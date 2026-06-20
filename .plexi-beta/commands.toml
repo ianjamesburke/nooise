@@ -1,8 +1,0 @@
-# Workspace commands — run with: plexi run <name>
-#
-# Simple form:   build = "cargo build"
-# With metadata: dev = { run = "npm run dev", description = "Start dev server" }
-# With secrets:  deploy = { run = "./deploy.sh", secrets = ["API_KEY"] }
-
-[commands]
-guess = "$PLEXI_CONFIG_DIR/scripts/guess"
