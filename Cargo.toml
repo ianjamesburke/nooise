@@ -1,0 +1,10 @@
+[package]
+name = "nooise"
+version = "0.1.0"
+edition = "2024"
+description = "A noise synthesis engine"
+license = "MIT"
+
+[dependencies]
+cpal = "0.15"
+rand = "0.8"

@@ -1,0 +1,16 @@
+schema_version = 1
+
+# Declare workspace app dependencies here.
+# Run `plexi app install` in this directory to install them.
+#
+# Example:
+#
+# [[app]]
+# id      = "gh-issues"
+# source  = "local:gh-issues"
+# version = "bundled"
+#
+# [[app]]
+# id      = "my-tool"
+# source  = "github:org/my-tool"
+# version = "v1.0.0"
