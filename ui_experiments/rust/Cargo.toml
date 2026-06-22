@@ -1,0 +1,37 @@
+[package]
+name = "nooise-ui-experiments"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "exp01"
+path = "src/bin/exp01_breathing_field.rs"
+
+[[bin]]
+name = "exp02"
+path = "src/bin/exp02_layered_ribbons.rs"
+
+[[bin]]
+name = "exp03"
+path = "src/bin/exp03_rainfall.rs"
+
+[[bin]]
+name = "exp04"
+path = "src/bin/exp04_concentric_pulse.rs"
+
+[[bin]]
+name = "exp05"
+path = "src/bin/exp05_color_fog.rs"
+
+[[bin]]
+name = "exp06"
+path = "src/bin/exp06_drift_field.rs"
+
+[[bin]]
+name = "exp07"
+path = "src/bin/exp07_web_of_threads.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+rand = "0.8"
