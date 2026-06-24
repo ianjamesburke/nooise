@@ -204,7 +204,7 @@ fn pad_chord(chord_index: usize) -> [f32; 4] {
 }
 
 fn rare_change_samples<R: Rng>(sample_rate: f32, rng: &mut R) -> u64 {
-    (rng.gen_range(130.0..260.0) * sample_rate).round() as u64
+    (rng.gen_range(60.0..120.0) * sample_rate).round() as u64
 }
 
 fn normalized_lfo(sample: f32) -> f32 {

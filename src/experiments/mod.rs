@@ -8,6 +8,7 @@ pub(crate) mod t1;
 pub(crate) mod t2;
 pub(crate) mod t3;
 pub(crate) mod t4;
+pub(crate) mod t5;
 
 pub(crate) fn run(experiment: &str) -> Result<(), Box<dyn Error>> {
     match experiment {
@@ -15,6 +16,7 @@ pub(crate) fn run(experiment: &str) -> Result<(), Box<dyn Error>> {
         "t2" => t2::run(),
         "t3" => t3::run(),
         "t4" => t4::run(),
+        "t5" => t5::run(),
         "r1" => r1::run(),
         "r2" => r2::run(),
         "r3" => r3::run(),

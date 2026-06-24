@@ -9,6 +9,45 @@ pub(crate) trait StereoEngine: Send + 'static {
     fn next_stereo(&mut self) -> (f32, f32);
 }
 
+pub(crate) fn start_stream<E>(
+    experiment_id: &str,
+    engine_factory: impl FnOnce(f32) -> E,
+) -> Result<Stream, Box<dyn Error>>
+where
+    E: StereoEngine,
+{
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or("no default output audio device found")?;
+    let supported_config = device.default_output_config()?;
+    let sample_format = supported_config.sample_format();
+    let stream_config: StreamConfig = supported_config.into();
+    let sample_rate = stream_config.sample_rate.0 as f32;
+
+    println!(
+        "running {experiment_id} at {} Hz on {}",
+        sample_rate as u32,
+        device.name()?
+    );
+
+    let stream = match sample_format {
+        SampleFormat::F32 => {
+            build_f32_stream(&device, &stream_config, engine_factory(sample_rate))?
+        }
+        SampleFormat::I16 => {
+            build_i16_stream(&device, &stream_config, engine_factory(sample_rate))?
+        }
+        SampleFormat::U16 => {
+            build_u16_stream(&device, &stream_config, engine_factory(sample_rate))?
+        }
+        other => return Err(format!("unsupported sample format: {other:?}").into()),
+    };
+
+    stream.play()?;
+    Ok(stream)
+}
+
 pub(crate) fn run_engine<E>(
     experiment_id: &str,
     engine_factory: impl FnOnce(f32) -> E,
