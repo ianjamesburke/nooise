@@ -19,12 +19,6 @@ impl SineOscillator {
         sample
     }
 
-    pub(crate) fn next_with_phase_modulation(&mut self, modulation: f32) -> f32 {
-        let sample = (self.phase + modulation).sin();
-        self.advance();
-        sample
-    }
-
     fn advance(&mut self) {
         self.phase += self.phase_increment;
         if self.phase >= TAU {

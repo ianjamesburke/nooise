@@ -1,3 +1,6 @@
-# Launch the t5e fluid audio visualizer
+# Launch the fluid TUI/audio engine
 fluid:
-    cargo run -- --experiment t5e
+    cargo run
+
+install:
+    cargo install --path . --locked

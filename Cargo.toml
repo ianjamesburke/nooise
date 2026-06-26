@@ -1,9 +1,14 @@
 [package]
 name = "nooise"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
-description = "A noise synthesis engine"
+default-run = "nooise"
+description = "Fluid focus music for the terminal"
 license = "MIT"
+
+[[bin]]
+name = "nooise"
+path = "src/main.rs"
 
 [dependencies]
 cpal = "0.15"

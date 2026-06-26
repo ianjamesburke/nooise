@@ -21,7 +21,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph, Widget},
+    widgets::{Block, Borders, Paragraph, Widget},
 };
 
 use crate::audio::{self, StereoEngine};
@@ -41,7 +41,7 @@ use crate::synth::oscillator::SineOscillator;
 /// counter (UI tracks the delta to fire one ripple per hit); `chord_index`
 /// mirrors the pad engine's current chord.
 #[derive(Default)]
-pub(crate) struct T5Telemetry {
+pub(crate) struct FluidTelemetry {
     pub chord_index: AtomicU64,
     pub kick_pulse: AtomicU64,
 }
@@ -214,7 +214,7 @@ impl Default for ClapControls {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct T5Controls {
+pub(crate) struct FluidControls {
     pub master: MasterControls,
     pub perc: PercControls,
     pub pad: PadControls,
@@ -227,45 +227,17 @@ pub(crate) struct T5Controls {
 // Entry point
 // ============================================================
 
-#[derive(Clone, Copy)]
-pub(crate) enum UiVariant {
-    T5a,
-    T5b,
-    T5c,
-    T5d,
-    T5e,
-}
+const APP_ID: &str = "nooise";
+const APP_NAME: &str = "fluid";
 
-impl UiVariant {
-    fn id(self) -> &'static str {
-        match self {
-            UiVariant::T5a => "t5a",
-            UiVariant::T5b => "t5b",
-            UiVariant::T5c => "t5c",
-            UiVariant::T5d => "t5d",
-            UiVariant::T5e => "t5e",
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            UiVariant::T5a => "gauges",
-            UiVariant::T5b => "orbit",
-            UiVariant::T5c => "matrix",
-            UiVariant::T5d => "score",
-            UiVariant::T5e => "fluid",
-        }
-    }
-}
-
-pub(crate) fn run(variant: UiVariant) -> Result<(), Box<dyn Error>> {
-    let controls = Arc::new(ArcSwap::from_pointee(T5Controls::default()));
+pub(crate) fn run() -> Result<(), Box<dyn Error>> {
+    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
     let controls_for_engine = Arc::clone(&controls);
-    let telemetry = Arc::new(T5Telemetry::default());
+    let telemetry = Arc::new(FluidTelemetry::default());
     let telemetry_for_engine = Arc::clone(&telemetry);
 
-    let _stream = audio::start_stream(variant.id(), move |sr| {
-        T5Engine::new(sr, controls_for_engine, telemetry_for_engine)
+    let _stream = audio::start_stream(APP_ID, move |sr| {
+        FluidEngine::new(sr, controls_for_engine, telemetry_for_engine)
     })?;
 
     enable_raw_mode()?;
@@ -274,7 +246,7 @@ pub(crate) fn run(variant: UiVariant) -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = ui_loop(&mut terminal, controls, telemetry, variant);
+    let result = ui_loop(&mut terminal, controls, telemetry);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -318,17 +290,6 @@ impl Tab {
         }
     }
 
-    fn short_name(self) -> &'static str {
-        match self {
-            Tab::Master => "MST",
-            Tab::Perc => "PRC",
-            Tab::Chords => "CHD",
-            Tab::Kick => "KIK",
-            Tab::Tonal => "TON",
-            Tab::Clap => "CLP",
-        }
-    }
-
     fn next(self) -> Self {
         match self {
             Tab::Master => Tab::Perc,
@@ -360,7 +321,7 @@ struct ControlItem {
     display: String,
 }
 
-fn tab_controls(tab: Tab, c: &T5Controls) -> Vec<ControlItem> {
+fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
     match tab {
         Tab::Master => vec![
             ControlItem {
@@ -744,7 +705,7 @@ fn tab_controls(tab: Tab, c: &T5Controls) -> Vec<ControlItem> {
     }
 }
 
-fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut T5Controls) {
+fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
     match tab {
         Tab::Master => match selected {
             0 => c.pad.level = (c.pad.level + dir * 0.02).clamp(0.0, 1.0),
@@ -837,9 +798,8 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut T5Controls) {
 
 fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    controls: Arc<ArcSwap<T5Controls>>,
-    telemetry: Arc<T5Telemetry>,
-    variant: UiVariant,
+    controls: Arc<ArcSwap<FluidControls>>,
+    telemetry: Arc<FluidTelemetry>,
 ) -> Result<(), Box<dyn Error>> {
     let mut tab = Tab::Master;
     let mut selected = 0usize;
@@ -847,7 +807,7 @@ fn ui_loop(
     let mut last = Instant::now();
 
     loop {
-        let c = T5Controls::clone(&controls.load());
+        let c = FluidControls::clone(&controls.load());
         let items = tab_controls(tab, &c);
         let items_len = items.len();
         selected = selected.min(items_len.saturating_sub(1));
@@ -857,7 +817,7 @@ fn ui_loop(
         last = now;
         fluid.tick(dt, &telemetry);
 
-        terminal.draw(|f| render(f, variant, &c, &items, tab, selected, &fluid))?;
+        terminal.draw(|f| render(f, &items, tab, selected, &fluid))?;
 
         if event::poll(std::time::Duration::from_millis(16))?
             && let Event::Key(key) = event::read()?
@@ -889,32 +849,24 @@ fn ui_loop(
     Ok(())
 }
 
-fn adjust(controls: &Arc<ArcSwap<T5Controls>>, tab: Tab, selected: usize, dir: f32) {
-    let mut next = T5Controls::clone(&controls.load());
+fn adjust(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize, dir: f32) {
+    let mut next = FluidControls::clone(&controls.load());
     apply_delta(tab, selected, dir, &mut next);
     controls.store(Arc::new(next));
 }
 
 fn render(
     f: &mut Frame,
-    variant: UiVariant,
-    controls: &T5Controls,
     items: &[ControlItem],
     active_tab: Tab,
     selected: usize,
     fluid: &FluidState,
 ) {
-    match variant {
-        UiVariant::T5a => render_t5a(f, variant, items, active_tab, selected),
-        UiVariant::T5b => render_t5b(f, variant, controls, items, active_tab, selected),
-        UiVariant::T5c => render_t5c(f, variant, controls, items, active_tab, selected),
-        UiVariant::T5d => render_t5d(f, variant, controls, items, active_tab, selected),
-        UiVariant::T5e => render_t5e(f, variant, items, active_tab, selected, fluid),
-    }
+    render_fluid(f, items, active_tab, selected, fluid);
 }
 
 // ============================================================
-// Fluid visualizer (t5e) — chords drive the field colour, kicks
+// Fluid visualizer: chords drive the field colour, kicks
 // spawn ripples. Driven entirely by live audio-thread telemetry.
 // ============================================================
 
@@ -945,7 +897,7 @@ impl FluidState {
         }
     }
 
-    fn tick(&mut self, dt: f32, telemetry: &T5Telemetry) {
+    fn tick(&mut self, dt: f32, telemetry: &FluidTelemetry) {
         self.t += dt;
 
         // kick pulses -> ripples (golden-angle scatter so they don't stack)
@@ -1061,9 +1013,8 @@ fn darken(c: Color, factor: f32) -> Color {
     }
 }
 
-fn render_t5e(
+fn render_fluid(
     f: &mut Frame,
-    variant: UiVariant,
     items: &[ControlItem],
     active_tab: Tab,
     selected: usize,
@@ -1100,7 +1051,7 @@ fn render_t5e(
 
     // Borders only (transparent fill) so the scrim shows through.
     let block = Block::default()
-        .title(format!(" {} {} ", variant.id(), variant.name()))
+        .title(format!(" {APP_ID} {APP_NAME} "))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
     let inner = block.inner(panel);
@@ -1130,13 +1081,11 @@ fn render_t5e(
         .collect::<Vec<_>>()
         .join("  ");
     f.render_widget(
-        Paragraph::new(tab_line)
-            .alignment(Alignment::Center)
-            .style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        Paragraph::new(tab_line).alignment(Alignment::Center).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         layout[2],
     );
 
@@ -1174,563 +1123,6 @@ fn render_t5e(
     );
 }
 
-fn render_t5a(
-    f: &mut Frame,
-    variant: UiVariant,
-    items: &[ControlItem],
-    active_tab: Tab,
-    selected: usize,
-) {
-    let area = f.area();
-
-    let outer = Block::default()
-        .title(format!(" {} {} ", variant.id(), variant.name()))
-        .borders(Borders::ALL);
-    let inner = outer.inner(area);
-    f.render_widget(outer, area);
-
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    let tab_line: String = Tab::all()
-        .iter()
-        .map(|t| {
-            if *t == active_tab {
-                format!("[{}]", t.name())
-            } else {
-                t.name().to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("  |  ");
-    let tab_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    f.render_widget(Paragraph::new(tab_line).style(tab_style), layout[0]);
-
-    let gauge_height = 2u16;
-    let constraints: Vec<Constraint> = items
-        .iter()
-        .map(|_| Constraint::Length(gauge_height))
-        .collect();
-    let slots = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(layout[2]);
-
-    for (i, item) in items.iter().enumerate() {
-        if i >= slots.len() {
-            break;
-        }
-        let active = i == selected;
-        let style = if active {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let ratio = ((item.value - item.min) / (item.max - item.min)).clamp(0.0, 1.0) as f64;
-        let prefix = if active { "▶ " } else { "  " };
-        let gauge = Gauge::default()
-            .block(
-                Block::default().title(format!("{}{:<14}  {}", prefix, item.label, item.display)),
-            )
-            .gauge_style(style)
-            .ratio(ratio);
-        f.render_widget(gauge, slots[i]);
-    }
-
-    f.render_widget(
-        Paragraph::new("↑↓/jk select   ←→/hl adjust   Tab/Shift+Tab layer   q quit"),
-        layout[3],
-    );
-}
-
-fn render_t5b(
-    f: &mut Frame,
-    variant: UiVariant,
-    controls: &T5Controls,
-    items: &[ControlItem],
-    active_tab: Tab,
-    selected: usize,
-) {
-    let area = f.area();
-    let outer = Block::default()
-        .title(format!(" {} {} ", variant.id(), variant.name()))
-        .borders(Borders::ALL);
-    let inner = outer.inner(area);
-    f.render_widget(outer, area);
-
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    render_variant_header(f, layout[0], variant, controls, active_tab);
-
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
-        .split(layout[1]);
-
-    f.render_widget(
-        Paragraph::new(orbit_lines(controls, active_tab)).block(Block::default().title(" layers ")),
-        body[0],
-    );
-    f.render_widget(
-        Paragraph::new(spoke_lines(items, selected)).block(Block::default().title(" spokes ")),
-        body[1],
-    );
-    render_focus_panel(f, layout[2], active_tab, items, selected);
-    render_footer(
-        f,
-        layout[3],
-        "Tab/Shift+Tab orbit   jk spoke   hl bend   q quit",
-    );
-}
-
-fn render_t5c(
-    f: &mut Frame,
-    variant: UiVariant,
-    controls: &T5Controls,
-    items: &[ControlItem],
-    active_tab: Tab,
-    selected: usize,
-) {
-    let area = f.area();
-    let outer = Block::default()
-        .title(format!(" {} {} ", variant.id(), variant.name()))
-        .borders(Borders::ALL);
-    let inner = outer.inner(area);
-    f.render_widget(outer, area);
-
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    render_variant_header(f, layout[0], variant, controls, active_tab);
-    f.render_widget(
-        Paragraph::new(matrix_lines(controls, active_tab, selected))
-            .block(Block::default().title(" all controls ")),
-        layout[1],
-    );
-    render_focus_panel(f, layout[2], active_tab, items, selected);
-    render_footer(
-        f,
-        layout[3],
-        "Tab/Shift+Tab column   jk row   hl value   q quit",
-    );
-}
-
-fn render_t5d(
-    f: &mut Frame,
-    variant: UiVariant,
-    controls: &T5Controls,
-    items: &[ControlItem],
-    active_tab: Tab,
-    selected: usize,
-) {
-    let area = f.area();
-    let outer = Block::default()
-        .title(format!(" {} {} ", variant.id(), variant.name()))
-        .borders(Borders::ALL);
-    let inner = outer.inner(area);
-    f.render_widget(outer, area);
-
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    render_variant_header(f, layout[0], variant, controls, active_tab);
-    f.render_widget(
-        Paragraph::new(score_lines(controls, active_tab))
-            .block(Block::default().title(" eight beat score ")),
-        layout[1],
-    );
-    render_focus_panel(f, layout[2], active_tab, items, selected);
-    render_footer(
-        f,
-        layout[3],
-        "Tab/Shift+Tab staff   jk parameter   hl conduct   q quit",
-    );
-}
-
-fn render_variant_header(
-    f: &mut Frame,
-    area: Rect,
-    variant: UiVariant,
-    controls: &T5Controls,
-    active_tab: Tab,
-) {
-    let status = Line::from(vec![
-        Span::styled(
-            format!("{} {}", variant.id(), variant.name()),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("   "),
-        Span::styled(
-            format!("{:.0} bpm", controls.master.bpm),
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::raw("   "),
-        Span::styled(
-            format!(
-                "master {:.0}%  drive {:.0}%  tone {}",
-                controls.master.level * 100.0,
-                controls.master.drive * 100.0,
-                tone_label(controls.master.tone)
-            ),
-            Style::default().fg(Color::Gray),
-        ),
-    ]);
-    f.render_widget(
-        Paragraph::new(vec![status, tab_selector_line(active_tab)]).alignment(Alignment::Center),
-        area,
-    );
-}
-
-fn render_footer(f: &mut Frame, area: Rect, text: &'static str) {
-    f.render_widget(Paragraph::new(text), area);
-}
-
-fn render_focus_panel(
-    f: &mut Frame,
-    area: Rect,
-    active_tab: Tab,
-    items: &[ControlItem],
-    selected: usize,
-) {
-    let Some(item) = items.get(selected) else {
-        return;
-    };
-    let ratio = item_ratio(item);
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Length(2),
-            Constraint::Length(1),
-        ])
-        .split(area);
-    let headline = Paragraph::new(vec![Line::from(vec![
-        Span::styled(
-            format!("{} / ", active_tab.name()),
-            Style::default().fg(layer_color(active_tab)),
-        ),
-        Span::styled(
-            item.label,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(item.display.clone(), Style::default().fg(Color::Cyan)),
-    ])])
-    .block(Block::default().title(" focus "));
-    f.render_widget(headline, chunks[0]);
-    f.render_widget(
-        Gauge::default()
-            .gauge_style(
-                Style::default()
-                    .fg(layer_color(active_tab))
-                    .add_modifier(Modifier::BOLD),
-            )
-            .ratio(ratio as f64),
-        chunks[1],
-    );
-}
-
-fn tab_selector_line(active_tab: Tab) -> Line<'static> {
-    let mut spans = Vec::new();
-    for tab in Tab::all() {
-        if !spans.is_empty() {
-            spans.push(Span::raw("  "));
-        }
-        let label = if tab == active_tab {
-            format!("[{}]", tab.short_name())
-        } else {
-            format!(" {} ", tab.short_name())
-        };
-        let style = if tab == active_tab {
-            Style::default()
-                .fg(layer_color(tab))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        spans.push(Span::styled(label, style));
-    }
-    Line::from(spans)
-}
-
-fn orbit_lines(controls: &T5Controls, active_tab: Tab) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    lines.push(Line::from(Span::styled(
-        "        volume orbit        motion orbit",
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(Line::from(""));
-
-    for tab in Tab::all() {
-        let active = tab == active_tab;
-        let marker = if active { ">>" } else { "  " };
-        let name_style = if active {
-            Style::default()
-                .fg(layer_color(tab))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(layer_color(tab))
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{marker} {:<7}", tab.name()), name_style),
-            Span::raw(ratio_bar(tab_level(tab, controls), 18, '#', '.')),
-            Span::raw("   "),
-            Span::raw(ratio_bar(tab_motion(tab, controls), 12, '=', '.')),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("core ", Style::default().fg(Color::Yellow)),
-        Span::raw(format!(
-            "{:.0} bpm / comp {:.1}:1 / release {:.0}ms",
-            controls.master.bpm, controls.master.comp_ratio, controls.master.comp_release_ms
-        )),
-    ]));
-    lines
-}
-
-fn spoke_lines(items: &[ControlItem], selected: usize) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for (i, item) in items.iter().enumerate() {
-        let active = i == selected;
-        let marker = if active { "@" } else { "." };
-        let style = if active {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{marker} {:02} ", i + 1), style),
-            Span::styled(format!("{:<18}", item.label), style),
-            Span::raw(ratio_bar(item_ratio(item), 16, '#', '.')),
-            Span::raw(" "),
-            Span::styled(item.display.clone(), Style::default().fg(Color::White)),
-        ]));
-    }
-    lines
-}
-
-fn matrix_lines(controls: &T5Controls, active_tab: Tab, selected: usize) -> Vec<Line<'static>> {
-    let all_controls: Vec<(Tab, Vec<ControlItem>)> = Tab::all()
-        .into_iter()
-        .map(|tab| (tab, tab_controls(tab, controls)))
-        .collect();
-    let row_count = all_controls
-        .iter()
-        .map(|(_, controls)| controls.len())
-        .max()
-        .unwrap_or(0);
-
-    let mut lines = Vec::new();
-    let mut header = vec![Span::raw("    ")];
-    for (tab, _) in &all_controls {
-        let style = if *tab == active_tab {
-            Style::default()
-                .fg(layer_color(*tab))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(layer_color(*tab))
-        };
-        header.push(Span::styled(format!("{:^10}", tab.short_name()), style));
-    }
-    lines.push(Line::from(header));
-
-    for row in 0..row_count {
-        let mut spans = vec![Span::styled(
-            format!("{:02}  ", row + 1),
-            Style::default().fg(Color::DarkGray),
-        )];
-        for (tab, tab_items) in &all_controls {
-            if let Some(item) = tab_items.get(row) {
-                let active = *tab == active_tab && row == selected;
-                let bar = ratio_bar(item_ratio(item), 6, '#', '.');
-                let cell = if active {
-                    format!("[{bar}] ")
-                } else {
-                    format!(" {bar}  ")
-                };
-                let style = if active {
-                    Style::default()
-                        .fg(Color::White)
-                        .bg(layer_color(*tab))
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(layer_color(*tab))
-                };
-                spans.push(Span::styled(format!("{cell:<10}"), style));
-            } else {
-                spans.push(Span::raw("          "));
-            }
-        }
-        lines.push(Line::from(spans));
-    }
-    lines
-}
-
-fn score_lines(controls: &T5Controls, active_tab: Tab) -> Vec<Line<'static>> {
-    const STEPS: usize = 32;
-    const STEP_BEATS: f32 = 0.25;
-
-    let mut lines = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled("beats ", Style::default().fg(Color::DarkGray)),
-        Span::raw("1...2...3...4...5...6...7...8..."),
-    ]));
-    lines.push(Line::from(""));
-
-    for tab in Tab::all() {
-        let active = tab == active_tab;
-        let pattern = match tab {
-            Tab::Master => "||||::::||||::::||||::::||||::::".to_string(),
-            Tab::Perc => pulse_pattern(0.25, 0.0, STEPS, STEP_BEATS, '#', '.'),
-            Tab::Chords => pulse_pattern(
-                controls.pad.chord_bars * 4.0,
-                0.0,
-                STEPS,
-                STEP_BEATS,
-                'O',
-                '~',
-            ),
-            Tab::Kick => pulse_pattern(
-                controls.kick.interval_beats,
-                controls.kick.offset_beats,
-                STEPS,
-                STEP_BEATS,
-                'K',
-                '.',
-            ),
-            Tab::Tonal => pulse_pattern(
-                controls.tonal.step_interval_beats,
-                controls.tonal.offset_beats,
-                STEPS,
-                STEP_BEATS,
-                'T',
-                '.',
-            ),
-            Tab::Clap => pulse_pattern(
-                controls.clap.interval_beats,
-                controls.clap.offset_beats,
-                STEPS,
-                STEP_BEATS,
-                'C',
-                '.',
-            ),
-        };
-        let style = if active {
-            Style::default()
-                .fg(layer_color(tab))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let marker = if active { ">" } else { " " };
-        lines.push(Line::from(vec![
-            Span::styled(format!("{marker} {:<7}", tab.name()), style),
-            Span::styled(pattern, style),
-            Span::raw("  "),
-            Span::styled(
-                ratio_bar(tab_level(tab, controls), 10, '#', '.'),
-                Style::default().fg(layer_color(tab)),
-            ),
-        ]));
-    }
-    lines
-}
-
-fn pulse_pattern(
-    interval_beats: f32,
-    offset_beats: f32,
-    steps: usize,
-    step_beats: f32,
-    hit: char,
-    rest: char,
-) -> String {
-    (0..steps)
-        .map(|i| {
-            let beat = i as f32 * step_beats;
-            if grid_hit_at_step(beat, interval_beats, offset_beats, step_beats * 0.45) {
-                hit
-            } else {
-                rest
-            }
-        })
-        .collect()
-}
-
-fn grid_hit_at_step(beat: f32, interval_beats: f32, offset_beats: f32, tolerance: f32) -> bool {
-    let interval = interval_beats.max(1.0 / 64.0);
-    let offset = offset_beats.rem_euclid(interval);
-    if beat + tolerance < offset {
-        return false;
-    }
-    let rel = (beat - offset).rem_euclid(interval);
-    rel <= tolerance || interval - rel <= tolerance
-}
-
-fn tab_level(tab: Tab, controls: &T5Controls) -> f32 {
-    match tab {
-        Tab::Master => controls.master.level,
-        Tab::Perc => controls.perc.level,
-        Tab::Chords => controls.pad.level,
-        Tab::Kick => controls.kick.level,
-        Tab::Tonal => controls.tonal.level,
-        Tab::Clap => controls.clap.level,
-    }
-    .clamp(0.0, 1.0)
-}
-
-fn tab_motion(tab: Tab, controls: &T5Controls) -> f32 {
-    match tab {
-        Tab::Master => controls.master.drive.max(controls.master.tone.abs()),
-        Tab::Perc => controls.perc.lfo_depth,
-        Tab::Chords => (controls.pad.stereo_width + controls.pad.detune) * 0.5,
-        Tab::Kick => controls.kick.echo_amount.max(controls.kick.drive),
-        Tab::Tonal => controls.tonal.randomness.max(controls.tonal.reverb_mix),
-        Tab::Clap => controls.clap.room.max(controls.clap.body),
-    }
-    .clamp(0.0, 1.0)
-}
-
 fn item_ratio(item: &ControlItem) -> f32 {
     let range = item.max - item.min;
     if range.abs() <= f32::EPSILON {
@@ -1751,56 +1143,35 @@ fn ratio_bar(ratio: f32, width: usize, filled: char, empty: char) -> String {
     )
 }
 
-fn tone_label(tone: f32) -> String {
-    if tone < -0.05 {
-        format!("bass {:.0}%", -tone * 100.0)
-    } else if tone > 0.05 {
-        format!("treble {:.0}%", tone * 100.0)
-    } else {
-        "flat".to_string()
-    }
-}
-
-fn layer_color(tab: Tab) -> Color {
-    match tab {
-        Tab::Master => Color::Yellow,
-        Tab::Perc => Color::Green,
-        Tab::Chords => Color::Magenta,
-        Tab::Kick => Color::Red,
-        Tab::Tonal => Color::Cyan,
-        Tab::Clap => Color::LightBlue,
-    }
-}
-
 // ============================================================
-// T5 Engine
+// Fluid Engine
 // ============================================================
 
-struct T5Engine {
+struct FluidEngine {
     current_sample: u64,
-    beat_clock: f64,
     sample_rate: f32,
+    tempo: TempoClock,
     pad: PadEngine,
     perc: PercEngine,
     kick: KickEngine,
     tonal: TonalEngine,
     clap: ClapEngine,
     master_bus: MasterBus,
-    controls: Arc<ArcSwap<T5Controls>>,
-    snapshot: T5Controls,
+    controls: Arc<ArcSwap<FluidControls>>,
+    snapshot: FluidControls,
 }
 
-impl T5Engine {
+impl FluidEngine {
     fn new(
         sample_rate: f32,
-        controls: Arc<ArcSwap<T5Controls>>,
-        telemetry: Arc<T5Telemetry>,
+        controls: Arc<ArcSwap<FluidControls>>,
+        telemetry: Arc<FluidTelemetry>,
     ) -> Self {
-        let snapshot = T5Controls::clone(&controls.load());
+        let snapshot = FluidControls::clone(&controls.load());
         Self {
             current_sample: 0,
-            beat_clock: 0.0,
             sample_rate,
+            tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
             pad: PadEngine::new(sample_rate, &snapshot.pad, Arc::clone(&telemetry)),
             perc: PercEngine::new(sample_rate),
             kick: KickEngine::new(sample_rate, telemetry),
@@ -1813,21 +1184,20 @@ impl T5Engine {
     }
 }
 
-impl StereoEngine for T5Engine {
+impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         if self.current_sample.is_multiple_of(512) {
-            self.snapshot = T5Controls::clone(&self.controls.load());
+            self.snapshot = FluidControls::clone(&self.controls.load());
         }
 
         let fade = (self.current_sample as f32 / (self.sample_rate * 8.0)).min(1.0);
-        let bpm = self.snapshot.master.bpm;
-        self.beat_clock += bpm as f64 / (60.0 * self.sample_rate as f64);
+        let timing = self.tempo.tick(self.snapshot.master.bpm);
 
-        let (pad_l, pad_r) = self.pad.next(&self.snapshot.pad, bpm, self.beat_clock);
-        let perc = self.perc.next(&self.snapshot.perc, bpm, self.beat_clock);
-        let (kick_l, kick_r) = self.kick.next(&self.snapshot.kick, bpm, self.beat_clock);
-        let (ton_l, ton_r) = self.tonal.next(&self.snapshot.tonal, bpm, self.beat_clock);
-        let (clap_l, clap_r) = self.clap.next(&self.snapshot.clap, self.beat_clock);
+        let (pad_l, pad_r) = self.pad.next(&self.snapshot.pad, timing);
+        let perc = self.perc.next(&self.snapshot.perc, timing);
+        let (kick_l, kick_r) = self.kick.next(&self.snapshot.kick, timing);
+        let (ton_l, ton_r) = self.tonal.next(&self.snapshot.tonal, timing);
+        let (clap_l, clap_r) = self.clap.next(&self.snapshot.clap, timing);
 
         self.current_sample += 1;
 
@@ -1838,27 +1208,153 @@ impl StereoEngine for T5Engine {
     }
 }
 
+const TEMPO_SMOOTH_MS: f64 = 180.0;
+
+struct TempoClock {
+    beat: f64,
+    bpm: f64,
+    sample_rate: f64,
+}
+
+impl TempoClock {
+    fn new(sample_rate: f32, bpm: f32) -> Self {
+        Self {
+            beat: 0.0,
+            bpm: f64::from(bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX)),
+            sample_rate: f64::from(sample_rate.max(1.0)),
+        }
+    }
+
+    fn tick(&mut self, target_bpm: f32) -> TimingContext {
+        let target_bpm = f64::from(target_bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX));
+        let smoothing_samples = (TEMPO_SMOOTH_MS * 0.001 * self.sample_rate).max(1.0);
+        let coeff = 1.0 - (-1.0 / smoothing_samples).exp();
+        self.bpm += (target_bpm - self.bpm) * coeff;
+
+        let timing = TimingContext::new(self.sample_rate, self.bpm, self.beat);
+        self.beat += self.bpm / (60.0 * self.sample_rate);
+        timing
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TimingContext {
+    sample_rate: f64,
+    bpm: f64,
+    beat: f64,
+}
+
+impl TimingContext {
+    fn new(sample_rate: f64, bpm: f64, beat: f64) -> Self {
+        Self {
+            sample_rate: sample_rate.max(1.0),
+            bpm: bpm.max(1.0),
+            beat,
+        }
+    }
+
+    fn samples_per_beat(self) -> f64 {
+        self.sample_rate * 60.0 / self.bpm
+    }
+
+    fn beats_to_samples(self, beats: f32) -> u64 {
+        (f64::from(beats.max(0.0)) * self.samples_per_beat())
+            .round()
+            .max(1.0) as u64
+    }
+
+    fn lfo_hz_for_bars(self, bars: f32) -> f32 {
+        (self.bpm as f32) / (240.0 * bars.max(1.0 / 64.0))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GridSpec {
+    interval_beats: f64,
+    offset_beats: f64,
+}
+
+impl GridSpec {
+    fn new(interval_beats: f32, offset_beats: f32) -> Self {
+        let interval_beats = f64::from(interval_beats).max(1.0 / 64.0);
+        Self {
+            interval_beats,
+            offset_beats: f64::from(offset_beats).rem_euclid(interval_beats),
+        }
+    }
+
+    fn hit_at_or_after(self, beat: f64) -> GridHit {
+        let interval = self.interval_beats;
+        let offset = self.offset_beats;
+        let slot = if beat <= offset {
+            0
+        } else {
+            ((beat - offset) / interval).ceil().max(0.0) as u64
+        };
+        GridHit {
+            beat: offset + slot as f64 * interval,
+        }
+    }
+
+    fn hit_after(self, beat: f64) -> GridHit {
+        self.hit_at_or_after(beat + GRID_BEAT_EPSILON)
+    }
+}
+
+const GRID_BEAT_EPSILON: f64 = 1e-9;
+
+#[derive(Clone, Copy, Debug)]
+struct GridHit {
+    beat: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FirstGridHit {
+    AtOrAfterNow,
+    AfterNow,
+}
+
 struct GridTrigger {
-    last_slot: Option<f64>,
+    spec: Option<GridSpec>,
+    next_hit: Option<GridHit>,
+    first_hit: FirstGridHit,
 }
 
 impl GridTrigger {
     fn new() -> Self {
-        Self { last_slot: None }
+        Self::with_first_hit(FirstGridHit::AtOrAfterNow)
     }
 
-    fn pop(&mut self, beat_phase: f64, interval_beats: f32, offset_beats: f32) -> bool {
-        let interval = (interval_beats as f64).max(1.0 / 64.0);
-        let offset = (offset_beats as f64).rem_euclid(interval);
+    fn after_start() -> Self {
+        Self::with_first_hit(FirstGridHit::AfterNow)
+    }
 
-        if beat_phase < offset {
-            return false;
+    fn with_first_hit(first_hit: FirstGridHit) -> Self {
+        Self {
+            spec: None,
+            next_hit: None,
+            first_hit,
         }
-        let slot = ((beat_phase - offset) / interval).floor();
+    }
 
-        let is_new = self.last_slot.is_none_or(|last| slot > last);
-        if is_new {
-            self.last_slot = Some(slot);
+    fn pop(&mut self, timing: TimingContext, interval_beats: f32, offset_beats: f32) -> bool {
+        let spec = GridSpec::new(interval_beats, offset_beats);
+        if self.spec != Some(spec) {
+            let first_schedule =
+                self.next_hit.is_none() && self.first_hit == FirstGridHit::AfterNow;
+            self.spec = Some(spec);
+            self.next_hit = Some(if first_schedule {
+                spec.hit_after(timing.beat)
+            } else {
+                spec.hit_at_or_after(timing.beat)
+            });
+        }
+
+        let Some(next_hit) = self.next_hit else {
+            return false;
+        };
+        if timing.beat + GRID_BEAT_EPSILON >= next_hit.beat {
+            self.next_hit = Some(spec.hit_after(timing.beat));
             true
         } else {
             false
@@ -1934,7 +1430,7 @@ impl MasterBus {
 }
 
 // ============================================================
-// Pad engine (chord drones, from t3)
+// Pad engine (chord drones)
 // ============================================================
 
 const MAX_PAD_LAYERS: usize = 4;
@@ -1942,22 +1438,22 @@ const MAX_PAD_LAYERS: usize = 4;
 struct PadEngine {
     sample_rate: f32,
     layers: Vec<PadLayer>,
-    next_change_beat: f64,
+    chord_trigger: GridTrigger,
     chord_index: usize,
     reverb: Freeverb,
     depth_lfo: DriftingLfo,
     width_lfo: DriftingLfo,
     air: WhiteNoise,
     rng: StdRng,
-    telemetry: Arc<T5Telemetry>,
+    telemetry: Arc<FluidTelemetry>,
 }
 
 impl PadEngine {
-    fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<T5Telemetry>) -> Self {
+    fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
             layers: vec![PadLayer::new(0, sample_rate, c.attack_time)],
-            next_change_beat: c.chord_bars as f64 * 4.0,
+            chord_trigger: GridTrigger::after_start(),
             chord_index: 0,
             reverb: Freeverb::new(sample_rate, 0.93, 0.46, 1.0),
             depth_lfo: DriftingLfo::new(1.0 / 42.0, sample_rate),
@@ -1968,8 +1464,8 @@ impl PadEngine {
         }
     }
 
-    fn next(&mut self, c: &PadControls, _bpm: f32, beat_phase: f64) -> (f32, f32) {
-        if beat_phase >= self.next_change_beat {
+    fn next(&mut self, c: &PadControls, timing: TimingContext) -> (f32, f32) {
+        if self.chord_trigger.pop(timing, c.chord_bars * 4.0, 0.0) {
             for layer in &mut self.layers {
                 layer.release();
             }
@@ -1986,7 +1482,6 @@ impl PadEngine {
                 self.sample_rate,
                 c.attack_time,
             ));
-            self.next_change_beat += c.chord_bars as f64 * 4.0;
         }
 
         let depth = normalized_lfo(self.depth_lfo.next(&mut self.rng, 1.0 / 68.0, 1.0 / 28.0));
@@ -2130,14 +1625,14 @@ impl PercEngine {
         }
     }
 
-    fn next(&mut self, c: &PercControls, bpm: f32, beat_phase: f64) -> f32 {
+    fn next(&mut self, c: &PercControls, timing: TimingContext) -> f32 {
         // Advance LFO every sample so phase accumulates at the correct rate.
-        let rate_hz = bpm / (240.0 * c.lfo_rate_bars);
+        let rate_hz = timing.lfo_hz_for_bars(c.lfo_rate_bars);
         let lfo_raw = self
             .vol_lfo
             .next(&mut self.rng, rate_hz * 0.5, rate_hz * 2.0);
 
-        if self.trigger.pop(beat_phase, 0.25, 0.0) {
+        if self.trigger.pop(timing, 0.25, 0.0) {
             let lfo_norm = normalized_lfo(lfo_raw);
             let effective_level = c.level * ((1.0 - c.lfo_depth) + lfo_norm * c.lfo_depth);
             let smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
@@ -2204,11 +1699,11 @@ struct KickEngine {
     voices: Vec<KickVoice>,
     delay: KickDelay,
     rng: StdRng,
-    telemetry: Arc<T5Telemetry>,
+    telemetry: Arc<FluidTelemetry>,
 }
 
 impl KickEngine {
-    fn new(sample_rate: f32, telemetry: Arc<T5Telemetry>) -> Self {
+    fn new(sample_rate: f32, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
             trigger: GridTrigger::new(),
@@ -2219,11 +1714,8 @@ impl KickEngine {
         }
     }
 
-    fn next(&mut self, c: &KickControls, bpm: f32, beat_phase: f64) -> (f32, f32) {
-        if self
-            .trigger
-            .pop(beat_phase, c.interval_beats, c.offset_beats)
-        {
+    fn next(&mut self, c: &KickControls, timing: TimingContext) -> (f32, f32) {
+        if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
             self.voices
                 .push(KickVoice::new(c, self.sample_rate, &mut self.rng));
             self.telemetry.kick_pulse.fetch_add(1, Ordering::Relaxed);
@@ -2238,7 +1730,7 @@ impl KickEngine {
         }
         self.voices.retain(|v| !v.is_done());
 
-        let delay_samples = ((c.echo_time_beats * 60.0 / bpm) * self.sample_rate) as usize;
+        let delay_samples = timing.beats_to_samples(c.echo_time_beats) as usize;
         let (echo_l, echo_r) = self.delay.process(
             dry_l,
             dry_r,
@@ -2374,7 +1866,7 @@ impl KickVoice {
 }
 
 // ============================================================
-// Tonal engine (melodic step sequencer with randomness)
+// Tonal engine (melodic steps with randomness)
 // ============================================================
 
 struct TonalEngine {
@@ -2403,10 +1895,10 @@ impl TonalEngine {
         }
     }
 
-    fn next(&mut self, c: &TonalControls, bpm: f32, beat_phase: f64) -> (f32, f32) {
+    fn next(&mut self, c: &TonalControls, timing: TimingContext) -> (f32, f32) {
         if self
             .trigger
-            .pop(beat_phase, c.step_interval_beats, c.offset_beats)
+            .pop(timing, c.step_interval_beats, c.offset_beats)
         {
             let degree = if self.rng.gen_range(0.0f32..1.0) < c.randomness {
                 self.rng.gen_range(0..SCALE_HZ.len())
@@ -2416,8 +1908,7 @@ impl TonalEngine {
                 d
             };
             let hz = SCALE_HZ[degree];
-            let decay_samples =
-                (c.note_length_beats * 60.0 / bpm * self.sample_rate).round() as u64;
+            let decay_samples = timing.beats_to_samples(c.note_length_beats);
             let pan = self.rng.gen_range(-0.5f32..0.5);
             self.voices.push(TonalVoice::new(
                 hz,
@@ -2506,11 +1997,8 @@ impl ClapEngine {
         }
     }
 
-    fn next(&mut self, c: &ClapControls, beat_phase: f64) -> (f32, f32) {
-        if self
-            .trigger
-            .pop(beat_phase, c.interval_beats, c.offset_beats)
-        {
+    fn next(&mut self, c: &ClapControls, timing: TimingContext) -> (f32, f32) {
+        if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
             self.voices
                 .push(ClapVoice::new(c, self.sample_rate, &mut self.rng));
         }
@@ -2628,6 +2116,13 @@ mod tests {
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
+    fn timing(sample: u64, bpm: f32) -> TimingContext {
+        let sample_rate = f64::from(SAMPLE_RATE);
+        let bpm = f64::from(bpm);
+        let beat = sample as f64 * bpm / (60.0 * sample_rate);
+        TimingContext::new(sample_rate, bpm, beat)
+    }
+
     #[test]
     fn tab_previous_wraps_back_one_tab() {
         assert_eq!(Tab::Master.previous(), Tab::Clap);
@@ -2635,25 +2130,16 @@ mod tests {
     }
 
     #[test]
-    fn render_variants_draw_without_terminal_backend() {
-        let controls = T5Controls::default();
-
+    fn render_fluid_draws_without_terminal_backend() {
+        let controls = FluidControls::default();
         let fluid = FluidState::new();
-        for variant in [
-            UiVariant::T5a,
-            UiVariant::T5b,
-            UiVariant::T5c,
-            UiVariant::T5d,
-            UiVariant::T5e,
-        ] {
-            let backend = TestBackend::new(100, 32);
-            let mut terminal = Terminal::new(backend).unwrap();
-            let items = tab_controls(Tab::Master, &controls);
+        let backend = TestBackend::new(100, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let items = tab_controls(Tab::Master, &controls);
 
-            terminal
-                .draw(|f| render(f, variant, &controls, &items, Tab::Master, 0, &fluid))
-                .unwrap();
-        }
+        terminal
+            .draw(|f| render(f, &items, Tab::Master, 0, &fluid))
+            .unwrap();
     }
 
     #[test]
@@ -2663,10 +2149,11 @@ mod tests {
             attack_time: 1.0,
             ..PadControls::default()
         };
-        let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(T5Telemetry::default()));
+        let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
 
         for chord in 1..12 {
-            let _ = pad.next(&controls, 120.0, chord as f64 * 4.0);
+            let sample = chord * SAMPLE_RATE as u64 * 2;
+            let _ = pad.next(&controls, timing(sample, 120.0));
             assert!(pad.layers.len() <= MAX_PAD_LAYERS);
         }
     }
@@ -2681,20 +2168,54 @@ mod tests {
     }
 
     #[test]
+    fn tempo_clock_preserves_beat_phase_when_bpm_changes() {
+        let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
+        let mut before = clock.tick(120.0);
+
+        for _ in 1..20_000 {
+            before = clock.tick(120.0);
+        }
+
+        let after = clock.tick(60.0);
+
+        assert!(after.beat > before.beat);
+        assert!(after.beat - before.beat < 0.001);
+        assert!(after.bpm < before.bpm);
+        assert!(after.bpm > 60.0);
+    }
+
+    #[test]
+    fn grid_trigger_keeps_next_hit_when_only_bpm_changes() {
+        let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
+        let mut trigger = GridTrigger::new();
+
+        for _ in 0..25_000 {
+            let timing = clock.tick(120.0);
+            let _ = trigger.pop(timing, 1.0, 0.0);
+        }
+
+        let before = trigger.next_hit.map(|hit| hit.beat);
+        let timing = clock.tick(60.0);
+        let fired = trigger.pop(timing, 1.0, 0.0);
+        let after = trigger.next_hit.map(|hit| hit.beat);
+
+        assert!(!fired);
+        assert_eq!(before, after);
+    }
+
+    #[test]
     fn grid_trigger_fires_identically_for_same_params() {
         let mut a = GridTrigger::new();
         let mut b = GridTrigger::new();
         let mut a_hits = Vec::new();
         let mut b_hits = Vec::new();
-        let mut clock = 0.0f64;
-        let inc = 120.0_f64 / (60.0 * SAMPLE_RATE as f64);
 
         for sample in 0..(SAMPLE_RATE as u64 * 6) {
-            clock += inc;
-            if a.pop(clock, 2.0, 1.0) {
+            let timing = timing(sample, 120.0);
+            if a.pop(timing, 2.0, 1.0) {
                 a_hits.push(sample);
             }
-            if b.pop(clock, 2.0, 1.0) {
+            if b.pop(timing, 2.0, 1.0) {
                 b_hits.push(sample);
             }
         }
@@ -2706,31 +2227,28 @@ mod tests {
     #[test]
     fn grid_trigger_no_silence_after_bpm_decrease() {
         let change_at = 50_000u64;
+        let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
         let mut kick = GridTrigger::new();
         let mut clap = GridTrigger::new();
         let mut kick_hits: Vec<u64> = Vec::new();
         let mut clap_hits: Vec<u64> = Vec::new();
-        let mut clock = 0.0f64;
 
-        let inc1 = 120.0_f64 / (60.0 * SAMPLE_RATE as f64);
         for sample in 0..change_at {
-            clock += inc1;
-            if kick.pop(clock, 1.0, 0.0) {
+            let timing = clock.tick(120.0);
+            if kick.pop(timing, 1.0, 0.0) {
                 kick_hits.push(sample);
             }
-            if clap.pop(clock, 2.0, 1.0) {
+            if clap.pop(timing, 2.0, 1.0) {
                 clap_hits.push(sample);
             }
         }
 
-        // BPM drops to 60 -- clock continues upward, never jumps back
-        let inc2 = 60.0_f64 / (60.0 * SAMPLE_RATE as f64);
         for sample in change_at..(SAMPLE_RATE as u64 * 8) {
-            clock += inc2;
-            if kick.pop(clock, 1.0, 0.0) {
+            let timing = clock.tick(60.0);
+            if kick.pop(timing, 1.0, 0.0) {
                 kick_hits.push(sample);
             }
-            if clap.pop(clock, 2.0, 1.0) {
+            if clap.pop(timing, 2.0, 1.0) {
                 clap_hits.push(sample);
             }
         }
@@ -2741,6 +2259,32 @@ mod tests {
         assert!(
             first_post.is_some_and(|s| s - change_at <= one_beat_samples),
             "kick stalled after BPM decrease"
+        );
+    }
+
+    #[test]
+    fn grid_trigger_no_silence_after_interval_increase() {
+        let change_at = 50_000u64;
+        let mut trigger = GridTrigger::new();
+        let mut hits: Vec<u64> = Vec::new();
+
+        for sample in 0..change_at {
+            if trigger.pop(timing(sample, 120.0), 0.5, 0.0) {
+                hits.push(sample);
+            }
+        }
+
+        for sample in change_at..(SAMPLE_RATE as u64 * 8) {
+            if trigger.pop(timing(sample, 120.0), 4.0, 0.0) {
+                hits.push(sample);
+            }
+        }
+
+        let new_interval_samples = (4.0 * 60.0 / 120.0 * SAMPLE_RATE) as u64;
+        let first_post = hits.iter().copied().find(|&s| s >= change_at);
+        assert!(
+            first_post.is_some_and(|s| s - change_at <= new_interval_samples),
+            "trigger stalled after interval increase"
         );
     }
 

@@ -8,7 +8,6 @@ enum Stage {
 }
 
 pub(crate) struct Adsr {
-    sample_rate: f32,
     attack_samples: f32,
     decay_samples: f32,
     sustain_level: f32,
@@ -28,7 +27,6 @@ impl Adsr {
         sample_rate: f32,
     ) -> Self {
         Self {
-            sample_rate,
             attack_samples: attack_seconds * sample_rate,
             decay_samples: decay_seconds * sample_rate,
             sustain_level,
@@ -102,9 +100,5 @@ impl Adsr {
 
     pub(crate) fn is_done(&self) -> bool {
         matches!(self.stage, Stage::Done)
-    }
-
-    pub(crate) fn samples_from_seconds(&self, seconds: f32) -> u64 {
-        (seconds * self.sample_rate).round() as u64
     }
 }
