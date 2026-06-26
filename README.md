@@ -1,14 +1,18 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ianjamesburke/nooise/v1.0.2/assets/nooise-wordmark.svg" alt="nooise" width="760">
+  <img src="https://raw.githubusercontent.com/ianjamesburke/nooise/v1.0.3/assets/nooise-wordmark.svg" alt="nooise" width="760">
 </p>
 
 <p align="center">
-  Fluid focus music for the terminal.
+  Ambient music generator for the terminal.
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ianjamesburke/nooise/v1.0.2/assets/nooise-preview.png" alt="nooise running in a terminal" width="900">
+  <img src="https://raw.githubusercontent.com/ianjamesburke/nooise/v1.0.3/assets/nooise-preview.png" alt="nooise running in a terminal" width="900">
 </p>
+
+I wanted an excuse to build a Rust synth engine. I kept putting on long, repetitive ambient music to get into flow, so I made a small terminal app that does that.
+
+nooise is one Rust binary: terminal UI, synth engine, and live controls.
 
 ## Install
 
@@ -31,6 +35,14 @@ nooise
 ```
 
 Press `q` to quit.
+
+## Update
+
+```sh
+nooise update
+```
+
+`nooise upgrade` does the same thing.
 
 ## From Source
 

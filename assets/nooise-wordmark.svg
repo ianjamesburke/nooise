@@ -1,6 +1,6 @@
 <svg width="980" height="220" viewBox="0 0 980 220" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">nooise</title>
-  <desc id="desc">Fluid focus music for the terminal</desc>
+  <desc id="desc">Ambient music generator for the terminal</desc>
   <rect width="980" height="220" rx="18" fill="#0B1020"/>
   <g opacity="0.75">
     <circle cx="75" cy="110" r="6" fill="#2BDBE8"/>
@@ -13,7 +13,7 @@
     <circle cx="905" cy="110" r="6" fill="#2BDBE8"/>
   </g>
   <text x="490" y="118" text-anchor="middle" fill="#D7E2FF" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="74" letter-spacing="6">nooise</text>
-  <text x="490" y="157" text-anchor="middle" fill="#8EA0C9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" letter-spacing="1">fluid focus music for the terminal</text>
-  <path d="M245 174C322 143 379 143 455 174C532 205 595 205 734 174" stroke="#153A63" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
-  <path d="M245 185C329 154 392 154 473 185C555 216 622 216 734 185" stroke="#0C7D94" stroke-width="2" stroke-linecap="round" opacity="0.45"/>
+  <text x="490" y="157" text-anchor="middle" fill="#8EA0C9" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" letter-spacing="1">ambient music generator for the terminal</text>
+  <path d="M245 190C322 170 379 170 455 190C532 210 595 210 734 190" stroke="#153A63" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
+  <path d="M245 200C329 181 392 181 473 200C555 219 622 219 734 200" stroke="#0C7D94" stroke-width="2" stroke-linecap="round" opacity="0.45"/>
 </svg>
