@@ -2,20 +2,32 @@
 
 Fluid focus music for the terminal.
 
-Run from source:
+## Requires Rust
+
+Install Rust with rustup:
 
 ```sh
-cargo run
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Install locally:
+Open a new terminal after rustup finishes.
+
+## Install nooise
 
 ```sh
-cargo install --path . --locked
+cargo install nooise --locked
 ```
 
-That installs:
+## Start
 
 ```sh
 nooise
+```
+
+Press `q` to quit.
+
+## From Source
+
+```sh
+cargo run
 ```
