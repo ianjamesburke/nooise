@@ -27,7 +27,7 @@ where
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: nooise-engine --experiment <t1|t2|t3|t4|t5a|t5b|t5c|t5d|r1|r2|r3|r4>"
+                    "Usage: nooise-engine --experiment <t1|t2|t3|t4|t5a|t5b|t5c|t5d|t5e|r1|r2|r3|r4>"
                 );
                 std::process::exit(0);
             }

@@ -2,6 +2,8 @@ use std::error::Error;
 use std::f32::consts::TAU;
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 
@@ -15,10 +17,11 @@ use rand::{Rng, SeedableRng};
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
+    buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Block, Borders, Gauge, Paragraph, Widget},
 };
 
 use crate::audio::{self, StereoEngine};
@@ -28,6 +31,20 @@ use crate::fx::reverb::Freeverb;
 use crate::synth::envelope::Adsr;
 use crate::synth::noise::WhiteNoise;
 use crate::synth::oscillator::SineOscillator;
+
+// ============================================================
+// Telemetry — audio thread publishes, UI thread reads
+// ============================================================
+
+/// Lock-free channel from the engine to the visualizer. The audio thread only
+/// ever stores; the UI thread only ever loads. `kick_pulse` is a monotonic
+/// counter (UI tracks the delta to fire one ripple per hit); `chord_index`
+/// mirrors the pad engine's current chord.
+#[derive(Default)]
+pub(crate) struct T5Telemetry {
+    pub chord_index: AtomicU64,
+    pub kick_pulse: AtomicU64,
+}
 
 // ============================================================
 // Controls
@@ -216,6 +233,7 @@ pub(crate) enum UiVariant {
     T5b,
     T5c,
     T5d,
+    T5e,
 }
 
 impl UiVariant {
@@ -225,6 +243,7 @@ impl UiVariant {
             UiVariant::T5b => "t5b",
             UiVariant::T5c => "t5c",
             UiVariant::T5d => "t5d",
+            UiVariant::T5e => "t5e",
         }
     }
 
@@ -234,6 +253,7 @@ impl UiVariant {
             UiVariant::T5b => "orbit",
             UiVariant::T5c => "matrix",
             UiVariant::T5d => "score",
+            UiVariant::T5e => "fluid",
         }
     }
 }
@@ -241,9 +261,11 @@ impl UiVariant {
 pub(crate) fn run(variant: UiVariant) -> Result<(), Box<dyn Error>> {
     let controls = Arc::new(ArcSwap::from_pointee(T5Controls::default()));
     let controls_for_engine = Arc::clone(&controls);
+    let telemetry = Arc::new(T5Telemetry::default());
+    let telemetry_for_engine = Arc::clone(&telemetry);
 
     let _stream = audio::start_stream(variant.id(), move |sr| {
-        T5Engine::new(sr, controls_for_engine)
+        T5Engine::new(sr, controls_for_engine, telemetry_for_engine)
     })?;
 
     enable_raw_mode()?;
@@ -252,7 +274,7 @@ pub(crate) fn run(variant: UiVariant) -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = ui_loop(&mut terminal, controls, variant);
+    let result = ui_loop(&mut terminal, controls, telemetry, variant);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -816,10 +838,13 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut T5Controls) {
 fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controls: Arc<ArcSwap<T5Controls>>,
+    telemetry: Arc<T5Telemetry>,
     variant: UiVariant,
 ) -> Result<(), Box<dyn Error>> {
     let mut tab = Tab::Master;
     let mut selected = 0usize;
+    let mut fluid = FluidState::new();
+    let mut last = Instant::now();
 
     loop {
         let c = T5Controls::clone(&controls.load());
@@ -827,9 +852,14 @@ fn ui_loop(
         let items_len = items.len();
         selected = selected.min(items_len.saturating_sub(1));
 
-        terminal.draw(|f| render(f, variant, &c, &items, tab, selected))?;
+        let now = Instant::now();
+        let dt = (now - last).as_secs_f32().min(0.05);
+        last = now;
+        fluid.tick(dt, &telemetry);
 
-        if event::poll(std::time::Duration::from_millis(50))?
+        terminal.draw(|f| render(f, variant, &c, &items, tab, selected, &fluid))?;
+
+        if event::poll(std::time::Duration::from_millis(16))?
             && let Event::Key(key) = event::read()?
         {
             if key.kind != KeyEventKind::Press {
@@ -872,13 +902,276 @@ fn render(
     items: &[ControlItem],
     active_tab: Tab,
     selected: usize,
+    fluid: &FluidState,
 ) {
     match variant {
         UiVariant::T5a => render_t5a(f, variant, items, active_tab, selected),
         UiVariant::T5b => render_t5b(f, variant, controls, items, active_tab, selected),
         UiVariant::T5c => render_t5c(f, variant, controls, items, active_tab, selected),
         UiVariant::T5d => render_t5d(f, variant, controls, items, active_tab, selected),
+        UiVariant::T5e => render_t5e(f, variant, items, active_tab, selected, fluid),
     }
+}
+
+// ============================================================
+// Fluid visualizer (t5e) — chords drive the field colour, kicks
+// spawn ripples. Driven entirely by live audio-thread telemetry.
+// ============================================================
+
+const FLUID_GRADIENT: &[char] = &[' ', '·', '∙', '•', '●', '◉', '⬤'];
+const RIPPLE_LIFETIME: f32 = 3.0;
+const RIPPLE_SPEED: f32 = 0.42; // normalized units / s
+
+/// One chord = one hue. Cycles with the pad engine's 5-chord table.
+fn hue_for_chord(index: u64) -> f32 {
+    const HUES: [f32; 5] = [205.0, 270.0, 325.0, 158.0, 38.0];
+    HUES[(index % HUES.len() as u64) as usize]
+}
+
+struct FluidState {
+    t: f32,
+    ripples: Vec<(f32, f32, f32)>, // (cx, cy, age) in 0..1 field coords
+    last_kick: u64,
+    hue: f32,
+}
+
+impl FluidState {
+    fn new() -> Self {
+        Self {
+            t: 0.0,
+            ripples: Vec::new(),
+            last_kick: 0,
+            hue: hue_for_chord(0),
+        }
+    }
+
+    fn tick(&mut self, dt: f32, telemetry: &T5Telemetry) {
+        self.t += dt;
+
+        // kick pulses -> ripples (golden-angle scatter so they don't stack)
+        let kick = telemetry.kick_pulse.load(Ordering::Relaxed);
+        if kick > self.last_kick {
+            let new = (kick - self.last_kick).min(4);
+            for k in 0..new {
+                let n = (self.last_kick + k + 1) as f32;
+                // Kick ripples originate along the bottom edge and radiate up,
+                // keeping them clear of the centered control panel.
+                let cx = (n * 0.618_034).fract();
+                let cy = 0.92 + (n * 0.381_966).fract() * 0.06;
+                self.ripples.push((cx.clamp(0.06, 0.94), cy, 0.0));
+            }
+            self.last_kick = kick;
+        }
+
+        for r in &mut self.ripples {
+            r.2 += dt;
+        }
+        self.ripples.retain(|r| r.2 < RIPPLE_LIFETIME);
+    }
+
+    /// Liquid field value in 0..1 at normalized coords, with ripple distortion.
+    fn field(&self, nx: f32, ny: f32) -> f32 {
+        let z = self.t * 0.5;
+        let mut v = 0.0;
+        v += (nx * 6.0 + z).sin() * (ny * 5.0 - z * 0.7).cos();
+        v += ((nx * 3.3 - ny * 4.1) + z * 1.3).sin() * 0.7;
+        v += (nx * 11.0 + ny * 9.0 - z * 0.4).sin() * 0.35;
+        v += ((nx + ny) * 7.5 + (z * 0.9).sin() * 2.0).cos() * 0.5;
+
+        for &(cx, cy, age) in &self.ripples {
+            let dx = nx - cx;
+            let dy = ny - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let front = age * RIPPLE_SPEED;
+            let fade = (1.0 - age / RIPPLE_LIFETIME).max(0.0);
+            // small, tight ripple rising from the bottom edge
+            let ring = (-((dist - front) * 12.0).powi(2)).exp();
+            v += (dist * 34.0 - age * 9.0).sin() * ring * fade * 1.6;
+        }
+
+        (v / 3.0).tanh() * 0.5 + 0.5
+    }
+}
+
+fn fluid_hsv(h: f32, s: f32, v: f32) -> Color {
+    let h = ((h % 360.0) + 360.0) % 360.0;
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    Color::Rgb(
+        ((r + m) * 255.0) as u8,
+        ((g + m) * 255.0) as u8,
+        ((b + m) * 255.0) as u8,
+    )
+}
+
+struct FluidWidget<'a> {
+    fluid: &'a FluidState,
+}
+
+impl Widget for FluidWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let w = area.width.max(1) as f32;
+        let h = area.height.max(1) as f32;
+        let base = self.fluid.hue;
+
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let nx = x as f32 / w;
+                let ny = y as f32 / h;
+                let v = self.fluid.field(nx, ny);
+
+                // edge vignette
+                let edge_x = (nx.min(1.0 - nx) * 2.0).min(1.0);
+                let edge_y = (ny.min(1.0 - ny) * 2.0).min(1.0);
+                let vig = (edge_x.min(edge_y) * 1.4).clamp(0.2, 1.0);
+
+                let hue = base + (v - 0.5) * 45.0;
+                let sat = (0.5 + v * 0.3).clamp(0.0, 1.0);
+                let val = ((0.12 + v * 0.8) * vig).clamp(0.0, 1.0);
+
+                let gi = ((v * (FLUID_GRADIENT.len() - 1) as f32).round() as usize)
+                    .min(FLUID_GRADIENT.len() - 1);
+                buf[(area.x + x, area.y + y)]
+                    .set_char(FLUID_GRADIENT[gi])
+                    .set_style(Style::default().fg(fluid_hsv(hue, sat, val)));
+            }
+        }
+    }
+}
+
+/// Multiply an RGB colour toward black; non-RGB passes through unchanged.
+fn darken(c: Color, factor: f32) -> Color {
+    if let Color::Rgb(r, g, b) = c {
+        Color::Rgb(
+            (r as f32 * factor) as u8,
+            (g as f32 * factor) as u8,
+            (b as f32 * factor) as u8,
+        )
+    } else {
+        c
+    }
+}
+
+fn render_t5e(
+    f: &mut Frame,
+    variant: UiVariant,
+    items: &[ControlItem],
+    active_tab: Tab,
+    selected: usize,
+    fluid: &FluidState,
+) {
+    let area = f.area();
+    f.render_widget(FluidWidget { fluid }, area);
+
+    // centered control overlay
+    let pw = ((area.width as f32 * 0.62) as u16)
+        .clamp(46, area.width.saturating_sub(2).max(46))
+        .min(area.width);
+    let ph = ((area.height as f32 * 0.92) as u16)
+        .clamp(10, area.height.saturating_sub(2).max(10))
+        .min(area.height);
+    let px = area.x + (area.width.saturating_sub(pw)) / 2;
+    let py = area.y + (area.height.saturating_sub(ph)) / 2;
+    let panel = Rect::new(px, py, pw, ph);
+
+    // Frosted-glass scrim: darken the live fluid underneath instead of covering
+    // it, so the visualizer still shows through the panel.
+    {
+        let buf = f.buffer_mut();
+        for y in panel.top()..panel.bottom() {
+            for x in panel.left()..panel.right() {
+                let cell = &mut buf[(x, y)];
+                let tint = darken(cell.fg, 0.30);
+                cell.set_char(' ');
+                cell.set_bg(tint);
+                cell.set_fg(Color::Rgb(30, 34, 44));
+            }
+        }
+    }
+
+    // Borders only (transparent fill) so the scrim shows through.
+    let block = Block::default()
+        .title(format!(" {} {} ", variant.id(), variant.name()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
+    let inner = block.inner(panel);
+    f.render_widget(block, panel);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // 0 top pad
+            Constraint::Length(1), // 1 pad
+            Constraint::Length(1), // 2 tab line
+            Constraint::Length(1), // 3 pad
+            Constraint::Min(0),    // 4 control rows
+            Constraint::Length(1), // 5 footer
+        ])
+        .split(inner);
+
+    let tab_line: String = Tab::all()
+        .iter()
+        .map(|t| {
+            if *t == active_tab {
+                format!("[{}]", t.name())
+            } else {
+                t.name().to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("  ");
+    f.render_widget(
+        Paragraph::new(tab_line)
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        layout[2],
+    );
+
+    // One text row per control, blank line between for vertical breathing room.
+    let bar_w = (inner.width as usize).saturating_sub(34).clamp(6, 80);
+    let mut rows: Vec<Line> = Vec::with_capacity(items.len() * 2);
+    for (i, item) in items.iter().enumerate() {
+        let active = i == selected;
+        let bar = ratio_bar(item_ratio(item), bar_w, '█', '░');
+        let prefix = if active { "▶ " } else { "  " };
+        let fg = if active {
+            Color::Rgb(120, 230, 255)
+        } else {
+            Color::Rgb(170, 178, 195)
+        };
+        let mut style = Style::default().fg(fg);
+        if active {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        rows.push(Line::from(Span::styled(
+            format!("{prefix}{:<15} {bar} {}", item.label, item.display),
+            style,
+        )));
+        if i + 1 < items.len() {
+            rows.push(Line::from(""));
+        }
+    }
+    f.render_widget(Paragraph::new(rows), layout[4]);
+
+    f.render_widget(
+        Paragraph::new("jk select   hl adjust   Tab layer   q quit")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Rgb(120, 128, 145))),
+        layout[5],
+    );
 }
 
 fn render_t5a(
@@ -1498,15 +1791,19 @@ struct T5Engine {
 }
 
 impl T5Engine {
-    fn new(sample_rate: f32, controls: Arc<ArcSwap<T5Controls>>) -> Self {
+    fn new(
+        sample_rate: f32,
+        controls: Arc<ArcSwap<T5Controls>>,
+        telemetry: Arc<T5Telemetry>,
+    ) -> Self {
         let snapshot = T5Controls::clone(&controls.load());
         Self {
             current_sample: 0,
             beat_clock: 0.0,
             sample_rate,
-            pad: PadEngine::new(sample_rate, &snapshot.pad),
+            pad: PadEngine::new(sample_rate, &snapshot.pad, Arc::clone(&telemetry)),
             perc: PercEngine::new(sample_rate),
-            kick: KickEngine::new(sample_rate),
+            kick: KickEngine::new(sample_rate, telemetry),
             tonal: TonalEngine::new(sample_rate),
             clap: ClapEngine::new(sample_rate),
             master_bus: MasterBus::new(),
@@ -1652,10 +1949,11 @@ struct PadEngine {
     width_lfo: DriftingLfo,
     air: WhiteNoise,
     rng: StdRng,
+    telemetry: Arc<T5Telemetry>,
 }
 
 impl PadEngine {
-    fn new(sample_rate: f32, c: &PadControls) -> Self {
+    fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<T5Telemetry>) -> Self {
         Self {
             sample_rate,
             layers: vec![PadLayer::new(0, sample_rate, c.attack_time)],
@@ -1666,6 +1964,7 @@ impl PadEngine {
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
             air: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
+            telemetry,
         }
     }
 
@@ -1675,6 +1974,9 @@ impl PadEngine {
                 layer.release();
             }
             self.chord_index = self.chord_index.wrapping_add(1);
+            self.telemetry
+                .chord_index
+                .store(self.chord_index as u64, Ordering::Relaxed);
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                 self.layers.drain(0..remove_count);
@@ -1902,16 +2204,18 @@ struct KickEngine {
     voices: Vec<KickVoice>,
     delay: KickDelay,
     rng: StdRng,
+    telemetry: Arc<T5Telemetry>,
 }
 
 impl KickEngine {
-    fn new(sample_rate: f32) -> Self {
+    fn new(sample_rate: f32, telemetry: Arc<T5Telemetry>) -> Self {
         Self {
             sample_rate,
             trigger: GridTrigger::new(),
             voices: Vec::with_capacity(4),
             delay: KickDelay::new(max_kick_echo_delay_samples(sample_rate)),
             rng: StdRng::from_entropy(),
+            telemetry,
         }
     }
 
@@ -1922,6 +2226,7 @@ impl KickEngine {
         {
             self.voices
                 .push(KickVoice::new(c, self.sample_rate, &mut self.rng));
+            self.telemetry.kick_pulse.fetch_add(1, Ordering::Relaxed);
         }
 
         let mut dry_l = 0.0f32;
@@ -2333,18 +2638,20 @@ mod tests {
     fn render_variants_draw_without_terminal_backend() {
         let controls = T5Controls::default();
 
+        let fluid = FluidState::new();
         for variant in [
             UiVariant::T5a,
             UiVariant::T5b,
             UiVariant::T5c,
             UiVariant::T5d,
+            UiVariant::T5e,
         ] {
             let backend = TestBackend::new(100, 32);
             let mut terminal = Terminal::new(backend).unwrap();
             let items = tab_controls(Tab::Master, &controls);
 
             terminal
-                .draw(|f| render(f, variant, &controls, &items, Tab::Master, 0))
+                .draw(|f| render(f, variant, &controls, &items, Tab::Master, 0, &fluid))
                 .unwrap();
         }
     }
@@ -2356,7 +2663,7 @@ mod tests {
             attack_time: 1.0,
             ..PadControls::default()
         };
-        let mut pad = PadEngine::new(SAMPLE_RATE, &controls);
+        let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(T5Telemetry::default()));
 
         for chord in 1..12 {
             let _ = pad.next(&controls, 120.0, chord as f64 * 4.0);
