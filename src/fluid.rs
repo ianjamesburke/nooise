@@ -8,7 +8,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -69,10 +69,10 @@ pub(crate) struct MasterControls {
 impl Default for MasterControls {
     fn default() -> Self {
         Self {
-            bpm: 92.0,
+            bpm: 82.0,
             level: 0.8,
-            drive: 0.0,
-            comp_threshold: -12.0,
+            drive: 0.1,
+            comp_threshold: -8.0,
             comp_ratio: 2.0,
             comp_release_ms: 100.0,
             tone: 0.0,
@@ -93,10 +93,10 @@ impl Default for PercControls {
     fn default() -> Self {
         Self {
             level: 0.0,
-            decay_ms: 80.0,
-            filter: 0.8,
-            lfo_rate_bars: 2.0,
-            lfo_depth: 0.3,
+            decay_ms: 200.0,
+            filter: 0.7,
+            lfo_rate_bars: 1.0,
+            lfo_depth: 0.1,
         }
     }
 }
@@ -146,9 +146,9 @@ impl Default for KickControls {
     fn default() -> Self {
         Self {
             level: 0.0,
-            start_freq: 80.0,
-            pitch_decay_ms: 60.0,
-            amp_decay_ms: 350.0,
+            start_freq: 160.0,
+            pitch_decay_ms: 55.0,
+            amp_decay_ms: 250.0,
             click: 0.0,
             drive: 0.2,
             interval_beats: 1.0,
@@ -175,9 +175,9 @@ impl Default for TonalControls {
     fn default() -> Self {
         Self {
             level: 0.0,
-            randomness: 0.3,
-            note_length_beats: 0.8,
-            step_interval_beats: 1.0,
+            randomness: 0.5,
+            note_length_beats: 1.5,
+            step_interval_beats: 2.5,
             offset_beats: 0.0,
             reverb_mix: 0.6,
         }
@@ -207,7 +207,7 @@ impl Default for ClapControls {
             slap_spread_ms: 8.0,
             decay_ms: 40.0,
             filter: 0.85,
-            room: 0.4,
+            room: 0.0,
             body: 0.2,
         }
     }
@@ -228,7 +228,6 @@ pub(crate) struct FluidControls {
 // ============================================================
 
 const APP_ID: &str = "nooise";
-const APP_NAME: &str = "fluid";
 
 pub(crate) fn run() -> Result<(), Box<dyn Error>> {
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
@@ -796,6 +795,80 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
     }
 }
 
+fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
+    match tab {
+        Tab::Master => match selected {
+            0 => c.pad.level = 0.0,
+            1 => c.perc.level = 0.0,
+            2 => c.kick.level = 0.0,
+            3 => c.tonal.level = 0.0,
+            4 => c.clap.level = 0.0,
+            5 => c.master.bpm = MASTER_BPM_MIN,
+            6 => c.master.level = 0.0,
+            7 => c.master.drive = 0.0,
+            8 => c.master.comp_threshold = -40.0,
+            9 => c.master.comp_ratio = 1.0,
+            10 => c.master.comp_release_ms = 10.0,
+            11 => c.master.tone = -1.0,
+            _ => {}
+        },
+        Tab::Perc => match selected {
+            0 => c.perc.level = 0.0,
+            1 => c.perc.decay_ms = 20.0,
+            2 => c.perc.filter = 0.5,
+            3 => c.perc.lfo_rate_bars = 0.25,
+            4 => c.perc.lfo_depth = 0.0,
+            _ => {}
+        },
+        Tab::Chords => match selected {
+            0 => c.pad.level = 0.0,
+            1 => c.pad.chord_bars = 1.0,
+            2 => c.pad.reverb_mix = 0.0,
+            3 => c.pad.stereo_width = 0.0,
+            4 => c.pad.detune = 0.0,
+            5 => c.pad.octave_mix = 0.0,
+            6 => c.pad.attack_time = 1.0,
+            _ => {}
+        },
+        Tab::Kick => match selected {
+            0 => c.kick.level = 0.0,
+            1 => c.kick.start_freq = 40.0,
+            2 => c.kick.pitch_decay_ms = 10.0,
+            3 => c.kick.amp_decay_ms = 50.0,
+            4 => c.kick.click = 0.0,
+            5 => c.kick.drive = 0.0,
+            6 => c.kick.interval_beats = 0.5,
+            7 => c.kick.offset_beats = 0.0,
+            8 => c.kick.echo_time_beats = KICK_ECHO_TIME_BEATS_MIN,
+            9 => c.kick.echo_filter = 0.0,
+            10 => c.kick.echo_amount = 0.0,
+            11 => c.kick.echo_feedback = 0.0,
+            _ => {}
+        },
+        Tab::Tonal => match selected {
+            0 => c.tonal.level = 0.0,
+            1 => c.tonal.randomness = 0.0,
+            2 => c.tonal.note_length_beats = 0.1,
+            3 => c.tonal.step_interval_beats = 0.5,
+            4 => c.tonal.offset_beats = 0.0,
+            5 => c.tonal.reverb_mix = 0.0,
+            _ => {}
+        },
+        Tab::Clap => match selected {
+            0 => c.clap.level = 0.0,
+            1 => c.clap.interval_beats = 0.5,
+            2 => c.clap.offset_beats = 0.0,
+            3 => c.clap.slap_count = 1.0,
+            4 => c.clap.slap_spread_ms = 0.0,
+            5 => c.clap.decay_ms = 10.0,
+            6 => c.clap.filter = 0.5,
+            7 => c.clap.room = 0.0,
+            8 => c.clap.body = 0.0,
+            _ => {}
+        },
+    }
+}
+
 fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controls: Arc<ArcSwap<FluidControls>>,
@@ -839,6 +912,13 @@ fn ui_loop(
                 KeyCode::Down | KeyCode::Char('j') => {
                     selected = selected.saturating_add(1).min(items_len.saturating_sub(1))
                 }
+                KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    reset_to_min(&controls, tab, selected)
+                }
+                KeyCode::Char('H') => reset_to_min(&controls, tab, selected),
+                KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    reset_to_min(&controls, tab, selected)
+                }
                 KeyCode::Left | KeyCode::Char('h') => adjust(&controls, tab, selected, -1.0),
                 KeyCode::Right | KeyCode::Char('l') => adjust(&controls, tab, selected, 1.0),
                 _ => {}
@@ -852,6 +932,12 @@ fn ui_loop(
 fn adjust(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize, dir: f32) {
     let mut next = FluidControls::clone(&controls.load());
     apply_delta(tab, selected, dir, &mut next);
+    controls.store(Arc::new(next));
+}
+
+fn reset_to_min(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize) {
+    let mut next = FluidControls::clone(&controls.load());
+    apply_min(tab, selected, &mut next);
     controls.store(Arc::new(next));
 }
 
@@ -1051,7 +1137,7 @@ fn render_fluid(
 
     // Borders only (transparent fill) so the scrim shows through.
     let block = Block::default()
-        .title(format!(" {APP_ID} {APP_NAME} "))
+        .title(format!(" {APP_ID} "))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
     let inner = block.inner(panel);
@@ -1116,7 +1202,7 @@ fn render_fluid(
     f.render_widget(Paragraph::new(rows), layout[4]);
 
     f.render_widget(
-        Paragraph::new("jk select   hl adjust   Tab layer   q quit")
+        Paragraph::new("jk select   hl adjust   H min   Tab layer   q quit")
             .alignment(Alignment::Center)
             .style(Style::default().fg(Color::Rgb(120, 128, 145))),
         layout[5],
@@ -2116,6 +2202,13 @@ mod tests {
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < f32::EPSILON,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     fn timing(sample: u64, bpm: f32) -> TimingContext {
         let sample_rate = f64::from(SAMPLE_RATE);
         let bpm = f64::from(bpm);
@@ -2140,6 +2233,51 @@ mod tests {
         terminal
             .draw(|f| render(f, &items, Tab::Master, 0, &fluid))
             .unwrap();
+    }
+
+    #[test]
+    fn defaults_match_current_mix() {
+        let controls = FluidControls::default();
+
+        assert_close(controls.master.bpm, 82.0);
+        assert_close(controls.master.drive, 0.1);
+        assert_close(controls.master.comp_threshold, -8.0);
+
+        assert_close(controls.perc.decay_ms, 200.0);
+        assert_close(controls.perc.filter, 0.7);
+        assert_close(controls.perc.lfo_rate_bars, 1.0);
+        assert_close(controls.perc.lfo_depth, 0.1);
+
+        assert_close(controls.kick.start_freq, 160.0);
+        assert_close(controls.kick.pitch_decay_ms, 55.0);
+        assert_close(controls.kick.amp_decay_ms, 250.0);
+
+        assert_close(controls.tonal.step_interval_beats, 2.5);
+        assert_close(controls.tonal.note_length_beats, 1.5);
+        assert_close(controls.tonal.randomness, 0.5);
+
+        assert_close(controls.clap.room, 0.0);
+    }
+
+    #[test]
+    fn apply_min_moves_selected_control_to_floor() {
+        let mut controls = FluidControls::default();
+
+        controls.master.drive = 0.8;
+        apply_min(Tab::Master, 7, &mut controls);
+        assert_close(controls.master.drive, 0.0);
+
+        controls.master.bpm = 120.0;
+        apply_min(Tab::Master, 5, &mut controls);
+        assert_close(controls.master.bpm, MASTER_BPM_MIN);
+
+        controls.master.tone = 0.5;
+        apply_min(Tab::Master, 11, &mut controls);
+        assert_close(controls.master.tone, -1.0);
+
+        controls.pad.chord_bars = 16.0;
+        apply_min(Tab::Chords, 1, &mut controls);
+        assert_close(controls.pad.chord_bars, 1.0);
     }
 
     #[test]
