@@ -1751,7 +1751,10 @@ impl PercEngine {
         if c.interval_beats >= 4.25 {
             // Continuous mode: bypass GridTrigger/NoiseHit entirely so there is
             // no trigger-rate amplitude ripple to disguise (see GOTCHAS.md).
-            return self.noise.next_filtered(&mut self.rng, c.filter) * effective_level * 0.4;
+            // Reuse the same exponential smoothing transform as discrete hits so
+            // Filter has a comparably audible range in both modes.
+            let smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
+            return self.noise.next_filtered(&mut self.rng, smoothing) * effective_level * 0.4;
         }
 
         if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
