@@ -87,6 +87,8 @@ pub(crate) struct PercControls {
     pub filter: f32,
     pub lfo_rate_bars: f32,
     pub lfo_depth: f32,
+    pub interval_beats: f32,
+    pub offset_beats: f32,
 }
 
 impl Default for PercControls {
@@ -97,6 +99,8 @@ impl Default for PercControls {
             filter: 0.7,
             lfo_rate_bars: 1.0,
             lfo_depth: 0.1,
+            interval_beats: 0.25,
+            offset_beats: 0.0,
         }
     }
 }
@@ -552,7 +556,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             ControlItem {
                 label: "Interval",
                 value: c.kick.interval_beats,
-                min: 0.5,
+                min: 0.25,
                 max: 4.0,
                 display: format!("{:.2} beats", c.kick.interval_beats),
             },
@@ -755,7 +759,7 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
             3 => c.kick.amp_decay_ms = (c.kick.amp_decay_ms + dir * 20.0).clamp(50.0, 1000.0),
             4 => c.kick.click = (c.kick.click + dir * 0.01).clamp(0.0, 0.2),
             5 => c.kick.drive = (c.kick.drive + dir * 0.02).clamp(0.0, 1.0),
-            6 => c.kick.interval_beats = (c.kick.interval_beats + dir * 0.25).clamp(0.5, 4.0),
+            6 => c.kick.interval_beats = (c.kick.interval_beats + dir * 0.25).clamp(0.25, 4.0),
             7 => c.kick.offset_beats = (c.kick.offset_beats + dir * 0.25).clamp(0.0, 4.0),
             8 => {
                 c.kick.echo_time_beats = (c.kick.echo_time_beats + dir * 0.125)
@@ -837,7 +841,7 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
             3 => c.kick.amp_decay_ms = 50.0,
             4 => c.kick.click = 0.0,
             5 => c.kick.drive = 0.0,
-            6 => c.kick.interval_beats = 0.5,
+            6 => c.kick.interval_beats = 0.25,
             7 => c.kick.offset_beats = 0.0,
             8 => c.kick.echo_time_beats = KICK_ECHO_TIME_BEATS_MIN,
             9 => c.kick.echo_filter = 0.0,
@@ -2247,6 +2251,8 @@ mod tests {
         assert_close(controls.perc.filter, 0.7);
         assert_close(controls.perc.lfo_rate_bars, 1.0);
         assert_close(controls.perc.lfo_depth, 0.1);
+        assert_close(controls.perc.interval_beats, 0.25);
+        assert_close(controls.perc.offset_beats, 0.0);
 
         assert_close(controls.kick.start_freq, 160.0);
         assert_close(controls.kick.pitch_decay_ms, 55.0);
@@ -2278,6 +2284,18 @@ mod tests {
         controls.pad.chord_bars = 16.0;
         apply_min(Tab::Chords, 1, &mut controls);
         assert_close(controls.pad.chord_bars, 1.0);
+    }
+
+    #[test]
+    fn kick_interval_floor_is_quarter_beat() {
+        let mut controls = FluidControls::default();
+        controls.kick.interval_beats = 1.0;
+        apply_min(Tab::Kick, 6, &mut controls);
+        assert_close(controls.kick.interval_beats, 0.25);
+
+        controls.kick.interval_beats = 0.25;
+        apply_delta(Tab::Kick, 6, -1.0, &mut controls);
+        assert_close(controls.kick.interval_beats, 0.25);
     }
 
     #[test]
