@@ -1700,6 +1700,7 @@ struct PercEngine {
     sample_rate: f32,
     trigger: GridTrigger,
     hits: Vec<NoiseHit>,
+    noise: WhiteNoise,
     vol_lfo: DriftingLfo,
     rng: StdRng,
 }
@@ -1710,6 +1711,7 @@ impl PercEngine {
             sample_rate,
             trigger: GridTrigger::new(),
             hits: Vec::with_capacity(8),
+            noise: WhiteNoise::new(),
             vol_lfo: DriftingLfo::new(0.2, sample_rate),
             rng: StdRng::from_entropy(),
         }
@@ -1721,10 +1723,16 @@ impl PercEngine {
         let lfo_raw = self
             .vol_lfo
             .next(&mut self.rng, rate_hz * 0.5, rate_hz * 2.0);
+        let lfo_norm = normalized_lfo(lfo_raw);
+        let effective_level = c.level * ((1.0 - c.lfo_depth) + lfo_norm * c.lfo_depth);
 
-        if self.trigger.pop(timing, 0.25, 0.0) {
-            let lfo_norm = normalized_lfo(lfo_raw);
-            let effective_level = c.level * ((1.0 - c.lfo_depth) + lfo_norm * c.lfo_depth);
+        if c.interval_beats >= 4.25 {
+            // Continuous mode: bypass GridTrigger/NoiseHit entirely so there is
+            // no trigger-rate amplitude ripple to disguise (see GOTCHAS.md).
+            return self.noise.next_filtered(&mut self.rng, c.filter) * effective_level * 0.4;
+        }
+
+        if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
             let smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
             self.hits.push(NoiseHit::new(
                 effective_level,
@@ -2296,6 +2304,59 @@ mod tests {
         controls.kick.interval_beats = 0.25;
         apply_delta(Tab::Kick, 6, -1.0, &mut controls);
         assert_close(controls.kick.interval_beats, 0.25);
+    }
+
+    #[test]
+    fn perc_continuous_mode_pushes_no_hits() {
+        let mut controls = PercControls::default();
+        controls.level = 1.0;
+        controls.interval_beats = 4.25;
+
+        let mut engine = PercEngine::new(SAMPLE_RATE);
+        let bpm = 82.0;
+        for sample in 0..(SAMPLE_RATE as u64 * 2) {
+            let t = timing(sample, bpm);
+            engine.next(&controls, t);
+        }
+        assert!(engine.hits.is_empty());
+    }
+
+    #[test]
+    fn perc_continuous_mode_has_no_periodic_rms_dips() {
+        let mut controls = PercControls::default();
+        controls.level = 1.0;
+        controls.lfo_depth = 0.0;
+        controls.interval_beats = 4.25;
+
+        let mut engine = PercEngine::new(SAMPLE_RATE);
+        let bpm = 82.0;
+        let window_samples = (SAMPLE_RATE * 0.01) as usize;
+        let total_samples = SAMPLE_RATE as usize * 2;
+        let mut window_rms = Vec::new();
+        let mut window = Vec::with_capacity(window_samples);
+
+        for sample in 0..total_samples as u64 {
+            let t = timing(sample, bpm);
+            let out = engine.next(&controls, t);
+            window.push(out);
+            if window.len() == window_samples {
+                let sum_sq: f32 = window.iter().map(|x| x * x).sum();
+                window_rms.push((sum_sq / window.len() as f32).sqrt());
+                window.clear();
+            }
+        }
+
+        let settle_windows = (SAMPLE_RATE * 0.25) as usize / window_samples;
+        let rms_tail = &window_rms[settle_windows..];
+
+        let min_rms = rms_tail.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_rms = rms_tail.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+        assert!(min_rms > 0.0, "continuous mode produced silence in a window");
+        assert!(
+            max_rms / min_rms < 2.0,
+            "windowed RMS varies too much ({min_rms}..{max_rms}), suggests periodic triggering survived"
+        );
     }
 
     #[test]
