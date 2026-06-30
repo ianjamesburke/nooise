@@ -458,6 +458,24 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 max: 1.0,
                 display: format!("{:.0}%", c.perc.lfo_depth * 100.0),
             },
+            ControlItem {
+                label: "Interval",
+                value: c.perc.interval_beats,
+                min: 0.25,
+                max: 4.25,
+                display: if c.perc.interval_beats >= 4.25 {
+                    "Continuous".to_string()
+                } else {
+                    format!("{:.2} beats", c.perc.interval_beats)
+                },
+            },
+            ControlItem {
+                label: "Offset",
+                value: c.perc.offset_beats,
+                min: 0.0,
+                max: 4.0,
+                display: format!("{:.2} beats", c.perc.offset_beats),
+            },
         ],
         Tab::Chords => vec![
             ControlItem {
@@ -734,6 +752,8 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
             2 => c.perc.filter = (c.perc.filter + dir * 0.02).clamp(0.5, 1.0),
             3 => c.perc.lfo_rate_bars = (c.perc.lfo_rate_bars + dir * 0.25).clamp(0.25, 16.0),
             4 => c.perc.lfo_depth = (c.perc.lfo_depth + dir * 0.02).clamp(0.0, 1.0),
+            5 => c.perc.interval_beats = (c.perc.interval_beats + dir * 0.25).clamp(0.25, 4.25),
+            6 => c.perc.offset_beats = (c.perc.offset_beats + dir * 0.25).clamp(0.0, 4.0),
             _ => {}
         },
         Tab::Chords => match selected {
@@ -822,6 +842,8 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
             2 => c.perc.filter = 0.5,
             3 => c.perc.lfo_rate_bars = 0.25,
             4 => c.perc.lfo_depth = 0.0,
+            5 => c.perc.interval_beats = 0.25,
+            6 => c.perc.offset_beats = 0.0,
             _ => {}
         },
         Tab::Chords => match selected {
@@ -2357,6 +2379,52 @@ mod tests {
             max_rms / min_rms < 2.0,
             "windowed RMS varies too much ({min_rms}..{max_rms}), suggests periodic triggering survived"
         );
+    }
+
+    #[test]
+    fn perc_tab_controls_include_interval_and_offset() {
+        let controls = FluidControls::default();
+        let rows = tab_controls(Tab::Perc, &controls);
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[5].label, "Interval");
+        assert_close(rows[5].min, 0.25);
+        assert_close(rows[5].max, 4.25);
+        assert_eq!(rows[6].label, "Offset");
+        assert_close(rows[6].min, 0.0);
+        assert_close(rows[6].max, 4.0);
+    }
+
+    #[test]
+    fn perc_interval_displays_continuous_at_top() {
+        let mut controls = FluidControls::default();
+        controls.perc.interval_beats = 4.25;
+        let rows = tab_controls(Tab::Perc, &controls);
+        assert_eq!(rows[5].display, "Continuous");
+    }
+
+    #[test]
+    fn perc_interval_and_offset_adjust_and_clamp() {
+        let mut controls = FluidControls::default();
+
+        apply_delta(Tab::Perc, 5, 1.0, &mut controls);
+        assert_close(controls.perc.interval_beats, 0.5);
+
+        controls.perc.interval_beats = 4.25;
+        apply_delta(Tab::Perc, 5, 1.0, &mut controls);
+        assert_close(controls.perc.interval_beats, 4.25);
+
+        apply_delta(Tab::Perc, 6, 1.0, &mut controls);
+        assert_close(controls.perc.offset_beats, 0.25);
+
+        controls.perc.offset_beats = 4.0;
+        apply_delta(Tab::Perc, 6, 1.0, &mut controls);
+        assert_close(controls.perc.offset_beats, 4.0);
+
+        apply_min(Tab::Perc, 5, &mut controls);
+        assert_close(controls.perc.interval_beats, 0.25);
+
+        apply_min(Tab::Perc, 6, &mut controls);
+        assert_close(controls.perc.offset_beats, 0.0);
     }
 
     #[test]
