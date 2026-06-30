@@ -427,6 +427,24 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 display: format!("{:.0}%", c.perc.level * 100.0),
             },
             ControlItem {
+                label: "Interval",
+                value: c.perc.interval_beats,
+                min: 0.25,
+                max: 4.25,
+                display: if c.perc.interval_beats >= 4.25 {
+                    "Continuous".to_string()
+                } else {
+                    format!("{:.2} beats", c.perc.interval_beats)
+                },
+            },
+            ControlItem {
+                label: "Offset",
+                value: c.perc.offset_beats,
+                min: 0.0,
+                max: 4.0,
+                display: format!("{:.2} beats", c.perc.offset_beats),
+            },
+            ControlItem {
                 label: "Decay",
                 value: c.perc.decay_ms,
                 min: 20.0,
@@ -457,24 +475,6 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 min: 0.0,
                 max: 1.0,
                 display: format!("{:.0}%", c.perc.lfo_depth * 100.0),
-            },
-            ControlItem {
-                label: "Interval",
-                value: c.perc.interval_beats,
-                min: 0.25,
-                max: 4.25,
-                display: if c.perc.interval_beats >= 4.25 {
-                    "Continuous".to_string()
-                } else {
-                    format!("{:.2} beats", c.perc.interval_beats)
-                },
-            },
-            ControlItem {
-                label: "Offset",
-                value: c.perc.offset_beats,
-                min: 0.0,
-                max: 4.0,
-                display: format!("{:.2} beats", c.perc.offset_beats),
             },
         ],
         Tab::Chords => vec![
@@ -537,6 +537,20 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 display: format!("{:.0}%", c.kick.level * 100.0),
             },
             ControlItem {
+                label: "Interval",
+                value: c.kick.interval_beats,
+                min: 0.25,
+                max: 4.0,
+                display: format!("{:.2} beats", c.kick.interval_beats),
+            },
+            ControlItem {
+                label: "Offset",
+                value: c.kick.offset_beats,
+                min: 0.0,
+                max: 4.0,
+                display: format!("{:.2} beats", c.kick.offset_beats),
+            },
+            ControlItem {
                 label: "Start Freq",
                 value: c.kick.start_freq,
                 min: 40.0,
@@ -570,20 +584,6 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 min: 0.0,
                 max: 1.0,
                 display: format!("{:.0}%", c.kick.drive * 100.0),
-            },
-            ControlItem {
-                label: "Interval",
-                value: c.kick.interval_beats,
-                min: 0.25,
-                max: 4.0,
-                display: format!("{:.2} beats", c.kick.interval_beats),
-            },
-            ControlItem {
-                label: "Offset",
-                value: c.kick.offset_beats,
-                min: 0.0,
-                max: 4.0,
-                display: format!("{:.2} beats", c.kick.offset_beats),
             },
             ControlItem {
                 label: "Echo Time",
@@ -623,20 +623,6 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 display: format!("{:.0}%", c.tonal.level * 100.0),
             },
             ControlItem {
-                label: "Randomness",
-                value: c.tonal.randomness,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.tonal.randomness * 100.0),
-            },
-            ControlItem {
-                label: "Note Length",
-                value: c.tonal.note_length_beats,
-                min: 0.1,
-                max: 2.0,
-                display: format!("{:.2} beats", c.tonal.note_length_beats),
-            },
-            ControlItem {
                 label: "Interval",
                 value: c.tonal.step_interval_beats,
                 min: 0.5,
@@ -649,6 +635,20 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 min: 0.0,
                 max: 4.0,
                 display: format!("{:.2} beats", c.tonal.offset_beats),
+            },
+            ControlItem {
+                label: "Randomness",
+                value: c.tonal.randomness,
+                min: 0.0,
+                max: 1.0,
+                display: format!("{:.0}%", c.tonal.randomness * 100.0),
+            },
+            ControlItem {
+                label: "Note Length",
+                value: c.tonal.note_length_beats,
+                min: 0.1,
+                max: 2.0,
+                display: format!("{:.2} beats", c.tonal.note_length_beats),
             },
             ControlItem {
                 label: "Reverb Mix",
@@ -748,12 +748,12 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
         },
         Tab::Perc => match selected {
             0 => c.perc.level = (c.perc.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => c.perc.decay_ms = (c.perc.decay_ms + dir * 20.0).clamp(20.0, 2000.0),
-            2 => c.perc.filter = (c.perc.filter + dir * 0.02).clamp(0.5, 1.0),
-            3 => c.perc.lfo_rate_bars = (c.perc.lfo_rate_bars + dir * 0.25).clamp(0.25, 16.0),
-            4 => c.perc.lfo_depth = (c.perc.lfo_depth + dir * 0.02).clamp(0.0, 1.0),
-            5 => c.perc.interval_beats = (c.perc.interval_beats + dir * 0.25).clamp(0.25, 4.25),
-            6 => c.perc.offset_beats = (c.perc.offset_beats + dir * 0.25).clamp(0.0, 4.0),
+            1 => c.perc.interval_beats = (c.perc.interval_beats + dir * 0.25).clamp(0.25, 4.25),
+            2 => c.perc.offset_beats = (c.perc.offset_beats + dir * 0.25).clamp(0.0, 4.0),
+            3 => c.perc.decay_ms = (c.perc.decay_ms + dir * 20.0).clamp(20.0, 2000.0),
+            4 => c.perc.filter = (c.perc.filter + dir * 0.02).clamp(0.5, 1.0),
+            5 => c.perc.lfo_rate_bars = (c.perc.lfo_rate_bars + dir * 0.25).clamp(0.25, 16.0),
+            6 => c.perc.lfo_depth = (c.perc.lfo_depth + dir * 0.02).clamp(0.0, 1.0),
             _ => {}
         },
         Tab::Chords => match selected {
@@ -774,13 +774,13 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
         },
         Tab::Kick => match selected {
             0 => c.kick.level = (c.kick.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => c.kick.start_freq = (c.kick.start_freq + dir * 5.0).clamp(40.0, 200.0),
-            2 => c.kick.pitch_decay_ms = (c.kick.pitch_decay_ms + dir * 5.0).clamp(10.0, 300.0),
-            3 => c.kick.amp_decay_ms = (c.kick.amp_decay_ms + dir * 20.0).clamp(50.0, 1000.0),
-            4 => c.kick.click = (c.kick.click + dir * 0.01).clamp(0.0, 0.2),
-            5 => c.kick.drive = (c.kick.drive + dir * 0.02).clamp(0.0, 1.0),
-            6 => c.kick.interval_beats = (c.kick.interval_beats + dir * 0.25).clamp(0.25, 4.0),
-            7 => c.kick.offset_beats = (c.kick.offset_beats + dir * 0.25).clamp(0.0, 4.0),
+            1 => c.kick.interval_beats = (c.kick.interval_beats + dir * 0.25).clamp(0.25, 4.0),
+            2 => c.kick.offset_beats = (c.kick.offset_beats + dir * 0.25).clamp(0.0, 4.0),
+            3 => c.kick.start_freq = (c.kick.start_freq + dir * 5.0).clamp(40.0, 200.0),
+            4 => c.kick.pitch_decay_ms = (c.kick.pitch_decay_ms + dir * 5.0).clamp(10.0, 300.0),
+            5 => c.kick.amp_decay_ms = (c.kick.amp_decay_ms + dir * 20.0).clamp(50.0, 1000.0),
+            6 => c.kick.click = (c.kick.click + dir * 0.01).clamp(0.0, 0.2),
+            7 => c.kick.drive = (c.kick.drive + dir * 0.02).clamp(0.0, 1.0),
             8 => {
                 c.kick.echo_time_beats = (c.kick.echo_time_beats + dir * 0.125)
                     .clamp(KICK_ECHO_TIME_BEATS_MIN, KICK_ECHO_TIME_BEATS_MAX)
@@ -792,15 +792,15 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
         },
         Tab::Tonal => match selected {
             0 => c.tonal.level = (c.tonal.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => c.tonal.randomness = (c.tonal.randomness + dir * 0.02).clamp(0.0, 1.0),
-            2 => {
-                c.tonal.note_length_beats = (c.tonal.note_length_beats + dir * 0.05).clamp(0.1, 2.0)
-            }
-            3 => {
+            1 => {
                 c.tonal.step_interval_beats =
                     (c.tonal.step_interval_beats + dir * 0.25).clamp(0.5, 4.0)
             }
-            4 => c.tonal.offset_beats = (c.tonal.offset_beats + dir * 0.25).clamp(0.0, 4.0),
+            2 => c.tonal.offset_beats = (c.tonal.offset_beats + dir * 0.25).clamp(0.0, 4.0),
+            3 => c.tonal.randomness = (c.tonal.randomness + dir * 0.02).clamp(0.0, 1.0),
+            4 => {
+                c.tonal.note_length_beats = (c.tonal.note_length_beats + dir * 0.05).clamp(0.1, 2.0)
+            }
             5 => c.tonal.reverb_mix = (c.tonal.reverb_mix + dir * 0.02).clamp(0.0, 1.0),
             _ => {}
         },
@@ -838,12 +838,12 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
         },
         Tab::Perc => match selected {
             0 => c.perc.level = 0.0,
-            1 => c.perc.decay_ms = 20.0,
-            2 => c.perc.filter = 0.5,
-            3 => c.perc.lfo_rate_bars = 0.25,
-            4 => c.perc.lfo_depth = 0.0,
-            5 => c.perc.interval_beats = 0.25,
-            6 => c.perc.offset_beats = 0.0,
+            1 => c.perc.interval_beats = 0.25,
+            2 => c.perc.offset_beats = 0.0,
+            3 => c.perc.decay_ms = 20.0,
+            4 => c.perc.filter = 0.5,
+            5 => c.perc.lfo_rate_bars = 0.25,
+            6 => c.perc.lfo_depth = 0.0,
             _ => {}
         },
         Tab::Chords => match selected {
@@ -858,13 +858,13 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
         },
         Tab::Kick => match selected {
             0 => c.kick.level = 0.0,
-            1 => c.kick.start_freq = 40.0,
-            2 => c.kick.pitch_decay_ms = 10.0,
-            3 => c.kick.amp_decay_ms = 50.0,
-            4 => c.kick.click = 0.0,
-            5 => c.kick.drive = 0.0,
-            6 => c.kick.interval_beats = 0.25,
-            7 => c.kick.offset_beats = 0.0,
+            1 => c.kick.interval_beats = 0.25,
+            2 => c.kick.offset_beats = 0.0,
+            3 => c.kick.start_freq = 40.0,
+            4 => c.kick.pitch_decay_ms = 10.0,
+            5 => c.kick.amp_decay_ms = 50.0,
+            6 => c.kick.click = 0.0,
+            7 => c.kick.drive = 0.0,
             8 => c.kick.echo_time_beats = KICK_ECHO_TIME_BEATS_MIN,
             9 => c.kick.echo_filter = 0.0,
             10 => c.kick.echo_amount = 0.0,
@@ -873,10 +873,10 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
         },
         Tab::Tonal => match selected {
             0 => c.tonal.level = 0.0,
-            1 => c.tonal.randomness = 0.0,
-            2 => c.tonal.note_length_beats = 0.1,
-            3 => c.tonal.step_interval_beats = 0.5,
-            4 => c.tonal.offset_beats = 0.0,
+            1 => c.tonal.step_interval_beats = 0.5,
+            2 => c.tonal.offset_beats = 0.0,
+            3 => c.tonal.randomness = 0.0,
+            4 => c.tonal.note_length_beats = 0.1,
             5 => c.tonal.reverb_mix = 0.0,
             _ => {}
         },
@@ -2320,11 +2320,11 @@ mod tests {
     fn kick_interval_floor_is_quarter_beat() {
         let mut controls = FluidControls::default();
         controls.kick.interval_beats = 1.0;
-        apply_min(Tab::Kick, 6, &mut controls);
+        apply_min(Tab::Kick, 1, &mut controls);
         assert_close(controls.kick.interval_beats, 0.25);
 
         controls.kick.interval_beats = 0.25;
-        apply_delta(Tab::Kick, 6, -1.0, &mut controls);
+        apply_delta(Tab::Kick, 1, -1.0, &mut controls);
         assert_close(controls.kick.interval_beats, 0.25);
     }
 
@@ -2386,12 +2386,12 @@ mod tests {
         let controls = FluidControls::default();
         let rows = tab_controls(Tab::Perc, &controls);
         assert_eq!(rows.len(), 7);
-        assert_eq!(rows[5].label, "Interval");
-        assert_close(rows[5].min, 0.25);
-        assert_close(rows[5].max, 4.25);
-        assert_eq!(rows[6].label, "Offset");
-        assert_close(rows[6].min, 0.0);
-        assert_close(rows[6].max, 4.0);
+        assert_eq!(rows[1].label, "Interval");
+        assert_close(rows[1].min, 0.25);
+        assert_close(rows[1].max, 4.25);
+        assert_eq!(rows[2].label, "Offset");
+        assert_close(rows[2].min, 0.0);
+        assert_close(rows[2].max, 4.0);
     }
 
     #[test]
@@ -2399,31 +2399,31 @@ mod tests {
         let mut controls = FluidControls::default();
         controls.perc.interval_beats = 4.25;
         let rows = tab_controls(Tab::Perc, &controls);
-        assert_eq!(rows[5].display, "Continuous");
+        assert_eq!(rows[1].display, "Continuous");
     }
 
     #[test]
     fn perc_interval_and_offset_adjust_and_clamp() {
         let mut controls = FluidControls::default();
 
-        apply_delta(Tab::Perc, 5, 1.0, &mut controls);
+        apply_delta(Tab::Perc, 1, 1.0, &mut controls);
         assert_close(controls.perc.interval_beats, 0.5);
 
         controls.perc.interval_beats = 4.25;
-        apply_delta(Tab::Perc, 5, 1.0, &mut controls);
+        apply_delta(Tab::Perc, 1, 1.0, &mut controls);
         assert_close(controls.perc.interval_beats, 4.25);
 
-        apply_delta(Tab::Perc, 6, 1.0, &mut controls);
+        apply_delta(Tab::Perc, 2, 1.0, &mut controls);
         assert_close(controls.perc.offset_beats, 0.25);
 
         controls.perc.offset_beats = 4.0;
-        apply_delta(Tab::Perc, 6, 1.0, &mut controls);
+        apply_delta(Tab::Perc, 2, 1.0, &mut controls);
         assert_close(controls.perc.offset_beats, 4.0);
 
-        apply_min(Tab::Perc, 5, &mut controls);
+        apply_min(Tab::Perc, 1, &mut controls);
         assert_close(controls.perc.interval_beats, 0.25);
 
-        apply_min(Tab::Perc, 6, &mut controls);
+        apply_min(Tab::Perc, 2, &mut controls);
         assert_close(controls.perc.offset_beats, 0.0);
     }
 
