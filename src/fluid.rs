@@ -401,771 +401,900 @@ impl NumericEntry {
     }
 }
 
-fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
-    use ControlKind::{Continuous, Discrete, Gain, Timing};
+// ============================================================
+// Control registry
+//
+// Single source of truth for every UI control row. Each row is one
+// ControlSpec: range, step, numeric-entry semantics, reset target,
+// accessors, and display formatting. tab_controls / apply_delta /
+// apply_min / apply_value all derive from these tables — adding a
+// control means adding one entry here.
+// ============================================================
 
-    match tab {
-        Tab::Master => vec![
-            ControlItem {
-                label: "Chords Vol",
-                kind: Gain,
-                value: c.pad.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.pad.level * 100.0),
-            },
-            ControlItem {
-                label: "Perc Vol",
-                kind: Gain,
-                value: c.perc.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.perc.level * 100.0),
-            },
-            ControlItem {
-                label: "Kick Vol",
-                kind: Gain,
-                value: c.kick.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.kick.level * 100.0),
-            },
-            ControlItem {
-                label: "Tonal Vol",
-                kind: Gain,
-                value: c.tonal.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.tonal.level * 100.0),
-            },
-            ControlItem {
-                label: "Clap Vol",
-                kind: Gain,
-                value: c.clap.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.clap.level * 100.0),
-            },
-            ControlItem {
-                label: "Bass Vol",
-                kind: Gain,
-                value: c.bass.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.bass.level * 100.0),
-            },
-            ControlItem {
-                label: "BPM",
-                kind: Timing,
-                value: c.master.bpm,
-                min: MASTER_BPM_MIN,
-                max: MASTER_BPM_MAX,
-                display: format!("{:.0} bpm", c.master.bpm),
-            },
-            ControlItem {
-                label: "Master Level",
-                kind: Gain,
-                value: c.master.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.master.level * 100.0),
-            },
-            ControlItem {
-                label: "Drive",
-                kind: Gain,
-                value: c.master.drive,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.master.drive * 100.0),
-            },
-            ControlItem {
-                label: "Comp Threshold",
-                kind: Continuous,
-                value: c.master.comp_threshold,
-                min: -40.0,
-                max: 0.0,
-                display: format!("{:.0} dB", c.master.comp_threshold),
-            },
-            ControlItem {
-                label: "Comp Ratio",
-                kind: Continuous,
-                value: c.master.comp_ratio,
-                min: 1.0,
-                max: 8.0,
-                display: format!("{:.1}:1", c.master.comp_ratio),
-            },
-            ControlItem {
-                label: "Comp Release",
-                kind: Timing,
-                value: c.master.comp_release_ms,
-                min: 10.0,
-                max: 500.0,
-                display: format!("{:.0} ms", c.master.comp_release_ms),
-            },
-            ControlItem {
-                label: "Tone",
-                kind: Continuous,
-                value: c.master.tone + 1.0,
-                min: 0.0,
-                max: 2.0,
-                display: if c.master.tone < -0.05 {
-                    format!("bass {:.0}%", -c.master.tone * 100.0)
-                } else if c.master.tone > 0.05 {
-                    format!("treble {:.0}%", c.master.tone * 100.0)
+type GetFn = fn(&FluidControls) -> f32;
+type SetFn = fn(&mut FluidControls, f32);
+type DisplayFn = fn(&FluidControls) -> String;
+
+/// How left/right adjustment moves the value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Step {
+    /// value += dir * step, clamped to [min, max].
+    Linear(f32),
+    /// value doubles/halves, clamped to [min, max].
+    PowerOfTwo,
+}
+
+/// How direct numeric entry is interpreted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Entry {
+    /// Unit or percent input, scaled to [0, max] (e.g. 42 → 0.42 * max).
+    Percent,
+    /// Rounded to the nearest integer.
+    Round,
+    /// Snapped to the control's step grid.
+    Snap,
+    /// Used as-is (clamped only).
+    Free,
+}
+
+/// How the value maps onto the ratio bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bar {
+    Linear,
+    /// Bar position is log2-scaled (for power-of-two ranges).
+    Log2,
+}
+
+struct ControlSpec {
+    label: &'static str,
+    kind: ControlKind,
+    min: f32,
+    max: f32,
+    step: Step,
+    entry: Entry,
+    reset: f32,
+    bar: Bar,
+    get: GetFn,
+    set: SetFn,
+    display: DisplayFn,
+}
+
+impl ControlSpec {
+    #[allow(clippy::too_many_arguments)]
+    const fn new(
+        label: &'static str,
+        kind: ControlKind,
+        min: f32,
+        max: f32,
+        step: Step,
+        entry: Entry,
+        get: GetFn,
+        set: SetFn,
+        display: DisplayFn,
+    ) -> Self {
+        Self {
+            label,
+            kind,
+            min,
+            max,
+            step,
+            entry,
+            reset: min,
+            bar: Bar::Linear,
+            get,
+            set,
+            display,
+        }
+    }
+
+    /// Gain-kind control: 2% steps, percent-style numeric entry, resets to min.
+    const fn gain(
+        label: &'static str,
+        min: f32,
+        max: f32,
+        get: GetFn,
+        set: SetFn,
+        display: DisplayFn,
+    ) -> Self {
+        Self::new(
+            label,
+            ControlKind::Gain,
+            min,
+            max,
+            Step::Linear(0.02),
+            Entry::Percent,
+            get,
+            set,
+            display,
+        )
+    }
+
+    const fn with_step(mut self, step: f32) -> Self {
+        self.step = Step::Linear(step);
+        self
+    }
+
+    const fn reset_at(mut self, reset: f32) -> Self {
+        self.reset = reset;
+        self
+    }
+
+    const fn log_bar(mut self) -> Self {
+        self.bar = Bar::Log2;
+        self
+    }
+
+    fn item(&self, c: &FluidControls) -> ControlItem {
+        let (value, min, max) = match self.bar {
+            Bar::Linear => ((self.get)(c), self.min, self.max),
+            Bar::Log2 => ((self.get)(c).log2(), self.min.log2(), self.max.log2()),
+        };
+        ControlItem {
+            label: self.label,
+            kind: self.kind,
+            value,
+            min,
+            max,
+            display: (self.display)(c),
+        }
+    }
+
+    fn apply_delta(&self, dir: f32, c: &mut FluidControls) {
+        let value = (self.get)(c);
+        let next = match self.step {
+            Step::Linear(step) => (value + dir * step).clamp(self.min, self.max),
+            Step::PowerOfTwo => {
+                if dir > 0.0 {
+                    (value * 2.0).min(self.max)
                 } else {
-                    "flat".to_string()
-                },
+                    (value / 2.0).max(self.min)
+                }
+            }
+        };
+        (self.set)(c, next);
+    }
+
+    fn apply_min(&self, c: &mut FluidControls) {
+        (self.set)(c, self.reset);
+    }
+
+    fn apply_value(&self, value: f32, c: &mut FluidControls) {
+        let next = match self.entry {
+            Entry::Percent => normalize_unit_input(value) * self.max,
+            Entry::Round => value.round(),
+            Entry::Snap => match self.step {
+                Step::Linear(step) => snap_step(value, step),
+                Step::PowerOfTwo => nearest_power_of_two(value, self.min, self.max),
             },
-            ControlItem {
-                label: "Tune",
-                kind: Discrete,
-                value: c.master.tune,
-                min: -12.0,
-                max: 12.0,
-                display: if c.master.tune.abs() < 0.05 {
-                    "0 st".to_string()
-                } else {
-                    format!("{:+.0} st", c.master.tune)
-                },
-            },
-        ],
-        Tab::Perc => vec![
-            ControlItem {
-                label: "Level",
-                kind: Gain,
-                value: c.perc.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.perc.level * 100.0),
-            },
-            ControlItem {
-                label: "Interval",
-                kind: Timing,
-                value: c.perc.interval_beats,
-                min: 0.25,
-                max: 4.25,
-                display: if c.perc.interval_beats >= 4.25 {
-                    "Continuous".to_string()
-                } else {
-                    format!("{:.2} beats", c.perc.interval_beats)
-                },
-            },
-            ControlItem {
-                label: "Offset",
-                kind: Timing,
-                value: c.perc.offset_beats,
-                min: 0.0,
-                max: 4.0,
-                display: format!("{:.2} beats", c.perc.offset_beats),
-            },
-            ControlItem {
-                label: "Decay",
-                kind: Timing,
-                value: c.perc.decay_ms,
-                min: 20.0,
-                max: 2000.0,
-                display: if c.perc.decay_ms >= 1000.0 {
-                    format!("{:.1} s", c.perc.decay_ms / 1000.0)
-                } else {
-                    format!("{:.0} ms", c.perc.decay_ms)
-                },
-            },
-            ControlItem {
-                label: "Filter",
-                kind: Gain,
-                value: c.perc.filter,
-                min: 0.5,
-                max: 1.0,
-                display: format!("{:.0}%", c.perc.filter * 100.0),
-            },
-            ControlItem {
-                label: "LFO Rate",
-                kind: Timing,
-                value: c.perc.lfo_rate_bars,
-                min: 0.25,
-                max: 16.0,
-                display: format!("{:.0} beats", c.perc.lfo_rate_bars * 4.0),
-            },
-            ControlItem {
-                label: "LFO Depth",
-                kind: Gain,
-                value: c.perc.lfo_depth,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.perc.lfo_depth * 100.0),
-            },
-        ],
-        Tab::Chords => vec![
-            ControlItem {
-                label: "Level",
-                kind: Gain,
-                value: c.pad.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.pad.level * 100.0),
-            },
-            ControlItem {
-                label: "Chord Length",
-                kind: Timing,
-                value: c.pad.chord_bars.log2(),
-                min: 0.0,
-                max: 6.0,
-                display: format!("{:.0} beats", c.pad.chord_bars * 4.0),
-            },
-            ControlItem {
-                label: "Progression",
-                kind: Discrete,
-                value: c.pad.progression,
-                min: 0.0,
-                max: 3.0,
-                display: ["A", "B", "C", "D"][c.pad.progression.round() as usize % 4].to_string(),
-            },
-            ControlItem {
-                label: "Reverb Mix",
-                kind: Gain,
-                value: c.pad.reverb_mix,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.pad.reverb_mix * 100.0),
-            },
-            ControlItem {
-                label: "Stereo Width",
-                kind: Gain,
-                value: c.pad.stereo_width,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.pad.stereo_width * 100.0),
-            },
-            ControlItem {
-                label: "Detune",
-                kind: Gain,
-                value: c.pad.detune,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.pad.detune * 100.0),
-            },
-            ControlItem {
-                label: "Octave Mix",
-                kind: Gain,
-                value: c.pad.octave_mix,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.pad.octave_mix * 100.0),
-            },
-            ControlItem {
-                label: "Attack",
-                kind: Timing,
-                value: c.pad.attack_time,
-                min: 0.05,
-                max: 30.0,
-                display: format!("{:.2} s", c.pad.attack_time),
-            },
-            ControlItem {
-                label: "Release",
-                kind: Timing,
-                value: c.pad.release_time,
-                min: 0.05,
-                max: 20.0,
-                display: format!("{:.2} s", c.pad.release_time),
-            },
-        ],
-        Tab::Bass => vec![
-            ControlItem {
-                label: "Level",
-                kind: Gain,
-                value: c.bass.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.bass.level * 100.0),
-            },
-            ControlItem {
-                label: "Interval",
-                kind: Timing,
-                value: c.bass.interval_beats,
-                min: 0.25,
-                max: 8.0,
-                display: format!("{:.2} beats", c.bass.interval_beats),
-            },
-            ControlItem {
-                label: "Offset",
-                kind: Timing,
-                value: c.bass.offset_beats,
-                min: 0.0,
-                max: 4.0,
-                display: format!("{:.2} beats", c.bass.offset_beats),
-            },
-            ControlItem {
-                label: "Rhythm",
-                kind: Discrete,
-                value: c.bass.rhythm,
-                min: 0.0,
-                max: 3.0,
-                display: ["A", "B", "C", "D"][c.bass.rhythm.round() as usize % 4].to_string(),
-            },
-            ControlItem {
-                label: "Octave",
-                kind: Discrete,
-                value: c.bass.octave,
-                min: -3.0,
-                max: 0.0,
-                display: format!("{:.0}", c.bass.octave),
-            },
-            ControlItem {
-                label: "Attack",
-                kind: Timing,
-                value: c.bass.attack_time,
-                min: 0.005,
-                max: 1.0,
-                display: format!("{:.3} s", c.bass.attack_time),
-            },
-            ControlItem {
-                label: "Decay",
-                kind: Timing,
-                value: c.bass.decay_time,
-                min: 0.005,
-                max: 2.0,
-                display: format!("{:.3} s", c.bass.decay_time),
-            },
-            ControlItem {
-                label: "Drive",
-                kind: Gain,
-                value: c.bass.drive,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.bass.drive * 100.0),
-            },
-        ],
-        Tab::Kick => vec![
-            ControlItem {
-                label: "Level",
-                kind: Gain,
-                value: c.kick.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.kick.level * 100.0),
-            },
-            ControlItem {
-                label: "Interval",
-                kind: Timing,
-                value: c.kick.interval_beats,
-                min: 0.25,
-                max: 4.0,
-                display: format!("{:.2} beats", c.kick.interval_beats),
-            },
-            ControlItem {
-                label: "Offset",
-                kind: Timing,
-                value: c.kick.offset_beats,
-                min: 0.0,
-                max: 4.0,
-                display: format!("{:.2} beats", c.kick.offset_beats),
-            },
-            ControlItem {
-                label: "Start Freq",
-                kind: Continuous,
-                value: c.kick.start_freq,
-                min: 40.0,
-                max: 200.0,
-                display: format!("{:.0} Hz", c.kick.start_freq),
-            },
-            ControlItem {
-                label: "Pitch Decay",
-                kind: Timing,
-                value: c.kick.pitch_decay_ms,
-                min: 10.0,
-                max: 300.0,
-                display: format!("{:.0} ms", c.kick.pitch_decay_ms),
-            },
-            ControlItem {
-                label: "Amp Decay",
-                kind: Timing,
-                value: c.kick.amp_decay_ms,
-                min: 50.0,
-                max: 1000.0,
-                display: format!("{:.0} ms", c.kick.amp_decay_ms),
-            },
-            ControlItem {
-                label: "Click",
-                kind: Gain,
-                value: c.kick.click,
-                min: 0.0,
-                max: 0.2,
-                display: format!("{:.0}%", c.kick.click / 0.2 * 100.0),
-            },
-            ControlItem {
-                label: "Drive",
-                kind: Gain,
-                value: c.kick.drive,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.kick.drive * 100.0),
-            },
-            ControlItem {
-                label: "Filter",
-                kind: Gain,
-                value: c.kick.filter,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.kick.filter * 100.0),
-            },
-            ControlItem {
-                label: "Echo Time",
-                kind: Timing,
-                value: c.kick.echo_time_beats,
-                min: KICK_ECHO_TIME_BEATS_MIN,
-                max: KICK_ECHO_TIME_BEATS_MAX,
-                display: format!("{:.3} beats", c.kick.echo_time_beats),
-            },
-            ControlItem {
-                label: "Echo Filter",
-                kind: Gain,
-                value: c.kick.echo_filter,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.kick.echo_filter * 100.0),
-            },
-            ControlItem {
-                label: "Echo Amount",
-                kind: Gain,
-                value: c.kick.echo_amount,
-                min: 0.0,
-                max: 0.9,
-                display: format!("{:.0}%", c.kick.echo_amount / 0.9 * 100.0),
-            },
-            ControlItem {
-                label: "Echo Feedback",
-                kind: Gain,
-                value: c.kick.echo_feedback,
-                min: 0.0,
-                max: 0.85,
-                display: format!("{:.0}%", c.kick.echo_feedback / 0.85 * 100.0),
-            },
-        ],
-        Tab::Tonal => vec![
-            ControlItem {
-                label: "Level",
-                kind: Gain,
-                value: c.tonal.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.tonal.level * 100.0),
-            },
-            ControlItem {
-                label: "Interval",
-                kind: Timing,
-                value: c.tonal.step_interval_beats,
-                min: 0.5,
-                max: 4.0,
-                display: format!("{:.2} beats", c.tonal.step_interval_beats),
-            },
-            ControlItem {
-                label: "Offset",
-                kind: Timing,
-                value: c.tonal.offset_beats,
-                min: 0.0,
-                max: 4.0,
-                display: format!("{:.2} beats", c.tonal.offset_beats),
-            },
-            ControlItem {
-                label: "Randomness",
-                kind: Gain,
-                value: c.tonal.randomness,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.tonal.randomness * 100.0),
-            },
-            ControlItem {
-                label: "Note Length",
-                kind: Timing,
-                value: c.tonal.note_length_beats,
-                min: 0.1,
-                max: 2.0,
-                display: format!("{:.2} beats", c.tonal.note_length_beats),
-            },
-            ControlItem {
-                label: "Reverb Mix",
-                kind: Gain,
-                value: c.tonal.reverb_mix,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.tonal.reverb_mix * 100.0),
-            },
-        ],
-        Tab::Clap => vec![
-            ControlItem {
-                label: "Level",
-                kind: Gain,
-                value: c.clap.level,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.clap.level * 100.0),
-            },
-            ControlItem {
-                label: "Interval",
-                kind: Timing,
-                value: c.clap.interval_beats,
-                min: 0.5,
-                max: 8.0,
-                display: format!("{:.2} beats", c.clap.interval_beats),
-            },
-            ControlItem {
-                label: "Offset",
-                kind: Timing,
-                value: c.clap.offset_beats,
-                min: 0.0,
-                max: 8.0,
-                display: format!("{:.2} beats", c.clap.offset_beats),
-            },
-            ControlItem {
-                label: "Slap Count",
-                kind: Discrete,
-                value: c.clap.slap_count,
-                min: 1.0,
-                max: 8.0,
-                display: format!("{:.0}", c.clap.slap_count),
-            },
-            ControlItem {
-                label: "Slap Spread",
-                kind: Timing,
-                value: c.clap.slap_spread_ms,
-                min: 0.0,
-                max: 100.0,
-                display: format!("{:.1} ms", c.clap.slap_spread_ms),
-            },
-            ControlItem {
-                label: "Decay",
-                kind: Timing,
-                value: c.clap.decay_ms,
-                min: 10.0,
-                max: 200.0,
-                display: format!("{:.0} ms", c.clap.decay_ms),
-            },
-            ControlItem {
-                label: "Filter",
-                kind: Gain,
-                value: c.clap.filter,
-                min: 0.5,
-                max: 1.0,
-                display: format!("{:.0}%", c.clap.filter * 100.0),
-            },
-            ControlItem {
-                label: "Room",
-                kind: Gain,
-                value: c.clap.room,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.clap.room * 100.0),
-            },
-            ControlItem {
-                label: "Body",
-                kind: Gain,
-                value: c.clap.body,
-                min: 0.0,
-                max: 1.0,
-                display: format!("{:.0}%", c.clap.body * 100.0),
-            },
-        ],
+            Entry::Free => value,
+        };
+        (self.set)(c, next.clamp(self.min, self.max));
     }
 }
 
-fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
+fn pct(v: f32) -> String {
+    format!("{:.0}%", v * 100.0)
+}
+
+fn beats2(v: f32) -> String {
+    format!("{v:.2} beats")
+}
+
+fn ms0(v: f32) -> String {
+    format!("{v:.0} ms")
+}
+
+const MASTER_CONTROLS: &[ControlSpec] = &[
+    ControlSpec::gain(
+        "Chords Vol",
+        0.0,
+        1.0,
+        |c| c.pad.level,
+        |c, v| c.pad.level = v,
+        |c| pct(c.pad.level),
+    ),
+    ControlSpec::gain(
+        "Perc Vol",
+        0.0,
+        1.0,
+        |c| c.perc.level,
+        |c, v| c.perc.level = v,
+        |c| pct(c.perc.level),
+    ),
+    ControlSpec::gain(
+        "Kick Vol",
+        0.0,
+        1.0,
+        |c| c.kick.level,
+        |c, v| c.kick.level = v,
+        |c| pct(c.kick.level),
+    ),
+    ControlSpec::gain(
+        "Tonal Vol",
+        0.0,
+        1.0,
+        |c| c.tonal.level,
+        |c, v| c.tonal.level = v,
+        |c| pct(c.tonal.level),
+    ),
+    ControlSpec::gain(
+        "Clap Vol",
+        0.0,
+        1.0,
+        |c| c.clap.level,
+        |c, v| c.clap.level = v,
+        |c| pct(c.clap.level),
+    ),
+    ControlSpec::gain(
+        "Bass Vol",
+        0.0,
+        1.0,
+        |c| c.bass.level,
+        |c, v| c.bass.level = v,
+        |c| pct(c.bass.level),
+    ),
+    ControlSpec::new(
+        "BPM",
+        ControlKind::Timing,
+        MASTER_BPM_MIN,
+        MASTER_BPM_MAX,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.master.bpm,
+        |c, v| c.master.bpm = v,
+        |c| format!("{:.0} bpm", c.master.bpm),
+    ),
+    ControlSpec::gain(
+        "Master Level",
+        0.0,
+        1.0,
+        |c| c.master.level,
+        |c, v| c.master.level = v,
+        |c| pct(c.master.level),
+    ),
+    ControlSpec::gain(
+        "Drive",
+        0.0,
+        1.0,
+        |c| c.master.drive,
+        |c, v| c.master.drive = v,
+        |c| pct(c.master.drive),
+    ),
+    ControlSpec::new(
+        "Comp Threshold",
+        ControlKind::Continuous,
+        -40.0,
+        0.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.master.comp_threshold,
+        |c, v| c.master.comp_threshold = v,
+        |c| format!("{:.0} dB", c.master.comp_threshold),
+    ),
+    ControlSpec::new(
+        "Comp Ratio",
+        ControlKind::Continuous,
+        1.0,
+        8.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.master.comp_ratio,
+        |c, v| c.master.comp_ratio = v,
+        |c| format!("{:.1}:1", c.master.comp_ratio),
+    ),
+    ControlSpec::new(
+        "Comp Release",
+        ControlKind::Timing,
+        10.0,
+        500.0,
+        Step::Linear(10.0),
+        Entry::Snap,
+        |c| c.master.comp_release_ms,
+        |c, v| c.master.comp_release_ms = v,
+        |c| ms0(c.master.comp_release_ms),
+    ),
+    ControlSpec::new(
+        "Tone",
+        ControlKind::Continuous,
+        -1.0,
+        1.0,
+        Step::Linear(0.05),
+        Entry::Free,
+        |c| c.master.tone,
+        |c, v| c.master.tone = v,
+        |c| {
+            if c.master.tone < -0.05 {
+                format!("bass {:.0}%", -c.master.tone * 100.0)
+            } else if c.master.tone > 0.05 {
+                format!("treble {:.0}%", c.master.tone * 100.0)
+            } else {
+                "flat".to_string()
+            }
+        },
+    ),
+    ControlSpec::new(
+        "Tune",
+        ControlKind::Discrete,
+        -12.0,
+        12.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.master.tune,
+        |c, v| c.master.tune = v,
+        |c| {
+            if c.master.tune.abs() < 0.05 {
+                "0 st".to_string()
+            } else {
+                format!("{:+.0} st", c.master.tune)
+            }
+        },
+    )
+    .reset_at(0.0),
+];
+
+const PERC_CONTROLS: &[ControlSpec] = &[
+    ControlSpec::gain(
+        "Level",
+        0.0,
+        1.0,
+        |c| c.perc.level,
+        |c, v| c.perc.level = v,
+        |c| pct(c.perc.level),
+    ),
+    ControlSpec::new(
+        "Interval",
+        ControlKind::Timing,
+        0.25,
+        4.25,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.perc.interval_beats,
+        |c, v| c.perc.interval_beats = v,
+        |c| {
+            if c.perc.interval_beats >= 4.25 {
+                "Continuous".to_string()
+            } else {
+                beats2(c.perc.interval_beats)
+            }
+        },
+    ),
+    ControlSpec::new(
+        "Offset",
+        ControlKind::Timing,
+        0.0,
+        4.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.perc.offset_beats,
+        |c, v| c.perc.offset_beats = v,
+        |c| beats2(c.perc.offset_beats),
+    ),
+    ControlSpec::new(
+        "Decay",
+        ControlKind::Timing,
+        20.0,
+        2000.0,
+        Step::Linear(20.0),
+        Entry::Free,
+        |c| c.perc.decay_ms,
+        |c, v| c.perc.decay_ms = v,
+        |c| {
+            if c.perc.decay_ms >= 1000.0 {
+                format!("{:.1} s", c.perc.decay_ms / 1000.0)
+            } else {
+                ms0(c.perc.decay_ms)
+            }
+        },
+    ),
+    ControlSpec::gain(
+        "Filter",
+        0.5,
+        1.0,
+        |c| c.perc.filter,
+        |c, v| c.perc.filter = v,
+        |c| pct(c.perc.filter),
+    ),
+    ControlSpec::new(
+        "LFO Rate",
+        ControlKind::Timing,
+        0.25,
+        16.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.perc.lfo_rate_bars,
+        |c, v| c.perc.lfo_rate_bars = v,
+        |c| format!("{:.0} beats", c.perc.lfo_rate_bars * 4.0),
+    ),
+    ControlSpec::gain(
+        "LFO Depth",
+        0.0,
+        1.0,
+        |c| c.perc.lfo_depth,
+        |c, v| c.perc.lfo_depth = v,
+        |c| pct(c.perc.lfo_depth),
+    ),
+];
+
+const CHORDS_CONTROLS: &[ControlSpec] = &[
+    ControlSpec::gain(
+        "Level",
+        0.0,
+        1.0,
+        |c| c.pad.level,
+        |c, v| c.pad.level = v,
+        |c| pct(c.pad.level),
+    ),
+    ControlSpec::new(
+        "Chord Length",
+        ControlKind::Timing,
+        1.0,
+        64.0,
+        Step::PowerOfTwo,
+        Entry::Snap,
+        |c| c.pad.chord_bars,
+        |c, v| c.pad.chord_bars = v,
+        |c| format!("{:.0} beats", c.pad.chord_bars * 4.0),
+    )
+    .log_bar(),
+    ControlSpec::new(
+        "Progression",
+        ControlKind::Discrete,
+        0.0,
+        3.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.progression,
+        |c, v| c.pad.progression = v,
+        |c| ["A", "B", "C", "D"][c.pad.progression.round() as usize % 4].to_string(),
+    ),
+    ControlSpec::gain(
+        "Reverb Mix",
+        0.0,
+        1.0,
+        |c| c.pad.reverb_mix,
+        |c, v| c.pad.reverb_mix = v,
+        |c| pct(c.pad.reverb_mix),
+    ),
+    ControlSpec::gain(
+        "Stereo Width",
+        0.0,
+        1.0,
+        |c| c.pad.stereo_width,
+        |c, v| c.pad.stereo_width = v,
+        |c| pct(c.pad.stereo_width),
+    ),
+    ControlSpec::gain(
+        "Detune",
+        0.0,
+        1.0,
+        |c| c.pad.detune,
+        |c, v| c.pad.detune = v,
+        |c| pct(c.pad.detune),
+    ),
+    ControlSpec::gain(
+        "Octave Mix",
+        0.0,
+        1.0,
+        |c| c.pad.octave_mix,
+        |c, v| c.pad.octave_mix = v,
+        |c| pct(c.pad.octave_mix),
+    ),
+    ControlSpec::new(
+        "Attack",
+        ControlKind::Timing,
+        0.05,
+        30.0,
+        Step::Linear(0.5),
+        Entry::Free,
+        |c| c.pad.attack_time,
+        |c, v| c.pad.attack_time = v,
+        |c| format!("{:.2} s", c.pad.attack_time),
+    ),
+    ControlSpec::new(
+        "Release",
+        ControlKind::Timing,
+        0.05,
+        20.0,
+        Step::Linear(0.5),
+        Entry::Free,
+        |c| c.pad.release_time,
+        |c, v| c.pad.release_time = v,
+        |c| format!("{:.2} s", c.pad.release_time),
+    ),
+];
+
+const BASS_CONTROLS: &[ControlSpec] = &[
+    ControlSpec::gain(
+        "Level",
+        0.0,
+        1.0,
+        |c| c.bass.level,
+        |c, v| c.bass.level = v,
+        |c| pct(c.bass.level),
+    ),
+    ControlSpec::new(
+        "Interval",
+        ControlKind::Timing,
+        0.25,
+        8.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.bass.interval_beats,
+        |c, v| c.bass.interval_beats = v,
+        |c| beats2(c.bass.interval_beats),
+    ),
+    ControlSpec::new(
+        "Offset",
+        ControlKind::Timing,
+        0.0,
+        4.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.bass.offset_beats,
+        |c, v| c.bass.offset_beats = v,
+        |c| beats2(c.bass.offset_beats),
+    ),
+    ControlSpec::new(
+        "Rhythm",
+        ControlKind::Discrete,
+        0.0,
+        3.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.bass.rhythm,
+        |c, v| c.bass.rhythm = v,
+        |c| ["A", "B", "C", "D"][c.bass.rhythm.round() as usize % 4].to_string(),
+    ),
+    ControlSpec::new(
+        "Octave",
+        ControlKind::Discrete,
+        -3.0,
+        0.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.bass.octave,
+        |c, v| c.bass.octave = v,
+        |c| format!("{:.0}", c.bass.octave),
+    ),
+    ControlSpec::new(
+        "Attack",
+        ControlKind::Timing,
+        0.005,
+        1.0,
+        Step::Linear(0.02),
+        Entry::Free,
+        |c| c.bass.attack_time,
+        |c, v| c.bass.attack_time = v,
+        |c| format!("{:.3} s", c.bass.attack_time),
+    ),
+    ControlSpec::new(
+        "Decay",
+        ControlKind::Timing,
+        0.005,
+        2.0,
+        Step::Linear(0.05),
+        Entry::Free,
+        |c| c.bass.decay_time,
+        |c, v| c.bass.decay_time = v,
+        |c| format!("{:.3} s", c.bass.decay_time),
+    ),
+    ControlSpec::gain(
+        "Drive",
+        0.0,
+        1.0,
+        |c| c.bass.drive,
+        |c, v| c.bass.drive = v,
+        |c| pct(c.bass.drive),
+    ),
+];
+
+const KICK_CONTROLS: &[ControlSpec] = &[
+    ControlSpec::gain(
+        "Level",
+        0.0,
+        1.0,
+        |c| c.kick.level,
+        |c, v| c.kick.level = v,
+        |c| pct(c.kick.level),
+    ),
+    ControlSpec::new(
+        "Interval",
+        ControlKind::Timing,
+        0.25,
+        4.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.kick.interval_beats,
+        |c, v| c.kick.interval_beats = v,
+        |c| beats2(c.kick.interval_beats),
+    ),
+    ControlSpec::new(
+        "Offset",
+        ControlKind::Timing,
+        0.0,
+        4.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.kick.offset_beats,
+        |c, v| c.kick.offset_beats = v,
+        |c| beats2(c.kick.offset_beats),
+    ),
+    ControlSpec::new(
+        "Start Freq",
+        ControlKind::Continuous,
+        40.0,
+        200.0,
+        Step::Linear(5.0),
+        Entry::Snap,
+        |c| c.kick.start_freq,
+        |c, v| c.kick.start_freq = v,
+        |c| format!("{:.0} Hz", c.kick.start_freq),
+    ),
+    ControlSpec::new(
+        "Pitch Decay",
+        ControlKind::Timing,
+        10.0,
+        300.0,
+        Step::Linear(5.0),
+        Entry::Snap,
+        |c| c.kick.pitch_decay_ms,
+        |c, v| c.kick.pitch_decay_ms = v,
+        |c| ms0(c.kick.pitch_decay_ms),
+    ),
+    ControlSpec::new(
+        "Amp Decay",
+        ControlKind::Timing,
+        50.0,
+        1000.0,
+        Step::Linear(20.0),
+        Entry::Snap,
+        |c| c.kick.amp_decay_ms,
+        |c, v| c.kick.amp_decay_ms = v,
+        |c| ms0(c.kick.amp_decay_ms),
+    ),
+    ControlSpec::gain(
+        "Click",
+        0.0,
+        0.2,
+        |c| c.kick.click,
+        |c, v| c.kick.click = v,
+        |c| pct(c.kick.click / 0.2),
+    )
+    .with_step(0.01),
+    ControlSpec::gain(
+        "Drive",
+        0.0,
+        1.0,
+        |c| c.kick.drive,
+        |c, v| c.kick.drive = v,
+        |c| pct(c.kick.drive),
+    ),
+    ControlSpec::gain(
+        "Filter",
+        0.0,
+        1.0,
+        |c| c.kick.filter,
+        |c, v| c.kick.filter = v,
+        |c| pct(c.kick.filter),
+    ),
+    ControlSpec::new(
+        "Echo Time",
+        ControlKind::Timing,
+        KICK_ECHO_TIME_BEATS_MIN,
+        KICK_ECHO_TIME_BEATS_MAX,
+        Step::Linear(0.125),
+        Entry::Snap,
+        |c| c.kick.echo_time_beats,
+        |c, v| c.kick.echo_time_beats = v,
+        |c| format!("{:.3} beats", c.kick.echo_time_beats),
+    ),
+    ControlSpec::gain(
+        "Echo Filter",
+        0.0,
+        1.0,
+        |c| c.kick.echo_filter,
+        |c, v| c.kick.echo_filter = v,
+        |c| pct(c.kick.echo_filter),
+    ),
+    ControlSpec::gain(
+        "Echo Amount",
+        0.0,
+        0.9,
+        |c| c.kick.echo_amount,
+        |c, v| c.kick.echo_amount = v,
+        |c| pct(c.kick.echo_amount / 0.9),
+    ),
+    ControlSpec::gain(
+        "Echo Feedback",
+        0.0,
+        0.85,
+        |c| c.kick.echo_feedback,
+        |c, v| c.kick.echo_feedback = v,
+        |c| pct(c.kick.echo_feedback / 0.85),
+    ),
+];
+
+const TONAL_CONTROLS: &[ControlSpec] = &[
+    ControlSpec::gain(
+        "Level",
+        0.0,
+        1.0,
+        |c| c.tonal.level,
+        |c, v| c.tonal.level = v,
+        |c| pct(c.tonal.level),
+    ),
+    ControlSpec::new(
+        "Interval",
+        ControlKind::Timing,
+        0.5,
+        4.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.tonal.step_interval_beats,
+        |c, v| c.tonal.step_interval_beats = v,
+        |c| beats2(c.tonal.step_interval_beats),
+    ),
+    ControlSpec::new(
+        "Offset",
+        ControlKind::Timing,
+        0.0,
+        4.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.tonal.offset_beats,
+        |c, v| c.tonal.offset_beats = v,
+        |c| beats2(c.tonal.offset_beats),
+    ),
+    ControlSpec::gain(
+        "Randomness",
+        0.0,
+        1.0,
+        |c| c.tonal.randomness,
+        |c, v| c.tonal.randomness = v,
+        |c| pct(c.tonal.randomness),
+    ),
+    ControlSpec::new(
+        "Note Length",
+        ControlKind::Timing,
+        0.1,
+        2.0,
+        Step::Linear(0.05),
+        Entry::Free,
+        |c| c.tonal.note_length_beats,
+        |c, v| c.tonal.note_length_beats = v,
+        |c| beats2(c.tonal.note_length_beats),
+    ),
+    ControlSpec::gain(
+        "Reverb Mix",
+        0.0,
+        1.0,
+        |c| c.tonal.reverb_mix,
+        |c, v| c.tonal.reverb_mix = v,
+        |c| pct(c.tonal.reverb_mix),
+    ),
+];
+
+const CLAP_CONTROLS: &[ControlSpec] = &[
+    ControlSpec::gain(
+        "Level",
+        0.0,
+        1.0,
+        |c| c.clap.level,
+        |c, v| c.clap.level = v,
+        |c| pct(c.clap.level),
+    ),
+    ControlSpec::new(
+        "Interval",
+        ControlKind::Timing,
+        0.5,
+        8.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.clap.interval_beats,
+        |c, v| c.clap.interval_beats = v,
+        |c| beats2(c.clap.interval_beats),
+    ),
+    ControlSpec::new(
+        "Offset",
+        ControlKind::Timing,
+        0.0,
+        8.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.clap.offset_beats,
+        |c, v| c.clap.offset_beats = v,
+        |c| beats2(c.clap.offset_beats),
+    ),
+    ControlSpec::new(
+        "Slap Count",
+        ControlKind::Discrete,
+        1.0,
+        8.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.clap.slap_count,
+        |c, v| c.clap.slap_count = v,
+        |c| format!("{:.0}", c.clap.slap_count),
+    ),
+    ControlSpec::new(
+        "Slap Spread",
+        ControlKind::Timing,
+        0.0,
+        100.0,
+        Step::Linear(2.0),
+        Entry::Snap,
+        |c| c.clap.slap_spread_ms,
+        |c, v| c.clap.slap_spread_ms = v,
+        |c| format!("{:.1} ms", c.clap.slap_spread_ms),
+    ),
+    ControlSpec::new(
+        "Decay",
+        ControlKind::Timing,
+        10.0,
+        200.0,
+        Step::Linear(5.0),
+        Entry::Snap,
+        |c| c.clap.decay_ms,
+        |c, v| c.clap.decay_ms = v,
+        |c| ms0(c.clap.decay_ms),
+    ),
+    ControlSpec::gain(
+        "Filter",
+        0.5,
+        1.0,
+        |c| c.clap.filter,
+        |c, v| c.clap.filter = v,
+        |c| pct(c.clap.filter),
+    ),
+    ControlSpec::gain(
+        "Room",
+        0.0,
+        1.0,
+        |c| c.clap.room,
+        |c, v| c.clap.room = v,
+        |c| pct(c.clap.room),
+    ),
+    ControlSpec::gain(
+        "Body",
+        0.0,
+        1.0,
+        |c| c.clap.body,
+        |c, v| c.clap.body = v,
+        |c| pct(c.clap.body),
+    ),
+];
+
+fn tab_specs(tab: Tab) -> &'static [ControlSpec] {
     match tab {
-        Tab::Master => match selected {
-            0 => c.pad.level = (c.pad.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => c.perc.level = (c.perc.level + dir * 0.02).clamp(0.0, 1.0),
-            2 => c.kick.level = (c.kick.level + dir * 0.02).clamp(0.0, 1.0),
-            3 => c.tonal.level = (c.tonal.level + dir * 0.02).clamp(0.0, 1.0),
-            4 => c.clap.level = (c.clap.level + dir * 0.02).clamp(0.0, 1.0),
-            5 => c.bass.level = (c.bass.level + dir * 0.02).clamp(0.0, 1.0),
-            6 => c.master.bpm = (c.master.bpm + dir * 1.0).clamp(MASTER_BPM_MIN, MASTER_BPM_MAX),
-            7 => c.master.level = (c.master.level + dir * 0.02).clamp(0.0, 1.0),
-            8 => c.master.drive = (c.master.drive + dir * 0.02).clamp(0.0, 1.0),
-            9 => c.master.comp_threshold = (c.master.comp_threshold + dir * 1.0).clamp(-40.0, 0.0),
-            10 => c.master.comp_ratio = (c.master.comp_ratio + dir * 0.25).clamp(1.0, 8.0),
-            11 => {
-                c.master.comp_release_ms =
-                    (c.master.comp_release_ms + dir * 10.0).clamp(10.0, 500.0)
-            }
-            12 => c.master.tone = (c.master.tone + dir * 0.05).clamp(-1.0, 1.0),
-            13 => c.master.tune = (c.master.tune + dir).clamp(-12.0, 12.0),
-            _ => {}
-        },
-        Tab::Perc => match selected {
-            0 => c.perc.level = (c.perc.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => c.perc.interval_beats = (c.perc.interval_beats + dir * 0.25).clamp(0.25, 4.25),
-            2 => c.perc.offset_beats = (c.perc.offset_beats + dir * 0.25).clamp(0.0, 4.0),
-            3 => c.perc.decay_ms = (c.perc.decay_ms + dir * 20.0).clamp(20.0, 2000.0),
-            4 => c.perc.filter = (c.perc.filter + dir * 0.02).clamp(0.5, 1.0),
-            5 => c.perc.lfo_rate_bars = (c.perc.lfo_rate_bars + dir * 0.25).clamp(0.25, 16.0),
-            6 => c.perc.lfo_depth = (c.perc.lfo_depth + dir * 0.02).clamp(0.0, 1.0),
-            _ => {}
-        },
-        Tab::Chords => match selected {
-            0 => c.pad.level = (c.pad.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => {
-                if dir > 0.0 {
-                    c.pad.chord_bars = (c.pad.chord_bars * 2.0).min(64.0)
-                } else {
-                    c.pad.chord_bars = (c.pad.chord_bars / 2.0).max(1.0)
-                }
-            }
-            2 => c.pad.progression = (c.pad.progression + dir).clamp(0.0, 3.0),
-            3 => c.pad.reverb_mix = (c.pad.reverb_mix + dir * 0.02).clamp(0.0, 1.0),
-            4 => c.pad.stereo_width = (c.pad.stereo_width + dir * 0.02).clamp(0.0, 1.0),
-            5 => c.pad.detune = (c.pad.detune + dir * 0.02).clamp(0.0, 1.0),
-            6 => c.pad.octave_mix = (c.pad.octave_mix + dir * 0.02).clamp(0.0, 1.0),
-            7 => c.pad.attack_time = (c.pad.attack_time + dir * 0.5).clamp(0.05, 30.0),
-            8 => c.pad.release_time = (c.pad.release_time + dir * 0.5).clamp(0.05, 20.0),
-            _ => {}
-        },
-        Tab::Bass => match selected {
-            0 => c.bass.level = (c.bass.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => c.bass.interval_beats = (c.bass.interval_beats + dir * 0.25).clamp(0.25, 8.0),
-            2 => c.bass.offset_beats = (c.bass.offset_beats + dir * 0.25).clamp(0.0, 4.0),
-            3 => c.bass.rhythm = (c.bass.rhythm + dir).clamp(0.0, 3.0),
-            4 => c.bass.octave = (c.bass.octave + dir).clamp(-3.0, 0.0),
-            5 => c.bass.attack_time = (c.bass.attack_time + dir * 0.02).clamp(0.005, 1.0),
-            6 => c.bass.decay_time = (c.bass.decay_time + dir * 0.05).clamp(0.005, 2.0),
-            7 => c.bass.drive = (c.bass.drive + dir * 0.02).clamp(0.0, 1.0),
-            _ => {}
-        },
-        Tab::Kick => match selected {
-            0 => c.kick.level = (c.kick.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => c.kick.interval_beats = (c.kick.interval_beats + dir * 0.25).clamp(0.25, 4.0),
-            2 => c.kick.offset_beats = (c.kick.offset_beats + dir * 0.25).clamp(0.0, 4.0),
-            3 => c.kick.start_freq = (c.kick.start_freq + dir * 5.0).clamp(40.0, 200.0),
-            4 => c.kick.pitch_decay_ms = (c.kick.pitch_decay_ms + dir * 5.0).clamp(10.0, 300.0),
-            5 => c.kick.amp_decay_ms = (c.kick.amp_decay_ms + dir * 20.0).clamp(50.0, 1000.0),
-            6 => c.kick.click = (c.kick.click + dir * 0.01).clamp(0.0, 0.2),
-            7 => c.kick.drive = (c.kick.drive + dir * 0.02).clamp(0.0, 1.0),
-            8 => c.kick.filter = (c.kick.filter + dir * 0.02).clamp(0.0, 1.0),
-            9 => {
-                c.kick.echo_time_beats = (c.kick.echo_time_beats + dir * 0.125)
-                    .clamp(KICK_ECHO_TIME_BEATS_MIN, KICK_ECHO_TIME_BEATS_MAX)
-            }
-            10 => c.kick.echo_filter = (c.kick.echo_filter + dir * 0.02).clamp(0.0, 1.0),
-            11 => c.kick.echo_amount = (c.kick.echo_amount + dir * 0.02).clamp(0.0, 0.9),
-            12 => c.kick.echo_feedback = (c.kick.echo_feedback + dir * 0.02).clamp(0.0, 0.85),
-            _ => {}
-        },
-        Tab::Tonal => match selected {
-            0 => c.tonal.level = (c.tonal.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => {
-                c.tonal.step_interval_beats =
-                    (c.tonal.step_interval_beats + dir * 0.25).clamp(0.5, 4.0)
-            }
-            2 => c.tonal.offset_beats = (c.tonal.offset_beats + dir * 0.25).clamp(0.0, 4.0),
-            3 => c.tonal.randomness = (c.tonal.randomness + dir * 0.02).clamp(0.0, 1.0),
-            4 => {
-                c.tonal.note_length_beats = (c.tonal.note_length_beats + dir * 0.05).clamp(0.1, 2.0)
-            }
-            5 => c.tonal.reverb_mix = (c.tonal.reverb_mix + dir * 0.02).clamp(0.0, 1.0),
-            _ => {}
-        },
-        Tab::Clap => match selected {
-            0 => c.clap.level = (c.clap.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => c.clap.interval_beats = (c.clap.interval_beats + dir * 0.25).clamp(0.5, 8.0),
-            2 => c.clap.offset_beats = (c.clap.offset_beats + dir * 0.25).clamp(0.0, 8.0),
-            3 => c.clap.slap_count = (c.clap.slap_count + dir * 1.0).clamp(1.0, 8.0),
-            4 => c.clap.slap_spread_ms = (c.clap.slap_spread_ms + dir * 2.0).clamp(0.0, 100.0),
-            5 => c.clap.decay_ms = (c.clap.decay_ms + dir * 5.0).clamp(10.0, 200.0),
-            6 => c.clap.filter = (c.clap.filter + dir * 0.02).clamp(0.5, 1.0),
-            7 => c.clap.room = (c.clap.room + dir * 0.02).clamp(0.0, 1.0),
-            8 => c.clap.body = (c.clap.body + dir * 0.02).clamp(0.0, 1.0),
-            _ => {}
-        },
+        Tab::Master => MASTER_CONTROLS,
+        Tab::Perc => PERC_CONTROLS,
+        Tab::Chords => CHORDS_CONTROLS,
+        Tab::Bass => BASS_CONTROLS,
+        Tab::Kick => KICK_CONTROLS,
+        Tab::Tonal => TONAL_CONTROLS,
+        Tab::Clap => CLAP_CONTROLS,
+    }
+}
+
+fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
+    tab_specs(tab).iter().map(|spec| spec.item(c)).collect()
+}
+
+fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
+    if let Some(spec) = tab_specs(tab).get(selected) {
+        spec.apply_delta(dir, c);
     }
 }
 
 fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
-    match tab {
-        Tab::Master => match selected {
-            0 => c.pad.level = 0.0,
-            1 => c.perc.level = 0.0,
-            2 => c.kick.level = 0.0,
-            3 => c.tonal.level = 0.0,
-            4 => c.clap.level = 0.0,
-            5 => c.bass.level = 0.0,
-            6 => c.master.bpm = MASTER_BPM_MIN,
-            7 => c.master.level = 0.0,
-            8 => c.master.drive = 0.0,
-            9 => c.master.comp_threshold = -40.0,
-            10 => c.master.comp_ratio = 1.0,
-            11 => c.master.comp_release_ms = 10.0,
-            12 => c.master.tone = -1.0,
-            13 => c.master.tune = 0.0,
-            _ => {}
-        },
-        Tab::Perc => match selected {
-            0 => c.perc.level = 0.0,
-            1 => c.perc.interval_beats = 0.25,
-            2 => c.perc.offset_beats = 0.0,
-            3 => c.perc.decay_ms = 20.0,
-            4 => c.perc.filter = 0.5,
-            5 => c.perc.lfo_rate_bars = 0.25,
-            6 => c.perc.lfo_depth = 0.0,
-            _ => {}
-        },
-        Tab::Chords => match selected {
-            0 => c.pad.level = 0.0,
-            1 => c.pad.chord_bars = 1.0,
-            2 => c.pad.progression = 0.0,
-            3 => c.pad.reverb_mix = 0.0,
-            4 => c.pad.stereo_width = 0.0,
-            5 => c.pad.detune = 0.0,
-            6 => c.pad.octave_mix = 0.0,
-            7 => c.pad.attack_time = 0.05,
-            8 => c.pad.release_time = 0.05,
-            _ => {}
-        },
-        Tab::Bass => match selected {
-            0 => c.bass.level = 0.0,
-            1 => c.bass.interval_beats = 0.25,
-            2 => c.bass.offset_beats = 0.0,
-            3 => c.bass.rhythm = 0.0,
-            4 => c.bass.octave = -3.0,
-            5 => c.bass.attack_time = 0.005,
-            6 => c.bass.decay_time = 0.005,
-            7 => c.bass.drive = 0.0,
-            _ => {}
-        },
-        Tab::Kick => match selected {
-            0 => c.kick.level = 0.0,
-            1 => c.kick.interval_beats = 0.25,
-            2 => c.kick.offset_beats = 0.0,
-            3 => c.kick.start_freq = 40.0,
-            4 => c.kick.pitch_decay_ms = 10.0,
-            5 => c.kick.amp_decay_ms = 50.0,
-            6 => c.kick.click = 0.0,
-            7 => c.kick.drive = 0.0,
-            8 => c.kick.filter = 0.0,
-            9 => c.kick.echo_time_beats = KICK_ECHO_TIME_BEATS_MIN,
-            10 => c.kick.echo_filter = 0.0,
-            11 => c.kick.echo_amount = 0.0,
-            12 => c.kick.echo_feedback = 0.0,
-            _ => {}
-        },
-        Tab::Tonal => match selected {
-            0 => c.tonal.level = 0.0,
-            1 => c.tonal.step_interval_beats = 0.5,
-            2 => c.tonal.offset_beats = 0.0,
-            3 => c.tonal.randomness = 0.0,
-            4 => c.tonal.note_length_beats = 0.1,
-            5 => c.tonal.reverb_mix = 0.0,
-            _ => {}
-        },
-        Tab::Clap => match selected {
-            0 => c.clap.level = 0.0,
-            1 => c.clap.interval_beats = 0.5,
-            2 => c.clap.offset_beats = 0.0,
-            3 => c.clap.slap_count = 1.0,
-            4 => c.clap.slap_spread_ms = 0.0,
-            5 => c.clap.decay_ms = 10.0,
-            6 => c.clap.filter = 0.5,
-            7 => c.clap.room = 0.0,
-            8 => c.clap.body = 0.0,
-            _ => {}
-        },
+    if let Some(spec) = tab_specs(tab).get(selected) {
+        spec.apply_min(c);
+    }
+}
+
+fn apply_value(tab: Tab, selected: usize, value: f32, c: &mut FluidControls) {
+    if let Some(spec) = tab_specs(tab).get(selected) {
+        spec.apply_value(value, c);
     }
 }
 
@@ -1185,101 +1314,6 @@ fn nearest_power_of_two(value: f32, min: f32, max: f32) -> f32 {
     let clamped = value.clamp(min, max);
     let exponent = clamped.log2().round();
     2.0f32.powf(exponent).clamp(min, max)
-}
-
-fn apply_value(tab: Tab, selected: usize, value: f32, c: &mut FluidControls) {
-    match tab {
-        Tab::Master => match selected {
-            0 => c.pad.level = normalize_unit_input(value),
-            1 => c.perc.level = normalize_unit_input(value),
-            2 => c.kick.level = normalize_unit_input(value),
-            3 => c.tonal.level = normalize_unit_input(value),
-            4 => c.clap.level = normalize_unit_input(value),
-            5 => c.bass.level = normalize_unit_input(value),
-            6 => c.master.bpm = value.round().clamp(MASTER_BPM_MIN, MASTER_BPM_MAX),
-            7 => c.master.level = normalize_unit_input(value),
-            8 => c.master.drive = normalize_unit_input(value),
-            9 => c.master.comp_threshold = value.round().clamp(-40.0, 0.0),
-            10 => c.master.comp_ratio = snap_step(value, 0.25).clamp(1.0, 8.0),
-            11 => c.master.comp_release_ms = snap_step(value, 10.0).clamp(10.0, 500.0),
-            12 => c.master.tone = value.clamp(-1.0, 1.0),
-            13 => c.master.tune = value.round().clamp(-12.0, 12.0),
-            _ => {}
-        },
-        Tab::Perc => match selected {
-            0 => c.perc.level = normalize_unit_input(value),
-            1 => c.perc.interval_beats = snap_step(value, 0.25).clamp(0.25, 4.25),
-            2 => c.perc.offset_beats = snap_step(value, 0.25).clamp(0.0, 4.0),
-            3 => c.perc.decay_ms = value.clamp(20.0, 2000.0),
-            4 => c.perc.filter = normalize_unit_input(value).clamp(0.5, 1.0),
-            5 => c.perc.lfo_rate_bars = snap_step(value, 0.25).clamp(0.25, 16.0),
-            6 => c.perc.lfo_depth = normalize_unit_input(value),
-            _ => {}
-        },
-        Tab::Chords => match selected {
-            0 => c.pad.level = normalize_unit_input(value),
-            1 => c.pad.chord_bars = nearest_power_of_two(value, 1.0, 64.0),
-            2 => c.pad.progression = value.round().clamp(0.0, 3.0),
-            3 => c.pad.reverb_mix = normalize_unit_input(value),
-            4 => c.pad.stereo_width = normalize_unit_input(value),
-            5 => c.pad.detune = normalize_unit_input(value),
-            6 => c.pad.octave_mix = normalize_unit_input(value),
-            7 => c.pad.attack_time = value.clamp(0.05, 30.0),
-            8 => c.pad.release_time = value.clamp(0.05, 20.0),
-            _ => {}
-        },
-        Tab::Bass => match selected {
-            0 => c.bass.level = normalize_unit_input(value),
-            1 => c.bass.interval_beats = snap_step(value, 0.25).clamp(0.25, 8.0),
-            2 => c.bass.offset_beats = snap_step(value, 0.25).clamp(0.0, 4.0),
-            3 => c.bass.rhythm = value.round().clamp(0.0, 3.0),
-            4 => c.bass.octave = value.round().clamp(-3.0, 0.0),
-            5 => c.bass.attack_time = value.clamp(0.005, 1.0),
-            6 => c.bass.decay_time = value.clamp(0.005, 2.0),
-            7 => c.bass.drive = normalize_unit_input(value),
-            _ => {}
-        },
-        Tab::Kick => match selected {
-            0 => c.kick.level = normalize_unit_input(value),
-            1 => c.kick.interval_beats = snap_step(value, 0.25).clamp(0.25, 4.0),
-            2 => c.kick.offset_beats = snap_step(value, 0.25).clamp(0.0, 4.0),
-            3 => c.kick.start_freq = snap_step(value, 5.0).clamp(40.0, 200.0),
-            4 => c.kick.pitch_decay_ms = snap_step(value, 5.0).clamp(10.0, 300.0),
-            5 => c.kick.amp_decay_ms = snap_step(value, 20.0).clamp(50.0, 1000.0),
-            6 => c.kick.click = normalize_unit_input(value) * 0.2,
-            7 => c.kick.drive = normalize_unit_input(value),
-            8 => c.kick.filter = normalize_unit_input(value),
-            9 => {
-                c.kick.echo_time_beats = snap_step(value, 0.125)
-                    .clamp(KICK_ECHO_TIME_BEATS_MIN, KICK_ECHO_TIME_BEATS_MAX)
-            }
-            10 => c.kick.echo_filter = normalize_unit_input(value),
-            11 => c.kick.echo_amount = normalize_unit_input(value) * 0.9,
-            12 => c.kick.echo_feedback = normalize_unit_input(value) * 0.85,
-            _ => {}
-        },
-        Tab::Tonal => match selected {
-            0 => c.tonal.level = normalize_unit_input(value),
-            1 => c.tonal.step_interval_beats = snap_step(value, 0.25).clamp(0.5, 4.0),
-            2 => c.tonal.offset_beats = snap_step(value, 0.25).clamp(0.0, 4.0),
-            3 => c.tonal.randomness = normalize_unit_input(value),
-            4 => c.tonal.note_length_beats = value.clamp(0.1, 2.0),
-            5 => c.tonal.reverb_mix = normalize_unit_input(value),
-            _ => {}
-        },
-        Tab::Clap => match selected {
-            0 => c.clap.level = normalize_unit_input(value),
-            1 => c.clap.interval_beats = snap_step(value, 0.25).clamp(0.5, 8.0),
-            2 => c.clap.offset_beats = snap_step(value, 0.25).clamp(0.0, 8.0),
-            3 => c.clap.slap_count = value.round().clamp(1.0, 8.0),
-            4 => c.clap.slap_spread_ms = snap_step(value, 2.0).clamp(0.0, 100.0),
-            5 => c.clap.decay_ms = snap_step(value, 5.0).clamp(10.0, 200.0),
-            6 => c.clap.filter = normalize_unit_input(value).clamp(0.5, 1.0),
-            7 => c.clap.room = normalize_unit_input(value),
-            8 => c.clap.body = normalize_unit_input(value),
-            _ => {}
-        },
-    }
 }
 
 fn ui_loop(
@@ -3446,6 +3480,49 @@ mod tests {
                 .map(|item| item.kind)
                 .collect();
             assert_eq!(actual, expected, "unexpected kind map for {}", tab.name());
+        }
+    }
+
+    #[test]
+    fn control_registry_specs_are_internally_consistent() {
+        let tabs = [
+            Tab::Master,
+            Tab::Perc,
+            Tab::Chords,
+            Tab::Bass,
+            Tab::Kick,
+            Tab::Tonal,
+            Tab::Clap,
+        ];
+        for tab in tabs {
+            for spec in tab_specs(tab) {
+                let ctx = format!("{} / {}", tab.name(), spec.label);
+                assert!(!spec.label.is_empty(), "{ctx}: empty label");
+                assert!(spec.min < spec.max, "{ctx}: min must be below max");
+                assert!(
+                    spec.reset >= spec.min && spec.reset <= spec.max,
+                    "{ctx}: reset outside [min, max]"
+                );
+                if spec.bar == Bar::Log2 {
+                    assert!(spec.min > 0.0, "{ctx}: log bar needs positive min");
+                }
+                if let Step::Linear(step) = spec.step {
+                    assert!(step > 0.0, "{ctx}: step must be positive");
+                }
+
+                // get/set must address the same field.
+                let mut c = FluidControls::default();
+                (spec.set)(&mut c, spec.max);
+                assert!(
+                    ((spec.get)(&c) - spec.max).abs() < 1e-6,
+                    "{ctx}: get/set roundtrip failed at max"
+                );
+                (spec.set)(&mut c, spec.reset);
+                assert!(
+                    ((spec.get)(&c) - spec.reset).abs() < 1e-6,
+                    "{ctx}: get/set roundtrip failed at reset"
+                );
+            }
         }
     }
 
