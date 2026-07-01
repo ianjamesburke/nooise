@@ -229,6 +229,7 @@ pub(crate) struct BassControls {
     pub rhythm: f32, // 0..=3, A/B/C/D pattern selector
     pub octave: f32, // octaves relative to the chord root, e.g. -1.0 = one octave down
     pub attack_time: f32,
+    pub decay_time: f32,
     pub release_time: f32,
     pub drive: f32,
 }
@@ -241,6 +242,7 @@ impl Default for BassControls {
             offset_beats: 0.0,
             rhythm: 0.0,
             octave: -1.0,
+            decay_time: 0.05,
             attack_time: 0.01,
             release_time: 0.2,
             drive: 0.15,
@@ -631,6 +633,13 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 display: format!("{:.3} s", c.bass.attack_time),
             },
             ControlItem {
+                label: "Decay",
+                value: c.bass.decay_time,
+                min: 0.005,
+                max: 1.0,
+                display: format!("{:.3} s", c.bass.decay_time),
+            },
+            ControlItem {
                 label: "Release",
                 value: c.bass.release_time,
                 min: 0.02,
@@ -899,8 +908,9 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
             3 => c.bass.rhythm = (c.bass.rhythm + dir).clamp(0.0, 3.0),
             4 => c.bass.octave = (c.bass.octave + dir).clamp(-3.0, 0.0),
             5 => c.bass.attack_time = (c.bass.attack_time + dir * 0.02).clamp(0.005, 1.0),
-            6 => c.bass.release_time = (c.bass.release_time + dir * 0.05).clamp(0.02, 2.0),
-            7 => c.bass.drive = (c.bass.drive + dir * 0.02).clamp(0.0, 1.0),
+            6 => c.bass.decay_time = (c.bass.decay_time + dir * 0.02).clamp(0.005, 1.0),
+            7 => c.bass.release_time = (c.bass.release_time + dir * 0.05).clamp(0.02, 2.0),
+            8 => c.bass.drive = (c.bass.drive + dir * 0.02).clamp(0.0, 1.0),
             _ => {}
         },
         Tab::Kick => match selected {
@@ -997,8 +1007,9 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
             3 => c.bass.rhythm = 0.0,
             4 => c.bass.octave = -3.0,
             5 => c.bass.attack_time = 0.005,
-            6 => c.bass.release_time = 0.02,
-            7 => c.bass.drive = 0.0,
+            6 => c.bass.decay_time = 0.005,
+            7 => c.bass.release_time = 0.02,
+            8 => c.bass.drive = 0.0,
             _ => {}
         },
         Tab::Kick => match selected {
@@ -2030,6 +2041,7 @@ impl BassEngine {
                 self.voices.push(BassVoice::new(
                     hz,
                     c.attack_time,
+                    c.decay_time,
                     c.release_time,
                     c.drive,
                     self.sample_rate,
@@ -2057,10 +2069,17 @@ struct BassVoice {
 }
 
 impl BassVoice {
-    fn new(hz: f32, attack_time: f32, release_time: f32, drive: f32, sample_rate: f32) -> Self {
+    fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        release_time: f32,
+        drive: f32,
+        sample_rate: f32,
+    ) -> Self {
         Self {
             osc: SineOscillator::new(hz, sample_rate),
-            envelope: Adsr::new(attack_time, 0.05, 0.85, release_time, sample_rate),
+            envelope: Adsr::new(attack_time, decay_time, 0.85, release_time, sample_rate),
             drive,
         }
     }
@@ -2817,6 +2836,13 @@ mod tests {
 
         apply_min(Tab::Bass, 0, &mut controls);
         assert_close(controls.bass.level, 0.0);
+
+        controls.bass.decay_time = 0.4;
+        apply_delta(Tab::Bass, 6, 1.0, &mut controls);
+        assert!(controls.bass.decay_time > 0.4);
+
+        apply_min(Tab::Bass, 6, &mut controls);
+        assert_close(controls.bass.decay_time, 0.005);
     }
 
     #[test]
