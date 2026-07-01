@@ -64,6 +64,7 @@ pub(crate) struct MasterControls {
     pub comp_ratio: f32,      // 1-8
     pub comp_release_ms: f32, // 10-500
     pub tone: f32,            // -1 (bass) to +1 (treble)
+    pub tune: f32,            // semitones, -12 (1 octave down) to +12 (1 octave up)
 }
 
 impl Default for MasterControls {
@@ -76,6 +77,7 @@ impl Default for MasterControls {
             comp_ratio: 2.0,
             comp_release_ms: 100.0,
             tone: 0.0,
+            tune: 0.0,
         }
     }
 }
@@ -459,6 +461,17 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                     format!("treble {:.0}%", c.master.tone * 100.0)
                 } else {
                     "flat".to_string()
+                },
+            },
+            ControlItem {
+                label: "Tune",
+                value: c.master.tune,
+                min: -12.0,
+                max: 12.0,
+                display: if c.master.tune.abs() < 0.05 {
+                    "0 st".to_string()
+                } else {
+                    format!("{:+.0} st", c.master.tune)
                 },
             },
         ],
@@ -862,6 +875,7 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
                     (c.master.comp_release_ms + dir * 10.0).clamp(10.0, 500.0)
             }
             12 => c.master.tone = (c.master.tone + dir * 0.05).clamp(-1.0, 1.0),
+            13 => c.master.tune = (c.master.tune + dir).clamp(-12.0, 12.0),
             _ => {}
         },
         Tab::Perc => match selected {
@@ -966,6 +980,7 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
             10 => c.master.comp_ratio = 1.0,
             11 => c.master.comp_release_ms = 10.0,
             12 => c.master.tone = -1.0,
+            13 => c.master.tune = 0.0,
             _ => {}
         },
         Tab::Perc => match selected {
@@ -1452,12 +1467,15 @@ impl StereoEngine for FluidEngine {
         let fade = (self.current_sample as f32 / (self.sample_rate * 8.0)).min(1.0);
         let timing = self.tempo.tick(self.snapshot.master.bpm);
 
-        let (pad_l, pad_r) = self.pad.next(&self.snapshot.pad, timing);
+        let tune = self.snapshot.master.tune;
+        let (pad_l, pad_r) = self.pad.next(&self.snapshot.pad, tune, timing);
         let perc = self.perc.next(&self.snapshot.perc, timing);
         let (kick_l, kick_r) = self.kick.next(&self.snapshot.kick, timing);
         let (ton_l, ton_r) = self.tonal.next(&self.snapshot.tonal, timing);
         let (clap_l, clap_r) = self.clap.next(&self.snapshot.clap, timing);
-        let (bass_l, bass_r) = self.bass.next(&self.snapshot.bass, &self.snapshot.pad, timing);
+        let (bass_l, bass_r) =
+            self.bass
+                .next(&self.snapshot.bass, &self.snapshot.pad, tune, timing);
 
         self.current_sample += 1;
 
@@ -1718,6 +1736,7 @@ impl PadEngine {
             layers: vec![PadLayer::new(
                 0,
                 0,
+                0.0,
                 sample_rate,
                 c.attack_time,
                 c.release_time,
@@ -1734,7 +1753,7 @@ impl PadEngine {
         }
     }
 
-    fn next(&mut self, c: &PadControls, timing: TimingContext) -> (f32, f32) {
+    fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
         let progression = (c.progression.round() as i64).rem_euclid(4) as usize;
         let progression_changed = progression != self.last_progression;
         self.last_progression = progression;
@@ -1758,6 +1777,7 @@ impl PadEngine {
             self.layers.push(PadLayer::new(
                 progression,
                 self.step_index,
+                tune,
                 self.sample_rate,
                 c.attack_time,
                 c.release_time,
@@ -1803,12 +1823,13 @@ impl PadLayer {
     fn new(
         progression: usize,
         step: usize,
+        tune: f32,
         sample_rate: f32,
         attack_time: f32,
         release_time: f32,
     ) -> Self {
         Self {
-            tones: pad_tones(progression, step, sample_rate, attack_time, release_time),
+            tones: pad_tones(progression, step, tune, sample_rate, attack_time, release_time),
         }
     }
     fn next_stereo(&mut self, width: f32, detune_mix: f32, octave_mix: f32) -> (f32, f32) {
@@ -1875,11 +1896,12 @@ impl PadTone {
 fn pad_tones(
     progression: usize,
     step: usize,
+    tune: f32,
     sample_rate: f32,
     attack_time: f32,
     release_time: f32,
 ) -> Vec<PadTone> {
-    let freqs = pad_chord(progression, step);
+    let freqs = pad_chord(progression, step, tune);
     let pans = [-0.52_f32, -0.18, 0.16, 0.46];
     let gains = [0.17_f32, 0.132, 0.126, 0.098];
     freqs
@@ -1892,6 +1914,11 @@ fn pad_tones(
 
 fn midi_to_hz(note: i32) -> f32 {
     440.0 * 2f32.powf((note as f32 - 69.0) / 12.0)
+}
+
+/// Frequency multiplier for a master tune offset in semitones.
+fn tune_ratio(semitones: f32) -> f32 {
+    2f32.powf(semitones / 12.0)
 }
 
 const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
@@ -1940,8 +1967,9 @@ const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
     ],
 ];
 
-fn pad_chord(progression: usize, step: usize) -> [f32; 4] {
-    PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8].map(midi_to_hz)
+fn pad_chord(progression: usize, step: usize, tune: f32) -> [f32; 4] {
+    PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8]
+        .map(|note| midi_to_hz(note) * tune_ratio(tune))
 }
 
 /// Bass line for each progression, authored independently of the Pad's
@@ -2019,7 +2047,13 @@ impl BassEngine {
         }
     }
 
-    fn next(&mut self, c: &BassControls, pad: &PadControls, timing: TimingContext) -> (f32, f32) {
+    fn next(
+        &mut self,
+        c: &BassControls,
+        pad: &PadControls,
+        tune: f32,
+        timing: TimingContext,
+    ) -> (f32, f32) {
         let progression = (pad.progression.round() as i64).rem_euclid(4) as usize;
         if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
             self.step_index = (self.step_index + 1) % 8;
@@ -2034,7 +2068,7 @@ impl BassEngine {
             if hit {
                 let note = bass_root_note(progression, self.step_index)
                     + (c.octave.round() as i32) * 12;
-                let hz = midi_to_hz(note);
+                let hz = midi_to_hz(note) * tune_ratio(tune);
                 for voice in &mut self.voices {
                     voice.release();
                 }
@@ -2650,7 +2684,7 @@ mod tests {
 
     #[test]
     fn pad_chord_converts_progression_a_first_chord() {
-        let chord = pad_chord(0, 0);
+        let chord = pad_chord(0, 0, 0.0);
         assert_close(chord[0], 110.0); // A2
         assert_close(chord[1], 440.0 * 2f32.powf((50.0 - 69.0) / 12.0)); // D3
         assert_close(chord[2], 440.0 * 2f32.powf((55.0 - 69.0) / 12.0)); // G3
@@ -2658,8 +2692,19 @@ mod tests {
     }
 
     #[test]
+    fn pad_chord_applies_master_tune_offset() {
+        let flat = pad_chord(0, 0, 0.0);
+        let up_octave = pad_chord(0, 0, 12.0);
+        let down_octave = pad_chord(0, 0, -12.0);
+        for i in 0..4 {
+            assert_close(up_octave[i], flat[i] * 2.0);
+            assert_close(down_octave[i], flat[i] * 0.5);
+        }
+    }
+
+    #[test]
     fn pad_chord_converts_progression_d_last_chord() {
-        let chord = pad_chord(3, 7);
+        let chord = pad_chord(3, 7, 0.0);
         assert_close(chord[0], 440.0 * 2f32.powf((43.0 - 69.0) / 12.0)); // G2
         assert_close(chord[1], 440.0 * 2f32.powf((50.0 - 69.0) / 12.0)); // D3
         assert_close(chord[2], 440.0 * 2f32.powf((55.0 - 69.0) / 12.0)); // G3
@@ -2668,12 +2713,12 @@ mod tests {
 
     #[test]
     fn pad_chord_wraps_progression_and_step_index() {
-        let wrapped_progression = pad_chord(4, 0);
-        let base_progression = pad_chord(0, 0);
+        let wrapped_progression = pad_chord(4, 0, 0.0);
+        let base_progression = pad_chord(0, 0, 0.0);
         assert_eq!(wrapped_progression, base_progression);
 
-        let wrapped_step = pad_chord(0, 8);
-        let base_step = pad_chord(0, 0);
+        let wrapped_step = pad_chord(0, 8, 0.0);
+        let base_step = pad_chord(0, 0, 0.0);
         assert_eq!(wrapped_step, base_step);
     }
 
@@ -2868,7 +2913,7 @@ mod tests {
         // rhythm hit have occurred.
         for _ in 0..(sample_rate as usize) {
             let timing = clock.tick(120.0);
-            bass.next(&bass_controls, &pad, timing);
+            bass.next(&bass_controls, &pad, 0.0, timing);
         }
 
         assert_ne!(bass.step_index, 0);
@@ -3074,7 +3119,7 @@ mod tests {
 
         for chord in 1..12 {
             let sample = chord * SAMPLE_RATE as u64 * 2;
-            let _ = pad.next(&controls, timing(sample, 120.0));
+            let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
             assert!(pad.layers.len() <= MAX_PAD_LAYERS);
         }
     }
@@ -3093,7 +3138,7 @@ mod tests {
         // of samples (18 seconds) and confirm the telemetry index wrapped past 8.
         for chord in 1..=9 {
             let sample = chord * SAMPLE_RATE as u64 * 2;
-            let _ = pad.next(&controls, timing(sample, 120.0));
+            let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
         }
         let final_index = pad.telemetry.chord_index.load(Ordering::Relaxed);
         assert!(final_index < 8, "step_index must wrap into 0..8, got {final_index}");
@@ -3117,13 +3162,13 @@ mod tests {
         // otherwise the Adsr release completes in the same tick it starts and
         // `retain` prunes the layer before this test can observe the pushed one.
         for sample in 0..10 {
-            let _ = pad.next(&controls, timing(sample, 120.0));
+            let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
         }
         let layers_before = pad.layers.len();
 
         // Flip progression with no further elapsed time / no chord-advance trigger.
         controls.progression = 1.0;
-        let _ = pad.next(&controls, timing(10, 120.0));
+        let _ = pad.next(&controls, 0.0, timing(10, 120.0));
 
         assert!(
             pad.layers.len() > layers_before,
