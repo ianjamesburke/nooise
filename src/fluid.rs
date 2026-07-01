@@ -2087,7 +2087,10 @@ impl BassVoice {
     ) -> Self {
         Self {
             osc: SineOscillator::new(hz, sample_rate),
-            envelope: Adsr::new(attack_time, decay_time, 0.85, release_time, sample_rate),
+            // No sustain — Decay carries the note fully to silence, like the
+            // Perc voice's percussive envelope. Release only smooths the
+            // cutoff when a new hit retriggers before the note has decayed.
+            envelope: Adsr::new(attack_time, decay_time, 0.0, release_time, sample_rate),
             drive,
         }
     }
@@ -2877,6 +2880,21 @@ mod tests {
 
         assert_ne!(bass.step_index, 0);
         assert!(bass.rhythm_step < BASS_RHYTHMS[0].len());
+    }
+
+    #[test]
+    fn bass_voice_decays_to_silence_without_sustaining() {
+        let sample_rate = 48_000.0;
+        let mut voice = BassVoice::new(110.0, 0.005, 0.05, 0.02, 0.0, sample_rate);
+
+        // Well past attack+decay (0.055s); a sustaining envelope would still
+        // be holding at ~0.85 gain here, an AD envelope has decayed to ~0.
+        for _ in 0..(sample_rate * 0.5) as usize {
+            voice.next();
+        }
+
+        let (l, r) = voice.next();
+        assert!(l.abs() < 0.001 && r.abs() < 0.001);
     }
 
     #[test]
