@@ -115,6 +115,7 @@ pub(crate) struct PadControls {
     pub detune: f32,
     pub octave_mix: f32,
     pub attack_time: f32,
+    pub release_time: f32,
 }
 
 impl Default for PadControls {
@@ -128,6 +129,7 @@ impl Default for PadControls {
             detune: 0.5,
             octave_mix: 0.5,
             attack_time: 6.0,
+            release_time: 20.0,
         }
     }
 }
@@ -533,9 +535,16 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             ControlItem {
                 label: "Attack",
                 value: c.pad.attack_time,
-                min: 1.0,
+                min: 0.05,
                 max: 30.0,
-                display: format!("{:.1} s", c.pad.attack_time),
+                display: format!("{:.2} s", c.pad.attack_time),
+            },
+            ControlItem {
+                label: "Release",
+                value: c.pad.release_time,
+                min: 0.05,
+                max: 20.0,
+                display: format!("{:.2} s", c.pad.release_time),
             },
         ],
         Tab::Kick => vec![
@@ -780,7 +789,8 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
             4 => c.pad.stereo_width = (c.pad.stereo_width + dir * 0.02).clamp(0.0, 1.0),
             5 => c.pad.detune = (c.pad.detune + dir * 0.02).clamp(0.0, 1.0),
             6 => c.pad.octave_mix = (c.pad.octave_mix + dir * 0.02).clamp(0.0, 1.0),
-            7 => c.pad.attack_time = (c.pad.attack_time + dir * 1.0).clamp(1.0, 30.0),
+            7 => c.pad.attack_time = (c.pad.attack_time + dir * 0.5).clamp(0.05, 30.0),
+            8 => c.pad.release_time = (c.pad.release_time + dir * 0.5).clamp(0.05, 20.0),
             _ => {}
         },
         Tab::Kick => match selected {
@@ -865,7 +875,8 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
             4 => c.pad.stereo_width = 0.0,
             5 => c.pad.detune = 0.0,
             6 => c.pad.octave_mix = 0.0,
-            7 => c.pad.attack_time = 1.0,
+            7 => c.pad.attack_time = 0.05,
+            8 => c.pad.release_time = 0.05,
             _ => {}
         },
         Tab::Kick => match selected {
@@ -1577,7 +1588,13 @@ impl PadEngine {
     fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
-            layers: vec![PadLayer::new(0, 0, sample_rate, c.attack_time)],
+            layers: vec![PadLayer::new(
+                0,
+                0,
+                sample_rate,
+                c.attack_time,
+                c.release_time,
+            )],
             chord_trigger: GridTrigger::after_start(),
             step_index: 0,
             last_progression: 0,
@@ -1616,6 +1633,7 @@ impl PadEngine {
                 self.step_index,
                 self.sample_rate,
                 c.attack_time,
+                c.release_time,
             ));
         }
 
@@ -1655,9 +1673,15 @@ struct PadLayer {
 }
 
 impl PadLayer {
-    fn new(progression: usize, step: usize, sample_rate: f32, attack_time: f32) -> Self {
+    fn new(
+        progression: usize,
+        step: usize,
+        sample_rate: f32,
+        attack_time: f32,
+        release_time: f32,
+    ) -> Self {
         Self {
-            tones: pad_tones(progression, step, sample_rate, attack_time),
+            tones: pad_tones(progression, step, sample_rate, attack_time, release_time),
         }
     }
     fn next_stereo(&mut self, width: f32, detune_mix: f32, octave_mix: f32) -> (f32, f32) {
@@ -1689,12 +1713,19 @@ struct PadTone {
 }
 
 impl PadTone {
-    fn new(hz: f32, pan: f32, gain: f32, attack_time: f32, sample_rate: f32) -> Self {
+    fn new(
+        hz: f32,
+        pan: f32,
+        gain: f32,
+        attack_time: f32,
+        release_time: f32,
+        sample_rate: f32,
+    ) -> Self {
         Self {
             primary: SineOscillator::new(hz, sample_rate),
             detuned: SineOscillator::new(hz * 1.003, sample_rate),
             octave: SineOscillator::new(hz * 2.0, sample_rate),
-            envelope: Adsr::new(attack_time, 12.0, 0.86, 20.0, sample_rate),
+            envelope: Adsr::new(attack_time, 12.0, 0.86, release_time, sample_rate),
             pan,
             gain,
         }
@@ -1714,7 +1745,13 @@ impl PadTone {
     }
 }
 
-fn pad_tones(progression: usize, step: usize, sample_rate: f32, attack_time: f32) -> Vec<PadTone> {
+fn pad_tones(
+    progression: usize,
+    step: usize,
+    sample_rate: f32,
+    attack_time: f32,
+    release_time: f32,
+) -> Vec<PadTone> {
     let freqs = pad_chord(progression, step);
     let pans = [-0.52_f32, -0.18, 0.16, 0.46];
     let gains = [0.17_f32, 0.132, 0.126, 0.098];
@@ -1722,7 +1759,7 @@ fn pad_tones(progression: usize, step: usize, sample_rate: f32, attack_time: f32
         .iter()
         .zip(pans)
         .zip(gains)
-        .map(|((hz, pan), gain)| PadTone::new(*hz, pan, gain, attack_time, sample_rate))
+        .map(|((hz, pan), gain)| PadTone::new(*hz, pan, gain, attack_time, release_time, sample_rate))
         .collect()
 }
 
@@ -1732,44 +1769,44 @@ fn midi_to_hz(note: i32) -> f32 {
 
 const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
     [
-        [45, 50, 55, 60],
-        [45, 52, 55, 62],
-        [43, 50, 57, 60],
-        [47, 52, 55, 62],
-        [45, 50, 57, 64],
-        [48, 55, 60, 64],
-        [43, 50, 55, 59],
-        [45, 52, 57, 60],
+        [45, 50, 55, 60], // Am
+        [43, 50, 57, 60], // G
+        [45, 52, 55, 62], // Am (alt voicing)
+        [47, 52, 55, 62], // B
+        [45, 50, 57, 64], // Am (alt voicing)
+        [43, 50, 55, 59], // G
+        [48, 55, 60, 64], // C
+        [52, 59, 64, 67], // Em (open, non-tonic close)
     ],
     [
-        [45, 50, 57, 60],
-        [50, 53, 57, 62],
-        [48, 55, 60, 64],
-        [43, 50, 55, 59],
-        [41, 48, 53, 57],
-        [45, 52, 57, 60],
-        [52, 59, 64, 67],
-        [45, 50, 57, 60],
+        [45, 50, 57, 60], // Am
+        [50, 53, 57, 62], // Dm
+        [48, 55, 60, 64], // C
+        [43, 50, 55, 59], // G
+        [41, 48, 53, 57], // F
+        [52, 59, 64, 67], // Em
+        [45, 52, 57, 60], // Am
+        [43, 50, 55, 59], // G (non-tonic close, leads back to Am)
     ],
     [
-        [45, 48, 52, 55],
-        [41, 45, 48, 52],
-        [48, 52, 55, 59],
-        [43, 47, 50, 53],
-        [50, 53, 57, 60],
-        [45, 48, 52, 55],
-        [52, 55, 59, 62],
-        [41, 45, 48, 52],
+        [45, 48, 52, 55], // Am7
+        [41, 45, 48, 52], // Fmaj7
+        [48, 52, 55, 59], // Cmaj7
+        [43, 47, 50, 53], // G7
+        [50, 53, 57, 60], // Dm7
+        [52, 55, 59, 62], // Em7
+        [47, 50, 53, 57], // Bm7b5 (half-diminished ii)
+        [43, 50, 55, 59], // G (non-tonic close)
     ],
     [
-        [45, 52, 57, 60],
-        [41, 45, 48, 55],
-        [48, 55, 59, 62],
-        [43, 50, 53, 57],
-        [50, 57, 60, 64],
-        [45, 52, 55, 60],
-        [52, 55, 59, 64],
-        [45, 52, 57, 60],
+        [45, 52, 57, 60], // Am, wide
+        [41, 45, 48, 55], // Fmaj9-flavor
+        [48, 55, 59, 62], // Cmaj9-flavor
+        [43, 50, 53, 57], // G9-flavor
+        [50, 57, 60, 64], // Dm9-flavor
+        [52, 55, 59, 64], // Em, open
+        [47, 53, 57, 64], // Bm7b5, wide (the "ache" chord)
+        [43, 50, 55, 64], // G, wide (non-tonic close)
     ],
 ];
 
@@ -2335,10 +2372,10 @@ mod tests {
     #[test]
     fn pad_chord_converts_progression_d_last_chord() {
         let chord = pad_chord(3, 7);
-        assert_close(chord[0], 110.0); // A2
-        assert_close(chord[1], 440.0 * 2f32.powf((52.0 - 69.0) / 12.0)); // E3
-        assert_close(chord[2], 220.0); // A3
-        assert_close(chord[3], 440.0 * 2f32.powf((60.0 - 69.0) / 12.0)); // C4
+        assert_close(chord[0], 440.0 * 2f32.powf((43.0 - 69.0) / 12.0)); // G2
+        assert_close(chord[1], 440.0 * 2f32.powf((50.0 - 69.0) / 12.0)); // D3
+        assert_close(chord[2], 440.0 * 2f32.powf((55.0 - 69.0) / 12.0)); // G3
+        assert_close(chord[3], 440.0 * 2f32.powf((64.0 - 69.0) / 12.0)); // E4
     }
 
     #[test]
@@ -2462,6 +2499,35 @@ mod tests {
         let controls = FluidControls::default();
         let rows = tab_controls(Tab::Chords, &controls);
         assert_eq!(rows[3].label, "Reverb Mix");
+    }
+
+    #[test]
+    fn chords_release_row_present_with_lowered_attack_floor() {
+        let controls = FluidControls::default();
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[7].label, "Attack");
+        assert_close(rows[7].min, 0.05);
+        assert_eq!(rows[8].label, "Release");
+        assert_close(rows[8].value, 20.0);
+        assert_close(rows[8].min, 0.05);
+        assert_close(rows[8].max, 20.0);
+    }
+
+    #[test]
+    fn chords_attack_and_release_adjust_and_clamp_low() {
+        let mut controls = FluidControls::default();
+
+        controls.pad.attack_time = 0.1;
+        apply_delta(Tab::Chords, 7, -1.0, &mut controls);
+        assert_close(controls.pad.attack_time, 0.05);
+        apply_min(Tab::Chords, 7, &mut controls);
+        assert_close(controls.pad.attack_time, 0.05);
+
+        controls.pad.release_time = 0.1;
+        apply_delta(Tab::Chords, 8, -1.0, &mut controls);
+        assert_close(controls.pad.release_time, 0.05);
+        apply_min(Tab::Chords, 8, &mut controls);
+        assert_close(controls.pad.release_time, 0.05);
     }
 
     #[test]
