@@ -1944,13 +1944,20 @@ fn pad_chord(progression: usize, step: usize) -> [f32; 4] {
     PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8].map(midi_to_hz)
 }
 
-/// Lowest MIDI note of the chord currently playing on the Pad voice — the
-/// note the Bass voice tracks.
+/// Bass line for each progression, authored independently of the Pad's
+/// chord voicings (one MIDI note per step, same 8-step indexing as
+/// PROGRESSIONS). B/C/D currently mirror their chord's lowest tone; A
+/// diverges deliberately (step 3 walks to G2 instead of following the
+/// B-chord's root) to give the bass its own melodic movement.
+const BASS_LINES: [[i32; 8]; 4] = [
+    [45, 47, 45, 43, 52, 53, 45, 45], // A
+    [45, 50, 48, 43, 41, 52, 45, 43], // B
+    [45, 41, 48, 43, 50, 52, 47, 43], // C
+    [45, 41, 48, 43, 50, 52, 47, 43], // D
+];
+
 fn bass_root_note(progression: usize, step: usize) -> i32 {
-    PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8]
-        .into_iter()
-        .min()
-        .expect("chords always have 4 notes")
+    BASS_LINES[progression % BASS_LINES.len()][step % 8]
 }
 
 // ============================================================
@@ -2785,8 +2792,12 @@ mod tests {
     }
 
     #[test]
-    fn bass_root_note_matches_lowest_chord_tone() {
+    fn bass_root_note_follows_authored_bass_line() {
         assert_eq!(bass_root_note(0, 0), 45);
+        // Progression A's authored line diverges from the chord's lowest
+        // tone at step 3 (B chord's min is 47) — proves the bass line is
+        // independent data, not derived from PROGRESSIONS.
+        assert_eq!(bass_root_note(0, 3), 43);
         assert_eq!(bass_root_note(2, 3), 43);
     }
 
