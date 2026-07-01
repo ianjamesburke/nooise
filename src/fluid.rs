@@ -1790,6 +1790,57 @@ impl FluidEngine {
     }
 }
 
+impl FluidEngine {
+    /// Reseed every voice RNG for reproducible offline renders.
+    fn reseed(&mut self, seed: u64) {
+        self.pad.rng = StdRng::seed_from_u64(seed);
+        self.perc.rng = StdRng::seed_from_u64(seed.wrapping_add(1));
+        self.kick.rng = StdRng::seed_from_u64(seed.wrapping_add(2));
+        self.tonal.rng = StdRng::seed_from_u64(seed.wrapping_add(3));
+        self.clap.rng = StdRng::seed_from_u64(seed.wrapping_add(4));
+    }
+}
+
+/// Render the default mix to a wav file without a terminal or audio device.
+pub(crate) fn render_wav(
+    seconds: f32,
+    out: &std::path::Path,
+    seed: Option<u64>,
+) -> Result<(), Box<dyn Error>> {
+    const RENDER_SAMPLE_RATE: u32 = 44_100;
+
+    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let mut engine = FluidEngine::new(RENDER_SAMPLE_RATE as f32, controls, telemetry);
+    if let Some(seed) = seed {
+        engine.reseed(seed);
+    }
+
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: RENDER_SAMPLE_RATE,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(out, spec)
+        .map_err(|e| format!("failed to create {}: {e}", out.display()))?;
+
+    let total_frames = (seconds * RENDER_SAMPLE_RATE as f32) as u64;
+    for _ in 0..total_frames {
+        let (left, right) = engine.next_stereo();
+        writer.write_sample((left.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)?;
+        writer.write_sample((right.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)?;
+    }
+    writer
+        .finalize()
+        .map_err(|e| format!("failed to finalize {}: {e}", out.display()))?;
+    println!(
+        "rendered {seconds} s ({total_frames} frames) at {RENDER_SAMPLE_RATE} Hz to {}",
+        out.display()
+    );
+    Ok(())
+}
+
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         if self.current_sample.is_multiple_of(512) {
