@@ -64,6 +64,7 @@ pub(crate) struct MasterControls {
     pub comp_ratio: f32,      // 1-8
     pub comp_release_ms: f32, // 10-500
     pub tone: f32,            // -1 (bass) to +1 (treble)
+    pub tune: f32,            // semitones, -12 (1 octave down) to +12 (1 octave up)
 }
 
 impl Default for MasterControls {
@@ -76,6 +77,7 @@ impl Default for MasterControls {
             comp_ratio: 2.0,
             comp_release_ms: 100.0,
             tone: 0.0,
+            tune: 0.0,
         }
     }
 }
@@ -109,23 +111,27 @@ impl Default for PercControls {
 pub(crate) struct PadControls {
     pub level: f32,
     pub chord_bars: f32, // 1,2,4,8,16,32,64
+    pub progression: f32,
     pub reverb_mix: f32,
     pub stereo_width: f32,
     pub detune: f32,
     pub octave_mix: f32,
     pub attack_time: f32,
+    pub release_time: f32,
 }
 
 impl Default for PadControls {
     fn default() -> Self {
         Self {
             level: 0.7,
-            chord_bars: 4.0,
+            chord_bars: 8.0,
+            progression: 0.0,
             reverb_mix: 0.8,
             stereo_width: 0.8,
             detune: 0.5,
             octave_mix: 0.5,
             attack_time: 6.0,
+            release_time: 8.0,
         }
     }
 }
@@ -219,6 +225,33 @@ impl Default for ClapControls {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct BassControls {
+    pub level: f32,
+    pub interval_beats: f32, // crops the 16-step rhythm phrase to this many beats (step length is fixed)
+    pub offset_beats: f32,
+    pub rhythm: f32, // 0..=3, A/B/C/D pattern selector
+    pub octave: f32, // octaves relative to the chord root, e.g. -1.0 = one octave down
+    pub attack_time: f32,
+    pub decay_time: f32, // also used as the cutoff curve when a hit retriggers mid-decay
+    pub drive: f32,
+}
+
+impl Default for BassControls {
+    fn default() -> Self {
+        Self {
+            level: 0.0,
+            interval_beats: 4.0,
+            offset_beats: 0.0,
+            rhythm: 0.0,
+            octave: -1.0,
+            decay_time: 0.05,
+            attack_time: 0.01,
+            drive: 0.15,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct FluidControls {
     pub master: MasterControls,
@@ -227,6 +260,7 @@ pub(crate) struct FluidControls {
     pub kick: KickControls,
     pub tonal: TonalControls,
     pub clap: ClapControls,
+    pub bass: BassControls,
 }
 
 // ============================================================
@@ -267,17 +301,19 @@ enum Tab {
     Master = 0,
     Perc = 1,
     Chords = 2,
-    Kick = 3,
-    Tonal = 4,
-    Clap = 5,
+    Bass = 3,
+    Kick = 4,
+    Tonal = 5,
+    Clap = 6,
 }
 
 impl Tab {
-    fn all() -> [Tab; 6] {
+    fn all() -> [Tab; 7] {
         [
             Tab::Master,
             Tab::Perc,
             Tab::Chords,
+            Tab::Bass,
             Tab::Kick,
             Tab::Tonal,
             Tab::Clap,
@@ -289,6 +325,7 @@ impl Tab {
             Tab::Master => "Master",
             Tab::Perc => "Perc",
             Tab::Chords => "Chords",
+            Tab::Bass => "Bass",
             Tab::Kick => "Kick",
             Tab::Tonal => "Tonal",
             Tab::Clap => "Clap",
@@ -299,7 +336,8 @@ impl Tab {
         match self {
             Tab::Master => Tab::Perc,
             Tab::Perc => Tab::Chords,
-            Tab::Chords => Tab::Kick,
+            Tab::Chords => Tab::Bass,
+            Tab::Bass => Tab::Kick,
             Tab::Kick => Tab::Tonal,
             Tab::Tonal => Tab::Clap,
             Tab::Clap => Tab::Master,
@@ -311,7 +349,8 @@ impl Tab {
             Tab::Master => Tab::Clap,
             Tab::Perc => Tab::Master,
             Tab::Chords => Tab::Perc,
-            Tab::Kick => Tab::Chords,
+            Tab::Bass => Tab::Chords,
+            Tab::Kick => Tab::Bass,
             Tab::Tonal => Tab::Kick,
             Tab::Clap => Tab::Tonal,
         }
@@ -363,6 +402,13 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 min: 0.0,
                 max: 1.0,
                 display: format!("{:.0}%", c.clap.level * 100.0),
+            },
+            ControlItem {
+                label: "Bass Vol",
+                value: c.bass.level,
+                min: 0.0,
+                max: 1.0,
+                display: format!("{:.0}%", c.bass.level * 100.0),
             },
             ControlItem {
                 label: "BPM",
@@ -417,6 +463,17 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                     format!("treble {:.0}%", c.master.tone * 100.0)
                 } else {
                     "flat".to_string()
+                },
+            },
+            ControlItem {
+                label: "Tune",
+                value: c.master.tune,
+                min: -12.0,
+                max: 12.0,
+                display: if c.master.tune.abs() < 0.05 {
+                    "0 st".to_string()
+                } else {
+                    format!("{:+.0} st", c.master.tune)
                 },
             },
         ],
@@ -495,6 +552,14 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 display: format!("{:.0} beats", c.pad.chord_bars * 4.0),
             },
             ControlItem {
+                label: "Progression",
+                value: c.pad.progression,
+                min: 0.0,
+                max: 3.0,
+                display: ["A", "B", "C", "D"][c.pad.progression.round() as usize % 4]
+                    .to_string(),
+            },
+            ControlItem {
                 label: "Reverb Mix",
                 value: c.pad.reverb_mix,
                 min: 0.0,
@@ -525,9 +590,74 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             ControlItem {
                 label: "Attack",
                 value: c.pad.attack_time,
-                min: 1.0,
+                min: 0.05,
                 max: 30.0,
-                display: format!("{:.1} s", c.pad.attack_time),
+                display: format!("{:.2} s", c.pad.attack_time),
+            },
+            ControlItem {
+                label: "Release",
+                value: c.pad.release_time,
+                min: 0.05,
+                max: 20.0,
+                display: format!("{:.2} s", c.pad.release_time),
+            },
+        ],
+        Tab::Bass => vec![
+            ControlItem {
+                label: "Level",
+                value: c.bass.level,
+                min: 0.0,
+                max: 1.0,
+                display: format!("{:.0}%", c.bass.level * 100.0),
+            },
+            ControlItem {
+                label: "Interval",
+                value: c.bass.interval_beats,
+                min: 0.25,
+                max: 8.0,
+                display: format!("{:.2} beats", c.bass.interval_beats),
+            },
+            ControlItem {
+                label: "Offset",
+                value: c.bass.offset_beats,
+                min: 0.0,
+                max: 4.0,
+                display: format!("{:.2} beats", c.bass.offset_beats),
+            },
+            ControlItem {
+                label: "Rhythm",
+                value: c.bass.rhythm,
+                min: 0.0,
+                max: 3.0,
+                display: ["A", "B", "C", "D"][c.bass.rhythm.round() as usize % 4].to_string(),
+            },
+            ControlItem {
+                label: "Octave",
+                value: c.bass.octave,
+                min: -3.0,
+                max: 0.0,
+                display: format!("{:.0}", c.bass.octave),
+            },
+            ControlItem {
+                label: "Attack",
+                value: c.bass.attack_time,
+                min: 0.005,
+                max: 1.0,
+                display: format!("{:.3} s", c.bass.attack_time),
+            },
+            ControlItem {
+                label: "Decay",
+                value: c.bass.decay_time,
+                min: 0.005,
+                max: 2.0,
+                display: format!("{:.3} s", c.bass.decay_time),
+            },
+            ControlItem {
+                label: "Drive",
+                value: c.bass.drive,
+                min: 0.0,
+                max: 1.0,
+                display: format!("{:.0}%", c.bass.drive * 100.0),
             },
         ],
         Tab::Kick => vec![
@@ -743,16 +873,18 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
             2 => c.kick.level = (c.kick.level + dir * 0.02).clamp(0.0, 1.0),
             3 => c.tonal.level = (c.tonal.level + dir * 0.02).clamp(0.0, 1.0),
             4 => c.clap.level = (c.clap.level + dir * 0.02).clamp(0.0, 1.0),
-            5 => c.master.bpm = (c.master.bpm + dir * 1.0).clamp(MASTER_BPM_MIN, MASTER_BPM_MAX),
-            6 => c.master.level = (c.master.level + dir * 0.02).clamp(0.0, 1.0),
-            7 => c.master.drive = (c.master.drive + dir * 0.02).clamp(0.0, 1.0),
-            8 => c.master.comp_threshold = (c.master.comp_threshold + dir * 1.0).clamp(-40.0, 0.0),
-            9 => c.master.comp_ratio = (c.master.comp_ratio + dir * 0.25).clamp(1.0, 8.0),
-            10 => {
+            5 => c.bass.level = (c.bass.level + dir * 0.02).clamp(0.0, 1.0),
+            6 => c.master.bpm = (c.master.bpm + dir * 1.0).clamp(MASTER_BPM_MIN, MASTER_BPM_MAX),
+            7 => c.master.level = (c.master.level + dir * 0.02).clamp(0.0, 1.0),
+            8 => c.master.drive = (c.master.drive + dir * 0.02).clamp(0.0, 1.0),
+            9 => c.master.comp_threshold = (c.master.comp_threshold + dir * 1.0).clamp(-40.0, 0.0),
+            10 => c.master.comp_ratio = (c.master.comp_ratio + dir * 0.25).clamp(1.0, 8.0),
+            11 => {
                 c.master.comp_release_ms =
                     (c.master.comp_release_ms + dir * 10.0).clamp(10.0, 500.0)
             }
-            11 => c.master.tone = (c.master.tone + dir * 0.05).clamp(-1.0, 1.0),
+            12 => c.master.tone = (c.master.tone + dir * 0.05).clamp(-1.0, 1.0),
+            13 => c.master.tune = (c.master.tune + dir).clamp(-12.0, 12.0),
             _ => {}
         },
         Tab::Perc => match selected {
@@ -774,11 +906,24 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
                     c.pad.chord_bars = (c.pad.chord_bars / 2.0).max(1.0)
                 }
             }
-            2 => c.pad.reverb_mix = (c.pad.reverb_mix + dir * 0.02).clamp(0.0, 1.0),
-            3 => c.pad.stereo_width = (c.pad.stereo_width + dir * 0.02).clamp(0.0, 1.0),
-            4 => c.pad.detune = (c.pad.detune + dir * 0.02).clamp(0.0, 1.0),
-            5 => c.pad.octave_mix = (c.pad.octave_mix + dir * 0.02).clamp(0.0, 1.0),
-            6 => c.pad.attack_time = (c.pad.attack_time + dir * 1.0).clamp(1.0, 30.0),
+            2 => c.pad.progression = (c.pad.progression + dir).clamp(0.0, 3.0),
+            3 => c.pad.reverb_mix = (c.pad.reverb_mix + dir * 0.02).clamp(0.0, 1.0),
+            4 => c.pad.stereo_width = (c.pad.stereo_width + dir * 0.02).clamp(0.0, 1.0),
+            5 => c.pad.detune = (c.pad.detune + dir * 0.02).clamp(0.0, 1.0),
+            6 => c.pad.octave_mix = (c.pad.octave_mix + dir * 0.02).clamp(0.0, 1.0),
+            7 => c.pad.attack_time = (c.pad.attack_time + dir * 0.5).clamp(0.05, 30.0),
+            8 => c.pad.release_time = (c.pad.release_time + dir * 0.5).clamp(0.05, 20.0),
+            _ => {}
+        },
+        Tab::Bass => match selected {
+            0 => c.bass.level = (c.bass.level + dir * 0.02).clamp(0.0, 1.0),
+            1 => c.bass.interval_beats = (c.bass.interval_beats + dir * 0.25).clamp(0.25, 8.0),
+            2 => c.bass.offset_beats = (c.bass.offset_beats + dir * 0.25).clamp(0.0, 4.0),
+            3 => c.bass.rhythm = (c.bass.rhythm + dir).clamp(0.0, 3.0),
+            4 => c.bass.octave = (c.bass.octave + dir).clamp(-3.0, 0.0),
+            5 => c.bass.attack_time = (c.bass.attack_time + dir * 0.02).clamp(0.005, 1.0),
+            6 => c.bass.decay_time = (c.bass.decay_time + dir * 0.05).clamp(0.005, 2.0),
+            7 => c.bass.drive = (c.bass.drive + dir * 0.02).clamp(0.0, 1.0),
             _ => {}
         },
         Tab::Kick => match selected {
@@ -837,13 +982,15 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
             2 => c.kick.level = 0.0,
             3 => c.tonal.level = 0.0,
             4 => c.clap.level = 0.0,
-            5 => c.master.bpm = MASTER_BPM_MIN,
-            6 => c.master.level = 0.0,
-            7 => c.master.drive = 0.0,
-            8 => c.master.comp_threshold = -40.0,
-            9 => c.master.comp_ratio = 1.0,
-            10 => c.master.comp_release_ms = 10.0,
-            11 => c.master.tone = -1.0,
+            5 => c.bass.level = 0.0,
+            6 => c.master.bpm = MASTER_BPM_MIN,
+            7 => c.master.level = 0.0,
+            8 => c.master.drive = 0.0,
+            9 => c.master.comp_threshold = -40.0,
+            10 => c.master.comp_ratio = 1.0,
+            11 => c.master.comp_release_ms = 10.0,
+            12 => c.master.tone = -1.0,
+            13 => c.master.tune = 0.0,
             _ => {}
         },
         Tab::Perc => match selected {
@@ -859,11 +1006,24 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
         Tab::Chords => match selected {
             0 => c.pad.level = 0.0,
             1 => c.pad.chord_bars = 1.0,
-            2 => c.pad.reverb_mix = 0.0,
-            3 => c.pad.stereo_width = 0.0,
-            4 => c.pad.detune = 0.0,
-            5 => c.pad.octave_mix = 0.0,
-            6 => c.pad.attack_time = 1.0,
+            2 => c.pad.progression = 0.0,
+            3 => c.pad.reverb_mix = 0.0,
+            4 => c.pad.stereo_width = 0.0,
+            5 => c.pad.detune = 0.0,
+            6 => c.pad.octave_mix = 0.0,
+            7 => c.pad.attack_time = 0.05,
+            8 => c.pad.release_time = 0.05,
+            _ => {}
+        },
+        Tab::Bass => match selected {
+            0 => c.bass.level = 0.0,
+            1 => c.bass.interval_beats = 0.25,
+            2 => c.bass.offset_beats = 0.0,
+            3 => c.bass.rhythm = 0.0,
+            4 => c.bass.octave = -3.0,
+            5 => c.bass.attack_time = 0.005,
+            6 => c.bass.decay_time = 0.005,
+            7 => c.bass.drive = 0.0,
             _ => {}
         },
         Tab::Kick => match selected {
@@ -1279,6 +1439,7 @@ struct FluidEngine {
     kick: KickEngine,
     tonal: TonalEngine,
     clap: ClapEngine,
+    bass: BassEngine,
     master_bus: MasterBus,
     controls: Arc<ArcSwap<FluidControls>>,
     snapshot: FluidControls,
@@ -1300,6 +1461,7 @@ impl FluidEngine {
             kick: KickEngine::new(sample_rate, telemetry),
             tonal: TonalEngine::new(sample_rate),
             clap: ClapEngine::new(sample_rate),
+            bass: BassEngine::new(sample_rate),
             master_bus: MasterBus::new(),
             controls,
             snapshot,
@@ -1316,16 +1478,22 @@ impl StereoEngine for FluidEngine {
         let fade = (self.current_sample as f32 / (self.sample_rate * 8.0)).min(1.0);
         let timing = self.tempo.tick(self.snapshot.master.bpm);
 
-        let (pad_l, pad_r) = self.pad.next(&self.snapshot.pad, timing);
+        let tune = self.snapshot.master.tune;
+        let (pad_l, pad_r) = self.pad.next(&self.snapshot.pad, tune, timing);
         let perc = self.perc.next(&self.snapshot.perc, timing);
         let (kick_l, kick_r) = self.kick.next(&self.snapshot.kick, timing);
         let (ton_l, ton_r) = self.tonal.next(&self.snapshot.tonal, timing);
         let (clap_l, clap_r) = self.clap.next(&self.snapshot.clap, timing);
+        let (bass_l, bass_r) =
+            self.bass
+                .next(&self.snapshot.bass, &self.snapshot.pad, tune, timing);
 
         self.current_sample += 1;
 
-        let raw_l = (pad_l + perc * 0.6 + kick_l * 0.7 + ton_l + clap_l * 0.65) * fade;
-        let raw_r = (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65) * fade;
+        let raw_l =
+            (pad_l + perc * 0.6 + kick_l * 0.7 + ton_l + clap_l * 0.65 + bass_l * 0.75) * fade;
+        let raw_r =
+            (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65 + bass_r * 0.75) * fade;
         self.master_bus
             .process(raw_l, raw_r, &self.snapshot.master, self.sample_rate)
     }
@@ -1562,7 +1730,8 @@ struct PadEngine {
     sample_rate: f32,
     layers: Vec<PadLayer>,
     chord_trigger: GridTrigger,
-    chord_index: usize,
+    step_index: usize,
+    last_progression: usize,
     reverb: Freeverb,
     depth_lfo: DriftingLfo,
     width_lfo: DriftingLfo,
@@ -1575,9 +1744,17 @@ impl PadEngine {
     fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
-            layers: vec![PadLayer::new(0, sample_rate, c.attack_time)],
+            layers: vec![PadLayer::new(
+                0,
+                0,
+                0.0,
+                sample_rate,
+                c.attack_time,
+                c.release_time,
+            )],
             chord_trigger: GridTrigger::after_start(),
-            chord_index: 0,
+            step_index: 0,
+            last_progression: 0,
             reverb: Freeverb::new(sample_rate, 0.93, 0.46, 1.0),
             depth_lfo: DriftingLfo::new(1.0 / 42.0, sample_rate),
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
@@ -1587,23 +1764,34 @@ impl PadEngine {
         }
     }
 
-    fn next(&mut self, c: &PadControls, timing: TimingContext) -> (f32, f32) {
-        if self.chord_trigger.pop(timing, c.chord_bars * 4.0, 0.0) {
+    fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
+        let progression = (c.progression.round() as i64).rem_euclid(4) as usize;
+        let progression_changed = progression != self.last_progression;
+        self.last_progression = progression;
+
+        let advance = self.chord_trigger.pop(timing, c.chord_bars * 4.0, 0.0);
+
+        if advance || progression_changed {
             for layer in &mut self.layers {
                 layer.release();
             }
-            self.chord_index = self.chord_index.wrapping_add(1);
+            if advance {
+                self.step_index = (self.step_index + 1) % 8;
+            }
             self.telemetry
                 .chord_index
-                .store(self.chord_index as u64, Ordering::Relaxed);
+                .store(self.step_index as u64, Ordering::Relaxed);
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                 self.layers.drain(0..remove_count);
             }
             self.layers.push(PadLayer::new(
-                self.chord_index,
+                progression,
+                self.step_index,
+                tune,
                 self.sample_rate,
                 c.attack_time,
+                c.release_time,
             ));
         }
 
@@ -1643,9 +1831,16 @@ struct PadLayer {
 }
 
 impl PadLayer {
-    fn new(chord_index: usize, sample_rate: f32, attack_time: f32) -> Self {
+    fn new(
+        progression: usize,
+        step: usize,
+        tune: f32,
+        sample_rate: f32,
+        attack_time: f32,
+        release_time: f32,
+    ) -> Self {
         Self {
-            tones: pad_tones(chord_index, sample_rate, attack_time),
+            tones: pad_tones(progression, step, tune, sample_rate, attack_time, release_time),
         }
     }
     fn next_stereo(&mut self, width: f32, detune_mix: f32, octave_mix: f32) -> (f32, f32) {
@@ -1677,12 +1872,19 @@ struct PadTone {
 }
 
 impl PadTone {
-    fn new(hz: f32, pan: f32, gain: f32, attack_time: f32, sample_rate: f32) -> Self {
+    fn new(
+        hz: f32,
+        pan: f32,
+        gain: f32,
+        attack_time: f32,
+        release_time: f32,
+        sample_rate: f32,
+    ) -> Self {
         Self {
             primary: SineOscillator::new(hz, sample_rate),
             detuned: SineOscillator::new(hz * 1.003, sample_rate),
             octave: SineOscillator::new(hz * 2.0, sample_rate),
-            envelope: Adsr::new(attack_time, 12.0, 0.86, 20.0, sample_rate),
+            envelope: Adsr::new(attack_time, 12.0, 0.86, release_time, sample_rate),
             pan,
             gain,
         }
@@ -1702,27 +1904,247 @@ impl PadTone {
     }
 }
 
-fn pad_tones(chord_index: usize, sample_rate: f32, attack_time: f32) -> Vec<PadTone> {
-    let freqs = pad_chord(chord_index);
+fn pad_tones(
+    progression: usize,
+    step: usize,
+    tune: f32,
+    sample_rate: f32,
+    attack_time: f32,
+    release_time: f32,
+) -> Vec<PadTone> {
+    let freqs = pad_chord(progression, step, tune);
     let pans = [-0.52_f32, -0.18, 0.16, 0.46];
     let gains = [0.17_f32, 0.132, 0.126, 0.098];
     freqs
         .iter()
         .zip(pans)
         .zip(gains)
-        .map(|((hz, pan), gain)| PadTone::new(*hz, pan, gain, attack_time, sample_rate))
+        .map(|((hz, pan), gain)| PadTone::new(*hz, pan, gain, attack_time, release_time, sample_rate))
         .collect()
 }
 
-fn pad_chord(index: usize) -> [f32; 4] {
-    const CHORDS: [[f32; 4]; 5] = [
-        [110.0, 146.83, 196.0, 261.63],
-        [110.0, 164.81, 196.0, 293.66],
-        [98.0, 146.83, 220.0, 261.63],
-        [123.47, 164.81, 196.0, 293.66],
-        [110.0, 146.83, 220.0, 329.63],
-    ];
-    CHORDS[index % CHORDS.len()]
+fn midi_to_hz(note: i32) -> f32 {
+    440.0 * 2f32.powf((note as f32 - 69.0) / 12.0)
+}
+
+/// Frequency multiplier for a master tune offset in semitones.
+fn tune_ratio(semitones: f32) -> f32 {
+    2f32.powf(semitones / 12.0)
+}
+
+const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
+    // Progression A: with an 8s release, each chord rings well into the next
+    // (and beyond), so voicings are chosen to hold at least one common tone
+    // across every step, including the loop back to step 0.
+    [
+        [45, 50, 55, 60], // Am
+        [43, 50, 57, 60], // G   (holds D3/C4 from Am)
+        [45, 52, 57, 60], // Am (alt voicing, holds A3/C4 from G)
+        [47, 52, 55, 62], // B   (holds E3 from Am)
+        [45, 52, 57, 64], // Am (alt voicing, holds E3 from B)
+        [43, 50, 55, 62], // G   (parallel shift from Am, glides in stepwise)
+        [48, 55, 60, 64], // C   (holds G3 from G)
+        [55, 59, 64, 67], // Em (holds G3/C4 from C, and G3 back into Am)
+    ],
+    [
+        [45, 50, 57, 60], // Am
+        [50, 53, 57, 62], // Dm
+        [48, 55, 60, 64], // C
+        [43, 50, 55, 59], // G
+        [41, 48, 53, 57], // F
+        [52, 59, 64, 67], // Em
+        [45, 52, 57, 60], // Am
+        [43, 50, 55, 59], // G (non-tonic close, leads back to Am)
+    ],
+    [
+        [45, 48, 52, 55], // Am7
+        [41, 45, 48, 52], // Fmaj7
+        [48, 52, 55, 59], // Cmaj7
+        [43, 47, 50, 53], // G7
+        [50, 53, 57, 60], // Dm7
+        [52, 55, 59, 62], // Em7
+        [47, 50, 53, 57], // Bm7b5 (half-diminished ii)
+        [43, 50, 55, 59], // G (non-tonic close)
+    ],
+    [
+        [45, 52, 57, 60], // Am, wide
+        [41, 45, 48, 55], // Fmaj9-flavor
+        [48, 55, 59, 62], // Cmaj9-flavor
+        [43, 50, 53, 57], // G9-flavor
+        [50, 57, 60, 64], // Dm9-flavor
+        [52, 55, 59, 64], // Em, open
+        [47, 53, 57, 64], // Bm7b5, wide (the "ache" chord)
+        [43, 50, 55, 64], // G, wide (non-tonic close)
+    ],
+];
+
+fn pad_chord(progression: usize, step: usize, tune: f32) -> [f32; 4] {
+    PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8]
+        .map(|note| midi_to_hz(note) * tune_ratio(tune))
+}
+
+/// Bass line for each progression, authored independently of the Pad's
+/// chord voicings (one MIDI note per step, same 8-step indexing as
+/// PROGRESSIONS). B/C/D currently mirror their chord's lowest tone; A
+/// diverges deliberately (step 3 walks to G2 instead of following the
+/// B-chord's root) to give the bass its own melodic movement.
+const BASS_LINES: [[i32; 8]; 4] = [
+    [45, 47, 45, 43, 52, 53, 45, 45], // A
+    [45, 50, 48, 43, 41, 52, 45, 43], // B
+    [45, 41, 48, 43, 50, 52, 47, 43], // C
+    [45, 41, 48, 43, 50, 52, 47, 43], // D
+];
+
+fn bass_root_note(progression: usize, step: usize) -> i32 {
+    BASS_LINES[progression % BASS_LINES.len()][step % 8]
+}
+
+// ============================================================
+// Bass engine (follows the Pad's chord root on a rhythm pattern)
+// ============================================================
+
+/// Four 16-step rhythm patterns (one bar at 16th-note resolution: counted
+/// "1 e & a 2 e & a 3 e & a 4 e & a"). A/B/C/D selects between them; `true`
+/// re-articulates the bass note at that step.
+const BASS_RHYTHMS: [[bool; 16]; 4] = [
+    // A: quarter notes on the beat
+    [
+        true, false, false, false, true, false, false, false, true, false, false, false, true,
+        false, false, false,
+    ],
+    // B: syncopated — pickup into 1, push before 3, quick pickups into 4
+    [
+        true, false, false, true, false, false, true, false, true, true, false, false, true,
+        true, false, false,
+    ],
+    // C: straight eighths — steady walking-bass feel
+    [
+        true, false, true, false, true, false, true, false, true, false, true, false, true,
+        false, true, false,
+    ],
+    // D: busy 16th groove
+    [
+        true, false, false, true, false, false, true, false, true, false, false, true, false,
+        false, true, false,
+    ],
+];
+
+const MAX_BASS_VOICES: usize = 3;
+
+/// Fixed duration of one rhythm-pattern step (a 16th note). Step timing never
+/// changes; `interval_beats` instead crops how many steps of the 16-step
+/// phrase play before looping back to step 0 (or extends the loop with
+/// trailing silence, for a "gap" feel).
+const BASS_STEP_BEATS: f32 = 0.25;
+
+struct BassEngine {
+    sample_rate: f32,
+    chord_trigger: GridTrigger,
+    step_index: usize,
+    step_trigger: GridTrigger,
+    rhythm_step: usize,
+    voices: Vec<BassVoice>,
+}
+
+impl BassEngine {
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate,
+            chord_trigger: GridTrigger::after_start(),
+            step_index: 0,
+            step_trigger: GridTrigger::new(),
+            rhythm_step: BASS_RHYTHMS[0].len() - 1,
+            voices: Vec::with_capacity(MAX_BASS_VOICES),
+        }
+    }
+
+    fn next(
+        &mut self,
+        c: &BassControls,
+        pad: &PadControls,
+        tune: f32,
+        timing: TimingContext,
+    ) -> (f32, f32) {
+        let progression = (pad.progression.round() as i64).rem_euclid(4) as usize;
+        if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
+            self.step_index = (self.step_index + 1) % 8;
+        }
+
+        let loop_len = (c.interval_beats / BASS_STEP_BEATS).round().clamp(1.0, 32.0) as usize;
+        if self.step_trigger.pop(timing, BASS_STEP_BEATS, c.offset_beats) {
+            self.rhythm_step = (self.rhythm_step + 1) % loop_len;
+            let rhythm = (c.rhythm.round() as usize) % BASS_RHYTHMS.len();
+            let hit = self.rhythm_step < BASS_RHYTHMS[rhythm].len()
+                && BASS_RHYTHMS[rhythm][self.rhythm_step];
+            if hit {
+                let note = bass_root_note(progression, self.step_index)
+                    + (c.octave.round() as i32) * 12;
+                let hz = midi_to_hz(note) * tune_ratio(tune);
+                for voice in &mut self.voices {
+                    voice.release();
+                }
+                if self.voices.len() >= MAX_BASS_VOICES {
+                    let remove_count = self.voices.len() + 1 - MAX_BASS_VOICES;
+                    self.voices.drain(0..remove_count);
+                }
+                self.voices.push(BassVoice::new(
+                    hz,
+                    c.attack_time,
+                    c.decay_time,
+                    c.drive,
+                    self.sample_rate,
+                ));
+            }
+        }
+
+        let mut l = 0.0f32;
+        let mut r = 0.0f32;
+        for voice in &mut self.voices {
+            let (vl, vr) = voice.next();
+            l += vl;
+            r += vr;
+        }
+        self.voices.retain(|v| !v.is_done());
+
+        (l * c.level, r * c.level)
+    }
+}
+
+struct BassVoice {
+    osc: SineOscillator,
+    envelope: Adsr,
+    drive: f32,
+}
+
+impl BassVoice {
+    fn new(hz: f32, attack_time: f32, decay_time: f32, drive: f32, sample_rate: f32) -> Self {
+        Self {
+            osc: SineOscillator::new(hz, sample_rate),
+            // No sustain — Decay carries the note fully to silence, like the
+            // Perc voice's percussive envelope. Decay also doubles as the
+            // release curve, smoothing the cutoff if a hit retriggers before
+            // the previous note has fully decayed.
+            envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
+            drive,
+        }
+    }
+
+    fn next(&mut self) -> (f32, f32) {
+        let mut s = self.osc.next() * self.envelope.next();
+        if self.drive > 0.0 {
+            let driven = s * (1.0 + self.drive * 8.0);
+            s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
+        }
+        StereoPanner::equal_power(s, 0.0)
+    }
+
+    fn release(&mut self) {
+        self.envelope.note_off();
+    }
+
+    fn is_done(&self) -> bool {
+        self.envelope.is_done()
+    }
 }
 
 // ============================================================
@@ -2290,9 +2712,64 @@ mod tests {
     }
 
     #[test]
+    fn midi_to_hz_matches_known_notes() {
+        assert_close(midi_to_hz(69), 440.0); // A4
+        assert_close(midi_to_hz(45), 110.0); // A2
+        assert_close(midi_to_hz(60), 440.0 * 2f32.powf((60.0 - 69.0) / 12.0)); // C4
+    }
+
+    #[test]
+    fn pad_chord_converts_progression_a_first_chord() {
+        let chord = pad_chord(0, 0, 0.0);
+        assert_close(chord[0], 110.0); // A2
+        assert_close(chord[1], 440.0 * 2f32.powf((50.0 - 69.0) / 12.0)); // D3
+        assert_close(chord[2], 440.0 * 2f32.powf((55.0 - 69.0) / 12.0)); // G3
+        assert_close(chord[3], 440.0 * 2f32.powf((60.0 - 69.0) / 12.0)); // C4
+    }
+
+    #[test]
+    fn pad_chord_applies_master_tune_offset() {
+        let flat = pad_chord(0, 0, 0.0);
+        let up_octave = pad_chord(0, 0, 12.0);
+        let down_octave = pad_chord(0, 0, -12.0);
+        for i in 0..4 {
+            assert_close(up_octave[i], flat[i] * 2.0);
+            assert_close(down_octave[i], flat[i] * 0.5);
+        }
+    }
+
+    #[test]
+    fn pad_chord_converts_progression_d_last_chord() {
+        let chord = pad_chord(3, 7, 0.0);
+        assert_close(chord[0], 440.0 * 2f32.powf((43.0 - 69.0) / 12.0)); // G2
+        assert_close(chord[1], 440.0 * 2f32.powf((50.0 - 69.0) / 12.0)); // D3
+        assert_close(chord[2], 440.0 * 2f32.powf((55.0 - 69.0) / 12.0)); // G3
+        assert_close(chord[3], 440.0 * 2f32.powf((64.0 - 69.0) / 12.0)); // E4
+    }
+
+    #[test]
+    fn pad_chord_wraps_progression_and_step_index() {
+        let wrapped_progression = pad_chord(4, 0, 0.0);
+        let base_progression = pad_chord(0, 0, 0.0);
+        assert_eq!(wrapped_progression, base_progression);
+
+        let wrapped_step = pad_chord(0, 8, 0.0);
+        let base_step = pad_chord(0, 0, 0.0);
+        assert_eq!(wrapped_step, base_step);
+    }
+
+    #[test]
+    fn pad_defaults_use_progression_a_and_eight_bar_chords() {
+        let controls = PadControls::default();
+        assert_close(controls.chord_bars, 8.0);
+        assert_close(controls.progression, 0.0);
+    }
+
+    #[test]
     fn tab_previous_wraps_back_one_tab() {
         assert_eq!(Tab::Master.previous(), Tab::Clap);
-        assert_eq!(Tab::Kick.previous(), Tab::Chords);
+        assert_eq!(Tab::Kick.previous(), Tab::Bass);
+        assert_eq!(Tab::Bass.previous(), Tab::Chords);
     }
 
     #[test]
@@ -2339,20 +2816,221 @@ mod tests {
         let mut controls = FluidControls::default();
 
         controls.master.drive = 0.8;
-        apply_min(Tab::Master, 7, &mut controls);
+        apply_min(Tab::Master, 8, &mut controls);
         assert_close(controls.master.drive, 0.0);
 
         controls.master.bpm = 120.0;
-        apply_min(Tab::Master, 5, &mut controls);
+        apply_min(Tab::Master, 6, &mut controls);
         assert_close(controls.master.bpm, MASTER_BPM_MIN);
 
         controls.master.tone = 0.5;
-        apply_min(Tab::Master, 11, &mut controls);
+        apply_min(Tab::Master, 12, &mut controls);
         assert_close(controls.master.tone, -1.0);
 
         controls.pad.chord_bars = 16.0;
         apply_min(Tab::Chords, 1, &mut controls);
         assert_close(controls.pad.chord_bars, 1.0);
+    }
+
+    #[test]
+    fn chords_tab_shows_progression_row_with_letter_display() {
+        let mut controls = FluidControls::default();
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[2].label, "Progression");
+        assert_eq!(rows[2].display, "A");
+
+        controls.pad.progression = 2.0;
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[2].display, "C");
+    }
+
+    #[test]
+    fn chords_progression_adjusts_and_clamps() {
+        let mut controls = FluidControls::default();
+
+        apply_delta(Tab::Chords, 2, 1.0, &mut controls);
+        assert_close(controls.pad.progression, 1.0);
+
+        controls.pad.progression = 3.0;
+        apply_delta(Tab::Chords, 2, 1.0, &mut controls);
+        assert_close(controls.pad.progression, 3.0);
+
+        controls.pad.progression = 0.0;
+        apply_delta(Tab::Chords, 2, -1.0, &mut controls);
+        assert_close(controls.pad.progression, 0.0);
+
+        controls.pad.progression = 2.0;
+        apply_min(Tab::Chords, 2, &mut controls);
+        assert_close(controls.pad.progression, 0.0);
+    }
+
+    #[test]
+    fn bass_rhythms_have_expected_hit_counts() {
+        assert_eq!(BASS_RHYTHMS[0].iter().filter(|&&b| b).count(), 4);
+        assert!(BASS_RHYTHMS[0][0]);
+        assert!(BASS_RHYTHMS[1].iter().filter(|&&b| b).count() > 4);
+        assert_eq!(BASS_RHYTHMS[2].iter().filter(|&&b| b).count(), 8);
+    }
+
+    #[test]
+    fn bass_root_note_follows_authored_bass_line() {
+        assert_eq!(bass_root_note(0, 0), 45);
+        // Progression A's authored line diverges from the chord's lowest
+        // tone at step 3 (B chord's min is 47) — proves the bass line is
+        // independent data, not derived from PROGRESSIONS.
+        assert_eq!(bass_root_note(0, 3), 43);
+        assert_eq!(bass_root_note(2, 3), 43);
+    }
+
+    #[test]
+    fn bass_defaults_are_silent_quarter_note_a() {
+        let controls = BassControls::default();
+        assert_close(controls.level, 0.0);
+        assert_close(controls.rhythm, 0.0);
+        assert_close(controls.octave, -1.0);
+        assert_close(controls.interval_beats, 4.0);
+    }
+
+    #[test]
+    fn bass_tab_shows_rhythm_row_with_letter_display() {
+        let mut controls = FluidControls::default();
+        let rows = tab_controls(Tab::Bass, &controls);
+        assert_eq!(rows[3].label, "Rhythm");
+        assert_eq!(rows[3].display, "A");
+
+        controls.bass.rhythm = 3.0;
+        let rows = tab_controls(Tab::Bass, &controls);
+        assert_eq!(rows[3].display, "D");
+    }
+
+    #[test]
+    fn bass_controls_adjust_and_clamp() {
+        let mut controls = FluidControls::default();
+
+        apply_delta(Tab::Bass, 3, 1.0, &mut controls);
+        assert_close(controls.bass.rhythm, 1.0);
+
+        controls.bass.rhythm = 3.0;
+        apply_delta(Tab::Bass, 3, 1.0, &mut controls);
+        assert_close(controls.bass.rhythm, 3.0);
+
+        controls.bass.octave = -1.0;
+        apply_delta(Tab::Bass, 4, -1.0, &mut controls);
+        apply_delta(Tab::Bass, 4, -1.0, &mut controls);
+        assert_close(controls.bass.octave, -3.0);
+
+        apply_min(Tab::Bass, 0, &mut controls);
+        assert_close(controls.bass.level, 0.0);
+
+        controls.bass.decay_time = 0.4;
+        apply_delta(Tab::Bass, 6, 1.0, &mut controls);
+        assert!(controls.bass.decay_time > 0.4);
+
+        apply_min(Tab::Bass, 6, &mut controls);
+        assert_close(controls.bass.decay_time, 0.005);
+    }
+
+    #[test]
+    fn bass_engine_follows_pad_chord_root_across_advances() {
+        let sample_rate = 48_000.0;
+        let mut bass = BassEngine::new(sample_rate);
+        let pad = PadControls {
+            chord_bars: 1.0 / 4.0, // advance every beat, fast enough to observe within the test
+            ..PadControls::default()
+        };
+        let bass_controls = BassControls {
+            interval_beats: 1.0,
+            rhythm: 0.0,
+            ..BassControls::default()
+        };
+        let mut clock = TempoClock::new(sample_rate, 120.0);
+
+        // Step far enough to guarantee at least one chord advance and one
+        // rhythm hit have occurred.
+        for _ in 0..(sample_rate as usize) {
+            let timing = clock.tick(120.0);
+            bass.next(&bass_controls, &pad, 0.0, timing);
+        }
+
+        assert_ne!(bass.step_index, 0);
+        assert!(bass.rhythm_step < BASS_RHYTHMS[0].len());
+    }
+
+    #[test]
+    fn bass_voice_decays_to_silence_without_sustaining() {
+        let sample_rate = 48_000.0;
+        let mut voice = BassVoice::new(110.0, 0.005, 0.05, 0.0, sample_rate);
+
+        // Well past attack+decay (0.055s); a sustaining envelope would still
+        // be holding at ~0.85 gain here, an AD envelope has decayed to ~0.
+        for _ in 0..(sample_rate * 0.5) as usize {
+            voice.next();
+        }
+
+        let (l, r) = voice.next();
+        assert!(l.abs() < 0.001 && r.abs() < 0.001);
+    }
+
+    #[test]
+    fn bass_interval_crops_phrase_instead_of_stretching_it() {
+        // Step duration is always a fixed 16th note; `interval_beats` only
+        // decides how many steps of the 16-step phrase play before looping
+        // back to step 0.
+        let hits_within = |rhythm: usize, loop_len: usize| -> Vec<usize> {
+            (0..loop_len)
+                .filter(|&s| s < BASS_RHYTHMS[rhythm].len() && BASS_RHYTHMS[rhythm][s])
+                .collect()
+        };
+
+        // Progression A (quarter notes) hits every 4 steps; cropping to a
+        // 4-step (1 beat) loop still only exposes step 0, which recurs at
+        // the same cadence as the full 16-step phrase - no audible change.
+        assert_eq!(hits_within(0, 16), vec![0, 4, 8, 12]);
+        assert_eq!(hits_within(0, 4), vec![0]);
+        assert_eq!(hits_within(0, 8), vec![0, 4]);
+
+        // A busier pattern's crop is audibly different: only its first half
+        // survives an 8-step (2 beat) loop.
+        let full = hits_within(1, 16);
+        let cropped = hits_within(1, 8);
+        assert!(cropped.len() < full.len());
+        assert!(cropped.iter().all(|s| full.contains(s)));
+    }
+
+    #[test]
+    fn chords_reverb_mix_row_shifted_to_index_three() {
+        let controls = FluidControls::default();
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[3].label, "Reverb Mix");
+    }
+
+    #[test]
+    fn chords_release_row_present_with_lowered_attack_floor() {
+        let controls = FluidControls::default();
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[7].label, "Attack");
+        assert_close(rows[7].min, 0.05);
+        assert_eq!(rows[8].label, "Release");
+        assert_close(rows[8].value, 8.0);
+        assert_close(rows[8].min, 0.05);
+        assert_close(rows[8].max, 20.0);
+    }
+
+    #[test]
+    fn chords_attack_and_release_adjust_and_clamp_low() {
+        let mut controls = FluidControls::default();
+
+        controls.pad.attack_time = 0.1;
+        apply_delta(Tab::Chords, 7, -1.0, &mut controls);
+        assert_close(controls.pad.attack_time, 0.05);
+        apply_min(Tab::Chords, 7, &mut controls);
+        assert_close(controls.pad.attack_time, 0.05);
+
+        controls.pad.release_time = 0.1;
+        apply_delta(Tab::Chords, 8, -1.0, &mut controls);
+        assert_close(controls.pad.release_time, 0.05);
+        apply_min(Tab::Chords, 8, &mut controls);
+        assert_close(controls.pad.release_time, 0.05);
     }
 
     #[test]
@@ -2477,9 +3155,61 @@ mod tests {
 
         for chord in 1..12 {
             let sample = chord * SAMPLE_RATE as u64 * 2;
-            let _ = pad.next(&controls, timing(sample, 120.0));
+            let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
             assert!(pad.layers.len() <= MAX_PAD_LAYERS);
         }
+    }
+
+    #[test]
+    fn pad_engine_step_index_wraps_at_eight() {
+        let controls = PadControls {
+            chord_bars: 1.0,
+            attack_time: 1.0,
+            ..PadControls::default()
+        };
+        let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+        // chord_bars=1.0 means chord_trigger fires every 4.0 beats; at 120 BPM
+        // that's 2 seconds of samples per chord. Render 9 chord-advances worth
+        // of samples (18 seconds) and confirm the telemetry index wrapped past 8.
+        for chord in 1..=9 {
+            let sample = chord * SAMPLE_RATE as u64 * 2;
+            let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+        }
+        let final_index = pad.telemetry.chord_index.load(Ordering::Relaxed);
+        assert!(final_index < 8, "step_index must wrap into 0..8, got {final_index}");
+    }
+
+    #[test]
+    fn pad_engine_progression_switch_retriggers_immediately() {
+        let mut controls = PadControls {
+            chord_bars: 64.0, // long chord length so no chord-advance trigger fires
+            // Short attack so the original layer's envelope is already audible
+            // (not still ~0 from the very first sample) by the time it's released;
+            // otherwise the release phase completes in the same tick it starts and
+            // `retain` prunes it before this test can observe the pushed layer.
+            attack_time: 0.001,
+            ..PadControls::default()
+        };
+        let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+        // Warm up the original layer's envelope (still progression 0, so no push
+        // happens here) so its level is non-negligible before it gets released;
+        // otherwise the Adsr release completes in the same tick it starts and
+        // `retain` prunes the layer before this test can observe the pushed one.
+        for sample in 0..10 {
+            let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+        }
+        let layers_before = pad.layers.len();
+
+        // Flip progression with no further elapsed time / no chord-advance trigger.
+        controls.progression = 1.0;
+        let _ = pad.next(&controls, 0.0, timing(10, 120.0));
+
+        assert!(
+            pad.layers.len() > layers_before,
+            "switching progression must push a new layer immediately, without waiting for chord_trigger"
+        );
     }
 
     #[test]
