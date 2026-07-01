@@ -221,6 +221,33 @@ impl Default for ClapControls {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct BassControls {
+    pub level: f32,
+    pub interval_beats: f32, // 16-step rhythm pattern spans this many beats
+    pub offset_beats: f32,
+    pub rhythm: f32, // 0..=3, A/B/C/D pattern selector
+    pub octave: f32, // octaves relative to the chord root, e.g. -1.0 = one octave down
+    pub attack_time: f32,
+    pub release_time: f32,
+    pub drive: f32,
+}
+
+impl Default for BassControls {
+    fn default() -> Self {
+        Self {
+            level: 0.0,
+            interval_beats: 4.0,
+            offset_beats: 0.0,
+            rhythm: 0.0,
+            octave: -1.0,
+            attack_time: 0.01,
+            release_time: 0.2,
+            drive: 0.15,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct FluidControls {
     pub master: MasterControls,
@@ -229,6 +256,7 @@ pub(crate) struct FluidControls {
     pub kick: KickControls,
     pub tonal: TonalControls,
     pub clap: ClapControls,
+    pub bass: BassControls,
 }
 
 // ============================================================
@@ -269,17 +297,19 @@ enum Tab {
     Master = 0,
     Perc = 1,
     Chords = 2,
-    Kick = 3,
-    Tonal = 4,
-    Clap = 5,
+    Bass = 3,
+    Kick = 4,
+    Tonal = 5,
+    Clap = 6,
 }
 
 impl Tab {
-    fn all() -> [Tab; 6] {
+    fn all() -> [Tab; 7] {
         [
             Tab::Master,
             Tab::Perc,
             Tab::Chords,
+            Tab::Bass,
             Tab::Kick,
             Tab::Tonal,
             Tab::Clap,
@@ -291,6 +321,7 @@ impl Tab {
             Tab::Master => "Master",
             Tab::Perc => "Perc",
             Tab::Chords => "Chords",
+            Tab::Bass => "Bass",
             Tab::Kick => "Kick",
             Tab::Tonal => "Tonal",
             Tab::Clap => "Clap",
@@ -301,7 +332,8 @@ impl Tab {
         match self {
             Tab::Master => Tab::Perc,
             Tab::Perc => Tab::Chords,
-            Tab::Chords => Tab::Kick,
+            Tab::Chords => Tab::Bass,
+            Tab::Bass => Tab::Kick,
             Tab::Kick => Tab::Tonal,
             Tab::Tonal => Tab::Clap,
             Tab::Clap => Tab::Master,
@@ -313,7 +345,8 @@ impl Tab {
             Tab::Master => Tab::Clap,
             Tab::Perc => Tab::Master,
             Tab::Chords => Tab::Perc,
-            Tab::Kick => Tab::Chords,
+            Tab::Bass => Tab::Chords,
+            Tab::Kick => Tab::Bass,
             Tab::Tonal => Tab::Kick,
             Tab::Clap => Tab::Tonal,
         }
@@ -365,6 +398,13 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 min: 0.0,
                 max: 1.0,
                 display: format!("{:.0}%", c.clap.level * 100.0),
+            },
+            ControlItem {
+                label: "Bass Vol",
+                value: c.bass.level,
+                min: 0.0,
+                max: 1.0,
+                display: format!("{:.0}%", c.bass.level * 100.0),
             },
             ControlItem {
                 label: "BPM",
@@ -545,6 +585,64 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 min: 0.05,
                 max: 20.0,
                 display: format!("{:.2} s", c.pad.release_time),
+            },
+        ],
+        Tab::Bass => vec![
+            ControlItem {
+                label: "Level",
+                value: c.bass.level,
+                min: 0.0,
+                max: 1.0,
+                display: format!("{:.0}%", c.bass.level * 100.0),
+            },
+            ControlItem {
+                label: "Interval",
+                value: c.bass.interval_beats,
+                min: 1.0,
+                max: 16.0,
+                display: format!("{:.2} beats", c.bass.interval_beats),
+            },
+            ControlItem {
+                label: "Offset",
+                value: c.bass.offset_beats,
+                min: 0.0,
+                max: 4.0,
+                display: format!("{:.2} beats", c.bass.offset_beats),
+            },
+            ControlItem {
+                label: "Rhythm",
+                value: c.bass.rhythm,
+                min: 0.0,
+                max: 3.0,
+                display: ["A", "B", "C", "D"][c.bass.rhythm.round() as usize % 4].to_string(),
+            },
+            ControlItem {
+                label: "Octave",
+                value: c.bass.octave,
+                min: -3.0,
+                max: 0.0,
+                display: format!("{:.0}", c.bass.octave),
+            },
+            ControlItem {
+                label: "Attack",
+                value: c.bass.attack_time,
+                min: 0.005,
+                max: 1.0,
+                display: format!("{:.3} s", c.bass.attack_time),
+            },
+            ControlItem {
+                label: "Release",
+                value: c.bass.release_time,
+                min: 0.02,
+                max: 2.0,
+                display: format!("{:.2} s", c.bass.release_time),
+            },
+            ControlItem {
+                label: "Drive",
+                value: c.bass.drive,
+                min: 0.0,
+                max: 1.0,
+                display: format!("{:.0}%", c.bass.drive * 100.0),
             },
         ],
         Tab::Kick => vec![
@@ -753,16 +851,17 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
             2 => c.kick.level = (c.kick.level + dir * 0.02).clamp(0.0, 1.0),
             3 => c.tonal.level = (c.tonal.level + dir * 0.02).clamp(0.0, 1.0),
             4 => c.clap.level = (c.clap.level + dir * 0.02).clamp(0.0, 1.0),
-            5 => c.master.bpm = (c.master.bpm + dir * 2.0).clamp(MASTER_BPM_MIN, MASTER_BPM_MAX),
-            6 => c.master.level = (c.master.level + dir * 0.02).clamp(0.0, 1.0),
-            7 => c.master.drive = (c.master.drive + dir * 0.02).clamp(0.0, 1.0),
-            8 => c.master.comp_threshold = (c.master.comp_threshold + dir * 1.0).clamp(-40.0, 0.0),
-            9 => c.master.comp_ratio = (c.master.comp_ratio + dir * 0.25).clamp(1.0, 8.0),
-            10 => {
+            5 => c.bass.level = (c.bass.level + dir * 0.02).clamp(0.0, 1.0),
+            6 => c.master.bpm = (c.master.bpm + dir * 2.0).clamp(MASTER_BPM_MIN, MASTER_BPM_MAX),
+            7 => c.master.level = (c.master.level + dir * 0.02).clamp(0.0, 1.0),
+            8 => c.master.drive = (c.master.drive + dir * 0.02).clamp(0.0, 1.0),
+            9 => c.master.comp_threshold = (c.master.comp_threshold + dir * 1.0).clamp(-40.0, 0.0),
+            10 => c.master.comp_ratio = (c.master.comp_ratio + dir * 0.25).clamp(1.0, 8.0),
+            11 => {
                 c.master.comp_release_ms =
                     (c.master.comp_release_ms + dir * 10.0).clamp(10.0, 500.0)
             }
-            11 => c.master.tone = (c.master.tone + dir * 0.05).clamp(-1.0, 1.0),
+            12 => c.master.tone = (c.master.tone + dir * 0.05).clamp(-1.0, 1.0),
             _ => {}
         },
         Tab::Perc => match selected {
@@ -791,6 +890,17 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
             6 => c.pad.octave_mix = (c.pad.octave_mix + dir * 0.02).clamp(0.0, 1.0),
             7 => c.pad.attack_time = (c.pad.attack_time + dir * 0.5).clamp(0.05, 30.0),
             8 => c.pad.release_time = (c.pad.release_time + dir * 0.5).clamp(0.05, 20.0),
+            _ => {}
+        },
+        Tab::Bass => match selected {
+            0 => c.bass.level = (c.bass.level + dir * 0.02).clamp(0.0, 1.0),
+            1 => c.bass.interval_beats = (c.bass.interval_beats + dir * 0.25).clamp(1.0, 16.0),
+            2 => c.bass.offset_beats = (c.bass.offset_beats + dir * 0.25).clamp(0.0, 4.0),
+            3 => c.bass.rhythm = (c.bass.rhythm + dir).clamp(0.0, 3.0),
+            4 => c.bass.octave = (c.bass.octave + dir).clamp(-3.0, 0.0),
+            5 => c.bass.attack_time = (c.bass.attack_time + dir * 0.02).clamp(0.005, 1.0),
+            6 => c.bass.release_time = (c.bass.release_time + dir * 0.05).clamp(0.02, 2.0),
+            7 => c.bass.drive = (c.bass.drive + dir * 0.02).clamp(0.0, 1.0),
             _ => {}
         },
         Tab::Kick => match selected {
@@ -848,13 +958,14 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
             2 => c.kick.level = 0.0,
             3 => c.tonal.level = 0.0,
             4 => c.clap.level = 0.0,
-            5 => c.master.bpm = MASTER_BPM_MIN,
-            6 => c.master.level = 0.0,
-            7 => c.master.drive = 0.0,
-            8 => c.master.comp_threshold = -40.0,
-            9 => c.master.comp_ratio = 1.0,
-            10 => c.master.comp_release_ms = 10.0,
-            11 => c.master.tone = -1.0,
+            5 => c.bass.level = 0.0,
+            6 => c.master.bpm = MASTER_BPM_MIN,
+            7 => c.master.level = 0.0,
+            8 => c.master.drive = 0.0,
+            9 => c.master.comp_threshold = -40.0,
+            10 => c.master.comp_ratio = 1.0,
+            11 => c.master.comp_release_ms = 10.0,
+            12 => c.master.tone = -1.0,
             _ => {}
         },
         Tab::Perc => match selected {
@@ -877,6 +988,17 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
             6 => c.pad.octave_mix = 0.0,
             7 => c.pad.attack_time = 0.05,
             8 => c.pad.release_time = 0.05,
+            _ => {}
+        },
+        Tab::Bass => match selected {
+            0 => c.bass.level = 0.0,
+            1 => c.bass.interval_beats = 1.0,
+            2 => c.bass.offset_beats = 0.0,
+            3 => c.bass.rhythm = 0.0,
+            4 => c.bass.octave = -3.0,
+            5 => c.bass.attack_time = 0.005,
+            6 => c.bass.release_time = 0.02,
+            7 => c.bass.drive = 0.0,
             _ => {}
         },
         Tab::Kick => match selected {
@@ -1291,6 +1413,7 @@ struct FluidEngine {
     kick: KickEngine,
     tonal: TonalEngine,
     clap: ClapEngine,
+    bass: BassEngine,
     master_bus: MasterBus,
     controls: Arc<ArcSwap<FluidControls>>,
     snapshot: FluidControls,
@@ -1312,6 +1435,7 @@ impl FluidEngine {
             kick: KickEngine::new(sample_rate, telemetry),
             tonal: TonalEngine::new(sample_rate),
             clap: ClapEngine::new(sample_rate),
+            bass: BassEngine::new(sample_rate),
             master_bus: MasterBus::new(),
             controls,
             snapshot,
@@ -1333,11 +1457,14 @@ impl StereoEngine for FluidEngine {
         let (kick_l, kick_r) = self.kick.next(&self.snapshot.kick, timing);
         let (ton_l, ton_r) = self.tonal.next(&self.snapshot.tonal, timing);
         let (clap_l, clap_r) = self.clap.next(&self.snapshot.clap, timing);
+        let (bass_l, bass_r) = self.bass.next(&self.snapshot.bass, &self.snapshot.pad, timing);
 
         self.current_sample += 1;
 
-        let raw_l = (pad_l + perc * 0.6 + kick_l * 0.7 + ton_l + clap_l * 0.65) * fade;
-        let raw_r = (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65) * fade;
+        let raw_l =
+            (pad_l + perc * 0.6 + kick_l * 0.7 + ton_l + clap_l * 0.65 + bass_l * 0.75) * fade;
+        let raw_r =
+            (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65 + bass_r * 0.75) * fade;
         self.master_bus
             .process(raw_l, raw_r, &self.snapshot.master, self.sample_rate)
     }
@@ -1815,6 +1942,145 @@ const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
 
 fn pad_chord(progression: usize, step: usize) -> [f32; 4] {
     PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8].map(midi_to_hz)
+}
+
+/// Lowest MIDI note of the chord currently playing on the Pad voice — the
+/// note the Bass voice tracks.
+fn bass_root_note(progression: usize, step: usize) -> i32 {
+    PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8]
+        .into_iter()
+        .min()
+        .expect("chords always have 4 notes")
+}
+
+// ============================================================
+// Bass engine (follows the Pad's chord root on a rhythm pattern)
+// ============================================================
+
+/// Four 16-step rhythm patterns (one bar at 16th-note resolution: counted
+/// "1 e & a 2 e & a 3 e & a 4 e & a"). A/B/C/D selects between them; `true`
+/// re-articulates the bass note at that step.
+const BASS_RHYTHMS: [[bool; 16]; 4] = [
+    // A: quarter notes on the beat
+    [
+        true, false, false, false, true, false, false, false, true, false, false, false, true,
+        false, false, false,
+    ],
+    // B: syncopated — pickup into 1, push before 3, quick pickups into 4
+    [
+        true, false, false, true, false, false, true, false, true, true, false, false, true,
+        true, false, false,
+    ],
+    // C: straight eighths — steady walking-bass feel
+    [
+        true, false, true, false, true, false, true, false, true, false, true, false, true,
+        false, true, false,
+    ],
+    // D: busy 16th groove
+    [
+        true, false, false, true, false, false, true, false, true, false, false, true, false,
+        false, true, false,
+    ],
+];
+
+const MAX_BASS_VOICES: usize = 3;
+
+struct BassEngine {
+    sample_rate: f32,
+    chord_trigger: GridTrigger,
+    step_index: usize,
+    step_trigger: GridTrigger,
+    rhythm_step: usize,
+    voices: Vec<BassVoice>,
+}
+
+impl BassEngine {
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            sample_rate,
+            chord_trigger: GridTrigger::after_start(),
+            step_index: 0,
+            step_trigger: GridTrigger::new(),
+            rhythm_step: BASS_RHYTHMS[0].len() - 1,
+            voices: Vec::with_capacity(MAX_BASS_VOICES),
+        }
+    }
+
+    fn next(&mut self, c: &BassControls, pad: &PadControls, timing: TimingContext) -> (f32, f32) {
+        let progression = (pad.progression.round() as i64).rem_euclid(4) as usize;
+        if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
+            self.step_index = (self.step_index + 1) % 8;
+        }
+
+        let step_beats = (c.interval_beats / BASS_RHYTHMS[0].len() as f32).max(1.0 / 64.0);
+        if self.step_trigger.pop(timing, step_beats, c.offset_beats) {
+            self.rhythm_step = (self.rhythm_step + 1) % BASS_RHYTHMS[0].len();
+            let rhythm = (c.rhythm.round() as usize) % BASS_RHYTHMS.len();
+            if BASS_RHYTHMS[rhythm][self.rhythm_step] {
+                let note = bass_root_note(progression, self.step_index)
+                    + (c.octave.round() as i32) * 12;
+                let hz = midi_to_hz(note);
+                for voice in &mut self.voices {
+                    voice.release();
+                }
+                if self.voices.len() >= MAX_BASS_VOICES {
+                    let remove_count = self.voices.len() + 1 - MAX_BASS_VOICES;
+                    self.voices.drain(0..remove_count);
+                }
+                self.voices.push(BassVoice::new(
+                    hz,
+                    c.attack_time,
+                    c.release_time,
+                    c.drive,
+                    self.sample_rate,
+                ));
+            }
+        }
+
+        let mut l = 0.0f32;
+        let mut r = 0.0f32;
+        for voice in &mut self.voices {
+            let (vl, vr) = voice.next();
+            l += vl;
+            r += vr;
+        }
+        self.voices.retain(|v| !v.is_done());
+
+        (l * c.level, r * c.level)
+    }
+}
+
+struct BassVoice {
+    osc: SineOscillator,
+    envelope: Adsr,
+    drive: f32,
+}
+
+impl BassVoice {
+    fn new(hz: f32, attack_time: f32, release_time: f32, drive: f32, sample_rate: f32) -> Self {
+        Self {
+            osc: SineOscillator::new(hz, sample_rate),
+            envelope: Adsr::new(attack_time, 0.05, 0.85, release_time, sample_rate),
+            drive,
+        }
+    }
+
+    fn next(&mut self) -> (f32, f32) {
+        let mut s = self.osc.next() * self.envelope.next();
+        if self.drive > 0.0 {
+            let driven = s * (1.0 + self.drive * 8.0);
+            s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
+        }
+        StereoPanner::equal_power(s, 0.0)
+    }
+
+    fn release(&mut self) {
+        self.envelope.note_off();
+    }
+
+    fn is_done(&self) -> bool {
+        self.envelope.is_done()
+    }
 }
 
 // ============================================================
@@ -2402,7 +2668,8 @@ mod tests {
     #[test]
     fn tab_previous_wraps_back_one_tab() {
         assert_eq!(Tab::Master.previous(), Tab::Clap);
-        assert_eq!(Tab::Kick.previous(), Tab::Chords);
+        assert_eq!(Tab::Kick.previous(), Tab::Bass);
+        assert_eq!(Tab::Bass.previous(), Tab::Chords);
     }
 
     #[test]
@@ -2449,15 +2716,15 @@ mod tests {
         let mut controls = FluidControls::default();
 
         controls.master.drive = 0.8;
-        apply_min(Tab::Master, 7, &mut controls);
+        apply_min(Tab::Master, 8, &mut controls);
         assert_close(controls.master.drive, 0.0);
 
         controls.master.bpm = 120.0;
-        apply_min(Tab::Master, 5, &mut controls);
+        apply_min(Tab::Master, 6, &mut controls);
         assert_close(controls.master.bpm, MASTER_BPM_MIN);
 
         controls.master.tone = 0.5;
-        apply_min(Tab::Master, 11, &mut controls);
+        apply_min(Tab::Master, 12, &mut controls);
         assert_close(controls.master.tone, -1.0);
 
         controls.pad.chord_bars = 16.0;
@@ -2495,6 +2762,87 @@ mod tests {
         controls.pad.progression = 2.0;
         apply_min(Tab::Chords, 2, &mut controls);
         assert_close(controls.pad.progression, 0.0);
+    }
+
+    #[test]
+    fn bass_rhythms_have_expected_hit_counts() {
+        assert_eq!(BASS_RHYTHMS[0].iter().filter(|&&b| b).count(), 4);
+        assert!(BASS_RHYTHMS[0][0]);
+        assert!(BASS_RHYTHMS[1].iter().filter(|&&b| b).count() > 4);
+        assert_eq!(BASS_RHYTHMS[2].iter().filter(|&&b| b).count(), 8);
+    }
+
+    #[test]
+    fn bass_root_note_matches_lowest_chord_tone() {
+        assert_eq!(bass_root_note(0, 0), 45);
+        assert_eq!(bass_root_note(2, 3), 43);
+    }
+
+    #[test]
+    fn bass_defaults_are_silent_quarter_note_a() {
+        let controls = BassControls::default();
+        assert_close(controls.level, 0.0);
+        assert_close(controls.rhythm, 0.0);
+        assert_close(controls.octave, -1.0);
+        assert_close(controls.interval_beats, 4.0);
+    }
+
+    #[test]
+    fn bass_tab_shows_rhythm_row_with_letter_display() {
+        let mut controls = FluidControls::default();
+        let rows = tab_controls(Tab::Bass, &controls);
+        assert_eq!(rows[3].label, "Rhythm");
+        assert_eq!(rows[3].display, "A");
+
+        controls.bass.rhythm = 3.0;
+        let rows = tab_controls(Tab::Bass, &controls);
+        assert_eq!(rows[3].display, "D");
+    }
+
+    #[test]
+    fn bass_controls_adjust_and_clamp() {
+        let mut controls = FluidControls::default();
+
+        apply_delta(Tab::Bass, 3, 1.0, &mut controls);
+        assert_close(controls.bass.rhythm, 1.0);
+
+        controls.bass.rhythm = 3.0;
+        apply_delta(Tab::Bass, 3, 1.0, &mut controls);
+        assert_close(controls.bass.rhythm, 3.0);
+
+        controls.bass.octave = -1.0;
+        apply_delta(Tab::Bass, 4, -1.0, &mut controls);
+        apply_delta(Tab::Bass, 4, -1.0, &mut controls);
+        assert_close(controls.bass.octave, -3.0);
+
+        apply_min(Tab::Bass, 0, &mut controls);
+        assert_close(controls.bass.level, 0.0);
+    }
+
+    #[test]
+    fn bass_engine_follows_pad_chord_root_across_advances() {
+        let sample_rate = 48_000.0;
+        let mut bass = BassEngine::new(sample_rate);
+        let pad = PadControls {
+            chord_bars: 1.0 / 4.0, // advance every beat, fast enough to observe within the test
+            ..PadControls::default()
+        };
+        let bass_controls = BassControls {
+            interval_beats: 1.0,
+            rhythm: 0.0,
+            ..BassControls::default()
+        };
+        let mut clock = TempoClock::new(sample_rate, 120.0);
+
+        // Step far enough to guarantee at least one chord advance and one
+        // rhythm hit have occurred.
+        for _ in 0..(sample_rate as usize) {
+            let timing = clock.tick(120.0);
+            bass.next(&bass_controls, &pad, timing);
+        }
+
+        assert_ne!(bass.step_index, 0);
+        assert!(bass.rhythm_step < BASS_RHYTHMS[0].len());
     }
 
     #[test]
