@@ -734,7 +734,7 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
             2 => c.kick.level = (c.kick.level + dir * 0.02).clamp(0.0, 1.0),
             3 => c.tonal.level = (c.tonal.level + dir * 0.02).clamp(0.0, 1.0),
             4 => c.clap.level = (c.clap.level + dir * 0.02).clamp(0.0, 1.0),
-            5 => c.master.bpm = (c.master.bpm + dir * 2.0).clamp(MASTER_BPM_MIN, MASTER_BPM_MAX),
+            5 => c.master.bpm = (c.master.bpm + dir * 1.0).clamp(MASTER_BPM_MIN, MASTER_BPM_MAX),
             6 => c.master.level = (c.master.level + dir * 0.02).clamp(0.0, 1.0),
             7 => c.master.drive = (c.master.drive + dir * 0.02).clamp(0.0, 1.0),
             8 => c.master.comp_threshold = (c.master.comp_threshold + dir * 1.0).clamp(-40.0, 0.0),
