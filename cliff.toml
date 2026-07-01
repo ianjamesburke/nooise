@@ -1,0 +1,64 @@
+[changelog]
+header = "# Changelog\n\nNewest releases appear first.\n"
+body = """
+## [{{ version | default(value="Unreleased") | trim_start_matches(pat="v") }}] — {{ timestamp | date(format="%Y-%m-%d") }}
+
+### Changes
+{% for commit in commits -%}
+- {{ commit.message | split(pat="\n") | first | trim }}
+{% endfor %}
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = false
+filter_unconventional = false
+filter_commits = true
+tag_pattern = "v[0-9].*"
+topo_order = false
+sort_commits = "newest"
+
+[[git.commit_parsers]]
+message = "^chore: bump"
+skip = true
+
+[[git.commit_parsers]]
+message = "^chore: release"
+skip = true
+
+[[git.commit_parsers]]
+message = "^chore(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^docs(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^test(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^refactor(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^style(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^ci(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^build(\\([^)]*\\))?:"
+skip = true
+
+[[git.commit_parsers]]
+message = "^Merge"
+skip = true
+
+[[git.commit_parsers]]
+message = ".*"
+group = "Changes"
