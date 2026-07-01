@@ -94,6 +94,11 @@ nooise is a single Rust binary: terminal UI, audio engine, and live controls for
 
 - `cargo build` and `cargo test` from repo root before committing engine changes.
 
+## Commit Messages
+
+- Prefix every commit: `feat:` (new capability), `fix:` (bug fix), `perf:` (performance), `chore:` (tooling/deps/no user-facing change), `docs:`, `refactor:`, `test:`, `style:`, `ci:`, `build:`.
+- `cliff.toml` groups changelog entries by these prefixes (`feat:`→Added, `fix:`→Fixed, `chore:`/`docs:`/`test:`/`refactor:`/`style:`/`ci:`/`build:`→skipped from release notes). Wrong or missing prefix falls through to a keyword guess or the catch-all "Changed" group — always prefix correctly instead of relying on the guess.
+
 ## Child DOX Index
 
 - `src/AGENTS.md` — engine/UI source tree (audio, fluid core, fx, synth)
