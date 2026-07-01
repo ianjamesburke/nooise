@@ -129,7 +129,7 @@ impl Default for PadControls {
             detune: 0.5,
             octave_mix: 0.5,
             attack_time: 6.0,
-            release_time: 20.0,
+            release_time: 1.5,
         }
     }
 }
@@ -2508,7 +2508,7 @@ mod tests {
         assert_eq!(rows[7].label, "Attack");
         assert_close(rows[7].min, 0.05);
         assert_eq!(rows[8].label, "Release");
-        assert_close(rows[8].value, 20.0);
+        assert_close(rows[8].value, 1.5);
         assert_close(rows[8].min, 0.05);
         assert_close(rows[8].max, 20.0);
     }
