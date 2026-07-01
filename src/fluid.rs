@@ -54,6 +54,7 @@ const MASTER_BPM_MIN: f32 = 60.0;
 const MASTER_BPM_MAX: f32 = 200.0;
 const KICK_ECHO_TIME_BEATS_MIN: f32 = 0.125;
 const KICK_ECHO_TIME_BEATS_MAX: f32 = 2.0;
+const LEVEL_RAMP_MS: f32 = 100.0;
 
 #[derive(Clone)]
 pub(crate) struct MasterControls {
@@ -359,17 +360,55 @@ impl Tab {
 
 struct ControlItem {
     label: &'static str,
+    kind: ControlKind,
     value: f32,
     min: f32,
     max: f32,
     display: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControlKind {
+    Gain,
+    Continuous,
+    Timing,
+    Discrete,
+}
+
+impl ControlKind {
+    fn smooths_audio(self) -> bool {
+        matches!(self, Self::Gain)
+    }
+}
+
+#[derive(Default)]
+struct NumericEntry {
+    buffer: String,
+}
+
+impl NumericEntry {
+    fn push(&mut self, c: char) {
+        match c {
+            '0'..='9' => self.buffer.push(c),
+            '.' if !self.buffer.contains('.') => self.buffer.push(c),
+            '-' if self.buffer.is_empty() => self.buffer.push(c),
+            _ => {}
+        }
+    }
+
+    fn is_complete_number(&self) -> bool {
+        !self.buffer.is_empty() && self.buffer != "." && self.buffer != "-"
+    }
+}
+
 fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
+    use ControlKind::{Continuous, Discrete, Gain, Timing};
+
     match tab {
         Tab::Master => vec![
             ControlItem {
                 label: "Chords Vol",
+                kind: Gain,
                 value: c.pad.level,
                 min: 0.0,
                 max: 1.0,
@@ -377,6 +416,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Perc Vol",
+                kind: Gain,
                 value: c.perc.level,
                 min: 0.0,
                 max: 1.0,
@@ -384,6 +424,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Kick Vol",
+                kind: Gain,
                 value: c.kick.level,
                 min: 0.0,
                 max: 1.0,
@@ -391,6 +432,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Tonal Vol",
+                kind: Gain,
                 value: c.tonal.level,
                 min: 0.0,
                 max: 1.0,
@@ -398,6 +440,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Clap Vol",
+                kind: Gain,
                 value: c.clap.level,
                 min: 0.0,
                 max: 1.0,
@@ -405,6 +448,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Bass Vol",
+                kind: Gain,
                 value: c.bass.level,
                 min: 0.0,
                 max: 1.0,
@@ -412,6 +456,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "BPM",
+                kind: Timing,
                 value: c.master.bpm,
                 min: MASTER_BPM_MIN,
                 max: MASTER_BPM_MAX,
@@ -419,6 +464,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Master Level",
+                kind: Gain,
                 value: c.master.level,
                 min: 0.0,
                 max: 1.0,
@@ -426,6 +472,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Drive",
+                kind: Gain,
                 value: c.master.drive,
                 min: 0.0,
                 max: 1.0,
@@ -433,6 +480,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Comp Threshold",
+                kind: Continuous,
                 value: c.master.comp_threshold,
                 min: -40.0,
                 max: 0.0,
@@ -440,6 +488,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Comp Ratio",
+                kind: Continuous,
                 value: c.master.comp_ratio,
                 min: 1.0,
                 max: 8.0,
@@ -447,6 +496,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Comp Release",
+                kind: Timing,
                 value: c.master.comp_release_ms,
                 min: 10.0,
                 max: 500.0,
@@ -454,6 +504,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Tone",
+                kind: Continuous,
                 value: c.master.tone + 1.0,
                 min: 0.0,
                 max: 2.0,
@@ -467,6 +518,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Tune",
+                kind: Discrete,
                 value: c.master.tune,
                 min: -12.0,
                 max: 12.0,
@@ -480,6 +532,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
         Tab::Perc => vec![
             ControlItem {
                 label: "Level",
+                kind: Gain,
                 value: c.perc.level,
                 min: 0.0,
                 max: 1.0,
@@ -487,6 +540,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Interval",
+                kind: Timing,
                 value: c.perc.interval_beats,
                 min: 0.25,
                 max: 4.25,
@@ -498,6 +552,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Offset",
+                kind: Timing,
                 value: c.perc.offset_beats,
                 min: 0.0,
                 max: 4.0,
@@ -505,6 +560,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Decay",
+                kind: Timing,
                 value: c.perc.decay_ms,
                 min: 20.0,
                 max: 2000.0,
@@ -516,6 +572,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Filter",
+                kind: Gain,
                 value: c.perc.filter,
                 min: 0.5,
                 max: 1.0,
@@ -523,6 +580,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "LFO Rate",
+                kind: Timing,
                 value: c.perc.lfo_rate_bars,
                 min: 0.25,
                 max: 16.0,
@@ -530,6 +588,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "LFO Depth",
+                kind: Gain,
                 value: c.perc.lfo_depth,
                 min: 0.0,
                 max: 1.0,
@@ -539,6 +598,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
         Tab::Chords => vec![
             ControlItem {
                 label: "Level",
+                kind: Gain,
                 value: c.pad.level,
                 min: 0.0,
                 max: 1.0,
@@ -546,6 +606,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Chord Length",
+                kind: Timing,
                 value: c.pad.chord_bars.log2(),
                 min: 0.0,
                 max: 6.0,
@@ -553,14 +614,15 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Progression",
+                kind: Discrete,
                 value: c.pad.progression,
                 min: 0.0,
                 max: 3.0,
-                display: ["A", "B", "C", "D"][c.pad.progression.round() as usize % 4]
-                    .to_string(),
+                display: ["A", "B", "C", "D"][c.pad.progression.round() as usize % 4].to_string(),
             },
             ControlItem {
                 label: "Reverb Mix",
+                kind: Gain,
                 value: c.pad.reverb_mix,
                 min: 0.0,
                 max: 1.0,
@@ -568,6 +630,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Stereo Width",
+                kind: Gain,
                 value: c.pad.stereo_width,
                 min: 0.0,
                 max: 1.0,
@@ -575,6 +638,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Detune",
+                kind: Gain,
                 value: c.pad.detune,
                 min: 0.0,
                 max: 1.0,
@@ -582,6 +646,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Octave Mix",
+                kind: Gain,
                 value: c.pad.octave_mix,
                 min: 0.0,
                 max: 1.0,
@@ -589,6 +654,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Attack",
+                kind: Timing,
                 value: c.pad.attack_time,
                 min: 0.05,
                 max: 30.0,
@@ -596,6 +662,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Release",
+                kind: Timing,
                 value: c.pad.release_time,
                 min: 0.05,
                 max: 20.0,
@@ -605,6 +672,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
         Tab::Bass => vec![
             ControlItem {
                 label: "Level",
+                kind: Gain,
                 value: c.bass.level,
                 min: 0.0,
                 max: 1.0,
@@ -612,6 +680,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Interval",
+                kind: Timing,
                 value: c.bass.interval_beats,
                 min: 0.25,
                 max: 8.0,
@@ -619,6 +688,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Offset",
+                kind: Timing,
                 value: c.bass.offset_beats,
                 min: 0.0,
                 max: 4.0,
@@ -626,6 +696,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Rhythm",
+                kind: Discrete,
                 value: c.bass.rhythm,
                 min: 0.0,
                 max: 3.0,
@@ -633,6 +704,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Octave",
+                kind: Discrete,
                 value: c.bass.octave,
                 min: -3.0,
                 max: 0.0,
@@ -640,6 +712,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Attack",
+                kind: Timing,
                 value: c.bass.attack_time,
                 min: 0.005,
                 max: 1.0,
@@ -647,6 +720,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Decay",
+                kind: Timing,
                 value: c.bass.decay_time,
                 min: 0.005,
                 max: 2.0,
@@ -654,6 +728,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Drive",
+                kind: Gain,
                 value: c.bass.drive,
                 min: 0.0,
                 max: 1.0,
@@ -663,6 +738,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
         Tab::Kick => vec![
             ControlItem {
                 label: "Level",
+                kind: Gain,
                 value: c.kick.level,
                 min: 0.0,
                 max: 1.0,
@@ -670,6 +746,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Interval",
+                kind: Timing,
                 value: c.kick.interval_beats,
                 min: 0.25,
                 max: 4.0,
@@ -677,6 +754,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Offset",
+                kind: Timing,
                 value: c.kick.offset_beats,
                 min: 0.0,
                 max: 4.0,
@@ -684,6 +762,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Start Freq",
+                kind: Continuous,
                 value: c.kick.start_freq,
                 min: 40.0,
                 max: 200.0,
@@ -691,6 +770,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Pitch Decay",
+                kind: Timing,
                 value: c.kick.pitch_decay_ms,
                 min: 10.0,
                 max: 300.0,
@@ -698,6 +778,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Amp Decay",
+                kind: Timing,
                 value: c.kick.amp_decay_ms,
                 min: 50.0,
                 max: 1000.0,
@@ -705,6 +786,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Click",
+                kind: Gain,
                 value: c.kick.click,
                 min: 0.0,
                 max: 0.2,
@@ -712,6 +794,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Drive",
+                kind: Gain,
                 value: c.kick.drive,
                 min: 0.0,
                 max: 1.0,
@@ -719,6 +802,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Filter",
+                kind: Gain,
                 value: c.kick.filter,
                 min: 0.0,
                 max: 1.0,
@@ -726,6 +810,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Echo Time",
+                kind: Timing,
                 value: c.kick.echo_time_beats,
                 min: KICK_ECHO_TIME_BEATS_MIN,
                 max: KICK_ECHO_TIME_BEATS_MAX,
@@ -733,6 +818,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Echo Filter",
+                kind: Gain,
                 value: c.kick.echo_filter,
                 min: 0.0,
                 max: 1.0,
@@ -740,6 +826,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Echo Amount",
+                kind: Gain,
                 value: c.kick.echo_amount,
                 min: 0.0,
                 max: 0.9,
@@ -747,6 +834,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Echo Feedback",
+                kind: Gain,
                 value: c.kick.echo_feedback,
                 min: 0.0,
                 max: 0.85,
@@ -756,6 +844,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
         Tab::Tonal => vec![
             ControlItem {
                 label: "Level",
+                kind: Gain,
                 value: c.tonal.level,
                 min: 0.0,
                 max: 1.0,
@@ -763,6 +852,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Interval",
+                kind: Timing,
                 value: c.tonal.step_interval_beats,
                 min: 0.5,
                 max: 4.0,
@@ -770,6 +860,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Offset",
+                kind: Timing,
                 value: c.tonal.offset_beats,
                 min: 0.0,
                 max: 4.0,
@@ -777,6 +868,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Randomness",
+                kind: Gain,
                 value: c.tonal.randomness,
                 min: 0.0,
                 max: 1.0,
@@ -784,6 +876,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Note Length",
+                kind: Timing,
                 value: c.tonal.note_length_beats,
                 min: 0.1,
                 max: 2.0,
@@ -791,6 +884,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Reverb Mix",
+                kind: Gain,
                 value: c.tonal.reverb_mix,
                 min: 0.0,
                 max: 1.0,
@@ -800,6 +894,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
         Tab::Clap => vec![
             ControlItem {
                 label: "Level",
+                kind: Gain,
                 value: c.clap.level,
                 min: 0.0,
                 max: 1.0,
@@ -807,6 +902,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Interval",
+                kind: Timing,
                 value: c.clap.interval_beats,
                 min: 0.5,
                 max: 8.0,
@@ -814,6 +910,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Offset",
+                kind: Timing,
                 value: c.clap.offset_beats,
                 min: 0.0,
                 max: 8.0,
@@ -821,6 +918,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Slap Count",
+                kind: Discrete,
                 value: c.clap.slap_count,
                 min: 1.0,
                 max: 8.0,
@@ -828,6 +926,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Slap Spread",
+                kind: Timing,
                 value: c.clap.slap_spread_ms,
                 min: 0.0,
                 max: 100.0,
@@ -835,6 +934,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Decay",
+                kind: Timing,
                 value: c.clap.decay_ms,
                 min: 10.0,
                 max: 200.0,
@@ -842,6 +942,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Filter",
+                kind: Gain,
                 value: c.clap.filter,
                 min: 0.5,
                 max: 1.0,
@@ -849,6 +950,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Room",
+                kind: Gain,
                 value: c.clap.room,
                 min: 0.0,
                 max: 1.0,
@@ -856,6 +958,7 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             },
             ControlItem {
                 label: "Body",
+                kind: Gain,
                 value: c.clap.body,
                 min: 0.0,
                 max: 1.0,
@@ -1066,6 +1169,119 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
     }
 }
 
+fn normalize_unit_input(value: f32) -> f32 {
+    if value > 1.0 {
+        (value / 100.0).clamp(0.0, 1.0)
+    } else {
+        value.clamp(0.0, 1.0)
+    }
+}
+
+fn snap_step(value: f32, step: f32) -> f32 {
+    (value / step).round() * step
+}
+
+fn nearest_power_of_two(value: f32, min: f32, max: f32) -> f32 {
+    let clamped = value.clamp(min, max);
+    let exponent = clamped.log2().round();
+    2.0f32.powf(exponent).clamp(min, max)
+}
+
+fn apply_value(tab: Tab, selected: usize, value: f32, c: &mut FluidControls) {
+    match tab {
+        Tab::Master => match selected {
+            0 => c.pad.level = normalize_unit_input(value),
+            1 => c.perc.level = normalize_unit_input(value),
+            2 => c.kick.level = normalize_unit_input(value),
+            3 => c.tonal.level = normalize_unit_input(value),
+            4 => c.clap.level = normalize_unit_input(value),
+            5 => c.bass.level = normalize_unit_input(value),
+            6 => c.master.bpm = value.round().clamp(MASTER_BPM_MIN, MASTER_BPM_MAX),
+            7 => c.master.level = normalize_unit_input(value),
+            8 => c.master.drive = normalize_unit_input(value),
+            9 => c.master.comp_threshold = value.round().clamp(-40.0, 0.0),
+            10 => c.master.comp_ratio = snap_step(value, 0.25).clamp(1.0, 8.0),
+            11 => c.master.comp_release_ms = snap_step(value, 10.0).clamp(10.0, 500.0),
+            12 => c.master.tone = value.clamp(-1.0, 1.0),
+            13 => c.master.tune = value.round().clamp(-12.0, 12.0),
+            _ => {}
+        },
+        Tab::Perc => match selected {
+            0 => c.perc.level = normalize_unit_input(value),
+            1 => c.perc.interval_beats = snap_step(value, 0.25).clamp(0.25, 4.25),
+            2 => c.perc.offset_beats = snap_step(value, 0.25).clamp(0.0, 4.0),
+            3 => c.perc.decay_ms = value.clamp(20.0, 2000.0),
+            4 => c.perc.filter = normalize_unit_input(value).clamp(0.5, 1.0),
+            5 => c.perc.lfo_rate_bars = snap_step(value, 0.25).clamp(0.25, 16.0),
+            6 => c.perc.lfo_depth = normalize_unit_input(value),
+            _ => {}
+        },
+        Tab::Chords => match selected {
+            0 => c.pad.level = normalize_unit_input(value),
+            1 => c.pad.chord_bars = nearest_power_of_two(value, 1.0, 64.0),
+            2 => c.pad.progression = value.round().clamp(0.0, 3.0),
+            3 => c.pad.reverb_mix = normalize_unit_input(value),
+            4 => c.pad.stereo_width = normalize_unit_input(value),
+            5 => c.pad.detune = normalize_unit_input(value),
+            6 => c.pad.octave_mix = normalize_unit_input(value),
+            7 => c.pad.attack_time = value.clamp(0.05, 30.0),
+            8 => c.pad.release_time = value.clamp(0.05, 20.0),
+            _ => {}
+        },
+        Tab::Bass => match selected {
+            0 => c.bass.level = normalize_unit_input(value),
+            1 => c.bass.interval_beats = snap_step(value, 0.25).clamp(0.25, 8.0),
+            2 => c.bass.offset_beats = snap_step(value, 0.25).clamp(0.0, 4.0),
+            3 => c.bass.rhythm = value.round().clamp(0.0, 3.0),
+            4 => c.bass.octave = value.round().clamp(-3.0, 0.0),
+            5 => c.bass.attack_time = value.clamp(0.005, 1.0),
+            6 => c.bass.decay_time = value.clamp(0.005, 2.0),
+            7 => c.bass.drive = normalize_unit_input(value),
+            _ => {}
+        },
+        Tab::Kick => match selected {
+            0 => c.kick.level = normalize_unit_input(value),
+            1 => c.kick.interval_beats = snap_step(value, 0.25).clamp(0.25, 4.0),
+            2 => c.kick.offset_beats = snap_step(value, 0.25).clamp(0.0, 4.0),
+            3 => c.kick.start_freq = snap_step(value, 5.0).clamp(40.0, 200.0),
+            4 => c.kick.pitch_decay_ms = snap_step(value, 5.0).clamp(10.0, 300.0),
+            5 => c.kick.amp_decay_ms = snap_step(value, 20.0).clamp(50.0, 1000.0),
+            6 => c.kick.click = normalize_unit_input(value) * 0.2,
+            7 => c.kick.drive = normalize_unit_input(value),
+            8 => c.kick.filter = normalize_unit_input(value),
+            9 => {
+                c.kick.echo_time_beats = snap_step(value, 0.125)
+                    .clamp(KICK_ECHO_TIME_BEATS_MIN, KICK_ECHO_TIME_BEATS_MAX)
+            }
+            10 => c.kick.echo_filter = normalize_unit_input(value),
+            11 => c.kick.echo_amount = normalize_unit_input(value) * 0.9,
+            12 => c.kick.echo_feedback = normalize_unit_input(value) * 0.85,
+            _ => {}
+        },
+        Tab::Tonal => match selected {
+            0 => c.tonal.level = normalize_unit_input(value),
+            1 => c.tonal.step_interval_beats = snap_step(value, 0.25).clamp(0.5, 4.0),
+            2 => c.tonal.offset_beats = snap_step(value, 0.25).clamp(0.0, 4.0),
+            3 => c.tonal.randomness = normalize_unit_input(value),
+            4 => c.tonal.note_length_beats = value.clamp(0.1, 2.0),
+            5 => c.tonal.reverb_mix = normalize_unit_input(value),
+            _ => {}
+        },
+        Tab::Clap => match selected {
+            0 => c.clap.level = normalize_unit_input(value),
+            1 => c.clap.interval_beats = snap_step(value, 0.25).clamp(0.5, 8.0),
+            2 => c.clap.offset_beats = snap_step(value, 0.25).clamp(0.0, 8.0),
+            3 => c.clap.slap_count = value.round().clamp(1.0, 8.0),
+            4 => c.clap.slap_spread_ms = snap_step(value, 2.0).clamp(0.0, 100.0),
+            5 => c.clap.decay_ms = snap_step(value, 5.0).clamp(10.0, 200.0),
+            6 => c.clap.filter = normalize_unit_input(value).clamp(0.5, 1.0),
+            7 => c.clap.room = normalize_unit_input(value),
+            8 => c.clap.body = normalize_unit_input(value),
+            _ => {}
+        },
+    }
+}
+
 fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controls: Arc<ArcSwap<FluidControls>>,
@@ -1073,8 +1289,10 @@ fn ui_loop(
 ) -> Result<(), Box<dyn Error>> {
     let mut tab = Tab::Master;
     let mut selected = 0usize;
+    let mut numeric_entry: Option<NumericEntry> = None;
     let mut fluid = FluidState::new();
     let mut last = Instant::now();
+    let started = Instant::now();
 
     loop {
         let c = FluidControls::clone(&controls.load());
@@ -1087,12 +1305,42 @@ fn ui_loop(
         last = now;
         fluid.tick(dt, &telemetry);
 
-        terminal.draw(|f| render(f, &items, tab, selected, &fluid))?;
+        let cursor_visible = (started.elapsed().as_millis() / 400).is_multiple_of(2);
+        terminal.draw(|f| {
+            render(
+                f,
+                &items,
+                tab,
+                selected,
+                numeric_entry.as_ref().map(|entry| entry.buffer.as_str()),
+                cursor_visible,
+                &fluid,
+            )
+        })?;
 
         if event::poll(std::time::Duration::from_millis(16))?
             && let Event::Key(key) = event::read()?
         {
             if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            if let Some(entry) = numeric_entry.as_mut() {
+                match key.code {
+                    KeyCode::Esc => numeric_entry = None,
+                    KeyCode::Enter => {
+                        if entry.is_complete_number()
+                            && let Ok(value) = entry.buffer.parse::<f32>()
+                        {
+                            set_value(&controls, tab, selected, value);
+                        }
+                        numeric_entry = None;
+                    }
+                    KeyCode::Backspace => {
+                        entry.buffer.pop();
+                    }
+                    KeyCode::Char(c) => entry.push(c),
+                    _ => {}
+                }
                 continue;
             }
             match key.code {
@@ -1118,6 +1366,11 @@ fn ui_loop(
                 }
                 KeyCode::Left | KeyCode::Char('h') => adjust(&controls, tab, selected, -1.0),
                 KeyCode::Right | KeyCode::Char('l') => adjust(&controls, tab, selected, 1.0),
+                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
+                    let mut entry = NumericEntry::default();
+                    entry.push(c);
+                    numeric_entry = Some(entry);
+                }
                 _ => {}
             }
         }
@@ -1138,14 +1391,30 @@ fn reset_to_min(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usiz
     controls.store(Arc::new(next));
 }
 
+fn set_value(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize, value: f32) {
+    let mut next = FluidControls::clone(&controls.load());
+    apply_value(tab, selected, value, &mut next);
+    controls.store(Arc::new(next));
+}
+
 fn render(
     f: &mut Frame,
     items: &[ControlItem],
     active_tab: Tab,
     selected: usize,
+    numeric_entry: Option<&str>,
+    cursor_visible: bool,
     fluid: &FluidState,
 ) {
-    render_fluid(f, items, active_tab, selected, fluid);
+    render_fluid(
+        f,
+        items,
+        active_tab,
+        selected,
+        numeric_entry,
+        cursor_visible,
+        fluid,
+    );
 }
 
 // ============================================================
@@ -1301,6 +1570,8 @@ fn render_fluid(
     items: &[ControlItem],
     active_tab: Tab,
     selected: usize,
+    numeric_entry: Option<&str>,
+    cursor_visible: bool,
     fluid: &FluidState,
 ) {
     let area = f.area();
@@ -1379,6 +1650,16 @@ fn render_fluid(
         let active = i == selected;
         let bar = ratio_bar(item_ratio(item), bar_w, '█', '░');
         let prefix = if active { "▶ " } else { "  " };
+        let display = if active {
+            if let Some(entry) = numeric_entry {
+                let cursor = if cursor_visible { "_" } else { " " };
+                format!("> {entry}{cursor}")
+            } else {
+                item.display.clone()
+            }
+        } else {
+            item.display.clone()
+        };
         let fg = if active {
             Color::Rgb(120, 230, 255)
         } else {
@@ -1389,7 +1670,7 @@ fn render_fluid(
             style = style.add_modifier(Modifier::BOLD);
         }
         rows.push(Line::from(Span::styled(
-            format!("{prefix}{:<15} {bar} {}", item.label, item.display),
+            format!("{prefix}{:<15} {bar} {display}", item.label),
             style,
         )));
         if i + 1 < items.len() {
@@ -1399,7 +1680,7 @@ fn render_fluid(
     f.render_widget(Paragraph::new(rows), layout[4]);
 
     f.render_widget(
-        Paragraph::new("jk select   hl adjust   H min   Tab layer   q quit")
+        Paragraph::new("jk select   hl adjust   type value   Enter set   Esc cancel   q quit")
             .alignment(Alignment::Center)
             .style(Style::default().fg(Color::Rgb(120, 128, 145))),
         layout[5],
@@ -1411,7 +1692,11 @@ fn item_ratio(item: &ControlItem) -> f32 {
     if range.abs() <= f32::EPSILON {
         0.0
     } else {
-        ((item.value - item.min) / range).clamp(0.0, 1.0)
+        let value = match item.kind {
+            ControlKind::Discrete => item.value.round(),
+            ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing => item.value,
+        };
+        ((value - item.min) / range).clamp(0.0, 1.0)
     }
 }
 
@@ -1434,6 +1719,7 @@ struct FluidEngine {
     current_sample: u64,
     sample_rate: f32,
     tempo: TempoClock,
+    gain_smoothers: GainSmoothers,
     pad: PadEngine,
     perc: PercEngine,
     kick: KickEngine,
@@ -1456,6 +1742,7 @@ impl FluidEngine {
             current_sample: 0,
             sample_rate,
             tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
+            gain_smoothers: GainSmoothers::new(&snapshot),
             pad: PadEngine::new(sample_rate, &snapshot.pad, Arc::clone(&telemetry)),
             perc: PercEngine::new(sample_rate),
             kick: KickEngine::new(sample_rate, telemetry),
@@ -1473,20 +1760,21 @@ impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         if self.current_sample.is_multiple_of(512) {
             self.snapshot = FluidControls::clone(&self.controls.load());
+            self.gain_smoothers
+                .set_targets(&self.snapshot, self.sample_rate);
         }
 
         let fade = (self.current_sample as f32 / (self.sample_rate * 8.0)).min(1.0);
-        let timing = self.tempo.tick(self.snapshot.master.bpm);
+        let smoothed = self.gain_smoothers.next_controls(&self.snapshot);
+        let timing = self.tempo.tick(smoothed.master.bpm);
 
-        let tune = self.snapshot.master.tune;
-        let (pad_l, pad_r) = self.pad.next(&self.snapshot.pad, tune, timing);
-        let perc = self.perc.next(&self.snapshot.perc, timing);
-        let (kick_l, kick_r) = self.kick.next(&self.snapshot.kick, timing);
-        let (ton_l, ton_r) = self.tonal.next(&self.snapshot.tonal, timing);
-        let (clap_l, clap_r) = self.clap.next(&self.snapshot.clap, timing);
-        let (bass_l, bass_r) =
-            self.bass
-                .next(&self.snapshot.bass, &self.snapshot.pad, tune, timing);
+        let tune = smoothed.master.tune;
+        let (pad_l, pad_r) = self.pad.next(&smoothed.pad, tune, timing);
+        let perc = self.perc.next(&smoothed.perc, timing);
+        let (kick_l, kick_r) = self.kick.next(&smoothed.kick, timing);
+        let (ton_l, ton_r) = self.tonal.next(&smoothed.tonal, timing);
+        let (clap_l, clap_r) = self.clap.next(&smoothed.clap, timing);
+        let (bass_l, bass_r) = self.bass.next(&smoothed.bass, &smoothed.pad, tune, timing);
 
         self.current_sample += 1;
 
@@ -1495,7 +1783,243 @@ impl StereoEngine for FluidEngine {
         let raw_r =
             (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65 + bass_r * 0.75) * fade;
         self.master_bus
-            .process(raw_l, raw_r, &self.snapshot.master, self.sample_rate)
+            .process(raw_l, raw_r, &smoothed.master, self.sample_rate)
+    }
+}
+
+struct GainSmoother {
+    current: f32,
+    target: f32,
+    step: f32,
+    samples_remaining: u32,
+}
+
+impl GainSmoother {
+    fn new(value: f32) -> Self {
+        Self {
+            current: value,
+            target: value,
+            step: 0.0,
+            samples_remaining: 0,
+        }
+    }
+
+    fn set_target(&mut self, target: f32, ramp_samples: u32) {
+        if (target - self.target).abs() <= f32::EPSILON {
+            return;
+        }
+        self.target = target;
+        self.samples_remaining = ramp_samples.max(1);
+        self.step = (self.target - self.current) / self.samples_remaining as f32;
+    }
+
+    fn next(&mut self) -> f32 {
+        if self.samples_remaining == 0 {
+            self.current = self.target;
+            return self.current;
+        }
+        self.current += self.step;
+        self.samples_remaining -= 1;
+        if self.samples_remaining == 0 {
+            self.current = self.target;
+        }
+        self.current
+    }
+}
+
+fn set_smooth_target(
+    smoother: &mut GainSmoother,
+    kind: ControlKind,
+    target: f32,
+    ramp_samples: u32,
+) {
+    if kind.smooths_audio() {
+        smoother.set_target(target, ramp_samples);
+    }
+}
+
+struct GainSmoothers {
+    pad: GainSmoother,
+    pad_reverb_mix: GainSmoother,
+    pad_stereo_width: GainSmoother,
+    pad_detune: GainSmoother,
+    pad_octave_mix: GainSmoother,
+    perc: GainSmoother,
+    perc_filter: GainSmoother,
+    perc_lfo_depth: GainSmoother,
+    kick: GainSmoother,
+    kick_echo_filter: GainSmoother,
+    kick_echo_amount: GainSmoother,
+    kick_echo_feedback: GainSmoother,
+    tonal: GainSmoother,
+    tonal_reverb_mix: GainSmoother,
+    clap: GainSmoother,
+    clap_room: GainSmoother,
+    bass: GainSmoother,
+    master: GainSmoother,
+    master_drive: GainSmoother,
+}
+
+impl GainSmoothers {
+    fn new(c: &FluidControls) -> Self {
+        Self {
+            pad: GainSmoother::new(c.pad.level),
+            pad_reverb_mix: GainSmoother::new(c.pad.reverb_mix),
+            pad_stereo_width: GainSmoother::new(c.pad.stereo_width),
+            pad_detune: GainSmoother::new(c.pad.detune),
+            pad_octave_mix: GainSmoother::new(c.pad.octave_mix),
+            perc: GainSmoother::new(c.perc.level),
+            perc_filter: GainSmoother::new(c.perc.filter),
+            perc_lfo_depth: GainSmoother::new(c.perc.lfo_depth),
+            kick: GainSmoother::new(c.kick.level),
+            kick_echo_filter: GainSmoother::new(c.kick.echo_filter),
+            kick_echo_amount: GainSmoother::new(c.kick.echo_amount),
+            kick_echo_feedback: GainSmoother::new(c.kick.echo_feedback),
+            tonal: GainSmoother::new(c.tonal.level),
+            tonal_reverb_mix: GainSmoother::new(c.tonal.reverb_mix),
+            clap: GainSmoother::new(c.clap.level),
+            clap_room: GainSmoother::new(c.clap.room),
+            bass: GainSmoother::new(c.bass.level),
+            master: GainSmoother::new(c.master.level),
+            master_drive: GainSmoother::new(c.master.drive),
+        }
+    }
+
+    fn set_targets(&mut self, c: &FluidControls, sample_rate: f32) {
+        let ramp_samples = (LEVEL_RAMP_MS * 0.001 * sample_rate).round() as u32;
+        set_smooth_target(&mut self.pad, ControlKind::Gain, c.pad.level, ramp_samples);
+        set_smooth_target(
+            &mut self.pad_reverb_mix,
+            ControlKind::Gain,
+            c.pad.reverb_mix,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.pad_stereo_width,
+            ControlKind::Gain,
+            c.pad.stereo_width,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.pad_detune,
+            ControlKind::Gain,
+            c.pad.detune,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.pad_octave_mix,
+            ControlKind::Gain,
+            c.pad.octave_mix,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.perc,
+            ControlKind::Gain,
+            c.perc.level,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.perc_filter,
+            ControlKind::Gain,
+            c.perc.filter,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.perc_lfo_depth,
+            ControlKind::Gain,
+            c.perc.lfo_depth,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.kick,
+            ControlKind::Gain,
+            c.kick.level,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.kick_echo_filter,
+            ControlKind::Gain,
+            c.kick.echo_filter,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.kick_echo_amount,
+            ControlKind::Gain,
+            c.kick.echo_amount,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.kick_echo_feedback,
+            ControlKind::Gain,
+            c.kick.echo_feedback,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.tonal,
+            ControlKind::Gain,
+            c.tonal.level,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.tonal_reverb_mix,
+            ControlKind::Gain,
+            c.tonal.reverb_mix,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.clap,
+            ControlKind::Gain,
+            c.clap.level,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.clap_room,
+            ControlKind::Gain,
+            c.clap.room,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.bass,
+            ControlKind::Gain,
+            c.bass.level,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.master,
+            ControlKind::Gain,
+            c.master.level,
+            ramp_samples,
+        );
+        set_smooth_target(
+            &mut self.master_drive,
+            ControlKind::Gain,
+            c.master.drive,
+            ramp_samples,
+        );
+    }
+
+    fn next_controls(&mut self, c: &FluidControls) -> FluidControls {
+        let mut next = c.clone();
+        next.pad.level = self.pad.next();
+        next.pad.reverb_mix = self.pad_reverb_mix.next();
+        next.pad.stereo_width = self.pad_stereo_width.next();
+        next.pad.detune = self.pad_detune.next();
+        next.pad.octave_mix = self.pad_octave_mix.next();
+        next.perc.level = self.perc.next();
+        next.perc.filter = self.perc_filter.next();
+        next.perc.lfo_depth = self.perc_lfo_depth.next();
+        next.kick.level = self.kick.next();
+        next.kick.echo_filter = self.kick_echo_filter.next();
+        next.kick.echo_amount = self.kick_echo_amount.next();
+        next.kick.echo_feedback = self.kick_echo_feedback.next();
+        next.tonal.level = self.tonal.next();
+        next.tonal.reverb_mix = self.tonal_reverb_mix.next();
+        next.clap.level = self.clap.next();
+        next.clap.room = self.clap_room.next();
+        next.bass.level = self.bass.next();
+        next.master.level = self.master.next();
+        next.master.drive = self.master_drive.next();
+        next
     }
 }
 
@@ -1840,7 +2364,14 @@ impl PadLayer {
         release_time: f32,
     ) -> Self {
         Self {
-            tones: pad_tones(progression, step, tune, sample_rate, attack_time, release_time),
+            tones: pad_tones(
+                progression,
+                step,
+                tune,
+                sample_rate,
+                attack_time,
+                release_time,
+            ),
         }
     }
     fn next_stereo(&mut self, width: f32, detune_mix: f32, octave_mix: f32) -> (f32, f32) {
@@ -1919,7 +2450,9 @@ fn pad_tones(
         .iter()
         .zip(pans)
         .zip(gains)
-        .map(|((hz, pan), gain)| PadTone::new(*hz, pan, gain, attack_time, release_time, sample_rate))
+        .map(|((hz, pan), gain)| {
+            PadTone::new(*hz, pan, gain, attack_time, release_time, sample_rate)
+        })
         .collect()
 }
 
@@ -2014,13 +2547,13 @@ const BASS_RHYTHMS: [[bool; 16]; 4] = [
     ],
     // B: syncopated — pickup into 1, push before 3, quick pickups into 4
     [
-        true, false, false, true, false, false, true, false, true, true, false, false, true,
-        true, false, false,
+        true, false, false, true, false, false, true, false, true, true, false, false, true, true,
+        false, false,
     ],
     // C: straight eighths — steady walking-bass feel
     [
-        true, false, true, false, true, false, true, false, true, false, true, false, true,
-        false, true, false,
+        true, false, true, false, true, false, true, false, true, false, true, false, true, false,
+        true, false,
     ],
     // D: busy 16th groove
     [
@@ -2070,15 +2603,20 @@ impl BassEngine {
             self.step_index = (self.step_index + 1) % 8;
         }
 
-        let loop_len = (c.interval_beats / BASS_STEP_BEATS).round().clamp(1.0, 32.0) as usize;
-        if self.step_trigger.pop(timing, BASS_STEP_BEATS, c.offset_beats) {
+        let loop_len = (c.interval_beats / BASS_STEP_BEATS)
+            .round()
+            .clamp(1.0, 32.0) as usize;
+        if self
+            .step_trigger
+            .pop(timing, BASS_STEP_BEATS, c.offset_beats)
+        {
             self.rhythm_step = (self.rhythm_step + 1) % loop_len;
             let rhythm = (c.rhythm.round() as usize) % BASS_RHYTHMS.len();
             let hit = self.rhythm_step < BASS_RHYTHMS[rhythm].len()
                 && BASS_RHYTHMS[rhythm][self.rhythm_step];
             if hit {
-                let note = bass_root_note(progression, self.step_index)
-                    + (c.octave.round() as i32) * 12;
+                let note =
+                    bass_root_note(progression, self.step_index) + (c.octave.round() as i32) * 12;
                 let hz = midi_to_hz(note) * tune_ratio(tune);
                 for voice in &mut self.voices {
                     voice.release();
@@ -2781,7 +3319,7 @@ mod tests {
         let items = tab_controls(Tab::Master, &controls);
 
         terminal
-            .draw(|f| render(f, &items, Tab::Master, 0, &fluid))
+            .draw(|f| render(f, &items, Tab::Master, 0, None, false, &fluid))
             .unwrap();
     }
 
@@ -2830,6 +3368,138 @@ mod tests {
         controls.pad.chord_bars = 16.0;
         apply_min(Tab::Chords, 1, &mut controls);
         assert_close(controls.pad.chord_bars, 1.0);
+    }
+
+    #[test]
+    fn apply_value_accepts_percent_style_unit_controls() {
+        let mut controls = FluidControls::default();
+
+        apply_value(Tab::Master, 7, 42.0, &mut controls);
+        assert_close(controls.master.level, 0.42);
+
+        apply_value(Tab::Master, 7, 0.7, &mut controls);
+        assert_close(controls.master.level, 0.7);
+    }
+
+    #[test]
+    fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
+        let mut controls = FluidControls::default();
+
+        apply_value(Tab::Kick, 1, 1.13, &mut controls);
+        assert_close(controls.kick.interval_beats, 1.25);
+
+        apply_value(Tab::Chords, 1, 12.0, &mut controls);
+        assert_close(controls.pad.chord_bars, 16.0);
+
+        apply_value(Tab::Clap, 3, 3.6, &mut controls);
+        assert_close(controls.clap.slap_count, 4.0);
+    }
+
+    #[test]
+    fn tab_controls_classify_each_slider_kind() {
+        use ControlKind::{Continuous, Discrete, Gain, Timing};
+
+        let controls = FluidControls::default();
+        let cases = [
+            (
+                Tab::Master,
+                vec![
+                    Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Gain, Continuous, Continuous,
+                    Timing, Continuous, Discrete,
+                ],
+            ),
+            (
+                Tab::Perc,
+                vec![Gain, Timing, Timing, Timing, Gain, Timing, Gain],
+            ),
+            (
+                Tab::Chords,
+                vec![
+                    Gain, Timing, Discrete, Gain, Gain, Gain, Gain, Timing, Timing,
+                ],
+            ),
+            (
+                Tab::Bass,
+                vec![
+                    Gain, Timing, Timing, Discrete, Discrete, Timing, Timing, Gain,
+                ],
+            ),
+            (
+                Tab::Kick,
+                vec![
+                    Gain, Timing, Timing, Continuous, Timing, Timing, Gain, Gain, Gain, Timing,
+                    Gain, Gain, Gain,
+                ],
+            ),
+            (Tab::Tonal, vec![Gain, Timing, Timing, Gain, Timing, Gain]),
+            (
+                Tab::Clap,
+                vec![
+                    Gain, Timing, Timing, Discrete, Timing, Timing, Gain, Gain, Gain,
+                ],
+            ),
+        ];
+
+        for (tab, expected) in cases {
+            let actual: Vec<_> = tab_controls(tab, &controls)
+                .into_iter()
+                .map(|item| item.kind)
+                .collect();
+            assert_eq!(actual, expected, "unexpected kind map for {}", tab.name());
+        }
+    }
+
+    #[test]
+    fn control_kind_smoothing_policy_is_explicit() {
+        assert!(ControlKind::Gain.smooths_audio());
+        assert!(!ControlKind::Continuous.smooths_audio());
+        assert!(!ControlKind::Timing.smooths_audio());
+        assert!(!ControlKind::Discrete.smooths_audio());
+    }
+
+    #[test]
+    fn gain_smoother_reaches_target_over_ramp() {
+        let mut smoother = GainSmoother::new(0.0);
+        smoother.set_target(1.0, 10);
+
+        assert_close(smoother.next(), 0.1);
+        for _ in 0..8 {
+            smoother.next();
+        }
+        assert_close(smoother.next(), 1.0);
+        assert_close(smoother.next(), 1.0);
+    }
+
+    #[test]
+    fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
+        let mut controls = FluidControls::default();
+        controls.pad.level = 0.0;
+        controls.pad.reverb_mix = 0.0;
+        controls.perc.filter = 0.5;
+        controls.kick.echo_amount = 0.0;
+        controls.master.level = 0.0;
+        controls.master.drive = 0.0;
+
+        let mut smoothers = GainSmoothers::new(&controls);
+        controls.pad.level = 1.0;
+        controls.pad.reverb_mix = 1.0;
+        controls.perc.filter = 1.0;
+        controls.kick.echo_amount = 0.9;
+        controls.master.level = 0.5;
+        controls.master.drive = 1.0;
+        controls.master.bpm = 123.0;
+        controls.bass.drive = 1.0;
+        smoothers.set_targets(&controls, 100.0);
+
+        let next = smoothers.next_controls(&controls);
+        assert_close(next.master.bpm, 123.0);
+        assert!(next.pad.level > 0.0 && next.pad.level < 1.0);
+        assert!(next.pad.reverb_mix > 0.0 && next.pad.reverb_mix < 1.0);
+        assert!(next.perc.filter > 0.5 && next.perc.filter < 1.0);
+        assert!(next.kick.echo_amount > 0.0 && next.kick.echo_amount < 0.9);
+        assert!(next.master.level > 0.0 && next.master.level < 0.5);
+        assert!(next.master.drive > 0.0 && next.master.drive < 1.0);
+        assert_close(next.bass.drive, 1.0);
     }
 
     #[test]
@@ -3052,6 +3722,7 @@ mod tests {
         controls.interval_beats = 4.25;
 
         let mut engine = PercEngine::new(SAMPLE_RATE);
+        engine.rng = StdRng::seed_from_u64(7);
         let bpm = 82.0;
         for sample in 0..(SAMPLE_RATE as u64 * 2) {
             let t = timing(sample, bpm);
@@ -3068,6 +3739,7 @@ mod tests {
         controls.interval_beats = 4.25;
 
         let mut engine = PercEngine::new(SAMPLE_RATE);
+        engine.rng = StdRng::seed_from_u64(7);
         let bpm = 82.0;
         let window_samples = (SAMPLE_RATE * 0.01) as usize;
         let total_samples = SAMPLE_RATE as usize * 2;
@@ -3091,7 +3763,10 @@ mod tests {
         let min_rms = rms_tail.iter().cloned().fold(f32::INFINITY, f32::min);
         let max_rms = rms_tail.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-        assert!(min_rms > 0.0, "continuous mode produced silence in a window");
+        assert!(
+            min_rms > 0.0,
+            "continuous mode produced silence in a window"
+        );
         assert!(
             max_rms / min_rms < 2.0,
             "windowed RMS varies too much ({min_rms}..{max_rms}), suggests periodic triggering survived"
@@ -3177,7 +3852,10 @@ mod tests {
             let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
         }
         let final_index = pad.telemetry.chord_index.load(Ordering::Relaxed);
-        assert!(final_index < 8, "step_index must wrap into 0..8, got {final_index}");
+        assert!(
+            final_index < 8,
+            "step_index must wrap into 0..8, got {final_index}"
+        );
     }
 
     #[test]
