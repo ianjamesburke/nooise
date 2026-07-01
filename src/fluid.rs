@@ -122,14 +122,14 @@ impl Default for PadControls {
     fn default() -> Self {
         Self {
             level: 0.7,
-            chord_bars: 1.0,
+            chord_bars: 8.0,
             progression: 0.0,
             reverb_mix: 0.8,
             stereo_width: 0.8,
             detune: 0.5,
             octave_mix: 0.5,
             attack_time: 6.0,
-            release_time: 1.5,
+            release_time: 8.0,
         }
     }
 }
@@ -1768,15 +1768,18 @@ fn midi_to_hz(note: i32) -> f32 {
 }
 
 const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
+    // Progression A: with an 8s release, each chord rings well into the next
+    // (and beyond), so voicings are chosen to hold at least one common tone
+    // across every step, including the loop back to step 0.
     [
         [45, 50, 55, 60], // Am
-        [43, 50, 57, 60], // G
-        [45, 52, 55, 62], // Am (alt voicing)
-        [47, 52, 55, 62], // B
-        [45, 50, 57, 64], // Am (alt voicing)
-        [43, 50, 55, 59], // G
-        [48, 55, 60, 64], // C
-        [52, 59, 64, 67], // Em (open, non-tonic close)
+        [43, 50, 57, 60], // G   (holds D3/C4 from Am)
+        [45, 52, 57, 60], // Am (alt voicing, holds A3/C4 from G)
+        [47, 52, 55, 62], // B   (holds E3 from Am)
+        [45, 52, 57, 64], // Am (alt voicing, holds E3 from B)
+        [43, 50, 55, 62], // G   (parallel shift from Am, glides in stepwise)
+        [48, 55, 60, 64], // C   (holds G3 from G)
+        [55, 59, 64, 67], // Em (holds G3/C4 from C, and G3 back into Am)
     ],
     [
         [45, 50, 57, 60], // Am
@@ -2390,9 +2393,9 @@ mod tests {
     }
 
     #[test]
-    fn pad_defaults_use_progression_a_and_one_bar_chords() {
+    fn pad_defaults_use_progression_a_and_eight_bar_chords() {
         let controls = PadControls::default();
-        assert_close(controls.chord_bars, 1.0);
+        assert_close(controls.chord_bars, 8.0);
         assert_close(controls.progression, 0.0);
     }
 
@@ -2508,7 +2511,7 @@ mod tests {
         assert_eq!(rows[7].label, "Attack");
         assert_close(rows[7].min, 0.05);
         assert_eq!(rows[8].label, "Release");
-        assert_close(rows[8].value, 1.5);
+        assert_close(rows[8].value, 8.0);
         assert_close(rows[8].min, 0.05);
         assert_close(rows[8].max, 20.0);
     }
