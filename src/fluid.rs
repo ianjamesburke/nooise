@@ -109,6 +109,7 @@ impl Default for PercControls {
 pub(crate) struct PadControls {
     pub level: f32,
     pub chord_bars: f32, // 1,2,4,8,16,32,64
+    pub progression: f32,
     pub reverb_mix: f32,
     pub stereo_width: f32,
     pub detune: f32,
@@ -120,7 +121,8 @@ impl Default for PadControls {
     fn default() -> Self {
         Self {
             level: 0.7,
-            chord_bars: 4.0,
+            chord_bars: 1.0,
+            progression: 0.0,
             reverb_mix: 0.8,
             stereo_width: 0.8,
             detune: 0.5,
@@ -1551,7 +1553,8 @@ struct PadEngine {
     sample_rate: f32,
     layers: Vec<PadLayer>,
     chord_trigger: GridTrigger,
-    chord_index: usize,
+    step_index: usize,
+    last_progression: usize,
     reverb: Freeverb,
     depth_lfo: DriftingLfo,
     width_lfo: DriftingLfo,
@@ -1564,9 +1567,10 @@ impl PadEngine {
     fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
-            layers: vec![PadLayer::new(0, sample_rate, c.attack_time)],
+            layers: vec![PadLayer::new(0, 0, sample_rate, c.attack_time)],
             chord_trigger: GridTrigger::after_start(),
-            chord_index: 0,
+            step_index: 0,
+            last_progression: 0,
             reverb: Freeverb::new(sample_rate, 0.93, 0.46, 1.0),
             depth_lfo: DriftingLfo::new(1.0 / 42.0, sample_rate),
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
@@ -1577,20 +1581,29 @@ impl PadEngine {
     }
 
     fn next(&mut self, c: &PadControls, timing: TimingContext) -> (f32, f32) {
-        if self.chord_trigger.pop(timing, c.chord_bars * 4.0, 0.0) {
+        let progression = (c.progression.round() as i64).rem_euclid(4) as usize;
+        let progression_changed = progression != self.last_progression;
+        self.last_progression = progression;
+
+        let advance = self.chord_trigger.pop(timing, c.chord_bars * 4.0, 0.0);
+
+        if advance || progression_changed {
             for layer in &mut self.layers {
                 layer.release();
             }
-            self.chord_index = self.chord_index.wrapping_add(1);
+            if advance {
+                self.step_index = (self.step_index + 1) % 8;
+            }
             self.telemetry
                 .chord_index
-                .store(self.chord_index as u64, Ordering::Relaxed);
+                .store(self.step_index as u64, Ordering::Relaxed);
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                 self.layers.drain(0..remove_count);
             }
             self.layers.push(PadLayer::new(
-                self.chord_index,
+                progression,
+                self.step_index,
                 self.sample_rate,
                 c.attack_time,
             ));
@@ -1632,9 +1645,9 @@ struct PadLayer {
 }
 
 impl PadLayer {
-    fn new(chord_index: usize, sample_rate: f32, attack_time: f32) -> Self {
+    fn new(progression: usize, step: usize, sample_rate: f32, attack_time: f32) -> Self {
         Self {
-            tones: pad_tones(chord_index, sample_rate, attack_time),
+            tones: pad_tones(progression, step, sample_rate, attack_time),
         }
     }
     fn next_stereo(&mut self, width: f32, detune_mix: f32, octave_mix: f32) -> (f32, f32) {
@@ -1691,8 +1704,8 @@ impl PadTone {
     }
 }
 
-fn pad_tones(chord_index: usize, sample_rate: f32, attack_time: f32) -> Vec<PadTone> {
-    let freqs = pad_chord(chord_index);
+fn pad_tones(progression: usize, step: usize, sample_rate: f32, attack_time: f32) -> Vec<PadTone> {
+    let freqs = pad_chord(progression, step);
     let pans = [-0.52_f32, -0.18, 0.16, 0.46];
     let gains = [0.17_f32, 0.132, 0.126, 0.098];
     freqs
@@ -1703,15 +1716,55 @@ fn pad_tones(chord_index: usize, sample_rate: f32, attack_time: f32) -> Vec<PadT
         .collect()
 }
 
-fn pad_chord(index: usize) -> [f32; 4] {
-    const CHORDS: [[f32; 4]; 5] = [
-        [110.0, 146.83, 196.0, 261.63],
-        [110.0, 164.81, 196.0, 293.66],
-        [98.0, 146.83, 220.0, 261.63],
-        [123.47, 164.81, 196.0, 293.66],
-        [110.0, 146.83, 220.0, 329.63],
-    ];
-    CHORDS[index % CHORDS.len()]
+fn midi_to_hz(note: i32) -> f32 {
+    440.0 * 2f32.powf((note as f32 - 69.0) / 12.0)
+}
+
+const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
+    [
+        [45, 50, 55, 60],
+        [45, 52, 55, 62],
+        [43, 50, 57, 60],
+        [47, 52, 55, 62],
+        [45, 50, 57, 64],
+        [48, 55, 60, 64],
+        [43, 50, 55, 59],
+        [45, 52, 57, 60],
+    ],
+    [
+        [45, 50, 57, 60],
+        [50, 53, 57, 62],
+        [48, 55, 60, 64],
+        [43, 50, 55, 59],
+        [41, 48, 53, 57],
+        [45, 52, 57, 60],
+        [52, 59, 64, 67],
+        [45, 50, 57, 60],
+    ],
+    [
+        [45, 48, 52, 55],
+        [41, 45, 48, 52],
+        [48, 52, 55, 59],
+        [43, 47, 50, 53],
+        [50, 53, 57, 60],
+        [45, 48, 52, 55],
+        [52, 55, 59, 62],
+        [41, 45, 48, 52],
+    ],
+    [
+        [45, 52, 57, 60],
+        [41, 45, 48, 55],
+        [48, 55, 59, 62],
+        [43, 50, 53, 57],
+        [50, 57, 60, 64],
+        [45, 52, 55, 60],
+        [52, 55, 59, 64],
+        [45, 52, 57, 60],
+    ],
+];
+
+fn pad_chord(progression: usize, step: usize) -> [f32; 4] {
+    PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8].map(midi_to_hz)
 }
 
 // ============================================================
@@ -2254,6 +2307,49 @@ mod tests {
     }
 
     #[test]
+    fn midi_to_hz_matches_known_notes() {
+        assert_close(midi_to_hz(69), 440.0); // A4
+        assert_close(midi_to_hz(45), 110.0); // A2
+        assert_close(midi_to_hz(60), 440.0 * 2f32.powf((60.0 - 69.0) / 12.0)); // C4
+    }
+
+    #[test]
+    fn pad_chord_converts_progression_a_first_chord() {
+        let chord = pad_chord(0, 0);
+        assert_close(chord[0], 110.0); // A2
+        assert_close(chord[1], 440.0 * 2f32.powf((50.0 - 69.0) / 12.0)); // D3
+        assert_close(chord[2], 440.0 * 2f32.powf((55.0 - 69.0) / 12.0)); // G3
+        assert_close(chord[3], 440.0 * 2f32.powf((60.0 - 69.0) / 12.0)); // C4
+    }
+
+    #[test]
+    fn pad_chord_converts_progression_d_last_chord() {
+        let chord = pad_chord(3, 7);
+        assert_close(chord[0], 110.0); // A2
+        assert_close(chord[1], 440.0 * 2f32.powf((52.0 - 69.0) / 12.0)); // E3
+        assert_close(chord[2], 220.0); // A3
+        assert_close(chord[3], 440.0 * 2f32.powf((60.0 - 69.0) / 12.0)); // C4
+    }
+
+    #[test]
+    fn pad_chord_wraps_progression_and_step_index() {
+        let wrapped_progression = pad_chord(4, 0);
+        let base_progression = pad_chord(0, 0);
+        assert_eq!(wrapped_progression, base_progression);
+
+        let wrapped_step = pad_chord(0, 8);
+        let base_step = pad_chord(0, 0);
+        assert_eq!(wrapped_step, base_step);
+    }
+
+    #[test]
+    fn pad_defaults_use_progression_a_and_one_bar_chords() {
+        let controls = PadControls::default();
+        assert_close(controls.chord_bars, 1.0);
+        assert_close(controls.progression, 0.0);
+    }
+
+    #[test]
     fn tab_previous_wraps_back_one_tab() {
         assert_eq!(Tab::Master.previous(), Tab::Clap);
         assert_eq!(Tab::Kick.previous(), Tab::Chords);
@@ -2444,6 +2540,58 @@ mod tests {
             let _ = pad.next(&controls, timing(sample, 120.0));
             assert!(pad.layers.len() <= MAX_PAD_LAYERS);
         }
+    }
+
+    #[test]
+    fn pad_engine_step_index_wraps_at_eight() {
+        let controls = PadControls {
+            chord_bars: 1.0,
+            attack_time: 1.0,
+            ..PadControls::default()
+        };
+        let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+        // chord_bars=1.0 means chord_trigger fires every 4.0 beats; at 120 BPM
+        // that's 2 seconds of samples per chord. Render 9 chord-advances worth
+        // of samples (18 seconds) and confirm the telemetry index wrapped past 8.
+        for chord in 1..=9 {
+            let sample = chord * SAMPLE_RATE as u64 * 2;
+            let _ = pad.next(&controls, timing(sample, 120.0));
+        }
+        let final_index = pad.telemetry.chord_index.load(Ordering::Relaxed);
+        assert!(final_index < 8, "step_index must wrap into 0..8, got {final_index}");
+    }
+
+    #[test]
+    fn pad_engine_progression_switch_retriggers_immediately() {
+        let mut controls = PadControls {
+            chord_bars: 64.0, // long chord length so no chord-advance trigger fires
+            // Short attack so the original layer's envelope is already audible
+            // (not still ~0 from the very first sample) by the time it's released;
+            // otherwise the release phase completes in the same tick it starts and
+            // `retain` prunes it before this test can observe the pushed layer.
+            attack_time: 0.001,
+            ..PadControls::default()
+        };
+        let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+        // Warm up the original layer's envelope (still progression 0, so no push
+        // happens here) so its level is non-negligible before it gets released;
+        // otherwise the Adsr release completes in the same tick it starts and
+        // `retain` prunes the layer before this test can observe the pushed one.
+        for sample in 0..10 {
+            let _ = pad.next(&controls, timing(sample, 120.0));
+        }
+        let layers_before = pad.layers.len();
+
+        // Flip progression with no further elapsed time / no chord-advance trigger.
+        controls.progression = 1.0;
+        let _ = pad.next(&controls, timing(10, 120.0));
+
+        assert!(
+            pad.layers.len() > layers_before,
+            "switching progression must push a new layer immediately, without waiting for chord_trigger"
+        );
     }
 
     #[test]
