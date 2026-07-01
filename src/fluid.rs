@@ -495,6 +495,14 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 display: format!("{:.0} beats", c.pad.chord_bars * 4.0),
             },
             ControlItem {
+                label: "Progression",
+                value: c.pad.progression,
+                min: 0.0,
+                max: 3.0,
+                display: ["A", "B", "C", "D"][c.pad.progression.round() as usize % 4]
+                    .to_string(),
+            },
+            ControlItem {
                 label: "Reverb Mix",
                 value: c.pad.reverb_mix,
                 min: 0.0,
@@ -767,11 +775,12 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
                     c.pad.chord_bars = (c.pad.chord_bars / 2.0).max(1.0)
                 }
             }
-            2 => c.pad.reverb_mix = (c.pad.reverb_mix + dir * 0.02).clamp(0.0, 1.0),
-            3 => c.pad.stereo_width = (c.pad.stereo_width + dir * 0.02).clamp(0.0, 1.0),
-            4 => c.pad.detune = (c.pad.detune + dir * 0.02).clamp(0.0, 1.0),
-            5 => c.pad.octave_mix = (c.pad.octave_mix + dir * 0.02).clamp(0.0, 1.0),
-            6 => c.pad.attack_time = (c.pad.attack_time + dir * 1.0).clamp(1.0, 30.0),
+            2 => c.pad.progression = (c.pad.progression + dir).clamp(0.0, 3.0),
+            3 => c.pad.reverb_mix = (c.pad.reverb_mix + dir * 0.02).clamp(0.0, 1.0),
+            4 => c.pad.stereo_width = (c.pad.stereo_width + dir * 0.02).clamp(0.0, 1.0),
+            5 => c.pad.detune = (c.pad.detune + dir * 0.02).clamp(0.0, 1.0),
+            6 => c.pad.octave_mix = (c.pad.octave_mix + dir * 0.02).clamp(0.0, 1.0),
+            7 => c.pad.attack_time = (c.pad.attack_time + dir * 1.0).clamp(1.0, 30.0),
             _ => {}
         },
         Tab::Kick => match selected {
@@ -851,11 +860,12 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
         Tab::Chords => match selected {
             0 => c.pad.level = 0.0,
             1 => c.pad.chord_bars = 1.0,
-            2 => c.pad.reverb_mix = 0.0,
-            3 => c.pad.stereo_width = 0.0,
-            4 => c.pad.detune = 0.0,
-            5 => c.pad.octave_mix = 0.0,
-            6 => c.pad.attack_time = 1.0,
+            2 => c.pad.progression = 0.0,
+            3 => c.pad.reverb_mix = 0.0,
+            4 => c.pad.stereo_width = 0.0,
+            5 => c.pad.detune = 0.0,
+            6 => c.pad.octave_mix = 0.0,
+            7 => c.pad.attack_time = 1.0,
             _ => {}
         },
         Tab::Kick => match selected {
@@ -2413,6 +2423,45 @@ mod tests {
         controls.pad.chord_bars = 16.0;
         apply_min(Tab::Chords, 1, &mut controls);
         assert_close(controls.pad.chord_bars, 1.0);
+    }
+
+    #[test]
+    fn chords_tab_shows_progression_row_with_letter_display() {
+        let mut controls = FluidControls::default();
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[2].label, "Progression");
+        assert_eq!(rows[2].display, "A");
+
+        controls.pad.progression = 2.0;
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[2].display, "C");
+    }
+
+    #[test]
+    fn chords_progression_adjusts_and_clamps() {
+        let mut controls = FluidControls::default();
+
+        apply_delta(Tab::Chords, 2, 1.0, &mut controls);
+        assert_close(controls.pad.progression, 1.0);
+
+        controls.pad.progression = 3.0;
+        apply_delta(Tab::Chords, 2, 1.0, &mut controls);
+        assert_close(controls.pad.progression, 3.0);
+
+        controls.pad.progression = 0.0;
+        apply_delta(Tab::Chords, 2, -1.0, &mut controls);
+        assert_close(controls.pad.progression, 0.0);
+
+        controls.pad.progression = 2.0;
+        apply_min(Tab::Chords, 2, &mut controls);
+        assert_close(controls.pad.progression, 0.0);
+    }
+
+    #[test]
+    fn chords_reverb_mix_row_shifted_to_index_three() {
+        let controls = FluidControls::default();
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[3].label, "Reverb Mix");
     }
 
     #[test]
