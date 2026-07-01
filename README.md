@@ -44,6 +44,14 @@ nooise update
 
 `nooise upgrade` does the same thing.
 
+## Render to a File
+
+```sh
+nooise render --seconds 60 --out ambient.wav
+```
+
+Renders the default mix straight to a wav, no audio device needed. Pass `--seed N` to make the render reproducible.
+
 ## From Source
 
 ```sh

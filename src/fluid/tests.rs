@@ -528,9 +528,11 @@ fn kick_interval_floor_is_quarter_beat() {
 
 #[test]
 fn perc_continuous_mode_pushes_no_hits() {
-    let mut controls = PercControls::default();
-    controls.level = 1.0;
-    controls.interval_beats = 4.25;
+    let controls = PercControls {
+        level: 1.0,
+        interval_beats: 4.25,
+        ..Default::default()
+    };
 
     let mut engine = PercEngine::new(SAMPLE_RATE);
     engine.rng = StdRng::seed_from_u64(7);
@@ -544,10 +546,12 @@ fn perc_continuous_mode_pushes_no_hits() {
 
 #[test]
 fn perc_continuous_mode_has_no_periodic_rms_dips() {
-    let mut controls = PercControls::default();
-    controls.level = 1.0;
-    controls.lfo_depth = 0.0;
-    controls.interval_beats = 4.25;
+    let controls = PercControls {
+        level: 1.0,
+        lfo_depth: 0.0,
+        interval_beats: 4.25,
+        ..Default::default()
+    };
 
     let mut engine = PercEngine::new(SAMPLE_RATE);
     engine.rng = StdRng::seed_from_u64(7);

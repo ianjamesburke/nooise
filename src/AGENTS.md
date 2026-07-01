@@ -6,24 +6,31 @@ All engine, terminal UI, and live-control code for the nooise binary.
 
 ## Ownership
 
-- `main.rs` — binary entry point, wires up terminal + audio engine.
+- `main.rs` — binary entry point: CLI parsing (`run`/`update`/`render`), wires up terminal + audio engine.
 - `audio.rs` — cpal/audio-backend plumbing, sample callback wiring.
-- `fluid.rs` — the core: all voice engines (Pad, Bass, Perc, Kick, Tonal, Clap), `FluidControls`/`MasterControls`/per-voice controls, tab UI (`tab_controls`/`apply_delta`/`apply_min`/`apply_value`), chord progressions, master tune, and their tests. This is the largest and most actively changed file in the crate.
-- `fx/` — shared DSP building blocks (LFO, panner, reverb) consumed by voices in `fluid.rs`. See `fx/AGENTS.md`.
-- `synth/` — shared synthesis primitives (envelope, oscillator, noise) consumed by voices in `fluid.rs`. See `synth/AGENTS.md`.
+- `fluid/` — the core engine module:
+  - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `render_wav()` (headless wav render), `FluidTelemetry`.
+  - `controls.rs` — `FluidControls`, `MasterControls`, and per-voice control structs with defaults.
+  - `registry.rs` — the control registry: one `ControlSpec` table per tab (label, kind, range, step, entry semantics, reset, accessors, display). `tab_controls`/`apply_delta`/`apply_min`/`apply_value` all derive from it.
+  - `ui.rs` — TUI event loop, tab rendering, fluid visualizer.
+  - `engine.rs` — `FluidEngine` (voice mixer), gain smoothers, tempo clock, grid triggers, master bus.
+  - `voice/` — one module per voice (pad, bass, perc, kick, tonal, clap) plus shared helpers (`midi_to_hz`, `tune_ratio`, `soft_clip`, `normalized_lfo`) in `voice/mod.rs`.
+- `fx/` — shared DSP building blocks (LFO, panner, reverb) consumed by voices. See `fx/AGENTS.md`.
+- `synth/` — shared synthesis primitives (envelope, oscillator, noise) consumed by voices. See `synth/AGENTS.md`.
 
 ## Local Contracts
 
-- Per-voice control structs (e.g. `PadControls`, `BassControls`, `MasterControls`) live in `fluid.rs` next to the engine that consumes them — not split into separate files.
-- Tab-indexed UI rows (`tab_controls`/`apply_delta`/`apply_min`/`apply_value`) use a shared match-arm-by-row-index pattern per tab; adding a control row means adding matching arms in all four functions, appended at the end of that tab's existing rows to avoid renumbering.
-- Control rows in `fluid.rs` carry `ControlKind`; use it as the source of truth for gain/continuous/timing/discrete semantics.
+- The `ControlSpec` tables in `fluid/registry.rs` are the single source of truth for every control row. Adding a control = adding one table entry; never reintroduce per-function match arms for control rows. The `control_registry_specs_are_internally_consistent` test enforces table sanity.
+- Control rows carry `ControlKind`; use it as the source of truth for gain/continuous/timing/discrete semantics.
 - Live-read gain controls are ramped by `GainSmoothers` in `FluidEngine`; do not apply UI volume jumps directly in the audio callback path.
 - Pitched voices (Pad, Bass) route note numbers through `midi_to_hz`; unpitched voices (Perc, Kick, Tonal, Clap) do not and are unaffected by global pitch controls like master tune.
+- Voice RNGs must stay reseedable via `FluidEngine::reseed` so `nooise render --seed` stays byte-reproducible.
 
 ## Verification
 
-- `cargo test` covers `fluid.rs` engine logic and UI control tables extensively (unit tests live inline in the same file via `#[cfg(test)] mod tests`).
-- Run full `cargo build` after any function-signature change in `fluid.rs` — call sites across engines/tests are otherwise easy to miss.
+- `just test` (cargo test) covers engine logic and the control registry; tests live in `fluid/tests.rs`.
+- `just check` runs clippy across all targets.
+- `nooise render --seconds N --seed N --out X.wav` (or `just render`) renders audio headlessly for DSP verification — same seed must produce byte-identical output.
 
 ## Child DOX Index
 

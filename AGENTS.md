@@ -76,7 +76,7 @@ Default section order:
 
 ## User Preferences
 
-- Currently working on: fluid core (`src/fluid.rs`)
+- Currently working on: fluid core (`src/fluid/`)
 
 ## Purpose
 
