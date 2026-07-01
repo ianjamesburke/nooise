@@ -224,7 +224,7 @@ impl Default for ClapControls {
 #[derive(Clone)]
 pub(crate) struct BassControls {
     pub level: f32,
-    pub interval_beats: f32, // 16-step rhythm pattern spans this many beats
+    pub interval_beats: f32, // crops the 16-step rhythm phrase to this many beats (step length is fixed)
     pub offset_beats: f32,
     pub rhythm: f32, // 0..=3, A/B/C/D pattern selector
     pub octave: f32, // octaves relative to the chord root, e.g. -1.0 = one octave down
@@ -600,8 +600,8 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             ControlItem {
                 label: "Interval",
                 value: c.bass.interval_beats,
-                min: 1.0,
-                max: 16.0,
+                min: 0.25,
+                max: 8.0,
                 display: format!("{:.2} beats", c.bass.interval_beats),
             },
             ControlItem {
@@ -903,7 +903,7 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
         },
         Tab::Bass => match selected {
             0 => c.bass.level = (c.bass.level + dir * 0.02).clamp(0.0, 1.0),
-            1 => c.bass.interval_beats = (c.bass.interval_beats + dir * 0.25).clamp(1.0, 16.0),
+            1 => c.bass.interval_beats = (c.bass.interval_beats + dir * 0.25).clamp(0.25, 8.0),
             2 => c.bass.offset_beats = (c.bass.offset_beats + dir * 0.25).clamp(0.0, 4.0),
             3 => c.bass.rhythm = (c.bass.rhythm + dir).clamp(0.0, 3.0),
             4 => c.bass.octave = (c.bass.octave + dir).clamp(-3.0, 0.0),
@@ -1002,7 +1002,7 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
         },
         Tab::Bass => match selected {
             0 => c.bass.level = 0.0,
-            1 => c.bass.interval_beats = 1.0,
+            1 => c.bass.interval_beats = 0.25,
             2 => c.bass.offset_beats = 0.0,
             3 => c.bass.rhythm = 0.0,
             4 => c.bass.octave = -3.0,
@@ -1996,6 +1996,12 @@ const BASS_RHYTHMS: [[bool; 16]; 4] = [
 
 const MAX_BASS_VOICES: usize = 3;
 
+/// Fixed duration of one rhythm-pattern step (a 16th note). Step timing never
+/// changes; `interval_beats` instead crops how many steps of the 16-step
+/// phrase play before looping back to step 0 (or extends the loop with
+/// trailing silence, for a "gap" feel).
+const BASS_STEP_BEATS: f32 = 0.25;
+
 struct BassEngine {
     sample_rate: f32,
     chord_trigger: GridTrigger,
@@ -2023,11 +2029,13 @@ impl BassEngine {
             self.step_index = (self.step_index + 1) % 8;
         }
 
-        let step_beats = (c.interval_beats / BASS_RHYTHMS[0].len() as f32).max(1.0 / 64.0);
-        if self.step_trigger.pop(timing, step_beats, c.offset_beats) {
-            self.rhythm_step = (self.rhythm_step + 1) % BASS_RHYTHMS[0].len();
+        let loop_len = (c.interval_beats / BASS_STEP_BEATS).round().clamp(1.0, 32.0) as usize;
+        if self.step_trigger.pop(timing, BASS_STEP_BEATS, c.offset_beats) {
+            self.rhythm_step = (self.rhythm_step + 1) % loop_len;
             let rhythm = (c.rhythm.round() as usize) % BASS_RHYTHMS.len();
-            if BASS_RHYTHMS[rhythm][self.rhythm_step] {
+            let hit = self.rhythm_step < BASS_RHYTHMS[rhythm].len()
+                && BASS_RHYTHMS[rhythm][self.rhythm_step];
+            if hit {
                 let note = bass_root_note(progression, self.step_index)
                     + (c.octave.round() as i32) * 12;
                 let hz = midi_to_hz(note);
@@ -2869,6 +2877,32 @@ mod tests {
 
         assert_ne!(bass.step_index, 0);
         assert!(bass.rhythm_step < BASS_RHYTHMS[0].len());
+    }
+
+    #[test]
+    fn bass_interval_crops_phrase_instead_of_stretching_it() {
+        // Step duration is always a fixed 16th note; `interval_beats` only
+        // decides how many steps of the 16-step phrase play before looping
+        // back to step 0.
+        let hits_within = |rhythm: usize, loop_len: usize| -> Vec<usize> {
+            (0..loop_len)
+                .filter(|&s| s < BASS_RHYTHMS[rhythm].len() && BASS_RHYTHMS[rhythm][s])
+                .collect()
+        };
+
+        // Progression A (quarter notes) hits every 4 steps; cropping to a
+        // 4-step (1 beat) loop still only exposes step 0, which recurs at
+        // the same cadence as the full 16-step phrase - no audible change.
+        assert_eq!(hits_within(0, 16), vec![0, 4, 8, 12]);
+        assert_eq!(hits_within(0, 4), vec![0]);
+        assert_eq!(hits_within(0, 8), vec![0, 4]);
+
+        // A busier pattern's crop is audibly different: only its first half
+        // survives an 8-step (2 beat) loop.
+        let full = hits_within(1, 16);
+        let cropped = hits_within(1, 8);
+        assert!(cropped.len() < full.len());
+        assert!(cropped.iter().all(|s| full.contains(s)));
     }
 
     #[test]
