@@ -138,6 +138,7 @@ pub(crate) struct KickControls {
     pub amp_decay_ms: f32,
     pub click: f32, // 0–0.2 UI range
     pub drive: f32,
+    pub filter: f32,
     pub interval_beats: f32,
     pub offset_beats: f32,
     pub echo_time_beats: f32,
@@ -155,6 +156,7 @@ impl Default for KickControls {
             amp_decay_ms: 250.0,
             click: 0.0,
             drive: 0.2,
+            filter: 0.7,
             interval_beats: 1.0,
             offset_beats: 0.0,
             echo_time_beats: 1.0,
@@ -586,6 +588,13 @@ fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 display: format!("{:.0}%", c.kick.drive * 100.0),
             },
             ControlItem {
+                label: "Filter",
+                value: c.kick.filter,
+                min: 0.0,
+                max: 1.0,
+                display: format!("{:.0}%", c.kick.filter * 100.0),
+            },
+            ControlItem {
                 label: "Echo Time",
                 value: c.kick.echo_time_beats,
                 min: KICK_ECHO_TIME_BEATS_MIN,
@@ -781,13 +790,14 @@ fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
             5 => c.kick.amp_decay_ms = (c.kick.amp_decay_ms + dir * 20.0).clamp(50.0, 1000.0),
             6 => c.kick.click = (c.kick.click + dir * 0.01).clamp(0.0, 0.2),
             7 => c.kick.drive = (c.kick.drive + dir * 0.02).clamp(0.0, 1.0),
-            8 => {
+            8 => c.kick.filter = (c.kick.filter + dir * 0.02).clamp(0.0, 1.0),
+            9 => {
                 c.kick.echo_time_beats = (c.kick.echo_time_beats + dir * 0.125)
                     .clamp(KICK_ECHO_TIME_BEATS_MIN, KICK_ECHO_TIME_BEATS_MAX)
             }
-            9 => c.kick.echo_filter = (c.kick.echo_filter + dir * 0.02).clamp(0.0, 1.0),
-            10 => c.kick.echo_amount = (c.kick.echo_amount + dir * 0.02).clamp(0.0, 0.9),
-            11 => c.kick.echo_feedback = (c.kick.echo_feedback + dir * 0.02).clamp(0.0, 0.85),
+            10 => c.kick.echo_filter = (c.kick.echo_filter + dir * 0.02).clamp(0.0, 1.0),
+            11 => c.kick.echo_amount = (c.kick.echo_amount + dir * 0.02).clamp(0.0, 0.9),
+            12 => c.kick.echo_feedback = (c.kick.echo_feedback + dir * 0.02).clamp(0.0, 0.85),
             _ => {}
         },
         Tab::Tonal => match selected {
@@ -865,10 +875,11 @@ fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
             5 => c.kick.amp_decay_ms = 50.0,
             6 => c.kick.click = 0.0,
             7 => c.kick.drive = 0.0,
-            8 => c.kick.echo_time_beats = KICK_ECHO_TIME_BEATS_MIN,
-            9 => c.kick.echo_filter = 0.0,
-            10 => c.kick.echo_amount = 0.0,
-            11 => c.kick.echo_feedback = 0.0,
+            8 => c.kick.filter = 0.0,
+            9 => c.kick.echo_time_beats = KICK_ECHO_TIME_BEATS_MIN,
+            10 => c.kick.echo_filter = 0.0,
+            11 => c.kick.echo_amount = 0.0,
+            12 => c.kick.echo_feedback = 0.0,
             _ => {}
         },
         Tab::Tonal => match selected {
@@ -1925,11 +1936,16 @@ impl KickDelay {
 
 struct KickVoice {
     phase: f32,
+    mod_phase: f32,
     freq: f32,
     target_freq: f32,
     freq_glide: f32,
     amp: f32,
     amp_decay: f32,
+    fm_depth: f32,
+    fm_depth_decay: f32,
+    lp_state: f32,
+    lp_coeff: f32,
     click_remaining: u64,
     click_level: f32,
     drive: f32,
@@ -1941,13 +1957,20 @@ impl KickVoice {
     fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
         let tau = (c.pitch_decay_ms * 0.001 * sample_rate / 3.0).max(1.0);
         let amp_tau = (c.amp_decay_ms * 0.001 * sample_rate / 3.0).max(1.0);
+        // FM depth decays ~3x faster than pitch for a tight transient thud
+        let fm_tau = (c.pitch_decay_ms * 0.001 * sample_rate / 9.0).max(1.0);
         Self {
             phase: 0.0,
+            mod_phase: 0.0,
             freq: c.start_freq,
             target_freq: c.start_freq * 0.28,
             freq_glide: 1.0 / tau,
             amp: c.level,
             amp_decay: (-1.0 / amp_tau).exp(),
+            fm_depth: 3.5,
+            fm_depth_decay: (-1.0 / fm_tau).exp(),
+            lp_state: 0.0,
+            lp_coeff: 10_f32.powf(c.filter * 3.0 - 2.5).clamp(0.01, 0.99),
             click_remaining: (c.amp_decay_ms * 0.001 * sample_rate * 0.04).round() as u64,
             click_level: c.click,
             drive: c.drive,
@@ -1962,7 +1985,17 @@ impl KickVoice {
         }
 
         self.freq += (self.target_freq - self.freq) * self.freq_glide;
-        self.phase += TAU * self.freq / self.sample_rate;
+
+        // FM: modulator at 2x carrier freq, decaying depth
+        let mod_freq = self.freq * 2.0;
+        self.mod_phase += TAU * mod_freq / self.sample_rate;
+        if self.mod_phase >= TAU {
+            self.mod_phase -= TAU;
+        }
+        let fm = self.mod_phase.sin() * self.fm_depth * self.freq;
+        self.fm_depth *= self.fm_depth_decay;
+
+        self.phase += TAU * (self.freq + fm) / self.sample_rate;
         if self.phase >= TAU {
             self.phase -= TAU;
         }
@@ -1978,6 +2011,9 @@ impl KickVoice {
             let driven = s * (1.0 + self.drive * 8.0);
             s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
         }
+
+        self.lp_state += self.lp_coeff * (s - self.lp_state);
+        s = self.lp_state;
 
         self.amp *= self.amp_decay;
         StereoPanner::equal_power(s, self.pan)
