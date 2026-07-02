@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [1.1.1] — 2026-07-02
+
+### Added
+- feat: use clap for nooise cli
 ## [1.1.0] — 2026-07-01
 
 ### Added
