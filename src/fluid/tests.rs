@@ -41,13 +41,13 @@ fn write_test_str(value: &str, out: &mut Vec<u8>) {
 
 fn automation_payload(target_id: &str, route: LfoRoute) -> Vec<u8> {
     let mut payload = Vec::new();
-    payload.push(1);
+    payload.push(2);
     payload.extend_from_slice(&1u16.to_le_bytes());
     write_test_str(target_id, &mut payload);
     payload.extend_from_slice(&route.cycle_beats.to_le_bytes());
     payload.extend_from_slice(&route.depth_ratio.to_le_bytes());
     payload.push(0);
-    payload.extend_from_slice(&route.phase_offset_cycles.to_le_bytes());
+    payload.extend_from_slice(&route.phase_offset_beats.to_le_bytes());
     payload
 }
 
@@ -157,7 +157,7 @@ fn automation_open_or_create_uses_safe_lfo_defaults() {
     assert_close(route.cycle_beats, 2.0);
     assert_close(route.depth_ratio, 0.25);
     assert_eq!(route.shape, LfoShape::Sine);
-    assert_close(route.phase_offset_cycles, 0.0);
+    assert_close(route.phase_offset_beats, 0.0);
     assert_eq!(automation.active_address(), Some(address));
 }
 
@@ -172,34 +172,42 @@ fn lfo_field_adjust_steps_and_clamps() {
     assert_close(route.depth_ratio, 0.0);
 
     route.adjust_field(LfoField::Interval, 1.0);
-    assert_close(route.cycle_beats, 4.0);
-    for _ in 0..10 {
+    assert_close(route.cycle_beats, 2.25);
+    for _ in 0..100 {
         route.adjust_field(LfoField::Interval, 1.0);
     }
     assert_close(route.cycle_beats, 16.0);
-    for _ in 0..10 {
+    for _ in 0..100 {
         route.adjust_field(LfoField::Interval, -1.0);
     }
     assert_close(route.cycle_beats, 0.25);
 
     route.adjust_field(LfoField::Offset, -1.0);
-    assert_close(route.phase_offset_cycles, 0.875);
+    assert_close(route.phase_offset_beats, 0.0);
     route.adjust_field(LfoField::Offset, 1.0);
-    assert_close(route.phase_offset_cycles, 0.0);
+    assert_close(route.phase_offset_beats, 0.25);
+    for _ in 0..100 {
+        route.adjust_field(LfoField::Offset, 1.0);
+    }
+    assert_close(route.phase_offset_beats, 4.0);
 }
 
 #[test]
-fn lfo_field_set_snaps_interval_to_ladder() {
+fn lfo_field_set_snaps_to_quarter_beat_grid() {
     let mut route = LfoRoute::default();
 
     route.set_field(LfoField::Interval, 3.1);
-    assert_close(route.cycle_beats, 4.0);
+    assert_close(route.cycle_beats, 3.0);
+    route.set_field(LfoField::Interval, 100.0);
+    assert_close(route.cycle_beats, 16.0);
     route.set_field(LfoField::Amount, 130.0);
     assert_close(route.depth_ratio, 1.0);
     route.set_field(LfoField::Amount, 40.0);
     assert_close(route.depth_ratio, 0.4);
-    route.set_field(LfoField::Offset, 1.25);
-    assert_close(route.phase_offset_cycles, 0.25);
+    route.set_field(LfoField::Offset, 1.3);
+    assert_close(route.phase_offset_beats, 1.25);
+    route.set_field(LfoField::Offset, 9.0);
+    assert_close(route.phase_offset_beats, 4.0);
 }
 
 #[test]
@@ -243,7 +251,7 @@ fn engine_publishes_beat_telemetry() {
 fn lfo_phase_at_uses_cycle_and_offset() {
     let route = LfoRoute {
         cycle_beats: 2.0,
-        phase_offset_cycles: 0.25,
+        phase_offset_beats: 0.5,
         ..LfoRoute::default()
     };
 
@@ -594,7 +602,7 @@ fn song_code_round_trips_lfo_automation_record() {
             cycle_beats: 4.0,
             depth_ratio: 0.4,
             shape: LfoShape::Sine,
-            phase_offset_cycles: 0.25,
+            phase_offset_beats: 0.25,
         },
     );
     let song = SongState {
@@ -613,7 +621,7 @@ fn song_code_round_trips_lfo_automation_record() {
     assert_close(route.cycle_beats, 4.0);
     assert_close(route.depth_ratio, 0.4);
     assert_eq!(route.shape, LfoShape::Sine);
-    assert_close(route.phase_offset_cycles, 0.25);
+    assert_close(route.phase_offset_beats, 0.25);
 }
 
 #[test]
