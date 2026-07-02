@@ -2,12 +2,20 @@ use super::*;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 
 const SAMPLE_RATE: f32 = 48_000.0;
 
 fn assert_close(actual: f32, expected: f32) {
     assert!(
         (actual - expected).abs() < f32::EPSILON,
+        "expected {expected}, got {actual}"
+    );
+}
+
+fn assert_near(actual: f32, expected: f32) {
+    assert!(
+        (actual - expected).abs() < 1e-5,
         "expected {expected}, got {actual}"
     );
 }
@@ -24,6 +32,31 @@ fn append_record_to_code(code: &str, record_type: u8, payload: &[u8]) -> String 
     let mut bytes = URL_SAFE_NO_PAD.decode(encoded).unwrap();
     song::write_record(record_type, payload, &mut bytes).unwrap();
     format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn write_test_str(value: &str, out: &mut Vec<u8>) {
+    out.push(value.len() as u8);
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn automation_payload(target_id: &str, route: LfoRoute) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.push(1);
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    write_test_str(target_id, &mut payload);
+    payload.extend_from_slice(&route.cycle_beats.to_le_bytes());
+    payload.extend_from_slice(&route.depth_ratio.to_le_bytes());
+    payload.push(0);
+    payload.extend_from_slice(&route.phase_offset_cycles.to_le_bytes());
+    payload
+}
+
+fn buffer_text(buffer: &Buffer) -> String {
+    buffer
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
 }
 
 #[test]
@@ -94,6 +127,7 @@ fn render_fluid_draws_without_terminal_backend() {
     let backend = TestBackend::new(100, 32);
     let mut terminal = Terminal::new(backend).unwrap();
     let items = tab_controls(Tab::Master, &controls);
+    let automation = AutomationState::default();
 
     terminal
         .draw(|f| {
@@ -102,12 +136,239 @@ fn render_fluid_draws_without_terminal_backend() {
                 &items,
                 Tab::Master,
                 0,
+                0,
+                0.0,
                 NumericDisplay::empty(),
                 &fluid,
+                &automation,
                 None,
             )
         })
         .unwrap();
+}
+
+#[test]
+fn automation_open_or_create_uses_safe_lfo_defaults() {
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new("master.level");
+
+    let route = automation.open_or_create(address);
+
+    assert_close(route.cycle_beats, 2.0);
+    assert_close(route.depth_ratio, 0.25);
+    assert_eq!(route.shape, LfoShape::Sine);
+    assert_close(route.phase_offset_cycles, 0.0);
+    assert_eq!(automation.active_address(), Some(address));
+}
+
+#[test]
+fn lfo_field_adjust_steps_and_clamps() {
+    let mut route = LfoRoute::default();
+
+    route.adjust_field(LfoField::Amount, 1.0);
+    assert_close(route.depth_ratio, 0.30);
+    route.set_field(LfoField::Amount, 0.0);
+    route.adjust_field(LfoField::Amount, -1.0);
+    assert_close(route.depth_ratio, 0.0);
+
+    route.adjust_field(LfoField::Interval, 1.0);
+    assert_close(route.cycle_beats, 4.0);
+    for _ in 0..10 {
+        route.adjust_field(LfoField::Interval, 1.0);
+    }
+    assert_close(route.cycle_beats, 16.0);
+    for _ in 0..10 {
+        route.adjust_field(LfoField::Interval, -1.0);
+    }
+    assert_close(route.cycle_beats, 0.25);
+
+    route.adjust_field(LfoField::Offset, -1.0);
+    assert_close(route.phase_offset_cycles, 0.875);
+    route.adjust_field(LfoField::Offset, 1.0);
+    assert_close(route.phase_offset_cycles, 0.0);
+}
+
+#[test]
+fn lfo_field_set_snaps_interval_to_ladder() {
+    let mut route = LfoRoute::default();
+
+    route.set_field(LfoField::Interval, 3.1);
+    assert_close(route.cycle_beats, 4.0);
+    route.set_field(LfoField::Amount, 130.0);
+    assert_close(route.depth_ratio, 1.0);
+    route.set_field(LfoField::Amount, 40.0);
+    assert_close(route.depth_ratio, 0.4);
+    route.set_field(LfoField::Offset, 1.25);
+    assert_close(route.phase_offset_cycles, 0.25);
+}
+
+#[test]
+fn close_editor_deletes_zero_depth_route() {
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new("master.level");
+    automation.open_or_create(address).depth_ratio = 0.0;
+
+    automation.close_editor();
+
+    assert!(automation.route(address).is_none());
+    assert!(!automation.is_editor_open());
+
+    automation.open_or_create(address);
+    automation.close_editor();
+    assert!(automation.route(address).is_some());
+}
+
+#[test]
+fn engine_publishes_beat_telemetry() {
+    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
+    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let bpm = f64::from(controls.load().master.bpm);
+    let mut engine = FluidEngine::new(44_100.0, controls, automation, Arc::clone(&telemetry));
+
+    for _ in 0..512 {
+        engine.next_stereo();
+    }
+
+    let expected = 256.0 * bpm / (60.0 * 44_100.0);
+    let beat = telemetry.beat();
+    assert!(beat > 0.0);
+    assert!(
+        (beat - expected).abs() / expected < 0.01,
+        "expected ~{expected}, got {beat}"
+    );
+}
+
+#[test]
+fn lfo_phase_at_uses_cycle_and_offset() {
+    let route = LfoRoute {
+        cycle_beats: 2.0,
+        phase_offset_cycles: 0.25,
+        ..LfoRoute::default()
+    };
+
+    assert!((route.phase_at(1.0) - 0.75).abs() < 1e-9);
+    assert!((route.phase_at(2.0) - 0.25).abs() < 1e-9);
+}
+
+#[test]
+fn render_fluid_draws_lfo_submenu_and_animated_lane() {
+    let controls = FluidControls::default();
+    let fluid = FluidState::new();
+    let items = tab_controls(Tab::Master, &controls);
+    let mut automation = AutomationState::default();
+    automation.open_or_create(ControlAddress::new(items[0].id));
+
+    let draw_at = |beat: f64| {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &items,
+                    Tab::Master,
+                    0,
+                    1,
+                    beat,
+                    NumericDisplay::empty(),
+                    &fluid,
+                    &automation,
+                    None,
+                )
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    };
+
+    let at_start = draw_at(0.0);
+    let text = buffer_text(&at_start);
+    assert!(text.contains("amount"));
+    assert!(text.contains("interval"));
+    assert!(text.contains("offset"));
+    assert!(text.contains('▄'));
+
+    // Default cycle is 2 beats, so beat 1.0 is the opposite phase: the lane's
+    // bright head has moved even though the wave glyphs are static.
+    let at_half_cycle = draw_at(1.0);
+    assert_ne!(at_start, at_half_cycle);
+}
+
+#[test]
+fn lfo_lane_is_phase_locked() {
+    let route = LfoRoute::default();
+
+    let start = lfo_lane_line(&route, 0.0, 24, true);
+    let same_phase = lfo_lane_line(&route, 2.0, 24, true);
+    let opposite_phase = lfo_lane_line(&route, 1.0, 24, true);
+
+    let styles =
+        |line: &ratatui::text::Line<'_>| line.spans.iter().map(|s| s.style).collect::<Vec<_>>();
+    assert_eq!(styles(&start), styles(&same_phase));
+    assert_ne!(styles(&start), styles(&opposite_phase));
+}
+
+#[test]
+fn automation_applies_bounded_lfo_offset_and_clamps_to_spec_range() {
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.9;
+    let mut automation = AutomationState::default();
+    let route = automation.open_or_create(ControlAddress::new("master.level"));
+    route.depth_ratio = 0.5;
+
+    apply_automation(
+        &mut controls,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+
+    assert_close(controls.master.level, 1.0);
+}
+
+#[test]
+fn automation_uses_beat_cycle_phase_for_opposite_lfo_offsets() {
+    let mut automation = AutomationState::default();
+    let route = automation.open_or_create(ControlAddress::new("master.level"));
+    route.cycle_beats = 2.0;
+    route.depth_ratio = 0.25;
+
+    let mut positive = FluidControls::default();
+    positive.master.level = 0.5;
+    apply_automation(
+        &mut positive,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+
+    let mut negative = FluidControls::default();
+    negative.master.level = 0.5;
+    apply_automation(
+        &mut negative,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.5),
+    );
+
+    assert_near(positive.master.level, 0.75);
+    assert_near(negative.master.level, 0.25);
+}
+
+#[test]
+fn automation_preserves_base_controls_and_modulates_only_effective_clone() {
+    let mut base = FluidControls::default();
+    base.master.level = 0.5;
+    let mut effective = base.clone();
+    let mut automation = AutomationState::default();
+    let route = automation.open_or_create(ControlAddress::new("master.level"));
+    route.depth_ratio = 0.25;
+
+    apply_automation(
+        &mut effective,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+
+    assert_near(effective.master.level, 0.75);
+    assert_close(base.master.level, 0.5);
 }
 
 #[test]
@@ -288,13 +549,13 @@ fn song_code_round_trips_quantized_snapshot_values() {
     controls.kick.echo_time_beats = 0.33;
     controls.clap.slap_count = 6.6;
 
-    let code = song::encode_song_code(&controls).unwrap();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.master.bpm, 123.0);
-    assert_close(decoded.pad.chord_bars, 16.0);
-    assert_close(decoded.kick.echo_time_beats, 0.375);
-    assert_close(decoded.clap.slap_count, 7.0);
+    assert_close(decoded.controls.master.bpm, 123.0);
+    assert_close(decoded.controls.pad.chord_bars, 16.0);
+    assert_close(decoded.controls.kick.echo_time_beats, 0.375);
+    assert_close(decoded.controls.clap.slap_count, 7.0);
 }
 
 #[test]
@@ -302,27 +563,74 @@ fn song_code_decodes_missing_controls_as_defaults() {
     let mut controls = FluidControls::default();
     controls.master.bpm = 120.0;
 
-    let code = song::encode_song_code(&controls).unwrap();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.pad.level, FluidControls::default().pad.level);
+    assert_close(
+        decoded.controls.pad.level,
+        FluidControls::default().pad.level,
+    );
+}
+
+#[test]
+fn song_code_decodes_snapshot_only_payload_with_empty_automation() {
+    let mut controls = FluidControls::default();
+    controls.master.bpm = 120.0;
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_eq!(decoded.automation.routes().count(), 0);
+}
+
+#[test]
+fn song_code_round_trips_lfo_automation_record() {
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.6;
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        ControlAddress::new("master.level"),
+        LfoRoute {
+            cycle_beats: 4.0,
+            depth_ratio: 0.4,
+            shape: LfoShape::Sine,
+            phase_offset_cycles: 0.25,
+        },
+    );
+    let song = SongState {
+        controls,
+        automation,
+    };
+
+    let code = song::encode_song_code(&song).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+    let route = decoded
+        .automation
+        .route(ControlAddress::new("master.level"))
+        .unwrap();
+
+    assert_close(decoded.controls.master.level, 0.6);
+    assert_close(route.cycle_beats, 4.0);
+    assert_close(route.depth_ratio, 0.4);
+    assert_eq!(route.shape, LfoShape::Sine);
+    assert_close(route.phase_offset_cycles, 0.25);
 }
 
 #[test]
 fn song_code_skips_unknown_records() {
     let mut controls = FluidControls::default();
     controls.master.tune = 5.0;
-    let code = song::encode_song_code(&controls).unwrap();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     let code = append_record_to_code(&code, 99, &[1, 2, 3, 4]);
 
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.master.tune, 5.0);
+    assert_close(decoded.controls.master.tune, 5.0);
 }
 
 #[test]
 fn song_code_skips_unknown_control_ids() {
-    let code = song::encode_song_code(&FluidControls::default()).unwrap();
+    let code = song::encode_song_code(&SongState::default()).unwrap();
     let mut payload = Vec::new();
     let id = b"future.control.id";
     payload.extend_from_slice(&1u16.to_le_bytes());
@@ -333,12 +641,32 @@ fn song_code_skips_unknown_control_ids() {
 
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.master.level, FluidControls::default().master.level);
+    assert_close(
+        decoded.controls.master.level,
+        FluidControls::default().master.level,
+    );
+}
+
+#[test]
+fn song_code_skips_unknown_automation_target_control_ids() {
+    let code = song::encode_song_code(&SongState::default()).unwrap();
+    let payload = automation_payload(
+        "future.control.id",
+        LfoRoute {
+            depth_ratio: 0.2,
+            ..LfoRoute::default()
+        },
+    );
+    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
+
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_eq!(decoded.automation.routes().count(), 0);
 }
 
 #[test]
 fn launch_line_is_cli_launchable() {
-    let line = launch_line(&FluidControls::default()).unwrap();
+    let line = launch_line(&SongState::default()).unwrap();
 
     assert!(line.starts_with("nooise n1_"));
 }

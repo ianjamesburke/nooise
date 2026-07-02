@@ -3,21 +3,29 @@ use super::*;
 pub(crate) fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controls: Arc<ArcSwap<FluidControls>>,
+    automation_shared: Arc<ArcSwap<AutomationState>>,
     telemetry: Arc<FluidTelemetry>,
+    initial_automation: AutomationState,
     updates: UpdateNotice,
 ) -> Result<(), Box<dyn Error>> {
     let mut tab = Tab::Master;
     let mut selected = 0usize;
+    let mut lfo_selected = 0usize;
     let mut numeric_entry: Option<NumericEntry> = None;
     let mut fluid = FluidState::new();
     let mut last = Instant::now();
     let started = Instant::now();
     let mut save_message: Option<String> = None;
+    let mut automation = initial_automation;
 
     loop {
         let c = FluidControls::clone(&controls.load());
         let update_message = updates.message();
-        let footer_message = save_message.as_deref().or(update_message.as_deref());
+        let automation_message = automation_footer(&automation);
+        let footer_message = save_message
+            .as_deref()
+            .or(automation_message.as_deref())
+            .or(update_message.as_deref());
         let items = tab_controls(tab, &c);
         let items_len = items.len();
         selected = selected.min(items_len.saturating_sub(1));
@@ -28,17 +36,21 @@ pub(crate) fn ui_loop(
         fluid.tick(dt, &telemetry);
 
         let cursor_visible = (started.elapsed().as_millis() / 400).is_multiple_of(2);
+        let beat = telemetry.beat();
         terminal.draw(|f| {
             render(
                 f,
                 &items,
                 tab,
                 selected,
+                lfo_selected,
+                beat,
                 NumericDisplay {
                     entry: numeric_entry.as_ref().map(|entry| entry.buffer.as_str()),
                     cursor_visible,
                 },
                 &fluid,
+                &automation,
                 footer_message,
             )
         })?;
@@ -56,7 +68,16 @@ pub(crate) fn ui_loop(
                         if entry.is_complete_number()
                             && let Ok(value) = entry.buffer.parse::<f32>()
                         {
-                            set_value(&controls, tab, selected, value);
+                            if let Some(field) = lfo_field_at(lfo_selected)
+                                && let Some(address) = automation.active_address()
+                            {
+                                if let Some(route) = automation.route_mut(address) {
+                                    route.set_field(field, value);
+                                }
+                                publish_automation(&automation_shared, &automation);
+                            } else {
+                                set_value(&controls, tab, selected, value);
+                            }
                         }
                         numeric_entry = None;
                     }
@@ -70,33 +91,114 @@ pub(crate) fn ui_loop(
             }
             match key.code {
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    save_message = Some(match copy_launch_line(&controls) {
+                    save_message = Some(match copy_launch_line(&controls, &automation) {
                         Ok(line) => format!("Copied {line}"),
                         Err(err) => format!("Save failed: {err}"),
                     });
                 }
+                KeyCode::Esc if automation.is_editor_open() => {
+                    automation.close_editor();
+                    lfo_selected = 0;
+                    publish_automation(&automation_shared, &automation);
+                }
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Tab => {
+                    if automation.is_editor_open() {
+                        automation.close_editor();
+                        publish_automation(&automation_shared, &automation);
+                    }
                     tab = tab.next();
                     selected = 0;
+                    lfo_selected = 0;
                 }
                 KeyCode::BackTab => {
+                    if automation.is_editor_open() {
+                        automation.close_editor();
+                        publish_automation(&automation_shared, &automation);
+                    }
                     tab = tab.previous();
                     selected = 0;
+                    lfo_selected = 0;
                 }
-                KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if automation.is_editor_open() {
+                        lfo_selected = lfo_selected.saturating_sub(1);
+                    } else {
+                        selected = selected.saturating_sub(1);
+                    }
+                }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    selected = selected.saturating_add(1).min(items_len.saturating_sub(1))
+                    if automation.is_editor_open() {
+                        lfo_selected = (lfo_selected + 1).min(LfoField::ALL.len());
+                    } else {
+                        selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
+                    }
                 }
                 KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                    reset_to_min(&controls, tab, selected)
+                    reset_lfo_or_control(
+                        &mut automation,
+                        &automation_shared,
+                        lfo_selected,
+                        &controls,
+                        tab,
+                        selected,
+                    );
                 }
-                KeyCode::Char('H') => reset_to_min(&controls, tab, selected),
+                KeyCode::Char('H') => {
+                    reset_lfo_or_control(
+                        &mut automation,
+                        &automation_shared,
+                        lfo_selected,
+                        &controls,
+                        tab,
+                        selected,
+                    );
+                }
                 KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                    reset_to_min(&controls, tab, selected)
+                    reset_lfo_or_control(
+                        &mut automation,
+                        &automation_shared,
+                        lfo_selected,
+                        &controls,
+                        tab,
+                        selected,
+                    );
                 }
-                KeyCode::Left | KeyCode::Char('h') => adjust(&controls, tab, selected, -1.0),
-                KeyCode::Right | KeyCode::Char('l') => adjust(&controls, tab, selected, 1.0),
+                KeyCode::Left | KeyCode::Char('h') => {
+                    adjust_lfo_or_control(
+                        &mut automation,
+                        &automation_shared,
+                        lfo_selected,
+                        &controls,
+                        tab,
+                        selected,
+                        -1.0,
+                    );
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    adjust_lfo_or_control(
+                        &mut automation,
+                        &automation_shared,
+                        lfo_selected,
+                        &controls,
+                        tab,
+                        selected,
+                        1.0,
+                    );
+                }
+                KeyCode::Char('f') => {
+                    if let Some(item) = items.get(selected) {
+                        let address = ControlAddress::new(item.id);
+                        if automation.active_address() == Some(address) {
+                            automation.close_editor();
+                        } else {
+                            automation.close_editor();
+                            automation.open_or_create(address);
+                        }
+                        lfo_selected = 0;
+                        publish_automation(&automation_shared, &automation);
+                    }
+                }
                 KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
                     let mut entry = NumericEntry::default();
                     entry.push(c);
@@ -110,9 +212,79 @@ pub(crate) fn ui_loop(
     Ok(())
 }
 
-fn copy_launch_line(controls: &Arc<ArcSwap<FluidControls>>) -> Result<String, Box<dyn Error>> {
+/// Submenu row 0 is the parent slider; rows 1..=3 map onto the LFO fields.
+pub(crate) fn lfo_field_at(index: usize) -> Option<LfoField> {
+    LfoField::ALL.get(index.checked_sub(1)?).copied()
+}
+
+fn adjust_lfo_or_control(
+    automation: &mut AutomationState,
+    automation_shared: &Arc<ArcSwap<AutomationState>>,
+    lfo_selected: usize,
+    controls: &Arc<ArcSwap<FluidControls>>,
+    tab: Tab,
+    selected: usize,
+    dir: f32,
+) {
+    if let Some(field) = lfo_field_at(lfo_selected)
+        && let Some(address) = automation.active_address()
+    {
+        if let Some(route) = automation.route_mut(address) {
+            route.adjust_field(field, dir);
+        }
+        publish_automation(automation_shared, automation);
+    } else {
+        adjust(controls, tab, selected, dir);
+    }
+}
+
+fn reset_lfo_or_control(
+    automation: &mut AutomationState,
+    automation_shared: &Arc<ArcSwap<AutomationState>>,
+    lfo_selected: usize,
+    controls: &Arc<ArcSwap<FluidControls>>,
+    tab: Tab,
+    selected: usize,
+) {
+    if let Some(field) = lfo_field_at(lfo_selected)
+        && let Some(address) = automation.active_address()
+    {
+        if let Some(route) = automation.route_mut(address) {
+            route.reset_field(field);
+        }
+        publish_automation(automation_shared, automation);
+    } else {
+        reset_to_min(controls, tab, selected);
+    }
+}
+
+fn publish_automation(
+    automation_shared: &Arc<ArcSwap<AutomationState>>,
+    automation: &AutomationState,
+) {
+    automation_shared.store(Arc::new(automation.clone()));
+}
+
+fn automation_footer(automation: &AutomationState) -> Option<String> {
+    let address = automation.active_address()?;
+    let route = automation.route(address)?;
+    Some(format!(
+        "LFO {}   {:.2} beats   depth {:.0}%   Esc close",
+        address.id(),
+        route.cycle_beats,
+        route.depth_ratio * 100.0
+    ))
+}
+
+fn copy_launch_line(
+    controls: &Arc<ArcSwap<FluidControls>>,
+    automation: &AutomationState,
+) -> Result<String, Box<dyn Error>> {
     let c = FluidControls::clone(&controls.load());
-    let line = launch_line(&c)?;
+    let line = launch_line(&SongState {
+        controls: c,
+        automation: automation.clone(),
+    })?;
     let mut clipboard = arboard::Clipboard::new()?;
     clipboard.set_text(line.clone())?;
     Ok(line)
@@ -141,13 +313,17 @@ pub(crate) fn set_value(
     controls.store(Arc::new(next));
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render(
     f: &mut Frame,
     items: &[ControlItem],
     active_tab: Tab,
     selected: usize,
+    lfo_selected: usize,
+    beat: f64,
     numeric: NumericDisplay<'_>,
     fluid: &FluidState,
+    automation: &AutomationState,
     update_message: Option<&str>,
 ) {
     render_fluid(
@@ -155,8 +331,11 @@ pub(crate) fn render(
         items,
         active_tab,
         selected,
+        lfo_selected,
+        beat,
         numeric,
         fluid,
+        automation,
         update_message,
     );
 }
@@ -324,13 +503,17 @@ pub(crate) fn darken(c: Color, factor: f32) -> Color {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_fluid(
     f: &mut Frame,
     items: &[ControlItem],
     active_tab: Tab,
     selected: usize,
+    lfo_selected: usize,
+    beat: f64,
     numeric: NumericDisplay<'_>,
     fluid: &FluidState,
+    automation: &AutomationState,
     update_message: Option<&str>,
 ) {
     let area = f.area();
@@ -404,12 +587,15 @@ pub(crate) fn render_fluid(
 
     // One text row per control, blank line between for vertical breathing room.
     let bar_w = (inner.width as usize).saturating_sub(34).clamp(6, 80);
-    let mut rows: Vec<Line> = Vec::with_capacity(items.len() * 2);
+    let mut rows: Vec<Line> = Vec::with_capacity(items.len() * 3);
     for (i, item) in items.iter().enumerate() {
         let active = i == selected;
-        let bar = ratio_bar(item_ratio(item), bar_w, '█', '░');
-        let prefix = if active { "▶ " } else { "  " };
-        let display = if active {
+        let address = ControlAddress::new(item.id);
+        let route = automation.route(address);
+        let editor_open_here = automation.active_address() == Some(address);
+        let parent_active = active && (!editor_open_here || lfo_selected == 0);
+        let prefix = if parent_active { "▶ " } else { "  " };
+        let display = if parent_active {
             if let Some(entry) = numeric.entry {
                 let cursor = if numeric.cursor_visible { "_" } else { " " };
                 format!("> {entry}{cursor}")
@@ -419,19 +605,37 @@ pub(crate) fn render_fluid(
         } else {
             item.display.clone()
         };
-        let fg = if active {
+        let fg = if parent_active {
             Color::Rgb(120, 230, 255)
         } else {
             Color::Rgb(170, 178, 195)
         };
         let mut style = Style::default().fg(fg);
-        if active {
+        if parent_active {
             style = style.add_modifier(Modifier::BOLD);
         }
-        rows.push(Line::from(Span::styled(
-            format!("{prefix}{:<15} {bar} {display}", item.label),
-            style,
-        )));
+        let modulated = route.map(|route| {
+            (item_ratio(item) + route.depth_ratio * route.wave_at(beat)).clamp(0.0, 1.0)
+        });
+        let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
+        spans.extend(slider_spans(item_ratio(item), modulated, bar_w, style));
+        spans.push(Span::styled(format!(" {display}"), style));
+        rows.push(Line::from(spans));
+
+        if let Some(route) = route {
+            if editor_open_here {
+                for (fi, field) in LfoField::ALL.iter().enumerate() {
+                    rows.push(lfo_field_line(
+                        route,
+                        *field,
+                        lfo_selected == fi + 1,
+                        &numeric,
+                        bar_w,
+                    ));
+                }
+            }
+            rows.push(lfo_lane_line(route, beat, bar_w, editor_open_here));
+        }
         if i + 1 < items.len() {
             rows.push(Line::from(""));
         }
@@ -439,7 +643,7 @@ pub(crate) fn render_fluid(
     f.render_widget(Paragraph::new(rows), layout[4]);
 
     let footer = update_message
-        .unwrap_or("jk select   hl adjust   type value   Enter set   Esc cancel   q quit");
+        .unwrap_or("jk select   h/l adjust   f LFO   type value   Enter set   q quit");
     let footer_style = if update_message.is_some() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
@@ -453,6 +657,98 @@ pub(crate) fn render_fluid(
             .style(footer_style),
         layout[5],
     );
+}
+
+fn lfo_field_line(
+    route: &LfoRoute,
+    field: LfoField,
+    active: bool,
+    numeric: &NumericDisplay<'_>,
+    bar_w: usize,
+) -> Line<'static> {
+    let fg = if active {
+        Color::Rgb(255, 130, 210)
+    } else {
+        Color::Rgb(190, 105, 210)
+    };
+    let mut style = Style::default().fg(fg);
+    if active {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    let prefix = if active { "▶ " } else { "  " };
+    let display = if active && let Some(entry) = numeric.entry {
+        let cursor = if numeric.cursor_visible { "_" } else { " " };
+        format!("> {entry}{cursor}")
+    } else {
+        route.field_display(field)
+    };
+    let bar = ratio_bar(route.field_ratio(field), bar_w, '█', '░');
+    Line::from(Span::styled(
+        format!("{prefix}  {:<13} {bar} {display}", field.label()),
+        style,
+    ))
+}
+
+/// Live oscillator lane: one LFO cycle across the width, phase-locked to the
+/// engine beat. Amplitude tracks the route depth; brightness peaks at the
+/// current phase head so the sweep reads as motion.
+pub(crate) fn lfo_lane_line(
+    route: &LfoRoute,
+    beat: f64,
+    width: usize,
+    active: bool,
+) -> Line<'static> {
+    const WAVE: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let width = width.clamp(6, 80);
+    let head = (route.phase_at(beat) * width as f64) as usize % width;
+    let floor = if active { 0.35 } else { 0.25 };
+    let mut spans = Vec::with_capacity(width + 1);
+    spans.push(Span::styled(
+        format!("  {:<15} ", ""),
+        Style::default().fg(Color::Rgb(130, 136, 160)),
+    ));
+    for i in 0..width {
+        let phase = i as f32 / width as f32;
+        let wave = (TAU * phase).sin() * route.depth_ratio;
+        let level = (wave * 0.5 + 0.5).clamp(0.0, 1.0);
+        let glyph = WAVE[((level * (WAVE.len() - 1) as f32).round() as usize).min(WAVE.len() - 1)];
+        let raw = i.abs_diff(head);
+        let wrapped = raw.min(width - raw);
+        let falloff = 1.0 - (wrapped as f32 / width as f32) * 2.0;
+        let brightness = (floor + falloff.max(0.0) * 0.6).clamp(0.0, 1.0);
+        let hue = 300.0 + wave * 25.0;
+        spans.push(Span::styled(
+            glyph.to_string(),
+            Style::default().fg(fluid_hsv(hue, 0.6, brightness)),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Slider bar spans with an optional bright marker at the live modulated value.
+fn slider_spans(
+    ratio: f32,
+    modulated: Option<f32>,
+    width: usize,
+    style: Style,
+) -> Vec<Span<'static>> {
+    let filled = (ratio.clamp(0.0, 1.0) * width as f32).round() as usize;
+    let marker = modulated
+        .map(|value| (value.clamp(0.0, 1.0) * width.saturating_sub(1) as f32).round() as usize);
+    (0..width)
+        .map(|i| {
+            if Some(i) == marker {
+                Span::styled(
+                    "◆".to_string(),
+                    Style::default()
+                        .fg(Color::Rgb(255, 130, 210))
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(if i < filled { "█" } else { "░" }.to_string(), style)
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn item_ratio(item: &ControlItem) -> f32 {

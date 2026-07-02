@@ -139,7 +139,13 @@ pub(crate) struct BassVoice {
 }
 
 impl BassVoice {
-    pub(crate) fn new(hz: f32, attack_time: f32, decay_time: f32, drive: f32, sample_rate: f32) -> Self {
+    pub(crate) fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        drive: f32,
+        sample_rate: f32,
+    ) -> Self {
         Self {
             osc: SineOscillator::new(hz, sample_rate),
             // No sustain — Decay carries the note fully to silence, like the

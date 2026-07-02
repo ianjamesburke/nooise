@@ -130,7 +130,12 @@ impl PadLayer {
             ),
         }
     }
-    pub(crate) fn next_stereo(&mut self, width: f32, detune_mix: f32, octave_mix: f32) -> (f32, f32) {
+    pub(crate) fn next_stereo(
+        &mut self,
+        width: f32,
+        detune_mix: f32,
+        octave_mix: f32,
+    ) -> (f32, f32) {
         let (mut l, mut r) = (0.0f32, 0.0f32);
         for t in &mut self.tones {
             let (tl, tr) = t.next_stereo(width, detune_mix, octave_mix);
@@ -176,7 +181,12 @@ impl PadTone {
             gain,
         }
     }
-    pub(crate) fn next_stereo(&mut self, width: f32, detune_mix: f32, octave_mix: f32) -> (f32, f32) {
+    pub(crate) fn next_stereo(
+        &mut self,
+        width: f32,
+        detune_mix: f32,
+        octave_mix: f32,
+    ) -> (f32, f32) {
         let s = self.primary.next()
             + self.detuned.next() * detune_mix
             + self.octave.next() * octave_mix;
@@ -211,7 +221,6 @@ pub(crate) fn pad_tones(
         })
         .collect()
 }
-
 
 pub(crate) const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
     // Progression A: with an 8s release, each chord rings well into the next

@@ -33,6 +33,7 @@ use crate::synth::noise::WhiteNoise;
 use crate::synth::oscillator::SineOscillator;
 use crate::update_check::{UpdateNotice, spawn_update_check};
 
+mod automation;
 mod controls;
 mod engine;
 mod registry;
@@ -43,10 +44,11 @@ mod voice;
 #[cfg(test)]
 mod tests;
 
+use automation::*;
 use controls::*;
 use engine::*;
 use registry::*;
-pub(crate) use song::{decode_song_code, launch_line};
+pub(crate) use song::{SongState, decode_song_code, launch_line};
 use ui::*;
 use voice::*;
 
@@ -62,6 +64,18 @@ use voice::*;
 pub(crate) struct FluidTelemetry {
     pub chord_index: AtomicU64,
     pub kick_pulse: AtomicU64,
+    /// Engine beat position as `f64::to_bits`, for beat-synced UI animation.
+    pub beat_bits: AtomicU64,
+}
+
+impl FluidTelemetry {
+    pub(crate) fn publish_beat(&self, beat: f64) {
+        self.beat_bits.store(beat.to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn beat(&self) -> f64 {
+        f64::from_bits(self.beat_bits.load(Ordering::Relaxed))
+    }
 }
 
 // ============================================================
@@ -75,15 +89,26 @@ pub(crate) fn run() -> Result<(), Box<dyn Error>> {
 }
 
 pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), Box<dyn Error>> {
-    let controls = Arc::new(ArcSwap::from_pointee(initial_controls));
+    run_with_song_state(SongState::from_controls(initial_controls))
+}
+
+pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn Error>> {
+    let controls = Arc::new(ArcSwap::from_pointee(initial_song.controls));
     let controls_for_engine = Arc::clone(&controls);
+    let automation = Arc::new(ArcSwap::from_pointee(initial_song.automation.clone()));
+    let automation_for_engine = Arc::clone(&automation);
     let telemetry = Arc::new(FluidTelemetry::default());
     let telemetry_for_engine = Arc::clone(&telemetry);
     let updates = UpdateNotice::default();
     spawn_update_check(updates.clone());
 
     let _stream = audio::start_stream(APP_ID, move |sr| {
-        FluidEngine::new(sr, controls_for_engine, telemetry_for_engine)
+        FluidEngine::new(
+            sr,
+            controls_for_engine,
+            automation_for_engine,
+            telemetry_for_engine,
+        )
     })?;
 
     enable_raw_mode()?;
@@ -92,7 +117,14 @@ pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), B
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = ui_loop(&mut terminal, controls, telemetry, updates);
+    let result = ui_loop(
+        &mut terminal,
+        controls,
+        automation,
+        telemetry,
+        initial_song.automation,
+        updates,
+    );
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -108,8 +140,9 @@ pub(crate) fn render_wav(
     const RENDER_SAMPLE_RATE: u32 = 44_100;
 
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
+    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(RENDER_SAMPLE_RATE as f32, controls, telemetry);
+    let mut engine = FluidEngine::new(RENDER_SAMPLE_RATE as f32, controls, automation, telemetry);
     if let Some(seed) = seed {
         engine.reseed(seed);
     }

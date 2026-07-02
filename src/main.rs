@@ -57,8 +57,8 @@ fn run_song_code(args: Vec<String>) -> Result<(), Box<dyn Error>> {
     let [code] = args.as_slice() else {
         return Err("expected exactly one song code".into());
     };
-    let controls = fluid::decode_song_code(code)?;
-    fluid::run_with_controls(controls)
+    let song = fluid::decode_song_code(code)?;
+    fluid::run_with_song_state(song)
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {

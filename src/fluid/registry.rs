@@ -66,6 +66,7 @@ impl Tab {
 }
 
 pub(crate) struct ControlItem {
+    pub(crate) id: &'static str,
     pub(crate) label: &'static str,
     pub(crate) kind: ControlKind,
     pub(crate) value: f32,
@@ -242,6 +243,7 @@ impl ControlSpec {
             Bar::Log2 => ((self.get)(c).log2(), self.min.log2(), self.max.log2()),
         };
         ControlItem {
+            id: self.id,
             label: self.label,
             kind: self.kind,
             value,
