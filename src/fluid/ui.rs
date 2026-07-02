@@ -13,11 +13,16 @@ pub(crate) fn ui_loop(
     let mut last = Instant::now();
     let started = Instant::now();
     let mut save_message: Option<String> = None;
+    let mut automation = AutomationState::default();
 
     loop {
         let c = FluidControls::clone(&controls.load());
         let update_message = updates.message();
-        let footer_message = save_message.as_deref().or(update_message.as_deref());
+        let automation_message = automation_footer(&automation);
+        let footer_message = save_message
+            .as_deref()
+            .or(automation_message.as_deref())
+            .or(update_message.as_deref());
         let items = tab_controls(tab, &c);
         let items_len = items.len();
         selected = selected.min(items_len.saturating_sub(1));
@@ -39,6 +44,7 @@ pub(crate) fn ui_loop(
                     cursor_visible,
                 },
                 &fluid,
+                &automation,
                 footer_message,
             )
         })?;
@@ -75,6 +81,7 @@ pub(crate) fn ui_loop(
                         Err(err) => format!("Save failed: {err}"),
                     });
                 }
+                KeyCode::Esc if automation.is_editor_open() => automation.close_editor(),
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Tab => {
                     tab = tab.next();
@@ -96,7 +103,12 @@ pub(crate) fn ui_loop(
                     reset_to_min(&controls, tab, selected)
                 }
                 KeyCode::Left | KeyCode::Char('h') => adjust(&controls, tab, selected, -1.0),
-                KeyCode::Right | KeyCode::Char('l') => adjust(&controls, tab, selected, 1.0),
+                KeyCode::Right => adjust(&controls, tab, selected, 1.0),
+                KeyCode::Char('l') => {
+                    if let Some(item) = items.get(selected) {
+                        automation.open_or_create(ControlAddress::new(item.id));
+                    }
+                }
                 KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
                     let mut entry = NumericEntry::default();
                     entry.push(c);
@@ -108,6 +120,18 @@ pub(crate) fn ui_loop(
     }
 
     Ok(())
+}
+
+fn automation_footer(automation: &AutomationState) -> Option<String> {
+    let address = automation.active_address()?;
+    let route = automation.route(address)?;
+    Some(format!(
+        "LFO {}   {:.2} beats   target +/-{:.0}%   effective {:.0}%   Esc close",
+        address.id(),
+        route.cycle_beats,
+        route.target_depth_ratio * 100.0,
+        route.effective_depth_ratio * 100.0
+    ))
 }
 
 fn copy_launch_line(controls: &Arc<ArcSwap<FluidControls>>) -> Result<String, Box<dyn Error>> {
@@ -148,6 +172,7 @@ pub(crate) fn render(
     selected: usize,
     numeric: NumericDisplay<'_>,
     fluid: &FluidState,
+    automation: &AutomationState,
     update_message: Option<&str>,
 ) {
     render_fluid(
@@ -157,6 +182,7 @@ pub(crate) fn render(
         selected,
         numeric,
         fluid,
+        automation,
         update_message,
     );
 }
@@ -331,6 +357,7 @@ pub(crate) fn render_fluid(
     selected: usize,
     numeric: NumericDisplay<'_>,
     fluid: &FluidState,
+    automation: &AutomationState,
     update_message: Option<&str>,
 ) {
     let area = f.area();
@@ -404,9 +431,10 @@ pub(crate) fn render_fluid(
 
     // One text row per control, blank line between for vertical breathing room.
     let bar_w = (inner.width as usize).saturating_sub(34).clamp(6, 80);
-    let mut rows: Vec<Line> = Vec::with_capacity(items.len() * 2);
+    let mut rows: Vec<Line> = Vec::with_capacity(items.len() * 3);
     for (i, item) in items.iter().enumerate() {
         let active = i == selected;
+        let address = ControlAddress::new(item.id);
         let bar = ratio_bar(item_ratio(item), bar_w, '█', '░');
         let prefix = if active { "▶ " } else { "  " };
         let display = if active {
@@ -432,6 +460,13 @@ pub(crate) fn render_fluid(
             format!("{prefix}{:<15} {bar} {display}", item.label),
             style,
         )));
+        if let Some(route) = automation.route(address) {
+            rows.push(automation_line(
+                route,
+                automation.active_address() == Some(address),
+                bar_w,
+            ));
+        }
         if i + 1 < items.len() {
             rows.push(Line::from(""));
         }
@@ -439,7 +474,7 @@ pub(crate) fn render_fluid(
     f.render_widget(Paragraph::new(rows), layout[4]);
 
     let footer = update_message
-        .unwrap_or("jk select   hl adjust   type value   Enter set   Esc cancel   q quit");
+        .unwrap_or("jk select   h/Left down   Right up   l LFO   type value   Enter set   q quit");
     let footer_style = if update_message.is_some() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
@@ -453,6 +488,34 @@ pub(crate) fn render_fluid(
             .style(footer_style),
         layout[5],
     );
+}
+
+fn automation_line(route: &LfoRoute, active: bool, bar_w: usize) -> Line<'static> {
+    let fg = if active {
+        Color::Rgb(255, 130, 210)
+    } else {
+        Color::Rgb(190, 105, 210)
+    };
+    let style = Style::default().fg(fg);
+    let label_style = Style::default().fg(Color::Rgb(130, 136, 160));
+    Line::from(vec![
+        Span::styled(format!("  {:<15} ", ""), label_style),
+        Span::styled(oscillator_lane(bar_w.clamp(6, 24)), style),
+        Span::styled(
+            format!(
+                " LFO {:.2}b +/-{:.0}% eff {:.0}%",
+                route.cycle_beats,
+                route.target_depth_ratio * 100.0,
+                route.effective_depth_ratio * 100.0
+            ),
+            style,
+        ),
+    ])
+}
+
+fn oscillator_lane(width: usize) -> String {
+    const WAVE: [char; 8] = ['▁', '▂', '▄', '▆', '█', '▆', '▄', '▂'];
+    (0..width).map(|i| WAVE[i % WAVE.len()]).collect()
 }
 
 pub(crate) fn item_ratio(item: &ControlItem) -> f32 {

@@ -1,7 +1,8 @@
 use super::*;
-use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 
 const SAMPLE_RATE: f32 = 48_000.0;
 
@@ -24,6 +25,14 @@ fn append_record_to_code(code: &str, record_type: u8, payload: &[u8]) -> String 
     let mut bytes = URL_SAFE_NO_PAD.decode(encoded).unwrap();
     song::write_record(record_type, payload, &mut bytes).unwrap();
     format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn buffer_text(buffer: &Buffer) -> String {
+    buffer
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>()
 }
 
 #[test]
@@ -94,6 +103,7 @@ fn render_fluid_draws_without_terminal_backend() {
     let backend = TestBackend::new(100, 32);
     let mut terminal = Terminal::new(backend).unwrap();
     let items = tab_controls(Tab::Master, &controls);
+    let automation = AutomationState::default();
 
     terminal
         .draw(|f| {
@@ -104,10 +114,53 @@ fn render_fluid_draws_without_terminal_backend() {
                 0,
                 NumericDisplay::empty(),
                 &fluid,
+                &automation,
                 None,
             )
         })
         .unwrap();
+}
+
+#[test]
+fn automation_open_or_create_uses_safe_lfo_defaults() {
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new("master.level");
+
+    let route = automation.open_or_create(address);
+
+    assert_close(route.cycle_beats, 2.0);
+    assert_close(route.target_depth_ratio, 0.10);
+    assert_close(route.effective_depth_ratio, 0.0);
+    assert_eq!(automation.active_address(), Some(address));
+}
+
+#[test]
+fn render_fluid_draws_oscillator_lane_for_automated_slider() {
+    let controls = FluidControls::default();
+    let fluid = FluidState::new();
+    let backend = TestBackend::new(120, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let items = tab_controls(Tab::Master, &controls);
+    let mut automation = AutomationState::default();
+    automation.open_or_create(ControlAddress::new(items[0].id));
+
+    terminal
+        .draw(|f| {
+            render(
+                f,
+                &items,
+                Tab::Master,
+                0,
+                NumericDisplay::empty(),
+                &fluid,
+                &automation,
+                None,
+            )
+        })
+        .unwrap();
+
+    let text = buffer_text(terminal.backend().buffer());
+    assert!(text.contains("LFO 2.00b +/-10% eff 0%"));
 }
 
 #[test]

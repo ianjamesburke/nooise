@@ -33,6 +33,7 @@ use crate::synth::noise::WhiteNoise;
 use crate::synth::oscillator::SineOscillator;
 use crate::update_check::{UpdateNotice, spawn_update_check};
 
+mod automation;
 mod controls;
 mod engine;
 mod registry;
@@ -43,6 +44,7 @@ mod voice;
 #[cfg(test)]
 mod tests;
 
+use automation::*;
 use controls::*;
 use engine::*;
 use registry::*;
