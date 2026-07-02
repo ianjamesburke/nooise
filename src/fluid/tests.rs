@@ -87,7 +87,17 @@ fn render_fluid_draws_without_terminal_backend() {
     let items = tab_controls(Tab::Master, &controls);
 
     terminal
-        .draw(|f| render(f, &items, Tab::Master, 0, None, false, &fluid))
+        .draw(|f| {
+            render(
+                f,
+                &items,
+                Tab::Master,
+                0,
+                NumericDisplay::empty(),
+                &fluid,
+                None,
+            )
+        })
         .unwrap();
 }
 

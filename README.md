@@ -40,12 +40,16 @@ Press `q` to quit.
 nooise --version
 ```
 
+The app checks crates.io at most once every 24 hours while running and shows a
+small update message when a newer release is available.
+
 ## Update
 
 ```sh
 nooise update
 ```
 
+Checks crates.io and only reinstalls when a newer release exists.
 `nooise upgrade` does the same thing.
 
 ## Render to a File

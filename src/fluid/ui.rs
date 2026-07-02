@@ -4,6 +4,7 @@ pub(crate) fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controls: Arc<ArcSwap<FluidControls>>,
     telemetry: Arc<FluidTelemetry>,
+    updates: UpdateNotice,
 ) -> Result<(), Box<dyn Error>> {
     let mut tab = Tab::Master;
     let mut selected = 0usize;
@@ -14,6 +15,7 @@ pub(crate) fn ui_loop(
 
     loop {
         let c = FluidControls::clone(&controls.load());
+        let update_message = updates.message();
         let items = tab_controls(tab, &c);
         let items_len = items.len();
         selected = selected.min(items_len.saturating_sub(1));
@@ -30,9 +32,12 @@ pub(crate) fn ui_loop(
                 &items,
                 tab,
                 selected,
-                numeric_entry.as_ref().map(|entry| entry.buffer.as_str()),
-                cursor_visible,
+                NumericDisplay {
+                    entry: numeric_entry.as_ref().map(|entry| entry.buffer.as_str()),
+                    cursor_visible,
+                },
                 &fluid,
+                update_message.as_deref(),
             )
         })?;
 
@@ -109,7 +114,12 @@ pub(crate) fn reset_to_min(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, sel
     controls.store(Arc::new(next));
 }
 
-pub(crate) fn set_value(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize, value: f32) {
+pub(crate) fn set_value(
+    controls: &Arc<ArcSwap<FluidControls>>,
+    tab: Tab,
+    selected: usize,
+    value: f32,
+) {
     let mut next = FluidControls::clone(&controls.load());
     apply_value(tab, selected, value, &mut next);
     controls.store(Arc::new(next));
@@ -120,19 +130,34 @@ pub(crate) fn render(
     items: &[ControlItem],
     active_tab: Tab,
     selected: usize,
-    numeric_entry: Option<&str>,
-    cursor_visible: bool,
+    numeric: NumericDisplay<'_>,
     fluid: &FluidState,
+    update_message: Option<&str>,
 ) {
     render_fluid(
         f,
         items,
         active_tab,
         selected,
-        numeric_entry,
-        cursor_visible,
+        numeric,
         fluid,
+        update_message,
     );
+}
+
+pub(crate) struct NumericDisplay<'a> {
+    entry: Option<&'a str>,
+    cursor_visible: bool,
+}
+
+#[cfg(test)]
+impl NumericDisplay<'_> {
+    pub(crate) fn empty() -> Self {
+        Self {
+            entry: None,
+            cursor_visible: false,
+        }
+    }
 }
 
 // ============================================================
@@ -288,9 +313,9 @@ pub(crate) fn render_fluid(
     items: &[ControlItem],
     active_tab: Tab,
     selected: usize,
-    numeric_entry: Option<&str>,
-    cursor_visible: bool,
+    numeric: NumericDisplay<'_>,
     fluid: &FluidState,
+    update_message: Option<&str>,
 ) {
     let area = f.area();
     f.render_widget(FluidWidget { fluid }, area);
@@ -369,8 +394,8 @@ pub(crate) fn render_fluid(
         let bar = ratio_bar(item_ratio(item), bar_w, '█', '░');
         let prefix = if active { "▶ " } else { "  " };
         let display = if active {
-            if let Some(entry) = numeric_entry {
-                let cursor = if cursor_visible { "_" } else { " " };
+            if let Some(entry) = numeric.entry {
+                let cursor = if numeric.cursor_visible { "_" } else { " " };
                 format!("> {entry}{cursor}")
             } else {
                 item.display.clone()
@@ -397,10 +422,19 @@ pub(crate) fn render_fluid(
     }
     f.render_widget(Paragraph::new(rows), layout[4]);
 
+    let footer = update_message
+        .unwrap_or("jk select   hl adjust   type value   Enter set   Esc cancel   q quit");
+    let footer_style = if update_message.is_some() {
+        Style::default()
+            .fg(Color::Rgb(255, 220, 120))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Rgb(120, 128, 145))
+    };
     f.render_widget(
-        Paragraph::new("jk select   hl adjust   type value   Enter set   Esc cancel   q quit")
+        Paragraph::new(footer)
             .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::Rgb(120, 128, 145))),
+            .style(footer_style),
         layout[5],
     );
 }

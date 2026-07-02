@@ -2,11 +2,13 @@ use clap::{Args, Parser, Subcommand};
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::Command;
+use update_check::check_for_update;
 
 mod audio;
 mod fluid;
 mod fx;
 mod synth;
+mod update_check;
 
 fn main() -> Result<(), Box<dyn Error>> {
     match Cli::parse().command {
@@ -49,9 +51,16 @@ fn render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {
-    println!("Updating nooise from crates.io...");
+    println!("Checking crates.io for nooise updates...");
+    let Some(latest) = check_for_update()? else {
+        println!("nooise is up to date (v{})", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    };
+
+    let latest_version = latest.semver().to_string();
+    println!("Updating nooise to {latest}...");
     let status = Command::new("cargo")
-        .args(["install", "nooise", "--locked", "--force"])
+        .args(cargo_install_args(&latest_version))
         .status()
         .map_err(|e| format!("failed to run cargo install nooise: {e}"))?;
 
@@ -62,9 +71,20 @@ fn update_nooise() -> Result<(), Box<dyn Error>> {
     }
 }
 
+fn cargo_install_args(version: &str) -> [&str; 6] {
+    [
+        "install",
+        "nooise",
+        "--locked",
+        "--version",
+        version,
+        "--force",
+    ]
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Cli, CliCommand, RenderArgs, render};
+    use super::{Cli, CliCommand, RenderArgs, cargo_install_args, render};
     use clap::{CommandFactory, Parser, error::ErrorKind};
     use std::path::PathBuf;
 
@@ -80,7 +100,10 @@ mod tests {
 
     #[test]
     fn version_flags_are_available() {
-        assert_eq!(parse(&["-V"]).unwrap_err().kind(), ErrorKind::DisplayVersion);
+        assert_eq!(
+            parse(&["-V"]).unwrap_err().kind(),
+            ErrorKind::DisplayVersion
+        );
         assert_eq!(
             parse(&["--version"]).unwrap_err().kind(),
             ErrorKind::DisplayVersion
@@ -89,8 +112,29 @@ mod tests {
 
     #[test]
     fn update_and_upgrade_run_updater() {
-        assert_eq!(parse(&["update"]).unwrap().command, Some(CliCommand::Update));
-        assert_eq!(parse(&["upgrade"]).unwrap().command, Some(CliCommand::Update));
+        assert_eq!(
+            parse(&["update"]).unwrap().command,
+            Some(CliCommand::Update)
+        );
+        assert_eq!(
+            parse(&["upgrade"]).unwrap().command,
+            Some(CliCommand::Update)
+        );
+    }
+
+    #[test]
+    fn updater_installs_exact_latest_version() {
+        assert_eq!(
+            cargo_install_args("1.2.3"),
+            [
+                "install",
+                "nooise",
+                "--locked",
+                "--version",
+                "1.2.3",
+                "--force"
+            ]
+        );
     }
 
     #[test]

@@ -7,6 +7,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
 ## Ownership
 
 - `main.rs` — binary entry point: CLI parsing (`run`/`version`/`update`/`render`), wires up terminal + audio engine.
+- `update_check.rs` — passive crates.io update notification helper; checks in the background and exposes a short TUI-safe message.
 - `audio.rs` — cpal/audio-backend plumbing, sample callback wiring.
 - `fluid/` — the core engine module:
   - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `render_wav()` (headless wav render), `FluidTelemetry`.
@@ -25,6 +26,8 @@ All engine, terminal UI, and live-control code for the nooise binary.
 - Live-read gain controls are ramped by `GainSmoothers` in `FluidEngine`; do not apply UI volume jumps directly in the audio callback path.
 - Pitched voices (Pad, Bass) route note numbers through `midi_to_hz`; unpitched voices (Perc, Kick, Tonal, Clap) do not and are unaffected by global pitch controls like master tune.
 - Voice RNGs must stay reseedable via `FluidEngine::reseed` so `nooise render --seed` stays byte-reproducible.
+- Passive update checks must never block the TUI or audio callback; keep crates.io/network work off the main loop and show no message on failure.
+- `nooise update` checks crates.io before invoking Cargo; do not force reinstall when the installed version is already current.
 
 ## Verification
 

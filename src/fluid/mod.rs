@@ -31,6 +31,7 @@ use crate::fx::reverb::Freeverb;
 use crate::synth::envelope::Adsr;
 use crate::synth::noise::WhiteNoise;
 use crate::synth::oscillator::SineOscillator;
+use crate::update_check::{UpdateNotice, spawn_update_check};
 
 mod controls;
 mod engine;
@@ -72,6 +73,8 @@ pub(crate) fn run() -> Result<(), Box<dyn Error>> {
     let controls_for_engine = Arc::clone(&controls);
     let telemetry = Arc::new(FluidTelemetry::default());
     let telemetry_for_engine = Arc::clone(&telemetry);
+    let updates = UpdateNotice::default();
+    spawn_update_check(updates.clone());
 
     let _stream = audio::start_stream(APP_ID, move |sr| {
         FluidEngine::new(sr, controls_for_engine, telemetry_for_engine)
@@ -83,7 +86,7 @@ pub(crate) fn run() -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = ui_loop(&mut terminal, controls, telemetry);
+    let result = ui_loop(&mut terminal, controls, telemetry, updates);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
