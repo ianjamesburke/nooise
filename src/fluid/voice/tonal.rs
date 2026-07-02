@@ -6,43 +6,77 @@ use super::*;
 
 pub(crate) struct TonalEngine {
     pub(crate) sample_rate: f32,
-    pub(crate) trigger: GridTrigger,
+    pub(crate) step_trigger: GridTrigger,
     pub(crate) step_index: usize,
+    pub(crate) active_phrase: usize,
+    pub(crate) last_cycle: Option<u64>,
+    pub(crate) evolved_phrase: Vec<i32>,
     pub(crate) voices: Vec<TonalVoice>,
     pub(crate) reverb: Freeverb,
     pub(crate) rng: StdRng,
 }
 
-pub(crate) const SCALE_HZ: [f32; 10] = [
-    110.0, 130.81, 146.83, 164.81, 196.0, 220.0, 261.63, 293.66, 329.63, 392.0,
+pub(crate) const TONAL_STEP_BEATS: f32 = 0.5;
+pub(crate) const TONAL_MAX_EVOLVE_NOTES: usize = 4;
+pub(crate) const TONAL_SCALE_MIDI: [i32; 10] = [45, 48, 50, 52, 55, 57, 60, 62, 64, 67];
+pub(crate) const TONAL_PHRASES: [&[i32]; 8] = [
+    &[45, 50, 55, 48, 52, 57, 50, 55],
+    &[45, 52, 57, 60, 57, 52, 50, 48, 50, 55, 52, 45],
+    &[57, 60, 64, 62, 60, 57, 52, 55],
+    &[45, 48, 52, 55, 60, 57, 55, 52, 50, 52, 55, 48],
+    &[52, 55, 60, 64, 67, 64, 60, 55],
+    &[
+        45, 50, 52, 55, 57, 55, 52, 50, 48, 50, 52, 45, 43, 45, 48, 50,
+    ],
+    &[60, 57, 55, 52, 50, 52, 55, 57],
+    &[
+        45, 48, 50, 55, 52, 57, 55, 60, 57, 64, 60, 67, 64, 60, 55, 52,
+    ],
 ];
-pub(crate) const PATTERN: [usize; 8] = [0, 2, 4, 1, 3, 5, 2, 4];
 
 impl TonalEngine {
     pub(crate) fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
-            trigger: GridTrigger::new(),
+            step_trigger: GridTrigger::new(),
             step_index: 0,
+            active_phrase: 0,
+            last_cycle: None,
+            evolved_phrase: tonal_phrase(0).to_vec(),
             voices: Vec::with_capacity(8),
             reverb: Freeverb::new(sample_rate, 0.86, 0.38, 0.9),
             rng: StdRng::from_entropy(),
         }
     }
 
-    pub(crate) fn next(&mut self, c: &TonalControls, timing: TimingContext) -> (f32, f32) {
+    pub(crate) fn next(
+        &mut self,
+        c: &TonalControls,
+        tune: f32,
+        timing: TimingContext,
+    ) -> (f32, f32) {
+        let phrase = tonal_phrase_index(c.phrase);
+        self.sync_phrase(phrase);
+
         if self
-            .trigger
-            .pop(timing, c.step_interval_beats, c.offset_beats)
+            .step_trigger
+            .pop(timing, TONAL_STEP_BEATS, c.offset_beats)
         {
-            let degree = if self.rng.gen_range(0.0f32..1.0) < c.randomness {
-                self.rng.gen_range(0..SCALE_HZ.len())
+            let cycle = tonal_cycle_index(timing.beat, c.step_interval_beats, c.offset_beats);
+            if self.last_cycle.is_some_and(|last| last != cycle) {
+                self.evolve_phrase(c.evolve_rate);
+            }
+            self.last_cycle = Some(cycle);
+
+            let loop_len = tonal_loop_len(c.step_interval_beats);
+            self.step_index =
+                tonal_cycle_step(timing.beat, c.step_interval_beats, c.offset_beats) % loop_len;
+            let note = if self.rng.gen_range(0.0f32..1.0) < c.randomness {
+                TONAL_SCALE_MIDI[self.rng.gen_range(0..TONAL_SCALE_MIDI.len())]
             } else {
-                let d = PATTERN[self.step_index % PATTERN.len()];
-                self.step_index += 1;
-                d
+                self.evolved_phrase[self.step_index % self.evolved_phrase.len()]
             };
-            let hz = SCALE_HZ[degree];
+            let hz = tonal_note_hz(note, tune);
             let decay_samples = timing.beats_to_samples(c.note_length_beats);
             let pan = self.rng.gen_range(-0.5f32..0.5);
             self.voices.push(TonalVoice::new(
@@ -71,6 +105,75 @@ impl TonalEngine {
             dry_r * (1.0 - c.reverb_mix * 0.5) + wet_r,
         )
     }
+
+    pub(crate) fn sync_phrase(&mut self, phrase: usize) {
+        if phrase != self.active_phrase {
+            self.active_phrase = phrase;
+            self.evolved_phrase = tonal_phrase(phrase).to_vec();
+            self.step_index = 0;
+            self.last_cycle = None;
+        }
+    }
+
+    pub(crate) fn evolve_phrase(&mut self, rate: f32) {
+        let count = tonal_evolve_note_count(rate, self.evolved_phrase.len());
+        let mut changed_positions = [usize::MAX; TONAL_MAX_EVOLVE_NOTES];
+        for changed in 0..count {
+            let mut pos = self.rng.gen_range(0..self.evolved_phrase.len());
+            while changed_positions[..changed].contains(&pos) {
+                pos = self.rng.gen_range(0..self.evolved_phrase.len());
+            }
+            changed_positions[changed] = pos;
+
+            let old = self.evolved_phrase[pos];
+            let mut next = old;
+            for _ in 0..8 {
+                next = TONAL_SCALE_MIDI[self.rng.gen_range(0..TONAL_SCALE_MIDI.len())];
+                if next != old {
+                    break;
+                }
+            }
+            self.evolved_phrase[pos] = next;
+        }
+    }
+}
+
+pub(crate) fn tonal_phrase_index(value: f32) -> usize {
+    (value.round() as i64).rem_euclid(TONAL_PHRASES.len() as i64) as usize
+}
+
+pub(crate) fn tonal_phrase(phrase: usize) -> &'static [i32] {
+    TONAL_PHRASES[phrase % TONAL_PHRASES.len()]
+}
+
+pub(crate) fn tonal_loop_len(interval_beats: f32) -> usize {
+    (interval_beats / TONAL_STEP_BEATS).round().clamp(1.0, 32.0) as usize
+}
+
+pub(crate) fn tonal_cycle_index(beat: f64, interval_beats: f32, offset_beats: f32) -> u64 {
+    let interval = f64::from(interval_beats.max(TONAL_STEP_BEATS));
+    let offset = f64::from(offset_beats).rem_euclid(interval);
+    ((beat - offset).max(0.0) / interval).floor() as u64
+}
+
+pub(crate) fn tonal_cycle_step(beat: f64, interval_beats: f32, offset_beats: f32) -> usize {
+    let interval = f64::from(interval_beats.max(TONAL_STEP_BEATS));
+    let offset = f64::from(offset_beats).rem_euclid(interval);
+    let local = (beat - offset).rem_euclid(interval);
+    (local / f64::from(TONAL_STEP_BEATS)).floor() as usize
+}
+
+pub(crate) fn tonal_evolve_note_count(rate: f32, phrase_len: usize) -> usize {
+    if phrase_len == 0 || rate <= 0.0 {
+        return 0;
+    }
+    (rate.clamp(0.0, 1.0) * TONAL_MAX_EVOLVE_NOTES as f32)
+        .ceil()
+        .min(phrase_len as f32) as usize
+}
+
+pub(crate) fn tonal_note_hz(note: i32, tune: f32) -> f32 {
+    midi_to_hz(note) * tune_ratio(tune)
 }
 
 pub(crate) struct TonalVoice {

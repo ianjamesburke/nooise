@@ -86,7 +86,7 @@ impl StereoEngine for FluidEngine {
         let (pad_l, pad_r) = self.pad.next(&effective.pad, tune, timing);
         let perc = self.perc.next(&effective.perc, timing);
         let (kick_l, kick_r) = self.kick.next(&effective.kick, timing);
-        let (ton_l, ton_r) = self.tonal.next(&effective.tonal, timing);
+        let (ton_l, ton_r) = self.tonal.next(&effective.tonal, tune, timing);
         let (clap_l, clap_r) = self.clap.next(&effective.clap, timing);
         let (bass_l, bass_r) = self
             .bass

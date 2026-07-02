@@ -73,7 +73,7 @@ impl Default for PadControls {
     fn default() -> Self {
         Self {
             level: 0.7,
-            chord_bars: 8.0,
+            chord_bars: 4.0,
             progression: 0.0,
             reverb_mix: 0.8,
             stereo_width: 0.8,
@@ -125,7 +125,9 @@ impl Default for KickControls {
 #[derive(Clone)]
 pub(crate) struct TonalControls {
     pub level: f32,
+    pub phrase: f32,
     pub randomness: f32,
+    pub evolve_rate: f32,
     pub note_length_beats: f32,
     pub step_interval_beats: f32,
     pub offset_beats: f32,
@@ -136,9 +138,11 @@ impl Default for TonalControls {
     fn default() -> Self {
         Self {
             level: 0.0,
+            phrase: 0.0,
             randomness: 0.5,
+            evolve_rate: 0.0,
             note_length_beats: 1.5,
-            step_interval_beats: 2.5,
+            step_interval_beats: 16.0,
             offset_beats: 0.0,
             reverb_mix: 0.6,
         }

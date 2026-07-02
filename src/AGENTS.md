@@ -29,7 +29,8 @@ All engine, terminal UI, and live-control code for the nooise binary.
 - Per-slider `f` automation is the user-facing LFO path; do not add voice-specific LFO rate/depth controls to core slider tabs.
 - Live-read gain controls are ramped by registry-derived `GainSmoothers` in `FluidEngine`; every unique `ControlKind::Gain` spec must get a smoother automatically.
 - TUI automation edits must go through `PublishedAutomation` so the shared audio-thread snapshot is stored on every mutation.
-- Pitched voices (Pad, Bass) route note numbers through `midi_to_hz`; unpitched voices (Perc, Kick, Tonal, Clap) do not and are unaffected by global pitch controls like master tune.
+- Pitched voices (Pad, Bass, Tonal) route note numbers through `midi_to_hz` and respect master tune; unpitched voices (Perc, Kick, Clap) do not.
+- Tonal uses authored phrase note lists on a fixed half-beat grid. `tonal.step_interval_beats` remains the stable interval control ID but crops/extends the phrase cycle instead of changing per-note step duration.
 - Voice RNGs must stay reseedable via `FluidEngine::reseed` so `nooise render --seed` stays byte-reproducible.
 - Passive update checks must never block the TUI or audio callback; keep crates.io/network work off the main loop and show no message on failure.
 - `nooise update` checks crates.io before invoking Cargo; do not force reinstall when the installed version is already current.

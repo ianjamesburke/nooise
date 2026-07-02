@@ -885,11 +885,26 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.tonal.level),
     ),
     ControlSpec::new(
+        "tonal.phrase",
+        "Phrase",
+        ControlKind::Discrete,
+        0.0,
+        7.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.tonal.phrase,
+        |c, v| c.tonal.phrase = v,
+        |c| {
+            ["A", "B", "C", "D", "E", "F", "G", "H"][c.tonal.phrase.round() as usize % 8]
+                .to_string()
+        },
+    ),
+    ControlSpec::new(
         "tonal.step_interval_beats",
         "Interval",
         ControlKind::Timing,
         0.5,
-        4.0,
+        16.0,
         Step::Linear(0.25),
         Entry::Snap,
         |c| c.tonal.step_interval_beats,
@@ -916,6 +931,18 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| c.tonal.randomness,
         |c, v| c.tonal.randomness = v,
         |c| pct(c.tonal.randomness),
+    ),
+    ControlSpec::new(
+        "tonal.evolve_rate",
+        "Evolve",
+        ControlKind::Continuous,
+        0.0,
+        1.0,
+        Step::Linear(0.05),
+        Entry::Percent,
+        |c| c.tonal.evolve_rate,
+        |c, v| c.tonal.evolve_rate = v,
+        |c| pct(c.tonal.evolve_rate),
     ),
     ControlSpec::new(
         "tonal.note_length_beats",

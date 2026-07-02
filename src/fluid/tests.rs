@@ -107,9 +107,69 @@ fn pad_chord_wraps_progression_and_step_index() {
 }
 
 #[test]
-fn pad_defaults_use_progression_a_and_eight_bar_chords() {
+fn tonal_phrase_a_keeps_existing_zero_randomness_melody() {
+    assert_eq!(tonal_phrase(0), &[45, 50, 55, 48, 52, 57, 50, 55]);
+}
+
+#[test]
+fn tonal_note_applies_master_tune_offset() {
+    let flat = tonal_note_hz(45, 0.0);
+    assert_close(tonal_note_hz(45, 12.0), flat * 2.0);
+    assert_close(tonal_note_hz(45, -12.0), flat * 0.5);
+}
+
+#[test]
+fn tonal_interval_crops_phrase_without_stretching_it() {
+    assert_eq!(tonal_loop_len(4.0), 8);
+    assert_eq!(tonal_loop_len(16.0), 32);
+    assert_eq!(tonal_cycle_step(3.75, 4.0, 0.0), 7);
+    assert_eq!(tonal_cycle_step(4.0, 4.0, 0.0), 0);
+}
+
+#[test]
+fn tonal_evolve_rate_maps_to_actual_notes_per_cycle() {
+    assert_eq!(tonal_evolve_note_count(0.0, 8), 0);
+    assert_eq!(tonal_evolve_note_count(0.01, 8), 1);
+    assert_eq!(tonal_evolve_note_count(0.50, 8), 2);
+    assert_eq!(tonal_evolve_note_count(1.0, 8), 4);
+}
+
+#[test]
+fn tonal_engine_evolves_one_actual_note_at_low_rate() {
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+    tonal.rng = StdRng::seed_from_u64(5);
+    let before = tonal.evolved_phrase.clone();
+
+    tonal.evolve_phrase(0.01);
+
+    let changed = before
+        .iter()
+        .zip(&tonal.evolved_phrase)
+        .filter(|(before, after)| before != after)
+        .count();
+    assert_eq!(changed, 1);
+}
+
+#[test]
+fn tonal_engine_evolves_more_notes_at_high_rate() {
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+    tonal.rng = StdRng::seed_from_u64(5);
+    let before = tonal.evolved_phrase.clone();
+
+    tonal.evolve_phrase(1.0);
+
+    let changed = before
+        .iter()
+        .zip(&tonal.evolved_phrase)
+        .filter(|(before, after)| before != after)
+        .count();
+    assert_eq!(changed, 4);
+}
+
+#[test]
+fn pad_defaults_use_progression_a_and_sixteen_beat_chords() {
     let controls = PadControls::default();
-    assert_close(controls.chord_bars, 8.0);
+    assert_close(controls.chord_bars, 4.0);
     assert_close(controls.progression, 0.0);
 }
 
@@ -429,9 +489,11 @@ fn defaults_match_current_mix() {
     assert_close(controls.kick.pitch_decay_ms, 55.0);
     assert_close(controls.kick.amp_decay_ms, 250.0);
 
-    assert_close(controls.tonal.step_interval_beats, 2.5);
+    assert_close(controls.tonal.phrase, 0.0);
+    assert_close(controls.tonal.step_interval_beats, 16.0);
     assert_close(controls.tonal.note_length_beats, 1.5);
     assert_close(controls.tonal.randomness, 0.5);
+    assert_close(controls.tonal.evolve_rate, 0.0);
 
     assert_close(controls.clap.room, 0.0);
 }
@@ -515,7 +577,12 @@ fn tab_controls_classify_each_slider_kind() {
                 Gain, Gain,
             ],
         ),
-        (Tab::Tonal, vec![Gain, Timing, Timing, Gain, Timing, Gain]),
+        (
+            Tab::Tonal,
+            vec![
+                Gain, Discrete, Timing, Timing, Gain, Continuous, Timing, Gain,
+            ],
+        ),
         (
             Tab::Clap,
             vec![
