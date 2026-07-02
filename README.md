@@ -36,6 +36,10 @@ nooise
 
 Press `q` to quit.
 
+```sh
+nooise --version
+```
+
 ## Update
 
 ```sh

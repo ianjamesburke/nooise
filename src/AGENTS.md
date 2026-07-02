@@ -6,7 +6,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
 
 ## Ownership
 
-- `main.rs` — binary entry point: CLI parsing (`run`/`update`/`render`), wires up terminal + audio engine.
+- `main.rs` — binary entry point: CLI parsing (`run`/`version`/`update`/`render`), wires up terminal + audio engine.
 - `audio.rs` — cpal/audio-backend plumbing, sample callback wiring.
 - `fluid/` — the core engine module:
   - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `render_wav()` (headless wav render), `FluidTelemetry`.
