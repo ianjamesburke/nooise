@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [1.1.2] — 2026-07-02
+
+### Fixed
+- fix: skip nooise reinstall when current
 ## [1.1.1] — 2026-07-02
 
 ### Added
