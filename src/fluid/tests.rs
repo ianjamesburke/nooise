@@ -166,7 +166,7 @@ fn lfo_field_adjust_steps_and_clamps() {
     let mut route = LfoRoute::default();
 
     route.adjust_field_at(LfoField::Amount, 1.0, 0.0);
-    assert_close(route.depth_ratio, 0.30);
+    assert_close(route.depth_ratio, 0.26);
     route.set_field_at(LfoField::Amount, 0.0, 0.0);
     route.adjust_field_at(LfoField::Amount, -1.0, 0.0);
     assert_close(route.depth_ratio, 0.0);

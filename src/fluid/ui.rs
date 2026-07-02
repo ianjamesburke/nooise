@@ -1,5 +1,7 @@
 use super::*;
 
+const SAVE_MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+
 pub(crate) fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controls: Arc<ArcSwap<FluidControls>>,
@@ -15,15 +17,22 @@ pub(crate) fn ui_loop(
     let mut fluid = FluidState::new();
     let mut last = Instant::now();
     let started = Instant::now();
-    let mut save_message: Option<String> = None;
+    let mut save_message: Option<(String, Instant)> = None;
     let mut automation = PublishedAutomation::new(initial_automation, automation_shared);
 
     loop {
         let c = FluidControls::clone(&controls.load());
+        if save_message
+            .as_ref()
+            .is_some_and(|(_, shown_at)| shown_at.elapsed() >= SAVE_MESSAGE_TTL)
+        {
+            save_message = None;
+        }
         let update_message = updates.message();
         let automation_message = automation_footer(automation.state());
         let footer_message = save_message
-            .as_deref()
+            .as_ref()
+            .map(|(message, _)| message.as_str())
             .or(automation_message.as_deref())
             .or(update_message.as_deref());
         let items = tab_controls(tab, &c);
@@ -93,8 +102,8 @@ pub(crate) fn ui_loop(
             match key.code {
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     save_message = Some(match copy_launch_line(&controls, automation.state()) {
-                        Ok(line) => format!("Copied {line}"),
-                        Err(err) => format!("Save failed: {err}"),
+                        Ok(()) => ("nooise copied to clipboard".to_string(), Instant::now()),
+                        Err(err) => (format!("Save failed: {err}"), Instant::now()),
                     });
                 }
                 KeyCode::Esc if automation.state().is_editor_open() => {
@@ -305,15 +314,15 @@ fn automation_footer(automation: &AutomationState) -> Option<String> {
 fn copy_launch_line(
     controls: &Arc<ArcSwap<FluidControls>>,
     automation: &AutomationState,
-) -> Result<String, Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     let c = FluidControls::clone(&controls.load());
     let line = launch_line(&SongState {
         controls: c,
         automation: automation.clone(),
     })?;
     let mut clipboard = arboard::Clipboard::new()?;
-    clipboard.set_text(line.clone())?;
-    Ok(line)
+    clipboard.set_text(line)?;
+    Ok(())
 }
 
 pub(crate) fn adjust(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize, dir: f32) {

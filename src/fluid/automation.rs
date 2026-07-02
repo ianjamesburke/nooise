@@ -12,7 +12,7 @@ pub(crate) const MIN_LFO_CYCLE_BEATS: f32 = 0.25;
 pub(crate) const MAX_LFO_CYCLE_BEATS: f32 = 16.0;
 pub(crate) const MAX_LFO_OFFSET_BEATS: f32 = 4.0;
 
-const AMOUNT_STEP: f32 = 0.05;
+const AMOUNT_STEP: f32 = 0.01;
 const INTERVAL_STEP: f32 = 0.25;
 const OFFSET_STEP: f32 = 0.25;
 
