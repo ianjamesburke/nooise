@@ -36,6 +36,7 @@ use crate::update_check::{UpdateNotice, spawn_update_check};
 mod controls;
 mod engine;
 mod registry;
+mod song;
 mod ui;
 mod voice;
 
@@ -45,6 +46,7 @@ mod tests;
 use controls::*;
 use engine::*;
 use registry::*;
+pub(crate) use song::{decode_song_code, launch_line};
 use ui::*;
 use voice::*;
 
@@ -69,7 +71,11 @@ pub(crate) struct FluidTelemetry {
 const APP_ID: &str = "nooise";
 
 pub(crate) fn run() -> Result<(), Box<dyn Error>> {
-    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
+    run_with_controls(FluidControls::default())
+}
+
+pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), Box<dyn Error>> {
+    let controls = Arc::new(ArcSwap::from_pointee(initial_controls));
     let controls_for_engine = Arc::clone(&controls);
     let telemetry = Arc::new(FluidTelemetry::default());
     let telemetry_for_engine = Arc::clone(&telemetry);

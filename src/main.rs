@@ -13,13 +13,14 @@ mod update_check;
 fn main() -> Result<(), Box<dyn Error>> {
     match Cli::parse().command {
         None => fluid::run(),
+        Some(CliCommand::Song(args)) => run_song_code(args),
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::Render(args)) => render(args),
     }
 }
 
 #[derive(Debug, Parser)]
-#[command(version, about)]
+#[command(version, about, after_help = "Run a snapshot: nooise <CODE>")]
 struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
@@ -31,6 +32,8 @@ enum CliCommand {
     Update,
     #[command(about = "Render the default mix to a wav file")]
     Render(RenderArgs),
+    #[command(external_subcommand)]
+    Song(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Args)]
@@ -48,6 +51,14 @@ fn render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         return Err("--seconds must be positive".into());
     }
     fluid::render_wav(args.seconds, &args.out, args.seed)
+}
+
+fn run_song_code(args: Vec<String>) -> Result<(), Box<dyn Error>> {
+    let [code] = args.as_slice() else {
+        return Err("expected exactly one song code".into());
+    };
+    let controls = fluid::decode_song_code(code)?;
+    fluid::run_with_controls(controls)
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {
@@ -96,6 +107,16 @@ mod tests {
     #[test]
     fn no_args_runs_app() {
         assert_eq!(parse(&[]).unwrap().command, None);
+    }
+
+    #[test]
+    fn song_code_arg_launches_app_with_snapshot() {
+        let cli = parse(&["n1_abc"]).unwrap();
+
+        assert_eq!(
+            cli.command,
+            Some(CliCommand::Song(vec!["n1_abc".to_string()]))
+        );
     }
 
     #[test]
@@ -199,5 +220,6 @@ mod tests {
         assert!(help.contains("update"));
         assert!(help.contains("upgrade"));
         assert!(help.contains("render"));
+        assert!(help.contains("Run a snapshot: nooise <CODE>"));
     }
 }

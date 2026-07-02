@@ -17,6 +17,8 @@ rand = "0.8"
 ratatui = "0.29"
 crossterm = "0.28"
 arc-swap = "1.9.1"
+arboard = "3.6.1"
+base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
 hound = "3.5.1"
 update-informer = "1.3"
