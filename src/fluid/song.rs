@@ -14,7 +14,7 @@ const CONTAINER_VERSION: u8 = 1;
 const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
-const AUTOMATION_PAYLOAD_VERSION: u8 = 1;
+const AUTOMATION_PAYLOAD_VERSION: u8 = 2;
 const LFO_SHAPE_SINE: u8 = 0;
 
 #[derive(Clone, Default)]
@@ -167,7 +167,7 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
         out.extend_from_slice(&route.cycle_beats.to_le_bytes());
         out.extend_from_slice(&route.depth_ratio.to_le_bytes());
         out.push(shape_tag(route.shape));
-        out.extend_from_slice(&route.phase_offset_cycles.to_le_bytes());
+        out.extend_from_slice(&route.phase_offset_beats.to_le_bytes());
     }
     Ok(())
 }
@@ -184,7 +184,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         let cycle_beats = reader.f32()?;
         let depth_ratio = reader.f32()?;
         let shape = reader.u8()?;
-        let phase_offset_cycles = reader.f32()?;
+        let phase_offset_beats = reader.f32()?;
 
         let (Some(spec), Some(shape)) = (spec_by_id(id), shape_from_tag(shape)) else {
             continue;
@@ -192,10 +192,10 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         automation.set_route(
             ControlAddress::new(spec.id),
             LfoRoute {
-                cycle_beats: finite_or(cycle_beats, 2.0).max(0.25),
+                cycle_beats: finite_or(cycle_beats, 2.0).clamp(0.25, 16.0),
                 depth_ratio: finite_or(depth_ratio, 0.25).clamp(0.0, 1.0),
                 shape,
-                phase_offset_cycles: finite_or(phase_offset_cycles, 0.0).rem_euclid(1.0),
+                phase_offset_beats: finite_or(phase_offset_beats, 0.0).clamp(0.0, 4.0),
             },
         );
     }

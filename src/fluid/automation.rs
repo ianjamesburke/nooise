@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 
-use super::{FluidControls, TimingContext, normalize_unit_input, spec_by_id};
+use super::{FluidControls, TimingContext, normalize_unit_input, snap_step, spec_by_id};
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
 pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.25;
 pub(crate) const MIN_LFO_CYCLE_BEATS: f32 = 0.25;
-pub(crate) const INTERVAL_LADDER: [f32; 7] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
+pub(crate) const MAX_LFO_CYCLE_BEATS: f32 = 16.0;
+pub(crate) const MAX_LFO_OFFSET_BEATS: f32 = 4.0;
 
 const AMOUNT_STEP: f32 = 0.05;
-const OFFSET_STEP: f32 = 0.125;
+const INTERVAL_STEP: f32 = 0.25;
+const OFFSET_STEP: f32 = 0.25;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct ControlAddress {
@@ -53,7 +55,7 @@ impl LfoField {
 pub(crate) struct LfoRoute {
     pub(crate) depth_ratio: f32,
     pub(crate) cycle_beats: f32,
-    pub(crate) phase_offset_cycles: f32,
+    pub(crate) phase_offset_beats: f32,
     pub(crate) shape: LfoShape,
 }
 
@@ -62,7 +64,7 @@ impl Default for LfoRoute {
         Self {
             depth_ratio: DEFAULT_LFO_DEPTH_RATIO,
             cycle_beats: DEFAULT_LFO_CYCLE_BEATS,
-            phase_offset_cycles: 0.0,
+            phase_offset_beats: 0.0,
             shape: LfoShape::Sine,
         }
     }
@@ -70,8 +72,8 @@ impl Default for LfoRoute {
 
 impl LfoRoute {
     pub(crate) fn phase_at(&self, beat: f64) -> f64 {
-        (beat / f64::from(self.cycle_beats.max(MIN_LFO_CYCLE_BEATS))
-            + f64::from(self.phase_offset_cycles))
+        ((beat + f64::from(self.phase_offset_beats))
+            / f64::from(self.cycle_beats.max(MIN_LFO_CYCLE_BEATS)))
         .rem_euclid(1.0)
     }
 
@@ -82,27 +84,19 @@ impl LfoRoute {
         }
     }
 
-    fn ladder_index(&self) -> usize {
-        nearest_ladder_index(self.cycle_beats)
-    }
-
     pub(crate) fn adjust_field(&mut self, field: LfoField, dir: f32) {
         match field {
             LfoField::Amount => {
                 self.depth_ratio = (self.depth_ratio + dir * AMOUNT_STEP).clamp(0.0, 1.0);
             }
             LfoField::Interval => {
-                let index = self.ladder_index();
-                let next = if dir > 0.0 {
-                    (index + 1).min(INTERVAL_LADDER.len() - 1)
-                } else {
-                    index.saturating_sub(1)
-                };
-                self.cycle_beats = INTERVAL_LADDER[next];
+                self.cycle_beats = snap_step(self.cycle_beats + dir * INTERVAL_STEP, INTERVAL_STEP)
+                    .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS);
             }
             LfoField::Offset => {
-                self.phase_offset_cycles =
-                    (self.phase_offset_cycles + dir * OFFSET_STEP).rem_euclid(1.0);
+                self.phase_offset_beats =
+                    snap_step(self.phase_offset_beats + dir * OFFSET_STEP, OFFSET_STEP)
+                        .clamp(0.0, MAX_LFO_OFFSET_BEATS);
             }
         }
     }
@@ -111,9 +105,13 @@ impl LfoRoute {
         match field {
             LfoField::Amount => self.depth_ratio = normalize_unit_input(value),
             LfoField::Interval => {
-                self.cycle_beats = INTERVAL_LADDER[nearest_ladder_index(value)];
+                self.cycle_beats =
+                    snap_step(value, INTERVAL_STEP).clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS);
             }
-            LfoField::Offset => self.phase_offset_cycles = value.rem_euclid(1.0),
+            LfoField::Offset => {
+                self.phase_offset_beats =
+                    snap_step(value, OFFSET_STEP).clamp(0.0, MAX_LFO_OFFSET_BEATS);
+            }
         }
     }
 
@@ -121,15 +119,18 @@ impl LfoRoute {
         match field {
             LfoField::Amount => self.depth_ratio = DEFAULT_LFO_DEPTH_RATIO,
             LfoField::Interval => self.cycle_beats = DEFAULT_LFO_CYCLE_BEATS,
-            LfoField::Offset => self.phase_offset_cycles = 0.0,
+            LfoField::Offset => self.phase_offset_beats = 0.0,
         }
     }
 
     pub(crate) fn field_ratio(&self, field: LfoField) -> f32 {
         match field {
             LfoField::Amount => self.depth_ratio,
-            LfoField::Interval => self.ladder_index() as f32 / (INTERVAL_LADDER.len() - 1) as f32,
-            LfoField::Offset => self.phase_offset_cycles,
+            LfoField::Interval => {
+                (self.cycle_beats - MIN_LFO_CYCLE_BEATS)
+                    / (MAX_LFO_CYCLE_BEATS - MIN_LFO_CYCLE_BEATS)
+            }
+            LfoField::Offset => self.phase_offset_beats / MAX_LFO_OFFSET_BEATS,
         }
     }
 
@@ -137,23 +138,9 @@ impl LfoRoute {
         match field {
             LfoField::Amount => format!("{:.0}%", self.depth_ratio * 100.0),
             LfoField::Interval => format!("{:.2} beats", self.cycle_beats),
-            LfoField::Offset => format!("{:.2} cyc", self.phase_offset_cycles),
+            LfoField::Offset => format!("{:.2} beats", self.phase_offset_beats),
         }
     }
-}
-
-fn nearest_ladder_index(value: f32) -> usize {
-    INTERVAL_LADDER
-        .iter()
-        .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            (**a - value)
-                .abs()
-                .partial_cmp(&(**b - value).abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(i, _)| i)
-        .unwrap_or(0)
 }
 
 #[derive(Clone, Default)]
