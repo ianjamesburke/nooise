@@ -2,3 +2,4 @@ target/
 .plexi*
 __pycache__/
 .stint/
+worktrees/
