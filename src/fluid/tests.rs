@@ -1,4 +1,6 @@
 use super::*;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ratatui::backend::TestBackend;
 
 const SAMPLE_RATE: f32 = 48_000.0;
@@ -15,6 +17,13 @@ fn timing(sample: u64, bpm: f32) -> TimingContext {
     let bpm = f64::from(bpm);
     let beat = sample as f64 * bpm / (60.0 * sample_rate);
     TimingContext::new(sample_rate, bpm, beat)
+}
+
+fn append_record_to_code(code: &str, record_type: u8, payload: &[u8]) -> String {
+    let encoded = code.strip_prefix("n1_").unwrap();
+    let mut bytes = URL_SAFE_NO_PAD.decode(encoded).unwrap();
+    song::write_record(record_type, payload, &mut bytes).unwrap();
+    format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
 #[test]
@@ -205,8 +214,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Kick,
             vec![
-                Gain, Timing, Timing, Continuous, Timing, Timing, Gain, Gain, Gain, Timing,
-                Gain, Gain, Gain,
+                Gain, Timing, Timing, Continuous, Timing, Timing, Gain, Gain, Gain, Timing, Gain,
+                Gain, Gain,
             ],
         ),
         (Tab::Tonal, vec![Gain, Timing, Timing, Gain, Timing, Gain]),
@@ -241,6 +250,7 @@ fn control_registry_specs_are_internally_consistent() {
     for tab in tabs {
         for spec in tab_specs(tab) {
             let ctx = format!("{} / {}", tab.name(), spec.label);
+            assert!(!spec.id.is_empty(), "{ctx}: empty stable id");
             assert!(!spec.label.is_empty(), "{ctx}: empty label");
             assert!(spec.min < spec.max, "{ctx}: min must be below max");
             assert!(
@@ -268,6 +278,69 @@ fn control_registry_specs_are_internally_consistent() {
             );
         }
     }
+}
+
+#[test]
+fn song_code_round_trips_quantized_snapshot_values() {
+    let mut controls = FluidControls::default();
+    controls.master.bpm = 123.4;
+    controls.pad.chord_bars = 12.0;
+    controls.kick.echo_time_beats = 0.33;
+    controls.clap.slap_count = 6.6;
+
+    let code = song::encode_song_code(&controls).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.master.bpm, 123.0);
+    assert_close(decoded.pad.chord_bars, 16.0);
+    assert_close(decoded.kick.echo_time_beats, 0.375);
+    assert_close(decoded.clap.slap_count, 7.0);
+}
+
+#[test]
+fn song_code_decodes_missing_controls_as_defaults() {
+    let mut controls = FluidControls::default();
+    controls.master.bpm = 120.0;
+
+    let code = song::encode_song_code(&controls).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.pad.level, FluidControls::default().pad.level);
+}
+
+#[test]
+fn song_code_skips_unknown_records() {
+    let mut controls = FluidControls::default();
+    controls.master.tune = 5.0;
+    let code = song::encode_song_code(&controls).unwrap();
+    let code = append_record_to_code(&code, 99, &[1, 2, 3, 4]);
+
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.master.tune, 5.0);
+}
+
+#[test]
+fn song_code_skips_unknown_control_ids() {
+    let code = song::encode_song_code(&FluidControls::default()).unwrap();
+    let mut payload = Vec::new();
+    let id = b"future.control.id";
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    payload.push(id.len() as u8);
+    payload.extend_from_slice(id);
+    payload.extend_from_slice(&0.75f32.to_le_bytes());
+    let code = append_record_to_code(&code, song::SNAPSHOT_RECORD, &payload);
+
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.master.level, FluidControls::default().master.level);
+}
+
+#[test]
+fn launch_line_is_cli_launchable() {
+    let line = launch_line(&FluidControls::default()).unwrap();
+
+    assert!(line.starts_with("nooise n1_"));
 }
 
 #[test]

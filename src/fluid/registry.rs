@@ -153,6 +153,7 @@ pub(crate) enum Bar {
 }
 
 pub(crate) struct ControlSpec {
+    pub(crate) id: &'static str,
     pub(crate) label: &'static str,
     pub(crate) kind: ControlKind,
     pub(crate) min: f32,
@@ -169,6 +170,7 @@ pub(crate) struct ControlSpec {
 impl ControlSpec {
     #[allow(clippy::too_many_arguments)]
     pub(crate) const fn new(
+        id: &'static str,
         label: &'static str,
         kind: ControlKind,
         min: f32,
@@ -180,6 +182,7 @@ impl ControlSpec {
         display: DisplayFn,
     ) -> Self {
         Self {
+            id,
             label,
             kind,
             min,
@@ -196,6 +199,7 @@ impl ControlSpec {
 
     /// Gain-kind control: 2% steps, percent-style numeric entry, resets to min.
     pub(crate) const fn gain(
+        id: &'static str,
         label: &'static str,
         min: f32,
         max: f32,
@@ -204,6 +208,7 @@ impl ControlSpec {
         display: DisplayFn,
     ) -> Self {
         Self::new(
+            id,
             label,
             ControlKind::Gain,
             min,
@@ -277,6 +282,22 @@ impl ControlSpec {
         };
         (self.set)(c, next.clamp(self.min, self.max));
     }
+
+    pub(crate) fn quantized_value(&self, c: &FluidControls) -> f32 {
+        self.quantize((self.get)(c))
+    }
+
+    pub(crate) fn apply_quantized_value(&self, value: f32, c: &mut FluidControls) {
+        (self.set)(c, self.quantize(value));
+    }
+
+    pub(crate) fn quantize(&self, value: f32) -> f32 {
+        let clamped = value.clamp(self.min, self.max);
+        match self.step {
+            Step::Linear(step) => snap_step(clamped, step).clamp(self.min, self.max),
+            Step::PowerOfTwo => nearest_power_of_two(clamped, self.min, self.max),
+        }
+    }
 }
 
 pub(crate) fn pct(v: f32) -> String {
@@ -293,6 +314,7 @@ pub(crate) fn ms0(v: f32) -> String {
 
 pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
+        "pad.level",
         "Chords Vol",
         0.0,
         1.0,
@@ -301,6 +323,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.pad.level),
     ),
     ControlSpec::gain(
+        "perc.level",
         "Perc Vol",
         0.0,
         1.0,
@@ -309,6 +332,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.perc.level),
     ),
     ControlSpec::gain(
+        "kick.level",
         "Kick Vol",
         0.0,
         1.0,
@@ -317,6 +341,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.kick.level),
     ),
     ControlSpec::gain(
+        "tonal.level",
         "Tonal Vol",
         0.0,
         1.0,
@@ -325,6 +350,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.tonal.level),
     ),
     ControlSpec::gain(
+        "clap.level",
         "Clap Vol",
         0.0,
         1.0,
@@ -333,6 +359,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.clap.level),
     ),
     ControlSpec::gain(
+        "bass.level",
         "Bass Vol",
         0.0,
         1.0,
@@ -341,6 +368,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.bass.level),
     ),
     ControlSpec::new(
+        "master.bpm",
         "BPM",
         ControlKind::Timing,
         MASTER_BPM_MIN,
@@ -352,6 +380,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.0} bpm", c.master.bpm),
     ),
     ControlSpec::gain(
+        "master.level",
         "Master Level",
         0.0,
         1.0,
@@ -360,6 +389,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.master.level),
     ),
     ControlSpec::gain(
+        "master.drive",
         "Drive",
         0.0,
         1.0,
@@ -368,6 +398,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.master.drive),
     ),
     ControlSpec::new(
+        "master.comp_threshold",
         "Comp Threshold",
         ControlKind::Continuous,
         -40.0,
@@ -379,6 +410,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.0} dB", c.master.comp_threshold),
     ),
     ControlSpec::new(
+        "master.comp_ratio",
         "Comp Ratio",
         ControlKind::Continuous,
         1.0,
@@ -390,6 +422,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.1}:1", c.master.comp_ratio),
     ),
     ControlSpec::new(
+        "master.comp_release_ms",
         "Comp Release",
         ControlKind::Timing,
         10.0,
@@ -401,6 +434,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| ms0(c.master.comp_release_ms),
     ),
     ControlSpec::new(
+        "master.tone",
         "Tone",
         ControlKind::Continuous,
         -1.0,
@@ -420,6 +454,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         },
     ),
     ControlSpec::new(
+        "master.tune",
         "Tune",
         ControlKind::Discrete,
         -12.0,
@@ -441,6 +476,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
 
 pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
+        "perc.level",
         "Level",
         0.0,
         1.0,
@@ -449,6 +485,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.perc.level),
     ),
     ControlSpec::new(
+        "perc.interval_beats",
         "Interval",
         ControlKind::Timing,
         0.25,
@@ -466,6 +503,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         },
     ),
     ControlSpec::new(
+        "perc.offset_beats",
         "Offset",
         ControlKind::Timing,
         0.0,
@@ -477,6 +515,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.perc.offset_beats),
     ),
     ControlSpec::new(
+        "perc.decay_ms",
         "Decay",
         ControlKind::Timing,
         20.0,
@@ -494,6 +533,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         },
     ),
     ControlSpec::gain(
+        "perc.filter",
         "Filter",
         0.5,
         1.0,
@@ -502,6 +542,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.perc.filter),
     ),
     ControlSpec::new(
+        "perc.lfo_rate_bars",
         "LFO Rate",
         ControlKind::Timing,
         0.25,
@@ -513,6 +554,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.0} beats", c.perc.lfo_rate_bars * 4.0),
     ),
     ControlSpec::gain(
+        "perc.lfo_depth",
         "LFO Depth",
         0.0,
         1.0,
@@ -524,6 +566,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
 
 pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
+        "pad.level",
         "Level",
         0.0,
         1.0,
@@ -532,6 +575,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.pad.level),
     ),
     ControlSpec::new(
+        "pad.chord_bars",
         "Chord Length",
         ControlKind::Timing,
         1.0,
@@ -544,6 +588,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
     )
     .log_bar(),
     ControlSpec::new(
+        "pad.progression",
         "Progression",
         ControlKind::Discrete,
         0.0,
@@ -555,6 +600,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c| ["A", "B", "C", "D"][c.pad.progression.round() as usize % 4].to_string(),
     ),
     ControlSpec::gain(
+        "pad.reverb_mix",
         "Reverb Mix",
         0.0,
         1.0,
@@ -563,6 +609,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.pad.reverb_mix),
     ),
     ControlSpec::gain(
+        "pad.stereo_width",
         "Stereo Width",
         0.0,
         1.0,
@@ -571,6 +618,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.pad.stereo_width),
     ),
     ControlSpec::gain(
+        "pad.detune",
         "Detune",
         0.0,
         1.0,
@@ -579,6 +627,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.pad.detune),
     ),
     ControlSpec::gain(
+        "pad.octave_mix",
         "Octave Mix",
         0.0,
         1.0,
@@ -587,6 +636,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.pad.octave_mix),
     ),
     ControlSpec::new(
+        "pad.attack_time",
         "Attack",
         ControlKind::Timing,
         0.05,
@@ -598,6 +648,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.2} s", c.pad.attack_time),
     ),
     ControlSpec::new(
+        "pad.release_time",
         "Release",
         ControlKind::Timing,
         0.05,
@@ -612,6 +663,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
 
 pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
+        "bass.level",
         "Level",
         0.0,
         1.0,
@@ -620,6 +672,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.bass.level),
     ),
     ControlSpec::new(
+        "bass.interval_beats",
         "Interval",
         ControlKind::Timing,
         0.25,
@@ -631,6 +684,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.bass.interval_beats),
     ),
     ControlSpec::new(
+        "bass.offset_beats",
         "Offset",
         ControlKind::Timing,
         0.0,
@@ -642,6 +696,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.bass.offset_beats),
     ),
     ControlSpec::new(
+        "bass.rhythm",
         "Rhythm",
         ControlKind::Discrete,
         0.0,
@@ -653,6 +708,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| ["A", "B", "C", "D"][c.bass.rhythm.round() as usize % 4].to_string(),
     ),
     ControlSpec::new(
+        "bass.octave",
         "Octave",
         ControlKind::Discrete,
         -3.0,
@@ -664,6 +720,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.0}", c.bass.octave),
     ),
     ControlSpec::new(
+        "bass.attack_time",
         "Attack",
         ControlKind::Timing,
         0.005,
@@ -675,6 +732,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.3} s", c.bass.attack_time),
     ),
     ControlSpec::new(
+        "bass.decay_time",
         "Decay",
         ControlKind::Timing,
         0.005,
@@ -686,6 +744,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.3} s", c.bass.decay_time),
     ),
     ControlSpec::gain(
+        "bass.drive",
         "Drive",
         0.0,
         1.0,
@@ -697,6 +756,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
 
 pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
+        "kick.level",
         "Level",
         0.0,
         1.0,
@@ -705,6 +765,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.kick.level),
     ),
     ControlSpec::new(
+        "kick.interval_beats",
         "Interval",
         ControlKind::Timing,
         0.25,
@@ -716,6 +777,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.kick.interval_beats),
     ),
     ControlSpec::new(
+        "kick.offset_beats",
         "Offset",
         ControlKind::Timing,
         0.0,
@@ -727,6 +789,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.kick.offset_beats),
     ),
     ControlSpec::new(
+        "kick.start_freq",
         "Start Freq",
         ControlKind::Continuous,
         40.0,
@@ -738,6 +801,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.0} Hz", c.kick.start_freq),
     ),
     ControlSpec::new(
+        "kick.pitch_decay_ms",
         "Pitch Decay",
         ControlKind::Timing,
         10.0,
@@ -749,6 +813,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| ms0(c.kick.pitch_decay_ms),
     ),
     ControlSpec::new(
+        "kick.amp_decay_ms",
         "Amp Decay",
         ControlKind::Timing,
         50.0,
@@ -760,6 +825,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| ms0(c.kick.amp_decay_ms),
     ),
     ControlSpec::gain(
+        "kick.click",
         "Click",
         0.0,
         0.2,
@@ -769,6 +835,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
     )
     .with_step(0.01),
     ControlSpec::gain(
+        "kick.drive",
         "Drive",
         0.0,
         1.0,
@@ -777,6 +844,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.kick.drive),
     ),
     ControlSpec::gain(
+        "kick.filter",
         "Filter",
         0.0,
         1.0,
@@ -785,6 +853,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.kick.filter),
     ),
     ControlSpec::new(
+        "kick.echo_time_beats",
         "Echo Time",
         ControlKind::Timing,
         KICK_ECHO_TIME_BEATS_MIN,
@@ -796,6 +865,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.3} beats", c.kick.echo_time_beats),
     ),
     ControlSpec::gain(
+        "kick.echo_filter",
         "Echo Filter",
         0.0,
         1.0,
@@ -804,6 +874,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.kick.echo_filter),
     ),
     ControlSpec::gain(
+        "kick.echo_amount",
         "Echo Amount",
         0.0,
         0.9,
@@ -812,6 +883,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.kick.echo_amount / 0.9),
     ),
     ControlSpec::gain(
+        "kick.echo_feedback",
         "Echo Feedback",
         0.0,
         0.85,
@@ -823,6 +895,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
 
 pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
+        "tonal.level",
         "Level",
         0.0,
         1.0,
@@ -831,6 +904,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.tonal.level),
     ),
     ControlSpec::new(
+        "tonal.step_interval_beats",
         "Interval",
         ControlKind::Timing,
         0.5,
@@ -842,6 +916,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.tonal.step_interval_beats),
     ),
     ControlSpec::new(
+        "tonal.offset_beats",
         "Offset",
         ControlKind::Timing,
         0.0,
@@ -853,6 +928,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.tonal.offset_beats),
     ),
     ControlSpec::gain(
+        "tonal.randomness",
         "Randomness",
         0.0,
         1.0,
@@ -861,6 +937,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.tonal.randomness),
     ),
     ControlSpec::new(
+        "tonal.note_length_beats",
         "Note Length",
         ControlKind::Timing,
         0.1,
@@ -872,6 +949,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.tonal.note_length_beats),
     ),
     ControlSpec::gain(
+        "tonal.reverb_mix",
         "Reverb Mix",
         0.0,
         1.0,
@@ -883,6 +961,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
 
 pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
+        "clap.level",
         "Level",
         0.0,
         1.0,
@@ -891,6 +970,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.clap.level),
     ),
     ControlSpec::new(
+        "clap.interval_beats",
         "Interval",
         ControlKind::Timing,
         0.5,
@@ -902,6 +982,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.clap.interval_beats),
     ),
     ControlSpec::new(
+        "clap.offset_beats",
         "Offset",
         ControlKind::Timing,
         0.0,
@@ -913,6 +994,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| beats2(c.clap.offset_beats),
     ),
     ControlSpec::new(
+        "clap.slap_count",
         "Slap Count",
         ControlKind::Discrete,
         1.0,
@@ -924,6 +1006,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.0}", c.clap.slap_count),
     ),
     ControlSpec::new(
+        "clap.slap_spread_ms",
         "Slap Spread",
         ControlKind::Timing,
         0.0,
@@ -935,6 +1018,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.1} ms", c.clap.slap_spread_ms),
     ),
     ControlSpec::new(
+        "clap.decay_ms",
         "Decay",
         ControlKind::Timing,
         10.0,
@@ -946,6 +1030,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| ms0(c.clap.decay_ms),
     ),
     ControlSpec::gain(
+        "clap.filter",
         "Filter",
         0.5,
         1.0,
@@ -954,6 +1039,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.clap.filter),
     ),
     ControlSpec::gain(
+        "clap.room",
         "Room",
         0.0,
         1.0,
@@ -962,6 +1048,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.clap.room),
     ),
     ControlSpec::gain(
+        "clap.body",
         "Body",
         0.0,
         1.0,
@@ -981,6 +1068,14 @@ pub(crate) fn tab_specs(tab: Tab) -> &'static [ControlSpec] {
         Tab::Tonal => TONAL_CONTROLS,
         Tab::Clap => CLAP_CONTROLS,
     }
+}
+
+pub(crate) fn all_specs() -> impl Iterator<Item = &'static ControlSpec> {
+    Tab::all().into_iter().flat_map(tab_specs)
+}
+
+pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
+    all_specs().find(|spec| spec.id == id)
 }
 
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {

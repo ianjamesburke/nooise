@@ -12,10 +12,12 @@ pub(crate) fn ui_loop(
     let mut fluid = FluidState::new();
     let mut last = Instant::now();
     let started = Instant::now();
+    let mut save_message: Option<String> = None;
 
     loop {
         let c = FluidControls::clone(&controls.load());
         let update_message = updates.message();
+        let footer_message = save_message.as_deref().or(update_message.as_deref());
         let items = tab_controls(tab, &c);
         let items_len = items.len();
         selected = selected.min(items_len.saturating_sub(1));
@@ -37,7 +39,7 @@ pub(crate) fn ui_loop(
                     cursor_visible,
                 },
                 &fluid,
-                update_message.as_deref(),
+                footer_message,
             )
         })?;
 
@@ -67,6 +69,12 @@ pub(crate) fn ui_loop(
                 continue;
             }
             match key.code {
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    save_message = Some(match copy_launch_line(&controls) {
+                        Ok(line) => format!("Copied {line}"),
+                        Err(err) => format!("Save failed: {err}"),
+                    });
+                }
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Tab => {
                     tab = tab.next();
@@ -100,6 +108,14 @@ pub(crate) fn ui_loop(
     }
 
     Ok(())
+}
+
+fn copy_launch_line(controls: &Arc<ArcSwap<FluidControls>>) -> Result<String, Box<dyn Error>> {
+    let c = FluidControls::clone(&controls.load());
+    let line = launch_line(&c)?;
+    let mut clipboard = arboard::Clipboard::new()?;
+    clipboard.set_text(line.clone())?;
+    Ok(line)
 }
 
 pub(crate) fn adjust(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize, dir: f32) {
