@@ -40,8 +40,6 @@ pub(crate) struct PercControls {
     pub level: f32,
     pub decay_ms: f32,
     pub filter: f32,
-    pub lfo_rate_bars: f32,
-    pub lfo_depth: f32,
     pub interval_beats: f32,
     pub offset_beats: f32,
 }
@@ -52,8 +50,6 @@ impl Default for PercControls {
             level: 0.0,
             decay_ms: 200.0,
             filter: 0.7,
-            lfo_rate_bars: 1.0,
-            lfo_depth: 0.1,
             interval_beats: 0.25,
             offset_beats: 0.0,
         }

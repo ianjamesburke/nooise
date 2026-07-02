@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 
 // ============================================================
@@ -41,7 +43,7 @@ impl FluidEngine {
             tonal: TonalEngine::new(sample_rate),
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
-            master_bus: MasterBus::new(),
+            master_bus: MasterBus::new(&snapshot.master, sample_rate),
             controls,
             automation,
             telemetry,
@@ -67,6 +69,8 @@ impl StereoEngine for FluidEngine {
             self.snapshot = FluidControls::clone(&self.controls.load());
             self.gain_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);
+            self.master_bus
+                .set_controls(&self.snapshot.master, self.sample_rate);
         }
 
         let fade = (self.current_sample as f32 / (self.sample_rate * 8.0)).min(1.0);
@@ -94,12 +98,12 @@ impl StereoEngine for FluidEngine {
             (pad_l + perc * 0.6 + kick_l * 0.7 + ton_l + clap_l * 0.65 + bass_l * 0.75) * fade;
         let raw_r =
             (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65 + bass_r * 0.75) * fade;
-        self.master_bus
-            .process(raw_l, raw_r, &effective.master, self.sample_rate)
+        self.master_bus.process(raw_l, raw_r, &effective.master)
     }
 }
 
 pub(crate) struct GainSmoother {
+    pub(crate) spec: Option<&'static ControlSpec>,
     pub(crate) current: f32,
     pub(crate) target: f32,
     pub(crate) step: f32,
@@ -107,8 +111,14 @@ pub(crate) struct GainSmoother {
 }
 
 impl GainSmoother {
+    #[cfg(test)]
     pub(crate) fn new(value: f32) -> Self {
+        Self::for_spec(None, value)
+    }
+
+    pub(crate) fn for_spec(spec: Option<&'static ControlSpec>, value: f32) -> Self {
         Self {
+            spec,
             current: value,
             target: value,
             step: 0.0,
@@ -139,198 +149,39 @@ impl GainSmoother {
     }
 }
 
-pub(crate) fn set_smooth_target(
-    smoother: &mut GainSmoother,
-    kind: ControlKind,
-    target: f32,
-    ramp_samples: u32,
-) {
-    if kind.smooths_audio() {
-        smoother.set_target(target, ramp_samples);
-    }
-}
-
 pub(crate) struct GainSmoothers {
-    pub(crate) pad: GainSmoother,
-    pub(crate) pad_reverb_mix: GainSmoother,
-    pub(crate) pad_stereo_width: GainSmoother,
-    pub(crate) pad_detune: GainSmoother,
-    pub(crate) pad_octave_mix: GainSmoother,
-    pub(crate) perc: GainSmoother,
-    pub(crate) perc_filter: GainSmoother,
-    pub(crate) perc_lfo_depth: GainSmoother,
-    pub(crate) kick: GainSmoother,
-    pub(crate) kick_echo_filter: GainSmoother,
-    pub(crate) kick_echo_amount: GainSmoother,
-    pub(crate) kick_echo_feedback: GainSmoother,
-    pub(crate) tonal: GainSmoother,
-    pub(crate) tonal_reverb_mix: GainSmoother,
-    pub(crate) clap: GainSmoother,
-    pub(crate) clap_room: GainSmoother,
-    pub(crate) bass: GainSmoother,
-    pub(crate) master: GainSmoother,
-    pub(crate) master_drive: GainSmoother,
+    pub(crate) smoothers: Vec<GainSmoother>,
 }
 
 impl GainSmoothers {
     pub(crate) fn new(c: &FluidControls) -> Self {
-        Self {
-            pad: GainSmoother::new(c.pad.level),
-            pad_reverb_mix: GainSmoother::new(c.pad.reverb_mix),
-            pad_stereo_width: GainSmoother::new(c.pad.stereo_width),
-            pad_detune: GainSmoother::new(c.pad.detune),
-            pad_octave_mix: GainSmoother::new(c.pad.octave_mix),
-            perc: GainSmoother::new(c.perc.level),
-            perc_filter: GainSmoother::new(c.perc.filter),
-            perc_lfo_depth: GainSmoother::new(c.perc.lfo_depth),
-            kick: GainSmoother::new(c.kick.level),
-            kick_echo_filter: GainSmoother::new(c.kick.echo_filter),
-            kick_echo_amount: GainSmoother::new(c.kick.echo_amount),
-            kick_echo_feedback: GainSmoother::new(c.kick.echo_feedback),
-            tonal: GainSmoother::new(c.tonal.level),
-            tonal_reverb_mix: GainSmoother::new(c.tonal.reverb_mix),
-            clap: GainSmoother::new(c.clap.level),
-            clap_room: GainSmoother::new(c.clap.room),
-            bass: GainSmoother::new(c.bass.level),
-            master: GainSmoother::new(c.master.level),
-            master_drive: GainSmoother::new(c.master.drive),
-        }
+        let mut seen = BTreeSet::new();
+        let smoothers = all_specs()
+            .filter(|spec| spec.kind.smooths_audio())
+            .filter(|spec| seen.insert(spec.id))
+            .map(|spec| GainSmoother::for_spec(Some(spec), (spec.get)(c)))
+            .collect();
+        Self { smoothers }
     }
 
     pub(crate) fn set_targets(&mut self, c: &FluidControls, sample_rate: f32) {
         let ramp_samples = (LEVEL_RAMP_MS * 0.001 * sample_rate).round() as u32;
-        set_smooth_target(&mut self.pad, ControlKind::Gain, c.pad.level, ramp_samples);
-        set_smooth_target(
-            &mut self.pad_reverb_mix,
-            ControlKind::Gain,
-            c.pad.reverb_mix,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.pad_stereo_width,
-            ControlKind::Gain,
-            c.pad.stereo_width,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.pad_detune,
-            ControlKind::Gain,
-            c.pad.detune,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.pad_octave_mix,
-            ControlKind::Gain,
-            c.pad.octave_mix,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.perc,
-            ControlKind::Gain,
-            c.perc.level,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.perc_filter,
-            ControlKind::Gain,
-            c.perc.filter,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.perc_lfo_depth,
-            ControlKind::Gain,
-            c.perc.lfo_depth,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.kick,
-            ControlKind::Gain,
-            c.kick.level,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.kick_echo_filter,
-            ControlKind::Gain,
-            c.kick.echo_filter,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.kick_echo_amount,
-            ControlKind::Gain,
-            c.kick.echo_amount,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.kick_echo_feedback,
-            ControlKind::Gain,
-            c.kick.echo_feedback,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.tonal,
-            ControlKind::Gain,
-            c.tonal.level,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.tonal_reverb_mix,
-            ControlKind::Gain,
-            c.tonal.reverb_mix,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.clap,
-            ControlKind::Gain,
-            c.clap.level,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.clap_room,
-            ControlKind::Gain,
-            c.clap.room,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.bass,
-            ControlKind::Gain,
-            c.bass.level,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.master,
-            ControlKind::Gain,
-            c.master.level,
-            ramp_samples,
-        );
-        set_smooth_target(
-            &mut self.master_drive,
-            ControlKind::Gain,
-            c.master.drive,
-            ramp_samples,
-        );
+        for smoother in &mut self.smoothers {
+            let spec = smoother
+                .spec
+                .expect("registry-derived gain smoothers carry a control spec");
+            smoother.set_target((spec.get)(c), ramp_samples);
+        }
     }
 
     pub(crate) fn next_controls(&mut self, c: &FluidControls) -> FluidControls {
         let mut next = c.clone();
-        next.pad.level = self.pad.next();
-        next.pad.reverb_mix = self.pad_reverb_mix.next();
-        next.pad.stereo_width = self.pad_stereo_width.next();
-        next.pad.detune = self.pad_detune.next();
-        next.pad.octave_mix = self.pad_octave_mix.next();
-        next.perc.level = self.perc.next();
-        next.perc.filter = self.perc_filter.next();
-        next.perc.lfo_depth = self.perc_lfo_depth.next();
-        next.kick.level = self.kick.next();
-        next.kick.echo_filter = self.kick_echo_filter.next();
-        next.kick.echo_amount = self.kick_echo_amount.next();
-        next.kick.echo_feedback = self.kick_echo_feedback.next();
-        next.tonal.level = self.tonal.next();
-        next.tonal.reverb_mix = self.tonal_reverb_mix.next();
-        next.clap.level = self.clap.next();
-        next.clap.room = self.clap_room.next();
-        next.bass.level = self.bass.next();
-        next.master.level = self.master.next();
-        next.master.drive = self.master_drive.next();
+        for smoother in &mut self.smoothers {
+            let spec = smoother
+                .spec
+                .expect("registry-derived gain smoothers carry a control spec");
+            (spec.set)(&mut next, smoother.next());
+        }
         next
     }
 }
@@ -341,22 +192,24 @@ pub(crate) struct TempoClock {
     pub(crate) beat: f64,
     pub(crate) bpm: f64,
     pub(crate) sample_rate: f64,
+    pub(crate) smoothing_coeff: f64,
 }
 
 impl TempoClock {
     pub(crate) fn new(sample_rate: f32, bpm: f32) -> Self {
+        let sample_rate = f64::from(sample_rate.max(1.0));
+        let smoothing_samples = (TEMPO_SMOOTH_MS * 0.001 * sample_rate).max(1.0);
         Self {
             beat: 0.0,
             bpm: f64::from(bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX)),
-            sample_rate: f64::from(sample_rate.max(1.0)),
+            sample_rate,
+            smoothing_coeff: 1.0 - (-1.0 / smoothing_samples).exp(),
         }
     }
 
     pub(crate) fn tick(&mut self, target_bpm: f32) -> TimingContext {
         let target_bpm = f64::from(target_bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX));
-        let smoothing_samples = (TEMPO_SMOOTH_MS * 0.001 * self.sample_rate).max(1.0);
-        let coeff = 1.0 - (-1.0 / smoothing_samples).exp();
-        self.bpm += (target_bpm - self.bpm) * coeff;
+        self.bpm += (target_bpm - self.bpm) * self.smoothing_coeff;
 
         let timing = TimingContext::new(self.sample_rate, self.bpm, self.beat);
         self.beat += self.bpm / (60.0 * self.sample_rate);
@@ -388,10 +241,6 @@ impl TimingContext {
         (f64::from(beats.max(0.0)) * self.samples_per_beat())
             .round()
             .max(1.0) as u64
-    }
-
-    pub(crate) fn lfo_hz_for_bars(self, bars: f32) -> f32 {
-        (self.bpm as f32) / (240.0 * bars.max(1.0 / 64.0))
     }
 }
 
@@ -502,24 +351,32 @@ pub(crate) struct MasterBus {
     pub(crate) comp_env: f32,
     pub(crate) tone_l: f32,
     pub(crate) tone_r: f32,
+    pub(crate) thresh_lin: f32,
+    pub(crate) attack_coeff: f32,
+    pub(crate) rel_coeff: f32,
 }
 
 impl MasterBus {
-    pub(crate) fn new() -> Self {
-        Self {
+    pub(crate) fn new(c: &MasterControls, sample_rate: f32) -> Self {
+        let mut bus = Self {
             comp_env: 0.0,
             tone_l: 0.0,
             tone_r: 0.0,
-        }
+            thresh_lin: 1.0,
+            attack_coeff: 0.0,
+            rel_coeff: 0.0,
+        };
+        bus.set_controls(c, sample_rate);
+        bus
     }
 
-    pub(crate) fn process(
-        &mut self,
-        mut l: f32,
-        mut r: f32,
-        c: &MasterControls,
-        sample_rate: f32,
-    ) -> (f32, f32) {
+    pub(crate) fn set_controls(&mut self, c: &MasterControls, sample_rate: f32) {
+        self.thresh_lin = 10_f32.powf(c.comp_threshold / 20.0);
+        self.attack_coeff = (-1.0_f32 / (0.001 * sample_rate)).exp();
+        self.rel_coeff = (-1.0_f32 / (c.comp_release_ms * 0.001 * sample_rate)).exp();
+    }
+
+    pub(crate) fn process(&mut self, mut l: f32, mut r: f32, c: &MasterControls) -> (f32, f32) {
         if c.drive > 0.001 {
             let gain = 1.0 + c.drive * 6.0;
             l = soft_clip(l * gain);
@@ -539,17 +396,15 @@ impl MasterBus {
             }
         }
 
-        let thresh_lin = 10_f32.powf(c.comp_threshold / 20.0);
-        let attack_coeff = (-1.0_f32 / (0.001 * sample_rate)).exp();
-        let rel_coeff = (-1.0_f32 / (c.comp_release_ms * 0.001 * sample_rate)).exp();
         let peak = l.abs().max(r.abs());
         self.comp_env = if peak > self.comp_env {
-            peak + attack_coeff * (self.comp_env - peak)
+            peak + self.attack_coeff * (self.comp_env - peak)
         } else {
-            peak + rel_coeff * (self.comp_env - peak)
+            peak + self.rel_coeff * (self.comp_env - peak)
         };
-        let gain_reduction = if self.comp_env > thresh_lin && c.comp_ratio > 1.001 {
-            (thresh_lin / self.comp_env) * (self.comp_env / thresh_lin).powf(1.0 / c.comp_ratio)
+        let gain_reduction = if self.comp_env > self.thresh_lin && c.comp_ratio > 1.001 {
+            (self.thresh_lin / self.comp_env)
+                * (self.comp_env / self.thresh_lin).powf(1.0 / c.comp_ratio)
         } else {
             1.0
         };

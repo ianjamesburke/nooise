@@ -16,12 +16,12 @@ pub(crate) fn ui_loop(
     let mut last = Instant::now();
     let started = Instant::now();
     let mut save_message: Option<String> = None;
-    let mut automation = initial_automation;
+    let mut automation = PublishedAutomation::new(initial_automation, automation_shared);
 
     loop {
         let c = FluidControls::clone(&controls.load());
         let update_message = updates.message();
-        let automation_message = automation_footer(&automation);
+        let automation_message = automation_footer(automation.state());
         let footer_message = save_message
             .as_deref()
             .or(automation_message.as_deref())
@@ -50,7 +50,7 @@ pub(crate) fn ui_loop(
                     cursor_visible,
                 },
                 &fluid,
-                &automation,
+                automation.state(),
                 footer_message,
             )
         })?;
@@ -69,12 +69,13 @@ pub(crate) fn ui_loop(
                             && let Ok(value) = entry.buffer.parse::<f32>()
                         {
                             if let Some(field) = lfo_field_at(lfo_selected)
-                                && let Some(address) = automation.active_address()
+                                && let Some(address) = automation.state().active_address()
                             {
-                                if let Some(route) = automation.route_mut(address) {
-                                    route.set_field(field, value);
-                                }
-                                publish_automation(&automation_shared, &automation);
+                                automation.edit(|state| {
+                                    if let Some(route) = state.route_mut(address) {
+                                        route.set_field_at(field, value, beat);
+                                    }
+                                });
                             } else {
                                 set_value(&controls, tab, selected, value);
                             }
@@ -91,45 +92,53 @@ pub(crate) fn ui_loop(
             }
             match key.code {
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    save_message = Some(match copy_launch_line(&controls, &automation) {
+                    save_message = Some(match copy_launch_line(&controls, automation.state()) {
                         Ok(line) => format!("Copied {line}"),
                         Err(err) => format!("Save failed: {err}"),
                     });
                 }
-                KeyCode::Esc if automation.is_editor_open() => {
-                    automation.close_editor();
+                KeyCode::Esc if automation.state().is_editor_open() => {
+                    automation.edit(AutomationState::close_editor);
                     lfo_selected = 0;
-                    publish_automation(&automation_shared, &automation);
                 }
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Tab => {
-                    if automation.is_editor_open() {
-                        automation.close_editor();
-                        publish_automation(&automation_shared, &automation);
+                    if automation.state().is_editor_open() {
+                        automation.edit(AutomationState::close_editor);
                     }
                     tab = tab.next();
                     selected = 0;
                     lfo_selected = 0;
                 }
                 KeyCode::BackTab => {
-                    if automation.is_editor_open() {
-                        automation.close_editor();
-                        publish_automation(&automation_shared, &automation);
+                    if automation.state().is_editor_open() {
+                        automation.edit(AutomationState::close_editor);
                     }
                     tab = tab.previous();
                     selected = 0;
                     lfo_selected = 0;
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    if automation.is_editor_open() {
-                        lfo_selected = lfo_selected.saturating_sub(1);
+                    if automation.state().is_editor_open() {
+                        if lfo_selected <= 1 {
+                            automation.edit(AutomationState::close_editor);
+                            lfo_selected = 0;
+                        } else {
+                            lfo_selected -= 1;
+                        }
                     } else {
                         selected = selected.saturating_sub(1);
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if automation.is_editor_open() {
-                        lfo_selected = (lfo_selected + 1).min(LfoField::ALL.len());
+                    if automation.state().is_editor_open() {
+                        if lfo_selected >= LfoField::ALL.len() {
+                            automation.edit(AutomationState::close_editor);
+                            selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
+                            lfo_selected = 0;
+                        } else {
+                            lfo_selected += 1;
+                        }
                     } else {
                         selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
                     }
@@ -137,66 +146,67 @@ pub(crate) fn ui_loop(
                 KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     reset_lfo_or_control(
                         &mut automation,
-                        &automation_shared,
                         lfo_selected,
                         &controls,
                         tab,
                         selected,
+                        beat,
                     );
                 }
                 KeyCode::Char('H') => {
                     reset_lfo_or_control(
                         &mut automation,
-                        &automation_shared,
                         lfo_selected,
                         &controls,
                         tab,
                         selected,
+                        beat,
                     );
                 }
                 KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     reset_lfo_or_control(
                         &mut automation,
-                        &automation_shared,
                         lfo_selected,
                         &controls,
                         tab,
                         selected,
+                        beat,
                     );
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
                     adjust_lfo_or_control(
                         &mut automation,
-                        &automation_shared,
                         lfo_selected,
                         &controls,
                         tab,
                         selected,
                         -1.0,
+                        beat,
                     );
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
                     adjust_lfo_or_control(
                         &mut automation,
-                        &automation_shared,
                         lfo_selected,
                         &controls,
                         tab,
                         selected,
                         1.0,
+                        beat,
                     );
                 }
                 KeyCode::Char('f') => {
                     if let Some(item) = items.get(selected) {
                         let address = ControlAddress::new(item.id);
-                        if automation.active_address() == Some(address) {
-                            automation.close_editor();
-                        } else {
-                            automation.close_editor();
-                            automation.open_or_create(address);
-                        }
-                        lfo_selected = 0;
-                        publish_automation(&automation_shared, &automation);
+                        automation.edit(|state| {
+                            if state.active_address() == Some(address) {
+                                state.close_editor();
+                            } else {
+                                state.close_editor();
+                                state.open_or_create(address);
+                            }
+                        });
+                        lfo_selected = 1;
                     }
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
@@ -217,52 +227,68 @@ pub(crate) fn lfo_field_at(index: usize) -> Option<LfoField> {
     LfoField::ALL.get(index.checked_sub(1)?).copied()
 }
 
+pub(crate) struct PublishedAutomation {
+    state: AutomationState,
+    shared: Arc<ArcSwap<AutomationState>>,
+}
+
+impl PublishedAutomation {
+    pub(crate) fn new(state: AutomationState, shared: Arc<ArcSwap<AutomationState>>) -> Self {
+        shared.store(Arc::new(state.clone()));
+        Self { state, shared }
+    }
+
+    pub(crate) fn state(&self) -> &AutomationState {
+        &self.state
+    }
+
+    pub(crate) fn edit(&mut self, edit: impl FnOnce(&mut AutomationState)) {
+        edit(&mut self.state);
+        self.shared.store(Arc::new(self.state.clone()));
+    }
+}
+
 fn adjust_lfo_or_control(
-    automation: &mut AutomationState,
-    automation_shared: &Arc<ArcSwap<AutomationState>>,
+    automation: &mut PublishedAutomation,
     lfo_selected: usize,
     controls: &Arc<ArcSwap<FluidControls>>,
     tab: Tab,
     selected: usize,
     dir: f32,
+    beat: f64,
 ) {
     if let Some(field) = lfo_field_at(lfo_selected)
-        && let Some(address) = automation.active_address()
+        && let Some(address) = automation.state().active_address()
     {
-        if let Some(route) = automation.route_mut(address) {
-            route.adjust_field(field, dir);
-        }
-        publish_automation(automation_shared, automation);
+        automation.edit(|state| {
+            if let Some(route) = state.route_mut(address) {
+                route.adjust_field_at(field, dir, beat);
+            }
+        });
     } else {
         adjust(controls, tab, selected, dir);
     }
 }
 
 fn reset_lfo_or_control(
-    automation: &mut AutomationState,
-    automation_shared: &Arc<ArcSwap<AutomationState>>,
+    automation: &mut PublishedAutomation,
     lfo_selected: usize,
     controls: &Arc<ArcSwap<FluidControls>>,
     tab: Tab,
     selected: usize,
+    beat: f64,
 ) {
     if let Some(field) = lfo_field_at(lfo_selected)
-        && let Some(address) = automation.active_address()
+        && let Some(address) = automation.state().active_address()
     {
-        if let Some(route) = automation.route_mut(address) {
-            route.reset_field(field);
-        }
-        publish_automation(automation_shared, automation);
+        automation.edit(|state| {
+            if let Some(route) = state.route_mut(address) {
+                route.reset_field_at(field, beat);
+            }
+        });
     } else {
         reset_to_min(controls, tab, selected);
     }
-}
-
-fn publish_automation(
-    automation_shared: &Arc<ArcSwap<AutomationState>>,
-    automation: &AutomationState,
-) {
-    automation_shared.store(Arc::new(automation.clone()));
 }
 
 fn automation_footer(automation: &AutomationState) -> Option<String> {

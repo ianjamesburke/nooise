@@ -1,6 +1,10 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::fmt;
 
-use super::{FluidControls, TimingContext, normalize_unit_input, snap_step, spec_by_id};
+use super::{
+    ControlSpec, FluidControls, TimingContext, normalize_unit_input, snap_step, spec_by_id,
+};
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
 pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.25;
@@ -12,18 +16,49 @@ const AMOUNT_STEP: f32 = 0.05;
 const INTERVAL_STEP: f32 = 0.25;
 const OFFSET_STEP: f32 = 0.25;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy)]
 pub(crate) struct ControlAddress {
-    id: &'static str,
+    spec: &'static ControlSpec,
 }
 
 impl ControlAddress {
-    pub(crate) const fn new(id: &'static str) -> Self {
-        Self { id }
+    pub(crate) fn new(id: &'static str) -> Self {
+        let spec = spec_by_id(id).expect("control address must reference a registered control");
+        Self { spec }
     }
 
     pub(crate) fn id(self) -> &'static str {
-        self.id
+        self.spec.id
+    }
+
+    pub(crate) fn spec(self) -> &'static ControlSpec {
+        self.spec
+    }
+}
+
+impl fmt::Debug for ControlAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ControlAddress").field(&self.id()).finish()
+    }
+}
+
+impl PartialEq for ControlAddress {
+    fn eq(&self, other: &Self) -> bool {
+        self.id() == other.id()
+    }
+}
+
+impl Eq for ControlAddress {}
+
+impl Ord for ControlAddress {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id().cmp(other.id())
+    }
+}
+
+impl PartialOrd for ControlAddress {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -43,13 +78,89 @@ impl LfoField {
     pub(crate) const ALL: [LfoField; 3] = [Self::Amount, Self::Interval, Self::Offset];
 
     pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Amount => "amount",
-            Self::Interval => "interval",
-            Self::Offset => "offset",
+        self.spec().label
+    }
+
+    pub(crate) fn spec(self) -> &'static LfoFieldSpec {
+        LFO_FIELD_SPECS
+            .iter()
+            .find(|spec| spec.field == self)
+            .expect("every LFO field has a spec")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LfoEntry {
+    Percent,
+    Snap,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LfoFieldSpec {
+    pub(crate) field: LfoField,
+    pub(crate) label: &'static str,
+    pub(crate) min: f32,
+    pub(crate) max: f32,
+    pub(crate) step: f32,
+    pub(crate) entry: LfoEntry,
+    pub(crate) reset: f32,
+}
+
+impl LfoFieldSpec {
+    pub(crate) fn adjust(self, value: f32, dir: f32) -> f32 {
+        self.quantize(value + dir * self.step)
+    }
+
+    pub(crate) fn parse_value(self, value: f32) -> f32 {
+        match self.entry {
+            LfoEntry::Percent => normalize_unit_input(value).clamp(self.min, self.max),
+            LfoEntry::Snap => self.quantize(value),
+        }
+    }
+
+    pub(crate) fn quantize(self, value: f32) -> f32 {
+        snap_step(value.clamp(self.min, self.max), self.step).clamp(self.min, self.max)
+    }
+
+    pub(crate) fn ratio(self, value: f32) -> f32 {
+        let range = self.max - self.min;
+        if range.abs() <= f32::EPSILON {
+            0.0
+        } else {
+            ((value - self.min) / range).clamp(0.0, 1.0)
         }
     }
 }
+
+pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
+    LfoFieldSpec {
+        field: LfoField::Amount,
+        label: "amount",
+        min: 0.0,
+        max: 1.0,
+        step: AMOUNT_STEP,
+        entry: LfoEntry::Percent,
+        reset: 0.0,
+    },
+    LfoFieldSpec {
+        field: LfoField::Interval,
+        label: "interval",
+        min: MIN_LFO_CYCLE_BEATS,
+        max: MAX_LFO_CYCLE_BEATS,
+        step: INTERVAL_STEP,
+        entry: LfoEntry::Snap,
+        reset: MIN_LFO_CYCLE_BEATS,
+    },
+    LfoFieldSpec {
+        field: LfoField::Offset,
+        label: "offset",
+        min: 0.0,
+        max: MAX_LFO_OFFSET_BEATS,
+        step: OFFSET_STEP,
+        entry: LfoEntry::Snap,
+        reset: 0.0,
+    },
+];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LfoRoute {
@@ -84,53 +195,49 @@ impl LfoRoute {
         }
     }
 
-    pub(crate) fn adjust_field(&mut self, field: LfoField, dir: f32) {
+    pub(crate) fn adjust_field_at(&mut self, field: LfoField, dir: f32, beat: f64) {
+        let spec = field.spec();
         match field {
             LfoField::Amount => {
-                self.depth_ratio = (self.depth_ratio + dir * AMOUNT_STEP).clamp(0.0, 1.0);
+                self.depth_ratio = spec.adjust(self.depth_ratio, dir);
             }
             LfoField::Interval => {
-                self.cycle_beats = snap_step(self.cycle_beats + dir * INTERVAL_STEP, INTERVAL_STEP)
-                    .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS);
+                self.set_cycle_preserving_phase(spec.adjust(self.cycle_beats, dir), beat);
             }
             LfoField::Offset => {
-                self.phase_offset_beats =
-                    snap_step(self.phase_offset_beats + dir * OFFSET_STEP, OFFSET_STEP)
-                        .clamp(0.0, MAX_LFO_OFFSET_BEATS);
+                self.phase_offset_beats = spec.adjust(self.phase_offset_beats, dir);
             }
         }
     }
 
-    pub(crate) fn set_field(&mut self, field: LfoField, value: f32) {
+    pub(crate) fn set_field_at(&mut self, field: LfoField, value: f32, beat: f64) {
+        let spec = field.spec();
         match field {
-            LfoField::Amount => self.depth_ratio = normalize_unit_input(value),
+            LfoField::Amount => self.depth_ratio = spec.parse_value(value),
             LfoField::Interval => {
-                self.cycle_beats =
-                    snap_step(value, INTERVAL_STEP).clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS);
+                self.set_cycle_preserving_phase(spec.parse_value(value), beat);
             }
             LfoField::Offset => {
-                self.phase_offset_beats =
-                    snap_step(value, OFFSET_STEP).clamp(0.0, MAX_LFO_OFFSET_BEATS);
+                self.phase_offset_beats = spec.parse_value(value);
             }
         }
     }
 
-    pub(crate) fn reset_field(&mut self, field: LfoField) {
+    pub(crate) fn reset_field_at(&mut self, field: LfoField, beat: f64) {
+        let reset = field.spec().reset;
         match field {
-            LfoField::Amount => self.depth_ratio = DEFAULT_LFO_DEPTH_RATIO,
-            LfoField::Interval => self.cycle_beats = DEFAULT_LFO_CYCLE_BEATS,
-            LfoField::Offset => self.phase_offset_beats = 0.0,
+            LfoField::Amount => self.depth_ratio = reset,
+            LfoField::Interval => self.set_cycle_preserving_phase(reset, beat),
+            LfoField::Offset => self.phase_offset_beats = reset,
         }
     }
 
     pub(crate) fn field_ratio(&self, field: LfoField) -> f32 {
+        let spec = field.spec();
         match field {
-            LfoField::Amount => self.depth_ratio,
-            LfoField::Interval => {
-                (self.cycle_beats - MIN_LFO_CYCLE_BEATS)
-                    / (MAX_LFO_CYCLE_BEATS - MIN_LFO_CYCLE_BEATS)
-            }
-            LfoField::Offset => self.phase_offset_beats / MAX_LFO_OFFSET_BEATS,
+            LfoField::Amount => spec.ratio(self.depth_ratio),
+            LfoField::Interval => spec.ratio(self.cycle_beats),
+            LfoField::Offset => spec.ratio(self.phase_offset_beats),
         }
     }
 
@@ -141,6 +248,44 @@ impl LfoRoute {
             LfoField::Offset => format!("{:.2} beats", self.phase_offset_beats),
         }
     }
+
+    fn set_cycle_preserving_phase(&mut self, cycle_beats: f32, beat: f64) {
+        let old_phase = self.phase_at(beat);
+        self.cycle_beats = cycle_beats;
+        self.phase_offset_beats = nearest_offset_for_phase(old_phase, beat, cycle_beats);
+    }
+}
+
+fn nearest_offset_for_phase(phase: f64, beat: f64, cycle_beats: f32) -> f32 {
+    let cycle = f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS));
+    let desired = (phase * cycle - beat).rem_euclid(cycle) as f32;
+    let offset_spec = LfoField::Offset.spec();
+    let snapped = offset_spec.quantize(desired);
+    if phase_distance(phase, phase_at_with_offset(beat, cycle, snapped)) < 0.001 {
+        return snapped;
+    }
+
+    let mut best = snapped;
+    let mut best_distance = phase_distance(phase, phase_at_with_offset(beat, cycle, best));
+    let steps = ((offset_spec.max - offset_spec.min) / offset_spec.step).round() as usize;
+    for i in 0..=steps {
+        let candidate = offset_spec.min + i as f32 * offset_spec.step;
+        let distance = phase_distance(phase, phase_at_with_offset(beat, cycle, candidate));
+        if distance < best_distance {
+            best = candidate;
+            best_distance = distance;
+        }
+    }
+    best
+}
+
+fn phase_at_with_offset(beat: f64, cycle: f64, offset: f32) -> f64 {
+    ((beat + f64::from(offset)) / cycle).rem_euclid(1.0)
+}
+
+fn phase_distance(a: f64, b: f64) -> f64 {
+    let diff = (a - b).abs();
+    diff.min(1.0 - diff)
 }
 
 #[derive(Clone, Default)]
@@ -199,9 +344,7 @@ pub(crate) fn apply_automation(
     timing: TimingContext,
 ) {
     for (address, route) in automation.routes() {
-        let Some(spec) = spec_by_id(address.id()) else {
-            continue;
-        };
+        let spec = address.spec();
         let depth = (spec.max - spec.min) * route.depth_ratio.clamp(0.0, 1.0);
         if depth <= f32::EPSILON {
             continue;

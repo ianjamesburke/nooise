@@ -9,7 +9,6 @@ pub(crate) struct PercEngine {
     pub(crate) trigger: GridTrigger,
     pub(crate) hits: Vec<NoiseHit>,
     pub(crate) noise: WhiteNoise,
-    pub(crate) vol_lfo: DriftingLfo,
     pub(crate) rng: StdRng,
 }
 
@@ -20,33 +19,24 @@ impl PercEngine {
             trigger: GridTrigger::new(),
             hits: Vec::with_capacity(8),
             noise: WhiteNoise::new(),
-            vol_lfo: DriftingLfo::new(0.2, sample_rate),
             rng: StdRng::from_entropy(),
         }
     }
 
     pub(crate) fn next(&mut self, c: &PercControls, timing: TimingContext) -> f32 {
-        // Advance LFO every sample so phase accumulates at the correct rate.
-        let rate_hz = timing.lfo_hz_for_bars(c.lfo_rate_bars);
-        let lfo_raw = self
-            .vol_lfo
-            .next(&mut self.rng, rate_hz * 0.5, rate_hz * 2.0);
-        let lfo_norm = normalized_lfo(lfo_raw);
-        let effective_level = c.level * ((1.0 - c.lfo_depth) + lfo_norm * c.lfo_depth);
-
         if c.interval_beats >= 4.25 {
             // Continuous mode: bypass GridTrigger/NoiseHit entirely so there is
             // no trigger-rate amplitude ripple to disguise (see GOTCHAS.md).
             // Reuse the same exponential smoothing transform as discrete hits so
             // Filter has a comparably audible range in both modes.
             let smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
-            return self.noise.next_filtered(&mut self.rng, smoothing) * effective_level * 0.4;
+            return self.noise.next_filtered(&mut self.rng, smoothing) * c.level * 0.4;
         }
 
         if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
             let smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
             self.hits.push(NoiseHit::new(
-                effective_level,
+                c.level,
                 c.decay_ms,
                 smoothing,
                 self.sample_rate,

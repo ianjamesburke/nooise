@@ -165,29 +165,29 @@ fn automation_open_or_create_uses_safe_lfo_defaults() {
 fn lfo_field_adjust_steps_and_clamps() {
     let mut route = LfoRoute::default();
 
-    route.adjust_field(LfoField::Amount, 1.0);
+    route.adjust_field_at(LfoField::Amount, 1.0, 0.0);
     assert_close(route.depth_ratio, 0.30);
-    route.set_field(LfoField::Amount, 0.0);
-    route.adjust_field(LfoField::Amount, -1.0);
+    route.set_field_at(LfoField::Amount, 0.0, 0.0);
+    route.adjust_field_at(LfoField::Amount, -1.0, 0.0);
     assert_close(route.depth_ratio, 0.0);
 
-    route.adjust_field(LfoField::Interval, 1.0);
+    route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
     assert_close(route.cycle_beats, 2.25);
     for _ in 0..100 {
-        route.adjust_field(LfoField::Interval, 1.0);
+        route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
     }
     assert_close(route.cycle_beats, 16.0);
     for _ in 0..100 {
-        route.adjust_field(LfoField::Interval, -1.0);
+        route.adjust_field_at(LfoField::Interval, -1.0, 0.0);
     }
     assert_close(route.cycle_beats, 0.25);
 
-    route.adjust_field(LfoField::Offset, -1.0);
+    route.adjust_field_at(LfoField::Offset, -1.0, 0.0);
     assert_close(route.phase_offset_beats, 0.0);
-    route.adjust_field(LfoField::Offset, 1.0);
+    route.adjust_field_at(LfoField::Offset, 1.0, 0.0);
     assert_close(route.phase_offset_beats, 0.25);
     for _ in 0..100 {
-        route.adjust_field(LfoField::Offset, 1.0);
+        route.adjust_field_at(LfoField::Offset, 1.0, 0.0);
     }
     assert_close(route.phase_offset_beats, 4.0);
 }
@@ -196,18 +196,51 @@ fn lfo_field_adjust_steps_and_clamps() {
 fn lfo_field_set_snaps_to_quarter_beat_grid() {
     let mut route = LfoRoute::default();
 
-    route.set_field(LfoField::Interval, 3.1);
+    route.set_field_at(LfoField::Interval, 3.1, 0.0);
     assert_close(route.cycle_beats, 3.0);
-    route.set_field(LfoField::Interval, 100.0);
+    route.set_field_at(LfoField::Interval, 100.0, 0.0);
     assert_close(route.cycle_beats, 16.0);
-    route.set_field(LfoField::Amount, 130.0);
+    route.set_field_at(LfoField::Amount, 130.0, 0.0);
     assert_close(route.depth_ratio, 1.0);
-    route.set_field(LfoField::Amount, 40.0);
+    route.set_field_at(LfoField::Amount, 40.0, 0.0);
     assert_close(route.depth_ratio, 0.4);
-    route.set_field(LfoField::Offset, 1.3);
+    route.set_field_at(LfoField::Offset, 1.3, 0.0);
     assert_close(route.phase_offset_beats, 1.25);
-    route.set_field(LfoField::Offset, 9.0);
+    route.set_field_at(LfoField::Offset, 9.0, 0.0);
     assert_close(route.phase_offset_beats, 4.0);
+}
+
+#[test]
+fn lfo_field_reset_uses_slider_minimums() {
+    let mut route = LfoRoute {
+        cycle_beats: 4.0,
+        depth_ratio: 0.75,
+        phase_offset_beats: 2.0,
+        ..LfoRoute::default()
+    };
+
+    route.reset_field_at(LfoField::Amount, 1.0);
+    assert_close(route.depth_ratio, 0.0);
+    route.reset_field_at(LfoField::Interval, 1.0);
+    assert_close(route.cycle_beats, MIN_LFO_CYCLE_BEATS);
+    route.reset_field_at(LfoField::Offset, 1.0);
+    assert_close(route.phase_offset_beats, 0.0);
+}
+
+#[test]
+fn lfo_interval_edits_preserve_live_phase_when_possible() {
+    let mut route = LfoRoute {
+        cycle_beats: 2.0,
+        phase_offset_beats: 0.0,
+        ..LfoRoute::default()
+    };
+    let beat = 4.0;
+    let before = route.phase_at(beat);
+
+    route.adjust_field_at(LfoField::Interval, 1.0, beat);
+
+    assert_close(route.cycle_beats, 2.25);
+    assert!((route.phase_at(beat) - before).abs() < 1e-9);
 }
 
 #[test]
@@ -389,8 +422,6 @@ fn defaults_match_current_mix() {
 
     assert_close(controls.perc.decay_ms, 200.0);
     assert_close(controls.perc.filter, 0.7);
-    assert_close(controls.perc.lfo_rate_bars, 1.0);
-    assert_close(controls.perc.lfo_depth, 0.1);
     assert_close(controls.perc.interval_beats, 0.25);
     assert_close(controls.perc.offset_beats, 0.0);
 
@@ -464,10 +495,7 @@ fn tab_controls_classify_each_slider_kind() {
                 Timing, Continuous, Discrete,
             ],
         ),
-        (
-            Tab::Perc,
-            vec![Gain, Timing, Timing, Timing, Gain, Timing, Gain],
-        ),
+        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Gain]),
         (
             Tab::Chords,
             vec![
@@ -706,15 +734,28 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.pad.level = 0.0;
     controls.pad.reverb_mix = 0.0;
     controls.perc.filter = 0.5;
+    controls.kick.click = 0.0;
+    controls.kick.drive = 0.0;
+    controls.kick.filter = 0.0;
     controls.kick.echo_amount = 0.0;
+    controls.tonal.randomness = 0.0;
+    controls.clap.filter = 0.5;
+    controls.clap.body = 0.0;
     controls.master.level = 0.0;
     controls.master.drive = 0.0;
+    controls.bass.drive = 0.0;
 
     let mut smoothers = GainSmoothers::new(&controls);
     controls.pad.level = 1.0;
     controls.pad.reverb_mix = 1.0;
     controls.perc.filter = 1.0;
+    controls.kick.click = 0.2;
+    controls.kick.drive = 1.0;
+    controls.kick.filter = 1.0;
     controls.kick.echo_amount = 0.9;
+    controls.tonal.randomness = 1.0;
+    controls.clap.filter = 1.0;
+    controls.clap.body = 1.0;
     controls.master.level = 0.5;
     controls.master.drive = 1.0;
     controls.master.bpm = 123.0;
@@ -726,10 +767,33 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     assert!(next.pad.level > 0.0 && next.pad.level < 1.0);
     assert!(next.pad.reverb_mix > 0.0 && next.pad.reverb_mix < 1.0);
     assert!(next.perc.filter > 0.5 && next.perc.filter < 1.0);
+    assert!(next.kick.click > 0.0 && next.kick.click < 0.2);
+    assert!(next.kick.drive > 0.0 && next.kick.drive < 1.0);
+    assert!(next.kick.filter > 0.0 && next.kick.filter < 1.0);
     assert!(next.kick.echo_amount > 0.0 && next.kick.echo_amount < 0.9);
+    assert!(next.tonal.randomness > 0.0 && next.tonal.randomness < 1.0);
+    assert!(next.clap.filter > 0.5 && next.clap.filter < 1.0);
+    assert!(next.clap.body > 0.0 && next.clap.body < 1.0);
     assert!(next.master.level > 0.0 && next.master.level < 0.5);
     assert!(next.master.drive > 0.0 && next.master.drive < 1.0);
-    assert_close(next.bass.drive, 1.0);
+    assert!(next.bass.drive > 0.0 && next.bass.drive < 1.0);
+}
+
+#[test]
+fn gain_smoothers_cover_every_unique_gain_spec() {
+    let controls = FluidControls::default();
+    let smoothers = GainSmoothers::new(&controls);
+    let expected: std::collections::BTreeSet<_> = all_specs()
+        .filter(|spec| spec.kind == ControlKind::Gain)
+        .map(|spec| spec.id)
+        .collect();
+    let actual: std::collections::BTreeSet<_> = smoothers
+        .smoothers
+        .iter()
+        .map(|smoother| smoother.spec.unwrap().id)
+        .collect();
+
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -967,7 +1031,6 @@ fn perc_continuous_mode_pushes_no_hits() {
 fn perc_continuous_mode_has_no_periodic_rms_dips() {
     let controls = PercControls {
         level: 1.0,
-        lfo_depth: 0.0,
         interval_beats: 4.25,
         ..Default::default()
     };
@@ -1011,7 +1074,7 @@ fn perc_continuous_mode_has_no_periodic_rms_dips() {
 fn perc_tab_controls_include_interval_and_offset() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Perc, &controls);
-    assert_eq!(rows.len(), 7);
+    assert_eq!(rows.len(), 5);
     assert_eq!(rows[1].label, "Interval");
     assert_close(rows[1].min, 0.25);
     assert_close(rows[1].max, 4.25);

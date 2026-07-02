@@ -13,7 +13,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
   - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `render_wav()` (headless wav render), `FluidTelemetry`.
   - `controls.rs` — `FluidControls`, `MasterControls`, and per-voice control structs with defaults.
   - `registry.rs` — the control registry: one `ControlSpec` table per tab (stable ID, label, kind, range, step, entry semantics, reset, accessors, display). `tab_controls`/`apply_delta`/`apply_min`/`apply_value` all derive from it.
-  - `automation.rs` — automation routes keyed by stable control ID. Each route holds one LFO (depth/interval/offset), edited via the `f` submenu in the TUI; routes drive runtime modulation and song-code persistence.
+  - `automation.rs` — automation routes keyed by stable control ID. Each route holds one LFO (depth/interval/offset), edited via the `f` submenu in the TUI; LFO field specs own slider ranges, steps, reset targets, and numeric entry behavior. Routes drive runtime modulation and song-code persistence.
   - `song.rs` — versioned binary song-code export/import for controls plus automation records. `Ctrl+S` copies `nooise <code>`; `nooise <code>` applies the decoded song state before audio/TUI startup.
   - `ui.rs` — TUI event loop, tab rendering, fluid visualizer.
   - `engine.rs` — `FluidEngine` (voice mixer), gain smoothers, tempo clock, grid triggers, master bus.
@@ -25,7 +25,10 @@ All engine, terminal UI, and live-control code for the nooise binary.
 
 - The `ControlSpec` tables in `fluid/registry.rs` are the single source of truth for every control row and stable song snapshot ID. Adding a control = adding one table entry with a durable ID; never reintroduce per-function match arms for control rows. The `control_registry_specs_are_internally_consistent` test enforces table sanity.
 - Control rows carry `ControlKind`; use it as the source of truth for gain/continuous/timing/discrete semantics.
-- Live-read gain controls are ramped by `GainSmoothers` in `FluidEngine`; do not apply UI volume jumps directly in the audio callback path.
+- LFO submenu rows derive from `LfoFieldSpec`; keep LFO slider range, step, reset, display, and numeric-entry behavior there instead of adding per-key UI branches.
+- Per-slider `f` automation is the user-facing LFO path; do not add voice-specific LFO rate/depth controls to core slider tabs.
+- Live-read gain controls are ramped by registry-derived `GainSmoothers` in `FluidEngine`; every unique `ControlKind::Gain` spec must get a smoother automatically.
+- TUI automation edits must go through `PublishedAutomation` so the shared audio-thread snapshot is stored on every mutation.
 - Pitched voices (Pad, Bass) route note numbers through `midi_to_hz`; unpitched voices (Perc, Kick, Tonal, Clap) do not and are unaffected by global pitch controls like master tune.
 - Voice RNGs must stay reseedable via `FluidEngine::reseed` so `nooise render --seed` stays byte-reproducible.
 - Passive update checks must never block the TUI or audio callback; keep crates.io/network work off the main loop and show no message on failure.

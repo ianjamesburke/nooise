@@ -543,27 +543,6 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         |c, v| c.perc.filter = v,
         |c| pct(c.perc.filter),
     ),
-    ControlSpec::new(
-        "perc.lfo_rate_bars",
-        "LFO Rate",
-        ControlKind::Timing,
-        0.25,
-        16.0,
-        Step::Linear(0.25),
-        Entry::Snap,
-        |c| c.perc.lfo_rate_bars,
-        |c, v| c.perc.lfo_rate_bars = v,
-        |c| format!("{:.0} beats", c.perc.lfo_rate_bars * 4.0),
-    ),
-    ControlSpec::gain(
-        "perc.lfo_depth",
-        "LFO Depth",
-        0.0,
-        1.0,
-        |c| c.perc.lfo_depth,
-        |c, v| c.perc.lfo_depth = v,
-        |c| pct(c.perc.lfo_depth),
-    ),
 ];
 
 pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
