@@ -45,8 +45,7 @@ fn automation_payload(target_id: &str, route: LfoRoute) -> Vec<u8> {
     payload.extend_from_slice(&1u16.to_le_bytes());
     write_test_str(target_id, &mut payload);
     payload.extend_from_slice(&route.cycle_beats.to_le_bytes());
-    payload.extend_from_slice(&route.target_depth_ratio.to_le_bytes());
-    payload.extend_from_slice(&route.effective_depth_ratio.to_le_bytes());
+    payload.extend_from_slice(&route.depth_ratio.to_le_bytes());
     payload.push(0);
     payload.extend_from_slice(&route.phase_offset_cycles.to_le_bytes());
     payload
@@ -137,6 +136,8 @@ fn render_fluid_draws_without_terminal_backend() {
                 &items,
                 Tab::Master,
                 0,
+                0,
+                0.0,
                 NumericDisplay::empty(),
                 &fluid,
                 &automation,
@@ -154,40 +155,157 @@ fn automation_open_or_create_uses_safe_lfo_defaults() {
     let route = automation.open_or_create(address);
 
     assert_close(route.cycle_beats, 2.0);
-    assert_close(route.target_depth_ratio, 0.10);
-    assert_close(route.effective_depth_ratio, 0.0);
+    assert_close(route.depth_ratio, 0.25);
     assert_eq!(route.shape, LfoShape::Sine);
     assert_close(route.phase_offset_cycles, 0.0);
     assert_eq!(automation.active_address(), Some(address));
 }
 
 #[test]
-fn render_fluid_draws_oscillator_lane_for_automated_slider() {
+fn lfo_field_adjust_steps_and_clamps() {
+    let mut route = LfoRoute::default();
+
+    route.adjust_field(LfoField::Amount, 1.0);
+    assert_close(route.depth_ratio, 0.30);
+    route.set_field(LfoField::Amount, 0.0);
+    route.adjust_field(LfoField::Amount, -1.0);
+    assert_close(route.depth_ratio, 0.0);
+
+    route.adjust_field(LfoField::Interval, 1.0);
+    assert_close(route.cycle_beats, 4.0);
+    for _ in 0..10 {
+        route.adjust_field(LfoField::Interval, 1.0);
+    }
+    assert_close(route.cycle_beats, 16.0);
+    for _ in 0..10 {
+        route.adjust_field(LfoField::Interval, -1.0);
+    }
+    assert_close(route.cycle_beats, 0.25);
+
+    route.adjust_field(LfoField::Offset, -1.0);
+    assert_close(route.phase_offset_cycles, 0.875);
+    route.adjust_field(LfoField::Offset, 1.0);
+    assert_close(route.phase_offset_cycles, 0.0);
+}
+
+#[test]
+fn lfo_field_set_snaps_interval_to_ladder() {
+    let mut route = LfoRoute::default();
+
+    route.set_field(LfoField::Interval, 3.1);
+    assert_close(route.cycle_beats, 4.0);
+    route.set_field(LfoField::Amount, 130.0);
+    assert_close(route.depth_ratio, 1.0);
+    route.set_field(LfoField::Amount, 40.0);
+    assert_close(route.depth_ratio, 0.4);
+    route.set_field(LfoField::Offset, 1.25);
+    assert_close(route.phase_offset_cycles, 0.25);
+}
+
+#[test]
+fn close_editor_deletes_zero_depth_route() {
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new("master.level");
+    automation.open_or_create(address).depth_ratio = 0.0;
+
+    automation.close_editor();
+
+    assert!(automation.route(address).is_none());
+    assert!(!automation.is_editor_open());
+
+    automation.open_or_create(address);
+    automation.close_editor();
+    assert!(automation.route(address).is_some());
+}
+
+#[test]
+fn engine_publishes_beat_telemetry() {
+    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
+    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let bpm = f64::from(controls.load().master.bpm);
+    let mut engine = FluidEngine::new(44_100.0, controls, automation, Arc::clone(&telemetry));
+
+    for _ in 0..512 {
+        engine.next_stereo();
+    }
+
+    let expected = 256.0 * bpm / (60.0 * 44_100.0);
+    let beat = telemetry.beat();
+    assert!(beat > 0.0);
+    assert!(
+        (beat - expected).abs() / expected < 0.01,
+        "expected ~{expected}, got {beat}"
+    );
+}
+
+#[test]
+fn lfo_phase_at_uses_cycle_and_offset() {
+    let route = LfoRoute {
+        cycle_beats: 2.0,
+        phase_offset_cycles: 0.25,
+        ..LfoRoute::default()
+    };
+
+    assert!((route.phase_at(1.0) - 0.75).abs() < 1e-9);
+    assert!((route.phase_at(2.0) - 0.25).abs() < 1e-9);
+}
+
+#[test]
+fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();
-    let backend = TestBackend::new(120, 32);
-    let mut terminal = Terminal::new(backend).unwrap();
     let items = tab_controls(Tab::Master, &controls);
     let mut automation = AutomationState::default();
     automation.open_or_create(ControlAddress::new(items[0].id));
 
-    terminal
-        .draw(|f| {
-            render(
-                f,
-                &items,
-                Tab::Master,
-                0,
-                NumericDisplay::empty(),
-                &fluid,
-                &automation,
-                None,
-            )
-        })
-        .unwrap();
+    let draw_at = |beat: f64| {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &items,
+                    Tab::Master,
+                    0,
+                    1,
+                    beat,
+                    NumericDisplay::empty(),
+                    &fluid,
+                    &automation,
+                    None,
+                )
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    };
 
-    let text = buffer_text(terminal.backend().buffer());
-    assert!(text.contains("LFO 2.00b +/-10% eff 0%"));
+    let at_start = draw_at(0.0);
+    let text = buffer_text(&at_start);
+    assert!(text.contains("amount"));
+    assert!(text.contains("interval"));
+    assert!(text.contains("offset"));
+    assert!(text.contains('▄'));
+
+    // Default cycle is 2 beats, so beat 1.0 is the opposite phase: the lane's
+    // bright head has moved even though the wave glyphs are static.
+    let at_half_cycle = draw_at(1.0);
+    assert_ne!(at_start, at_half_cycle);
+}
+
+#[test]
+fn lfo_lane_is_phase_locked() {
+    let route = LfoRoute::default();
+
+    let start = lfo_lane_line(&route, 0.0, 24, true);
+    let same_phase = lfo_lane_line(&route, 2.0, 24, true);
+    let opposite_phase = lfo_lane_line(&route, 1.0, 24, true);
+
+    let styles =
+        |line: &ratatui::text::Line<'_>| line.spans.iter().map(|s| s.style).collect::<Vec<_>>();
+    assert_eq!(styles(&start), styles(&same_phase));
+    assert_ne!(styles(&start), styles(&opposite_phase));
 }
 
 #[test]
@@ -196,7 +314,7 @@ fn automation_applies_bounded_lfo_offset_and_clamps_to_spec_range() {
     controls.master.level = 0.9;
     let mut automation = AutomationState::default();
     let route = automation.open_or_create(ControlAddress::new("master.level"));
-    route.effective_depth_ratio = 0.5;
+    route.depth_ratio = 0.5;
 
     apply_automation(
         &mut controls,
@@ -212,7 +330,7 @@ fn automation_uses_beat_cycle_phase_for_opposite_lfo_offsets() {
     let mut automation = AutomationState::default();
     let route = automation.open_or_create(ControlAddress::new("master.level"));
     route.cycle_beats = 2.0;
-    route.effective_depth_ratio = 0.25;
+    route.depth_ratio = 0.25;
 
     let mut positive = FluidControls::default();
     positive.master.level = 0.5;
@@ -241,7 +359,7 @@ fn automation_preserves_base_controls_and_modulates_only_effective_clone() {
     let mut effective = base.clone();
     let mut automation = AutomationState::default();
     let route = automation.open_or_create(ControlAddress::new("master.level"));
-    route.effective_depth_ratio = 0.25;
+    route.depth_ratio = 0.25;
 
     apply_automation(
         &mut effective,
@@ -474,8 +592,7 @@ fn song_code_round_trips_lfo_automation_record() {
         ControlAddress::new("master.level"),
         LfoRoute {
             cycle_beats: 4.0,
-            target_depth_ratio: 0.25,
-            effective_depth_ratio: 0.15,
+            depth_ratio: 0.4,
             shape: LfoShape::Sine,
             phase_offset_cycles: 0.25,
         },
@@ -494,8 +611,7 @@ fn song_code_round_trips_lfo_automation_record() {
 
     assert_close(decoded.controls.master.level, 0.6);
     assert_close(route.cycle_beats, 4.0);
-    assert_close(route.target_depth_ratio, 0.25);
-    assert_close(route.effective_depth_ratio, 0.15);
+    assert_close(route.depth_ratio, 0.4);
     assert_eq!(route.shape, LfoShape::Sine);
     assert_close(route.phase_offset_cycles, 0.25);
 }
@@ -537,7 +653,7 @@ fn song_code_skips_unknown_automation_target_control_ids() {
     let payload = automation_payload(
         "future.control.id",
         LfoRoute {
-            effective_depth_ratio: 0.2,
+            depth_ratio: 0.2,
             ..LfoRoute::default()
         },
     );

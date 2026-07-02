@@ -18,6 +18,7 @@ pub(crate) struct FluidEngine {
     pub(crate) master_bus: MasterBus,
     pub(crate) controls: Arc<ArcSwap<FluidControls>>,
     pub(crate) automation: Arc<ArcSwap<AutomationState>>,
+    pub(crate) telemetry: Arc<FluidTelemetry>,
     pub(crate) snapshot: FluidControls,
 }
 
@@ -36,13 +37,14 @@ impl FluidEngine {
             gain_smoothers: GainSmoothers::new(&snapshot),
             pad: PadEngine::new(sample_rate, &snapshot.pad, Arc::clone(&telemetry)),
             perc: PercEngine::new(sample_rate),
-            kick: KickEngine::new(sample_rate, telemetry),
+            kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
             tonal: TonalEngine::new(sample_rate),
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
             master_bus: MasterBus::new(),
             controls,
             automation,
+            telemetry,
             snapshot,
         }
     }
@@ -70,6 +72,9 @@ impl StereoEngine for FluidEngine {
         let fade = (self.current_sample as f32 / (self.sample_rate * 8.0)).min(1.0);
         let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
         let timing = self.tempo.tick(effective.master.bpm);
+        if self.current_sample.is_multiple_of(256) {
+            self.telemetry.publish_beat(timing.beat);
+        }
         let automation = self.automation.load();
         apply_automation(&mut effective, &automation, timing);
 

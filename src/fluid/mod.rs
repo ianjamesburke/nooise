@@ -64,6 +64,18 @@ use voice::*;
 pub(crate) struct FluidTelemetry {
     pub chord_index: AtomicU64,
     pub kick_pulse: AtomicU64,
+    /// Engine beat position as `f64::to_bits`, for beat-synced UI animation.
+    pub beat_bits: AtomicU64,
+}
+
+impl FluidTelemetry {
+    pub(crate) fn publish_beat(&self, beat: f64) {
+        self.beat_bits.store(beat.to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn beat(&self) -> f64 {
+        f64::from_bits(self.beat_bits.load(Ordering::Relaxed))
+    }
 }
 
 // ============================================================

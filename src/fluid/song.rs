@@ -165,8 +165,7 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
     for (address, route) in automation.routes() {
         write_str(address.id(), out)?;
         out.extend_from_slice(&route.cycle_beats.to_le_bytes());
-        out.extend_from_slice(&route.target_depth_ratio.to_le_bytes());
-        out.extend_from_slice(&route.effective_depth_ratio.to_le_bytes());
+        out.extend_from_slice(&route.depth_ratio.to_le_bytes());
         out.push(shape_tag(route.shape));
         out.extend_from_slice(&route.phase_offset_cycles.to_le_bytes());
     }
@@ -183,8 +182,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
     for _ in 0..count {
         let id = reader.string()?;
         let cycle_beats = reader.f32()?;
-        let target_depth_ratio = reader.f32()?;
-        let effective_depth_ratio = reader.f32()?;
+        let depth_ratio = reader.f32()?;
         let shape = reader.u8()?;
         let phase_offset_cycles = reader.f32()?;
 
@@ -194,9 +192,8 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         automation.set_route(
             ControlAddress::new(spec.id),
             LfoRoute {
-                cycle_beats: finite_or(cycle_beats, 2.0).max(1.0 / 64.0),
-                target_depth_ratio: finite_or(target_depth_ratio, 0.10).clamp(0.0, 1.0),
-                effective_depth_ratio: finite_or(effective_depth_ratio, 0.0).clamp(0.0, 1.0),
+                cycle_beats: finite_or(cycle_beats, 2.0).max(0.25),
+                depth_ratio: finite_or(depth_ratio, 0.25).clamp(0.0, 1.0),
                 shape,
                 phase_offset_cycles: finite_or(phase_offset_cycles, 0.0).rem_euclid(1.0),
             },
