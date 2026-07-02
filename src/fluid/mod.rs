@@ -48,7 +48,7 @@ use automation::*;
 use controls::*;
 use engine::*;
 use registry::*;
-pub(crate) use song::{decode_song_code, launch_line};
+pub(crate) use song::{SongState, decode_song_code, launch_line};
 use ui::*;
 use voice::*;
 
@@ -77,9 +77,13 @@ pub(crate) fn run() -> Result<(), Box<dyn Error>> {
 }
 
 pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), Box<dyn Error>> {
-    let controls = Arc::new(ArcSwap::from_pointee(initial_controls));
+    run_with_song_state(SongState::from_controls(initial_controls))
+}
+
+pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn Error>> {
+    let controls = Arc::new(ArcSwap::from_pointee(initial_song.controls));
     let controls_for_engine = Arc::clone(&controls);
-    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let automation = Arc::new(ArcSwap::from_pointee(initial_song.automation.clone()));
     let automation_for_engine = Arc::clone(&automation);
     let telemetry = Arc::new(FluidTelemetry::default());
     let telemetry_for_engine = Arc::clone(&telemetry);
@@ -101,7 +105,14 @@ pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), B
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = ui_loop(&mut terminal, controls, automation, telemetry, updates);
+    let result = ui_loop(
+        &mut terminal,
+        controls,
+        automation,
+        telemetry,
+        initial_song.automation,
+        updates,
+    );
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;

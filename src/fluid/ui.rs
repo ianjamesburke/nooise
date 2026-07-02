@@ -5,6 +5,7 @@ pub(crate) fn ui_loop(
     controls: Arc<ArcSwap<FluidControls>>,
     automation_shared: Arc<ArcSwap<AutomationState>>,
     telemetry: Arc<FluidTelemetry>,
+    initial_automation: AutomationState,
     updates: UpdateNotice,
 ) -> Result<(), Box<dyn Error>> {
     let mut tab = Tab::Master;
@@ -14,7 +15,7 @@ pub(crate) fn ui_loop(
     let mut last = Instant::now();
     let started = Instant::now();
     let mut save_message: Option<String> = None;
-    let mut automation = AutomationState::default();
+    let mut automation = initial_automation;
 
     loop {
         let c = FluidControls::clone(&controls.load());
@@ -77,7 +78,7 @@ pub(crate) fn ui_loop(
             }
             match key.code {
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    save_message = Some(match copy_launch_line(&controls) {
+                    save_message = Some(match copy_launch_line(&controls, &automation) {
                         Ok(line) => format!("Copied {line}"),
                         Err(err) => format!("Save failed: {err}"),
                     });
@@ -146,9 +147,15 @@ fn automation_footer(automation: &AutomationState) -> Option<String> {
     ))
 }
 
-fn copy_launch_line(controls: &Arc<ArcSwap<FluidControls>>) -> Result<String, Box<dyn Error>> {
+fn copy_launch_line(
+    controls: &Arc<ArcSwap<FluidControls>>,
+    automation: &AutomationState,
+) -> Result<String, Box<dyn Error>> {
     let c = FluidControls::clone(&controls.load());
-    let line = launch_line(&c)?;
+    let line = launch_line(&SongState {
+        controls: c,
+        automation: automation.clone(),
+    })?;
     let mut clipboard = arboard::Clipboard::new()?;
     clipboard.set_text(line.clone())?;
     Ok(line)

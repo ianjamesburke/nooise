@@ -5,12 +5,32 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-use super::{FluidControls, all_specs, spec_by_id};
+use super::{
+    AutomationState, ControlAddress, FluidControls, LfoRoute, LfoShape, all_specs, spec_by_id,
+};
 
 const MAGIC: &[u8; 4] = b"NOOI";
 const CONTAINER_VERSION: u8 = 1;
 const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
+pub(crate) const AUTOMATION_RECORD: u8 = 1;
+const AUTOMATION_PAYLOAD_VERSION: u8 = 1;
+const LFO_SHAPE_SINE: u8 = 0;
+
+#[derive(Clone, Default)]
+pub(crate) struct SongState {
+    pub(crate) controls: FluidControls,
+    pub(crate) automation: AutomationState,
+}
+
+impl SongState {
+    pub(crate) fn from_controls(controls: FluidControls) -> Self {
+        Self {
+            controls,
+            automation: AutomationState::default(),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SongCodeError {
@@ -41,24 +61,33 @@ impl fmt::Display for SongCodeError {
 
 impl Error for SongCodeError {}
 
-pub(crate) fn launch_line(controls: &FluidControls) -> Result<String, SongCodeError> {
-    Ok(format!("nooise {}", encode_song_code(controls)?))
+pub(crate) fn launch_line(song: &SongState) -> Result<String, SongCodeError> {
+    let code = encode_song_code(song)?;
+    // Compact song payloads stay as inline CLI codes for now. There is no file
+    // handoff UI until the format grows beyond practical copy/paste size.
+    Ok(format!("nooise {code}"))
 }
 
-pub(crate) fn encode_song_code(controls: &FluidControls) -> Result<String, SongCodeError> {
+pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
     bytes.push(CONTAINER_VERSION);
     write_str(env!("CARGO_PKG_VERSION"), &mut bytes)?;
 
     let mut snapshot = Vec::new();
-    write_snapshot(controls, &mut snapshot)?;
+    write_snapshot(&song.controls, &mut snapshot)?;
     write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes)?;
+
+    if song.automation.routes().next().is_some() {
+        let mut automation = Vec::new();
+        write_automation(&song.automation, &mut automation)?;
+        write_record(AUTOMATION_RECORD, &automation, &mut bytes)?;
+    }
 
     Ok(format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
-pub(crate) fn decode_song_code(code: &str) -> Result<FluidControls, SongCodeError> {
+pub(crate) fn decode_song_code(code: &str) -> Result<SongState, SongCodeError> {
     let encoded = code
         .strip_prefix(CODE_PREFIX)
         .ok_or(SongCodeError::MissingPrefix)?;
@@ -76,18 +105,20 @@ pub(crate) fn decode_song_code(code: &str) -> Result<FluidControls, SongCodeErro
     }
 
     let _app_version = reader.string()?;
-    let mut controls = FluidControls::default();
+    let mut song = SongState::default();
 
     while !reader.is_empty() {
         let record_type = reader.u8()?;
         let len = reader.u32()? as usize;
         let payload = reader.bytes(len)?;
-        if record_type == SNAPSHOT_RECORD {
-            read_snapshot(payload, &mut controls)?;
+        match record_type {
+            SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
+            AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
+            _ => {}
         }
     }
 
-    Ok(controls)
+    Ok(song)
 }
 
 fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
@@ -126,6 +157,69 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
         }
     }
     Ok(())
+}
+
+fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
+    out.push(AUTOMATION_PAYLOAD_VERSION);
+    write_u16(automation.routes().count(), out)?;
+    for (address, route) in automation.routes() {
+        write_str(address.id(), out)?;
+        out.extend_from_slice(&route.cycle_beats.to_le_bytes());
+        out.extend_from_slice(&route.target_depth_ratio.to_le_bytes());
+        out.extend_from_slice(&route.effective_depth_ratio.to_le_bytes());
+        out.push(shape_tag(route.shape));
+        out.extend_from_slice(&route.phase_offset_cycles.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
+    let mut reader = Reader::new(bytes);
+    let version = reader.u8()?;
+    if version != AUTOMATION_PAYLOAD_VERSION {
+        return Ok(());
+    }
+    let count = reader.u16()?;
+    for _ in 0..count {
+        let id = reader.string()?;
+        let cycle_beats = reader.f32()?;
+        let target_depth_ratio = reader.f32()?;
+        let effective_depth_ratio = reader.f32()?;
+        let shape = reader.u8()?;
+        let phase_offset_cycles = reader.f32()?;
+
+        let (Some(spec), Some(shape)) = (spec_by_id(id), shape_from_tag(shape)) else {
+            continue;
+        };
+        automation.set_route(
+            ControlAddress::new(spec.id),
+            LfoRoute {
+                cycle_beats: finite_or(cycle_beats, 2.0).max(1.0 / 64.0),
+                target_depth_ratio: finite_or(target_depth_ratio, 0.10).clamp(0.0, 1.0),
+                effective_depth_ratio: finite_or(effective_depth_ratio, 0.0).clamp(0.0, 1.0),
+                shape,
+                phase_offset_cycles: finite_or(phase_offset_cycles, 0.0).rem_euclid(1.0),
+            },
+        );
+    }
+    Ok(())
+}
+
+fn shape_tag(shape: LfoShape) -> u8 {
+    match shape {
+        LfoShape::Sine => LFO_SHAPE_SINE,
+    }
+}
+
+fn shape_from_tag(tag: u8) -> Option<LfoShape> {
+    match tag {
+        LFO_SHAPE_SINE => Some(LfoShape::Sine),
+        _ => None,
+    }
+}
+
+fn finite_or(value: f32, fallback: f32) -> f32 {
+    if value.is_finite() { value } else { fallback }
 }
 
 pub(crate) fn write_record(

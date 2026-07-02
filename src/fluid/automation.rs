@@ -22,10 +22,17 @@ impl ControlAddress {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LfoShape {
+    Sine,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LfoRoute {
     pub(crate) cycle_beats: f32,
     pub(crate) target_depth_ratio: f32,
     pub(crate) effective_depth_ratio: f32,
+    pub(crate) shape: LfoShape,
+    pub(crate) phase_offset_cycles: f32,
 }
 
 impl Default for LfoRoute {
@@ -34,6 +41,8 @@ impl Default for LfoRoute {
             cycle_beats: DEFAULT_LFO_CYCLE_BEATS,
             target_depth_ratio: DEFAULT_LFO_TARGET_DEPTH_RATIO,
             effective_depth_ratio: DEFAULT_LFO_EFFECTIVE_DEPTH_RATIO,
+            shape: LfoShape::Sine,
+            phase_offset_cycles: 0.0,
         }
     }
 }
@@ -67,6 +76,10 @@ impl AutomationState {
         self.routes.get(&address)
     }
 
+    pub(crate) fn set_route(&mut self, address: ControlAddress, route: LfoRoute) {
+        self.routes.insert(address, route);
+    }
+
     pub(crate) fn routes(&self) -> impl Iterator<Item = (ControlAddress, &LfoRoute)> {
         self.routes.iter().map(|(address, route)| (*address, route))
     }
@@ -87,8 +100,12 @@ pub(crate) fn apply_automation(
             continue;
         }
         let cycle_beats = f64::from(route.cycle_beats.max(1.0 / 64.0));
-        let phase = (timing.beat / cycle_beats).rem_euclid(1.0);
-        let offset = (std::f64::consts::TAU * phase).sin() as f32 * depth;
+        let phase =
+            (timing.beat / cycle_beats + f64::from(route.phase_offset_cycles)).rem_euclid(1.0);
+        let lfo = match route.shape {
+            LfoShape::Sine => (std::f64::consts::TAU * phase).sin() as f32,
+        };
+        let offset = lfo * depth;
         (spec.set)(controls, (base + offset).clamp(spec.min, spec.max));
     }
 }

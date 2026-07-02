@@ -34,6 +34,24 @@ fn append_record_to_code(code: &str, record_type: u8, payload: &[u8]) -> String 
     format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
+fn write_test_str(value: &str, out: &mut Vec<u8>) {
+    out.push(value.len() as u8);
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn automation_payload(target_id: &str, route: LfoRoute) -> Vec<u8> {
+    let mut payload = Vec::new();
+    payload.push(1);
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    write_test_str(target_id, &mut payload);
+    payload.extend_from_slice(&route.cycle_beats.to_le_bytes());
+    payload.extend_from_slice(&route.target_depth_ratio.to_le_bytes());
+    payload.extend_from_slice(&route.effective_depth_ratio.to_le_bytes());
+    payload.push(0);
+    payload.extend_from_slice(&route.phase_offset_cycles.to_le_bytes());
+    payload
+}
+
 fn buffer_text(buffer: &Buffer) -> String {
     buffer
         .content
@@ -138,6 +156,8 @@ fn automation_open_or_create_uses_safe_lfo_defaults() {
     assert_close(route.cycle_beats, 2.0);
     assert_close(route.target_depth_ratio, 0.10);
     assert_close(route.effective_depth_ratio, 0.0);
+    assert_eq!(route.shape, LfoShape::Sine);
+    assert_close(route.phase_offset_cycles, 0.0);
     assert_eq!(automation.active_address(), Some(address));
 }
 
@@ -411,13 +431,13 @@ fn song_code_round_trips_quantized_snapshot_values() {
     controls.kick.echo_time_beats = 0.33;
     controls.clap.slap_count = 6.6;
 
-    let code = song::encode_song_code(&controls).unwrap();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.master.bpm, 123.0);
-    assert_close(decoded.pad.chord_bars, 16.0);
-    assert_close(decoded.kick.echo_time_beats, 0.375);
-    assert_close(decoded.clap.slap_count, 7.0);
+    assert_close(decoded.controls.master.bpm, 123.0);
+    assert_close(decoded.controls.pad.chord_bars, 16.0);
+    assert_close(decoded.controls.kick.echo_time_beats, 0.375);
+    assert_close(decoded.controls.clap.slap_count, 7.0);
 }
 
 #[test]
@@ -425,27 +445,76 @@ fn song_code_decodes_missing_controls_as_defaults() {
     let mut controls = FluidControls::default();
     controls.master.bpm = 120.0;
 
-    let code = song::encode_song_code(&controls).unwrap();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.pad.level, FluidControls::default().pad.level);
+    assert_close(
+        decoded.controls.pad.level,
+        FluidControls::default().pad.level,
+    );
+}
+
+#[test]
+fn song_code_decodes_snapshot_only_payload_with_empty_automation() {
+    let mut controls = FluidControls::default();
+    controls.master.bpm = 120.0;
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_eq!(decoded.automation.routes().count(), 0);
+}
+
+#[test]
+fn song_code_round_trips_lfo_automation_record() {
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.6;
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        ControlAddress::new("master.level"),
+        LfoRoute {
+            cycle_beats: 4.0,
+            target_depth_ratio: 0.25,
+            effective_depth_ratio: 0.15,
+            shape: LfoShape::Sine,
+            phase_offset_cycles: 0.25,
+        },
+    );
+    let song = SongState {
+        controls,
+        automation,
+    };
+
+    let code = song::encode_song_code(&song).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+    let route = decoded
+        .automation
+        .route(ControlAddress::new("master.level"))
+        .unwrap();
+
+    assert_close(decoded.controls.master.level, 0.6);
+    assert_close(route.cycle_beats, 4.0);
+    assert_close(route.target_depth_ratio, 0.25);
+    assert_close(route.effective_depth_ratio, 0.15);
+    assert_eq!(route.shape, LfoShape::Sine);
+    assert_close(route.phase_offset_cycles, 0.25);
 }
 
 #[test]
 fn song_code_skips_unknown_records() {
     let mut controls = FluidControls::default();
     controls.master.tune = 5.0;
-    let code = song::encode_song_code(&controls).unwrap();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     let code = append_record_to_code(&code, 99, &[1, 2, 3, 4]);
 
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.master.tune, 5.0);
+    assert_close(decoded.controls.master.tune, 5.0);
 }
 
 #[test]
 fn song_code_skips_unknown_control_ids() {
-    let code = song::encode_song_code(&FluidControls::default()).unwrap();
+    let code = song::encode_song_code(&SongState::default()).unwrap();
     let mut payload = Vec::new();
     let id = b"future.control.id";
     payload.extend_from_slice(&1u16.to_le_bytes());
@@ -456,12 +525,32 @@ fn song_code_skips_unknown_control_ids() {
 
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.master.level, FluidControls::default().master.level);
+    assert_close(
+        decoded.controls.master.level,
+        FluidControls::default().master.level,
+    );
+}
+
+#[test]
+fn song_code_skips_unknown_automation_target_control_ids() {
+    let code = song::encode_song_code(&SongState::default()).unwrap();
+    let payload = automation_payload(
+        "future.control.id",
+        LfoRoute {
+            effective_depth_ratio: 0.2,
+            ..LfoRoute::default()
+        },
+    );
+    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
+
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_eq!(decoded.automation.routes().count(), 0);
 }
 
 #[test]
 fn launch_line_is_cli_launchable() {
-    let line = launch_line(&FluidControls::default()).unwrap();
+    let line = launch_line(&SongState::default()).unwrap();
 
     assert!(line.starts_with("nooise n1_"));
 }
