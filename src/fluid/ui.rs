@@ -3,6 +3,7 @@ use super::*;
 pub(crate) fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controls: Arc<ArcSwap<FluidControls>>,
+    automation_shared: Arc<ArcSwap<AutomationState>>,
     telemetry: Arc<FluidTelemetry>,
     updates: UpdateNotice,
 ) -> Result<(), Box<dyn Error>> {
@@ -81,7 +82,10 @@ pub(crate) fn ui_loop(
                         Err(err) => format!("Save failed: {err}"),
                     });
                 }
-                KeyCode::Esc if automation.is_editor_open() => automation.close_editor(),
+                KeyCode::Esc if automation.is_editor_open() => {
+                    automation.close_editor();
+                    publish_automation(&automation_shared, &automation);
+                }
                 KeyCode::Char('q') | KeyCode::Esc => break,
                 KeyCode::Tab => {
                     tab = tab.next();
@@ -107,6 +111,7 @@ pub(crate) fn ui_loop(
                 KeyCode::Char('l') => {
                     if let Some(item) = items.get(selected) {
                         automation.open_or_create(ControlAddress::new(item.id));
+                        publish_automation(&automation_shared, &automation);
                     }
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
@@ -120,6 +125,13 @@ pub(crate) fn ui_loop(
     }
 
     Ok(())
+}
+
+fn publish_automation(
+    automation_shared: &Arc<ArcSwap<AutomationState>>,
+    automation: &AutomationState,
+) {
+    automation_shared.store(Arc::new(automation.clone()));
 }
 
 fn automation_footer(automation: &AutomationState) -> Option<String> {

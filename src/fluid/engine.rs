@@ -17,6 +17,7 @@ pub(crate) struct FluidEngine {
     pub(crate) bass: BassEngine,
     pub(crate) master_bus: MasterBus,
     pub(crate) controls: Arc<ArcSwap<FluidControls>>,
+    pub(crate) automation: Arc<ArcSwap<AutomationState>>,
     pub(crate) snapshot: FluidControls,
 }
 
@@ -24,6 +25,7 @@ impl FluidEngine {
     pub(crate) fn new(
         sample_rate: f32,
         controls: Arc<ArcSwap<FluidControls>>,
+        automation: Arc<ArcSwap<AutomationState>>,
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
         let snapshot = FluidControls::clone(&controls.load());
@@ -40,6 +42,7 @@ impl FluidEngine {
             bass: BassEngine::new(sample_rate),
             master_bus: MasterBus::new(),
             controls,
+            automation,
             snapshot,
         }
     }
@@ -56,7 +59,6 @@ impl FluidEngine {
     }
 }
 
-
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         if self.current_sample.is_multiple_of(512) {
@@ -66,16 +68,20 @@ impl StereoEngine for FluidEngine {
         }
 
         let fade = (self.current_sample as f32 / (self.sample_rate * 8.0)).min(1.0);
-        let smoothed = self.gain_smoothers.next_controls(&self.snapshot);
-        let timing = self.tempo.tick(smoothed.master.bpm);
+        let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
+        let timing = self.tempo.tick(effective.master.bpm);
+        let automation = self.automation.load();
+        apply_automation(&mut effective, &automation, timing);
 
-        let tune = smoothed.master.tune;
-        let (pad_l, pad_r) = self.pad.next(&smoothed.pad, tune, timing);
-        let perc = self.perc.next(&smoothed.perc, timing);
-        let (kick_l, kick_r) = self.kick.next(&smoothed.kick, timing);
-        let (ton_l, ton_r) = self.tonal.next(&smoothed.tonal, timing);
-        let (clap_l, clap_r) = self.clap.next(&smoothed.clap, timing);
-        let (bass_l, bass_r) = self.bass.next(&smoothed.bass, &smoothed.pad, tune, timing);
+        let tune = effective.master.tune;
+        let (pad_l, pad_r) = self.pad.next(&effective.pad, tune, timing);
+        let perc = self.perc.next(&effective.perc, timing);
+        let (kick_l, kick_r) = self.kick.next(&effective.kick, timing);
+        let (ton_l, ton_r) = self.tonal.next(&effective.tonal, timing);
+        let (clap_l, clap_r) = self.clap.next(&effective.clap, timing);
+        let (bass_l, bass_r) = self
+            .bass
+            .next(&effective.bass, &effective.pad, tune, timing);
 
         self.current_sample += 1;
 
@@ -84,7 +90,7 @@ impl StereoEngine for FluidEngine {
         let raw_r =
             (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65 + bass_r * 0.75) * fade;
         self.master_bus
-            .process(raw_l, raw_r, &smoothed.master, self.sample_rate)
+            .process(raw_l, raw_r, &effective.master, self.sample_rate)
     }
 }
 
@@ -453,7 +459,12 @@ impl GridTrigger {
         }
     }
 
-    pub(crate) fn pop(&mut self, timing: TimingContext, interval_beats: f32, offset_beats: f32) -> bool {
+    pub(crate) fn pop(
+        &mut self,
+        timing: TimingContext,
+        interval_beats: f32,
+        offset_beats: f32,
+    ) -> bool {
         let spec = GridSpec::new(interval_beats, offset_beats);
         if self.spec != Some(spec) {
             let first_schedule =

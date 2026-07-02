@@ -13,7 +13,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
   - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `render_wav()` (headless wav render), `FluidTelemetry`.
   - `controls.rs` — `FluidControls`, `MasterControls`, and per-voice control structs with defaults.
   - `registry.rs` — the control registry: one `ControlSpec` table per tab (stable ID, label, kind, range, step, entry semantics, reset, accessors, display). `tab_controls`/`apply_delta`/`apply_min`/`apply_value` all derive from it.
-  - `automation.rs` — UI-local automation routes keyed by stable control ID. Stores editor/open state and intended LFO affordances only; audio modulation and song-code persistence are separate work.
+  - `automation.rs` — automation routes keyed by stable control ID. Stores editor/open state and per-control LFO settings; audio modulation is runtime-only and song-code persistence is separate work.
   - `song.rs` — versioned binary song snapshot code export/import. `Ctrl+S` copies `nooise <code>`; `nooise <code>` applies the snapshot before audio/TUI startup.
   - `ui.rs` — TUI event loop, tab rendering, fluid visualizer.
   - `engine.rs` — `FluidEngine` (voice mixer), gain smoothers, tempo clock, grid triggers, master bus.

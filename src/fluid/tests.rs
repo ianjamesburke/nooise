@@ -1,6 +1,6 @@
 use super::*;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 
@@ -9,6 +9,13 @@ const SAMPLE_RATE: f32 = 48_000.0;
 fn assert_close(actual: f32, expected: f32) {
     assert!(
         (actual - expected).abs() < f32::EPSILON,
+        "expected {expected}, got {actual}"
+    );
+}
+
+fn assert_near(actual: f32, expected: f32) {
+    assert!(
+        (actual - expected).abs() < 1e-5,
         "expected {expected}, got {actual}"
     );
 }
@@ -161,6 +168,69 @@ fn render_fluid_draws_oscillator_lane_for_automated_slider() {
 
     let text = buffer_text(terminal.backend().buffer());
     assert!(text.contains("LFO 2.00b +/-10% eff 0%"));
+}
+
+#[test]
+fn automation_applies_bounded_lfo_offset_and_clamps_to_spec_range() {
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.9;
+    let mut automation = AutomationState::default();
+    let route = automation.open_or_create(ControlAddress::new("master.level"));
+    route.effective_depth_ratio = 0.5;
+
+    apply_automation(
+        &mut controls,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+
+    assert_close(controls.master.level, 1.0);
+}
+
+#[test]
+fn automation_uses_beat_cycle_phase_for_opposite_lfo_offsets() {
+    let mut automation = AutomationState::default();
+    let route = automation.open_or_create(ControlAddress::new("master.level"));
+    route.cycle_beats = 2.0;
+    route.effective_depth_ratio = 0.25;
+
+    let mut positive = FluidControls::default();
+    positive.master.level = 0.5;
+    apply_automation(
+        &mut positive,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+
+    let mut negative = FluidControls::default();
+    negative.master.level = 0.5;
+    apply_automation(
+        &mut negative,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.5),
+    );
+
+    assert_near(positive.master.level, 0.75);
+    assert_near(negative.master.level, 0.25);
+}
+
+#[test]
+fn automation_preserves_base_controls_and_modulates_only_effective_clone() {
+    let mut base = FluidControls::default();
+    base.master.level = 0.5;
+    let mut effective = base.clone();
+    let mut automation = AutomationState::default();
+    let route = automation.open_or_create(ControlAddress::new("master.level"));
+    route.effective_depth_ratio = 0.25;
+
+    apply_automation(
+        &mut effective,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+
+    assert_near(effective.master.level, 0.75);
+    assert_close(base.master.level, 0.5);
 }
 
 #[test]

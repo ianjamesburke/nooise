@@ -79,13 +79,20 @@ pub(crate) fn run() -> Result<(), Box<dyn Error>> {
 pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), Box<dyn Error>> {
     let controls = Arc::new(ArcSwap::from_pointee(initial_controls));
     let controls_for_engine = Arc::clone(&controls);
+    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let automation_for_engine = Arc::clone(&automation);
     let telemetry = Arc::new(FluidTelemetry::default());
     let telemetry_for_engine = Arc::clone(&telemetry);
     let updates = UpdateNotice::default();
     spawn_update_check(updates.clone());
 
     let _stream = audio::start_stream(APP_ID, move |sr| {
-        FluidEngine::new(sr, controls_for_engine, telemetry_for_engine)
+        FluidEngine::new(
+            sr,
+            controls_for_engine,
+            automation_for_engine,
+            telemetry_for_engine,
+        )
     })?;
 
     enable_raw_mode()?;
@@ -94,7 +101,7 @@ pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), B
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = ui_loop(&mut terminal, controls, telemetry, updates);
+    let result = ui_loop(&mut terminal, controls, automation, telemetry, updates);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -110,8 +117,9 @@ pub(crate) fn render_wav(
     const RENDER_SAMPLE_RATE: u32 = 44_100;
 
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
+    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(RENDER_SAMPLE_RATE as f32, controls, telemetry);
+    let mut engine = FluidEngine::new(RENDER_SAMPLE_RATE as f32, controls, automation, telemetry);
     if let Some(seed) = seed {
         engine.reseed(seed);
     }
