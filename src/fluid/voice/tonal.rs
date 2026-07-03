@@ -25,6 +25,63 @@ pub(crate) const TONAL_CYCLE_BEATS_MAX: f32 = 16.0;
 pub(crate) const TONAL_MAX_LOOP_STEPS: usize = 64;
 pub(crate) const TONAL_MAX_EVOLVE_NOTES: usize = 4;
 pub(crate) const TONAL_SCALE_MIDI: [i32; 10] = [45, 48, 50, 52, 55, 57, 60, 62, 64, 67];
+pub(crate) const TONAL_PIANO_HARMONIC_COUNT: usize = 16;
+pub(crate) const TONAL_PIANO_MAX_AMPLITUDE: f32 = 0.32;
+pub(crate) const TONAL_PIANO_KEYFRAMES: [PianoKeyframe; 3] = [
+    PianoKeyframe {
+        midi: 36,
+        decay_factor: 3.0,
+        harmonics: [
+            0.03703704, 0.07407408, 0.22222224, 0.15308644, 0.18024692, 0.21481483, 0.24691358,
+            0.04938272, 0.03703704, 0.05679013, 0.11111112, 0.05432099, 0.22716051, 0.04938272,
+            0.04938272, 0.03703704,
+        ],
+    },
+    PianoKeyframe {
+        midi: 48,
+        decay_factor: 2.0,
+        harmonics: [
+            0.04368932,
+            0.43689322,
+            0.18786408,
+            0.04368932,
+            0.1485437,
+            0.10048544,
+            0.30582526,
+            0.034951456,
+            0.052427184,
+            0.10048544,
+            0.04805825,
+            0.07427185,
+            0.026213592,
+            0.10048544,
+            0.078640774,
+            0.017475728,
+        ],
+    },
+    PianoKeyframe {
+        midi: 60,
+        decay_factor: 1.0,
+        harmonics: [
+            0.57937425,
+            0.17381229,
+            0.06546929,
+            0.052143686,
+            0.024913093,
+            0.052143686,
+            0.035921205,
+            0.0063731167,
+            0.004634994,
+            0.0011587485,
+            0.0011587485,
+            0.0011587485,
+            0.00057937426,
+            0.00028968713,
+            0.00057937426,
+            0.00028968713,
+        ],
+    },
+];
 pub(crate) const TONAL_PHRASES: [&[i32]; 8] = [
     &[45, 50, 55, 48, 52, 57, 50, 55],
     &[45, 52, 57, 60, 57, 52, 50, 48, 50, 55, 52, 45],
@@ -88,6 +145,8 @@ impl TonalEngine {
             let decay_samples = timing.beats_to_samples(c.note_length_beats);
             let pan = self.rng.gen_range(-0.5f32..0.5);
             self.voices.push(TonalVoice::new(
+                tonal_synth_type_index(c.synth_type),
+                note,
                 hz,
                 pan,
                 c.level,
@@ -220,7 +279,56 @@ impl TonalLowCut {
     }
 }
 
-pub(crate) struct TonalVoice {
+pub(crate) enum TonalVoice {
+    Sine(SineTonalVoice),
+    Piano(Box<PianoTonalVoice>),
+}
+
+impl TonalVoice {
+    pub(crate) fn new(
+        synth_type: usize,
+        midi_note: i32,
+        hz: f32,
+        pan: f32,
+        level: f32,
+        decay_samples: u64,
+        sample_rate: f32,
+    ) -> Self {
+        match synth_type {
+            0 => Self::Sine(SineTonalVoice::new(
+                hz,
+                pan,
+                level,
+                decay_samples,
+                sample_rate,
+            )),
+            _ => Self::Piano(Box::new(PianoTonalVoice::new(
+                midi_note,
+                hz,
+                pan,
+                level,
+                decay_samples,
+                sample_rate,
+            ))),
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> (f32, f32) {
+        match self {
+            Self::Sine(voice) => voice.next(),
+            Self::Piano(voice) => voice.next(),
+        }
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        match self {
+            Self::Sine(voice) => voice.is_done(),
+            Self::Piano(voice) => voice.is_done(),
+        }
+    }
+}
+
+pub(crate) struct SineTonalVoice {
     pub(crate) primary: SineOscillator,
     pub(crate) detuned: SineOscillator,
     pub(crate) samples_remaining: u64,
@@ -229,7 +337,7 @@ pub(crate) struct TonalVoice {
     pub(crate) level: f32,
 }
 
-impl TonalVoice {
+impl SineTonalVoice {
     pub(crate) fn new(hz: f32, pan: f32, level: f32, decay_samples: u64, sample_rate: f32) -> Self {
         let total = decay_samples.max(1);
         Self {
@@ -253,5 +361,126 @@ impl TonalVoice {
     }
     pub(crate) fn is_done(&self) -> bool {
         self.samples_remaining == 0
+    }
+}
+
+pub(crate) struct PianoKeyframe {
+    pub(crate) midi: i32,
+    pub(crate) decay_factor: f32,
+    pub(crate) harmonics: [f32; TONAL_PIANO_HARMONIC_COUNT],
+}
+
+pub(crate) struct PianoTonalVoice {
+    pub(crate) oscillators: [SineOscillator; TONAL_PIANO_HARMONIC_COUNT],
+    pub(crate) harmonic_amplitudes: [f32; TONAL_PIANO_HARMONIC_COUNT],
+    pub(crate) harmonic_decay_rates: [f32; TONAL_PIANO_HARMONIC_COUNT],
+    pub(crate) samples_elapsed: u64,
+    pub(crate) total_samples: u64,
+    pub(crate) pan: f32,
+    pub(crate) level: f32,
+}
+
+impl PianoTonalVoice {
+    pub(crate) fn new(
+        midi_note: i32,
+        hz: f32,
+        pan: f32,
+        level: f32,
+        decay_samples: u64,
+        sample_rate: f32,
+    ) -> Self {
+        let total = decay_samples.max(1);
+        Self {
+            oscillators: std::array::from_fn(|index| {
+                SineOscillator::new(hz * (index + 1) as f32, sample_rate)
+            }),
+            harmonic_amplitudes: piano_harmonic_amplitudes(midi_note),
+            harmonic_decay_rates: piano_harmonic_decay_rates(midi_note, hz),
+            samples_elapsed: 0,
+            total_samples: total,
+            pan,
+            level,
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> (f32, f32) {
+        if self.samples_elapsed >= self.total_samples {
+            return (0.0, 0.0);
+        }
+
+        let t = self.samples_elapsed as f32 / self.total_samples as f32;
+        self.samples_elapsed += 1;
+
+        let attack = (t / 0.025).clamp(0.0, 1.0);
+        let mut sample = 0.0f32;
+        for index in 0..TONAL_PIANO_HARMONIC_COUNT {
+            let harmonic = self.oscillators[index].next();
+            let decay = (-t * self.harmonic_decay_rates[index]).exp();
+            sample += harmonic * self.harmonic_amplitudes[index] * decay;
+        }
+
+        let body = (1.0 - t).clamp(0.0, 1.0).sqrt();
+        let s = soft_clip(sample * TONAL_PIANO_MAX_AMPLITUDE) * attack * body * self.level;
+        StereoPanner::equal_power(s, self.pan)
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.samples_elapsed >= self.total_samples
+    }
+}
+
+pub(crate) fn piano_harmonic_amplitudes(midi_note: i32) -> [f32; TONAL_PIANO_HARMONIC_COUNT] {
+    let (low, high) = piano_keyframe_pair(midi_note);
+    let t = ease_in_out(lerp_t(low.midi as f32, high.midi as f32, midi_note as f32));
+    std::array::from_fn(|index| lerp(low.harmonics[index], high.harmonics[index], t))
+}
+
+pub(crate) fn piano_harmonic_decay_rates(
+    midi_note: i32,
+    fundamental_hz: f32,
+) -> [f32; TONAL_PIANO_HARMONIC_COUNT] {
+    let (low, high) = piano_keyframe_pair(midi_note);
+    let t = ease_in_out(lerp_t(low.midi as f32, high.midi as f32, midi_note as f32));
+    let frame_decay = lerp(low.decay_factor, high.decay_factor, t).max(0.25);
+    std::array::from_fn(|index| {
+        let harmonic_hz = fundamental_hz * (index + 1) as f32;
+        let pitch_decay = lerp_t(80.0, 6_000.0, harmonic_hz);
+        lerp(1.4, 10.0, pitch_decay) / frame_decay
+    })
+}
+
+fn piano_keyframe_pair(midi_note: i32) -> (&'static PianoKeyframe, &'static PianoKeyframe) {
+    let mut low = &TONAL_PIANO_KEYFRAMES[0];
+    let mut high = &TONAL_PIANO_KEYFRAMES[TONAL_PIANO_KEYFRAMES.len() - 1];
+
+    for keyframe in &TONAL_PIANO_KEYFRAMES {
+        if keyframe.midi <= midi_note && keyframe.midi >= low.midi {
+            low = keyframe;
+        }
+        if keyframe.midi >= midi_note && keyframe.midi <= high.midi {
+            high = keyframe;
+        }
+    }
+
+    (low, high)
+}
+
+fn lerp_t(min: f32, max: f32, value: f32) -> f32 {
+    if (max - min).abs() <= f32::EPSILON {
+        0.0
+    } else {
+        ((value - min) / (max - min)).clamp(0.0, 1.0)
+    }
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn ease_in_out(t: f32) -> f32 {
+    if t < 0.5 {
+        2.0 * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(2) * 0.5
     }
 }

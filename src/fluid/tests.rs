@@ -119,6 +119,43 @@ fn tonal_note_applies_master_tune_offset() {
 }
 
 #[test]
+fn piano_harmonics_interpolate_with_note_pitch() {
+    let low = piano_harmonic_amplitudes(36);
+    let mid = piano_harmonic_amplitudes(48);
+    let high = piano_harmonic_amplitudes(60);
+
+    assert!(low[6] > high[6]);
+    assert!(mid[1] > low[1]);
+}
+
+#[test]
+fn piano_harmonic_decay_gets_faster_with_pitch() {
+    let low = piano_harmonic_decay_rates(36, tonal_note_hz(36, 0.0));
+    let high = piano_harmonic_decay_rates(60, tonal_note_hz(60, 0.0));
+
+    assert!(high[15] > low[15]);
+}
+
+#[test]
+fn tonal_engine_triggers_piano_voice_from_type_slider() {
+    let controls = TonalControls {
+        level: 1.0,
+        synth_type: 1.0,
+        randomness: 0.0,
+        ..TonalControls::default()
+    };
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+
+    let _ = tonal.next(
+        &controls,
+        0.0,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
+    );
+
+    assert!(matches!(tonal.voices.first(), Some(TonalVoice::Piano(_))));
+}
+
+#[test]
 fn tonal_low_cut_reduces_sub_energy_without_thinning_low_notes() {
     fn filtered_sine_rms(hz: f32) -> f32 {
         let mut low_cut = TonalLowCut::new(SAMPLE_RATE, TONAL_LOW_CUT_HZ);
@@ -655,6 +692,7 @@ fn defaults_match_current_mix() {
     assert_close(controls.kick.amp_decay_ms, 250.0);
 
     assert_close(controls.tonal.phrase, 0.0);
+    assert_close(controls.tonal.synth_type, 0.0);
     assert_close(controls.tonal.rate_beats, 0.5);
     assert_close(controls.tonal.step_interval_beats, 16.0);
     assert_close(controls.tonal.note_length_beats, 1.5);
@@ -746,7 +784,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Tonal,
             vec![
-                Gain, Discrete, Timing, Timing, Timing, Gain, Continuous, Timing, Gain,
+                Gain, Discrete, Discrete, Timing, Timing, Timing, Gain, Continuous, Timing, Gain,
             ],
         ),
         (
@@ -1045,12 +1083,17 @@ fn chords_tab_shows_progression_row_with_letter_display() {
 fn tonal_tab_separates_rate_from_cycle() {
     let rows = tab_controls(Tab::Tonal, &FluidControls::default());
 
-    assert_eq!(rows[2].id, "tonal.rate_beats");
-    assert_eq!(rows[2].label, "Rate");
-    assert_eq!(rows[2].display, "0.50 beats");
-    assert_eq!(rows[3].id, "tonal.step_interval_beats");
-    assert_eq!(rows[3].label, "Cycle");
-    assert_eq!(rows[3].display, "16.00 beats");
+    assert_eq!(rows[1].id, "tonal.synth_type");
+    assert_eq!(rows[1].label, "Type");
+    assert_eq!(rows[1].display, "Sine");
+    assert_eq!(rows[2].id, "tonal.phrase");
+    assert_eq!(rows[2].label, "Phrase");
+    assert_eq!(rows[3].id, "tonal.rate_beats");
+    assert_eq!(rows[3].label, "Rate");
+    assert_eq!(rows[3].display, "0.50 beats");
+    assert_eq!(rows[4].id, "tonal.step_interval_beats");
+    assert_eq!(rows[4].label, "Cycle");
+    assert_eq!(rows[4].display, "16.00 beats");
 }
 
 #[test]

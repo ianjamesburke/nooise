@@ -33,6 +33,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
 - TUI automation edits must go through `PublishedAutomation` so the shared audio-thread snapshot is stored on every mutation.
 - Pitched voices (Pad, Bass, Tonal) route note numbers through `midi_to_hz` and respect master tune; unpitched voices (Perc, Kick, Clap) do not.
 - Tonal separates trigger density from phrase shape: `tonal.rate_beats` controls note trigger spacing; `tonal.step_interval_beats` is the stable cycle-length ID for phrase wrapping and evolution boundaries.
+- Tonal synth selection lives in `tonal.synth_type`; it changes the voice created for new tonal notes while preserving the shared phrase/randomness/timing/master-tune/reverb path.
 - Tonal owns a slight fixed low cut before engine mixing so its low notes sit above sub/bass energy without requiring a user-facing control.
 - Pad and Tonal emit dry voice output; `FluidEngine` owns their shared ambient reverb send/return so reverb mix changes do not add an uncontrolled per-voice wet gain boost.
 - Voice RNGs must stay reseedable via `FluidEngine::reseed` so `nooise render --seed` stays byte-reproducible.
