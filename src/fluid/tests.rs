@@ -120,9 +120,10 @@ fn tonal_note_applies_master_tune_offset() {
 
 #[test]
 fn piano_harmonics_interpolate_with_note_pitch() {
-    let low = piano_harmonic_amplitudes(36);
-    let mid = piano_harmonic_amplitudes(48);
-    let high = piano_harmonic_amplitudes(60);
+    let profile = piano_profile(1);
+    let low = piano_harmonic_amplitudes(profile, 36);
+    let mid = piano_harmonic_amplitudes(profile, 48);
+    let high = piano_harmonic_amplitudes(profile, 60);
 
     assert!(low[6] > high[6]);
     assert!(mid[1] > low[1]);
@@ -130,29 +131,44 @@ fn piano_harmonics_interpolate_with_note_pitch() {
 
 #[test]
 fn piano_harmonic_decay_gets_faster_with_pitch() {
-    let low = piano_harmonic_decay_rates(36, tonal_note_hz(36, 0.0));
-    let high = piano_harmonic_decay_rates(60, tonal_note_hz(60, 0.0));
+    let profile = piano_profile(1);
+    let low = piano_harmonic_decay_rates(profile, 36, tonal_note_hz(36, 0.0));
+    let high = piano_harmonic_decay_rates(profile, 60, tonal_note_hz(60, 0.0));
 
     assert!(high[15] > low[15]);
 }
 
 #[test]
-fn tonal_engine_triggers_piano_voice_from_type_slider() {
+fn tonal_engine_triggers_all_non_sine_type_variants() {
     let controls = TonalControls {
         level: 1.0,
-        synth_type: 1.0,
         randomness: 0.0,
         ..TonalControls::default()
     };
-    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+    for synth_type in 1..=4 {
+        let controls = TonalControls {
+            synth_type: synth_type as f32,
+            ..controls.clone()
+        };
+        let mut tonal = TonalEngine::new(SAMPLE_RATE);
 
-    let _ = tonal.next(
-        &controls,
-        0.0,
-        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
-    );
+        let _ = tonal.next(
+            &controls,
+            0.0,
+            TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
+        );
 
-    assert!(matches!(tonal.voices.first(), Some(TonalVoice::Piano(_))));
+        assert!(matches!(tonal.voices.first(), Some(TonalVoice::Piano(_))));
+    }
+}
+
+#[test]
+fn tonal_type_labels_cover_exploration_variants() {
+    assert_eq!(tonal_synth_type_label(0.0), "Sine");
+    assert_eq!(tonal_synth_type_label(1.0), "Piano A");
+    assert_eq!(tonal_synth_type_label(2.0), "Piano B");
+    assert_eq!(tonal_synth_type_label(3.0), "Piano C");
+    assert_eq!(tonal_synth_type_label(4.0), "Marimba");
 }
 
 #[test]

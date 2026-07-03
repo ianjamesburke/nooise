@@ -26,8 +26,8 @@ pub(crate) const TONAL_MAX_LOOP_STEPS: usize = 64;
 pub(crate) const TONAL_MAX_EVOLVE_NOTES: usize = 4;
 pub(crate) const TONAL_SCALE_MIDI: [i32; 10] = [45, 48, 50, 52, 55, 57, 60, 62, 64, 67];
 pub(crate) const TONAL_PIANO_HARMONIC_COUNT: usize = 16;
-pub(crate) const TONAL_PIANO_MAX_AMPLITUDE: f32 = 0.32;
-pub(crate) const TONAL_PIANO_KEYFRAMES: [PianoKeyframe; 3] = [
+pub(crate) const TONAL_PIANO_PROFILE_COUNT: usize = 4;
+pub(crate) const TONAL_PIANO_A_KEYFRAMES: [PianoKeyframe; 3] = [
     PianoKeyframe {
         midi: 36,
         decay_factor: 3.0,
@@ -80,6 +80,138 @@ pub(crate) const TONAL_PIANO_KEYFRAMES: [PianoKeyframe; 3] = [
             0.00057937426,
             0.00028968713,
         ],
+    },
+];
+pub(crate) const TONAL_MARIMBA_KEYFRAMES: [PianoKeyframe; 4] = [
+    PianoKeyframe {
+        midi: 36,
+        decay_factor: 3.0,
+        harmonics: [
+            0.6043514,
+            0.009669623,
+            0.009669623,
+            0.030217571,
+            0.024174057,
+            0.030217571,
+            0.018130543,
+            0.018130543,
+            0.030217571,
+            0.25987113,
+            0.060435142,
+            0.24174057,
+            0.060435142,
+            0.042304598,
+            0.030217571,
+            0.030217571,
+        ],
+    },
+    PianoKeyframe {
+        midi: 48,
+        decay_factor: 2.0,
+        harmonics: [
+            0.38923132,
+            0.011676939,
+            0.038923133,
+            0.17126179,
+            0.02919235,
+            0.015569253,
+            0.011676939,
+            0.0077846264,
+            0.038923133,
+            0.32695428,
+            0.108984776,
+            0.019461567,
+            0.023353878,
+            0.0031138507,
+            0.002335388,
+            0.0015569254,
+        ],
+    },
+    PianoKeyframe {
+        midi: 60,
+        decay_factor: 1.0,
+        harmonics: [
+            0.6660065,
+            0.0048003546,
+            0.013320129,
+            0.17499822,
+            0.0066600647,
+            0.0,
+            0.002664026,
+            0.00020980158,
+            0.0005268287,
+            0.13081412,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ],
+    },
+    PianoKeyframe {
+        midi: 84,
+        decay_factor: 1.0,
+        harmonics: [
+            0.77432626,
+            0.0034792372,
+            0.00040290528,
+            0.0,
+            0.018717118,
+            0.0030744278,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ],
+    },
+];
+pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT] = [
+    PianoProfile {
+        keyframes: &TONAL_PIANO_A_KEYFRAMES,
+        amplitude: 0.32,
+        attack_ratio: 0.025,
+        body_power: 0.5,
+        harmonic_tilt: 0.0,
+        decay_low: 1.4,
+        decay_high: 10.0,
+        decay_scale: 1.0,
+    },
+    PianoProfile {
+        keyframes: &TONAL_PIANO_A_KEYFRAMES,
+        amplitude: 0.36,
+        attack_ratio: 0.008,
+        body_power: 0.85,
+        harmonic_tilt: 0.55,
+        decay_low: 1.9,
+        decay_high: 16.0,
+        decay_scale: 1.35,
+    },
+    PianoProfile {
+        keyframes: &TONAL_PIANO_A_KEYFRAMES,
+        amplitude: 0.38,
+        attack_ratio: 0.04,
+        body_power: 0.35,
+        harmonic_tilt: -0.45,
+        decay_low: 0.9,
+        decay_high: 7.0,
+        decay_scale: 0.75,
+    },
+    PianoProfile {
+        keyframes: &TONAL_MARIMBA_KEYFRAMES,
+        amplitude: 0.42,
+        attack_ratio: 0.004,
+        body_power: 1.2,
+        harmonic_tilt: 0.15,
+        decay_low: 3.5,
+        decay_high: 24.0,
+        decay_scale: 1.6,
     },
 ];
 pub(crate) const TONAL_PHRASES: [&[i32]; 8] = [
@@ -303,6 +435,7 @@ impl TonalVoice {
                 sample_rate,
             )),
             _ => Self::Piano(Box::new(PianoTonalVoice::new(
+                piano_profile(synth_type),
                 midi_note,
                 hz,
                 pan,
@@ -370,8 +503,21 @@ pub(crate) struct PianoKeyframe {
     pub(crate) harmonics: [f32; TONAL_PIANO_HARMONIC_COUNT],
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct PianoProfile {
+    pub(crate) keyframes: &'static [PianoKeyframe],
+    pub(crate) amplitude: f32,
+    pub(crate) attack_ratio: f32,
+    pub(crate) body_power: f32,
+    pub(crate) harmonic_tilt: f32,
+    pub(crate) decay_low: f32,
+    pub(crate) decay_high: f32,
+    pub(crate) decay_scale: f32,
+}
+
 pub(crate) struct PianoTonalVoice {
     pub(crate) oscillators: [SineOscillator; TONAL_PIANO_HARMONIC_COUNT],
+    pub(crate) profile: PianoProfile,
     pub(crate) harmonic_amplitudes: [f32; TONAL_PIANO_HARMONIC_COUNT],
     pub(crate) harmonic_decay_rates: [f32; TONAL_PIANO_HARMONIC_COUNT],
     pub(crate) samples_elapsed: u64,
@@ -382,6 +528,7 @@ pub(crate) struct PianoTonalVoice {
 
 impl PianoTonalVoice {
     pub(crate) fn new(
+        profile: PianoProfile,
         midi_note: i32,
         hz: f32,
         pan: f32,
@@ -394,8 +541,9 @@ impl PianoTonalVoice {
             oscillators: std::array::from_fn(|index| {
                 SineOscillator::new(hz * (index + 1) as f32, sample_rate)
             }),
-            harmonic_amplitudes: piano_harmonic_amplitudes(midi_note),
-            harmonic_decay_rates: piano_harmonic_decay_rates(midi_note, hz),
+            profile,
+            harmonic_amplitudes: piano_harmonic_amplitudes(profile, midi_note),
+            harmonic_decay_rates: piano_harmonic_decay_rates(profile, midi_note, hz),
             samples_elapsed: 0,
             total_samples: total,
             pan,
@@ -411,7 +559,7 @@ impl PianoTonalVoice {
         let t = self.samples_elapsed as f32 / self.total_samples as f32;
         self.samples_elapsed += 1;
 
-        let attack = (t / 0.025).clamp(0.0, 1.0);
+        let attack = (t / self.profile.attack_ratio).clamp(0.0, 1.0);
         let mut sample = 0.0f32;
         for index in 0..TONAL_PIANO_HARMONIC_COUNT {
             let harmonic = self.oscillators[index].next();
@@ -419,8 +567,8 @@ impl PianoTonalVoice {
             sample += harmonic * self.harmonic_amplitudes[index] * decay;
         }
 
-        let body = (1.0 - t).clamp(0.0, 1.0).sqrt();
-        let s = soft_clip(sample * TONAL_PIANO_MAX_AMPLITUDE) * attack * body * self.level;
+        let body = (1.0 - t).clamp(0.0, 1.0).powf(self.profile.body_power);
+        let s = soft_clip(sample * self.profile.amplitude) * attack * body * self.level;
         StereoPanner::equal_power(s, self.pan)
     }
 
@@ -429,31 +577,46 @@ impl PianoTonalVoice {
     }
 }
 
-pub(crate) fn piano_harmonic_amplitudes(midi_note: i32) -> [f32; TONAL_PIANO_HARMONIC_COUNT] {
-    let (low, high) = piano_keyframe_pair(midi_note);
+pub(crate) fn piano_profile(synth_type: usize) -> PianoProfile {
+    TONAL_PIANO_PROFILES[(synth_type.saturating_sub(1)) % TONAL_PIANO_PROFILES.len()]
+}
+
+pub(crate) fn piano_harmonic_amplitudes(
+    profile: PianoProfile,
+    midi_note: i32,
+) -> [f32; TONAL_PIANO_HARMONIC_COUNT] {
+    let (low, high) = piano_keyframe_pair(profile, midi_note);
     let t = ease_in_out(lerp_t(low.midi as f32, high.midi as f32, midi_note as f32));
-    std::array::from_fn(|index| lerp(low.harmonics[index], high.harmonics[index], t))
+    std::array::from_fn(|index| {
+        let harmonic = (index + 1) as f32;
+        let tilt = harmonic.powf(profile.harmonic_tilt);
+        lerp(low.harmonics[index], high.harmonics[index], t) * tilt
+    })
 }
 
 pub(crate) fn piano_harmonic_decay_rates(
+    profile: PianoProfile,
     midi_note: i32,
     fundamental_hz: f32,
 ) -> [f32; TONAL_PIANO_HARMONIC_COUNT] {
-    let (low, high) = piano_keyframe_pair(midi_note);
+    let (low, high) = piano_keyframe_pair(profile, midi_note);
     let t = ease_in_out(lerp_t(low.midi as f32, high.midi as f32, midi_note as f32));
     let frame_decay = lerp(low.decay_factor, high.decay_factor, t).max(0.25);
     std::array::from_fn(|index| {
         let harmonic_hz = fundamental_hz * (index + 1) as f32;
         let pitch_decay = lerp_t(80.0, 6_000.0, harmonic_hz);
-        lerp(1.4, 10.0, pitch_decay) / frame_decay
+        lerp(profile.decay_low, profile.decay_high, pitch_decay) * profile.decay_scale / frame_decay
     })
 }
 
-fn piano_keyframe_pair(midi_note: i32) -> (&'static PianoKeyframe, &'static PianoKeyframe) {
-    let mut low = &TONAL_PIANO_KEYFRAMES[0];
-    let mut high = &TONAL_PIANO_KEYFRAMES[TONAL_PIANO_KEYFRAMES.len() - 1];
+fn piano_keyframe_pair(
+    profile: PianoProfile,
+    midi_note: i32,
+) -> (&'static PianoKeyframe, &'static PianoKeyframe) {
+    let mut low = &profile.keyframes[0];
+    let mut high = &profile.keyframes[profile.keyframes.len() - 1];
 
-    for keyframe in &TONAL_PIANO_KEYFRAMES {
+    for keyframe in profile.keyframes {
         if keyframe.midi <= midi_note && keyframe.midi >= low.midi {
             low = keyframe;
         }
