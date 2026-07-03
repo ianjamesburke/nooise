@@ -87,7 +87,7 @@ nooise is a single Rust binary: terminal UI, audio engine, and live controls for
 - Root: crate manifest (`Cargo.toml`), README, GOTCHAS.md, this DOX rail.
 - `src/`: all engine, UI, and control code — see `src/AGENTS.md`.
 - `assets/`: static wordmark/preview images, no code, no local rules needed.
-- `docs/superpowers/`: brainstorming specs and plans produced by the superpowers skill workflow (spec-first process, not application code).
+- `docs/superpowers/`: local brainstorming specs and plans produced by the superpowers skill workflow; ignored by git and not part of the shipped crate.
 - `.stint/`: local sprint/task tracking tool state, not part of the shipped crate.
 
 ## Verification
