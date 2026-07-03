@@ -3,11 +3,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use super::{
-    ControlSpec, FluidControls, TimingContext, normalize_unit_input, snap_step, spec_by_id,
+    ControlSpec, FluidControls, LfoSnap, TimingContext, nearest_power_of_two,
+    normalize_unit_input, snap_step, spec_by_id,
 };
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
-pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.25;
+pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.0;
 pub(crate) const MIN_LFO_CYCLE_BEATS: f32 = 0.25;
 pub(crate) const MAX_LFO_CYCLE_BEATS: f32 = 16.0;
 pub(crate) const MAX_LFO_OFFSET_BEATS: f32 = 4.0;
@@ -338,6 +339,24 @@ impl AutomationState {
     }
 }
 
+/// The effective value the engine plays for a modulated control: base plus
+/// LFO, clamped to range, then snapped per the control's `LfoSnap`. The UI's
+/// modulation marker must go through this too so it shows what is heard.
+pub(crate) fn modulated_control_value(
+    spec: &ControlSpec,
+    route: &LfoRoute,
+    base: f32,
+    beat: f64,
+) -> f32 {
+    let depth = (spec.max - spec.min) * route.depth_ratio.clamp(0.0, 1.0);
+    let modulated = (base + route.wave_at(beat) * depth).clamp(spec.min, spec.max);
+    match spec.lfo_snap {
+        LfoSnap::None => modulated,
+        LfoSnap::PowerOfTwo => nearest_power_of_two(modulated, spec.min, spec.max),
+        LfoSnap::Step => spec.quantize(modulated),
+    }
+}
+
 pub(crate) fn apply_automation(
     controls: &mut FluidControls,
     automation: &AutomationState,
@@ -345,12 +364,11 @@ pub(crate) fn apply_automation(
 ) {
     for (address, route) in automation.routes() {
         let spec = address.spec();
-        let depth = (spec.max - spec.min) * route.depth_ratio.clamp(0.0, 1.0);
-        if depth <= f32::EPSILON {
+        if route.depth_ratio <= f32::EPSILON {
             continue;
         }
         let base = (spec.get)(controls);
-        let offset = route.wave_at(timing.beat) * depth;
-        (spec.set)(controls, (base + offset).clamp(spec.min, spec.max));
+        let value = modulated_control_value(spec, route, base, timing.beat);
+        (spec.set)(controls, value);
     }
 }

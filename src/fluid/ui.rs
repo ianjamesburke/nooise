@@ -650,7 +650,22 @@ pub(crate) fn render_fluid(
             style = style.add_modifier(Modifier::BOLD);
         }
         let modulated = route.map(|route| {
-            (item_ratio(item) + route.depth_ratio * route.wave_at(beat)).clamp(0.0, 1.0)
+            let spec = address.spec();
+            let base = match spec.bar {
+                Bar::Linear => item.value,
+                Bar::Log2 => 2f32.powf(item.value),
+            };
+            let value = modulated_control_value(spec, route, base, beat);
+            let value = match spec.bar {
+                Bar::Linear => value,
+                Bar::Log2 => value.log2(),
+            };
+            let range = item.max - item.min;
+            if range.abs() <= f32::EPSILON {
+                0.0
+            } else {
+                ((value - item.min) / range).clamp(0.0, 1.0)
+            }
         });
         let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
         spans.extend(slider_spans(item_ratio(item), modulated, bar_w, style));

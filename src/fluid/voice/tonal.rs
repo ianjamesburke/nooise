@@ -12,11 +12,17 @@ pub(crate) struct TonalEngine {
     pub(crate) last_cycle: Option<u64>,
     pub(crate) evolved_phrase: Vec<i32>,
     pub(crate) voices: Vec<TonalVoice>,
-    pub(crate) reverb: Freeverb,
+    pub(crate) low_cut_l: TonalLowCut,
+    pub(crate) low_cut_r: TonalLowCut,
     pub(crate) rng: StdRng,
 }
 
-pub(crate) const TONAL_STEP_BEATS: f32 = 0.5;
+pub(crate) const TONAL_LOW_CUT_HZ: f32 = 70.0;
+pub(crate) const TONAL_RATE_BEATS_MIN: f32 = 0.25;
+pub(crate) const TONAL_RATE_BEATS_MAX: f32 = 4.0;
+pub(crate) const TONAL_CYCLE_BEATS_MIN: f32 = TONAL_RATE_BEATS_MIN;
+pub(crate) const TONAL_CYCLE_BEATS_MAX: f32 = 16.0;
+pub(crate) const TONAL_MAX_LOOP_STEPS: usize = 64;
 pub(crate) const TONAL_MAX_EVOLVE_NOTES: usize = 4;
 pub(crate) const TONAL_SCALE_MIDI: [i32; 10] = [45, 48, 50, 52, 55, 57, 60, 62, 64, 67];
 pub(crate) const TONAL_PHRASES: [&[i32]; 8] = [
@@ -44,7 +50,8 @@ impl TonalEngine {
             last_cycle: None,
             evolved_phrase: tonal_phrase(0).to_vec(),
             voices: Vec::with_capacity(8),
-            reverb: Freeverb::new(sample_rate, 0.86, 0.38, 0.9),
+            low_cut_l: TonalLowCut::new(sample_rate, TONAL_LOW_CUT_HZ),
+            low_cut_r: TonalLowCut::new(sample_rate, TONAL_LOW_CUT_HZ),
             rng: StdRng::from_entropy(),
         }
     }
@@ -58,19 +65,20 @@ impl TonalEngine {
         let phrase = tonal_phrase_index(c.phrase);
         self.sync_phrase(phrase);
 
-        if self
-            .step_trigger
-            .pop(timing, TONAL_STEP_BEATS, c.offset_beats)
-        {
+        if self.step_trigger.pop(timing, c.rate_beats, c.offset_beats) {
             let cycle = tonal_cycle_index(timing.beat, c.step_interval_beats, c.offset_beats);
             if self.last_cycle.is_some_and(|last| last != cycle) {
                 self.evolve_phrase(c.evolve_rate);
             }
             self.last_cycle = Some(cycle);
 
-            let loop_len = tonal_loop_len(c.step_interval_beats);
-            self.step_index =
-                tonal_cycle_step(timing.beat, c.step_interval_beats, c.offset_beats) % loop_len;
+            let loop_len = tonal_loop_len(c.step_interval_beats, c.rate_beats);
+            self.step_index = tonal_cycle_step(
+                timing.beat,
+                c.step_interval_beats,
+                c.offset_beats,
+                c.rate_beats,
+            ) % loop_len;
             let note = if self.rng.gen_range(0.0f32..1.0) < c.randomness {
                 TONAL_SCALE_MIDI[self.rng.gen_range(0..TONAL_SCALE_MIDI.len())]
             } else {
@@ -97,13 +105,7 @@ impl TonalEngine {
         }
         self.voices.retain(|v| !v.is_done());
 
-        let (wet_l, wet_r) = self
-            .reverb
-            .process(dry_l * c.reverb_mix, dry_r * c.reverb_mix);
-        (
-            dry_l * (1.0 - c.reverb_mix * 0.5) + wet_l,
-            dry_r * (1.0 - c.reverb_mix * 0.5) + wet_r,
-        )
+        (self.low_cut_l.process(dry_l), self.low_cut_r.process(dry_r))
     }
 
     pub(crate) fn sync_phrase(&mut self, phrase: usize) {
@@ -146,21 +148,36 @@ pub(crate) fn tonal_phrase(phrase: usize) -> &'static [i32] {
     TONAL_PHRASES[phrase % TONAL_PHRASES.len()]
 }
 
-pub(crate) fn tonal_loop_len(interval_beats: f32) -> usize {
-    (interval_beats / TONAL_STEP_BEATS).round().clamp(1.0, 32.0) as usize
+pub(crate) fn tonal_loop_len(cycle_beats: f32, rate_beats: f32) -> usize {
+    (cycle_beats / tonal_rate_beats(rate_beats))
+        .round()
+        .clamp(1.0, TONAL_MAX_LOOP_STEPS as f32) as usize
 }
 
-pub(crate) fn tonal_cycle_index(beat: f64, interval_beats: f32, offset_beats: f32) -> u64 {
-    let interval = f64::from(interval_beats.max(TONAL_STEP_BEATS));
-    let offset = f64::from(offset_beats).rem_euclid(interval);
-    ((beat - offset).max(0.0) / interval).floor() as u64
+pub(crate) fn tonal_cycle_index(beat: f64, cycle_beats: f32, offset_beats: f32) -> u64 {
+    let cycle = f64::from(tonal_cycle_beats(cycle_beats));
+    let offset = f64::from(offset_beats).rem_euclid(cycle);
+    ((beat - offset).max(0.0) / cycle).floor() as u64
 }
 
-pub(crate) fn tonal_cycle_step(beat: f64, interval_beats: f32, offset_beats: f32) -> usize {
-    let interval = f64::from(interval_beats.max(TONAL_STEP_BEATS));
-    let offset = f64::from(offset_beats).rem_euclid(interval);
-    let local = (beat - offset).rem_euclid(interval);
-    (local / f64::from(TONAL_STEP_BEATS)).floor() as usize
+pub(crate) fn tonal_cycle_step(
+    beat: f64,
+    cycle_beats: f32,
+    offset_beats: f32,
+    rate_beats: f32,
+) -> usize {
+    let cycle = f64::from(tonal_cycle_beats(cycle_beats));
+    let offset = f64::from(offset_beats).rem_euclid(cycle);
+    let local = (beat - offset).rem_euclid(cycle);
+    (local / f64::from(tonal_rate_beats(rate_beats))).floor() as usize
+}
+
+pub(crate) fn tonal_rate_beats(rate_beats: f32) -> f32 {
+    rate_beats.clamp(TONAL_RATE_BEATS_MIN, TONAL_RATE_BEATS_MAX)
+}
+
+pub(crate) fn tonal_cycle_beats(cycle_beats: f32) -> f32 {
+    cycle_beats.clamp(TONAL_CYCLE_BEATS_MIN, TONAL_CYCLE_BEATS_MAX)
 }
 
 pub(crate) fn tonal_evolve_note_count(rate: f32, phrase_len: usize) -> usize {
@@ -174,6 +191,33 @@ pub(crate) fn tonal_evolve_note_count(rate: f32, phrase_len: usize) -> usize {
 
 pub(crate) fn tonal_note_hz(note: i32, tune: f32) -> f32 {
     midi_to_hz(note) * tune_ratio(tune)
+}
+
+pub(crate) struct TonalLowCut {
+    pub(crate) alpha: f32,
+    pub(crate) last_input: f32,
+    pub(crate) last_output: f32,
+}
+
+impl TonalLowCut {
+    pub(crate) fn new(sample_rate: f32, cutoff_hz: f32) -> Self {
+        let sample_rate = sample_rate.max(1.0);
+        let cutoff_hz = cutoff_hz.max(1.0);
+        let dt = 1.0 / sample_rate;
+        let rc = 1.0 / (TAU * cutoff_hz);
+        Self {
+            alpha: rc / (rc + dt),
+            last_input: 0.0,
+            last_output: 0.0,
+        }
+    }
+
+    pub(crate) fn process(&mut self, input: f32) -> f32 {
+        let output = self.alpha * (self.last_output + input - self.last_input);
+        self.last_input = input;
+        self.last_output = output;
+        output
+    }
 }
 
 pub(crate) struct TonalVoice {

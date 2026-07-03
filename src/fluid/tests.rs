@@ -119,11 +119,80 @@ fn tonal_note_applies_master_tune_offset() {
 }
 
 #[test]
-fn tonal_interval_crops_phrase_without_stretching_it() {
-    assert_eq!(tonal_loop_len(4.0), 8);
-    assert_eq!(tonal_loop_len(16.0), 32);
-    assert_eq!(tonal_cycle_step(3.75, 4.0, 0.0), 7);
-    assert_eq!(tonal_cycle_step(4.0, 4.0, 0.0), 0);
+fn tonal_low_cut_reduces_sub_energy_without_thinning_low_notes() {
+    fn filtered_sine_rms(hz: f32) -> f32 {
+        let mut low_cut = TonalLowCut::new(SAMPLE_RATE, TONAL_LOW_CUT_HZ);
+        let total = SAMPLE_RATE as u64 * 2;
+        let warmup = SAMPLE_RATE as u64 / 2;
+        let mut sum = 0.0f32;
+        let mut count = 0u64;
+
+        for sample in 0..total {
+            let phase = TAU * hz * sample as f32 / SAMPLE_RATE;
+            let filtered = low_cut.process(phase.sin());
+            if sample >= warmup {
+                sum += filtered * filtered;
+                count += 1;
+            }
+        }
+
+        (sum / count as f32).sqrt()
+    }
+
+    let sub = filtered_sine_rms(TONAL_LOW_CUT_HZ * 0.5);
+    let low_a = filtered_sine_rms(110.0);
+
+    assert!(sub < 0.4, "sub rms should be reduced, got {sub}");
+    assert!(
+        low_a > 0.55,
+        "lowest tonal fundamental should stay present, got {low_a}"
+    );
+    assert!(
+        low_a > sub * 1.5,
+        "low note should survive more than sub energy: sub {sub}, low_a {low_a}"
+    );
+}
+
+#[test]
+fn tonal_cycle_crops_phrase_without_stretching_rate() {
+    assert_eq!(tonal_loop_len(4.0, 0.5), 8);
+    assert_eq!(tonal_loop_len(16.0, 0.5), 32);
+    assert_eq!(tonal_loop_len(4.0, 1.0), 4);
+    assert_eq!(tonal_cycle_step(3.75, 4.0, 0.0, 0.5), 7);
+    assert_eq!(tonal_cycle_step(3.75, 4.0, 0.0, 1.0), 3);
+    assert_eq!(tonal_cycle_step(4.0, 4.0, 0.0, 0.5), 0);
+}
+
+#[test]
+fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
+    let controls = TonalControls {
+        rate_beats: 1.0,
+        step_interval_beats: 4.0,
+        randomness: 0.0,
+        ..TonalControls::default()
+    };
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+
+    let _ = tonal.next(
+        &controls,
+        0.0,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
+    );
+    assert_eq!(tonal.step_index, 0);
+
+    let _ = tonal.next(
+        &controls,
+        0.0,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+    assert_eq!(tonal.step_index, 0);
+
+    let _ = tonal.next(
+        &controls,
+        0.0,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.0),
+    );
+    assert_eq!(tonal.step_index, 1);
 }
 
 #[test]
@@ -215,7 +284,7 @@ fn automation_open_or_create_uses_safe_lfo_defaults() {
     let route = automation.open_or_create(address);
 
     assert_close(route.cycle_beats, 2.0);
-    assert_close(route.depth_ratio, 0.25);
+    assert_close(route.depth_ratio, 0.0);
     assert_eq!(route.shape, LfoShape::Sine);
     assert_close(route.phase_offset_beats, 0.0);
     assert_eq!(automation.active_address(), Some(address));
@@ -226,7 +295,7 @@ fn lfo_field_adjust_steps_and_clamps() {
     let mut route = LfoRoute::default();
 
     route.adjust_field_at(LfoField::Amount, 1.0, 0.0);
-    assert_close(route.depth_ratio, 0.26);
+    assert_close(route.depth_ratio, 0.01);
     route.set_field_at(LfoField::Amount, 0.0, 0.0);
     route.adjust_field_at(LfoField::Amount, -1.0, 0.0);
     assert_close(route.depth_ratio, 0.0);
@@ -316,7 +385,7 @@ fn close_editor_deletes_zero_depth_route() {
 
     automation.open_or_create(address);
     automation.close_editor();
-    assert!(automation.route(address).is_some());
+    assert!(automation.route(address).is_none());
 }
 
 #[test]
@@ -337,6 +406,102 @@ fn engine_publishes_beat_telemetry() {
     assert!(
         (beat - expected).abs() / expected < 0.01,
         "expected ~{expected}, got {beat}"
+    );
+}
+
+#[test]
+fn ambient_reverb_send_ducks_dry_sources_by_mix() {
+    let mut send = AmbientReverbSend::new(SAMPLE_RATE);
+
+    let frame = send.process((1.0, -1.0), (0.5, -0.5), 1.0, 0.5);
+
+    assert_near(frame.pad_l, AmbientReverbSend::dry_gain(1.0));
+    assert_near(frame.pad_r, -AmbientReverbSend::dry_gain(1.0));
+    assert_near(frame.tonal_l, 0.5 * AmbientReverbSend::dry_gain(0.5));
+    assert_near(frame.tonal_r, -0.5 * AmbientReverbSend::dry_gain(0.5));
+    assert_close(frame.wet_l, 0.0);
+    assert_close(frame.wet_r, 0.0);
+}
+
+#[test]
+fn full_pad_reverb_does_not_boost_pad_rms() {
+    fn pad_rms(reverb_mix: f32) -> f32 {
+        let controls = PadControls {
+            reverb_mix,
+            attack_time: 0.01,
+            release_time: 0.1,
+            ..PadControls::default()
+        };
+        let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+        pad.rng = StdRng::seed_from_u64(7);
+        let mut send = AmbientReverbSend::new(SAMPLE_RATE);
+        let mut sum = 0.0;
+        let mut count = 0;
+        let total = SAMPLE_RATE as u64 * 4;
+        let warmup = SAMPLE_RATE as u64;
+
+        for sample in 0..total {
+            let dry = pad.next(&controls, 0.0, timing(sample, 120.0));
+            let frame = send.process(dry, (0.0, 0.0), controls.reverb_mix, 0.0);
+            if sample >= warmup {
+                let l = frame.pad_l + frame.wet_l;
+                let r = frame.pad_r + frame.wet_r;
+                sum += l * l + r * r;
+                count += 2;
+            }
+        }
+
+        (sum / count as f32).sqrt()
+    }
+
+    let dry = pad_rms(0.0);
+    let wet = pad_rms(1.0);
+
+    assert!(
+        wet <= dry * 1.05,
+        "full reverb should not make pad much louder: dry rms {dry}, wet rms {wet}"
+    );
+}
+
+#[test]
+fn full_tonal_reverb_does_not_boost_tonal_rms() {
+    fn tonal_rms(reverb_mix: f32) -> f32 {
+        let controls = TonalControls {
+            level: 0.8,
+            randomness: 0.0,
+            note_length_beats: 1.0,
+            step_interval_beats: 4.0,
+            reverb_mix,
+            ..TonalControls::default()
+        };
+        let mut tonal = TonalEngine::new(SAMPLE_RATE);
+        tonal.rng = StdRng::seed_from_u64(11);
+        let mut send = AmbientReverbSend::new(SAMPLE_RATE);
+        let mut sum = 0.0;
+        let mut count = 0;
+        let total = SAMPLE_RATE as u64 * 4;
+        let warmup = SAMPLE_RATE as u64;
+
+        for sample in 0..total {
+            let dry = tonal.next(&controls, 0.0, timing(sample, 120.0));
+            let frame = send.process((0.0, 0.0), dry, 0.0, controls.reverb_mix);
+            if sample >= warmup {
+                let l = frame.tonal_l + frame.wet_l;
+                let r = frame.tonal_r + frame.wet_r;
+                sum += l * l + r * r;
+                count += 2;
+            }
+        }
+
+        (sum / count as f32).sqrt()
+    }
+
+    let dry = tonal_rms(0.0);
+    let wet = tonal_rms(1.0);
+
+    assert!(
+        wet <= dry * 1.05,
+        "full reverb should not make tonal much louder: dry rms {dry}, wet rms {wet}"
     );
 }
 
@@ -387,10 +552,10 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     assert!(text.contains("amount"));
     assert!(text.contains("interval"));
     assert!(text.contains("offset"));
-    assert!(text.contains('▄'));
+    assert!(text.contains("0%"));
 
     // Default cycle is 2 beats, so beat 1.0 is the opposite phase: the lane's
-    // bright head has moved even though the wave glyphs are static.
+    // bright head has moved even though the 0% wave glyphs are flat.
     let at_half_cycle = draw_at(1.0);
     assert_ne!(at_start, at_half_cycle);
 }
@@ -490,6 +655,7 @@ fn defaults_match_current_mix() {
     assert_close(controls.kick.amp_decay_ms, 250.0);
 
     assert_close(controls.tonal.phrase, 0.0);
+    assert_close(controls.tonal.rate_beats, 0.5);
     assert_close(controls.tonal.step_interval_beats, 16.0);
     assert_close(controls.tonal.note_length_beats, 1.5);
     assert_close(controls.tonal.randomness, 0.5);
@@ -580,7 +746,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Tonal,
             vec![
-                Gain, Discrete, Timing, Timing, Gain, Continuous, Timing, Gain,
+                Gain, Discrete, Timing, Timing, Timing, Gain, Continuous, Timing, Gain,
             ],
         ),
         (
@@ -873,6 +1039,18 @@ fn chords_tab_shows_progression_row_with_letter_display() {
     controls.pad.progression = 2.0;
     let rows = tab_controls(Tab::Chords, &controls);
     assert_eq!(rows[2].display, "C");
+}
+
+#[test]
+fn tonal_tab_separates_rate_from_cycle() {
+    let rows = tab_controls(Tab::Tonal, &FluidControls::default());
+
+    assert_eq!(rows[2].id, "tonal.rate_beats");
+    assert_eq!(rows[2].label, "Rate");
+    assert_eq!(rows[2].display, "0.50 beats");
+    assert_eq!(rows[3].id, "tonal.step_interval_beats");
+    assert_eq!(rows[3].label, "Cycle");
+    assert_eq!(rows[3].display, "16.00 beats");
 }
 
 #[test]
@@ -1381,6 +1559,183 @@ fn grid_trigger_no_silence_after_interval_increase() {
     assert!(
         first_post.is_some_and(|s| s - change_at <= new_interval_samples),
         "trigger stalled after interval increase"
+    );
+}
+
+fn max_hit_gap(hit_beats: &[f64], total_beats: f64) -> f64 {
+    let mut max_gap = 0.0f64;
+    let mut prev = 0.0f64;
+    for &beat in hit_beats {
+        max_gap = max_gap.max(beat - prev);
+        prev = beat;
+    }
+    max_gap.max(total_beats - prev)
+}
+
+#[test]
+fn grid_trigger_survives_continuous_interval_sweep() {
+    let total_beats = 32.0;
+    let samples = (total_beats * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let mut trigger = GridTrigger::new();
+    let mut hit_beats = Vec::new();
+
+    for sample in 0..samples {
+        let t = timing(sample, 120.0);
+        let interval = 1.0 + 0.75 * (std::f64::consts::TAU * t.beat / 8.0).sin() as f32;
+        if trigger.pop(t, interval, 0.0) {
+            hit_beats.push(t.beat);
+        }
+    }
+
+    let max_gap = max_hit_gap(&hit_beats, total_beats);
+    assert!(
+        max_gap <= 2.0,
+        "trigger starved during interval sweep: max gap {max_gap:.2} beats"
+    );
+}
+
+#[test]
+fn grid_trigger_survives_sliding_offset() {
+    let total_beats = 32.0;
+    let samples = (total_beats * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let mut trigger = GridTrigger::new();
+    let mut hit_beats = Vec::new();
+
+    for sample in 0..samples {
+        let t = timing(sample, 120.0);
+        let offset = 2.0 + 2.0 * (std::f64::consts::TAU * t.beat / 8.0).sin() as f32;
+        if trigger.pop(t, 1.0, offset) {
+            hit_beats.push(t.beat);
+        }
+    }
+
+    let max_gap = max_hit_gap(&hit_beats, total_beats);
+    assert!(
+        max_gap <= 1.5,
+        "trigger starved during offset slide: max gap {max_gap:.2} beats"
+    );
+}
+
+fn automation_with_route(
+    target_id: &'static str,
+    depth_ratio: f32,
+    cycle_beats: f32,
+) -> AutomationState {
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        ControlAddress::new(target_id),
+        LfoRoute {
+            depth_ratio,
+            cycle_beats,
+            phase_offset_beats: 0.0,
+            shape: LfoShape::Sine,
+        },
+    );
+    automation
+}
+
+#[test]
+fn modulated_control_value_snaps_like_the_engine() {
+    let spec = spec_by_id("kick.interval_beats").unwrap();
+    let route = LfoRoute {
+        depth_ratio: 0.4,
+        cycle_beats: 8.0,
+        phase_offset_beats: 0.0,
+        shape: LfoShape::Sine,
+    };
+
+    // Peak of the sine: raw value 1.0 + 0.4 * 3.75 = 2.5 must land on 2.0.
+    let peak = modulated_control_value(spec, &route, 1.0, 2.0);
+    assert_close(peak, 2.0);
+
+    // Trough: 1.0 - 1.5 clamps to the minimum subdivision.
+    let trough = modulated_control_value(spec, &route, 1.0, 6.0);
+    assert_close(trough, 0.25);
+}
+
+#[test]
+fn lfo_interval_modulation_snaps_to_power_of_two() {
+    let mut controls = FluidControls::default();
+    controls.kick.interval_beats = 1.0;
+    let automation = automation_with_route("kick.interval_beats", 0.4, 8.0);
+
+    for sample in (0..(SAMPLE_RATE as u64 * 16)).step_by(64) {
+        let mut effective = controls.clone();
+        apply_automation(&mut effective, &automation, timing(sample, 120.0));
+        let v = effective.kick.interval_beats;
+        assert!(
+            [0.25f32, 0.5, 1.0, 2.0, 4.0]
+                .iter()
+                .any(|&q| (v - q).abs() < 1e-4),
+            "modulated interval {v} is not a power-of-two subdivision"
+        );
+    }
+}
+
+#[test]
+fn lfo_offset_modulation_snaps_to_quarter_beats() {
+    let mut controls = FluidControls::default();
+    controls.kick.offset_beats = 2.0;
+    let automation = automation_with_route("kick.offset_beats", 0.4, 8.0);
+
+    for sample in (0..(SAMPLE_RATE as u64 * 16)).step_by(64) {
+        let mut effective = controls.clone();
+        apply_automation(&mut effective, &automation, timing(sample, 120.0));
+        let v = effective.kick.offset_beats;
+        let snapped = (v / 0.25).round() * 0.25;
+        assert!(
+            (v - snapped).abs() < 1e-4,
+            "modulated offset {v} is not on the 0.25-beat grid"
+        );
+    }
+}
+
+#[test]
+fn lfo_interval_sweep_plays_on_grid_breakdown() {
+    let mut controls = FluidControls::default();
+    controls.kick.interval_beats = 1.0;
+    controls.kick.offset_beats = 0.0;
+    let automation = automation_with_route("kick.interval_beats", 0.4, 8.0);
+
+    let total_beats = 32.0;
+    let samples = (total_beats * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let mut trigger = GridTrigger::new();
+    let mut hit_beats = Vec::new();
+
+    for sample in 0..samples {
+        let t = timing(sample, 120.0);
+        let mut effective = controls.clone();
+        apply_automation(&mut effective, &automation, t);
+        if trigger.pop(t, effective.kick.interval_beats, effective.kick.offset_beats) {
+            hit_beats.push(t.beat);
+        }
+    }
+
+    // Every hit stays locked to the absolute 16th grid.
+    for &beat in &hit_beats {
+        let snapped = (beat / 0.25).round() * 0.25;
+        assert!(
+            (beat - snapped).abs() < 1e-3,
+            "hit at beat {beat:.4} is off the 0.25 grid"
+        );
+    }
+
+    // The sweep actually breaks down through multiple subdivisions.
+    let mut gaps: Vec<i64> = hit_beats
+        .windows(2)
+        .map(|w| ((w[1] - w[0]) / 0.25).round() as i64)
+        .collect();
+    gaps.sort_unstable();
+    gaps.dedup();
+    assert!(
+        gaps.len() >= 3,
+        "expected at least 3 distinct hit spacings, got {gaps:?}"
+    );
+
+    let max_gap = max_hit_gap(&hit_beats, total_beats);
+    assert!(
+        max_gap <= 2.0 + 1e-3,
+        "trigger starved during breakdown sweep: max gap {max_gap:.2} beats"
     );
 }
 

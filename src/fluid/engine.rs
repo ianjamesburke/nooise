@@ -17,6 +17,7 @@ pub(crate) struct FluidEngine {
     pub(crate) tonal: TonalEngine,
     pub(crate) clap: ClapEngine,
     pub(crate) bass: BassEngine,
+    pub(crate) ambient_reverb: AmbientReverbSend,
     pub(crate) master_bus: MasterBus,
     pub(crate) controls: Arc<ArcSwap<FluidControls>>,
     pub(crate) automation: Arc<ArcSwap<AutomationState>>,
@@ -43,6 +44,7 @@ impl FluidEngine {
             tonal: TonalEngine::new(sample_rate),
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
+            ambient_reverb: AmbientReverbSend::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
             controls,
             automation,
@@ -91,13 +93,28 @@ impl StereoEngine for FluidEngine {
         let (bass_l, bass_r) = self
             .bass
             .next(&effective.bass, &effective.pad, tune, timing);
+        let AmbientReverbFrame {
+            pad_l,
+            pad_r,
+            tonal_l: ton_l,
+            tonal_r: ton_r,
+            wet_l,
+            wet_r,
+        } = self.ambient_reverb.process(
+            (pad_l, pad_r),
+            (ton_l, ton_r),
+            effective.pad.reverb_mix,
+            effective.tonal.reverb_mix,
+        );
 
         self.current_sample += 1;
 
         let raw_l =
-            (pad_l + perc * 0.6 + kick_l * 0.7 + ton_l + clap_l * 0.65 + bass_l * 0.75) * fade;
+            (pad_l + perc * 0.6 + kick_l * 0.7 + ton_l + clap_l * 0.65 + bass_l * 0.75 + wet_l)
+                * fade;
         let raw_r =
-            (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65 + bass_r * 0.75) * fade;
+            (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65 + bass_r * 0.75 + wet_r)
+                * fade;
         self.master_bus.process(raw_l, raw_r, &effective.master)
     }
 }
@@ -321,14 +338,25 @@ impl GridTrigger {
     ) -> bool {
         let spec = GridSpec::new(interval_beats, offset_beats);
         if self.spec != Some(spec) {
-            let first_schedule =
-                self.next_hit.is_none() && self.first_hit == FirstGridHit::AfterNow;
             self.spec = Some(spec);
-            self.next_hit = Some(if first_schedule {
-                spec.hit_after(timing.beat)
-            } else {
-                spec.hit_at_or_after(timing.beat)
-            });
+            match self.next_hit {
+                None => {
+                    self.next_hit = Some(match self.first_hit {
+                        FirstGridHit::AtOrAfterNow => spec.hit_at_or_after(timing.beat),
+                        FirstGridHit::AfterNow => spec.hit_after(timing.beat),
+                    });
+                }
+                // Pull the scheduled hit earlier when the new grid lands sooner;
+                // a grid that lands later waits until the scheduled hit fires.
+                // A modulated grid can therefore never push the target ahead of
+                // the playhead indefinitely and starve the trigger.
+                Some(hit) => {
+                    let candidate = spec.hit_at_or_after(timing.beat);
+                    if candidate.beat < hit.beat {
+                        self.next_hit = Some(candidate);
+                    }
+                }
+            }
         }
 
         let Some(next_hit) = self.next_hit else {
@@ -340,6 +368,67 @@ impl GridTrigger {
         } else {
             false
         }
+    }
+}
+
+// ============================================================
+// Ambient reverb send
+// ============================================================
+
+pub(crate) const AMBIENT_REVERB_DRY_DUCK: f32 = 0.3;
+pub(crate) const AMBIENT_REVERB_PAD_SEND: f32 = 0.4;
+pub(crate) const AMBIENT_REVERB_TONAL_SEND: f32 = 0.32;
+pub(crate) const AMBIENT_REVERB_RETURN: f32 = 0.22;
+
+pub(crate) struct AmbientReverbSend {
+    pub(crate) reverb: Freeverb,
+}
+
+pub(crate) struct AmbientReverbFrame {
+    pub(crate) pad_l: f32,
+    pub(crate) pad_r: f32,
+    pub(crate) tonal_l: f32,
+    pub(crate) tonal_r: f32,
+    pub(crate) wet_l: f32,
+    pub(crate) wet_r: f32,
+}
+
+impl AmbientReverbSend {
+    pub(crate) fn new(sample_rate: f32) -> Self {
+        Self {
+            reverb: Freeverb::new(sample_rate, 0.9, 0.44, 1.0),
+        }
+    }
+
+    pub(crate) fn process(
+        &mut self,
+        pad: (f32, f32),
+        tonal: (f32, f32),
+        pad_mix: f32,
+        tonal_mix: f32,
+    ) -> AmbientReverbFrame {
+        let pad_mix = pad_mix.clamp(0.0, 1.0);
+        let tonal_mix = tonal_mix.clamp(0.0, 1.0);
+        let pad_dry = Self::dry_gain(pad_mix);
+        let tonal_dry = Self::dry_gain(tonal_mix);
+        let pad_send = pad_mix * AMBIENT_REVERB_PAD_SEND;
+        let tonal_send = tonal_mix * AMBIENT_REVERB_TONAL_SEND;
+        let send_l = pad.0 * pad_send + tonal.0 * tonal_send;
+        let send_r = pad.1 * pad_send + tonal.1 * tonal_send;
+        let (wet_l, wet_r) = self.reverb.process(send_l, send_r);
+
+        AmbientReverbFrame {
+            pad_l: pad.0 * pad_dry,
+            pad_r: pad.1 * pad_dry,
+            tonal_l: tonal.0 * tonal_dry,
+            tonal_r: tonal.1 * tonal_dry,
+            wet_l: wet_l * AMBIENT_REVERB_RETURN,
+            wet_r: wet_r * AMBIENT_REVERB_RETURN,
+        }
+    }
+
+    pub(crate) fn dry_gain(mix: f32) -> f32 {
+        1.0 - mix.clamp(0.0, 1.0) * AMBIENT_REVERB_DRY_DUCK
     }
 }
 

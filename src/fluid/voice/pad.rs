@@ -12,8 +12,6 @@ pub(crate) struct PadEngine {
     pub(crate) chord_trigger: GridTrigger,
     pub(crate) step_index: usize,
     pub(crate) last_progression: usize,
-    pub(crate) reverb: Freeverb,
-    pub(crate) depth_lfo: DriftingLfo,
     pub(crate) width_lfo: DriftingLfo,
     pub(crate) air: WhiteNoise,
     pub(crate) rng: StdRng,
@@ -35,8 +33,6 @@ impl PadEngine {
             chord_trigger: GridTrigger::after_start(),
             step_index: 0,
             last_progression: 0,
-            reverb: Freeverb::new(sample_rate, 0.93, 0.46, 1.0),
-            depth_lfo: DriftingLfo::new(1.0 / 42.0, sample_rate),
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
             air: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
@@ -75,7 +71,6 @@ impl PadEngine {
             ));
         }
 
-        let depth = normalized_lfo(self.depth_lfo.next(&mut self.rng, 1.0 / 68.0, 1.0 / 28.0));
         let width = c.stereo_width
             * (0.58
                 + normalized_lfo(self.width_lfo.next(&mut self.rng, 1.0 / 86.0, 1.0 / 38.0))
@@ -92,16 +87,11 @@ impl PadEngine {
         }
         self.layers.retain(|l| !l.is_done());
 
-        let reverb_send = c.reverb_mix * (0.48 + depth * 0.22);
-        let (wet_l, wet_r) = self
-            .reverb
-            .process(dry_l * reverb_send, dry_r * reverb_send);
-        let wet_mix = 0.72 + depth * 0.34;
         let air = self.air.next_filtered(&mut self.rng, 0.0002) * 0.00025;
 
         (
-            (dry_l * 0.58 + wet_l * wet_mix + air) * c.level,
-            (dry_r * 0.58 + wet_r * wet_mix + air) * c.level,
+            (dry_l * 0.58 + air) * c.level,
+            (dry_r * 0.58 + air) * c.level,
         )
     }
 }

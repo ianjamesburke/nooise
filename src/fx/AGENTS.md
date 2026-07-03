@@ -8,7 +8,7 @@ Shared DSP effects consumed by voice engines in `fluid.rs`.
 
 - `lfo.rs` — drifting/periodic LFO generators.
 - `panner.rs` — stereo pan helper.
-- `reverb.rs` — Freeverb-style reverb used by Pad (and any other voice wanting space).
+- `reverb.rs` — Freeverb-style reverb used by the engine ambient send and voice-local room effects.
 - `mod.rs` — module re-exports only.
 
 ## Local Contracts
