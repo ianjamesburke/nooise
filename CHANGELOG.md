@@ -1,6 +1,18 @@
 # Changelog
 
 Newest releases appear first.
+## [1.2.0] — 2026-07-03
+
+### Added
+- feat: refine fluid modulation and ambient reverb
+- feat: redesign tonal phrases
+- feat: lfo interval on 0.25-beat grid, offset in beats (#5)
+- feat: lfo automation with f-key submenu and animated lane (#3)
+- feat: add song snapshot codes (stint 0002) (#4)
+
+### Fixed
+- fix: tighten save toast and lfo amount step
+- fix: remove fluid control foot guns
 ## [1.1.2] — 2026-07-02
 
 ### Fixed
