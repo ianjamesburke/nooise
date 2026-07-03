@@ -145,7 +145,7 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
         randomness: 0.0,
         ..TonalControls::default()
     };
-    for synth_type in 1..=4 {
+    for synth_type in 1..=8 {
         let controls = TonalControls {
             synth_type: synth_type as f32,
             ..controls.clone()
@@ -165,10 +165,14 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
 #[test]
 fn tonal_type_labels_cover_exploration_variants() {
     assert_eq!(tonal_synth_type_label(0.0), "Sine");
-    assert_eq!(tonal_synth_type_label(1.0), "Piano A");
-    assert_eq!(tonal_synth_type_label(2.0), "Piano B");
-    assert_eq!(tonal_synth_type_label(3.0), "Piano C");
-    assert_eq!(tonal_synth_type_label(4.0), "Marimba");
+    assert_eq!(tonal_synth_type_label(1.0), "Piano C-A");
+    assert_eq!(tonal_synth_type_label(2.0), "Piano C-B");
+    assert_eq!(tonal_synth_type_label(3.0), "Piano C-C");
+    assert_eq!(tonal_synth_type_label(4.0), "Felt");
+    assert_eq!(tonal_synth_type_label(5.0), "Soft Grand");
+    assert_eq!(tonal_synth_type_label(6.0), "Tape Keys");
+    assert_eq!(tonal_synth_type_label(7.0), "Wood");
+    assert_eq!(tonal_synth_type_label(8.0), "Cloud Keys");
 }
 
 #[test]

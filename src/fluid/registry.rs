@@ -915,7 +915,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         "Type",
         ControlKind::Discrete,
         0.0,
-        4.0,
+        8.0,
         Step::Linear(1.0),
         Entry::Round,
         |c| c.tonal.synth_type,
@@ -1023,15 +1023,19 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
 pub(crate) fn tonal_synth_type_label(value: f32) -> &'static str {
     match tonal_synth_type_index(value) {
         0 => "Sine",
-        1 => "Piano A",
-        2 => "Piano B",
-        3 => "Piano C",
-        _ => "Marimba",
+        1 => "Piano C-A",
+        2 => "Piano C-B",
+        3 => "Piano C-C",
+        4 => "Felt",
+        5 => "Soft Grand",
+        6 => "Tape Keys",
+        7 => "Wood",
+        _ => "Cloud Keys",
     }
 }
 
 pub(crate) fn tonal_synth_type_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid(5) as usize
+    (value.round() as i64).rem_euclid(9) as usize
 }
 
 pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
