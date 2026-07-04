@@ -19,6 +19,10 @@ pub(crate) struct FluidEngine {
     pub(crate) bass: BassEngine,
     pub(crate) ambient_reverb: AmbientReverbSend,
     pub(crate) master_bus: MasterBus,
+    /// Per-voice output envelope followers (visual telemetry only; never fed
+    /// back into the sample path, so audio stays deterministic).
+    pub(crate) level_env: VoiceLevels,
+    pub(crate) level_coeff: f32,
     pub(crate) controls: Arc<ArcSwap<FluidControls>>,
     pub(crate) automation: Arc<ArcSwap<AutomationState>>,
     pub(crate) telemetry: Arc<FluidTelemetry>,
@@ -39,19 +43,33 @@ impl FluidEngine {
             tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
             gain_smoothers: GainSmoothers::new(&snapshot),
             pad: PadEngine::new(sample_rate, &snapshot.pad, Arc::clone(&telemetry)),
-            perc: PercEngine::new(sample_rate),
+            perc: PercEngine::new(sample_rate, Arc::clone(&telemetry)),
             kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
-            tonal: TonalEngine::new(sample_rate),
-            clap: ClapEngine::new(sample_rate),
-            bass: BassEngine::new(sample_rate),
+            tonal: TonalEngine::new(sample_rate, Arc::clone(&telemetry)),
+            clap: ClapEngine::new(sample_rate, Arc::clone(&telemetry)),
+            bass: BassEngine::new(sample_rate, Arc::clone(&telemetry)),
             ambient_reverb: AmbientReverbSend::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
+            level_env: VoiceLevels::default(),
+            level_coeff: (-1.0 / (LEVEL_ENV_MS * 0.001 * sample_rate)).exp(),
             controls,
             automation,
             telemetry,
             snapshot,
         }
     }
+}
+
+/// Time constant of the per-voice level follower that feeds visual telemetry.
+pub(crate) const LEVEL_ENV_MS: f32 = 90.0;
+/// Publish smoothed voice levels this often (samples). Control rate, not per
+/// sample — the follower itself runs per sample but only writes atomics here.
+pub(crate) const LEVEL_PUBLISH_INTERVAL: u64 = 256;
+
+/// Peak-follower step: instantaneous rise, exponential fall.
+#[inline]
+fn level_follow(env: f32, mag: f32, coeff: f32) -> f32 {
+    if mag > env { mag } else { env * coeff }
 }
 
 impl FluidEngine {
@@ -93,6 +111,23 @@ impl StereoEngine for FluidEngine {
         let (bass_l, bass_r) = self
             .bass
             .next(&effective.bass, &effective.pad, tune, timing);
+
+        // Follow each voice's dry magnitude for visual telemetry. Captured
+        // here, before the reverb send rescales pad/tonal, so a node's
+        // brightness tracks the voice itself. Pure side-channel: nothing here
+        // feeds back into the samples below.
+        let c = self.level_coeff;
+        let mag = |l: f32, r: f32| 0.5 * (l.abs() + r.abs());
+        self.level_env.pad = level_follow(self.level_env.pad, mag(pad_l, pad_r), c);
+        self.level_env.perc = level_follow(self.level_env.perc, perc.abs(), c);
+        self.level_env.kick = level_follow(self.level_env.kick, mag(kick_l, kick_r), c);
+        self.level_env.tonal = level_follow(self.level_env.tonal, mag(ton_l, ton_r), c);
+        self.level_env.clap = level_follow(self.level_env.clap, mag(clap_l, clap_r), c);
+        self.level_env.bass = level_follow(self.level_env.bass, mag(bass_l, bass_r), c);
+        if self.current_sample.is_multiple_of(LEVEL_PUBLISH_INTERVAL) {
+            self.telemetry.publish_levels(self.level_env);
+        }
+
         let AmbientReverbFrame {
             pad_l,
             pad_r,
