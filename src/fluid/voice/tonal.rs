@@ -26,7 +26,7 @@ pub(crate) const TONAL_MAX_LOOP_STEPS: usize = 64;
 pub(crate) const TONAL_MAX_EVOLVE_NOTES: usize = 4;
 pub(crate) const TONAL_SCALE_MIDI: [i32; 10] = [45, 48, 50, 52, 55, 57, 60, 62, 64, 67];
 pub(crate) const TONAL_PIANO_HARMONIC_COUNT: usize = 16;
-pub(crate) const TONAL_PIANO_PROFILE_COUNT: usize = 8;
+pub(crate) const TONAL_PIANO_PROFILE_COUNT: usize = 9;
 pub(crate) const TONAL_PIANO_A_KEYFRAMES: [PianoKeyframe; 3] = [
     PianoKeyframe {
         midi: 36,
@@ -172,67 +172,73 @@ pub(crate) const TONAL_MARIMBA_KEYFRAMES: [PianoKeyframe; 4] = [
         ],
     },
 ];
-pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT] = [
-    PianoProfile {
-        keyframes: &TONAL_PIANO_A_KEYFRAMES,
-        amplitude: 0.38,
-        attack_ratio: 0.045,
-        body_power: 0.36,
-        harmonic_tilt: -0.55,
-        decay_low: 0.75,
-        decay_high: 6.0,
-        decay_scale: 0.68,
+// Electric-piano spectrum: fundamental-dominant with a soft "tine" bump
+// around the 5th/6th partial and a fast upper rolloff. Warm, non-metallic —
+// the reeds fade quickly so nothing rings out bright.
+pub(crate) const TONAL_EP_KEYFRAMES: [PianoKeyframe; 3] = [
+    PianoKeyframe {
+        midi: 36,
+        decay_factor: 2.6,
+        harmonics: [
+            0.6, 0.168, 0.072, 0.036, 0.084, 0.06, 0.024, 0.012, 0.009, 0.006, 0.0048, 0.003,
+            0.0024, 0.0018, 0.0012, 0.0006,
+        ],
     },
+    PianoKeyframe {
+        midi: 48,
+        decay_factor: 1.8,
+        harmonics: [
+            0.6, 0.132, 0.054, 0.03, 0.06, 0.036, 0.018, 0.009, 0.006, 0.0036, 0.0024, 0.0018,
+            0.0012, 0.0009, 0.0006, 0.00048,
+        ],
+    },
+    PianoKeyframe {
+        midi: 60,
+        decay_factor: 1.0,
+        harmonics: [
+            0.6, 0.09, 0.036, 0.018, 0.03, 0.018, 0.009, 0.0048, 0.003, 0.0018, 0.0012, 0.0006,
+            0.00048, 0.0003, 0.00024, 0.00018,
+        ],
+    },
+];
+// Types 1-9 (profile index = type - 1). Type 8 / profile[7] is Cloud Keys,
+// the keeper, left exactly as tuned. The rest are warm, non-metallic keys
+// voiced for ambient techno: soft attacks, unhurried decays, gentle tops.
+pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT] = [
+    // Rhodes: warm electric piano, quick bell-tine attack, mellow sustain.
+    PianoProfile {
+        keyframes: &TONAL_EP_KEYFRAMES,
+        amplitude: 0.40,
+        attack_ratio: 0.02,
+        body_power: 0.35,
+        harmonic_tilt: -0.70,
+        decay_low: 0.70,
+        decay_high: 4.2,
+        decay_scale: 0.60,
+    },
+    // Wurli: reedier electric piano, a touch more bark and shorter tail.
+    PianoProfile {
+        keyframes: &TONAL_EP_KEYFRAMES,
+        amplitude: 0.44,
+        attack_ratio: 0.03,
+        body_power: 0.45,
+        harmonic_tilt: -0.85,
+        decay_low: 0.50,
+        decay_high: 3.6,
+        decay_scale: 0.50,
+    },
+    // Felt: muted upright with the soft attack of a felt-covered hammer.
     PianoProfile {
         keyframes: &TONAL_PIANO_A_KEYFRAMES,
         amplitude: 0.36,
-        attack_ratio: 0.06,
-        body_power: 0.28,
-        harmonic_tilt: -0.75,
-        decay_low: 0.55,
-        decay_high: 4.6,
-        decay_scale: 0.52,
-    },
-    PianoProfile {
-        keyframes: &TONAL_PIANO_A_KEYFRAMES,
-        amplitude: 0.42,
-        attack_ratio: 0.03,
-        body_power: 0.45,
-        harmonic_tilt: -0.38,
-        decay_low: 0.95,
-        decay_high: 7.5,
-        decay_scale: 0.8,
-    },
-    PianoProfile {
-        keyframes: &TONAL_PIANO_A_KEYFRAMES,
-        amplitude: 0.44,
         attack_ratio: 0.085,
         body_power: 0.30,
         harmonic_tilt: -1.05,
-        decay_low: 0.42,
-        decay_high: 3.8,
-        decay_scale: 0.45,
+        decay_low: 0.45,
+        decay_high: 3.4,
+        decay_scale: 0.50,
     },
-    PianoProfile {
-        keyframes: &TONAL_PIANO_A_KEYFRAMES,
-        amplitude: 0.39,
-        attack_ratio: 0.022,
-        body_power: 0.58,
-        harmonic_tilt: -0.62,
-        decay_low: 0.85,
-        decay_high: 6.2,
-        decay_scale: 0.72,
-    },
-    PianoProfile {
-        keyframes: &TONAL_PIANO_A_KEYFRAMES,
-        amplitude: 0.46,
-        attack_ratio: 0.07,
-        body_power: 0.22,
-        harmonic_tilt: -0.90,
-        decay_low: 0.35,
-        decay_high: 3.2,
-        decay_scale: 0.40,
-    },
+    // Marimba: wooden mallet, percussive body, rounded overtones.
     PianoProfile {
         keyframes: &TONAL_MARIMBA_KEYFRAMES,
         amplitude: 0.30,
@@ -243,6 +249,40 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
         decay_high: 5.8,
         decay_scale: 0.62,
     },
+    // Kalimba: plucked lamellophone, fundamental-heavy, gentle ring.
+    PianoProfile {
+        keyframes: &TONAL_EP_KEYFRAMES,
+        amplitude: 0.34,
+        attack_ratio: 0.02,
+        body_power: 0.70,
+        harmonic_tilt: -0.60,
+        decay_low: 1.1,
+        decay_high: 6.5,
+        decay_scale: 0.50,
+    },
+    // Pluck: short, dry, staccato key stab for rhythmic ambient patterns.
+    PianoProfile {
+        keyframes: &TONAL_EP_KEYFRAMES,
+        amplitude: 0.36,
+        attack_ratio: 0.015,
+        body_power: 0.85,
+        harmonic_tilt: -0.70,
+        decay_low: 1.2,
+        decay_high: 6.0,
+        decay_scale: 0.45,
+    },
+    // Dulcet: clear, sweet upright with a little more shimmer than Felt.
+    PianoProfile {
+        keyframes: &TONAL_PIANO_A_KEYFRAMES,
+        amplitude: 0.38,
+        attack_ratio: 0.04,
+        body_power: 0.40,
+        harmonic_tilt: -0.70,
+        decay_low: 0.70,
+        decay_high: 5.0,
+        decay_scale: 0.68,
+    },
+    // Cloud Keys: the keeper. Airy, dark, slow-blooming pad piano.
     PianoProfile {
         keyframes: &TONAL_PIANO_A_KEYFRAMES,
         amplitude: 0.34,
@@ -252,6 +292,17 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
         decay_low: 0.28,
         decay_high: 2.4,
         decay_scale: 0.34,
+    },
+    // Haze: an even softer, slower sibling of Cloud — a breath of a key.
+    PianoProfile {
+        keyframes: &TONAL_PIANO_A_KEYFRAMES,
+        amplitude: 0.32,
+        attack_ratio: 0.13,
+        body_power: 0.16,
+        harmonic_tilt: -1.15,
+        decay_low: 0.30,
+        decay_high: 2.8,
+        decay_scale: 0.38,
     },
 ];
 pub(crate) const TONAL_PHRASES: [&[i32]; 8] = [

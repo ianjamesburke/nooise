@@ -120,7 +120,9 @@ fn tonal_note_applies_master_tune_offset() {
 
 #[test]
 fn piano_harmonics_interpolate_with_note_pitch() {
-    let profile = piano_profile(1);
+    // Felt uses the acoustic-piano keyframe table, whose upper partials
+    // strengthen from the low register into the mids.
+    let profile = piano_profile(3);
     let low = piano_harmonic_amplitudes(profile, 36);
     let mid = piano_harmonic_amplitudes(profile, 48);
     let high = piano_harmonic_amplitudes(profile, 60);
@@ -145,7 +147,7 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
         randomness: 0.0,
         ..TonalControls::default()
     };
-    for synth_type in 1..=8 {
+    for synth_type in 1..=9 {
         let controls = TonalControls {
             synth_type: synth_type as f32,
             ..controls.clone()
@@ -165,14 +167,15 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
 #[test]
 fn tonal_type_labels_cover_exploration_variants() {
     assert_eq!(tonal_synth_type_label(0.0), "Sine");
-    assert_eq!(tonal_synth_type_label(1.0), "Piano C-A");
-    assert_eq!(tonal_synth_type_label(2.0), "Piano C-B");
-    assert_eq!(tonal_synth_type_label(3.0), "Piano C-C");
-    assert_eq!(tonal_synth_type_label(4.0), "Felt");
-    assert_eq!(tonal_synth_type_label(5.0), "Soft Grand");
-    assert_eq!(tonal_synth_type_label(6.0), "Tape Keys");
-    assert_eq!(tonal_synth_type_label(7.0), "Wood");
+    assert_eq!(tonal_synth_type_label(1.0), "Rhodes");
+    assert_eq!(tonal_synth_type_label(2.0), "Wurli");
+    assert_eq!(tonal_synth_type_label(3.0), "Felt");
+    assert_eq!(tonal_synth_type_label(4.0), "Marimba");
+    assert_eq!(tonal_synth_type_label(5.0), "Kalimba");
+    assert_eq!(tonal_synth_type_label(6.0), "Pluck");
+    assert_eq!(tonal_synth_type_label(7.0), "Dulcet");
     assert_eq!(tonal_synth_type_label(8.0), "Cloud Keys");
+    assert_eq!(tonal_synth_type_label(9.0), "Haze");
 }
 
 #[test]
