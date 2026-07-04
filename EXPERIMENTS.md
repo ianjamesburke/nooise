@@ -26,17 +26,19 @@ glints are sparks composited over the field, so they stay sharp even when
 the field is busy.
 
 **Hard rule:** every element's brightness is its voice's *live output
-level*. No floors, no unconditional spawns. A muted voice draws nothing.
+level*, every frame of its life. No floors, no unconditional spawns, no
+fixed visual clocks. A muted voice draws nothing; a decaying voice fades
+its body at exactly the sound's rate.
 
 ## Voice → visual mapping
 
 | Voice | Layer | Body | What it shows |
 |-------|-------|------|---------------|
-| **Pad / chords** | field | the ambient medium | Level drives the whole field's base simmer; **hue follows the chord** (5-colour table). Pad silent → field black and still. |
-| **Bass** | field | persistent node, low-center (0.50, 0.80), warm amber | Level sets ring brightness; **note pitch sets the wavelength** — low notes are long slow rings, high notes pack more rings. Each new note restarts the ring. |
-| **Kick** | field | coherent wavefront from the whole bottom edge | One wave rises per hit and decays; brightness strictly tracks the live kick level. Watch it ripple through the bass rings. |
-| **Tonal** | surface | bright spark; **height = pitch**, cyan→green by pitch | Size and brightness from the live level; successive notes fan across the field. |
-| **Perc** | surface | sharp glint, left flank (x ≈ 0.13), cool blue | One glint per hit, brightness from live level. |
+| **Pad / chords** | field | the flowing medium | Level drives the whole field's flow; **each chord has its own wave character** (spatial frequency + drift speed, morphed on change) plus its own hue. Pad silent → field black and still. |
+| **Bass** | field | persistent node, low-center (0.50, 0.80), warm amber | Live level sets ring brightness (decay included); **note pitch sets the wavelength**. Each new note restarts the ring. |
+| **Kick** | field | radial wave from a point near the bottom | One ring per hit expands upward and outward, pushed hardest straight up; brightness from the live kick level at the hit. Watch it ripple through the bass rings. |
+| **Tonal** | surface | bright spark; **height = pitch**, cyan→green by pitch | Brightness tracks the live envelope for the note's whole length — a long decay glows on, a short pluck winks out. |
+| **Perc** | surface | sharp glint, left flank (x ≈ 0.13), cool blue | One glint per hit; fades at the voice's real decay rate. |
 | **Clap** | surface | sharp glint, right flank (x ≈ 0.87), magenta | Mirrors perc on the right. |
 
 ## Focus mode
@@ -59,13 +61,12 @@ it all play and watch the kick waves pass through the bass rings.
 
 1. **Is silence actually still?** All volumes at zero should be a black,
    motionless screen. Any residual activity is a bug.
-2. **Does the kick read as THE kick?** A coherent wave from the bottom per
-   hit — is it satisfying, and does its brightness track your kick volume?
-3. **Does the field interaction land?** Kick waves passing through bass
-   rings and the pad wash — does the "unified fluid" feel survive, or do the
-   layers feel disconnected?
-4. **Are the surface sparks crisp enough?** Tonal notes at pitch height,
+2. **Does decay read?** Lengthen the tonal/perc decay knobs — do the sparks
+   audibly-visibly hold and release with the sound?
+3. **Does the radial kick land?** A ring from near the bottom pushing up and
+   out — better than the old full-width band? Right size at birth?
+4. **Do the chords flow like the original?** Each chord should have its own
+   wave character, not just its own colour. Does a chord change visibly
+   reshape the flow?
+5. **Are the surface sparks crisp enough?** Tonal notes at pitch height,
    perc left / clap right — can you point at each while everything plays?
-5. **Is true-black silence right, or too dead?** The old build kept a faint
-   ambient breath; now the pad level gates all ambient motion. Keep or
-   soften?
