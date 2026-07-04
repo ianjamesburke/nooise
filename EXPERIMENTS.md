@@ -36,8 +36,8 @@ its body at exactly the sound's rate.
 |-------|-------|------|---------------|
 | **Pad / chords** | field | the flowing medium | Level drives the whole field's flow; **each chord has its own wave character** (spatial frequency + drift speed, morphed on change) plus its own hue. Pad silent → field black and still. |
 | **Bass** | field | persistent node, low-center (0.50, 0.80), warm amber | Live level sets ring brightness (decay included); **note pitch sets the wavelength**. Each new note restarts the ring. |
-| **Kick** | field | radial wave from a point near the bottom | One ring per hit expands upward and outward, pushed hardest straight up; brightness from the live kick level at the hit. Watch it ripple through the bass rings. |
-| **Tonal** | surface | bright spark; **height = pitch**, cyan→green by pitch | Brightness tracks the live envelope for the note's whole length — a long decay glows on, a short pluck winks out. |
+| **Kick** | field | radial wave from a point near the bottom | One ring per hit expands upward and outward, pushed hardest straight up; the origin wanders slowly around center, never hops. Every hit waves — trigger capture is immune to the telemetry publish race. |
+| **Tonal** | surface | bright spark; **position = pitch** (pitch class → column, pitch → height), cyan→green | The same note always lands at the same spot; higher notes sit higher. Brightness tracks the live envelope for the note's whole length. |
 | **Perc** | surface | sharp glint, left flank (x ≈ 0.13), cool blue | One glint per hit; fades at the voice's real decay rate. |
 | **Clap** | surface | sharp glint, right flank (x ≈ 0.87), magenta | Mirrors perc on the right. |
 

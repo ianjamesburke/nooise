@@ -610,6 +610,145 @@ fn pad_flow_pattern_differs_by_chord() {
 }
 
 #[test]
+fn kick_survives_stale_level_at_trigger() {
+    // The audio thread bumps the pulse counter at the trigger sample but
+    // publishes levels only every 256 samples. A UI frame landing in that
+    // gap sees the pulse with the pre-hit (decayed) level; the kick must
+    // still wave once the level arrives instead of being dropped forever.
+    let telemetry = FluidTelemetry::default();
+    let mut fluid = FluidState::new();
+    telemetry
+        .kick_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    fluid.tick(0.016, &telemetry); // level publish hasn't landed yet
+    telemetry.publish_levels(VoiceLevels {
+        kick: 0.3,
+        ..Default::default()
+    });
+    fluid.tick(0.016, &telemetry);
+    let mut bottom = 0.0f32;
+    for ix in 0..=40 {
+        bottom = bottom.max(fluid.field(ix as f32 / 40.0, 0.93).value);
+    }
+    assert!(
+        bottom > 0.1,
+        "kick dropped by the level-publish race, bottom peak {bottom}"
+    );
+}
+
+#[test]
+fn perc_glint_survives_stale_level_at_trigger() {
+    // Same publish race as the kick: the glint must appear once the level
+    // lands one frame later.
+    let telemetry = FluidTelemetry::default();
+    let mut fluid = FluidState::new();
+    telemetry
+        .perc_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    fluid.tick(0.016, &telemetry);
+    telemetry.publish_levels(VoiceLevels {
+        perc: 0.3,
+        ..Default::default()
+    });
+    fluid.tick(0.016, &telemetry);
+    let lit = (0..40)
+        .any(|iy| (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some()));
+    assert!(lit, "perc glint dropped by the level-publish race");
+}
+
+#[test]
+fn kick_origin_wanders_gently_not_randomly() {
+    // Successive kick origins should drift slowly around center-bottom, not
+    // hop across the screen.
+    let telemetry = FluidTelemetry::default();
+    telemetry.publish_levels(VoiceLevels {
+        kick: 0.3,
+        ..Default::default()
+    });
+    let mut fluid = FluidState::new();
+    let mut origins = Vec::new();
+    for pulse in 1..=5u64 {
+        telemetry
+            .kick_pulse
+            .store(pulse, std::sync::atomic::Ordering::Relaxed);
+        fluid.tick(0.05, &telemetry);
+        let (ci, _) = (0..=40)
+            .map(|ix| (ix, fluid.field(ix as f32 / 40.0, 0.93).value))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        origins.push(ci as f32 / 40.0);
+        // Let the wave die before the next hit so the scan sees one wave.
+        for _ in 0..40 {
+            fluid.tick(0.05, &telemetry);
+        }
+    }
+    for pair in origins.windows(2) {
+        let delta = (pair[1] - pair[0]).abs();
+        assert!(
+            delta < 0.06,
+            "kick origin hopped {delta} between hits: {origins:?}"
+        );
+    }
+    for &x in &origins {
+        assert!(
+            (0.4..=0.6).contains(&x),
+            "kick origin strayed from center-bottom: {origins:?}"
+        );
+    }
+}
+
+#[test]
+fn tonal_spark_position_is_deterministic_in_pitch() {
+    // The same note must always land at the same spot, and a higher note
+    // must sit higher, so spatial placement reads as tonality — any
+    // remaining randomness comes from the notes themselves.
+    let spark_pos = |hz: f32, pulses: u64| {
+        let telemetry = FluidTelemetry::default();
+        telemetry.publish_tonal_note(hz);
+        telemetry.publish_levels(VoiceLevels {
+            tonal: 0.3,
+            ..Default::default()
+        });
+        let mut fluid = FluidState::new();
+        for pulse in 1..=pulses {
+            // Fire a few decoy pulses first so any hidden spawn-order state
+            // would show up as a position change.
+            telemetry
+                .tonal_pulse
+                .store(pulse, std::sync::atomic::Ordering::Relaxed);
+            fluid.tick(0.05, &telemetry);
+        }
+        let mut best = (0.0f32, 0.0f32, 0.0f32);
+        for iy in 0..=80 {
+            for ix in 0..=80 {
+                let (nx, ny) = (ix as f32 / 80.0, iy as f32 / 80.0);
+                if let Some(s) = fluid.surface(nx, ny)
+                    && s.value > best.2
+                {
+                    best = (nx, ny, s.value);
+                }
+            }
+        }
+        assert!(best.2 > 0.0, "no tonal spark found for {hz} Hz");
+        (best.0, best.1)
+    };
+
+    let (x1, y1) = spark_pos(440.0, 1);
+    let (x2, y2) = spark_pos(440.0, 3);
+    assert!(
+        (x1 - x2).abs() < 0.03 && (y1 - y2).abs() < 0.03,
+        "same note moved: ({x1},{y1}) vs ({x2},{y2})"
+    );
+
+    let (_, y_low) = spark_pos(220.0, 1);
+    let (_, y_high) = spark_pos(660.0, 1);
+    assert!(
+        y_high < y_low - 0.1,
+        "higher note should sit higher on screen (y {y_high} vs {y_low})"
+    );
+}
+
+#[test]
 fn render_fluid_draws_without_terminal_backend() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();

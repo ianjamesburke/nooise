@@ -440,6 +440,14 @@ pub(crate) fn tonal_node_y(hz: f32) -> f32 {
     0.62 - t * 0.44
 }
 
+/// Tonal note pitch -> horizontal field position by pitch class, so the
+/// same note always lands in the same column and octaves stack vertically
+/// above it. Deterministic in `hz`.
+pub(crate) fn tonal_node_x(hz: f32) -> f32 {
+    let semitone = 12.0 * (hz.max(1.0) / 440.0).log2() + 69.0;
+    0.16 + (semitone.rem_euclid(12.0) / 12.0) * 0.68
+}
+
 /// Map a raw voice level to a 0..1 visual amplitude. Silence -> 0 (node goes
 /// dark); a mild power curve makes quiet voices still legible.
 fn visual_amp(level: f32, gain: f32) -> f32 {
@@ -663,47 +671,43 @@ impl FluidState {
         }
 
         // Kick -> one radial wavefront from a point near the bottom, pushed
-        // strongest straight up. Amplitude is strictly the live kick level:
-        // a muted kick draws nothing. Multiple pulses within one frame
-        // collapse into one front.
+        // strongest straight up. The origin wanders slowly around center;
+        // spawning is unconditional because the trigger pulse can outrun the
+        // control-rate level publish by a few ms — the attack window below
+        // captures the true hit level, and a muted kick stays at amp 0 and
+        // draws nothing. Multiple pulses within one frame collapse into one.
         let kick = telemetry.kick_pulse.load(Ordering::Relaxed);
         if kick > self.last_kick {
-            let amp = visual_amp(levels.kick, KICK_LEVEL_GAIN);
-            if amp > SPAWN_MIN {
-                if self.kicks.len() >= MAX_KICK_WAVES {
-                    self.kicks.remove(0);
-                }
-                self.scatter = (self.scatter + 0.618_034).fract();
-                self.kicks.push(KickWave {
-                    x: 0.35 + self.scatter * 0.3,
-                    age: 0.0,
-                    life: KICK_WAVE_LIFE,
-                    amp,
-                });
+            if self.kicks.len() >= MAX_KICK_WAVES {
+                self.kicks.remove(0);
             }
+            self.kicks.push(KickWave {
+                x: 0.5 + (self.t * KICK_DRIFT_RATE).sin() * KICK_DRIFT_SPAN,
+                age: 0.0,
+                life: KICK_WAVE_LIFE,
+                amp: visual_amp(levels.kick, KICK_LEVEL_GAIN),
+            });
             self.last_kick = kick;
         }
 
-        // Tonal -> a surface spark at the pitch's height; size and
-        // brightness from the live level, hue cyan->green by pitch.
+        // Tonal -> a surface spark whose position is the pitch: pitch class
+        // sets the column, octave-spread pitch sets the height, so the same
+        // note always lands at the same spot. Hue cyan->green by pitch.
         let tonal = telemetry.tonal_pulse.load(Ordering::Relaxed);
         if tonal > self.last_tonal {
             let amp = visual_amp(levels.tonal, TONAL_LEVEL_GAIN);
-            if amp > SPAWN_MIN {
-                self.scatter = (self.scatter + 0.618_034).fract();
-                let hz = telemetry.tonal_note_hz();
-                let pitch_t = ((hz.max(1.0).log2() - 110.0_f32.log2()) / 3.0).clamp(0.0, 1.0);
-                self.push_spark(Spark {
-                    voice: SparkVoice::Tonal,
-                    x: 0.16 + self.scatter * 0.68,
-                    y: tonal_node_y(hz),
-                    age: 0.0,
-                    life: TONAL_SPARK_LIFE,
-                    size: 0.035 + amp * 0.05,
-                    amp,
-                    hue: 190.0 - pitch_t * 60.0,
-                });
-            }
+            let hz = telemetry.tonal_note_hz();
+            let pitch_t = ((hz.max(1.0).log2() - 110.0_f32.log2()) / 3.0).clamp(0.0, 1.0);
+            self.push_spark(Spark {
+                voice: SparkVoice::Tonal,
+                x: tonal_node_x(hz),
+                y: tonal_node_y(hz),
+                age: 0.0,
+                life: TONAL_SPARK_LIFE,
+                size: 0.035 + amp * 0.05,
+                amp,
+                hue: 190.0 - pitch_t * 60.0,
+            });
             self.last_tonal = tonal;
         }
 
@@ -711,40 +715,45 @@ impl FluidState {
         let perc = telemetry.perc_pulse.load(Ordering::Relaxed);
         if perc > self.last_perc {
             let amp = visual_amp(levels.perc, PERC_LEVEL_GAIN);
-            if amp > SPAWN_MIN {
-                self.scatter = (self.scatter + 0.381_966).fract();
-                self.push_spark(glint(
-                    SparkVoice::Perc,
-                    0.13,
-                    0.35 + self.scatter * 0.3,
-                    amp,
-                    210.0,
-                ));
-            }
+            self.scatter = (self.scatter + 0.381_966).fract();
+            self.push_spark(glint(
+                SparkVoice::Perc,
+                0.13,
+                0.35 + self.scatter * 0.3,
+                amp,
+                210.0,
+            ));
             self.last_perc = perc;
         }
         let clap = telemetry.clap_pulse.load(Ordering::Relaxed);
         if clap > self.last_clap {
             let amp = visual_amp(levels.clap, CLAP_LEVEL_GAIN);
-            if amp > SPAWN_MIN {
-                self.scatter = (self.scatter + 0.381_966).fract();
-                self.push_spark(glint(
-                    SparkVoice::Clap,
-                    0.87,
-                    0.35 + self.scatter * 0.3,
-                    amp,
-                    330.0,
-                ));
-            }
+            self.scatter = (self.scatter + 0.381_966).fract();
+            self.push_spark(glint(
+                SparkVoice::Clap,
+                0.87,
+                0.35 + self.scatter * 0.3,
+                amp,
+                330.0,
+            ));
             self.last_clap = clap;
         }
 
+        // Envelope coupling, in two phases. During the attack window a body
+        // captures its voice's rising peak (the trigger pulse can reach the
+        // UI a few ms before the control-rate level publish); after it, the
+        // live envelope only pulls brightness down, so every body fades at
+        // exactly the sound's decay rate. Bodies whose voice never sounds
+        // stay at amp 0, draw nothing, and are pruned after the window.
+        let kick_live = visual_amp(levels.kick, KICK_LEVEL_GAIN);
         for k in &mut self.kicks {
             k.age += dt;
+            if k.age < ATTACK_WINDOW {
+                k.amp = k.amp.max(kick_live);
+            }
         }
-        self.kicks.retain(|k| k.age < k.life);
-        // Live decay: a spark can never outshine its voice's current
-        // envelope, so brightness follows the sound's real decay tail.
+        self.kicks
+            .retain(|k| k.age < k.life && (k.age < ATTACK_WINDOW || k.amp > SPAWN_MIN));
         let live = |voice: SparkVoice| match voice {
             SparkVoice::Tonal => visual_amp(levels.tonal, TONAL_LEVEL_GAIN),
             SparkVoice::Perc => visual_amp(levels.perc, PERC_LEVEL_GAIN),
@@ -752,9 +761,20 @@ impl FluidState {
         };
         for s in &mut self.sparks {
             s.age += dt;
-            s.amp = s.amp.min(live(s.voice));
+            let live = live(s.voice);
+            if s.age < ATTACK_WINDOW {
+                if live > s.amp {
+                    s.amp = live;
+                    if matches!(s.voice, SparkVoice::Tonal) {
+                        s.size = 0.035 + s.amp * 0.05;
+                    }
+                }
+            } else {
+                s.amp = s.amp.min(live);
+            }
         }
-        self.sparks.retain(|s| s.age < s.life && s.amp > 0.005);
+        self.sparks
+            .retain(|s| s.age < s.life && (s.age < ATTACK_WINDOW || s.amp > 0.005));
     }
 
     fn push_spark(&mut self, s: Spark) {
@@ -888,8 +908,15 @@ const BASS_RING_SPEED: f32 = 3.2;
 /// Caps on live transients so per-cell field cost stays bounded fullscreen.
 const MAX_KICK_WAVES: usize = 8;
 const MAX_SPARKS: usize = 24;
-/// Spawn gate: a trigger whose voice level maps below this draws nothing.
+/// A body dimmer than this after its attack window is pruned as silent.
 const SPAWN_MIN: f32 = 0.02;
+/// How long after its trigger a body keeps capturing its voice's rising
+/// level. Covers the trigger-pulse vs level-publish race (~6 ms) plus a
+/// frame or two of UI latency.
+const ATTACK_WINDOW: f32 = 0.12;
+/// The kick origin's slow wander around center-bottom: rad/s and half-span.
+const KICK_DRIFT_RATE: f32 = 0.25;
+const KICK_DRIFT_SPAN: f32 = 0.07;
 /// Minimum surface-layer intensity that claims a cell from the field.
 const SURFACE_MIN: f32 = 0.04;
 /// Spark lifetime ceilings. Generous on purpose: the owning voice's live
