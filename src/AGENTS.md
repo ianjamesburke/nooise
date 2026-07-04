@@ -13,7 +13,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
   - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `render_wav()` (headless wav render), `FluidTelemetry`.
   - `controls.rs` — `FluidControls`, `MasterControls`, and per-voice control structs with defaults.
   - `registry.rs` — the control registry: one `ControlSpec` table per tab (stable ID, label, kind, range, step, entry semantics, reset, accessors, display). `tab_controls`/`apply_delta`/`apply_min`/`apply_value` all derive from it.
-  - `automation.rs` — automation routes keyed by stable control ID. Each route holds one LFO (depth/interval/offset), edited via the `f` submenu in the TUI; LFO field specs own slider ranges, steps, reset targets, and numeric entry behavior. Routes drive runtime modulation and song-code persistence.
+  - `automation.rs` — modulation routes keyed by stable control ID. A control can carry an independent LFO route (`f` submenu: shape/amount/interval/offset) and/or a one-shot envelope route (`e` submenu: amount/attack/decay/trigger); `modulated_control_value_full` sums both, clamps, then snaps. LFO field specs own slider ranges, steps, reset targets, and numeric entry; envelope field behavior lives on `EnvelopeRoute`. LFO shapes cover sine/triangle/ramp/square plus seeded random drift and sample & hold (pure `(seed, cycle index)` hash — no RNG state — reseedable via `LfoRoute::reseed`). Routes drive runtime modulation; song-code persists LFO routes (incl. shape), envelope routes are not persisted on the experiment branch.
   - `song.rs` — versioned binary song-code export/import for controls plus automation records. `Ctrl+S` copies `nooise <code>` and shows a short confirmation; `nooise <code>` applies the decoded song state before audio/TUI startup.
   - `ui.rs` — TUI event loop, tab rendering, fluid visualizer.
   - `engine.rs` — `FluidEngine` (voice mixer), gain smoothers, tempo clock, grid triggers, ambient reverb send, master bus.
@@ -25,9 +25,10 @@ All engine, terminal UI, and live-control code for the nooise binary.
 
 - The `ControlSpec` tables in `fluid/registry.rs` are the single source of truth for every control row and stable song snapshot ID. Adding a control = adding one table entry with a durable ID; never reintroduce per-function match arms for control rows. The `control_registry_specs_are_internally_consistent` test enforces table sanity.
 - Control rows carry `ControlKind`; use it as the source of truth for gain/continuous/timing/discrete semantics.
-- LFO submenu rows derive from `LfoFieldSpec`; keep LFO slider range, step, reset, display, and numeric-entry behavior there instead of adding per-key UI branches.
-- Per-slider `f` automation is the user-facing LFO path; do not add voice-specific LFO rate/depth controls to core slider tabs.
-- New LFO routes must start at 0% amount; opening the editor should be audible-neutral until the user raises amount.
+- Continuous LFO submenu rows derive from `LfoFieldSpec` (range/step/reset/display/entry); the discrete LFO shape field and all envelope fields are handled on `LfoRoute`/`EnvelopeRoute` instead of per-key UI branches.
+- Per-slider `f` (LFO) and `e` (envelope) automation are the user-facing modulation paths; do not add voice-specific LFO/envelope rate/depth controls to core slider tabs.
+- New LFO routes start at 0% amount and new envelope routes at 0 amount; opening either editor is audible-neutral until the user raises amount, and `close_editor` drops a still-neutral route.
+- Every modulated value shown or heard must come from `modulated_control_value_full` (LFO + envelope summed, clamped, snapped); never add divergent UI-only modulation math.
 - Grid-timing controls carry `LfoSnap` in their `ControlSpec` (intervals snap modulation to power-of-two subdivisions, offsets to their step grid); every modulated value — engine and UI marker alike — must come from `modulated_control_value` so what is shown matches what is heard. `GridTrigger` only pulls scheduled hits earlier between fires; grids that move later latch at the next fire so modulation can never starve a trigger.
 - Live-read gain controls are ramped by registry-derived `GainSmoothers` in `FluidEngine`; every unique `ControlKind::Gain` spec must get a smoother automatically.
 - TUI automation edits must go through `PublishedAutomation` so the shared audio-thread snapshot is stored on every mutation.
