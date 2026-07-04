@@ -152,7 +152,7 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
             synth_type: synth_type as f32,
             ..controls.clone()
         };
-        let mut tonal = TonalEngine::new(SAMPLE_RATE);
+        let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
 
         let _ = tonal.next(
             &controls,
@@ -231,7 +231,7 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
         randomness: 0.0,
         ..TonalControls::default()
     };
-    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+    let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
 
     let _ = tonal.next(
         &controls,
@@ -265,7 +265,7 @@ fn tonal_evolve_rate_maps_to_actual_notes_per_cycle() {
 
 #[test]
 fn tonal_engine_evolves_one_actual_note_at_low_rate() {
-    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+    let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
     tonal.rng = StdRng::seed_from_u64(5);
     let before = tonal.evolved_phrase.clone();
 
@@ -281,7 +281,7 @@ fn tonal_engine_evolves_one_actual_note_at_low_rate() {
 
 #[test]
 fn tonal_engine_evolves_more_notes_at_high_rate() {
-    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+    let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
     tonal.rng = StdRng::seed_from_u64(5);
     let before = tonal.evolved_phrase.clone();
 
@@ -310,6 +310,80 @@ fn tab_previous_wraps_back_one_tab() {
 }
 
 #[test]
+fn bass_spatial_freq_rises_with_pitch() {
+    // A low note gives a long wavelength (fewer rings); higher notes pack more.
+    let low = bass_spatial_freq(midi_to_hz(33)); // A0-ish, deep bass
+    let mid = bass_spatial_freq(midi_to_hz(45)); // A2
+    let high = bass_spatial_freq(midi_to_hz(57)); // A3
+    assert!(low < mid, "expected {low} < {mid}");
+    assert!(mid < high, "expected {mid} < {high}");
+    // Clamped to a bounded, positive range for the field loop.
+    assert!(bass_spatial_freq(1.0) >= 3.0);
+    assert!(bass_spatial_freq(20_000.0) <= 16.0);
+}
+
+#[test]
+fn tonal_node_y_rises_for_higher_notes() {
+    // Higher pitch sits higher on the screen (smaller y).
+    let low = tonal_node_y(midi_to_hz(45));
+    let mid = tonal_node_y(midi_to_hz(57));
+    let high = tonal_node_y(midi_to_hz(67));
+    assert!(high < mid, "expected {high} < {mid}");
+    assert!(mid < low, "expected {mid} < {low}");
+    // Stays within the visible field.
+    assert!((0.0..=1.0).contains(&tonal_node_y(midi_to_hz(45))));
+    assert!((0.0..=1.0).contains(&tonal_node_y(midi_to_hz(67))));
+}
+
+#[test]
+fn silent_field_stays_dark() {
+    // With no telemetry activity every node is still; the field brightness
+    // must stay near the ambient floor so a listener can tell nothing plays.
+    let telemetry = FluidTelemetry::default();
+    let mut fluid = FluidState::new();
+    for _ in 0..30 {
+        fluid.tick(0.05, &telemetry);
+    }
+    let mut peak = 0.0f32;
+    for iy in 0..20 {
+        for ix in 0..20 {
+            let v = fluid.field(ix as f32 / 20.0, iy as f32 / 20.0).value;
+            peak = peak.max(v);
+        }
+    }
+    assert!(peak < 0.2, "silent field should be dark, peak was {peak}");
+}
+
+#[test]
+fn active_voice_lights_its_region() {
+    // Publish a strong bass level; the bass node's home region must brighten
+    // well above a far-away silent region.
+    let telemetry = FluidTelemetry::default();
+    telemetry.publish_bass_note(midi_to_hz(45));
+    telemetry.publish_levels(VoiceLevels {
+        bass: 1.0,
+        ..Default::default()
+    });
+    let mut fluid = FluidState::new();
+    for _ in 0..40 {
+        fluid.tick(0.05, &telemetry);
+    }
+    // Sample the brightest cell near the bass home (0.5, 0.80).
+    let mut near_peak = 0.0f32;
+    for iy in 14..18 {
+        for ix in 8..12 {
+            let v = fluid.field(ix as f32 / 20.0, iy as f32 / 20.0).value;
+            near_peak = near_peak.max(v);
+        }
+    }
+    let far = fluid.field(0.05, 0.05).value;
+    assert!(
+        near_peak > far + 0.2,
+        "bass region ({near_peak}) should outshine a far corner ({far})"
+    );
+}
+
+#[test]
 fn render_fluid_draws_without_terminal_backend() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();
@@ -331,6 +405,7 @@ fn render_fluid_draws_without_terminal_backend() {
                 &fluid,
                 &automation,
                 None,
+                false,
             )
         })
         .unwrap();
@@ -534,7 +609,7 @@ fn full_tonal_reverb_does_not_boost_tonal_rms() {
             reverb_mix,
             ..TonalControls::default()
         };
-        let mut tonal = TonalEngine::new(SAMPLE_RATE);
+        let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
         tonal.rng = StdRng::seed_from_u64(11);
         let mut send = AmbientReverbSend::new(SAMPLE_RATE);
         let mut sum = 0.0;
@@ -601,6 +676,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
                     &fluid,
                     &automation,
                     None,
+                    false,
                 )
             })
             .unwrap();
@@ -1208,7 +1284,7 @@ fn bass_controls_adjust_and_clamp() {
 #[test]
 fn bass_engine_follows_pad_chord_root_across_advances() {
     let sample_rate = 48_000.0;
-    let mut bass = BassEngine::new(sample_rate);
+    let mut bass = BassEngine::new(sample_rate, Arc::new(FluidTelemetry::default()));
     let pad = PadControls {
         chord_bars: 1.0 / 4.0, // advance every beat, fast enough to observe within the test
         ..PadControls::default()
@@ -1328,7 +1404,7 @@ fn perc_continuous_mode_pushes_no_hits() {
         ..Default::default()
     };
 
-    let mut engine = PercEngine::new(SAMPLE_RATE);
+    let mut engine = PercEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
     engine.rng = StdRng::seed_from_u64(7);
     let bpm = 82.0;
     for sample in 0..(SAMPLE_RATE as u64 * 2) {
@@ -1346,7 +1422,7 @@ fn perc_continuous_mode_has_no_periodic_rms_dips() {
         ..Default::default()
     };
 
-    let mut engine = PercEngine::new(SAMPLE_RATE);
+    let mut engine = PercEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
     engine.rng = StdRng::seed_from_u64(7);
     let bpm = 82.0;
     let window_samples = (SAMPLE_RATE * 0.01) as usize;

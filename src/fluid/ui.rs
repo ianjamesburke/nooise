@@ -19,6 +19,9 @@ pub(crate) fn ui_loop(
     let started = Instant::now();
     let mut save_message: Option<(String, Instant)> = None;
     let mut automation = PublishedAutomation::new(initial_automation, automation_shared);
+    // "Just watch it" mode: hide the control panel so the full field shows.
+    // Any key returns to the controls.
+    let mut visuals_focus = false;
 
     loop {
         let c = FluidControls::clone(&controls.load());
@@ -61,6 +64,7 @@ pub(crate) fn ui_loop(
                 &fluid,
                 automation.state(),
                 footer_message,
+                visuals_focus,
             )
         })?;
 
@@ -68,6 +72,11 @@ pub(crate) fn ui_loop(
             && let Event::Key(key) = event::read()?
         {
             if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            // In focus mode any key returns to the controls (and is consumed).
+            if visuals_focus {
+                visuals_focus = false;
                 continue;
             }
             if let Some(entry) = numeric_entry.as_mut() {
@@ -111,6 +120,7 @@ pub(crate) fn ui_loop(
                     lfo_selected = 0;
                 }
                 KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('V') => visuals_focus = true,
                 KeyCode::Tab => {
                     if automation.state().is_editor_open() {
                         automation.edit(AutomationState::close_editor);
@@ -360,6 +370,7 @@ pub(crate) fn render(
     fluid: &FluidState,
     automation: &AutomationState,
     update_message: Option<&str>,
+    visuals_focus: bool,
 ) {
     render_fluid(
         f,
@@ -372,6 +383,7 @@ pub(crate) fn render(
         fluid,
         automation,
         update_message,
+        visuals_focus,
     );
 }
 
@@ -391,84 +403,355 @@ impl NumericDisplay<'_> {
 }
 
 // ============================================================
-// Fluid visualizer: chords drive the field colour, kicks
-// spawn ripples. Driven entirely by live audio-thread telemetry.
+// Fluid visualizer: a system of resonating NODES, one visual body
+// per sounding voice. Bass and pad are persistent nodes whose
+// amplitude tracks their live level; kick/tonal/perc/clap spawn
+// transient wavelets on each trigger. All waves superpose into the
+// shared field; each contributes a hue tint so overlaps read as
+// mixed colour. Driven entirely by live audio-thread telemetry.
 // ============================================================
 
 pub(crate) const FLUID_GRADIENT: &[char] = &[' ', '·', '∙', '•', '●', '◉', '⬤'];
-pub(crate) const RIPPLE_LIFETIME: f32 = 3.0;
-pub(crate) const RIPPLE_SPEED: f32 = 0.42; // normalized units / s
 
-/// One chord = one hue. Cycles with the pad engine's 5-chord table.
+/// Cap on live transient wavelets so the per-cell field cost stays bounded on
+/// a fullscreen terminal (oldest are dropped past this).
+pub(crate) const MAX_WAVELETS: usize = 28;
+
+/// One chord = one hue. Cycles with the pad engine's chord table; drives the
+/// pad node's hue and the ambient wash behind the whole field.
 pub(crate) fn hue_for_chord(index: u64) -> f32 {
     const HUES: [f32; 5] = [205.0, 270.0, 325.0, 158.0, 38.0];
     HUES[(index % HUES.len() as u64) as usize]
 }
 
+/// Bass note pitch -> spatial frequency (rings per unit distance). A low note
+/// gives a long, slow wavelength (few rings); a high note packs more rings in.
+/// Monotonically increasing in `hz`.
+pub(crate) fn bass_spatial_freq(hz: f32) -> f32 {
+    let hz = hz.clamp(20.0, 500.0);
+    let octaves = (hz / 55.0).log2(); // 0 at A1 (55 Hz)
+    (5.0 + octaves * 2.2).clamp(3.0, 16.0)
+}
+
+/// Tonal note pitch -> vertical field position. High notes sit higher on the
+/// screen (smaller y), low notes lower. Monotonically decreasing in `hz`.
+pub(crate) fn tonal_node_y(hz: f32) -> f32 {
+    let hz = hz.clamp(55.0, 2000.0);
+    let lo = 110.0_f32.log2();
+    let hi = 784.0_f32.log2();
+    let t = ((hz.log2() - lo) / (hi - lo)).clamp(0.0, 1.0);
+    0.62 - t * 0.44
+}
+
+/// Map a raw voice level to a 0..1 visual amplitude. Silence -> 0 (node goes
+/// dark); a mild power curve makes quiet voices still legible.
+fn visual_amp(level: f32, gain: f32) -> f32 {
+    (level * gain).clamp(0.0, 1.0).powf(0.7)
+}
+
+/// One-pole smoothing factor for a time constant `tau` seconds over step `dt`.
+fn smooth(dt: f32, tau: f32) -> f32 {
+    1.0 - (-dt / tau).exp()
+}
+
+/// Move a hue toward `target` along the shortest arc on the colour wheel.
+fn lerp_hue(cur: f32, target: f32, a: f32) -> f32 {
+    let delta = (target - cur + 540.0).rem_euclid(360.0) - 180.0;
+    (cur + delta * a).rem_euclid(360.0)
+}
+
+/// A persistent voice body: a home position that radiates concentric waves
+/// whose amplitude tracks the voice's live level.
+struct Node {
+    x: f32,
+    y: f32,
+    reach: f32,
+    amp: f32,
+    spatial_freq: f32,
+    phase: f32,
+    hue: f32,
+}
+
+impl Node {
+    fn new(x: f32, y: f32, reach: f32, spatial_freq: f32, hue: f32) -> Self {
+        Self {
+            x,
+            y,
+            reach,
+            amp: 0.0,
+            spatial_freq,
+            phase: 0.0,
+            hue,
+        }
+    }
+}
+
+/// A transient traveling ring spawned by a percussive/discrete trigger.
+struct Wavelet {
+    x: f32,
+    y: f32,
+    age: f32,
+    life: f32,
+    speed: f32,      // wavefront travel speed (units/s)
+    freq: f32,       // ripple spatial frequency
+    ring_speed: f32, // internal oscillation speed
+    tight: f32,      // wavefront sharpness
+    amp: f32,
+    hue: f32,
+}
+
+/// Sampled field value plus the dominant hue at a point.
+pub(crate) struct FieldSample {
+    pub value: f32,
+    pub hue: f32,
+}
+
 pub(crate) struct FluidState {
     t: f32,
-    ripples: Vec<(f32, f32, f32)>, // (cx, cy, age) in 0..1 field coords
+    bass: Node,
+    pad: Node,
+    perc: Node,
+    clap: Node,
+    wavelets: Vec<Wavelet>,
+    ambient_hue: f32,
     last_kick: u64,
-    hue: f32,
+    last_bass: u64,
+    last_tonal: u64,
+    last_perc: u64,
+    last_clap: u64,
+    scatter: f32,
 }
 
 impl FluidState {
     pub(crate) fn new() -> Self {
+        let hue0 = hue_for_chord(0);
         Self {
             t: 0.0,
-            ripples: Vec::new(),
+            // bass low-center, pad wide upper arc, perc/clap on the flanks.
+            bass: Node::new(0.5, 0.80, 0.55, 7.0, 30.0),
+            pad: Node::new(0.5, 0.24, 0.72, 3.2, hue0),
+            perc: Node::new(0.13, 0.5, 0.30, 20.0, 210.0),
+            clap: Node::new(0.87, 0.5, 0.30, 20.0, 330.0),
+            wavelets: Vec::with_capacity(MAX_WAVELETS),
+            ambient_hue: hue0,
             last_kick: 0,
-            hue: hue_for_chord(0),
+            last_bass: 0,
+            last_tonal: 0,
+            last_perc: 0,
+            last_clap: 0,
+            scatter: 0.0,
         }
     }
 
     pub(crate) fn tick(&mut self, dt: f32, telemetry: &FluidTelemetry) {
         self.t += dt;
+        let levels = telemetry.levels();
+        let chord_hue = hue_for_chord(telemetry.chord_index.load(Ordering::Relaxed));
+        self.ambient_hue = lerp_hue(self.ambient_hue, chord_hue, smooth(dt, 1.2));
 
-        // kick pulses -> ripples (golden-angle scatter so they don't stack)
+        // Bass node: amplitude from level, wavelength retunes to the note.
+        let bass_sf = bass_spatial_freq(telemetry.bass_note_hz());
+        self.bass.spatial_freq += (bass_sf - self.bass.spatial_freq) * smooth(dt, 0.25);
+        let bass_amp = visual_amp(levels.bass, BASS_LEVEL_GAIN);
+        self.bass.amp += (bass_amp - self.bass.amp) * smooth(dt, 0.12);
+        self.bass.phase += dt * BASS_RING_SPEED;
+
+        // Pad node: broad slow undulation, hue follows the chord.
+        let pad_amp = visual_amp(levels.pad, PAD_LEVEL_GAIN);
+        self.pad.amp += (pad_amp - self.pad.amp) * smooth(dt, 0.3);
+        self.pad.hue = lerp_hue(self.pad.hue, chord_hue, smooth(dt, 0.8));
+        self.pad.phase += dt * PAD_RING_SPEED;
+
+        // Perc/clap flank nodes: a persistent faint glow from their level, so a
+        // steady stream reads as a lit flank between the sharp glints below.
+        self.perc.amp += (visual_amp(levels.perc, PERC_LEVEL_GAIN) - self.perc.amp)
+            * smooth(dt, 0.18);
+        self.perc.phase += dt * 6.0;
+        self.clap.amp += (visual_amp(levels.clap, CLAP_LEVEL_GAIN) - self.clap.amp)
+            * smooth(dt, 0.18);
+        self.clap.phase += dt * 6.0;
+
+        // Kick -> ripples along the bottom edge (golden-angle scatter).
         let kick = telemetry.kick_pulse.load(Ordering::Relaxed);
         if kick > self.last_kick {
             let new = (kick - self.last_kick).min(4);
             for k in 0..new {
                 let n = (self.last_kick + k + 1) as f32;
-                // Kick ripples originate along the bottom edge and radiate up,
-                // keeping them clear of the centered control panel.
-                let cx = (n * 0.618_034).fract();
+                let cx = (n * 0.618_034).fract().clamp(0.06, 0.94);
                 let cy = 0.92 + (n * 0.381_966).fract() * 0.06;
-                self.ripples.push((cx.clamp(0.06, 0.94), cy, 0.0));
+                let amp = visual_amp(levels.kick, KICK_LEVEL_GAIN).max(0.4);
+                self.push_wavelet(Wavelet {
+                    x: cx,
+                    y: cy,
+                    age: 0.0,
+                    life: 3.0,
+                    speed: 0.42,
+                    freq: 34.0,
+                    ring_speed: 9.0,
+                    tight: 12.0,
+                    amp,
+                    hue: 40.0,
+                });
             }
             self.last_kick = kick;
         }
 
-        for r in &mut self.ripples {
-            r.2 += dt;
+        // Bass trigger: restart the node's ring so a fresh wavefront emanates.
+        let bass_pulse = telemetry.bass_pulse.load(Ordering::Relaxed);
+        if bass_pulse > self.last_bass {
+            self.bass.phase = 0.0;
+            self.last_bass = bass_pulse;
         }
-        self.ripples.retain(|r| r.2 < RIPPLE_LIFETIME);
+
+        // Tonal -> a bright short-wavelength wavelet at the pitch's position,
+        // drifting across the mid-field so successive notes fan out.
+        let tonal = telemetry.tonal_pulse.load(Ordering::Relaxed);
+        if tonal > self.last_tonal {
+            let new = (tonal - self.last_tonal).min(3);
+            for _ in 0..new {
+                self.scatter = (self.scatter + 0.618_034).fract();
+                let hz = telemetry.tonal_note_hz();
+                let x = 0.16 + self.scatter * 0.68;
+                let y = tonal_node_y(hz);
+                let pitch_t = ((hz.max(1.0).log2() - 110.0_f32.log2()) / 3.0).clamp(0.0, 1.0);
+                let amp = visual_amp(levels.tonal, TONAL_LEVEL_GAIN).max(0.45);
+                self.push_wavelet(Wavelet {
+                    x,
+                    y,
+                    age: 0.0,
+                    life: 1.6,
+                    speed: 0.5,
+                    freq: 46.0,
+                    ring_speed: 12.0,
+                    tight: 16.0,
+                    amp,
+                    hue: 190.0 - pitch_t * 60.0,
+                });
+            }
+            self.last_tonal = tonal;
+        }
+
+        // Perc -> small sharp glint on the left flank.
+        let perc = telemetry.perc_pulse.load(Ordering::Relaxed);
+        if perc > self.last_perc {
+            self.scatter = (self.scatter + 0.381_966).fract();
+            let y = 0.35 + self.scatter * 0.3;
+            self.push_wavelet(glint(0.13, y, 210.0));
+            self.last_perc = perc;
+        }
+
+        // Clap -> small sharp glint on the right flank.
+        let clap = telemetry.clap_pulse.load(Ordering::Relaxed);
+        if clap > self.last_clap {
+            self.scatter = (self.scatter + 0.381_966).fract();
+            let y = 0.35 + self.scatter * 0.3;
+            self.push_wavelet(glint(0.87, y, 330.0));
+            self.last_clap = clap;
+        }
+
+        for w in &mut self.wavelets {
+            w.age += dt;
+        }
+        self.wavelets.retain(|w| w.age < w.life);
     }
 
-    /// Liquid field value in 0..1 at normalized coords, with ripple distortion.
-    pub(crate) fn field(&self, nx: f32, ny: f32) -> f32 {
-        let z = self.t * 0.5;
-        let mut v = 0.0;
-        v += (nx * 6.0 + z).sin() * (ny * 5.0 - z * 0.7).cos();
-        v += ((nx * 3.3 - ny * 4.1) + z * 1.3).sin() * 0.7;
-        v += (nx * 11.0 + ny * 9.0 - z * 0.4).sin() * 0.35;
-        v += ((nx + ny) * 7.5 + (z * 0.9).sin() * 2.0).cos() * 0.5;
+    fn push_wavelet(&mut self, w: Wavelet) {
+        if self.wavelets.len() >= MAX_WAVELETS {
+            self.wavelets.remove(0);
+        }
+        self.wavelets.push(w);
+    }
 
-        for &(cx, cy, age) in &self.ripples {
-            let dx = nx - cx;
-            let dy = ny - cy;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let front = age * RIPPLE_SPEED;
-            let fade = (1.0 - age / RIPPLE_LIFETIME).max(0.0);
-            // small, tight ripple rising from the bottom edge
-            let ring = (-((dist - front) * 12.0).powi(2)).exp();
-            v += (dist * 34.0 - age * 9.0).sin() * ring * fade * 1.6;
+    /// Sample the superposed field at normalized coords. Returns brightness in
+    /// 0..1 (near 0 where no voice sounds) and the dominant hue at that point.
+    pub(crate) fn field(&self, nx: f32, ny: f32) -> FieldSample {
+        // Faint ambient drift so silence still breathes without lighting up.
+        let z = self.t * 0.4;
+        let mut v = ((nx * 5.0 + z).sin() * (ny * 4.0 - z * 0.6).cos()
+            + ((nx * 3.0 - ny * 3.5) + z * 1.1).sin() * 0.5)
+            * AMBIENT_DRIFT;
+        let mut energy = AMBIENT_FLOOR;
+        let mut best_w = 0.0f32;
+        let mut hue = self.ambient_hue;
+
+        for node in [&self.bass, &self.pad, &self.perc, &self.clap] {
+            if node.amp < 1e-3 {
+                continue;
+            }
+            let dx = nx - node.x;
+            let dy = ny - node.y;
+            let d2 = dx * dx + dy * dy;
+            let falloff = (-d2 / (node.reach * node.reach)).exp();
+            let w = node.amp * falloff;
+            if w > 1e-4 {
+                let dist = d2.sqrt();
+                v += (dist * node.spatial_freq - node.phase).sin() * w;
+                energy += w;
+                if w > best_w {
+                    best_w = w;
+                    hue = node.hue;
+                }
+            }
         }
 
-        (v / 3.0).tanh() * 0.5 + 0.5
+        for wl in &self.wavelets {
+            let dx = nx - wl.x;
+            let dy = ny - wl.y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let front = wl.age * wl.speed;
+            let fade = (1.0 - wl.age / wl.life).max(0.0);
+            let ring = (-((dist - front) * wl.tight).powi(2)).exp();
+            let w = ring * fade * wl.amp;
+            if w > 1e-4 {
+                v += (dist * wl.freq - wl.age * wl.ring_speed).sin() * w;
+                energy += w;
+                if w > best_w {
+                    best_w = w;
+                    hue = wl.hue;
+                }
+            }
+        }
+
+        let wave = (v * FIELD_GAIN).tanh() * 0.5 + 0.5;
+        let value = ((0.35 + 0.65 * wave) * (energy * ENERGY_GAIN).min(1.0)).clamp(0.0, 1.0);
+        FieldSample { value, hue }
     }
 }
+
+/// A small, short-lived flank glint (perc/clap).
+fn glint(x: f32, y: f32, hue: f32) -> Wavelet {
+    Wavelet {
+        x,
+        y,
+        age: 0.0,
+        life: 0.55,
+        speed: 0.6,
+        freq: 60.0,
+        ring_speed: 14.0,
+        tight: 24.0,
+        amp: 0.6,
+        hue,
+    }
+}
+
+// Per-voice level -> visual amplitude gains, and wave motion/mix constants.
+// Voice output magnitudes are small; these lift them into a legible 0..1 range.
+const BASS_LEVEL_GAIN: f32 = 5.0;
+const PAD_LEVEL_GAIN: f32 = 6.0;
+const KICK_LEVEL_GAIN: f32 = 5.0;
+const TONAL_LEVEL_GAIN: f32 = 6.0;
+const PERC_LEVEL_GAIN: f32 = 8.0;
+const CLAP_LEVEL_GAIN: f32 = 6.0;
+const BASS_RING_SPEED: f32 = 3.2;
+const PAD_RING_SPEED: f32 = 1.1;
+/// Weight of the always-on ambient plasma (kept low so voices dominate).
+const AMBIENT_DRIFT: f32 = 0.5;
+/// Baseline energy so a silent field is near-black but not pure void.
+const AMBIENT_FLOOR: f32 = 0.06;
+/// Scales summed local wave energy into cell brightness.
+const ENERGY_GAIN: f32 = 1.6;
+/// Soft-clamp gain on the summed wave before mapping to 0..1.
+const FIELD_GAIN: f32 = 0.85;
 
 pub(crate) fn fluid_hsv(h: f32, s: f32, v: f32) -> Color {
     let h = ((h % 360.0) + 360.0) % 360.0;
@@ -498,28 +781,27 @@ impl Widget for FluidWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let w = area.width.max(1) as f32;
         let h = area.height.max(1) as f32;
-        let base = self.fluid.hue;
 
         for y in 0..area.height {
             for x in 0..area.width {
                 let nx = x as f32 / w;
                 let ny = y as f32 / h;
-                let v = self.fluid.field(nx, ny);
+                let sample = self.fluid.field(nx, ny);
+                let v = sample.value;
 
                 // edge vignette
                 let edge_x = (nx.min(1.0 - nx) * 2.0).min(1.0);
                 let edge_y = (ny.min(1.0 - ny) * 2.0).min(1.0);
                 let vig = (edge_x.min(edge_y) * 1.4).clamp(0.2, 1.0);
 
-                let hue = base + (v - 0.5) * 45.0;
-                let sat = (0.5 + v * 0.3).clamp(0.0, 1.0);
-                let val = ((0.12 + v * 0.8) * vig).clamp(0.0, 1.0);
+                let sat = (0.55 + v * 0.25).clamp(0.0, 1.0);
+                let val = ((0.05 + v * 0.9) * vig).clamp(0.0, 1.0);
 
                 let gi = ((v * (FLUID_GRADIENT.len() - 1) as f32).round() as usize)
                     .min(FLUID_GRADIENT.len() - 1);
                 buf[(area.x + x, area.y + y)]
                     .set_char(FLUID_GRADIENT[gi])
-                    .set_style(Style::default().fg(fluid_hsv(hue, sat, val)));
+                    .set_style(Style::default().fg(fluid_hsv(sample.hue, sat, val)));
             }
         }
     }
@@ -550,9 +832,22 @@ pub(crate) fn render_fluid(
     fluid: &FluidState,
     automation: &AutomationState,
     update_message: Option<&str>,
+    visuals_focus: bool,
 ) {
     let area = f.area();
     f.render_widget(FluidWidget { fluid }, area);
+
+    // Focus mode: show the full field, no control panel. A one-line hint sits
+    // at the bottom so the user knows any key returns.
+    if visuals_focus {
+        f.render_widget(
+            Paragraph::new("visuals focus — press any key to return")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Rgb(150, 160, 185))),
+            Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+        );
+        return;
+    }
 
     // centered control overlay
     let pw = ((area.width as f32 * 0.62) as u16)
