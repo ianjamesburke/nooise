@@ -45,6 +45,7 @@ pub(crate) fn ui_loop(
         let now = Instant::now();
         let dt = (now - last).as_secs_f32().min(0.05);
         last = now;
+        fluid.set_harmony(c.pad.progression, c.master.tune);
         fluid.tick(dt, &telemetry);
 
         let cursor_visible = (started.elapsed().as_millis() / 400).is_multiple_of(2);
@@ -403,13 +404,15 @@ impl NumericDisplay<'_> {
 }
 
 // ============================================================
-// Fluid visualizer, two layers. LAYER 1 (fluid field): pad is the
-// ambient medium, bass radiates rings, kick injects wavefronts from
-// the bottom edge — all superpose, so the low end visibly interacts.
-// LAYER 2 (surface): tonal notes and perc/clap glints are discrete
-// sparks composited over the field so they stay crisp. Every element
-// is gated by its voice's live telemetry level: silence is a still,
-// black screen.
+// Fluid visualizer: one shared fluid. The chord tones are four
+// vibrating nodes stacked down the center column, radiating
+// micro-ripples that are the field's default motion and colour.
+// Every other voice strikes the same fluid: the kick pulses a
+// radial wave from the bottom, bass radiates rings low-center,
+// tonal notes ripple from their pitch-anchored spot, perc and clap
+// each ripple from a fixed home — so everything superposes and
+// collides. Every element is gated by its voice's live telemetry
+// level: silence is a still, black screen.
 // ============================================================
 
 pub(crate) const FLUID_GRADIENT: &[char] = &[' ', '·', '∙', '•', '●', '◉', '⬤'];
@@ -501,96 +504,66 @@ struct KickWave {
     amp: f32,
 }
 
-/// Per-chord wave character for the pad flow: the spatial frequencies and
-/// drift speed of the flowing plasma, so each chord literally shapes the
-/// field differently instead of only recoloring it. Indexed alongside
-/// `hue_for_chord`'s 5-chord table.
-#[derive(Clone, Copy)]
-struct ChordWave {
-    fx: f32,
-    fy: f32,
-    cross: f32,
-    diag: f32,
-    drift: f32,
+/// A chord tone's vibrating node: fixed to the center column at its pitch
+/// height, radiating fine micro-ripples whose wavelength and vibration rate
+/// follow the note. All four tones superpose in the one fluid, so their
+/// ripples collide with each other and with the kick waves.
+struct ChordNode {
+    y: f32,
+    spatial_freq: f32,
+    speed: f32,
+    phase: f32,
 }
 
-const CHORD_WAVES: [ChordWave; 5] = [
-    // Settled home chord: broad, even swells.
-    ChordWave {
-        fx: 6.0,
-        fy: 5.0,
-        cross: 3.3,
-        diag: 7.5,
-        drift: 0.50,
-    },
-    // Lifted: taller vertical motion, quicker drift.
-    ChordWave {
-        fx: 4.4,
-        fy: 6.6,
-        cross: 4.6,
-        diag: 9.2,
-        drift: 0.62,
-    },
-    // Tense: tighter horizontal ripple, slower drift.
-    ChordWave {
-        fx: 7.2,
-        fy: 3.8,
-        cross: 5.4,
-        diag: 6.1,
-        drift: 0.44,
-    },
-    // Bright: fine diagonal shimmer, fastest drift.
-    ChordWave {
-        fx: 5.2,
-        fy: 5.8,
-        cross: 2.8,
-        diag: 10.5,
-        drift: 0.70,
-    },
-    // Warm resolve: the longest, laziest swells.
-    ChordWave {
-        fx: 3.6,
-        fy: 4.4,
-        cross: 4.1,
-        diag: 5.4,
-        drift: 0.38,
-    },
-];
-
-impl ChordWave {
-    /// Ease every parameter toward `target` so chord changes morph the flow
-    /// instead of snapping it.
-    fn approach(&mut self, target: ChordWave, a: f32) {
-        self.fx += (target.fx - self.fx) * a;
-        self.fy += (target.fy - self.fy) * a;
-        self.cross += (target.cross - self.cross) * a;
-        self.diag += (target.diag - self.diag) * a;
-        self.drift += (target.drift - self.drift) * a;
+impl ChordNode {
+    fn tuned_to(hz: f32) -> Self {
+        Self {
+            y: tonal_node_y(hz),
+            spatial_freq: chord_ripple_freq(hz),
+            speed: chord_vibration(hz),
+            phase: 0.0,
+        }
     }
 }
 
-/// Which voice a surface spark belongs to, so its brightness can keep
-/// tracking that voice's live envelope after it spawns.
+/// Chord tone pitch -> micro-ripple spatial frequency: higher notes vibrate
+/// with finer ripples. Monotonically increasing in `hz`.
+pub(crate) fn chord_ripple_freq(hz: f32) -> f32 {
+    let octaves = (hz.clamp(30.0, 2000.0) / 55.0).log2();
+    (9.0 + octaves * 3.5).clamp(8.0, 26.0)
+}
+
+/// Chord tone pitch -> node vibration rate: higher notes shimmer faster.
+fn chord_vibration(hz: f32) -> f32 {
+    let octaves = (hz.clamp(30.0, 2000.0) / 55.0).log2();
+    2.0 + octaves * 1.2
+}
+
+/// Which voice a ripple belongs to, so its brightness can keep tracking
+/// that voice's live envelope after it spawns.
 #[derive(Clone, Copy)]
-enum SparkVoice {
+enum RippleVoice {
     Tonal,
     Perc,
     Clap,
 }
 
-/// A discrete surface element (tonal note, perc/clap glint) composited over
-/// the field so it stays crisp when the field is busy. `amp` is clamped to
-/// the owning voice's live level every frame, so the spark decays exactly
-/// with the sound: a long tonal decay glows on, a choked perc winks out.
-struct Spark {
-    voice: SparkVoice,
+/// A transient ring expanding from the point its voice struck: tonal notes
+/// from their pitch-anchored spot, perc and clap from their fixed homes. It
+/// lives in the same fluid as everything else, so it superposes with the
+/// chord nodes' ripples and the kick waves. `amp` is clamped to the owning
+/// voice's live level after its attack window, so the ripple decays exactly
+/// with the sound: a long tonal decay rings on, a choked perc winks out.
+struct Ripple {
+    voice: RippleVoice,
     x: f32,
     y: f32,
     age: f32,
     life: f32,
-    size: f32,
     amp: f32,
     hue: f32,
+    tight: f32,
+    speed: f32,
 }
 
 /// Sampled field value plus the dominant hue at a point.
@@ -603,17 +576,17 @@ pub(crate) struct FluidState {
     t: f32,
     bass: Node,
     pad_amp: f32,
-    pad_phase: f32,
-    wave: ChordWave,
+    chords: [ChordNode; 4],
+    progression: usize,
+    tune: f32,
     kicks: Vec<KickWave>,
-    sparks: Vec<Spark>,
+    ripples: Vec<Ripple>,
     ambient_hue: f32,
     last_kick: u64,
     last_bass: u64,
     last_tonal: u64,
     last_perc: u64,
     last_clap: u64,
-    scatter: f32,
 }
 
 impl FluidState {
@@ -621,21 +594,28 @@ impl FluidState {
         let hue0 = hue_for_chord(0);
         Self {
             t: 0.0,
-            // bass node low-center; the pad is the whole field's flow.
+            // bass node low-center; the chord nodes stack up the middle.
             bass: Node::new(0.5, 0.80, 0.55, 7.0, 30.0),
             pad_amp: 0.0,
-            pad_phase: 0.0,
-            wave: CHORD_WAVES[0],
+            chords: pad_chord(0, 0, 0.0).map(ChordNode::tuned_to),
+            progression: 0,
+            tune: 0.0,
             kicks: Vec::with_capacity(MAX_KICK_WAVES),
-            sparks: Vec::with_capacity(MAX_SPARKS),
+            ripples: Vec::with_capacity(MAX_RIPPLES),
             ambient_hue: hue0,
             last_kick: 0,
             last_bass: 0,
             last_tonal: 0,
             last_perc: 0,
             last_clap: 0,
-            scatter: 0.0,
         }
+    }
+
+    /// Mirror the pad's progression and master tune controls so the chord
+    /// nodes retune to the actual chord tones the pad is sounding.
+    pub(crate) fn set_harmony(&mut self, progression: f32, tune: f32) {
+        self.progression = (progression.round() as i64).rem_euclid(4) as usize;
+        self.tune = tune;
     }
 
     pub(crate) fn tick(&mut self, dt: f32, telemetry: &FluidTelemetry) {
@@ -652,16 +632,20 @@ impl FluidState {
         self.bass.amp += (bass_amp - self.bass.amp) * smooth(dt, 0.07);
         self.bass.phase += dt * BASS_RING_SPEED;
 
-        // Pad: the field's flowing medium. Level gates all base motion (a
-        // silent pad leaves the medium black and still); the chord morphs
-        // the flow's wave character, not just its hue.
+        // Pad: four vibrating chord-tone nodes stacked down the center
+        // column, each radiating micro-ripples at its own pitch. Level gates
+        // them all — a silent pad leaves the fluid black and still. On a
+        // chord change the nodes glide to the new tones' heights.
         let pad_amp = visual_amp(levels.pad, PAD_LEVEL_GAIN);
         self.pad_amp += (pad_amp - self.pad_amp) * smooth(dt, 0.3);
-        self.wave.approach(
-            CHORD_WAVES[(chord % CHORD_WAVES.len() as u64) as usize],
-            smooth(dt, 1.2),
-        );
-        self.pad_phase += dt * self.wave.drift;
+        let tones = pad_chord(self.progression, chord as usize, self.tune);
+        let glide = smooth(dt, 0.5);
+        for (node, hz) in self.chords.iter_mut().zip(tones) {
+            node.y += (tonal_node_y(hz) - node.y) * glide;
+            node.spatial_freq += (chord_ripple_freq(hz) - node.spatial_freq) * glide;
+            node.speed += (chord_vibration(hz) - node.speed) * glide;
+            node.phase += dt * node.speed;
+        }
 
         // Bass trigger restarts the ring so a fresh wavefront emanates.
         let bass_pulse = telemetry.bass_pulse.load(Ordering::Relaxed);
@@ -690,52 +674,61 @@ impl FluidState {
             self.last_kick = kick;
         }
 
-        // Tonal -> a surface spark whose position is the pitch: pitch class
-        // sets the column, octave-spread pitch sets the height, so the same
-        // note always lands at the same spot. Hue cyan->green by pitch.
+        // Tonal -> a ripple in the fluid whose origin is the pitch: pitch
+        // class sets the column, octave-spread pitch sets the height, so the
+        // same note always ripples from the same spot. Its hue sits opposite
+        // the chord's on the colour wheel so it reads against the wash.
         let tonal = telemetry.tonal_pulse.load(Ordering::Relaxed);
         if tonal > self.last_tonal {
             let amp = visual_amp(levels.tonal, TONAL_LEVEL_GAIN);
             let hz = telemetry.tonal_note_hz();
             let pitch_t = ((hz.max(1.0).log2() - 110.0_f32.log2()) / 3.0).clamp(0.0, 1.0);
-            self.push_spark(Spark {
-                voice: SparkVoice::Tonal,
+            self.push_ripple(Ripple {
+                voice: RippleVoice::Tonal,
                 x: tonal_node_x(hz),
                 y: tonal_node_y(hz),
                 age: 0.0,
-                life: TONAL_SPARK_LIFE,
-                size: 0.035 + amp * 0.05,
+                life: TONAL_RIPPLE_LIFE,
                 amp,
-                hue: 190.0 - pitch_t * 60.0,
+                hue: self.ambient_hue + 180.0 + pitch_t * 30.0,
+                tight: 11.0,
+                speed: 0.16,
             });
             self.last_tonal = tonal;
         }
 
-        // Perc -> sharp glint on the left flank; clap mirrors on the right.
+        // Perc and clap each strike one fixed home spot and ripple outward
+        // from it, in complementary offsets of the chord's hue.
         let perc = telemetry.perc_pulse.load(Ordering::Relaxed);
         if perc > self.last_perc {
             let amp = visual_amp(levels.perc, PERC_LEVEL_GAIN);
-            self.scatter = (self.scatter + 0.381_966).fract();
-            self.push_spark(glint(
-                SparkVoice::Perc,
-                0.13,
-                0.35 + self.scatter * 0.3,
+            self.push_ripple(Ripple {
+                voice: RippleVoice::Perc,
+                x: PERC_HOME.0,
+                y: PERC_HOME.1,
+                age: 0.0,
+                life: HIT_RIPPLE_LIFE,
                 amp,
-                210.0,
-            ));
+                hue: self.ambient_hue + 140.0,
+                tight: 13.0,
+                speed: 0.45,
+            });
             self.last_perc = perc;
         }
         let clap = telemetry.clap_pulse.load(Ordering::Relaxed);
         if clap > self.last_clap {
             let amp = visual_amp(levels.clap, CLAP_LEVEL_GAIN);
-            self.scatter = (self.scatter + 0.381_966).fract();
-            self.push_spark(glint(
-                SparkVoice::Clap,
-                0.87,
-                0.35 + self.scatter * 0.3,
+            self.push_ripple(Ripple {
+                voice: RippleVoice::Clap,
+                x: CLAP_HOME.0,
+                y: CLAP_HOME.1,
+                age: 0.0,
+                life: HIT_RIPPLE_LIFE,
                 amp,
-                330.0,
-            ));
+                hue: self.ambient_hue + 220.0,
+                tight: 10.0,
+                speed: 0.50,
+            });
             self.last_clap = clap;
         }
 
@@ -754,51 +747,39 @@ impl FluidState {
         }
         self.kicks
             .retain(|k| k.age < k.life && (k.age < ATTACK_WINDOW || k.amp > SPAWN_MIN));
-        let live = |voice: SparkVoice| match voice {
-            SparkVoice::Tonal => visual_amp(levels.tonal, TONAL_LEVEL_GAIN),
-            SparkVoice::Perc => visual_amp(levels.perc, PERC_LEVEL_GAIN),
-            SparkVoice::Clap => visual_amp(levels.clap, CLAP_LEVEL_GAIN),
+        let live = |voice: RippleVoice| match voice {
+            RippleVoice::Tonal => visual_amp(levels.tonal, TONAL_LEVEL_GAIN),
+            RippleVoice::Perc => visual_amp(levels.perc, PERC_LEVEL_GAIN),
+            RippleVoice::Clap => visual_amp(levels.clap, CLAP_LEVEL_GAIN),
         };
-        for s in &mut self.sparks {
-            s.age += dt;
-            let live = live(s.voice);
-            if s.age < ATTACK_WINDOW {
-                if live > s.amp {
-                    s.amp = live;
-                    if matches!(s.voice, SparkVoice::Tonal) {
-                        s.size = 0.035 + s.amp * 0.05;
-                    }
-                }
+        for r in &mut self.ripples {
+            r.age += dt;
+            let live = live(r.voice);
+            if r.age < ATTACK_WINDOW {
+                r.amp = r.amp.max(live);
             } else {
-                s.amp = s.amp.min(live);
+                r.amp = r.amp.min(live);
             }
         }
-        self.sparks
-            .retain(|s| s.age < s.life && (s.age < ATTACK_WINDOW || s.amp > 0.005));
+        self.ripples
+            .retain(|r| r.age < r.life && (r.age < ATTACK_WINDOW || r.amp > 0.005));
     }
 
-    fn push_spark(&mut self, s: Spark) {
-        if self.sparks.len() >= MAX_SPARKS {
-            self.sparks.remove(0);
+    fn push_ripple(&mut self, r: Ripple) {
+        if self.ripples.len() >= MAX_RIPPLES {
+            self.ripples.remove(0);
         }
-        self.sparks.push(s);
+        self.ripples.push(r);
     }
 
-    /// Sample the fluid layer at normalized coords: pad wash + bass rings +
-    /// kick wavefronts superposed. Brightness is 0 where nothing sounds.
-    /// Hue accumulates as a weighted vector on the colour wheel so
-    /// overlapping sources mix instead of flickering winner-take-all.
+    /// Sample the one fluid at normalized coords: chord-node micro-ripples +
+    /// bass rings + kick wavefronts + hit ripples, all superposed so they
+    /// visibly collide. Brightness is 0 where nothing sounds. Hue
+    /// accumulates as a weighted vector on the colour wheel so overlapping
+    /// sources mix instead of flickering winner-take-all.
     pub(crate) fn field(&self, nx: f32, ny: f32) -> FieldSample {
-        // The pad's flowing plasma: superposed travelling waves whose
-        // spatial character morphs with the chord, all gated by pad level.
-        let w = &self.wave;
-        let z = self.pad_phase;
-        let mut v = ((nx * w.fx + z).sin() * (ny * w.fy - z * 0.7).cos()
-            + ((nx * w.cross - ny * w.cross * 1.24) + z * 1.3).sin() * 0.7
-            + ((nx + ny) * w.diag + (z * 0.9).sin() * 2.0).cos() * 0.5)
-            * PAD_WAVE_GAIN
-            * self.pad_amp;
-        let mut energy = PAD_ENERGY * self.pad_amp;
+        let mut v = 0.0f32;
+        let mut energy = 0.0f32;
         let mut hx = 0.0f32;
         let mut hy = 0.0f32;
         let add_hue = |hx: &mut f32, hy: &mut f32, hue: f32, w: f32| {
@@ -806,7 +787,27 @@ impl FluidState {
             *hx += r.cos() * w;
             *hy += r.sin() * w;
         };
-        add_hue(&mut hx, &mut hy, self.ambient_hue, energy.max(1e-4));
+
+        // Chord tones: vibrating nodes down the center column. Their
+        // micro-ripples are the fluid's default motion; a faint even wash
+        // keeps the whole field in the chord's colour while the pad sounds.
+        if self.pad_amp > 1e-3 {
+            let wash = PAD_WASH * self.pad_amp;
+            energy += wash;
+            add_hue(&mut hx, &mut hy, self.ambient_hue, wash);
+            for node in &self.chords {
+                let dx = nx - CHORD_X;
+                let dy = ny - node.y;
+                let d2 = dx * dx + dy * dy;
+                let falloff = (-d2 / (CHORD_REACH * CHORD_REACH)).exp();
+                let w = self.pad_amp * falloff * CHORD_NODE_GAIN;
+                if w > 1e-4 {
+                    v += (d2.sqrt() * node.spatial_freq - node.phase).sin() * w;
+                    energy += w;
+                    add_hue(&mut hx, &mut hy, self.ambient_hue, w);
+                }
+            }
+        }
 
         let node = &self.bass;
         if node.amp >= 1e-3 {
@@ -848,6 +849,22 @@ impl FluidState {
             }
         }
 
+        // Hit ripples: tonal, perc, clap rings expanding through the fluid.
+        for r in &self.ripples {
+            let dx = nx - r.x;
+            let dy = ny - r.y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let front = r.age * r.speed;
+            let fade = (1.0 - r.age / r.life).max(0.0);
+            let band = (-((dist - front) * r.tight).powi(2)).exp();
+            let w = band * fade * r.amp;
+            if w > 1e-4 {
+                v += ((front - dist) * RIPPLE_FREQ).sin().mul_add(0.5, 0.8) * w;
+                energy += w;
+                add_hue(&mut hx, &mut hy, r.hue, w);
+            }
+        }
+
         let hue = if hx == 0.0 && hy == 0.0 {
             self.ambient_hue
         } else {
@@ -857,49 +874,12 @@ impl FluidState {
         let value = ((0.35 + 0.65 * wave) * (energy * ENERGY_GAIN).min(1.0)).clamp(0.0, 1.0);
         FieldSample { value, hue }
     }
-
-    /// Sample the discrete surface layer (tonal notes, perc/clap glints).
-    /// Returns the brightest covering element, if any; the widget composites
-    /// it over the field so sparks stay crisp when the field is busy.
-    pub(crate) fn surface(&self, nx: f32, ny: f32) -> Option<FieldSample> {
-        let mut best_v = 0.0f32;
-        let mut hue = 0.0f32;
-        for s in &self.sparks {
-            let dx = (nx - s.x) / s.size;
-            let dy = (ny - s.y) / s.size;
-            let fade = (1.0 - s.age / s.life).max(0.0);
-            let v = (-(dx * dx + dy * dy)).exp() * fade * s.amp;
-            if v > best_v {
-                best_v = v;
-                hue = s.hue;
-            }
-        }
-        (best_v > SURFACE_MIN).then_some(FieldSample {
-            value: best_v.min(1.0),
-            hue,
-        })
-    }
-}
-
-/// A small flank glint (perc/clap). Its lifetime is a generous ceiling; the
-/// voice's live envelope is the real clock that fades it out.
-fn glint(voice: SparkVoice, x: f32, y: f32, amp: f32, hue: f32) -> Spark {
-    Spark {
-        voice,
-        x,
-        y,
-        age: 0.0,
-        life: GLINT_LIFE,
-        size: 0.028,
-        amp,
-        hue,
-    }
 }
 
 // Per-voice level -> visual amplitude gains, and wave motion/mix constants.
 // Voice output magnitudes are small; these lift them into a legible 0..1 range.
 const BASS_LEVEL_GAIN: f32 = 5.0;
-const PAD_LEVEL_GAIN: f32 = 6.0;
+const PAD_LEVEL_GAIN: f32 = 8.0;
 const KICK_LEVEL_GAIN: f32 = 5.0;
 const TONAL_LEVEL_GAIN: f32 = 6.0;
 const PERC_LEVEL_GAIN: f32 = 8.0;
@@ -907,9 +887,21 @@ const CLAP_LEVEL_GAIN: f32 = 6.0;
 const BASS_RING_SPEED: f32 = 3.2;
 /// Caps on live transients so per-cell field cost stays bounded fullscreen.
 const MAX_KICK_WAVES: usize = 8;
-const MAX_SPARKS: usize = 24;
+const MAX_RIPPLES: usize = 24;
 /// A body dimmer than this after its attack window is pruned as silent.
 const SPAWN_MIN: f32 = 0.02;
+/// Chord node geometry: the center column they stack down, each node's
+/// ripple reach, its wave weight, and the faint even colour wash a sounding
+/// pad spreads over the whole field.
+const CHORD_X: f32 = 0.5;
+const CHORD_REACH: f32 = 0.30;
+const CHORD_NODE_GAIN: f32 = 0.7;
+const PAD_WASH: f32 = 0.18;
+/// Fixed home spots that perc and clap hits ripple from.
+const PERC_HOME: (f32, f32) = (0.20, 0.32);
+const CLAP_HOME: (f32, f32) = (0.80, 0.32);
+/// Ripple texture frequency trailing a hit ripple's front.
+const RIPPLE_FREQ: f32 = 30.0;
 /// How long after its trigger a body keeps capturing its voice's rising
 /// level. Covers the trigger-pulse vs level-publish race (~6 ms) plus a
 /// frame or two of UI latency.
@@ -917,12 +909,10 @@ const ATTACK_WINDOW: f32 = 0.12;
 /// The kick origin's slow wander around center-bottom: rad/s and half-span.
 const KICK_DRIFT_RATE: f32 = 0.25;
 const KICK_DRIFT_SPAN: f32 = 0.07;
-/// Minimum surface-layer intensity that claims a cell from the field.
-const SURFACE_MIN: f32 = 0.04;
-/// Spark lifetime ceilings. Generous on purpose: the owning voice's live
+/// Ripple lifetime ceilings. Generous on purpose: the owning voice's live
 /// envelope is the real clock; these only bound the spatial cleanup.
-const TONAL_SPARK_LIFE: f32 = 2.5;
-const GLINT_LIFE: f32 = 1.5;
+const TONAL_RIPPLE_LIFE: f32 = 2.5;
+const HIT_RIPPLE_LIFE: f32 = 1.2;
 /// Kick wavefront: origin height, radial speed (units/s), ring sharpness,
 /// ripple frequency, lifetime, and hue (warm white-amber).
 const KICK_ORIGIN_Y: f32 = 0.96;
@@ -931,10 +921,6 @@ const KICK_WAVE_TIGHT: f32 = 7.0;
 const KICK_WAVE_FREQ: f32 = 26.0;
 const KICK_WAVE_LIFE: f32 = 1.6;
 const KICK_HUE: f32 = 40.0;
-/// Weight of the pad's flowing plasma in the summed wave.
-const PAD_WAVE_GAIN: f32 = 0.55;
-/// Uniform field energy contributed by a full-level pad.
-const PAD_ENERGY: f32 = 0.55;
 /// Scales summed local wave energy into cell brightness.
 const ENERGY_GAIN: f32 = 1.6;
 /// Soft-clamp gain on the summed wave before mapping to 0..1.
@@ -974,19 +960,14 @@ impl Widget for FluidWidget<'_> {
                 let nx = x as f32 / w;
                 let ny = y as f32 / h;
                 let sample = self.fluid.field(nx, ny);
-                // Surface elements win the cell: the field dims beneath them
-                // so tonal notes and perc/clap glints stay crisp.
-                let (v, hue, sat_boost) = match self.fluid.surface(nx, ny) {
-                    Some(s) => ((sample.value * 0.35 + s.value).clamp(0.0, 1.0), s.hue, 0.25),
-                    None => (sample.value, sample.hue, 0.0),
-                };
+                let (v, hue) = (sample.value, sample.hue);
 
                 // edge vignette
                 let edge_x = (nx.min(1.0 - nx) * 2.0).min(1.0);
                 let edge_y = (ny.min(1.0 - ny) * 2.0).min(1.0);
                 let vig = (edge_x.min(edge_y) * 1.4).clamp(0.2, 1.0);
 
-                let sat = (0.55 + v * 0.25 + sat_boost).clamp(0.0, 1.0);
+                let sat = (0.55 + v * 0.25).clamp(0.0, 1.0);
                 let val = ((0.05 + v * 0.9) * vig).clamp(0.0, 1.0);
 
                 let gi = ((v * (FLUID_GRADIENT.len() - 1) as f32).round() as usize)

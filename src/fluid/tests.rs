@@ -431,10 +431,24 @@ fn active_voice_lights_its_region() {
     );
 }
 
+fn field_argmax(fluid: &FluidState) -> (f32, f32, f32) {
+    let mut best = (0.0f32, 0.0f32, 0.0f32);
+    for iy in 0..=80 {
+        for ix in 0..=80 {
+            let (nx, ny) = (ix as f32 / 80.0, iy as f32 / 80.0);
+            let v = fluid.field(nx, ny).value;
+            if v > best.2 {
+                best = (nx, ny, v);
+            }
+        }
+    }
+    best
+}
+
 #[test]
-fn tonal_note_is_surface_only() {
-    // A tonal note must appear on the surface layer at its pitch height and
-    // contribute nothing to the fluid field.
+fn tonal_note_ripples_at_its_pitch_spot() {
+    // A tonal note ripples the shared fluid from its pitch-anchored spot:
+    // pitch class sets the column, pitch sets the height.
     let telemetry = FluidTelemetry::default();
     telemetry.publish_tonal_note(440.0);
     telemetry.publish_levels(VoiceLevels {
@@ -448,46 +462,32 @@ fn tonal_note_is_surface_only() {
         .store(1, std::sync::atomic::Ordering::Relaxed);
     fluid.tick(0.05, &telemetry);
 
-    let mut field_peak = 0.0f32;
-    let mut spark_hits = 0;
-    for iy in 0..40 {
-        for ix in 0..40 {
-            let (nx, ny) = (ix as f32 / 40.0, iy as f32 / 40.0);
-            field_peak = field_peak.max(fluid.field(nx, ny).value);
-            if fluid.surface(nx, ny).is_some() {
-                spark_hits += 1;
-            }
-        }
-    }
+    let (x, y, peak) = field_argmax(&fluid);
+    assert!(peak > 0.1, "tonal ripple missing from the fluid: {peak}");
     assert!(
-        field_peak < 0.02,
-        "tonal leaked into the field: {field_peak}"
+        (x - tonal_node_x(440.0)).abs() < 0.08 && (y - tonal_node_y(440.0)).abs() < 0.08,
+        "tonal ripple at ({x},{y}), expected near ({}, {})",
+        tonal_node_x(440.0),
+        tonal_node_y(440.0)
     );
-    assert!(spark_hits > 0, "tonal spark missing from the surface layer");
 }
 
 #[test]
-fn muted_perc_spawns_no_surface_spark() {
+fn muted_perc_ripples_nothing() {
     let telemetry = FluidTelemetry::default();
     let mut fluid = FluidState::new();
     telemetry
         .perc_pulse
         .store(1, std::sync::atomic::Ordering::Relaxed);
     fluid.tick(0.05, &telemetry);
-    for iy in 0..40 {
-        for ix in 0..40 {
-            assert!(
-                fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_none(),
-                "muted perc must draw nothing"
-            );
-        }
-    }
+    let (_, _, peak) = field_argmax(&fluid);
+    assert!(peak < 0.02, "muted perc must draw nothing, peak {peak}");
 }
 
 #[test]
-fn spark_dies_when_its_voice_decays() {
-    // Glint brightness must track the voice's live envelope, not a fixed
-    // visual clock: when the perc sound decays to silence, the glint goes
+fn ripple_dies_when_its_voice_decays() {
+    // Ripple brightness must track the voice's live envelope, not a fixed
+    // visual clock: when the perc sound decays to silence, the ripple goes
     // dark with it even though its lifetime has barely started.
     let telemetry = FluidTelemetry::default();
     telemetry.publish_levels(VoiceLevels {
@@ -499,25 +499,25 @@ fn spark_dies_when_its_voice_decays() {
         .perc_pulse
         .store(1, std::sync::atomic::Ordering::Relaxed);
     fluid.tick(0.05, &telemetry);
-    let lit = |fluid: &FluidState| {
-        (0..40)
-            .any(|iy| (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some()))
-    };
-    assert!(lit(&fluid), "perc glint should appear while the hit sounds");
+    assert!(
+        field_argmax(&fluid).2 > 0.1,
+        "perc ripple should appear while the hit sounds"
+    );
 
     telemetry.publish_levels(VoiceLevels::default());
     for _ in 0..3 {
         fluid.tick(0.05, &telemetry);
     }
+    let (_, _, peak) = field_argmax(&fluid);
     assert!(
-        !lit(&fluid),
-        "glint must go dark when the perc envelope reaches zero"
+        peak < 0.02,
+        "ripple must go dark when the perc envelope reaches zero, peak {peak}"
     );
 }
 
 #[test]
-fn sustained_tonal_note_keeps_its_spark_alive() {
-    // A long tonal decay keeps sounding past a second; its spark must stay
+fn sustained_tonal_note_keeps_its_ripple_alive() {
+    // A long tonal decay keeps sounding past a second; its ripple must stay
     // visible for as long as the envelope holds, showing the note's length.
     let telemetry = FluidTelemetry::default();
     telemetry.publish_tonal_note(440.0);
@@ -532,9 +532,11 @@ fn sustained_tonal_note_keeps_its_spark_alive() {
     for _ in 0..26 {
         fluid.tick(0.05, &telemetry);
     }
-    let lit = (0..40)
-        .any(|iy| (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some()));
-    assert!(lit, "a sounding tonal note must keep its spark visible");
+    let (_, _, peak) = field_argmax(&fluid);
+    assert!(
+        peak > 0.05,
+        "a sounding tonal note must keep its ripple visible, peak {peak}"
+    );
 }
 
 #[test]
@@ -610,6 +612,66 @@ fn pad_flow_pattern_differs_by_chord() {
 }
 
 #[test]
+fn chord_nodes_stack_down_the_center_column() {
+    // The chord tones are vibrating nodes on the center column; while the
+    // pad sounds, the center must outshine the flanks at a chord tone's
+    // height. Peaks are taken across ticks so a sine trough can't hide it.
+    let telemetry = FluidTelemetry::default();
+    telemetry.publish_levels(VoiceLevels {
+        pad: 0.2,
+        ..Default::default()
+    });
+    let mut fluid = FluidState::new();
+    for _ in 0..40 {
+        fluid.tick(0.05, &telemetry);
+    }
+    let y = tonal_node_y(pad_chord(0, 0, 0.0)[1]);
+    let mut center = 0.0f32;
+    let mut flank = 0.0f32;
+    for _ in 0..20 {
+        fluid.tick(0.05, &telemetry);
+        center = center.max(fluid.field(0.5, y).value);
+        flank = flank.max(fluid.field(0.06, y).value);
+    }
+    assert!(
+        center > flank + 0.1,
+        "chord nodes should light the center column (center {center}, flank {flank})"
+    );
+}
+
+#[test]
+fn perc_ripples_from_one_fixed_home_spot() {
+    // Successive perc hits must ripple from the same spot: the randomness
+    // on screen should be the rhythm's, not the placement's.
+    let telemetry = FluidTelemetry::default();
+    let mut fluid = FluidState::new();
+    let hit = |fluid: &mut FluidState, pulse: u64| {
+        telemetry.publish_levels(VoiceLevels {
+            perc: 0.3,
+            ..Default::default()
+        });
+        telemetry
+            .perc_pulse
+            .store(pulse, std::sync::atomic::Ordering::Relaxed);
+        fluid.tick(0.05, &telemetry);
+        let (x, y, peak) = field_argmax(fluid);
+        assert!(peak > 0.1, "perc hit {pulse} missing from the fluid");
+        // Let the ripple die before the next hit.
+        telemetry.publish_levels(VoiceLevels::default());
+        for _ in 0..30 {
+            fluid.tick(0.05, &telemetry);
+        }
+        (x, y)
+    };
+    let (x1, y1) = hit(&mut fluid, 1);
+    let (x2, y2) = hit(&mut fluid, 2);
+    assert!(
+        (x1 - x2).abs() < 0.03 && (y1 - y2).abs() < 0.03,
+        "perc moved between hits: ({x1},{y1}) vs ({x2},{y2})"
+    );
+}
+
+#[test]
 fn kick_survives_stale_level_at_trigger() {
     // The audio thread bumps the pulse counter at the trigger sample but
     // publishes levels only every 256 samples. A UI frame landing in that
@@ -637,8 +699,8 @@ fn kick_survives_stale_level_at_trigger() {
 }
 
 #[test]
-fn perc_glint_survives_stale_level_at_trigger() {
-    // Same publish race as the kick: the glint must appear once the level
+fn perc_ripple_survives_stale_level_at_trigger() {
+    // Same publish race as the kick: the ripple must appear once the level
     // lands one frame later.
     let telemetry = FluidTelemetry::default();
     let mut fluid = FluidState::new();
@@ -651,9 +713,11 @@ fn perc_glint_survives_stale_level_at_trigger() {
         ..Default::default()
     });
     fluid.tick(0.016, &telemetry);
-    let lit = (0..40)
-        .any(|iy| (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some()));
-    assert!(lit, "perc glint dropped by the level-publish race");
+    let (_, _, peak) = field_argmax(&fluid);
+    assert!(
+        peak > 0.1,
+        "perc ripple dropped by the level-publish race, peak {peak}"
+    );
 }
 
 #[test]
@@ -698,11 +762,11 @@ fn kick_origin_wanders_gently_not_randomly() {
 }
 
 #[test]
-fn tonal_spark_position_is_deterministic_in_pitch() {
-    // The same note must always land at the same spot, and a higher note
-    // must sit higher, so spatial placement reads as tonality — any
+fn tonal_ripple_position_is_deterministic_in_pitch() {
+    // The same note must always ripple from the same spot, and a higher
+    // note must sit higher, so spatial placement reads as tonality — any
     // remaining randomness comes from the notes themselves.
-    let spark_pos = |hz: f32, pulses: u64| {
+    let ripple_pos = |hz: f32, pulses: u64| {
         let telemetry = FluidTelemetry::default();
         telemetry.publish_tonal_note(hz);
         telemetry.publish_levels(VoiceLevels {
@@ -718,30 +782,20 @@ fn tonal_spark_position_is_deterministic_in_pitch() {
                 .store(pulse, std::sync::atomic::Ordering::Relaxed);
             fluid.tick(0.05, &telemetry);
         }
-        let mut best = (0.0f32, 0.0f32, 0.0f32);
-        for iy in 0..=80 {
-            for ix in 0..=80 {
-                let (nx, ny) = (ix as f32 / 80.0, iy as f32 / 80.0);
-                if let Some(s) = fluid.surface(nx, ny)
-                    && s.value > best.2
-                {
-                    best = (nx, ny, s.value);
-                }
-            }
-        }
-        assert!(best.2 > 0.0, "no tonal spark found for {hz} Hz");
-        (best.0, best.1)
+        let (x, y, peak) = field_argmax(&fluid);
+        assert!(peak > 0.05, "no tonal ripple found for {hz} Hz");
+        (x, y)
     };
 
-    let (x1, y1) = spark_pos(440.0, 1);
-    let (x2, y2) = spark_pos(440.0, 3);
+    let (x1, y1) = ripple_pos(440.0, 1);
+    let (x2, y2) = ripple_pos(440.0, 3);
     assert!(
         (x1 - x2).abs() < 0.03 && (y1 - y2).abs() < 0.03,
         "same note moved: ({x1},{y1}) vs ({x2},{y2})"
     );
 
-    let (_, y_low) = spark_pos(220.0, 1);
-    let (_, y_high) = spark_pos(660.0, 1);
+    let (_, y_low) = ripple_pos(220.0, 1);
+    let (_, y_high) = ripple_pos(660.0, 1);
     assert!(
         y_high < y_low - 0.1,
         "higher note should sit higher on screen (y {y_high} vs {y_low})"
