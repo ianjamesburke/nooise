@@ -374,7 +374,10 @@ fn triggers_without_level_draw_nothing() {
             peak = peak.max(fluid.field(ix as f32 / 20.0, iy as f32 / 20.0).value);
         }
     }
-    assert!(peak < 0.02, "muted triggers must stay dark, peak was {peak}");
+    assert!(
+        peak < 0.02,
+        "muted triggers must stay dark, peak was {peak}"
+    );
 }
 
 #[test]
@@ -456,7 +459,10 @@ fn tonal_note_is_surface_only() {
             }
         }
     }
-    assert!(field_peak < 0.02, "tonal leaked into the field: {field_peak}");
+    assert!(
+        field_peak < 0.02,
+        "tonal leaked into the field: {field_peak}"
+    );
     assert!(spark_hits > 0, "tonal spark missing from the surface layer");
 }
 
@@ -471,9 +477,7 @@ fn muted_perc_spawns_no_surface_spark() {
     for iy in 0..40 {
         for ix in 0..40 {
             assert!(
-                fluid
-                    .surface(ix as f32 / 40.0, iy as f32 / 40.0)
-                    .is_none(),
+                fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_none(),
                 "muted perc must draw nothing"
             );
         }
@@ -496,9 +500,8 @@ fn spark_dies_when_its_voice_decays() {
         .store(1, std::sync::atomic::Ordering::Relaxed);
     fluid.tick(0.05, &telemetry);
     let lit = |fluid: &FluidState| {
-        (0..40).any(|iy| {
-            (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some())
-        })
+        (0..40)
+            .any(|iy| (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some()))
     };
     assert!(lit(&fluid), "perc glint should appear while the hit sounds");
 
@@ -529,9 +532,8 @@ fn sustained_tonal_note_keeps_its_spark_alive() {
     for _ in 0..26 {
         fluid.tick(0.05, &telemetry);
     }
-    let lit = (0..40).any(|iy| {
-        (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some())
-    });
+    let lit = (0..40)
+        .any(|iy| (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some()));
     assert!(lit, "a sounding tonal note must keep its spark visible");
 }
 
@@ -2072,7 +2074,11 @@ fn lfo_interval_sweep_plays_on_grid_breakdown() {
         let t = timing(sample, 120.0);
         let mut effective = controls.clone();
         apply_automation(&mut effective, &automation, t);
-        if trigger.pop(t, effective.kick.interval_beats, effective.kick.offset_beats) {
+        if trigger.pop(
+            t,
+            effective.kick.interval_beats,
+            effective.kick.offset_beats,
+        ) {
             hit_beats.push(t.beat);
         }
     }

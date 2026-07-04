@@ -493,6 +493,74 @@ struct KickWave {
     amp: f32,
 }
 
+/// Per-chord wave character for the pad flow: the spatial frequencies and
+/// drift speed of the flowing plasma, so each chord literally shapes the
+/// field differently instead of only recoloring it. Indexed alongside
+/// `hue_for_chord`'s 5-chord table.
+#[derive(Clone, Copy)]
+struct ChordWave {
+    fx: f32,
+    fy: f32,
+    cross: f32,
+    diag: f32,
+    drift: f32,
+}
+
+const CHORD_WAVES: [ChordWave; 5] = [
+    // Settled home chord: broad, even swells.
+    ChordWave {
+        fx: 6.0,
+        fy: 5.0,
+        cross: 3.3,
+        diag: 7.5,
+        drift: 0.50,
+    },
+    // Lifted: taller vertical motion, quicker drift.
+    ChordWave {
+        fx: 4.4,
+        fy: 6.6,
+        cross: 4.6,
+        diag: 9.2,
+        drift: 0.62,
+    },
+    // Tense: tighter horizontal ripple, slower drift.
+    ChordWave {
+        fx: 7.2,
+        fy: 3.8,
+        cross: 5.4,
+        diag: 6.1,
+        drift: 0.44,
+    },
+    // Bright: fine diagonal shimmer, fastest drift.
+    ChordWave {
+        fx: 5.2,
+        fy: 5.8,
+        cross: 2.8,
+        diag: 10.5,
+        drift: 0.70,
+    },
+    // Warm resolve: the longest, laziest swells.
+    ChordWave {
+        fx: 3.6,
+        fy: 4.4,
+        cross: 4.1,
+        diag: 5.4,
+        drift: 0.38,
+    },
+];
+
+impl ChordWave {
+    /// Ease every parameter toward `target` so chord changes morph the flow
+    /// instead of snapping it.
+    fn approach(&mut self, target: ChordWave, a: f32) {
+        self.fx += (target.fx - self.fx) * a;
+        self.fy += (target.fy - self.fy) * a;
+        self.cross += (target.cross - self.cross) * a;
+        self.diag += (target.diag - self.diag) * a;
+        self.drift += (target.drift - self.drift) * a;
+    }
+}
+
 /// Which voice a surface spark belongs to, so its brightness can keep
 /// tracking that voice's live envelope after it spawns.
 #[derive(Clone, Copy)]
@@ -526,7 +594,9 @@ pub(crate) struct FieldSample {
 pub(crate) struct FluidState {
     t: f32,
     bass: Node,
-    pad: Node,
+    pad_amp: f32,
+    pad_phase: f32,
+    wave: ChordWave,
     kicks: Vec<KickWave>,
     sparks: Vec<Spark>,
     ambient_hue: f32,
@@ -543,9 +613,11 @@ impl FluidState {
         let hue0 = hue_for_chord(0);
         Self {
             t: 0.0,
-            // bass low-center, pad wide upper arc.
+            // bass node low-center; the pad is the whole field's flow.
             bass: Node::new(0.5, 0.80, 0.55, 7.0, 30.0),
-            pad: Node::new(0.5, 0.24, 0.72, 3.2, hue0),
+            pad_amp: 0.0,
+            pad_phase: 0.0,
+            wave: CHORD_WAVES[0],
             kicks: Vec::with_capacity(MAX_KICK_WAVES),
             sparks: Vec::with_capacity(MAX_SPARKS),
             ambient_hue: hue0,
@@ -561,7 +633,8 @@ impl FluidState {
     pub(crate) fn tick(&mut self, dt: f32, telemetry: &FluidTelemetry) {
         self.t += dt;
         let levels = telemetry.levels();
-        let chord_hue = hue_for_chord(telemetry.chord_index.load(Ordering::Relaxed));
+        let chord = telemetry.chord_index.load(Ordering::Relaxed);
+        let chord_hue = hue_for_chord(chord);
         self.ambient_hue = lerp_hue(self.ambient_hue, chord_hue, smooth(dt, 1.2));
 
         // Bass node: amplitude from level, wavelength retunes to the note.
@@ -571,13 +644,16 @@ impl FluidState {
         self.bass.amp += (bass_amp - self.bass.amp) * smooth(dt, 0.07);
         self.bass.phase += dt * BASS_RING_SPEED;
 
-        // Pad node: the field's ambient medium. Hue follows the chord; its
-        // level also gates the base simmer in `field`, so a silent pad
-        // leaves the medium black and still.
+        // Pad: the field's flowing medium. Level gates all base motion (a
+        // silent pad leaves the medium black and still); the chord morphs
+        // the flow's wave character, not just its hue.
         let pad_amp = visual_amp(levels.pad, PAD_LEVEL_GAIN);
-        self.pad.amp += (pad_amp - self.pad.amp) * smooth(dt, 0.3);
-        self.pad.hue = lerp_hue(self.pad.hue, chord_hue, smooth(dt, 0.8));
-        self.pad.phase += dt * PAD_RING_SPEED;
+        self.pad_amp += (pad_amp - self.pad_amp) * smooth(dt, 0.3);
+        self.wave.approach(
+            CHORD_WAVES[(chord % CHORD_WAVES.len() as u64) as usize],
+            smooth(dt, 1.2),
+        );
+        self.pad_phase += dt * self.wave.drift;
 
         // Bass trigger restarts the ring so a fresh wavefront emanates.
         let bass_pulse = telemetry.bass_pulse.load(Ordering::Relaxed);
@@ -616,8 +692,7 @@ impl FluidState {
             if amp > SPAWN_MIN {
                 self.scatter = (self.scatter + 0.618_034).fract();
                 let hz = telemetry.tonal_note_hz();
-                let pitch_t =
-                    ((hz.max(1.0).log2() - 110.0_f32.log2()) / 3.0).clamp(0.0, 1.0);
+                let pitch_t = ((hz.max(1.0).log2() - 110.0_f32.log2()) / 3.0).clamp(0.0, 1.0);
                 self.push_spark(Spark {
                     voice: SparkVoice::Tonal,
                     x: 0.16 + self.scatter * 0.68,
@@ -694,12 +769,16 @@ impl FluidState {
     /// Hue accumulates as a weighted vector on the colour wheel so
     /// overlapping sources mix instead of flickering winner-take-all.
     pub(crate) fn field(&self, nx: f32, ny: f32) -> FieldSample {
-        let z = self.t * 0.4;
-        let mut v = ((nx * 5.0 + z).sin() * (ny * 4.0 - z * 0.6).cos()
-            + ((nx * 3.0 - ny * 3.5) + z * 1.1).sin() * 0.5)
-            * AMBIENT_DRIFT
-            * self.pad.amp;
-        let mut energy = AMBIENT_FLOOR * self.pad.amp;
+        // The pad's flowing plasma: superposed travelling waves whose
+        // spatial character morphs with the chord, all gated by pad level.
+        let w = &self.wave;
+        let z = self.pad_phase;
+        let mut v = ((nx * w.fx + z).sin() * (ny * w.fy - z * 0.7).cos()
+            + ((nx * w.cross - ny * w.cross * 1.24) + z * 1.3).sin() * 0.7
+            + ((nx + ny) * w.diag + (z * 0.9).sin() * 2.0).cos() * 0.5)
+            * PAD_WAVE_GAIN
+            * self.pad_amp;
+        let mut energy = PAD_ENERGY * self.pad_amp;
         let mut hx = 0.0f32;
         let mut hy = 0.0f32;
         let add_hue = |hx: &mut f32, hy: &mut f32, hue: f32, w: f32| {
@@ -709,10 +788,8 @@ impl FluidState {
         };
         add_hue(&mut hx, &mut hy, self.ambient_hue, energy.max(1e-4));
 
-        for node in [&self.bass, &self.pad] {
-            if node.amp < 1e-3 {
-                continue;
-            }
+        let node = &self.bass;
+        if node.amp >= 1e-3 {
             let dx = nx - node.x;
             let dy = ny - node.y;
             let d2 = dx * dx + dy * dy;
@@ -734,7 +811,11 @@ impl FluidState {
             let fade = (1.0 - kw.age / kw.life).max(0.0);
             let band = (-((dist - front) * KICK_WAVE_TIGHT).powi(2)).exp();
             // Radial ring, weighted to push hardest straight up.
-            let up = if dist > 1e-4 { (-dy / dist).max(0.0) } else { 1.0 };
+            let up = if dist > 1e-4 {
+                (-dy / dist).max(0.0)
+            } else {
+                1.0
+            };
             let w = band * fade * kw.amp * (0.45 + 0.55 * up);
             if w > 1e-4 {
                 // A bright ring with ripple texture trailing the front.
@@ -753,8 +834,7 @@ impl FluidState {
             hy.atan2(hx).to_degrees().rem_euclid(360.0)
         };
         let wave = (v * FIELD_GAIN).tanh() * 0.5 + 0.5;
-        let value =
-            ((0.35 + 0.65 * wave) * (energy * ENERGY_GAIN).min(1.0)).clamp(0.0, 1.0);
+        let value = ((0.35 + 0.65 * wave) * (energy * ENERGY_GAIN).min(1.0)).clamp(0.0, 1.0);
         FieldSample { value, hue }
     }
 
@@ -805,7 +885,6 @@ const TONAL_LEVEL_GAIN: f32 = 6.0;
 const PERC_LEVEL_GAIN: f32 = 8.0;
 const CLAP_LEVEL_GAIN: f32 = 6.0;
 const BASS_RING_SPEED: f32 = 3.2;
-const PAD_RING_SPEED: f32 = 1.1;
 /// Caps on live transients so per-cell field cost stays bounded fullscreen.
 const MAX_KICK_WAVES: usize = 8;
 const MAX_SPARKS: usize = 24;
@@ -825,10 +904,10 @@ const KICK_WAVE_TIGHT: f32 = 7.0;
 const KICK_WAVE_FREQ: f32 = 26.0;
 const KICK_WAVE_LIFE: f32 = 1.6;
 const KICK_HUE: f32 = 40.0;
-/// Weight of the always-on ambient plasma (kept low so voices dominate).
-const AMBIENT_DRIFT: f32 = 0.5;
-/// Baseline energy so a silent field is near-black but not pure void.
-const AMBIENT_FLOOR: f32 = 0.06;
+/// Weight of the pad's flowing plasma in the summed wave.
+const PAD_WAVE_GAIN: f32 = 0.55;
+/// Uniform field energy contributed by a full-level pad.
+const PAD_ENERGY: f32 = 0.55;
 /// Scales summed local wave energy into cell brightness.
 const ENERGY_GAIN: f32 = 1.6;
 /// Soft-clamp gain on the summed wave before mapping to 0..1.
@@ -871,11 +950,7 @@ impl Widget for FluidWidget<'_> {
                 // Surface elements win the cell: the field dims beneath them
                 // so tonal notes and perc/clap glints stay crisp.
                 let (v, hue, sat_boost) = match self.fluid.surface(nx, ny) {
-                    Some(s) => (
-                        (sample.value * 0.35 + s.value).clamp(0.0, 1.0),
-                        s.hue,
-                        0.25,
-                    ),
+                    Some(s) => ((sample.value * 0.35 + s.value).clamp(0.0, 1.0), s.hue, 0.25),
                     None => (sample.value, sample.hue, 0.0),
                 };
 

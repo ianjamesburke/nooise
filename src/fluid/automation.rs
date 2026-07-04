@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use super::{
-    ControlSpec, FluidControls, LfoSnap, TimingContext, nearest_power_of_two,
-    normalize_unit_input, snap_step, spec_by_id,
+    ControlSpec, FluidControls, LfoSnap, TimingContext, nearest_power_of_two, normalize_unit_input,
+    snap_step, spec_by_id,
 };
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
