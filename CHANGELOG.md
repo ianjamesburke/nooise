@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [1.2.1] — 2026-07-04
+
+### Added
+- feat: add ambient techno tonal voices
+- feat: retune tonal piano variations
+- feat: add tonal synth type variations
+- feat: add piano tonal synth type
 ## [1.2.0] — 2026-07-03
 
 ### Added
