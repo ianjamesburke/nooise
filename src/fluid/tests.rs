@@ -429,6 +429,58 @@ fn active_voice_lights_its_region() {
 }
 
 #[test]
+fn tonal_note_is_surface_only() {
+    // A tonal note must appear on the surface layer at its pitch height and
+    // contribute nothing to the fluid field.
+    let telemetry = FluidTelemetry::default();
+    telemetry.publish_tonal_note(440.0);
+    telemetry.publish_levels(VoiceLevels {
+        tonal: 0.3,
+        ..Default::default()
+    });
+    let mut fluid = FluidState::new();
+    fluid.tick(0.05, &telemetry);
+    telemetry
+        .tonal_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    fluid.tick(0.05, &telemetry);
+
+    let mut field_peak = 0.0f32;
+    let mut spark_hits = 0;
+    for iy in 0..40 {
+        for ix in 0..40 {
+            let (nx, ny) = (ix as f32 / 40.0, iy as f32 / 40.0);
+            field_peak = field_peak.max(fluid.field(nx, ny).value);
+            if fluid.surface(nx, ny).is_some() {
+                spark_hits += 1;
+            }
+        }
+    }
+    assert!(field_peak < 0.02, "tonal leaked into the field: {field_peak}");
+    assert!(spark_hits > 0, "tonal spark missing from the surface layer");
+}
+
+#[test]
+fn muted_perc_spawns_no_surface_spark() {
+    let telemetry = FluidTelemetry::default();
+    let mut fluid = FluidState::new();
+    telemetry
+        .perc_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    fluid.tick(0.05, &telemetry);
+    for iy in 0..40 {
+        for ix in 0..40 {
+            assert!(
+                fluid
+                    .surface(ix as f32 / 40.0, iy as f32 / 40.0)
+                    .is_none(),
+                "muted perc must draw nothing"
+            );
+        }
+    }
+}
+
+#[test]
 fn render_fluid_draws_without_terminal_backend() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();

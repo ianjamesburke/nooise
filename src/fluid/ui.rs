@@ -819,21 +819,30 @@ impl Widget for FluidWidget<'_> {
                 let nx = x as f32 / w;
                 let ny = y as f32 / h;
                 let sample = self.fluid.field(nx, ny);
-                let v = sample.value;
+                // Surface elements win the cell: the field dims beneath them
+                // so tonal notes and perc/clap glints stay crisp.
+                let (v, hue, sat_boost) = match self.fluid.surface(nx, ny) {
+                    Some(s) => (
+                        (sample.value * 0.35 + s.value).clamp(0.0, 1.0),
+                        s.hue,
+                        0.25,
+                    ),
+                    None => (sample.value, sample.hue, 0.0),
+                };
 
                 // edge vignette
                 let edge_x = (nx.min(1.0 - nx) * 2.0).min(1.0);
                 let edge_y = (ny.min(1.0 - ny) * 2.0).min(1.0);
                 let vig = (edge_x.min(edge_y) * 1.4).clamp(0.2, 1.0);
 
-                let sat = (0.55 + v * 0.25).clamp(0.0, 1.0);
+                let sat = (0.55 + v * 0.25 + sat_boost).clamp(0.0, 1.0);
                 let val = ((0.05 + v * 0.9) * vig).clamp(0.0, 1.0);
 
                 let gi = ((v * (FLUID_GRADIENT.len() - 1) as f32).round() as usize)
                     .min(FLUID_GRADIENT.len() - 1);
                 buf[(area.x + x, area.y + y)]
                     .set_char(FLUID_GRADIENT[gi])
-                    .set_style(Style::default().fg(fluid_hsv(sample.hue, sat, val)));
+                    .set_style(Style::default().fg(fluid_hsv(hue, sat, val)));
             }
         }
     }
