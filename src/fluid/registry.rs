@@ -911,6 +911,18 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.tonal.level),
     ),
     ControlSpec::new(
+        "tonal.synth_type",
+        "Type",
+        ControlKind::Discrete,
+        0.0,
+        9.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.tonal.synth_type,
+        |c, v| c.tonal.synth_type = v,
+        |c| tonal_synth_type_label(c.tonal.synth_type).to_string(),
+    ),
+    ControlSpec::new(
         "tonal.phrase",
         "Phrase",
         ControlKind::Discrete,
@@ -1007,6 +1019,25 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.tonal.reverb_mix),
     ),
 ];
+
+pub(crate) fn tonal_synth_type_label(value: f32) -> &'static str {
+    match tonal_synth_type_index(value) {
+        0 => "Sine",
+        1 => "Rhodes",
+        2 => "Wurli",
+        3 => "Felt",
+        4 => "Marimba",
+        5 => "Kalimba",
+        6 => "Pluck",
+        7 => "Dulcet",
+        8 => "Cloud Keys",
+        _ => "Haze",
+    }
+}
+
+pub(crate) fn tonal_synth_type_index(value: f32) -> usize {
+    (value.round() as i64).rem_euclid(10) as usize
+}
 
 pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
