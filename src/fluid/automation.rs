@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::f32::consts::TAU;
 use std::fmt;
 
 use super::{
@@ -16,6 +17,19 @@ pub(crate) const MAX_LFO_OFFSET_BEATS: f32 = 4.0;
 const AMOUNT_STEP: f32 = 0.01;
 const INTERVAL_STEP: f32 = 0.25;
 const OFFSET_STEP: f32 = 0.25;
+
+/// Softness of the smoothed square edge; higher = closer to a hard square.
+const SQUARE_SMOOTH: f32 = 6.0;
+
+// Envelope route field ranges. Attack/decay reach into the minutes at slow
+// tempos (512 beats is ~6 min at 82 BPM, ~12 min at 40 BPM) so the same
+// one-shot serves both fast swells and set-and-forget macro blooms.
+pub(crate) const MAX_ENV_ATTACK_BEATS: f32 = 512.0;
+pub(crate) const MAX_ENV_DECAY_BEATS: f32 = 512.0;
+const ENV_BEATS_STEP: f32 = 0.5;
+const ENV_AMOUNT_STEP: f32 = 0.01;
+const DEFAULT_ENV_ATTACK_BEATS: f32 = 1.0;
+const DEFAULT_ENV_DECAY_BEATS: f32 = 4.0;
 
 #[derive(Clone, Copy)]
 pub(crate) struct ControlAddress {
@@ -63,9 +77,146 @@ impl PartialOrd for ControlAddress {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Which modulator editor is currently open on a control. LFO and envelope
+/// routes are independent siblings that can both live on one control.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModKind {
+    Lfo,
+    Envelope,
+}
+
+/// Sampling context shared by every modulator so the UI marker and the engine
+/// value come from the same math. `kick_*` describe the live kick grid, which
+/// the on-kick envelope trigger reconstructs deterministically.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ModContext {
+    pub(crate) beat: f64,
+    pub(crate) kick_interval_beats: f32,
+    pub(crate) kick_offset_beats: f32,
+}
+
+impl ModContext {
+    /// Context for an LFO-only evaluation; the kick fields are unused because
+    /// no LFO shape depends on the kick grid.
+    #[cfg(test)]
+    pub(crate) fn lfo_only(beat: f64) -> Self {
+        Self {
+            beat,
+            kick_interval_beats: 1.0,
+            kick_offset_beats: 0.0,
+        }
+    }
+}
+
+// ============================================================
+// LFO shapes
+// ============================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LfoShape {
     Sine,
+    Triangle,
+    RampUp,
+    RampDown,
+    Square,
+    RandomDrift,
+    SampleHold,
+}
+
+impl LfoShape {
+    pub(crate) const ALL: [LfoShape; 7] = [
+        Self::Sine,
+        Self::Triangle,
+        Self::RampUp,
+        Self::RampDown,
+        Self::Square,
+        Self::RandomDrift,
+        Self::SampleHold,
+    ];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Sine => "sine",
+            Self::Triangle => "triangle",
+            Self::RampUp => "ramp up",
+            Self::RampDown => "ramp down",
+            Self::Square => "square",
+            Self::RandomDrift => "random drift",
+            Self::SampleHold => "sample & hold",
+        }
+    }
+
+    /// Random shapes generate their trajectory from the route seed instead of a
+    /// fixed periodic curve, so the animated lane must scope them differently.
+    pub(crate) fn is_random(self) -> bool {
+        matches!(self, Self::RandomDrift | Self::SampleHold)
+    }
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|&s| s == self).unwrap_or(0)
+    }
+
+    fn cycled(self, dir: f32) -> Self {
+        let len = Self::ALL.len() as i32;
+        let next = (self.index() as i32 + dir.signum() as i32).rem_euclid(len);
+        Self::ALL[next as usize]
+    }
+
+    fn from_index(index: f32) -> Self {
+        let i = (index.round() as i64).rem_euclid(Self::ALL.len() as i64) as usize;
+        Self::ALL[i]
+    }
+}
+
+/// Deterministic per-index value in -1..1, keyed by the route seed. Pure hash,
+/// no RNG state, so the UI and engine agree and offline renders stay identical.
+fn seeded_unit(seed: u32, index: i64) -> f32 {
+    let mut z = (index as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(u64::from(seed))
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    let unit = (z >> 40) as f32 / f32::from(1u16 << 8) / f32::from(1u16 << 8) / 256.0;
+    unit * 2.0 - 1.0
+}
+
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Periodic shape value in -1..1 for a phase in 0..1. Random shapes return 0
+/// here; they are evaluated from absolute beat position in `wave_at`.
+fn periodic_shape_value(shape: LfoShape, phase: f32) -> f32 {
+    match shape {
+        LfoShape::Sine => (TAU * phase).sin(),
+        LfoShape::Triangle => {
+            if phase < 0.25 {
+                4.0 * phase
+            } else if phase < 0.75 {
+                1.0 - 4.0 * (phase - 0.25)
+            } else {
+                -1.0 + 4.0 * (phase - 0.75)
+            }
+        }
+        LfoShape::RampUp => 2.0 * phase - 1.0,
+        LfoShape::RampDown => 1.0 - 2.0 * phase,
+        LfoShape::Square => (SQUARE_SMOOTH * (TAU * phase).sin()).tanh(),
+        LfoShape::RandomDrift | LfoShape::SampleHold => 0.0,
+    }
+}
+
+/// Deterministic FNV-1a hash so each control's random modulator starts from an
+/// independent seed without persisting per-route state.
+fn seed_for_id(id: &str) -> u32 {
+    let mut hash = 0x811C_9DC5u32;
+    for byte in id.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,20 +224,25 @@ pub(crate) enum LfoField {
     Amount,
     Interval,
     Offset,
+    Shape,
 }
 
 impl LfoField {
-    pub(crate) const ALL: [LfoField; 3] = [Self::Amount, Self::Interval, Self::Offset];
+    pub(crate) const ALL: [LfoField; 4] = [Self::Amount, Self::Interval, Self::Offset, Self::Shape];
 
     pub(crate) fn label(self) -> &'static str {
-        self.spec().label
+        match self {
+            Self::Shape => "shape",
+            _ => self.spec().label,
+        }
     }
 
-    pub(crate) fn spec(self) -> &'static LfoFieldSpec {
+    /// Only continuous slider fields carry a numeric spec; Shape is discrete.
+    fn spec(self) -> &'static LfoFieldSpec {
         LFO_FIELD_SPECS
             .iter()
             .find(|spec| spec.field == self)
-            .expect("every LFO field has a spec")
+            .expect("every continuous LFO field has a spec")
     }
 }
 
@@ -169,6 +325,8 @@ pub(crate) struct LfoRoute {
     pub(crate) cycle_beats: f32,
     pub(crate) phase_offset_beats: f32,
     pub(crate) shape: LfoShape,
+    /// Seed for random shapes; hashed with the cycle index to produce values.
+    pub(crate) seed: u32,
 }
 
 impl Default for LfoRoute {
@@ -178,72 +336,115 @@ impl Default for LfoRoute {
             cycle_beats: DEFAULT_LFO_CYCLE_BEATS,
             phase_offset_beats: 0.0,
             shape: LfoShape::Sine,
+            seed: 0,
         }
     }
 }
 
 impl LfoRoute {
+    pub(crate) fn with_seed(seed: u32) -> Self {
+        Self {
+            seed,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn phase_at(&self, beat: f64) -> f64 {
         ((beat + f64::from(self.phase_offset_beats))
             / f64::from(self.cycle_beats.max(MIN_LFO_CYCLE_BEATS)))
         .rem_euclid(1.0)
     }
 
-    /// Oscillator output in -1..1 at the given beat; depth scaling is the caller's job.
+    /// Absolute cycle index and phase-in-cycle for the given beat. Random shapes
+    /// hash the cycle index; the fractional part doubles as the periodic phase.
+    fn cycle_index_and_phase(&self, beat: f64) -> (i64, f32) {
+        let cycle = f64::from(self.cycle_beats.max(MIN_LFO_CYCLE_BEATS));
+        let t = (beat + f64::from(self.phase_offset_beats)) / cycle;
+        let index = t.floor();
+        ((index as i64), (t - index) as f32)
+    }
+
+    /// Oscillator output in -1..1 at the given beat; depth scaling is the
+    /// caller's job. Single source of truth for both the engine and the lane.
     pub(crate) fn wave_at(&self, beat: f64) -> f32 {
+        let (index, phase) = self.cycle_index_and_phase(beat);
         match self.shape {
-            LfoShape::Sine => (std::f64::consts::TAU * self.phase_at(beat)).sin() as f32,
+            LfoShape::SampleHold => seeded_unit(self.seed, index),
+            LfoShape::RandomDrift => {
+                let a = seeded_unit(self.seed, index);
+                let b = seeded_unit(self.seed, index + 1);
+                a + (b - a) * smoothstep(phase)
+            }
+            shape => periodic_shape_value(shape, phase),
         }
     }
 
+    /// Periodic shape value in -1..1 at a phase in 0..1, for lane drawing.
+    /// Random shapes return 0 here; draw them from `wave_at` over time instead.
+    pub(crate) fn shape_value_at_phase(&self, phase: f32) -> f32 {
+        periodic_shape_value(self.shape, phase)
+    }
+
+    /// Re-roll the random seed to a new but repeatable pattern.
+    pub(crate) fn reseed(&mut self) {
+        self.seed = self
+            .seed
+            .wrapping_mul(1_664_525)
+            .wrapping_add(1_013_904_223)
+            ^ 0x5DEE_CE66;
+    }
+
     pub(crate) fn adjust_field_at(&mut self, field: LfoField, dir: f32, beat: f64) {
-        let spec = field.spec();
         match field {
+            LfoField::Shape => self.shape = self.shape.cycled(dir),
             LfoField::Amount => {
-                self.depth_ratio = spec.adjust(self.depth_ratio, dir);
+                self.depth_ratio = field.spec().adjust(self.depth_ratio, dir);
             }
             LfoField::Interval => {
-                self.set_cycle_preserving_phase(spec.adjust(self.cycle_beats, dir), beat);
+                self.set_cycle_preserving_phase(field.spec().adjust(self.cycle_beats, dir), beat);
             }
             LfoField::Offset => {
-                self.phase_offset_beats = spec.adjust(self.phase_offset_beats, dir);
+                self.phase_offset_beats = field.spec().adjust(self.phase_offset_beats, dir);
             }
         }
     }
 
     pub(crate) fn set_field_at(&mut self, field: LfoField, value: f32, beat: f64) {
-        let spec = field.spec();
         match field {
-            LfoField::Amount => self.depth_ratio = spec.parse_value(value),
+            LfoField::Shape => self.shape = LfoShape::from_index(value),
+            LfoField::Amount => self.depth_ratio = field.spec().parse_value(value),
             LfoField::Interval => {
-                self.set_cycle_preserving_phase(spec.parse_value(value), beat);
+                self.set_cycle_preserving_phase(field.spec().parse_value(value), beat);
             }
             LfoField::Offset => {
-                self.phase_offset_beats = spec.parse_value(value);
+                self.phase_offset_beats = field.spec().parse_value(value);
             }
         }
     }
 
     pub(crate) fn reset_field_at(&mut self, field: LfoField, beat: f64) {
-        let reset = field.spec().reset;
         match field {
-            LfoField::Amount => self.depth_ratio = reset,
-            LfoField::Interval => self.set_cycle_preserving_phase(reset, beat),
-            LfoField::Offset => self.phase_offset_beats = reset,
+            LfoField::Shape => self.shape = LfoShape::Sine,
+            LfoField::Amount => self.depth_ratio = field.spec().reset,
+            LfoField::Interval => self.set_cycle_preserving_phase(field.spec().reset, beat),
+            LfoField::Offset => self.phase_offset_beats = field.spec().reset,
         }
     }
 
     pub(crate) fn field_ratio(&self, field: LfoField) -> f32 {
-        let spec = field.spec();
         match field {
-            LfoField::Amount => spec.ratio(self.depth_ratio),
-            LfoField::Interval => spec.ratio(self.cycle_beats),
-            LfoField::Offset => spec.ratio(self.phase_offset_beats),
+            LfoField::Shape => {
+                self.shape.index() as f32 / (LfoShape::ALL.len() - 1).max(1) as f32
+            }
+            LfoField::Amount => field.spec().ratio(self.depth_ratio),
+            LfoField::Interval => field.spec().ratio(self.cycle_beats),
+            LfoField::Offset => field.spec().ratio(self.phase_offset_beats),
         }
     }
 
     pub(crate) fn field_display(&self, field: LfoField) -> String {
         match field {
+            LfoField::Shape => self.shape.label().to_string(),
             LfoField::Amount => format!("{:.0}%", self.depth_ratio * 100.0),
             LfoField::Interval => format!("{:.2} beats", self.cycle_beats),
             LfoField::Offset => format!("{:.2} beats", self.phase_offset_beats),
@@ -289,28 +490,321 @@ fn phase_distance(a: f64, b: f64) -> f64 {
     diff.min(1.0 - diff)
 }
 
+// ============================================================
+// Envelope routes
+// ============================================================
+
+/// What re-triggers a one-shot envelope. `EveryBeats` cycles on a musical grid,
+/// `OnKick` fires with the kick, and `Once` is the set-and-forget macro that
+/// sweeps a single time from song start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum EnvTrigger {
+    EveryBeats(f32),
+    OnKick,
+    Once,
+}
+
+impl EnvTrigger {
+    /// Ordered presets the Trigger field cycles through, folding the every-N
+    /// interval choices and the macro one-shot into one discrete field.
+    const CYCLE: [EnvTrigger; 8] = [
+        Self::EveryBeats(1.0),
+        Self::EveryBeats(2.0),
+        Self::EveryBeats(4.0),
+        Self::EveryBeats(8.0),
+        Self::EveryBeats(16.0),
+        Self::EveryBeats(32.0),
+        Self::OnKick,
+        Self::Once,
+    ];
+
+    fn index(self) -> usize {
+        Self::CYCLE
+            .iter()
+            .position(|&t| t == self)
+            .unwrap_or(2) // default: every 4 beats
+    }
+
+    fn cycled(self, dir: f32) -> Self {
+        let len = Self::CYCLE.len() as i32;
+        let next = (self.index() as i32 + dir.signum() as i32).rem_euclid(len);
+        Self::CYCLE[next as usize]
+    }
+
+    fn from_index(index: f32) -> Self {
+        let i = (index.round() as i64).rem_euclid(Self::CYCLE.len() as i64) as usize;
+        Self::CYCLE[i]
+    }
+
+    fn label(self) -> String {
+        match self {
+            Self::EveryBeats(n) => format!("every {n:.0} beats"),
+            Self::OnKick => "on kick".to_string(),
+            Self::Once => "once (macro)".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnvField {
+    Amount,
+    Attack,
+    Decay,
+    Trigger,
+}
+
+impl EnvField {
+    pub(crate) const ALL: [EnvField; 4] = [Self::Amount, Self::Attack, Self::Decay, Self::Trigger];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Amount => "amount",
+            Self::Attack => "attack",
+            Self::Decay => "decay",
+            Self::Trigger => "trigger",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct EnvelopeRoute {
+    /// Bipolar sweep depth in -1..1; positive blooms up, negative dips down.
+    pub(crate) amount: f32,
+    pub(crate) attack_beats: f32,
+    /// Fall time back to base; 0 holds at the peak indefinitely (macro hold).
+    pub(crate) decay_beats: f32,
+    pub(crate) trigger: EnvTrigger,
+}
+
+impl Default for EnvelopeRoute {
+    fn default() -> Self {
+        Self {
+            amount: 0.0,
+            attack_beats: DEFAULT_ENV_ATTACK_BEATS,
+            decay_beats: DEFAULT_ENV_DECAY_BEATS,
+            trigger: EnvTrigger::EveryBeats(4.0),
+        }
+    }
+}
+
+impl EnvelopeRoute {
+    /// Beats elapsed since the most recent trigger, or None before the first
+    /// trigger has fired. Pure function of the context so UI and engine agree.
+    fn beats_since_trigger(&self, ctx: ModContext) -> Option<f32> {
+        match self.trigger {
+            EnvTrigger::EveryBeats(n) => {
+                let n = f64::from(n.max(ENV_BEATS_STEP));
+                if ctx.beat < 0.0 {
+                    return None;
+                }
+                Some(ctx.beat.rem_euclid(n) as f32)
+            }
+            EnvTrigger::Once => {
+                if ctx.beat < 0.0 {
+                    None
+                } else {
+                    Some(ctx.beat as f32)
+                }
+            }
+            EnvTrigger::OnKick => {
+                let interval = f64::from(ctx.kick_interval_beats.max(1.0 / 64.0));
+                let offset = f64::from(ctx.kick_offset_beats).rem_euclid(interval);
+                let slot = ((ctx.beat - offset) / interval).floor();
+                let last = offset + slot * interval;
+                if last < -1e-9 {
+                    None
+                } else {
+                    Some((ctx.beat - last) as f32)
+                }
+            }
+        }
+    }
+
+    /// One-shot AD level in 0..1 at the given beat. Zero attack fires instantly;
+    /// zero decay holds at the peak (set-and-forget macro).
+    pub(crate) fn level_at(&self, ctx: ModContext) -> f32 {
+        let Some(since) = self.beats_since_trigger(ctx) else {
+            return 0.0;
+        };
+        self.level_for_elapsed(since)
+    }
+
+    fn level_for_elapsed(&self, since: f32) -> f32 {
+        if since < 0.0 {
+            0.0
+        } else if self.attack_beats > 0.0 && since < self.attack_beats {
+            since / self.attack_beats
+        } else if self.decay_beats <= 0.0 {
+            1.0
+        } else if since < self.attack_beats + self.decay_beats {
+            1.0 - (since - self.attack_beats) / self.decay_beats
+        } else {
+            0.0
+        }
+    }
+
+    /// Beats spanned by one trigger period, used to scope the animated lane.
+    pub(crate) fn window_beats(&self) -> f32 {
+        match self.trigger {
+            EnvTrigger::EveryBeats(n) => n.max(ENV_BEATS_STEP),
+            EnvTrigger::OnKick => self.attack_beats + self.decay_beats.max(ENV_BEATS_STEP),
+            EnvTrigger::Once => (self.attack_beats + self.decay_beats).max(ENV_BEATS_STEP),
+        }
+    }
+
+    /// Envelope level at a given elapsed beat, for drawing the lane curve.
+    pub(crate) fn level_for_lane(&self, since: f32) -> f32 {
+        self.level_for_elapsed(since)
+    }
+
+    /// Where the live phase head sits along the lane window, 0..1.
+    pub(crate) fn lane_head_phase(&self, ctx: ModContext) -> f32 {
+        match self.beats_since_trigger(ctx) {
+            Some(since) => (since / self.window_beats().max(ENV_BEATS_STEP)).clamp(0.0, 1.0),
+            None => 0.0,
+        }
+    }
+
+    pub(crate) fn adjust_field(&mut self, field: EnvField, dir: f32) {
+        match field {
+            EnvField::Amount => {
+                self.amount = (self.amount + dir * ENV_AMOUNT_STEP).clamp(-1.0, 1.0);
+            }
+            EnvField::Attack => {
+                self.attack_beats =
+                    snap_step(self.attack_beats + dir * ENV_BEATS_STEP, ENV_BEATS_STEP)
+                        .clamp(0.0, MAX_ENV_ATTACK_BEATS);
+            }
+            EnvField::Decay => {
+                self.decay_beats =
+                    snap_step(self.decay_beats + dir * ENV_BEATS_STEP, ENV_BEATS_STEP)
+                        .clamp(0.0, MAX_ENV_DECAY_BEATS);
+            }
+            EnvField::Trigger => self.trigger = self.trigger.cycled(dir),
+        }
+    }
+
+    pub(crate) fn set_field(&mut self, field: EnvField, value: f32) {
+        match field {
+            EnvField::Amount => {
+                let unit = if value.abs() > 1.0 { value / 100.0 } else { value };
+                self.amount = unit.clamp(-1.0, 1.0);
+            }
+            EnvField::Attack => {
+                self.attack_beats =
+                    snap_step(value, ENV_BEATS_STEP).clamp(0.0, MAX_ENV_ATTACK_BEATS);
+            }
+            EnvField::Decay => {
+                self.decay_beats = snap_step(value, ENV_BEATS_STEP).clamp(0.0, MAX_ENV_DECAY_BEATS);
+            }
+            EnvField::Trigger => self.trigger = EnvTrigger::from_index(value),
+        }
+    }
+
+    pub(crate) fn reset_field(&mut self, field: EnvField) {
+        let defaults = EnvelopeRoute::default();
+        match field {
+            EnvField::Amount => self.amount = defaults.amount,
+            EnvField::Attack => self.attack_beats = defaults.attack_beats,
+            EnvField::Decay => self.decay_beats = defaults.decay_beats,
+            EnvField::Trigger => self.trigger = defaults.trigger,
+        }
+    }
+
+    pub(crate) fn field_ratio(&self, field: EnvField) -> f32 {
+        match field {
+            EnvField::Amount => (self.amount * 0.5 + 0.5).clamp(0.0, 1.0),
+            EnvField::Attack => (self.attack_beats / MAX_ENV_ATTACK_BEATS).clamp(0.0, 1.0),
+            EnvField::Decay => (self.decay_beats / MAX_ENV_DECAY_BEATS).clamp(0.0, 1.0),
+            EnvField::Trigger => {
+                self.trigger.index() as f32 / (EnvTrigger::CYCLE.len() - 1).max(1) as f32
+            }
+        }
+    }
+
+    pub(crate) fn field_display(&self, field: EnvField) -> String {
+        match field {
+            EnvField::Amount => format!("{:+.0}%", self.amount * 100.0),
+            EnvField::Attack => format!("{:.2} beats", self.attack_beats),
+            EnvField::Decay => {
+                if self.decay_beats <= 0.0 {
+                    "hold".to_string()
+                } else {
+                    format!("{:.2} beats", self.decay_beats)
+                }
+            }
+            EnvField::Trigger => self.trigger.label(),
+        }
+    }
+}
+
+// ============================================================
+// Automation state
+// ============================================================
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OpenEditor {
+    address: ControlAddress,
+    kind: ModKind,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct AutomationState {
     routes: BTreeMap<ControlAddress, LfoRoute>,
-    open: Option<ControlAddress>,
+    envelopes: BTreeMap<ControlAddress, EnvelopeRoute>,
+    open: Option<OpenEditor>,
 }
 
 impl AutomationState {
     pub(crate) fn open_or_create(&mut self, address: ControlAddress) -> &mut LfoRoute {
-        let route = self.routes.entry(address).or_default();
-        self.open = Some(address);
+        let route = self
+            .routes
+            .entry(address)
+            .or_insert_with(|| LfoRoute::with_seed(seed_for_id(address.id())));
+        self.open = Some(OpenEditor {
+            address,
+            kind: ModKind::Lfo,
+        });
         route
     }
 
-    /// Close the editor; a route left at zero depth is dead weight and is removed.
+    pub(crate) fn open_or_create_envelope(
+        &mut self,
+        address: ControlAddress,
+    ) -> &mut EnvelopeRoute {
+        let route = self.envelopes.entry(address).or_default();
+        self.open = Some(OpenEditor {
+            address,
+            kind: ModKind::Envelope,
+        });
+        route
+    }
+
+    /// Close the editor; a route left at neutral amount is dead weight and is
+    /// removed so it never colours the UI or the song code.
     pub(crate) fn close_editor(&mut self) {
-        if let Some(address) = self.open.take()
-            && self
-                .routes
-                .get(&address)
-                .is_some_and(|route| route.depth_ratio <= f32::EPSILON)
-        {
-            self.routes.remove(&address);
+        let Some(open) = self.open.take() else {
+            return;
+        };
+        match open.kind {
+            ModKind::Lfo => {
+                if self
+                    .routes
+                    .get(&open.address)
+                    .is_some_and(|route| route.depth_ratio <= f32::EPSILON)
+                {
+                    self.routes.remove(&open.address);
+                }
+            }
+            ModKind::Envelope => {
+                if self
+                    .envelopes
+                    .get(&open.address)
+                    .is_some_and(|route| route.amount.abs() <= f32::EPSILON)
+                {
+                    self.envelopes.remove(&open.address);
+                }
+            }
         }
     }
 
@@ -319,7 +813,11 @@ impl AutomationState {
     }
 
     pub(crate) fn active_address(&self) -> Option<ControlAddress> {
-        self.open
+        self.open.map(|open| open.address)
+    }
+
+    pub(crate) fn active_kind(&self) -> Option<ModKind> {
+        self.open.map(|open| open.kind)
     }
 
     pub(crate) fn route(&self, address: ControlAddress) -> Option<&LfoRoute> {
@@ -337,24 +835,65 @@ impl AutomationState {
     pub(crate) fn routes(&self) -> impl Iterator<Item = (ControlAddress, &LfoRoute)> {
         self.routes.iter().map(|(address, route)| (*address, route))
     }
+
+    pub(crate) fn envelope(&self, address: ControlAddress) -> Option<&EnvelopeRoute> {
+        self.envelopes.get(&address)
+    }
+
+    pub(crate) fn envelope_mut(&mut self, address: ControlAddress) -> Option<&mut EnvelopeRoute> {
+        self.envelopes.get_mut(&address)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_envelope(&mut self, address: ControlAddress, route: EnvelopeRoute) {
+        self.envelopes.insert(address, route);
+    }
+
+    fn modulated_addresses(&self) -> BTreeSet<ControlAddress> {
+        self.routes
+            .keys()
+            .chain(self.envelopes.keys())
+            .copied()
+            .collect()
+    }
 }
 
-/// The effective value the engine plays for a modulated control: base plus
-/// LFO, clamped to range, then snapped per the control's `LfoSnap`. The UI's
-/// modulation marker must go through this too so it shows what is heard.
+/// The effective value the engine plays for a modulated control: base plus LFO
+/// plus envelope, summed, clamped to range, then snapped per the control's
+/// `LfoSnap`. The UI's modulation marker must go through this too so it shows
+/// what is heard.
+pub(crate) fn modulated_control_value_full(
+    spec: &ControlSpec,
+    lfo: Option<&LfoRoute>,
+    envelope: Option<&EnvelopeRoute>,
+    base: f32,
+    ctx: ModContext,
+) -> f32 {
+    let range = spec.max - spec.min;
+    let mut value = base;
+    if let Some(route) = lfo {
+        value += route.wave_at(ctx.beat) * range * route.depth_ratio.clamp(0.0, 1.0);
+    }
+    if let Some(route) = envelope {
+        value += route.level_at(ctx) * range * route.amount.clamp(-1.0, 1.0);
+    }
+    let value = value.clamp(spec.min, spec.max);
+    match spec.lfo_snap {
+        LfoSnap::None => value,
+        LfoSnap::PowerOfTwo => nearest_power_of_two(value, spec.min, spec.max),
+        LfoSnap::Step => spec.quantize(value),
+    }
+}
+
+/// LFO-only convenience wrapper over `modulated_control_value_full`.
+#[cfg(test)]
 pub(crate) fn modulated_control_value(
     spec: &ControlSpec,
     route: &LfoRoute,
     base: f32,
     beat: f64,
 ) -> f32 {
-    let depth = (spec.max - spec.min) * route.depth_ratio.clamp(0.0, 1.0);
-    let modulated = (base + route.wave_at(beat) * depth).clamp(spec.min, spec.max);
-    match spec.lfo_snap {
-        LfoSnap::None => modulated,
-        LfoSnap::PowerOfTwo => nearest_power_of_two(modulated, spec.min, spec.max),
-        LfoSnap::Step => spec.quantize(modulated),
-    }
+    modulated_control_value_full(spec, Some(route), None, base, ModContext::lfo_only(beat))
 }
 
 pub(crate) fn apply_automation(
@@ -362,13 +901,24 @@ pub(crate) fn apply_automation(
     automation: &AutomationState,
     timing: TimingContext,
 ) {
-    for (address, route) in automation.routes() {
+    let ctx = ModContext {
+        beat: timing.beat,
+        kick_interval_beats: controls.kick.interval_beats,
+        kick_offset_beats: controls.kick.offset_beats,
+    };
+    for address in automation.modulated_addresses() {
         let spec = address.spec();
-        if route.depth_ratio <= f32::EPSILON {
+        let lfo = automation
+            .route(address)
+            .filter(|route| route.depth_ratio > f32::EPSILON);
+        let envelope = automation
+            .envelope(address)
+            .filter(|route| route.amount.abs() > f32::EPSILON);
+        if lfo.is_none() && envelope.is_none() {
             continue;
         }
         let base = (spec.get)(controls);
-        let value = modulated_control_value(spec, route, base, timing.beat);
+        let value = modulated_control_value_full(spec, lfo, envelope, base, ctx);
         (spec.set)(controls, value);
     }
 }

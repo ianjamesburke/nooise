@@ -60,6 +60,7 @@ pub(crate) fn ui_loop(
                 },
                 &fluid,
                 automation.state(),
+                &c,
                 footer_message,
             )
         })?;
@@ -77,17 +78,15 @@ pub(crate) fn ui_loop(
                         if entry.is_complete_number()
                             && let Ok(value) = entry.buffer.parse::<f32>()
                         {
-                            if let Some(field) = lfo_field_at(lfo_selected)
-                                && let Some(address) = automation.state().active_address()
-                            {
-                                automation.edit(|state| {
-                                    if let Some(route) = state.route_mut(address) {
-                                        route.set_field_at(field, value, beat);
-                                    }
-                                });
-                            } else {
-                                set_value(&controls, tab, selected, value);
-                            }
+                            set_modulator_or_control(
+                                &mut automation,
+                                lfo_selected,
+                                &controls,
+                                tab,
+                                selected,
+                                value,
+                                beat,
+                            );
                         }
                         numeric_entry = None;
                     }
@@ -141,7 +140,7 @@ pub(crate) fn ui_loop(
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if automation.state().is_editor_open() {
-                        if lfo_selected >= LfoField::ALL.len() {
+                        if lfo_selected >= active_field_count(automation.state()) {
                             automation.edit(AutomationState::close_editor);
                             selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
                             lfo_selected = 0;
@@ -205,17 +204,28 @@ pub(crate) fn ui_loop(
                     );
                 }
                 KeyCode::Char('f') => {
-                    if let Some(item) = items.get(selected) {
-                        let address = ControlAddress::new(item.id);
+                    open_modulator(&mut automation, &items, selected, ModKind::Lfo, &mut lfo_selected);
+                }
+                KeyCode::Char('e') => {
+                    open_modulator(
+                        &mut automation,
+                        &items,
+                        selected,
+                        ModKind::Envelope,
+                        &mut lfo_selected,
+                    );
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    if let Some(address) = automation.state().active_address()
+                        && automation.state().active_kind() == Some(ModKind::Lfo)
+                    {
                         automation.edit(|state| {
-                            if state.active_address() == Some(address) {
-                                state.close_editor();
-                            } else {
-                                state.close_editor();
-                                state.open_or_create(address);
+                            if let Some(route) = state.route_mut(address)
+                                && route.shape.is_random()
+                            {
+                                route.reseed();
                             }
                         });
-                        lfo_selected = 1;
                     }
                 }
                 KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
@@ -231,9 +241,53 @@ pub(crate) fn ui_loop(
     Ok(())
 }
 
-/// Submenu row 0 is the parent slider; rows 1..=3 map onto the LFO fields.
+/// Submenu row 0 is the parent slider; rows 1.. map onto the modulator fields.
 pub(crate) fn lfo_field_at(index: usize) -> Option<LfoField> {
     LfoField::ALL.get(index.checked_sub(1)?).copied()
+}
+
+pub(crate) fn env_field_at(index: usize) -> Option<EnvField> {
+    EnvField::ALL.get(index.checked_sub(1)?).copied()
+}
+
+/// Submenu row count for the currently open editor (0 when none is open).
+pub(crate) fn active_field_count(automation: &AutomationState) -> usize {
+    match automation.active_kind() {
+        Some(ModKind::Lfo) => LfoField::ALL.len(),
+        Some(ModKind::Envelope) => EnvField::ALL.len(),
+        None => 0,
+    }
+}
+
+/// Toggle a modulator editor of `kind` on the selected control: same kind on
+/// the same control closes it, otherwise the open editor is swapped for a new
+/// one (created audible-neutral).
+fn open_modulator(
+    automation: &mut PublishedAutomation,
+    items: &[ControlItem],
+    selected: usize,
+    kind: ModKind,
+    sub_selected: &mut usize,
+) {
+    if let Some(item) = items.get(selected) {
+        let address = ControlAddress::new(item.id);
+        automation.edit(|state| {
+            let already =
+                state.active_address() == Some(address) && state.active_kind() == Some(kind);
+            state.close_editor();
+            if !already {
+                match kind {
+                    ModKind::Lfo => {
+                        state.open_or_create(address);
+                    }
+                    ModKind::Envelope => {
+                        state.open_or_create_envelope(address);
+                    }
+                }
+            }
+        });
+        *sub_selected = 1;
+    }
 }
 
 pub(crate) struct PublishedAutomation {
@@ -257,6 +311,32 @@ impl PublishedAutomation {
     }
 }
 
+/// Which modulator field (if any) the submenu cursor sits on for the open
+/// editor. Returns None when the parent slider row (index 0) is selected or no
+/// editor is open, so the caller edits the underlying control instead.
+enum ActiveField {
+    Lfo(ControlAddress, LfoField),
+    Envelope(ControlAddress, EnvField),
+    Control,
+}
+
+fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveField {
+    let Some(address) = automation.active_address() else {
+        return ActiveField::Control;
+    };
+    match automation.active_kind() {
+        Some(ModKind::Lfo) => match lfo_field_at(lfo_selected) {
+            Some(field) => ActiveField::Lfo(address, field),
+            None => ActiveField::Control,
+        },
+        Some(ModKind::Envelope) => match env_field_at(lfo_selected) {
+            Some(field) => ActiveField::Envelope(address, field),
+            None => ActiveField::Control,
+        },
+        None => ActiveField::Control,
+    }
+}
+
 fn adjust_lfo_or_control(
     automation: &mut PublishedAutomation,
     lfo_selected: usize,
@@ -266,16 +346,18 @@ fn adjust_lfo_or_control(
     dir: f32,
     beat: f64,
 ) {
-    if let Some(field) = lfo_field_at(lfo_selected)
-        && let Some(address) = automation.state().active_address()
-    {
-        automation.edit(|state| {
+    match active_field(automation.state(), lfo_selected) {
+        ActiveField::Lfo(address, field) => automation.edit(|state| {
             if let Some(route) = state.route_mut(address) {
                 route.adjust_field_at(field, dir, beat);
             }
-        });
-    } else {
-        adjust(controls, tab, selected, dir);
+        }),
+        ActiveField::Envelope(address, field) => automation.edit(|state| {
+            if let Some(route) = state.envelope_mut(address) {
+                route.adjust_field(field, dir);
+            }
+        }),
+        ActiveField::Control => adjust(controls, tab, selected, dir),
     }
 }
 
@@ -287,28 +369,73 @@ fn reset_lfo_or_control(
     selected: usize,
     beat: f64,
 ) {
-    if let Some(field) = lfo_field_at(lfo_selected)
-        && let Some(address) = automation.state().active_address()
-    {
-        automation.edit(|state| {
+    match active_field(automation.state(), lfo_selected) {
+        ActiveField::Lfo(address, field) => automation.edit(|state| {
             if let Some(route) = state.route_mut(address) {
                 route.reset_field_at(field, beat);
             }
-        });
-    } else {
-        reset_to_min(controls, tab, selected);
+        }),
+        ActiveField::Envelope(address, field) => automation.edit(|state| {
+            if let Some(route) = state.envelope_mut(address) {
+                route.reset_field(field);
+            }
+        }),
+        ActiveField::Control => reset_to_min(controls, tab, selected),
+    }
+}
+
+fn set_modulator_or_control(
+    automation: &mut PublishedAutomation,
+    lfo_selected: usize,
+    controls: &Arc<ArcSwap<FluidControls>>,
+    tab: Tab,
+    selected: usize,
+    value: f32,
+    beat: f64,
+) {
+    match active_field(automation.state(), lfo_selected) {
+        ActiveField::Lfo(address, field) => automation.edit(|state| {
+            if let Some(route) = state.route_mut(address) {
+                route.set_field_at(field, value, beat);
+            }
+        }),
+        ActiveField::Envelope(address, field) => automation.edit(|state| {
+            if let Some(route) = state.envelope_mut(address) {
+                route.set_field(field, value);
+            }
+        }),
+        ActiveField::Control => set_value(controls, tab, selected, value),
     }
 }
 
 fn automation_footer(automation: &AutomationState) -> Option<String> {
     let address = automation.active_address()?;
-    let route = automation.route(address)?;
-    Some(format!(
-        "LFO {}   {:.2} beats   depth {:.0}%   Esc close",
-        address.id(),
-        route.cycle_beats,
-        route.depth_ratio * 100.0
-    ))
+    match automation.active_kind()? {
+        ModKind::Lfo => {
+            let route = automation.route(address)?;
+            let reseed = if route.shape.is_random() {
+                "   r reseed"
+            } else {
+                ""
+            };
+            Some(format!(
+                "LFO {}   {}   {:.2} beats   depth {:.0}%{reseed}   Esc close",
+                address.id(),
+                route.shape.label(),
+                route.cycle_beats,
+                route.depth_ratio * 100.0
+            ))
+        }
+        ModKind::Envelope => {
+            let route = automation.envelope(address)?;
+            Some(format!(
+                "ENV {}   {}   amount {:+.0}%   Esc close",
+                address.id(),
+                route.field_display(EnvField::Trigger),
+                route.amount * 100.0
+            ))
+        }
+    }
 }
 
 fn copy_launch_line(
@@ -359,6 +486,7 @@ pub(crate) fn render(
     numeric: NumericDisplay<'_>,
     fluid: &FluidState,
     automation: &AutomationState,
+    controls: &FluidControls,
     update_message: Option<&str>,
 ) {
     render_fluid(
@@ -371,6 +499,7 @@ pub(crate) fn render(
         numeric,
         fluid,
         automation,
+        controls,
         update_message,
     );
 }
@@ -549,8 +678,14 @@ pub(crate) fn render_fluid(
     numeric: NumericDisplay<'_>,
     fluid: &FluidState,
     automation: &AutomationState,
+    controls: &FluidControls,
     update_message: Option<&str>,
 ) {
+    let mod_ctx = ModContext {
+        beat,
+        kick_interval_beats: controls.kick.interval_beats,
+        kick_offset_beats: controls.kick.offset_beats,
+    };
     let area = f.area();
     f.render_widget(FluidWidget { fluid }, area);
 
@@ -627,7 +762,11 @@ pub(crate) fn render_fluid(
         let active = i == selected;
         let address = ControlAddress::new(item.id);
         let route = automation.route(address);
-        let editor_open_here = automation.active_address() == Some(address);
+        let envelope = automation.envelope(address);
+        let editor_here = automation.active_address() == Some(address);
+        let lfo_open_here = editor_here && automation.active_kind() == Some(ModKind::Lfo);
+        let env_open_here = editor_here && automation.active_kind() == Some(ModKind::Envelope);
+        let editor_open_here = editor_here;
         let parent_active = active && (!editor_open_here || lfo_selected == 0);
         let prefix = if parent_active { "▶ " } else { "  " };
         let display = if parent_active {
@@ -649,13 +788,13 @@ pub(crate) fn render_fluid(
         if parent_active {
             style = style.add_modifier(Modifier::BOLD);
         }
-        let modulated = route.map(|route| {
+        let modulated = (route.is_some() || envelope.is_some()).then(|| {
             let spec = address.spec();
             let base = match spec.bar {
                 Bar::Linear => item.value,
                 Bar::Log2 => 2f32.powf(item.value),
             };
-            let value = modulated_control_value(spec, route, base, beat);
+            let value = modulated_control_value_full(spec, route, envelope, base, mod_ctx);
             let value = match spec.bar {
                 Bar::Linear => value,
                 Bar::Log2 => value.log2(),
@@ -673,7 +812,7 @@ pub(crate) fn render_fluid(
         rows.push(Line::from(spans));
 
         if let Some(route) = route {
-            if editor_open_here {
+            if lfo_open_here {
                 for (fi, field) in LfoField::ALL.iter().enumerate() {
                     rows.push(lfo_field_line(
                         route,
@@ -684,7 +823,21 @@ pub(crate) fn render_fluid(
                     ));
                 }
             }
-            rows.push(lfo_lane_line(route, beat, bar_w, editor_open_here));
+            rows.push(lfo_lane_line(route, beat, bar_w, lfo_open_here));
+        }
+        if let Some(route) = envelope {
+            if env_open_here {
+                for (fi, field) in EnvField::ALL.iter().enumerate() {
+                    rows.push(env_field_line(
+                        route,
+                        *field,
+                        lfo_selected == fi + 1,
+                        &numeric,
+                        bar_w,
+                    ));
+                }
+            }
+            rows.push(env_lane_line(route, mod_ctx, bar_w, env_open_here));
         }
         if i + 1 < items.len() {
             rows.push(Line::from(""));
@@ -693,7 +846,7 @@ pub(crate) fn render_fluid(
     f.render_widget(Paragraph::new(rows), layout[4]);
 
     let footer = update_message
-        .unwrap_or("jk select   h/l adjust   f LFO   type value   Enter set   q quit");
+        .unwrap_or("jk select   h/l adjust   f LFO   e envelope   type value   Enter set   q quit");
     let footer_style = if update_message.is_some() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
@@ -739,37 +892,128 @@ fn lfo_field_line(
     ))
 }
 
-/// Live oscillator lane: one LFO cycle across the width, phase-locked to the
-/// engine beat. Amplitude tracks the route depth; brightness peaks at the
-/// current phase head so the sweep reads as motion.
+const LANE_WAVE: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// How many random cycles the lane scopes so sample & hold / random drift read
+/// as an actual scrolling trajectory rather than a single flat step.
+const RANDOM_LANE_CYCLES: f32 = 4.0;
+
+fn lane_glyph(level: f32) -> char {
+    let level = level.clamp(0.0, 1.0);
+    LANE_WAVE[((level * (LANE_WAVE.len() - 1) as f32).round() as usize).min(LANE_WAVE.len() - 1)]
+}
+
+/// Live modulator lane. Periodic shapes draw one phase-locked cycle across the
+/// width with a bright head at the current phase. Random shapes scroll the real
+/// generated trajectory right-to-left, head at "now" on the right edge, so what
+/// the lane shows is exactly what the engine plays.
 pub(crate) fn lfo_lane_line(
     route: &LfoRoute,
     beat: f64,
     width: usize,
     active: bool,
 ) -> Line<'static> {
-    const WAVE: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let width = width.clamp(6, 80);
-    let head = (route.phase_at(beat) * width as f64) as usize % width;
     let floor = if active { 0.35 } else { 0.25 };
     let mut spans = Vec::with_capacity(width + 1);
     spans.push(Span::styled(
         format!("  {:<15} ", ""),
         Style::default().fg(Color::Rgb(130, 136, 160)),
     ));
+
+    if route.shape.is_random() {
+        let window = f64::from(route.cycle_beats.max(MIN_LFO_CYCLE_BEATS) * RANDOM_LANE_CYCLES);
+        for i in 0..width {
+            let age = (width - 1 - i) as f64 / width as f64;
+            let wave = route.wave_at(beat - age * window) * route.depth_ratio;
+            let level = wave * 0.5 + 0.5;
+            let brightness = (floor + (i as f32 / (width - 1) as f32) * 0.6).clamp(0.0, 1.0);
+            let hue = 300.0 + wave * 25.0;
+            spans.push(Span::styled(
+                lane_glyph(level).to_string(),
+                Style::default().fg(fluid_hsv(hue, 0.6, brightness)),
+            ));
+        }
+        return Line::from(spans);
+    }
+
+    let head = (route.phase_at(beat) * width as f64) as usize % width;
     for i in 0..width {
         let phase = i as f32 / width as f32;
-        let wave = (TAU * phase).sin() * route.depth_ratio;
-        let level = (wave * 0.5 + 0.5).clamp(0.0, 1.0);
-        let glyph = WAVE[((level * (WAVE.len() - 1) as f32).round() as usize).min(WAVE.len() - 1)];
+        let wave = route.shape_value_at_phase(phase) * route.depth_ratio;
+        let level = wave * 0.5 + 0.5;
         let raw = i.abs_diff(head);
         let wrapped = raw.min(width - raw);
         let falloff = 1.0 - (wrapped as f32 / width as f32) * 2.0;
         let brightness = (floor + falloff.max(0.0) * 0.6).clamp(0.0, 1.0);
         let hue = 300.0 + wave * 25.0;
         spans.push(Span::styled(
-            glyph.to_string(),
+            lane_glyph(level).to_string(),
             Style::default().fg(fluid_hsv(hue, 0.6, brightness)),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn env_field_line(
+    route: &EnvelopeRoute,
+    field: EnvField,
+    active: bool,
+    numeric: &NumericDisplay<'_>,
+    bar_w: usize,
+) -> Line<'static> {
+    let fg = if active {
+        Color::Rgb(140, 235, 175)
+    } else {
+        Color::Rgb(95, 195, 140)
+    };
+    let mut style = Style::default().fg(fg);
+    if active {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    let prefix = if active { "▶ " } else { "  " };
+    let display = if active && let Some(entry) = numeric.entry {
+        let cursor = if numeric.cursor_visible { "_" } else { " " };
+        format!("> {entry}{cursor}")
+    } else {
+        route.field_display(field)
+    };
+    let bar = ratio_bar(route.field_ratio(field), bar_w, '█', '░');
+    Line::from(Span::styled(
+        format!("{prefix}  {:<13} {bar} {display}", field.label()),
+        style,
+    ))
+}
+
+/// Envelope lane: the one-shot AD ramp across one trigger period, with a bright
+/// head at the live phase. Uses the same `level_at` math as the engine.
+pub(crate) fn env_lane_line(
+    route: &EnvelopeRoute,
+    ctx: ModContext,
+    width: usize,
+    active: bool,
+) -> Line<'static> {
+    let width = width.clamp(6, 80);
+    let floor = if active { 0.35 } else { 0.25 };
+    let window = f64::from(route.window_beats());
+    let head_phase = route.lane_head_phase(ctx);
+    let head = ((head_phase * width as f32) as usize).min(width - 1);
+
+    let mut spans = Vec::with_capacity(width + 1);
+    spans.push(Span::styled(
+        format!("  {:<15} ", ""),
+        Style::default().fg(Color::Rgb(130, 136, 160)),
+    ));
+    for i in 0..width {
+        let col_since = (i as f64 / width as f64 * window) as f32;
+        let level = route.level_for_lane(col_since) * route.amount.abs();
+        let raw = i.abs_diff(head);
+        let falloff = 1.0 - (raw as f32 / width as f32) * 2.0;
+        let brightness = (floor + falloff.max(0.0) * 0.6).clamp(0.0, 1.0);
+        let hue = if route.amount >= 0.0 { 150.0 } else { 15.0 };
+        spans.push(Span::styled(
+            lane_glyph(level).to_string(),
+            Style::default().fg(fluid_hsv(hue, 0.55, brightness)),
         ));
     }
     Line::from(spans)

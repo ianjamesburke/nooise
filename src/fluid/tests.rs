@@ -330,6 +330,7 @@ fn render_fluid_draws_without_terminal_backend() {
                 NumericDisplay::empty(),
                 &fluid,
                 &automation,
+                &controls,
                 None,
             )
         })
@@ -600,6 +601,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
                     NumericDisplay::empty(),
                     &fluid,
                     &automation,
+                    &controls,
                     None,
                 )
             })
@@ -925,6 +927,7 @@ fn song_code_round_trips_lfo_automation_record() {
             depth_ratio: 0.4,
             shape: LfoShape::Sine,
             phase_offset_beats: 0.25,
+            ..LfoRoute::default()
         },
     );
     let song = SongState {
@@ -1695,6 +1698,7 @@ fn automation_with_route(
             cycle_beats,
             phase_offset_beats: 0.0,
             shape: LfoShape::Sine,
+            ..LfoRoute::default()
         },
     );
     automation
@@ -1708,6 +1712,7 @@ fn modulated_control_value_snaps_like_the_engine() {
         cycle_beats: 8.0,
         phase_offset_beats: 0.0,
         shape: LfoShape::Sine,
+        ..LfoRoute::default()
     };
 
     // Peak of the sine: raw value 1.0 + 0.4 * 3.75 = 2.5 must land on 2.0.
@@ -1802,6 +1807,362 @@ fn lfo_interval_sweep_plays_on_grid_breakdown() {
     assert!(
         max_gap <= 2.0 + 1e-3,
         "trigger starved during breakdown sweep: max gap {max_gap:.2} beats"
+    );
+}
+
+// ============================================================
+// Modulator shapes, random determinism, envelopes
+// ============================================================
+
+fn lfo_shape(shape: LfoShape) -> LfoRoute {
+    LfoRoute {
+        shape,
+        cycle_beats: 1.0,
+        depth_ratio: 1.0,
+        ..LfoRoute::default()
+    }
+}
+
+fn env_ctx(beat: f64) -> ModContext {
+    ModContext {
+        beat,
+        kick_interval_beats: 1.0,
+        kick_offset_beats: 0.0,
+    }
+}
+
+#[test]
+fn render_fluid_draws_envelope_submenu_and_lane() {
+    let controls = FluidControls::default();
+    let fluid = FluidState::new();
+    let items = tab_controls(Tab::Chords, &controls);
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new(items[3].id); // Reverb Mix
+    // A random LFO plus an open envelope editor exercises both new lanes.
+    automation.open_or_create(address).shape = LfoShape::SampleHold;
+    automation.open_or_create_envelope(address).amount = 0.5;
+
+    let backend = TestBackend::new(120, 44);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            render(
+                f,
+                &items,
+                Tab::Chords,
+                3,
+                1,
+                2.5,
+                NumericDisplay::empty(),
+                &fluid,
+                &automation,
+                &controls,
+                None,
+            )
+        })
+        .unwrap();
+
+    let text = buffer_text(terminal.backend().buffer());
+    assert!(text.contains("attack"));
+    assert!(text.contains("decay"));
+    assert!(text.contains("trigger"));
+}
+
+#[test]
+fn lfo_shapes_match_reference_curves() {
+    // cycle_beats == 1.0 means beat value equals phase in 0..1.
+    let tri = lfo_shape(LfoShape::Triangle);
+    assert_near(tri.wave_at(0.0), 0.0);
+    assert_near(tri.wave_at(0.25), 1.0);
+    assert_near(tri.wave_at(0.5), 0.0);
+    assert_near(tri.wave_at(0.75), -1.0);
+
+    let up = lfo_shape(LfoShape::RampUp);
+    assert_near(up.wave_at(0.0), -1.0);
+    assert_near(up.wave_at(0.5), 0.0);
+    assert_near(up.wave_at(0.75), 0.5);
+
+    let down = lfo_shape(LfoShape::RampDown);
+    assert_near(down.wave_at(0.0), 1.0);
+    assert_near(down.wave_at(0.5), 0.0);
+    assert_near(down.wave_at(0.75), -0.5);
+
+    let square = lfo_shape(LfoShape::Square);
+    assert!(square.wave_at(0.25) > 0.99, "square high near +1");
+    assert!(square.wave_at(0.75) < -0.99, "square low near -1");
+}
+
+#[test]
+fn sample_hold_is_stepped_and_seeded() {
+    let route = LfoRoute {
+        shape: LfoShape::SampleHold,
+        cycle_beats: 1.0,
+        depth_ratio: 1.0,
+        seed: 12345,
+        ..LfoRoute::default()
+    };
+
+    // Constant within one cycle, so what the marker shows holds until the step.
+    assert_close(route.wave_at(0.1), route.wave_at(0.9));
+    // Stepping to the next cycle almost always lands on a different value.
+    assert!((route.wave_at(0.5) - route.wave_at(1.5)).abs() > 1e-6);
+
+    // Same seed reproduces the same trajectory exactly.
+    let twin = route;
+    for i in 0..64 {
+        let beat = f64::from(i) * 0.5;
+        assert_close(route.wave_at(beat), twin.wave_at(beat));
+    }
+}
+
+#[test]
+fn random_drift_is_deterministic_for_a_seed() {
+    let a = LfoRoute {
+        shape: LfoShape::RandomDrift,
+        cycle_beats: 2.0,
+        depth_ratio: 1.0,
+        seed: 777,
+        ..LfoRoute::default()
+    };
+    let b = a;
+    for i in 0..128 {
+        let beat = f64::from(i) * 0.3;
+        assert_close(a.wave_at(beat), b.wave_at(beat));
+        assert!(a.wave_at(beat).abs() <= 1.0 + 1e-6);
+    }
+}
+
+#[test]
+fn reseed_changes_pattern_but_stays_repeatable() {
+    let base = LfoRoute {
+        shape: LfoShape::SampleHold,
+        cycle_beats: 1.0,
+        depth_ratio: 1.0,
+        seed: 5,
+        ..LfoRoute::default()
+    };
+    let sample = |route: &LfoRoute| -> Vec<f32> {
+        (0..32).map(|i| route.wave_at(f64::from(i))).collect()
+    };
+
+    let original = sample(&base);
+    let mut rolled = base;
+    rolled.reseed();
+    let mut rolled_again = base;
+    rolled_again.reseed();
+
+    // Reseed is deterministic: two routes reseeded from the same start match,
+    // so `render --seed` stays byte-identical.
+    assert_eq!(sample(&rolled), sample(&rolled_again));
+    // ...and it actually produced a different pattern.
+    assert_ne!(sample(&base), sample(&rolled));
+    let _ = original;
+}
+
+#[test]
+fn envelope_level_follows_attack_then_decay() {
+    let env = EnvelopeRoute {
+        amount: 1.0,
+        attack_beats: 2.0,
+        decay_beats: 2.0,
+        trigger: EnvTrigger::Once,
+    };
+    assert_near(env.level_at(env_ctx(0.0)), 0.0);
+    assert_near(env.level_at(env_ctx(1.0)), 0.5);
+    assert_near(env.level_at(env_ctx(2.0)), 1.0);
+    assert_near(env.level_at(env_ctx(3.0)), 0.5);
+    assert_near(env.level_at(env_ctx(4.0)), 0.0);
+    assert_near(env.level_at(env_ctx(9.0)), 0.0);
+}
+
+#[test]
+fn envelope_macro_holds_at_peak_when_decay_is_zero() {
+    let env = EnvelopeRoute {
+        amount: 1.0,
+        attack_beats: 4.0,
+        decay_beats: 0.0,
+        trigger: EnvTrigger::Once,
+    };
+    assert_near(env.level_at(env_ctx(2.0)), 0.5);
+    assert_near(env.level_at(env_ctx(4.0)), 1.0);
+    assert_near(env.level_at(env_ctx(400.0)), 1.0);
+}
+
+#[test]
+fn envelope_every_n_beats_retriggers() {
+    let env = EnvelopeRoute {
+        amount: 1.0,
+        attack_beats: 0.0,
+        decay_beats: 4.0,
+        trigger: EnvTrigger::EveryBeats(4.0),
+    };
+    // Instant attack, so the sweep is at its peak right after each trigger.
+    assert_near(env.level_at(env_ctx(0.0)), 1.0);
+    assert!(env.level_at(env_ctx(3.9)) < 0.1);
+    // Beat 4 wraps back to the start of a fresh one-shot.
+    assert_near(env.level_at(env_ctx(4.0)), 1.0);
+}
+
+#[test]
+fn envelope_on_kick_tracks_the_kick_grid() {
+    let env = EnvelopeRoute {
+        amount: 1.0,
+        attack_beats: 0.0,
+        decay_beats: 1.0,
+        trigger: EnvTrigger::OnKick,
+    };
+    let ctx = |beat: f64| ModContext {
+        beat,
+        kick_interval_beats: 2.0,
+        kick_offset_beats: 0.0,
+    };
+    // Kicks land on beats 0, 2, 4, ...; the one-shot peaks right at each hit.
+    assert_near(env.level_at(ctx(2.0)), 1.0);
+    assert_near(env.level_at(ctx(2.5)), 0.5);
+    assert_near(env.level_at(ctx(4.0)), 1.0);
+}
+
+#[test]
+fn envelope_amount_zero_is_audible_neutral() {
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.5;
+    let mut automation = AutomationState::default();
+    automation.open_or_create_envelope(ControlAddress::new("master.level"));
+
+    apply_automation(
+        &mut controls,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.0),
+    );
+
+    assert_close(controls.master.level, 0.5);
+}
+
+#[test]
+fn open_or_create_envelope_defaults_to_neutral_amount() {
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new("master.level");
+
+    let env = automation.open_or_create_envelope(address);
+
+    assert_close(env.amount, 0.0);
+    assert_eq!(automation.active_kind(), Some(ModKind::Envelope));
+}
+
+#[test]
+fn close_editor_deletes_zero_amount_envelope() {
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new("master.level");
+    automation.open_or_create_envelope(address);
+
+    automation.close_editor();
+    assert!(automation.envelope(address).is_none());
+
+    automation.open_or_create_envelope(address).amount = 0.5;
+    automation.close_editor();
+    assert!(automation.envelope(address).is_some());
+}
+
+#[test]
+fn lfo_and_envelope_coexist_on_one_control() {
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new("pad.reverb_mix");
+    automation.open_or_create(address).depth_ratio = 0.3;
+    automation.open_or_create_envelope(address).amount = 0.4;
+
+    assert!(automation.route(address).is_some());
+    assert!(automation.envelope(address).is_some());
+    assert_eq!(automation.active_kind(), Some(ModKind::Envelope));
+}
+
+#[test]
+fn combined_lfo_and_envelope_sum_and_clamp() {
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.5;
+    let address = ControlAddress::new("master.level");
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        address,
+        LfoRoute {
+            depth_ratio: 0.5,
+            cycle_beats: 2.0,
+            shape: LfoShape::Sine,
+            ..LfoRoute::default()
+        },
+    );
+    automation.set_envelope(
+        address,
+        EnvelopeRoute {
+            amount: 0.5,
+            attack_beats: 0.0,
+            decay_beats: 64.0,
+            trigger: EnvTrigger::Once,
+        },
+    );
+
+    // Beat 0.5 is the sine peak (cycle 2) and near the envelope peak; both push
+    // up from 0.5, so the summed value saturates at the control ceiling.
+    apply_automation(
+        &mut controls,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+    assert_close(controls.master.level, 1.0);
+}
+
+#[test]
+fn song_code_round_trips_non_sine_lfo_shape() {
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        ControlAddress::new("master.level"),
+        LfoRoute {
+            cycle_beats: 4.0,
+            depth_ratio: 0.4,
+            shape: LfoShape::SampleHold,
+            phase_offset_beats: 0.0,
+            ..LfoRoute::default()
+        },
+    );
+    let song = SongState {
+        controls: FluidControls::default(),
+        automation,
+    };
+
+    let code = song::encode_song_code(&song).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+    let route = decoded
+        .automation
+        .route(ControlAddress::new("master.level"))
+        .unwrap();
+
+    assert_eq!(route.shape, LfoShape::SampleHold);
+}
+
+#[test]
+fn song_code_skips_envelope_routes_without_crashing() {
+    let mut automation = AutomationState::default();
+    automation.set_envelope(
+        ControlAddress::new("pad.reverb_mix"),
+        EnvelopeRoute {
+            amount: 0.6,
+            ..EnvelopeRoute::default()
+        },
+    );
+    let song = SongState {
+        controls: FluidControls::default(),
+        automation,
+    };
+
+    // Envelope routes are not serialized on this experiment branch; encoding
+    // must not crash and the decode simply carries no automation.
+    let code = song::encode_song_code(&song).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert!(
+        decoded
+            .automation
+            .envelope(ControlAddress::new("pad.reverb_mix"))
+            .is_none()
     );
 }
 

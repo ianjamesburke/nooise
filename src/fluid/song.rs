@@ -17,6 +17,12 @@ pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const AUTOMATION_PAYLOAD_VERSION: u8 = 2;
 const LFO_SHAPE_SINE: u8 = 0;
+const LFO_SHAPE_TRIANGLE: u8 = 1;
+const LFO_SHAPE_RAMP_UP: u8 = 2;
+const LFO_SHAPE_RAMP_DOWN: u8 = 3;
+const LFO_SHAPE_SQUARE: u8 = 4;
+const LFO_SHAPE_RANDOM_DRIFT: u8 = 5;
+const LFO_SHAPE_SAMPLE_HOLD: u8 = 6;
 
 #[derive(Clone, Default)]
 pub(crate) struct SongState {
@@ -197,6 +203,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
                 depth_ratio: finite_or(depth_ratio, DEFAULT_LFO_DEPTH_RATIO).clamp(0.0, 1.0),
                 shape,
                 phase_offset_beats: finite_or(phase_offset_beats, 0.0).clamp(0.0, 4.0),
+                ..LfoRoute::default()
             },
         );
     }
@@ -206,12 +213,24 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
 fn shape_tag(shape: LfoShape) -> u8 {
     match shape {
         LfoShape::Sine => LFO_SHAPE_SINE,
+        LfoShape::Triangle => LFO_SHAPE_TRIANGLE,
+        LfoShape::RampUp => LFO_SHAPE_RAMP_UP,
+        LfoShape::RampDown => LFO_SHAPE_RAMP_DOWN,
+        LfoShape::Square => LFO_SHAPE_SQUARE,
+        LfoShape::RandomDrift => LFO_SHAPE_RANDOM_DRIFT,
+        LfoShape::SampleHold => LFO_SHAPE_SAMPLE_HOLD,
     }
 }
 
 fn shape_from_tag(tag: u8) -> Option<LfoShape> {
     match tag {
         LFO_SHAPE_SINE => Some(LfoShape::Sine),
+        LFO_SHAPE_TRIANGLE => Some(LfoShape::Triangle),
+        LFO_SHAPE_RAMP_UP => Some(LfoShape::RampUp),
+        LFO_SHAPE_RAMP_DOWN => Some(LfoShape::RampDown),
+        LFO_SHAPE_SQUARE => Some(LfoShape::Square),
+        LFO_SHAPE_RANDOM_DRIFT => Some(LfoShape::RandomDrift),
+        LFO_SHAPE_SAMPLE_HOLD => Some(LfoShape::SampleHold),
         _ => None,
     }
 }
