@@ -481,6 +481,133 @@ fn muted_perc_spawns_no_surface_spark() {
 }
 
 #[test]
+fn spark_dies_when_its_voice_decays() {
+    // Glint brightness must track the voice's live envelope, not a fixed
+    // visual clock: when the perc sound decays to silence, the glint goes
+    // dark with it even though its lifetime has barely started.
+    let telemetry = FluidTelemetry::default();
+    telemetry.publish_levels(VoiceLevels {
+        perc: 0.3,
+        ..Default::default()
+    });
+    let mut fluid = FluidState::new();
+    telemetry
+        .perc_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    fluid.tick(0.05, &telemetry);
+    let lit = |fluid: &FluidState| {
+        (0..40).any(|iy| {
+            (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some())
+        })
+    };
+    assert!(lit(&fluid), "perc glint should appear while the hit sounds");
+
+    telemetry.publish_levels(VoiceLevels::default());
+    for _ in 0..3 {
+        fluid.tick(0.05, &telemetry);
+    }
+    assert!(
+        !lit(&fluid),
+        "glint must go dark when the perc envelope reaches zero"
+    );
+}
+
+#[test]
+fn sustained_tonal_note_keeps_its_spark_alive() {
+    // A long tonal decay keeps sounding past a second; its spark must stay
+    // visible for as long as the envelope holds, showing the note's length.
+    let telemetry = FluidTelemetry::default();
+    telemetry.publish_tonal_note(440.0);
+    telemetry.publish_levels(VoiceLevels {
+        tonal: 0.3,
+        ..Default::default()
+    });
+    let mut fluid = FluidState::new();
+    telemetry
+        .tonal_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    for _ in 0..26 {
+        fluid.tick(0.05, &telemetry);
+    }
+    let lit = (0..40).any(|iy| {
+        (0..40).any(|ix| fluid.surface(ix as f32 / 40.0, iy as f32 / 40.0).is_some())
+    });
+    assert!(lit, "a sounding tonal note must keep its spark visible");
+}
+
+#[test]
+fn kick_wave_is_radial_from_a_bottom_point() {
+    // The kick wave radiates from a point near the bottom, not a full-width
+    // band: at the same height, cells far from the origin stay dark.
+    let telemetry = FluidTelemetry::default();
+    telemetry.publish_levels(VoiceLevels {
+        kick: 0.3,
+        ..Default::default()
+    });
+    let mut fluid = FluidState::new();
+    fluid.tick(0.05, &telemetry);
+    telemetry
+        .kick_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    fluid.tick(0.05, &telemetry);
+
+    let row: Vec<f32> = (0..=40)
+        .map(|ix| fluid.field(ix as f32 / 40.0, 0.93).value)
+        .collect();
+    let (ci, peak) = row
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i, v))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap();
+    let cx = ci as f32 / 40.0;
+    let far_x = if cx < 0.5 { cx + 0.45 } else { cx - 0.45 };
+    let far = fluid.field(far_x, 0.93).value;
+    assert!(
+        peak > far + 0.15,
+        "kick wave should be local to its origin (peak {peak} at x {cx}, far {far})"
+    );
+}
+
+#[test]
+fn pad_flow_pattern_differs_by_chord() {
+    // Each chord shapes the pad flow with its own wave character, not just a
+    // hue swap: the brightness pattern itself must differ between chords.
+    let grid = |chord: u64| {
+        let telemetry = FluidTelemetry::default();
+        telemetry
+            .chord_index
+            .store(chord, std::sync::atomic::Ordering::Relaxed);
+        telemetry.publish_levels(VoiceLevels {
+            pad: 0.2,
+            ..Default::default()
+        });
+        let mut fluid = FluidState::new();
+        for _ in 0..40 {
+            fluid.tick(0.05, &telemetry);
+        }
+        let mut cells = Vec::with_capacity(400);
+        for iy in 0..20 {
+            for ix in 0..20 {
+                cells.push(fluid.field(ix as f32 / 20.0, iy as f32 / 20.0).value);
+            }
+        }
+        cells
+    };
+    let a = grid(0);
+    let b = grid(1);
+    let max_diff = a
+        .iter()
+        .zip(&b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        max_diff > 0.05,
+        "chords should shape the flow differently, max diff {max_diff}"
+    );
+}
+
+#[test]
 fn render_fluid_draws_without_terminal_backend() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();

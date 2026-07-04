@@ -492,9 +492,21 @@ struct KickWave {
     amp: f32,
 }
 
+/// Which voice a surface spark belongs to, so its brightness can keep
+/// tracking that voice's live envelope after it spawns.
+#[derive(Clone, Copy)]
+enum SparkVoice {
+    Tonal,
+    Perc,
+    Clap,
+}
+
 /// A discrete surface element (tonal note, perc/clap glint) composited over
-/// the field so it stays crisp when the field is busy.
+/// the field so it stays crisp when the field is busy. `amp` is clamped to
+/// the owning voice's live level every frame, so the spark decays exactly
+/// with the sound: a long tonal decay glows on, a choked perc winks out.
 struct Spark {
+    voice: SparkVoice,
     x: f32,
     y: f32,
     age: f32,
@@ -555,7 +567,7 @@ impl FluidState {
         let bass_sf = bass_spatial_freq(telemetry.bass_note_hz());
         self.bass.spatial_freq += (bass_sf - self.bass.spatial_freq) * smooth(dt, 0.25);
         let bass_amp = visual_amp(levels.bass, BASS_LEVEL_GAIN);
-        self.bass.amp += (bass_amp - self.bass.amp) * smooth(dt, 0.12);
+        self.bass.amp += (bass_amp - self.bass.amp) * smooth(dt, 0.07);
         self.bass.phase += dt * BASS_RING_SPEED;
 
         // Pad node: the field's ambient medium. Hue follows the chord; its
@@ -603,10 +615,11 @@ impl FluidState {
                 let pitch_t =
                     ((hz.max(1.0).log2() - 110.0_f32.log2()) / 3.0).clamp(0.0, 1.0);
                 self.push_spark(Spark {
+                    voice: SparkVoice::Tonal,
                     x: 0.16 + self.scatter * 0.68,
                     y: tonal_node_y(hz),
                     age: 0.0,
-                    life: 0.9,
+                    life: TONAL_SPARK_LIFE,
                     size: 0.035 + amp * 0.05,
                     amp,
                     hue: 190.0 - pitch_t * 60.0,
@@ -621,7 +634,13 @@ impl FluidState {
             let amp = visual_amp(levels.perc, PERC_LEVEL_GAIN);
             if amp > SPAWN_MIN {
                 self.scatter = (self.scatter + 0.381_966).fract();
-                self.push_spark(glint(0.13, 0.35 + self.scatter * 0.3, amp, 210.0));
+                self.push_spark(glint(
+                    SparkVoice::Perc,
+                    0.13,
+                    0.35 + self.scatter * 0.3,
+                    amp,
+                    210.0,
+                ));
             }
             self.last_perc = perc;
         }
@@ -630,7 +649,13 @@ impl FluidState {
             let amp = visual_amp(levels.clap, CLAP_LEVEL_GAIN);
             if amp > SPAWN_MIN {
                 self.scatter = (self.scatter + 0.381_966).fract();
-                self.push_spark(glint(0.87, 0.35 + self.scatter * 0.3, amp, 330.0));
+                self.push_spark(glint(
+                    SparkVoice::Clap,
+                    0.87,
+                    0.35 + self.scatter * 0.3,
+                    amp,
+                    330.0,
+                ));
             }
             self.last_clap = clap;
         }
@@ -639,10 +664,18 @@ impl FluidState {
             k.age += dt;
         }
         self.kicks.retain(|k| k.age < k.life);
+        // Live decay: a spark can never outshine its voice's current
+        // envelope, so brightness follows the sound's real decay tail.
+        let live = |voice: SparkVoice| match voice {
+            SparkVoice::Tonal => visual_amp(levels.tonal, TONAL_LEVEL_GAIN),
+            SparkVoice::Perc => visual_amp(levels.perc, PERC_LEVEL_GAIN),
+            SparkVoice::Clap => visual_amp(levels.clap, CLAP_LEVEL_GAIN),
+        };
         for s in &mut self.sparks {
             s.age += dt;
+            s.amp = s.amp.min(live(s.voice));
         }
-        self.sparks.retain(|s| s.age < s.life);
+        self.sparks.retain(|s| s.age < s.life && s.amp > 0.005);
     }
 
     fn push_spark(&mut self, s: Spark) {
@@ -739,13 +772,15 @@ impl FluidState {
     }
 }
 
-/// A small, short-lived flank glint (perc/clap); brightness from live level.
-fn glint(x: f32, y: f32, amp: f32, hue: f32) -> Spark {
+/// A small flank glint (perc/clap). Its lifetime is a generous ceiling; the
+/// voice's live envelope is the real clock that fades it out.
+fn glint(voice: SparkVoice, x: f32, y: f32, amp: f32, hue: f32) -> Spark {
     Spark {
+        voice,
         x,
         y,
         age: 0.0,
-        life: 0.4,
+        life: GLINT_LIFE,
         size: 0.028,
         amp,
         hue,
@@ -769,6 +804,10 @@ const MAX_SPARKS: usize = 24;
 const SPAWN_MIN: f32 = 0.02;
 /// Minimum surface-layer intensity that claims a cell from the field.
 const SURFACE_MIN: f32 = 0.04;
+/// Spark lifetime ceilings. Generous on purpose: the owning voice's live
+/// envelope is the real clock; these only bound the spatial cleanup.
+const TONAL_SPARK_LIFE: f32 = 2.5;
+const GLINT_LIFE: f32 = 1.5;
 /// Kick wavefront: rise speed (units/s), band sharpness, ripple frequency,
 /// lifetime, and hue (warm white-amber).
 const KICK_WAVE_SPEED: f32 = 0.55;
