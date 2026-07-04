@@ -403,19 +403,16 @@ impl NumericDisplay<'_> {
 }
 
 // ============================================================
-// Fluid visualizer: a system of resonating NODES, one visual body
-// per sounding voice. Bass and pad are persistent nodes whose
-// amplitude tracks their live level; kick/tonal/perc/clap spawn
-// transient wavelets on each trigger. All waves superpose into the
-// shared field; each contributes a hue tint so overlaps read as
-// mixed colour. Driven entirely by live audio-thread telemetry.
+// Fluid visualizer, two layers. LAYER 1 (fluid field): pad is the
+// ambient medium, bass radiates rings, kick injects wavefronts from
+// the bottom edge — all superpose, so the low end visibly interacts.
+// LAYER 2 (surface): tonal notes and perc/clap glints are discrete
+// sparks composited over the field so they stay crisp. Every element
+// is gated by its voice's live telemetry level: silence is a still,
+// black screen.
 // ============================================================
 
 pub(crate) const FLUID_GRADIENT: &[char] = &[' ', '·', '∙', '•', '●', '◉', '⬤'];
-
-/// Cap on live transient wavelets so the per-cell field cost stays bounded on
-/// a fullscreen terminal (oldest are dropped past this).
-pub(crate) const MAX_WAVELETS: usize = 28;
 
 /// One chord = one hue. Cycles with the pad engine's chord table; drives the
 /// pad node's hue and the ambient wash behind the whole field.
@@ -486,16 +483,23 @@ impl Node {
     }
 }
 
-/// A transient traveling ring spawned by a percussive/discrete trigger.
-struct Wavelet {
+/// A coherent kick wavefront: a horizontal band that rises from the bottom
+/// edge and decays. Lives in the shared field so it visibly ripples through
+/// the bass rings and pad wash.
+struct KickWave {
+    age: f32,
+    life: f32,
+    amp: f32,
+}
+
+/// A discrete surface element (tonal note, perc/clap glint) composited over
+/// the field so it stays crisp when the field is busy.
+struct Spark {
     x: f32,
     y: f32,
     age: f32,
     life: f32,
-    speed: f32,      // wavefront travel speed (units/s)
-    freq: f32,       // ripple spatial frequency
-    ring_speed: f32, // internal oscillation speed
-    tight: f32,      // wavefront sharpness
+    size: f32,
     amp: f32,
     hue: f32,
 }
@@ -510,9 +514,8 @@ pub(crate) struct FluidState {
     t: f32,
     bass: Node,
     pad: Node,
-    perc: Node,
-    clap: Node,
-    wavelets: Vec<Wavelet>,
+    kicks: Vec<KickWave>,
+    sparks: Vec<Spark>,
     ambient_hue: f32,
     last_kick: u64,
     last_bass: u64,
@@ -527,12 +530,11 @@ impl FluidState {
         let hue0 = hue_for_chord(0);
         Self {
             t: 0.0,
-            // bass low-center, pad wide upper arc, perc/clap on the flanks.
+            // bass low-center, pad wide upper arc.
             bass: Node::new(0.5, 0.80, 0.55, 7.0, 30.0),
             pad: Node::new(0.5, 0.24, 0.72, 3.2, hue0),
-            perc: Node::new(0.13, 0.5, 0.30, 20.0, 210.0),
-            clap: Node::new(0.87, 0.5, 0.30, 20.0, 330.0),
-            wavelets: Vec::with_capacity(MAX_WAVELETS),
+            kicks: Vec::with_capacity(MAX_KICK_WAVES),
+            sparks: Vec::with_capacity(MAX_SPARKS),
             ambient_hue: hue0,
             last_kick: 0,
             last_bass: 0,
@@ -556,74 +558,56 @@ impl FluidState {
         self.bass.amp += (bass_amp - self.bass.amp) * smooth(dt, 0.12);
         self.bass.phase += dt * BASS_RING_SPEED;
 
-        // Pad node: broad slow undulation, hue follows the chord.
+        // Pad node: the field's ambient medium. Hue follows the chord; its
+        // level also gates the base simmer in `field`, so a silent pad
+        // leaves the medium black and still.
         let pad_amp = visual_amp(levels.pad, PAD_LEVEL_GAIN);
         self.pad.amp += (pad_amp - self.pad.amp) * smooth(dt, 0.3);
         self.pad.hue = lerp_hue(self.pad.hue, chord_hue, smooth(dt, 0.8));
         self.pad.phase += dt * PAD_RING_SPEED;
 
-        // Perc/clap flank nodes: a persistent faint glow from their level, so a
-        // steady stream reads as a lit flank between the sharp glints below.
-        self.perc.amp += (visual_amp(levels.perc, PERC_LEVEL_GAIN) - self.perc.amp)
-            * smooth(dt, 0.18);
-        self.perc.phase += dt * 6.0;
-        self.clap.amp += (visual_amp(levels.clap, CLAP_LEVEL_GAIN) - self.clap.amp)
-            * smooth(dt, 0.18);
-        self.clap.phase += dt * 6.0;
-
-        // Kick -> ripples along the bottom edge (golden-angle scatter).
-        let kick = telemetry.kick_pulse.load(Ordering::Relaxed);
-        if kick > self.last_kick {
-            let new = (kick - self.last_kick).min(4);
-            for k in 0..new {
-                let n = (self.last_kick + k + 1) as f32;
-                let cx = (n * 0.618_034).fract().clamp(0.06, 0.94);
-                let cy = 0.92 + (n * 0.381_966).fract() * 0.06;
-                let amp = visual_amp(levels.kick, KICK_LEVEL_GAIN).max(0.4);
-                self.push_wavelet(Wavelet {
-                    x: cx,
-                    y: cy,
-                    age: 0.0,
-                    life: 3.0,
-                    speed: 0.42,
-                    freq: 34.0,
-                    ring_speed: 9.0,
-                    tight: 12.0,
-                    amp,
-                    hue: 40.0,
-                });
-            }
-            self.last_kick = kick;
-        }
-
-        // Bass trigger: restart the node's ring so a fresh wavefront emanates.
+        // Bass trigger restarts the ring so a fresh wavefront emanates.
         let bass_pulse = telemetry.bass_pulse.load(Ordering::Relaxed);
         if bass_pulse > self.last_bass {
             self.bass.phase = 0.0;
             self.last_bass = bass_pulse;
         }
 
-        // Tonal -> a bright short-wavelength wavelet at the pitch's position,
-        // drifting across the mid-field so successive notes fan out.
+        // Kick -> one coherent wavefront rising from the whole bottom edge.
+        // Amplitude is strictly the live kick level: a muted kick draws
+        // nothing. Multiple pulses within one frame collapse into one front.
+        let kick = telemetry.kick_pulse.load(Ordering::Relaxed);
+        if kick > self.last_kick {
+            let amp = visual_amp(levels.kick, KICK_LEVEL_GAIN);
+            if amp > SPAWN_MIN {
+                if self.kicks.len() >= MAX_KICK_WAVES {
+                    self.kicks.remove(0);
+                }
+                self.kicks.push(KickWave {
+                    age: 0.0,
+                    life: KICK_WAVE_LIFE,
+                    amp,
+                });
+            }
+            self.last_kick = kick;
+        }
+
+        // Tonal -> a surface spark at the pitch's height; size and
+        // brightness from the live level, hue cyan->green by pitch.
         let tonal = telemetry.tonal_pulse.load(Ordering::Relaxed);
         if tonal > self.last_tonal {
-            let new = (tonal - self.last_tonal).min(3);
-            for _ in 0..new {
+            let amp = visual_amp(levels.tonal, TONAL_LEVEL_GAIN);
+            if amp > SPAWN_MIN {
                 self.scatter = (self.scatter + 0.618_034).fract();
                 let hz = telemetry.tonal_note_hz();
-                let x = 0.16 + self.scatter * 0.68;
-                let y = tonal_node_y(hz);
-                let pitch_t = ((hz.max(1.0).log2() - 110.0_f32.log2()) / 3.0).clamp(0.0, 1.0);
-                let amp = visual_amp(levels.tonal, TONAL_LEVEL_GAIN).max(0.45);
-                self.push_wavelet(Wavelet {
-                    x,
-                    y,
+                let pitch_t =
+                    ((hz.max(1.0).log2() - 110.0_f32.log2()) / 3.0).clamp(0.0, 1.0);
+                self.push_spark(Spark {
+                    x: 0.16 + self.scatter * 0.68,
+                    y: tonal_node_y(hz),
                     age: 0.0,
-                    life: 1.6,
-                    speed: 0.5,
-                    freq: 46.0,
-                    ring_speed: 12.0,
-                    tight: 16.0,
+                    life: 0.9,
+                    size: 0.035 + amp * 0.05,
                     amp,
                     hue: 190.0 - pitch_t * 60.0,
                 });
@@ -631,50 +615,64 @@ impl FluidState {
             self.last_tonal = tonal;
         }
 
-        // Perc -> small sharp glint on the left flank.
+        // Perc -> sharp glint on the left flank; clap mirrors on the right.
         let perc = telemetry.perc_pulse.load(Ordering::Relaxed);
         if perc > self.last_perc {
-            self.scatter = (self.scatter + 0.381_966).fract();
-            let y = 0.35 + self.scatter * 0.3;
-            self.push_wavelet(glint(0.13, y, 210.0));
+            let amp = visual_amp(levels.perc, PERC_LEVEL_GAIN);
+            if amp > SPAWN_MIN {
+                self.scatter = (self.scatter + 0.381_966).fract();
+                self.push_spark(glint(0.13, 0.35 + self.scatter * 0.3, amp, 210.0));
+            }
             self.last_perc = perc;
         }
-
-        // Clap -> small sharp glint on the right flank.
         let clap = telemetry.clap_pulse.load(Ordering::Relaxed);
         if clap > self.last_clap {
-            self.scatter = (self.scatter + 0.381_966).fract();
-            let y = 0.35 + self.scatter * 0.3;
-            self.push_wavelet(glint(0.87, y, 330.0));
+            let amp = visual_amp(levels.clap, CLAP_LEVEL_GAIN);
+            if amp > SPAWN_MIN {
+                self.scatter = (self.scatter + 0.381_966).fract();
+                self.push_spark(glint(0.87, 0.35 + self.scatter * 0.3, amp, 330.0));
+            }
             self.last_clap = clap;
         }
 
-        for w in &mut self.wavelets {
-            w.age += dt;
+        for k in &mut self.kicks {
+            k.age += dt;
         }
-        self.wavelets.retain(|w| w.age < w.life);
+        self.kicks.retain(|k| k.age < k.life);
+        for s in &mut self.sparks {
+            s.age += dt;
+        }
+        self.sparks.retain(|s| s.age < s.life);
     }
 
-    fn push_wavelet(&mut self, w: Wavelet) {
-        if self.wavelets.len() >= MAX_WAVELETS {
-            self.wavelets.remove(0);
+    fn push_spark(&mut self, s: Spark) {
+        if self.sparks.len() >= MAX_SPARKS {
+            self.sparks.remove(0);
         }
-        self.wavelets.push(w);
+        self.sparks.push(s);
     }
 
-    /// Sample the superposed field at normalized coords. Returns brightness in
-    /// 0..1 (near 0 where no voice sounds) and the dominant hue at that point.
+    /// Sample the fluid layer at normalized coords: pad wash + bass rings +
+    /// kick wavefronts superposed. Brightness is 0 where nothing sounds.
+    /// Hue accumulates as a weighted vector on the colour wheel so
+    /// overlapping sources mix instead of flickering winner-take-all.
     pub(crate) fn field(&self, nx: f32, ny: f32) -> FieldSample {
-        // Faint ambient drift so silence still breathes without lighting up.
         let z = self.t * 0.4;
         let mut v = ((nx * 5.0 + z).sin() * (ny * 4.0 - z * 0.6).cos()
             + ((nx * 3.0 - ny * 3.5) + z * 1.1).sin() * 0.5)
-            * AMBIENT_DRIFT;
-        let mut energy = AMBIENT_FLOOR;
-        let mut best_w = 0.0f32;
-        let mut hue = self.ambient_hue;
+            * AMBIENT_DRIFT
+            * self.pad.amp;
+        let mut energy = AMBIENT_FLOOR * self.pad.amp;
+        let mut hx = 0.0f32;
+        let mut hy = 0.0f32;
+        let add_hue = |hx: &mut f32, hy: &mut f32, hue: f32, w: f32| {
+            let r = hue.to_radians();
+            *hx += r.cos() * w;
+            *hy += r.sin() * w;
+        };
+        add_hue(&mut hx, &mut hy, self.ambient_hue, energy.max(1e-4));
 
-        for node in [&self.bass, &self.pad, &self.perc, &self.clap] {
+        for node in [&self.bass, &self.pad] {
             if node.amp < 1e-3 {
                 continue;
             }
@@ -687,49 +685,69 @@ impl FluidState {
                 let dist = d2.sqrt();
                 v += (dist * node.spatial_freq - node.phase).sin() * w;
                 energy += w;
-                if w > best_w {
-                    best_w = w;
-                    hue = node.hue;
-                }
+                add_hue(&mut hx, &mut hy, node.hue, w);
             }
         }
 
-        for wl in &self.wavelets {
-            let dx = nx - wl.x;
-            let dy = ny - wl.y;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let front = wl.age * wl.speed;
-            let fade = (1.0 - wl.age / wl.life).max(0.0);
-            let ring = (-((dist - front) * wl.tight).powi(2)).exp();
-            let w = ring * fade * wl.amp;
+        for kw in &self.kicks {
+            let front = 1.0 - kw.age * KICK_WAVE_SPEED;
+            let fade = (1.0 - kw.age / kw.life).max(0.0);
+            let band = (-((ny - front) * KICK_WAVE_TIGHT).powi(2)).exp();
+            let w = band * fade * kw.amp;
             if w > 1e-4 {
-                v += (dist * wl.freq - wl.age * wl.ring_speed).sin() * w;
+                // A bright band with ripple texture trailing the front.
+                v += ((front - ny) * KICK_WAVE_FREQ - kw.age * 6.0)
+                    .sin()
+                    .mul_add(0.5, 0.8)
+                    * w;
                 energy += w;
-                if w > best_w {
-                    best_w = w;
-                    hue = wl.hue;
-                }
+                add_hue(&mut hx, &mut hy, KICK_HUE, w);
             }
         }
 
+        let hue = if hx == 0.0 && hy == 0.0 {
+            self.ambient_hue
+        } else {
+            hy.atan2(hx).to_degrees().rem_euclid(360.0)
+        };
         let wave = (v * FIELD_GAIN).tanh() * 0.5 + 0.5;
-        let value = ((0.35 + 0.65 * wave) * (energy * ENERGY_GAIN).min(1.0)).clamp(0.0, 1.0);
+        let value =
+            ((0.35 + 0.65 * wave) * (energy * ENERGY_GAIN).min(1.0)).clamp(0.0, 1.0);
         FieldSample { value, hue }
+    }
+
+    /// Sample the discrete surface layer (tonal notes, perc/clap glints).
+    /// Returns the brightest covering element, if any; the widget composites
+    /// it over the field so sparks stay crisp when the field is busy.
+    pub(crate) fn surface(&self, nx: f32, ny: f32) -> Option<FieldSample> {
+        let mut best_v = 0.0f32;
+        let mut hue = 0.0f32;
+        for s in &self.sparks {
+            let dx = (nx - s.x) / s.size;
+            let dy = (ny - s.y) / s.size;
+            let fade = (1.0 - s.age / s.life).max(0.0);
+            let v = (-(dx * dx + dy * dy)).exp() * fade * s.amp;
+            if v > best_v {
+                best_v = v;
+                hue = s.hue;
+            }
+        }
+        (best_v > SURFACE_MIN).then_some(FieldSample {
+            value: best_v.min(1.0),
+            hue,
+        })
     }
 }
 
-/// A small, short-lived flank glint (perc/clap).
-fn glint(x: f32, y: f32, hue: f32) -> Wavelet {
-    Wavelet {
+/// A small, short-lived flank glint (perc/clap); brightness from live level.
+fn glint(x: f32, y: f32, amp: f32, hue: f32) -> Spark {
+    Spark {
         x,
         y,
         age: 0.0,
-        life: 0.55,
-        speed: 0.6,
-        freq: 60.0,
-        ring_speed: 14.0,
-        tight: 24.0,
-        amp: 0.6,
+        life: 0.4,
+        size: 0.028,
+        amp,
         hue,
     }
 }
@@ -744,6 +762,20 @@ const PERC_LEVEL_GAIN: f32 = 8.0;
 const CLAP_LEVEL_GAIN: f32 = 6.0;
 const BASS_RING_SPEED: f32 = 3.2;
 const PAD_RING_SPEED: f32 = 1.1;
+/// Caps on live transients so per-cell field cost stays bounded fullscreen.
+const MAX_KICK_WAVES: usize = 8;
+const MAX_SPARKS: usize = 24;
+/// Spawn gate: a trigger whose voice level maps below this draws nothing.
+const SPAWN_MIN: f32 = 0.02;
+/// Minimum surface-layer intensity that claims a cell from the field.
+const SURFACE_MIN: f32 = 0.04;
+/// Kick wavefront: rise speed (units/s), band sharpness, ripple frequency,
+/// lifetime, and hue (warm white-amber).
+const KICK_WAVE_SPEED: f32 = 0.55;
+const KICK_WAVE_TIGHT: f32 = 9.0;
+const KICK_WAVE_FREQ: f32 = 26.0;
+const KICK_WAVE_LIFE: f32 = 1.5;
+const KICK_HUE: f32 = 40.0;
 /// Weight of the always-on ambient plasma (kept low so voices dominate).
 const AMBIENT_DRIFT: f32 = 0.5;
 /// Baseline energy so a silent field is near-black but not pure void.

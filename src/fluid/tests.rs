@@ -351,7 +351,52 @@ fn silent_field_stays_dark() {
             peak = peak.max(v);
         }
     }
-    assert!(peak < 0.2, "silent field should be dark, peak was {peak}");
+    assert!(peak < 0.02, "silent field should be black, peak was {peak}");
+}
+
+#[test]
+fn triggers_without_level_draw_nothing() {
+    // The sequencer keeps firing pulses when voices are muted; with all
+    // levels at zero those pulses must not paint anything.
+    let telemetry = FluidTelemetry::default();
+    let mut fluid = FluidState::new();
+    for i in 1..=16u64 {
+        use std::sync::atomic::Ordering::Relaxed;
+        telemetry.kick_pulse.store(i, Relaxed);
+        telemetry.tonal_pulse.store(i, Relaxed);
+        telemetry.perc_pulse.store(i, Relaxed);
+        telemetry.clap_pulse.store(i, Relaxed);
+        fluid.tick(0.05, &telemetry);
+    }
+    let mut peak = 0.0f32;
+    for iy in 0..20 {
+        for ix in 0..20 {
+            peak = peak.max(fluid.field(ix as f32 / 20.0, iy as f32 / 20.0).value);
+        }
+    }
+    assert!(peak < 0.02, "muted triggers must stay dark, peak was {peak}");
+}
+
+#[test]
+fn kick_wave_rises_from_bottom_edge() {
+    // A kick hit with live level injects a coherent wavefront at the bottom.
+    let telemetry = FluidTelemetry::default();
+    telemetry.publish_levels(VoiceLevels {
+        kick: 0.3,
+        ..Default::default()
+    });
+    let mut fluid = FluidState::new();
+    fluid.tick(0.05, &telemetry);
+    telemetry
+        .kick_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    fluid.tick(0.05, &telemetry);
+    let bottom = fluid.field(0.5, 0.93).value;
+    let top = fluid.field(0.5, 0.10).value;
+    assert!(
+        bottom > top + 0.1,
+        "kick front should light the bottom (bottom {bottom}, top {top})"
+    );
 }
 
 #[test]
