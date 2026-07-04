@@ -483,10 +483,11 @@ impl Node {
     }
 }
 
-/// A coherent kick wavefront: a horizontal band that rises from the bottom
-/// edge and decays. Lives in the shared field so it visibly ripples through
-/// the bass rings and pad wash.
+/// A coherent kick wavefront: a ring expanding radially from a point near
+/// the bottom edge, pushed hardest straight up. Lives in the shared field so
+/// it visibly ripples through the bass rings and pad wash.
 struct KickWave {
+    x: f32,
     age: f32,
     life: f32,
     amp: f32,
@@ -585,9 +586,10 @@ impl FluidState {
             self.last_bass = bass_pulse;
         }
 
-        // Kick -> one coherent wavefront rising from the whole bottom edge.
-        // Amplitude is strictly the live kick level: a muted kick draws
-        // nothing. Multiple pulses within one frame collapse into one front.
+        // Kick -> one radial wavefront from a point near the bottom, pushed
+        // strongest straight up. Amplitude is strictly the live kick level:
+        // a muted kick draws nothing. Multiple pulses within one frame
+        // collapse into one front.
         let kick = telemetry.kick_pulse.load(Ordering::Relaxed);
         if kick > self.last_kick {
             let amp = visual_amp(levels.kick, KICK_LEVEL_GAIN);
@@ -595,7 +597,9 @@ impl FluidState {
                 if self.kicks.len() >= MAX_KICK_WAVES {
                     self.kicks.remove(0);
                 }
+                self.scatter = (self.scatter + 0.618_034).fract();
                 self.kicks.push(KickWave {
+                    x: 0.35 + self.scatter * 0.3,
                     age: 0.0,
                     life: KICK_WAVE_LIFE,
                     amp,
@@ -723,13 +727,18 @@ impl FluidState {
         }
 
         for kw in &self.kicks {
-            let front = 1.0 - kw.age * KICK_WAVE_SPEED;
+            let dx = nx - kw.x;
+            let dy = ny - KICK_ORIGIN_Y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let front = kw.age * KICK_WAVE_SPEED;
             let fade = (1.0 - kw.age / kw.life).max(0.0);
-            let band = (-((ny - front) * KICK_WAVE_TIGHT).powi(2)).exp();
-            let w = band * fade * kw.amp;
+            let band = (-((dist - front) * KICK_WAVE_TIGHT).powi(2)).exp();
+            // Radial ring, weighted to push hardest straight up.
+            let up = if dist > 1e-4 { (-dy / dist).max(0.0) } else { 1.0 };
+            let w = band * fade * kw.amp * (0.45 + 0.55 * up);
             if w > 1e-4 {
-                // A bright band with ripple texture trailing the front.
-                v += ((front - ny) * KICK_WAVE_FREQ - kw.age * 6.0)
+                // A bright ring with ripple texture trailing the front.
+                v += ((front - dist) * KICK_WAVE_FREQ - kw.age * 6.0)
                     .sin()
                     .mul_add(0.5, 0.8)
                     * w;
@@ -808,12 +817,13 @@ const SURFACE_MIN: f32 = 0.04;
 /// envelope is the real clock; these only bound the spatial cleanup.
 const TONAL_SPARK_LIFE: f32 = 2.5;
 const GLINT_LIFE: f32 = 1.5;
-/// Kick wavefront: rise speed (units/s), band sharpness, ripple frequency,
-/// lifetime, and hue (warm white-amber).
-const KICK_WAVE_SPEED: f32 = 0.55;
-const KICK_WAVE_TIGHT: f32 = 9.0;
+/// Kick wavefront: origin height, radial speed (units/s), ring sharpness,
+/// ripple frequency, lifetime, and hue (warm white-amber).
+const KICK_ORIGIN_Y: f32 = 0.96;
+const KICK_WAVE_SPEED: f32 = 0.7;
+const KICK_WAVE_TIGHT: f32 = 7.0;
 const KICK_WAVE_FREQ: f32 = 26.0;
-const KICK_WAVE_LIFE: f32 = 1.5;
+const KICK_WAVE_LIFE: f32 = 1.6;
 const KICK_HUE: f32 = 40.0;
 /// Weight of the always-on ambient plasma (kept low so voices dominate).
 const AMBIENT_DRIFT: f32 = 0.5;
