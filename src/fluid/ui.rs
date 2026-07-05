@@ -1029,15 +1029,8 @@ pub(crate) fn render_fluid(
     let area = f.area();
     f.render_widget(FluidWidget { fluid }, area);
 
-    // Focus mode: show the full field, no control panel. A one-line hint sits
-    // at the bottom so the user knows any key returns.
+    // Focus mode: pure visuals, no control panel and no text. Any key returns.
     if visuals_focus {
-        f.render_widget(
-            Paragraph::new("visuals focus — press any key to return")
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(Color::Rgb(150, 160, 185))),
-            Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
-        );
         return;
     }
 
@@ -1194,6 +1187,17 @@ pub(crate) fn render_fluid(
             .style(footer_style),
         layout[5],
     );
+
+    // Grey discoverability hint on the visuals, below the panel: press V to
+    // drop into pure-visuals focus mode.
+    if area.bottom() > panel.bottom() {
+        f.render_widget(
+            Paragraph::new("V · focus visuals")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Rgb(110, 118, 135))),
+            Rect::new(area.x, area.bottom().saturating_sub(1), area.width, 1),
+        );
+    }
 }
 
 fn lfo_field_line(

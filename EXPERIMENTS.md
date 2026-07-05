@@ -41,8 +41,10 @@ rate.
 
 ## Focus mode
 
-Press **`V`** for "just watch it" mode: the control panel disappears and the
-full field fills the screen. **Any key** returns to the controls.
+A grey **`V · focus visuals`** hint sits center-bottom over the field. Press
+**`V`** for "just watch it" mode: the control panel disappears and the full
+field fills the screen with no text at all — pure visuals. **Any key** returns
+to the controls.
 
 ## How to try it
 
