@@ -152,7 +152,7 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
             synth_type: synth_type as f32,
             ..controls.clone()
         };
-        let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
+        let mut tonal = TonalEngine::new(SAMPLE_RATE);
 
         let _ = tonal.next(
             &controls,
@@ -231,7 +231,7 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
         randomness: 0.0,
         ..TonalControls::default()
     };
-    let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
 
     let _ = tonal.next(
         &controls,
@@ -265,7 +265,7 @@ fn tonal_evolve_rate_maps_to_actual_notes_per_cycle() {
 
 #[test]
 fn tonal_engine_evolves_one_actual_note_at_low_rate() {
-    let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
     tonal.rng = StdRng::seed_from_u64(5);
     let before = tonal.evolved_phrase.clone();
 
@@ -281,7 +281,7 @@ fn tonal_engine_evolves_one_actual_note_at_low_rate() {
 
 #[test]
 fn tonal_engine_evolves_more_notes_at_high_rate() {
-    let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
     tonal.rng = StdRng::seed_from_u64(5);
     let before = tonal.evolved_phrase.clone();
 
@@ -310,540 +310,6 @@ fn tab_previous_wraps_back_one_tab() {
 }
 
 #[test]
-fn bass_spatial_freq_rises_with_pitch() {
-    // A low note gives a long wavelength (fewer rings); higher notes pack more.
-    let low = bass_spatial_freq(midi_to_hz(33)); // A0-ish, deep bass
-    let mid = bass_spatial_freq(midi_to_hz(45)); // A2
-    let high = bass_spatial_freq(midi_to_hz(57)); // A3
-    assert!(low < mid, "expected {low} < {mid}");
-    assert!(mid < high, "expected {mid} < {high}");
-    // Clamped to a bounded, positive range for the field loop.
-    assert!(bass_spatial_freq(1.0) >= 3.0);
-    assert!(bass_spatial_freq(20_000.0) <= 16.0);
-}
-
-#[test]
-fn tonal_node_y_rises_for_higher_notes() {
-    // Higher pitch sits higher on the screen (smaller y).
-    let low = tonal_node_y(midi_to_hz(45));
-    let mid = tonal_node_y(midi_to_hz(57));
-    let high = tonal_node_y(midi_to_hz(67));
-    assert!(high < mid, "expected {high} < {mid}");
-    assert!(mid < low, "expected {mid} < {low}");
-    // Stays within the visible field.
-    assert!((0.0..=1.0).contains(&tonal_node_y(midi_to_hz(45))));
-    assert!((0.0..=1.0).contains(&tonal_node_y(midi_to_hz(67))));
-}
-
-#[test]
-fn silent_field_stays_dark() {
-    // With no telemetry activity every node is still; the field brightness
-    // must stay near the ambient floor so a listener can tell nothing plays.
-    let telemetry = FluidTelemetry::default();
-    let mut fluid = FluidState::new();
-    for _ in 0..30 {
-        fluid.tick(0.05, &telemetry);
-    }
-    let mut peak = 0.0f32;
-    for iy in 0..20 {
-        for ix in 0..20 {
-            let v = fluid.field(ix as f32 / 20.0, iy as f32 / 20.0).value;
-            peak = peak.max(v);
-        }
-    }
-    assert!(peak < 0.02, "silent field should be black, peak was {peak}");
-}
-
-#[test]
-fn triggers_without_level_draw_nothing() {
-    // The sequencer keeps firing pulses when voices are muted; with all
-    // levels at zero those pulses must not paint anything.
-    let telemetry = FluidTelemetry::default();
-    let mut fluid = FluidState::new();
-    for i in 1..=16u64 {
-        use std::sync::atomic::Ordering::Relaxed;
-        telemetry.kick_pulse.store(i, Relaxed);
-        telemetry.tonal_pulse.store(i, Relaxed);
-        telemetry.perc_pulse.store(i, Relaxed);
-        telemetry.clap_pulse.store(i, Relaxed);
-        fluid.tick(0.05, &telemetry);
-    }
-    let mut peak = 0.0f32;
-    for iy in 0..20 {
-        for ix in 0..20 {
-            peak = peak.max(fluid.field(ix as f32 / 20.0, iy as f32 / 20.0).value);
-        }
-    }
-    assert!(
-        peak < 0.02,
-        "muted triggers must stay dark, peak was {peak}"
-    );
-}
-
-#[test]
-fn kick_wave_rises_from_bottom_edge() {
-    // A kick hit with live level injects a coherent wavefront at the bottom.
-    let telemetry = FluidTelemetry::default();
-    telemetry.publish_levels(VoiceLevels {
-        kick: 0.3,
-        ..Default::default()
-    });
-    let mut fluid = FluidState::new();
-    fluid.tick(0.05, &telemetry);
-    telemetry
-        .kick_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    fluid.tick(0.05, &telemetry);
-    let bottom = fluid.field(0.5, 0.93).value;
-    let top = fluid.field(0.5, 0.10).value;
-    assert!(
-        bottom > top + 0.1,
-        "kick front should light the bottom (bottom {bottom}, top {top})"
-    );
-}
-
-#[test]
-fn active_voice_lights_its_region() {
-    // Publish a strong bass level; the bass node's home region must brighten
-    // well above a far-away silent region.
-    let telemetry = FluidTelemetry::default();
-    telemetry.publish_bass_note(midi_to_hz(45));
-    telemetry.publish_levels(VoiceLevels {
-        bass: 1.0,
-        ..Default::default()
-    });
-    let mut fluid = FluidState::new();
-    for _ in 0..40 {
-        fluid.tick(0.05, &telemetry);
-    }
-    // Sample the brightest cell near the bass home (0.5, 0.80).
-    let mut near_peak = 0.0f32;
-    for iy in 14..18 {
-        for ix in 8..12 {
-            let v = fluid.field(ix as f32 / 20.0, iy as f32 / 20.0).value;
-            near_peak = near_peak.max(v);
-        }
-    }
-    let far = fluid.field(0.05, 0.05).value;
-    assert!(
-        near_peak > far + 0.2,
-        "bass region ({near_peak}) should outshine a far corner ({far})"
-    );
-}
-
-fn field_argmax(fluid: &FluidState) -> (f32, f32, f32) {
-    let mut best = (0.0f32, 0.0f32, 0.0f32);
-    for iy in 0..=80 {
-        for ix in 0..=80 {
-            let (nx, ny) = (ix as f32 / 80.0, iy as f32 / 80.0);
-            let v = fluid.field(nx, ny).value;
-            if v > best.2 {
-                best = (nx, ny, v);
-            }
-        }
-    }
-    best
-}
-
-#[test]
-fn tonal_note_ripples_at_its_pitch_spot() {
-    // A tonal note ripples the shared fluid from its pitch-anchored spot:
-    // pitch class sets the column, pitch sets the height.
-    let telemetry = FluidTelemetry::default();
-    telemetry.publish_tonal_note(440.0);
-    telemetry.publish_levels(VoiceLevels {
-        tonal: 0.3,
-        ..Default::default()
-    });
-    let mut fluid = FluidState::new();
-    fluid.tick(0.05, &telemetry);
-    telemetry
-        .tonal_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    fluid.tick(0.05, &telemetry);
-
-    let (x, y, peak) = field_argmax(&fluid);
-    assert!(peak > 0.1, "tonal ripple missing from the fluid: {peak}");
-    assert!(
-        (x - tonal_node_x(440.0)).abs() < 0.08 && (y - tonal_node_y(440.0)).abs() < 0.08,
-        "tonal ripple at ({x},{y}), expected near ({}, {})",
-        tonal_node_x(440.0),
-        tonal_node_y(440.0)
-    );
-}
-
-#[test]
-fn tonal_impact_reads_through_a_kick_wave() {
-    // The failure mode this pins: hits getting lost in the kick's wash. At
-    // the moment a kick wavefront crosses the tonal spot, the cell must
-    // still be bright and wear the tonal's own colour, not the kick's.
-    let telemetry = FluidTelemetry::default();
-    telemetry.publish_tonal_note(440.0);
-    telemetry.publish_levels(VoiceLevels {
-        kick: 0.3,
-        tonal: 0.3,
-        ..Default::default()
-    });
-    let mut fluid = FluidState::new();
-    telemetry
-        .kick_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    // Let the kick front expand up to the tonal spot's height...
-    for _ in 0..19 {
-        fluid.tick(0.05, &telemetry);
-    }
-    // ...then strike the tonal note right as the wave crosses it.
-    telemetry
-        .tonal_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    fluid.tick(0.05, &telemetry);
-
-    let sample = fluid.field(tonal_node_x(440.0), tonal_node_y(440.0));
-    assert!(
-        sample.value > 0.5,
-        "tonal impact washed out by the kick, value {}",
-        sample.value
-    );
-    // 440 Hz tonal hue is 150 (cyan-green); the kick's is 40 (amber).
-    let hue_delta = (sample.hue - 150.0 + 540.0).rem_euclid(360.0) - 180.0;
-    assert!(
-        hue_delta.abs() < 45.0,
-        "tonal lost its colour to the kick: hue {}",
-        sample.hue
-    );
-}
-
-#[test]
-fn muted_perc_ripples_nothing() {
-    let telemetry = FluidTelemetry::default();
-    let mut fluid = FluidState::new();
-    telemetry
-        .perc_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    fluid.tick(0.05, &telemetry);
-    let (_, _, peak) = field_argmax(&fluid);
-    assert!(peak < 0.02, "muted perc must draw nothing, peak {peak}");
-}
-
-#[test]
-fn ripple_dies_when_its_voice_decays() {
-    // Ripple brightness must track the voice's live envelope, not a fixed
-    // visual clock: when the perc sound decays to silence, the ripple goes
-    // dark with it even though its lifetime has barely started.
-    let telemetry = FluidTelemetry::default();
-    telemetry.publish_levels(VoiceLevels {
-        perc: 0.3,
-        ..Default::default()
-    });
-    let mut fluid = FluidState::new();
-    telemetry
-        .perc_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    fluid.tick(0.05, &telemetry);
-    assert!(
-        field_argmax(&fluid).2 > 0.1,
-        "perc ripple should appear while the hit sounds"
-    );
-
-    telemetry.publish_levels(VoiceLevels::default());
-    for _ in 0..3 {
-        fluid.tick(0.05, &telemetry);
-    }
-    let (_, _, peak) = field_argmax(&fluid);
-    assert!(
-        peak < 0.02,
-        "ripple must go dark when the perc envelope reaches zero, peak {peak}"
-    );
-}
-
-#[test]
-fn sustained_tonal_note_keeps_its_ripple_alive() {
-    // A long tonal decay keeps sounding past a second; its ripple must stay
-    // visible for as long as the envelope holds, showing the note's length.
-    let telemetry = FluidTelemetry::default();
-    telemetry.publish_tonal_note(440.0);
-    telemetry.publish_levels(VoiceLevels {
-        tonal: 0.3,
-        ..Default::default()
-    });
-    let mut fluid = FluidState::new();
-    telemetry
-        .tonal_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    for _ in 0..26 {
-        fluid.tick(0.05, &telemetry);
-    }
-    let (_, _, peak) = field_argmax(&fluid);
-    assert!(
-        peak > 0.05,
-        "a sounding tonal note must keep its ripple visible, peak {peak}"
-    );
-}
-
-#[test]
-fn kick_wave_is_radial_from_a_bottom_point() {
-    // The kick wave radiates from a point near the bottom, not a full-width
-    // band: at the same height, cells far from the origin stay dark.
-    let telemetry = FluidTelemetry::default();
-    telemetry.publish_levels(VoiceLevels {
-        kick: 0.3,
-        ..Default::default()
-    });
-    let mut fluid = FluidState::new();
-    fluid.tick(0.05, &telemetry);
-    telemetry
-        .kick_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    fluid.tick(0.05, &telemetry);
-
-    let row: Vec<f32> = (0..=40)
-        .map(|ix| fluid.field(ix as f32 / 40.0, 0.93).value)
-        .collect();
-    let (ci, peak) = row
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| (i, v))
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .unwrap();
-    let cx = ci as f32 / 40.0;
-    let far_x = if cx < 0.5 { cx + 0.45 } else { cx - 0.45 };
-    let far = fluid.field(far_x, 0.93).value;
-    assert!(
-        peak > far + 0.15,
-        "kick wave should be local to its origin (peak {peak} at x {cx}, far {far})"
-    );
-}
-
-#[test]
-fn pad_flow_pattern_differs_by_chord() {
-    // Each chord shapes the pad flow with its own wave character, not just a
-    // hue swap: the brightness pattern itself must differ between chords.
-    let grid = |chord: u64| {
-        let telemetry = FluidTelemetry::default();
-        telemetry
-            .chord_index
-            .store(chord, std::sync::atomic::Ordering::Relaxed);
-        telemetry.publish_levels(VoiceLevels {
-            pad: 0.2,
-            ..Default::default()
-        });
-        let mut fluid = FluidState::new();
-        for _ in 0..40 {
-            fluid.tick(0.05, &telemetry);
-        }
-        let mut cells = Vec::with_capacity(400);
-        for iy in 0..20 {
-            for ix in 0..20 {
-                cells.push(fluid.field(ix as f32 / 20.0, iy as f32 / 20.0).value);
-            }
-        }
-        cells
-    };
-    let a = grid(0);
-    let b = grid(1);
-    let max_diff = a
-        .iter()
-        .zip(&b)
-        .map(|(x, y)| (x - y).abs())
-        .fold(0.0f32, f32::max);
-    assert!(
-        max_diff > 0.05,
-        "chords should shape the flow differently, max diff {max_diff}"
-    );
-}
-
-#[test]
-fn chord_nodes_stack_down_the_center_column() {
-    // The chord tones are vibrating nodes on the center column; while the
-    // pad sounds, the center must outshine the flanks at a chord tone's
-    // height. Peaks are taken across ticks so a sine trough can't hide it.
-    let telemetry = FluidTelemetry::default();
-    telemetry.publish_levels(VoiceLevels {
-        pad: 0.2,
-        ..Default::default()
-    });
-    let mut fluid = FluidState::new();
-    for _ in 0..40 {
-        fluid.tick(0.05, &telemetry);
-    }
-    let y = tonal_node_y(pad_chord(0, 0, 0.0)[1]);
-    let mut center = 0.0f32;
-    let mut flank = 0.0f32;
-    for _ in 0..20 {
-        fluid.tick(0.05, &telemetry);
-        center = center.max(fluid.field(0.5, y).value);
-        flank = flank.max(fluid.field(0.06, y).value);
-    }
-    assert!(
-        center > flank + 0.1,
-        "chord nodes should light the center column (center {center}, flank {flank})"
-    );
-}
-
-#[test]
-fn perc_ripples_from_one_fixed_home_spot() {
-    // Successive perc hits must ripple from the same spot: the randomness
-    // on screen should be the rhythm's, not the placement's.
-    let telemetry = FluidTelemetry::default();
-    let mut fluid = FluidState::new();
-    let hit = |fluid: &mut FluidState, pulse: u64| {
-        telemetry.publish_levels(VoiceLevels {
-            perc: 0.3,
-            ..Default::default()
-        });
-        telemetry
-            .perc_pulse
-            .store(pulse, std::sync::atomic::Ordering::Relaxed);
-        fluid.tick(0.05, &telemetry);
-        let (x, y, peak) = field_argmax(fluid);
-        assert!(peak > 0.1, "perc hit {pulse} missing from the fluid");
-        // Let the ripple die before the next hit.
-        telemetry.publish_levels(VoiceLevels::default());
-        for _ in 0..30 {
-            fluid.tick(0.05, &telemetry);
-        }
-        (x, y)
-    };
-    let (x1, y1) = hit(&mut fluid, 1);
-    let (x2, y2) = hit(&mut fluid, 2);
-    assert!(
-        (x1 - x2).abs() < 0.03 && (y1 - y2).abs() < 0.03,
-        "perc moved between hits: ({x1},{y1}) vs ({x2},{y2})"
-    );
-}
-
-#[test]
-fn kick_survives_stale_level_at_trigger() {
-    // The audio thread bumps the pulse counter at the trigger sample but
-    // publishes levels only every 256 samples. A UI frame landing in that
-    // gap sees the pulse with the pre-hit (decayed) level; the kick must
-    // still wave once the level arrives instead of being dropped forever.
-    let telemetry = FluidTelemetry::default();
-    let mut fluid = FluidState::new();
-    telemetry
-        .kick_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    fluid.tick(0.016, &telemetry); // level publish hasn't landed yet
-    telemetry.publish_levels(VoiceLevels {
-        kick: 0.3,
-        ..Default::default()
-    });
-    fluid.tick(0.016, &telemetry);
-    let mut bottom = 0.0f32;
-    for ix in 0..=40 {
-        bottom = bottom.max(fluid.field(ix as f32 / 40.0, 0.93).value);
-    }
-    assert!(
-        bottom > 0.1,
-        "kick dropped by the level-publish race, bottom peak {bottom}"
-    );
-}
-
-#[test]
-fn perc_ripple_survives_stale_level_at_trigger() {
-    // Same publish race as the kick: the ripple must appear once the level
-    // lands one frame later.
-    let telemetry = FluidTelemetry::default();
-    let mut fluid = FluidState::new();
-    telemetry
-        .perc_pulse
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    fluid.tick(0.016, &telemetry);
-    telemetry.publish_levels(VoiceLevels {
-        perc: 0.3,
-        ..Default::default()
-    });
-    fluid.tick(0.016, &telemetry);
-    let (_, _, peak) = field_argmax(&fluid);
-    assert!(
-        peak > 0.1,
-        "perc ripple dropped by the level-publish race, peak {peak}"
-    );
-}
-
-#[test]
-fn kick_origin_wanders_gently_not_randomly() {
-    // Successive kick origins should drift slowly around center-bottom, not
-    // hop across the screen.
-    let telemetry = FluidTelemetry::default();
-    telemetry.publish_levels(VoiceLevels {
-        kick: 0.3,
-        ..Default::default()
-    });
-    let mut fluid = FluidState::new();
-    let mut origins = Vec::new();
-    for pulse in 1..=5u64 {
-        telemetry
-            .kick_pulse
-            .store(pulse, std::sync::atomic::Ordering::Relaxed);
-        fluid.tick(0.05, &telemetry);
-        let (ci, _) = (0..=40)
-            .map(|ix| (ix, fluid.field(ix as f32 / 40.0, 0.93).value))
-            .max_by(|a, b| a.1.total_cmp(&b.1))
-            .unwrap();
-        origins.push(ci as f32 / 40.0);
-        // Let the wave die before the next hit so the scan sees one wave.
-        for _ in 0..40 {
-            fluid.tick(0.05, &telemetry);
-        }
-    }
-    for pair in origins.windows(2) {
-        let delta = (pair[1] - pair[0]).abs();
-        assert!(
-            delta < 0.06,
-            "kick origin hopped {delta} between hits: {origins:?}"
-        );
-    }
-    for &x in &origins {
-        assert!(
-            (0.4..=0.6).contains(&x),
-            "kick origin strayed from center-bottom: {origins:?}"
-        );
-    }
-}
-
-#[test]
-fn tonal_ripple_position_is_deterministic_in_pitch() {
-    // The same note must always ripple from the same spot, and a higher
-    // note must sit higher, so spatial placement reads as tonality — any
-    // remaining randomness comes from the notes themselves.
-    let ripple_pos = |hz: f32, pulses: u64| {
-        let telemetry = FluidTelemetry::default();
-        telemetry.publish_tonal_note(hz);
-        telemetry.publish_levels(VoiceLevels {
-            tonal: 0.3,
-            ..Default::default()
-        });
-        let mut fluid = FluidState::new();
-        for pulse in 1..=pulses {
-            // Fire a few decoy pulses first so any hidden spawn-order state
-            // would show up as a position change.
-            telemetry
-                .tonal_pulse
-                .store(pulse, std::sync::atomic::Ordering::Relaxed);
-            fluid.tick(0.05, &telemetry);
-        }
-        let (x, y, peak) = field_argmax(&fluid);
-        assert!(peak > 0.05, "no tonal ripple found for {hz} Hz");
-        (x, y)
-    };
-
-    let (x1, y1) = ripple_pos(440.0, 1);
-    let (x2, y2) = ripple_pos(440.0, 3);
-    assert!(
-        (x1 - x2).abs() < 0.03 && (y1 - y2).abs() < 0.03,
-        "same note moved: ({x1},{y1}) vs ({x2},{y2})"
-    );
-
-    let (_, y_low) = ripple_pos(220.0, 1);
-    let (_, y_high) = ripple_pos(660.0, 1);
-    assert!(
-        y_high < y_low - 0.1,
-        "higher note should sit higher on screen (y {y_high} vs {y_low})"
-    );
-}
-
-#[test]
 fn render_fluid_draws_without_terminal_backend() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();
@@ -865,7 +331,6 @@ fn render_fluid_draws_without_terminal_backend() {
                 &fluid,
                 &automation,
                 None,
-                false,
             )
         })
         .unwrap();
@@ -1069,7 +534,7 @@ fn full_tonal_reverb_does_not_boost_tonal_rms() {
             reverb_mix,
             ..TonalControls::default()
         };
-        let mut tonal = TonalEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
+        let mut tonal = TonalEngine::new(SAMPLE_RATE);
         tonal.rng = StdRng::seed_from_u64(11);
         let mut send = AmbientReverbSend::new(SAMPLE_RATE);
         let mut sum = 0.0;
@@ -1136,7 +601,6 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
                     &fluid,
                     &automation,
                     None,
-                    false,
                 )
             })
             .unwrap();
@@ -1744,7 +1208,7 @@ fn bass_controls_adjust_and_clamp() {
 #[test]
 fn bass_engine_follows_pad_chord_root_across_advances() {
     let sample_rate = 48_000.0;
-    let mut bass = BassEngine::new(sample_rate, Arc::new(FluidTelemetry::default()));
+    let mut bass = BassEngine::new(sample_rate);
     let pad = PadControls {
         chord_bars: 1.0 / 4.0, // advance every beat, fast enough to observe within the test
         ..PadControls::default()
@@ -1864,7 +1328,7 @@ fn perc_continuous_mode_pushes_no_hits() {
         ..Default::default()
     };
 
-    let mut engine = PercEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
+    let mut engine = PercEngine::new(SAMPLE_RATE);
     engine.rng = StdRng::seed_from_u64(7);
     let bpm = 82.0;
     for sample in 0..(SAMPLE_RATE as u64 * 2) {
@@ -1882,7 +1346,7 @@ fn perc_continuous_mode_has_no_periodic_rms_dips() {
         ..Default::default()
     };
 
-    let mut engine = PercEngine::new(SAMPLE_RATE, Arc::new(FluidTelemetry::default()));
+    let mut engine = PercEngine::new(SAMPLE_RATE);
     engine.rng = StdRng::seed_from_u64(7);
     let bpm = 82.0;
     let window_samples = (SAMPLE_RATE * 0.01) as usize;
@@ -2308,11 +1772,7 @@ fn lfo_interval_sweep_plays_on_grid_breakdown() {
         let t = timing(sample, 120.0);
         let mut effective = controls.clone();
         apply_automation(&mut effective, &automation, t);
-        if trigger.pop(
-            t,
-            effective.kick.interval_beats,
-            effective.kick.offset_beats,
-        ) {
+        if trigger.pop(t, effective.kick.interval_beats, effective.kick.offset_beats) {
             hit_beats.push(t.beat);
         }
     }

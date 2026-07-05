@@ -15,7 +15,6 @@ pub(crate) struct TonalEngine {
     pub(crate) low_cut_l: TonalLowCut,
     pub(crate) low_cut_r: TonalLowCut,
     pub(crate) rng: StdRng,
-    pub(crate) telemetry: Arc<FluidTelemetry>,
 }
 
 pub(crate) const TONAL_LOW_CUT_HZ: f32 = 70.0;
@@ -322,7 +321,7 @@ pub(crate) const TONAL_PHRASES: [&[i32]; 8] = [
 ];
 
 impl TonalEngine {
-    pub(crate) fn new(sample_rate: f32, telemetry: Arc<FluidTelemetry>) -> Self {
+    pub(crate) fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
             step_trigger: GridTrigger::new(),
@@ -334,7 +333,6 @@ impl TonalEngine {
             low_cut_l: TonalLowCut::new(sample_rate, TONAL_LOW_CUT_HZ),
             low_cut_r: TonalLowCut::new(sample_rate, TONAL_LOW_CUT_HZ),
             rng: StdRng::from_entropy(),
-            telemetry,
         }
     }
 
@@ -367,8 +365,6 @@ impl TonalEngine {
                 self.evolved_phrase[self.step_index % self.evolved_phrase.len()]
             };
             let hz = tonal_note_hz(note, tune);
-            self.telemetry.publish_tonal_note(hz);
-            self.telemetry.tonal_pulse.fetch_add(1, Ordering::Relaxed);
             let decay_samples = timing.beats_to_samples(c.note_length_beats);
             let pan = self.rng.gen_range(-0.5f32..0.5);
             self.voices.push(TonalVoice::new(

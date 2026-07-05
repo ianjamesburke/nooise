@@ -2,7 +2,7 @@ use std::error::Error;
 use std::f32::consts::TAU;
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -57,51 +57,15 @@ use voice::*;
 // ============================================================
 
 /// Lock-free channel from the engine to the visualizer. The audio thread only
-/// ever stores (relaxed); the UI thread only ever loads. It carries three kinds
-/// of signal, one visual body per sounding voice:
-///
-/// * Trigger pulses — monotonic counters bumped once per note/hit
-///   (`kick_pulse`, `bass_pulse`, `tonal_pulse`, `perc_pulse`, `clap_pulse`).
-///   The UI tracks the delta to spawn one wavelet per event.
-/// * Pitch — the last bass and tonal note, packed as `f32::to_bits` Hz, so the
-///   visualizer can place and tune those voices' waves.
-/// * Smoothed output level — one `f32` per voice, an envelope follower the
-///   engine updates per sample and publishes at control rate (every
-///   `LEVEL_PUBLISH_INTERVAL` samples), never per sample. A silent voice's
-///   level falls to zero so its node goes still and dark.
-///
-/// `chord_index` mirrors the pad engine's current chord (drives pad hue).
+/// ever stores; the UI thread only ever loads. `kick_pulse` is a monotonic
+/// counter (UI tracks the delta to fire one ripple per hit); `chord_index`
+/// mirrors the pad engine's current chord.
 #[derive(Default)]
 pub(crate) struct FluidTelemetry {
     pub chord_index: AtomicU64,
     pub kick_pulse: AtomicU64,
-    pub bass_pulse: AtomicU64,
-    pub tonal_pulse: AtomicU64,
-    pub perc_pulse: AtomicU64,
-    pub clap_pulse: AtomicU64,
     /// Engine beat position as `f64::to_bits`, for beat-synced UI animation.
     pub beat_bits: AtomicU64,
-    /// Last bass / tonal note as `f32::to_bits` Hz.
-    pub bass_note_bits: AtomicU32,
-    pub tonal_note_bits: AtomicU32,
-    /// Per-voice smoothed output level as `f32::to_bits`.
-    pub bass_level_bits: AtomicU32,
-    pub pad_level_bits: AtomicU32,
-    pub kick_level_bits: AtomicU32,
-    pub tonal_level_bits: AtomicU32,
-    pub perc_level_bits: AtomicU32,
-    pub clap_level_bits: AtomicU32,
-}
-
-/// Smoothed per-voice output levels, published together at control rate.
-#[derive(Default, Clone, Copy)]
-pub(crate) struct VoiceLevels {
-    pub bass: f32,
-    pub pad: f32,
-    pub kick: f32,
-    pub tonal: f32,
-    pub perc: f32,
-    pub clap: f32,
 }
 
 impl FluidTelemetry {
@@ -111,48 +75,6 @@ impl FluidTelemetry {
 
     pub(crate) fn beat(&self) -> f64 {
         f64::from_bits(self.beat_bits.load(Ordering::Relaxed))
-    }
-
-    pub(crate) fn publish_bass_note(&self, hz: f32) {
-        self.bass_note_bits.store(hz.to_bits(), Ordering::Relaxed);
-    }
-
-    pub(crate) fn bass_note_hz(&self) -> f32 {
-        f32::from_bits(self.bass_note_bits.load(Ordering::Relaxed))
-    }
-
-    pub(crate) fn publish_tonal_note(&self, hz: f32) {
-        self.tonal_note_bits.store(hz.to_bits(), Ordering::Relaxed);
-    }
-
-    pub(crate) fn tonal_note_hz(&self) -> f32 {
-        f32::from_bits(self.tonal_note_bits.load(Ordering::Relaxed))
-    }
-
-    pub(crate) fn publish_levels(&self, levels: VoiceLevels) {
-        self.bass_level_bits
-            .store(levels.bass.to_bits(), Ordering::Relaxed);
-        self.pad_level_bits
-            .store(levels.pad.to_bits(), Ordering::Relaxed);
-        self.kick_level_bits
-            .store(levels.kick.to_bits(), Ordering::Relaxed);
-        self.tonal_level_bits
-            .store(levels.tonal.to_bits(), Ordering::Relaxed);
-        self.perc_level_bits
-            .store(levels.perc.to_bits(), Ordering::Relaxed);
-        self.clap_level_bits
-            .store(levels.clap.to_bits(), Ordering::Relaxed);
-    }
-
-    pub(crate) fn levels(&self) -> VoiceLevels {
-        VoiceLevels {
-            bass: f32::from_bits(self.bass_level_bits.load(Ordering::Relaxed)),
-            pad: f32::from_bits(self.pad_level_bits.load(Ordering::Relaxed)),
-            kick: f32::from_bits(self.kick_level_bits.load(Ordering::Relaxed)),
-            tonal: f32::from_bits(self.tonal_level_bits.load(Ordering::Relaxed)),
-            perc: f32::from_bits(self.perc_level_bits.load(Ordering::Relaxed)),
-            clap: f32::from_bits(self.clap_level_bits.load(Ordering::Relaxed)),
-        }
     }
 }
 

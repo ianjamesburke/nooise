@@ -10,24 +10,21 @@ pub(crate) struct ClapEngine {
     pub(crate) voices: Vec<ClapVoice>,
     pub(crate) reverb: Freeverb,
     pub(crate) rng: StdRng,
-    pub(crate) telemetry: Arc<FluidTelemetry>,
 }
 
 impl ClapEngine {
-    pub(crate) fn new(sample_rate: f32, telemetry: Arc<FluidTelemetry>) -> Self {
+    pub(crate) fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
             trigger: GridTrigger::new(),
             voices: Vec::with_capacity(4),
             reverb: Freeverb::new(sample_rate, 0.28, 0.62, 0.85),
             rng: StdRng::from_entropy(),
-            telemetry,
         }
     }
 
     pub(crate) fn next(&mut self, c: &ClapControls, timing: TimingContext) -> (f32, f32) {
         if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
-            self.telemetry.clap_pulse.fetch_add(1, Ordering::Relaxed);
             self.voices
                 .push(ClapVoice::new(c, self.sample_rate, &mut self.rng));
         }
