@@ -473,6 +473,47 @@ fn tonal_note_ripples_at_its_pitch_spot() {
 }
 
 #[test]
+fn tonal_impact_reads_through_a_kick_wave() {
+    // The failure mode this pins: hits getting lost in the kick's wash. At
+    // the moment a kick wavefront crosses the tonal spot, the cell must
+    // still be bright and wear the tonal's own colour, not the kick's.
+    let telemetry = FluidTelemetry::default();
+    telemetry.publish_tonal_note(440.0);
+    telemetry.publish_levels(VoiceLevels {
+        kick: 0.3,
+        tonal: 0.3,
+        ..Default::default()
+    });
+    let mut fluid = FluidState::new();
+    telemetry
+        .kick_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    // Let the kick front expand up to the tonal spot's height...
+    for _ in 0..19 {
+        fluid.tick(0.05, &telemetry);
+    }
+    // ...then strike the tonal note right as the wave crosses it.
+    telemetry
+        .tonal_pulse
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    fluid.tick(0.05, &telemetry);
+
+    let sample = fluid.field(tonal_node_x(440.0), tonal_node_y(440.0));
+    assert!(
+        sample.value > 0.5,
+        "tonal impact washed out by the kick, value {}",
+        sample.value
+    );
+    // 440 Hz tonal hue is 150 (cyan-green); the kick's is 40 (amber).
+    let hue_delta = (sample.hue - 150.0 + 540.0).rem_euclid(360.0) - 180.0;
+    assert!(
+        hue_delta.abs() < 45.0,
+        "tonal lost its colour to the kick: hue {}",
+        sample.hue
+    );
+}
+
+#[test]
 fn muted_perc_ripples_nothing() {
     let telemetry = FluidTelemetry::default();
     let mut fluid = FluidState::new();

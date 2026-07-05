@@ -676,8 +676,9 @@ impl FluidState {
 
         // Tonal -> a ripple in the fluid whose origin is the pitch: pitch
         // class sets the column, octave-spread pitch sets the height, so the
-        // same note always ripples from the same spot. Its hue sits opposite
-        // the chord's on the colour wheel so it reads against the wash.
+        // same note always ripples from the same spot. It carries its own
+        // identity colour (cyan->green by pitch) so it never melts into the
+        // chord wash or the kick's amber.
         let tonal = telemetry.tonal_pulse.load(Ordering::Relaxed);
         if tonal > self.last_tonal {
             let amp = visual_amp(levels.tonal, TONAL_LEVEL_GAIN);
@@ -690,15 +691,15 @@ impl FluidState {
                 age: 0.0,
                 life: TONAL_RIPPLE_LIFE,
                 amp,
-                hue: self.ambient_hue + 180.0 + pitch_t * 30.0,
-                tight: 11.0,
+                hue: 190.0 - pitch_t * 60.0,
+                tight: 14.0,
                 speed: 0.16,
             });
             self.last_tonal = tonal;
         }
 
         // Perc and clap each strike one fixed home spot and ripple outward
-        // from it, in complementary offsets of the chord's hue.
+        // from it, each in its own identity colour (ice blue / magenta).
         let perc = telemetry.perc_pulse.load(Ordering::Relaxed);
         if perc > self.last_perc {
             let amp = visual_amp(levels.perc, PERC_LEVEL_GAIN);
@@ -709,8 +710,8 @@ impl FluidState {
                 age: 0.0,
                 life: HIT_RIPPLE_LIFE,
                 amp,
-                hue: self.ambient_hue + 140.0,
-                tight: 13.0,
+                hue: 210.0,
+                tight: 16.0,
                 speed: 0.45,
             });
             self.last_perc = perc;
@@ -725,8 +726,8 @@ impl FluidState {
                 age: 0.0,
                 life: HIT_RIPPLE_LIFE,
                 amp,
-                hue: self.ambient_hue + 220.0,
-                tight: 10.0,
+                hue: 330.0,
+                tight: 13.0,
                 speed: 0.50,
             });
             self.last_clap = clap;
@@ -850,18 +851,29 @@ impl FluidState {
         }
 
         // Hit ripples: tonal, perc, clap rings expanding through the fluid.
+        // Each carries an impact core — a bright dot of the ripple's own
+        // colour at the strike point that dissipates with the envelope — and
+        // its hue is over-weighted in the blend, so a hit stays legible even
+        // while a kick wave washes through the same cells.
         for r in &self.ripples {
             let dx = nx - r.x;
             let dy = ny - r.y;
-            let dist = (dx * dx + dy * dy).sqrt();
+            let d2 = dx * dx + dy * dy;
+            let dist = d2.sqrt();
             let front = r.age * r.speed;
             let fade = (1.0 - r.age / r.life).max(0.0);
             let band = (-((dist - front) * r.tight).powi(2)).exp();
-            let w = band * fade * r.amp;
+            let ring = band * fade * r.amp * RIPPLE_GAIN;
+            let core = (-d2 / (IMPACT_CORE_SIZE * IMPACT_CORE_SIZE)).exp()
+                * fade
+                * fade
+                * r.amp
+                * IMPACT_CORE_GAIN;
+            let w = ring + core;
             if w > 1e-4 {
-                v += ((front - dist) * RIPPLE_FREQ).sin().mul_add(0.5, 0.8) * w;
+                v += ((front - dist) * RIPPLE_FREQ).sin().mul_add(0.5, 0.8) * ring + core;
                 energy += w;
-                add_hue(&mut hx, &mut hy, r.hue, w);
+                add_hue(&mut hx, &mut hy, r.hue, w * RIPPLE_HUE_BOOST);
             }
         }
 
@@ -902,6 +914,13 @@ const PERC_HOME: (f32, f32) = (0.20, 0.32);
 const CLAP_HOME: (f32, f32) = (0.80, 0.32);
 /// Ripple texture frequency trailing a hit ripple's front.
 const RIPPLE_FREQ: f32 = 30.0;
+/// Hit ripple presence: ring weight, the impact core's radius and strength
+/// (the bright dot at the strike point), and how strongly a ripple's hue
+/// outweighs the wash beneath it in the colour blend.
+const RIPPLE_GAIN: f32 = 1.3;
+const IMPACT_CORE_SIZE: f32 = 0.045;
+const IMPACT_CORE_GAIN: f32 = 1.2;
+const RIPPLE_HUE_BOOST: f32 = 2.0;
 /// How long after its trigger a body keeps capturing its voice's rising
 /// level. Covers the trigger-pulse vs level-publish race (~6 ms) plus a
 /// frame or two of UI latency.

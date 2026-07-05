@@ -35,9 +35,9 @@ rate.
 | **Pad / chords** | 4 vibrating nodes, center column | Each chord tone is a node at its pitch height (higher tone = higher node) radiating micro-ripples — finer and faster for higher tones. Chord changes glide the nodes to the new tones. Level drives it all + a faint chord-colour wash; pad silent → field black and still. |
 | **Bass** | persistent node, low-center (0.50, 0.80), warm amber | Live level sets ring brightness (decay included); **note pitch sets the wavelength**. Each new note restarts the ring. |
 | **Kick** | radial pulse from a point near the bottom | One wave per hit expands upward and outward, pushed hardest straight up; the origin wanders slowly around center, never hops. Immune to the telemetry publish race. |
-| **Tonal** | ripple from its pitch spot | **Position = pitch** (pitch class → column, pitch → height); the same note always ripples from the same spot. Hue sits opposite the chord's. Rings on for the note's whole envelope. |
-| **Perc** | ripple from one fixed home (0.20, 0.32) | Every hit strikes the same spot; fades at the voice's real decay rate. Hue offset from the chord's. |
-| **Clap** | ripple from one fixed home (0.80, 0.32) | Mirrors perc on the right, its own hue offset. |
+| **Tonal** | ripple from its pitch spot, cyan→green | **Position = pitch** (pitch class → column, pitch → height); the same note always ripples from the same spot. A bright impact core in its own colour dissipates with the envelope, so the hit reads through the kick's wash. |
+| **Perc** | ripple from one fixed home (0.20, 0.32), ice blue | Every hit strikes the same spot with a tight ring + impact core; fades at the voice's real decay rate. |
+| **Clap** | ripple from one fixed home (0.80, 0.32), magenta | Mirrors perc on the right. |
 
 ## Focus mode
 
