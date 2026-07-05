@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [1.2.3] — 2026-07-05
+
+### Changed
+- Revert "Merge branch 'exp-audio-visuals'"
 ## [1.2.2] — 2026-07-05
 
 ### Added
