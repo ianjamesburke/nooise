@@ -61,10 +61,11 @@ pub(crate) struct BassEngine {
     pub(crate) step_trigger: GridTrigger,
     pub(crate) rhythm_step: usize,
     pub(crate) voices: Vec<BassVoice>,
+    pub(crate) telemetry: Arc<FluidTelemetry>,
 }
 
 impl BassEngine {
-    pub(crate) fn new(sample_rate: f32) -> Self {
+    pub(crate) fn new(sample_rate: f32, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
             chord_trigger: GridTrigger::after_start(),
@@ -72,6 +73,7 @@ impl BassEngine {
             step_trigger: GridTrigger::new(),
             rhythm_step: BASS_RHYTHMS[0].len() - 1,
             voices: Vec::with_capacity(MAX_BASS_VOICES),
+            telemetry,
         }
     }
 
@@ -102,6 +104,8 @@ impl BassEngine {
                 let note =
                     bass_root_note(progression, self.step_index) + (c.octave.round() as i32) * 12;
                 let hz = midi_to_hz(note) * tune_ratio(tune);
+                self.telemetry.publish_bass_note(hz);
+                self.telemetry.bass_pulse.fetch_add(1, Ordering::Relaxed);
                 for voice in &mut self.voices {
                     voice.release();
                 }

@@ -10,16 +10,18 @@ pub(crate) struct PercEngine {
     pub(crate) hits: Vec<NoiseHit>,
     pub(crate) noise: WhiteNoise,
     pub(crate) rng: StdRng,
+    pub(crate) telemetry: Arc<FluidTelemetry>,
 }
 
 impl PercEngine {
-    pub(crate) fn new(sample_rate: f32) -> Self {
+    pub(crate) fn new(sample_rate: f32, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
             trigger: GridTrigger::new(),
             hits: Vec::with_capacity(8),
             noise: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
+            telemetry,
         }
     }
 
@@ -34,6 +36,7 @@ impl PercEngine {
         }
 
         if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
+            self.telemetry.perc_pulse.fetch_add(1, Ordering::Relaxed);
             let smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
             self.hits.push(NoiseHit::new(
                 c.level,
