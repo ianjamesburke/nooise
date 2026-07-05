@@ -1,6 +1,22 @@
 # Changelog
 
 Newest releases appear first.
+## [1.2.2] — 2026-07-05
+
+### Added
+- feat(fluid): move focus-mode hint to discoverability cue, purify focus view
+- feat: give hit ripples identity colours and impact cores so they read through the kick
+- feat: unify everything into one fluid; chord tones become vibrating center-column nodes
+- feat: chord character shapes the pad's flowing waves
+- feat: kick wave radiates from a bottom point, pushed upward
+- feat: spark brightness tracks each voice's live decay envelope
+- feat: crisp surface layer for tonal/perc/clap over the fluid field
+- feat: level-gated fluid field with coherent kick wavefront and blended hue
+- feat: node-based audio-reactive field visualizer
+- feat: publish per-voice telemetry for visualizer
+
+### Fixed
+- fix: capture trigger peaks past the level-publish race; anchor kick and tonal placement
 ## [1.2.1] — 2026-07-04
 
 ### Added
