@@ -363,7 +363,7 @@ fn lfo_field_adjust_steps_and_clamps() {
     assert_close(route.depth_ratio, 0.0);
 
     route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
-    assert_close(route.cycle_beats, 2.125);
+    assert_close(route.cycle_beats, 2.25);
     for _ in 0..150 {
         route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
     }
@@ -388,7 +388,9 @@ fn lfo_field_set_snaps_to_eighth_beat_grid() {
     let mut route = LfoRoute::default();
 
     route.set_field_at(LfoField::Interval, 3.1, 0.0);
-    assert_close(route.cycle_beats, 3.125);
+    assert_close(route.cycle_beats, 3.0);
+    route.set_field_at(LfoField::Interval, 0.17, 0.0);
+    assert_close(route.cycle_beats, 0.125);
     route.set_field_at(LfoField::Interval, 100.0, 0.0);
     assert_close(route.cycle_beats, 16.0);
     route.set_field_at(LfoField::Amount, 130.0, 0.0);
@@ -463,7 +465,7 @@ fn lfo_interval_edits_preserve_live_phase_when_possible() {
 
     route.adjust_field_at(LfoField::Interval, 1.0, beat);
 
-    assert_close(route.cycle_beats, 2.125);
+    assert_close(route.cycle_beats, 2.25);
     assert!((route.phase_at(beat) - before).abs() < 1e-9);
 }
 
@@ -942,7 +944,10 @@ fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     let mut controls = FluidControls::default();
 
     apply_value(Tab::Kick, 1, 1.13, &mut controls);
-    assert_close(controls.kick.interval_beats, 1.125);
+    assert_close(controls.kick.interval_beats, 1.25);
+
+    apply_value(Tab::Kick, 1, 0.16, &mut controls);
+    assert_close(controls.kick.interval_beats, 0.125);
 
     apply_value(Tab::Chords, 1, 12.0, &mut controls);
     assert_close(controls.pad.chord_bars, 16.0);
@@ -1588,7 +1593,13 @@ fn perc_interval_and_offset_adjust_and_clamp() {
     let mut controls = FluidControls::default();
 
     apply_delta(Tab::Perc, 1, 1.0, &mut controls);
-    assert_close(controls.perc.interval_beats, 0.375);
+    assert_close(controls.perc.interval_beats, 0.5);
+
+    controls.perc.interval_beats = 0.25;
+    apply_delta(Tab::Perc, 1, -1.0, &mut controls);
+    assert_close(controls.perc.interval_beats, 0.125);
+    apply_delta(Tab::Perc, 1, 1.0, &mut controls);
+    assert_close(controls.perc.interval_beats, 0.25);
 
     controls.perc.interval_beats = 4.25;
     apply_delta(Tab::Perc, 1, 1.0, &mut controls);

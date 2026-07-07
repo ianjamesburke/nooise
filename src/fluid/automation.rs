@@ -4,8 +4,9 @@ use std::f32::consts::TAU;
 use std::fmt;
 
 use super::{
-    ControlSpec, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TimingContext, is_macro_id,
-    nearest_power_of_two, normalize_unit_input, snap_step, spec_by_id,
+    ControlSpec, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TimingContext,
+    beat_grid_adjust, beat_grid_snap, is_macro_id, nearest_power_of_two, normalize_unit_input,
+    snap_step, spec_by_id,
 };
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
@@ -272,11 +273,18 @@ pub(crate) struct LfoFieldSpec {
     pub(crate) step: f32,
     pub(crate) entry: LfoEntry,
     pub(crate) reset: f32,
+    /// Interval-like fields lock to the musical beat grid (0.125 floor,
+    /// sixteenths above) instead of a fixed linear step.
+    pub(crate) beat_grid: bool,
 }
 
 impl LfoFieldSpec {
     pub(crate) fn adjust(self, value: f32, dir: f32) -> f32 {
-        self.quantize(value + dir * self.step)
+        if self.beat_grid {
+            beat_grid_adjust(value, dir, self.min, self.max)
+        } else {
+            self.quantize(value + dir * self.step)
+        }
     }
 
     pub(crate) fn parse_value(self, value: f32) -> f32 {
@@ -287,7 +295,11 @@ impl LfoFieldSpec {
     }
 
     pub(crate) fn quantize(self, value: f32) -> f32 {
-        snap_step(value.clamp(self.min, self.max), self.step).clamp(self.min, self.max)
+        if self.beat_grid {
+            beat_grid_snap(value, self.min, self.max)
+        } else {
+            snap_step(value.clamp(self.min, self.max), self.step).clamp(self.min, self.max)
+        }
     }
 
     pub(crate) fn ratio(self, value: f32) -> f32 {
@@ -309,6 +321,7 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
         step: AMOUNT_STEP,
         entry: LfoEntry::Percent,
         reset: 0.0,
+        beat_grid: false,
     },
     LfoFieldSpec {
         field: LfoField::Interval,
@@ -318,6 +331,7 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
         step: INTERVAL_STEP,
         entry: LfoEntry::Snap,
         reset: MIN_LFO_CYCLE_BEATS,
+        beat_grid: true,
     },
     LfoFieldSpec {
         field: LfoField::Offset,
@@ -327,6 +341,7 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
         step: OFFSET_STEP,
         entry: LfoEntry::Snap,
         reset: 0.0,
+        beat_grid: false,
     },
 ];
 

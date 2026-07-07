@@ -135,6 +135,8 @@ pub(crate) enum Step {
     Linear(f32),
     /// value doubles/halves, clamped to [min, max].
     PowerOfTwo,
+    /// 0.125 as the floor value, sixteenths (0.25 grid) above it.
+    BeatGrid,
 }
 
 /// How direct numeric entry is interpreted.
@@ -310,6 +312,7 @@ impl ControlSpec {
                     (value / 2.0).max(self.min)
                 }
             }
+            Step::BeatGrid => beat_grid_adjust(value, dir, self.min, self.max),
         };
         (self.set)(c, next);
     }
@@ -325,6 +328,7 @@ impl ControlSpec {
             Entry::Snap => match self.step {
                 Step::Linear(step) => snap_step(value, step),
                 Step::PowerOfTwo => nearest_power_of_two(value, self.min, self.max),
+                Step::BeatGrid => beat_grid_snap(value, self.min, self.max),
             },
             Entry::Free => value,
         };
@@ -344,6 +348,7 @@ impl ControlSpec {
         match self.step {
             Step::Linear(step) => snap_step(clamped, step).clamp(self.min, self.max),
             Step::PowerOfTwo => nearest_power_of_two(clamped, self.min, self.max),
+            Step::BeatGrid => beat_grid_snap(clamped, self.min, self.max),
         }
     }
 }
@@ -539,7 +544,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.125,
         4.25,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.perc.interval_beats,
         |c, v| c.perc.interval_beats = v,
@@ -711,7 +716,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.125,
         8.0,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.bass.interval_beats,
         |c, v| c.bass.interval_beats = v,
@@ -808,7 +813,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.125,
         4.0,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.kick.interval_beats,
         |c, v| c.kick.interval_beats = v,
@@ -981,7 +986,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         TONAL_RATE_BEATS_MIN,
         TONAL_RATE_BEATS_MAX,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.tonal.rate_beats,
         |c, v| c.tonal.rate_beats = v,
@@ -995,7 +1000,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         TONAL_CYCLE_BEATS_MIN,
         TONAL_CYCLE_BEATS_MAX,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.tonal.step_interval_beats,
         |c, v| c.tonal.step_interval_beats = v,
@@ -1097,7 +1102,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.5,
         8.0,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.clap.interval_beats,
         |c, v| c.clap.interval_beats = v,
@@ -1300,6 +1305,33 @@ pub(crate) fn normalize_unit_input(value: f32) -> f32 {
 
 pub(crate) fn snap_step(value: f32, step: f32) -> f32 {
     (value / step).round() * step
+}
+
+/// Musical grid for interval-like fields: the 32nd (0.125) survives only as
+/// the floor value; everything above it locks to sixteenths (0.25 multiples).
+pub(crate) const BEAT_GRID_FLOOR: f32 = 0.125;
+pub(crate) const BEAT_GRID_STEP: f32 = 0.25;
+
+pub(crate) fn beat_grid_snap(value: f32, min: f32, max: f32) -> f32 {
+    let clamped = value.clamp(min, max);
+    let snapped = if clamped < (BEAT_GRID_FLOOR + BEAT_GRID_STEP) / 2.0 {
+        BEAT_GRID_FLOOR
+    } else {
+        snap_step(clamped, BEAT_GRID_STEP)
+    };
+    snapped.clamp(min, max)
+}
+
+pub(crate) fn beat_grid_adjust(value: f32, dir: f32, min: f32, max: f32) -> f32 {
+    let current = beat_grid_snap(value, min, max);
+    let next = if dir > 0.0 && current <= BEAT_GRID_FLOOR {
+        BEAT_GRID_STEP
+    } else if dir < 0.0 && current <= BEAT_GRID_STEP {
+        BEAT_GRID_FLOOR
+    } else {
+        current + dir.signum() * BEAT_GRID_STEP
+    };
+    beat_grid_snap(next, min, max)
 }
 
 pub(crate) fn nearest_power_of_two(value: f32, min: f32, max: f32) -> f32 {
