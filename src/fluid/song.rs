@@ -6,8 +6,10 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use super::{
-    AutomationState, ControlAddress, DEFAULT_LFO_DEPTH_RATIO, FluidControls, LfoRoute, LfoShape,
-    MAX_LFO_CYCLE_BEATS, MIN_LFO_CYCLE_BEATS, all_specs, spec_by_id,
+    AutomationState, ControlAddress, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger, EnvelopeRoute,
+    FluidControls, LfoRoute, LfoShape, MACRO_COUNT, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
+    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MIN_LFO_CYCLE_BEATS, MacroRoute, all_specs,
+    spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -15,7 +17,8 @@ const CONTAINER_VERSION: u8 = 1;
 const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
-const AUTOMATION_PAYLOAD_VERSION: u8 = 2;
+const AUTOMATION_PAYLOAD_VERSION_V2: u8 = 2;
+const AUTOMATION_PAYLOAD_VERSION: u8 = 3;
 const LFO_SHAPE_SINE: u8 = 0;
 const LFO_SHAPE_TRIANGLE: u8 = 1;
 const LFO_SHAPE_RAMP_UP: u8 = 2;
@@ -23,6 +26,15 @@ const LFO_SHAPE_RAMP_DOWN: u8 = 3;
 const LFO_SHAPE_SQUARE: u8 = 4;
 const LFO_SHAPE_RANDOM_DRIFT: u8 = 5;
 const LFO_SHAPE_SAMPLE_HOLD: u8 = 6;
+const ENV_TRIGGER_EVERY_BEATS: u8 = 0;
+const ENV_TRIGGER_ON_KICK: u8 = 1;
+const ENV_TRIGGER_ONCE: u8 = 2;
+/// Default `EveryBeats` interval used when a v3 payload's trigger param is
+/// missing or non-finite; matches `EnvTrigger`'s own "every 4 beats" default.
+const DEFAULT_ENV_TRIGGER_BEATS: f32 = 4.0;
+/// A macro or envelope route with no audible effect is dead weight; skip it
+/// on encode exactly like the LFO editor already prunes zero-depth routes.
+const NEUTRAL_ENVELOPE_AMOUNT_EPSILON: f32 = f32::EPSILON;
 
 #[derive(Clone, Default)]
 pub(crate) struct SongState {
@@ -85,7 +97,7 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
     write_snapshot(&song.controls, &mut snapshot)?;
     write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes)?;
 
-    if song.automation.routes().next().is_some() {
+    if automation_has_content(&song.automation) {
         let mut automation = Vec::new();
         write_automation(&song.automation, &mut automation)?;
         write_record(AUTOMATION_RECORD, &automation, &mut bytes)?;
@@ -166,8 +178,26 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
     Ok(())
 }
 
+/// A route, macro assignment, or envelope worth persisting. Mirrors the
+/// pruning `AutomationState::close_editor` already applies in the UI, so a
+/// route the editor would delete on close never round-trips through a song
+/// code either.
+fn automation_has_content(automation: &AutomationState) -> bool {
+    automation.routes().next().is_some()
+        || automation
+            .macro_routes()
+            .any(|(_, route)| !route.is_neutral())
+        || automation
+            .envelopes()
+            .any(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
+}
+
+/// Automation payload v3: LFO section (with seed), then macro section, then
+/// envelope section. v2 payloads (LFO only, no seed) still decode via
+/// [`read_automation_v2`] below; only the write path has moved to v3.
 fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     out.push(AUTOMATION_PAYLOAD_VERSION);
+
     write_u16(automation.routes().count(), out)?;
     for (address, route) in automation.routes() {
         write_str(address.id(), out)?;
@@ -175,16 +205,57 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
         out.extend_from_slice(&route.depth_ratio.to_le_bytes());
         out.push(shape_tag(route.shape));
         out.extend_from_slice(&route.phase_offset_beats.to_le_bytes());
+        out.extend_from_slice(&route.seed.to_le_bytes());
     }
+
+    let macros: Vec<_> = automation
+        .macro_routes()
+        .filter(|(_, route)| !route.is_neutral())
+        .collect();
+    write_u16(macros.len(), out)?;
+    for (address, route) in macros {
+        write_str(address.id(), out)?;
+        let target = route
+            .target
+            .expect("neutral (targetless) macros are filtered out above");
+        out.push(u8::try_from(target).map_err(|_| SongCodeError::TooLarge)?);
+        out.extend_from_slice(&route.amount.to_le_bytes());
+    }
+
+    let envelopes: Vec<_> = automation
+        .envelopes()
+        .filter(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
+        .collect();
+    write_u16(envelopes.len(), out)?;
+    for (address, route) in envelopes {
+        write_str(address.id(), out)?;
+        out.extend_from_slice(&route.amount.to_le_bytes());
+        out.extend_from_slice(&route.attack_beats.to_le_bytes());
+        out.extend_from_slice(&route.decay_beats.to_le_bytes());
+        let (tag, param) = env_trigger_tag(route.trigger);
+        out.push(tag);
+        out.extend_from_slice(&param.to_le_bytes());
+    }
+
     Ok(())
 }
 
 fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(bytes);
     let version = reader.u8()?;
-    if version != AUTOMATION_PAYLOAD_VERSION {
-        return Ok(());
+    match version {
+        AUTOMATION_PAYLOAD_VERSION_V2 => read_automation_v2(&mut reader, automation),
+        AUTOMATION_PAYLOAD_VERSION => read_automation_v3(&mut reader, automation),
+        _ => Ok(()),
     }
+}
+
+/// Legacy v2 layout: LFO routes only, no seed, no macros, no envelopes.
+/// Kept so song codes authored before this change keep decoding.
+fn read_automation_v2(
+    reader: &mut Reader,
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
     let count = reader.u16()?;
     for _ in 0..count {
         let id = reader.string()?;
@@ -203,12 +274,114 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
                     .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS),
                 depth_ratio: finite_or(depth_ratio, DEFAULT_LFO_DEPTH_RATIO).clamp(0.0, 1.0),
                 shape,
-                phase_offset_beats: finite_or(phase_offset_beats, 0.0).clamp(0.0, 4.0),
+                phase_offset_beats: finite_or(phase_offset_beats, 0.0)
+                    .clamp(0.0, MAX_LFO_OFFSET_BEATS),
                 ..LfoRoute::default()
             },
         );
     }
     Ok(())
+}
+
+/// v3 layout: LFO section (with seed), macro section, envelope section.
+fn read_automation_v3(
+    reader: &mut Reader,
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
+    let lfo_count = reader.u16()?;
+    for _ in 0..lfo_count {
+        let id = reader.string()?;
+        let cycle_beats = reader.f32()?;
+        let depth_ratio = reader.f32()?;
+        let shape = reader.u8()?;
+        let phase_offset_beats = reader.f32()?;
+        let seed = reader.u32()?;
+
+        let (Some(spec), Some(shape)) = (spec_by_id(id), shape_from_tag(shape)) else {
+            continue;
+        };
+        automation.set_route(
+            ControlAddress::new(spec.id),
+            LfoRoute {
+                cycle_beats: finite_or(cycle_beats, 2.0)
+                    .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS),
+                depth_ratio: finite_or(depth_ratio, DEFAULT_LFO_DEPTH_RATIO).clamp(0.0, 1.0),
+                shape,
+                phase_offset_beats: finite_or(phase_offset_beats, 0.0)
+                    .clamp(0.0, MAX_LFO_OFFSET_BEATS),
+                seed,
+            },
+        );
+    }
+
+    let macro_count = reader.u16()?;
+    for _ in 0..macro_count {
+        let id = reader.string()?;
+        let target = reader.u8()? as usize;
+        let amount = reader.f32()?;
+
+        let Some(spec) = spec_by_id(id) else {
+            continue;
+        };
+        if target >= MACRO_COUNT {
+            continue;
+        }
+        automation.set_macro_route(
+            ControlAddress::new(spec.id),
+            MacroRoute {
+                target: Some(target),
+                amount: finite_or(amount, 0.0).clamp(-1.0, 1.0),
+            },
+        );
+    }
+
+    let envelope_count = reader.u16()?;
+    for _ in 0..envelope_count {
+        let id = reader.string()?;
+        let amount = reader.f32()?;
+        let attack_beats = reader.f32()?;
+        let decay_beats = reader.f32()?;
+        let trigger_tag = reader.u8()?;
+        let trigger_param = reader.f32()?;
+
+        let (Some(spec), Some(trigger)) = (
+            spec_by_id(id),
+            env_trigger_from_tag(
+                trigger_tag,
+                finite_or(trigger_param, DEFAULT_ENV_TRIGGER_BEATS),
+            ),
+        ) else {
+            continue;
+        };
+        automation.set_envelope(
+            ControlAddress::new(spec.id),
+            EnvelopeRoute {
+                amount: finite_or(amount, 0.0).clamp(-1.0, 1.0),
+                attack_beats: finite_or(attack_beats, 0.0).clamp(0.0, MAX_ENV_ATTACK_BEATS),
+                decay_beats: finite_or(decay_beats, 0.0).clamp(0.0, MAX_ENV_DECAY_BEATS),
+                trigger,
+            },
+        );
+    }
+
+    Ok(())
+}
+
+fn env_trigger_tag(trigger: EnvTrigger) -> (u8, f32) {
+    match trigger {
+        EnvTrigger::EveryBeats(beats) => (ENV_TRIGGER_EVERY_BEATS, beats),
+        EnvTrigger::OnKick => (ENV_TRIGGER_ON_KICK, 0.0),
+        EnvTrigger::Once => (ENV_TRIGGER_ONCE, 0.0),
+    }
+}
+
+fn env_trigger_from_tag(tag: u8, param: f32) -> Option<EnvTrigger> {
+    match tag {
+        ENV_TRIGGER_EVERY_BEATS => Some(EnvTrigger::EveryBeats(param)),
+        ENV_TRIGGER_ON_KICK => Some(EnvTrigger::OnKick),
+        ENV_TRIGGER_ONCE => Some(EnvTrigger::Once),
+        _ => None,
+    }
 }
 
 fn shape_tag(shape: LfoShape) -> u8 {

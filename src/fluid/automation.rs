@@ -979,7 +979,6 @@ impl AutomationState {
         self.envelopes.get_mut(&address)
     }
 
-    #[cfg(test)]
     pub(crate) fn set_envelope(&mut self, address: ControlAddress, route: EnvelopeRoute) {
         self.envelopes.insert(address, route);
     }

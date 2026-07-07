@@ -2290,13 +2290,15 @@ fn song_code_round_trips_non_sine_lfo_shape() {
 }
 
 #[test]
-fn song_code_skips_envelope_routes_without_crashing() {
+fn song_code_round_trips_envelope_routes() {
     let mut automation = AutomationState::default();
     automation.set_envelope(
         ControlAddress::new("pad.reverb_mix"),
         EnvelopeRoute {
             amount: 0.6,
-            ..EnvelopeRoute::default()
+            attack_beats: 1.5,
+            decay_beats: 3.0,
+            trigger: EnvTrigger::OnKick,
         },
     );
     let song = SongState {
@@ -2304,17 +2306,17 @@ fn song_code_skips_envelope_routes_without_crashing() {
         automation,
     };
 
-    // Envelope routes are not serialized on this experiment branch; encoding
-    // must not crash and the decode simply carries no automation.
     let code = song::encode_song_code(&song).unwrap();
     let decoded = song::decode_song_code(&code).unwrap();
+    let env = decoded
+        .automation
+        .envelope(ControlAddress::new("pad.reverb_mix"))
+        .unwrap();
 
-    assert!(
-        decoded
-            .automation
-            .envelope(ControlAddress::new("pad.reverb_mix"))
-            .is_none()
-    );
+    assert_close(env.amount, 0.6);
+    assert_close(env.attack_beats, 1.5);
+    assert_close(env.decay_beats, 3.0);
+    assert_eq!(env.trigger, EnvTrigger::OnKick);
 }
 
 #[test]
@@ -2345,4 +2347,146 @@ fn unit_conversion_round_trips_at_current_bpm() {
     assert_eq!(UnitMode::Native.cycled(), UnitMode::Ms);
     assert_eq!(UnitMode::Ms.cycled(), UnitMode::Beats);
     assert_eq!(UnitMode::Beats.cycled(), UnitMode::Native);
+}
+
+// ============================================================
+// Automation payload v3: seeds, macro routes, envelopes
+// ============================================================
+
+#[test]
+fn song_code_v3_round_trips_seed_macro_and_envelope() {
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        ControlAddress::new("master.level"),
+        LfoRoute {
+            cycle_beats: 4.0,
+            depth_ratio: 0.4,
+            shape: LfoShape::SampleHold,
+            phase_offset_beats: 0.5,
+            seed: 0xDEAD_BEEF,
+        },
+    );
+    automation.set_macro_route(
+        ControlAddress::new("pad.level"),
+        MacroRoute {
+            target: Some(2),
+            amount: -0.55,
+        },
+    );
+    automation.set_envelope(
+        ControlAddress::new("pad.reverb_mix"),
+        EnvelopeRoute {
+            amount: 0.7,
+            attack_beats: 1.25,
+            decay_beats: 6.0,
+            trigger: EnvTrigger::EveryBeats(8.0),
+        },
+    );
+    let song = SongState {
+        controls: FluidControls::default(),
+        automation,
+    };
+
+    let code = song::encode_song_code(&song).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    let route = decoded
+        .automation
+        .route(ControlAddress::new("master.level"))
+        .unwrap();
+    assert_close(route.cycle_beats, 4.0);
+    assert_close(route.depth_ratio, 0.4);
+    assert_eq!(route.shape, LfoShape::SampleHold);
+    assert_close(route.phase_offset_beats, 0.5);
+    assert_eq!(route.seed, 0xDEAD_BEEF);
+
+    let macro_route = decoded
+        .automation
+        .macro_route(ControlAddress::new("pad.level"))
+        .unwrap();
+    assert_eq!(macro_route.target, Some(2));
+    assert_close(macro_route.amount, -0.55);
+
+    let env = decoded
+        .automation
+        .envelope(ControlAddress::new("pad.reverb_mix"))
+        .unwrap();
+    assert_close(env.amount, 0.7);
+    assert_close(env.attack_beats, 1.25);
+    assert_close(env.decay_beats, 6.0);
+    assert_eq!(env.trigger, EnvTrigger::EveryBeats(8.0));
+}
+
+#[test]
+fn song_code_decodes_hand_built_v2_automation_payload() {
+    // Hand-built payload using the pre-v3 layout: version byte 2, LFO count,
+    // then per-route (id, cycle, depth, shape tag, offset) with no seed and
+    // no macro/envelope sections. Confirms old song codes keep working.
+    let code = song::encode_song_code(&SongState::default()).unwrap();
+    let mut payload = Vec::new();
+    payload.push(2u8); // AUTOMATION_PAYLOAD_VERSION_V2
+    payload.extend_from_slice(&1u16.to_le_bytes());
+    write_test_str("master.level", &mut payload);
+    payload.extend_from_slice(&4.0f32.to_le_bytes()); // cycle_beats
+    payload.extend_from_slice(&0.4f32.to_le_bytes()); // depth_ratio
+    payload.push(0); // LFO_SHAPE_SINE
+    payload.extend_from_slice(&0.25f32.to_le_bytes()); // phase_offset_beats
+    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
+
+    let decoded = song::decode_song_code(&code).unwrap();
+    let route = decoded
+        .automation
+        .route(ControlAddress::new("master.level"))
+        .unwrap();
+
+    assert_close(route.cycle_beats, 4.0);
+    assert_close(route.depth_ratio, 0.4);
+    assert_eq!(route.shape, LfoShape::Sine);
+    assert_close(route.phase_offset_beats, 0.25);
+    // v2 payloads carry no seed; decoding must fall back to the route default.
+    assert_eq!(route.seed, 0);
+    assert!(decoded.automation.macro_routes().next().is_none());
+    assert!(decoded.automation.envelopes().next().is_none());
+}
+
+#[test]
+fn song_code_does_not_serialize_neutral_macro_routes() {
+    let mut automation = AutomationState::default();
+    // Unassigned target: neutral, must not be written.
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        MacroRoute {
+            target: None,
+            amount: 0.8,
+        },
+    );
+    // Assigned target but zero amount: also neutral, must not be written.
+    automation.set_macro_route(
+        ControlAddress::new("pad.level"),
+        MacroRoute {
+            target: Some(1),
+            amount: 0.0,
+        },
+    );
+    let song = SongState {
+        controls: FluidControls::default(),
+        automation,
+    };
+
+    let code = song::encode_song_code(&song).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert!(decoded.automation.macro_routes().next().is_none());
+    assert!(
+        decoded
+            .automation
+            .macro_route(ControlAddress::new("master.level"))
+            .is_none()
+    );
+    assert!(
+        decoded
+            .automation
+            .macro_route(ControlAddress::new("pad.level"))
+            .is_none()
+    );
 }
