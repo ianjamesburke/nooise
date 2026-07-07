@@ -19,10 +19,11 @@ path the engine hears. All new routes start audible-neutral (amount 0).
 - The **MACROS** tab (last tab) holds four bare sliders. On a macro slider,
   `f` adds an LFO and `e` adds a one-shot envelope; `e` is refused elsewhere,
   and `v` is refused on macro rows.
-- Double-tap the submenu's own key (`f` `f`, `e` `e`, `v` `v`) to disable:
-  amount zeroes and the route disappears. `Esc` closes and keeps settings.
-- `T` cycles the unit mode native → ms → beats; time fields convert their
-  display and numeric entry at the current BPM.
+- Double-tap `f` or `e` to disable that modulator (amount zeroes, route
+  disappears). Double-tap `v` only hides the macro editor — the assignment
+  keeps working from its chip line. `Esc` closes and keeps settings.
+- `T` flips the selected time field between beats and ms (per field, not
+  global); display and numeric entry convert at the current BPM.
 - `Enter` on a cross-tab row (Master voice levels) expands into that voice's
   tab.
 - `r` re-rolls the seed of a random-shape LFO.
@@ -56,7 +57,7 @@ path the engine hears. All new routes start audible-neutral (amount 0).
 2. Is the amber chip line under an assigned control enough visibility, or do
    macro assignments need a dedicated overview (e.g. on the MACROS tab)?
 3. Ghost diamonds: clarifying or cluttering once two sources overlap?
-4. Unit mode is global (all fields at once). Do you ever want per-field
-   units instead?
-5. Envelopes now only shape macros. Do you miss them on regular controls,
+4. Envelopes now only shape macros. Do you miss them on regular controls,
    or is routing a control through a macro the better gesture anyway?
+5. Would a `macro` row inside the f-submenu (macro scales the LFO's amount)
+   earn its place next to macro-as-own-source, or is one mechanism enough?
