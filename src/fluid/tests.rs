@@ -332,7 +332,7 @@ fn render_fluid_draws_without_terminal_backend() {
                 &automation,
                 &controls,
                 None,
-                UnitMode::Native,
+                &FlippedUnits::new(),
             )
         })
         .unwrap();
@@ -752,7 +752,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
                     &automation,
                     &controls,
                     None,
-                    UnitMode::Native,
+                    &FlippedUnits::new(),
                 )
             })
             .unwrap();
@@ -2008,7 +2008,7 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
                 &automation,
                 &controls,
                 None,
-                UnitMode::Native,
+                &FlippedUnits::new(),
             )
         })
         .unwrap();
@@ -2344,9 +2344,11 @@ fn unit_conversion_round_trips_at_current_bpm() {
     assert_near(ms_to_beats(500.0, 120.0), 1.0);
     let beats = 2.125;
     assert_near(ms_to_beats(beats_to_ms(beats, bpm), bpm), beats);
-    assert_eq!(UnitMode::Native.cycled(), UnitMode::Ms);
-    assert_eq!(UnitMode::Ms.cycled(), UnitMode::Beats);
-    assert_eq!(UnitMode::Beats.cycled(), UnitMode::Native);
+    assert_eq!(
+        unit_key("kick.level", Some("lfo.interval")),
+        "kick.level#lfo.interval"
+    );
+    assert_eq!(unit_key("perc.decay_ms", None), "perc.decay_ms");
 }
 
 // ============================================================
