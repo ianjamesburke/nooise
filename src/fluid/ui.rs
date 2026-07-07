@@ -259,10 +259,12 @@ pub(crate) fn active_field_count(automation: &AutomationState) -> usize {
     }
 }
 
-/// Toggle a modulator editor of `kind` on the selected control: same kind on
-/// the same control closes it, otherwise the open editor is swapped for a new
-/// one (created audible-neutral).
-fn open_modulator(
+/// Toggle a modulator editor of `kind` on the selected control. Pressing the
+/// key again while its editor is open (double-tap) disables the modulator:
+/// amount drops to zero and the neutral-route cleanup removes it entirely.
+/// Otherwise any open editor is swapped for the requested one (created
+/// audible-neutral).
+pub(crate) fn open_modulator(
     automation: &mut PublishedAutomation,
     items: &[ControlItem],
     selected: usize,
@@ -274,6 +276,20 @@ fn open_modulator(
         automation.edit(|state| {
             let already =
                 state.active_address() == Some(address) && state.active_kind() == Some(kind);
+            if already {
+                match kind {
+                    ModKind::Lfo => {
+                        if let Some(route) = state.route_mut(address) {
+                            route.depth_ratio = 0.0;
+                        }
+                    }
+                    ModKind::Envelope => {
+                        if let Some(route) = state.envelope_mut(address) {
+                            route.amount = 0.0;
+                        }
+                    }
+                }
+            }
             state.close_editor();
             if !already {
                 match kind {

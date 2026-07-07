@@ -483,6 +483,26 @@ fn close_editor_deletes_zero_depth_route() {
 }
 
 #[test]
+fn double_tap_zeroes_amount_and_removes_the_route() {
+    let controls = FluidControls::default();
+    let items = tab_controls(Tab::Master, &controls);
+    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let address = ControlAddress::new(items[0].id);
+    let mut sub = 0usize;
+
+    // First tap opens the editor; give the route an audible amount.
+    open_modulator(&mut automation, &items, 0, ModKind::Lfo, &mut sub);
+    automation.edit(|state| state.route_mut(address).unwrap().depth_ratio = 0.4);
+    assert!(automation.state().is_editor_open());
+
+    // Second tap disables: amount to zero, editor closed, route removed.
+    open_modulator(&mut automation, &items, 0, ModKind::Lfo, &mut sub);
+    assert!(!automation.state().is_editor_open());
+    assert!(automation.state().route(address).is_none());
+}
+
+#[test]
 fn engine_publishes_beat_telemetry() {
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
     let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
