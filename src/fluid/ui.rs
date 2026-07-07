@@ -814,12 +814,14 @@ pub(crate) fn render_fluid(
         if let Some(route) = route {
             if lfo_open_here {
                 for (fi, field) in LfoField::ALL.iter().enumerate() {
-                    rows.push(lfo_field_line(
-                        route,
-                        *field,
+                    rows.push(field_line(
+                        field.label(),
+                        route.field_ratio(*field),
+                        route.field_display(*field),
                         lfo_selected == fi + 1,
                         &numeric,
                         bar_w,
+                        LFO_PALETTE,
                     ));
                 }
             }
@@ -828,12 +830,14 @@ pub(crate) fn render_fluid(
         if let Some(route) = envelope {
             if env_open_here {
                 for (fi, field) in EnvField::ALL.iter().enumerate() {
-                    rows.push(env_field_line(
-                        route,
-                        *field,
+                    rows.push(field_line(
+                        field.label(),
+                        route.field_ratio(*field),
+                        route.field_display(*field),
                         lfo_selected == fi + 1,
                         &numeric,
                         bar_w,
+                        ENV_PALETTE,
                     ));
                 }
             }
@@ -862,19 +866,35 @@ pub(crate) fn render_fluid(
     );
 }
 
-fn lfo_field_line(
-    route: &LfoRoute,
-    field: LfoField,
+/// Colour pair for a modulator submenu: (active row, idle row).
+#[derive(Clone, Copy)]
+pub(crate) struct FieldPalette {
+    active: Color,
+    idle: Color,
+}
+
+pub(crate) const LFO_PALETTE: FieldPalette = FieldPalette {
+    active: Color::Rgb(255, 130, 210),
+    idle: Color::Rgb(190, 105, 210),
+};
+
+pub(crate) const ENV_PALETTE: FieldPalette = FieldPalette {
+    active: Color::Rgb(140, 235, 175),
+    idle: Color::Rgb(95, 195, 140),
+};
+
+/// Baseline submenu field row: label, clamped ratio bar, live display, shared
+/// numeric-entry cursor. Every modulator field renders through this.
+fn field_line(
+    label: &str,
+    ratio: f32,
+    value_display: String,
     active: bool,
     numeric: &NumericDisplay<'_>,
     bar_w: usize,
+    palette: FieldPalette,
 ) -> Line<'static> {
-    let fg = if active {
-        Color::Rgb(255, 130, 210)
-    } else {
-        Color::Rgb(190, 105, 210)
-    };
-    let mut style = Style::default().fg(fg);
+    let mut style = Style::default().fg(if active { palette.active } else { palette.idle });
     if active {
         style = style.add_modifier(Modifier::BOLD);
     }
@@ -883,11 +903,11 @@ fn lfo_field_line(
         let cursor = if numeric.cursor_visible { "_" } else { " " };
         format!("> {entry}{cursor}")
     } else {
-        route.field_display(field)
+        value_display
     };
-    let bar = ratio_bar(route.field_ratio(field), bar_w, '█', '░');
+    let bar = ratio_bar(ratio, bar_w, '█', '░');
     Line::from(Span::styled(
-        format!("{prefix}  {:<13} {bar} {display}", field.label()),
+        format!("{prefix}  {label:<13} {bar} {display}"),
         style,
     ))
 }
@@ -953,36 +973,6 @@ pub(crate) fn lfo_lane_line(
         ));
     }
     Line::from(spans)
-}
-
-fn env_field_line(
-    route: &EnvelopeRoute,
-    field: EnvField,
-    active: bool,
-    numeric: &NumericDisplay<'_>,
-    bar_w: usize,
-) -> Line<'static> {
-    let fg = if active {
-        Color::Rgb(140, 235, 175)
-    } else {
-        Color::Rgb(95, 195, 140)
-    };
-    let mut style = Style::default().fg(fg);
-    if active {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    let prefix = if active { "▶ " } else { "  " };
-    let display = if active && let Some(entry) = numeric.entry {
-        let cursor = if numeric.cursor_visible { "_" } else { " " };
-        format!("> {entry}{cursor}")
-    } else {
-        route.field_display(field)
-    };
-    let bar = ratio_bar(route.field_ratio(field), bar_w, '█', '░');
-    Line::from(Span::styled(
-        format!("{prefix}  {:<13} {bar} {display}", field.label()),
-        style,
-    ))
 }
 
 /// Envelope lane: the one-shot AD ramp across one trigger period, with a bright

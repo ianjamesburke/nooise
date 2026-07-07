@@ -157,15 +157,24 @@ impl LfoShape {
     }
 
     fn cycled(self, dir: f32) -> Self {
-        let len = Self::ALL.len() as i32;
-        let next = (self.index() as i32 + dir.signum() as i32).rem_euclid(len);
-        Self::ALL[next as usize]
+        Self::ALL[stepped_index(self.index(), dir, Self::ALL.len())]
     }
 
     fn from_index(index: f32) -> Self {
-        let i = (index.round() as i64).rem_euclid(Self::ALL.len() as i64) as usize;
-        Self::ALL[i]
+        Self::ALL[clamped_index(index, Self::ALL.len())]
     }
+}
+
+/// Step a discrete field's index without wrapping: h/l stop at the ends, the
+/// baseline behaviour for every slider-like field.
+pub(crate) fn stepped_index(index: usize, dir: f32, len: usize) -> usize {
+    let next = index as i64 + i64::from(dir.signum() as i32);
+    next.clamp(0, len.saturating_sub(1) as i64) as usize
+}
+
+/// Numeric entry for a discrete field: round and clamp to the valid range.
+pub(crate) fn clamped_index(index: f32, len: usize) -> usize {
+    (index.round() as i64).clamp(0, len.saturating_sub(1) as i64) as usize
 }
 
 /// Deterministic per-index value in -1..1, keyed by the route seed. Pure hash,
@@ -526,14 +535,11 @@ impl EnvTrigger {
     }
 
     fn cycled(self, dir: f32) -> Self {
-        let len = Self::CYCLE.len() as i32;
-        let next = (self.index() as i32 + dir.signum() as i32).rem_euclid(len);
-        Self::CYCLE[next as usize]
+        Self::CYCLE[stepped_index(self.index(), dir, Self::CYCLE.len())]
     }
 
     fn from_index(index: f32) -> Self {
-        let i = (index.round() as i64).rem_euclid(Self::CYCLE.len() as i64) as usize;
-        Self::CYCLE[i]
+        Self::CYCLE[clamped_index(index, Self::CYCLE.len())]
     }
 
     fn label(self) -> String {

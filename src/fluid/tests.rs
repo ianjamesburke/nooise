@@ -401,6 +401,39 @@ fn lfo_field_set_snaps_to_eighth_beat_grid() {
 }
 
 #[test]
+fn discrete_fields_clamp_at_their_ends_instead_of_wrapping() {
+    let mut route = LfoRoute::default();
+    route.adjust_field_at(LfoField::Shape, -1.0, 0.0);
+    assert_eq!(route.shape, LfoShape::Sine, "shape must not wrap below sine");
+    for _ in 0..20 {
+        route.adjust_field_at(LfoField::Shape, 1.0, 0.0);
+    }
+    assert_eq!(
+        route.shape,
+        LfoShape::SampleHold,
+        "shape must stop at the last entry"
+    );
+    route.set_field_at(LfoField::Shape, 99.0, 0.0);
+    assert_eq!(
+        route.shape,
+        LfoShape::SampleHold,
+        "numeric entry clamps, not wraps"
+    );
+
+    let mut env = EnvelopeRoute::default();
+    for _ in 0..20 {
+        env.adjust_field(EnvField::Trigger, 1.0);
+    }
+    assert_eq!(env.trigger, EnvTrigger::Once, "trigger must stop at once");
+    env.adjust_field(EnvField::Trigger, 1.0);
+    assert_eq!(env.trigger, EnvTrigger::Once);
+    for _ in 0..20 {
+        env.adjust_field(EnvField::Trigger, -1.0);
+    }
+    assert_eq!(env.trigger, EnvTrigger::EveryBeats(1.0));
+}
+
+#[test]
 fn lfo_field_reset_uses_slider_minimums() {
     let mut route = LfoRoute {
         cycle_beats: 4.0,
