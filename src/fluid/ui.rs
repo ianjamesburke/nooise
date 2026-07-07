@@ -13,6 +13,7 @@ pub(crate) fn ui_loop(
     let mut tab = Tab::Master;
     let mut selected = 0usize;
     let mut lfo_selected = 0usize;
+    let mut unit = UnitMode::Native;
     let mut numeric_entry: Option<NumericEntry> = None;
     let mut fluid = FluidState::new();
     let mut last = Instant::now();
@@ -62,6 +63,7 @@ pub(crate) fn ui_loop(
                 automation.state(),
                 &c,
                 footer_message,
+                unit,
             )
         })?;
 
@@ -86,6 +88,7 @@ pub(crate) fn ui_loop(
                                 selected,
                                 value,
                                 beat,
+                                unit,
                             );
                         }
                         numeric_entry = None;
@@ -224,6 +227,9 @@ pub(crate) fn ui_loop(
                         &mut lfo_selected,
                     );
                 }
+                KeyCode::Char('t') | KeyCode::Char('T') => {
+                    unit = unit.cycled();
+                }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Some(address) = automation.state().active_address()
                         && automation.state().active_kind() == Some(ModKind::Lfo)
@@ -251,6 +257,74 @@ pub(crate) fn ui_loop(
 }
 
 /// Submenu row 0 is the parent slider; rows 1.. map onto the modulator fields.
+/// Global unit mode cycled by T. Native shows each time field in its own
+/// base; Ms/Beats convert every cross-base field's display and numeric entry
+/// at the current BPM. Stepping always stays on the native grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UnitMode {
+    Native,
+    Ms,
+    Beats,
+}
+
+impl UnitMode {
+    pub(crate) fn cycled(self) -> Self {
+        match self {
+            Self::Native => Self::Ms,
+            Self::Ms => Self::Beats,
+            Self::Beats => Self::Native,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Ms => "ms",
+            Self::Beats => "beats",
+        }
+    }
+}
+
+pub(crate) fn beats_to_ms(beats: f32, bpm: f32) -> f32 {
+    beats * 60_000.0 / bpm.max(1.0)
+}
+
+pub(crate) fn ms_to_beats(ms: f32, bpm: f32) -> f32 {
+    ms * bpm.max(1.0) / 60_000.0
+}
+
+fn fmt_ms(ms: f32) -> String {
+    if ms >= 1000.0 {
+        format!("{:.2} s", ms / 1000.0)
+    } else {
+        format!("{ms:.0} ms")
+    }
+}
+
+fn fmt_beats(beats: f32) -> String {
+    format!("{beats:.3} beats")
+}
+
+/// Converted display for a time field when the unit mode crosses its native
+/// base; None keeps the native display.
+fn unit_display(base: TimeBase, value: f32, bpm: f32, unit: UnitMode) -> Option<String> {
+    match (base, unit) {
+        (TimeBase::Beats, UnitMode::Ms) => Some(fmt_ms(beats_to_ms(value, bpm))),
+        (TimeBase::Ms, UnitMode::Beats) => Some(fmt_beats(ms_to_beats(value, bpm))),
+        _ => None,
+    }
+}
+
+/// Numeric entry typed in the current unit mode, converted back to the
+/// field's native base before snapping.
+fn entry_to_native(base: TimeBase, value: f32, bpm: f32, unit: UnitMode) -> f32 {
+    match (base, unit) {
+        (TimeBase::Beats, UnitMode::Ms) => ms_to_beats(value, bpm),
+        (TimeBase::Ms, UnitMode::Beats) => beats_to_ms(value, bpm),
+        _ => value,
+    }
+}
+
 pub(crate) fn lfo_field_at(index: usize) -> Option<LfoField> {
     LfoField::ALL.get(index.checked_sub(1)?).copied()
 }
@@ -451,6 +525,7 @@ fn reset_lfo_or_control(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn set_modulator_or_control(
     automation: &mut PublishedAutomation,
     lfo_selected: usize,
@@ -459,14 +534,28 @@ fn set_modulator_or_control(
     selected: usize,
     value: f32,
     beat: f64,
+    unit: UnitMode,
 ) {
+    let bpm = controls.load().master.bpm;
     match active_field(automation.state(), lfo_selected) {
         ActiveField::Lfo(address, field) => automation.edit(|state| {
+            let value = match field {
+                LfoField::Interval | LfoField::Offset => {
+                    entry_to_native(TimeBase::Beats, value, bpm, unit)
+                }
+                LfoField::Amount | LfoField::Shape => value,
+            };
             if let Some(route) = state.route_mut(address) {
                 route.set_field_at(field, value, beat);
             }
         }),
         ActiveField::Envelope(address, field) => automation.edit(|state| {
+            let value = match field {
+                EnvField::Attack | EnvField::Decay => {
+                    entry_to_native(TimeBase::Beats, value, bpm, unit)
+                }
+                EnvField::Amount | EnvField::Trigger => value,
+            };
             if let Some(route) = state.envelope_mut(address) {
                 route.set_field(field, value);
             }
@@ -476,7 +565,13 @@ fn set_modulator_or_control(
                 route.set_field(field, value);
             }
         }),
-        ActiveField::Control => set_value(controls, tab, selected, value),
+        ActiveField::Control => {
+            let value = match tab_specs(tab).get(selected) {
+                Some(spec) => entry_to_native(spec.time_base, value, bpm, unit),
+                None => value,
+            };
+            set_value(controls, tab, selected, value);
+        }
     }
 }
 
@@ -569,6 +664,7 @@ pub(crate) fn render(
     automation: &AutomationState,
     controls: &FluidControls,
     update_message: Option<&str>,
+    unit: UnitMode,
 ) {
     render_fluid(
         f,
@@ -582,6 +678,7 @@ pub(crate) fn render(
         automation,
         controls,
         update_message,
+        unit,
     );
 }
 
@@ -761,7 +858,9 @@ pub(crate) fn render_fluid(
     automation: &AutomationState,
     controls: &FluidControls,
     update_message: Option<&str>,
+    unit: UnitMode,
 ) {
+    let bpm = controls.master.bpm;
     let mod_ctx = ModContext {
         beat,
         kick_interval_beats: controls.kick.interval_beats,
@@ -863,6 +962,11 @@ pub(crate) fn render_fluid(
         } else {
             item.display.clone()
         };
+        let display = if numeric.entry.is_some() && parent_active {
+            display
+        } else {
+            unit_display(address.spec().time_base, item.value, bpm, unit).unwrap_or(display)
+        };
         let fg = if parent_active {
             Color::Rgb(120, 230, 255)
         } else {
@@ -898,10 +1002,20 @@ pub(crate) fn render_fluid(
         if let Some(route) = route {
             if lfo_open_here {
                 for (fi, field) in LfoField::ALL.iter().enumerate() {
+                    let value_display = match field {
+                        LfoField::Interval => {
+                            unit_display(TimeBase::Beats, route.cycle_beats, bpm, unit)
+                        }
+                        LfoField::Offset => {
+                            unit_display(TimeBase::Beats, route.phase_offset_beats, bpm, unit)
+                        }
+                        _ => None,
+                    }
+                    .unwrap_or_else(|| route.field_display(*field));
                     rows.push(field_line(
                         field.label(),
                         route.field_ratio(*field),
-                        route.field_display(*field),
+                        value_display,
                         lfo_selected == fi + 1,
                         &numeric,
                         bar_w,
@@ -914,10 +1028,20 @@ pub(crate) fn render_fluid(
         if let Some(route) = envelope {
             if env_open_here {
                 for (fi, field) in EnvField::ALL.iter().enumerate() {
+                    let value_display = match field {
+                        EnvField::Attack => {
+                            unit_display(TimeBase::Beats, route.attack_beats, bpm, unit)
+                        }
+                        EnvField::Decay if route.decay_beats > 0.0 => {
+                            unit_display(TimeBase::Beats, route.decay_beats, bpm, unit)
+                        }
+                        _ => None,
+                    }
+                    .unwrap_or_else(|| route.field_display(*field));
                     rows.push(field_line(
                         field.label(),
                         route.field_ratio(*field),
-                        route.field_display(*field),
+                        value_display,
                         lfo_selected == fi + 1,
                         &numeric,
                         bar_w,
@@ -950,8 +1074,17 @@ pub(crate) fn render_fluid(
     }
     f.render_widget(Paragraph::new(rows), layout[4]);
 
-    let footer = update_message
-        .unwrap_or("jk select   h/l adjust   f LFO   v macro   type value   Enter set   q quit");
+    let footer_line;
+    let footer = match update_message {
+        Some(message) => message,
+        None => {
+            footer_line = format!(
+                "jk select   h/l adjust   f LFO   v macro   T units({})   Enter set   q quit",
+                unit.label()
+            );
+            footer_line.as_str()
+        }
+    };
     let footer_style = if update_message.is_some() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))

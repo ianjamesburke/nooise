@@ -158,6 +158,16 @@ pub(crate) enum Bar {
     Log2,
 }
 
+/// The native unit of a time-like control, letting the UI's unit toggle (T)
+/// convert its display and numeric entry between beats and milliseconds at
+/// the current BPM. Stepping always stays on the native grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TimeBase {
+    None,
+    Beats,
+    Ms,
+}
+
 /// How LFO modulation lands on the control. Grid-timing controls snap the
 /// modulated value so triggers step through musical grids instead of
 /// smearing continuously; everything else takes the raw value.
@@ -181,6 +191,7 @@ pub(crate) struct ControlSpec {
     pub(crate) reset: f32,
     pub(crate) bar: Bar,
     pub(crate) lfo_snap: LfoSnap,
+    pub(crate) time_base: TimeBase,
     pub(crate) get: GetFn,
     pub(crate) set: SetFn,
     pub(crate) display: DisplayFn,
@@ -211,6 +222,7 @@ impl ControlSpec {
             reset: min,
             bar: Bar::Linear,
             lfo_snap: LfoSnap::None,
+            time_base: TimeBase::None,
             get,
             set,
             display,
@@ -258,6 +270,16 @@ impl ControlSpec {
 
     pub(crate) const fn lfo_snap(mut self, snap: LfoSnap) -> Self {
         self.lfo_snap = snap;
+        self
+    }
+
+    pub(crate) const fn in_beats(mut self) -> Self {
+        self.time_base = TimeBase::Beats;
+        self
+    }
+
+    pub(crate) const fn in_ms(mut self) -> Self {
+        self.time_base = TimeBase::Ms;
         self
     }
 
@@ -458,7 +480,8 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c| c.master.comp_release_ms,
         |c, v| c.master.comp_release_ms = v,
         |c| ms0(c.master.comp_release_ms),
-    ),
+    )
+    .in_ms(),
     ControlSpec::new(
         "master.tone",
         "Tone",
@@ -528,7 +551,8 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
             }
         },
     )
-    .lfo_snap(LfoSnap::PowerOfTwo),
+    .lfo_snap(LfoSnap::PowerOfTwo)
+    .in_beats(),
     ControlSpec::new(
         "perc.offset_beats",
         "Offset",
@@ -541,7 +565,8 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         |c, v| c.perc.offset_beats = v,
         |c| beats2(c.perc.offset_beats),
     )
-    .lfo_snap(LfoSnap::Step),
+    .lfo_snap(LfoSnap::Step)
+    .in_beats(),
     ControlSpec::new(
         "perc.decay_ms",
         "Decay",
@@ -559,7 +584,8 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
                 ms0(c.perc.decay_ms)
             }
         },
-    ),
+    )
+    .in_ms(),
     ControlSpec::gain(
         "perc.filter",
         "Filter",
@@ -691,7 +717,8 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c, v| c.bass.interval_beats = v,
         |c| beats2(c.bass.interval_beats),
     )
-    .lfo_snap(LfoSnap::PowerOfTwo),
+    .lfo_snap(LfoSnap::PowerOfTwo)
+    .in_beats(),
     ControlSpec::new(
         "bass.offset_beats",
         "Offset",
@@ -704,7 +731,8 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c, v| c.bass.offset_beats = v,
         |c| beats2(c.bass.offset_beats),
     )
-    .lfo_snap(LfoSnap::Step),
+    .lfo_snap(LfoSnap::Step)
+    .in_beats(),
     ControlSpec::new(
         "bass.rhythm",
         "Rhythm",
@@ -786,7 +814,8 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c, v| c.kick.interval_beats = v,
         |c| beats2(c.kick.interval_beats),
     )
-    .lfo_snap(LfoSnap::PowerOfTwo),
+    .lfo_snap(LfoSnap::PowerOfTwo)
+    .in_beats(),
     ControlSpec::new(
         "kick.offset_beats",
         "Offset",
@@ -799,7 +828,8 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c, v| c.kick.offset_beats = v,
         |c| beats2(c.kick.offset_beats),
     )
-    .lfo_snap(LfoSnap::Step),
+    .lfo_snap(LfoSnap::Step)
+    .in_beats(),
     ControlSpec::new(
         "kick.start_freq",
         "Start Freq",
@@ -823,7 +853,8 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| c.kick.pitch_decay_ms,
         |c, v| c.kick.pitch_decay_ms = v,
         |c| ms0(c.kick.pitch_decay_ms),
-    ),
+    )
+    .in_ms(),
     ControlSpec::new(
         "kick.amp_decay_ms",
         "Amp Decay",
@@ -835,7 +866,8 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| c.kick.amp_decay_ms,
         |c, v| c.kick.amp_decay_ms = v,
         |c| ms0(c.kick.amp_decay_ms),
-    ),
+    )
+    .in_ms(),
     ControlSpec::gain(
         "kick.click",
         "Click",
@@ -875,7 +907,8 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| c.kick.echo_time_beats,
         |c, v| c.kick.echo_time_beats = v,
         |c| format!("{:.3} beats", c.kick.echo_time_beats),
-    ),
+    )
+    .in_beats(),
     ControlSpec::gain(
         "kick.echo_filter",
         "Echo Filter",
@@ -954,7 +987,8 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c, v| c.tonal.rate_beats = v,
         |c| beats2(c.tonal.rate_beats),
     )
-    .lfo_snap(LfoSnap::PowerOfTwo),
+    .lfo_snap(LfoSnap::PowerOfTwo)
+    .in_beats(),
     ControlSpec::new(
         "tonal.step_interval_beats",
         "Cycle",
@@ -967,7 +1001,8 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c, v| c.tonal.step_interval_beats = v,
         |c| beats2(c.tonal.step_interval_beats),
     )
-    .lfo_snap(LfoSnap::PowerOfTwo),
+    .lfo_snap(LfoSnap::PowerOfTwo)
+    .in_beats(),
     ControlSpec::new(
         "tonal.offset_beats",
         "Offset",
@@ -980,7 +1015,8 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c, v| c.tonal.offset_beats = v,
         |c| beats2(c.tonal.offset_beats),
     )
-    .lfo_snap(LfoSnap::Step),
+    .lfo_snap(LfoSnap::Step)
+    .in_beats(),
     ControlSpec::gain(
         "tonal.randomness",
         "Randomness",
@@ -1013,7 +1049,8 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| c.tonal.note_length_beats,
         |c, v| c.tonal.note_length_beats = v,
         |c| beats2(c.tonal.note_length_beats),
-    ),
+    )
+    .in_beats(),
     ControlSpec::gain(
         "tonal.reverb_mix",
         "Reverb Mix",
@@ -1066,7 +1103,8 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c, v| c.clap.interval_beats = v,
         |c| beats2(c.clap.interval_beats),
     )
-    .lfo_snap(LfoSnap::PowerOfTwo),
+    .lfo_snap(LfoSnap::PowerOfTwo)
+    .in_beats(),
     ControlSpec::new(
         "clap.offset_beats",
         "Offset",
@@ -1079,7 +1117,8 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c, v| c.clap.offset_beats = v,
         |c| beats2(c.clap.offset_beats),
     )
-    .lfo_snap(LfoSnap::Step),
+    .lfo_snap(LfoSnap::Step)
+    .in_beats(),
     ControlSpec::new(
         "clap.slap_count",
         "Slap Count",
@@ -1103,7 +1142,8 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| c.clap.slap_spread_ms,
         |c, v| c.clap.slap_spread_ms = v,
         |c| format!("{:.1} ms", c.clap.slap_spread_ms),
-    ),
+    )
+    .in_ms(),
     ControlSpec::new(
         "clap.decay_ms",
         "Decay",
@@ -1115,7 +1155,8 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| c.clap.decay_ms,
         |c, v| c.clap.decay_ms = v,
         |c| ms0(c.clap.decay_ms),
-    ),
+    )
+    .in_ms(),
     ControlSpec::gain(
         "clap.filter",
         "Filter",
