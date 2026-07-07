@@ -10,9 +10,10 @@
   <img src="https://raw.githubusercontent.com/ianjamesburke/nooise/v1.0.4/assets/nooise-preview.png" alt="nooise running in a terminal" width="900">
 </p>
 
-I wanted an excuse to build a Rust synth engine. I kept putting on long, repetitive ambient music to get into flow, so I made a small terminal app that does that.
+I wanted an excuse to build a Rust synth engine. I kept putting on long, repetitive ambient music to get into flow, so I made a small terminal app that does that. 
 
-nooise is one Rust binary: terminal UI, synth engine, and live controls.
+Playlist: https://www.youtube.com/playlist?list=PLdHqCi9SgnRY
+
 
 ## Install
 
