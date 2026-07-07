@@ -370,9 +370,10 @@ fn kind_allowed_on(kind: ModKind, id: &str) -> bool {
 }
 
 /// Toggle a modulator editor of `kind` on the selected control. Pressing the
-/// key again while its editor is open (double-tap) disables the modulator:
-/// amount drops to zero and the neutral-route cleanup removes it entirely.
-/// Otherwise any open editor is swapped for the requested one (created
+/// key again while its editor is open (double-tap) disables an LFO or
+/// envelope — amount drops to zero and the neutral-route cleanup removes it —
+/// but only *hides* a macro assignment, which keeps working from its chip
+/// line. Otherwise any open editor is swapped for the requested one (created
 /// audible-neutral).
 pub(crate) fn open_modulator(
     automation: &mut PublishedAutomation,
@@ -401,11 +402,9 @@ pub(crate) fn open_modulator(
                             route.amount = 0.0;
                         }
                     }
-                    ModKind::Macro => {
-                        if let Some(route) = state.macro_route_mut(address) {
-                            route.amount = 0.0;
-                        }
-                    }
+                    // Macro assignments survive a double-tap: closing only
+                    // hides the editor, the chip line keeps showing the route.
+                    ModKind::Macro => {}
                 }
             }
             state.close_editor();

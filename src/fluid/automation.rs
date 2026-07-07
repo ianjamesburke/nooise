@@ -759,7 +759,9 @@ pub(crate) enum MacroField {
 }
 
 impl MacroField {
-    pub(crate) const ALL: [MacroField; 2] = [Self::Target, Self::Amount];
+    /// Amount leads so the first row after opening matches the LFO and
+    /// envelope submenus.
+    pub(crate) const ALL: [MacroField; 2] = [Self::Amount, Self::Target];
 
     pub(crate) fn label(self) -> &'static str {
         match self {

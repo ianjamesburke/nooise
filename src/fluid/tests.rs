@@ -2499,3 +2499,26 @@ fn enter_expands_into_the_owning_tab() {
     assert_eq!(tab_owning_control("master.bpm"), Some(Tab::Master));
     assert_eq!(tab_owning_control("nope.nope"), None);
 }
+
+#[test]
+fn macro_double_tap_hides_but_keeps_the_assignment() {
+    let controls = FluidControls::default();
+    let items = tab_controls(Tab::Master, &controls);
+    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let address = ControlAddress::new(items[0].id);
+    let mut sub = 0usize;
+
+    open_modulator(&mut automation, &items, 0, ModKind::Macro, &mut sub);
+    automation.edit(|state| {
+        let route = state.macro_route_mut(address).unwrap();
+        route.target = Some(1);
+        route.amount = 0.5;
+    });
+
+    open_modulator(&mut automation, &items, 0, ModKind::Macro, &mut sub);
+    assert!(!automation.state().is_editor_open());
+    let route = automation.state().macro_route(address).unwrap();
+    assert_eq!(route.target, Some(1));
+    assert_close(route.amount, 0.5);
+}
