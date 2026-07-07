@@ -484,7 +484,7 @@ fn close_editor_deletes_zero_depth_route() {
 }
 
 #[test]
-fn double_tap_zeroes_amount_and_removes_the_route() {
+fn same_key_toggles_editor_closed_and_keeps_the_route() {
     let controls = FluidControls::default();
     let items = tab_controls(Tab::Master, &controls);
     let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
@@ -492,15 +492,43 @@ fn double_tap_zeroes_amount_and_removes_the_route() {
     let address = ControlAddress::new(items[0].id);
     let mut sub = 0usize;
 
-    // First tap opens the editor; give the route an audible amount.
     open_modulator(&mut automation, &items, 0, ModKind::Lfo, &mut sub);
     automation.edit(|state| state.route_mut(address).unwrap().depth_ratio = 0.4);
     assert!(automation.state().is_editor_open());
 
-    // Second tap disables: amount to zero, editor closed, route removed.
+    // Second tap closes the editor but the route keeps playing.
     open_modulator(&mut automation, &items, 0, ModKind::Lfo, &mut sub);
     assert!(!automation.state().is_editor_open());
-    assert!(automation.state().route(address).is_none());
+    assert_close(
+        automation.state().route(address).unwrap().depth_ratio,
+        0.4,
+    );
+}
+
+#[test]
+fn x_removes_the_open_route_or_clears_the_whole_control() {
+    let address = ControlAddress::new("master.level");
+    let mut automation = AutomationState::default();
+
+    // x with the editor open removes exactly that route and closes.
+    automation.open_or_create(address).depth_ratio = 0.4;
+    automation.remove_open_route();
+    assert!(!automation.is_editor_open());
+    assert!(automation.route(address).is_none());
+
+    // x with no editor open strips every modulator on the control.
+    automation.open_or_create(address).depth_ratio = 0.4;
+    automation.close_editor();
+    automation.set_macro_route(
+        address,
+        MacroRoute {
+            target: Some(0),
+            amount: 0.5,
+        },
+    );
+    automation.clear_control(address);
+    assert!(automation.route(address).is_none());
+    assert!(automation.macro_route(address).is_none());
 }
 
 #[test]
@@ -2503,7 +2531,7 @@ fn enter_expands_into_the_owning_tab() {
 }
 
 #[test]
-fn macro_double_tap_hides_but_keeps_the_assignment() {
+fn macro_toggle_hides_but_keeps_the_assignment() {
     let controls = FluidControls::default();
     let items = tab_controls(Tab::Master, &controls);
     let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));

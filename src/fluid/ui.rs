@@ -229,6 +229,15 @@ pub(crate) fn ui_loop(
                         &mut lfo_selected,
                     );
                 }
+                KeyCode::Char('x') | KeyCode::Char('X') => {
+                    if automation.state().is_editor_open() {
+                        automation.edit(AutomationState::remove_open_route);
+                        lfo_selected = 0;
+                    } else if let Some(item) = items.get(selected) {
+                        let address = ControlAddress::new(item.id);
+                        automation.edit(|state| state.clear_control(address));
+                    }
+                }
                 KeyCode::Enter => {
                     if !automation.state().is_editor_open()
                         && let Some(item) = items.get(selected)
@@ -393,11 +402,9 @@ fn kind_allowed_on(kind: ModKind, id: &str) -> bool {
     }
 }
 
-/// Toggle a modulator editor of `kind` on the selected control. Pressing the
-/// key again while its editor is open (double-tap) disables an LFO or
-/// envelope — amount drops to zero and the neutral-route cleanup removes it —
-/// but only *hides* a macro assignment, which keeps working from its chip
-/// line. Otherwise any open editor is swapped for the requested one (created
+/// Toggle a modulator editor of `kind` on the selected control: same kind on
+/// the same control closes it (settings kept — x is the remove gesture),
+/// otherwise the open editor is swapped for the requested one (created
 /// audible-neutral).
 pub(crate) fn open_modulator(
     automation: &mut PublishedAutomation,
@@ -414,23 +421,6 @@ pub(crate) fn open_modulator(
         automation.edit(|state| {
             let already =
                 state.active_address() == Some(address) && state.active_kind() == Some(kind);
-            if already {
-                match kind {
-                    ModKind::Lfo => {
-                        if let Some(route) = state.route_mut(address) {
-                            route.depth_ratio = 0.0;
-                        }
-                    }
-                    ModKind::Envelope => {
-                        if let Some(route) = state.envelope_mut(address) {
-                            route.amount = 0.0;
-                        }
-                    }
-                    // Macro assignments survive a double-tap: closing only
-                    // hides the editor, the chip line keeps showing the route.
-                    ModKind::Macro => {}
-                }
-            }
             state.close_editor();
             if !already {
                 match kind {
@@ -632,7 +622,7 @@ fn automation_footer(automation: &AutomationState) -> Option<String> {
                 ""
             };
             Some(format!(
-                "LFO {}   {}   {:.2} beats   depth {:.0}%{reseed}   Esc close",
+                "LFO {}   {}   {:.2} beats   depth {:.0}%{reseed}   x remove   Esc close",
                 address.id(),
                 route.shape.label(),
                 route.cycle_beats,
@@ -642,7 +632,7 @@ fn automation_footer(automation: &AutomationState) -> Option<String> {
         ModKind::Envelope => {
             let route = automation.envelope(address)?;
             Some(format!(
-                "ENV {}   {}   amount {:+.0}%   Esc close",
+                "ENV {}   {}   amount {:+.0}%   x remove   Esc close",
                 address.id(),
                 route.field_display(EnvField::Trigger),
                 route.amount * 100.0
@@ -651,7 +641,7 @@ fn automation_footer(automation: &AutomationState) -> Option<String> {
         ModKind::Macro => {
             let route = automation.macro_route(address)?;
             Some(format!(
-                "MACRO {}   {}   amount {:+.0}%   Esc close",
+                "MACRO {}   {}   amount {:+.0}%   x remove   Esc close",
                 address.id(),
                 route.field_display(MacroField::Target),
                 route.amount * 100.0

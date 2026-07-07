@@ -908,6 +908,36 @@ impl AutomationState {
         route
     }
 
+    /// Remove the route backing the open editor and close it. The x gesture:
+    /// explicit, worked on the first try, unlike double-tap.
+    pub(crate) fn remove_open_route(&mut self) {
+        let Some(open) = self.open.take() else {
+            return;
+        };
+        match open.kind {
+            ModKind::Lfo => {
+                self.routes.remove(&open.address);
+            }
+            ModKind::Envelope => {
+                self.envelopes.remove(&open.address);
+            }
+            ModKind::Macro => {
+                self.macros.remove(&open.address);
+            }
+        }
+    }
+
+    /// Strip every modulator from a control (LFO, envelope, macro route),
+    /// closing the editor if it was open on that control.
+    pub(crate) fn clear_control(&mut self, address: ControlAddress) {
+        self.routes.remove(&address);
+        self.envelopes.remove(&address);
+        self.macros.remove(&address);
+        if self.open.is_some_and(|open| open.address == address) {
+            self.open = None;
+        }
+    }
+
     /// Close the editor; a route left at neutral amount is dead weight and is
     /// removed so it never colours the UI or the song code.
     pub(crate) fn close_editor(&mut self) {
