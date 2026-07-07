@@ -976,26 +976,42 @@ pub(crate) fn render_fluid(
         if parent_active {
             style = style.add_modifier(Modifier::BOLD);
         }
-        let modulated = (route.is_some() || envelope.is_some() || macro_mod.is_some()).then(|| {
+        let markers = {
             let spec = address.spec();
             let base = match spec.bar {
                 Bar::Linear => item.value,
                 Bar::Log2 => 2f32.powf(item.value),
             };
-            let value = modulated_control_value_full(spec, route, envelope, macro_mod, base, mod_ctx);
-            let value = match spec.bar {
-                Bar::Linear => value,
-                Bar::Log2 => value.log2(),
-            };
             let range = item.max - item.min;
-            if range.abs() <= f32::EPSILON {
-                0.0
-            } else {
-                ((value - item.min) / range).clamp(0.0, 1.0)
+            let ratio_of = |value: f32| {
+                let value = match spec.bar {
+                    Bar::Linear => value,
+                    Bar::Log2 => value.log2(),
+                };
+                if range.abs() <= f32::EPSILON {
+                    0.0
+                } else {
+                    ((value - item.min) / range).clamp(0.0, 1.0)
+                }
+            };
+            // Ghosts only for sources that actually contribute.
+            let lfo = route.filter(|r| r.depth_ratio > f32::EPSILON);
+            let env = envelope.filter(|r| r.amount.abs() > f32::EPSILON);
+            let single = |l: Option<&LfoRoute>,
+                          e: Option<&EnvelopeRoute>,
+                          m: Option<(f32, f32)>| {
+                ratio_of(modulated_control_value_full(spec, l, e, m, base, mod_ctx))
+            };
+            SliderMarkers {
+                effective: (lfo.is_some() || env.is_some() || macro_mod.is_some())
+                    .then(|| single(lfo, env, macro_mod)),
+                lfo: lfo.map(|r| single(Some(r), None, None)),
+                envelope: env.map(|r| single(None, Some(r), None)),
+                macro_: macro_mod.map(|m| single(None, None, Some(m))),
             }
-        });
+        };
         let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
-        spans.extend(slider_spans(item_ratio(item), modulated, bar_w, style));
+        spans.extend(slider_spans(item_ratio(item), markers, bar_w, style));
         spans.push(Span::styled(format!(" {display}"), style));
         rows.push(Line::from(spans));
 
@@ -1261,25 +1277,49 @@ pub(crate) fn env_lane_line(
     Line::from(spans)
 }
 
-/// Slider bar spans with an optional bright marker at the live modulated value.
+/// Live marker positions on a slider, all as 0..1 bar ratios. `effective` is
+/// the summed value the engine plays; the per-source entries are base plus
+/// that source alone, drawn as dim ghost diamonds so a diverging cursor is
+/// explained at a glance (pink = LFO, green = envelope, amber = macro).
+#[derive(Default, Clone, Copy)]
+pub(crate) struct SliderMarkers {
+    pub(crate) effective: Option<f32>,
+    pub(crate) lfo: Option<f32>,
+    pub(crate) envelope: Option<f32>,
+    pub(crate) macro_: Option<f32>,
+}
+
+const EFFECTIVE_MARKER_COLOR: Color = Color::Rgb(235, 245, 255);
+
+/// Slider bar spans with ghost diamonds per modulation source and one bright
+/// diamond at the effective value. The effective marker wins overlaps.
 fn slider_spans(
     ratio: f32,
-    modulated: Option<f32>,
+    markers: SliderMarkers,
     width: usize,
     style: Style,
 ) -> Vec<Span<'static>> {
     let filled = (ratio.clamp(0.0, 1.0) * width as f32).round() as usize;
-    let marker = modulated
-        .map(|value| (value.clamp(0.0, 1.0) * width.saturating_sub(1) as f32).round() as usize);
+    let cell = |value: Option<f32>| {
+        value.map(|v| (v.clamp(0.0, 1.0) * width.saturating_sub(1) as f32).round() as usize)
+    };
+    let effective = cell(markers.effective);
+    let ghosts = [
+        (cell(markers.lfo), LFO_PALETTE.idle),
+        (cell(markers.envelope), ENV_PALETTE.idle),
+        (cell(markers.macro_), MACRO_PALETTE.idle),
+    ];
     (0..width)
         .map(|i| {
-            if Some(i) == marker {
+            if Some(i) == effective {
                 Span::styled(
                     "◆".to_string(),
                     Style::default()
-                        .fg(Color::Rgb(255, 130, 210))
+                        .fg(EFFECTIVE_MARKER_COLOR)
                         .add_modifier(Modifier::BOLD),
                 )
+            } else if let Some((_, color)) = ghosts.iter().find(|(pos, _)| *pos == Some(i)) {
+                Span::styled("◇".to_string(), Style::default().fg(*color))
             } else {
                 Span::styled(if i < filled { "█" } else { "░" }.to_string(), style)
             }
