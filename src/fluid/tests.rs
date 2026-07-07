@@ -2841,3 +2841,43 @@ fn macro_toggle_hides_but_keeps_the_assignment() {
     let route = automation.state().macro_route(address).unwrap();
     assert_close(route.amounts[1], 0.5);
 }
+
+/// Timing harness for the audio hot path with a busy automation state.
+/// Run with `cargo test --release engine_hot_path_timing -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn engine_hot_path_timing() {
+    let mut automation = AutomationState::default();
+    automation.set_route(ControlAddress::new("pad.level"), LfoRoute::default());
+    automation.set_route(ControlAddress::new("kick.interval_beats"), LfoRoute::default());
+    automation.set_route(ControlAddress::new("tonal.level"), LfoRoute::default());
+    automation.set_route(ControlAddress::new("macro.1"), LfoRoute::default());
+    automation.set_field_macro(
+        unit_key("pad.level", Some("lfo.amount")),
+        single_macro_route(0, 0.5),
+    );
+    automation.set_macro_route(ControlAddress::new("perc.level"), single_macro_route(0, 0.4));
+    automation.set_macro_route(ControlAddress::new("bass.level"), single_macro_route(1, -0.3));
+    automation.set_envelope(ControlAddress::new("macro.1"), EnvelopeRoute {
+        amount: 0.5,
+        ..EnvelopeRoute::default()
+    });
+
+    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
+    let automation = Arc::new(ArcSwap::from_pointee(automation));
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let mut engine = FluidEngine::new(SAMPLE_RATE, controls, automation, telemetry);
+
+    let frames = SAMPLE_RATE as u64 * 10;
+    let start = Instant::now();
+    let mut acc = 0.0f32;
+    for _ in 0..frames {
+        let (l, r) = engine.next_stereo();
+        acc += l + r;
+    }
+    let elapsed = start.elapsed();
+    println!(
+        "10 s of audio in {elapsed:?} ({:.1}x realtime, acc {acc})",
+        10.0 / elapsed.as_secs_f64()
+    );
+}

@@ -1304,15 +1304,6 @@ fn live_macro_pair(
     Some(route.combined(&values))
 }
 
-pub(crate) fn macro_contribution(
-    automation: &AutomationState,
-    controls: &FluidControls,
-    address: ControlAddress,
-) -> Option<f32> {
-    let route = automation.macro_route(address)?;
-    macro_pair(route, controls)
-}
-
 pub(crate) fn live_macro_contribution(
     automation: &AutomationState,
     controls: &FluidControls,
@@ -1321,6 +1312,34 @@ pub(crate) fn live_macro_contribution(
 ) -> Option<f32> {
     let route = automation.macro_route(address)?;
     live_macro_pair(route, automation, controls, ctx)
+}
+
+/// Slot order for stacked LFO field macros, shared by every fold over them
+/// (`PlannedRoute::field_macros` uses the same indices).
+const LFO_FIELD_MACRO_SLOTS: [LfoField; 3] = [LfoField::Amount, LfoField::Interval, LfoField::Offset];
+
+/// Fold per-slot combined macro ratios into a modulated copy of the route.
+/// `contribution(slot)` resolves the stacked macro on `LFO_FIELD_MACRO_SLOTS[slot]`,
+/// or None when there is none / it is neutral.
+fn fold_field_macro_contributions(
+    route: &LfoRoute,
+    mut contribution: impl FnMut(usize) -> Option<f32>,
+) -> LfoRoute {
+    let mut effective = *route;
+    if let Some(combined) = contribution(0) {
+        effective.depth_ratio = (route.depth_ratio + combined).clamp(0.0, 1.0);
+    }
+    if let Some(combined) = contribution(1) {
+        effective.cycle_beats = (route.cycle_beats
+            + combined * (MAX_LFO_CYCLE_BEATS - MIN_LFO_CYCLE_BEATS))
+            .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS);
+    }
+    if let Some(combined) = contribution(2) {
+        effective.phase_offset_beats = (route.phase_offset_beats
+            + combined * MAX_LFO_OFFSET_BEATS)
+            .clamp(0.0, MAX_LFO_OFFSET_BEATS);
+    }
+    effective
 }
 
 /// Fold any macros stacked onto an LFO route's amount/interval/offset (via
@@ -1337,41 +1356,18 @@ fn apply_field_macros(
     if is_macro_id(address.id()) {
         return *route;
     }
-    let mut effective = *route;
-    let mut apply_field = |key_str: &str, base: f32, min: f32, max: f32, out: &mut f32| {
-        let key = unit_key(address.id(), Some(key_str));
-        if let Some(field_route) = automation.field_macro(&key)
-            && let Some(combined) = contribution(field_route)
-        {
-            *out = (base + combined * (max - min)).clamp(min, max);
-        }
-    };
-    apply_field(
-        "lfo.amount",
-        route.depth_ratio,
-        0.0,
-        1.0,
-        &mut effective.depth_ratio,
-    );
-    apply_field(
-        "lfo.interval",
-        route.cycle_beats,
-        MIN_LFO_CYCLE_BEATS,
-        MAX_LFO_CYCLE_BEATS,
-        &mut effective.cycle_beats,
-    );
-    apply_field(
-        "lfo.offset",
-        route.phase_offset_beats,
-        0.0,
-        MAX_LFO_OFFSET_BEATS,
-        &mut effective.phase_offset_beats,
-    );
-    effective
+    fold_field_macro_contributions(route, |slot| {
+        let key = unit_key(address.id(), LFO_FIELD_MACRO_SLOTS[slot].macro_key());
+        automation
+            .field_macro(&key)
+            .and_then(&mut contribution)
+    })
 }
 
-/// Engine-side: `controls` already reflects pass-one's modulated macro
-/// slider values, so a plain lookup is correct.
+/// Engine-side semantics (`AutomationPlan::apply` is the production copy):
+/// `controls` already reflects pass-one's modulated macro slider values,
+/// so a plain lookup is correct.
+#[cfg(test)]
 pub(crate) fn effective_lfo_route(
     automation: &AutomationState,
     controls: &FluidControls,
@@ -1397,39 +1393,98 @@ pub(crate) fn live_effective_lfo_route(
     })
 }
 
+/// One modulated control's routes, resolved to plain copies so applying
+/// them per sample needs no map lookups, string keys, or heap.
+struct PlannedRoute {
+    spec: &'static ControlSpec,
+    lfo: Option<LfoRoute>,
+    /// Stacked field macros indexed by `LFO_FIELD_MACRO_SLOTS`.
+    field_macros: [Option<MacroRoute>; 3],
+    envelope: Option<EnvelopeRoute>,
+    macro_route: Option<MacroRoute>,
+}
+
+/// Allocation-free application plan for an `AutomationState`. The engine
+/// rebuilds it only when the published automation Arc changes (a UI edit),
+/// so the per-sample audio hot path never touches the allocator.
+#[derive(Default)]
+pub(crate) struct AutomationPlan {
+    /// Macro sliders first, so targets read already-modulated macro values.
+    routes: Vec<PlannedRoute>,
+}
+
+impl AutomationPlan {
+    pub(crate) fn rebuild(&mut self, automation: &AutomationState) {
+        self.routes.clear();
+        let addresses = automation.modulated_addresses();
+        let (macro_sliders, targets): (Vec<_>, Vec<_>) = addresses
+            .into_iter()
+            .partition(|address| is_macro_id(address.id()));
+        for address in macro_sliders.into_iter().chain(targets) {
+            let lfo = automation.route(address).copied();
+            // Macro sliders' own LFOs never take a stacked macro.
+            let field_macros = if lfo.is_none() || is_macro_id(address.id()) {
+                [None; 3]
+            } else {
+                LFO_FIELD_MACRO_SLOTS.map(|field| {
+                    let key = unit_key(address.id(), field.macro_key());
+                    automation.field_macro(&key).copied()
+                })
+            };
+            self.routes.push(PlannedRoute {
+                spec: address.spec(),
+                lfo,
+                field_macros,
+                envelope: automation.envelope(address).copied(),
+                macro_route: automation.macro_route(address).copied(),
+            });
+        }
+    }
+
+    pub(crate) fn apply(&self, controls: &mut FluidControls, timing: TimingContext) {
+        let ctx = ModContext {
+            beat: timing.beat,
+            kick_interval_beats: controls.kick.interval_beats,
+            kick_offset_beats: controls.kick.offset_beats,
+        };
+        for planned in &self.routes {
+            let lfo = planned.lfo.map(|route| {
+                fold_field_macro_contributions(&route, |slot| {
+                    planned.field_macros[slot]
+                        .as_ref()
+                        .and_then(|field_route| macro_pair(field_route, controls))
+                })
+            });
+            let lfo = lfo
+                .as_ref()
+                .filter(|route| route.depth_ratio > f32::EPSILON);
+            let envelope = planned
+                .envelope
+                .as_ref()
+                .filter(|route| route.amount.abs() > f32::EPSILON);
+            let macro_mod = planned
+                .macro_route
+                .as_ref()
+                .and_then(|route| macro_pair(route, controls));
+            if lfo.is_none() && envelope.is_none() && macro_mod.is_none() {
+                continue;
+            }
+            let base = (planned.spec.get)(controls);
+            let value =
+                modulated_control_value_full(planned.spec, lfo, envelope, macro_mod, base, ctx);
+            (planned.spec.set)(controls, value);
+        }
+    }
+}
+
+/// One-shot convenience over `AutomationPlan` for tests: rebuild + apply.
+#[cfg(test)]
 pub(crate) fn apply_automation(
     controls: &mut FluidControls,
     automation: &AutomationState,
     timing: TimingContext,
 ) {
-    let ctx = ModContext {
-        beat: timing.beat,
-        kick_interval_beats: controls.kick.interval_beats,
-        kick_offset_beats: controls.kick.offset_beats,
-    };
-    // Two passes: macro sliders modulate first so their targets read the
-    // already-modulated macro values in the second pass.
-    let addresses = automation.modulated_addresses();
-    let (macro_sliders, targets): (Vec<_>, Vec<_>) = addresses
-        .into_iter()
-        .partition(|address| is_macro_id(address.id()));
-    for address in macro_sliders.into_iter().chain(targets) {
-        let spec = address.spec();
-        let route = automation
-            .route(address)
-            .map(|route| effective_lfo_route(automation, controls, address, route));
-        let lfo = route
-            .as_ref()
-            .filter(|route| route.depth_ratio > f32::EPSILON);
-        let envelope = automation
-            .envelope(address)
-            .filter(|route| route.amount.abs() > f32::EPSILON);
-        let macro_mod = macro_contribution(automation, controls, address);
-        if lfo.is_none() && envelope.is_none() && macro_mod.is_none() {
-            continue;
-        }
-        let base = (spec.get)(controls);
-        let value = modulated_control_value_full(spec, lfo, envelope, macro_mod, base, ctx);
-        (spec.set)(controls, value);
-    }
+    let mut plan = AutomationPlan::default();
+    plan.rebuild(automation);
+    plan.apply(controls, timing);
 }

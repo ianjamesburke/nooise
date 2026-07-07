@@ -23,6 +23,10 @@ pub(crate) struct FluidEngine {
     pub(crate) automation: Arc<ArcSwap<AutomationState>>,
     pub(crate) telemetry: Arc<FluidTelemetry>,
     pub(crate) snapshot: FluidControls,
+    /// Allocation-free per-sample plan, rebuilt only when `plan_source`
+    /// (the last-seen published automation Arc) changes.
+    plan: AutomationPlan,
+    plan_source: Arc<AutomationState>,
 }
 
 impl FluidEngine {
@@ -33,6 +37,9 @@ impl FluidEngine {
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
         let snapshot = FluidControls::clone(&controls.load());
+        let plan_source = automation.load_full();
+        let mut plan = AutomationPlan::default();
+        plan.rebuild(&plan_source);
         Self {
             current_sample: 0,
             sample_rate,
@@ -50,6 +57,8 @@ impl FluidEngine {
             automation,
             telemetry,
             snapshot,
+            plan,
+            plan_source,
         }
     }
 }
@@ -74,6 +83,11 @@ impl StereoEngine for FluidEngine {
                 .set_targets(&self.snapshot, self.sample_rate);
             self.master_bus
                 .set_controls(&self.snapshot.master, self.sample_rate);
+            let automation = self.automation.load_full();
+            if !Arc::ptr_eq(&automation, &self.plan_source) {
+                self.plan.rebuild(&automation);
+                self.plan_source = automation;
+            }
         }
 
         let fade = (self.current_sample as f32 / (self.sample_rate * 8.0)).min(1.0);
@@ -82,8 +96,7 @@ impl StereoEngine for FluidEngine {
         if self.current_sample.is_multiple_of(256) {
             self.telemetry.publish_beat(timing.beat);
         }
-        let automation = self.automation.load();
-        apply_automation(&mut effective, &automation, timing);
+        self.plan.apply(&mut effective, timing);
 
         let tune = effective.master.tune;
         let (pad_l, pad_r) = self.pad.next(&effective.pad, tune, timing);

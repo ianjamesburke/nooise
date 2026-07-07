@@ -11,6 +11,12 @@ repository = "https://github.com/ianjamesburke/nooise"
 name = "nooise"
 path = "src/main.rs"
 
+# The audio callback renders per-sample DSP in real time; unoptimized dev
+# builds leave almost no headroom (~1.4x realtime) and crackle. opt-level 1
+# restores near-release throughput while keeping fast incremental compiles.
+[profile.dev]
+opt-level = 1
+
 [dependencies]
 cpal = "0.15"
 rand = "0.8"
