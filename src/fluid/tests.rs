@@ -565,6 +565,47 @@ fn macro_route_scales_target_into_its_range() {
 }
 
 #[test]
+fn macro_stacked_on_lfo_amount_scales_the_depth() {
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.2;
+    controls.macros.values[0] = 0.5;
+    let mut automation = AutomationState::default();
+    // Depth 0: only the stacked macro opens the LFO up.
+    automation.set_route(
+        ControlAddress::new("master.level"),
+        LfoRoute {
+            depth_ratio: 0.0,
+            cycle_beats: 2.0,
+            depth_macro: Some(0),
+            depth_macro_amount: 1.0,
+            ..LfoRoute::default()
+        },
+    );
+
+    // Half a beat into a 2-beat sine sits at its +1 peak, so the level is
+    // base + range * (0 + 1.0 * macro 0.5).
+    let half_beat = SAMPLE_RATE as u64 / 4; // 0.5 beats at 120 BPM
+    let mut effective = controls.clone();
+    apply_automation(&mut effective, &automation, timing(half_beat, 120.0));
+    assert_near(effective.master.level, 0.7);
+
+    // With the macro slider at zero the route contributes nothing again.
+    controls.macros.values[0] = 0.0;
+    let mut effective = controls.clone();
+    apply_automation(&mut effective, &automation, timing(half_beat, 120.0));
+    assert_near(effective.master.level, 0.2);
+}
+
+#[test]
+fn macro_sliders_own_lfos_have_no_depth_macro_rows() {
+    assert_eq!(lfo_fields_for("macro.1").len(), LfoField::BARE.len());
+    assert_eq!(lfo_field_at(2, "macro.1"), Some(LfoField::Interval));
+    assert_eq!(lfo_fields_for("master.level").len(), LfoField::ALL.len());
+    assert_eq!(lfo_field_at(2, "master.level"), Some(LfoField::MacroAmount));
+    assert_eq!(lfo_field_at(3, "master.level"), Some(LfoField::MacroTarget));
+}
+
+#[test]
 fn macro_own_lfo_feeds_targets_in_the_same_pass() {
     let mut controls = FluidControls::default();
     controls.master.level = 0.0;
@@ -2441,8 +2482,9 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
     flipped.insert(unit_key("master.level", Some("lfo.interval")));
 
     // Default cycle is 2 beats = 1000 ms at 120 BPM; one flipped step lands
-    // on 1010 ms, off the beat grid.
-    adjust_lfo_or_control(&mut automation, 2, &controls, Tab::Master, 0, 1.0, 0.0, &flipped);
+    // on 1010 ms, off the beat grid. Interval is row 4 (amount and its two
+    // nested macro rows come first).
+    adjust_lfo_or_control(&mut automation, 4, &controls, Tab::Master, 0, 1.0, 0.0, &flipped);
     assert_near(
         beats_to_ms(automation.state().route(address).unwrap().cycle_beats, 120.0),
         1010.0,
@@ -2450,7 +2492,7 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
 
     // Un-flipping snaps the interval back onto the sixteenth grid.
     flipped.clear();
-    snap_after_unit_flip(&mut automation, 2, &controls, Tab::Master, 0, false, 0.0);
+    snap_after_unit_flip(&mut automation, 4, &controls, Tab::Master, 0, false, 0.0);
     assert_close(automation.state().route(address).unwrap().cycle_beats, 2.0);
 }
 
@@ -2469,6 +2511,8 @@ fn song_code_v3_round_trips_seed_macro_and_envelope() {
             shape: LfoShape::SampleHold,
             phase_offset_beats: 0.5,
             seed: 0xDEAD_BEEF,
+            depth_macro: Some(1),
+            depth_macro_amount: 0.35,
         },
     );
     automation.set_macro_route(
@@ -2504,6 +2548,8 @@ fn song_code_v3_round_trips_seed_macro_and_envelope() {
     assert_eq!(route.shape, LfoShape::SampleHold);
     assert_close(route.phase_offset_beats, 0.5);
     assert_eq!(route.seed, 0xDEAD_BEEF);
+    assert_eq!(route.depth_macro, Some(1));
+    assert_close(route.depth_macro_amount, 0.35);
 
     let macro_route = decoded
         .automation

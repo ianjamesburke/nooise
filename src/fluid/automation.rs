@@ -234,17 +234,35 @@ fn seed_for_id(id: &str) -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LfoField {
     Amount,
+    /// Bipolar scale a macro applies to the depth (nested under Amount).
+    MacroAmount,
+    /// Which macro slider drives the depth, if any (nested under Amount).
+    MacroTarget,
     Interval,
     Offset,
     Shape,
 }
 
 impl LfoField {
-    pub(crate) const ALL: [LfoField; 4] = [Self::Amount, Self::Interval, Self::Offset, Self::Shape];
+    pub(crate) const ALL: [LfoField; 6] = [
+        Self::Amount,
+        Self::MacroAmount,
+        Self::MacroTarget,
+        Self::Interval,
+        Self::Offset,
+        Self::Shape,
+    ];
+
+    /// The rows offered on macro sliders' own LFOs: no macro-chasing there,
+    /// single-pass ordering between macros would be ambiguous.
+    pub(crate) const BARE: [LfoField; 4] =
+        [Self::Amount, Self::Interval, Self::Offset, Self::Shape];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Shape => "shape",
+            Self::MacroAmount => "amt",
+            Self::MacroTarget => "macro",
             _ => self.spec().label,
         }
     }
@@ -255,6 +273,16 @@ impl LfoField {
             .iter()
             .find(|spec| spec.field == self)
             .expect("every continuous LFO field has a spec")
+    }
+}
+
+/// The LFO submenu rows for a control: macro sliders' own LFOs skip the
+/// depth-macro rows.
+pub(crate) fn lfo_fields_for(id: &str) -> &'static [LfoField] {
+    if is_macro_id(id) {
+        &LfoField::BARE
+    } else {
+        &LfoField::ALL
     }
 }
 
@@ -353,6 +381,10 @@ pub(crate) struct LfoRoute {
     pub(crate) shape: LfoShape,
     /// Seed for random shapes; hashed with the cycle index to produce values.
     pub(crate) seed: u32,
+    /// Macro slider stacked onto the depth: effective depth is
+    /// `depth_ratio + depth_macro_amount * macro value`, clamped to 0..1.
+    pub(crate) depth_macro: Option<usize>,
+    pub(crate) depth_macro_amount: f32,
 }
 
 impl Default for LfoRoute {
@@ -363,6 +395,8 @@ impl Default for LfoRoute {
             phase_offset_beats: 0.0,
             shape: LfoShape::Sine,
             seed: 0,
+            depth_macro: None,
+            depth_macro_amount: 0.0,
         }
     }
 }
@@ -420,11 +454,27 @@ impl LfoRoute {
             ^ 0x5DEE_CE66;
     }
 
+    /// Whether a macro meaningfully drives this route's depth.
+    pub(crate) fn depth_macro_active(&self) -> bool {
+        self.depth_macro.is_some() && self.depth_macro_amount.abs() > f32::EPSILON
+    }
+
     pub(crate) fn adjust_field_at(&mut self, field: LfoField, dir: f32, beat: f64) {
         match field {
             LfoField::Shape => self.shape = self.shape.cycled(dir),
             LfoField::Amount => {
                 self.depth_ratio = field.spec().adjust(self.depth_ratio, dir);
+            }
+            LfoField::MacroAmount => {
+                self.depth_macro_amount =
+                    (self.depth_macro_amount + dir * MACRO_AMOUNT_STEP).clamp(-1.0, 1.0);
+            }
+            LfoField::MacroTarget => {
+                self.depth_macro = macro_target_from_index(stepped_index(
+                    macro_target_index(self.depth_macro),
+                    dir,
+                    MACRO_COUNT + 1,
+                ));
             }
             LfoField::Interval => {
                 self.set_cycle_preserving_phase(field.spec().adjust(self.cycle_beats, dir), beat);
@@ -439,6 +489,13 @@ impl LfoRoute {
         match field {
             LfoField::Shape => self.shape = LfoShape::from_index(value),
             LfoField::Amount => self.depth_ratio = field.spec().parse_value(value),
+            LfoField::MacroAmount => {
+                let unit = if value.abs() > 1.0 { value / 100.0 } else { value };
+                self.depth_macro_amount = unit.clamp(-1.0, 1.0);
+            }
+            LfoField::MacroTarget => {
+                self.depth_macro = macro_target_from_index(clamped_index(value, MACRO_COUNT + 1));
+            }
             LfoField::Interval => {
                 self.set_cycle_preserving_phase(field.spec().parse_value(value), beat);
             }
@@ -459,7 +516,7 @@ impl LfoRoute {
             LfoField::Offset => {
                 self.phase_offset_beats = value.clamp(0.0, MAX_LFO_OFFSET_BEATS);
             }
-            LfoField::Amount | LfoField::Shape => self.set_field_at(field, value, beat),
+            _ => self.set_field_at(field, value, beat),
         }
     }
 
@@ -467,6 +524,8 @@ impl LfoRoute {
         match field {
             LfoField::Shape => self.shape = LfoShape::Sine,
             LfoField::Amount => self.depth_ratio = field.spec().reset,
+            LfoField::MacroAmount => self.depth_macro_amount = 0.0,
+            LfoField::MacroTarget => self.depth_macro = None,
             LfoField::Interval => self.set_cycle_preserving_phase(field.spec().reset, beat),
             LfoField::Offset => self.phase_offset_beats = field.spec().reset,
         }
@@ -478,6 +537,10 @@ impl LfoRoute {
                 self.shape.index() as f32 / (LfoShape::ALL.len() - 1).max(1) as f32
             }
             LfoField::Amount => field.spec().ratio(self.depth_ratio),
+            LfoField::MacroAmount => (self.depth_macro_amount * 0.5 + 0.5).clamp(0.0, 1.0),
+            LfoField::MacroTarget => {
+                macro_target_index(self.depth_macro) as f32 / MACRO_COUNT as f32
+            }
             LfoField::Interval => field.spec().ratio(self.cycle_beats),
             LfoField::Offset => field.spec().ratio(self.phase_offset_beats),
         }
@@ -487,6 +550,8 @@ impl LfoRoute {
         match field {
             LfoField::Shape => self.shape.label().to_string(),
             LfoField::Amount => format!("{:.0}%", self.depth_ratio * 100.0),
+            LfoField::MacroAmount => format!("{:+.0}%", self.depth_macro_amount * 100.0),
+            LfoField::MacroTarget => macro_target_display(self.depth_macro),
             LfoField::Interval => format!("{:.2} beats", self.cycle_beats),
             LfoField::Offset => format!("{:.2} beats", self.phase_offset_beats),
         }
@@ -792,6 +857,23 @@ impl EnvelopeRoute {
 
 const MACRO_AMOUNT_STEP: f32 = 0.01;
 
+/// A macro target cycles through none + each macro slider; none sits at
+/// index 0. Shared by macro routes and LFO depth macros.
+fn macro_target_index(target: Option<usize>) -> usize {
+    target.map_or(0, |t| t + 1)
+}
+
+fn macro_target_from_index(index: usize) -> Option<usize> {
+    index.checked_sub(1)
+}
+
+fn macro_target_display(target: Option<usize>) -> String {
+    match target {
+        Some(t) => format!("macro {}", t + 1),
+        None => "none".to_string(),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MacroField {
     Target,
@@ -832,13 +914,12 @@ impl Default for MacroRoute {
 }
 
 impl MacroRoute {
-    /// Target cycles through none + each macro slider; none sits at index 0.
     fn target_index(self) -> usize {
-        self.target.map_or(0, |t| t + 1)
+        macro_target_index(self.target)
     }
 
     fn target_from_index(index: usize) -> Option<usize> {
-        index.checked_sub(1)
+        macro_target_from_index(index)
     }
 
     pub(crate) fn is_neutral(self) -> bool {
@@ -887,10 +968,7 @@ impl MacroRoute {
 
     pub(crate) fn field_display(self, field: MacroField) -> String {
         match field {
-            MacroField::Target => match self.target {
-                Some(t) => format!("macro {}", t + 1),
-                None => "none".to_string(),
-            },
+            MacroField::Target => macro_target_display(self.target),
             MacroField::Amount => format!("{:+.0}%", self.amount * 100.0),
         }
     }
@@ -986,11 +1064,9 @@ impl AutomationState {
         };
         match open.kind {
             ModKind::Lfo => {
-                if self
-                    .routes
-                    .get(&open.address)
-                    .is_some_and(|route| route.depth_ratio <= f32::EPSILON)
-                {
+                if self.routes.get(&open.address).is_some_and(|route| {
+                    route.depth_ratio <= f32::EPSILON && !route.depth_macro_active()
+                }) {
                     self.routes.remove(&open.address);
                 }
             }
@@ -1097,13 +1173,19 @@ pub(crate) fn modulated_control_value_full(
     lfo: Option<&LfoRoute>,
     envelope: Option<&EnvelopeRoute>,
     macro_mod: Option<(f32, f32)>,
+    lfo_macro: Option<(f32, f32)>,
     base: f32,
     ctx: ModContext,
 ) -> f32 {
     let range = spec.max - spec.min;
     let mut value = base;
     if let Some(route) = lfo {
-        value += route.wave_at(ctx.beat) * range * route.depth_ratio.clamp(0.0, 1.0);
+        let mut depth = route.depth_ratio.clamp(0.0, 1.0);
+        if let Some((amount, macro_value)) = lfo_macro {
+            depth = (depth + amount.clamp(-1.0, 1.0) * macro_value.clamp(0.0, 1.0))
+                .clamp(0.0, 1.0);
+        }
+        value += route.wave_at(ctx.beat) * range * depth;
     }
     if let Some(route) = envelope {
         value += route.level_at(ctx) * range * route.amount.clamp(-1.0, 1.0);
@@ -1127,34 +1209,41 @@ pub(crate) fn modulated_control_value(
     base: f32,
     beat: f64,
 ) -> f32 {
-    modulated_control_value_full(spec, Some(route), None, None, base, ModContext::lfo_only(beat))
+    modulated_control_value_full(
+        spec,
+        Some(route),
+        None,
+        None,
+        None,
+        base,
+        ModContext::lfo_only(beat),
+    )
 }
 
-/// The `(amount, live macro value)` pair a control's macro route contributes,
-/// or None when the route is missing/neutral. Reads the macro slider from
-/// `controls`, so callers that want the macro's own modulation reflected must
-/// apply it to `controls` first (`apply_automation` pass one does).
-pub(crate) fn macro_contribution(
-    automation: &AutomationState,
+/// The `(amount, live macro value)` pair for a `(amount, target)` assignment,
+/// or None when unassigned/neutral. Reads the macro slider from `controls`,
+/// so callers that want the macro's own modulation reflected must apply it to
+/// `controls` first (`apply_automation` pass one does).
+fn macro_pair(
+    amount: f32,
+    target: Option<usize>,
     controls: &FluidControls,
-    address: ControlAddress,
 ) -> Option<(f32, f32)> {
-    let route = automation.macro_route(address)?;
-    let target = route.target.filter(|_| route.amount.abs() > f32::EPSILON)?;
-    Some((route.amount, controls.macros.values[target]))
+    let target = target.filter(|_| amount.abs() > f32::EPSILON)?;
+    Some((amount, controls.macros.values[target]))
 }
 
-/// UI-side macro contribution: recomputes the macro slider's own modulated
-/// value from raw controls, mirroring what `apply_automation` pass one
-/// produces, so the marker shows what the engine hears.
-pub(crate) fn live_macro_contribution(
+/// UI-side variant: recomputes the macro slider's own modulated value from
+/// raw controls, mirroring what `apply_automation` pass one produces, so
+/// markers show what the engine hears.
+fn live_macro_pair(
+    amount: f32,
+    target: Option<usize>,
     automation: &AutomationState,
     controls: &FluidControls,
-    address: ControlAddress,
     ctx: ModContext,
 ) -> Option<(f32, f32)> {
-    let route = automation.macro_route(address)?;
-    let target = route.target.filter(|_| route.amount.abs() > f32::EPSILON)?;
+    let target = target.filter(|_| amount.abs() > f32::EPSILON)?;
     let spec = spec_by_id(MACRO_CONTROLS[target].id)
         .expect("macro sliders are registered controls");
     let macro_address = ControlAddress::new(spec.id);
@@ -1167,10 +1256,64 @@ pub(crate) fn live_macro_contribution(
             .envelope(macro_address)
             .filter(|route| route.amount.abs() > f32::EPSILON),
         None,
+        None,
         (spec.get)(controls),
         ctx,
     );
-    Some((route.amount, value))
+    Some((amount, value))
+}
+
+pub(crate) fn macro_contribution(
+    automation: &AutomationState,
+    controls: &FluidControls,
+    address: ControlAddress,
+) -> Option<(f32, f32)> {
+    let route = automation.macro_route(address)?;
+    macro_pair(route.amount, route.target, controls)
+}
+
+pub(crate) fn live_macro_contribution(
+    automation: &AutomationState,
+    controls: &FluidControls,
+    address: ControlAddress,
+    ctx: ModContext,
+) -> Option<(f32, f32)> {
+    let route = automation.macro_route(address)?;
+    live_macro_pair(route.amount, route.target, automation, controls, ctx)
+}
+
+/// The `(amount, live macro value)` pair stacked onto a control's LFO depth.
+/// Macro sliders' own LFOs never chase a macro (see `LfoField::BARE`).
+pub(crate) fn lfo_depth_contribution(
+    automation: &AutomationState,
+    controls: &FluidControls,
+    address: ControlAddress,
+) -> Option<(f32, f32)> {
+    if is_macro_id(address.id()) {
+        return None;
+    }
+    let route = automation.route(address)?;
+    macro_pair(route.depth_macro_amount, route.depth_macro, controls)
+}
+
+/// UI-side twin of [`lfo_depth_contribution`].
+pub(crate) fn live_lfo_depth_contribution(
+    automation: &AutomationState,
+    controls: &FluidControls,
+    address: ControlAddress,
+    ctx: ModContext,
+) -> Option<(f32, f32)> {
+    if is_macro_id(address.id()) {
+        return None;
+    }
+    let route = automation.route(address)?;
+    live_macro_pair(
+        route.depth_macro_amount,
+        route.depth_macro,
+        automation,
+        controls,
+        ctx,
+    )
 }
 
 pub(crate) fn apply_automation(
@@ -1191,9 +1334,10 @@ pub(crate) fn apply_automation(
         .partition(|address| is_macro_id(address.id()));
     for address in macro_sliders.into_iter().chain(targets) {
         let spec = address.spec();
+        let lfo_macro = lfo_depth_contribution(automation, controls, address);
         let lfo = automation
             .route(address)
-            .filter(|route| route.depth_ratio > f32::EPSILON);
+            .filter(|route| route.depth_ratio > f32::EPSILON || lfo_macro.is_some());
         let envelope = automation
             .envelope(address)
             .filter(|route| route.amount.abs() > f32::EPSILON);
@@ -1202,7 +1346,8 @@ pub(crate) fn apply_automation(
             continue;
         }
         let base = (spec.get)(controls);
-        let value = modulated_control_value_full(spec, lfo, envelope, macro_mod, base, ctx);
+        let value =
+            modulated_control_value_full(spec, lfo, envelope, macro_mod, lfo_macro, base, ctx);
         (spec.set)(controls, value);
     }
 }

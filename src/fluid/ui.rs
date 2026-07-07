@@ -401,7 +401,7 @@ pub(crate) fn snap_after_unit_flip(
                 match field {
                     LfoField::Interval => route.set_field_at(field, route.cycle_beats, beat),
                     LfoField::Offset => route.set_field_at(field, route.phase_offset_beats, beat),
-                    LfoField::Amount | LfoField::Shape => {}
+                    _ => {}
                 }
             }
         }),
@@ -443,7 +443,7 @@ fn lfo_time_key(field: LfoField) -> Option<&'static str> {
     match field {
         LfoField::Interval => Some("lfo.interval"),
         LfoField::Offset => Some("lfo.offset"),
-        LfoField::Amount | LfoField::Shape => None,
+        _ => None,
     }
 }
 
@@ -479,8 +479,8 @@ fn unit_toggle_key(
     }
 }
 
-pub(crate) fn lfo_field_at(index: usize) -> Option<LfoField> {
-    LfoField::ALL.get(index.checked_sub(1)?).copied()
+pub(crate) fn lfo_field_at(index: usize, id: &str) -> Option<LfoField> {
+    lfo_fields_for(id).get(index.checked_sub(1)?).copied()
 }
 
 pub(crate) fn env_field_at(index: usize) -> Option<EnvField> {
@@ -494,7 +494,11 @@ pub(crate) fn macro_field_at(index: usize) -> Option<MacroField> {
 /// Submenu row count for the currently open editor (0 when none is open).
 pub(crate) fn active_field_count(automation: &AutomationState) -> usize {
     match automation.active_kind() {
-        Some(ModKind::Lfo) => LfoField::ALL.len(),
+        Some(ModKind::Lfo) => automation
+            .active_address()
+            .map_or(LfoField::ALL.len(), |address| {
+                lfo_fields_for(address.id()).len()
+            }),
         Some(ModKind::Envelope) => EnvField::ALL.len(),
         Some(ModKind::Macro) => MacroField::ALL.len(),
         None => 0,
@@ -586,7 +590,7 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
         return ActiveField::Control;
     };
     match automation.active_kind() {
-        Some(ModKind::Lfo) => match lfo_field_at(lfo_selected) {
+        Some(ModKind::Lfo) => match lfo_field_at(lfo_selected, address.id()) {
             Some(field) => ActiveField::Lfo(address, field),
             None => ActiveField::Control,
         },
@@ -1188,12 +1192,16 @@ pub(crate) fn render_fluid(
                 }
             };
             // Ghosts only for sources that actually contribute.
-            let lfo = route.filter(|r| r.depth_ratio > f32::EPSILON);
+            let lfo_macro = live_lfo_depth_contribution(automation, controls, address, mod_ctx);
+            let lfo =
+                route.filter(|r| r.depth_ratio > f32::EPSILON || lfo_macro.is_some());
             let env = envelope.filter(|r| r.amount.abs() > f32::EPSILON);
             let single = |l: Option<&LfoRoute>,
                           e: Option<&EnvelopeRoute>,
                           m: Option<(f32, f32)>| {
-                ratio_of(modulated_control_value_full(spec, l, e, m, base, mod_ctx))
+                ratio_of(modulated_control_value_full(
+                    spec, l, e, m, lfo_macro, base, mod_ctx,
+                ))
             };
             SliderMarkers {
                 effective: (lfo.is_some() || env.is_some() || macro_mod.is_some())
@@ -1210,7 +1218,7 @@ pub(crate) fn render_fluid(
 
         if let Some(route) = route {
             if lfo_open_here {
-                for (fi, field) in LfoField::ALL.iter().enumerate() {
+                for (fi, field) in lfo_fields_for(item.id).iter().enumerate() {
                     let value_display = match field {
                         LfoField::Interval
                             if flipped
@@ -1226,14 +1234,23 @@ pub(crate) fn render_fluid(
                         _ => None,
                     }
                     .unwrap_or_else(|| route.field_display(*field));
+                    // The depth-macro rows nest under amount: indented a step
+                    // further and in macro amber.
+                    let nested =
+                        matches!(field, LfoField::MacroAmount | LfoField::MacroTarget);
+                    let label = if nested {
+                        format!("· {}", field.label())
+                    } else {
+                        field.label().to_string()
+                    };
                     rows.push(field_line(
-                        field.label(),
+                        &label,
                         route.field_ratio(*field),
                         value_display,
                         lfo_selected == fi + 1,
                         &numeric,
                         bar_w,
-                        LFO_PALETTE,
+                        if nested { MACRO_PALETTE } else { LFO_PALETTE },
                     ));
                 }
             }

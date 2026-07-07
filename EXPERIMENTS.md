@@ -13,7 +13,10 @@ path the engine hears. All new routes start audible-neutral (amount 0).
 `cargo run`, then:
 
 - Arrow/`jk` select a control, `h/l` adjust, type a number + `Enter` to set.
-- `f` opens the **LFO** submenu (amount / interval / offset / shape).
+- `f` opens the **LFO** submenu (amount / interval / offset / shape). Under
+  amount sit two indented amber rows — `· amt` and `· macro` — that stack a
+  macro onto the LFO's depth: effective depth = amount + amt x macro value.
+  Macro sliders' own LFOs don't get these rows.
 - `v` opens the **macro** submenu (macro none/1-4, bipolar amount) on any
   regular control.
 - The **MACROS** tab (last tab) holds four bare sliders. On a macro slider,
@@ -23,7 +26,9 @@ path the engine hears. All new routes start audible-neutral (amount 0).
   way. `x` removes: with an editor open it deletes that route, on a bare
   control it strips every modulator at once. `Esc` also closes-and-keeps.
 - `T` flips the selected time field between beats and ms (per field, not
-  global); display and numeric entry convert at the current BPM.
+  global). Flipping to ms keeps the exact equivalent and then h/l moves on a
+  10 ms grid (typed ms is exact too); flipping back to beats rounds onto the
+  beat grid.
 - `Enter` on a cross-tab row (Master voice levels) expands into that voice's
   tab.
 - `r` re-rolls the seed of a random-shape LFO.
@@ -44,20 +49,25 @@ path the engine hears. All new routes start audible-neutral (amount 0).
 4. **Baseline field behaviour.** Discrete fields (shape, trigger, macro
    target) clamp at their ends instead of wrapping; all submenu rows render
    through one shared field-row component.
-5. **Resolution.** Every 0.25-beat grid halved to 0.125 (32nd notes), floors
-   included.
-6. **Persistence.** Song-code automation payload v3 carries LFO seeds, macro
-   routes, and envelope routes. v2 codes still decode.
+5. **Resolution.** Interval-like fields (voice intervals, tonal rate/cycle,
+   LFO interval) keep 0.125 as a reachable floor but lock to sixteenths
+   (0.25 grid) above it; offsets still step in 0.125.
+6. **Persistence.** Song-code automation payload v4 carries LFO seeds, depth
+   macros, macro routes, and envelope routes. v2/v3 codes still decode.
 7. **Louder chords.** Pad voice output gain 0.58 → 0.72.
+8. **Macros stack onto LFO depth.** Two indented amber rows under an LFO's
+   amount — `· amt` and `· macro` — let a macro scale the LFO's depth
+   directly (effective depth = amount + amt x macro value), so a macro can
+   ride alongside macro-as-own-source instead of only replacing it. Macro
+   sliders' own LFOs skip these rows (no macro chasing a macro).
 
 ## Feedback questions
 
-1. Does macro-as-own-source feel right, or did you expect the macro to scale
-   the LFO amount instead?
-2. Is the amber chip line under an assigned control enough visibility, or do
+1. Is the amber chip line under an assigned control enough visibility, or do
    macro assignments need a dedicated overview (e.g. on the MACROS tab)?
-3. Ghost diamonds: clarifying or cluttering once two sources overlap?
-4. Envelopes now only shape macros. Do you miss them on regular controls,
+2. Ghost diamonds: clarifying or cluttering once two sources overlap?
+3. Envelopes now only shape macros. Do you miss them on regular controls,
    or is routing a control through a macro the better gesture anyway?
-5. Would a `macro` row inside the f-submenu (macro scales the LFO's amount)
-   earn its place next to macro-as-own-source, or is one mechanism enough?
+4. Now that macros can stack onto LFO depth, does macro-as-own-source still
+   earn its place, or would you rather it collapse into always going through
+   the LFO/depth path?
