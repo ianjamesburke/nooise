@@ -7,7 +7,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use super::{
     AutomationState, ControlAddress, DEFAULT_LFO_DEPTH_RATIO, FluidControls, LfoRoute, LfoShape,
-    all_specs, spec_by_id,
+    MAX_LFO_CYCLE_BEATS, MIN_LFO_CYCLE_BEATS, all_specs, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -199,7 +199,8 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         automation.set_route(
             ControlAddress::new(spec.id),
             LfoRoute {
-                cycle_beats: finite_or(cycle_beats, 2.0).clamp(0.25, 16.0),
+                cycle_beats: finite_or(cycle_beats, 2.0)
+                    .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS),
                 depth_ratio: finite_or(depth_ratio, DEFAULT_LFO_DEPTH_RATIO).clamp(0.0, 1.0),
                 shape,
                 phase_offset_beats: finite_or(phase_offset_beats, 0.0).clamp(0.0, 4.0),

@@ -18,7 +18,7 @@ pub(crate) struct TonalEngine {
 }
 
 pub(crate) const TONAL_LOW_CUT_HZ: f32 = 70.0;
-pub(crate) const TONAL_RATE_BEATS_MIN: f32 = 0.25;
+pub(crate) const TONAL_RATE_BEATS_MIN: f32 = 0.125;
 pub(crate) const TONAL_RATE_BEATS_MAX: f32 = 4.0;
 pub(crate) const TONAL_CYCLE_BEATS_MIN: f32 = TONAL_RATE_BEATS_MIN;
 pub(crate) const TONAL_CYCLE_BEATS_MAX: f32 = 16.0;

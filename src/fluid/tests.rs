@@ -362,20 +362,20 @@ fn lfo_field_adjust_steps_and_clamps() {
     assert_close(route.depth_ratio, 0.0);
 
     route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
-    assert_close(route.cycle_beats, 2.25);
-    for _ in 0..100 {
+    assert_close(route.cycle_beats, 2.125);
+    for _ in 0..150 {
         route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
     }
     assert_close(route.cycle_beats, 16.0);
-    for _ in 0..100 {
+    for _ in 0..150 {
         route.adjust_field_at(LfoField::Interval, -1.0, 0.0);
     }
-    assert_close(route.cycle_beats, 0.25);
+    assert_close(route.cycle_beats, 0.125);
 
     route.adjust_field_at(LfoField::Offset, -1.0, 0.0);
     assert_close(route.phase_offset_beats, 0.0);
     route.adjust_field_at(LfoField::Offset, 1.0, 0.0);
-    assert_close(route.phase_offset_beats, 0.25);
+    assert_close(route.phase_offset_beats, 0.125);
     for _ in 0..100 {
         route.adjust_field_at(LfoField::Offset, 1.0, 0.0);
     }
@@ -383,11 +383,11 @@ fn lfo_field_adjust_steps_and_clamps() {
 }
 
 #[test]
-fn lfo_field_set_snaps_to_quarter_beat_grid() {
+fn lfo_field_set_snaps_to_eighth_beat_grid() {
     let mut route = LfoRoute::default();
 
     route.set_field_at(LfoField::Interval, 3.1, 0.0);
-    assert_close(route.cycle_beats, 3.0);
+    assert_close(route.cycle_beats, 3.125);
     route.set_field_at(LfoField::Interval, 100.0, 0.0);
     assert_close(route.cycle_beats, 16.0);
     route.set_field_at(LfoField::Amount, 130.0, 0.0);
@@ -429,7 +429,7 @@ fn lfo_interval_edits_preserve_live_phase_when_possible() {
 
     route.adjust_field_at(LfoField::Interval, 1.0, beat);
 
-    assert_close(route.cycle_beats, 2.25);
+    assert_close(route.cycle_beats, 2.125);
     assert!((route.phase_at(beat) - before).abs() < 1e-9);
 }
 
@@ -764,7 +764,7 @@ fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     let mut controls = FluidControls::default();
 
     apply_value(Tab::Kick, 1, 1.13, &mut controls);
-    assert_close(controls.kick.interval_beats, 1.25);
+    assert_close(controls.kick.interval_beats, 1.125);
 
     apply_value(Tab::Chords, 1, 12.0, &mut controls);
     assert_close(controls.pad.chord_bars, 16.0);
@@ -1312,15 +1312,15 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
 }
 
 #[test]
-fn kick_interval_floor_is_quarter_beat() {
+fn kick_interval_floor_is_eighth_beat() {
     let mut controls = FluidControls::default();
     controls.kick.interval_beats = 1.0;
     apply_min(Tab::Kick, 1, &mut controls);
-    assert_close(controls.kick.interval_beats, 0.25);
+    assert_close(controls.kick.interval_beats, 0.125);
 
-    controls.kick.interval_beats = 0.25;
+    controls.kick.interval_beats = 0.125;
     apply_delta(Tab::Kick, 1, -1.0, &mut controls);
-    assert_close(controls.kick.interval_beats, 0.25);
+    assert_close(controls.kick.interval_beats, 0.125);
 }
 
 #[test]
@@ -1390,7 +1390,7 @@ fn perc_tab_controls_include_interval_and_offset() {
     let rows = tab_controls(Tab::Perc, &controls);
     assert_eq!(rows.len(), 5);
     assert_eq!(rows[1].label, "Interval");
-    assert_close(rows[1].min, 0.25);
+    assert_close(rows[1].min, 0.125);
     assert_close(rows[1].max, 4.25);
     assert_eq!(rows[2].label, "Offset");
     assert_close(rows[2].min, 0.0);
@@ -1410,21 +1410,21 @@ fn perc_interval_and_offset_adjust_and_clamp() {
     let mut controls = FluidControls::default();
 
     apply_delta(Tab::Perc, 1, 1.0, &mut controls);
-    assert_close(controls.perc.interval_beats, 0.5);
+    assert_close(controls.perc.interval_beats, 0.375);
 
     controls.perc.interval_beats = 4.25;
     apply_delta(Tab::Perc, 1, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 4.25);
 
     apply_delta(Tab::Perc, 2, 1.0, &mut controls);
-    assert_close(controls.perc.offset_beats, 0.25);
+    assert_close(controls.perc.offset_beats, 0.125);
 
     controls.perc.offset_beats = 4.0;
     apply_delta(Tab::Perc, 2, 1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 4.0);
 
     apply_min(Tab::Perc, 1, &mut controls);
-    assert_close(controls.perc.interval_beats, 0.25);
+    assert_close(controls.perc.interval_beats, 0.125);
 
     apply_min(Tab::Perc, 2, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
@@ -1715,13 +1715,13 @@ fn modulated_control_value_snaps_like_the_engine() {
         ..LfoRoute::default()
     };
 
-    // Peak of the sine: raw value 1.0 + 0.4 * 3.75 = 2.5 must land on 2.0.
+    // Peak of the sine: raw value 1.0 + 0.4 * 3.875 = 2.55 must land on 2.0.
     let peak = modulated_control_value(spec, &route, 1.0, 2.0);
     assert_close(peak, 2.0);
 
     // Trough: 1.0 - 1.5 clamps to the minimum subdivision.
     let trough = modulated_control_value(spec, &route, 1.0, 6.0);
-    assert_close(trough, 0.25);
+    assert_close(trough, 0.125);
 }
 
 #[test]
@@ -1735,7 +1735,7 @@ fn lfo_interval_modulation_snaps_to_power_of_two() {
         apply_automation(&mut effective, &automation, timing(sample, 120.0));
         let v = effective.kick.interval_beats;
         assert!(
-            [0.25f32, 0.5, 1.0, 2.0, 4.0]
+            [0.125f32, 0.25, 0.5, 1.0, 2.0, 4.0]
                 .iter()
                 .any(|&q| (v - q).abs() < 1e-4),
             "modulated interval {v} is not a power-of-two subdivision"
@@ -1744,7 +1744,7 @@ fn lfo_interval_modulation_snaps_to_power_of_two() {
 }
 
 #[test]
-fn lfo_offset_modulation_snaps_to_quarter_beats() {
+fn lfo_offset_modulation_snaps_to_eighth_beats() {
     let mut controls = FluidControls::default();
     controls.kick.offset_beats = 2.0;
     let automation = automation_with_route("kick.offset_beats", 0.4, 8.0);
@@ -1753,10 +1753,10 @@ fn lfo_offset_modulation_snaps_to_quarter_beats() {
         let mut effective = controls.clone();
         apply_automation(&mut effective, &automation, timing(sample, 120.0));
         let v = effective.kick.offset_beats;
-        let snapped = (v / 0.25).round() * 0.25;
+        let snapped = (v / 0.125).round() * 0.125;
         assert!(
             (v - snapped).abs() < 1e-4,
-            "modulated offset {v} is not on the 0.25-beat grid"
+            "modulated offset {v} is not on the 0.125-beat grid"
         );
     }
 }
@@ -1784,17 +1784,17 @@ fn lfo_interval_sweep_plays_on_grid_breakdown() {
 
     // Every hit stays locked to the absolute 16th grid.
     for &beat in &hit_beats {
-        let snapped = (beat / 0.25).round() * 0.25;
+        let snapped = (beat / 0.125).round() * 0.125;
         assert!(
             (beat - snapped).abs() < 1e-3,
-            "hit at beat {beat:.4} is off the 0.25 grid"
+            "hit at beat {beat:.4} is off the 0.125 grid"
         );
     }
 
     // The sweep actually breaks down through multiple subdivisions.
     let mut gaps: Vec<i64> = hit_beats
         .windows(2)
-        .map(|w| ((w[1] - w[0]) / 0.25).round() as i64)
+        .map(|w| ((w[1] - w[0]) / 0.125).round() as i64)
         .collect();
     gaps.sort_unstable();
     gaps.dedup();
