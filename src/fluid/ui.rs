@@ -516,14 +516,15 @@ pub(crate) fn lfo_submenu_rows(
     automation: &AutomationState,
     address: ControlAddress,
 ) -> Vec<LfoSubRow> {
-    let mut rows = Vec::with_capacity(6);
+    let mut rows = Vec::with_capacity(LfoField::ALL.len() * (1 + MacroField::ALL.len()));
     for field in LfoField::ALL {
         rows.push(LfoSubRow::Field(field));
         if let Some(key_str) = field.macro_key() {
             let key = unit_key(address.id(), Some(key_str));
             if automation.open_field() == Some(key.as_str()) {
-                rows.push(LfoSubRow::FieldMacro(field, MacroField::Amount));
-                rows.push(LfoSubRow::FieldMacro(field, MacroField::Target));
+                for slot in MacroField::ALL {
+                    rows.push(LfoSubRow::FieldMacro(field, slot));
+                }
             }
         }
     }
@@ -872,10 +873,9 @@ fn automation_footer(automation: &AutomationState) -> Option<String> {
         ModKind::Macro => {
             let route = automation.macro_route(address)?;
             Some(format!(
-                "MACRO {}   {}   amount {:+.0}%   x remove   Esc close",
+                "MACRO {}   {}   x remove   Esc close",
                 address.id(),
-                route.field_display(MacroField::Target),
-                route.amount * 100.0
+                route.summary(),
             ))
         }
     }
@@ -1272,7 +1272,7 @@ pub(crate) fn render_fluid(
                 .as_ref()
                 .filter(|r| r.depth_ratio > f32::EPSILON);
             let env = envelope.filter(|r| r.amount.abs() > f32::EPSILON);
-            let single = |l: Option<&LfoRoute>, e: Option<&EnvelopeRoute>, m: Option<(f32, f32)>| {
+            let single = |l: Option<&LfoRoute>, e: Option<&EnvelopeRoute>, m: Option<f32>| {
                 ratio_of(modulated_control_value_full(spec, l, e, m, base, mod_ctx))
             };
             // While an editor is open on this control, faintly shade the full
@@ -1294,9 +1294,9 @@ pub(crate) fn render_fluid(
                     hi = hi.max(base + swing.max(0.0));
                 }
                 if let Some(r) = macro_route {
-                    let swing = mod_range * r.amount.clamp(-1.0, 1.0);
-                    lo = lo.min(base + swing.min(0.0));
-                    hi = hi.max(base + swing.max(0.0));
+                    let (swing_lo, swing_hi) = r.swing(mod_range);
+                    lo = lo.min(base + swing_lo);
+                    hi = hi.max(base + swing_hi);
                 }
                 (
                     ratio_of(lo.clamp(spec.min, spec.max)),
@@ -1308,7 +1308,7 @@ pub(crate) fn render_fluid(
                     .then(|| single(lfo, env, macro_mod)),
                 lfo: lfo.map(|r| single(Some(r), None, None)),
                 envelope: env.map(|r| single(None, Some(r), None)),
-                macro_: macro_mod.map(|m| single(None, None, Some(m))),
+                macro_: macro_mod.map(|combined| single(None, None, Some(combined))),
                 shadow,
             }
         };
@@ -1415,7 +1415,7 @@ pub(crate) fn render_fluid(
             if macro_open_here {
                 for (fi, field) in MacroField::ALL.iter().enumerate() {
                     rows.push(field_line(
-                        field.label(),
+                        &field.label(),
                         route.field_ratio(*field),
                         route.field_display(*field),
                         lfo_selected == fi + 1,
@@ -1476,12 +1476,7 @@ pub(crate) const MACRO_PALETTE: FieldPalette = FieldPalette {
 /// Compact one-line reminder of a closed macro assignment under its control.
 fn macro_chip_line(route: &MacroRoute) -> Line<'static> {
     Line::from(Span::styled(
-        format!(
-            "    {:<15} ⇒ {}   {}",
-            "",
-            route.field_display(MacroField::Target),
-            route.field_display(MacroField::Amount)
-        ),
+        format!("    {:<15} ⇒ {}", "", route.summary()),
         Style::default().fg(MACRO_PALETTE.idle),
     ))
 }

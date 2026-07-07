@@ -27,6 +27,14 @@ fn timing(sample: u64, bpm: f32) -> TimingContext {
     TimingContext::new(sample_rate, bpm, beat)
 }
 
+/// A macro route riding a single slot, for tests that only care about one
+/// macro slider (most of the pre-existing single-target coverage).
+fn single_macro_route(slot: usize, amount: f32) -> MacroRoute {
+    let mut amounts = [0.0; MACRO_COUNT];
+    amounts[slot] = amount;
+    MacroRoute { amounts }
+}
+
 fn append_record_to_code(code: &str, record_type: u8, payload: &[u8]) -> String {
     let encoded = code.strip_prefix("n1_").unwrap();
     let mut bytes = URL_SAFE_NO_PAD.decode(encoded).unwrap();
@@ -521,13 +529,7 @@ fn x_removes_the_open_route_or_clears_the_whole_control() {
     // x with no editor open strips every modulator on the control.
     automation.open_or_create(address).depth_ratio = 0.4;
     automation.close_editor();
-    automation.set_macro_route(
-        address,
-        MacroRoute {
-            target: Some(0),
-            amount: 0.5,
-        },
-    );
+    automation.set_macro_route(address, single_macro_route(0, 0.5));
     automation.clear_control(address);
     assert!(automation.route(address).is_none());
     assert!(automation.macro_route(address).is_none());
@@ -539,29 +541,44 @@ fn macro_route_scales_target_into_its_range() {
     controls.master.level = 0.2;
     controls.macros.values[0] = 0.5;
     let mut automation = AutomationState::default();
-    automation.set_macro_route(
-        ControlAddress::new("master.level"),
-        MacroRoute {
-            target: Some(0),
-            amount: 1.0,
-        },
-    );
+    automation.set_macro_route(ControlAddress::new("master.level"), single_macro_route(0, 1.0));
 
     let mut effective = controls.clone();
     apply_automation(&mut effective, &automation, timing(0, 120.0));
     assert_near(effective.master.level, 0.7);
 
     // Negative amount dips below the base and clamps at the control minimum.
-    automation.set_macro_route(
-        ControlAddress::new("master.level"),
-        MacroRoute {
-            target: Some(0),
-            amount: -1.0,
-        },
-    );
+    automation.set_macro_route(ControlAddress::new("master.level"), single_macro_route(0, -1.0));
     let mut effective = controls.clone();
     apply_automation(&mut effective, &automation, timing(0, 120.0));
     assert_near(effective.master.level, 0.0);
+}
+
+#[test]
+fn a_control_can_ride_several_macro_sliders_at_once() {
+    // The core of the "4 amount sliders" model: no target selection, so a
+    // control can be assigned to more than one macro at the same time, each
+    // amount set and adjusted independently.
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.2;
+    controls.macros.values[0] = 0.5;
+    controls.macros.values[2] = 1.0;
+    let mut automation = AutomationState::default();
+    let mut route = MacroRoute::default();
+    route.amounts[0] = 0.4;
+    route.amounts[2] = -0.3;
+    automation.set_macro_route(ControlAddress::new("master.level"), route);
+
+    // 0.2 + range(1.0) * (0.4 * 0.5 + -0.3 * 1.0) = 0.2 + (0.2 - 0.3) = 0.1
+    let mut effective = controls.clone();
+    apply_automation(&mut effective, &automation, timing(0, 120.0));
+    assert_near(effective.master.level, 0.1);
+
+    // Zeroing one slot doesn't disturb the other.
+    automation.macro_route_mut(ControlAddress::new("master.level")).unwrap().amounts[2] = 0.0;
+    let mut effective = controls.clone();
+    apply_automation(&mut effective, &automation, timing(0, 120.0));
+    assert_near(effective.master.level, 0.4);
 }
 
 #[test]
@@ -589,8 +606,8 @@ fn field_macro_on_lfo_amount_is_off_by_default_and_only_appears_after_v() {
     automation.edit(|state| state.toggle_open_field(key.clone()));
     assert_eq!(
         lfo_submenu_rows(automation.state(), address).len(),
-        LfoField::ALL.len() + 2,
-        "amount and target rows nest in once expanded"
+        LfoField::ALL.len() + MacroField::ALL.len(),
+        "one row per macro slider nests in once expanded"
     );
     assert!(automation.state().field_macro(&key).is_some());
 
@@ -621,10 +638,7 @@ fn macro_stacked_on_lfo_amount_via_v_scales_the_depth() {
     // The only way this route exists: the user pressed v on the amount row.
     automation.set_field_macro(
         unit_key("master.level", Some("lfo.amount")),
-        MacroRoute {
-            target: Some(0),
-            amount: 1.0,
-        },
+        single_macro_route(0, 1.0),
     );
 
     // Half a beat into a 2-beat sine sits at its +1 peak, so the level is
@@ -650,10 +664,7 @@ fn macro_sliders_own_lfos_never_take_a_stacked_field_macro() {
     // from a hand-edited song code), it must never apply.
     automation.set_field_macro(
         unit_key("macro.1", Some("lfo.amount")),
-        MacroRoute {
-            target: Some(1),
-            amount: 1.0,
-        },
+        single_macro_route(1, 1.0),
     );
     let controls = FluidControls::default();
     let route = automation.route(address).unwrap();
@@ -676,13 +687,7 @@ fn macro_own_lfo_feeds_targets_in_the_same_pass() {
             ..LfoRoute::default()
         },
     );
-    automation.set_macro_route(
-        ControlAddress::new("master.level"),
-        MacroRoute {
-            target: Some(0),
-            amount: 1.0,
-        },
-    );
+    automation.set_macro_route(ControlAddress::new("master.level"), single_macro_route(0, 1.0));
 
     // Sine peak: beat 0.5 of a 2-beat cycle. At 120 BPM that is 0.25 s.
     let sample = (f64::from(SAMPLE_RATE) * 0.25) as u64;
@@ -2578,7 +2583,7 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
 // ============================================================
 
 #[test]
-fn song_code_v4_round_trips_seed_macro_envelope_and_field_macro() {
+fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
     let mut automation = AutomationState::default();
     automation.set_route(
         ControlAddress::new("master.level"),
@@ -2592,18 +2597,14 @@ fn song_code_v4_round_trips_seed_macro_envelope_and_field_macro() {
     );
     automation.set_field_macro(
         unit_key("master.level", Some("lfo.amount")),
-        MacroRoute {
-            target: Some(1),
-            amount: 0.35,
-        },
+        single_macro_route(1, 0.35),
     );
-    automation.set_macro_route(
-        ControlAddress::new("pad.level"),
-        MacroRoute {
-            target: Some(2),
-            amount: -0.55,
-        },
-    );
+    // pad.level rides two macro sliders at once, proving persistence keeps
+    // every slot, not just one target.
+    let mut pad_route = MacroRoute::default();
+    pad_route.amounts[2] = -0.55;
+    pad_route.amounts[3] = 0.2;
+    automation.set_macro_route(ControlAddress::new("pad.level"), pad_route);
     automation.set_envelope(
         ControlAddress::new("pad.reverb_mix"),
         EnvelopeRoute {
@@ -2635,15 +2636,14 @@ fn song_code_v4_round_trips_seed_macro_envelope_and_field_macro() {
         .automation
         .field_macro(&unit_key("master.level", Some("lfo.amount")))
         .unwrap();
-    assert_eq!(field_macro.target, Some(1));
-    assert_close(field_macro.amount, 0.35);
+    assert_close(field_macro.amounts[1], 0.35);
 
     let macro_route = decoded
         .automation
         .macro_route(ControlAddress::new("pad.level"))
         .unwrap();
-    assert_eq!(macro_route.target, Some(2));
-    assert_close(macro_route.amount, -0.55);
+    assert_close(macro_route.amounts[2], -0.55);
+    assert_close(macro_route.amounts[3], 0.2);
 
     let env = decoded
         .automation
@@ -2688,24 +2688,43 @@ fn song_code_decodes_hand_built_v2_automation_payload() {
 }
 
 #[test]
+fn song_code_decodes_hand_built_v4_single_target_macro_into_one_slot() {
+    // Hand-built v4 payload: the pre-v5 macro shape named one target macro
+    // slider plus one amount per address. Confirms song codes authored
+    // before the "4 independent amounts" model keep decoding, landing in
+    // just that one slot of the new per-slider representation.
+    let code = song::encode_song_code(&SongState::default()).unwrap();
+    let mut payload = Vec::new();
+    payload.push(4u8); // AUTOMATION_PAYLOAD_VERSION_V4
+    payload.extend_from_slice(&0u16.to_le_bytes()); // no LFO routes
+    payload.extend_from_slice(&1u16.to_le_bytes()); // one legacy macro route
+    write_test_str("pad.level", &mut payload);
+    payload.push(2); // target: macro slider index 2
+    payload.extend_from_slice(&(-0.6f32).to_le_bytes()); // amount
+    payload.extend_from_slice(&0u16.to_le_bytes()); // no envelopes
+    payload.extend_from_slice(&0u16.to_le_bytes()); // no legacy field macros
+    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
+
+    let decoded = song::decode_song_code(&code).unwrap();
+    let route = decoded
+        .automation
+        .macro_route(ControlAddress::new("pad.level"))
+        .unwrap();
+    for (i, amount) in route.amounts.iter().enumerate() {
+        if i == 2 {
+            assert_close(*amount, -0.6);
+        } else {
+            assert_close(*amount, 0.0);
+        }
+    }
+}
+
+#[test]
 fn song_code_does_not_serialize_neutral_macro_routes() {
     let mut automation = AutomationState::default();
-    // Unassigned target: neutral, must not be written.
-    automation.set_macro_route(
-        ControlAddress::new("master.level"),
-        MacroRoute {
-            target: None,
-            amount: 0.8,
-        },
-    );
-    // Assigned target but zero amount: also neutral, must not be written.
-    automation.set_macro_route(
-        ControlAddress::new("pad.level"),
-        MacroRoute {
-            target: Some(1),
-            amount: 0.0,
-        },
-    );
+    // Every slot at zero: neutral, must not be written.
+    automation.set_macro_route(ControlAddress::new("master.level"), MacroRoute::default());
+    automation.set_macro_route(ControlAddress::new("pad.level"), MacroRoute::default());
     let song = SongState {
         controls: FluidControls::default(),
         automation,
@@ -2750,13 +2769,11 @@ fn macro_toggle_hides_but_keeps_the_assignment() {
     open_modulator(&mut automation, &items, 0, ModKind::Macro, &mut sub);
     automation.edit(|state| {
         let route = state.macro_route_mut(address).unwrap();
-        route.target = Some(1);
-        route.amount = 0.5;
+        route.amounts[1] = 0.5;
     });
 
     open_modulator(&mut automation, &items, 0, ModKind::Macro, &mut sub);
     assert!(!automation.state().is_editor_open());
     let route = automation.state().macro_route(address).unwrap();
-    assert_eq!(route.target, Some(1));
-    assert_close(route.amount, 0.5);
+    assert_close(route.amounts[1], 0.5);
 }

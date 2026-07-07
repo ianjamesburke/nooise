@@ -19,7 +19,8 @@ pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const AUTOMATION_PAYLOAD_VERSION_V2: u8 = 2;
 const AUTOMATION_PAYLOAD_VERSION_V3: u8 = 3;
-const AUTOMATION_PAYLOAD_VERSION: u8 = 4;
+const AUTOMATION_PAYLOAD_VERSION_V4: u8 = 4;
+const AUTOMATION_PAYLOAD_VERSION: u8 = 5;
 const LFO_SHAPE_SINE: u8 = 0;
 const LFO_SHAPE_TRIANGLE: u8 = 1;
 const LFO_SHAPE_RAMP_UP: u8 = 2;
@@ -193,11 +194,14 @@ fn automation_has_content(automation: &AutomationState) -> bool {
             .any(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
 }
 
-/// Automation payload v4: LFO section (with seed), macro section, envelope
-/// section, then a new field-macro section (a macro stacked onto a single
-/// numeric field of an LFO editor via its `v` gesture). v2 (LFO only, no
-/// seed) and v3 (no field-macro section) payloads still decode via their
-/// readers below; only the write path has moved to v4.
+/// Automation payload v5: LFO section (with seed), macro section, envelope
+/// section, then a field-macro section (a macro stacked onto a single
+/// numeric field of an LFO editor via its `v` gesture). Macro and
+/// field-macro routes each carry one bipolar amount per macro slider (a
+/// control can ride several macros at once), replacing v4's single
+/// target+amount pair. v2 (LFO only, no seed), v3 (no field-macro section),
+/// and v4 (single-target macros) payloads still decode via their readers
+/// below; only the write path has moved to v5.
 fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     out.push(AUTOMATION_PAYLOAD_VERSION);
 
@@ -218,11 +222,7 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
     write_u16(macros.len(), out)?;
     for (address, route) in macros {
         write_str(address.id(), out)?;
-        let target = route
-            .target
-            .expect("neutral (targetless) macros are filtered out above");
-        out.push(u8::try_from(target).map_err(|_| SongCodeError::TooLarge)?);
-        out.extend_from_slice(&route.amount.to_le_bytes());
+        write_macro_amounts(route, out);
     }
 
     let envelopes: Vec<_> = automation
@@ -247,14 +247,16 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
     write_u16(field_macros.len(), out)?;
     for (key, route) in field_macros {
         write_str(key, out)?;
-        let target = route
-            .target
-            .expect("neutral (targetless) field macros are filtered out above");
-        out.push(u8::try_from(target).map_err(|_| SongCodeError::TooLarge)?);
-        out.extend_from_slice(&route.amount.to_le_bytes());
+        write_macro_amounts(route, out);
     }
 
     Ok(())
+}
+
+fn write_macro_amounts(route: &MacroRoute, out: &mut Vec<u8>) {
+    for amount in route.amounts {
+        out.extend_from_slice(&amount.to_le_bytes());
+    }
 }
 
 fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
@@ -263,7 +265,8 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
     match version {
         AUTOMATION_PAYLOAD_VERSION_V2 => read_automation_v2(&mut reader, automation),
         AUTOMATION_PAYLOAD_VERSION_V3 => read_automation_v3(&mut reader, automation),
-        AUTOMATION_PAYLOAD_VERSION => read_automation_v4(&mut reader, automation),
+        AUTOMATION_PAYLOAD_VERSION_V4 => read_automation_v4(&mut reader, automation),
+        AUTOMATION_PAYLOAD_VERSION => read_automation_v5(&mut reader, automation),
         _ => Ok(()),
     }
 }
@@ -301,23 +304,28 @@ fn read_automation_v2(
     Ok(())
 }
 
-/// v3 layout: LFO section (with seed), macro section, envelope section.
+/// v3 layout: LFO section (with seed), macro section (single target+amount
+/// per address), envelope section.
 fn read_automation_v3(
     reader: &mut Reader,
     automation: &mut AutomationState,
 ) -> Result<(), SongCodeError> {
     read_lfo_section(reader, automation)?;
-    read_macro_and_envelope_sections(reader, automation)
+    read_legacy_macro_section(reader, automation)?;
+    read_envelope_section(reader, automation)
 }
 
 /// v4 layout: identical LFO/macro/envelope sections to v3, plus a trailing
-/// field-macro section (a macro stacked onto one numeric LFO field).
+/// field-macro section (a macro stacked onto one numeric LFO field), both
+/// still in the single target+amount shape superseded by v5's per-slider
+/// amounts.
 fn read_automation_v4(
     reader: &mut Reader,
     automation: &mut AutomationState,
 ) -> Result<(), SongCodeError> {
     read_lfo_section(reader, automation)?;
-    read_macro_and_envelope_sections(reader, automation)?;
+    read_legacy_macro_section(reader, automation)?;
+    read_envelope_section(reader, automation)?;
 
     let field_macro_count = reader.u16()?;
     for _ in 0..field_macro_count {
@@ -328,16 +336,58 @@ fn read_automation_v4(
         if target >= MACRO_COUNT {
             continue;
         }
-        automation.set_field_macro(
-            key.to_string(),
-            MacroRoute {
-                target: Some(target),
-                amount: finite_or(amount, 0.0).clamp(-1.0, 1.0),
-            },
-        );
+        automation.set_field_macro(key.to_string(), single_slot_macro_route(target, amount));
     }
 
     Ok(())
+}
+
+/// v5 layout: identical LFO/envelope sections, but macro and field-macro
+/// sections now carry one bipolar amount per macro slider per address/key,
+/// so a control (or stacked field) can ride several macros at once.
+fn read_automation_v5(
+    reader: &mut Reader,
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
+    read_lfo_section(reader, automation)?;
+
+    let macro_count = reader.u16()?;
+    for _ in 0..macro_count {
+        let id = reader.string()?;
+        let route = read_macro_amounts(reader)?;
+        if let Some(spec) = spec_by_id(id) {
+            automation.set_macro_route(ControlAddress::new(spec.id), route);
+        }
+    }
+
+    read_envelope_section(reader, automation)?;
+
+    let field_macro_count = reader.u16()?;
+    for _ in 0..field_macro_count {
+        let key = reader.string()?;
+        let route = read_macro_amounts(reader)?;
+        automation.set_field_macro(key.to_string(), route);
+    }
+
+    Ok(())
+}
+
+fn read_macro_amounts(reader: &mut Reader) -> Result<MacroRoute, SongCodeError> {
+    let mut amounts = [0.0; MACRO_COUNT];
+    for amount in &mut amounts {
+        *amount = finite_or(reader.f32()?, 0.0).clamp(-1.0, 1.0);
+    }
+    Ok(MacroRoute { amounts })
+}
+
+/// A v3/v4-era macro assignment named one target macro slider; fold it into
+/// the current per-slot representation with only that slot set.
+fn single_slot_macro_route(target: usize, amount: f32) -> MacroRoute {
+    let mut amounts = [0.0; MACRO_COUNT];
+    if target < MACRO_COUNT {
+        amounts[target] = finite_or(amount, 0.0).clamp(-1.0, 1.0);
+    }
+    MacroRoute { amounts }
 }
 
 /// LFO section shared by the v3 and v4 layouts (identical byte shape).
@@ -373,8 +423,9 @@ fn read_lfo_section(
     Ok(())
 }
 
-/// Macro and envelope sections shared by the v3 and v4 layouts.
-fn read_macro_and_envelope_sections(
+/// Macro section shared by the v3 and v4 layouts: one target macro slider
+/// plus one amount per address, superseded by v5's per-slot amounts.
+fn read_legacy_macro_section(
     reader: &mut Reader,
     automation: &mut AutomationState,
 ) -> Result<(), SongCodeError> {
@@ -392,13 +443,17 @@ fn read_macro_and_envelope_sections(
         }
         automation.set_macro_route(
             ControlAddress::new(spec.id),
-            MacroRoute {
-                target: Some(target),
-                amount: finite_or(amount, 0.0).clamp(-1.0, 1.0),
-            },
+            single_slot_macro_route(target, amount),
         );
     }
+    Ok(())
+}
 
+/// Envelope section shared by the v3, v4, and v5 layouts (identical shape).
+fn read_envelope_section(
+    reader: &mut Reader,
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
     let envelope_count = reader.u16()?;
     for _ in 0..envelope_count {
         let id = reader.string()?;

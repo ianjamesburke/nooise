@@ -809,120 +809,124 @@ impl EnvelopeRoute {
 
 const MACRO_AMOUNT_STEP: f32 = 0.01;
 
-/// A macro target cycles through none + each macro slider; none sits at
-/// index 0. Shared by macro routes and LFO depth macros.
-fn macro_target_index(target: Option<usize>) -> usize {
-    target.map_or(0, |t| t + 1)
-}
-
-fn macro_target_from_index(index: usize) -> Option<usize> {
-    index.checked_sub(1)
-}
-
-fn macro_target_display(target: Option<usize>) -> String {
-    match target {
-        Some(t) => format!("macro {}", t + 1),
-        None => "none".to_string(),
-    }
-}
-
+/// One of the four macro sliders' independent amount fields on a route.
+/// There is no "target" selection any more: every macro assignment (a
+/// regular control's `v` route, or a field macro stacked on an LFO field)
+/// holds a bipolar amount for all four macro sliders at once, so a single
+/// control can ride several macros simultaneously.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MacroField {
-    Target,
-    Amount,
-}
+pub(crate) struct MacroField(usize);
 
 impl MacroField {
-    /// Amount leads so the first row after opening matches the LFO and
-    /// envelope submenus.
-    pub(crate) const ALL: [MacroField; 2] = [Self::Amount, Self::Target];
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Target => "macro",
-            Self::Amount => "amount",
+    pub(crate) const ALL: [MacroField; MACRO_COUNT] = {
+        let mut all = [MacroField(0); MACRO_COUNT];
+        let mut i = 0;
+        while i < MACRO_COUNT {
+            all[i] = MacroField(i);
+            i += 1;
         }
+        all
+    };
+
+    pub(crate) fn label(self) -> String {
+        format!("macro {}", self.0 + 1)
+    }
+
+    fn index(self) -> usize {
+        self.0
     }
 }
 
-/// Assignment of a regular control to one of the macro sliders. The macro's
-/// live value scales `amount` into the control's range as an independent
-/// modulation source alongside the LFO.
+/// Assignment of a control (or a single stacked LFO field) to the macro
+/// sliders. Each of the four macro sliders has its own independent bipolar
+/// amount in -1..1, applied to the control's full range and summed — a
+/// control can ride several macros at once, each set directly, none of them
+/// requiring the others to be neutral.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MacroRoute {
-    /// Index into the macro sliders, or None while unassigned.
-    pub(crate) target: Option<usize>,
-    /// Bipolar depth in -1..1 applied to the control's full range.
-    pub(crate) amount: f32,
+    pub(crate) amounts: [f32; MACRO_COUNT],
 }
 
 impl Default for MacroRoute {
     fn default() -> Self {
         Self {
-            target: None,
-            amount: 0.0,
+            amounts: [0.0; MACRO_COUNT],
         }
     }
 }
 
 impl MacroRoute {
-    fn target_index(self) -> usize {
-        macro_target_index(self.target)
-    }
-
-    fn target_from_index(index: usize) -> Option<usize> {
-        macro_target_from_index(index)
-    }
-
     pub(crate) fn is_neutral(self) -> bool {
-        self.target.is_none() || self.amount.abs() <= f32::EPSILON
+        self.amounts.iter().all(|a| a.abs() <= f32::EPSILON)
     }
 
     pub(crate) fn adjust_field(&mut self, field: MacroField, dir: f32) {
-        match field {
-            MacroField::Target => {
-                let states = MACRO_COUNT + 1;
-                self.target =
-                    Self::target_from_index(stepped_index(self.target_index(), dir, states));
-            }
-            MacroField::Amount => {
-                self.amount = (self.amount + dir * MACRO_AMOUNT_STEP).clamp(-1.0, 1.0);
-            }
-        }
+        let a = &mut self.amounts[field.index()];
+        *a = (*a + dir * MACRO_AMOUNT_STEP).clamp(-1.0, 1.0);
     }
 
     pub(crate) fn set_field(&mut self, field: MacroField, value: f32) {
-        match field {
-            MacroField::Target => {
-                self.target = Self::target_from_index(clamped_index(value, MACRO_COUNT + 1));
-            }
-            MacroField::Amount => {
-                let unit = if value.abs() > 1.0 { value / 100.0 } else { value };
-                self.amount = unit.clamp(-1.0, 1.0);
-            }
-        }
+        let unit = if value.abs() > 1.0 { value / 100.0 } else { value };
+        self.amounts[field.index()] = unit.clamp(-1.0, 1.0);
     }
 
     pub(crate) fn reset_field(&mut self, field: MacroField) {
-        let defaults = MacroRoute::default();
-        match field {
-            MacroField::Target => self.target = defaults.target,
-            MacroField::Amount => self.amount = defaults.amount,
-        }
+        self.amounts[field.index()] = 0.0;
     }
 
     pub(crate) fn field_ratio(self, field: MacroField) -> f32 {
-        match field {
-            MacroField::Target => self.target_index() as f32 / MACRO_COUNT as f32,
-            MacroField::Amount => (self.amount * 0.5 + 0.5).clamp(0.0, 1.0),
-        }
+        (self.amounts[field.index()] * 0.5 + 0.5).clamp(0.0, 1.0)
     }
 
     pub(crate) fn field_display(self, field: MacroField) -> String {
-        match field {
-            MacroField::Target => macro_target_display(self.target),
-            MacroField::Amount => format!("{:+.0}%", self.amount * 100.0),
+        format!("{:+.0}%", self.amounts[field.index()] * 100.0)
+    }
+
+    /// Compact summary of every non-neutral slot, e.g. "m1 +30%  m3 -50%",
+    /// for the closed chip line. "none" when every slot is at zero.
+    pub(crate) fn summary(self) -> String {
+        let parts: Vec<String> = self
+            .amounts
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.abs() > f32::EPSILON)
+            .map(|(i, a)| format!("m{} {:+.0}%", i + 1, a * 100.0))
+            .collect();
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join("  ")
         }
+    }
+
+    /// Combined bipolar contribution ratio: sum over every macro slider of
+    /// this route's amount times that slider's live value, each individually
+    /// clamped before summing. Multiplied by the control's range by the
+    /// caller. 0.0 when neutral, matching the "no effect" case.
+    fn combined(self, macro_values: &[f32; MACRO_COUNT]) -> f32 {
+        self.amounts
+            .iter()
+            .zip(macro_values)
+            .map(|(a, v)| a.clamp(-1.0, 1.0) * v.clamp(0.0, 1.0))
+            .sum()
+    }
+
+    /// Best-case full reach: how far the combined contribution could swing
+    /// the control below (negative) and above (positive) base if every macro
+    /// slider it rides independently reached its own extreme (1.0). Used by
+    /// the reach-shadow marker, not the live value.
+    pub(crate) fn swing(self, range: f32) -> (f32, f32) {
+        let mut lo = 0.0;
+        let mut hi = 0.0;
+        for a in self.amounts {
+            let a = a.clamp(-1.0, 1.0);
+            if a < 0.0 {
+                lo += a * range;
+            } else {
+                hi += a * range;
+            }
+        }
+        (lo, hi)
     }
 }
 
@@ -1209,7 +1213,7 @@ pub(crate) fn modulated_control_value_full(
     spec: &ControlSpec,
     lfo: Option<&LfoRoute>,
     envelope: Option<&EnvelopeRoute>,
-    macro_mod: Option<(f32, f32)>,
+    macro_mod: Option<f32>,
     base: f32,
     ctx: ModContext,
 ) -> f32 {
@@ -1221,8 +1225,8 @@ pub(crate) fn modulated_control_value_full(
     if let Some(route) = envelope {
         value += route.level_at(ctx) * range * route.amount.clamp(-1.0, 1.0);
     }
-    if let Some((amount, macro_value)) = macro_mod {
-        value += macro_value.clamp(0.0, 1.0) * range * amount.clamp(-1.0, 1.0);
+    if let Some(combined) = macro_mod {
+        value += combined * range;
     }
     let value = value.clamp(spec.min, spec.max);
     match spec.lfo_snap {
@@ -1243,55 +1247,60 @@ pub(crate) fn modulated_control_value(
     modulated_control_value_full(spec, Some(route), None, None, base, ModContext::lfo_only(beat))
 }
 
-/// The `(amount, live macro value)` pair for a `(amount, target)` assignment,
-/// or None when unassigned/neutral. Reads the macro slider from `controls`,
-/// so callers that want the macro's own modulation reflected must apply it to
-/// `controls` first (`apply_automation` pass one does).
-fn macro_pair(
-    amount: f32,
-    target: Option<usize>,
-    controls: &FluidControls,
-) -> Option<(f32, f32)> {
-    let target = target.filter(|_| amount.abs() > f32::EPSILON)?;
-    Some((amount, controls.macros.values[target]))
+/// Combined contribution of every macro slider a route rides, or None when
+/// the route is neutral (every slot at zero). Reads the macro sliders from
+/// `controls`, so callers that want their own modulation reflected must
+/// apply it to `controls` first (`apply_automation` pass one does).
+fn macro_pair(route: &MacroRoute, controls: &FluidControls) -> Option<f32> {
+    if route.is_neutral() {
+        return None;
+    }
+    Some(route.combined(&controls.macros.values))
 }
 
-/// UI-side variant: recomputes the macro slider's own modulated value from
-/// raw controls, mirroring what `apply_automation` pass one produces, so
-/// markers show what the engine hears.
+/// UI-side variant: recomputes each ridden macro slider's own modulated
+/// value from raw controls, mirroring what `apply_automation` pass one
+/// produces, so markers show what the engine hears.
 fn live_macro_pair(
-    amount: f32,
-    target: Option<usize>,
+    route: &MacroRoute,
     automation: &AutomationState,
     controls: &FluidControls,
     ctx: ModContext,
-) -> Option<(f32, f32)> {
-    let target = target.filter(|_| amount.abs() > f32::EPSILON)?;
-    let spec = spec_by_id(MACRO_CONTROLS[target].id)
-        .expect("macro sliders are registered controls");
-    let macro_address = ControlAddress::new(spec.id);
-    let value = modulated_control_value_full(
-        spec,
-        automation
-            .route(macro_address)
-            .filter(|route| route.depth_ratio > f32::EPSILON),
-        automation
-            .envelope(macro_address)
-            .filter(|route| route.amount.abs() > f32::EPSILON),
-        None,
-        (spec.get)(controls),
-        ctx,
-    );
-    Some((amount, value))
+) -> Option<f32> {
+    if route.is_neutral() {
+        return None;
+    }
+    let mut values = [0.0; MACRO_COUNT];
+    for (i, value) in values.iter_mut().enumerate() {
+        if route.amounts[i].abs() <= f32::EPSILON {
+            continue;
+        }
+        let spec =
+            spec_by_id(MACRO_CONTROLS[i].id).expect("macro sliders are registered controls");
+        let macro_address = ControlAddress::new(spec.id);
+        *value = modulated_control_value_full(
+            spec,
+            automation
+                .route(macro_address)
+                .filter(|route| route.depth_ratio > f32::EPSILON),
+            automation
+                .envelope(macro_address)
+                .filter(|route| route.amount.abs() > f32::EPSILON),
+            None,
+            (spec.get)(controls),
+            ctx,
+        );
+    }
+    Some(route.combined(&values))
 }
 
 pub(crate) fn macro_contribution(
     automation: &AutomationState,
     controls: &FluidControls,
     address: ControlAddress,
-) -> Option<(f32, f32)> {
+) -> Option<f32> {
     let route = automation.macro_route(address)?;
-    macro_pair(route.amount, route.target, controls)
+    macro_pair(route, controls)
 }
 
 pub(crate) fn live_macro_contribution(
@@ -1299,21 +1308,21 @@ pub(crate) fn live_macro_contribution(
     controls: &FluidControls,
     address: ControlAddress,
     ctx: ModContext,
-) -> Option<(f32, f32)> {
+) -> Option<f32> {
     let route = automation.macro_route(address)?;
-    live_macro_pair(route.amount, route.target, automation, controls, ctx)
+    live_macro_pair(route, automation, controls, ctx)
 }
 
 /// Fold any macros stacked onto an LFO route's amount/interval/offset (via
 /// the field editor's `v` gesture) into a modulated copy, using whatever
-/// `contribution` resolves each stacked field-macro's `(amount, target)` to.
+/// `contribution` resolves each stacked field-macro's combined ratio to.
 /// A macro slider's own LFO never takes a stacked macro (no macro chasing
 /// itself), so this is a no-op there.
 fn apply_field_macros(
     automation: &AutomationState,
     address: ControlAddress,
     route: &LfoRoute,
-    mut contribution: impl FnMut(&MacroRoute) -> Option<(f32, f32)>,
+    mut contribution: impl FnMut(&MacroRoute) -> Option<f32>,
 ) -> LfoRoute {
     if is_macro_id(address.id()) {
         return *route;
@@ -1322,10 +1331,9 @@ fn apply_field_macros(
     let mut apply_field = |key_str: &str, base: f32, min: f32, max: f32, out: &mut f32| {
         let key = unit_key(address.id(), Some(key_str));
         if let Some(field_route) = automation.field_macro(&key)
-            && let Some((amount, macro_value)) = contribution(field_route)
+            && let Some(combined) = contribution(field_route)
         {
-            *out = (base + amount.clamp(-1.0, 1.0) * macro_value.clamp(0.0, 1.0) * (max - min))
-                .clamp(min, max);
+            *out = (base + combined * (max - min)).clamp(min, max);
         }
     };
     apply_field(
@@ -1361,7 +1369,7 @@ pub(crate) fn effective_lfo_route(
     route: &LfoRoute,
 ) -> LfoRoute {
     apply_field_macros(automation, address, route, |field_route| {
-        macro_pair(field_route.amount, field_route.target, controls)
+        macro_pair(field_route, controls)
     })
 }
 
@@ -1375,7 +1383,7 @@ pub(crate) fn live_effective_lfo_route(
     ctx: ModContext,
 ) -> LfoRoute {
     apply_field_macros(automation, address, route, |field_route| {
-        live_macro_pair(field_route.amount, field_route.target, automation, controls, ctx)
+        live_macro_pair(field_route, automation, controls, ctx)
     })
 }
 
