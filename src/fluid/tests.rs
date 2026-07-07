@@ -2490,3 +2490,12 @@ fn song_code_does_not_serialize_neutral_macro_routes() {
             .is_none()
     );
 }
+
+#[test]
+fn enter_expands_into_the_owning_tab() {
+    assert_eq!(tab_owning_control("pad.level"), Some(Tab::Chords));
+    assert_eq!(tab_owning_control("bass.level"), Some(Tab::Bass));
+    assert_eq!(tab_owning_control("macro.1"), Some(Tab::Macros));
+    assert_eq!(tab_owning_control("master.bpm"), Some(Tab::Master));
+    assert_eq!(tab_owning_control("nope.nope"), None);
+}

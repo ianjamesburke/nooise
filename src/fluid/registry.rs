@@ -1231,6 +1231,22 @@ pub(crate) fn is_macro_id(id: &str) -> bool {
     MACRO_CONTROLS.iter().any(|spec| spec.id == id)
 }
 
+/// The tab a control lives on natively (its deepest editing surface), so
+/// Enter on a cross-tab row like the Master voice levels expands into that
+/// voice's own tab. Master picks up its own rows via the fallback scan.
+pub(crate) fn tab_owning_control(id: &str) -> Option<Tab> {
+    let owner = Tab::all()
+        .into_iter()
+        .filter(|tab| *tab != Tab::Master)
+        .find(|tab| tab_specs(*tab).iter().any(|spec| spec.id == id));
+    owner.or_else(|| {
+        MASTER_CONTROLS
+            .iter()
+            .any(|spec| spec.id == id)
+            .then_some(Tab::Master)
+    })
+}
+
 pub(crate) fn tab_specs(tab: Tab) -> &'static [ControlSpec] {
     match tab {
         Tab::Master => MASTER_CONTROLS,

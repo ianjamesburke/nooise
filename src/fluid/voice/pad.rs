@@ -90,8 +90,8 @@ impl PadEngine {
         let air = self.air.next_filtered(&mut self.rng, 0.0002) * 0.00025;
 
         (
-            (dry_l * 0.58 + air) * c.level,
-            (dry_r * 0.58 + air) * c.level,
+            (dry_l * 0.72 + air) * c.level,
+            (dry_r * 0.72 + air) * c.level,
         )
     }
 }

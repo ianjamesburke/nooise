@@ -227,6 +227,17 @@ pub(crate) fn ui_loop(
                         &mut lfo_selected,
                     );
                 }
+                KeyCode::Enter => {
+                    if !automation.state().is_editor_open()
+                        && let Some(item) = items.get(selected)
+                        && let Some(owner) = tab_owning_control(item.id)
+                        && owner != tab
+                    {
+                        tab = owner;
+                        selected = 0;
+                        lfo_selected = 0;
+                    }
+                }
                 KeyCode::Char('t') | KeyCode::Char('T') => {
                     unit = unit.cycled();
                 }
