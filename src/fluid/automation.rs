@@ -369,7 +369,7 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
         step: OFFSET_STEP,
         entry: LfoEntry::Snap,
         reset: 0.0,
-        beat_grid: false,
+        beat_grid: true,
     },
 ];
 
@@ -575,9 +575,13 @@ fn nearest_offset_for_phase(phase: f64, beat: f64, cycle_beats: f32) -> f32 {
 
     let mut best = snapped;
     let mut best_distance = phase_distance(phase, phase_at_with_offset(beat, cycle, best));
-    let steps = ((offset_spec.max - offset_spec.min) / offset_spec.step).round() as usize;
+    // Scan at the finest grid resolution and re-quantize each sample onto the
+    // control's actual grid, so `best` always lands on a real rung even
+    // though the grid itself is coarser above the floor.
+    let steps = ((offset_spec.max - offset_spec.min) / OFFSET_STEP).round() as usize;
     for i in 0..=steps {
-        let candidate = offset_spec.min + i as f32 * offset_spec.step;
+        let raw = offset_spec.min + i as f32 * OFFSET_STEP;
+        let candidate = offset_spec.quantize(raw);
         let distance = phase_distance(phase, phase_at_with_offset(beat, cycle, candidate));
         if distance < best_distance {
             best = candidate;

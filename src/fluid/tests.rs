@@ -1661,6 +1661,28 @@ fn perc_interval_and_offset_adjust_and_clamp() {
 }
 
 #[test]
+fn offset_grid_keeps_true_zero_reachable_below_the_floor() {
+    // Offsets have a genuine 0 = "no shift" minimum, unlike intervals (whose
+    // minimum is the 0.125 floor itself): 0 must survive as an extra rung
+    // below the floor, with sixteenths taking over above it.
+    let mut controls = FluidControls::default();
+    apply_value(Tab::Perc, 2, 0.03, &mut controls);
+    assert_close(controls.perc.offset_beats, 0.0);
+
+    apply_value(Tab::Perc, 2, 0.09, &mut controls);
+    assert_close(controls.perc.offset_beats, 0.125);
+
+    apply_value(Tab::Perc, 2, 0.3, &mut controls);
+    assert_close(controls.perc.offset_beats, 0.25);
+
+    controls.perc.offset_beats = 0.125;
+    apply_delta(Tab::Perc, 2, -1.0, &mut controls);
+    assert_close(controls.perc.offset_beats, 0.0);
+    apply_delta(Tab::Perc, 2, -1.0, &mut controls);
+    assert_close(controls.perc.offset_beats, 0.0);
+}
+
+#[test]
 fn pad_engine_caps_released_layers() {
     let controls = PadControls {
         chord_bars: 1.0,

@@ -570,7 +570,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.0,
         4.0,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.perc.offset_beats,
         |c, v| c.perc.offset_beats = v,
@@ -736,7 +736,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.0,
         4.0,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.bass.offset_beats,
         |c, v| c.bass.offset_beats = v,
@@ -833,7 +833,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.0,
         4.0,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.kick.offset_beats,
         |c, v| c.kick.offset_beats = v,
@@ -1020,7 +1020,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.0,
         4.0,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.tonal.offset_beats,
         |c, v| c.tonal.offset_beats = v,
@@ -1122,7 +1122,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.0,
         8.0,
-        Step::Linear(0.125),
+        Step::BeatGrid,
         Entry::Snap,
         |c| c.clap.offset_beats,
         |c, v| c.clap.offset_beats = v,
@@ -1313,29 +1313,43 @@ pub(crate) fn snap_step(value: f32, step: f32) -> f32 {
     (value / step).round() * step
 }
 
-/// Musical grid for interval-like fields: the 32nd (0.125) survives only as
-/// the floor value; everything above it locks to sixteenths (0.25 multiples).
+/// Musical grid shared by every interval- and offset-like field: the 32nd
+/// (0.125) survives only as a floor rung; everything above it locks to
+/// sixteenths (0.25 multiples). A control whose own minimum sits below the
+/// floor (offsets: 0 beats, meaning "no shift") keeps that true minimum as an
+/// extra rung below 0.125, so "no offset" stays reachable.
 pub(crate) const BEAT_GRID_FLOOR: f32 = 0.125;
 pub(crate) const BEAT_GRID_STEP: f32 = 0.25;
 
 pub(crate) fn beat_grid_snap(value: f32, min: f32, max: f32) -> f32 {
     let clamped = value.clamp(min, max);
-    let snapped = if clamped < (BEAT_GRID_FLOOR + BEAT_GRID_STEP) / 2.0 {
-        BEAT_GRID_FLOOR
-    } else {
-        snap_step(clamped, BEAT_GRID_STEP)
-    };
-    snapped.clamp(min, max)
+    let low = if min < BEAT_GRID_FLOOR { min } else { BEAT_GRID_FLOOR };
+    if low < BEAT_GRID_FLOOR && clamped <= (low + BEAT_GRID_FLOOR) / 2.0 {
+        return low.clamp(min, max);
+    }
+    if clamped < (BEAT_GRID_FLOOR + BEAT_GRID_STEP) / 2.0 {
+        return BEAT_GRID_FLOOR.clamp(min, max);
+    }
+    snap_step(clamped, BEAT_GRID_STEP).clamp(min, max)
 }
 
 pub(crate) fn beat_grid_adjust(value: f32, dir: f32, min: f32, max: f32) -> f32 {
     let current = beat_grid_snap(value, min, max);
-    let next = if dir > 0.0 && current <= BEAT_GRID_FLOOR {
-        BEAT_GRID_STEP
-    } else if dir < 0.0 && current <= BEAT_GRID_STEP {
+    let low = if min < BEAT_GRID_FLOOR { min } else { BEAT_GRID_FLOOR };
+    let next = if dir > 0.0 {
+        if current < BEAT_GRID_FLOOR {
+            BEAT_GRID_FLOOR
+        } else if current <= BEAT_GRID_FLOOR {
+            BEAT_GRID_STEP
+        } else {
+            current + BEAT_GRID_STEP
+        }
+    } else if current > BEAT_GRID_STEP {
+        current - BEAT_GRID_STEP
+    } else if current > BEAT_GRID_FLOOR {
         BEAT_GRID_FLOOR
     } else {
-        current + dir.signum() * BEAT_GRID_STEP
+        low
     };
     beat_grid_snap(next, min, max)
 }
