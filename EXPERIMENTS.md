@@ -1,94 +1,62 @@
-# Experiment: Envelopes and richer modulation
+# Experiment: LFO shapes + lightweight macros
 
-Branch `exp-envelopes-mod`. Theme: every control can already have a sine LFO —
-this branch explores what *else* a control can have. It extends the existing
-`f`-submenu + animated-lane paradigm rather than replacing it: select a slider,
-press a key, tweak an inline submenu, watch a live lane that draws exactly what
-the engine plays.
+Branch `exp-envelopes-mod`. Round two: the per-control envelope submenu from
+round one is gone — envelopes now live only on macro sliders. What remains is
+the LFO **shape** parameter (the round-one winner) plus a lightweight macro
+system and a batch of ergonomics fixes.
 
-All new routes/fields start **audible-neutral** (amount 0). Everything the UI
-draws comes from the same `modulated_control_value_full` path the engine hears.
+Everything the UI draws still comes from the same `modulated_control_value_full`
+path the engine hears. All new routes start audible-neutral (amount 0).
 
 ## How to try it
 
-`cargo run`, then on any tab:
+`cargo run`, then:
 
 - Arrow/`jk` select a control, `h/l` adjust, type a number + `Enter` to set.
-- `f` opens the **LFO** submenu (as before) — now with a **shape** field.
-- `e` opens the **envelope** submenu (new) — a one-shot AD sweep.
-- Inside a submenu: `jk` move between rows, `h/l` change a field, `H` reset a
-  field, type a number + `Enter` to set, `Esc` closes.
-- `r` re-rolls the seed of the selected LFO when its shape is random.
-- A control can carry **both** an LFO and an envelope at once; the marker and
-  audio sum them and clamp to the control's range.
+- `f` opens the **LFO** submenu (amount / interval / offset / shape).
+- `v` opens the **macro** submenu (macro none/1-4, bipolar amount) on any
+  regular control.
+- The **MACROS** tab (last tab) holds four bare sliders. On a macro slider,
+  `f` adds an LFO and `e` adds a one-shot envelope; `e` is refused elsewhere,
+  and `v` is refused on macro rows.
+- Double-tap the submenu's own key (`f` `f`, `e` `e`, `v` `v`) to disable:
+  amount zeroes and the route disappears. `Esc` closes and keeps settings.
+- `T` cycles the unit mode native → ms → beats; time fields convert their
+  display and numeric entry at the current BPM.
+- `Enter` on a cross-tab row (Master voice levels) expands into that voice's
+  tab.
+- `r` re-rolls the seed of a random-shape LFO.
 
-### 1. Modulator SHAPE (LFO submenu)
+## What changed this round
 
-The LFO submenu gains a `shape` row (last row, so `f`→`l` still nudges amount
-first). Cycle with `h/l` through:
-
-- `sine` (unchanged default), `triangle`, `ramp up`, `ramp down`, `square`
-  (smoothed), `random drift` (smoothed noise), `sample & hold` (stepped random,
-  snapped to the LFO's cycle grid).
-
-The animated lane draws the actual selected shape. Periodic shapes stay
-phase-locked (one cycle across the width, bright head at the current phase).
-Random shapes instead scroll the **real generated trajectory** right-to-left
-(head = now), so what you see is the sequence you hear. Random values are a pure
-hash of `(seed, cycle index)` — no RNG state — so offline `render --seed` stays
-byte-identical. `r` re-rolls the seed to a new but repeatable pattern.
-
-### 2. One-shot ENVELOPE (`e` submenu)
-
-`e` opens a sibling editor with four rows: `amount` (bipolar −100%..100%),
-`attack` (beats), `decay` (beats; `0` = hold at peak), and `trigger`. The
-trigger row cycles through `every 1/2/4/8/16/32 beats`, `on kick`, and
-`once (macro)` — folding the every-N interval choices and the macro one-shot
-into one discrete field. The envelope re-triggers and sweeps the control's
-modulation marker just like the LFO diamond, with its own lane (a rising/falling
-ramp with a phase head; green = positive amount, amber = negative).
-
-`on kick` reconstructs the kick grid from the live `kick.interval`/`kick.offset`
-controls, so it fires with the kick without threading kick-engine state into
-automation.
-
-### 3. Slow MACRO envelope
-
-Implemented as the `once (macro)` trigger plus a long `attack` and `decay = 0`
-(hold). Example: select Reverb Mix, `e`, set trigger `once (macro)`, amount
-`+60%`, attack `256 beats`, decay `hold` — the mix blooms over the next few
-minutes and stays. `attack`/`decay` reach 512 beats (~6 min at 82 BPM, ~12 min
-at 40 BPM). It is the same envelope system, not a separate one.
-
-### 4. LFO + envelope on the same control
-
-Cheap and kept: `AutomationState` holds independent `routes` (LFO) and
-`envelopes` maps. `modulated_control_value_full` sums both contributions and
-clamps/snaps once. Add an LFO with `f`, an envelope with `e`, on the same
-slider; the marker reflects the sum.
-
-## Tradeoffs / notes
-
-- **Persistence:** LFO shape now survives the song code (still payload v2, new
-  shape tags). Envelope routes and random seeds are **not** serialized on this
-  branch — export silently skips envelopes, and decoding old codes still works.
-  A saved random LFO reloads at the default seed (id-derived), so a manually
-  re-rolled pattern does not survive save/load.
-- **On-kick approximation:** the envelope's `on kick` trigger follows the kick
-  *grid*, not the kick engine's exact latching/pull-earlier behaviour. Close in
-  practice, deterministic, and it avoids coupling automation to the voice.
-- **Attack/decay granularity:** 0.5-beat steps (numeric entry for large macro
-  values). Fine for slow evolution; a fast pluck-tight attack is coarse.
+1. **Macros.** A macro is its own modulation source: effective = base + LFO +
+   amount x macro value, summed and clamped once. Macro sliders are ordinary
+   registry controls, so the engine applies automation in two passes (macros
+   first) and targets follow a macro that is itself LFO- or envelope-driven.
+   A closed assignment shows a compact amber chip line under its control.
+2. **Envelope demoted.** The AD sweep + trigger machinery (every-N / on-kick /
+   once) survives only on macro sliders, where slow blooms actually made
+   sense. Regular controls no longer take `e`.
+3. **Markers.** The bright diamond is the effective (summed) value; each
+   contributing source draws a dim ghost diamond at base+that-source-alone:
+   pink = LFO, green = envelope, amber = macro.
+4. **Baseline field behaviour.** Discrete fields (shape, trigger, macro
+   target) clamp at their ends instead of wrapping; all submenu rows render
+   through one shared field-row component.
+5. **Resolution.** Every 0.25-beat grid halved to 0.125 (32nd notes), floors
+   included.
+6. **Persistence.** Song-code automation payload v3 carries LFO seeds, macro
+   routes, and envelope routes. v2 codes still decode.
+7. **Louder chords.** Pad voice output gain 0.58 → 0.72.
 
 ## Feedback questions
 
-1. Is `e` for envelope, sitting right next to `f` for LFO, discoverable? Or
-   should the submenu advertise both keys inline?
-2. Does putting `shape` as the **last** LFO row (so `f`→`l` still hits amount)
-   feel right, or should shape lead the submenu as the headline feature?
-3. Do the random lanes (scrolling oscilloscope) read clearly next to the
-   phase-locked periodic lanes, or is the mixed metaphor confusing?
-4. Is folding interval + macro into one `trigger` field intuitive, or would you
-   expect a separate "interval" row and/or a dedicated macro key?
-5. Is `r` to re-roll a random LFO seed findable, and do you want reseeded
-   patterns to persist in the song code?
+1. Does macro-as-own-source feel right, or did you expect the macro to scale
+   the LFO amount instead?
+2. Is the amber chip line under an assigned control enough visibility, or do
+   macro assignments need a dedicated overview (e.g. on the MACROS tab)?
+3. Ghost diamonds: clarifying or cluttering once two sources overlap?
+4. Unit mode is global (all fields at once). Do you ever want per-field
+   units instead?
+5. Envelopes now only shape macros. Do you miss them on regular controls,
+   or is routing a control through a macro the better gesture anyway?
