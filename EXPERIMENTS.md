@@ -13,10 +13,12 @@ path the engine hears. All new routes start audible-neutral (amount 0).
 `cargo run`, then:
 
 - Arrow/`jk` select a control, `h/l` adjust, type a number + `Enter` to set.
-- `f` opens the **LFO** submenu (amount / interval / offset / shape). Under
-  amount sit two indented amber rows — `· amt` and `· macro` — that stack a
-  macro onto the LFO's depth: effective depth = amount + amt x macro value.
-  Macro sliders' own LFOs don't get these rows.
+- `f` opens the **LFO** submenu (amount / interval / offset / shape). On
+  amount, interval, or offset, `v` stacks a macro onto that specific field —
+  nothing shows until you press it, and it's pruned back out on close if you
+  leave it neutral, same as every other route. `x` on the expanded rows
+  removes just that stacked macro; `x` elsewhere still removes the whole
+  route. Macro sliders' own LFOs never take a stacked macro.
 - `v` opens the **macro** submenu (macro none/1-4, bipolar amount) on any
   regular control.
 - The **MACROS** tab (last tab) holds four bare sliders. On a macro slider,
@@ -45,29 +47,37 @@ path the engine hears. All new routes start audible-neutral (amount 0).
    sense. Regular controls no longer take `e`.
 3. **Markers.** The bright diamond is the effective (summed) value; each
    contributing source draws a dim ghost diamond at base+that-source-alone:
-   pink = LFO, green = envelope, amber = macro.
+   pink = LFO, green = envelope, amber = macro. While any editor is open on a
+   control, a faint band also shades the full reach of every active source —
+   how far the value could swing, not just where it sits this instant.
 4. **Baseline field behaviour.** Discrete fields (shape, trigger, macro
    target) clamp at their ends instead of wrapping; all submenu rows render
    through one shared field-row component.
-5. **Resolution.** Interval-like fields (voice intervals, tonal rate/cycle,
-   LFO interval) keep 0.125 as a reachable floor but lock to sixteenths
-   (0.25 grid) above it; offsets still step in 0.125.
-6. **Persistence.** Song-code automation payload v4 carries LFO seeds, depth
-   macros, macro routes, and envelope routes. v2/v3 codes still decode.
+5. **Resolution, centralized.** Every interval- and offset-like field (voice
+   intervals, tonal rate/cycle, LFO interval, LFO offset, and all per-voice
+   offsets) shares one beat-grid rule: 0.125 survives as a reachable floor
+   (or a field's own lower minimum, e.g. offset's true 0 = no shift), then
+   locks to sixteenths (0.25 grid) above it.
+6. **Persistence.** Song-code automation payload v4 carries LFO seeds, macro
+   routes, envelope routes, and field macros. v2/v3 codes still decode.
 7. **Louder chords.** Pad voice output gain 0.58 → 0.72.
-8. **Macros stack onto LFO depth.** Two indented amber rows under an LFO's
-   amount — `· amt` and `· macro` — let a macro scale the LFO's depth
-   directly (effective depth = amount + amt x macro value), so a macro can
-   ride alongside macro-as-own-source instead of only replacing it. Macro
-   sliders' own LFOs skip these rows (no macro chasing a macro).
+8. **Macros stack onto any LFO field.** `v` on the amount, interval, or
+   offset row of an open LFO editor stacks a macro onto that one field —
+   off by default, created only on that keypress, pruned back out if left
+   neutral. Never on the field itself unless you opened it. Macro sliders'
+   own LFOs are excluded (no macro chasing a macro).
+9. **Reach shadow.** While a control's editor is open, its bar shades the
+   full range every active source could push it to, distinct from the ghost
+   diamonds (which show only the current instant).
 
 ## Feedback questions
 
 1. Is the amber chip line under an assigned control enough visibility, or do
    macro assignments need a dedicated overview (e.g. on the MACROS tab)?
-2. Ghost diamonds: clarifying or cluttering once two sources overlap?
+2. Ghost diamonds plus the new reach shadow: clarifying or too much ink once
+   two or three sources overlap?
 3. Envelopes now only shape macros. Do you miss them on regular controls,
    or is routing a control through a macro the better gesture anyway?
-4. Now that macros can stack onto LFO depth, does macro-as-own-source still
-   earn its place, or would you rather it collapse into always going through
-   the LFO/depth path?
+4. Now that any LFO field can take a stacked macro, does macro-as-own-source
+   still earn its place, or would you rather it collapse into always going
+   through the per-field path?

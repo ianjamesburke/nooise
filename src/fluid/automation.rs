@@ -6,7 +6,7 @@ use std::fmt;
 use super::{
     ControlSpec, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TimingContext,
     beat_grid_adjust, beat_grid_snap, is_macro_id, nearest_power_of_two, normalize_unit_input,
-    snap_step, spec_by_id,
+    snap_step, spec_by_id, unit_key,
 };
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
@@ -234,35 +234,17 @@ fn seed_for_id(id: &str) -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LfoField {
     Amount,
-    /// Bipolar scale a macro applies to the depth (nested under Amount).
-    MacroAmount,
-    /// Which macro slider drives the depth, if any (nested under Amount).
-    MacroTarget,
     Interval,
     Offset,
     Shape,
 }
 
 impl LfoField {
-    pub(crate) const ALL: [LfoField; 6] = [
-        Self::Amount,
-        Self::MacroAmount,
-        Self::MacroTarget,
-        Self::Interval,
-        Self::Offset,
-        Self::Shape,
-    ];
-
-    /// The rows offered on macro sliders' own LFOs: no macro-chasing there,
-    /// single-pass ordering between macros would be ambiguous.
-    pub(crate) const BARE: [LfoField; 4] =
-        [Self::Amount, Self::Interval, Self::Offset, Self::Shape];
+    pub(crate) const ALL: [LfoField; 4] = [Self::Amount, Self::Interval, Self::Offset, Self::Shape];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Shape => "shape",
-            Self::MacroAmount => "amt",
-            Self::MacroTarget => "macro",
             _ => self.spec().label,
         }
     }
@@ -274,15 +256,18 @@ impl LfoField {
             .find(|spec| spec.field == self)
             .expect("every continuous LFO field has a spec")
     }
-}
 
-/// The LFO submenu rows for a control: macro sliders' own LFOs skip the
-/// depth-macro rows.
-pub(crate) fn lfo_fields_for(id: &str) -> &'static [LfoField] {
-    if is_macro_id(id) {
-        &LfoField::BARE
-    } else {
-        &LfoField::ALL
+    /// Stable key qualifier for a field a macro can stack onto (see
+    /// `AutomationState::field_macros`); None for Shape, which is discrete.
+    /// Only meaningful on regular controls — a macro slider's own LFO never
+    /// takes a stacked macro (no macro chasing itself).
+    pub(crate) fn macro_key(self) -> Option<&'static str> {
+        match self {
+            Self::Amount => Some("lfo.amount"),
+            Self::Interval => Some("lfo.interval"),
+            Self::Offset => Some("lfo.offset"),
+            Self::Shape => None,
+        }
     }
 }
 
@@ -381,10 +366,6 @@ pub(crate) struct LfoRoute {
     pub(crate) shape: LfoShape,
     /// Seed for random shapes; hashed with the cycle index to produce values.
     pub(crate) seed: u32,
-    /// Macro slider stacked onto the depth: effective depth is
-    /// `depth_ratio + depth_macro_amount * macro value`, clamped to 0..1.
-    pub(crate) depth_macro: Option<usize>,
-    pub(crate) depth_macro_amount: f32,
 }
 
 impl Default for LfoRoute {
@@ -395,8 +376,6 @@ impl Default for LfoRoute {
             phase_offset_beats: 0.0,
             shape: LfoShape::Sine,
             seed: 0,
-            depth_macro: None,
-            depth_macro_amount: 0.0,
         }
     }
 }
@@ -454,27 +433,11 @@ impl LfoRoute {
             ^ 0x5DEE_CE66;
     }
 
-    /// Whether a macro meaningfully drives this route's depth.
-    pub(crate) fn depth_macro_active(&self) -> bool {
-        self.depth_macro.is_some() && self.depth_macro_amount.abs() > f32::EPSILON
-    }
-
     pub(crate) fn adjust_field_at(&mut self, field: LfoField, dir: f32, beat: f64) {
         match field {
             LfoField::Shape => self.shape = self.shape.cycled(dir),
             LfoField::Amount => {
                 self.depth_ratio = field.spec().adjust(self.depth_ratio, dir);
-            }
-            LfoField::MacroAmount => {
-                self.depth_macro_amount =
-                    (self.depth_macro_amount + dir * MACRO_AMOUNT_STEP).clamp(-1.0, 1.0);
-            }
-            LfoField::MacroTarget => {
-                self.depth_macro = macro_target_from_index(stepped_index(
-                    macro_target_index(self.depth_macro),
-                    dir,
-                    MACRO_COUNT + 1,
-                ));
             }
             LfoField::Interval => {
                 self.set_cycle_preserving_phase(field.spec().adjust(self.cycle_beats, dir), beat);
@@ -489,13 +452,6 @@ impl LfoRoute {
         match field {
             LfoField::Shape => self.shape = LfoShape::from_index(value),
             LfoField::Amount => self.depth_ratio = field.spec().parse_value(value),
-            LfoField::MacroAmount => {
-                let unit = if value.abs() > 1.0 { value / 100.0 } else { value };
-                self.depth_macro_amount = unit.clamp(-1.0, 1.0);
-            }
-            LfoField::MacroTarget => {
-                self.depth_macro = macro_target_from_index(clamped_index(value, MACRO_COUNT + 1));
-            }
             LfoField::Interval => {
                 self.set_cycle_preserving_phase(field.spec().parse_value(value), beat);
             }
@@ -524,8 +480,6 @@ impl LfoRoute {
         match field {
             LfoField::Shape => self.shape = LfoShape::Sine,
             LfoField::Amount => self.depth_ratio = field.spec().reset,
-            LfoField::MacroAmount => self.depth_macro_amount = 0.0,
-            LfoField::MacroTarget => self.depth_macro = None,
             LfoField::Interval => self.set_cycle_preserving_phase(field.spec().reset, beat),
             LfoField::Offset => self.phase_offset_beats = field.spec().reset,
         }
@@ -537,10 +491,6 @@ impl LfoRoute {
                 self.shape.index() as f32 / (LfoShape::ALL.len() - 1).max(1) as f32
             }
             LfoField::Amount => field.spec().ratio(self.depth_ratio),
-            LfoField::MacroAmount => (self.depth_macro_amount * 0.5 + 0.5).clamp(0.0, 1.0),
-            LfoField::MacroTarget => {
-                macro_target_index(self.depth_macro) as f32 / MACRO_COUNT as f32
-            }
             LfoField::Interval => field.spec().ratio(self.cycle_beats),
             LfoField::Offset => field.spec().ratio(self.phase_offset_beats),
         }
@@ -550,8 +500,6 @@ impl LfoRoute {
         match field {
             LfoField::Shape => self.shape.label().to_string(),
             LfoField::Amount => format!("{:.0}%", self.depth_ratio * 100.0),
-            LfoField::MacroAmount => format!("{:+.0}%", self.depth_macro_amount * 100.0),
-            LfoField::MacroTarget => macro_target_display(self.depth_macro),
             LfoField::Interval => format!("{:.2} beats", self.cycle_beats),
             LfoField::Offset => format!("{:.2} beats", self.phase_offset_beats),
         }
@@ -993,7 +941,17 @@ pub(crate) struct AutomationState {
     routes: BTreeMap<ControlAddress, LfoRoute>,
     envelopes: BTreeMap<ControlAddress, EnvelopeRoute>,
     macros: BTreeMap<ControlAddress, MacroRoute>,
+    /// A macro stacked onto a single numeric field of an open LFO editor
+    /// (amount, interval, or offset), keyed the same way as `FlippedUnits`:
+    /// `unit_key(control id, Some(field key))`. Only ever created when the
+    /// user explicitly presses `v` on that field — never on by default —
+    /// and pruned back out on close if left at neutral, same as every other
+    /// route kind.
+    field_macros: BTreeMap<String, MacroRoute>,
     open: Option<OpenEditor>,
+    /// The field-macro key currently expanded for editing, if any. Only
+    /// meaningful while `open` points at the same control's LFO editor.
+    open_field: Option<String>,
 }
 
 impl AutomationState {
@@ -1039,6 +997,7 @@ impl AutomationState {
         match open.kind {
             ModKind::Lfo => {
                 self.routes.remove(&open.address);
+                self.remove_field_macros_for(open.address, "lfo.");
             }
             ModKind::Envelope => {
                 self.envelopes.remove(&open.address);
@@ -1047,30 +1006,47 @@ impl AutomationState {
                 self.macros.remove(&open.address);
             }
         }
+        self.open_field = None;
     }
 
-    /// Strip every modulator from a control (LFO, envelope, macro route),
-    /// closing the editor if it was open on that control.
+    /// Strip every modulator from a control (LFO, envelope, macro route,
+    /// field macros), closing the editor if it was open on that control.
     pub(crate) fn clear_control(&mut self, address: ControlAddress) {
         self.routes.remove(&address);
         self.envelopes.remove(&address);
         self.macros.remove(&address);
+        self.remove_field_macros_for(address, "");
         if self.open.is_some_and(|open| open.address == address) {
             self.open = None;
+        }
+    }
+
+    fn remove_field_macros_for(&mut self, address: ControlAddress, field_prefix: &str) {
+        let prefix = format!("{}#{field_prefix}", address.id());
+        self.field_macros.retain(|key, _| !key.starts_with(&prefix));
+        if self
+            .open_field
+            .as_ref()
+            .is_some_and(|key| key.starts_with(&prefix))
+        {
+            self.open_field = None;
         }
     }
 
     /// Close the editor; a route left at neutral amount is dead weight and is
     /// removed so it never colours the UI or the song code.
     pub(crate) fn close_editor(&mut self) {
+        self.close_open_field();
         let Some(open) = self.open.take() else {
             return;
         };
         match open.kind {
             ModKind::Lfo => {
-                if self.routes.get(&open.address).is_some_and(|route| {
-                    route.depth_ratio <= f32::EPSILON && !route.depth_macro_active()
-                }) {
+                if self
+                    .routes
+                    .get(&open.address)
+                    .is_some_and(|route| route.depth_ratio <= f32::EPSILON)
+                {
                     self.routes.remove(&open.address);
                 }
             }
@@ -1093,6 +1069,63 @@ impl AutomationState {
                 }
             }
         }
+    }
+
+    /// The field-macro key currently expanded for editing, if any.
+    pub(crate) fn open_field(&self) -> Option<&str> {
+        self.open_field.as_deref()
+    }
+
+    /// Toggle the nested macro editor for a field: same key closes (pruning
+    /// it if left neutral), any other key swaps to it (creating it
+    /// audible-neutral). This is the only way a field macro is created —
+    /// never on by default.
+    pub(crate) fn toggle_open_field(&mut self, key: String) {
+        if self.open_field.as_deref() == Some(key.as_str()) {
+            self.close_open_field();
+            return;
+        }
+        self.close_open_field();
+        self.field_macros.entry(key.clone()).or_default();
+        self.open_field = Some(key);
+    }
+
+    fn close_open_field(&mut self) {
+        let Some(key) = self.open_field.take() else {
+            return;
+        };
+        if self
+            .field_macros
+            .get(&key)
+            .is_some_and(|route| route.is_neutral())
+        {
+            self.field_macros.remove(&key);
+        }
+    }
+
+    pub(crate) fn field_macro(&self, key: &str) -> Option<&MacroRoute> {
+        self.field_macros.get(key)
+    }
+
+    pub(crate) fn field_macro_mut(&mut self, key: &str) -> Option<&mut MacroRoute> {
+        self.field_macros.get_mut(key)
+    }
+
+    pub(crate) fn set_field_macro(&mut self, key: String, route: MacroRoute) {
+        self.field_macros.insert(key, route);
+    }
+
+    /// Remove a stacked field macro outright (the x gesture on its nested
+    /// row), closing it if it was the one expanded for editing.
+    pub(crate) fn remove_field_macro(&mut self, key: &str) {
+        self.field_macros.remove(key);
+        if self.open_field.as_deref() == Some(key) {
+            self.open_field = None;
+        }
+    }
+
+    pub(crate) fn field_macros(&self) -> impl Iterator<Item = (&str, &MacroRoute)> {
+        self.field_macros.iter().map(|(k, v)| (k.as_str(), v))
     }
 
     pub(crate) fn is_editor_open(&self) -> bool {
@@ -1177,19 +1210,13 @@ pub(crate) fn modulated_control_value_full(
     lfo: Option<&LfoRoute>,
     envelope: Option<&EnvelopeRoute>,
     macro_mod: Option<(f32, f32)>,
-    lfo_macro: Option<(f32, f32)>,
     base: f32,
     ctx: ModContext,
 ) -> f32 {
     let range = spec.max - spec.min;
     let mut value = base;
     if let Some(route) = lfo {
-        let mut depth = route.depth_ratio.clamp(0.0, 1.0);
-        if let Some((amount, macro_value)) = lfo_macro {
-            depth = (depth + amount.clamp(-1.0, 1.0) * macro_value.clamp(0.0, 1.0))
-                .clamp(0.0, 1.0);
-        }
-        value += route.wave_at(ctx.beat) * range * depth;
+        value += route.wave_at(ctx.beat) * range * route.depth_ratio.clamp(0.0, 1.0);
     }
     if let Some(route) = envelope {
         value += route.level_at(ctx) * range * route.amount.clamp(-1.0, 1.0);
@@ -1213,15 +1240,7 @@ pub(crate) fn modulated_control_value(
     base: f32,
     beat: f64,
 ) -> f32 {
-    modulated_control_value_full(
-        spec,
-        Some(route),
-        None,
-        None,
-        None,
-        base,
-        ModContext::lfo_only(beat),
-    )
+    modulated_control_value_full(spec, Some(route), None, None, base, ModContext::lfo_only(beat))
 }
 
 /// The `(amount, live macro value)` pair for a `(amount, target)` assignment,
@@ -1260,7 +1279,6 @@ fn live_macro_pair(
             .envelope(macro_address)
             .filter(|route| route.amount.abs() > f32::EPSILON),
         None,
-        None,
         (spec.get)(controls),
         ctx,
     );
@@ -1286,38 +1304,79 @@ pub(crate) fn live_macro_contribution(
     live_macro_pair(route.amount, route.target, automation, controls, ctx)
 }
 
-/// The `(amount, live macro value)` pair stacked onto a control's LFO depth.
-/// Macro sliders' own LFOs never chase a macro (see `LfoField::BARE`).
-pub(crate) fn lfo_depth_contribution(
+/// Fold any macros stacked onto an LFO route's amount/interval/offset (via
+/// the field editor's `v` gesture) into a modulated copy, using whatever
+/// `contribution` resolves each stacked field-macro's `(amount, target)` to.
+/// A macro slider's own LFO never takes a stacked macro (no macro chasing
+/// itself), so this is a no-op there.
+fn apply_field_macros(
     automation: &AutomationState,
-    controls: &FluidControls,
     address: ControlAddress,
-) -> Option<(f32, f32)> {
+    route: &LfoRoute,
+    mut contribution: impl FnMut(&MacroRoute) -> Option<(f32, f32)>,
+) -> LfoRoute {
     if is_macro_id(address.id()) {
-        return None;
+        return *route;
     }
-    let route = automation.route(address)?;
-    macro_pair(route.depth_macro_amount, route.depth_macro, controls)
+    let mut effective = *route;
+    let mut apply_field = |key_str: &str, base: f32, min: f32, max: f32, out: &mut f32| {
+        let key = unit_key(address.id(), Some(key_str));
+        if let Some(field_route) = automation.field_macro(&key)
+            && let Some((amount, macro_value)) = contribution(field_route)
+        {
+            *out = (base + amount.clamp(-1.0, 1.0) * macro_value.clamp(0.0, 1.0) * (max - min))
+                .clamp(min, max);
+        }
+    };
+    apply_field(
+        "lfo.amount",
+        route.depth_ratio,
+        0.0,
+        1.0,
+        &mut effective.depth_ratio,
+    );
+    apply_field(
+        "lfo.interval",
+        route.cycle_beats,
+        MIN_LFO_CYCLE_BEATS,
+        MAX_LFO_CYCLE_BEATS,
+        &mut effective.cycle_beats,
+    );
+    apply_field(
+        "lfo.offset",
+        route.phase_offset_beats,
+        0.0,
+        MAX_LFO_OFFSET_BEATS,
+        &mut effective.phase_offset_beats,
+    );
+    effective
 }
 
-/// UI-side twin of [`lfo_depth_contribution`].
-pub(crate) fn live_lfo_depth_contribution(
+/// Engine-side: `controls` already reflects pass-one's modulated macro
+/// slider values, so a plain lookup is correct.
+pub(crate) fn effective_lfo_route(
     automation: &AutomationState,
     controls: &FluidControls,
     address: ControlAddress,
+    route: &LfoRoute,
+) -> LfoRoute {
+    apply_field_macros(automation, address, route, |field_route| {
+        macro_pair(field_route.amount, field_route.target, controls)
+    })
+}
+
+/// UI-side twin: recomputes each stacked macro's own live modulation so the
+/// parent slider's markers show what the engine hears.
+pub(crate) fn live_effective_lfo_route(
+    automation: &AutomationState,
+    controls: &FluidControls,
+    address: ControlAddress,
+    route: &LfoRoute,
     ctx: ModContext,
-) -> Option<(f32, f32)> {
-    if is_macro_id(address.id()) {
-        return None;
-    }
-    let route = automation.route(address)?;
-    live_macro_pair(
-        route.depth_macro_amount,
-        route.depth_macro,
-        automation,
-        controls,
-        ctx,
-    )
+) -> LfoRoute {
+    apply_field_macros(automation, address, route, |field_route| {
+        live_macro_pair(field_route.amount, field_route.target, automation, controls, ctx)
+    })
 }
 
 pub(crate) fn apply_automation(
@@ -1338,10 +1397,12 @@ pub(crate) fn apply_automation(
         .partition(|address| is_macro_id(address.id()));
     for address in macro_sliders.into_iter().chain(targets) {
         let spec = address.spec();
-        let lfo_macro = lfo_depth_contribution(automation, controls, address);
-        let lfo = automation
+        let route = automation
             .route(address)
-            .filter(|route| route.depth_ratio > f32::EPSILON || lfo_macro.is_some());
+            .map(|route| effective_lfo_route(automation, controls, address, route));
+        let lfo = route
+            .as_ref()
+            .filter(|route| route.depth_ratio > f32::EPSILON);
         let envelope = automation
             .envelope(address)
             .filter(|route| route.amount.abs() > f32::EPSILON);
@@ -1350,8 +1411,7 @@ pub(crate) fn apply_automation(
             continue;
         }
         let base = (spec.get)(controls);
-        let value =
-            modulated_control_value_full(spec, lfo, envelope, macro_mod, lfo_macro, base, ctx);
+        let value = modulated_control_value_full(spec, lfo, envelope, macro_mod, base, ctx);
         (spec.set)(controls, value);
     }
 }

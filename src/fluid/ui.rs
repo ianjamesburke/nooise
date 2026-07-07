@@ -230,21 +230,44 @@ pub(crate) fn ui_loop(
                     );
                 }
                 KeyCode::Char('v') => {
-                    open_modulator(
-                        &mut automation,
-                        &items,
-                        selected,
-                        ModKind::Macro,
-                        &mut lfo_selected,
-                    );
+                    match active_field(automation.state(), lfo_selected) {
+                        // On an LFO field row: stack (or un-stack) a macro
+                        // onto that specific field, never on by default.
+                        ActiveField::Lfo(address, field) if field.macro_key().is_some() => {
+                            let key = unit_key(address.id(), field.macro_key());
+                            automation.edit(|state| state.toggle_open_field(key));
+                            lfo_selected += 1;
+                        }
+                        _ => {
+                            open_modulator(
+                                &mut automation,
+                                &items,
+                                selected,
+                                ModKind::Macro,
+                                &mut lfo_selected,
+                            );
+                        }
+                    }
                 }
                 KeyCode::Char('x') | KeyCode::Char('X') => {
-                    if automation.state().is_editor_open() {
-                        automation.edit(AutomationState::remove_open_route);
-                        lfo_selected = 0;
-                    } else if let Some(item) = items.get(selected) {
-                        let address = ControlAddress::new(item.id);
-                        automation.edit(|state| state.clear_control(address));
+                    match active_field(automation.state(), lfo_selected) {
+                        // On an open field-macro row: remove just that
+                        // stacked macro, keep the parent LFO editor open.
+                        ActiveField::LfoMacro(address, field, _) => {
+                            let key = unit_key(address.id(), field.macro_key());
+                            automation.edit(|state| state.remove_field_macro(&key));
+                            lfo_selected -= 1;
+                        }
+                        _ if automation.state().is_editor_open() => {
+                            automation.edit(AutomationState::remove_open_route);
+                            lfo_selected = 0;
+                        }
+                        _ => {
+                            if let Some(item) = items.get(selected) {
+                                let address = ControlAddress::new(item.id);
+                                automation.edit(|state| state.clear_control(address));
+                            }
+                        }
                     }
                 }
                 KeyCode::Enter => {
@@ -470,7 +493,7 @@ fn unit_toggle_key(
         ActiveField::Envelope(address, field) => {
             env_time_key(field).map(|key| unit_key(address.id(), Some(key)))
         }
-        ActiveField::Macro(..) => None,
+        ActiveField::LfoMacro(..) | ActiveField::Macro(..) => None,
         ActiveField::Control => {
             let item = items.get(selected)?;
             let spec = spec_by_id(item.id)?;
@@ -479,8 +502,32 @@ fn unit_toggle_key(
     }
 }
 
-pub(crate) fn lfo_field_at(index: usize, id: &str) -> Option<LfoField> {
-    lfo_fields_for(id).get(index.checked_sub(1)?).copied()
+/// One selectable row inside an open LFO editor: either one of the LFO's own
+/// fields, or one of the two rows (amount, target) of a macro currently
+/// stacked onto that field. The macro rows only exist while that field's `v`
+/// gesture has expanded them — never by default.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum LfoSubRow {
+    Field(LfoField),
+    FieldMacro(LfoField, MacroField),
+}
+
+pub(crate) fn lfo_submenu_rows(
+    automation: &AutomationState,
+    address: ControlAddress,
+) -> Vec<LfoSubRow> {
+    let mut rows = Vec::with_capacity(6);
+    for field in LfoField::ALL {
+        rows.push(LfoSubRow::Field(field));
+        if let Some(key_str) = field.macro_key() {
+            let key = unit_key(address.id(), Some(key_str));
+            if automation.open_field() == Some(key.as_str()) {
+                rows.push(LfoSubRow::FieldMacro(field, MacroField::Amount));
+                rows.push(LfoSubRow::FieldMacro(field, MacroField::Target));
+            }
+        }
+    }
+    rows
 }
 
 pub(crate) fn env_field_at(index: usize) -> Option<EnvField> {
@@ -497,7 +544,7 @@ pub(crate) fn active_field_count(automation: &AutomationState) -> usize {
         Some(ModKind::Lfo) => automation
             .active_address()
             .map_or(LfoField::ALL.len(), |address| {
-                lfo_fields_for(address.id()).len()
+                lfo_submenu_rows(automation, address).len()
             }),
         Some(ModKind::Envelope) => EnvField::ALL.len(),
         Some(ModKind::Macro) => MacroField::ALL.len(),
@@ -580,6 +627,9 @@ impl PublishedAutomation {
 /// editor is open, so the caller edits the underlying control instead.
 enum ActiveField {
     Lfo(ControlAddress, LfoField),
+    /// A macro's amount/target row nested under an LFO field, only present
+    /// while that field's stacked macro is expanded for editing.
+    LfoMacro(ControlAddress, LfoField, MacroField),
     Envelope(ControlAddress, EnvField),
     Macro(ControlAddress, MacroField),
     Control,
@@ -589,9 +639,13 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
     let Some(address) = automation.active_address() else {
         return ActiveField::Control;
     };
+    if lfo_selected == 0 {
+        return ActiveField::Control;
+    }
     match automation.active_kind() {
-        Some(ModKind::Lfo) => match lfo_field_at(lfo_selected, address.id()) {
-            Some(field) => ActiveField::Lfo(address, field),
+        Some(ModKind::Lfo) => match lfo_submenu_rows(automation, address).get(lfo_selected - 1) {
+            Some(LfoSubRow::Field(field)) => ActiveField::Lfo(address, *field),
+            Some(LfoSubRow::FieldMacro(field, mf)) => ActiveField::LfoMacro(address, *field, *mf),
             None => ActiveField::Control,
         },
         Some(ModKind::Envelope) => match env_field_at(lfo_selected) {
@@ -660,6 +714,12 @@ pub(crate) fn adjust_lfo_or_control(
                 }
             });
         }
+        ActiveField::LfoMacro(address, field, macro_field) => automation.edit(|state| {
+            let key = unit_key(address.id(), field.macro_key());
+            if let Some(route) = state.field_macro_mut(&key) {
+                route.adjust_field(macro_field, dir);
+            }
+        }),
         ActiveField::Macro(address, field) => automation.edit(|state| {
             if let Some(route) = state.macro_route_mut(address) {
                 route.adjust_field(field, dir);
@@ -699,6 +759,12 @@ fn reset_lfo_or_control(
         ActiveField::Envelope(address, field) => automation.edit(|state| {
             if let Some(route) = state.envelope_mut(address) {
                 route.reset_field(field);
+            }
+        }),
+        ActiveField::LfoMacro(address, field, macro_field) => automation.edit(|state| {
+            let key = unit_key(address.id(), field.macro_key());
+            if let Some(route) = state.field_macro_mut(&key) {
+                route.reset_field(macro_field);
             }
         }),
         ActiveField::Macro(address, field) => automation.edit(|state| {
@@ -745,6 +811,12 @@ fn set_modulator_or_control(
                 } else {
                     route.set_field(field, value);
                 }
+            }
+        }),
+        ActiveField::LfoMacro(address, field, macro_field) => automation.edit(|state| {
+            let key = unit_key(address.id(), field.macro_key());
+            if let Some(route) = state.field_macro_mut(&key) {
+                route.set_field(macro_field, value);
             }
         }),
         ActiveField::Macro(address, field) => automation.edit(|state| {
@@ -1173,6 +1245,10 @@ pub(crate) fn render_fluid(
         if parent_active {
             style = style.add_modifier(Modifier::BOLD);
         }
+        // The LFO route folded with any macro stacked onto its own fields
+        // (amount/interval/offset), so markers show what the engine hears.
+        let effective_lfo =
+            route.map(|r| live_effective_lfo_route(automation, controls, address, r, mod_ctx));
         let markers = {
             let spec = address.spec();
             let base = match spec.bar {
@@ -1192,23 +1268,48 @@ pub(crate) fn render_fluid(
                 }
             };
             // Ghosts only for sources that actually contribute.
-            let lfo_macro = live_lfo_depth_contribution(automation, controls, address, mod_ctx);
-            let lfo =
-                route.filter(|r| r.depth_ratio > f32::EPSILON || lfo_macro.is_some());
+            let lfo = effective_lfo
+                .as_ref()
+                .filter(|r| r.depth_ratio > f32::EPSILON);
             let env = envelope.filter(|r| r.amount.abs() > f32::EPSILON);
-            let single = |l: Option<&LfoRoute>,
-                          e: Option<&EnvelopeRoute>,
-                          m: Option<(f32, f32)>| {
-                ratio_of(modulated_control_value_full(
-                    spec, l, e, m, lfo_macro, base, mod_ctx,
-                ))
+            let single = |l: Option<&LfoRoute>, e: Option<&EnvelopeRoute>, m: Option<(f32, f32)>| {
+                ratio_of(modulated_control_value_full(spec, l, e, m, base, mod_ctx))
             };
+            // While an editor is open on this control, faintly shade the full
+            // reach of every active source (its full throw, not just the
+            // live instant) so turning a depth/amount knob previews how far
+            // it can push the effective value.
+            let mod_range = spec.max - spec.min;
+            let shadow = editor_here.then(|| {
+                let mut lo = base;
+                let mut hi = base;
+                if let Some(r) = effective_lfo.as_ref() {
+                    let swing = mod_range * r.depth_ratio.clamp(0.0, 1.0);
+                    lo = lo.min(base - swing);
+                    hi = hi.max(base + swing);
+                }
+                if let Some(r) = envelope {
+                    let swing = mod_range * r.amount.clamp(-1.0, 1.0);
+                    lo = lo.min(base + swing.min(0.0));
+                    hi = hi.max(base + swing.max(0.0));
+                }
+                if let Some(r) = macro_route {
+                    let swing = mod_range * r.amount.clamp(-1.0, 1.0);
+                    lo = lo.min(base + swing.min(0.0));
+                    hi = hi.max(base + swing.max(0.0));
+                }
+                (
+                    ratio_of(lo.clamp(spec.min, spec.max)),
+                    ratio_of(hi.clamp(spec.min, spec.max)),
+                )
+            });
             SliderMarkers {
                 effective: (lfo.is_some() || env.is_some() || macro_mod.is_some())
                     .then(|| single(lfo, env, macro_mod)),
                 lfo: lfo.map(|r| single(Some(r), None, None)),
                 envelope: env.map(|r| single(None, Some(r), None)),
                 macro_: macro_mod.map(|m| single(None, None, Some(m))),
+                shadow,
             }
         };
         let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
@@ -1218,40 +1319,62 @@ pub(crate) fn render_fluid(
 
         if let Some(route) = route {
             if lfo_open_here {
-                for (fi, field) in lfo_fields_for(item.id).iter().enumerate() {
-                    let value_display = match field {
-                        LfoField::Interval
-                            if flipped
-                                .contains(&unit_key(item.id, Some("lfo.interval"))) =>
-                        {
-                            flip_display(TimeBase::Beats, route.cycle_beats, bpm)
+                for (fi, sub_row) in lfo_submenu_rows(automation, address).iter().enumerate() {
+                    match *sub_row {
+                        LfoSubRow::Field(field) => {
+                            let value_display = match field {
+                                LfoField::Interval
+                                    if flipped
+                                        .contains(&unit_key(item.id, Some("lfo.interval"))) =>
+                                {
+                                    flip_display(TimeBase::Beats, route.cycle_beats, bpm)
+                                }
+                                LfoField::Offset
+                                    if flipped
+                                        .contains(&unit_key(item.id, Some("lfo.offset"))) =>
+                                {
+                                    flip_display(TimeBase::Beats, route.phase_offset_beats, bpm)
+                                }
+                                _ => None,
+                            }
+                            .unwrap_or_else(|| route.field_display(field));
+                            rows.push(field_line(
+                                field.label(),
+                                route.field_ratio(field),
+                                value_display,
+                                lfo_selected == fi + 1,
+                                &numeric,
+                                bar_w,
+                                LFO_PALETTE,
+                            ));
+                            // A macro stacked on this field but not currently
+                            // expanded shows as a closed chip, same as a
+                            // regular control's macro assignment.
+                            if let Some(key_str) = field.macro_key() {
+                                let key = unit_key(item.id, Some(key_str));
+                                if let Some(field_route) = automation.field_macro(&key)
+                                    && !field_route.is_neutral()
+                                {
+                                    rows.push(macro_chip_line(field_route));
+                                }
+                            }
                         }
-                        LfoField::Offset
-                            if flipped.contains(&unit_key(item.id, Some("lfo.offset"))) =>
-                        {
-                            flip_display(TimeBase::Beats, route.phase_offset_beats, bpm)
+                        LfoSubRow::FieldMacro(field, macro_field) => {
+                            let key = unit_key(item.id, field.macro_key());
+                            let Some(field_route) = automation.field_macro(&key) else {
+                                continue;
+                            };
+                            rows.push(field_line(
+                                &format!("· {}", macro_field.label()),
+                                field_route.field_ratio(macro_field),
+                                field_route.field_display(macro_field),
+                                lfo_selected == fi + 1,
+                                &numeric,
+                                bar_w,
+                                MACRO_PALETTE,
+                            ));
                         }
-                        _ => None,
                     }
-                    .unwrap_or_else(|| route.field_display(*field));
-                    // The depth-macro rows nest under amount: indented a step
-                    // further and in macro amber.
-                    let nested =
-                        matches!(field, LfoField::MacroAmount | LfoField::MacroTarget);
-                    let label = if nested {
-                        format!("· {}", field.label())
-                    } else {
-                        field.label().to_string()
-                    };
-                    rows.push(field_line(
-                        &label,
-                        route.field_ratio(*field),
-                        value_display,
-                        lfo_selected == fi + 1,
-                        &numeric,
-                        bar_w,
-                        if nested { MACRO_PALETTE } else { LFO_PALETTE },
-                    ));
                 }
             }
             rows.push(lfo_lane_line(route, beat, bar_w, lfo_open_here));
@@ -1499,12 +1622,19 @@ pub(crate) struct SliderMarkers {
     pub(crate) lfo: Option<f32>,
     pub(crate) envelope: Option<f32>,
     pub(crate) macro_: Option<f32>,
+    /// Faint reach band (lo, hi ratios) showing the full throw of every
+    /// active source while its editor is open — a preview of how far the
+    /// effective value could swing, not just where it sits this instant.
+    pub(crate) shadow: Option<(f32, f32)>,
 }
 
 const EFFECTIVE_MARKER_COLOR: Color = Color::Rgb(235, 245, 255);
+const SHADOW_COLOR: Color = Color::Rgb(95, 100, 115);
 
-/// Slider bar spans with ghost diamonds per modulation source and one bright
-/// diamond at the effective value. The effective marker wins overlaps.
+/// Slider bar spans with ghost diamonds per modulation source, a faint reach
+/// band, and one bright diamond at the effective value. Precedence: the
+/// effective marker wins overlaps, then ghosts, then the actual filled bar,
+/// then the shadow band, then empty track.
 fn slider_spans(
     ratio: f32,
     markers: SliderMarkers,
@@ -1521,6 +1651,11 @@ fn slider_spans(
         (cell(markers.envelope), ENV_PALETTE.idle),
         (cell(markers.macro_), MACRO_PALETTE.idle),
     ];
+    let shadow_range = markers.shadow.map(|(lo, hi)| {
+        let lo = cell(Some(lo)).unwrap_or(0);
+        let hi = cell(Some(hi)).unwrap_or(0);
+        lo.min(hi)..=lo.max(hi)
+    });
     (0..width)
         .map(|i| {
             if Some(i) == effective {
@@ -1532,8 +1667,12 @@ fn slider_spans(
                 )
             } else if let Some((_, color)) = ghosts.iter().find(|(pos, _)| *pos == Some(i)) {
                 Span::styled("◇", Style::default().fg(*color))
+            } else if i < filled {
+                Span::styled("█", style)
+            } else if shadow_range.as_ref().is_some_and(|r| r.contains(&i)) {
+                Span::styled("▒", Style::default().fg(SHADOW_COLOR))
             } else {
-                Span::styled(if i < filled { "█" } else { "░" }, style)
+                Span::styled("░", style)
             }
         })
         .collect()

@@ -9,7 +9,7 @@ use super::{
     AutomationState, ControlAddress, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger, EnvelopeRoute,
     FluidControls, LfoRoute, LfoShape, MACRO_COUNT, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
     MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MIN_LFO_CYCLE_BEATS, MacroRoute, all_specs,
-    is_macro_id, spec_by_id,
+    spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -193,10 +193,11 @@ fn automation_has_content(automation: &AutomationState) -> bool {
             .any(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
 }
 
-/// Automation payload v4: LFO section (with seed and depth macro), then
-/// macro section, then envelope section. v2 (LFO only, no seed) and v3 (no
-/// depth macro) payloads still decode via their readers below; only the
-/// write path has moved to v4.
+/// Automation payload v4: LFO section (with seed), macro section, envelope
+/// section, then a new field-macro section (a macro stacked onto a single
+/// numeric field of an LFO editor via its `v` gesture). v2 (LFO only, no
+/// seed) and v3 (no field-macro section) payloads still decode via their
+/// readers below; only the write path has moved to v4.
 fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     out.push(AUTOMATION_PAYLOAD_VERSION);
 
@@ -208,10 +209,6 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
         out.push(shape_tag(route.shape));
         out.extend_from_slice(&route.phase_offset_beats.to_le_bytes());
         out.extend_from_slice(&route.seed.to_le_bytes());
-        // Depth macro: 0 = none, 1..=MACRO_COUNT = macro index + 1.
-        let tag = route.depth_macro.map_or(0, |t| t + 1);
-        out.push(u8::try_from(tag).map_err(|_| SongCodeError::TooLarge)?);
-        out.extend_from_slice(&route.depth_macro_amount.to_le_bytes());
     }
 
     let macros: Vec<_> = automation
@@ -241,6 +238,20 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
         let (tag, param) = env_trigger_tag(route.trigger);
         out.push(tag);
         out.extend_from_slice(&param.to_le_bytes());
+    }
+
+    let field_macros: Vec<_> = automation
+        .field_macros()
+        .filter(|(_, route)| !route.is_neutral())
+        .collect();
+    write_u16(field_macros.len(), out)?;
+    for (key, route) in field_macros {
+        write_str(key, out)?;
+        let target = route
+            .target
+            .expect("neutral (targetless) field macros are filtered out above");
+        out.push(u8::try_from(target).map_err(|_| SongCodeError::TooLarge)?);
+        out.extend_from_slice(&route.amount.to_le_bytes());
     }
 
     Ok(())
@@ -290,44 +301,47 @@ fn read_automation_v2(
     Ok(())
 }
 
-/// v3 layout: LFO section (with seed, no depth macro), macro section,
-/// envelope section.
+/// v3 layout: LFO section (with seed), macro section, envelope section.
 fn read_automation_v3(
     reader: &mut Reader,
     automation: &mut AutomationState,
 ) -> Result<(), SongCodeError> {
-    let lfo_count = reader.u16()?;
-    for _ in 0..lfo_count {
-        let id = reader.string()?;
-        let cycle_beats = reader.f32()?;
-        let depth_ratio = reader.f32()?;
-        let shape = reader.u8()?;
-        let phase_offset_beats = reader.f32()?;
-        let seed = reader.u32()?;
+    read_lfo_section(reader, automation)?;
+    read_macro_and_envelope_sections(reader, automation)
+}
 
-        let (Some(spec), Some(shape)) = (spec_by_id(id), shape_from_tag(shape)) else {
+/// v4 layout: identical LFO/macro/envelope sections to v3, plus a trailing
+/// field-macro section (a macro stacked onto one numeric LFO field).
+fn read_automation_v4(
+    reader: &mut Reader,
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
+    read_lfo_section(reader, automation)?;
+    read_macro_and_envelope_sections(reader, automation)?;
+
+    let field_macro_count = reader.u16()?;
+    for _ in 0..field_macro_count {
+        let key = reader.string()?;
+        let target = reader.u8()? as usize;
+        let amount = reader.f32()?;
+
+        if target >= MACRO_COUNT {
             continue;
-        };
-        automation.set_route(
-            ControlAddress::new(spec.id),
-            LfoRoute {
-                cycle_beats: finite_or(cycle_beats, 2.0)
-                    .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS),
-                depth_ratio: finite_or(depth_ratio, DEFAULT_LFO_DEPTH_RATIO).clamp(0.0, 1.0),
-                shape,
-                phase_offset_beats: finite_or(phase_offset_beats, 0.0)
-                    .clamp(0.0, MAX_LFO_OFFSET_BEATS),
-                seed,
-                ..LfoRoute::default()
+        }
+        automation.set_field_macro(
+            key.to_string(),
+            MacroRoute {
+                target: Some(target),
+                amount: finite_or(amount, 0.0).clamp(-1.0, 1.0),
             },
         );
     }
 
-    read_macro_and_envelope_sections(reader, automation)
+    Ok(())
 }
 
-/// v4 layout: v3 plus a depth macro (tag + amount) per LFO record.
-fn read_automation_v4(
+/// LFO section shared by the v3 and v4 layouts (identical byte shape).
+fn read_lfo_section(
     reader: &mut Reader,
     automation: &mut AutomationState,
 ) -> Result<(), SongCodeError> {
@@ -339,8 +353,6 @@ fn read_automation_v4(
         let shape = reader.u8()?;
         let phase_offset_beats = reader.f32()?;
         let seed = reader.u32()?;
-        let depth_macro_tag = reader.u8()? as usize;
-        let depth_macro_amount = reader.f32()?;
 
         let (Some(spec), Some(shape)) = (spec_by_id(id), shape_from_tag(shape)) else {
             continue;
@@ -355,16 +367,10 @@ fn read_automation_v4(
                 phase_offset_beats: finite_or(phase_offset_beats, 0.0)
                     .clamp(0.0, MAX_LFO_OFFSET_BEATS),
                 seed,
-                depth_macro: (1..=MACRO_COUNT)
-                    .contains(&depth_macro_tag)
-                    .then(|| depth_macro_tag - 1)
-                    .filter(|_| !is_macro_id(spec.id)),
-                depth_macro_amount: finite_or(depth_macro_amount, 0.0).clamp(-1.0, 1.0),
             },
         );
     }
-
-    read_macro_and_envelope_sections(reader, automation)
+    Ok(())
 }
 
 /// Macro and envelope sections shared by the v3 and v4 layouts.

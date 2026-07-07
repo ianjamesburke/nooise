@@ -565,20 +565,65 @@ fn macro_route_scales_target_into_its_range() {
 }
 
 #[test]
-fn macro_stacked_on_lfo_amount_scales_the_depth() {
+fn field_macro_on_lfo_amount_is_off_by_default_and_only_appears_after_v() {
+    let controls = FluidControls::default();
+    let items = tab_controls(Tab::Master, &controls);
+    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let address = ControlAddress::new(items[0].id);
+    let key = unit_key(address.id(), Some("lfo.amount"));
+
+    // Opening the LFO editor alone must NOT create a stacked macro on
+    // amount — it only exists after the user explicitly presses v there.
+    automation.edit(|state| {
+        state.open_or_create(address);
+    });
+    assert_eq!(
+        lfo_submenu_rows(automation.state(), address).len(),
+        LfoField::ALL.len(),
+        "no macro rows before v is pressed"
+    );
+    assert!(automation.state().field_macro(&key).is_none());
+
+    // v on the amount row (lfo_selected == 1) expands it.
+    automation.edit(|state| state.toggle_open_field(key.clone()));
+    assert_eq!(
+        lfo_submenu_rows(automation.state(), address).len(),
+        LfoField::ALL.len() + 2,
+        "amount and target rows nest in once expanded"
+    );
+    assert!(automation.state().field_macro(&key).is_some());
+
+    // Left neutral, closing (v again) prunes it back out — same rule as
+    // every other route kind.
+    automation.edit(|state| state.toggle_open_field(key.clone()));
+    assert!(automation.state().field_macro(&key).is_none());
+    assert_eq!(
+        lfo_submenu_rows(automation.state(), address).len(),
+        LfoField::ALL.len()
+    );
+}
+
+#[test]
+fn macro_stacked_on_lfo_amount_via_v_scales_the_depth() {
     let mut controls = FluidControls::default();
     controls.master.level = 0.2;
     controls.macros.values[0] = 0.5;
     let mut automation = AutomationState::default();
-    // Depth 0: only the stacked macro opens the LFO up.
     automation.set_route(
         ControlAddress::new("master.level"),
         LfoRoute {
             depth_ratio: 0.0,
             cycle_beats: 2.0,
-            depth_macro: Some(0),
-            depth_macro_amount: 1.0,
             ..LfoRoute::default()
+        },
+    );
+    // The only way this route exists: the user pressed v on the amount row.
+    automation.set_field_macro(
+        unit_key("master.level", Some("lfo.amount")),
+        MacroRoute {
+            target: Some(0),
+            amount: 1.0,
         },
     );
 
@@ -597,12 +642,23 @@ fn macro_stacked_on_lfo_amount_scales_the_depth() {
 }
 
 #[test]
-fn macro_sliders_own_lfos_have_no_depth_macro_rows() {
-    assert_eq!(lfo_fields_for("macro.1").len(), LfoField::BARE.len());
-    assert_eq!(lfo_field_at(2, "macro.1"), Some(LfoField::Interval));
-    assert_eq!(lfo_fields_for("master.level").len(), LfoField::ALL.len());
-    assert_eq!(lfo_field_at(2, "master.level"), Some(LfoField::MacroAmount));
-    assert_eq!(lfo_field_at(3, "master.level"), Some(LfoField::MacroTarget));
+fn macro_sliders_own_lfos_never_take_a_stacked_field_macro() {
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new("macro.1");
+    automation.set_route(ControlAddress::new("macro.1"), LfoRoute::default());
+    // Even if a stray field-macro entry existed for a macro's own LFO (e.g.
+    // from a hand-edited song code), it must never apply.
+    automation.set_field_macro(
+        unit_key("macro.1", Some("lfo.amount")),
+        MacroRoute {
+            target: Some(1),
+            amount: 1.0,
+        },
+    );
+    let controls = FluidControls::default();
+    let route = automation.route(address).unwrap();
+    let effective = effective_lfo_route(&automation, &controls, address, route);
+    assert_close(effective.depth_ratio, route.depth_ratio);
 }
 
 #[test]
@@ -2504,9 +2560,8 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
     flipped.insert(unit_key("master.level", Some("lfo.interval")));
 
     // Default cycle is 2 beats = 1000 ms at 120 BPM; one flipped step lands
-    // on 1010 ms, off the beat grid. Interval is row 4 (amount and its two
-    // nested macro rows come first).
-    adjust_lfo_or_control(&mut automation, 4, &controls, Tab::Master, 0, 1.0, 0.0, &flipped);
+    // on 1010 ms, off the beat grid. Interval is row 2 (amount is row 1).
+    adjust_lfo_or_control(&mut automation, 2, &controls, Tab::Master, 0, 1.0, 0.0, &flipped);
     assert_near(
         beats_to_ms(automation.state().route(address).unwrap().cycle_beats, 120.0),
         1010.0,
@@ -2514,7 +2569,7 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
 
     // Un-flipping snaps the interval back onto the sixteenth grid.
     flipped.clear();
-    snap_after_unit_flip(&mut automation, 4, &controls, Tab::Master, 0, false, 0.0);
+    snap_after_unit_flip(&mut automation, 2, &controls, Tab::Master, 0, false, 0.0);
     assert_close(automation.state().route(address).unwrap().cycle_beats, 2.0);
 }
 
@@ -2523,7 +2578,7 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
 // ============================================================
 
 #[test]
-fn song_code_v3_round_trips_seed_macro_and_envelope() {
+fn song_code_v4_round_trips_seed_macro_envelope_and_field_macro() {
     let mut automation = AutomationState::default();
     automation.set_route(
         ControlAddress::new("master.level"),
@@ -2533,8 +2588,13 @@ fn song_code_v3_round_trips_seed_macro_and_envelope() {
             shape: LfoShape::SampleHold,
             phase_offset_beats: 0.5,
             seed: 0xDEAD_BEEF,
-            depth_macro: Some(1),
-            depth_macro_amount: 0.35,
+        },
+    );
+    automation.set_field_macro(
+        unit_key("master.level", Some("lfo.amount")),
+        MacroRoute {
+            target: Some(1),
+            amount: 0.35,
         },
     );
     automation.set_macro_route(
@@ -2570,8 +2630,13 @@ fn song_code_v3_round_trips_seed_macro_and_envelope() {
     assert_eq!(route.shape, LfoShape::SampleHold);
     assert_close(route.phase_offset_beats, 0.5);
     assert_eq!(route.seed, 0xDEAD_BEEF);
-    assert_eq!(route.depth_macro, Some(1));
-    assert_close(route.depth_macro_amount, 0.35);
+
+    let field_macro = decoded
+        .automation
+        .field_macro(&unit_key("master.level", Some("lfo.amount")))
+        .unwrap();
+    assert_eq!(field_macro.target, Some(1));
+    assert_close(field_macro.amount, 0.35);
 
     let macro_route = decoded
         .automation
