@@ -622,6 +622,68 @@ fn field_macro_on_lfo_amount_is_off_by_default_and_only_appears_after_v() {
 }
 
 #[test]
+fn close_one_level_collapses_the_nested_field_macro_before_the_whole_lfo_editor() {
+    let controls = FluidControls::default();
+    let items = tab_controls(Tab::Master, &controls);
+    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let address = ControlAddress::new(items[0].id);
+    let key = unit_key(address.id(), Some("lfo.amount"));
+
+    automation.edit(|state| {
+        state.open_or_create(address).depth_ratio = 0.3;
+    });
+    automation.edit(|state| state.toggle_open_field(key.clone()));
+    automation.edit(|state| {
+        state.field_macro_mut(&key).unwrap().amounts[0] = 0.5;
+    });
+    let mut lfo_selected = 5; // sitting on one of the nested macro rows
+
+    // First close: only the nested field-macro editor collapses. The LFO
+    // editor (and its now-non-neutral field macro) stays open.
+    close_one_level(&mut automation, &mut lfo_selected);
+    assert!(automation.state().is_editor_open());
+    assert_eq!(automation.state().active_kind(), Some(ModKind::Lfo));
+    assert!(automation.state().field_macro(&key).is_some());
+    assert_eq!(
+        lfo_selected, 1,
+        "cursor lands back on the amount field's own row"
+    );
+
+    // Second close: nothing nested remains open, so this closes the whole
+    // LFO editor.
+    close_one_level(&mut automation, &mut lfo_selected);
+    assert!(!automation.state().is_editor_open());
+    assert_eq!(lfo_selected, 0);
+    // The route itself survives close — only the editor closed.
+    assert_close(automation.state().route(address).unwrap().depth_ratio, 0.3);
+}
+
+#[test]
+fn close_one_level_prunes_a_neutral_field_macro_left_open() {
+    let controls = FluidControls::default();
+    let items = tab_controls(Tab::Master, &controls);
+    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let address = ControlAddress::new(items[0].id);
+    let key = unit_key(address.id(), Some("lfo.amount"));
+
+    automation.edit(|state| {
+        state.open_or_create(address);
+    });
+    automation.edit(|state| state.toggle_open_field(key.clone()));
+    let mut lfo_selected = 5;
+
+    close_one_level(&mut automation, &mut lfo_selected);
+    assert!(
+        automation.state().field_macro(&key).is_none(),
+        "left neutral, the field macro prunes on close like every other route"
+    );
+    assert!(automation.state().is_editor_open());
+    assert_eq!(lfo_selected, 1);
+}
+
+#[test]
 fn macro_stacked_on_lfo_amount_via_v_scales_the_depth() {
     let mut controls = FluidControls::default();
     controls.master.level = 0.2;

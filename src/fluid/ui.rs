@@ -117,11 +117,16 @@ pub(crate) fn ui_loop(
                         Err(err) => (format!("Save failed: {err}"), Instant::now()),
                     });
                 }
+                // Esc only ever drills out one level (nested field-macro
+                // editor, then the modulator editor, then nothing) — it
+                // never quits, so escaping a deep edit can't risk exiting
+                // the app. Only q and Ctrl+C do that.
                 KeyCode::Esc if automation.state().is_editor_open() => {
-                    automation.edit(AutomationState::close_editor);
-                    lfo_selected = 0;
+                    close_one_level(&mut automation, &mut lfo_selected);
                 }
-                KeyCode::Char('q') | KeyCode::Esc => break 'ui,
+                KeyCode::Esc => {}
+                KeyCode::Char('q') => break 'ui,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'ui,
                 KeyCode::Tab => {
                     if automation.state().is_editor_open() {
                         automation.edit(AutomationState::close_editor);
@@ -235,9 +240,22 @@ pub(crate) fn ui_loop(
                         // onto that specific field, never on by default.
                         ActiveField::Lfo(address, field) if field.macro_key().is_some() => {
                             let key = unit_key(address.id(), field.macro_key());
+                            let was_open = automation.state().open_field() == Some(key.as_str());
                             automation.edit(|state| state.toggle_open_field(key));
-                            lfo_selected += 1;
+                            let base = field_row_index(automation.state(), address, field);
+                            lfo_selected = if was_open { base } else { base + 1 };
                         }
+                        // Already inside a field's nested macro rows: v
+                        // closes just that, same as Esc — never hijacks the
+                        // parent LFO editor into swapping to a top-level
+                        // Macro editor.
+                        ActiveField::LfoMacro(..) => {
+                            close_one_level(&mut automation, &mut lfo_selected);
+                        }
+                        // Anywhere else (including already inside the
+                        // top-level Macro editor, where this closes it): v
+                        // opens the Macro editor for the selected control,
+                        // for any slider.
                         _ => {
                             open_modulator(
                                 &mut automation,
@@ -256,7 +274,7 @@ pub(crate) fn ui_loop(
                         ActiveField::LfoMacro(address, field, _) => {
                             let key = unit_key(address.id(), field.macro_key());
                             automation.edit(|state| state.remove_field_macro(&key));
-                            lfo_selected -= 1;
+                            lfo_selected = field_row_index(automation.state(), address, field);
                         }
                         _ if automation.state().is_editor_open() => {
                             automation.edit(AutomationState::remove_open_route);
@@ -529,6 +547,46 @@ pub(crate) fn lfo_submenu_rows(
         }
     }
     rows
+}
+
+/// The submenu row index (1-based, matching `lfo_selected`) of an LFO
+/// field's own row, or 0 if it isn't present. Used to land the cursor back
+/// on a field's row after its nested rows appear or disappear, since the
+/// field's own position never shifts (nested rows only ever insert or
+/// remove immediately after it).
+fn field_row_index(automation: &AutomationState, address: ControlAddress, field: LfoField) -> usize {
+    lfo_submenu_rows(automation, address)
+        .iter()
+        .position(|row| *row == LfoSubRow::Field(field))
+        .map_or(0, |pos| pos + 1)
+}
+
+/// Which LFO field currently has its nested macro editor expanded, if any.
+fn field_macro_owner(automation: &AutomationState, address: ControlAddress) -> Option<LfoField> {
+    let open_key = automation.open_field()?;
+    LfoField::ALL.into_iter().find(|field| {
+        field
+            .macro_key()
+            .is_some_and(|key_str| unit_key(address.id(), Some(key_str)) == open_key)
+    })
+}
+
+/// Close exactly one level of nesting on the open editor: a field-macro's
+/// own editor if one is expanded, else the whole modulator editor. This is
+/// the single place that governs "close the innermost open thing" — Esc and
+/// re-pressing `v` on a nested field-macro row both route through it, so
+/// drilling out one step never destroys more than what's actually open.
+pub(crate) fn close_one_level(automation: &mut PublishedAutomation, lfo_selected: &mut usize) {
+    let Some(address) = automation.state().active_address() else {
+        return;
+    };
+    if let Some(field) = field_macro_owner(automation.state(), address) {
+        automation.edit(AutomationState::close_open_field);
+        *lfo_selected = field_row_index(automation.state(), address, field);
+    } else {
+        automation.edit(AutomationState::close_editor);
+        *lfo_selected = 0;
+    }
 }
 
 pub(crate) fn env_field_at(index: usize) -> Option<EnvField> {

@@ -27,7 +27,8 @@ path the engine hears. All new routes start audible-neutral (amount 0).
   and `v` is refused on macro rows.
 - `f`/`e`/`v` toggle their editor open and closed; settings are kept either
   way. `x` removes: with an editor open it deletes that route, on a bare
-  control it strips every modulator at once. `Esc` also closes-and-keeps.
+  control it strips every modulator at once. `Esc` also closes-and-keeps, one
+  level at a time — it never quits the app, even at the root.
 - `T` flips the selected time field between beats and ms (per field, not
   global). Flipping to ms keeps the exact equivalent and then h/l moves on a
   10 ms grid (typed ms is exact too); flipping back to beats rounds onto the
@@ -77,6 +78,12 @@ path the engine hears. All new routes start audible-neutral (amount 0).
 9. **Reach shadow.** While a control's editor is open, its bar shades the
    full range every active source could push it to, distinct from the ghost
    diamonds (which show only the current instant).
+10. **Esc never quits.** Esc only ever drills out one level (a nested field
+    macro, then the modulator editor, then nothing) — only `q` or Ctrl+C
+    exit the app now, so backing out of a deep edit can't accidentally kill
+    the process. `v` on a nested field-macro row closes just that row the
+    same way, instead of hijacking the parent LFO editor into swapping to a
+    top-level Macro editor.
 
 ## Feedback questions
 

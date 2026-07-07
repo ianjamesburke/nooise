@@ -1094,7 +1094,9 @@ impl AutomationState {
         self.open_field = Some(key);
     }
 
-    fn close_open_field(&mut self) {
+    /// Close just the nested field-macro editor, keeping the parent LFO
+    /// editor open. The inner half of Esc/`v`'s one-level-at-a-time close.
+    pub(crate) fn close_open_field(&mut self) {
         let Some(key) = self.open_field.take() else {
             return;
         };
