@@ -448,6 +448,21 @@ impl LfoRoute {
         }
     }
 
+    /// Set a time field to an exact value, clamped to range but not snapped
+    /// to the beat grid — used while the field is being driven in ms.
+    pub(crate) fn set_field_raw_at(&mut self, field: LfoField, value: f32, beat: f64) {
+        match field {
+            LfoField::Interval => self.set_cycle_preserving_phase(
+                value.clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS),
+                beat,
+            ),
+            LfoField::Offset => {
+                self.phase_offset_beats = value.clamp(0.0, MAX_LFO_OFFSET_BEATS);
+            }
+            LfoField::Amount | LfoField::Shape => self.set_field_at(field, value, beat),
+        }
+    }
+
     pub(crate) fn reset_field_at(&mut self, field: LfoField, beat: f64) {
         match field {
             LfoField::Shape => self.shape = LfoShape::Sine,
@@ -721,6 +736,16 @@ impl EnvelopeRoute {
                 self.decay_beats = snap_step(value, ENV_BEATS_STEP).clamp(0.0, MAX_ENV_DECAY_BEATS);
             }
             EnvField::Trigger => self.trigger = EnvTrigger::from_index(value),
+        }
+    }
+
+    /// Set a time field to an exact value, clamped to range but not snapped
+    /// to the beat grid — used while the field is being driven in ms.
+    pub(crate) fn set_field_raw(&mut self, field: EnvField, value: f32) {
+        match field {
+            EnvField::Attack => self.attack_beats = value.clamp(0.0, MAX_ENV_ATTACK_BEATS),
+            EnvField::Decay => self.decay_beats = value.clamp(0.0, MAX_ENV_DECAY_BEATS),
+            EnvField::Amount | EnvField::Trigger => self.set_field(field, value),
         }
     }
 

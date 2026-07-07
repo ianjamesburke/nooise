@@ -343,6 +343,12 @@ impl ControlSpec {
         (self.set)(c, self.quantize(value));
     }
 
+    /// Set an exact value, clamped to range but not snapped to the step
+    /// grid — used while a time control is being driven in its flipped unit.
+    pub(crate) fn apply_raw(&self, value: f32, c: &mut FluidControls) {
+        (self.set)(c, value.clamp(self.min, self.max));
+    }
+
     pub(crate) fn quantize(&self, value: f32) -> f32 {
         let clamped = value.clamp(self.min, self.max);
         match self.step {

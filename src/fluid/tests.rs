@@ -2390,6 +2390,70 @@ fn unit_conversion_round_trips_at_current_bpm() {
     assert_eq!(unit_key("perc.decay_ms", None), "perc.decay_ms");
 }
 
+#[test]
+fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
+    let mut c = FluidControls::default();
+    c.master.bpm = 120.0; // one beat is exactly 500 ms
+    c.perc.decay_ms = 470.0;
+    let controls = Arc::new(ArcSwap::from_pointee(c));
+    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let mut flipped = FlippedUnits::new();
+
+    // Perc interval (native beats) flipped to ms: h/l moves on the 10 ms
+    // grid instead of the beat grid. 0.25 beats = 125 ms -> 140 ms.
+    flipped.insert(unit_key("perc.interval_beats", None));
+    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 1, 1.0, 0.0, &flipped);
+    assert_near(beats_to_ms(controls.load().perc.interval_beats, 120.0), 140.0);
+
+    // Flipping back to beats lands the value on the control's own grid.
+    flipped.remove(&unit_key("perc.interval_beats", None));
+    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 1, false, 0.0);
+    assert_close(controls.load().perc.interval_beats, 0.25);
+
+    // An ms-native control flipped to beats rounds to the nearest divided
+    // beat: 470 ms at 120 BPM is 0.94 beats -> 1.0 beats -> 500 ms.
+    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 3, true, 0.0);
+    assert_near(controls.load().perc.decay_ms, 500.0);
+
+    // And once flipped, it steps on the 0.125-beat grid: 500 ms + an eighth
+    // of a beat (62.5 ms) at 120 BPM.
+    flipped.insert(unit_key("perc.decay_ms", None));
+    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 3, 1.0, 0.0, &flipped);
+    assert_near(controls.load().perc.decay_ms, 562.5);
+}
+
+#[test]
+fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
+    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
+    {
+        let mut c = FluidControls::clone(&controls.load());
+        c.master.bpm = 120.0;
+        controls.store(Arc::new(c));
+    }
+    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let address = ControlAddress::new("master.level");
+    automation.edit(|state| {
+        state.open_or_create(address);
+    });
+    let mut flipped = FlippedUnits::new();
+    flipped.insert(unit_key("master.level", Some("lfo.interval")));
+
+    // Default cycle is 2 beats = 1000 ms at 120 BPM; one flipped step lands
+    // on 1010 ms, off the beat grid.
+    adjust_lfo_or_control(&mut automation, 2, &controls, Tab::Master, 0, 1.0, 0.0, &flipped);
+    assert_near(
+        beats_to_ms(automation.state().route(address).unwrap().cycle_beats, 120.0),
+        1010.0,
+    );
+
+    // Un-flipping snaps the interval back onto the sixteenth grid.
+    flipped.clear();
+    snap_after_unit_flip(&mut automation, 2, &controls, Tab::Master, 0, false, 0.0);
+    assert_close(automation.state().route(address).unwrap().cycle_beats, 2.0);
+}
+
 // ============================================================
 // Automation payload v3: seeds, macro routes, envelopes
 // ============================================================

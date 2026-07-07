@@ -202,6 +202,7 @@ pub(crate) fn ui_loop(
                         selected,
                         -1.0,
                         beat,
+                        &flipped,
                     );
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
@@ -213,6 +214,7 @@ pub(crate) fn ui_loop(
                         selected,
                         1.0,
                         beat,
+                        &flipped,
                     );
                 }
                 KeyCode::Char('f') => {
@@ -259,9 +261,20 @@ pub(crate) fn ui_loop(
                 KeyCode::Char('t') | KeyCode::Char('T') => {
                     if let Some(key) =
                         unit_toggle_key(automation.state(), lfo_selected, &items, selected)
-                        && !flipped.remove(&key)
                     {
-                        flipped.insert(key);
+                        let now_flipped = !flipped.remove(&key);
+                        if now_flipped {
+                            flipped.insert(key);
+                        }
+                        snap_after_unit_flip(
+                            &mut automation,
+                            lfo_selected,
+                            &controls,
+                            tab,
+                            selected,
+                            now_flipped,
+                            beat,
+                        );
                     }
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
@@ -346,6 +359,102 @@ fn flip_entry(base: TimeBase, value: f32, bpm: f32) -> f32 {
     }
 }
 
+/// Step grids for a flipped time field: native-beats fields move on a 10 ms
+/// grid, native-ms fields on the 0.125-beat grid.
+const FLIP_MS_STEP: f32 = 10.0;
+const FLIP_BEAT_STEP: f32 = 0.125;
+
+/// One h/l step for a flipped time field, taken in its display unit and
+/// returned in the native unit (unclamped; the setter clamps).
+fn flipped_step(native: TimeBase, value: f32, dir: f32, bpm: f32) -> f32 {
+    match native {
+        TimeBase::Beats => ms_to_beats(
+            snap_step(beats_to_ms(value, bpm) + dir * FLIP_MS_STEP, FLIP_MS_STEP),
+            bpm,
+        ),
+        TimeBase::Ms => beats_to_ms(
+            snap_step(ms_to_beats(value, bpm) + dir * FLIP_BEAT_STEP, FLIP_BEAT_STEP),
+            bpm,
+        ),
+        TimeBase::None => value,
+    }
+}
+
+/// Landing rule for the unit toggle: flipping a field so it displays beats
+/// rounds its value onto the beat grid; flipping to ms keeps the exact
+/// equivalent so the value can then move freely in time.
+pub(crate) fn snap_after_unit_flip(
+    automation: &mut PublishedAutomation,
+    lfo_selected: usize,
+    controls: &Arc<ArcSwap<FluidControls>>,
+    tab: Tab,
+    selected: usize,
+    now_flipped: bool,
+    beat: f64,
+) {
+    let bpm = controls.load().master.bpm;
+    match active_field(automation.state(), lfo_selected) {
+        // Modulator time fields are native beats: un-flipping lands back on
+        // their own grid via the snapping setter.
+        ActiveField::Lfo(address, field) if !now_flipped => automation.edit(|state| {
+            if let Some(route) = state.route_mut(address) {
+                match field {
+                    LfoField::Interval => route.set_field_at(field, route.cycle_beats, beat),
+                    LfoField::Offset => route.set_field_at(field, route.phase_offset_beats, beat),
+                    LfoField::Amount | LfoField::Shape => {}
+                }
+            }
+        }),
+        ActiveField::Envelope(address, field) if !now_flipped => automation.edit(|state| {
+            if let Some(route) = state.envelope_mut(address) {
+                match field {
+                    EnvField::Attack => route.set_field(field, route.attack_beats),
+                    EnvField::Decay => route.set_field(field, route.decay_beats),
+                    EnvField::Amount | EnvField::Trigger => {}
+                }
+            }
+        }),
+        ActiveField::Control => {
+            let Some(spec) = tab_specs(tab).get(selected) else {
+                return;
+            };
+            let mut next = FluidControls::clone(&controls.load());
+            let current = (spec.get)(&next);
+            match (spec.time_base, now_flipped) {
+                // Back to native beats: land on the control's own grid.
+                (TimeBase::Beats, false) => spec.apply_quantized_value(current, &mut next),
+                // An ms control now displayed in beats: round to the nearest
+                // divided beat.
+                (TimeBase::Ms, true) => {
+                    let beats = snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP)
+                        .max(FLIP_BEAT_STEP);
+                    spec.apply_raw(beats_to_ms(beats, bpm), &mut next);
+                }
+                _ => return,
+            }
+            controls.store(Arc::new(next));
+        }
+        _ => {}
+    }
+}
+
+/// The flip key qualifier for a modulator time field, None for unit-less ones.
+fn lfo_time_key(field: LfoField) -> Option<&'static str> {
+    match field {
+        LfoField::Interval => Some("lfo.interval"),
+        LfoField::Offset => Some("lfo.offset"),
+        LfoField::Amount | LfoField::Shape => None,
+    }
+}
+
+fn env_time_key(field: EnvField) -> Option<&'static str> {
+    match field {
+        EnvField::Attack => Some("env.attack"),
+        EnvField::Decay => Some("env.decay"),
+        EnvField::Amount | EnvField::Trigger => None,
+    }
+}
+
 /// The flip key for whatever time field the cursor sits on, or None when the
 /// selection has no time base (T is then a no-op).
 fn unit_toggle_key(
@@ -355,19 +464,13 @@ fn unit_toggle_key(
     selected: usize,
 ) -> Option<String> {
     match active_field(automation, lfo_selected) {
-        ActiveField::Lfo(address, LfoField::Interval) => {
-            Some(unit_key(address.id(), Some("lfo.interval")))
+        ActiveField::Lfo(address, field) => {
+            lfo_time_key(field).map(|key| unit_key(address.id(), Some(key)))
         }
-        ActiveField::Lfo(address, LfoField::Offset) => {
-            Some(unit_key(address.id(), Some("lfo.offset")))
+        ActiveField::Envelope(address, field) => {
+            env_time_key(field).map(|key| unit_key(address.id(), Some(key)))
         }
-        ActiveField::Envelope(address, EnvField::Attack) => {
-            Some(unit_key(address.id(), Some("env.attack")))
-        }
-        ActiveField::Envelope(address, EnvField::Decay) => {
-            Some(unit_key(address.id(), Some("env.decay")))
-        }
-        ActiveField::Lfo(..) | ActiveField::Envelope(..) | ActiveField::Macro(..) => None,
+        ActiveField::Macro(..) => None,
         ActiveField::Control => {
             let item = items.get(selected)?;
             let spec = spec_by_id(item.id)?;
@@ -499,7 +602,8 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
     }
 }
 
-fn adjust_lfo_or_control(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn adjust_lfo_or_control(
     automation: &mut PublishedAutomation,
     lfo_selected: usize,
     controls: &Arc<ArcSwap<FluidControls>>,
@@ -507,24 +611,70 @@ fn adjust_lfo_or_control(
     selected: usize,
     dir: f32,
     beat: f64,
+    flipped: &FlippedUnits,
 ) {
+    let bpm = controls.load().master.bpm;
     match active_field(automation.state(), lfo_selected) {
-        ActiveField::Lfo(address, field) => automation.edit(|state| {
-            if let Some(route) = state.route_mut(address) {
-                route.adjust_field_at(field, dir, beat);
-            }
-        }),
-        ActiveField::Envelope(address, field) => automation.edit(|state| {
-            if let Some(route) = state.envelope_mut(address) {
-                route.adjust_field(field, dir);
-            }
-        }),
+        ActiveField::Lfo(address, field) => {
+            let is_flipped = lfo_time_key(field)
+                .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
+            automation.edit(|state| {
+                let Some(route) = state.route_mut(address) else {
+                    return;
+                };
+                match (is_flipped, field) {
+                    (true, LfoField::Interval) => {
+                        let next = flipped_step(TimeBase::Beats, route.cycle_beats, dir, bpm);
+                        route.set_field_raw_at(field, next, beat);
+                    }
+                    (true, LfoField::Offset) => {
+                        let next =
+                            flipped_step(TimeBase::Beats, route.phase_offset_beats, dir, bpm);
+                        route.set_field_raw_at(field, next, beat);
+                    }
+                    _ => route.adjust_field_at(field, dir, beat),
+                }
+            });
+        }
+        ActiveField::Envelope(address, field) => {
+            let is_flipped = env_time_key(field)
+                .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
+            automation.edit(|state| {
+                let Some(route) = state.envelope_mut(address) else {
+                    return;
+                };
+                match (is_flipped, field) {
+                    (true, EnvField::Attack) => {
+                        let next = flipped_step(TimeBase::Beats, route.attack_beats, dir, bpm);
+                        route.set_field_raw(field, next);
+                    }
+                    (true, EnvField::Decay) => {
+                        let next = flipped_step(TimeBase::Beats, route.decay_beats, dir, bpm);
+                        route.set_field_raw(field, next);
+                    }
+                    _ => route.adjust_field(field, dir),
+                }
+            });
+        }
         ActiveField::Macro(address, field) => automation.edit(|state| {
             if let Some(route) = state.macro_route_mut(address) {
                 route.adjust_field(field, dir);
             }
         }),
-        ActiveField::Control => adjust(controls, tab, selected, dir),
+        ActiveField::Control => {
+            let flipped_spec = tab_specs(tab).get(selected).filter(|spec| {
+                spec.time_base != TimeBase::None && flipped.contains(&unit_key(spec.id, None))
+            });
+            match flipped_spec {
+                Some(spec) => {
+                    let mut next = FluidControls::clone(&controls.load());
+                    let current = (spec.get)(&next);
+                    spec.apply_raw(flipped_step(spec.time_base, current, dir, bpm), &mut next);
+                    controls.store(Arc::new(next));
+                }
+                None => adjust(controls, tab, selected, dir),
+            }
+        }
     }
 }
 
@@ -570,35 +720,27 @@ fn set_modulator_or_control(
     let bpm = controls.load().master.bpm;
     match active_field(automation.state(), lfo_selected) {
         ActiveField::Lfo(address, field) => automation.edit(|state| {
-            let field_key = match field {
-                LfoField::Interval => Some("lfo.interval"),
-                LfoField::Offset => Some("lfo.offset"),
-                LfoField::Amount | LfoField::Shape => None,
-            };
-            let value = match field_key {
-                Some(key) if flipped.contains(&unit_key(address.id(), Some(key))) => {
-                    flip_entry(TimeBase::Beats, value, bpm)
-                }
-                _ => value,
-            };
+            let is_flipped = lfo_time_key(field)
+                .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
             if let Some(route) = state.route_mut(address) {
-                route.set_field_at(field, value, beat);
+                if is_flipped {
+                    // Typed ms is exact: convert and clamp, but don't snap
+                    // back onto the beat grid.
+                    route.set_field_raw_at(field, flip_entry(TimeBase::Beats, value, bpm), beat);
+                } else {
+                    route.set_field_at(field, value, beat);
+                }
             }
         }),
         ActiveField::Envelope(address, field) => automation.edit(|state| {
-            let field_key = match field {
-                EnvField::Attack => Some("env.attack"),
-                EnvField::Decay => Some("env.decay"),
-                EnvField::Amount | EnvField::Trigger => None,
-            };
-            let value = match field_key {
-                Some(key) if flipped.contains(&unit_key(address.id(), Some(key))) => {
-                    flip_entry(TimeBase::Beats, value, bpm)
-                }
-                _ => value,
-            };
+            let is_flipped = env_time_key(field)
+                .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
             if let Some(route) = state.envelope_mut(address) {
-                route.set_field(field, value);
+                if is_flipped {
+                    route.set_field_raw(field, flip_entry(TimeBase::Beats, value, bpm));
+                } else {
+                    route.set_field(field, value);
+                }
             }
         }),
         ActiveField::Macro(address, field) => automation.edit(|state| {
@@ -607,13 +749,19 @@ fn set_modulator_or_control(
             }
         }),
         ActiveField::Control => {
-            let value = match tab_specs(tab).get(selected) {
-                Some(spec) if flipped.contains(&unit_key(spec.id, None)) => {
-                    flip_entry(spec.time_base, value, bpm)
+            match tab_specs(tab).get(selected) {
+                Some(spec)
+                    if spec.time_base != TimeBase::None
+                        && flipped.contains(&unit_key(spec.id, None)) =>
+                {
+                    // Typed input in the flipped unit is exact: convert and
+                    // clamp, but don't snap onto the native step grid.
+                    let mut next = FluidControls::clone(&controls.load());
+                    spec.apply_raw(flip_entry(spec.time_base, value, bpm), &mut next);
+                    controls.store(Arc::new(next));
                 }
-                _ => value,
-            };
-            set_value(controls, tab, selected, value);
+                _ => set_value(controls, tab, selected, value),
+            }
         }
     }
 }
