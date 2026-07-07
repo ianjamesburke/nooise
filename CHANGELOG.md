@@ -1,6 +1,35 @@
 # Changelog
 
 Newest releases appear first.
+## [1.3.0] — 2026-07-07
+
+### Added
+- feat: macro routes become 4 independent amount sliders, drop target picker
+- feat: gate macro-on-field behind v (off by default), add reach-shadow marker
+- feat: centralize beat grid for offsets too, keeping true zero reachable below the 0.125 floor
+- feat: stack a macro onto LFO depth via indented amount rows
+- feat: flipped time fields step and type in their display unit, snap on return to beats
+- feat: interval grids lock to sixteenths above the 0.125 floor
+- feat: x removes automation; same-key tap just toggles the editor
+- feat: T flips units per selected field instead of globally
+- feat: v double-tap hides a macro assignment; amount row leads the macro submenu
+- feat: Enter expands a row into its owning tab; louder chords voice
+- feat: song code v3 — persist LFO seeds, macro routes, and envelopes
+- feat: effective marker + per-source ghost diamonds on sliders
+- feat: T cycles a global beats/ms unit mode
+- feat: lightweight macro system — 4 sliders, v-assignment, two-pass automation
+- feat: double-tap f/e disables the modulator
+- feat: baseline field behaviour — discrete fields clamp, shared field row renderer
+- feat: halve all 0.25-beat grids to 0.125 (32nd notes)
+- feat: add modulator shapes, envelopes, and combined LFO+envelope routes
+
+### Fixed
+- fix: percent entry always means percent, v on Shape no-ops, macro-driven LFO amount survives hide
+- fix: Esc never quits, unify one-level-at-a-time editor close
+
+### Performance
+- perf: allocation-free audio hot path, opt-level 1 dev builds
+- perf: instant-feel input and audio response
 ## [1.2.3] — 2026-07-05
 
 ### Changed
