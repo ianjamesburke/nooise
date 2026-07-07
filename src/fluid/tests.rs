@@ -304,7 +304,7 @@ fn pad_defaults_use_progression_a_and_sixteen_beat_chords() {
 
 #[test]
 fn tab_previous_wraps_back_one_tab() {
-    assert_eq!(Tab::Master.previous(), Tab::Clap);
+    assert_eq!(Tab::Master.previous(), Tab::Macros);
     assert_eq!(Tab::Kick.previous(), Tab::Bass);
     assert_eq!(Tab::Bass.previous(), Tab::Chords);
 }
@@ -500,6 +500,101 @@ fn double_tap_zeroes_amount_and_removes_the_route() {
     open_modulator(&mut automation, &items, 0, ModKind::Lfo, &mut sub);
     assert!(!automation.state().is_editor_open());
     assert!(automation.state().route(address).is_none());
+}
+
+#[test]
+fn macro_route_scales_target_into_its_range() {
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.2;
+    controls.macros.values[0] = 0.5;
+    let mut automation = AutomationState::default();
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        MacroRoute {
+            target: Some(0),
+            amount: 1.0,
+        },
+    );
+
+    let mut effective = controls.clone();
+    apply_automation(&mut effective, &automation, timing(0, 120.0));
+    assert_near(effective.master.level, 0.7);
+
+    // Negative amount dips below the base and clamps at the control minimum.
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        MacroRoute {
+            target: Some(0),
+            amount: -1.0,
+        },
+    );
+    let mut effective = controls.clone();
+    apply_automation(&mut effective, &automation, timing(0, 120.0));
+    assert_near(effective.master.level, 0.0);
+}
+
+#[test]
+fn macro_own_lfo_feeds_targets_in_the_same_pass() {
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.0;
+    controls.macros.values[0] = 0.0;
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        ControlAddress::new("macro.1"),
+        LfoRoute {
+            depth_ratio: 1.0,
+            cycle_beats: 2.0,
+            shape: LfoShape::Sine,
+            ..LfoRoute::default()
+        },
+    );
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        MacroRoute {
+            target: Some(0),
+            amount: 1.0,
+        },
+    );
+
+    // Sine peak: beat 0.5 of a 2-beat cycle. At 120 BPM that is 0.25 s.
+    let sample = (f64::from(SAMPLE_RATE) * 0.25) as u64;
+    let mut effective = controls.clone();
+    apply_automation(&mut effective, &automation, timing(sample, 120.0));
+    assert!(
+        effective.macros.values[0] > 0.99,
+        "macro slider should sit at its LFO peak, got {}",
+        effective.macros.values[0]
+    );
+    assert!(
+        effective.master.level > 0.99,
+        "target should follow the modulated macro, got {}",
+        effective.master.level
+    );
+}
+
+#[test]
+fn envelope_opens_only_on_macros_and_macros_never_target_macros() {
+    let controls = FluidControls::default();
+    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let mut sub = 0usize;
+
+    // e on a regular control: refused.
+    let master_items = tab_controls(Tab::Master, &controls);
+    open_modulator(&mut automation, &master_items, 0, ModKind::Envelope, &mut sub);
+    assert!(!automation.state().is_editor_open());
+
+    // v on a macro slider: refused.
+    let macro_items = tab_controls(Tab::Macros, &controls);
+    open_modulator(&mut automation, &macro_items, 0, ModKind::Macro, &mut sub);
+    assert!(!automation.state().is_editor_open());
+
+    // e on a macro slider and v on a regular control: allowed.
+    open_modulator(&mut automation, &macro_items, 0, ModKind::Envelope, &mut sub);
+    assert_eq!(automation.state().active_kind(), Some(ModKind::Envelope));
+    automation.edit(AutomationState::close_editor);
+    open_modulator(&mut automation, &master_items, 0, ModKind::Macro, &mut sub);
+    assert_eq!(automation.state().active_kind(), Some(ModKind::Macro));
 }
 
 #[test]

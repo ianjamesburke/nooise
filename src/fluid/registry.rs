@@ -13,10 +13,11 @@ pub(crate) enum Tab {
     Kick = 4,
     Tonal = 5,
     Clap = 6,
+    Macros = 7,
 }
 
 impl Tab {
-    pub(crate) fn all() -> [Tab; 7] {
+    pub(crate) fn all() -> [Tab; 8] {
         [
             Tab::Master,
             Tab::Perc,
@@ -25,6 +26,7 @@ impl Tab {
             Tab::Kick,
             Tab::Tonal,
             Tab::Clap,
+            Tab::Macros,
         ]
     }
 
@@ -37,6 +39,7 @@ impl Tab {
             Tab::Kick => "Kick",
             Tab::Tonal => "Tonal",
             Tab::Clap => "Clap",
+            Tab::Macros => "Macros",
         }
     }
 
@@ -48,19 +51,21 @@ impl Tab {
             Tab::Bass => Tab::Kick,
             Tab::Kick => Tab::Tonal,
             Tab::Tonal => Tab::Clap,
-            Tab::Clap => Tab::Master,
+            Tab::Clap => Tab::Macros,
+            Tab::Macros => Tab::Master,
         }
     }
 
     pub(crate) fn previous(self) -> Self {
         match self {
-            Tab::Master => Tab::Clap,
+            Tab::Master => Tab::Macros,
             Tab::Perc => Tab::Master,
             Tab::Chords => Tab::Perc,
             Tab::Bass => Tab::Chords,
             Tab::Kick => Tab::Bass,
             Tab::Tonal => Tab::Kick,
             Tab::Clap => Tab::Tonal,
+            Tab::Macros => Tab::Clap,
         }
     }
 }
@@ -1140,6 +1145,51 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
     ),
 ];
 
+pub(crate) const MACRO_CONTROLS: &[ControlSpec] = &[
+    ControlSpec::gain(
+        "macro.1",
+        "Macro 1",
+        0.0,
+        1.0,
+        |c| c.macros.values[0],
+        |c, v| c.macros.values[0] = v,
+        |c| pct(c.macros.values[0]),
+    ),
+    ControlSpec::gain(
+        "macro.2",
+        "Macro 2",
+        0.0,
+        1.0,
+        |c| c.macros.values[1],
+        |c, v| c.macros.values[1] = v,
+        |c| pct(c.macros.values[1]),
+    ),
+    ControlSpec::gain(
+        "macro.3",
+        "Macro 3",
+        0.0,
+        1.0,
+        |c| c.macros.values[2],
+        |c, v| c.macros.values[2] = v,
+        |c| pct(c.macros.values[2]),
+    ),
+    ControlSpec::gain(
+        "macro.4",
+        "Macro 4",
+        0.0,
+        1.0,
+        |c| c.macros.values[3],
+        |c, v| c.macros.values[3] = v,
+        |c| pct(c.macros.values[3]),
+    ),
+];
+
+/// Whether a control id names one of the macro sliders. Macro sliders take
+/// LFOs and envelopes but cannot themselves be macro targets.
+pub(crate) fn is_macro_id(id: &str) -> bool {
+    MACRO_CONTROLS.iter().any(|spec| spec.id == id)
+}
+
 pub(crate) fn tab_specs(tab: Tab) -> &'static [ControlSpec] {
     match tab {
         Tab::Master => MASTER_CONTROLS,
@@ -1149,6 +1199,7 @@ pub(crate) fn tab_specs(tab: Tab) -> &'static [ControlSpec] {
         Tab::Kick => KICK_CONTROLS,
         Tab::Tonal => TONAL_CONTROLS,
         Tab::Clap => CLAP_CONTROLS,
+        Tab::Macros => MACRO_CONTROLS,
     }
 }
 

@@ -215,6 +215,15 @@ pub(crate) fn ui_loop(
                         &mut lfo_selected,
                     );
                 }
+                KeyCode::Char('v') => {
+                    open_modulator(
+                        &mut automation,
+                        &items,
+                        selected,
+                        ModKind::Macro,
+                        &mut lfo_selected,
+                    );
+                }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Some(address) = automation.state().active_address()
                         && automation.state().active_kind() == Some(ModKind::Lfo)
@@ -250,12 +259,28 @@ pub(crate) fn env_field_at(index: usize) -> Option<EnvField> {
     EnvField::ALL.get(index.checked_sub(1)?).copied()
 }
 
+pub(crate) fn macro_field_at(index: usize) -> Option<MacroField> {
+    MacroField::ALL.get(index.checked_sub(1)?).copied()
+}
+
 /// Submenu row count for the currently open editor (0 when none is open).
 pub(crate) fn active_field_count(automation: &AutomationState) -> usize {
     match automation.active_kind() {
         Some(ModKind::Lfo) => LfoField::ALL.len(),
         Some(ModKind::Envelope) => EnvField::ALL.len(),
+        Some(ModKind::Macro) => MacroField::ALL.len(),
         None => 0,
+    }
+}
+
+/// Whether a modulator kind can open on a control. Envelopes live only on
+/// macro sliders; macro routes live only on regular controls (no macro
+/// feeding another macro).
+fn kind_allowed_on(kind: ModKind, id: &str) -> bool {
+    match kind {
+        ModKind::Lfo => true,
+        ModKind::Envelope => is_macro_id(id),
+        ModKind::Macro => !is_macro_id(id),
     }
 }
 
@@ -272,6 +297,9 @@ pub(crate) fn open_modulator(
     sub_selected: &mut usize,
 ) {
     if let Some(item) = items.get(selected) {
+        if !kind_allowed_on(kind, item.id) {
+            return;
+        }
         let address = ControlAddress::new(item.id);
         automation.edit(|state| {
             let already =
@@ -288,6 +316,11 @@ pub(crate) fn open_modulator(
                             route.amount = 0.0;
                         }
                     }
+                    ModKind::Macro => {
+                        if let Some(route) = state.macro_route_mut(address) {
+                            route.amount = 0.0;
+                        }
+                    }
                 }
             }
             state.close_editor();
@@ -298,6 +331,9 @@ pub(crate) fn open_modulator(
                     }
                     ModKind::Envelope => {
                         state.open_or_create_envelope(address);
+                    }
+                    ModKind::Macro => {
+                        state.open_or_create_macro(address);
                     }
                 }
             }
@@ -333,6 +369,7 @@ impl PublishedAutomation {
 enum ActiveField {
     Lfo(ControlAddress, LfoField),
     Envelope(ControlAddress, EnvField),
+    Macro(ControlAddress, MacroField),
     Control,
 }
 
@@ -347,6 +384,10 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
         },
         Some(ModKind::Envelope) => match env_field_at(lfo_selected) {
             Some(field) => ActiveField::Envelope(address, field),
+            None => ActiveField::Control,
+        },
+        Some(ModKind::Macro) => match macro_field_at(lfo_selected) {
+            Some(field) => ActiveField::Macro(address, field),
             None => ActiveField::Control,
         },
         None => ActiveField::Control,
@@ -373,6 +414,11 @@ fn adjust_lfo_or_control(
                 route.adjust_field(field, dir);
             }
         }),
+        ActiveField::Macro(address, field) => automation.edit(|state| {
+            if let Some(route) = state.macro_route_mut(address) {
+                route.adjust_field(field, dir);
+            }
+        }),
         ActiveField::Control => adjust(controls, tab, selected, dir),
     }
 }
@@ -393,6 +439,11 @@ fn reset_lfo_or_control(
         }),
         ActiveField::Envelope(address, field) => automation.edit(|state| {
             if let Some(route) = state.envelope_mut(address) {
+                route.reset_field(field);
+            }
+        }),
+        ActiveField::Macro(address, field) => automation.edit(|state| {
+            if let Some(route) = state.macro_route_mut(address) {
                 route.reset_field(field);
             }
         }),
@@ -417,6 +468,11 @@ fn set_modulator_or_control(
         }),
         ActiveField::Envelope(address, field) => automation.edit(|state| {
             if let Some(route) = state.envelope_mut(address) {
+                route.set_field(field, value);
+            }
+        }),
+        ActiveField::Macro(address, field) => automation.edit(|state| {
+            if let Some(route) = state.macro_route_mut(address) {
                 route.set_field(field, value);
             }
         }),
@@ -448,6 +504,15 @@ fn automation_footer(automation: &AutomationState) -> Option<String> {
                 "ENV {}   {}   amount {:+.0}%   Esc close",
                 address.id(),
                 route.field_display(EnvField::Trigger),
+                route.amount * 100.0
+            ))
+        }
+        ModKind::Macro => {
+            let route = automation.macro_route(address)?;
+            Some(format!(
+                "MACRO {}   {}   amount {:+.0}%   Esc close",
+                address.id(),
+                route.field_display(MacroField::Target),
                 route.amount * 100.0
             ))
         }
@@ -779,9 +844,12 @@ pub(crate) fn render_fluid(
         let address = ControlAddress::new(item.id);
         let route = automation.route(address);
         let envelope = automation.envelope(address);
+        let macro_route = automation.macro_route(address);
+        let macro_mod = live_macro_contribution(automation, controls, address, mod_ctx);
         let editor_here = automation.active_address() == Some(address);
         let lfo_open_here = editor_here && automation.active_kind() == Some(ModKind::Lfo);
         let env_open_here = editor_here && automation.active_kind() == Some(ModKind::Envelope);
+        let macro_open_here = editor_here && automation.active_kind() == Some(ModKind::Macro);
         let editor_open_here = editor_here;
         let parent_active = active && (!editor_open_here || lfo_selected == 0);
         let prefix = if parent_active { "▶ " } else { "  " };
@@ -804,13 +872,13 @@ pub(crate) fn render_fluid(
         if parent_active {
             style = style.add_modifier(Modifier::BOLD);
         }
-        let modulated = (route.is_some() || envelope.is_some()).then(|| {
+        let modulated = (route.is_some() || envelope.is_some() || macro_mod.is_some()).then(|| {
             let spec = address.spec();
             let base = match spec.bar {
                 Bar::Linear => item.value,
                 Bar::Log2 => 2f32.powf(item.value),
             };
-            let value = modulated_control_value_full(spec, route, envelope, base, mod_ctx);
+            let value = modulated_control_value_full(spec, route, envelope, macro_mod, base, mod_ctx);
             let value = match spec.bar {
                 Bar::Linear => value,
                 Bar::Log2 => value.log2(),
@@ -859,6 +927,23 @@ pub(crate) fn render_fluid(
             }
             rows.push(env_lane_line(route, mod_ctx, bar_w, env_open_here));
         }
+        if let Some(route) = macro_route {
+            if macro_open_here {
+                for (fi, field) in MacroField::ALL.iter().enumerate() {
+                    rows.push(field_line(
+                        field.label(),
+                        route.field_ratio(*field),
+                        route.field_display(*field),
+                        lfo_selected == fi + 1,
+                        &numeric,
+                        bar_w,
+                        MACRO_PALETTE,
+                    ));
+                }
+            } else {
+                rows.push(macro_chip_line(route));
+            }
+        }
         if i + 1 < items.len() {
             rows.push(Line::from(""));
         }
@@ -866,7 +951,7 @@ pub(crate) fn render_fluid(
     f.render_widget(Paragraph::new(rows), layout[4]);
 
     let footer = update_message
-        .unwrap_or("jk select   h/l adjust   f LFO   e envelope   type value   Enter set   q quit");
+        .unwrap_or("jk select   h/l adjust   f LFO   v macro   type value   Enter set   q quit");
     let footer_style = if update_message.is_some() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
@@ -898,6 +983,24 @@ pub(crate) const ENV_PALETTE: FieldPalette = FieldPalette {
     active: Color::Rgb(140, 235, 175),
     idle: Color::Rgb(95, 195, 140),
 };
+
+pub(crate) const MACRO_PALETTE: FieldPalette = FieldPalette {
+    active: Color::Rgb(255, 200, 120),
+    idle: Color::Rgb(210, 160, 90),
+};
+
+/// Compact one-line reminder of a closed macro assignment under its control.
+fn macro_chip_line(route: &MacroRoute) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(
+            "    {:<15} ⇒ {}   {}",
+            "",
+            route.field_display(MacroField::Target),
+            route.field_display(MacroField::Amount)
+        ),
+        Style::default().fg(MACRO_PALETTE.idle),
+    ))
+}
 
 /// Baseline submenu field row: label, clamped ratio bar, live display, shared
 /// numeric-entry cursor. Every modulator field renders through this.

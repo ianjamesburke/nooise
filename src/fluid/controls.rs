@@ -209,6 +209,16 @@ impl Default for BassControls {
     }
 }
 
+pub(crate) const MACRO_COUNT: usize = 4;
+
+/// The macro sliders: bare 0..1 values with no direct audio path. They only
+/// matter through macro routes, which scale a route's amount into its target
+/// control's range.
+#[derive(Clone, Default)]
+pub(crate) struct MacroControls {
+    pub values: [f32; MACRO_COUNT],
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct FluidControls {
     pub master: MasterControls,
@@ -218,4 +228,5 @@ pub(crate) struct FluidControls {
     pub tonal: TonalControls,
     pub clap: ClapControls,
     pub bass: BassControls,
+    pub macros: MacroControls,
 }
