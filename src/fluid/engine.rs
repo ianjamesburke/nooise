@@ -67,7 +67,8 @@ impl FluidEngine {
 
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
-        if self.current_sample.is_multiple_of(512) {
+        // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
+        if self.current_sample.is_multiple_of(128) {
             self.snapshot = FluidControls::clone(&self.controls.load());
             self.gain_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);

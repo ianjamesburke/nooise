@@ -6,7 +6,9 @@ pub(crate) const MASTER_BPM_MIN: f32 = 60.0;
 pub(crate) const MASTER_BPM_MAX: f32 = 200.0;
 pub(crate) const KICK_ECHO_TIME_BEATS_MIN: f32 = 0.125;
 pub(crate) const KICK_ECHO_TIME_BEATS_MAX: f32 = 2.0;
-pub(crate) const LEVEL_RAMP_MS: f32 = 100.0;
+// Short enough to feel instant under a moving slider, long enough to stay
+// click-free on gain changes.
+pub(crate) const LEVEL_RAMP_MS: f32 = 30.0;
 
 #[derive(Clone)]
 pub(crate) struct MasterControls {

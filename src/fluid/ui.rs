@@ -23,7 +23,7 @@ pub(crate) fn ui_loop(
     let mut save_message: Option<(String, Instant)> = None;
     let mut automation = PublishedAutomation::new(initial_automation, automation_shared);
 
-    loop {
+    'ui: loop {
         let c = FluidControls::clone(&controls.load());
         if save_message
             .as_ref()
@@ -69,9 +69,16 @@ pub(crate) fn ui_loop(
             )
         })?;
 
-        if event::poll(std::time::Duration::from_millis(16))?
-            && let Event::Key(key) = event::read()?
-        {
+        // Drain every queued key event before the next draw so a held key
+        // never falls behind the frame rate; the first poll doubles as the
+        // ~16 ms frame pacing wait.
+        let mut pending = event::poll(std::time::Duration::from_millis(16))?;
+        while pending {
+            let event = event::read()?;
+            pending = event::poll(std::time::Duration::ZERO)?;
+            let Event::Key(key) = event else {
+                continue;
+            };
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -114,7 +121,7 @@ pub(crate) fn ui_loop(
                     automation.edit(AutomationState::close_editor);
                     lfo_selected = 0;
                 }
-                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('q') | KeyCode::Esc => break 'ui,
                 KeyCode::Tab => {
                     if automation.state().is_editor_open() {
                         automation.edit(AutomationState::close_editor);
@@ -1220,13 +1227,13 @@ fn field_line(
     ))
 }
 
-const LANE_WAVE: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+const LANE_WAVE: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
 /// How many random cycles the lane scopes so sample & hold / random drift read
 /// as an actual scrolling trajectory rather than a single flat step.
 const RANDOM_LANE_CYCLES: f32 = 4.0;
 
-fn lane_glyph(level: f32) -> char {
+fn lane_glyph(level: f32) -> &'static str {
     let level = level.clamp(0.0, 1.0);
     LANE_WAVE[((level * (LANE_WAVE.len() - 1) as f32).round() as usize).min(LANE_WAVE.len() - 1)]
 }
@@ -1258,7 +1265,7 @@ pub(crate) fn lfo_lane_line(
             let brightness = (floor + (i as f32 / (width - 1) as f32) * 0.6).clamp(0.0, 1.0);
             let hue = 300.0 + wave * 25.0;
             spans.push(Span::styled(
-                lane_glyph(level).to_string(),
+                lane_glyph(level),
                 Style::default().fg(fluid_hsv(hue, 0.6, brightness)),
             ));
         }
@@ -1276,7 +1283,7 @@ pub(crate) fn lfo_lane_line(
         let brightness = (floor + falloff.max(0.0) * 0.6).clamp(0.0, 1.0);
         let hue = 300.0 + wave * 25.0;
         spans.push(Span::styled(
-            lane_glyph(level).to_string(),
+            lane_glyph(level),
             Style::default().fg(fluid_hsv(hue, 0.6, brightness)),
         ));
     }
@@ -1353,15 +1360,15 @@ fn slider_spans(
         .map(|i| {
             if Some(i) == effective {
                 Span::styled(
-                    "◆".to_string(),
+                    "◆",
                     Style::default()
                         .fg(EFFECTIVE_MARKER_COLOR)
                         .add_modifier(Modifier::BOLD),
                 )
             } else if let Some((_, color)) = ghosts.iter().find(|(pos, _)| *pos == Some(i)) {
-                Span::styled("◇".to_string(), Style::default().fg(*color))
+                Span::styled("◇", Style::default().fg(*color))
             } else {
-                Span::styled(if i < filled { "█" } else { "░" }.to_string(), style)
+                Span::styled(if i < filled { "█" } else { "░" }, style)
             }
         })
         .collect()

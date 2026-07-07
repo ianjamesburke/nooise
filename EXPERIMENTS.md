@@ -19,9 +19,9 @@ path the engine hears. All new routes start audible-neutral (amount 0).
 - The **MACROS** tab (last tab) holds four bare sliders. On a macro slider,
   `f` adds an LFO and `e` adds a one-shot envelope; `e` is refused elsewhere,
   and `v` is refused on macro rows.
-- Double-tap `f` or `e` to disable that modulator (amount zeroes, route
-  disappears). Double-tap `v` only hides the macro editor — the assignment
-  keeps working from its chip line. `Esc` closes and keeps settings.
+- `f`/`e`/`v` toggle their editor open and closed; settings are kept either
+  way. `x` removes: with an editor open it deletes that route, on a bare
+  control it strips every modulator at once. `Esc` also closes-and-keeps.
 - `T` flips the selected time field between beats and ms (per field, not
   global); display and numeric entry convert at the current BPM.
 - `Enter` on a cross-tab row (Master voice levels) expands into that voice's
