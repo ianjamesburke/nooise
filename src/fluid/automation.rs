@@ -742,8 +742,7 @@ impl EnvelopeRoute {
     pub(crate) fn set_field(&mut self, field: EnvField, value: f32) {
         match field {
             EnvField::Amount => {
-                let unit = if value.abs() > 1.0 { value / 100.0 } else { value };
-                self.amount = unit.clamp(-1.0, 1.0);
+                self.amount = (value / 100.0).clamp(-1.0, 1.0);
             }
             EnvField::Attack => {
                 self.attack_beats =
@@ -866,8 +865,7 @@ impl MacroRoute {
     }
 
     pub(crate) fn set_field(&mut self, field: MacroField, value: f32) {
-        let unit = if value.abs() > 1.0 { value / 100.0 } else { value };
-        self.amounts[field.index()] = unit.clamp(-1.0, 1.0);
+        self.amounts[field.index()] = (value / 100.0).clamp(-1.0, 1.0);
     }
 
     pub(crate) fn reset_field(&mut self, field: MacroField) {
@@ -1046,11 +1044,21 @@ impl AutomationState {
         };
         match open.kind {
             ModKind::Lfo => {
-                if self
+                // depth_ratio alone isn't the whole story: a field macro
+                // stacked on lfo.amount (or interval/offset) can still be
+                // driving the route externally even while its own base
+                // amount sits at neutral, so the route stays live and must
+                // not be pruned out from under it.
+                let base_neutral = self
                     .routes
                     .get(&open.address)
-                    .is_some_and(|route| route.depth_ratio <= f32::EPSILON)
-                {
+                    .is_some_and(|route| route.depth_ratio <= f32::EPSILON);
+                let field_macro_prefix = format!("{}#lfo.", open.address.id());
+                let has_live_field_macro = self
+                    .field_macros
+                    .iter()
+                    .any(|(key, route)| key.starts_with(&field_macro_prefix) && !route.is_neutral());
+                if base_neutral && !has_live_field_macro {
                     self.routes.remove(&open.address);
                 }
             }

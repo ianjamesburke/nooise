@@ -1099,8 +1099,10 @@ fn apply_value_accepts_percent_style_unit_controls() {
     apply_value(Tab::Master, 7, 42.0, &mut controls);
     assert_close(controls.master.level, 0.42);
 
-    apply_value(Tab::Master, 7, 0.7, &mut controls);
-    assert_close(controls.master.level, 0.7);
+    // Typed entry is always a plain percent integer, never a pre-divided
+    // ratio: 1 means 1%, not 100%.
+    apply_value(Tab::Master, 7, 1.0, &mut controls);
+    assert_close(controls.master.level, 0.01);
 }
 
 #[test]

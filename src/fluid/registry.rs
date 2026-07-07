@@ -1301,12 +1301,11 @@ pub(crate) fn apply_value(tab: Tab, selected: usize, value: f32, c: &mut FluidCo
     }
 }
 
+/// Typed percent entry is always a plain integer meaning percent (`50` =>
+/// 50%, `1` => 1%) — never a pre-divided ratio, so there is no ambiguous
+/// small-value branch.
 pub(crate) fn normalize_unit_input(value: f32) -> f32 {
-    if value > 1.0 {
-        (value / 100.0).clamp(0.0, 1.0)
-    } else {
-        value.clamp(0.0, 1.0)
-    }
+    (value / 100.0).clamp(0.0, 1.0)
 }
 
 pub(crate) fn snap_step(value: f32, step: f32) -> f32 {

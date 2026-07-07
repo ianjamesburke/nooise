@@ -252,6 +252,13 @@ pub(crate) fn ui_loop(
                         ActiveField::LfoMacro(..) => {
                             close_one_level(&mut automation, &mut lfo_selected);
                         }
+                        // Discrete fields (Shape) carry no macro_key and
+                        // can't take a stacked macro — a continuous -1..1
+                        // contribution has no defined meaning against an
+                        // enum index. A true no-op, same as v being refused
+                        // on a macro slider's own rows, not a fallthrough
+                        // into hijacking the parent LFO editor.
+                        ActiveField::Lfo(_, field) if field.macro_key().is_none() => {}
                         // Anywhere else (including already inside the
                         // top-level Macro editor, where this closes it): v
                         // opens the Macro editor for the selected control,
