@@ -238,7 +238,9 @@ pub(crate) fn ui_loop(
                     match active_field(automation.state(), lfo_selected) {
                         // On an LFO field row: stack (or un-stack) a macro
                         // onto that specific field, never on by default.
-                        ActiveField::Lfo(address, field) if field.macro_key().is_some() => {
+                        ActiveField::Lfo(address, field)
+                            if !is_macro_id(address.id()) && field.macro_key().is_some() =>
+                        {
                             let key = unit_key(address.id(), field.macro_key());
                             let was_open = automation.state().open_field() == Some(key.as_str());
                             automation.edit(|state| state.toggle_open_field(key));
@@ -544,6 +546,9 @@ pub(crate) fn lfo_submenu_rows(
     let mut rows = Vec::with_capacity(LfoField::ALL.len() * (1 + MacroField::ALL.len()));
     for field in LfoField::ALL {
         rows.push(LfoSubRow::Field(field));
+        if is_macro_id(address.id()) {
+            continue;
+        }
         if let Some(key_str) = field.macro_key() {
             let key = unit_key(address.id(), Some(key_str));
             if automation.open_field() == Some(key.as_str()) {

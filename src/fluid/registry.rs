@@ -144,6 +144,8 @@ pub(crate) enum Step {
 pub(crate) enum Entry {
     /// Unit or percent input, scaled to [0, max] (e.g. 42 → 0.42 * max).
     Percent,
+    /// Displayed/typed in beats while stored internally as bars.
+    BeatsAsBars,
     /// Rounded to the nearest integer.
     Round,
     /// Snapped to the control's step grid.
@@ -324,6 +326,7 @@ impl ControlSpec {
     pub(crate) fn apply_value(&self, value: f32, c: &mut FluidControls) {
         let next = match self.entry {
             Entry::Percent => normalize_unit_input(value) * self.max,
+            Entry::BeatsAsBars => nearest_power_of_two(value / 4.0, self.min, self.max),
             Entry::Round => value.round(),
             Entry::Snap => match self.step {
                 Step::Linear(step) => snap_step(value, step),
@@ -625,7 +628,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         1.0,
         64.0,
         Step::PowerOfTwo,
-        Entry::Snap,
+        Entry::BeatsAsBars,
         |c| c.pad.chord_bars,
         |c, v| c.pad.chord_bars = v,
         |c| format!("{:.0} beats", c.pad.chord_bars * 4.0),

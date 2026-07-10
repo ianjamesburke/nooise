@@ -735,6 +735,20 @@ fn macro_sliders_own_lfos_never_take_a_stacked_field_macro() {
 }
 
 #[test]
+fn macro_slider_lfo_fields_do_not_expose_stacked_macro_rows() {
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new("macro.1");
+    automation.open_or_create(address);
+    automation.toggle_open_field(unit_key("macro.1", Some("lfo.amount")));
+
+    assert_eq!(
+        lfo_submenu_rows(&automation, address).len(),
+        LfoField::ALL.len(),
+        "macro sliders may have LFOs, but their LFO fields do not take nested macro routes"
+    );
+}
+
+#[test]
 fn macro_own_lfo_feeds_targets_in_the_same_pass() {
     let mut controls = FluidControls::default();
     controls.master.level = 0.0;
@@ -1116,7 +1130,7 @@ fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     assert_close(controls.kick.interval_beats, 0.125);
 
     apply_value(Tab::Chords, 1, 12.0, &mut controls);
-    assert_close(controls.pad.chord_bars, 16.0);
+    assert_close(controls.pad.chord_bars, 4.0);
 
     apply_value(Tab::Clap, 3, 3.6, &mut controls);
     assert_close(controls.clap.slap_count, 4.0);
@@ -1366,8 +1380,12 @@ fn gain_smoother_reaches_target_over_ramp() {
     let mut smoother = GainSmoother::new(0.0);
     smoother.set_target(1.0, 10);
 
-    assert_close(smoother.next(), 0.1);
-    for _ in 0..8 {
+    assert_near(smoother.next(), 0.028);
+    for _ in 0..4 {
+        smoother.next();
+    }
+    assert_near(smoother.current, 0.5);
+    for _ in 0..4 {
         smoother.next();
     }
     assert_close(smoother.next(), 1.0);

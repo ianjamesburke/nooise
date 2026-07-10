@@ -30,6 +30,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
 - New LFO routes start at 0% amount and new envelope routes at 0 amount; opening either editor is audible-neutral until the user raises amount, and `close_editor` drops a still-neutral route.
 - Every modulated value shown or heard must come from `modulated_control_value_full` (LFO + envelope summed, clamped, snapped); never add divergent UI-only modulation math.
 - Grid-timing controls carry `LfoSnap` in their `ControlSpec` (intervals snap modulation to power-of-two subdivisions, offsets to their step grid); every modulated value — engine and UI marker alike — must come from `modulated_control_value` so what is shown matches what is heard. `GridTrigger` only pulls scheduled hits earlier between fires; grids that move later latch at the next fire so modulation can never starve a trigger.
+- Chord length (`pad.chord_bars`) stores bars for the pad/bass engines but displays and accepts numeric entry in beats; typed values convert to bars and snap to the existing power-of-two grid.
 - Live-read gain controls are ramped by registry-derived `GainSmoothers` in `FluidEngine`; every unique `ControlKind::Gain` spec must get a smoother automatically.
 - TUI automation edits must go through `PublishedAutomation` so the shared audio-thread snapshot is stored on every mutation.
 - Pitched voices (Pad, Bass, Tonal) route note numbers through `midi_to_hz` and respect master tune; unpitched voices (Perc, Kick, Clap) do not.

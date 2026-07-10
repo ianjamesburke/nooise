@@ -135,9 +135,10 @@ impl StereoEngine for FluidEngine {
 
 pub(crate) struct GainSmoother {
     pub(crate) spec: Option<&'static ControlSpec>,
+    pub(crate) start: f32,
     pub(crate) current: f32,
     pub(crate) target: f32,
-    pub(crate) step: f32,
+    pub(crate) samples_total: u32,
     pub(crate) samples_remaining: u32,
 }
 
@@ -150,9 +151,10 @@ impl GainSmoother {
     pub(crate) fn for_spec(spec: Option<&'static ControlSpec>, value: f32) -> Self {
         Self {
             spec,
+            start: value,
             current: value,
             target: value,
-            step: 0.0,
+            samples_total: 0,
             samples_remaining: 0,
         }
     }
@@ -161,9 +163,10 @@ impl GainSmoother {
         if (target - self.target).abs() <= f32::EPSILON {
             return;
         }
+        self.start = self.current;
         self.target = target;
-        self.samples_remaining = ramp_samples.max(1);
-        self.step = (self.target - self.current) / self.samples_remaining as f32;
+        self.samples_total = ramp_samples.max(1);
+        self.samples_remaining = self.samples_total;
     }
 
     pub(crate) fn next(&mut self) -> f32 {
@@ -171,7 +174,10 @@ impl GainSmoother {
             self.current = self.target;
             return self.current;
         }
-        self.current += self.step;
+        let elapsed = self.samples_total - self.samples_remaining + 1;
+        let t = elapsed as f32 / self.samples_total as f32;
+        let eased = t * t * (3.0 - 2.0 * t);
+        self.current = self.start + (self.target - self.start) * eased;
         self.samples_remaining -= 1;
         if self.samples_remaining == 0 {
             self.current = self.target;
