@@ -102,12 +102,12 @@ pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn
     let updates = UpdateNotice::default();
     spawn_update_check(updates.clone());
 
-    let _stream = audio::start_stream(APP_ID, move |sr| {
+    let _audio_output = audio::start_stream(APP_ID, move |sr| {
         FluidEngine::new(
             sr,
-            controls_for_engine,
-            automation_for_engine,
-            telemetry_for_engine,
+            Arc::clone(&controls_for_engine),
+            Arc::clone(&automation_for_engine),
+            Arc::clone(&telemetry_for_engine),
         )
     })?;
 
