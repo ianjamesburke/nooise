@@ -4,12 +4,18 @@ use super::*;
 /// chord voicings (one MIDI note per step, same 8-step indexing as
 /// PROGRESSIONS). B/C/D currently mirror their chord's lowest tone; A
 /// diverges deliberately (step 3 walks to G2 instead of following the
-/// B-chord's root) to give the bass its own melodic movement.
-pub(crate) const BASS_LINES: [[i32; 8]; 4] = [
+/// B-chord's root) to give the bass its own melodic movement. E/F/G/H
+/// mostly follow their chord's root (transposed down an octave where the
+/// pad voicing sits too high for the bass register).
+pub(crate) const BASS_LINES: [[i32; 8]; 8] = [
     [45, 47, 45, 43, 52, 53, 45, 45], // A
     [45, 50, 48, 43, 41, 52, 45, 43], // B
     [45, 41, 48, 43, 50, 52, 47, 43], // C
     [45, 41, 48, 43, 50, 52, 47, 43], // D
+    [45, 46, 48, 50, 52, 43, 43, 45], // E: dark phrygian, walks up then falls back
+    [52, 47, 50, 45, 45, 52, 43, 52], // F: suspended drone, mostly pedal E
+    [48, 55, 45, 53, 48, 55, 53, 48], // G: bright C-G-Am-F pop bass
+    [43, 50, 52, 48, 43, 50, 52, 48], // H: bright G-D-Em-C axis-loop bass
 ];
 
 pub(crate) fn bass_root_note(progression: usize, step: usize) -> i32 {
@@ -82,7 +88,7 @@ impl BassEngine {
         tune: f32,
         timing: TimingContext,
     ) -> (f32, f32) {
-        let progression = (pad.progression.round() as i64).rem_euclid(4) as usize;
+        let progression = (pad.progression.round() as i64).rem_euclid(8) as usize;
         if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
             self.step_index = (self.step_index + 1) % 8;
         }

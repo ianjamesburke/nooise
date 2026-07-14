@@ -640,12 +640,15 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         "Progression",
         ControlKind::Discrete,
         0.0,
-        3.0,
+        7.0,
         Step::Linear(1.0),
         Entry::Round,
         |c| c.pad.progression,
         |c, v| c.pad.progression = v,
-        |c| ["A", "B", "C", "D"][c.pad.progression.round() as usize % 4].to_string(),
+        |c| {
+            ["A", "B", "C", "D", "E", "F", "G", "H"][c.pad.progression.round() as usize % 8]
+                .to_string()
+        },
     ),
     ControlSpec::gain(
         "pad.reverb_mix",

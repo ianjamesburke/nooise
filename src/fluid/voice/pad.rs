@@ -41,7 +41,7 @@ impl PadEngine {
     }
 
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
-        let progression = (c.progression.round() as i64).rem_euclid(4) as usize;
+        let progression = (c.progression.round() as i64).rem_euclid(8) as usize;
         let progression_changed = progression != self.last_progression;
         self.last_progression = progression;
 
@@ -212,7 +212,7 @@ pub(crate) fn pad_tones(
         .collect()
 }
 
-pub(crate) const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
+pub(crate) const PROGRESSIONS: [[[i32; 4]; 8]; 8] = [
     // Progression A: with an 8s release, each chord rings well into the next
     // (and beyond), so voicings are chosen to hold at least one common tone
     // across every step, including the loop back to step 0.
@@ -255,6 +255,55 @@ pub(crate) const PROGRESSIONS: [[[i32; 4]; 8]; 4] = [
         [52, 55, 59, 64], // Em, open
         [47, 53, 57, 64], // Bm7b5, wide (the "ache" chord)
         [43, 50, 55, 64], // G, wide (non-tonic close)
+    ],
+    // Progression E: dark, phrygian-leaning modal (A phrygian: A Bb C D E F G).
+    // Suspended/added-tone voicings throughout; the bII-over-tonic close
+    // (step 7) is deliberately dissonant, resolving into the Am at step 0.
+    [
+        [45, 48, 52, 57], // Am
+        [46, 50, 53, 57], // Bbmaj7 (holds A3 from Am)
+        [48, 53, 55, 60], // Csus4 (holds F3 from Bbmaj7)
+        [50, 53, 60, 62], // Dm7, no 5th (holds C4 from Csus4)
+        [52, 59, 62, 64], // Em7sus, no 3rd (holds D4 from Dm7)
+        [55, 59, 62, 64], // G6 (holds B3/D4/E4 from Em7sus)
+        [55, 58, 62, 65], // Gm7 (holds G3/D4 from G6)
+        [45, 52, 58, 62], // Bbmaj7/A, ache (holds Bb3/D4 from Gm7, resolves to Am)
+    ],
+    // Progression F: suspended drone, phrygian-tinged E pedal (open fifths,
+    // sus chords). Harmonic rhythm barely moves; the E pedal keeps ringing
+    // through nearly every step for a moody, unresolved feel.
+    [
+        [52, 55, 59, 64], // Em (drone)
+        [47, 52, 59, 64], // E5/B, open (holds E3/B3/E4 from Em)
+        [50, 59, 62, 67], // G/D, sus (holds B3 from E5/B)
+        [45, 57, 62, 65], // Dm/A (holds D4 from G/D)
+        [45, 52, 57, 64], // Asus, open (holds A3/E4 from Dm/A)
+        [52, 60, 64, 67], // Cmaj/E (holds E3/E4 from Asus)
+        [55, 60, 62, 65], // Gsus4 (add C/D/F) (holds C4 from Cmaj/E)
+        [52, 55, 59, 62], // Em7 (holds G3 from Gsus4, resolves to Em drone)
+    ],
+    // Progression G: bright C-major pop loop (I-V-vi-IV), common-tone rich.
+    [
+        [48, 52, 55, 60], // C
+        [55, 60, 62, 67], // G (add C) (holds G3/C4 from C)
+        [45, 57, 60, 64], // Am (holds C4 from G)
+        [53, 57, 60, 65], // F (holds A3/C4 from Am)
+        [48, 52, 60, 65], // C (add F) (holds C4/F4 from F)
+        [55, 60, 62, 67], // G (add C) (holds C4 from C add F)
+        [53, 57, 60, 65], // F (holds C4 from G add C)
+        [48, 55, 60, 64], // C (open, add E) (holds C4 from F, loops to C)
+    ],
+    // Progression H: bright G-major "axis" loop (I-V-iii-vi, spelled here as
+    // G-D-Em7-C, played twice with varied voicings), uplifting pop feel.
+    [
+        [55, 59, 62, 67], // G
+        [50, 54, 57, 62], // D (holds D4 from G)
+        [52, 55, 59, 62], // Em7 (holds D4 from D)
+        [48, 52, 55, 60], // C (holds E3/G3 from Em7)
+        [43, 55, 62, 67], // G, wide (holds G3 from C)
+        [50, 57, 62, 66], // D (holds D4 from G)
+        [52, 59, 62, 64], // Em7 (holds D4 from D)
+        [48, 55, 60, 64], // C (holds E4 from Em7, loops to G)
     ],
 ];
 

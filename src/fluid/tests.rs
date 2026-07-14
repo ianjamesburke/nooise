@@ -105,13 +105,35 @@ fn pad_chord_converts_progression_d_last_chord() {
 
 #[test]
 fn pad_chord_wraps_progression_and_step_index() {
-    let wrapped_progression = pad_chord(4, 0, 0.0);
+    let wrapped_progression = pad_chord(8, 0, 0.0);
     let base_progression = pad_chord(0, 0, 0.0);
     assert_eq!(wrapped_progression, base_progression);
 
     let wrapped_step = pad_chord(0, 8, 0.0);
     let base_step = pad_chord(0, 0, 0.0);
     assert_eq!(wrapped_step, base_step);
+}
+
+#[test]
+fn new_progressions_hold_a_common_tone_between_consecutive_steps() {
+    // Progressions E-H (indices 4-7, added alongside A-D's dark/major
+    // expansion) are held to the strict common-tone discipline described in
+    // their doc comments. A-D predate this test and include one documented
+    // exception (progression A, step 4->5, an intentional stepwise glide
+    // with no shared tone), so they are left unchecked here.
+    for (progression_index, progression) in PROGRESSIONS.iter().enumerate().skip(4) {
+        for step in 0..8 {
+            let current = progression[step];
+            let next = progression[(step + 1) % 8];
+            let shares_a_tone = current.iter().any(|note| next.contains(note));
+            assert!(
+                shares_a_tone,
+                "progression {progression_index} step {step} -> {} shares no common tone \
+                 (an 8s release needs at least one held tone so chords don't clash)",
+                (step + 1) % 8
+            );
+        }
+    }
 }
 
 #[test]
@@ -1496,9 +1518,9 @@ fn chords_progression_adjusts_and_clamps() {
     apply_delta(Tab::Chords, 2, 1.0, &mut controls);
     assert_close(controls.pad.progression, 1.0);
 
-    controls.pad.progression = 3.0;
+    controls.pad.progression = 7.0;
     apply_delta(Tab::Chords, 2, 1.0, &mut controls);
-    assert_close(controls.pad.progression, 3.0);
+    assert_close(controls.pad.progression, 7.0);
 
     controls.pad.progression = 0.0;
     apply_delta(Tab::Chords, 2, -1.0, &mut controls);
