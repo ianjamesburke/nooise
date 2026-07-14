@@ -17,7 +17,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
   - `song.rs` — versioned binary song-code export/import for controls plus automation records. `Ctrl+S` copies `nooise <code>` and shows a short confirmation; `nooise <code>` applies the decoded song state before audio/TUI startup.
   - `ui.rs` — TUI event loop, tab rendering, fluid visualizer.
   - `engine.rs` — `FluidEngine` (voice mixer), gain smoothers, tempo clock, grid triggers, ambient reverb send, master bus.
-  - `voice/` — one module per voice (pad, bass, perc, kick, tonal, clap) plus shared helpers (`midi_to_hz`, `tune_ratio`, `soft_clip`, `normalized_lfo`) in `voice/mod.rs`.
+  - `voice/` — one module per voice (pad, bass, perc, kick, tonal, clap, arp) plus shared helpers (`midi_to_hz`, `tune_ratio`, `soft_clip`, `normalized_lfo`) in `voice/mod.rs`.
 - `fx/` — shared DSP building blocks (LFO, panner, reverb) consumed by voices. See `fx/AGENTS.md`.
 - `synth/` — shared synthesis primitives (envelope, oscillator, noise) consumed by voices. See `synth/AGENTS.md`.
 
@@ -38,7 +38,8 @@ All engine, terminal UI, and live-control code for the nooise binary.
 - Tonal synth selection lives in `tonal.synth_type`; it changes the voice created for new tonal notes while preserving the shared phrase/randomness/timing/master-tune/reverb path. Exploration variants may differ in harmonic tables, spectral tilt, and pitch-scaled harmonic decay; keep piano-family profiles warm and non-metallic unless the user explicitly asks for FM-like brightness.
 - Attack and release timing for every tonal synth type (Sine and all piano-family profiles) come from `tonal.attack`/`tonal.release` (seconds) via the shared `tonal_envelope_gain` helper, not per-profile fields; only the release curve's shape exponent (`PianoProfile::body_power`, or the sine voice's fixed sqrt taper) stays profile-owned character. A control value longer than a note's own duration clamps to the note length instead of overshooting.
 - Tonal owns a slight fixed low cut before engine mixing so its low notes sit above sub/bass energy without requiring a user-facing control.
-- Pad and Tonal emit dry voice output; `FluidEngine` owns their shared ambient reverb send/return so reverb mix changes do not add an uncontrolled per-voice wet gain boost.
+- Pad, Tonal, and Arp emit dry voice output; `FluidEngine` owns their shared ambient reverb send/return so reverb mix changes do not add an uncontrolled per-voice wet gain boost. Arp has no user-facing `arp.reverb_mix` control; it rides the send at a fixed effective mix (`AMBIENT_REVERB_ARP_MIX_FIXED`/`_SEND` in `engine.rs`) instead.
+- Arp follows the Pad's current chord without reaching into `PadEngine` directly: it keeps its own `chord_trigger`/`step_index` synced to the same `pad.chord_bars` grid (same pattern as Bass), reads chord tones via `pad_chord_midi`, and cycles them (Up/Down/Up-Down/Random, 1–3 octave span) on its own `arp.rate_beats` grid. It always uses one fixed warm piano profile (`ARP_PROFILE_INDEX`, reusing Tonal's `PianoTonalVoice`/`tonal_envelope_gain` path) — no per-voice synth-type control. `arp.gain` defaults to 0 (silent) so adding the voice never changes an existing song or default startup. When the chord or octave span changes mid-cycle, the cycle position is clamped into the new tone list rather than reset, avoiding a click.
 - Voice RNGs must stay reseedable via `FluidEngine::reseed` so `nooise render --seed` stays byte-reproducible.
 - Passive update checks must never block the TUI or audio callback; keep crates.io/network work off the main loop and show no message on failure.
 - `nooise update` checks crates.io before invoking Cargo; do not force reinstall when the installed version is already current.

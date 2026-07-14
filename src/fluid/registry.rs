@@ -13,11 +13,12 @@ pub(crate) enum Tab {
     Kick = 4,
     Tonal = 5,
     Clap = 6,
-    Macros = 7,
+    Arp = 7,
+    Macros = 8,
 }
 
 impl Tab {
-    pub(crate) fn all() -> [Tab; 8] {
+    pub(crate) fn all() -> [Tab; 9] {
         [
             Tab::Master,
             Tab::Perc,
@@ -26,6 +27,7 @@ impl Tab {
             Tab::Kick,
             Tab::Tonal,
             Tab::Clap,
+            Tab::Arp,
             Tab::Macros,
         ]
     }
@@ -39,6 +41,7 @@ impl Tab {
             Tab::Kick => "Kick",
             Tab::Tonal => "Tonal",
             Tab::Clap => "Clap",
+            Tab::Arp => "Arp",
             Tab::Macros => "Macros",
         }
     }
@@ -51,7 +54,8 @@ impl Tab {
             Tab::Bass => Tab::Kick,
             Tab::Kick => Tab::Tonal,
             Tab::Tonal => Tab::Clap,
-            Tab::Clap => Tab::Macros,
+            Tab::Clap => Tab::Arp,
+            Tab::Arp => Tab::Macros,
             Tab::Macros => Tab::Master,
         }
     }
@@ -65,7 +69,8 @@ impl Tab {
             Tab::Kick => Tab::Bass,
             Tab::Tonal => Tab::Kick,
             Tab::Clap => Tab::Tonal,
-            Tab::Macros => Tab::Clap,
+            Tab::Arp => Tab::Clap,
+            Tab::Macros => Tab::Arp,
         }
     }
 }
@@ -1227,6 +1232,80 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
     ),
 ];
 
+pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
+    ControlSpec::gain(
+        "arp.gain",
+        "Level",
+        0.0,
+        1.0,
+        |c| c.arp.gain,
+        |c, v| c.arp.gain = v,
+        |c| pct(c.arp.gain),
+    ),
+    ControlSpec::new(
+        "arp.rate_beats",
+        "Rate",
+        ControlKind::Timing,
+        ARP_RATE_BEATS_MIN,
+        ARP_RATE_BEATS_MAX,
+        Step::BeatGrid,
+        Entry::Snap,
+        |c| c.arp.rate_beats,
+        |c, v| c.arp.rate_beats = v,
+        |c| beats2(c.arp.rate_beats),
+    )
+    .lfo_snap(LfoSnap::PowerOfTwo)
+    .in_beats(),
+    ControlSpec::new(
+        "arp.pattern",
+        "Pattern",
+        ControlKind::Discrete,
+        0.0,
+        3.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.arp.pattern,
+        |c, v| c.arp.pattern = v,
+        |c| arp_pattern_label(c.arp.pattern).to_string(),
+    ),
+    ControlSpec::new(
+        "arp.octaves",
+        "Octaves",
+        ControlKind::Discrete,
+        ARP_OCTAVES_MIN,
+        ARP_OCTAVES_MAX,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.arp.octaves,
+        |c, v| c.arp.octaves = v,
+        |c| format!("{:.0}", c.arp.octaves),
+    ),
+    ControlSpec::new(
+        "arp.attack",
+        "Attack",
+        ControlKind::Timing,
+        0.0,
+        1.0,
+        Step::Linear(0.01),
+        Entry::Free,
+        |c| c.arp.attack,
+        |c, v| c.arp.attack = v,
+        |c| format!("{:.3} s", c.arp.attack),
+    ),
+    ControlSpec::new(
+        "arp.release",
+        "Release",
+        ControlKind::Timing,
+        0.0,
+        6.0,
+        Step::Linear(0.05),
+        Entry::Free,
+        |c| c.arp.release,
+        |c, v| c.arp.release = v,
+        |c| format!("{:.2} s", c.arp.release),
+    ),
+];
+
 pub(crate) const MACRO_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
         "macro.1",
@@ -1297,6 +1376,7 @@ pub(crate) fn tab_specs(tab: Tab) -> &'static [ControlSpec] {
         Tab::Kick => KICK_CONTROLS,
         Tab::Tonal => TONAL_CONTROLS,
         Tab::Clap => CLAP_CONTROLS,
+        Tab::Arp => ARP_CONTROLS,
         Tab::Macros => MACRO_CONTROLS,
     }
 }

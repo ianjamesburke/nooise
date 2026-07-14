@@ -221,6 +221,31 @@ impl Default for BassControls {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct ArpControls {
+    pub gain: f32,
+    pub rate_beats: f32,
+    pub pattern: f32,   // 0=Up, 1=Down, 2=Up-Down, 3=Random
+    pub octaves: f32,   // 1-3, octave span of the cycled chord tones
+    pub attack: f32,
+    pub release: f32,
+}
+
+impl Default for ArpControls {
+    fn default() -> Self {
+        Self {
+            // Silent by default: a new voice must never change the sound of
+            // existing songs or a fresh startup.
+            gain: 0.0,
+            rate_beats: 0.5,
+            pattern: 0.0,
+            octaves: 1.0,
+            attack: 0.005,
+            release: 0.3,
+        }
+    }
+}
+
 pub(crate) const MACRO_COUNT: usize = 4;
 
 /// The macro sliders: bare 0..1 values with no direct audio path. They only
@@ -240,5 +265,6 @@ pub(crate) struct FluidControls {
     pub tonal: TonalControls,
     pub clap: ClapControls,
     pub bass: BassControls,
+    pub arp: ArpControls,
     pub macros: MacroControls,
 }

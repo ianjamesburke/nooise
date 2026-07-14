@@ -17,6 +17,7 @@ pub(crate) struct FluidEngine {
     pub(crate) tonal: TonalEngine,
     pub(crate) clap: ClapEngine,
     pub(crate) bass: BassEngine,
+    pub(crate) arp: ArpEngine,
     pub(crate) ambient_reverb: AmbientReverbSend,
     pub(crate) master_bus: MasterBus,
     pub(crate) controls: Arc<ArcSwap<FluidControls>>,
@@ -51,6 +52,7 @@ impl FluidEngine {
             tonal: TonalEngine::new(sample_rate),
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
+            arp: ArpEngine::new(sample_rate),
             ambient_reverb: AmbientReverbSend::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
             controls,
@@ -71,6 +73,7 @@ impl FluidEngine {
         self.kick.rng = StdRng::seed_from_u64(seed.wrapping_add(2));
         self.tonal.rng = StdRng::seed_from_u64(seed.wrapping_add(3));
         self.clap.rng = StdRng::seed_from_u64(seed.wrapping_add(4));
+        self.arp.rng = StdRng::seed_from_u64(seed.wrapping_add(5));
     }
 }
 
@@ -107,28 +110,44 @@ impl StereoEngine for FluidEngine {
         let (bass_l, bass_r) = self
             .bass
             .next(&effective.bass, &effective.pad, tune, timing);
+        let (arp_l, arp_r) = self.arp.next(&effective.arp, &effective.pad, tune, timing);
         let AmbientReverbFrame {
             pad_l,
             pad_r,
             tonal_l: ton_l,
             tonal_r: ton_r,
+            arp_l,
+            arp_r,
             wet_l,
             wet_r,
         } = self.ambient_reverb.process(
             (pad_l, pad_r),
             (ton_l, ton_r),
+            (arp_l, arp_r),
             effective.pad.reverb_mix,
             effective.tonal.reverb_mix,
         );
 
         self.current_sample += 1;
 
-        let raw_l =
-            (pad_l + perc * 0.6 + kick_l * 0.7 + ton_l + clap_l * 0.65 + bass_l * 0.75 + wet_l)
-                * fade;
-        let raw_r =
-            (pad_r + perc * 0.6 + kick_r * 0.7 + ton_r + clap_r * 0.65 + bass_r * 0.75 + wet_r)
-                * fade;
+        let raw_l = (pad_l
+            + perc * 0.6
+            + kick_l * 0.7
+            + ton_l
+            + clap_l * 0.65
+            + bass_l * 0.75
+            + arp_l
+            + wet_l)
+            * fade;
+        let raw_r = (pad_r
+            + perc * 0.6
+            + kick_r * 0.7
+            + ton_r
+            + clap_r * 0.65
+            + bass_r * 0.75
+            + arp_r
+            + wet_r)
+            * fade;
         self.master_bus.process(raw_l, raw_r, &effective.master)
     }
 }
@@ -399,6 +418,11 @@ pub(crate) const AMBIENT_REVERB_DRY_DUCK: f32 = 0.3;
 pub(crate) const AMBIENT_REVERB_PAD_SEND: f32 = 0.4;
 pub(crate) const AMBIENT_REVERB_TONAL_SEND: f32 = 0.32;
 pub(crate) const AMBIENT_REVERB_RETURN: f32 = 0.22;
+/// Arp has no user-facing `arp.reverb_mix` control (not in its control list),
+/// so it rides the shared ambient send at a fixed effective mix rather than a
+/// per-voice wet gain — tuned in the same range as Tonal's default mix.
+pub(crate) const AMBIENT_REVERB_ARP_MIX_FIXED: f32 = 0.5;
+pub(crate) const AMBIENT_REVERB_ARP_SEND: f32 = 0.3;
 
 pub(crate) struct AmbientReverbSend {
     pub(crate) reverb: Freeverb,
@@ -409,6 +433,8 @@ pub(crate) struct AmbientReverbFrame {
     pub(crate) pad_r: f32,
     pub(crate) tonal_l: f32,
     pub(crate) tonal_r: f32,
+    pub(crate) arp_l: f32,
+    pub(crate) arp_r: f32,
     pub(crate) wet_l: f32,
     pub(crate) wet_r: f32,
 }
@@ -424,6 +450,7 @@ impl AmbientReverbSend {
         &mut self,
         pad: (f32, f32),
         tonal: (f32, f32),
+        arp: (f32, f32),
         pad_mix: f32,
         tonal_mix: f32,
     ) -> AmbientReverbFrame {
@@ -431,10 +458,12 @@ impl AmbientReverbSend {
         let tonal_mix = tonal_mix.clamp(0.0, 1.0);
         let pad_dry = Self::dry_gain(pad_mix);
         let tonal_dry = Self::dry_gain(tonal_mix);
+        let arp_dry = Self::dry_gain(AMBIENT_REVERB_ARP_MIX_FIXED);
         let pad_send = pad_mix * AMBIENT_REVERB_PAD_SEND;
         let tonal_send = tonal_mix * AMBIENT_REVERB_TONAL_SEND;
-        let send_l = pad.0 * pad_send + tonal.0 * tonal_send;
-        let send_r = pad.1 * pad_send + tonal.1 * tonal_send;
+        let arp_send = AMBIENT_REVERB_ARP_MIX_FIXED * AMBIENT_REVERB_ARP_SEND;
+        let send_l = pad.0 * pad_send + tonal.0 * tonal_send + arp.0 * arp_send;
+        let send_r = pad.1 * pad_send + tonal.1 * tonal_send + arp.1 * arp_send;
         let (wet_l, wet_r) = self.reverb.process(send_l, send_r);
 
         AmbientReverbFrame {
@@ -442,6 +471,8 @@ impl AmbientReverbSend {
             pad_r: pad.1 * pad_dry,
             tonal_l: tonal.0 * tonal_dry,
             tonal_r: tonal.1 * tonal_dry,
+            arp_l: arp.0 * arp_dry,
+            arp_r: arp.1 * arp_dry,
             wet_l: wet_l * AMBIENT_REVERB_RETURN,
             wet_r: wet_r * AMBIENT_REVERB_RETURN,
         }

@@ -308,6 +308,12 @@ pub(crate) const PROGRESSIONS: [[[i32; 4]; 8]; 8] = [
 ];
 
 pub(crate) fn pad_chord(progression: usize, step: usize, tune: f32) -> [f32; 4] {
+    pad_chord_midi(progression, step).map(|note| midi_to_hz(note) * tune_ratio(tune))
+}
+
+/// The pad's current chord as raw MIDI note numbers (pre-`midi_to_hz`/tune),
+/// for voices — like Arp — that need to build their own note list (e.g.
+/// octave-extended cycles) rather than four fixed frequencies.
+pub(crate) fn pad_chord_midi(progression: usize, step: usize) -> [i32; 4] {
     PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8]
-        .map(|note| midi_to_hz(note) * tune_ratio(tune))
 }

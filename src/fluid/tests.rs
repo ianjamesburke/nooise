@@ -948,7 +948,7 @@ fn engine_publishes_beat_telemetry() {
 fn ambient_reverb_send_ducks_dry_sources_by_mix() {
     let mut send = AmbientReverbSend::new(SAMPLE_RATE);
 
-    let frame = send.process((1.0, -1.0), (0.5, -0.5), 1.0, 0.5);
+    let frame = send.process((1.0, -1.0), (0.5, -0.5), (0.0, 0.0), 1.0, 0.5);
 
     assert_near(frame.pad_l, AmbientReverbSend::dry_gain(1.0));
     assert_near(frame.pad_r, -AmbientReverbSend::dry_gain(1.0));
@@ -977,7 +977,7 @@ fn full_pad_reverb_does_not_boost_pad_rms() {
 
         for sample in 0..total {
             let dry = pad.next(&controls, 0.0, timing(sample, 120.0));
-            let frame = send.process(dry, (0.0, 0.0), controls.reverb_mix, 0.0);
+            let frame = send.process(dry, (0.0, 0.0), (0.0, 0.0), controls.reverb_mix, 0.0);
             if sample >= warmup {
                 let l = frame.pad_l + frame.wet_l;
                 let r = frame.pad_r + frame.wet_r;
@@ -1019,7 +1019,7 @@ fn full_tonal_reverb_does_not_boost_tonal_rms() {
 
         for sample in 0..total {
             let dry = tonal.next(&controls, 0.0, timing(sample, 120.0));
-            let frame = send.process((0.0, 0.0), dry, 0.0, controls.reverb_mix);
+            let frame = send.process((0.0, 0.0), dry, (0.0, 0.0), 0.0, controls.reverb_mix);
             if sample >= warmup {
                 let l = frame.tonal_l + frame.wet_l;
                 let r = frame.tonal_r + frame.wet_r;
@@ -1299,6 +1299,10 @@ fn tab_controls_classify_each_slider_kind() {
                 Gain, Timing, Timing, Discrete, Timing, Timing, Gain, Gain, Gain,
             ],
         ),
+        (
+            Tab::Arp,
+            vec![Gain, Timing, Discrete, Discrete, Timing, Timing],
+        ),
     ];
 
     for (tab, expected) in cases {
@@ -1320,6 +1324,7 @@ fn control_registry_specs_are_internally_consistent() {
         Tab::Kick,
         Tab::Tonal,
         Tab::Clap,
+        Tab::Arp,
     ];
     for tab in tabs {
         for spec in tab_specs(tab) {
@@ -3041,5 +3046,203 @@ fn engine_hot_path_timing() {
     println!(
         "10 s of audio in {elapsed:?} ({:.1}x realtime, acc {acc})",
         10.0 / elapsed.as_secs_f64()
+    );
+}
+
+// ============================================================
+// Arp
+// ============================================================
+
+#[test]
+fn arp_defaults_are_silent() {
+    assert_close(ArpControls::default().gain, 0.0);
+}
+
+#[test]
+fn arp_cycle_notes_duplicates_chord_up_whole_octaves_sorted() {
+    let chord = [45, 48, 52, 55];
+
+    assert_eq!(arp_cycle_notes(chord, 1), vec![45, 48, 52, 55]);
+    assert_eq!(
+        arp_cycle_notes(chord, 2),
+        vec![45, 48, 52, 55, 57, 60, 64, 67]
+    );
+    assert_eq!(
+        arp_cycle_notes(chord, 3),
+        vec![45, 48, 52, 55, 57, 60, 64, 67, 69, 72, 76, 79]
+    );
+}
+
+#[test]
+fn arp_pattern_labels_and_index_map_round_trip() {
+    assert_eq!(arp_pattern_label(0.0), "Up");
+    assert_eq!(arp_pattern_label(1.0), "Down");
+    assert_eq!(arp_pattern_label(2.0), "Up-Down");
+    assert_eq!(arp_pattern_label(3.0), "Random");
+    assert_eq!(arp_pattern_from_control(0.0), ArpPattern::Up);
+    assert_eq!(arp_pattern_from_control(1.0), ArpPattern::Down);
+    assert_eq!(arp_pattern_from_control(2.0), ArpPattern::UpDown);
+    assert_eq!(arp_pattern_from_control(3.0), ArpPattern::Random);
+}
+
+/// Replays `arp_advance` `count` times from `pos`/`dir` and returns the
+/// sequence of *emitted* indices (the index read before each advance),
+/// exactly mirroring `ArpEngine::next`'s "read current pos, then advance"
+/// order.
+fn arp_advance_sequence(
+    pattern: ArpPattern,
+    len: usize,
+    count: usize,
+    rng: &mut StdRng,
+) -> Vec<usize> {
+    let mut pos = 0usize;
+    let mut dir = 1i32;
+    let mut seq = Vec::with_capacity(count);
+    for _ in 0..count {
+        seq.push(pos);
+        let (next_pos, next_dir) = arp_advance(pos, pattern, len, dir, rng);
+        pos = next_pos;
+        dir = next_dir;
+    }
+    seq
+}
+
+#[test]
+fn arp_pattern_up_cycles_ascending_across_octave_spans() {
+    let mut rng = StdRng::seed_from_u64(0);
+    assert_eq!(
+        arp_advance_sequence(ArpPattern::Up, 4, 9, &mut rng),
+        vec![0, 1, 2, 3, 0, 1, 2, 3, 0]
+    );
+    assert_eq!(
+        arp_advance_sequence(ArpPattern::Up, 8, 10, &mut rng),
+        vec![0, 1, 2, 3, 4, 5, 6, 7, 0, 1]
+    );
+    assert_eq!(
+        arp_advance_sequence(ArpPattern::Up, 12, 13, &mut rng),
+        vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0]
+    );
+}
+
+#[test]
+fn arp_pattern_down_cycles_descending() {
+    let mut rng = StdRng::seed_from_u64(0);
+    assert_eq!(
+        arp_advance_sequence(ArpPattern::Down, 4, 9, &mut rng),
+        vec![0, 3, 2, 1, 0, 3, 2, 1, 0]
+    );
+    assert_eq!(
+        arp_advance_sequence(ArpPattern::Down, 8, 5, &mut rng),
+        vec![0, 7, 6, 5, 4]
+    );
+}
+
+#[test]
+fn arp_pattern_up_down_ping_pongs_without_repeating_endpoints() {
+    let mut rng = StdRng::seed_from_u64(0);
+    // len 4: period is 2*(len-1) = 6, bouncing at 0 and 3 without doubling.
+    assert_eq!(
+        arp_advance_sequence(ArpPattern::UpDown, 4, 13, &mut rng),
+        vec![0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 2, 1, 0]
+    );
+    // A single-tone list (len 1) never bounces off itself.
+    assert_eq!(
+        arp_advance_sequence(ArpPattern::UpDown, 1, 4, &mut rng),
+        vec![0, 0, 0, 0]
+    );
+}
+
+#[test]
+fn arp_random_pattern_is_deterministic_for_a_seed_and_differs_across_seeds() {
+    let seq_a = arp_advance_sequence(ArpPattern::Random, 8, 20, &mut StdRng::seed_from_u64(5));
+    let seq_b = arp_advance_sequence(ArpPattern::Random, 8, 20, &mut StdRng::seed_from_u64(5));
+    let seq_c = arp_advance_sequence(ArpPattern::Random, 8, 20, &mut StdRng::seed_from_u64(6));
+
+    assert_eq!(seq_a, seq_b, "same seed must reproduce the same sequence");
+    assert_ne!(seq_a, seq_c, "different seeds should (almost always) diverge");
+    assert!(seq_a.iter().all(|&i| i < 8), "random index must stay in range");
+}
+
+#[test]
+fn arp_engine_reseed_via_fluid_engine_reproduces_random_pattern() {
+    // Mirrors FluidEngine::reseed's per-voice offset convention (`seed + 5`
+    // for arp) so `nooise render --seed N` stays byte-identical when the
+    // pattern control is Random.
+    let mut a = ArpEngine::new(SAMPLE_RATE);
+    a.rng = StdRng::seed_from_u64(9u64.wrapping_add(5));
+    let mut b = ArpEngine::new(SAMPLE_RATE);
+    b.rng = StdRng::seed_from_u64(9u64.wrapping_add(5));
+
+    let pad = PadControls::default();
+    let controls = ArpControls {
+        gain: 0.5,
+        pattern: 3.0, // Random
+        ..ArpControls::default()
+    };
+
+    let total = SAMPLE_RATE as u64 * 2;
+    let mut out_a = Vec::with_capacity(total as usize * 2);
+    let mut out_b = Vec::with_capacity(total as usize * 2);
+    for sample in 0..total {
+        let (l, r) = a.next(&controls, &pad, 0.0, timing(sample, 120.0));
+        out_a.push(l);
+        out_a.push(r);
+        let (l, r) = b.next(&controls, &pad, 0.0, timing(sample, 120.0));
+        out_b.push(l);
+        out_b.push(r);
+    }
+
+    assert_eq!(out_a, out_b, "identical reseed must render byte-identical audio");
+}
+
+#[test]
+fn arp_cycle_notes_duplicates_chord_up_whole_octaves_sorted_extra() {
+    // arp_cycle_notes is exercised above via arp_advance_sequence's `len`
+    // arguments; this covers the actual chord->list construction directly.
+    let chord = [45, 48, 52, 55];
+    assert_eq!(arp_cycle_notes(chord, 1).len(), 4);
+    assert_eq!(arp_cycle_notes(chord, 2).len(), 8);
+    assert_eq!(arp_cycle_notes(chord, 3).len(), 12);
+    assert!(arp_cycle_notes(chord, 2).is_sorted());
+}
+
+#[test]
+fn arp_chord_change_clamps_cycle_position_without_resetting_it() {
+    let mut arp = ArpEngine::new(SAMPLE_RATE);
+    // Simulate having played deep into a 3-octave (12-tone) cycle.
+    arp.cycle_pos = 9;
+
+    let pad = PadControls::default();
+    let narrow = ArpControls {
+        gain: 0.5,
+        octaves: 1.0, // now only a 4-tone list
+        pattern: 0.0, // Up, so the post-clamp advance is easy to check
+        ..ArpControls::default()
+    };
+
+    arp.next(&narrow, &pad, 0.0, timing(0, 120.0));
+
+    // Clamped into range (index 3, the top of a 4-tone list) rather than
+    // reset to 0, then advanced one step by the Up pattern: (3+1)%4 = 0.
+    assert_eq!(arp.cycle_pos, 0);
+}
+
+#[test]
+fn arp_defaults_are_silent_and_do_not_change_default_render() {
+    let controls = FluidControls::default();
+    assert_close(controls.arp.gain, 0.0);
+}
+
+#[test]
+fn arp_reuses_shared_ambient_reverb_send_alongside_pad_and_tonal() {
+    let mut send = AmbientReverbSend::new(SAMPLE_RATE);
+    let frame = send.process((0.0, 0.0), (0.0, 0.0), (1.0, -1.0), 0.0, 0.0);
+    assert_near(
+        frame.arp_l,
+        AmbientReverbSend::dry_gain(AMBIENT_REVERB_ARP_MIX_FIXED),
+    );
+    assert_near(
+        frame.arp_r,
+        -AmbientReverbSend::dry_gain(AMBIENT_REVERB_ARP_MIX_FIXED),
     );
 }

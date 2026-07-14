@@ -1,5 +1,6 @@
 use super::*;
 
+mod arp;
 mod bass;
 mod clap;
 mod kick;
@@ -7,6 +8,7 @@ mod pad;
 mod perc;
 mod tonal;
 
+pub(crate) use arp::*;
 pub(crate) use bass::*;
 pub(crate) use clap::*;
 pub(crate) use kick::*;
