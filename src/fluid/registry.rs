@@ -627,6 +627,18 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.pad.level),
     ),
     ControlSpec::new(
+        "pad.type",
+        "Type",
+        ControlKind::Discrete,
+        0.0,
+        2.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.voice_type,
+        |c, v| c.pad.voice_type = v,
+        |c| pad_type_label(c.pad.voice_type).to_string(),
+    ),
+    ControlSpec::new(
         "pad.chord_bars",
         "Chord Length",
         ControlKind::Timing,
@@ -835,6 +847,18 @@ pub(crate) fn bass_type_label(value: f32) -> &'static str {
 }
 
 pub(crate) fn bass_type_index(value: f32) -> usize {
+    (value.round() as i64).rem_euclid(3) as usize
+}
+
+pub(crate) fn pad_type_label(value: f32) -> &'static str {
+    match pad_type_index(value) {
+        0 => "Warm",
+        1 => "Dark",
+        _ => "Glass",
+    }
+}
+
+pub(crate) fn pad_type_index(value: f32) -> usize {
     (value.round() as i64).rem_euclid(3) as usize
 }
 

@@ -425,6 +425,24 @@ fn pad_defaults_use_progression_a_and_sixteen_beat_chords() {
     let controls = PadControls::default();
     assert_close(controls.chord_bars, 4.0);
     assert_close(controls.progression, 0.0);
+    assert_close(controls.voice_type, 0.0);
+}
+
+#[test]
+fn chords_tab_shows_type_row_with_letter_display() {
+    let mut controls = FluidControls::default();
+    let rows = tab_controls(Tab::Chords, &controls);
+    assert_eq!(rows[1].id, "pad.type");
+    assert_eq!(rows[1].label, "Type");
+    assert_eq!(rows[1].display, "Warm");
+
+    controls.pad.voice_type = 1.0;
+    let rows = tab_controls(Tab::Chords, &controls);
+    assert_eq!(rows[1].display, "Dark");
+
+    controls.pad.voice_type = 2.0;
+    let rows = tab_controls(Tab::Chords, &controls);
+    assert_eq!(rows[1].display, "Glass");
 }
 
 #[test]
@@ -1219,7 +1237,7 @@ fn apply_min_moves_selected_control_to_floor() {
     assert_close(controls.master.tone, -1.0);
 
     controls.pad.chord_bars = 16.0;
-    apply_min(Tab::Chords, 1, &mut controls);
+    apply_min(Tab::Chords, 2, &mut controls);
     assert_close(controls.pad.chord_bars, 1.0);
 }
 
@@ -1270,7 +1288,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Chords,
             vec![
-                Gain, Timing, Discrete, Gain, Gain, Gain, Gain, Timing, Timing,
+                Gain, Discrete, Timing, Discrete, Gain, Gain, Gain, Gain, Timing, Timing,
             ],
         ),
         (
@@ -1397,6 +1415,28 @@ fn song_code_predating_bass_type_decodes_as_default_sub() {
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_close(decoded.controls.bass.voice_type, 0.0);
+}
+
+#[test]
+fn song_code_round_trips_pad_type() {
+    let mut controls = FluidControls::default();
+    controls.pad.voice_type = 2.0;
+
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.pad.voice_type, 2.0);
+}
+
+#[test]
+fn song_code_predating_pad_type_decodes_as_default_warm() {
+    // Same generic id->f32 snapshot codec as bass.type: a code written
+    // before `pad.type` existed simply omits the id and decodes to default.
+    let controls = FluidControls::default();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.pad.voice_type, 0.0);
 }
 
 #[test]
@@ -1636,12 +1676,12 @@ fn gain_smoothers_cover_every_unique_gain_spec() {
 fn chords_tab_shows_progression_row_with_letter_display() {
     let mut controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[2].label, "Progression");
-    assert_eq!(rows[2].display, "A");
+    assert_eq!(rows[3].label, "Progression");
+    assert_eq!(rows[3].display, "A");
 
     controls.pad.progression = 2.0;
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[2].display, "C");
+    assert_eq!(rows[3].display, "C");
 }
 
 #[test]
@@ -1665,19 +1705,19 @@ fn tonal_tab_separates_rate_from_cycle() {
 fn chords_progression_adjusts_and_clamps() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Chords, 2, 1.0, &mut controls);
+    apply_delta(Tab::Chords, 3, 1.0, &mut controls);
     assert_close(controls.pad.progression, 1.0);
 
     controls.pad.progression = 7.0;
-    apply_delta(Tab::Chords, 2, 1.0, &mut controls);
+    apply_delta(Tab::Chords, 3, 1.0, &mut controls);
     assert_close(controls.pad.progression, 7.0);
 
     controls.pad.progression = 0.0;
-    apply_delta(Tab::Chords, 2, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 3, -1.0, &mut controls);
     assert_close(controls.pad.progression, 0.0);
 
     controls.pad.progression = 2.0;
-    apply_min(Tab::Chords, 2, &mut controls);
+    apply_min(Tab::Chords, 3, &mut controls);
     assert_close(controls.pad.progression, 0.0);
 }
 
@@ -1869,6 +1909,69 @@ fn bass_types_produce_differing_but_comparably_balanced_audio() {
 }
 
 #[test]
+fn pad_type_zero_matches_legacy_warm_tone_exactly() {
+    let sample_rate = 48_000.0;
+    let mut dispatched = PadTone::new(0, 220.0, 0.2, 0.15, 0.5, 1.0, sample_rate);
+    let mut legacy = WarmPadTone::new(220.0, 0.2, 0.15, 0.5, 1.0, sample_rate);
+
+    for _ in 0..(sample_rate * 0.3) as usize {
+        assert_eq!(dispatched.next_stereo(0.8, 0.5, 0.5), legacy.next_stereo(0.8, 0.5, 0.5));
+    }
+}
+
+#[test]
+fn pad_types_produce_differing_but_comparably_balanced_audio() {
+    let sample_rate = 48_000.0;
+    let samples = (sample_rate * 0.4) as usize;
+
+    let rms = |character: usize| -> f32 {
+        let mut tone = PadTone::new(character, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
+        let mut sum_sq = 0.0f32;
+        for _ in 0..samples {
+            let (l, r) = tone.next_stereo(0.8, 0.5, 0.5);
+            sum_sq += l * l + r * r;
+        }
+        (sum_sq / (samples as f32 * 2.0)).sqrt()
+    };
+
+    let warm_rms = rms(0);
+    let dark_rms = rms(1);
+    let glass_rms = rms(2);
+
+    assert!(warm_rms > 0.0 && dark_rms > 0.0 && glass_rms > 0.0);
+
+    let mut warm = PadTone::new(0, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
+    let mut dark = PadTone::new(1, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
+    let mut glass = PadTone::new(2, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
+    let mut any_diff_warm_dark = false;
+    let mut any_diff_warm_glass = false;
+    for _ in 0..samples {
+        let (wl, _) = warm.next_stereo(0.8, 0.5, 0.5);
+        let (dl, _) = dark.next_stereo(0.8, 0.5, 0.5);
+        let (gl, _) = glass.next_stereo(0.8, 0.5, 0.5);
+        if (wl - dl).abs() > 1e-6 {
+            any_diff_warm_dark = true;
+        }
+        if (wl - gl).abs() > 1e-6 {
+            any_diff_warm_glass = true;
+        }
+    }
+    assert!(any_diff_warm_dark);
+    assert!(any_diff_warm_glass);
+
+    // Authored gains keep the three characters at a comparable perceived
+    // level: no type should be more than 2x (~6 dB) louder or quieter than
+    // the others.
+    let levels = [warm_rms, dark_rms, glass_rms];
+    let max = levels.iter().cloned().fold(f32::MIN, f32::max);
+    let min = levels.iter().cloned().fold(f32::MAX, f32::min);
+    assert!(
+        max / min < 2.0,
+        "pad types not level-matched: warm={warm_rms}, dark={dark_rms}, glass={glass_rms}"
+    );
+}
+
+#[test]
 fn bass_interval_crops_phrase_instead_of_stretching_it() {
     // Step duration is always a fixed 16th note; `interval_beats` only
     // decides how many steps of the 16-step phrase play before looping
@@ -1895,22 +1998,22 @@ fn bass_interval_crops_phrase_instead_of_stretching_it() {
 }
 
 #[test]
-fn chords_reverb_mix_row_shifted_to_index_three() {
+fn chords_reverb_mix_row_shifted_to_index_four() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].label, "Reverb Mix");
+    assert_eq!(rows[4].label, "Reverb Mix");
 }
 
 #[test]
 fn chords_release_row_present_with_lowered_attack_floor() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[7].label, "Attack");
-    assert_close(rows[7].min, 0.05);
-    assert_eq!(rows[8].label, "Release");
-    assert_close(rows[8].value, 8.0);
+    assert_eq!(rows[8].label, "Attack");
     assert_close(rows[8].min, 0.05);
-    assert_close(rows[8].max, 20.0);
+    assert_eq!(rows[9].label, "Release");
+    assert_close(rows[9].value, 8.0);
+    assert_close(rows[9].min, 0.05);
+    assert_close(rows[9].max, 20.0);
 }
 
 #[test]
@@ -1918,15 +2021,15 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
     let mut controls = FluidControls::default();
 
     controls.pad.attack_time = 0.1;
-    apply_delta(Tab::Chords, 7, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 8, -1.0, &mut controls);
     assert_close(controls.pad.attack_time, 0.05);
-    apply_min(Tab::Chords, 7, &mut controls);
+    apply_min(Tab::Chords, 8, &mut controls);
     assert_close(controls.pad.attack_time, 0.05);
 
     controls.pad.release_time = 0.1;
-    apply_delta(Tab::Chords, 8, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 9, -1.0, &mut controls);
     assert_close(controls.pad.release_time, 0.05);
-    apply_min(Tab::Chords, 8, &mut controls);
+    apply_min(Tab::Chords, 9, &mut controls);
     assert_close(controls.pad.release_time, 0.05);
 }
 

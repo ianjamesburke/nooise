@@ -61,6 +61,7 @@ impl Default for PercControls {
 #[derive(Clone)]
 pub(crate) struct PadControls {
     pub level: f32,
+    pub voice_type: f32, // 0=Warm (legacy), 1=Dark, 2=Glass character selector
     pub chord_bars: f32, // 1,2,4,8,16,32,64
     pub progression: f32,
     pub reverb_mix: f32,
@@ -75,6 +76,7 @@ impl Default for PadControls {
     fn default() -> Self {
         Self {
             level: 0.7,
+            voice_type: 0.0,
             chord_bars: 4.0,
             progression: 0.0,
             reverb_mix: 0.8,

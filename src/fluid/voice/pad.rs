@@ -23,6 +23,7 @@ impl PadEngine {
         Self {
             sample_rate,
             layers: vec![PadLayer::new(
+                pad_type_index(c.voice_type),
                 0,
                 0,
                 0.0,
@@ -62,6 +63,7 @@ impl PadEngine {
                 self.layers.drain(0..remove_count);
             }
             self.layers.push(PadLayer::new(
+                pad_type_index(c.voice_type),
                 progression,
                 self.step_index,
                 tune,
@@ -102,6 +104,7 @@ pub(crate) struct PadLayer {
 
 impl PadLayer {
     pub(crate) fn new(
+        character: usize,
         progression: usize,
         step: usize,
         tune: f32,
@@ -111,6 +114,7 @@ impl PadLayer {
     ) -> Self {
         Self {
             tones: pad_tones(
+                character,
                 progression,
                 step,
                 tune,
@@ -144,7 +148,88 @@ impl PadLayer {
     }
 }
 
-pub(crate) struct PadTone {
+/// `pad.type` selects the tone character used for every layer's tones.
+/// Index 0 (`Warm`) is the legacy tone, byte-for-byte unchanged and the
+/// default; switching type never touches the shared chord/progression
+/// (`pad_chord`), trigger timing, attack/release, or pan authoring above.
+pub(crate) enum PadTone {
+    Warm(WarmPadTone),
+    Dark(DarkPadTone),
+    Glass(GlassPadTone),
+}
+
+impl PadTone {
+    pub(crate) fn new(
+        character: usize,
+        hz: f32,
+        pan: f32,
+        gain: f32,
+        attack_time: f32,
+        release_time: f32,
+        sample_rate: f32,
+    ) -> Self {
+        match character {
+            0 => Self::Warm(WarmPadTone::new(
+                hz,
+                pan,
+                gain,
+                attack_time,
+                release_time,
+                sample_rate,
+            )),
+            1 => Self::Dark(DarkPadTone::new(
+                hz,
+                pan,
+                gain,
+                attack_time,
+                release_time,
+                sample_rate,
+            )),
+            _ => Self::Glass(GlassPadTone::new(
+                hz,
+                pan,
+                gain,
+                attack_time,
+                release_time,
+                sample_rate,
+            )),
+        }
+    }
+
+    pub(crate) fn next_stereo(
+        &mut self,
+        width: f32,
+        detune_mix: f32,
+        octave_mix: f32,
+    ) -> (f32, f32) {
+        match self {
+            Self::Warm(tone) => tone.next_stereo(width, detune_mix, octave_mix),
+            Self::Dark(tone) => tone.next_stereo(width, detune_mix, octave_mix),
+            Self::Glass(tone) => tone.next_stereo(width, detune_mix, octave_mix),
+        }
+    }
+
+    pub(crate) fn release(&mut self) {
+        match self {
+            Self::Warm(tone) => tone.release(),
+            Self::Dark(tone) => tone.release(),
+            Self::Glass(tone) => tone.release(),
+        }
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        match self {
+            Self::Warm(tone) => tone.is_done(),
+            Self::Dark(tone) => tone.is_done(),
+            Self::Glass(tone) => tone.is_done(),
+        }
+    }
+}
+
+/// Type 0 (default): the original pad tone, byte-for-byte unchanged. Three
+/// sines (fundamental, slightly detuned, one octave up) summed, soft-clipped,
+/// and shaped by the shared ADSR.
+pub(crate) struct WarmPadTone {
     pub(crate) primary: SineOscillator,
     pub(crate) detuned: SineOscillator,
     pub(crate) octave: SineOscillator,
@@ -153,7 +238,7 @@ pub(crate) struct PadTone {
     pub(crate) gain: f32,
 }
 
-impl PadTone {
+impl WarmPadTone {
     pub(crate) fn new(
         hz: f32,
         pan: f32,
@@ -191,7 +276,133 @@ impl PadTone {
     }
 }
 
+/// One-pole lowpass coefficient shared by the Dark tone's per-sample
+/// smoothing; low enough to noticeably round off the upper harmonic content
+/// contributed by the detune/octave layers without muffling the fundamental.
+const PAD_DARK_LOWPASS_COEFF: f32 = 0.18;
+/// Output trim compensating for the lowpass stage's energy loss so Dark sits
+/// at a comparable perceived level to Warm/Glass.
+const PAD_DARK_OUTPUT_GAIN: f32 = 1.22;
+
+/// Type 1: a darker, filtered character. Identical oscillator stack to Warm,
+/// but the summed signal passes through a gentle fixed one-pole lowpass
+/// before soft-clipping, rounding off the highs contributed by the detune and
+/// octave layers.
+pub(crate) struct DarkPadTone {
+    pub(crate) primary: SineOscillator,
+    pub(crate) detuned: SineOscillator,
+    pub(crate) octave: SineOscillator,
+    pub(crate) envelope: Adsr,
+    pub(crate) pan: f32,
+    pub(crate) gain: f32,
+    pub(crate) lowpass_state: f32,
+}
+
+impl DarkPadTone {
+    pub(crate) fn new(
+        hz: f32,
+        pan: f32,
+        gain: f32,
+        attack_time: f32,
+        release_time: f32,
+        sample_rate: f32,
+    ) -> Self {
+        Self {
+            primary: SineOscillator::new(hz, sample_rate),
+            detuned: SineOscillator::new(hz * 1.003, sample_rate),
+            octave: SineOscillator::new(hz * 2.0, sample_rate),
+            envelope: Adsr::new(attack_time, 12.0, 0.86, release_time, sample_rate),
+            pan,
+            gain,
+            lowpass_state: 0.0,
+        }
+    }
+    pub(crate) fn next_stereo(
+        &mut self,
+        width: f32,
+        detune_mix: f32,
+        octave_mix: f32,
+    ) -> (f32, f32) {
+        let s = self.primary.next()
+            + self.detuned.next() * detune_mix
+            + self.octave.next() * octave_mix;
+        self.lowpass_state += PAD_DARK_LOWPASS_COEFF * (s - self.lowpass_state);
+        let shaped = soft_clip(self.lowpass_state * 0.55)
+            * self.envelope.next()
+            * self.gain
+            * PAD_DARK_OUTPUT_GAIN;
+        StereoPanner::equal_power(shaped, self.pan * width)
+    }
+    pub(crate) fn release(&mut self) {
+        self.envelope.note_off();
+    }
+    pub(crate) fn is_done(&self) -> bool {
+        self.envelope.is_done()
+    }
+}
+
+/// Fixed mix level of the Glass tone's shimmer layer (two octaves above the
+/// fundamental), independent of the user-facing `pad.octave_mix` control.
+const PAD_GLASS_SHIMMER_MIX: f32 = 0.09;
+/// Output trim compensating for the shimmer layer's added energy so Glass
+/// sits at a comparable perceived level to Warm/Dark.
+const PAD_GLASS_OUTPUT_GAIN: f32 = 0.93;
+
+/// Type 2: a brighter, glassier character. Identical oscillator stack to
+/// Warm, plus a quiet fixed shimmer oscillator two octaves above the
+/// fundamental for added upper harmonic content.
+pub(crate) struct GlassPadTone {
+    pub(crate) primary: SineOscillator,
+    pub(crate) detuned: SineOscillator,
+    pub(crate) octave: SineOscillator,
+    pub(crate) shimmer: SineOscillator,
+    pub(crate) envelope: Adsr,
+    pub(crate) pan: f32,
+    pub(crate) gain: f32,
+}
+
+impl GlassPadTone {
+    pub(crate) fn new(
+        hz: f32,
+        pan: f32,
+        gain: f32,
+        attack_time: f32,
+        release_time: f32,
+        sample_rate: f32,
+    ) -> Self {
+        Self {
+            primary: SineOscillator::new(hz, sample_rate),
+            detuned: SineOscillator::new(hz * 1.003, sample_rate),
+            octave: SineOscillator::new(hz * 2.0, sample_rate),
+            shimmer: SineOscillator::new(hz * 4.0, sample_rate),
+            envelope: Adsr::new(attack_time, 12.0, 0.86, release_time, sample_rate),
+            pan,
+            gain,
+        }
+    }
+    pub(crate) fn next_stereo(
+        &mut self,
+        width: f32,
+        detune_mix: f32,
+        octave_mix: f32,
+    ) -> (f32, f32) {
+        let s = self.primary.next()
+            + self.detuned.next() * detune_mix
+            + self.octave.next() * octave_mix
+            + self.shimmer.next() * PAD_GLASS_SHIMMER_MIX;
+        let shaped = soft_clip(s * 0.55) * self.envelope.next() * self.gain * PAD_GLASS_OUTPUT_GAIN;
+        StereoPanner::equal_power(shaped, self.pan * width)
+    }
+    pub(crate) fn release(&mut self) {
+        self.envelope.note_off();
+    }
+    pub(crate) fn is_done(&self) -> bool {
+        self.envelope.is_done()
+    }
+}
+
 pub(crate) fn pad_tones(
+    character: usize,
     progression: usize,
     step: usize,
     tune: f32,
@@ -207,7 +418,15 @@ pub(crate) fn pad_tones(
         .zip(pans)
         .zip(gains)
         .map(|((hz, pan), gain)| {
-            PadTone::new(*hz, pan, gain, attack_time, release_time, sample_rate)
+            PadTone::new(
+                character,
+                *hz,
+                pan,
+                gain,
+                attack_time,
+                release_time,
+                sample_rate,
+            )
         })
         .collect()
 }
