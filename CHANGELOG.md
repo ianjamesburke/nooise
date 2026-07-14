@@ -1,6 +1,19 @@
 # Changelog
 
 Newest releases appear first.
+## [1.4.0] — 2026-07-14
+
+### Added
+- feat: add custom chord progression builder
+- feat: add pad chord type character variants
+- feat: add bass type character variants
+- feat: add arp voice following the pad chord progression
+- feat: add attack/release controls to tonal
+- feat: add four new chord progressions (two dark modal, two major)
+- feat: beats-based chord length entry, eased gain ramps, macro LFO field guard
+
+### Fixed
+- fix: rebuild audio stream when the default output device changes
 ## [1.3.0] — 2026-07-07
 
 ### Added
