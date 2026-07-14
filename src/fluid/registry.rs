@@ -1159,6 +1159,18 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| tonal_synth_type_label(c.tonal.synth_type).to_string(),
     ),
     ControlSpec::new(
+        "tonal.octave",
+        "Octave",
+        ControlKind::Discrete,
+        -2.0,
+        2.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.tonal.octave,
+        |c, v| c.tonal.octave = v,
+        |c| format!("{:.0}", c.tonal.octave),
+    ),
+    ControlSpec::new(
         "tonal.phrase",
         "Phrase",
         ControlKind::Discrete,

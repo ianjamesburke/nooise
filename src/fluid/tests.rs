@@ -1350,7 +1350,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Tonal,
             vec![
-                Gain, Discrete, Discrete, Timing, Timing, Timing, Timing, Timing, Gain,
+                Gain, Discrete, Discrete, Discrete, Timing, Timing, Timing, Timing, Timing, Gain,
                 Continuous, Timing, Gain,
             ],
         ),
@@ -1589,6 +1589,30 @@ fn song_code_predating_bass_cutoff_decodes_as_default_open() {
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_close(decoded.controls.bass.cutoff, BASS_CUTOFF_MAX_HZ);
+}
+
+#[test]
+fn song_code_round_trips_tonal_octave() {
+    let mut controls = FluidControls::default();
+    controls.tonal.octave = -1.0;
+
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.tonal.octave, -1.0);
+}
+
+#[test]
+fn song_code_predating_tonal_octave_decodes_as_default_zero() {
+    // Same generic id->f32 snapshot codec as bass.cutoff/bass.type/pad.type: a
+    // code written before `tonal.octave` existed simply omits the id and
+    // decodes to the no-shift default (0.0), preserving the pre-existing
+    // sound.
+    let controls = FluidControls::default();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.tonal.octave, 0.0);
 }
 
 #[test]
@@ -1849,14 +1873,16 @@ fn tonal_tab_separates_rate_from_cycle() {
     assert_eq!(rows[1].id, "tonal.synth_type");
     assert_eq!(rows[1].label, "Type");
     assert_eq!(rows[1].display, "Sine");
-    assert_eq!(rows[2].id, "tonal.phrase");
-    assert_eq!(rows[2].label, "Phrase");
-    assert_eq!(rows[3].id, "tonal.rate_beats");
-    assert_eq!(rows[3].label, "Rate");
-    assert_eq!(rows[3].display, "0.50 beats");
-    assert_eq!(rows[4].id, "tonal.step_interval_beats");
-    assert_eq!(rows[4].label, "Cycle");
-    assert_eq!(rows[4].display, "16.00 beats");
+    assert_eq!(rows[2].id, "tonal.octave");
+    assert_eq!(rows[2].label, "Octave");
+    assert_eq!(rows[3].id, "tonal.phrase");
+    assert_eq!(rows[3].label, "Phrase");
+    assert_eq!(rows[4].id, "tonal.rate_beats");
+    assert_eq!(rows[4].label, "Rate");
+    assert_eq!(rows[4].display, "0.50 beats");
+    assert_eq!(rows[5].id, "tonal.step_interval_beats");
+    assert_eq!(rows[5].label, "Cycle");
+    assert_eq!(rows[5].display, "16.00 beats");
 }
 
 #[test]

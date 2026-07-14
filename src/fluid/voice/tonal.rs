@@ -354,7 +354,7 @@ impl TonalEngine {
                 TONAL_SCALE_MIDI[self.rng.gen_range(0..TONAL_SCALE_MIDI.len())]
             } else {
                 self.evolved_phrase[self.step_index % self.evolved_phrase.len()]
-            };
+            } + (c.octave.round() as i32) * 12;
             let hz = tonal_note_hz(note, tune);
             let decay_samples = timing.beats_to_samples(c.note_length_beats);
             let pan = self.rng.gen_range(-0.5f32..0.5);

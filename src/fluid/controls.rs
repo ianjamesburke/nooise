@@ -167,6 +167,7 @@ impl Default for KickControls {
 pub(crate) struct TonalControls {
     pub level: f32,
     pub synth_type: f32,
+    pub octave: f32,
     pub phrase: f32,
     pub randomness: f32,
     pub evolve_rate: f32,
@@ -184,6 +185,7 @@ impl Default for TonalControls {
         Self {
             level: 0.0,
             synth_type: 0.0,
+            octave: 0.0,
             phrase: 0.0,
             randomness: 0.5,
             evolve_rate: 0.0,
