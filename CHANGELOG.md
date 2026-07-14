@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [1.5.0] — 2026-07-14
+
+### Added
+- feat: add arp.reverb_mix control, replacing fixed ambient reverb mix
+- feat: add tonal.octave whole-octave transpose control
+- feat: add bass.cutoff one-pole lowpass filter
+
+### Fixed
+- fix: make bass monophonic with hard-cut retrigger
 ## [1.4.0] — 2026-07-14
 
 ### Added
