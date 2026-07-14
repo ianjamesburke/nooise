@@ -126,6 +126,7 @@ impl StereoEngine for FluidEngine {
             (arp_l, arp_r),
             effective.pad.reverb_mix,
             effective.tonal.reverb_mix,
+            effective.arp.reverb_mix,
         );
 
         self.current_sample += 1;
@@ -418,10 +419,8 @@ pub(crate) const AMBIENT_REVERB_DRY_DUCK: f32 = 0.3;
 pub(crate) const AMBIENT_REVERB_PAD_SEND: f32 = 0.4;
 pub(crate) const AMBIENT_REVERB_TONAL_SEND: f32 = 0.32;
 pub(crate) const AMBIENT_REVERB_RETURN: f32 = 0.22;
-/// Arp has no user-facing `arp.reverb_mix` control (not in its control list),
-/// so it rides the shared ambient send at a fixed effective mix rather than a
-/// per-voice wet gain — tuned in the same range as Tonal's default mix.
-pub(crate) const AMBIENT_REVERB_ARP_MIX_FIXED: f32 = 0.5;
+/// Arp's send level stays fixed (unlike its mix, `arp.reverb_mix`, which is a
+/// user-facing control) — tuned in the same range as Tonal's default send.
 pub(crate) const AMBIENT_REVERB_ARP_SEND: f32 = 0.3;
 
 pub(crate) struct AmbientReverbSend {
@@ -453,15 +452,17 @@ impl AmbientReverbSend {
         arp: (f32, f32),
         pad_mix: f32,
         tonal_mix: f32,
+        arp_mix: f32,
     ) -> AmbientReverbFrame {
         let pad_mix = pad_mix.clamp(0.0, 1.0);
         let tonal_mix = tonal_mix.clamp(0.0, 1.0);
+        let arp_mix = arp_mix.clamp(0.0, 1.0);
         let pad_dry = Self::dry_gain(pad_mix);
         let tonal_dry = Self::dry_gain(tonal_mix);
-        let arp_dry = Self::dry_gain(AMBIENT_REVERB_ARP_MIX_FIXED);
+        let arp_dry = Self::dry_gain(arp_mix);
         let pad_send = pad_mix * AMBIENT_REVERB_PAD_SEND;
         let tonal_send = tonal_mix * AMBIENT_REVERB_TONAL_SEND;
-        let arp_send = AMBIENT_REVERB_ARP_MIX_FIXED * AMBIENT_REVERB_ARP_SEND;
+        let arp_send = arp_mix * AMBIENT_REVERB_ARP_SEND;
         let send_l = pad.0 * pad_send + tonal.0 * tonal_send + arp.0 * arp_send;
         let send_r = pad.1 * pad_send + tonal.1 * tonal_send + arp.1 * arp_send;
         let (wet_l, wet_r) = self.reverb.process(send_l, send_r);

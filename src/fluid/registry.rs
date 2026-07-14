@@ -1492,6 +1492,15 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
         |c, v| c.arp.release = v,
         |c| format!("{:.2} s", c.arp.release),
     ),
+    ControlSpec::gain(
+        "arp.reverb_mix",
+        "Reverb Mix",
+        0.0,
+        1.0,
+        |c| c.arp.reverb_mix,
+        |c, v| c.arp.reverb_mix = v,
+        |c| pct(c.arp.reverb_mix),
+    ),
 ];
 
 pub(crate) const MACRO_CONTROLS: &[ControlSpec] = &[

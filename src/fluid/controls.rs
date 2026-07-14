@@ -274,6 +274,7 @@ pub(crate) struct ArpControls {
     pub octaves: f32,   // 1-3, octave span of the cycled chord tones
     pub attack: f32,
     pub release: f32,
+    pub reverb_mix: f32,
 }
 
 impl Default for ArpControls {
@@ -287,6 +288,9 @@ impl Default for ArpControls {
             octaves: 1.0,
             attack: 0.005,
             release: 0.3,
+            // Matches the former AMBIENT_REVERB_ARP_MIX_FIXED constant so the
+            // default sound is unchanged.
+            reverb_mix: 0.5,
         }
     }
 }

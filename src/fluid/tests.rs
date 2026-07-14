@@ -1003,7 +1003,7 @@ fn engine_publishes_beat_telemetry() {
 fn ambient_reverb_send_ducks_dry_sources_by_mix() {
     let mut send = AmbientReverbSend::new(SAMPLE_RATE);
 
-    let frame = send.process((1.0, -1.0), (0.5, -0.5), (0.0, 0.0), 1.0, 0.5);
+    let frame = send.process((1.0, -1.0), (0.5, -0.5), (0.0, 0.0), 1.0, 0.5, 0.0);
 
     assert_near(frame.pad_l, AmbientReverbSend::dry_gain(1.0));
     assert_near(frame.pad_r, -AmbientReverbSend::dry_gain(1.0));
@@ -1032,7 +1032,7 @@ fn full_pad_reverb_does_not_boost_pad_rms() {
 
         for sample in 0..total {
             let dry = pad.next(&controls, 0.0, timing(sample, 120.0));
-            let frame = send.process(dry, (0.0, 0.0), (0.0, 0.0), controls.reverb_mix, 0.0);
+            let frame = send.process(dry, (0.0, 0.0), (0.0, 0.0), controls.reverb_mix, 0.0, 0.0);
             if sample >= warmup {
                 let l = frame.pad_l + frame.wet_l;
                 let r = frame.pad_r + frame.wet_r;
@@ -1074,7 +1074,7 @@ fn full_tonal_reverb_does_not_boost_tonal_rms() {
 
         for sample in 0..total {
             let dry = tonal.next(&controls, 0.0, timing(sample, 120.0));
-            let frame = send.process((0.0, 0.0), dry, (0.0, 0.0), 0.0, controls.reverb_mix);
+            let frame = send.process((0.0, 0.0), dry, (0.0, 0.0), 0.0, controls.reverb_mix, 0.0);
             if sample >= warmup {
                 let l = frame.tonal_l + frame.wet_l;
                 let r = frame.tonal_r + frame.wet_r;
@@ -1362,7 +1362,7 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (
             Tab::Arp,
-            vec![Gain, Timing, Discrete, Discrete, Timing, Timing],
+            vec![Gain, Timing, Discrete, Discrete, Timing, Timing, Gain],
         ),
     ];
 
@@ -1613,6 +1613,30 @@ fn song_code_predating_tonal_octave_decodes_as_default_zero() {
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_close(decoded.controls.tonal.octave, 0.0);
+}
+
+#[test]
+fn song_code_round_trips_arp_reverb_mix() {
+    let mut controls = FluidControls::default();
+    controls.arp.reverb_mix = 0.9;
+
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.arp.reverb_mix, 0.9);
+}
+
+#[test]
+fn song_code_predating_arp_reverb_mix_decodes_as_default_fixed_mix() {
+    // Same generic id->f32 snapshot codec as tonal.octave/bass.cutoff: a code
+    // written before `arp.reverb_mix` existed simply omits the id and decodes
+    // to the former fixed-mix default (0.5), preserving the pre-existing
+    // sound.
+    let controls = FluidControls::default();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.arp.reverb_mix, 0.5);
 }
 
 #[test]
@@ -3805,13 +3829,8 @@ fn arp_defaults_are_silent_and_do_not_change_default_render() {
 #[test]
 fn arp_reuses_shared_ambient_reverb_send_alongside_pad_and_tonal() {
     let mut send = AmbientReverbSend::new(SAMPLE_RATE);
-    let frame = send.process((0.0, 0.0), (0.0, 0.0), (1.0, -1.0), 0.0, 0.0);
-    assert_near(
-        frame.arp_l,
-        AmbientReverbSend::dry_gain(AMBIENT_REVERB_ARP_MIX_FIXED),
-    );
-    assert_near(
-        frame.arp_r,
-        -AmbientReverbSend::dry_gain(AMBIENT_REVERB_ARP_MIX_FIXED),
-    );
+    let arp_mix = ArpControls::default().reverb_mix;
+    let frame = send.process((0.0, 0.0), (0.0, 0.0), (1.0, -1.0), 0.0, 0.0, arp_mix);
+    assert_near(frame.arp_l, AmbientReverbSend::dry_gain(arp_mix));
+    assert_near(frame.arp_r, -AmbientReverbSend::dry_gain(arp_mix));
 }
