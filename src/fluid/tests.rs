@@ -312,6 +312,35 @@ fn tonal_type_labels_cover_exploration_variants() {
 }
 
 #[test]
+fn bass_low_pass_reduces_high_energy_without_thinning_low_notes() {
+    fn filtered_sine_rms(hz: f32, cutoff_hz: f32) -> f32 {
+        let mut low_pass = BassLowPass::new();
+        let total = SAMPLE_RATE as u64 * 2;
+        let warmup = SAMPLE_RATE as u64 / 2;
+        let mut sum = 0.0f32;
+        let mut count = 0u64;
+
+        for sample in 0..total {
+            let phase = TAU * hz * sample as f32 / SAMPLE_RATE;
+            let filtered = low_pass.process(phase.sin(), cutoff_hz, SAMPLE_RATE);
+            if sample >= warmup {
+                sum += filtered * filtered;
+                count += 1;
+            }
+        }
+
+        (sum / count as f32).sqrt()
+    }
+
+    let cutoff = 300.0;
+    let low = filtered_sine_rms(80.0, cutoff);
+    let high = filtered_sine_rms(cutoff * 8.0, cutoff);
+
+    assert!(low > 0.4, "low note rms should stay strong, got {low}");
+    assert!(high < 0.3, "high content should be reduced, got {high}");
+}
+
+#[test]
 fn tonal_low_cut_reduces_sub_energy_without_thinning_low_notes() {
     fn filtered_sine_rms(hz: f32) -> f32 {
         let mut low_cut = TonalLowCut::new(SAMPLE_RATE, TONAL_LOW_CUT_HZ);
@@ -1308,6 +1337,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Bass,
             vec![
                 Gain, Discrete, Timing, Timing, Discrete, Discrete, Timing, Timing, Gain,
+                Continuous,
             ],
         ),
         (
@@ -1535,6 +1565,30 @@ fn song_code_predating_pad_type_decodes_as_default_warm() {
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_close(decoded.controls.pad.voice_type, 0.0);
+}
+
+#[test]
+fn song_code_round_trips_bass_cutoff() {
+    let mut controls = FluidControls::default();
+    controls.bass.cutoff = 500.0;
+
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.bass.cutoff, 500.0);
+}
+
+#[test]
+fn song_code_predating_bass_cutoff_decodes_as_default_open() {
+    // Same generic id->f32 snapshot codec as bass.type/pad.type: a code
+    // written before `bass.cutoff` existed simply omits the id and decodes
+    // to the fully-open default (BASS_CUTOFF_MAX_HZ), preserving the
+    // pre-existing sound.
+    let controls = FluidControls::default();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.bass.cutoff, BASS_CUTOFF_MAX_HZ);
 }
 
 #[test]

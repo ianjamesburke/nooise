@@ -6,6 +6,11 @@ pub(crate) const MASTER_BPM_MIN: f32 = 60.0;
 pub(crate) const MASTER_BPM_MAX: f32 = 200.0;
 pub(crate) const KICK_ECHO_TIME_BEATS_MIN: f32 = 0.125;
 pub(crate) const KICK_ECHO_TIME_BEATS_MAX: f32 = 2.0;
+// bass.cutoff range for BassEngine's one-pole lowpass. The max is treated as
+// a literal bypass in BassEngine::next (not just a high filter coefficient)
+// so the default render stays byte-identical — see BassLowPass in bass.rs.
+pub(crate) const BASS_CUTOFF_MIN_HZ: f32 = 80.0;
+pub(crate) const BASS_CUTOFF_MAX_HZ: f32 = 8000.0;
 // Short enough to feel instant under a moving slider, long enough to stay
 // click-free on gain changes.
 pub(crate) const LEVEL_RAMP_MS: f32 = 30.0;
@@ -239,6 +244,7 @@ pub(crate) struct BassControls {
     pub attack_time: f32,
     pub decay_time: f32, // also used as the cutoff curve when a hit retriggers mid-decay
     pub drive: f32,
+    pub cutoff: f32, // one-pole lowpass cutoff, Hz; BASS_CUTOFF_MAX_HZ = fully open (bypass)
 }
 
 impl Default for BassControls {
@@ -253,6 +259,7 @@ impl Default for BassControls {
             decay_time: 0.05,
             attack_time: 0.01,
             drive: 0.15,
+            cutoff: BASS_CUTOFF_MAX_HZ,
         }
     }
 }

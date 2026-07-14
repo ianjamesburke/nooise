@@ -951,6 +951,19 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c, v| c.bass.drive = v,
         |c| pct(c.bass.drive),
     ),
+    ControlSpec::new(
+        "bass.cutoff",
+        "Cutoff",
+        ControlKind::Continuous,
+        BASS_CUTOFF_MIN_HZ,
+        BASS_CUTOFF_MAX_HZ,
+        Step::Linear(100.0),
+        Entry::Snap,
+        |c| c.bass.cutoff,
+        |c, v| c.bass.cutoff = v,
+        |c| format!("{:.0} Hz", c.bass.cutoff),
+    )
+    .reset_at(BASS_CUTOFF_MAX_HZ),
 ];
 
 pub(crate) fn bass_type_label(value: f32) -> &'static str {
