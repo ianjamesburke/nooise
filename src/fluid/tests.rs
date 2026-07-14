@@ -13,6 +13,14 @@ fn assert_close(actual: f32, expected: f32) {
     );
 }
 
+/// Test-only reconstruction of the pad's built-in chord frequencies, from
+/// the two building blocks production code actually uses
+/// (`pad_chord_midi`, `midi_to_hz`, `tune_ratio`) now that the custom
+/// chord-slot path replaced the direct frequency helper in production.
+fn pad_chord(progression: usize, step: usize, tune: f32) -> [f32; 4] {
+    pad_chord_midi(progression, step).map(|note| midi_to_hz(note) * tune_ratio(tune))
+}
+
 fn assert_near(actual: f32, expected: f32) {
     assert!(
         (actual - expected).abs() < 1e-5,
@@ -1288,7 +1296,12 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Chords,
             vec![
-                Gain, Discrete, Timing, Discrete, Gain, Gain, Gain, Gain, Timing, Timing,
+                Gain, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain, Gain, Timing,
+                Timing, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
+                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
+                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
+                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
+                Discrete,
             ],
         ),
         (
@@ -1392,6 +1405,91 @@ fn song_code_round_trips_quantized_snapshot_values() {
     assert_close(decoded.controls.pad.chord_bars, 16.0);
     assert_close(decoded.controls.kick.echo_time_beats, 0.375);
     assert_close(decoded.controls.clap.slap_count, 7.0);
+}
+
+#[test]
+fn song_code_round_trips_a_custom_progression() {
+    let mut controls = FluidControls::default();
+    controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
+    controls.pad.chord_count = 3.0;
+    controls.pad.chord_slots[0].degree = 2.0;
+    controls.pad.chord_slots[0].accidental = -1.0;
+    controls.pad.chord_slots[0].extension = 2.0;
+    controls.pad.chord_slots[0].inversion = 1.0;
+    controls.pad.chord_slots[2].degree = -3.0;
+
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(
+        decoded.controls.pad.progression,
+        CUSTOM_PROGRESSION_INDEX as f32,
+    );
+    assert_close(decoded.controls.pad.chord_count, 3.0);
+    assert_close(decoded.controls.pad.chord_slots[0].degree, 2.0);
+    assert_close(decoded.controls.pad.chord_slots[0].accidental, -1.0);
+    assert_close(decoded.controls.pad.chord_slots[0].extension, 2.0);
+    assert_close(decoded.controls.pad.chord_slots[0].inversion, 1.0);
+    assert_close(decoded.controls.pad.chord_slots[2].degree, -3.0);
+}
+
+/// A song code encoded before this feature existed simply never wrote the
+/// `pad.chordN_*`/`pad.chord_count` ids (the generic snapshot codec only
+/// writes ids that differ from default) — so it decodes today with those
+/// fields at their defaults, no format migration required.
+#[test]
+fn song_code_predating_custom_progression_decodes_with_defaults() {
+    let controls = FluidControls::default();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let encoded = code.strip_prefix("n1_").unwrap();
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).unwrap();
+
+    assert!(
+        !bytes
+            .windows(b"pad.chord1_degree".len())
+            .any(|window| window == b"pad.chord1_degree")
+    );
+
+    let decoded = song::decode_song_code(&code).unwrap();
+    assert_close(decoded.controls.pad.progression, 0.0);
+    assert_close(decoded.controls.pad.chord_count, 8.0);
+    assert_close(decoded.controls.pad.chord_slots[0].degree, 0.0);
+}
+
+/// End-to-end: a custom progression configured via song code, with pad,
+/// bass, and arp all turned on, renders several seconds through the full
+/// engine without panicking or producing non-finite samples.
+#[test]
+fn full_engine_renders_a_custom_progression_from_song_code_without_panicking() {
+    let mut controls = FluidControls::default();
+    controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
+    controls.pad.chord_count = 5.0;
+    controls.pad.chord_bars = 1.0;
+    for (slot, degree) in [2.0, -2.0, 4.0, -4.0, 6.0].into_iter().enumerate() {
+        controls.pad.chord_slots[slot].degree = degree;
+        controls.pad.chord_slots[slot].accidental = if slot % 2 == 0 { 1.0 } else { -1.0 };
+        controls.pad.chord_slots[slot].extension = (slot % 4) as f32;
+        controls.pad.chord_slots[slot].inversion = (slot % 3) as f32;
+    }
+    controls.bass.level = 0.5;
+    controls.arp.gain = 0.5;
+
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+    assert_close(
+        decoded.controls.pad.progression,
+        CUSTOM_PROGRESSION_INDEX as f32,
+    );
+
+    let controls_swap = Arc::new(ArcSwap::from_pointee(decoded.controls));
+    let automation = Arc::new(ArcSwap::from_pointee(decoded.automation));
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let mut engine = FluidEngine::new(SAMPLE_RATE, controls_swap, automation, telemetry);
+
+    for _ in 0..(SAMPLE_RATE as usize * 4) {
+        let (l, r) = engine.next_stereo();
+        assert!(l.is_finite() && r.is_finite(), "engine produced non-finite output");
+    }
 }
 
 #[test]
@@ -1676,12 +1774,18 @@ fn gain_smoothers_cover_every_unique_gain_spec() {
 fn chords_tab_shows_progression_row_with_letter_display() {
     let mut controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].label, "Progression");
-    assert_eq!(rows[3].display, "A");
+    assert_eq!(rows[3].label, "Chord Count");
+    assert_eq!(rows[3].display, "8");
+    assert_eq!(rows[4].label, "Progression");
+    assert_eq!(rows[4].display, "A");
 
     controls.pad.progression = 2.0;
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "C");
+    assert_eq!(rows[4].display, "C");
+
+    controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
+    let rows = tab_controls(Tab::Chords, &controls);
+    assert_eq!(rows[4].display, "Custom");
 }
 
 #[test]
@@ -1705,19 +1809,19 @@ fn tonal_tab_separates_rate_from_cycle() {
 fn chords_progression_adjusts_and_clamps() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Chords, 3, 1.0, &mut controls);
+    apply_delta(Tab::Chords, 4, 1.0, &mut controls);
     assert_close(controls.pad.progression, 1.0);
 
-    controls.pad.progression = 7.0;
-    apply_delta(Tab::Chords, 3, 1.0, &mut controls);
-    assert_close(controls.pad.progression, 7.0);
+    controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
+    apply_delta(Tab::Chords, 4, 1.0, &mut controls);
+    assert_close(controls.pad.progression, CUSTOM_PROGRESSION_INDEX as f32);
 
     controls.pad.progression = 0.0;
-    apply_delta(Tab::Chords, 3, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 4, -1.0, &mut controls);
     assert_close(controls.pad.progression, 0.0);
 
     controls.pad.progression = 2.0;
-    apply_min(Tab::Chords, 3, &mut controls);
+    apply_min(Tab::Chords, 4, &mut controls);
     assert_close(controls.pad.progression, 0.0);
 }
 
@@ -1731,12 +1835,23 @@ fn bass_rhythms_have_expected_hit_counts() {
 
 #[test]
 fn bass_root_note_follows_authored_bass_line() {
-    assert_eq!(bass_root_note(0, 0), 45);
+    let pad = PadControls::default();
+    assert_eq!(bass_root_note(0, 0, &pad), 45);
     // Progression A's authored line diverges from the chord's lowest
     // tone at step 3 (B chord's min is 47) — proves the bass line is
     // independent data, not derived from PROGRESSIONS.
-    assert_eq!(bass_root_note(0, 3), 43);
-    assert_eq!(bass_root_note(2, 3), 43);
+    assert_eq!(bass_root_note(0, 3, &pad), 43);
+    assert_eq!(bass_root_note(2, 3, &pad), 43);
+}
+
+#[test]
+fn bass_root_note_follows_custom_chord_slot_root_when_selected() {
+    let mut pad = PadControls::default();
+    pad.chord_slots[3].degree = -1.0;
+    pad.chord_slots[3].accidental = 1.0;
+
+    let root = bass_root_note(CUSTOM_PROGRESSION_INDEX, 3, &pad);
+    assert_eq!(root, pad_chord_root_note(&pad.chord_slots[3]));
 }
 
 #[test]
@@ -2001,19 +2116,19 @@ fn bass_interval_crops_phrase_instead_of_stretching_it() {
 fn chords_reverb_mix_row_shifted_to_index_four() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[4].label, "Reverb Mix");
+    assert_eq!(rows[5].label, "Reverb Mix");
 }
 
 #[test]
 fn chords_release_row_present_with_lowered_attack_floor() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[8].label, "Attack");
-    assert_close(rows[8].min, 0.05);
-    assert_eq!(rows[9].label, "Release");
-    assert_close(rows[9].value, 8.0);
+    assert_eq!(rows[9].label, "Attack");
     assert_close(rows[9].min, 0.05);
-    assert_close(rows[9].max, 20.0);
+    assert_eq!(rows[10].label, "Release");
+    assert_close(rows[10].value, 8.0);
+    assert_close(rows[10].min, 0.05);
+    assert_close(rows[10].max, 20.0);
 }
 
 #[test]
@@ -2021,15 +2136,15 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
     let mut controls = FluidControls::default();
 
     controls.pad.attack_time = 0.1;
-    apply_delta(Tab::Chords, 8, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 9, -1.0, &mut controls);
     assert_close(controls.pad.attack_time, 0.05);
-    apply_min(Tab::Chords, 8, &mut controls);
+    apply_min(Tab::Chords, 9, &mut controls);
     assert_close(controls.pad.attack_time, 0.05);
 
     controls.pad.release_time = 0.1;
-    apply_delta(Tab::Chords, 9, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 10, -1.0, &mut controls);
     assert_close(controls.pad.release_time, 0.05);
-    apply_min(Tab::Chords, 9, &mut controls);
+    apply_min(Tab::Chords, 10, &mut controls);
     assert_close(controls.pad.release_time, 0.05);
 }
 
@@ -2248,6 +2363,145 @@ fn pad_engine_progression_switch_retriggers_immediately() {
     assert!(
         pad.layers.len() > layers_before,
         "switching progression must push a new layer immediately, without waiting for chord_trigger"
+    );
+}
+
+#[test]
+fn pad_chord_notes_with_slot_builds_notes_from_root_extension_and_inversion() {
+    let slot = ChordSlotControls {
+        degree: 1.0,
+        accidental: -1.0,
+        extension: 2.0,
+        inversion: 1.0,
+    };
+
+    let notes = pad_chord_notes_with_slot(&slot);
+
+    assert_eq!(notes, pad_chord_notes_with_slot(&slot));
+    assert_eq!(notes.len(), 4);
+    // Strictly ascending: inversion/accidental never collapse two voices
+    // onto the same (or a crossed) pitch.
+    assert!(notes.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn pad_chord_root_note_applies_degree_and_accidental() {
+    let flat_default = ChordSlotControls::default();
+    assert_eq!(pad_chord_root_note(&flat_default), 45); // A2 tonic
+
+    let sharp_second = ChordSlotControls {
+        degree: 1.0,
+        accidental: 1.0,
+        ..ChordSlotControls::default()
+    };
+    // A2 up one diatonic degree (B2, MIDI 47) plus a sharp.
+    assert_eq!(pad_chord_root_note(&sharp_second), 48);
+}
+
+#[test]
+fn custom_progression_pad_bass_and_arp_read_the_same_chord_source() {
+    let mut pad = PadControls {
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        chord_count: 4.0,
+        ..PadControls::default()
+    };
+    pad.chord_slots[2].degree = 3.0;
+    pad.chord_slots[2].accidental = -1.0;
+    pad.chord_slots[2].extension = 1.0;
+
+    let tones = pad_chord_tones(&pad, 2);
+    let root = bass_root_note(CUSTOM_PROGRESSION_INDEX, 2, &pad);
+
+    // Bass's root matches the pad chord's own root voice, and both derive
+    // from the same slot data via the shared chord-source path.
+    assert_eq!(root, pad_chord_root_note(&pad.chord_slots[2]));
+    assert_eq!(root, tones[0]);
+
+    // Arp cycles the same 4 chord tones the pad voices (span 1 = no octave
+    // duplication), proving it reads through the identical path.
+    assert_eq!(arp_cycle_notes(tones, 1), {
+        let mut sorted = tones;
+        sorted.sort_unstable();
+        sorted.to_vec()
+    });
+}
+
+#[test]
+fn pad_chord_count_gates_step_wrap_only_in_custom_mode() {
+    let built_in = PadControls {
+        progression: 0.0,
+        chord_count: 2.0, // inert: built-ins always wrap at 8
+        ..PadControls::default()
+    };
+    assert_eq!(pad_chord_count(&built_in), 8);
+
+    let custom = PadControls {
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        chord_count: 2.0,
+        ..PadControls::default()
+    };
+    assert_eq!(pad_chord_count(&custom), 2);
+}
+
+#[test]
+fn bass_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
+    let sample_rate = 48_000.0;
+    let mut bass = BassEngine::new(sample_rate);
+    let pad = PadControls {
+        chord_bars: 1.0,
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        chord_count: 2.0,
+        ..PadControls::default()
+    };
+    let bass_controls = BassControls::default();
+
+    for chord in 1..=5 {
+        let sample = chord * sample_rate as u64 * 2;
+        let timing = timing(sample, 120.0);
+        bass.next(&bass_controls, &pad, 0.0, timing);
+        assert!(bass.step_index < 2);
+    }
+}
+
+#[test]
+fn pad_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
+    let controls = PadControls {
+        chord_bars: 1.0,
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        chord_count: 2.0,
+        attack_time: 1.0,
+        ..PadControls::default()
+    };
+    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+    for chord in 1..=5 {
+        let sample = chord * SAMPLE_RATE as u64 * 2;
+        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+        assert!(pad.step_index < 2);
+    }
+}
+
+#[test]
+fn pad_engine_chord_slot_edit_retriggers_immediately() {
+    let mut controls = PadControls {
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        chord_bars: 64.0,
+        attack_time: 0.001,
+        ..PadControls::default()
+    };
+    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+    for sample in 0..10 {
+        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+    }
+    let layers_before = pad.layers.len();
+
+    controls.chord_slots[0].degree = 1.0;
+    let _ = pad.next(&controls, 0.0, timing(10, 120.0));
+
+    assert!(
+        pad.layers.len() > layers_before,
+        "editing the current chord slot must push a new layer immediately"
     );
 }
 

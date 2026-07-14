@@ -189,6 +189,7 @@ pub(crate) enum LfoSnap {
     Step,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct ControlSpec {
     pub(crate) id: &'static str,
     pub(crate) label: &'static str,
@@ -616,6 +617,71 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
     ),
 ];
 
+/// One chord slot's four fields as `ControlSpec` rows (Root/Accidental/
+/// Extension/Inversion), expanded inline into `CHORDS_CONTROLS`. Slot
+/// numbers are 1-based in ids/labels, 0-based into `chord_slots`.
+macro_rules! chord_slot_rows {
+    ($slot:literal) => {
+        [
+        ControlSpec::new(
+            concat!("pad.chord", $slot, "_degree"),
+            concat!("Chord ", $slot, " Root"),
+            ControlKind::Discrete,
+            -7.0,
+            7.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.pad.chord_slots[$slot - 1].degree,
+            |c, v| c.pad.chord_slots[$slot - 1].degree = v,
+            |c| format!("{:+.0}", c.pad.chord_slots[$slot - 1].degree),
+        )
+        .reset_at(0.0),
+        ControlSpec::new(
+            concat!("pad.chord", $slot, "_accidental"),
+            concat!("Chord ", $slot, " Accidental"),
+            ControlKind::Discrete,
+            -1.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.pad.chord_slots[$slot - 1].accidental,
+            |c, v| c.pad.chord_slots[$slot - 1].accidental = v,
+            |c| match c.pad.chord_slots[$slot - 1].accidental.round() as i32 {
+                -1 => "b".to_string(),
+                1 => "#".to_string(),
+                _ => "natural".to_string(),
+            },
+        )
+        .reset_at(0.0),
+        ControlSpec::new(
+            concat!("pad.chord", $slot, "_extension"),
+            concat!("Chord ", $slot, " Extension"),
+            ControlKind::Discrete,
+            0.0,
+            3.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.pad.chord_slots[$slot - 1].extension,
+            |c, v| c.pad.chord_slots[$slot - 1].extension = v,
+            |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].extension),
+        ),
+        ControlSpec::new(
+            concat!("pad.chord", $slot, "_inversion"),
+            concat!("Chord ", $slot, " Inversion"),
+            ControlKind::Discrete,
+            0.0,
+            3.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.pad.chord_slots[$slot - 1].inversion,
+            |c, v| c.pad.chord_slots[$slot - 1].inversion = v,
+            |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].inversion),
+        )
+        .reset_at(0.0),
+        ]
+    };
+}
+
 pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(
         "pad.level",
@@ -653,18 +719,35 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
     .log_bar()
     .lfo_snap(LfoSnap::Step),
     ControlSpec::new(
+        "pad.chord_count",
+        "Chord Count",
+        ControlKind::Discrete,
+        1.0,
+        CHORD_SLOT_COUNT as f32,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.chord_count,
+        |c, v| c.pad.chord_count = v,
+        |c| format!("{:.0}", c.pad.chord_count),
+    )
+    .reset_at(CHORD_SLOT_COUNT as f32),
+    ControlSpec::new(
         "pad.progression",
         "Progression",
         ControlKind::Discrete,
         0.0,
-        7.0,
+        CUSTOM_PROGRESSION_INDEX as f32,
         Step::Linear(1.0),
         Entry::Round,
         |c| c.pad.progression,
         |c, v| c.pad.progression = v,
         |c| {
-            ["A", "B", "C", "D", "E", "F", "G", "H"][c.pad.progression.round() as usize % 8]
-                .to_string()
+            let index = progression_index(c.pad.progression);
+            if is_custom_progression(index) {
+                "Custom".to_string()
+            } else {
+                ["A", "B", "C", "D", "E", "F", "G", "H"][index].to_string()
+            }
         },
     ),
     ControlSpec::gain(
@@ -727,6 +810,38 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c, v| c.pad.release_time = v,
         |c| format!("{:.2} s", c.pad.release_time),
     ),
+    chord_slot_rows!(1)[0],
+    chord_slot_rows!(1)[1],
+    chord_slot_rows!(1)[2],
+    chord_slot_rows!(1)[3],
+    chord_slot_rows!(2)[0],
+    chord_slot_rows!(2)[1],
+    chord_slot_rows!(2)[2],
+    chord_slot_rows!(2)[3],
+    chord_slot_rows!(3)[0],
+    chord_slot_rows!(3)[1],
+    chord_slot_rows!(3)[2],
+    chord_slot_rows!(3)[3],
+    chord_slot_rows!(4)[0],
+    chord_slot_rows!(4)[1],
+    chord_slot_rows!(4)[2],
+    chord_slot_rows!(4)[3],
+    chord_slot_rows!(5)[0],
+    chord_slot_rows!(5)[1],
+    chord_slot_rows!(5)[2],
+    chord_slot_rows!(5)[3],
+    chord_slot_rows!(6)[0],
+    chord_slot_rows!(6)[1],
+    chord_slot_rows!(6)[2],
+    chord_slot_rows!(6)[3],
+    chord_slot_rows!(7)[0],
+    chord_slot_rows!(7)[1],
+    chord_slot_rows!(7)[2],
+    chord_slot_rows!(7)[3],
+    chord_slot_rows!(8)[0],
+    chord_slot_rows!(8)[1],
+    chord_slot_rows!(8)[2],
+    chord_slot_rows!(8)[3],
 ];
 
 pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[

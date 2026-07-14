@@ -58,12 +58,39 @@ impl Default for PercControls {
     }
 }
 
+/// One slot of a custom chord progression: `degree` is the chord root as a
+/// tonic-relative scale degree (diatonic steps, -7..7, spanning one octave in
+/// each direction); `accidental` nudges that root a semitone flat/sharp;
+/// `extension` picks how high the chord's top voice reaches above the triad
+/// (0=triad, 1/2/3=progressively richer diatonic extensions); `inversion`
+/// moves the lowest voice(s) up an octave. Only read when `PadControls`'s
+/// `progression` selects the custom slot (`voice::CUSTOM_PROGRESSION_INDEX`);
+/// otherwise inert.
+#[derive(Clone, Default)]
+pub(crate) struct ChordSlotControls {
+    pub degree: f32,
+    pub accidental: f32,
+    pub extension: f32,
+    pub inversion: f32,
+}
+
+/// Default per-slot root degrees for a fresh custom progression: a stepwise
+/// shape around the tonic so switching into Custom mode is immediately
+/// musical rather than eight identical tonic chords.
+pub(crate) const DEFAULT_CHORD_SLOT_DEGREES: [f32; 8] = [0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 2.0, 4.0];
+
+/// Number of custom chord slots (`PadControls::chord_slots`), and the max of
+/// `pad.chord_count`. Matches the built-ins' fixed 8-step length.
+pub(crate) const CHORD_SLOT_COUNT: usize = 8;
+
 #[derive(Clone)]
 pub(crate) struct PadControls {
     pub level: f32,
     pub voice_type: f32, // 0=Warm (legacy), 1=Dark, 2=Glass character selector
     pub chord_bars: f32, // 1,2,4,8,16,32,64
+    pub chord_count: f32,
     pub progression: f32,
+    pub chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
     pub reverb_mix: f32,
     pub stereo_width: f32,
     pub detune: f32,
@@ -78,7 +105,12 @@ impl Default for PadControls {
             level: 0.7,
             voice_type: 0.0,
             chord_bars: 4.0,
+            chord_count: 8.0,
             progression: 0.0,
+            chord_slots: std::array::from_fn(|slot| ChordSlotControls {
+                degree: DEFAULT_CHORD_SLOT_DEGREES[slot],
+                ..ChordSlotControls::default()
+            }),
             reverb_mix: 0.8,
             stereo_width: 0.8,
             detune: 0.5,

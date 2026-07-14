@@ -12,6 +12,8 @@ pub(crate) struct PadEngine {
     pub(crate) chord_trigger: GridTrigger,
     pub(crate) step_index: usize,
     pub(crate) last_progression: usize,
+    pub(crate) last_chord_count: usize,
+    pub(crate) last_chord_notes: [i32; 4],
     pub(crate) width_lfo: DriftingLfo,
     pub(crate) air: WhiteNoise,
     pub(crate) rng: StdRng,
@@ -20,12 +22,12 @@ pub(crate) struct PadEngine {
 
 impl PadEngine {
     pub(crate) fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<FluidTelemetry>) -> Self {
+        let initial_notes = pad_chord_midi(0, 0);
         Self {
             sample_rate,
             layers: vec![PadLayer::new(
                 pad_type_index(c.voice_type),
-                0,
-                0,
+                initial_notes,
                 0.0,
                 sample_rate,
                 c.attack_time,
@@ -34,6 +36,8 @@ impl PadEngine {
             chord_trigger: GridTrigger::after_start(),
             step_index: 0,
             last_progression: 0,
+            last_chord_count: 8,
+            last_chord_notes: initial_notes,
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
             air: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
@@ -42,18 +46,27 @@ impl PadEngine {
     }
 
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
-        let progression = (c.progression.round() as i64).rem_euclid(8) as usize;
+        let progression = progression_index(c.progression);
+        let chord_count = pad_chord_count(c);
         let progression_changed = progression != self.last_progression;
+        let chord_count_changed = chord_count != self.last_chord_count;
         self.last_progression = progression;
+        self.last_chord_count = chord_count;
+        if self.step_index >= chord_count {
+            self.step_index = 0;
+        }
 
         let advance = self.chord_trigger.pop(timing, c.chord_bars * 4.0, 0.0);
+        if advance {
+            self.step_index = (self.step_index + 1) % chord_count;
+        }
+        let chord_notes = pad_chord_tones(c, self.step_index);
+        let chord_edited = chord_notes != self.last_chord_notes;
+        self.last_chord_notes = chord_notes;
 
-        if advance || progression_changed {
+        if advance || progression_changed || chord_count_changed || chord_edited {
             for layer in &mut self.layers {
                 layer.release();
-            }
-            if advance {
-                self.step_index = (self.step_index + 1) % 8;
             }
             self.telemetry
                 .chord_index
@@ -64,8 +77,7 @@ impl PadEngine {
             }
             self.layers.push(PadLayer::new(
                 pad_type_index(c.voice_type),
-                progression,
-                self.step_index,
+                chord_notes,
                 tune,
                 self.sample_rate,
                 c.attack_time,
@@ -105,8 +117,7 @@ pub(crate) struct PadLayer {
 impl PadLayer {
     pub(crate) fn new(
         character: usize,
-        progression: usize,
-        step: usize,
+        notes: [i32; 4],
         tune: f32,
         sample_rate: f32,
         attack_time: f32,
@@ -115,8 +126,7 @@ impl PadLayer {
         Self {
             tones: pad_tones(
                 character,
-                progression,
-                step,
+                notes,
                 tune,
                 sample_rate,
                 attack_time,
@@ -403,14 +413,13 @@ impl GlassPadTone {
 
 pub(crate) fn pad_tones(
     character: usize,
-    progression: usize,
-    step: usize,
+    notes: [i32; 4],
     tune: f32,
     sample_rate: f32,
     attack_time: f32,
     release_time: f32,
 ) -> Vec<PadTone> {
-    let freqs = pad_chord(progression, step, tune);
+    let freqs = notes.map(|note| midi_to_hz(note) * tune_ratio(tune));
     let pans = [-0.52_f32, -0.18, 0.16, 0.46];
     let gains = [0.17_f32, 0.132, 0.126, 0.098];
     freqs
@@ -526,13 +535,133 @@ pub(crate) const PROGRESSIONS: [[[i32; 4]; 8]; 8] = [
     ],
 ];
 
-pub(crate) fn pad_chord(progression: usize, step: usize, tune: f32) -> [f32; 4] {
-    pad_chord_midi(progression, step).map(|note| midi_to_hz(note) * tune_ratio(tune))
-}
-
 /// The pad's current chord as raw MIDI note numbers (pre-`midi_to_hz`/tune),
 /// for voices — like Arp — that need to build their own note list (e.g.
 /// octave-extended cycles) rather than four fixed frequencies.
 pub(crate) fn pad_chord_midi(progression: usize, step: usize) -> [i32; 4] {
     PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8]
+}
+
+// ============================================================
+// Custom chord-slot progression
+//
+// A ninth progression choice ("Custom") built from user-authored chord
+// slots instead of a fixed table. `progression_index`/`pad_chord_tones`
+// are the single chord-source path shared by Pad, Bass, and Arp: every
+// voice resolves "what chord is playing at this step" through here so a
+// custom progression drives all three identically. Built-in progressions
+// (0..PROGRESSIONS.len()) are untouched — this only adds one more index.
+// ============================================================
+
+/// Selecting this progression index switches Pad/Bass/Arp onto the user's
+/// chord slots (`PadControls::chord_slots`) instead of the `PROGRESSIONS`
+/// table.
+pub(crate) const CUSTOM_PROGRESSION_INDEX: usize = PROGRESSIONS.len();
+
+/// Resolve `pad.progression`'s raw control value to a progression index,
+/// wrapping across the built-ins plus the one Custom slot.
+pub(crate) fn progression_index(value: f32) -> usize {
+    (value.round() as i64).rem_euclid((PROGRESSIONS.len() + 1) as i64) as usize
+}
+
+pub(crate) fn is_custom_progression(progression: usize) -> bool {
+    progression == CUSTOM_PROGRESSION_INDEX
+}
+
+/// Number of chord slots actually cycled through: `pad.chord_count` when
+/// Custom is selected (so a shorter user progression loops correctly),
+/// otherwise the built-ins' fixed 8-step length.
+pub(crate) fn pad_chord_count(c: &PadControls) -> usize {
+    if is_custom_progression(progression_index(c.progression)) {
+        c.chord_count.round().clamp(1.0, CHORD_SLOT_COUNT as f32) as usize
+    } else {
+        8
+    }
+}
+
+/// The shared chord-source entry point: the 4 chord tones (raw MIDI) at
+/// `step` for whichever progression `c.progression` currently selects —
+/// a built-in table lookup, or the custom chord slots. Pad, Bass, and Arp
+/// all resolve their current chord through this one function.
+pub(crate) fn pad_chord_tones(c: &PadControls, step: usize) -> [i32; 4] {
+    let progression = progression_index(c.progression);
+    if is_custom_progression(progression) {
+        let count = pad_chord_count(c);
+        pad_chord_notes_with_slot(&c.chord_slots[step % count])
+    } else {
+        pad_chord_midi(progression, step)
+    }
+}
+
+/// A custom chord slot's four voiced tones: root (tonic-relative diatonic
+/// degree + accidental), then diatonic third/fifth, then a top voice chosen
+/// by `extension`, finally reshuffled by `inversion` and de-duplicated
+/// upward so inversions/accidentals never collide two voices onto one note.
+pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
+    const TONIC: i32 = 45; // A2, matching PROGRESSIONS' shared tonal center
+    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
+    let accidental = slot.accidental.round().clamp(-1.0, 1.0) as i32;
+    let extension = slot.extension.round().clamp(0.0, 3.0) as i32;
+    let inversion = slot.inversion.round().clamp(0.0, 3.0) as i32;
+    let top = match extension {
+        1 => shift_diatonic(root, 6),
+        2 => shift_diatonic(root, 8),
+        3 => shift_diatonic(root, 10),
+        _ => root + 12,
+    };
+    let mut notes = [root, shift_diatonic(root, 2), shift_diatonic(root, 4), top];
+    apply_inversion(&mut notes, inversion);
+    if accidental != 0 {
+        notes = notes.map(|note| note + accidental);
+    }
+    dedupe_upwards(&mut notes);
+    notes
+}
+
+/// A custom chord slot's root note alone (root + accidental, before
+/// extension/inversion reshuffle) — what Bass follows instead of the pad's
+/// full voicing.
+pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
+    const TONIC: i32 = 45;
+    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
+    root + slot.accidental.round().clamp(-1.0, 1.0) as i32
+}
+
+/// Move `note` by `steps` positions on the diatonic major scale (not raw
+/// semitones), preserving octave-crossing correctly in either direction.
+fn shift_diatonic(note: i32, steps: i32) -> i32 {
+    const SCALE: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+    let octave = note.div_euclid(12);
+    let pitch = note.rem_euclid(12);
+    let degree = SCALE
+        .iter()
+        .position(|&pc| pc == pitch)
+        .map(|index| octave * 7 + index as i32)
+        .unwrap_or_else(|| octave * 7);
+    let shifted = degree + steps;
+    let shifted_octave = shifted.div_euclid(7);
+    let shifted_degree = shifted.rem_euclid(7) as usize;
+    shifted_octave * 12 + SCALE[shifted_degree]
+}
+
+/// Move the lowest voice(s) up an octave `inversion` times, re-sorting after
+/// each move so successive inversions keep stacking correctly.
+fn apply_inversion(notes: &mut [i32; 4], inversion: i32) {
+    notes.sort_unstable();
+    for _ in 0..inversion {
+        notes[0] += 12;
+        notes.sort_unstable();
+    }
+}
+
+/// Nudge any voice that lands on or below the one before it up by diatonic
+/// steps until the chord is strictly ascending — accidentals or inversions
+/// can otherwise stack two voices onto the same (or a crossed) pitch.
+fn dedupe_upwards(notes: &mut [i32; 4]) {
+    notes.sort_unstable();
+    for i in 1..notes.len() {
+        while notes[i] <= notes[i - 1] {
+            notes[i] = shift_diatonic(notes[i], 1);
+        }
+    }
 }

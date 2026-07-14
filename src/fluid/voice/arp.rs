@@ -134,15 +134,20 @@ impl ArpEngine {
         // Follow the pad's current chord: an independent trigger synced to
         // the same chord-length grid as the pad/bass engines, so this
         // engine's step_index always matches the pad's, without reaching
-        // into the pad engine directly.
-        let progression = (pad.progression.round() as i64).rem_euclid(8) as usize;
+        // into the pad engine directly. `pad_chord_tones` is the same
+        // chord-source path Pad and Bass resolve through, so a custom
+        // progression drives all three identically.
+        let chord_count = pad_chord_count(pad);
+        if self.step_index >= chord_count {
+            self.step_index = 0;
+        }
         if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
-            self.step_index = (self.step_index + 1) % 8;
+            self.step_index = (self.step_index + 1) % chord_count;
         }
 
         let rate_beats = c.rate_beats.clamp(ARP_RATE_BEATS_MIN, ARP_RATE_BEATS_MAX);
         if self.note_trigger.pop(timing, rate_beats, 0.0) {
-            let chord = pad_chord_midi(progression, self.step_index);
+            let chord = pad_chord_tones(pad, self.step_index);
             let octaves = arp_octave_span(c.octaves);
             let notes = arp_cycle_notes(chord, octaves);
             let len = notes.len().max(1);

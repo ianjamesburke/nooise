@@ -18,8 +18,17 @@ pub(crate) const BASS_LINES: [[i32; 8]; 8] = [
     [43, 50, 52, 48, 43, 50, 52, 48], // H: bright G-D-Em-C axis-loop bass
 ];
 
-pub(crate) fn bass_root_note(progression: usize, step: usize) -> i32 {
-    BASS_LINES[progression % BASS_LINES.len()][step % 8]
+/// Bass follows the same chord source as Pad/Arp: for a custom progression
+/// it reads the pad's chord-slot root directly (`pad_chord_root_note`); for
+/// a built-in progression it keeps its own authored `BASS_LINES`, which
+/// deliberately diverge from the pad's chord roots (see above).
+pub(crate) fn bass_root_note(progression: usize, step: usize, pad: &PadControls) -> i32 {
+    if is_custom_progression(progression) {
+        let count = pad_chord_count(pad);
+        pad_chord_root_note(&pad.chord_slots[step % count])
+    } else {
+        BASS_LINES[progression % BASS_LINES.len()][step % 8]
+    }
 }
 
 // ============================================================
@@ -88,9 +97,13 @@ impl BassEngine {
         tune: f32,
         timing: TimingContext,
     ) -> (f32, f32) {
-        let progression = (pad.progression.round() as i64).rem_euclid(8) as usize;
+        let progression = progression_index(pad.progression);
+        let chord_count = pad_chord_count(pad);
+        if self.step_index >= chord_count {
+            self.step_index = 0;
+        }
         if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
-            self.step_index = (self.step_index + 1) % 8;
+            self.step_index = (self.step_index + 1) % chord_count;
         }
 
         let loop_len = (c.interval_beats / BASS_STEP_BEATS)
@@ -105,8 +118,8 @@ impl BassEngine {
             let hit = self.rhythm_step < BASS_RHYTHMS[rhythm].len()
                 && BASS_RHYTHMS[rhythm][self.rhythm_step];
             if hit {
-                let note =
-                    bass_root_note(progression, self.step_index) + (c.octave.round() as i32) * 12;
+                let note = bass_root_note(progression, self.step_index, pad)
+                    + (c.octave.round() as i32) * 12;
                 let hz = midi_to_hz(note) * tune_ratio(tune);
                 for voice in &mut self.voices {
                     voice.release();
