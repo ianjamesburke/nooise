@@ -116,6 +116,7 @@ impl BassEngine {
                     self.voices.drain(0..remove_count);
                 }
                 self.voices.push(BassVoice::new(
+                    bass_type_index(c.voice_type),
                     hz,
                     c.attack_time,
                     c.decay_time,
@@ -138,13 +139,85 @@ impl BassEngine {
     }
 }
 
-pub(crate) struct BassVoice {
+/// `bass.type` selects the voice character used for every new bass note.
+/// Index 0 (`Sub`) is the legacy voice, unchanged and the default; switching
+/// type never touches the shared trigger/rhythm, pitch, or reseed paths in
+/// `BassEngine::next` above.
+pub(crate) enum BassVoice {
+    Sub(SubBassVoice),
+    Saw(SawBassVoice),
+    Pluck(PluckBassVoice),
+}
+
+impl BassVoice {
+    pub(crate) fn new(
+        voice_type: usize,
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        drive: f32,
+        sample_rate: f32,
+    ) -> Self {
+        match voice_type {
+            0 => Self::Sub(SubBassVoice::new(
+                hz,
+                attack_time,
+                decay_time,
+                drive,
+                sample_rate,
+            )),
+            1 => Self::Saw(SawBassVoice::new(
+                hz,
+                attack_time,
+                decay_time,
+                drive,
+                sample_rate,
+            )),
+            _ => Self::Pluck(PluckBassVoice::new(
+                hz,
+                attack_time,
+                decay_time,
+                drive,
+                sample_rate,
+            )),
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> (f32, f32) {
+        match self {
+            Self::Sub(voice) => voice.next(),
+            Self::Saw(voice) => voice.next(),
+            Self::Pluck(voice) => voice.next(),
+        }
+    }
+
+    pub(crate) fn release(&mut self) {
+        match self {
+            Self::Sub(voice) => voice.release(),
+            Self::Saw(voice) => voice.release(),
+            Self::Pluck(voice) => voice.release(),
+        }
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        match self {
+            Self::Sub(voice) => voice.is_done(),
+            Self::Saw(voice) => voice.is_done(),
+            Self::Pluck(voice) => voice.is_done(),
+        }
+    }
+}
+
+/// Type 0 (default): the original bass voice, byte-for-byte unchanged. A
+/// single sine oscillator through the shared attack/decay envelope, with an
+/// optional soft-clip drive stage.
+pub(crate) struct SubBassVoice {
     pub(crate) osc: SineOscillator,
     pub(crate) envelope: Adsr,
     pub(crate) drive: f32,
 }
 
-impl BassVoice {
+impl SubBassVoice {
     pub(crate) fn new(
         hz: f32,
         attack_time: f32,
@@ -165,6 +238,145 @@ impl BassVoice {
 
     pub(crate) fn next(&mut self) -> (f32, f32) {
         let mut s = self.osc.next() * self.envelope.next();
+        if self.drive > 0.0 {
+            let driven = s * (1.0 + self.drive * 8.0);
+            s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
+        }
+        StereoPanner::equal_power(s, 0.0)
+    }
+
+    pub(crate) fn release(&mut self) {
+        self.envelope.note_off();
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.envelope.is_done()
+    }
+}
+
+/// Number of stacked harmonics in the Saw voice's additive stack (fundamental
+/// plus three overtones).
+const BASS_SAW_HARMONIC_COUNT: usize = 4;
+/// Per-harmonic amplitude weights, steeper than a true sawtooth's `1/n`
+/// falloff so the extra brightness stays bass-register appropriate (tamed
+/// highs) instead of turning harsh. Chosen (together with
+/// `BASS_SAW_OUTPUT_GAIN`) so the voice sits at the same perceived level as
+/// the Sub and Pluck voices.
+const BASS_SAW_HARMONIC_GAINS: [f32; BASS_SAW_HARMONIC_COUNT] = [1.0, 0.46, 0.24, 0.14];
+/// Output trim balancing the additive stack's summed energy against the
+/// single-oscillator Sub/Pluck voices.
+const BASS_SAW_OUTPUT_GAIN: f32 = 0.62;
+
+/// Type 1: a brighter, saw-leaning character. An additive stack of sine
+/// harmonics (not a literal bandlimited sawtooth oscillator — none exists in
+/// `synth::oscillator` — but a steeper-than-`1/n` weighted approximation)
+/// gives it more harmonic content than the Sub voice while a fast tilt keeps
+/// the top end tame. Shares the Sub voice's envelope shape and drive stage.
+pub(crate) struct SawBassVoice {
+    pub(crate) oscillators: [SineOscillator; BASS_SAW_HARMONIC_COUNT],
+    pub(crate) envelope: Adsr,
+    pub(crate) drive: f32,
+}
+
+impl SawBassVoice {
+    pub(crate) fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        drive: f32,
+        sample_rate: f32,
+    ) -> Self {
+        Self {
+            oscillators: std::array::from_fn(|index| {
+                SineOscillator::new(hz * (index + 1) as f32, sample_rate)
+            }),
+            envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
+            drive,
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> (f32, f32) {
+        let mut raw = 0.0f32;
+        for (osc, gain) in self.oscillators.iter_mut().zip(BASS_SAW_HARMONIC_GAINS) {
+            raw += osc.next() * gain;
+        }
+        let mut s = raw * BASS_SAW_OUTPUT_GAIN * self.envelope.next();
+        if self.drive > 0.0 {
+            let driven = s * (1.0 + self.drive * 8.0);
+            s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
+        }
+        StereoPanner::equal_power(s, 0.0)
+    }
+
+    pub(crate) fn release(&mut self) {
+        self.envelope.note_off();
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.envelope.is_done()
+    }
+}
+
+/// Fraction of the control-supplied attack/decay used by the Pluck voice's
+/// body envelope — shorter than Sub/Saw so it decays faster while still
+/// tracking the shared `bass.attack_time`/`bass.decay_time` controls.
+const BASS_PLUCK_ENVELOPE_SCALE: f32 = 0.4;
+/// Fixed decay time (seconds) of the Pluck voice's attack transient (an
+/// octave-up click that fires once per note, independent of the shared decay
+/// control).
+const BASS_PLUCK_TRANSIENT_DECAY_SECONDS: f32 = 0.02;
+/// Mix level of the transient click relative to the sustained body.
+const BASS_PLUCK_TRANSIENT_MIX: f32 = 0.5;
+/// Output trim balancing the Pluck voice's body + transient against the Sub
+/// voice's single-oscillator level.
+const BASS_PLUCK_OUTPUT_GAIN: f32 = 0.82;
+
+/// Type 2: a plucked/shorter character. Faster attack/decay than Sub (scaled
+/// via `BASS_PLUCK_ENVELOPE_SCALE`) plus a short octave-up transient at the
+/// onset of the note for a percussive pluck attack.
+pub(crate) struct PluckBassVoice {
+    pub(crate) osc: SineOscillator,
+    pub(crate) transient_osc: SineOscillator,
+    pub(crate) envelope: Adsr,
+    pub(crate) transient_samples_remaining: u64,
+    pub(crate) transient_total_samples: f32,
+    pub(crate) drive: f32,
+}
+
+impl PluckBassVoice {
+    pub(crate) fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        drive: f32,
+        sample_rate: f32,
+    ) -> Self {
+        let attack_time = (attack_time * BASS_PLUCK_ENVELOPE_SCALE).max(0.001);
+        let decay_time = (decay_time * BASS_PLUCK_ENVELOPE_SCALE).max(0.001);
+        let transient_total_samples = (BASS_PLUCK_TRANSIENT_DECAY_SECONDS * sample_rate).max(1.0);
+        Self {
+            osc: SineOscillator::new(hz, sample_rate),
+            transient_osc: SineOscillator::new(hz * 2.0, sample_rate),
+            envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
+            transient_samples_remaining: transient_total_samples as u64,
+            transient_total_samples,
+            drive,
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> (f32, f32) {
+        let body = self.osc.next() * self.envelope.next();
+
+        let transient = if self.transient_samples_remaining > 0 {
+            let elapsed = self.transient_total_samples - self.transient_samples_remaining as f32;
+            let gain = (-elapsed / self.transient_total_samples * 5.0).exp();
+            self.transient_samples_remaining -= 1;
+            self.transient_osc.next() * gain
+        } else {
+            0.0
+        };
+
+        let mut s = (body + transient * BASS_PLUCK_TRANSIENT_MIX) * BASS_PLUCK_OUTPUT_GAIN;
         if self.drive > 0.0 {
             let driven = s * (1.0 + self.drive * 8.0);
             s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);

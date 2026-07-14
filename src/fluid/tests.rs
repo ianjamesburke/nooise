@@ -1276,7 +1276,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Bass,
             vec![
-                Gain, Timing, Timing, Discrete, Discrete, Timing, Timing, Gain,
+                Gain, Discrete, Timing, Timing, Discrete, Discrete, Timing, Timing, Gain,
             ],
         ),
         (
@@ -1374,6 +1374,29 @@ fn song_code_round_trips_quantized_snapshot_values() {
     assert_close(decoded.controls.pad.chord_bars, 16.0);
     assert_close(decoded.controls.kick.echo_time_beats, 0.375);
     assert_close(decoded.controls.clap.slap_count, 7.0);
+}
+
+#[test]
+fn song_code_round_trips_bass_type() {
+    let mut controls = FluidControls::default();
+    controls.bass.voice_type = 2.0;
+
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.bass.voice_type, 2.0);
+}
+
+#[test]
+fn song_code_predating_bass_type_decodes_as_default_sub() {
+    // A code written before `bass.type` existed simply omits the id; the
+    // generic snapshot codec (keyed by durable id, not position) already
+    // decodes any missing id to its default, same as every other control.
+    let controls = FluidControls::default();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.bass.voice_type, 0.0);
 }
 
 #[test]
@@ -1680,47 +1703,59 @@ fn bass_root_note_follows_authored_bass_line() {
 fn bass_defaults_are_silent_quarter_note_a() {
     let controls = BassControls::default();
     assert_close(controls.level, 0.0);
+    assert_close(controls.voice_type, 0.0);
     assert_close(controls.rhythm, 0.0);
     assert_close(controls.octave, -1.0);
     assert_close(controls.interval_beats, 4.0);
 }
 
 #[test]
-fn bass_tab_shows_rhythm_row_with_letter_display() {
+fn bass_tab_shows_type_and_rhythm_rows_with_letter_display() {
     let mut controls = FluidControls::default();
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[3].label, "Rhythm");
-    assert_eq!(rows[3].display, "A");
+    assert_eq!(rows[1].id, "bass.type");
+    assert_eq!(rows[1].label, "Type");
+    assert_eq!(rows[1].display, "Sub");
+    assert_eq!(rows[4].label, "Rhythm");
+    assert_eq!(rows[4].display, "A");
+
+    controls.bass.voice_type = 1.0;
+    let rows = tab_controls(Tab::Bass, &controls);
+    assert_eq!(rows[1].display, "Saw");
+
+    controls.bass.voice_type = 2.0;
+    let rows = tab_controls(Tab::Bass, &controls);
+    assert_eq!(rows[1].display, "Pluck");
 
     controls.bass.rhythm = 3.0;
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[3].display, "D");
+    assert_eq!(rows[4].display, "D");
 }
 
 #[test]
 fn bass_controls_adjust_and_clamp() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Bass, 3, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 4, 1.0, &mut controls);
     assert_close(controls.bass.rhythm, 1.0);
 
     controls.bass.rhythm = 3.0;
-    apply_delta(Tab::Bass, 3, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 4, 1.0, &mut controls);
     assert_close(controls.bass.rhythm, 3.0);
 
     controls.bass.octave = -1.0;
-    apply_delta(Tab::Bass, 4, -1.0, &mut controls);
-    apply_delta(Tab::Bass, 4, -1.0, &mut controls);
+    apply_delta(Tab::Bass, 5, -1.0, &mut controls);
+    apply_delta(Tab::Bass, 5, -1.0, &mut controls);
     assert_close(controls.bass.octave, -3.0);
 
     apply_min(Tab::Bass, 0, &mut controls);
     assert_close(controls.bass.level, 0.0);
 
     controls.bass.decay_time = 0.4;
-    apply_delta(Tab::Bass, 6, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 7, 1.0, &mut controls);
     assert!(controls.bass.decay_time > 0.4);
 
-    apply_min(Tab::Bass, 6, &mut controls);
+    apply_min(Tab::Bass, 7, &mut controls);
     assert_close(controls.bass.decay_time, 0.005);
 }
 
@@ -1753,7 +1788,7 @@ fn bass_engine_follows_pad_chord_root_across_advances() {
 #[test]
 fn bass_voice_decays_to_silence_without_sustaining() {
     let sample_rate = 48_000.0;
-    let mut voice = BassVoice::new(110.0, 0.005, 0.05, 0.0, sample_rate);
+    let mut voice = BassVoice::new(0, 110.0, 0.005, 0.05, 0.0, sample_rate);
 
     // Well past attack+decay (0.055s); a sustaining envelope would still
     // be holding at ~0.85 gain here, an AD envelope has decayed to ~0.
@@ -1763,6 +1798,74 @@ fn bass_voice_decays_to_silence_without_sustaining() {
 
     let (l, r) = voice.next();
     assert!(l.abs() < 0.001 && r.abs() < 0.001);
+}
+
+#[test]
+fn bass_type_zero_matches_legacy_sub_voice_exactly() {
+    let sample_rate = 48_000.0;
+    let mut dispatched = BassVoice::new(0, 110.0, 0.01, 0.05, 0.15, sample_rate);
+    let mut legacy = SubBassVoice::new(110.0, 0.01, 0.05, 0.15, sample_rate);
+
+    for _ in 0..(sample_rate * 0.3) as usize {
+        assert_eq!(dispatched.next(), legacy.next());
+    }
+}
+
+#[test]
+fn bass_types_produce_differing_but_comparably_balanced_audio() {
+    let sample_rate = 48_000.0;
+    let samples = (sample_rate * 0.4) as usize;
+
+    let rms = |voice_type: usize| -> f32 {
+        let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, 0.0, sample_rate);
+        let mut sum_sq = 0.0f32;
+        for _ in 0..samples {
+            let (l, r) = voice.next();
+            sum_sq += l * l + r * r;
+        }
+        (sum_sq / (samples as f32 * 2.0)).sqrt()
+    };
+
+    let sub_rms = rms(0);
+    let saw_rms = rms(1);
+    let pluck_rms = rms(2);
+
+    // Each character actually differs in level (not exactly zero would be a
+    // trivially "different" but useless voice).
+    assert!(sub_rms > 0.0 && saw_rms > 0.0 && pluck_rms > 0.0);
+
+    // Types must sound different from one another, not just be scaled
+    // copies produced by the shared drive/panner tail; sample a few points
+    // in the decay and confirm at least one differs beyond float noise.
+    let mut sub = BassVoice::new(0, 110.0, 0.01, 0.3, 0.0, sample_rate);
+    let mut saw = BassVoice::new(1, 110.0, 0.01, 0.3, 0.0, sample_rate);
+    let mut pluck = BassVoice::new(2, 110.0, 0.01, 0.3, 0.0, sample_rate);
+    let mut any_diff_sub_saw = false;
+    let mut any_diff_sub_pluck = false;
+    for _ in 0..samples {
+        let (sl, _) = sub.next();
+        let (wl, _) = saw.next();
+        let (pl, _) = pluck.next();
+        if (sl - wl).abs() > 1e-6 {
+            any_diff_sub_saw = true;
+        }
+        if (sl - pl).abs() > 1e-6 {
+            any_diff_sub_pluck = true;
+        }
+    }
+    assert!(any_diff_sub_saw);
+    assert!(any_diff_sub_pluck);
+
+    // Authored gains keep the three characters at a comparable perceived
+    // level: no type should be more than 2x (~6 dB) louder or quieter than
+    // the others.
+    let levels = [sub_rms, saw_rms, pluck_rms];
+    let max = levels.iter().cloned().fold(f32::MIN, f32::max);
+    let min = levels.iter().cloned().fold(f32::MAX, f32::min);
+    assert!(
+        max / min < 2.0,
+        "bass types not level-matched: sub={sub_rms}, saw={saw_rms}, pluck={pluck_rms}"
+    );
 }
 
 #[test]

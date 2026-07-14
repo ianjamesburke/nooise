@@ -728,6 +728,18 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.bass.level),
     ),
     ControlSpec::new(
+        "bass.type",
+        "Type",
+        ControlKind::Discrete,
+        0.0,
+        2.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.bass.voice_type,
+        |c, v| c.bass.voice_type = v,
+        |c| bass_type_label(c.bass.voice_type).to_string(),
+    ),
+    ControlSpec::new(
         "bass.interval_beats",
         "Interval",
         ControlKind::Timing,
@@ -813,6 +825,18 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.bass.drive),
     ),
 ];
+
+pub(crate) fn bass_type_label(value: f32) -> &'static str {
+    match bass_type_index(value) {
+        0 => "Sub",
+        1 => "Saw",
+        _ => "Pluck",
+    }
+}
+
+pub(crate) fn bass_type_index(value: f32) -> usize {
+    (value.round() as i64).rem_euclid(3) as usize
+}
 
 pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
     ControlSpec::gain(

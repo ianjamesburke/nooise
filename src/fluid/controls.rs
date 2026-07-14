@@ -197,6 +197,7 @@ impl Default for ClapControls {
 #[derive(Clone)]
 pub(crate) struct BassControls {
     pub level: f32,
+    pub voice_type: f32, // 0=Sub (legacy), 1=Saw, 2=Pluck character selector
     pub interval_beats: f32, // crops the 16-step rhythm phrase to this many beats (step length is fixed)
     pub offset_beats: f32,
     pub rhythm: f32, // 0..=3, A/B/C/D pattern selector
@@ -210,6 +211,7 @@ impl Default for BassControls {
     fn default() -> Self {
         Self {
             level: 0.0,
+            voice_type: 0.0,
             interval_beats: 4.0,
             offset_beats: 0.0,
             rhythm: 0.0,
