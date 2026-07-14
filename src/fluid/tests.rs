@@ -171,6 +171,101 @@ fn piano_harmonic_decay_gets_faster_with_pitch() {
 }
 
 #[test]
+fn tonal_envelope_gain_ramps_attack_then_holds_then_releases() {
+    // total=1s, attack=0.5s, release=0.5s, power=1 (linear release): ramp up
+    // across the first half, hold at unity, then release linearly across
+    // the second half.
+    assert_close(tonal_envelope_gain(0.0, 1.0, 0.5, 0.5, 1.0), 0.0);
+    assert_close(tonal_envelope_gain(0.25, 1.0, 0.5, 0.5, 1.0), 0.5);
+    assert_close(tonal_envelope_gain(0.5, 1.0, 0.5, 0.5, 1.0), 1.0);
+    assert_close(tonal_envelope_gain(0.75, 1.0, 0.5, 0.5, 1.0), 0.5);
+    assert_close(tonal_envelope_gain(1.0, 1.0, 0.5, 0.5, 1.0), 0.0);
+}
+
+#[test]
+fn tonal_envelope_gain_reduces_to_full_note_curve_when_release_covers_whole_note() {
+    // With attack ~0 and release at or beyond the note's own duration, the
+    // shared envelope collapses to the tonal voices' original always-in-
+    // release shape: (1 - t)^power for the whole note. This is the default
+    // reset behavior (tonal.release resets to 2.0s, at least as long as any
+    // note the current controls can produce), so switching a profile's type
+    // keeps its historical decay curve exactly unless release is shortened.
+    let total = 2.0;
+    for &t in &[0.0f32, 0.1, 0.25, 0.6, 0.9, 1.0] {
+        let elapsed = t * total;
+        let gain = tonal_envelope_gain(elapsed, total, 0.0, 5.0, 2.0);
+        assert_near(gain, (1.0 - t).powf(2.0));
+    }
+}
+
+#[test]
+fn tonal_envelope_gain_clamps_attack_to_note_length() {
+    // An attack control longer than the note itself should still reach
+    // (near) full volume by the note's end instead of leaving it fading in
+    // forever.
+    let total = 1.0;
+    let near_end = tonal_envelope_gain(total * 0.999, total, 10.0, 0.0, 1.0);
+    assert!(near_end > 0.99, "expected near-unity gain, got {near_end}");
+}
+
+#[test]
+fn tonal_envelope_gain_clamps_release_to_note_length() {
+    // A release control longer than the note itself should still fully
+    // decay by the note's end instead of leaving an audible tail hanging
+    // past it.
+    let total = 1.0;
+    let at_end = tonal_envelope_gain(total, total, 0.0, 10.0, 1.0);
+    assert_close(at_end, 0.0);
+}
+
+#[test]
+fn tonal_attack_control_changes_piano_voice_onset() {
+    // Compare energy over the first handful of samples rather than the
+    // very first one, since every oscillator starts at zero phase and
+    // would otherwise mask the envelope difference.
+    let profile = piano_profile(1);
+    let mut fast = PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, 48_000, SAMPLE_RATE, 0.0, 2.0);
+    let mut slow = PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, 48_000, SAMPLE_RATE, 0.05, 2.0);
+
+    let fast_energy: f32 = (0..10).map(|_| fast.next().0.abs()).sum();
+    let slow_energy: f32 = (0..10).map(|_| slow.next().0.abs()).sum();
+
+    assert!(
+        fast_energy > slow_energy,
+        "a longer tonal.attack should produce a quieter onset: fast={fast_energy}, slow={slow_energy}"
+    );
+}
+
+#[test]
+fn tonal_release_control_delays_decay_onset() {
+    // A short release only kicks in right at the tail of the note (full
+    // sustain until then); a release spanning the whole note is decaying
+    // from the very first sample. Halfway through the note, the short-
+    // release voice should still be louder.
+    let profile = piano_profile(1);
+    let total_samples = 48_000u64;
+    let halfway = total_samples / 2;
+
+    let mut long_release =
+        PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, total_samples, SAMPLE_RATE, 0.0, 2.0);
+    let mut short_release =
+        PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, total_samples, SAMPLE_RATE, 0.0, 0.05);
+
+    for _ in 0..halfway {
+        long_release.next();
+        short_release.next();
+    }
+    let (long_l, _) = long_release.next();
+    let (short_l, _) = short_release.next();
+
+    assert!(
+        short_l.abs() > long_l.abs(),
+        "a shorter tonal.release should still be at full sustain halfway through the note \
+         while a release spanning the whole note has already decayed: long={long_l}, short={short_l}"
+    );
+}
+
+#[test]
 fn tonal_engine_triggers_all_non_sine_type_variants() {
     let controls = TonalControls {
         level: 1.0,
@@ -1194,7 +1289,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Tonal,
             vec![
-                Gain, Discrete, Discrete, Timing, Timing, Timing, Gain, Continuous, Timing, Gain,
+                Gain, Discrete, Discrete, Timing, Timing, Timing, Timing, Timing, Gain,
+                Continuous, Timing, Gain,
             ],
         ),
         (
@@ -1287,6 +1383,32 @@ fn song_code_decodes_missing_controls_as_defaults() {
         decoded.controls.pad.level,
         FluidControls::default().pad.level,
     );
+}
+
+#[test]
+fn song_code_round_trips_tonal_attack_and_release() {
+    let mut controls = FluidControls::default();
+    controls.tonal.attack = 0.2;
+    controls.tonal.release = 1.5;
+
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.tonal.attack, 0.2);
+    assert_close(decoded.controls.tonal.release, 1.5);
+}
+
+/// A song code encoded before tonal.attack/tonal.release existed simply has
+/// no entries for those ids; the generic id->f32 snapshot format (unchanged
+/// since it predates this control) already decodes them as defaults with no
+/// version bump required.
+#[test]
+fn song_code_predating_tonal_attack_release_decodes_with_defaults() {
+    let code = song::encode_song_code(&SongState::default()).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.tonal.attack, TonalControls::default().attack);
+    assert_close(decoded.controls.tonal.release, TonalControls::default().release);
 }
 
 #[test]

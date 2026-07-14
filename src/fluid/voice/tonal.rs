@@ -209,7 +209,6 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
     PianoProfile {
         keyframes: &TONAL_EP_KEYFRAMES,
         amplitude: 0.40,
-        attack_ratio: 0.02,
         body_power: 0.35,
         harmonic_tilt: -0.70,
         decay_low: 0.70,
@@ -220,7 +219,6 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
     PianoProfile {
         keyframes: &TONAL_EP_KEYFRAMES,
         amplitude: 0.44,
-        attack_ratio: 0.03,
         body_power: 0.45,
         harmonic_tilt: -0.85,
         decay_low: 0.50,
@@ -231,7 +229,6 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
     PianoProfile {
         keyframes: &TONAL_PIANO_A_KEYFRAMES,
         amplitude: 0.36,
-        attack_ratio: 0.085,
         body_power: 0.30,
         harmonic_tilt: -1.05,
         decay_low: 0.45,
@@ -242,7 +239,6 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
     PianoProfile {
         keyframes: &TONAL_MARIMBA_KEYFRAMES,
         amplitude: 0.30,
-        attack_ratio: 0.028,
         body_power: 0.78,
         harmonic_tilt: -0.95,
         decay_low: 1.0,
@@ -253,7 +249,6 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
     PianoProfile {
         keyframes: &TONAL_EP_KEYFRAMES,
         amplitude: 0.34,
-        attack_ratio: 0.02,
         body_power: 0.70,
         harmonic_tilt: -0.60,
         decay_low: 1.1,
@@ -264,7 +259,6 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
     PianoProfile {
         keyframes: &TONAL_EP_KEYFRAMES,
         amplitude: 0.36,
-        attack_ratio: 0.015,
         body_power: 0.85,
         harmonic_tilt: -0.70,
         decay_low: 1.2,
@@ -275,7 +269,6 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
     PianoProfile {
         keyframes: &TONAL_PIANO_A_KEYFRAMES,
         amplitude: 0.38,
-        attack_ratio: 0.04,
         body_power: 0.40,
         harmonic_tilt: -0.70,
         decay_low: 0.70,
@@ -286,7 +279,6 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
     PianoProfile {
         keyframes: &TONAL_PIANO_A_KEYFRAMES,
         amplitude: 0.34,
-        attack_ratio: 0.11,
         body_power: 0.18,
         harmonic_tilt: -1.20,
         decay_low: 0.28,
@@ -297,7 +289,6 @@ pub(crate) const TONAL_PIANO_PROFILES: [PianoProfile; TONAL_PIANO_PROFILE_COUNT]
     PianoProfile {
         keyframes: &TONAL_PIANO_A_KEYFRAMES,
         amplitude: 0.32,
-        attack_ratio: 0.13,
         body_power: 0.16,
         harmonic_tilt: -1.15,
         decay_low: 0.30,
@@ -375,6 +366,8 @@ impl TonalEngine {
                 c.level,
                 decay_samples,
                 self.sample_rate,
+                c.attack,
+                c.release,
             ));
         }
 
@@ -508,6 +501,7 @@ pub(crate) enum TonalVoice {
 }
 
 impl TonalVoice {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         synth_type: usize,
         midi_note: i32,
@@ -516,6 +510,8 @@ impl TonalVoice {
         level: f32,
         decay_samples: u64,
         sample_rate: f32,
+        attack_time: f32,
+        release_time: f32,
     ) -> Self {
         match synth_type {
             0 => Self::Sine(SineTonalVoice::new(
@@ -524,6 +520,8 @@ impl TonalVoice {
                 level,
                 decay_samples,
                 sample_rate,
+                attack_time,
+                release_time,
             )),
             _ => Self::Piano(Box::new(PianoTonalVoice::new(
                 piano_profile(synth_type),
@@ -533,6 +531,8 @@ impl TonalVoice {
                 level,
                 decay_samples,
                 sample_rate,
+                attack_time,
+                release_time,
             ))),
         }
     }
@@ -552,23 +552,89 @@ impl TonalVoice {
     }
 }
 
+/// Shape of the sine voice's legacy taper: `sqrt(remaining / total)`, i.e. a
+/// release curve exponent of 0.5 with no separate attack stage.
+const TONAL_SINE_RELEASE_POWER: f32 = 0.5;
+
+/// Attack + release envelope shared by every tonal synth type. `elapsed` and
+/// `total` are seconds; `attack`/`release` are user-owned control values
+/// (also seconds), each clamped to the note's own duration so a slider set
+/// longer than the note still reaches full volume and fully decays. `power`
+/// is the release curve's shape exponent — this is the one piece of "harmonic
+/// character" each voice keeps (the piano profile's `body_power`, or the
+/// sine voice's fixed sqrt taper).
+///
+/// When `release >= total` (the default reset for every profile), this
+/// reduces exactly to the note's original always-releasing shape: attack
+/// ramps in linearly, and `(1 - t)^power` decays across the whole note.
+pub(crate) fn tonal_envelope_gain(
+    elapsed: f32,
+    total: f32,
+    attack: f32,
+    release: f32,
+    power: f32,
+) -> f32 {
+    let total = total.max(1e-6);
+
+    // A control value of exactly 0 means "instant" — an attack of 0 seconds
+    // reaches full volume on the very first sample rather than dividing by a
+    // vanishingly small ramp time, and a release of 0 seconds holds at unity
+    // until the literal last sample of the note.
+    let attack_gain = if attack <= 0.0 {
+        1.0
+    } else {
+        let attack_time = attack.min(total);
+        (elapsed / attack_time).clamp(0.0, 1.0)
+    };
+
+    let release_gain = if release <= 0.0 {
+        if elapsed >= total { 0.0 } else { 1.0 }
+    } else {
+        let release_time = release.min(total);
+        let release_start = (total - release_time).max(0.0);
+        if elapsed <= release_start {
+            1.0
+        } else {
+            (1.0 - ((elapsed - release_start) / release_time).clamp(0.0, 1.0)).powf(power)
+        }
+    };
+
+    attack_gain * release_gain
+}
+
 pub(crate) struct SineTonalVoice {
     pub(crate) primary: SineOscillator,
     pub(crate) detuned: SineOscillator,
     pub(crate) samples_remaining: u64,
     pub(crate) total_samples: u64,
+    pub(crate) total_duration: f32,
+    pub(crate) attack_time: f32,
+    pub(crate) release_time: f32,
     pub(crate) pan: f32,
     pub(crate) level: f32,
 }
 
 impl SineTonalVoice {
-    pub(crate) fn new(hz: f32, pan: f32, level: f32, decay_samples: u64, sample_rate: f32) -> Self {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        hz: f32,
+        pan: f32,
+        level: f32,
+        decay_samples: u64,
+        sample_rate: f32,
+        attack_time: f32,
+        release_time: f32,
+    ) -> Self {
         let total = decay_samples.max(1);
+        let sample_rate = sample_rate.max(1.0);
         Self {
             primary: SineOscillator::new(hz, sample_rate),
             detuned: SineOscillator::new(hz * 1.004, sample_rate),
             samples_remaining: total,
             total_samples: total,
+            total_duration: total as f32 / sample_rate,
+            attack_time,
+            release_time,
             pan,
             level,
         }
@@ -577,8 +643,16 @@ impl SineTonalVoice {
         if self.samples_remaining == 0 {
             return (0.0, 0.0);
         }
-        let gain = (self.samples_remaining as f32 / self.total_samples as f32).sqrt();
+        let elapsed_samples = self.total_samples - self.samples_remaining;
+        let elapsed = elapsed_samples as f32 / self.total_samples as f32 * self.total_duration;
         self.samples_remaining -= 1;
+        let gain = tonal_envelope_gain(
+            elapsed,
+            self.total_duration,
+            self.attack_time,
+            self.release_time,
+            TONAL_SINE_RELEASE_POWER,
+        );
         let s =
             soft_clip((self.primary.next() + self.detuned.next() * 0.3) * 0.4) * gain * self.level;
         StereoPanner::equal_power(s, self.pan)
@@ -598,7 +672,6 @@ pub(crate) struct PianoKeyframe {
 pub(crate) struct PianoProfile {
     pub(crate) keyframes: &'static [PianoKeyframe],
     pub(crate) amplitude: f32,
-    pub(crate) attack_ratio: f32,
     pub(crate) body_power: f32,
     pub(crate) harmonic_tilt: f32,
     pub(crate) decay_low: f32,
@@ -613,11 +686,15 @@ pub(crate) struct PianoTonalVoice {
     pub(crate) harmonic_decay_rates: [f32; TONAL_PIANO_HARMONIC_COUNT],
     pub(crate) samples_elapsed: u64,
     pub(crate) total_samples: u64,
+    pub(crate) total_duration: f32,
+    pub(crate) attack_time: f32,
+    pub(crate) release_time: f32,
     pub(crate) pan: f32,
     pub(crate) level: f32,
 }
 
 impl PianoTonalVoice {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         profile: PianoProfile,
         midi_note: i32,
@@ -626,8 +703,11 @@ impl PianoTonalVoice {
         level: f32,
         decay_samples: u64,
         sample_rate: f32,
+        attack_time: f32,
+        release_time: f32,
     ) -> Self {
         let total = decay_samples.max(1);
+        let sample_rate = sample_rate.max(1.0);
         Self {
             oscillators: std::array::from_fn(|index| {
                 SineOscillator::new(hz * (index + 1) as f32, sample_rate)
@@ -637,6 +717,9 @@ impl PianoTonalVoice {
             harmonic_decay_rates: piano_harmonic_decay_rates(profile, midi_note, hz),
             samples_elapsed: 0,
             total_samples: total,
+            total_duration: total as f32 / sample_rate,
+            attack_time,
+            release_time,
             pan,
             level,
         }
@@ -648,9 +731,9 @@ impl PianoTonalVoice {
         }
 
         let t = self.samples_elapsed as f32 / self.total_samples as f32;
+        let elapsed = t * self.total_duration;
         self.samples_elapsed += 1;
 
-        let attack = (t / self.profile.attack_ratio).clamp(0.0, 1.0);
         let mut sample = 0.0f32;
         for index in 0..TONAL_PIANO_HARMONIC_COUNT {
             let harmonic = self.oscillators[index].next();
@@ -658,8 +741,14 @@ impl PianoTonalVoice {
             sample += harmonic * self.harmonic_amplitudes[index] * decay;
         }
 
-        let body = (1.0 - t).clamp(0.0, 1.0).powf(self.profile.body_power);
-        let s = soft_clip(sample * self.profile.amplitude) * attack * body * self.level;
+        let envelope = tonal_envelope_gain(
+            elapsed,
+            self.total_duration,
+            self.attack_time,
+            self.release_time,
+            self.profile.body_power,
+        );
+        let s = soft_clip(sample * self.profile.amplitude) * envelope * self.level;
         StereoPanner::equal_power(s, self.pan)
     }
 

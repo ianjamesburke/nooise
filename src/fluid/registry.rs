@@ -1034,6 +1034,30 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
     )
     .lfo_snap(LfoSnap::Step)
     .in_beats(),
+    ControlSpec::new(
+        "tonal.attack",
+        "Attack",
+        ControlKind::Timing,
+        0.0,
+        1.0,
+        Step::Linear(0.01),
+        Entry::Free,
+        |c| c.tonal.attack,
+        |c, v| c.tonal.attack = v,
+        |c| format!("{:.3} s", c.tonal.attack),
+    ),
+    ControlSpec::new(
+        "tonal.release",
+        "Release",
+        ControlKind::Timing,
+        0.0,
+        6.0,
+        Step::Linear(0.05),
+        Entry::Free,
+        |c| c.tonal.release,
+        |c, v| c.tonal.release = v,
+        |c| format!("{:.2} s", c.tonal.release),
+    ),
     ControlSpec::gain(
         "tonal.randomness",
         "Randomness",

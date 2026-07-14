@@ -135,6 +135,8 @@ pub(crate) struct TonalControls {
     pub rate_beats: f32,
     pub step_interval_beats: f32,
     pub offset_beats: f32,
+    pub attack: f32,
+    pub release: f32,
     pub reverb_mix: f32,
 }
 
@@ -150,6 +152,14 @@ impl Default for TonalControls {
             rate_beats: 0.5,
             step_interval_beats: 16.0,
             offset_beats: 0.0,
+            // Reset targets chosen so the default sound is unchanged: attack
+            // approximates the average onset of the old per-profile
+            // attack_ratio values at the default note length, and release
+            // sits at or above the longest possible note (2 beats at the
+            // slowest bpm, 60) so every profile's original full-note decay
+            // curve keeps playing out exactly as before.
+            attack: 0.03,
+            release: 2.0,
             reverb_mix: 0.6,
         }
     }
