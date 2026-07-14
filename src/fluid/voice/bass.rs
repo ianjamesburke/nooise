@@ -61,13 +61,20 @@ pub(crate) const BASS_RHYTHMS: [[bool; 16]; 4] = [
     ],
 ];
 
-pub(crate) const MAX_BASS_VOICES: usize = 3;
-
 /// Fixed duration of one rhythm-pattern step (a 16th note). Step timing never
 /// changes; `interval_beats` instead crops how many steps of the 16-step
 /// phrase play before looping back to step 0 (or extends the loop with
 /// trailing silence, for a "gap" feel).
 pub(crate) const BASS_STEP_BEATS: f32 = 0.25;
+
+/// Bass is monophonic: a rhythm-grid hit hard-cuts whatever is currently
+/// sounding and starts the new note fresh, regardless of `decay_time`. The
+/// replaced voice isn't dropped instantly (that clicks) — it's handed to
+/// `fading_voice` and rung down over this fixed short window, independent of
+/// the voice's own envelope. This fade-out is a click guard, not a second
+/// voice: it is silent well before the next 16th-note step can land, so
+/// consecutive bass hits never audibly overlap.
+const BASS_MONO_FADE_SECONDS: f32 = 0.003;
 
 pub(crate) struct BassEngine {
     pub(crate) sample_rate: f32,
@@ -75,7 +82,10 @@ pub(crate) struct BassEngine {
     pub(crate) step_index: usize,
     pub(crate) step_trigger: GridTrigger,
     pub(crate) rhythm_step: usize,
-    pub(crate) voices: Vec<BassVoice>,
+    pub(crate) voice: Option<BassVoice>,
+    pub(crate) fading_voice: Option<BassVoice>,
+    pub(crate) fade_samples_remaining: u32,
+    pub(crate) fade_total_samples: u32,
 }
 
 impl BassEngine {
@@ -86,7 +96,10 @@ impl BassEngine {
             step_index: 0,
             step_trigger: GridTrigger::new(),
             rhythm_step: BASS_RHYTHMS[0].len() - 1,
-            voices: Vec::with_capacity(MAX_BASS_VOICES),
+            voice: None,
+            fading_voice: None,
+            fade_samples_remaining: 0,
+            fade_total_samples: (sample_rate * BASS_MONO_FADE_SECONDS).max(1.0) as u32,
         }
     }
 
@@ -121,14 +134,12 @@ impl BassEngine {
                 let note = bass_root_note(progression, self.step_index, pad)
                     + (c.octave.round() as i32) * 12;
                 let hz = midi_to_hz(note) * tune_ratio(tune);
-                for voice in &mut self.voices {
-                    voice.release();
-                }
-                if self.voices.len() >= MAX_BASS_VOICES {
-                    let remove_count = self.voices.len() + 1 - MAX_BASS_VOICES;
-                    self.voices.drain(0..remove_count);
-                }
-                self.voices.push(BassVoice::new(
+                // Hard-cut: whatever was sounding hands off to the fade-out
+                // slot (replacing any prior fade in progress) and the new
+                // note starts clean and immediately, not layered on top.
+                self.fading_voice = self.voice.take();
+                self.fade_samples_remaining = self.fade_total_samples;
+                self.voice = Some(BassVoice::new(
                     bass_type_index(c.voice_type),
                     hz,
                     c.attack_time,
@@ -141,12 +152,24 @@ impl BassEngine {
 
         let mut l = 0.0f32;
         let mut r = 0.0f32;
-        for voice in &mut self.voices {
+        if let Some(voice) = &mut self.voice {
             let (vl, vr) = voice.next();
             l += vl;
             r += vr;
+            if voice.is_done() {
+                self.voice = None;
+            }
         }
-        self.voices.retain(|v| !v.is_done());
+        if let Some(voice) = &mut self.fading_voice {
+            let (vl, vr) = voice.next();
+            let fade_gain = self.fade_samples_remaining as f32 / self.fade_total_samples as f32;
+            l += vl * fade_gain;
+            r += vr * fade_gain;
+            self.fade_samples_remaining = self.fade_samples_remaining.saturating_sub(1);
+            if self.fade_samples_remaining == 0 {
+                self.fading_voice = None;
+            }
+        }
 
         (l * c.level, r * c.level)
     }
@@ -204,14 +227,6 @@ impl BassVoice {
         }
     }
 
-    pub(crate) fn release(&mut self) {
-        match self {
-            Self::Sub(voice) => voice.release(),
-            Self::Saw(voice) => voice.release(),
-            Self::Pluck(voice) => voice.release(),
-        }
-    }
-
     pub(crate) fn is_done(&self) -> bool {
         match self {
             Self::Sub(voice) => voice.is_done(),
@@ -256,10 +271,6 @@ impl SubBassVoice {
             s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
         }
         StereoPanner::equal_power(s, 0.0)
-    }
-
-    pub(crate) fn release(&mut self) {
-        self.envelope.note_off();
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -319,10 +330,6 @@ impl SawBassVoice {
             s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
         }
         StereoPanner::equal_power(s, 0.0)
-    }
-
-    pub(crate) fn release(&mut self) {
-        self.envelope.note_off();
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -395,10 +402,6 @@ impl PluckBassVoice {
             s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
         }
         StereoPanner::equal_power(s, 0.0)
-    }
-
-    pub(crate) fn release(&mut self) {
-        self.envelope.note_off();
     }
 
     pub(crate) fn is_done(&self) -> bool {

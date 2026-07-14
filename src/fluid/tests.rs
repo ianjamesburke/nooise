@@ -1941,6 +1941,35 @@ fn bass_engine_follows_pad_chord_root_across_advances() {
 }
 
 #[test]
+fn bass_engine_is_monophonic_and_hard_cuts_on_retrigger() {
+    let sample_rate = 48_000.0;
+    let mut bass = BassEngine::new(sample_rate);
+    let pad = PadControls::default();
+    let bass_controls = BassControls {
+        interval_beats: 1.0,
+        rhythm: 0.0, // quarter notes: hits every beat
+        decay_time: 5.0, // deliberately long: a pool would still be ringing
+        attack_time: 0.001,
+        ..BassControls::default()
+    };
+    let mut clock = TempoClock::new(sample_rate, 120.0);
+
+    // 120bpm quarter notes land every 0.5s; run long enough to guarantee at
+    // least two hits plus the short anti-click fade window has fully elapsed
+    // after the second one.
+    for _ in 0..(sample_rate * 1.2) as usize {
+        let timing = clock.tick(120.0);
+        bass.next(&bass_controls, &pad, 0.0, timing);
+    }
+
+    // Only one active voice remains: the previous hit's fade-out slot has
+    // already rung fully silent, regardless of the 5s decay_time — that's
+    // the mono guarantee (no audible overlap between consecutive hits).
+    assert!(bass.voice.is_some());
+    assert!(bass.fading_voice.is_none());
+}
+
+#[test]
 fn bass_voice_decays_to_silence_without_sustaining() {
     let sample_rate = 48_000.0;
     let mut voice = BassVoice::new(0, 110.0, 0.005, 0.05, 0.0, sample_rate);
