@@ -4,6 +4,26 @@ use super::*;
 
 const SAVE_MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Chords tab's local navigation depth: base params, drilled into the
+/// active slots' Root list, or drilled into one slot's secondary fields.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub(crate) enum ChordDrill {
+    #[default]
+    None,
+    Progression,
+    Slot(usize),
+}
+
+/// Translates a Chords-tab visible-row index to its real `CHORDS_CONTROLS`
+/// index for the positional registry setters; a no-op on every other tab.
+fn chords_selected_index(tab: Tab, chord_drill: ChordDrill, selected: usize) -> usize {
+    if tab == Tab::Chords {
+        chords_flat_index(chord_drill, selected)
+    } else {
+        selected
+    }
+}
+
 pub(crate) fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controls: Arc<ArcSwap<FluidControls>>,
@@ -15,6 +35,7 @@ pub(crate) fn ui_loop(
     let mut tab = Tab::Master;
     let mut selected = 0usize;
     let mut lfo_selected = 0usize;
+    let mut chord_drill = ChordDrill::None;
     let mut flipped = FlippedUnits::new();
     let mut numeric_entry: Option<NumericEntry> = None;
     let mut fluid = FluidState::new();
@@ -33,12 +54,18 @@ pub(crate) fn ui_loop(
         }
         let update_message = updates.message();
         let automation_message = automation_footer(automation.state());
+        let chords_message = chords_footer(tab, chord_drill);
         let footer_message = save_message
             .as_ref()
             .map(|(message, _)| message.as_str())
             .or(automation_message.as_deref())
+            .or(chords_message.as_deref())
             .or(update_message.as_deref());
-        let items = tab_controls(tab, &c);
+        let items = if tab == Tab::Chords {
+            chords_tab_controls(&c, chord_drill)
+        } else {
+            tab_controls(tab, &c)
+        };
         let items_len = items.len();
         selected = selected.min(items_len.saturating_sub(1));
 
@@ -66,6 +93,7 @@ pub(crate) fn ui_loop(
                 &c,
                 footer_message,
                 &flipped,
+                chord_drill,
             )
         })?;
 
@@ -94,7 +122,7 @@ pub(crate) fn ui_loop(
                                 lfo_selected,
                                 &controls,
                                 tab,
-                                selected,
+                                chords_selected_index(tab, chord_drill, selected),
                                 value,
                                 beat,
                                 &flipped,
@@ -124,24 +152,31 @@ pub(crate) fn ui_loop(
                 KeyCode::Esc if automation.state().is_editor_open() => {
                     close_one_level(&mut automation, &mut lfo_selected);
                 }
+                KeyCode::Esc if tab == Tab::Chords && chord_drill != ChordDrill::None => {
+                    selected = match chord_drill {
+                        ChordDrill::Slot(n) => n,
+                        _ => 4,
+                    };
+                    chord_drill = match chord_drill {
+                        ChordDrill::Slot(_) => ChordDrill::Progression,
+                        _ => ChordDrill::None,
+                    };
+                }
                 KeyCode::Esc => {}
                 KeyCode::Char('q') => break 'ui,
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'ui,
-                KeyCode::Tab => {
+                KeyCode::Tab | KeyCode::BackTab => {
                     if automation.state().is_editor_open() {
                         automation.edit(AutomationState::close_editor);
                     }
-                    tab = tab.next();
+                    tab = if key.code == KeyCode::Tab {
+                        tab.next()
+                    } else {
+                        tab.previous()
+                    };
                     selected = 0;
                     lfo_selected = 0;
-                }
-                KeyCode::BackTab => {
-                    if automation.state().is_editor_open() {
-                        automation.edit(AutomationState::close_editor);
-                    }
-                    tab = tab.previous();
-                    selected = 0;
-                    lfo_selected = 0;
+                    chord_drill = ChordDrill::None;
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if automation.state().is_editor_open() {
@@ -168,33 +203,25 @@ pub(crate) fn ui_loop(
                         selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
                     }
                 }
-                KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                    reset_lfo_or_control(
-                        &mut automation,
-                        lfo_selected,
-                        &controls,
-                        tab,
-                        selected,
-                        beat,
-                    );
-                }
                 KeyCode::Char('H') => {
                     reset_lfo_or_control(
                         &mut automation,
                         lfo_selected,
                         &controls,
                         tab,
-                        selected,
+                        chords_selected_index(tab, chord_drill, selected),
                         beat,
                     );
                 }
-                KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                KeyCode::Left | KeyCode::Char('h')
+                    if key.modifiers.contains(KeyModifiers::SHIFT) =>
+                {
                     reset_lfo_or_control(
                         &mut automation,
                         lfo_selected,
                         &controls,
                         tab,
-                        selected,
+                        chords_selected_index(tab, chord_drill, selected),
                         beat,
                     );
                 }
@@ -204,7 +231,7 @@ pub(crate) fn ui_loop(
                         lfo_selected,
                         &controls,
                         tab,
-                        selected,
+                        chords_selected_index(tab, chord_drill, selected),
                         -1.0,
                         beat,
                         &flipped,
@@ -216,7 +243,7 @@ pub(crate) fn ui_loop(
                         lfo_selected,
                         &controls,
                         tab,
-                        selected,
+                        chords_selected_index(tab, chord_drill, selected),
                         1.0,
                         beat,
                         &flipped,
@@ -298,14 +325,32 @@ pub(crate) fn ui_loop(
                     }
                 }
                 KeyCode::Enter => {
-                    if !automation.state().is_editor_open()
-                        && let Some(item) = items.get(selected)
-                        && let Some(owner) = tab_owning_control(item.id)
-                        && owner != tab
-                    {
-                        tab = owner;
-                        selected = 0;
-                        lfo_selected = 0;
+                    if !automation.state().is_editor_open() {
+                        if tab == Tab::Chords {
+                            match (chord_drill, items.get(selected).map(|i| i.id)) {
+                                (ChordDrill::None, Some("pad.progression"))
+                                    if is_custom_progression(progression_index(
+                                        c.pad.progression,
+                                    )) =>
+                                {
+                                    chord_drill = ChordDrill::Progression;
+                                    selected = 0;
+                                }
+                                (ChordDrill::Progression, Some(_)) => {
+                                    chord_drill = ChordDrill::Slot(selected);
+                                    selected = 0;
+                                }
+                                _ => {}
+                            }
+                        } else if let Some(item) = items.get(selected)
+                            && let Some(owner) = tab_owning_control(item.id)
+                            && owner != tab
+                        {
+                            tab = owner;
+                            selected = 0;
+                            lfo_selected = 0;
+                            chord_drill = ChordDrill::None;
+                        }
                     }
                 }
                 KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -321,7 +366,7 @@ pub(crate) fn ui_loop(
                             lfo_selected,
                             &controls,
                             tab,
-                            selected,
+                            chords_selected_index(tab, chord_drill, selected),
                             now_flipped,
                             beat,
                         );
@@ -951,6 +996,17 @@ fn automation_footer(automation: &AutomationState) -> Option<String> {
     }
 }
 
+pub(crate) fn chords_footer(tab: Tab, chord_drill: ChordDrill) -> Option<String> {
+    if tab != Tab::Chords {
+        return None;
+    }
+    match chord_drill {
+        ChordDrill::None => None,
+        ChordDrill::Progression => Some("Progression   Enter: open chord   Esc: back".to_string()),
+        ChordDrill::Slot(n) => Some(format!("Chord {}   Esc: back", n + 1)),
+    }
+}
+
 fn copy_launch_line(
     controls: &Arc<ArcSwap<FluidControls>>,
     automation: &AutomationState,
@@ -986,37 +1042,6 @@ pub(crate) fn set_value(
     let mut next = FluidControls::clone(&controls.load());
     apply_value(tab, selected, value, &mut next);
     controls.store(Arc::new(next));
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn render(
-    f: &mut Frame,
-    items: &[ControlItem],
-    active_tab: Tab,
-    selected: usize,
-    lfo_selected: usize,
-    beat: f64,
-    numeric: NumericDisplay<'_>,
-    fluid: &FluidState,
-    automation: &AutomationState,
-    controls: &FluidControls,
-    update_message: Option<&str>,
-    flipped: &FlippedUnits,
-) {
-    render_fluid(
-        f,
-        items,
-        active_tab,
-        selected,
-        lfo_selected,
-        beat,
-        numeric,
-        fluid,
-        automation,
-        controls,
-        update_message,
-        flipped,
-    );
 }
 
 pub(crate) struct NumericDisplay<'a> {
@@ -1183,7 +1208,7 @@ pub(crate) fn darken(c: Color, factor: f32) -> Color {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_fluid(
+pub(crate) fn render(
     f: &mut Frame,
     items: &[ControlItem],
     active_tab: Tab,
@@ -1196,6 +1221,7 @@ pub(crate) fn render_fluid(
     controls: &FluidControls,
     update_message: Option<&str>,
     flipped: &FlippedUnits,
+    chord_drill: ChordDrill,
 ) {
     let bpm = controls.master.bpm;
     let mod_ctx = ModContext {
@@ -1255,10 +1281,19 @@ pub(crate) fn render_fluid(
     let tab_line: String = Tab::all()
         .iter()
         .map(|t| {
-            if *t == active_tab {
-                format!("[{}]", t.name())
+            let name = if *t == Tab::Chords {
+                match chord_drill {
+                    ChordDrill::Progression => format!("{} › Progression", t.name()),
+                    ChordDrill::Slot(n) => format!("{} › Chord {}", t.name(), n + 1),
+                    ChordDrill::None => t.name().to_string(),
+                }
             } else {
                 t.name().to_string()
+            };
+            if *t == active_tab {
+                format!("[{name}]")
+            } else {
+                name
             }
         })
         .collect::<Vec<_>>()

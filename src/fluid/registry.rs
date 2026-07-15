@@ -1590,6 +1590,40 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
     tab_specs(tab).iter().map(|spec| spec.item(c)).collect()
 }
 
+/// Chords-tab visible rows for the given drill level: the 11 base params,
+/// the active slots' Root list, or one slot's Accidental/Extension/Inversion.
+/// Read-only view over `CHORDS_CONTROLS`'s fixed layout (11 base rows, then
+/// 8 slots x 4 rows in degree/accidental/extension/inversion order) — never
+/// reorders the underlying array.
+pub(crate) fn chords_tab_controls(c: &FluidControls, drill: ChordDrill) -> Vec<ControlItem> {
+    match drill {
+        ChordDrill::None => CHORDS_CONTROLS[..11].iter().map(|spec| spec.item(c)).collect(),
+        ChordDrill::Progression => {
+            let count = (c.pad.chord_count.round() as usize).clamp(1, CHORD_SLOT_COUNT);
+            (0..count)
+                .map(|slot| CHORDS_CONTROLS[11 + 4 * slot].item(c))
+                .collect()
+        }
+        ChordDrill::Slot(n) => {
+            let base = 11 + 4 * n;
+            [base + 1, base + 2, base + 3]
+                .iter()
+                .map(|&i| CHORDS_CONTROLS[i].item(c))
+                .collect()
+        }
+    }
+}
+
+/// Maps a visible-row index under `chords_tab_controls` back to its real
+/// index into `CHORDS_CONTROLS`, for the positional registry setters below.
+pub(crate) fn chords_flat_index(drill: ChordDrill, visible_row: usize) -> usize {
+    match drill {
+        ChordDrill::None => visible_row,
+        ChordDrill::Progression => 11 + 4 * visible_row,
+        ChordDrill::Slot(n) => 11 + 4 * n + 1 + visible_row,
+    }
+}
+
 pub(crate) fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
     if let Some(spec) = tab_specs(tab).get(selected) {
         spec.apply_delta(dir, c);

@@ -513,6 +513,7 @@ fn render_fluid_draws_without_terminal_backend() {
                 &controls,
                 None,
                 &FlippedUnits::new(),
+                ChordDrill::None,
             )
         })
         .unwrap();
@@ -1133,6 +1134,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
                     &controls,
                     None,
                     &FlippedUnits::new(),
+                    ChordDrill::None,
                 )
             })
             .unwrap();
@@ -1927,6 +1929,105 @@ fn chords_progression_adjusts_and_clamps() {
     controls.pad.progression = 2.0;
     apply_min(Tab::Chords, 4, &mut controls);
     assert_close(controls.pad.progression, 0.0);
+}
+
+#[test]
+fn chords_tab_controls_none_shows_only_base_params() {
+    let controls = FluidControls::default();
+    let rows = chords_tab_controls(&controls, ChordDrill::None);
+    assert_eq!(rows.len(), 11);
+    assert_eq!(rows[0].id, "pad.level");
+    assert_eq!(rows[4].id, "pad.progression");
+    assert_eq!(rows[10].id, "pad.release_time");
+    assert!(rows.iter().all(|r| !r.label.contains("Root")));
+}
+
+#[test]
+fn chords_tab_controls_progression_lists_active_slot_roots() {
+    let mut controls = FluidControls::default();
+
+    controls.pad.chord_count = 3.0;
+    let rows = chords_tab_controls(&controls, ChordDrill::Progression);
+    assert_eq!(
+        rows.iter().map(|r| r.label).collect::<Vec<_>>(),
+        vec!["Chord 1 Root", "Chord 2 Root", "Chord 3 Root"]
+    );
+
+    controls.pad.chord_count = 8.0;
+    let rows = chords_tab_controls(&controls, ChordDrill::Progression);
+    assert_eq!(rows.len(), 8);
+    assert_eq!(rows[7].label, "Chord 8 Root");
+}
+
+#[test]
+fn chords_tab_controls_slot_shows_accidental_extension_inversion() {
+    let controls = FluidControls::default();
+    let rows = chords_tab_controls(&controls, ChordDrill::Slot(2));
+    assert_eq!(
+        rows.iter().map(|r| r.label).collect::<Vec<_>>(),
+        vec!["Chord 3 Accidental", "Chord 3 Extension", "Chord 3 Inversion"]
+    );
+}
+
+#[test]
+fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
+    assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
+    assert_eq!(chords_flat_index(ChordDrill::Progression, 0), 11);
+    assert_eq!(chords_flat_index(ChordDrill::Progression, 2), 19);
+    assert_eq!(chords_flat_index(ChordDrill::Slot(2), 0), 20);
+
+    let controls = FluidControls::default();
+    let expected = tab_controls(Tab::Chords, &controls)[20].id;
+    assert_eq!(expected, "pad.chord3_accidental");
+}
+
+#[test]
+fn chords_footer_signals_drill_depth() {
+    assert_eq!(chords_footer(Tab::Chords, ChordDrill::None), None);
+    assert_eq!(chords_footer(Tab::Master, ChordDrill::Progression), None);
+    assert_eq!(
+        chords_footer(Tab::Chords, ChordDrill::Progression),
+        Some("Progression   Enter: open chord   Esc: back".to_string())
+    );
+    assert_eq!(
+        chords_footer(Tab::Chords, ChordDrill::Slot(2)),
+        Some("Chord 3   Esc: back".to_string())
+    );
+}
+
+#[test]
+fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
+    let controls = FluidControls::default();
+    let fluid = FluidState::new();
+    let automation = AutomationState::default();
+    let rows = chords_tab_controls(&controls, ChordDrill::Slot(1));
+    let footer = chords_footer(Tab::Chords, ChordDrill::Slot(1));
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            render(
+                f,
+                &rows,
+                Tab::Chords,
+                0,
+                0,
+                0.0,
+                NumericDisplay::empty(),
+                &fluid,
+                &automation,
+                &controls,
+                footer.as_deref(),
+                &FlippedUnits::new(),
+                ChordDrill::Slot(1),
+            )
+        })
+        .unwrap();
+
+    let text = buffer_text(terminal.backend().buffer());
+    assert!(text.contains("Chords › Chord 2"));
+    assert!(text.contains("Chord 2   Esc: back"));
 }
 
 #[test]
@@ -2996,6 +3097,7 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
                 &controls,
                 None,
                 &FlippedUnits::new(),
+                ChordDrill::None,
             )
         })
         .unwrap();
