@@ -46,32 +46,15 @@ impl Tab {
         }
     }
 
+    // Discriminants match `all()`'s order, so tab cycling is index arithmetic.
     pub(crate) fn next(self) -> Self {
-        match self {
-            Tab::Master => Tab::Perc,
-            Tab::Perc => Tab::Chords,
-            Tab::Chords => Tab::Bass,
-            Tab::Bass => Tab::Kick,
-            Tab::Kick => Tab::Tonal,
-            Tab::Tonal => Tab::Clap,
-            Tab::Clap => Tab::Arp,
-            Tab::Arp => Tab::Macros,
-            Tab::Macros => Tab::Master,
-        }
+        let all = Self::all();
+        all[(self as usize + 1) % all.len()]
     }
 
     pub(crate) fn previous(self) -> Self {
-        match self {
-            Tab::Master => Tab::Macros,
-            Tab::Perc => Tab::Master,
-            Tab::Chords => Tab::Perc,
-            Tab::Bass => Tab::Chords,
-            Tab::Kick => Tab::Bass,
-            Tab::Tonal => Tab::Kick,
-            Tab::Clap => Tab::Tonal,
-            Tab::Arp => Tab::Clap,
-            Tab::Macros => Tab::Arp,
-        }
+        let all = Self::all();
+        all[(self as usize + all.len() - 1) % all.len()]
     }
 }
 

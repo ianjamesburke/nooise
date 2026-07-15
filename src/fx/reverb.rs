@@ -23,7 +23,10 @@ impl Comb {
         let output = self.buffer[self.index];
         self.filter_store = output * self.damp2 + self.filter_store * self.damp1;
         self.buffer[self.index] = input + self.filter_store * self.feedback;
-        self.index = (self.index + 1) % self.buffer.len();
+        self.index += 1;
+        if self.index >= self.buffer.len() {
+            self.index = 0;
+        }
         output
     }
 }
@@ -47,7 +50,10 @@ impl AllPass {
         let buffered = self.buffer[self.index];
         let output = -input + buffered;
         self.buffer[self.index] = input + buffered * self.feedback;
-        self.index = (self.index + 1) % self.buffer.len();
+        self.index += 1;
+        if self.index >= self.buffer.len() {
+            self.index = 0;
+        }
         output
     }
 }
@@ -58,6 +64,11 @@ pub(crate) struct Freeverb {
     allpasses_left: Vec<AllPass>,
     allpasses_right: Vec<AllPass>,
     wet: f32,
+    /// Sticky: false until the first nonzero input sample. While every input
+    /// so far has been zero, every comb/allpass buffer and filter holds exact
+    /// zeros and the output is exact silence, so `process` skips all work.
+    /// Once audio arrives it stays active so the tail always rings out.
+    active: bool,
 }
 
 impl Freeverb {
@@ -91,11 +102,18 @@ impl Freeverb {
             allpasses_left,
             allpasses_right,
             wet: wet.clamp(0.0, 1.0),
+            active: false,
         }
     }
 
     pub(crate) fn process(&mut self, input_left: f32, input_right: f32) -> (f32, f32) {
         let input = (input_left + input_right) * 0.5;
+        if !self.active {
+            if input == 0.0 {
+                return (0.0, 0.0);
+            }
+            self.active = true;
+        }
         let mut left = self
             .combs_left
             .iter_mut()

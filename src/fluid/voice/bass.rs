@@ -118,6 +118,9 @@ pub(crate) struct BassEngine {
     pub(crate) fade_total_samples: u32,
     pub(crate) lowpass_l: BassLowPass,
     pub(crate) lowpass_r: BassLowPass,
+    /// Bass voices are mono and always centered; the constant-power center
+    /// gain pair is computed once here instead of per voice-sample.
+    pub(crate) center_gains: (f32, f32),
 }
 
 impl BassEngine {
@@ -134,6 +137,7 @@ impl BassEngine {
             fade_total_samples: (sample_rate * BASS_MONO_FADE_SECONDS).max(1.0) as u32,
             lowpass_l: BassLowPass::new(),
             lowpass_r: BassLowPass::new(),
+            center_gains: StereoPanner::gains(0.0),
         }
     }
 
@@ -184,21 +188,22 @@ impl BassEngine {
             }
         }
 
+        let (gain_l, gain_r) = self.center_gains;
         let mut l = 0.0f32;
         let mut r = 0.0f32;
         if let Some(voice) = &mut self.voice {
-            let (vl, vr) = voice.next();
-            l += vl;
-            r += vr;
+            let s = voice.next();
+            l += s * gain_l;
+            r += s * gain_r;
             if voice.is_done() {
                 self.voice = None;
             }
         }
         if let Some(voice) = &mut self.fading_voice {
-            let (vl, vr) = voice.next();
+            let s = voice.next();
             let fade_gain = self.fade_samples_remaining as f32 / self.fade_total_samples as f32;
-            l += vl * fade_gain;
-            r += vr * fade_gain;
+            l += s * gain_l * fade_gain;
+            r += s * gain_r * fade_gain;
             self.fade_samples_remaining = self.fade_samples_remaining.saturating_sub(1);
             if self.fade_samples_remaining == 0 {
                 self.fading_voice = None;
@@ -262,7 +267,7 @@ impl BassVoice {
         }
     }
 
-    pub(crate) fn next(&mut self) -> (f32, f32) {
+    pub(crate) fn next(&mut self) -> f32 {
         match self {
             Self::Sub(voice) => voice.next(),
             Self::Saw(voice) => voice.next(),
@@ -307,13 +312,8 @@ impl SubBassVoice {
         }
     }
 
-    pub(crate) fn next(&mut self) -> (f32, f32) {
-        let mut s = self.osc.next() * self.envelope.next();
-        if self.drive > 0.0 {
-            let driven = s * (1.0 + self.drive * 8.0);
-            s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
-        }
-        StereoPanner::equal_power(s, 0.0)
+    pub(crate) fn next(&mut self) -> f32 {
+        drive_stage(self.osc.next() * self.envelope.next(), self.drive)
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -362,17 +362,12 @@ impl SawBassVoice {
         }
     }
 
-    pub(crate) fn next(&mut self) -> (f32, f32) {
+    pub(crate) fn next(&mut self) -> f32 {
         let mut raw = 0.0f32;
         for (osc, gain) in self.oscillators.iter_mut().zip(BASS_SAW_HARMONIC_GAINS) {
             raw += osc.next() * gain;
         }
-        let mut s = raw * BASS_SAW_OUTPUT_GAIN * self.envelope.next();
-        if self.drive > 0.0 {
-            let driven = s * (1.0 + self.drive * 8.0);
-            s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
-        }
-        StereoPanner::equal_power(s, 0.0)
+        drive_stage(raw * BASS_SAW_OUTPUT_GAIN * self.envelope.next(), self.drive)
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -427,7 +422,7 @@ impl PluckBassVoice {
         }
     }
 
-    pub(crate) fn next(&mut self) -> (f32, f32) {
+    pub(crate) fn next(&mut self) -> f32 {
         let body = self.osc.next() * self.envelope.next();
 
         let transient = if self.transient_samples_remaining > 0 {
@@ -439,12 +434,10 @@ impl PluckBassVoice {
             0.0
         };
 
-        let mut s = (body + transient * BASS_PLUCK_TRANSIENT_MIX) * BASS_PLUCK_OUTPUT_GAIN;
-        if self.drive > 0.0 {
-            let driven = s * (1.0 + self.drive * 8.0);
-            s = driven / (1.0 + driven.abs()) * (1.0 + self.drive * 0.5);
-        }
-        StereoPanner::equal_power(s, 0.0)
+        drive_stage(
+            (body + transient * BASS_PLUCK_TRANSIENT_MIX) * BASS_PLUCK_OUTPUT_GAIN,
+            self.drive,
+        )
     }
 
     pub(crate) fn is_done(&self) -> bool {

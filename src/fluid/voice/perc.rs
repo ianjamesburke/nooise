@@ -10,6 +10,10 @@ pub(crate) struct PercEngine {
     pub(crate) hits: Vec<NoiseHit>,
     pub(crate) noise: WhiteNoise,
     pub(crate) rng: StdRng,
+    /// Cached `filter -> smoothing` mapping for continuous mode, so the
+    /// per-sample `powf` only reruns when the control value actually changes.
+    pub(crate) last_filter: f32,
+    pub(crate) smoothing: f32,
 }
 
 impl PercEngine {
@@ -20,6 +24,8 @@ impl PercEngine {
             hits: Vec::with_capacity(8),
             noise: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
+            last_filter: f32::NAN,
+            smoothing: 0.0,
         }
     }
 
@@ -29,8 +35,11 @@ impl PercEngine {
             // no trigger-rate amplitude ripple to disguise (see GOTCHAS.md).
             // Reuse the same exponential smoothing transform as discrete hits so
             // Filter has a comparably audible range in both modes.
-            let smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
-            return self.noise.next_filtered(&mut self.rng, smoothing) * c.level * 0.4;
+            if c.filter != self.last_filter {
+                self.last_filter = c.filter;
+                self.smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
+            }
+            return self.noise.next_filtered(&mut self.rng, self.smoothing) * c.level * 0.4;
         }
 
         if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {

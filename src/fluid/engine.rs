@@ -160,6 +160,12 @@ pub(crate) struct GainSmoother {
     pub(crate) target: f32,
     pub(crate) samples_total: u32,
     pub(crate) samples_remaining: u32,
+    /// True while the smoother is settled AND its target equals the snapshot
+    /// value bit-for-bit, so `next_controls` can skip the per-sample write
+    /// (which would be a no-op). Recomputed every `set_targets` call; stays
+    /// false when `set_target`'s epsilon guard leaves a sub-epsilon gap
+    /// between target and snapshot, where the write is load-bearing.
+    pub(crate) idle: bool,
 }
 
 impl GainSmoother {
@@ -176,6 +182,7 @@ impl GainSmoother {
             target: value,
             samples_total: 0,
             samples_remaining: 0,
+            idle: false,
         }
     }
 
@@ -227,13 +234,18 @@ impl GainSmoothers {
             let spec = smoother
                 .spec
                 .expect("registry-derived gain smoothers carry a control spec");
-            smoother.set_target((spec.get)(c), ramp_samples);
+            let snapshot_value = (spec.get)(c);
+            smoother.set_target(snapshot_value, ramp_samples);
+            smoother.idle = smoother.samples_remaining == 0 && smoother.target == snapshot_value;
         }
     }
 
     pub(crate) fn next_controls(&mut self, c: &FluidControls) -> FluidControls {
         let mut next = c.clone();
         for smoother in &mut self.smoothers {
+            if smoother.idle {
+                continue;
+            }
             let spec = smoother
                 .spec
                 .expect("registry-derived gain smoothers carry a control spec");

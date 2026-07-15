@@ -36,3 +36,15 @@ pub(crate) fn normalized_lfo(sample: f32) -> f32 {
 pub(crate) fn soft_clip(sample: f32) -> f32 {
     sample / (1.0 + sample.abs())
 }
+
+/// Soft-clip drive stage shared by the bass voices and the kick: boost by
+/// `1 + drive * 8`, saturate, then restore presence with `1 + drive * 0.5`.
+/// A drive of 0 passes the sample through untouched.
+pub(crate) fn drive_stage(sample: f32, drive: f32) -> f32 {
+    if drive > 0.0 {
+        let driven = sample * (1.0 + drive * 8.0);
+        driven / (1.0 + driven.abs()) * (1.0 + drive * 0.5)
+    } else {
+        sample
+    }
+}

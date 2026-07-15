@@ -358,17 +358,23 @@ impl TonalEngine {
             let hz = tonal_note_hz(note, tune);
             let decay_samples = timing.beats_to_samples(c.note_length_beats);
             let pan = self.rng.gen_range(-0.5f32..0.5);
-            self.voices.push(TonalVoice::new(
-                tonal_synth_type_index(c.synth_type),
-                note,
-                hz,
-                pan,
-                c.level,
-                decay_samples,
-                self.sample_rate,
-                c.attack,
-                c.release,
-            ));
+            // A voice captures its level at trigger time, so a level of
+            // exactly 0 would stay silent for its whole life — skip creating
+            // it. Every RNG draw above still happens, keeping seeded renders
+            // byte-identical.
+            if c.level != 0.0 {
+                self.voices.push(TonalVoice::new(
+                    tonal_synth_type_index(c.synth_type),
+                    note,
+                    hz,
+                    pan,
+                    c.level,
+                    decay_samples,
+                    self.sample_rate,
+                    c.attack,
+                    c.release,
+                ));
+            }
         }
 
         let mut dry_l = 0.0f32;
@@ -610,7 +616,7 @@ pub(crate) struct SineTonalVoice {
     pub(crate) total_duration: f32,
     pub(crate) attack_time: f32,
     pub(crate) release_time: f32,
-    pub(crate) pan: f32,
+    pub(crate) pan_gains: (f32, f32),
     pub(crate) level: f32,
 }
 
@@ -635,7 +641,7 @@ impl SineTonalVoice {
             total_duration: total as f32 / sample_rate,
             attack_time,
             release_time,
-            pan,
+            pan_gains: StereoPanner::gains(pan),
             level,
         }
     }
@@ -655,7 +661,7 @@ impl SineTonalVoice {
         );
         let s =
             soft_clip((self.primary.next() + self.detuned.next() * 0.3) * 0.4) * gain * self.level;
-        StereoPanner::equal_power(s, self.pan)
+        (s * self.pan_gains.0, s * self.pan_gains.1)
     }
     pub(crate) fn is_done(&self) -> bool {
         self.samples_remaining == 0
@@ -689,7 +695,7 @@ pub(crate) struct PianoTonalVoice {
     pub(crate) total_duration: f32,
     pub(crate) attack_time: f32,
     pub(crate) release_time: f32,
-    pub(crate) pan: f32,
+    pub(crate) pan_gains: (f32, f32),
     pub(crate) level: f32,
 }
 
@@ -720,7 +726,7 @@ impl PianoTonalVoice {
             total_duration: total as f32 / sample_rate,
             attack_time,
             release_time,
-            pan,
+            pan_gains: StereoPanner::gains(pan),
             level,
         }
     }
@@ -749,7 +755,7 @@ impl PianoTonalVoice {
             self.profile.body_power,
         );
         let s = soft_clip(sample * self.profile.amplitude) * envelope * self.level;
-        StereoPanner::equal_power(s, self.pan)
+        (s * self.pan_gains.0, s * self.pan_gains.1)
     }
 
     pub(crate) fn is_done(&self) -> bool {

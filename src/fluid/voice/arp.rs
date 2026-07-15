@@ -166,17 +166,23 @@ impl ArpEngine {
             let hz = midi_to_hz(note) * tune_ratio(tune);
             let decay_samples = timing.beats_to_samples(rate_beats);
             let pan = self.rng.gen_range(-0.4f32..0.4);
-            self.voices.push(PianoTonalVoice::new(
-                TONAL_PIANO_PROFILES[ARP_PROFILE_INDEX],
-                note,
-                hz,
-                pan,
-                c.gain,
-                decay_samples,
-                self.sample_rate,
-                c.attack,
-                c.release,
-            ));
+            // A voice captures its gain at trigger time, so a gain of exactly
+            // 0 (the default) would stay silent for its whole life — skip
+            // creating it. Every RNG draw above still happens, keeping seeded
+            // renders byte-identical.
+            if c.gain != 0.0 {
+                self.voices.push(PianoTonalVoice::new(
+                    TONAL_PIANO_PROFILES[ARP_PROFILE_INDEX],
+                    note,
+                    hz,
+                    pan,
+                    c.gain,
+                    decay_samples,
+                    self.sample_rate,
+                    c.attack,
+                    c.release,
+                ));
+            }
         }
 
         let mut dry_l = 0.0f32;

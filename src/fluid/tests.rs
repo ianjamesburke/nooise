@@ -2211,8 +2211,7 @@ fn bass_voice_decays_to_silence_without_sustaining() {
         voice.next();
     }
 
-    let (l, r) = voice.next();
-    assert!(l.abs() < 0.001 && r.abs() < 0.001);
+    assert!(voice.next().abs() < 0.001);
 }
 
 #[test]
@@ -2235,10 +2234,10 @@ fn bass_types_produce_differing_but_comparably_balanced_audio() {
         let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, 0.0, sample_rate);
         let mut sum_sq = 0.0f32;
         for _ in 0..samples {
-            let (l, r) = voice.next();
-            sum_sq += l * l + r * r;
+            let s = voice.next();
+            sum_sq += s * s;
         }
-        (sum_sq / (samples as f32 * 2.0)).sqrt()
+        (sum_sq / samples as f32).sqrt()
     };
 
     let sub_rms = rms(0);
@@ -2258,9 +2257,9 @@ fn bass_types_produce_differing_but_comparably_balanced_audio() {
     let mut any_diff_sub_saw = false;
     let mut any_diff_sub_pluck = false;
     for _ in 0..samples {
-        let (sl, _) = sub.next();
-        let (wl, _) = saw.next();
-        let (pl, _) = pluck.next();
+        let sl = sub.next();
+        let wl = saw.next();
+        let pl = pluck.next();
         if (sl - wl).abs() > 1e-6 {
             any_diff_sub_saw = true;
         }
