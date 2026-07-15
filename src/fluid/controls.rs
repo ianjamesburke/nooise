@@ -228,7 +228,7 @@ impl Default for ClapControls {
             slap_count: 3.0,
             slap_spread_ms: 8.0,
             decay_ms: 40.0,
-            filter: 0.85,
+            filter: 0.75,
             room: 0.0,
             body: 0.2,
         }
