@@ -435,6 +435,15 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c, v| c.bass.level = v,
         |c| pct(c.bass.level),
     ),
+    ControlSpec::gain(
+        "arp.gain",
+        "Arp Vol",
+        0.0,
+        1.0,
+        |c| c.arp.gain,
+        |c, v| c.arp.gain = v,
+        |c| pct(c.arp.gain),
+    ),
     ControlSpec::new(
         "master.bpm",
         "BPM",

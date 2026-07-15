@@ -1264,15 +1264,15 @@ fn apply_min_moves_selected_control_to_floor() {
     let mut controls = FluidControls::default();
 
     controls.master.drive = 0.8;
-    apply_min(Tab::Master, 8, &mut controls);
+    apply_min(Tab::Master, 9, &mut controls);
     assert_close(controls.master.drive, 0.0);
 
     controls.master.bpm = 120.0;
-    apply_min(Tab::Master, 6, &mut controls);
+    apply_min(Tab::Master, 7, &mut controls);
     assert_close(controls.master.bpm, MASTER_BPM_MIN);
 
     controls.master.tone = 0.5;
-    apply_min(Tab::Master, 12, &mut controls);
+    apply_min(Tab::Master, 13, &mut controls);
     assert_close(controls.master.tone, -1.0);
 
     controls.pad.chord_bars = 16.0;
@@ -1284,12 +1284,12 @@ fn apply_min_moves_selected_control_to_floor() {
 fn apply_value_accepts_percent_style_unit_controls() {
     let mut controls = FluidControls::default();
 
-    apply_value(Tab::Master, 7, 42.0, &mut controls);
+    apply_value(Tab::Master, 8, 42.0, &mut controls);
     assert_close(controls.master.level, 0.42);
 
     // Typed entry is always a plain percent integer, never a pre-divided
     // ratio: 1 means 1%, not 100%.
-    apply_value(Tab::Master, 7, 1.0, &mut controls);
+    apply_value(Tab::Master, 8, 1.0, &mut controls);
     assert_close(controls.master.level, 0.01);
 }
 
@@ -1319,8 +1319,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Master,
             vec![
-                Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Gain, Continuous, Continuous,
-                Timing, Continuous, Discrete,
+                Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Gain, Continuous,
+                Continuous, Timing, Continuous, Discrete,
             ],
         ),
         (Tab::Perc, vec![Gain, Timing, Timing, Timing, Gain]),
