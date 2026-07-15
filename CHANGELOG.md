@@ -1,6 +1,18 @@
 # Changelog
 
 Newest releases appear first.
+## [1.5.1] — 2026-07-15
+
+### Added
+- feat: mirror arp level onto the Master tab mixer
+- feat: add arp.offset_beats control
+- feat: add drill-down navigation to the Chords tab
+
+### Fixed
+- fix: lower clap filter default to 75%
+
+### Performance
+- perf: cut wasted work from the per-sample audio path
 ## [1.5.0] — 2026-07-14
 
 ### Added
