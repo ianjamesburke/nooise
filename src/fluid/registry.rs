@@ -1445,6 +1445,20 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
     .lfo_snap(LfoSnap::PowerOfTwo)
     .in_beats(),
     ControlSpec::new(
+        "arp.offset_beats",
+        "Offset",
+        ControlKind::Timing,
+        0.0,
+        4.0,
+        Step::BeatGrid,
+        Entry::Snap,
+        |c| c.arp.offset_beats,
+        |c, v| c.arp.offset_beats = v,
+        |c| beats2(c.arp.offset_beats),
+    )
+    .lfo_snap(LfoSnap::Step)
+    .in_beats(),
+    ControlSpec::new(
         "arp.pattern",
         "Pattern",
         ControlKind::Discrete,

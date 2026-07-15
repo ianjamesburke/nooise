@@ -1364,7 +1364,9 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (
             Tab::Arp,
-            vec![Gain, Timing, Discrete, Discrete, Timing, Timing, Gain],
+            vec![
+                Gain, Timing, Timing, Discrete, Discrete, Timing, Timing, Gain,
+            ],
         ),
     ];
 
@@ -1639,6 +1641,30 @@ fn song_code_predating_arp_reverb_mix_decodes_as_default_fixed_mix() {
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_close(decoded.controls.arp.reverb_mix, 0.5);
+}
+
+#[test]
+fn song_code_round_trips_arp_offset_beats() {
+    let mut controls = FluidControls::default();
+    controls.arp.offset_beats = 1.5;
+
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.arp.offset_beats, 1.5);
+}
+
+#[test]
+fn song_code_predating_arp_offset_beats_decodes_as_default_zero() {
+    // Same generic id->f32 snapshot codec as arp.reverb_mix/tonal.octave: a
+    // code written before `arp.offset_beats` existed simply omits the id and
+    // decodes to the no-shift default (0.0), preserving the pre-existing
+    // trigger phase.
+    let controls = FluidControls::default();
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.arp.offset_beats, 0.0);
 }
 
 #[test]

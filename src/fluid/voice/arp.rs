@@ -146,7 +146,7 @@ impl ArpEngine {
         }
 
         let rate_beats = c.rate_beats.clamp(ARP_RATE_BEATS_MIN, ARP_RATE_BEATS_MAX);
-        if self.note_trigger.pop(timing, rate_beats, 0.0) {
+        if self.note_trigger.pop(timing, rate_beats, c.offset_beats) {
             let chord = pad_chord_tones(pad, self.step_index);
             let octaves = arp_octave_span(c.octaves);
             let notes = arp_cycle_notes(chord, octaves);

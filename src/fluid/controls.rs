@@ -270,6 +270,7 @@ impl Default for BassControls {
 pub(crate) struct ArpControls {
     pub gain: f32,
     pub rate_beats: f32,
+    pub offset_beats: f32,
     pub pattern: f32,   // 0=Up, 1=Down, 2=Up-Down, 3=Random
     pub octaves: f32,   // 1-3, octave span of the cycled chord tones
     pub attack: f32,
@@ -284,6 +285,7 @@ impl Default for ArpControls {
             // existing songs or a fresh startup.
             gain: 0.0,
             rate_beats: 0.5,
+            offset_beats: 0.0,
             pattern: 0.0,
             octaves: 1.0,
             attack: 0.005,
