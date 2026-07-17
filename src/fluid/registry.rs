@@ -1352,6 +1352,28 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c, v| c.clap.level = v,
         |c| pct(c.clap.level),
     ),
+    ControlSpec::gain(
+        "clap.filter",
+        "Filter",
+        0.5,
+        1.0,
+        |c| c.clap.filter,
+        |c, v| c.clap.filter = v,
+        |c| pct(c.clap.filter),
+    ),
+    ControlSpec::new(
+        "clap.decay_ms",
+        "Decay",
+        ControlKind::Timing,
+        10.0,
+        200.0,
+        Step::Linear(5.0),
+        Entry::Snap,
+        |c| c.clap.decay_ms,
+        |c, v| c.clap.decay_ms = v,
+        |c| ms0(c.clap.decay_ms),
+    )
+    .in_ms(),
     ControlSpec::new(
         "clap.interval_beats",
         "Interval",
@@ -1405,28 +1427,6 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.1} ms", c.clap.slap_spread_ms),
     )
     .in_ms(),
-    ControlSpec::new(
-        "clap.decay_ms",
-        "Decay",
-        ControlKind::Timing,
-        10.0,
-        200.0,
-        Step::Linear(5.0),
-        Entry::Snap,
-        |c| c.clap.decay_ms,
-        |c, v| c.clap.decay_ms = v,
-        |c| ms0(c.clap.decay_ms),
-    )
-    .in_ms(),
-    ControlSpec::gain(
-        "clap.filter",
-        "Filter",
-        0.5,
-        1.0,
-        |c| c.clap.filter,
-        |c, v| c.clap.filter = v,
-        |c| pct(c.clap.filter),
-    ),
     ControlSpec::gain(
         "clap.room",
         "Room",

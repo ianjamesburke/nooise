@@ -1314,7 +1314,7 @@ fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     apply_value(Tab::Chords, 1, 12.0, &mut controls);
     assert_close(controls.pad.chord_bars, 4.0);
 
-    apply_value(Tab::Clap, 3, 3.6, &mut controls);
+    apply_value(Tab::Clap, 5, 3.6, &mut controls);
     assert_close(controls.clap.slap_count, 4.0);
 }
 
@@ -1370,7 +1370,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Clap,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Gain, Gain, Gain,
+                Gain, Gain, Timing, Timing, Timing, Discrete, Timing, Gain, Gain,
             ],
         ),
         (
