@@ -1349,8 +1349,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Bass,
             vec![
-                Gain, Discrete, Timing, Timing, Discrete, Discrete, Timing, Timing, Gain,
-                Continuous,
+                Gain, Continuous, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete,
+                Gain,
             ],
         ),
         (
@@ -2111,49 +2111,49 @@ fn bass_defaults_are_silent_quarter_note_a() {
 fn bass_tab_shows_type_and_rhythm_rows_with_letter_display() {
     let mut controls = FluidControls::default();
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[1].id, "bass.type");
-    assert_eq!(rows[1].label, "Type");
-    assert_eq!(rows[1].display, "Sub");
-    assert_eq!(rows[4].label, "Rhythm");
-    assert_eq!(rows[4].display, "A");
+    assert_eq!(rows[4].id, "bass.type");
+    assert_eq!(rows[4].label, "Type");
+    assert_eq!(rows[4].display, "Sub");
+    assert_eq!(rows[7].label, "Rhythm");
+    assert_eq!(rows[7].display, "A");
 
     controls.bass.voice_type = 1.0;
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[1].display, "Saw");
+    assert_eq!(rows[4].display, "Saw");
 
     controls.bass.voice_type = 2.0;
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[1].display, "Pluck");
+    assert_eq!(rows[4].display, "Pluck");
 
     controls.bass.rhythm = 3.0;
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[4].display, "D");
+    assert_eq!(rows[7].display, "D");
 }
 
 #[test]
 fn bass_controls_adjust_and_clamp() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Bass, 4, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 7, 1.0, &mut controls);
     assert_close(controls.bass.rhythm, 1.0);
 
     controls.bass.rhythm = 3.0;
-    apply_delta(Tab::Bass, 4, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 7, 1.0, &mut controls);
     assert_close(controls.bass.rhythm, 3.0);
 
     controls.bass.octave = -1.0;
-    apply_delta(Tab::Bass, 5, -1.0, &mut controls);
-    apply_delta(Tab::Bass, 5, -1.0, &mut controls);
+    apply_delta(Tab::Bass, 8, -1.0, &mut controls);
+    apply_delta(Tab::Bass, 8, -1.0, &mut controls);
     assert_close(controls.bass.octave, -3.0);
 
     apply_min(Tab::Bass, 0, &mut controls);
     assert_close(controls.bass.level, 0.0);
 
     controls.bass.decay_time = 0.4;
-    apply_delta(Tab::Bass, 7, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 3, 1.0, &mut controls);
     assert!(controls.bass.decay_time > 0.4);
 
-    apply_min(Tab::Bass, 7, &mut controls);
+    apply_min(Tab::Bass, 3, &mut controls);
     assert_close(controls.bass.decay_time, 0.005);
 }
 
