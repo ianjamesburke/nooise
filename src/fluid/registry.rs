@@ -1423,6 +1423,18 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.arp.gain),
     ),
     ControlSpec::new(
+        "arp.type",
+        "Type",
+        ControlKind::Discrete,
+        0.0,
+        9.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.arp.voice_type,
+        |c, v| c.arp.voice_type = v,
+        |c| tonal_synth_type_label(c.arp.voice_type).to_string(),
+    ),
+    ControlSpec::new(
         "arp.rate_beats",
         "Rate",
         ControlKind::Timing,

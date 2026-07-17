@@ -1365,7 +1365,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Arp,
             vec![
-                Gain, Timing, Timing, Discrete, Discrete, Timing, Timing, Gain,
+                Gain, Discrete, Timing, Timing, Discrete, Discrete, Timing, Timing, Gain,
             ],
         ),
     ];
@@ -3842,6 +3842,28 @@ fn engine_hot_path_timing() {
 #[test]
 fn arp_defaults_are_silent() {
     assert_close(ArpControls::default().gain, 0.0);
+}
+
+#[test]
+fn arp_default_voice_type_matches_former_fixed_pluck_profile() {
+    // arp.type replaced a hardcoded `TONAL_PIANO_PROFILES[5]` ("Pluck").
+    // The default value must resolve to that exact profile so existing
+    // songs and a fresh startup render identically to before the control
+    // existed.
+    let expected = TONAL_PIANO_PROFILES[5];
+    let actual = piano_profile(tonal_synth_type_index(ArpControls::default().voice_type));
+    assert_eq!(actual.keyframes.len(), expected.keyframes.len());
+    for (a, e) in actual.keyframes.iter().zip(expected.keyframes.iter()) {
+        assert_eq!(a.midi, e.midi);
+        assert_eq!(a.decay_factor, e.decay_factor);
+        assert_eq!(a.harmonics, e.harmonics);
+    }
+    assert_eq!(actual.amplitude, expected.amplitude);
+    assert_eq!(actual.body_power, expected.body_power);
+    assert_eq!(actual.harmonic_tilt, expected.harmonic_tilt);
+    assert_eq!(actual.decay_low, expected.decay_low);
+    assert_eq!(actual.decay_high, expected.decay_high);
+    assert_eq!(actual.decay_scale, expected.decay_scale);
 }
 
 #[test]
