@@ -469,17 +469,17 @@ fn pad_defaults_use_progression_a_and_sixteen_beat_chords() {
 fn chords_tab_shows_type_row_with_letter_display() {
     let mut controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[1].id, "pad.type");
-    assert_eq!(rows[1].label, "Type");
-    assert_eq!(rows[1].display, "Warm");
+    assert_eq!(rows[3].id, "pad.type");
+    assert_eq!(rows[3].label, "Type");
+    assert_eq!(rows[3].display, "Warm");
 
     controls.pad.voice_type = 1.0;
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[1].display, "Dark");
+    assert_eq!(rows[3].display, "Dark");
 
     controls.pad.voice_type = 2.0;
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[1].display, "Glass");
+    assert_eq!(rows[3].display, "Glass");
 }
 
 #[test]
@@ -1284,7 +1284,7 @@ fn apply_min_moves_selected_control_to_floor() {
     assert_close(controls.master.tone, -1.0);
 
     controls.pad.chord_bars = 16.0;
-    apply_min(Tab::Chords, 2, &mut controls);
+    apply_min(Tab::Chords, 4, &mut controls);
     assert_close(controls.pad.chord_bars, 1.0);
 }
 
@@ -1311,7 +1311,7 @@ fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     apply_value(Tab::Kick, 4, 0.16, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
-    apply_value(Tab::Chords, 1, 12.0, &mut controls);
+    apply_value(Tab::Chords, 4, 12.0, &mut controls);
     assert_close(controls.pad.chord_bars, 4.0);
 
     apply_value(Tab::Clap, 5, 3.6, &mut controls);
@@ -1338,8 +1338,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Chords,
             vec![
-                Gain, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain, Gain, Timing,
-                Timing, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
+                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain,
+                Gain, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
                 Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
                 Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
                 Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
@@ -1915,18 +1915,18 @@ fn gain_smoothers_cover_every_unique_gain_spec() {
 fn chords_tab_shows_progression_row_with_letter_display() {
     let mut controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].label, "Chord Count");
-    assert_eq!(rows[3].display, "8");
-    assert_eq!(rows[4].label, "Progression");
-    assert_eq!(rows[4].display, "A");
+    assert_eq!(rows[5].label, "Chord Count");
+    assert_eq!(rows[5].display, "8");
+    assert_eq!(rows[6].label, "Progression");
+    assert_eq!(rows[6].display, "A");
 
     controls.pad.progression = 2.0;
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[4].display, "C");
+    assert_eq!(rows[6].display, "C");
 
     controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[4].display, "Custom");
+    assert_eq!(rows[6].display, "Custom");
 }
 
 #[test]
@@ -1952,19 +1952,19 @@ fn tonal_tab_separates_rate_from_cycle() {
 fn chords_progression_adjusts_and_clamps() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Chords, 4, 1.0, &mut controls);
+    apply_delta(Tab::Chords, 6, 1.0, &mut controls);
     assert_close(controls.pad.progression, 1.0);
 
     controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
-    apply_delta(Tab::Chords, 4, 1.0, &mut controls);
+    apply_delta(Tab::Chords, 6, 1.0, &mut controls);
     assert_close(controls.pad.progression, CUSTOM_PROGRESSION_INDEX as f32);
 
     controls.pad.progression = 0.0;
-    apply_delta(Tab::Chords, 4, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 6, -1.0, &mut controls);
     assert_close(controls.pad.progression, 0.0);
 
     controls.pad.progression = 2.0;
-    apply_min(Tab::Chords, 4, &mut controls);
+    apply_min(Tab::Chords, 6, &mut controls);
     assert_close(controls.pad.progression, 0.0);
 }
 
@@ -1974,8 +1974,8 @@ fn chords_tab_controls_none_shows_only_base_params() {
     let rows = chords_tab_controls(&controls, ChordDrill::None);
     assert_eq!(rows.len(), 11);
     assert_eq!(rows[0].id, "pad.level");
-    assert_eq!(rows[4].id, "pad.progression");
-    assert_eq!(rows[10].id, "pad.release_time");
+    assert_eq!(rows[6].id, "pad.progression");
+    assert_eq!(rows[2].id, "pad.release_time");
     assert!(rows.iter().all(|r| !r.label.contains("Root")));
 }
 
@@ -2387,19 +2387,19 @@ fn bass_interval_crops_phrase_instead_of_stretching_it() {
 fn chords_reverb_mix_row_shifted_to_index_four() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[5].label, "Reverb Mix");
+    assert_eq!(rows[7].label, "Reverb Mix");
 }
 
 #[test]
 fn chords_release_row_present_with_lowered_attack_floor() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[9].label, "Attack");
-    assert_close(rows[9].min, 0.05);
-    assert_eq!(rows[10].label, "Release");
-    assert_close(rows[10].value, 8.0);
-    assert_close(rows[10].min, 0.05);
-    assert_close(rows[10].max, 20.0);
+    assert_eq!(rows[1].label, "Attack");
+    assert_close(rows[1].min, 0.05);
+    assert_eq!(rows[2].label, "Release");
+    assert_close(rows[2].value, 8.0);
+    assert_close(rows[2].min, 0.05);
+    assert_close(rows[2].max, 20.0);
 }
 
 #[test]
@@ -2407,15 +2407,15 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
     let mut controls = FluidControls::default();
 
     controls.pad.attack_time = 0.1;
-    apply_delta(Tab::Chords, 9, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 1, -1.0, &mut controls);
     assert_close(controls.pad.attack_time, 0.05);
-    apply_min(Tab::Chords, 9, &mut controls);
+    apply_min(Tab::Chords, 1, &mut controls);
     assert_close(controls.pad.attack_time, 0.05);
 
     controls.pad.release_time = 0.1;
-    apply_delta(Tab::Chords, 10, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 2, -1.0, &mut controls);
     assert_close(controls.pad.release_time, 0.05);
-    apply_min(Tab::Chords, 10, &mut controls);
+    apply_min(Tab::Chords, 2, &mut controls);
     assert_close(controls.pad.release_time, 0.05);
 }
 
