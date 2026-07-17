@@ -348,6 +348,14 @@ impl GridSpec {
 
 pub(crate) const GRID_BEAT_EPSILON: f64 = 1e-9;
 
+// Minimum real time a pulled-forward hit must sit after the last hit that
+// actually fired. Without this, nudging offset/rate right after a hit fires
+// can recompute a candidate hit only fractions of a beat away, producing an
+// audible double-hit on the next tick. 30ms sits well under audible/rhythmic
+// perception at any reasonable tempo but is large enough to absorb typical
+// live-edit jitter.
+pub(crate) const MIN_RETRIGGER_SECONDS: f64 = 0.03;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GridHit {
     pub(crate) beat: f64,
@@ -363,6 +371,7 @@ pub(crate) struct GridTrigger {
     pub(crate) spec: Option<GridSpec>,
     pub(crate) next_hit: Option<GridHit>,
     pub(crate) first_hit: FirstGridHit,
+    last_fired_beat: Option<f64>,
 }
 
 impl GridTrigger {
@@ -379,6 +388,7 @@ impl GridTrigger {
             spec: None,
             next_hit: None,
             first_hit,
+            last_fired_beat: None,
         }
     }
 
@@ -403,7 +413,8 @@ impl GridTrigger {
                 // A modulated grid can therefore never push the target ahead of
                 // the playhead indefinitely and starve the trigger.
                 Some(hit) => {
-                    let candidate = spec.hit_at_or_after(timing.beat);
+                    let candidate =
+                        self.floor_after_last_fire(spec, timing, spec.hit_at_or_after(timing.beat));
                     if candidate.beat < hit.beat {
                         self.next_hit = Some(candidate);
                     }
@@ -415,10 +426,38 @@ impl GridTrigger {
             return false;
         };
         if timing.beat + GRID_BEAT_EPSILON >= next_hit.beat {
-            self.next_hit = Some(spec.hit_after(timing.beat));
+            self.last_fired_beat = Some(timing.beat);
+            // The hit that just fired may not itself sit on the current grid
+            // (e.g. it was a stale schedule kept because a live spec change
+            // wasn't pulled earlier). Floor the next hit against the fire we
+            // just recorded too, or a grid whose points land close to "now"
+            // can immediately reschedule a near-instant repeat.
+            self.next_hit =
+                Some(self.floor_after_last_fire(spec, timing, spec.hit_after(timing.beat)));
             true
         } else {
             false
+        }
+    }
+
+    // Never let a scheduled hit land within MIN_RETRIGGER_SECONDS of the last
+    // hit that actually fired, even if the grid spec's own math says "now" -
+    // bias later, never earlier, than that floor.
+    fn floor_after_last_fire(
+        &self,
+        spec: GridSpec,
+        timing: TimingContext,
+        candidate: GridHit,
+    ) -> GridHit {
+        let Some(last_fired) = self.last_fired_beat else {
+            return candidate;
+        };
+        let min_gap_beats = MIN_RETRIGGER_SECONDS * timing.bpm / 60.0;
+        let floor = last_fired + min_gap_beats;
+        if candidate.beat < floor {
+            spec.hit_at_or_after(floor)
+        } else {
+            candidate
         }
     }
 }
