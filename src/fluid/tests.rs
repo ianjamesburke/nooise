@@ -1305,10 +1305,10 @@ fn apply_value_accepts_percent_style_unit_controls() {
 fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     let mut controls = FluidControls::default();
 
-    apply_value(Tab::Kick, 1, 1.13, &mut controls);
+    apply_value(Tab::Kick, 4, 1.13, &mut controls);
     assert_close(controls.kick.interval_beats, 1.25);
 
-    apply_value(Tab::Kick, 1, 0.16, &mut controls);
+    apply_value(Tab::Kick, 4, 0.16, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
     apply_value(Tab::Chords, 1, 12.0, &mut controls);
@@ -1356,7 +1356,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Kick,
             vec![
-                Gain, Timing, Timing, Continuous, Timing, Timing, Gain, Gain, Gain, Timing, Gain,
+                Gain, Gain, Timing, Timing, Timing, Timing, Continuous, Gain, Gain, Timing, Gain,
                 Gain, Gain,
             ],
         ),
@@ -2423,11 +2423,11 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
 fn kick_interval_floor_is_eighth_beat() {
     let mut controls = FluidControls::default();
     controls.kick.interval_beats = 1.0;
-    apply_min(Tab::Kick, 1, &mut controls);
+    apply_min(Tab::Kick, 4, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
     controls.kick.interval_beats = 0.125;
-    apply_delta(Tab::Kick, 1, -1.0, &mut controls);
+    apply_delta(Tab::Kick, 4, -1.0, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 }
 
