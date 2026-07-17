@@ -1363,7 +1363,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Tonal,
             vec![
-                Gain, Discrete, Discrete, Discrete, Timing, Timing, Timing, Gain, Timing, Timing,
+                Gain, Timing, Timing, Discrete, Discrete, Discrete, Timing, Timing, Timing, Gain,
                 Gain, Continuous, Timing, Gain,
             ],
         ),
@@ -1933,19 +1933,19 @@ fn chords_tab_shows_progression_row_with_letter_display() {
 fn tonal_tab_separates_rate_from_cycle() {
     let rows = tab_controls(Tab::Tonal, &FluidControls::default());
 
-    assert_eq!(rows[1].id, "tonal.synth_type");
-    assert_eq!(rows[1].label, "Type");
-    assert_eq!(rows[1].display, "Sine");
-    assert_eq!(rows[2].id, "tonal.octave");
-    assert_eq!(rows[2].label, "Octave");
-    assert_eq!(rows[3].id, "tonal.phrase");
-    assert_eq!(rows[3].label, "Phrase");
-    assert_eq!(rows[4].id, "tonal.rate_beats");
-    assert_eq!(rows[4].label, "Rate");
-    assert_eq!(rows[4].display, "0.50 beats");
-    assert_eq!(rows[5].id, "tonal.step_interval_beats");
-    assert_eq!(rows[5].label, "Cycle");
-    assert_eq!(rows[5].display, "16.00 beats");
+    assert_eq!(rows[3].id, "tonal.synth_type");
+    assert_eq!(rows[3].label, "Type");
+    assert_eq!(rows[3].display, "Sine");
+    assert_eq!(rows[4].id, "tonal.octave");
+    assert_eq!(rows[4].label, "Octave");
+    assert_eq!(rows[5].id, "tonal.phrase");
+    assert_eq!(rows[5].label, "Phrase");
+    assert_eq!(rows[6].id, "tonal.rate_beats");
+    assert_eq!(rows[6].label, "Rate");
+    assert_eq!(rows[6].display, "0.50 beats");
+    assert_eq!(rows[7].id, "tonal.step_interval_beats");
+    assert_eq!(rows[7].label, "Cycle");
+    assert_eq!(rows[7].display, "16.00 beats");
 }
 
 #[test]
