@@ -985,7 +985,13 @@ fn engine_publishes_beat_telemetry() {
     let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
     let telemetry = Arc::new(FluidTelemetry::default());
     let bpm = f64::from(controls.load().master.bpm);
-    let mut engine = FluidEngine::new(44_100.0, controls, automation, Arc::clone(&telemetry));
+    let mut engine = FluidEngine::new(
+        44_100.0,
+        controls,
+        automation,
+        no_morph(),
+        Arc::clone(&telemetry),
+    );
 
     for _ in 0..512 {
         engine.next_stereo();
@@ -1518,7 +1524,7 @@ fn full_engine_renders_a_custom_progression_from_song_code_without_panicking() {
     let controls_swap = Arc::new(ArcSwap::from_pointee(decoded.controls));
     let automation = Arc::new(ArcSwap::from_pointee(decoded.automation));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(SAMPLE_RATE, controls_swap, automation, telemetry);
+    let mut engine = FluidEngine::new(SAMPLE_RATE, controls_swap, automation, no_morph(), telemetry);
 
     for _ in 0..(SAMPLE_RATE as usize * 4) {
         let (l, r) = engine.next_stereo();
@@ -3753,7 +3759,7 @@ fn engine_hot_path_timing() {
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
     let automation = Arc::new(ArcSwap::from_pointee(automation));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(SAMPLE_RATE, controls, automation, telemetry);
+    let mut engine = FluidEngine::new(SAMPLE_RATE, controls, automation, no_morph(), telemetry);
 
     let frames = SAMPLE_RATE as u64 * 10;
     let start = Instant::now();

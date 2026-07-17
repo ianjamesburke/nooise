@@ -22,6 +22,10 @@ pub(crate) struct FluidEngine {
     pub(crate) master_bus: MasterBus,
     pub(crate) controls: Arc<ArcSwap<FluidControls>>,
     pub(crate) automation: Arc<ArcSwap<AutomationState>>,
+    /// `Some` only while running `nooise auto`; rewrites `controls` on a
+    /// throttled tick so the morph is audible and visible.
+    pub(crate) morph: Arc<ArcSwap<Option<MorphState>>>,
+    morph_writer: MorphWriter,
     pub(crate) telemetry: Arc<FluidTelemetry>,
     pub(crate) snapshot: FluidControls,
     /// Allocation-free per-sample plan, rebuilt only when `plan_source`
@@ -35,6 +39,7 @@ impl FluidEngine {
         sample_rate: f32,
         controls: Arc<ArcSwap<FluidControls>>,
         automation: Arc<ArcSwap<AutomationState>>,
+        morph: Arc<ArcSwap<Option<MorphState>>>,
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
         let snapshot = FluidControls::clone(&controls.load());
@@ -57,6 +62,8 @@ impl FluidEngine {
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
             controls,
             automation,
+            morph,
+            morph_writer: MorphWriter::default(),
             telemetry,
             snapshot,
             plan,
@@ -81,6 +88,11 @@ impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         if self.current_sample.is_multiple_of(128) {
+            if let Some(morph) = self.morph.load_full().as_ref()
+                && let Some(next) = self.morph_writer.tick(morph, self.tempo.beat)
+            {
+                self.controls.store(Arc::new(next));
+            }
             self.snapshot = FluidControls::clone(&self.controls.load());
             self.gain_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);

@@ -6,11 +6,12 @@ All engine, terminal UI, and live-control code for the nooise binary.
 
 ## Ownership
 
-- `main.rs` — binary entry point: CLI parsing (`run`/`version`/`update`/`render`/song code), wires up terminal + audio engine.
+- `main.rs` — binary entry point: CLI parsing (`run`/`version`/`update`/`render`/`auto`/song code), wires up terminal + audio engine.
 - `update_check.rs` — passive crates.io update notification helper; checks in the background and exposes a short TUI-safe message.
 - `audio.rs` — cpal/audio-backend plumbing, sample callback wiring.
 - `fluid/` — the core engine module:
-  - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `render_wav()` (headless wav render), `FluidTelemetry`.
+  - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `run_auto()` (TUI + live audio, slow-morph mode), `render_wav()` (headless wav render), `FluidTelemetry`.
+  - `auto.rs` — `nooise auto [BARS]`: `AUTO_STATES` baked-in share codes decode to a `Vec<SongState>` at startup (fatal on a bad code); `MorphState` holds the decoded endpoints + bars-per-leg and derives leg index/from/to/t purely from the live beat clock (no stored progress, so it stays render-deterministic); `MorphWriter` throttles the engine's control-reload tick to one recompute-and-store per 1/8 note.
   - `controls.rs` — `FluidControls`, `MasterControls`, and per-voice control structs with defaults.
   - `registry.rs` — the control registry: one `ControlSpec` table per tab (stable ID, label, kind, range, step, entry semantics, reset, accessors, display). `tab_controls`/`apply_delta`/`apply_min`/`apply_value` all derive from it.
   - `automation.rs` — modulation routes keyed by stable control ID. A control can carry an independent LFO route (`f` submenu: shape/amount/interval/offset) and/or a one-shot envelope route (`e` submenu: amount/attack/decay/trigger); `modulated_control_value_full` sums both, clamps, then snaps. LFO field specs own slider ranges, steps, reset targets, and numeric entry; envelope field behavior lives on `EnvelopeRoute`. LFO shapes cover sine/triangle/ramp/square plus seeded random drift and sample & hold (pure `(seed, cycle index)` hash — no RNG state — reseedable via `LfoRoute::reseed`). Routes drive runtime modulation; song-code persists LFO routes (incl. shape), envelope routes are not persisted on the experiment branch.
@@ -50,6 +51,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
 - Voice RNGs must stay reseedable via `FluidEngine::reseed` so `nooise render --seed` stays byte-reproducible.
 - Passive update checks must never block the TUI or audio callback; keep crates.io/network work off the main loop and show no message on failure.
 - `nooise update` checks crates.io before invoking Cargo; do not force reinstall when the installed version is already current.
+- `nooise auto` morphs by owning and rewriting the live `FluidControls` (same clone-modify-store path the UI uses), driven by registry `ControlKind`: `Gain`/`Continuous` lerp continuously, `Timing`/`Discrete` hold `from` until t=0.5 then jump to `to` through `spec.quantize`. Manual UI edits during a morph are overwritten on the next tick — accepted for this version, not paused. Appending a state to `auto::AUTO_STATES` scales the loop to more legs with no structural change; that list is the seam a future TOML mixtape loader replaces.
 
 ## Verification
 

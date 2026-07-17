@@ -33,6 +33,7 @@ use crate::synth::noise::WhiteNoise;
 use crate::synth::oscillator::SineOscillator;
 use crate::update_check::{UpdateNotice, spawn_update_check};
 
+mod auto;
 mod automation;
 mod controls;
 mod engine;
@@ -44,6 +45,7 @@ mod voice;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use auto::{DEFAULT_AUTO_BARS, MorphState, MorphWriter, decode_auto_states, no_morph};
 use automation::*;
 use controls::*;
 use engine::*;
@@ -107,6 +109,60 @@ pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn
             sr,
             Arc::clone(&controls_for_engine),
             Arc::clone(&automation_for_engine),
+            no_morph(),
+            Arc::clone(&telemetry_for_engine),
+        )
+    })?;
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = ui_loop(
+        &mut terminal,
+        controls,
+        automation,
+        telemetry,
+        initial_song.automation,
+        updates,
+    );
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    result
+}
+
+/// Run the live interactive TUI, slowly morphing forever between the
+/// built-in `AUTO_STATES` over `bars`-bar legs. `nooise auto [BARS]`.
+pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
+    let states = decode_auto_states();
+    let endpoints: Vec<FluidControls> = states.iter().map(|s| s.controls.clone()).collect();
+    let initial_song = SongState {
+        controls: endpoints[0].clone(),
+        automation: states[0].automation.clone(),
+    };
+
+    let controls = Arc::new(ArcSwap::from_pointee(initial_song.controls.clone()));
+    let controls_for_engine = Arc::clone(&controls);
+    let automation = Arc::new(ArcSwap::from_pointee(initial_song.automation.clone()));
+    let automation_for_engine = Arc::clone(&automation);
+    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
+        endpoints, bars,
+    ))));
+    let morph_for_engine = Arc::clone(&morph);
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let telemetry_for_engine = Arc::clone(&telemetry);
+    let updates = UpdateNotice::default();
+    spawn_update_check(updates.clone());
+
+    let _audio_output = audio::start_stream(APP_ID, move |sr| {
+        FluidEngine::new(
+            sr,
+            Arc::clone(&controls_for_engine),
+            Arc::clone(&automation_for_engine),
+            Arc::clone(&morph_for_engine),
             Arc::clone(&telemetry_for_engine),
         )
     })?;
@@ -142,7 +198,13 @@ pub(crate) fn render_wav(
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
     let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(RENDER_SAMPLE_RATE as f32, controls, automation, telemetry);
+    let mut engine = FluidEngine::new(
+        RENDER_SAMPLE_RATE as f32,
+        controls,
+        automation,
+        no_morph(),
+        telemetry,
+    );
     if let Some(seed) = seed {
         engine.reseed(seed);
     }

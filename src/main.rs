@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(CliCommand::Song(args)) => run_song_code(args),
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::Render(args)) => render(args),
+        Some(CliCommand::Auto(args)) => fluid::run_auto(args.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS)),
     }
 }
 
@@ -32,6 +33,8 @@ enum CliCommand {
     Update,
     #[command(about = "Render the default mix to a wav file")]
     Render(RenderArgs),
+    #[command(about = "Slowly morph between built-in song states forever")]
+    Auto(AutoArgs),
     #[command(external_subcommand)]
     Song(Vec<String>),
 }
@@ -44,6 +47,12 @@ struct RenderArgs {
     out: PathBuf,
     #[arg(long)]
     seed: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Args)]
+struct AutoArgs {
+    /// Bars per morph leg (one state-to-state transition). Defaults to 64.
+    bars: Option<u32>,
 }
 
 fn render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
@@ -95,7 +104,7 @@ fn cargo_install_args(version: &str) -> [&str; 6] {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, CliCommand, RenderArgs, cargo_install_args, render};
+    use super::{AutoArgs, Cli, CliCommand, RenderArgs, cargo_install_args, render};
     use clap::{CommandFactory, Parser, error::ErrorKind};
     use std::path::PathBuf;
 
@@ -190,6 +199,28 @@ mod tests {
                 out: PathBuf::from("/tmp/x.wav"),
                 seed: Some(42),
             }))
+        );
+    }
+
+    #[test]
+    fn auto_parses_with_and_without_bars() {
+        assert_eq!(
+            parse(&["auto"]).unwrap().command,
+            Some(CliCommand::Auto(AutoArgs { bars: None }))
+        );
+        assert_eq!(
+            parse(&["auto", "32"]).unwrap().command,
+            Some(CliCommand::Auto(AutoArgs { bars: Some(32) }))
+        );
+        assert_eq!(
+            parse(&["auto"])
+                .unwrap()
+                .command
+                .map(|cmd| match cmd {
+                    CliCommand::Auto(args) => args.bars.unwrap_or(crate::fluid::DEFAULT_AUTO_BARS),
+                    _ => unreachable!(),
+                }),
+            Some(64)
         );
     }
 
