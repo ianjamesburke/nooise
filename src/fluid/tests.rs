@@ -1376,7 +1376,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Arp,
             vec![
-                Gain, Discrete, Timing, Timing, Gain, Discrete, Discrete, Timing, Timing, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Gain, Discrete, Discrete, Gain,
             ],
         ),
     ];
