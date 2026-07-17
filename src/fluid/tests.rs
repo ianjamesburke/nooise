@@ -2948,6 +2948,72 @@ fn grid_trigger_survives_sliding_offset() {
     );
 }
 
+#[test]
+fn grid_trigger_no_double_hit_after_offset_nudge() {
+    let bpm = 120.0;
+    let sample_rate = f64::from(SAMPLE_RATE);
+    let total_samples = (SAMPLE_RATE as u64) * 8;
+    let mut trigger = GridTrigger::new();
+    let mut offset = 0.0f32;
+    let mut nudged = false;
+    let mut hit_samples = Vec::new();
+
+    for sample in 0..total_samples {
+        let t = timing(sample, bpm);
+        if trigger.pop(t, 1.0, offset) {
+            hit_samples.push(sample);
+            if !nudged {
+                // ~10ms nudge, matching the reported live-edit gesture.
+                offset += (0.010 * bpm as f64 / 60.0) as f32;
+                nudged = true;
+            }
+        }
+    }
+
+    assert!(nudged, "test never reached a hit to nudge after");
+    for pair in hit_samples.windows(2) {
+        let gap_seconds = (pair[1] - pair[0]) as f64 / sample_rate;
+        assert!(
+            gap_seconds >= MIN_RETRIGGER_SECONDS,
+            "double hit after offset nudge: gap {gap_seconds:.4}s at sample {}",
+            pair[1]
+        );
+    }
+}
+
+#[test]
+fn grid_trigger_no_double_hit_after_rate_nudge() {
+    let bpm = 120.0;
+    let sample_rate = f64::from(SAMPLE_RATE);
+    let total_samples = (SAMPLE_RATE as u64) * 8;
+    let mut trigger = GridTrigger::new();
+    let mut interval = 1.0f32;
+    let mut nudged = false;
+    let mut hit_samples = Vec::new();
+
+    for sample in 0..total_samples {
+        let t = timing(sample, bpm);
+        if trigger.pop(t, interval, 0.0) {
+            hit_samples.push(sample);
+            if !nudged {
+                // A quick rate tweak right as a hit fires.
+                interval *= 0.4;
+                nudged = true;
+            }
+        }
+    }
+
+    assert!(nudged, "test never reached a hit to nudge after");
+    for pair in hit_samples.windows(2) {
+        let gap_seconds = (pair[1] - pair[0]) as f64 / sample_rate;
+        assert!(
+            gap_seconds >= MIN_RETRIGGER_SECONDS,
+            "double hit after rate nudge: gap {gap_seconds:.4}s at sample {}",
+            pair[1]
+        );
+    }
+}
+
 fn automation_with_route(
     target_id: &'static str,
     depth_ratio: f32,
