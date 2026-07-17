@@ -56,6 +56,23 @@ impl Tab {
         let all = Self::all();
         all[(self as usize + all.len() - 1) % all.len()]
     }
+
+    /// Stable id of this tab's primary level/gain control, or `None` for a
+    /// tab with no single level to mute (`Macros`). The one place that maps
+    /// a tab to its mute target, so `m`/`M` never need a per-voice match arm.
+    pub(crate) fn level_id(self) -> Option<&'static str> {
+        match self {
+            Tab::Master => Some("master.level"),
+            Tab::Perc => Some("perc.level"),
+            Tab::Chords => Some("pad.level"),
+            Tab::Bass => Some("bass.level"),
+            Tab::Kick => Some("kick.level"),
+            Tab::Tonal => Some("tonal.level"),
+            Tab::Clap => Some("clap.level"),
+            Tab::Arp => Some("arp.gain"),
+            Tab::Macros => None,
+        }
+    }
 }
 
 pub(crate) struct ControlItem {
