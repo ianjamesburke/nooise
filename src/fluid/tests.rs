@@ -1331,7 +1331,10 @@ fn tab_controls_classify_each_slider_kind() {
                 Continuous, Timing, Continuous, Discrete,
             ],
         ),
-        (Tab::Perc, vec![Gain, Timing, Timing, Gain, Timing, Gain]),
+        (
+            Tab::Perc,
+            vec![Gain, Gain, Timing, Timing, Timing, Gain],
+        ),
         (
             Tab::Chords,
             vec![
@@ -2494,12 +2497,12 @@ fn perc_tab_controls_include_interval_and_offset() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Perc, &controls);
     assert_eq!(rows.len(), 6);
-    assert_eq!(rows[1].label, "Interval");
-    assert_close(rows[1].min, 0.125);
-    assert_close(rows[1].max, 4.25);
-    assert_eq!(rows[2].label, "Offset");
-    assert_close(rows[2].min, 0.0);
-    assert_close(rows[2].max, 4.0);
+    assert_eq!(rows[3].label, "Interval");
+    assert_close(rows[3].min, 0.125);
+    assert_close(rows[3].max, 4.25);
+    assert_eq!(rows[4].label, "Offset");
+    assert_close(rows[4].min, 0.0);
+    assert_close(rows[4].max, 4.0);
 }
 
 #[test]
@@ -2507,37 +2510,37 @@ fn perc_interval_displays_continuous_at_top() {
     let mut controls = FluidControls::default();
     controls.perc.interval_beats = 4.25;
     let rows = tab_controls(Tab::Perc, &controls);
-    assert_eq!(rows[1].display, "Continuous");
+    assert_eq!(rows[3].display, "Continuous");
 }
 
 #[test]
 fn perc_interval_and_offset_adjust_and_clamp() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Perc, 1, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 0.5);
 
     controls.perc.interval_beats = 0.25;
-    apply_delta(Tab::Perc, 1, -1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, -1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 0.125);
-    apply_delta(Tab::Perc, 1, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 0.25);
 
     controls.perc.interval_beats = 4.25;
-    apply_delta(Tab::Perc, 1, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 4.25);
 
-    apply_delta(Tab::Perc, 2, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 4, 1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 0.125);
 
     controls.perc.offset_beats = 4.0;
-    apply_delta(Tab::Perc, 2, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 4, 1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 4.0);
 
-    apply_min(Tab::Perc, 1, &mut controls);
+    apply_min(Tab::Perc, 3, &mut controls);
     assert_close(controls.perc.interval_beats, 0.125);
 
-    apply_min(Tab::Perc, 2, &mut controls);
+    apply_min(Tab::Perc, 4, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 }
 
@@ -2547,19 +2550,19 @@ fn offset_grid_keeps_true_zero_reachable_below_the_floor() {
     // minimum is the 0.125 floor itself): 0 must survive as an extra rung
     // below the floor, with sixteenths taking over above it.
     let mut controls = FluidControls::default();
-    apply_value(Tab::Perc, 2, 0.03, &mut controls);
+    apply_value(Tab::Perc, 4, 0.03, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 
-    apply_value(Tab::Perc, 2, 0.09, &mut controls);
+    apply_value(Tab::Perc, 4, 0.09, &mut controls);
     assert_close(controls.perc.offset_beats, 0.125);
 
-    apply_value(Tab::Perc, 2, 0.3, &mut controls);
+    apply_value(Tab::Perc, 4, 0.3, &mut controls);
     assert_close(controls.perc.offset_beats, 0.25);
 
     controls.perc.offset_beats = 0.125;
-    apply_delta(Tab::Perc, 2, -1.0, &mut controls);
+    apply_delta(Tab::Perc, 4, -1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
-    apply_delta(Tab::Perc, 2, -1.0, &mut controls);
+    apply_delta(Tab::Perc, 4, -1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 }
 
@@ -3617,23 +3620,23 @@ fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
     // Perc interval (native beats) flipped to ms: h/l moves on the 10 ms
     // grid instead of the beat grid. 0.25 beats = 125 ms -> 140 ms.
     flipped.insert(unit_key("perc.interval_beats", None));
-    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 1, 1.0, 0.0, &flipped);
+    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 3, 1.0, 0.0, &flipped);
     assert_near(beats_to_ms(controls.load().perc.interval_beats, 120.0), 140.0);
 
     // Flipping back to beats lands the value on the control's own grid.
     flipped.remove(&unit_key("perc.interval_beats", None));
-    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 1, false, 0.0);
+    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 3, false, 0.0);
     assert_close(controls.load().perc.interval_beats, 0.25);
 
     // An ms-native control flipped to beats rounds to the nearest divided
     // beat: 470 ms at 120 BPM is 0.94 beats -> 1.0 beats -> 500 ms.
-    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 4, true, 0.0);
+    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 2, true, 0.0);
     assert_near(controls.load().perc.decay_ms, 500.0);
 
     // And once flipped, it steps on the 0.125-beat grid: 500 ms + an eighth
     // of a beat (62.5 ms) at 120 BPM.
     flipped.insert(unit_key("perc.decay_ms", None));
-    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 4, 1.0, 0.0, &flipped);
+    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 2, 1.0, 0.0, &flipped);
     assert_near(controls.load().perc.decay_ms, 562.5);
 }
 

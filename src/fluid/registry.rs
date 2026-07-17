@@ -562,6 +562,34 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         |c, v| c.perc.level = v,
         |c| pct(c.perc.level),
     ),
+    ControlSpec::gain(
+        "perc.filter",
+        "Filter",
+        0.5,
+        1.0,
+        |c| c.perc.filter,
+        |c, v| c.perc.filter = v,
+        |c| pct(c.perc.filter),
+    ),
+    ControlSpec::new(
+        "perc.decay_ms",
+        "Decay",
+        ControlKind::Timing,
+        20.0,
+        2000.0,
+        Step::Linear(20.0),
+        Entry::Free,
+        |c| c.perc.decay_ms,
+        |c, v| c.perc.decay_ms = v,
+        |c| {
+            if c.perc.decay_ms >= 1000.0 {
+                format!("{:.1} s", c.perc.decay_ms / 1000.0)
+            } else {
+                ms0(c.perc.decay_ms)
+            }
+        },
+    )
+    .in_ms(),
     ControlSpec::new(
         "perc.interval_beats",
         "Interval",
@@ -604,34 +632,6 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         |c| c.perc.swing,
         |c, v| c.perc.swing = v,
         |c| pct(c.perc.swing),
-    ),
-    ControlSpec::new(
-        "perc.decay_ms",
-        "Decay",
-        ControlKind::Timing,
-        20.0,
-        2000.0,
-        Step::Linear(20.0),
-        Entry::Free,
-        |c| c.perc.decay_ms,
-        |c, v| c.perc.decay_ms = v,
-        |c| {
-            if c.perc.decay_ms >= 1000.0 {
-                format!("{:.1} s", c.perc.decay_ms / 1000.0)
-            } else {
-                ms0(c.perc.decay_ms)
-            }
-        },
-    )
-    .in_ms(),
-    ControlSpec::gain(
-        "perc.filter",
-        "Filter",
-        0.5,
-        1.0,
-        |c| c.perc.filter,
-        |c, v| c.perc.filter = v,
-        |c| pct(c.perc.filter),
     ),
 ];
 
