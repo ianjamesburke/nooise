@@ -82,6 +82,9 @@ pub(crate) struct ControlItem {
     pub(crate) value: f32,
     pub(crate) min: f32,
     pub(crate) max: f32,
+    /// How `value` maps onto the 0..1 bar — carried so `item_ratio` and the
+    /// marker math stay one shared computation.
+    pub(crate) taper: Taper,
     pub(crate) display: String,
 }
 
@@ -159,12 +162,66 @@ pub(crate) enum Entry {
     Free,
 }
 
-/// How the value maps onto the ratio bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Bar {
+/// Steps per full sweep of an exp-tapered control: one h/l press moves the dial
+/// by this fraction of its throw, so a tapered time control gets this many fine
+/// steps end to end no matter how wide its range.
+pub(crate) const TAPER_STEPS_PER_SWEEP: f32 = 48.0;
+
+/// Default exponent for time controls' exp taper — how hard resolution
+/// concentrates at the low end (1.0 is linear; larger biases toward the floor).
+/// The one place to retune the feel of every envelope-time dial. Tuned by ear.
+pub(crate) const TIME_TAPER: f32 = 3.0;
+
+/// How a control's value maps onto dial position — the shared taper driving
+/// both the visual ratio bar and h/l stepping. `forward` sends a value into the
+/// space where position is linear; `inverse` brings a position back to a value.
+/// Position (0..1) of `v` in `[min, max]` is therefore
+/// `(forward(v) - forward(min)) / (forward(max) - forward(min))`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Taper {
     Linear,
-    /// Bar position is log2-scaled (for power-of-two ranges).
+    /// Log2-scaled, for power-of-two (musical) ranges. Needs a positive min.
     Log2,
+    /// Power-law with exponent `n > 1`, concentrating resolution at the low
+    /// end: `forward(v) = v^(1/n)`, so `value ≈ max * ratio^n` — fine control
+    /// near the floor, coarse near the ceiling. Handles a zero min, which a
+    /// pure log cannot.
+    Exp(f32),
+}
+
+impl Taper {
+    pub(crate) fn forward(self, v: f32) -> f32 {
+        match self {
+            Self::Linear => v,
+            Self::Log2 => v.log2(),
+            Self::Exp(n) => v.max(0.0).powf(1.0 / n),
+        }
+    }
+
+    pub(crate) fn inverse(self, t: f32) -> f32 {
+        match self {
+            Self::Linear => t,
+            Self::Log2 => t.exp2(),
+            Self::Exp(n) => t.max(0.0).powf(n),
+        }
+    }
+
+    /// Position (0..1) of `value` within `[min, max]` under this taper.
+    pub(crate) fn ratio(self, value: f32, min: f32, max: f32) -> f32 {
+        let (lo, hi) = (self.forward(min), self.forward(max));
+        let span = hi - lo;
+        if span.abs() <= f32::EPSILON {
+            0.0
+        } else {
+            ((self.forward(value) - lo) / span).clamp(0.0, 1.0)
+        }
+    }
+
+    /// Value at position `ratio` (0..1) within `[min, max]` under this taper.
+    pub(crate) fn value_at(self, ratio: f32, min: f32, max: f32) -> f32 {
+        let (lo, hi) = (self.forward(min), self.forward(max));
+        self.inverse(lo + ratio.clamp(0.0, 1.0) * (hi - lo))
+    }
 }
 
 /// The native unit of a time-like control, letting the UI's unit toggle (T)
@@ -199,7 +256,7 @@ pub(crate) struct ControlSpec {
     pub(crate) step: Step,
     pub(crate) entry: Entry,
     pub(crate) reset: f32,
-    pub(crate) bar: Bar,
+    pub(crate) taper: Taper,
     pub(crate) lfo_snap: LfoSnap,
     pub(crate) time_base: TimeBase,
     pub(crate) get: GetFn,
@@ -230,7 +287,7 @@ impl ControlSpec {
             step,
             entry,
             reset: min,
-            bar: Bar::Linear,
+            taper: Taper::Linear,
             lfo_snap: LfoSnap::None,
             time_base: TimeBase::None,
             get,
@@ -273,8 +330,8 @@ impl ControlSpec {
         self
     }
 
-    pub(crate) const fn log_bar(mut self) -> Self {
-        self.bar = Bar::Log2;
+    pub(crate) const fn taper(mut self, taper: Taper) -> Self {
+        self.taper = taper;
         self
     }
 
@@ -294,35 +351,52 @@ impl ControlSpec {
     }
 
     pub(crate) fn item(&self, c: &FluidControls) -> ControlItem {
-        let (value, min, max) = match self.bar {
-            Bar::Linear => ((self.get)(c), self.min, self.max),
-            Bar::Log2 => ((self.get)(c).log2(), self.min.log2(), self.max.log2()),
-        };
         ControlItem {
             id: self.id,
             label: self.label,
             kind: self.kind,
-            value,
-            min,
-            max,
+            value: (self.get)(c),
+            min: self.min,
+            max: self.max,
+            taper: self.taper,
             display: (self.display)(c),
         }
     }
 
     pub(crate) fn apply_delta(&self, dir: f32, c: &mut FluidControls) {
         let value = (self.get)(c);
-        let next = match self.step {
-            Step::Linear(step) => (value + dir * step).clamp(self.min, self.max),
-            Step::PowerOfTwo => {
-                if dir > 0.0 {
-                    (value * 2.0).min(self.max)
-                } else {
-                    (value / 2.0).max(self.min)
+        let next = if self.is_continuous_tapered() {
+            // A tapered continuous dial steps in position space, so each press
+            // moves an equal fraction of the throw — fine near the floor,
+            // coarse near the ceiling (log-even octaves for Log2, low-biased
+            // for Exp) — instead of a fixed value delta.
+            let ratio = self.taper.ratio(value, self.min, self.max);
+            let stepped = (ratio + dir / TAPER_STEPS_PER_SWEEP).clamp(0.0, 1.0);
+            self.taper
+                .value_at(stepped, self.min, self.max)
+                .clamp(self.min, self.max)
+        } else {
+            match self.step {
+                Step::Linear(step) => (value + dir * step).clamp(self.min, self.max),
+                Step::PowerOfTwo => {
+                    if dir > 0.0 {
+                        (value * 2.0).min(self.max)
+                    } else {
+                        (value / 2.0).max(self.min)
+                    }
                 }
+                Step::BeatGrid => beat_grid_adjust(value, dir, self.min, self.max),
             }
-            Step::BeatGrid => beat_grid_adjust(value, dir, self.min, self.max),
         };
         (self.set)(c, next);
+    }
+
+    /// A continuous dial with a non-linear taper and a plain `Linear` step:
+    /// stepped in position space and stored at full precision. Discrete grids
+    /// (`PowerOfTwo`/`BeatGrid`) keep their own musical stepping even under a
+    /// `Log2` bar (e.g. chord bars doubling on octaves).
+    fn is_continuous_tapered(&self) -> bool {
+        !matches!(self.taper, Taper::Linear) && matches!(self.step, Step::Linear(_))
     }
 
     pub(crate) fn apply_min(&self, c: &mut FluidControls) {
@@ -360,6 +434,12 @@ impl ControlSpec {
 
     pub(crate) fn quantize(&self, value: f32) -> f32 {
         let clamped = value.clamp(self.min, self.max);
+        // Tapered continuous dials move in position space, so they carry no
+        // value grid: store the exact value (full precision, exact song-code
+        // round-trip) rather than snapping to a spurious step.
+        if self.is_continuous_tapered() {
+            return clamped;
+        }
         match self.step {
             Step::Linear(step) => snap_step(clamped, step).clamp(self.min, self.max),
             Step::PowerOfTwo => nearest_power_of_two(clamped, self.min, self.max),
@@ -376,8 +456,15 @@ pub(crate) fn beats2(v: f32) -> String {
     format!("{v:.2} beats")
 }
 
-pub(crate) fn ms0(v: f32) -> String {
-    format!("{v:.0} ms")
+/// Canonical time readout, shared by every time control: whole milliseconds
+/// below 1 s, seconds (2 dp) at or above. Takes seconds, so ms-stored controls
+/// pass `ms / 1000.0` and get identical ms/s presentation.
+pub(crate) fn secs(seconds: f32) -> String {
+    if seconds < 1.0 {
+        format!("{:.0} ms", seconds * 1000.0)
+    } else {
+        format!("{seconds:.2} s")
+    }
 }
 
 pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
@@ -504,12 +591,13 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         10.0,
         500.0,
-        Step::Linear(10.0),
-        Entry::Snap,
+        Step::Linear(1.0),
+        Entry::Free,
         |c| c.master.comp_release_ms,
         |c, v| c.master.comp_release_ms = v,
-        |c| ms0(c.master.comp_release_ms),
+        |c| secs(c.master.comp_release_ms / 1000.0),
     )
+    .taper(Taper::Exp(TIME_TAPER))
     .in_ms(),
     ControlSpec::new(
         "master.tone",
@@ -577,18 +665,13 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         20.0,
         2000.0,
-        Step::Linear(20.0),
+        Step::Linear(1.0),
         Entry::Free,
         |c| c.perc.decay_ms,
         |c, v| c.perc.decay_ms = v,
-        |c| {
-            if c.perc.decay_ms >= 1000.0 {
-                format!("{:.1} s", c.perc.decay_ms / 1000.0)
-            } else {
-                ms0(c.perc.decay_ms)
-            }
-        },
+        |c| secs(c.perc.decay_ms / 1000.0),
     )
+    .taper(Taper::Exp(TIME_TAPER))
     .in_ms(),
     ControlSpec::new(
         "perc.interval_beats",
@@ -716,24 +799,26 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.05,
         30.0,
-        Step::Linear(0.5),
+        Step::Linear(0.001),
         Entry::Free,
         |c| c.pad.attack_time,
         |c, v| c.pad.attack_time = v,
-        |c| format!("{:.2} s", c.pad.attack_time),
-    ),
+        |c| secs(c.pad.attack_time),
+    )
+    .taper(Taper::Exp(TIME_TAPER)),
     ControlSpec::new(
         "pad.release_time",
         "Release",
         ControlKind::Timing,
         0.05,
         20.0,
-        Step::Linear(0.5),
+        Step::Linear(0.001),
         Entry::Free,
         |c| c.pad.release_time,
         |c, v| c.pad.release_time = v,
-        |c| format!("{:.2} s", c.pad.release_time),
-    ),
+        |c| secs(c.pad.release_time),
+    )
+    .taper(Taper::Exp(TIME_TAPER)),
     ControlSpec::new(
         "pad.type",
         "Type",
@@ -758,7 +843,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
         |c, v| c.pad.chord_bars = v,
         |c| format!("{:.0} beats", c.pad.chord_bars * 4.0),
     )
-    .log_bar()
+    .taper(Taper::Log2)
     .lfo_snap(LfoSnap::Step),
     ControlSpec::new(
         "pad.chord_count",
@@ -879,11 +964,14 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         BASS_CUTOFF_MIN_HZ,
         BASS_CUTOFF_MAX_HZ,
         Step::Linear(100.0),
-        Entry::Snap,
+        Entry::Free,
         |c| c.bass.cutoff,
         |c, v| c.bass.cutoff = v,
         |c| format!("{:.0} Hz", c.bass.cutoff),
     )
+    // Frequency is perceptually logarithmic: a Log2 taper spaces octaves
+    // evenly across the dial so the sweep is smooth from 80 Hz to fully open.
+    .taper(Taper::Log2)
     .reset_at(BASS_CUTOFF_MAX_HZ),
     ControlSpec::new(
         "bass.attack_time",
@@ -891,24 +979,26 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.005,
         1.0,
-        Step::Linear(0.02),
+        Step::Linear(0.001),
         Entry::Free,
         |c| c.bass.attack_time,
         |c, v| c.bass.attack_time = v,
-        |c| format!("{:.3} s", c.bass.attack_time),
-    ),
+        |c| secs(c.bass.attack_time),
+    )
+    .taper(Taper::Exp(TIME_TAPER)),
     ControlSpec::new(
         "bass.decay_time",
         "Decay",
         ControlKind::Timing,
         0.005,
         2.0,
-        Step::Linear(0.05),
+        Step::Linear(0.001),
         Entry::Free,
         |c| c.bass.decay_time,
         |c, v| c.bass.decay_time = v,
-        |c| format!("{:.3} s", c.bass.decay_time),
-    ),
+        |c| secs(c.bass.decay_time),
+    )
+    .taper(Taper::Exp(TIME_TAPER)),
     ControlSpec::new(
         "bass.type",
         "Type",
@@ -1033,12 +1123,13 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         10.0,
         300.0,
-        Step::Linear(5.0),
-        Entry::Snap,
+        Step::Linear(1.0),
+        Entry::Free,
         |c| c.kick.pitch_decay_ms,
         |c, v| c.kick.pitch_decay_ms = v,
-        |c| ms0(c.kick.pitch_decay_ms),
+        |c| secs(c.kick.pitch_decay_ms / 1000.0),
     )
+    .taper(Taper::Exp(TIME_TAPER))
     .in_ms(),
     ControlSpec::new(
         "kick.amp_decay_ms",
@@ -1046,12 +1137,13 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         50.0,
         1000.0,
-        Step::Linear(20.0),
-        Entry::Snap,
+        Step::Linear(1.0),
+        Entry::Free,
         |c| c.kick.amp_decay_ms,
         |c, v| c.kick.amp_decay_ms = v,
-        |c| ms0(c.kick.amp_decay_ms),
+        |c| secs(c.kick.amp_decay_ms / 1000.0),
     )
+    .taper(Taper::Exp(TIME_TAPER))
     .in_ms(),
     ControlSpec::new(
         "kick.interval_beats",
@@ -1170,24 +1262,26 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.0,
         1.0,
-        Step::Linear(0.01),
+        Step::Linear(0.001),
         Entry::Free,
         |c| c.tonal.attack,
         |c, v| c.tonal.attack = v,
-        |c| format!("{:.3} s", c.tonal.attack),
-    ),
+        |c| secs(c.tonal.attack),
+    )
+    .taper(Taper::Exp(TIME_TAPER)),
     ControlSpec::new(
-        "tonal.release",
-        "Release",
+        "tonal.decay",
+        "Decay",
         ControlKind::Timing,
-        0.0,
+        TONAL_DECAY_MIN,
         6.0,
-        Step::Linear(0.05),
+        Step::Linear(0.001),
         Entry::Free,
-        |c| c.tonal.release,
-        |c, v| c.tonal.release = v,
-        |c| format!("{:.2} s", c.tonal.release),
-    ),
+        |c| c.tonal.decay,
+        |c, v| c.tonal.decay = v,
+        |c| secs(c.tonal.decay),
+    )
+    .taper(Taper::Exp(TIME_TAPER)),
     ControlSpec::new(
         "tonal.synth_type",
         "Type",
@@ -1299,19 +1393,6 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c, v| c.tonal.evolve_rate = v,
         |c| pct(c.tonal.evolve_rate),
     ),
-    ControlSpec::new(
-        "tonal.note_length_beats",
-        "Note Length",
-        ControlKind::Timing,
-        0.1,
-        2.0,
-        Step::Linear(0.05),
-        Entry::Free,
-        |c| c.tonal.note_length_beats,
-        |c, v| c.tonal.note_length_beats = v,
-        |c| beats2(c.tonal.note_length_beats),
-    )
-    .in_beats(),
     ControlSpec::gain(
         "tonal.reverb_mix",
         "Reverb Mix",
@@ -1367,12 +1448,13 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         10.0,
         200.0,
-        Step::Linear(5.0),
-        Entry::Snap,
+        Step::Linear(1.0),
+        Entry::Free,
         |c| c.clap.decay_ms,
         |c, v| c.clap.decay_ms = v,
-        |c| ms0(c.clap.decay_ms),
+        |c| secs(c.clap.decay_ms / 1000.0),
     )
+    .taper(Taper::Exp(TIME_TAPER))
     .in_ms(),
     ControlSpec::new(
         "clap.interval_beats",
@@ -1420,12 +1502,13 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.0,
         100.0,
-        Step::Linear(2.0),
-        Entry::Snap,
+        Step::Linear(1.0),
+        Entry::Free,
         |c| c.clap.slap_spread_ms,
         |c, v| c.clap.slap_spread_ms = v,
-        |c| format!("{:.1} ms", c.clap.slap_spread_ms),
+        |c| secs(c.clap.slap_spread_ms / 1000.0),
     )
+    .taper(Taper::Exp(TIME_TAPER))
     .in_ms(),
     ControlSpec::gain(
         "clap.room",
@@ -1463,24 +1546,26 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
         ControlKind::Timing,
         0.0,
         1.0,
-        Step::Linear(0.01),
+        Step::Linear(0.001),
         Entry::Free,
         |c| c.arp.attack,
         |c, v| c.arp.attack = v,
-        |c| format!("{:.3} s", c.arp.attack),
-    ),
+        |c| secs(c.arp.attack),
+    )
+    .taper(Taper::Exp(TIME_TAPER)),
     ControlSpec::new(
-        "arp.release",
-        "Release",
+        "arp.decay",
+        "Decay",
         ControlKind::Timing,
-        0.0,
+        TONAL_DECAY_MIN,
         6.0,
-        Step::Linear(0.05),
+        Step::Linear(0.001),
         Entry::Free,
-        |c| c.arp.release,
-        |c, v| c.arp.release = v,
-        |c| format!("{:.2} s", c.arp.release),
-    ),
+        |c| c.arp.decay,
+        |c, v| c.arp.decay = v,
+        |c| secs(c.arp.decay),
+    )
+    .taper(Taper::Exp(TIME_TAPER)),
     ControlSpec::new(
         "arp.type",
         "Type",

@@ -179,51 +179,47 @@ fn piano_harmonic_decay_gets_faster_with_pitch() {
 }
 
 #[test]
-fn tonal_envelope_gain_ramps_attack_then_holds_then_releases() {
-    // total=1s, attack=0.5s, release=0.5s, power=1 (linear release): ramp up
-    // across the first half, hold at unity, then release linearly across
-    // the second half.
-    assert_close(tonal_envelope_gain(0.0, 1.0, 0.5, 0.5, 1.0), 0.0);
-    assert_close(tonal_envelope_gain(0.25, 1.0, 0.5, 0.5, 1.0), 0.5);
-    assert_close(tonal_envelope_gain(0.5, 1.0, 0.5, 0.5, 1.0), 1.0);
-    assert_close(tonal_envelope_gain(0.75, 1.0, 0.5, 0.5, 1.0), 0.5);
-    assert_close(tonal_envelope_gain(1.0, 1.0, 0.5, 0.5, 1.0), 0.0);
+fn attack_decay_gain_ramps_attack_then_decays() {
+    // attack=0.5s, decay=0.5s, power=1 (linear decay): ramp up across the
+    // attack, peak at its end, then fall linearly to zero across the decay.
+    // The note's whole life is attack + decay = 1s.
+    assert_close(attack_decay_gain(0.0, 0.5, 0.5, 1.0), 0.0);
+    assert_close(attack_decay_gain(0.25, 0.5, 0.5, 1.0), 0.5);
+    assert_close(attack_decay_gain(0.5, 0.5, 0.5, 1.0), 1.0);
+    assert_close(attack_decay_gain(0.75, 0.5, 0.5, 1.0), 0.5);
+    assert_close(attack_decay_gain(1.0, 0.5, 0.5, 1.0), 0.0);
 }
 
 #[test]
-fn tonal_envelope_gain_reduces_to_full_note_curve_when_release_covers_whole_note() {
-    // With attack ~0 and release at or beyond the note's own duration, the
-    // shared envelope collapses to the tonal voices' original always-in-
-    // release shape: (1 - t)^power for the whole note. This is the default
-    // reset behavior (tonal.release resets to 2.0s, at least as long as any
-    // note the current controls can produce), so switching a profile's type
-    // keeps its historical decay curve exactly unless release is shortened.
-    let total = 2.0;
+fn attack_decay_gain_is_pure_decay_with_zero_attack() {
+    // With attack 0 the note peaks on the first sample and is a pure
+    // `(1 - t)^power` decay across the decay time — exactly the clap/perc
+    // decay shape the whole synth is unified around.
+    let decay = 2.0;
     for &t in &[0.0f32, 0.1, 0.25, 0.6, 0.9, 1.0] {
-        let elapsed = t * total;
-        let gain = tonal_envelope_gain(elapsed, total, 0.0, 5.0, 2.0);
+        let elapsed = t * decay;
+        let gain = attack_decay_gain(elapsed, 0.0, decay, 2.0);
         assert_near(gain, (1.0 - t).powf(2.0));
     }
 }
 
 #[test]
-fn tonal_envelope_gain_clamps_attack_to_note_length() {
-    // An attack control longer than the note itself should still reach
-    // (near) full volume by the note's end instead of leaving it fading in
-    // forever.
-    let total = 1.0;
-    let near_end = tonal_envelope_gain(total * 0.999, total, 10.0, 0.0, 1.0);
-    assert!(near_end > 0.99, "expected near-unity gain, got {near_end}");
+fn attack_decay_gain_peaks_at_end_of_attack() {
+    // The envelope reaches unity exactly when the attack ramp finishes, then
+    // immediately begins decaying — there is no hold-at-full stage.
+    assert_close(attack_decay_gain(0.1, 0.2, 1.0, 1.0), 0.5);
+    assert_close(attack_decay_gain(0.2, 0.2, 1.0, 1.0), 1.0);
+    assert!(attack_decay_gain(0.3, 0.2, 1.0, 1.0) < 1.0);
 }
 
 #[test]
-fn tonal_envelope_gain_clamps_release_to_note_length() {
-    // A release control longer than the note itself should still fully
-    // decay by the note's end instead of leaving an audible tail hanging
-    // past it.
-    let total = 1.0;
-    let at_end = tonal_envelope_gain(total, total, 0.0, 10.0, 1.0);
-    assert_close(at_end, 0.0);
+fn attack_decay_gain_reaches_zero_at_end_of_life() {
+    // The envelope hits exactly 0 at elapsed = attack + decay, so a voice
+    // killed at that length ends in silence rather than a clicking cut.
+    assert_close(attack_decay_gain(1.0, 0.2, 0.8, 1.0), 0.0);
+    // A decay of 0 collapses the note to nothing (the registry floors the
+    // control above 0 so the UI can never request this hard cut).
+    assert_close(attack_decay_gain(0.05, 0.1, 0.0, 1.0), 0.0);
 }
 
 #[test]
@@ -232,8 +228,8 @@ fn tonal_attack_control_changes_piano_voice_onset() {
     // very first one, since every oscillator starts at zero phase and
     // would otherwise mask the envelope difference.
     let profile = piano_profile(1);
-    let mut fast = PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, 48_000, SAMPLE_RATE, 0.0, 2.0);
-    let mut slow = PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, 48_000, SAMPLE_RATE, 0.05, 2.0);
+    let mut fast = PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, SAMPLE_RATE, 0.0, 2.0);
+    let mut slow = PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, SAMPLE_RATE, 0.05, 2.0);
 
     let fast_energy: f32 = (0..10).map(|_| fast.next().0.abs()).sum();
     let slow_energy: f32 = (0..10).map(|_| slow.next().0.abs()).sum();
@@ -245,31 +241,29 @@ fn tonal_attack_control_changes_piano_voice_onset() {
 }
 
 #[test]
-fn tonal_release_control_delays_decay_onset() {
-    // A short release only kicks in right at the tail of the note (full
-    // sustain until then); a release spanning the whole note is decaying
-    // from the very first sample. Halfway through the note, the short-
-    // release voice should still be louder.
+fn tonal_decay_control_sets_ring_length() {
+    // Decay is the note's whole ring: a long decay is still sounding well
+    // past the point where a short-decay note has already fallen silent and
+    // ended. This is the clap/perc decay model applied to the tonal voice.
     let profile = piano_profile(1);
-    let total_samples = 48_000u64;
-    let halfway = total_samples / 2;
+    // attack 0, so each note's life is exactly its decay time.
+    let mut long_decay = PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, SAMPLE_RATE, 0.0, 2.0);
+    let mut short_decay = PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, SAMPLE_RATE, 0.0, 0.1);
 
-    let mut long_release =
-        PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, total_samples, SAMPLE_RATE, 0.0, 2.0);
-    let mut short_release =
-        PianoTonalVoice::new(profile, 60, 440.0, 0.0, 1.0, total_samples, SAMPLE_RATE, 0.0, 0.05);
-
-    for _ in 0..halfway {
-        long_release.next();
-        short_release.next();
+    // 0.25s in — past the short note's 0.1s life, deep inside the long note's.
+    let quarter_second = (SAMPLE_RATE * 0.25) as u64;
+    for _ in 0..quarter_second {
+        long_decay.next();
+        short_decay.next();
     }
-    let (long_l, _) = long_release.next();
-    let (short_l, _) = short_release.next();
+    let (long_l, _) = long_decay.next();
+    let (short_l, _) = short_decay.next();
 
+    assert!(short_decay.is_done(), "a short-decay note must have ended by 0.25s");
     assert!(
-        short_l.abs() > long_l.abs(),
-        "a shorter tonal.release should still be at full sustain halfway through the note \
-         while a release spanning the whole note has already decayed: long={long_l}, short={short_l}"
+        long_l.abs() > short_l.abs(),
+        "a longer tonal.decay should still be ringing when the short note is silent: \
+         long={long_l}, short={short_l}"
     );
 }
 
@@ -1007,6 +1001,74 @@ fn engine_publishes_beat_telemetry() {
     );
 }
 
+// ============================================================
+// Golden render — reproducibility guardrail
+//
+// `render --seed` is relied on to be byte-identical across releases (the
+// release profile comment in Cargo.toml calls this out explicitly). Nothing
+// enforced that before this test: it's the tripwire for any change to the
+// per-sample DSP math (oscillators, decay curves, filter coefficients) that
+// alters float rounding, even when the change is otherwise behavior-neutral.
+// A deliberate DSP change (e.g. replacing a per-sample `exp()` with an
+// equivalent closed-form recurrence) is expected to trip this — re-bless
+// GOLDEN_RENDER_CHECKSUM only after confirming the new output is inaudibly
+// close to the old one.
+const GOLDEN_RENDER_SAMPLES: usize = 48_000;
+// Re-blessed when tonal and arp were unified onto one attack+decay envelope
+// (`attack_decay_gain`): every note now ramps in over `attack`, then decays
+// from the peak to silence over `decay`, with the note's whole life = attack +
+// decay and no step-clamped hold. This shifts both the tonal and arp voices in
+// this render (tonal.level 0.5 + arp.gain 0.4); pad/bass paths are unchanged.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0xb71d_8f67_366c_2d4a;
+
+/// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
+/// bit patterns (not values) means any float divergence, including sub-ULP
+/// rounding differences, changes the checksum.
+fn fold_sample_bits(hash: u64, bits: u32) -> u64 {
+    (hash ^ u64::from(bits)).wrapping_mul(0x100000001b3)
+}
+
+#[test]
+fn golden_render_is_byte_identical_for_a_seed() {
+    // Non-default tonal/arp levels and synth types so the render actually
+    // exercises the piano voice's per-harmonic decay path, not just silence.
+    let controls = Arc::new(ArcSwap::from_pointee(FluidControls {
+        master: MasterControls {
+            bpm: 140.0,
+            ..MasterControls::default()
+        },
+        tonal: TonalControls {
+            level: 0.5,
+            synth_type: 2.0,
+            rate_beats: 0.25,
+            ..TonalControls::default()
+        },
+        arp: ArpControls {
+            gain: 0.4,
+            ..ArpControls::default()
+        },
+        ..FluidControls::default()
+    }));
+    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let mut engine = FluidEngine::new(SAMPLE_RATE, controls, automation, no_morph(), telemetry);
+    engine.reseed(42);
+
+    let mut hash = 0xcbf2_9ce4_8422_2325u64; // FNV offset basis
+    for _ in 0..GOLDEN_RENDER_SAMPLES {
+        let (l, r) = engine.next_stereo();
+        hash = fold_sample_bits(hash, l.to_bits());
+        hash = fold_sample_bits(hash, r.to_bits());
+    }
+
+    assert_eq!(
+        hash, GOLDEN_RENDER_CHECKSUM,
+        "seeded render output changed — this either broke reproducibility \
+         unintentionally, or is an expected result of a deliberate DSP change. \
+         If the latter, re-bless GOLDEN_RENDER_CHECKSUM (checksum was {hash:#x})"
+    );
+}
+
 #[test]
 fn ambient_reverb_send_ducks_dry_sources_by_mix() {
     let mut send = AmbientReverbSend::new(SAMPLE_RATE);
@@ -1067,7 +1129,6 @@ fn full_tonal_reverb_does_not_boost_tonal_rms() {
         let controls = TonalControls {
             level: 0.8,
             randomness: 0.0,
-            note_length_beats: 1.0,
             step_interval_beats: 4.0,
             reverb_mix,
             ..TonalControls::default()
@@ -1260,7 +1321,7 @@ fn defaults_match_current_mix() {
     assert_close(controls.tonal.synth_type, 0.0);
     assert_close(controls.tonal.rate_beats, 0.5);
     assert_close(controls.tonal.step_interval_beats, 16.0);
-    assert_close(controls.tonal.note_length_beats, 1.5);
+    assert_close(controls.tonal.decay, 1.2);
     assert_close(controls.tonal.randomness, 0.5);
     assert_close(controls.tonal.evolve_rate, 0.0);
 
@@ -1364,7 +1425,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Tonal,
             vec![
                 Gain, Timing, Timing, Discrete, Discrete, Discrete, Timing, Timing, Timing, Gain,
-                Gain, Continuous, Timing, Gain,
+                Gain, Continuous, Gain,
             ],
         ),
         (
@@ -1412,8 +1473,12 @@ fn control_registry_specs_are_internally_consistent() {
                 spec.reset >= spec.min && spec.reset <= spec.max,
                 "{ctx}: reset outside [min, max]"
             );
-            if spec.bar == Bar::Log2 {
-                assert!(spec.min > 0.0, "{ctx}: log bar needs positive min");
+            if spec.taper == Taper::Log2 {
+                assert!(spec.min > 0.0, "{ctx}: log taper needs positive min");
+            }
+            if let Taper::Exp(n) = spec.taper {
+                assert!(n > 0.0, "{ctx}: exp taper needs a positive exponent");
+                assert!(spec.min >= 0.0, "{ctx}: exp taper needs a non-negative min");
             }
             if let Step::Linear(step) = spec.step {
                 assert!(step > 0.0, "{ctx}: step must be positive");
@@ -1693,29 +1758,29 @@ fn song_code_decodes_missing_controls_as_defaults() {
 }
 
 #[test]
-fn song_code_round_trips_tonal_attack_and_release() {
+fn song_code_round_trips_tonal_attack_and_decay() {
     let mut controls = FluidControls::default();
     controls.tonal.attack = 0.2;
-    controls.tonal.release = 1.5;
+    controls.tonal.decay = 1.5;
 
     let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_close(decoded.controls.tonal.attack, 0.2);
-    assert_close(decoded.controls.tonal.release, 1.5);
+    assert_close(decoded.controls.tonal.decay, 1.5);
 }
 
-/// A song code encoded before tonal.attack/tonal.release existed simply has
+/// A song code encoded before tonal.attack/tonal.decay existed simply has
 /// no entries for those ids; the generic id->f32 snapshot format (unchanged
 /// since it predates this control) already decodes them as defaults with no
 /// version bump required.
 #[test]
-fn song_code_predating_tonal_attack_release_decodes_with_defaults() {
+fn song_code_predating_tonal_attack_decay_decodes_with_defaults() {
     let code = song::encode_song_code(&SongState::default()).unwrap();
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_close(decoded.controls.tonal.attack, TonalControls::default().attack);
-    assert_close(decoded.controls.tonal.release, TonalControls::default().release);
+    assert_close(decoded.controls.tonal.decay, TonalControls::default().decay);
 }
 
 #[test]
@@ -2406,16 +2471,24 @@ fn chords_release_row_present_with_lowered_attack_floor() {
 fn chords_attack_and_release_adjust_and_clamp_low() {
     let mut controls = FluidControls::default();
 
+    // Exp-tapered dials step in position space, so a single press near the
+    // floor is a small move (fine control), not a jump to the min. Stepping
+    // down lowers the value but stays in range; apply_min snaps to the floor;
+    // and stepping down again at the floor holds there.
     controls.pad.attack_time = 0.1;
     apply_delta(Tab::Chords, 1, -1.0, &mut controls);
-    assert_close(controls.pad.attack_time, 0.05);
+    assert!(controls.pad.attack_time < 0.1 && controls.pad.attack_time >= 0.05);
     apply_min(Tab::Chords, 1, &mut controls);
+    assert_close(controls.pad.attack_time, 0.05);
+    apply_delta(Tab::Chords, 1, -1.0, &mut controls);
     assert_close(controls.pad.attack_time, 0.05);
 
     controls.pad.release_time = 0.1;
     apply_delta(Tab::Chords, 2, -1.0, &mut controls);
-    assert_close(controls.pad.release_time, 0.05);
+    assert!(controls.pad.release_time < 0.1 && controls.pad.release_time >= 0.05);
     apply_min(Tab::Chords, 2, &mut controls);
+    assert_close(controls.pad.release_time, 0.05);
+    apply_delta(Tab::Chords, 2, -1.0, &mut controls);
     assert_close(controls.pad.release_time, 0.05);
 }
 
@@ -4109,6 +4182,57 @@ fn arp_chord_change_clamps_cycle_position_without_resetting_it() {
     // Clamped into range (index 3, the top of a 4-tone list) rather than
     // reset to 0, then advanced one step by the Up pattern: (3+1)%4 = 0.
     assert_eq!(arp.cycle_pos, 0);
+}
+
+#[test]
+fn arp_decay_sets_note_ring_independent_of_step() {
+    // A note's life is `attack + decay`, fully decoupled from the step grid.
+    // A short-decay note ends well before the next step; a long-decay note
+    // rings past it. The step only spaces the triggers.
+    let pad = PadControls::default();
+    let t0 = timing(0, 120.0);
+    // One long, isolated step so the next trigger is far away and can't be
+    // mistaken for a still-ringing note.
+    let step_samples = t0.beats_to_samples(ARP_RATE_BEATS_MAX);
+    let base = ArpControls {
+        gain: 0.5,
+        rate_beats: ARP_RATE_BEATS_MAX,
+        pattern: 0.0,
+        ..ArpControls::default()
+    };
+
+    let mut short = ArpEngine::new(SAMPLE_RATE);
+    let mut long = ArpEngine::new(SAMPLE_RATE);
+    let short_controls = ArpControls {
+        decay: 0.1,
+        ..base.clone()
+    };
+    let long_controls = ArpControls {
+        decay: 3.0,
+        ..base
+    };
+
+    short.next(&short_controls, &pad, 0.0, t0);
+    long.next(&long_controls, &pad, 0.0, t0);
+    assert_eq!(short.voices.len(), 1);
+    assert_eq!(long.voices.len(), 1);
+
+    // Advance each voice up to the next step boundary (the `next` calls above
+    // already consumed one sample) without letting the engine trigger a new
+    // note.
+    for _ in 0..step_samples {
+        short.voices[0].next();
+        long.voices[0].next();
+    }
+
+    assert!(
+        short.voices[0].is_done(),
+        "a short-decay arp note must end long before the next step"
+    );
+    assert!(
+        !long.voices[0].is_done(),
+        "a long decay must keep the arp note ringing past its step"
+    );
 }
 
 #[test]

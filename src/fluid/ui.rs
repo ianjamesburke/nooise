@@ -458,11 +458,7 @@ pub(crate) fn ms_to_beats(ms: f32, bpm: f32) -> f32 {
 }
 
 fn fmt_ms(ms: f32) -> String {
-    if ms >= 1000.0 {
-        format!("{:.2} s", ms / 1000.0)
-    } else {
-        format!("{ms:.0} ms")
-    }
+    secs(ms / 1000.0)
 }
 
 fn fmt_beats(beats: f32) -> String {
@@ -1421,22 +1417,9 @@ pub(crate) fn render(
             route.map(|r| live_effective_lfo_route(automation, controls, address, r, mod_ctx));
         let markers = {
             let spec = address.spec();
-            let base = match spec.bar {
-                Bar::Linear => item.value,
-                Bar::Log2 => 2f32.powf(item.value),
-            };
-            let range = item.max - item.min;
-            let ratio_of = |value: f32| {
-                let value = match spec.bar {
-                    Bar::Linear => value,
-                    Bar::Log2 => value.log2(),
-                };
-                if range.abs() <= f32::EPSILON {
-                    0.0
-                } else {
-                    ((value - item.min) / range).clamp(0.0, 1.0)
-                }
-            };
+            // Markers all sit on the same tapered bar as the value itself.
+            let base = item.value;
+            let ratio_of = |value: f32| spec.taper.ratio(value, spec.min, spec.max);
             // Ghosts only for sources that actually contribute.
             let lfo = effective_lfo
                 .as_ref()
@@ -1844,16 +1827,11 @@ fn slider_spans(
 }
 
 pub(crate) fn item_ratio(item: &ControlItem) -> f32 {
-    let range = item.max - item.min;
-    if range.abs() <= f32::EPSILON {
-        0.0
-    } else {
-        let value = match item.kind {
-            ControlKind::Discrete => item.value.round(),
-            ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing => item.value,
-        };
-        ((value - item.min) / range).clamp(0.0, 1.0)
-    }
+    let value = match item.kind {
+        ControlKind::Discrete => item.value.round(),
+        ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing => item.value,
+    };
+    item.taper.ratio(value, item.min, item.max)
 }
 
 pub(crate) fn ratio_bar(ratio: f32, width: usize, filled: char, empty: char) -> String {

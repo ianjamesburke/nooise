@@ -173,12 +173,11 @@ pub(crate) struct TonalControls {
     pub phrase: f32,
     pub randomness: f32,
     pub evolve_rate: f32,
-    pub note_length_beats: f32,
     pub rate_beats: f32,
     pub step_interval_beats: f32,
     pub offset_beats: f32,
     pub attack: f32,
-    pub release: f32,
+    pub decay: f32,
     pub reverb_mix: f32,
     pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
@@ -192,18 +191,16 @@ impl Default for TonalControls {
             phrase: 0.0,
             randomness: 0.5,
             evolve_rate: 0.0,
-            note_length_beats: 1.5,
             rate_beats: 0.5,
             step_interval_beats: 16.0,
             offset_beats: 0.0,
-            // Reset targets chosen so the default sound is unchanged: attack
-            // approximates the average onset of the old per-profile
-            // attack_ratio values at the default note length, and release
-            // sits at or above the longest possible note (2 beats at the
-            // slowest bpm, 60) so every profile's original full-note decay
-            // curve keeps playing out exactly as before.
+            // Attack + decay are the note's whole envelope: ramp in over
+            // `attack`, then fall from the peak to silence over `decay`. The
+            // note's sounding length is exactly `attack + decay`, decoupled
+            // from the step grid, so `decay` alone sets how long each note
+            // rings.
             attack: 0.03,
-            release: 2.0,
+            decay: 1.2,
             reverb_mix: 0.6,
             swing: 0.0,
         }
@@ -279,7 +276,7 @@ pub(crate) struct ArpControls {
     pub pattern: f32,   // 0=Up, 1=Down, 2=Up-Down, 3=Random
     pub octaves: f32,   // 1-3, octave span of the cycled chord tones
     pub attack: f32,
-    pub release: f32,
+    pub decay: f32,
     pub reverb_mix: f32,
     pub swing: f32,     // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
@@ -298,7 +295,7 @@ impl Default for ArpControls {
             pattern: 0.0,
             octaves: 1.0,
             attack: 0.005,
-            release: 0.3,
+            decay: 0.4,
             // Matches the former AMBIENT_REVERB_ARP_MIX_FIXED constant so the
             // default sound is unchanged.
             reverb_mix: 0.5,

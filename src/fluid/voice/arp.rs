@@ -159,7 +159,10 @@ impl ArpEngine {
             self.ping_pong_dir = next_dir;
 
             let hz = midi_to_hz(note) * tune_ratio(tune);
-            let decay_samples = timing.beats_to_samples(rate_beats);
+            // A note sounds for `attack + decay`, decoupled from the step grid,
+            // so a longer decay lets consecutive notes overlap and ring out
+            // instead of being cut at the step. `rate_beats` only sets the
+            // trigger spacing below.
             let pan = self.rng.gen_range(-0.4f32..0.4);
             // A voice captures its gain at trigger time, so a gain of exactly
             // 0 (the default) would stay silent for its whole life — skip
@@ -172,10 +175,9 @@ impl ArpEngine {
                     hz,
                     pan,
                     c.gain,
-                    decay_samples,
                     self.sample_rate,
                     c.attack,
-                    c.release,
+                    c.decay,
                 ));
             }
         }
