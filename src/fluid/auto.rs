@@ -6,7 +6,7 @@ use super::{ControlKind, FluidControls, SongState, all_specs, decode_song_code};
 
 /// Bars per morph leg, matching the throttled-writer granularity of one leg
 /// spanning `bars * 4` beats (4/4).
-pub(crate) const DEFAULT_AUTO_BARS: u32 = 64;
+pub(crate) const DEFAULT_AUTO_BARS: u32 = 128;
 
 /// Ordered share codes for the built-in auto-morph states. Appending a code
 /// here scales the loop to more legs with no structural change; the future
