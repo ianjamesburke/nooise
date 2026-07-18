@@ -99,7 +99,7 @@ pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), B
 pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn Error>> {
     // Interactive start: no morph running. `A` can begin one live, heading
     // toward the built-in states from wherever the user currently is.
-    let auto_states = decode_auto_states().into_iter().map(|s| s.controls).collect();
+    let auto_states = decode_auto_states();
     run_interactive(initial_song, no_morph(), auto_states, DEFAULT_AUTO_BARS)
 }
 
@@ -108,16 +108,12 @@ pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn
 /// — as does touching any parameter — and back on from the current state.
 pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
     let states = decode_auto_states();
-    let endpoints: Vec<FluidControls> = states.iter().map(|s| s.controls.clone()).collect();
-    let initial_song = SongState {
-        controls: endpoints[0].clone(),
-        automation: states[0].automation.clone(),
-    };
+    let initial_song = states[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
-        endpoints.clone(),
+        states.clone(),
         bars,
     ))));
-    run_interactive(initial_song, morph, endpoints, bars)
+    run_interactive(initial_song, morph, states, bars)
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
@@ -127,7 +123,7 @@ pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
 fn run_interactive(
     initial_song: SongState,
     morph: Arc<ArcSwap<Option<MorphState>>>,
-    auto_states: Vec<FluidControls>,
+    auto_states: Vec<SongState>,
     auto_bars: u32,
 ) -> Result<(), Box<dyn Error>> {
     let controls = Arc::new(ArcSwap::from_pointee(initial_song.controls.clone()));

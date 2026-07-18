@@ -89,9 +89,11 @@ impl StereoEngine for FluidEngine {
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         if self.current_sample.is_multiple_of(128) {
             if let Some(morph) = self.morph.load_full().as_ref()
-                && let Some(next) = self.morph_writer.tick(morph, self.tempo.beat)
+                && let Some((next_controls, next_automation)) =
+                    self.morph_writer.tick(morph, self.tempo.beat)
             {
-                self.controls.store(Arc::new(next));
+                self.controls.store(Arc::new(next_controls));
+                self.automation.store(Arc::new(next_automation));
             }
             self.snapshot = FluidControls::clone(&self.controls.load());
             self.gain_smoothers

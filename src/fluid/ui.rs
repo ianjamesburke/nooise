@@ -201,7 +201,7 @@ pub(crate) fn ui_loop(
                 // nothing jumps, heading to the nearest built-in state first.
                 KeyCode::Char('a') => {
                     let current = FluidControls::clone(&controls.load());
-                    auto.toggle(current, beat);
+                    auto.toggle(current, automation.state().clone(), beat);
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if automation.state().is_editor_open() {
@@ -279,9 +279,11 @@ pub(crate) fn ui_loop(
                     );
                 }
                 KeyCode::Char('f') => {
+                    auto.exit(); // touching a modulator exits auto
                     open_modulator(&mut automation, &items, selected, ModKind::Lfo, &mut lfo_selected);
                 }
                 KeyCode::Char('e') => {
+                    auto.exit(); // touching a modulator exits auto
                     open_modulator(
                         &mut automation,
                         &items,
@@ -291,6 +293,7 @@ pub(crate) fn ui_loop(
                     );
                 }
                 KeyCode::Char('v') => {
+                    auto.exit(); // touching a modulator exits auto
                     match active_field(automation.state(), lfo_selected) {
                         // On an LFO field row: stack (or un-stack) a macro
                         // onto that specific field, never on by default.
@@ -333,6 +336,7 @@ pub(crate) fn ui_loop(
                     }
                 }
                 KeyCode::Char('x') | KeyCode::Char('X') => {
+                    auto.exit(); // touching a modulator exits auto
                     match active_field(automation.state(), lfo_selected) {
                         // On an open field-macro row: remove just that
                         // stacked macro, keep the parent LFO editor open.
@@ -411,6 +415,7 @@ pub(crate) fn ui_loop(
                     if let Some(address) = automation.state().active_address()
                         && automation.state().active_kind() == Some(ModKind::Lfo)
                     {
+                        auto.exit(); // touching a modulator exits auto
                         automation.edit(|state| {
                             if let Some(route) = state.route_mut(address)
                                 && route.shape.is_random()

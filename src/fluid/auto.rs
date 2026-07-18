@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
-use super::{ControlKind, FluidControls, SongState, all_specs, decode_song_code};
+use super::{AutomationState, ControlKind, FluidControls, SongState, all_specs, decode_song_code};
+#[cfg(test)]
+use super::automation::{ControlAddress, LfoRoute, LfoShape};
 
 /// Bars per morph leg, matching the throttled-writer granularity of one leg
 /// spanning `bars * 4` beats (4/4).
@@ -123,7 +125,7 @@ fn stepped_offsets(from: &FluidControls, to: &FluidControls) -> Vec<(usize, f64)
 /// automation. Live progress is derived from the beat clock, not stored, so
 /// it stays deterministic for any future offline render.
 pub(crate) struct MorphState {
-    endpoints: Vec<FluidControls>,
+    endpoints: Vec<SongState>,
     bars: u32,
     /// Staggered hard-switch offsets for leg i -> i+1 (mod n), precomputed once.
     stepped: Vec<Vec<(usize, f64)>>,
@@ -134,14 +136,14 @@ pub(crate) struct MorphState {
 }
 
 impl MorphState {
-    pub(crate) fn new(endpoints: Vec<FluidControls>, bars: u32) -> Self {
+    pub(crate) fn new(endpoints: Vec<SongState>, bars: u32) -> Self {
         assert!(
             !endpoints.is_empty(),
             "auto-morph requires at least one state"
         );
         let n = endpoints.len();
         let stepped = (0..n)
-            .map(|i| stepped_offsets(&endpoints[i], &endpoints[(i + 1) % n]))
+            .map(|i| stepped_offsets(&endpoints[i].controls, &endpoints[(i + 1) % n].controls))
             .collect();
         Self {
             endpoints,
@@ -152,12 +154,16 @@ impl MorphState {
     }
 
     /// Build a morph for a live toggle at `start_beat`: endpoint 0 is the
-    /// caller's current controls, so nothing changes instantly — the morph just
-    /// starts moving from where they already are. It heads to the *nearest*
-    /// built-in state first (by `level_distance`), then loops the rest.
+    /// caller's current controls and automation (LFO/envelope/macro routes),
+    /// so nothing changes instantly — the morph just starts moving from where
+    /// it already is, taking whatever modulators are live along for the ride
+    /// instead of leaving them running unmodified forever. It heads to the
+    /// *nearest* built-in state first (by `level_distance`), then loops the
+    /// rest.
     pub(crate) fn from_live(
         current: FluidControls,
-        states: Vec<FluidControls>,
+        current_automation: AutomationState,
+        states: Vec<SongState>,
         bars: u32,
         start_beat: f64,
     ) -> Self {
@@ -165,12 +171,15 @@ impl MorphState {
             .iter()
             .enumerate()
             .min_by(|(_, a), (_, b)| {
-                level_distance(&current, a).total_cmp(&level_distance(&current, b))
+                level_distance(&current, &a.controls).total_cmp(&level_distance(&current, &b.controls))
             })
             .map(|(i, _)| i)
             .unwrap_or(0);
         let mut endpoints = Vec::with_capacity(states.len() + 1);
-        endpoints.push(current);
+        endpoints.push(SongState {
+            controls: current,
+            automation: current_automation,
+        });
         endpoints.extend(states[nearest..].iter().cloned());
         endpoints.extend(states[..nearest].iter().cloned());
         let mut morph = Self::new(endpoints, bars);
@@ -207,8 +216,8 @@ impl MorphState {
     /// which equals this leg's `to`, so the real target lands exactly on "one".
     pub(crate) fn controls_at(&self, beat: f64) -> FluidControls {
         let (from_idx, to_idx, t) = self.leg_at(beat);
-        let from = &self.endpoints[from_idx];
-        let to = &self.endpoints[to_idx];
+        let from = &self.endpoints[from_idx].controls;
+        let to = &self.endpoints[to_idx].controls;
         let offsets = &self.stepped[from_idx];
         let beats_per_leg = self.beats_per_leg();
         let t_beat = t * beats_per_leg;
@@ -244,6 +253,24 @@ impl MorphState {
         }
         next
     }
+
+    /// The morphed `AutomationState` at `beat`: the `AutomationState`
+    /// counterpart to `controls_at`. Every LFO/envelope/macro route snaps its
+    /// non-level fields together at the single transition downbeat (no
+    /// per-field staggering, unlike `controls_at`'s grid params) while its
+    /// level field glides continuously — see `AutomationState::morph` for the
+    /// full rationale.
+    pub(crate) fn automation_at(&self, beat: f64) -> AutomationState {
+        let (from_idx, to_idx, t) = self.leg_at(beat);
+        let from = &self.endpoints[from_idx].automation;
+        let to = &self.endpoints[to_idx].automation;
+        let beats_per_leg = self.beats_per_leg();
+        let t_beat = t * beats_per_leg;
+        let transition_start = self.transition_start_beat();
+        let transition_beats = (beats_per_leg - transition_start).max(1e-6);
+        let tt = ((t_beat - transition_start) / transition_beats).clamp(0.0, 1.0) as f32;
+        AutomationState::morph(from, to, tt, t_beat >= transition_start)
+    }
 }
 
 /// A morph-less `ArcSwap`, shared by every entry point that doesn't run
@@ -258,12 +285,12 @@ pub(crate) fn no_morph() -> Arc<ArcSwap<Option<MorphState>>> {
 /// touches the `ArcSwap` directly.
 pub(crate) struct AutoControls {
     morph: Arc<ArcSwap<Option<MorphState>>>,
-    states: Vec<FluidControls>,
+    states: Vec<SongState>,
     bars: u32,
 }
 
 impl AutoControls {
-    pub(crate) fn new(morph: Arc<ArcSwap<Option<MorphState>>>, states: Vec<FluidControls>, bars: u32) -> Self {
+    pub(crate) fn new(morph: Arc<ArcSwap<Option<MorphState>>>, states: Vec<SongState>, bars: u32) -> Self {
         Self { morph, states, bars }
     }
 
@@ -272,37 +299,46 @@ impl AutoControls {
         self.morph.load().is_some()
     }
 
-    /// Leave auto mode. The engine stops rewriting controls, so the current
-    /// morphed values stay live and editable. A no-op when already off.
+    /// Leave auto mode. The engine stops rewriting controls and automation,
+    /// so the current morphed values stay live and editable. A no-op when
+    /// already off.
     pub(crate) fn exit(&self) {
         self.morph.store(Arc::new(None));
     }
 
     /// Flip auto mode. Turning on builds a morph anchored at `beat` starting
-    /// from `current`, so nothing jumps; turning off just calls `exit`.
-    pub(crate) fn toggle(&self, current: FluidControls, beat: f64) {
+    /// from `current`/`current_automation`, so nothing jumps — any live
+    /// LFO/envelope/macro routes ride along with the morph instead of being
+    /// left behind; turning off just calls `exit`.
+    pub(crate) fn toggle(&self, current: FluidControls, current_automation: AutomationState, beat: f64) {
         if self.is_running() {
             self.exit();
         } else {
-            let state = MorphState::from_live(current, self.states.clone(), self.bars, beat);
+            let state = MorphState::from_live(
+                current,
+                current_automation,
+                self.states.clone(),
+                self.bars,
+                beat,
+            );
             self.morph.store(Arc::new(Some(state)));
         }
     }
 }
 
 /// Throttled writer driving the morph from the engine's control-reload tick.
-/// Recomputes and returns the morphed controls only once per 1/8 note,
-/// tracking the last beat it fired on so the audio thread never rewrites the
-/// shared controls Arc more often than that.
+/// Recomputes and returns the morphed controls and automation only once per
+/// 1/8 note, tracking the last beat it fired on so the audio thread never
+/// rewrites the shared Arcs more often than that.
 #[derive(Default)]
 pub(crate) struct MorphWriter {
     last_tick_beat: Option<f64>,
 }
 
 impl MorphWriter {
-    /// `Some(controls)` when a new morph tick is due at `beat`; `None`
-    /// otherwise (call site should skip the write).
-    pub(crate) fn tick(&mut self, morph: &MorphState, beat: f64) -> Option<FluidControls> {
+    /// `Some((controls, automation))` when a new morph tick is due at `beat`;
+    /// `None` otherwise (call site should skip the write).
+    pub(crate) fn tick(&mut self, morph: &MorphState, beat: f64) -> Option<(FluidControls, AutomationState)> {
         let due = match self.last_tick_beat {
             None => true,
             Some(last) => beat - last >= MORPH_TICK_BEATS,
@@ -311,7 +347,7 @@ impl MorphWriter {
             return None;
         }
         self.last_tick_beat = Some(beat);
-        Some(morph.controls_at(beat))
+        Some((morph.controls_at(beat), morph.automation_at(beat)))
     }
 }
 
@@ -323,6 +359,15 @@ mod tests {
         let mut c = FluidControls::default();
         c.master.bpm = bpm;
         c
+    }
+
+    /// Wrap bare controls into a `SongState` with no automation, for tests
+    /// that only care about the controls side of a morph.
+    fn song(controls: FluidControls) -> SongState {
+        SongState {
+            controls,
+            automation: AutomationState::default(),
+        }
     }
 
     /// Sum of every performing element's level/gain: the audible-energy proxy
@@ -339,7 +384,7 @@ mod tests {
 
     #[test]
     fn leg_math_two_states_wraps_forever() {
-        let morph = MorphState::new(vec![state(80.0), state(120.0)], 2);
+        let morph = MorphState::new(vec![song(state(80.0)), song(state(120.0))], 2);
         // 2 bars/leg * 4 beats = 8 beats per leg.
         assert_eq!(morph.leg_at(0.0), (0, 1, 0.0));
         assert_eq!(morph.leg_at(4.0), (0, 1, 0.5));
@@ -350,7 +395,7 @@ mod tests {
 
     #[test]
     fn leg_math_eight_states_wraps_forever() {
-        let endpoints: Vec<FluidControls> = (0..8).map(|i| state(80.0 + i as f32)).collect();
+        let endpoints: Vec<SongState> = (0..8).map(|i| song(state(80.0 + i as f32))).collect();
         let morph = MorphState::new(endpoints, 1);
         // 1 bar/leg * 4 beats = 4 beats per leg.
         assert_eq!(morph.leg_at(0.0), (0, 1, 0.0));
@@ -361,7 +406,7 @@ mod tests {
 
     #[test]
     fn leg_math_boundaries_at_t_zero_and_towards_one() {
-        let morph = MorphState::new(vec![state(80.0), state(120.0)], 1);
+        let morph = MorphState::new(vec![song(state(80.0)), song(state(120.0))], 1);
         let (_, _, t_start) = morph.leg_at(0.0);
         assert_eq!(t_start, 0.0);
         let (from, to, t_end) = morph.leg_at(3.999_999);
@@ -376,7 +421,7 @@ mod tests {
         from.pad.level = 0.0;
         let mut to = FluidControls::default();
         to.pad.level = 1.0;
-        let morph = MorphState::new(vec![from, to], 1);
+        let morph = MorphState::new(vec![song(from), song(to)], 1);
         let controls = morph.controls_at(4.0 * 0.25);
         assert!((controls.pad.level - 0.25).abs() < 1e-4);
     }
@@ -388,7 +433,7 @@ mod tests {
         let mut to = FluidControls::default();
         to.master.drive = 1.0;
         // 6 bars/leg: hold 4 bars (transition_start=16 beats), transition 8 beats.
-        let morph = MorphState::new(vec![from, to], 6);
+        let morph = MorphState::new(vec![song(from), song(to)], 6);
         // Deep in the hold window: still `from`.
         assert!((morph.controls_at(8.0).master.drive - 0.0).abs() < 1e-4);
         // Halfway through the transition (beat 20 of 24): ~0.5.
@@ -405,7 +450,7 @@ mod tests {
         to.pad.chord_count = 2.0;
         to.arp.pattern = 2.0;
         // 6 bars/leg -> transition downbeat at beat 16.
-        let morph = MorphState::new(vec![from.clone(), to.clone()], 6);
+        let morph = MorphState::new(vec![song(from.clone()), song(to.clone())], 6);
 
         // Just before the downbeat: all three still hold `from`.
         let before = morph.controls_at(15.9);
@@ -426,7 +471,7 @@ mod tests {
         let mut to = FluidControls::default();
         to.tonal.synth_type = 1.0; // one changed non-structural grid param -> 8-bar offset
         // 30 bars/leg: hold 20 bars (transition_start=80), its jump at 80+8*4=112.
-        let morph = MorphState::new(vec![from.clone(), to.clone()], 30);
+        let morph = MorphState::new(vec![song(from.clone()), song(to.clone())], 30);
 
         // Still holds through the structural downbeat and up to its own offset.
         assert_eq!(morph.controls_at(80.0).tonal.synth_type, from.tonal.synth_type);
@@ -450,7 +495,7 @@ mod tests {
         quiet.bass.level = 0.1;
         quiet.arp.gain = 0.0;
         let floor = total_level(&loud).min(total_level(&quiet));
-        let morph = MorphState::new(vec![loud, quiet], 8);
+        let morph = MorphState::new(vec![song(loud), song(quiet)], 8);
         let beats_per_leg = 32.0;
 
         for i in 0..=64 {
@@ -473,12 +518,18 @@ mod tests {
         let mut near = FluidControls::default();
         near.pad.level = 0.5; // matches current, everything else default -> closest
 
-        let morph = MorphState::from_live(current.clone(), vec![far, near.clone()], 4, 0.0);
+        let morph = MorphState::from_live(
+            current.clone(),
+            AutomationState::default(),
+            vec![song(far), song(near.clone())],
+            4,
+            0.0,
+        );
         // Endpoint 0 is exactly the current state: toggling on changes nothing.
-        assert_eq!(morph.endpoints[0].pad.level, current.pad.level);
+        assert_eq!(morph.endpoints[0].controls.pad.level, current.pad.level);
         // First target is the nearest built-in state, not the far one.
-        assert_eq!(morph.endpoints[1].pad.level, near.pad.level);
-        assert_eq!(morph.endpoints[1].kick.level, near.kick.level);
+        assert_eq!(morph.endpoints[1].controls.pad.level, near.pad.level);
+        assert_eq!(morph.endpoints[1].controls.kick.level, near.kick.level);
     }
 
     #[test]
@@ -488,14 +539,20 @@ mod tests {
         let mut target = FluidControls::default();
         target.pad.level = 0.9;
         // Toggle on at beat 1000: the leg must start there, not mid-loop.
-        let morph = MorphState::from_live(current.clone(), vec![target], 4, 1000.0);
+        let morph = MorphState::from_live(
+            current.clone(),
+            AutomationState::default(),
+            vec![song(target)],
+            4,
+            1000.0,
+        );
         // At the toggle beat, output is exactly `current` (leg 0, t=0).
         assert!((morph.controls_at(1000.0).pad.level - 0.2).abs() < 1e-4);
     }
 
     #[test]
     fn writer_throttles_to_one_tick_per_eighth_note() {
-        let morph = MorphState::new(vec![state(80.0), state(120.0)], 64);
+        let morph = MorphState::new(vec![song(state(80.0)), song(state(120.0))], 64);
         let mut writer = MorphWriter::default();
 
         assert!(writer.tick(&morph, 0.0).is_some(), "first tick always fires");
@@ -506,6 +563,128 @@ mod tests {
         assert!(
             writer.tick(&morph, 0.5).is_some(),
             "a full 1/8 note later, a new write is due"
+        );
+    }
+
+    fn lfo_route(depth_ratio: f32) -> LfoRoute {
+        LfoRoute {
+            depth_ratio,
+            ..LfoRoute::default()
+        }
+    }
+
+    #[test]
+    fn automation_route_present_on_both_sides_glides_depth_and_snaps_shape() {
+        let mut from_state = FluidControls::default();
+        from_state.master.drive = 0.0;
+        let mut to_state = FluidControls::default();
+        to_state.master.drive = 0.0;
+
+        let address = ControlAddress::new("pad.level");
+        let mut from_auto = AutomationState::default();
+        from_auto.set_route(
+            address,
+            LfoRoute { depth_ratio: 0.2, shape: LfoShape::Sine, ..LfoRoute::default() },
+        );
+        let mut to_auto = AutomationState::default();
+        to_auto.set_route(
+            address,
+            LfoRoute { depth_ratio: 0.8, shape: LfoShape::Square, ..LfoRoute::default() },
+        );
+
+        let morph = MorphState::new(
+            vec![
+                SongState { controls: from_state, automation: from_auto },
+                SongState { controls: to_state, automation: to_auto },
+            ],
+            6,
+        );
+        // 6 bars/leg -> transition downbeat at beat 16, transition ends at beat 24.
+
+        // Deep in the hold window: depth and shape both still `from`.
+        let held = morph.automation_at(8.0);
+        assert!((held.route(address).unwrap().depth_ratio - 0.2).abs() < 1e-4);
+        assert_eq!(held.route(address).unwrap().shape, LfoShape::Sine);
+
+        // Halfway through the transition: depth has glided, shape has already
+        // snapped to `to` at the downbeat (not interpolated).
+        let mid = morph.automation_at(20.0);
+        assert!((mid.route(address).unwrap().depth_ratio - 0.5).abs() < 1e-3);
+        assert_eq!(mid.route(address).unwrap().shape, LfoShape::Square);
+
+        // End of the transition: essentially `to`.
+        let done = morph.automation_at(23.9);
+        assert!(done.route(address).unwrap().depth_ratio > 0.78);
+    }
+
+    #[test]
+    fn automation_route_added_by_target_fades_in_from_silence() {
+        let from_auto = AutomationState::default();
+        let address = ControlAddress::new("pad.level");
+        let mut to_auto = AutomationState::default();
+        to_auto.set_route(address, lfo_route(0.6));
+
+        let morph = MorphState::new(
+            vec![
+                SongState { controls: FluidControls::default(), automation: from_auto },
+                SongState { controls: FluidControls::default(), automation: to_auto },
+            ],
+            6,
+        );
+
+        // Present but silent (depth 0) during the hold window — functionally
+        // identical to absent, since a zero-depth route has no audible effect.
+        assert!((morph.automation_at(0.0).route(address).unwrap().depth_ratio).abs() < 1e-4);
+        // Fading in during the transition, silent at its start.
+        let mid = morph.automation_at(20.0);
+        assert!((mid.route(address).unwrap().depth_ratio - 0.3).abs() < 1e-3);
+    }
+
+    #[test]
+    fn automation_route_removed_by_target_fades_out_and_does_not_reappear() {
+        // Three states so leg 1 (endpoint 1 -> endpoint 2) doesn't loop
+        // straight back to the routed endpoint 0.
+        let address = ControlAddress::new("pad.level");
+        let mut routed = AutomationState::default();
+        routed.set_route(address, lfo_route(0.6));
+        let unrouted = AutomationState::default();
+
+        let morph = MorphState::new(
+            vec![
+                SongState { controls: FluidControls::default(), automation: routed },
+                SongState { controls: FluidControls::default(), automation: unrouted.clone() },
+                SongState { controls: FluidControls::default(), automation: unrouted },
+            ],
+            6,
+        );
+
+        // Still full depth during the hold window of leg 0 (endpoint 0 -> 1).
+        assert!((morph.automation_at(0.0).route(address).unwrap().depth_ratio - 0.6).abs() < 1e-4);
+        // Fading out during the transition.
+        let mid = morph.automation_at(20.0);
+        assert!((mid.route(address).unwrap().depth_ratio - 0.3).abs() < 1e-3);
+        // Gone once this leg's `to` (endpoint 1, unrouted) becomes leg 1's
+        // `from`: beat 24 is the start of leg 1 (endpoint 1 -> 2, neither
+        // routed).
+        assert!(morph.automation_at(24.0).route(address).is_none());
+    }
+
+    #[test]
+    fn from_live_carries_current_automation_as_endpoint_zero() {
+        let address = ControlAddress::new("pad.level");
+        let mut current_auto = AutomationState::default();
+        current_auto.set_route(address, lfo_route(0.5));
+
+        let morph = MorphState::from_live(
+            FluidControls::default(),
+            current_auto.clone(),
+            vec![song(FluidControls::default())],
+            4,
+            0.0,
+        );
+        assert_eq!(
+            morph.endpoints[0].automation.route(address).unwrap().depth_ratio,
+            0.5
         );
     }
 }
