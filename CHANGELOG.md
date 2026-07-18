@@ -1,6 +1,28 @@
 # Changelog
 
 Newest releases appear first.
+## [1.6.0] — 2026-07-18
+
+### Added
+- Add full-band build state to the auto-morph rotation
+- Add tapered dial mapping; unify tonal/arp envelope to attack+decay
+- Add release-build render benchmark script
+- feat: auto-morph slow evolution between song states (stint 0024) (#6)
+- feat: add m/M mute keybindings for track and master (stint 0027)
+- feat: add instrument type selector to ARP (stint 0026)
+
+### Changed
+- Symlink CLAUDE.md to AGENTS.md
+- Halve startup fade-in from 8s to 4s
+- Lower TUI redraw pacing from 60fps to 30fps
+
+### Fixed
+- fix: default bass decay to 300ms
+- fix: morph LFO/envelope/macro automation through auto-mode
+- fix: guard GridTrigger against double-hit on offset/rate edits (stint 0025)
+
+### Removed
+- Remove kick echo/delay engine and its sliders
 ## [1.5.2] — 2026-07-15
 
 ### Added
