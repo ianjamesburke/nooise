@@ -9,11 +9,6 @@ pub(crate) const ARP_RATE_BEATS_MAX: f32 = 4.0;
 pub(crate) const ARP_OCTAVES_MIN: f32 = 1.0;
 pub(crate) const ARP_OCTAVES_MAX: f32 = 3.0;
 pub(crate) const ARP_CHORD_TONES: usize = 4;
-/// Fixed synth character for the arp voice — the "Pluck" piano profile
-/// (short, dry, staccato), matching `piano_profile`'s type-6 mapping
-/// (`TONAL_PIANO_PROFILES[5]`). No user-facing synth-type control; the arp
-/// always uses this one warm, non-metallic voice.
-pub(crate) const ARP_PROFILE_INDEX: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ArpPattern {
@@ -106,7 +101,7 @@ pub(crate) struct ArpEngine {
     pub(crate) note_trigger: GridTrigger,
     pub(crate) cycle_pos: usize,
     pub(crate) ping_pong_dir: i32,
-    pub(crate) voices: Vec<PianoTonalVoice>,
+    pub(crate) voices: Vec<TonalVoice>,
     pub(crate) rng: StdRng,
 }
 
@@ -171,8 +166,8 @@ impl ArpEngine {
             // creating it. Every RNG draw above still happens, keeping seeded
             // renders byte-identical.
             if c.gain != 0.0 {
-                self.voices.push(PianoTonalVoice::new(
-                    TONAL_PIANO_PROFILES[ARP_PROFILE_INDEX],
+                self.voices.push(TonalVoice::new(
+                    tonal_synth_type_index(c.voice_type),
                     note,
                     hz,
                     pan,

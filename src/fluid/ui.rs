@@ -39,6 +39,7 @@ pub(crate) fn ui_loop(
     let mut chord_drill = ChordDrill::None;
     let mut flipped = FlippedUnits::new();
     let mut numeric_entry: Option<NumericEntry> = None;
+    let mut mute: MuteState = [None; 9];
     let mut fluid = FluidState::new();
     let mut last = Instant::now();
     let started = Instant::now();
@@ -99,6 +100,7 @@ pub(crate) fn ui_loop(
                 footer_message,
                 &flipped,
                 chord_drill,
+                &mute,
             )
         })?;
 
@@ -389,6 +391,12 @@ pub(crate) fn ui_loop(
                             beat,
                         );
                     }
+                }
+                KeyCode::Char('m') => {
+                    toggle_mute(&controls, tab, &mut mute);
+                }
+                KeyCode::Char('M') => {
+                    toggle_mute(&controls, Tab::Master, &mut mute);
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Some(address) = automation.state().active_address()
@@ -1039,6 +1047,30 @@ fn copy_launch_line(
     Ok(())
 }
 
+/// Per-tab mute state, indexed by `Tab as usize` (`Tab::Master` included at
+/// its own slot 0). `Some(level)` holds the pre-mute value so unmuting
+/// restores it exactly instead of snapping to a hardcoded level; UI-local
+/// only, never persisted to song code.
+pub(crate) type MuteState = [Option<f32>; 9];
+
+/// Toggle mute on `tab`'s level/gain control: mute stores the live value and
+/// zeroes it, unmute restores the stored value. No-op on a tab with no level
+/// control to mute (`Macros`).
+pub(crate) fn toggle_mute(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, mute: &mut MuteState) {
+    let Some(id) = tab.level_id() else { return };
+    let spec = spec_by_id(id).expect("tab level_id must name a real control");
+    let mut next = FluidControls::clone(&controls.load());
+    let slot = &mut mute[tab as usize];
+    match slot.take() {
+        Some(previous) => (spec.set)(&mut next, previous),
+        None => {
+            *slot = Some((spec.get)(&next));
+            (spec.set)(&mut next, 0.0);
+        }
+    }
+    controls.store(Arc::new(next));
+}
+
 pub(crate) fn adjust(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize, dir: f32) {
     let mut next = FluidControls::clone(&controls.load());
     apply_delta(tab, selected, dir, &mut next);
@@ -1240,6 +1272,7 @@ pub(crate) fn render(
     update_message: Option<&str>,
     flipped: &FlippedUnits,
     chord_drill: ChordDrill,
+    mute: &MuteState,
 ) {
     let bpm = controls.master.bpm;
     let mod_ctx = ModContext {
@@ -1307,6 +1340,11 @@ pub(crate) fn render(
                 }
             } else {
                 t.name().to_string()
+            };
+            let name = if mute[*t as usize].is_some() {
+                format!("{name} (M)")
+            } else {
+                name
             };
             if *t == active_tab {
                 format!("[{name}]")

@@ -514,6 +514,7 @@ fn render_fluid_draws_without_terminal_backend() {
                 None,
                 &FlippedUnits::new(),
                 ChordDrill::None,
+                &[None; 9],
             )
         })
         .unwrap();
@@ -1141,6 +1142,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
                     None,
                     &FlippedUnits::new(),
                     ChordDrill::None,
+                    &[None; 9],
                 )
             })
             .unwrap();
@@ -1371,7 +1373,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Arp,
             vec![
-                Gain, Timing, Timing, Gain, Discrete, Discrete, Timing, Timing, Gain,
+                Gain, Discrete, Timing, Timing, Gain, Discrete, Discrete, Timing, Timing, Gain,
             ],
         ),
     ];
@@ -2053,6 +2055,7 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
                 footer.as_deref(),
                 &FlippedUnits::new(),
                 ChordDrill::Slot(1),
+                &[None; 9],
             )
         })
         .unwrap();
@@ -3020,6 +3023,69 @@ fn grid_trigger_no_double_fire_when_offset_steps() {
     );
 }
 
+/// A live offset nudge landing right as a hit fires must not squeeze the next
+/// hit closer than half an interval (the same guard as the ramp/step tests
+/// above, exercised against the exact live-edit gesture that was reported).
+#[test]
+fn grid_trigger_no_double_hit_after_offset_nudge() {
+    let bpm = 120.0;
+    let interval = 1.0f32;
+    let total_samples = (SAMPLE_RATE as u64) * 8;
+    let mut trigger = GridTrigger::new();
+    let mut offset = 0.0f32;
+    let mut nudged = false;
+    let mut hit_beats = Vec::new();
+
+    for sample in 0..total_samples {
+        let t = timing(sample, bpm);
+        if trigger.pop(t, interval, offset) {
+            hit_beats.push(t.beat);
+            if !nudged {
+                // ~10ms nudge, matching the reported live-edit gesture.
+                offset += (0.010 * bpm as f64 / 60.0) as f32;
+                nudged = true;
+            }
+        }
+    }
+
+    assert!(nudged, "test never reached a hit to nudge after");
+    let min_gap = min_hit_gap(&hit_beats);
+    assert!(
+        min_gap >= f64::from(interval) * 0.5 - 1e-6,
+        "double hit after offset nudge: min gap {min_gap:.4} beats < half interval"
+    );
+}
+
+/// Same guard for a live rate nudge landing right as a hit fires.
+#[test]
+fn grid_trigger_no_double_hit_after_rate_nudge() {
+    let bpm = 120.0;
+    let total_samples = (SAMPLE_RATE as u64) * 8;
+    let mut trigger = GridTrigger::new();
+    let mut interval = 1.0f32;
+    let mut nudged = false;
+    let mut hit_beats = Vec::new();
+
+    for sample in 0..total_samples {
+        let t = timing(sample, bpm);
+        if trigger.pop(t, interval, 0.0) {
+            hit_beats.push(t.beat);
+            if !nudged {
+                // A quick rate tweak right as a hit fires.
+                interval *= 0.4;
+                nudged = true;
+            }
+        }
+    }
+
+    assert!(nudged, "test never reached a hit to nudge after");
+    let min_gap = min_hit_gap(&hit_beats);
+    assert!(
+        min_gap >= f64::from(interval) * 0.5 - 1e-6,
+        "double hit after rate nudge: min gap {min_gap:.4} beats < half interval"
+    );
+}
+
 fn automation_with_route(
     target_id: &'static str,
     depth_ratio: f32,
@@ -3195,6 +3261,7 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
                 None,
                 &FlippedUnits::new(),
                 ChordDrill::None,
+                &[None; 9],
             )
         })
         .unwrap();
@@ -3851,6 +3918,28 @@ fn arp_defaults_are_silent() {
 }
 
 #[test]
+fn arp_default_voice_type_matches_former_fixed_pluck_profile() {
+    // arp.type replaced a hardcoded `TONAL_PIANO_PROFILES[5]` ("Pluck").
+    // The default value must resolve to that exact profile so existing
+    // songs and a fresh startup render identically to before the control
+    // existed.
+    let expected = TONAL_PIANO_PROFILES[5];
+    let actual = piano_profile(tonal_synth_type_index(ArpControls::default().voice_type));
+    assert_eq!(actual.keyframes.len(), expected.keyframes.len());
+    for (a, e) in actual.keyframes.iter().zip(expected.keyframes.iter()) {
+        assert_eq!(a.midi, e.midi);
+        assert_eq!(a.decay_factor, e.decay_factor);
+        assert_eq!(a.harmonics, e.harmonics);
+    }
+    assert_eq!(actual.amplitude, expected.amplitude);
+    assert_eq!(actual.body_power, expected.body_power);
+    assert_eq!(actual.harmonic_tilt, expected.harmonic_tilt);
+    assert_eq!(actual.decay_low, expected.decay_low);
+    assert_eq!(actual.decay_high, expected.decay_high);
+    assert_eq!(actual.decay_scale, expected.decay_scale);
+}
+
+#[test]
 fn arp_cycle_notes_duplicates_chord_up_whole_octaves_sorted() {
     let chord = [45, 48, 52, 55];
 
@@ -4032,4 +4121,92 @@ fn arp_reuses_shared_ambient_reverb_send_alongside_pad_and_tonal() {
     let frame = send.process((0.0, 0.0), (0.0, 0.0), (1.0, -1.0), 0.0, 0.0, arp_mix);
     assert_near(frame.arp_l, AmbientReverbSend::dry_gain(arp_mix));
     assert_near(frame.arp_r, -AmbientReverbSend::dry_gain(arp_mix));
+}
+
+#[test]
+fn toggle_mute_zeroes_and_restores_the_track_level() {
+    let mut c = FluidControls::default();
+    c.perc.level = 0.65;
+    let controls = Arc::new(ArcSwap::from_pointee(c));
+    let mut mute: MuteState = [None; 9];
+
+    toggle_mute(&controls, Tab::Perc, &mut mute);
+    assert_close(controls.load().perc.level, 0.0);
+    assert!(mute[Tab::Perc as usize].is_some());
+
+    toggle_mute(&controls, Tab::Perc, &mut mute);
+    assert_close(controls.load().perc.level, 0.65);
+    assert!(mute[Tab::Perc as usize].is_none());
+}
+
+#[test]
+fn toggle_mute_on_master_is_independent_of_track_mute() {
+    let mut c = FluidControls::default();
+    c.master.level = 0.8;
+    c.bass.level = 0.5;
+    let controls = Arc::new(ArcSwap::from_pointee(c));
+    let mut mute: MuteState = [None; 9];
+
+    toggle_mute(&controls, Tab::Master, &mut mute);
+    assert_close(controls.load().master.level, 0.0);
+    assert_close(controls.load().bass.level, 0.5);
+
+    toggle_mute(&controls, Tab::Bass, &mut mute);
+    assert_close(controls.load().bass.level, 0.0);
+    // Master stays muted; muting bass didn't disturb it or restore it early.
+    assert_close(controls.load().master.level, 0.0);
+
+    toggle_mute(&controls, Tab::Master, &mut mute);
+    assert_close(controls.load().master.level, 0.8);
+    assert_close(controls.load().bass.level, 0.0);
+}
+
+#[test]
+fn toggle_mute_on_macros_tab_is_a_no_op() {
+    let c = FluidControls::default();
+    let controls = Arc::new(ArcSwap::from_pointee(c));
+    let mut mute: MuteState = [None; 9];
+
+    toggle_mute(&controls, Tab::Macros, &mut mute);
+    assert!(mute[Tab::Macros as usize].is_none());
+}
+
+#[test]
+fn render_shows_a_mute_marker_on_muted_tabs_only() {
+    let controls = FluidControls::default();
+    let fluid = FluidState::new();
+    let items = tab_controls(Tab::Bass, &controls);
+    let automation = AutomationState::default();
+    let mut mute: MuteState = [None; 9];
+    mute[Tab::Perc as usize] = Some(0.7);
+
+    let backend = TestBackend::new(120, 44);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            render(
+                f,
+                &items,
+                Tab::Bass,
+                0,
+                0,
+                0.0,
+                NumericDisplay::empty(),
+                &fluid,
+                &automation,
+                &controls,
+                None,
+                &FlippedUnits::new(),
+                ChordDrill::None,
+                &mute,
+            )
+        })
+        .unwrap();
+
+    let text = buffer_text(terminal.backend().buffer());
+    assert!(text.contains("Perc (M)"), "muted tab must show a marker");
+    assert!(
+        !text.contains("Bass (M)"),
+        "unmuted tab must not show a marker"
+    );
 }
