@@ -51,7 +51,7 @@ struct RenderArgs {
 
 #[derive(Debug, Clone, PartialEq, Args)]
 struct AutoArgs {
-    /// Bars per morph leg (one state-to-state transition). Defaults to 128.
+    /// Bars per morph leg (one state-to-state transition). Defaults to 64.
     bars: Option<u32>,
 }
 
@@ -220,7 +220,7 @@ mod tests {
                     CliCommand::Auto(args) => args.bars.unwrap_or(crate::fluid::DEFAULT_AUTO_BARS),
                     _ => unreachable!(),
                 }),
-            Some(128)
+            Some(64)
         );
     }
 

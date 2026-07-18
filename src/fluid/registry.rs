@@ -579,6 +579,15 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
     )
     .lfo_snap(LfoSnap::Step)
     .in_beats(),
+    ControlSpec::gain(
+        "perc.swing",
+        "Swing",
+        0.0,
+        1.0,
+        |c| c.perc.swing,
+        |c, v| c.perc.swing = v,
+        |c| pct(c.perc.swing),
+    ),
     ControlSpec::new(
         "perc.decay_ms",
         "Decay",
@@ -1219,6 +1228,15 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
     )
     .lfo_snap(LfoSnap::Step)
     .in_beats(),
+    ControlSpec::gain(
+        "tonal.swing",
+        "Swing",
+        0.0,
+        1.0,
+        |c| c.tonal.swing,
+        |c, v| c.tonal.swing = v,
+        |c| pct(c.tonal.swing),
+    ),
     ControlSpec::new(
         "tonal.attack",
         "Attack",
@@ -1450,6 +1468,15 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
     )
     .lfo_snap(LfoSnap::Step)
     .in_beats(),
+    ControlSpec::gain(
+        "arp.swing",
+        "Swing",
+        0.0,
+        1.0,
+        |c| c.arp.swing,
+        |c, v| c.arp.swing = v,
+        |c| pct(c.arp.swing),
+    ),
     ControlSpec::new(
         "arp.pattern",
         "Pattern",

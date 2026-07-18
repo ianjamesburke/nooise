@@ -31,6 +31,7 @@ pub(crate) fn ui_loop(
     telemetry: Arc<FluidTelemetry>,
     initial_automation: AutomationState,
     updates: UpdateNotice,
+    auto: AutoControls,
 ) -> Result<(), Box<dyn Error>> {
     let mut tab = Tab::Master;
     let mut selected = 0usize;
@@ -55,11 +56,15 @@ pub(crate) fn ui_loop(
         let update_message = updates.message();
         let automation_message = automation_footer(automation.state());
         let chords_message = chords_footer(tab, chord_drill);
+        let in_auto = auto.is_running();
+        let auto_message =
+            in_auto.then_some("\u{25cf} AUTO morphing   a or touch any param to exit");
         let footer_message = save_message
             .as_ref()
             .map(|(message, _)| message.as_str())
             .or(automation_message.as_deref())
             .or(chords_message.as_deref())
+            .or(auto_message)
             .or(update_message.as_deref());
         let items = if tab == Tab::Chords {
             chords_tab_controls(&c, chord_drill)
@@ -127,6 +132,7 @@ pub(crate) fn ui_loop(
                                 beat,
                                 &flipped,
                             );
+                            auto.exit(); // touching a param exits auto
                         }
                         numeric_entry = None;
                     }
@@ -178,6 +184,14 @@ pub(crate) fn ui_loop(
                     lfo_selected = 0;
                     chord_drill = ChordDrill::None;
                 }
+                // Toggle auto-morph. On -> off swaps in `None` (the engine
+                // stops rewriting controls, leaving the current morphed values
+                // live). Off -> on builds a morph from the current state so
+                // nothing jumps, heading to the nearest built-in state first.
+                KeyCode::Char('a') => {
+                    let current = FluidControls::clone(&controls.load());
+                    auto.toggle(current, beat);
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if automation.state().is_editor_open() {
                         if lfo_selected <= 1 {
@@ -204,6 +218,7 @@ pub(crate) fn ui_loop(
                     }
                 }
                 KeyCode::Char('H') => {
+                    auto.exit(); // touching a param exits auto
                     reset_lfo_or_control(
                         &mut automation,
                         lfo_selected,
@@ -216,6 +231,7 @@ pub(crate) fn ui_loop(
                 KeyCode::Left | KeyCode::Char('h')
                     if key.modifiers.contains(KeyModifiers::SHIFT) =>
                 {
+                    auto.exit(); // touching a param exits auto
                     reset_lfo_or_control(
                         &mut automation,
                         lfo_selected,
@@ -226,6 +242,7 @@ pub(crate) fn ui_loop(
                     );
                 }
                 KeyCode::Left | KeyCode::Char('h') => {
+                    auto.exit(); // touching a param exits auto
                     adjust_lfo_or_control(
                         &mut automation,
                         lfo_selected,
@@ -238,6 +255,7 @@ pub(crate) fn ui_loop(
                     );
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
+                    auto.exit(); // touching a param exits auto
                     adjust_lfo_or_control(
                         &mut automation,
                         lfo_selected,
@@ -1540,7 +1558,7 @@ pub(crate) fn render(
     f.render_widget(Paragraph::new(rows), layout[4]);
 
     let footer = update_message
-        .unwrap_or("jk select   h/l adjust   f LFO   v macro   T units   Enter set   q quit");
+        .unwrap_or("jk select   h/l adjust   f LFO   v macro   a auto   T units   q quit");
     let footer_style = if update_message.is_some() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))

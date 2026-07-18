@@ -325,36 +325,104 @@ impl TimingContext {
     }
 }
 
+/// Only grids at or below this interval (one beat) swing; slower chord-rate
+/// grids stay straight, so a progression never lands off the downbeat.
+const SWING_MAX_INTERVAL_BEATS: f64 = 1.0;
+/// A full (100%) swing delays each off-slot by half its interval — the hardest
+/// shuffle that still keeps slots strictly ordered.
+const SWING_MAX_FRACTION: f64 = 0.5;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct GridSpec {
     pub(crate) interval_beats: f64,
     pub(crate) offset_beats: f64,
+    /// Beats each odd slot is pushed late; 0 on straight or chord-rate grids.
+    swing_delay_beats: f64,
 }
 
 impl GridSpec {
-    pub(crate) fn new(interval_beats: f32, offset_beats: f32) -> Self {
+    pub(crate) fn new(interval_beats: f32, offset_beats: f32, swing: f32) -> Self {
         let interval_beats = f64::from(interval_beats).max(1.0 / 64.0);
+        let swing_fraction = if interval_beats <= SWING_MAX_INTERVAL_BEATS {
+            f64::from(swing.clamp(0.0, 1.0)) * SWING_MAX_FRACTION
+        } else {
+            0.0
+        };
         Self {
             interval_beats,
             offset_beats: f64::from(offset_beats).rem_euclid(interval_beats),
+            swing_delay_beats: swing_fraction * interval_beats,
+        }
+    }
+
+    /// Beat of grid slot `slot`, with odd slots pushed late by the swing delay.
+    /// Strictly increasing in `slot` since the delay is always < one interval.
+    fn swung_beat(self, slot: u64) -> f64 {
+        let base = self.offset_beats + slot as f64 * self.interval_beats;
+        if slot % 2 == 1 {
+            base + self.swing_delay_beats
+        } else {
+            base
         }
     }
 
     pub(crate) fn hit_at_or_after(self, beat: f64) -> GridHit {
-        let interval = self.interval_beats;
-        let offset = self.offset_beats;
-        let slot = if beat <= offset {
-            0
-        } else {
-            ((beat - offset) / interval).ceil().max(0.0) as u64
-        };
-        GridHit {
-            beat: offset + slot as f64 * interval,
+        if beat <= self.offset_beats {
+            return GridHit {
+                beat: self.offset_beats,
+            };
+        }
+        // Straight-grid estimate, then walk forward to the first swung slot at
+        // or after `beat`. Swing moves a slot by less than one interval, so the
+        // true slot is at most one past the estimate — a handful of iterations.
+        let est = ((beat - self.offset_beats) / self.interval_beats).floor().max(0.0) as u64;
+        let mut slot = est.saturating_sub(1);
+        loop {
+            let hit = self.swung_beat(slot);
+            if hit >= beat {
+                return GridHit { beat: hit };
+            }
+            slot += 1;
         }
     }
 
     pub(crate) fn hit_after(self, beat: f64) -> GridHit {
         self.hit_at_or_after(beat + GRID_BEAT_EPSILON)
+    }
+}
+
+#[cfg(test)]
+mod grid_swing_tests {
+    use super::*;
+
+    #[test]
+    fn straight_grid_hits_land_on_even_subdivisions() {
+        let grid = GridSpec::new(0.5, 0.0, 0.0);
+        assert_eq!(grid.hit_at_or_after(0.0).beat, 0.0);
+        assert_eq!(grid.hit_at_or_after(0.1).beat, 0.5);
+        assert_eq!(grid.hit_at_or_after(0.5).beat, 0.5);
+        assert_eq!(grid.hit_at_or_after(0.6).beat, 1.0);
+    }
+
+    #[test]
+    fn swing_delays_odd_slots_only_and_stays_ordered() {
+        // 0.5-beat grid, full swing: odd slots pushed by (1.0 * 0.5) * 0.5 = 0.25.
+        let grid = GridSpec::new(0.5, 0.0, 1.0);
+        assert_eq!(grid.hit_at_or_after(0.0).beat, 0.0); // slot 0 (even) straight
+        assert!((grid.hit_at_or_after(0.1).beat - 0.75).abs() < 1e-9); // slot 1 pushed late
+        assert_eq!(grid.hit_at_or_after(0.8).beat, 1.0); // slot 2 (even) straight
+        // Never reorders: consecutive hits are strictly increasing.
+        assert!(grid.hit_at_or_after(0.0).beat < grid.hit_at_or_after(0.1).beat);
+        assert!(grid.hit_at_or_after(0.1).beat < grid.hit_at_or_after(0.8).beat);
+    }
+
+    #[test]
+    fn chord_rate_grids_never_swing() {
+        // Interval above the subdivision threshold: swing is ignored entirely.
+        let straight = GridSpec::new(4.0, 0.0, 0.0);
+        let asked_to_swing = GridSpec::new(4.0, 0.0, 1.0);
+        assert_eq!(straight, asked_to_swing);
+        assert_eq!(asked_to_swing.hit_at_or_after(4.1).beat, 8.0);
     }
 }
 
@@ -375,6 +443,11 @@ pub(crate) struct GridTrigger {
     pub(crate) spec: Option<GridSpec>,
     pub(crate) next_hit: Option<GridHit>,
     pub(crate) first_hit: FirstGridHit,
+    /// Beat of the most recently emitted hit. A live grid reshape (rate/offset/
+    /// swing change) may never reschedule the next hit within half an interval
+    /// of this — the guard that stops a timing tweak from re-firing the slot
+    /// that just sounded (an audible double-trigger / flam).
+    last_hit_beat: Option<f64>,
 }
 
 impl GridTrigger {
@@ -391,6 +464,7 @@ impl GridTrigger {
             spec: None,
             next_hit: None,
             first_hit,
+            last_hit_beat: None,
         }
     }
 
@@ -400,7 +474,30 @@ impl GridTrigger {
         interval_beats: f32,
         offset_beats: f32,
     ) -> bool {
-        let spec = GridSpec::new(interval_beats, offset_beats);
+        self.pop_swung(timing, interval_beats, offset_beats, 0.0)
+    }
+
+    /// Earliest beat the next hit may occupy: at or after the playhead, and
+    /// never within half an interval of the hit already emitted. A live reshape
+    /// (swing/offset/rate) moves any slot by at most half an interval, so this
+    /// floor is what stops the just-played slot from being scheduled again.
+    fn earliest_hit(&self, spec: GridSpec, beat: f64) -> f64 {
+        let floor = self
+            .last_hit_beat
+            .map_or(f64::NEG_INFINITY, |b| b + spec.interval_beats * 0.5);
+        (beat + GRID_BEAT_EPSILON).max(floor)
+    }
+
+    /// Like `pop`, but this voice's grid swings its odd subdivisions by
+    /// `swing` (0 straight .. 1 max shuffle). Only voices that opt in call this.
+    pub(crate) fn pop_swung(
+        &mut self,
+        timing: TimingContext,
+        interval_beats: f32,
+        offset_beats: f32,
+        swing: f32,
+    ) -> bool {
+        let spec = GridSpec::new(interval_beats, offset_beats, swing);
         if self.spec != Some(spec) {
             self.spec = Some(spec);
             match self.next_hit {
@@ -410,12 +507,12 @@ impl GridTrigger {
                         FirstGridHit::AfterNow => spec.hit_after(timing.beat),
                     });
                 }
-                // Pull the scheduled hit earlier when the new grid lands sooner;
-                // a grid that lands later waits until the scheduled hit fires.
-                // A modulated grid can therefore never push the target ahead of
-                // the playhead indefinitely and starve the trigger.
+                // Pull the scheduled hit earlier when the reshaped grid lands
+                // sooner, so a denser grid isn't starved — but never earlier than
+                // `earliest_hit`, which rejects a re-fire of the slot that just
+                // sounded while still admitting the genuinely-next denser slot.
                 Some(hit) => {
-                    let candidate = spec.hit_at_or_after(timing.beat);
+                    let candidate = spec.hit_at_or_after(self.earliest_hit(spec, timing.beat));
                     if candidate.beat < hit.beat {
                         self.next_hit = Some(candidate);
                     }
@@ -427,7 +524,8 @@ impl GridTrigger {
             return false;
         };
         if timing.beat + GRID_BEAT_EPSILON >= next_hit.beat {
-            self.next_hit = Some(spec.hit_after(timing.beat));
+            self.last_hit_beat = Some(next_hit.beat);
+            self.next_hit = Some(spec.hit_at_or_after(self.earliest_hit(spec, timing.beat)));
             true
         } else {
             false
