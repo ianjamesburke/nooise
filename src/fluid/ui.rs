@@ -4,6 +4,15 @@ use super::*;
 
 const SAVE_MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// TUI redraw/frame-pacing interval. 30 fps is smooth for a terminal
+/// visualizer (most terminal emulators don't reliably render faster than
+/// that anyway) and roughly halves the render-thread CPU spent rebuilding
+/// widgets and diffing the terminal buffer versus the previous 16ms (60 fps)
+/// pacing, with no perceptible loss of animation smoothness or key latency
+/// (queued key events are still drained fully every frame, so held keys
+/// never fall behind).
+const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
+
 /// Chords tab's local navigation depth: base params, drilled into the
 /// active slots' Root list, or drilled into one slot's secondary fields.
 #[derive(Clone, Copy, PartialEq, Default)]
@@ -106,8 +115,8 @@ pub(crate) fn ui_loop(
 
         // Drain every queued key event before the next draw so a held key
         // never falls behind the frame rate; the first poll doubles as the
-        // ~16 ms frame pacing wait.
-        let mut pending = event::poll(std::time::Duration::from_millis(16))?;
+        // frame pacing wait.
+        let mut pending = event::poll(FRAME_INTERVAL)?;
         while pending {
             let event = event::read()?;
             pending = event::poll(std::time::Duration::ZERO)?;
