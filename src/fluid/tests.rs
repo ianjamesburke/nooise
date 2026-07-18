@@ -986,7 +986,13 @@ fn engine_publishes_beat_telemetry() {
     let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
     let telemetry = Arc::new(FluidTelemetry::default());
     let bpm = f64::from(controls.load().master.bpm);
-    let mut engine = FluidEngine::new(44_100.0, controls, automation, Arc::clone(&telemetry));
+    let mut engine = FluidEngine::new(
+        44_100.0,
+        controls,
+        automation,
+        no_morph(),
+        Arc::clone(&telemetry),
+    );
 
     for _ in 0..512 {
         engine.next_stereo();
@@ -1325,7 +1331,7 @@ fn tab_controls_classify_each_slider_kind() {
                 Continuous, Timing, Continuous, Discrete,
             ],
         ),
-        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Gain]),
+        (Tab::Perc, vec![Gain, Timing, Timing, Gain, Timing, Gain]),
         (
             Tab::Chords,
             vec![
@@ -1354,8 +1360,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Tonal,
             vec![
-                Gain, Discrete, Discrete, Discrete, Timing, Timing, Timing, Timing, Timing, Gain,
-                Continuous, Timing, Gain,
+                Gain, Discrete, Discrete, Discrete, Timing, Timing, Timing, Gain, Timing, Timing,
+                Gain, Continuous, Timing, Gain,
             ],
         ),
         (
@@ -1367,7 +1373,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Arp,
             vec![
-                Gain, Discrete, Timing, Timing, Discrete, Discrete, Timing, Timing, Gain,
+                Gain, Discrete, Timing, Timing, Gain, Discrete, Discrete, Timing, Timing, Gain,
             ],
         ),
     ];
@@ -1520,7 +1526,7 @@ fn full_engine_renders_a_custom_progression_from_song_code_without_panicking() {
     let controls_swap = Arc::new(ArcSwap::from_pointee(decoded.controls));
     let automation = Arc::new(ArcSwap::from_pointee(decoded.automation));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(SAMPLE_RATE, controls_swap, automation, telemetry);
+    let mut engine = FluidEngine::new(SAMPLE_RATE, controls_swap, automation, no_morph(), telemetry);
 
     for _ in 0..(SAMPLE_RATE as usize * 4) {
         let (l, r) = engine.next_stereo();
@@ -2487,7 +2493,7 @@ fn perc_continuous_mode_has_no_periodic_rms_dips() {
 fn perc_tab_controls_include_interval_and_offset() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Perc, &controls);
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 6);
     assert_eq!(rows[1].label, "Interval");
     assert_close(rows[1].min, 0.125);
     assert_close(rows[1].max, 4.25);
@@ -2923,8 +2929,12 @@ fn grid_trigger_survives_continuous_interval_sweep() {
     }
 
     let max_gap = max_hit_gap(&hit_beats, total_beats);
+    // Bound is a hair above one peak interval (1.75): the anti-double-fire floor
+    // (half an interval after the last hit) is slightly more conservative than
+    // an unbounded pull-earlier, so the worst-case gap under a continuous
+    // interval LFO sits just over 2 beats. Still nowhere near a stall.
     assert!(
-        max_gap <= 2.0,
+        max_gap <= 2.25,
         "trigger starved during interval sweep: max gap {max_gap:.2} beats"
     );
 }
@@ -2951,20 +2961,85 @@ fn grid_trigger_survives_sliding_offset() {
     );
 }
 
+fn min_hit_gap(hit_beats: &[f64]) -> f64 {
+    hit_beats
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// Cranking swing while the grid runs must never re-fire the slot that just
+/// sounded: consecutive hits stay at least half an interval apart. This is the
+/// double-trigger / flam bug that a live timing tweak used to produce.
+#[test]
+fn grid_trigger_no_double_fire_when_swing_ramps() {
+    let interval = 0.5f32;
+    let total_beats = 32.0;
+    let samples = (total_beats * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let mut trigger = GridTrigger::new();
+    let mut hit_beats = Vec::new();
+
+    for sample in 0..samples {
+        let t = timing(sample, 120.0);
+        // Sweep swing 0 -> 1 across the run so the reshape lands at every phase.
+        let swing = (t.beat / total_beats) as f32;
+        if trigger.pop_swung(t, interval, 0.0, swing) {
+            hit_beats.push(t.beat);
+        }
+    }
+
+    let min_gap = min_hit_gap(&hit_beats);
+    assert!(
+        min_gap >= f64::from(interval) * 0.5 - 1e-6,
+        "swing ramp double-fired: min gap {min_gap:.4} beats < half interval"
+    );
+    // Still musically dense — the guard must not have stalled the grid.
+    assert!(hit_beats.len() as f64 >= total_beats / f64::from(interval) * 0.5);
+}
+
+/// The same guard for a live offset jump: nudging offset must not squeeze two
+/// hits closer than half an interval.
+#[test]
+fn grid_trigger_no_double_fire_when_offset_steps() {
+    let interval = 1.0f32;
+    let total_beats = 32.0;
+    let samples = (total_beats * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let mut trigger = GridTrigger::new();
+    let mut hit_beats = Vec::new();
+
+    for sample in 0..samples {
+        let t = timing(sample, 120.0);
+        // Step the offset every few beats, straddling slot boundaries.
+        let offset = 0.1 * (t.beat as f32 * 0.5).floor();
+        if trigger.pop(t, interval, offset) {
+            hit_beats.push(t.beat);
+        }
+    }
+
+    let min_gap = min_hit_gap(&hit_beats);
+    assert!(
+        min_gap >= f64::from(interval) * 0.5 - 1e-6,
+        "offset step double-fired: min gap {min_gap:.4} beats < half interval"
+    );
+}
+
+/// A live offset nudge landing right as a hit fires must not squeeze the next
+/// hit closer than half an interval (the same guard as the ramp/step tests
+/// above, exercised against the exact live-edit gesture that was reported).
 #[test]
 fn grid_trigger_no_double_hit_after_offset_nudge() {
     let bpm = 120.0;
-    let sample_rate = f64::from(SAMPLE_RATE);
+    let interval = 1.0f32;
     let total_samples = (SAMPLE_RATE as u64) * 8;
     let mut trigger = GridTrigger::new();
     let mut offset = 0.0f32;
     let mut nudged = false;
-    let mut hit_samples = Vec::new();
+    let mut hit_beats = Vec::new();
 
     for sample in 0..total_samples {
         let t = timing(sample, bpm);
-        if trigger.pop(t, 1.0, offset) {
-            hit_samples.push(sample);
+        if trigger.pop(t, interval, offset) {
+            hit_beats.push(t.beat);
             if !nudged {
                 // ~10ms nudge, matching the reported live-edit gesture.
                 offset += (0.010 * bpm as f64 / 60.0) as f32;
@@ -2974,30 +3049,27 @@ fn grid_trigger_no_double_hit_after_offset_nudge() {
     }
 
     assert!(nudged, "test never reached a hit to nudge after");
-    for pair in hit_samples.windows(2) {
-        let gap_seconds = (pair[1] - pair[0]) as f64 / sample_rate;
-        assert!(
-            gap_seconds >= MIN_RETRIGGER_SECONDS,
-            "double hit after offset nudge: gap {gap_seconds:.4}s at sample {}",
-            pair[1]
-        );
-    }
+    let min_gap = min_hit_gap(&hit_beats);
+    assert!(
+        min_gap >= f64::from(interval) * 0.5 - 1e-6,
+        "double hit after offset nudge: min gap {min_gap:.4} beats < half interval"
+    );
 }
 
+/// Same guard for a live rate nudge landing right as a hit fires.
 #[test]
 fn grid_trigger_no_double_hit_after_rate_nudge() {
     let bpm = 120.0;
-    let sample_rate = f64::from(SAMPLE_RATE);
     let total_samples = (SAMPLE_RATE as u64) * 8;
     let mut trigger = GridTrigger::new();
     let mut interval = 1.0f32;
     let mut nudged = false;
-    let mut hit_samples = Vec::new();
+    let mut hit_beats = Vec::new();
 
     for sample in 0..total_samples {
         let t = timing(sample, bpm);
         if trigger.pop(t, interval, 0.0) {
-            hit_samples.push(sample);
+            hit_beats.push(t.beat);
             if !nudged {
                 // A quick rate tweak right as a hit fires.
                 interval *= 0.4;
@@ -3007,14 +3079,11 @@ fn grid_trigger_no_double_hit_after_rate_nudge() {
     }
 
     assert!(nudged, "test never reached a hit to nudge after");
-    for pair in hit_samples.windows(2) {
-        let gap_seconds = (pair[1] - pair[0]) as f64 / sample_rate;
-        assert!(
-            gap_seconds >= MIN_RETRIGGER_SECONDS,
-            "double hit after rate nudge: gap {gap_seconds:.4}s at sample {}",
-            pair[1]
-        );
-    }
+    let min_gap = min_hit_gap(&hit_beats);
+    assert!(
+        min_gap >= f64::from(interval) * 0.5 - 1e-6,
+        "double hit after rate nudge: min gap {min_gap:.4} beats < half interval"
+    );
 }
 
 fn automation_with_route(
@@ -3558,13 +3627,13 @@ fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
 
     // An ms-native control flipped to beats rounds to the nearest divided
     // beat: 470 ms at 120 BPM is 0.94 beats -> 1.0 beats -> 500 ms.
-    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 3, true, 0.0);
+    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 4, true, 0.0);
     assert_near(controls.load().perc.decay_ms, 500.0);
 
     // And once flipped, it steps on the 0.125-beat grid: 500 ms + an eighth
     // of a beat (62.5 ms) at 120 BPM.
     flipped.insert(unit_key("perc.decay_ms", None));
-    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 3, 1.0, 0.0, &flipped);
+    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 4, 1.0, 0.0, &flipped);
     assert_near(controls.load().perc.decay_ms, 562.5);
 }
 
@@ -3823,7 +3892,7 @@ fn engine_hot_path_timing() {
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
     let automation = Arc::new(ArcSwap::from_pointee(automation));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(SAMPLE_RATE, controls, automation, telemetry);
+    let mut engine = FluidEngine::new(SAMPLE_RATE, controls, automation, no_morph(), telemetry);
 
     let frames = SAMPLE_RATE as u64 * 10;
     let start = Instant::now();

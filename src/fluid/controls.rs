@@ -49,6 +49,7 @@ pub(crate) struct PercControls {
     pub filter: f32,
     pub interval_beats: f32,
     pub offset_beats: f32,
+    pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
 impl Default for PercControls {
@@ -59,6 +60,7 @@ impl Default for PercControls {
             filter: 0.7,
             interval_beats: 0.25,
             offset_beats: 0.0,
+            swing: 0.0,
         }
     }
 }
@@ -178,6 +180,7 @@ pub(crate) struct TonalControls {
     pub attack: f32,
     pub release: f32,
     pub reverb_mix: f32,
+    pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
 impl Default for TonalControls {
@@ -202,6 +205,7 @@ impl Default for TonalControls {
             attack: 0.03,
             release: 2.0,
             reverb_mix: 0.6,
+            swing: 0.0,
         }
     }
 }
@@ -277,6 +281,7 @@ pub(crate) struct ArpControls {
     pub attack: f32,
     pub release: f32,
     pub reverb_mix: f32,
+    pub swing: f32,     // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
 impl Default for ArpControls {
@@ -297,6 +302,7 @@ impl Default for ArpControls {
             // Matches the former AMBIENT_REVERB_ARP_MIX_FIXED constant so the
             // default sound is unchanged.
             reverb_mix: 0.5,
+            swing: 0.0,
         }
     }
 }

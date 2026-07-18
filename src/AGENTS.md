@@ -6,11 +6,12 @@ All engine, terminal UI, and live-control code for the nooise binary.
 
 ## Ownership
 
-- `main.rs` — binary entry point: CLI parsing (`run`/`version`/`update`/`render`/song code), wires up terminal + audio engine.
+- `main.rs` — binary entry point: CLI parsing (`run`/`version`/`update`/`render`/`auto`/song code), wires up terminal + audio engine.
 - `update_check.rs` — passive crates.io update notification helper; checks in the background and exposes a short TUI-safe message.
 - `audio.rs` — cpal/audio-backend plumbing, sample callback wiring.
 - `fluid/` — the core engine module:
-  - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `render_wav()` (headless wav render), `FluidTelemetry`.
+  - `mod.rs` — crate-facing glue: `run()` (TUI + live audio), `run_auto()` (TUI + live audio, slow-morph mode), `render_wav()` (headless wav render), `FluidTelemetry`.
+  - `auto.rs` — `nooise auto [BARS]`: `AUTO_STATES` baked-in share codes decode to a `Vec<SongState>` at startup (fatal on a bad code); `MorphState` holds the decoded endpoints + bars-per-leg and derives leg index/from/to/t purely from the live beat clock (no stored progress, so it stays render-deterministic); `MorphWriter` throttles the engine's control-reload tick to one recompute-and-store per 1/8 note.
   - `controls.rs` — `FluidControls`, `MasterControls`, and per-voice control structs with defaults.
   - `registry.rs` — the control registry: one `ControlSpec` table per tab (stable ID, label, kind, range, step, entry semantics, reset, accessors, display). `tab_controls`/`apply_delta`/`apply_min`/`apply_value` all derive from it.
   - `automation.rs` — modulation routes keyed by stable control ID. A control can carry an independent LFO route (`f` submenu: shape/amount/interval/offset) and/or a one-shot envelope route (`e` submenu: amount/attack/decay/trigger); `modulated_control_value_full` sums both, clamps, then snaps. LFO field specs own slider ranges, steps, reset targets, and numeric entry; envelope field behavior lives on `EnvelopeRoute`. LFO shapes cover sine/triangle/ramp/square plus seeded random drift and sample & hold (pure `(seed, cycle index)` hash — no RNG state — reseedable via `LfoRoute::reseed`). Routes drive runtime modulation; song-code persists LFO routes (incl. shape), envelope routes are not persisted on the experiment branch.
@@ -30,7 +31,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
 - Per-slider `f` (LFO) and `e` (envelope) automation are the user-facing modulation paths; do not add voice-specific LFO/envelope rate/depth controls to core slider tabs.
 - New LFO routes start at 0% amount and new envelope routes at 0 amount; opening either editor is audible-neutral until the user raises amount, and `close_editor` drops a still-neutral route.
 - Every modulated value shown or heard must come from `modulated_control_value_full` (LFO + envelope summed, clamped, snapped); never add divergent UI-only modulation math.
-- Grid-timing controls carry `LfoSnap` in their `ControlSpec` (intervals snap modulation to power-of-two subdivisions, offsets to their step grid); every modulated value — engine and UI marker alike — must come from `modulated_control_value` so what is shown matches what is heard. `GridTrigger` only pulls scheduled hits earlier between fires; grids that move later latch at the next fire so modulation can never starve a trigger.
+- Grid-timing controls carry `LfoSnap` in their `ControlSpec` (intervals snap modulation to power-of-two subdivisions, offsets to their step grid); every modulated value — engine and UI marker alike — must come from `modulated_control_value` so what is shown matches what is heard. `GridTrigger` may pull a scheduled hit earlier when a reshaped grid lands sooner (so a denser grid never starves), but never within half an interval of the hit already emitted (`earliest_hit`, floored on `last_hit_beat`); a reshape moves any slot by at most half an interval, so this guard is what stops a live swing/offset/rate change from re-firing the slot that just sounded (an audible double-trigger). Grids that move later latch at the next fire.
 - Chord length (`pad.chord_bars`) stores bars for the pad/bass engines but displays and accepts numeric entry in beats; typed values convert to bars and snap to the existing power-of-two grid.
 - Live-read gain controls are ramped by registry-derived `GainSmoothers` in `FluidEngine`; every unique `ControlKind::Gain` spec must get a smoother automatically.
 - TUI automation edits must go through `PublishedAutomation` so the shared audio-thread snapshot is stored on every mutation.
@@ -50,6 +51,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
 - Voice RNGs must stay reseedable via `FluidEngine::reseed` so `nooise render --seed` stays byte-reproducible.
 - Passive update checks must never block the TUI or audio callback; keep crates.io/network work off the main loop and show no message on failure.
 - `nooise update` checks crates.io before invoking Cargo; do not force reinstall when the installed version is already current.
+- `nooise auto` morphs by owning and rewriting the live `FluidControls` (same clone-modify-store path the UI uses), driven by registry `ControlKind`. Each leg holds steady for `HOLD_FRACTION` (2/3) of its length, then transitions in the final third: `Gain`/`Continuous` glide across the transition window (levels included, so a morph can never dip below the quieter endpoint — proven by `morph_never_dips_below_the_quieter_endpoint`); `Timing`/`Discrete` snap through `spec.quantize`, never interpolated. The `STRUCTURAL_SNAP_IDS` group (progression, chord count/bars, arp pattern) jumps atomically on the transition downbeat; other grid params stagger at `STAGGER_STEP_BARS` (8-bar) offsets after it. Manual UI edits during a morph are overwritten on the next tick — pressing `a` or touching any param exits auto instead (`AutoControls`). Add a morph target by appending an `n1_…` share code to `auto::AUTO_STATES` (see the doc-comment there for the copy-from-session steps); that list is the seam a future TOML mixtape loader replaces.
 
 ## Verification
 

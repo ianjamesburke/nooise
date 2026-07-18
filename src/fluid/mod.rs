@@ -33,6 +33,7 @@ use crate::synth::noise::WhiteNoise;
 use crate::synth::oscillator::SineOscillator;
 use crate::update_check::{UpdateNotice, spawn_update_check};
 
+mod auto;
 mod automation;
 mod controls;
 mod engine;
@@ -44,6 +45,9 @@ mod voice;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use auto::{
+    AutoControls, DEFAULT_AUTO_BARS, MorphState, MorphWriter, decode_auto_states, no_morph,
+};
 use automation::*;
 use controls::*;
 use engine::*;
@@ -93,10 +97,44 @@ pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), B
 }
 
 pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn Error>> {
-    let controls = Arc::new(ArcSwap::from_pointee(initial_song.controls));
+    // Interactive start: no morph running. `A` can begin one live, heading
+    // toward the built-in states from wherever the user currently is.
+    let auto_states = decode_auto_states().into_iter().map(|s| s.controls).collect();
+    run_interactive(initial_song, no_morph(), auto_states, DEFAULT_AUTO_BARS)
+}
+
+/// Run the live interactive TUI already morphing forever between the built-in
+/// `AUTO_STATES` over `bars`-bar legs (`nooise auto [BARS]`). `A` toggles it off
+/// — as does touching any parameter — and back on from the current state.
+pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
+    let states = decode_auto_states();
+    let endpoints: Vec<FluidControls> = states.iter().map(|s| s.controls.clone()).collect();
+    let initial_song = SongState {
+        controls: endpoints[0].clone(),
+        automation: states[0].automation.clone(),
+    };
+    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
+        endpoints.clone(),
+        bars,
+    ))));
+    run_interactive(initial_song, morph, endpoints, bars)
+}
+
+/// Shared interactive setup: wire the audio engine, terminal, and UI loop
+/// around the controls/automation/telemetry/morph quartet. `morph` starts
+/// `Some` for `nooise auto` and `None` otherwise; `auto_states`/`auto_bars` let
+/// the UI build a fresh morph when the user toggles auto mode on live.
+fn run_interactive(
+    initial_song: SongState,
+    morph: Arc<ArcSwap<Option<MorphState>>>,
+    auto_states: Vec<FluidControls>,
+    auto_bars: u32,
+) -> Result<(), Box<dyn Error>> {
+    let controls = Arc::new(ArcSwap::from_pointee(initial_song.controls.clone()));
     let controls_for_engine = Arc::clone(&controls);
     let automation = Arc::new(ArcSwap::from_pointee(initial_song.automation.clone()));
     let automation_for_engine = Arc::clone(&automation);
+    let morph_for_engine = Arc::clone(&morph);
     let telemetry = Arc::new(FluidTelemetry::default());
     let telemetry_for_engine = Arc::clone(&telemetry);
     let updates = UpdateNotice::default();
@@ -107,6 +145,7 @@ pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn
             sr,
             Arc::clone(&controls_for_engine),
             Arc::clone(&automation_for_engine),
+            Arc::clone(&morph_for_engine),
             Arc::clone(&telemetry_for_engine),
         )
     })?;
@@ -124,6 +163,7 @@ pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn
         telemetry,
         initial_song.automation,
         updates,
+        AutoControls::new(morph, auto_states, auto_bars),
     );
 
     disable_raw_mode()?;
@@ -142,7 +182,13 @@ pub(crate) fn render_wav(
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
     let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(RENDER_SAMPLE_RATE as f32, controls, automation, telemetry);
+    let mut engine = FluidEngine::new(
+        RENDER_SAMPLE_RATE as f32,
+        controls,
+        automation,
+        no_morph(),
+        telemetry,
+    );
     if let Some(seed) = seed {
         engine.reseed(seed);
     }

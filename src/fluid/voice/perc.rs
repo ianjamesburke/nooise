@@ -42,7 +42,7 @@ impl PercEngine {
             return self.noise.next_filtered(&mut self.rng, self.smoothing) * c.level * 0.4;
         }
 
-        if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
+        if self.trigger.pop_swung(timing, c.interval_beats, c.offset_beats, c.swing) {
             let smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
             self.hits.push(NoiseHit::new(
                 c.level,
