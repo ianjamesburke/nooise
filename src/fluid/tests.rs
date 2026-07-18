@@ -3356,6 +3356,24 @@ fn lfo_shapes_match_reference_curves() {
 }
 
 #[test]
+fn ramp_shapes_are_continuous_across_the_wrap() {
+    // A value that jumps between adjacent samples is an audible click when
+    // applied directly to a live-read control (e.g. level or cutoff). Every
+    // other shape is continuous at the cycle boundary; ramps must be too.
+    let eps = 1e-4;
+    for shape in [LfoShape::RampUp, LfoShape::RampDown] {
+        let route = lfo_shape(shape);
+        let before = route.wave_at(1.0 - eps);
+        let after = route.wave_at(1.0 + eps);
+        assert!(
+            (after - before).abs() < 0.1,
+            "{shape:?} jumps {} across the wrap",
+            (after - before).abs()
+        );
+    }
+}
+
+#[test]
 fn sample_hold_is_stepped_and_seeded() {
     let route = LfoRoute {
         shape: LfoShape::SampleHold,
