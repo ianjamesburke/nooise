@@ -105,7 +105,7 @@ impl StereoEngine for FluidEngine {
             }
         }
 
-        let fade = (self.current_sample as f32 / (self.sample_rate * 8.0)).min(1.0);
+        let fade = (self.current_sample as f32 / (self.sample_rate * 4.0)).min(1.0);
         let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
         let timing = self.tempo.tick(effective.master.bpm);
         if self.current_sample.is_multiple_of(256) {
