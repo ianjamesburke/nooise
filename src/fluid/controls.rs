@@ -249,7 +249,7 @@ impl Default for BassControls {
             offset_beats: 0.0,
             rhythm: 0.0,
             octave: -1.0,
-            decay_time: 0.05,
+            decay_time: 0.3,
             attack_time: 0.01,
             drive: 0.15,
             cutoff: BASS_CUTOFF_MAX_HZ,
