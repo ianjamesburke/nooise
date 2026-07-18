@@ -300,13 +300,18 @@ impl TempoClock {
     }
 }
 
+// `sample_rate`/`bpm` and the beats<->samples conversions below are only
+// exercised by tests that need production timing math to compute expected
+// values (e.g. arp step spacing) — genuinely unread outside `cfg(test)`.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct TimingContext {
     pub(crate) sample_rate: f64,
     pub(crate) bpm: f64,
     pub(crate) beat: f64,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl TimingContext {
     pub(crate) fn new(sample_rate: f64, bpm: f64, beat: f64) -> Self {
         Self {
