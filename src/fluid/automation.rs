@@ -487,9 +487,7 @@ impl LfoRoute {
 
     pub(crate) fn field_ratio(&self, field: LfoField) -> f32 {
         match field {
-            LfoField::Shape => {
-                self.shape.index() as f32 / (LfoShape::ALL.len() - 1).max(1) as f32
-            }
+            LfoField::Shape => self.shape.index() as f32 / (LfoShape::ALL.len() - 1).max(1) as f32,
             LfoField::Amount => field.spec().ratio(self.depth_ratio),
             LfoField::Interval => field.spec().ratio(self.cycle_beats),
             LfoField::Offset => field.spec().ratio(self.phase_offset_beats),
@@ -519,7 +517,12 @@ impl LfoRoute {
     /// depth to/from 0 while holding the present side's other fields — it
     /// fades in or out rather than popping, and naturally disappears once the
     /// leg's `to` state becomes the next leg's `from`.
-    fn morph(from: Option<&LfoRoute>, to: Option<&LfoRoute>, tt: f32, use_to: bool) -> Option<LfoRoute> {
+    fn morph(
+        from: Option<&LfoRoute>,
+        to: Option<&LfoRoute>,
+        tt: f32,
+        use_to: bool,
+    ) -> Option<LfoRoute> {
         match (from, to) {
             (Some(f), Some(t)) => {
                 let mut route = if use_to { *t } else { *f };
@@ -606,10 +609,7 @@ impl EnvTrigger {
     ];
 
     fn index(self) -> usize {
-        Self::CYCLE
-            .iter()
-            .position(|&t| t == self)
-            .unwrap_or(2) // default: every 4 beats
+        Self::CYCLE.iter().position(|&t| t == self).unwrap_or(2) // default: every 4 beats
     }
 
     fn cycled(self, dir: f32) -> Self {
@@ -1131,10 +1131,9 @@ impl AutomationState {
                     .get(&open.address)
                     .is_some_and(|route| route.depth_ratio <= f32::EPSILON);
                 let field_macro_prefix = format!("{}#lfo.", open.address.id());
-                let has_live_field_macro = self
-                    .field_macros
-                    .iter()
-                    .any(|(key, route)| key.starts_with(&field_macro_prefix) && !route.is_neutral());
+                let has_live_field_macro = self.field_macros.iter().any(|(key, route)| {
+                    key.starts_with(&field_macro_prefix) && !route.is_neutral()
+                });
                 if base_neutral && !has_live_field_macro {
                     self.routes.remove(&open.address);
                 }
@@ -1304,13 +1303,24 @@ impl AutomationState {
     /// absent route is simply absent from the map again. Editor-open state
     /// (`open`, `open_field`) is UI navigation, not audible, and is never
     /// morphed — the result always has neither open.
-    pub(crate) fn morph(from: &AutomationState, to: &AutomationState, tt: f32, use_to: bool) -> AutomationState {
+    pub(crate) fn morph(
+        from: &AutomationState,
+        to: &AutomationState,
+        tt: f32,
+        use_to: bool,
+    ) -> AutomationState {
         let mut result = AutomationState::default();
 
-        let route_keys: BTreeSet<ControlAddress> =
-            from.routes.keys().chain(to.routes.keys()).copied().collect();
+        let route_keys: BTreeSet<ControlAddress> = from
+            .routes
+            .keys()
+            .chain(to.routes.keys())
+            .copied()
+            .collect();
         for key in route_keys {
-            if let Some(route) = LfoRoute::morph(from.routes.get(&key), to.routes.get(&key), tt, use_to) {
+            if let Some(route) =
+                LfoRoute::morph(from.routes.get(&key), to.routes.get(&key), tt, use_to)
+            {
                 result.routes.insert(key, route);
             }
         }
@@ -1322,18 +1332,19 @@ impl AutomationState {
             .copied()
             .collect();
         for key in envelope_keys {
-            if let Some(route) = EnvelopeRoute::morph(
-                from.envelopes.get(&key),
-                to.envelopes.get(&key),
-                tt,
-                use_to,
-            ) {
+            if let Some(route) =
+                EnvelopeRoute::morph(from.envelopes.get(&key), to.envelopes.get(&key), tt, use_to)
+            {
                 result.envelopes.insert(key, route);
             }
         }
 
-        let macro_keys: BTreeSet<ControlAddress> =
-            from.macros.keys().chain(to.macros.keys()).copied().collect();
+        let macro_keys: BTreeSet<ControlAddress> = from
+            .macros
+            .keys()
+            .chain(to.macros.keys())
+            .copied()
+            .collect();
         for key in macro_keys {
             if let Some(route) = MacroRoute::morph(from.macros.get(&key), to.macros.get(&key), tt) {
                 result.macros.insert(key, route);
@@ -1397,7 +1408,14 @@ pub(crate) fn modulated_control_value(
     base: f32,
     beat: f64,
 ) -> f32 {
-    modulated_control_value_full(spec, Some(route), None, None, base, ModContext::lfo_only(beat))
+    modulated_control_value_full(
+        spec,
+        Some(route),
+        None,
+        None,
+        base,
+        ModContext::lfo_only(beat),
+    )
 }
 
 /// Combined contribution of every macro slider a route rides, or None when
@@ -1428,8 +1446,7 @@ fn live_macro_pair(
         if route.amounts[i].abs() <= f32::EPSILON {
             continue;
         }
-        let spec =
-            spec_by_id(MACRO_CONTROLS[i].id).expect("macro sliders are registered controls");
+        let spec = spec_by_id(MACRO_CONTROLS[i].id).expect("macro sliders are registered controls");
         let macro_address = ControlAddress::new(spec.id);
         *value = modulated_control_value_full(
             spec,
@@ -1459,7 +1476,8 @@ pub(crate) fn live_macro_contribution(
 
 /// Slot order for stacked LFO field macros, shared by every fold over them
 /// (`PlannedRoute::field_macros` uses the same indices).
-const LFO_FIELD_MACRO_SLOTS: [LfoField; 3] = [LfoField::Amount, LfoField::Interval, LfoField::Offset];
+const LFO_FIELD_MACRO_SLOTS: [LfoField; 3] =
+    [LfoField::Amount, LfoField::Interval, LfoField::Offset];
 
 /// Fold per-slot combined macro ratios into a modulated copy of the route.
 /// `contribution(slot)` resolves the stacked macro on `LFO_FIELD_MACRO_SLOTS[slot]`,
@@ -1478,8 +1496,7 @@ fn fold_field_macro_contributions(
             .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS);
     }
     if let Some(combined) = contribution(2) {
-        effective.phase_offset_beats = (route.phase_offset_beats
-            + combined * MAX_LFO_OFFSET_BEATS)
+        effective.phase_offset_beats = (route.phase_offset_beats + combined * MAX_LFO_OFFSET_BEATS)
             .clamp(0.0, MAX_LFO_OFFSET_BEATS);
     }
     effective
@@ -1501,9 +1518,7 @@ fn apply_field_macros(
     }
     fold_field_macro_contributions(route, |slot| {
         let key = unit_key(address.id(), LFO_FIELD_MACRO_SLOTS[slot].macro_key());
-        automation
-            .field_macro(&key)
-            .and_then(&mut contribution)
+        automation.field_macro(&key).and_then(&mut contribution)
     })
 }
 

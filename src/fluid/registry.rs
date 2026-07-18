@@ -724,61 +724,61 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
 macro_rules! chord_slot_rows {
     ($slot:literal) => {
         [
-        ControlSpec::new(
-            concat!("pad.chord", $slot, "_degree"),
-            concat!("Chord ", $slot, " Root"),
-            ControlKind::Discrete,
-            -7.0,
-            7.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.pad.chord_slots[$slot - 1].degree,
-            |c, v| c.pad.chord_slots[$slot - 1].degree = v,
-            |c| format!("{:+.0}", c.pad.chord_slots[$slot - 1].degree),
-        )
-        .reset_at(0.0),
-        ControlSpec::new(
-            concat!("pad.chord", $slot, "_accidental"),
-            concat!("Chord ", $slot, " Accidental"),
-            ControlKind::Discrete,
-            -1.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.pad.chord_slots[$slot - 1].accidental,
-            |c, v| c.pad.chord_slots[$slot - 1].accidental = v,
-            |c| match c.pad.chord_slots[$slot - 1].accidental.round() as i32 {
-                -1 => "b".to_string(),
-                1 => "#".to_string(),
-                _ => "natural".to_string(),
-            },
-        )
-        .reset_at(0.0),
-        ControlSpec::new(
-            concat!("pad.chord", $slot, "_extension"),
-            concat!("Chord ", $slot, " Extension"),
-            ControlKind::Discrete,
-            0.0,
-            3.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.pad.chord_slots[$slot - 1].extension,
-            |c, v| c.pad.chord_slots[$slot - 1].extension = v,
-            |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].extension),
-        ),
-        ControlSpec::new(
-            concat!("pad.chord", $slot, "_inversion"),
-            concat!("Chord ", $slot, " Inversion"),
-            ControlKind::Discrete,
-            0.0,
-            3.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.pad.chord_slots[$slot - 1].inversion,
-            |c, v| c.pad.chord_slots[$slot - 1].inversion = v,
-            |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].inversion),
-        )
-        .reset_at(0.0),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_degree"),
+                concat!("Chord ", $slot, " Root"),
+                ControlKind::Discrete,
+                -7.0,
+                7.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.pad.chord_slots[$slot - 1].degree,
+                |c, v| c.pad.chord_slots[$slot - 1].degree = v,
+                |c| format!("{:+.0}", c.pad.chord_slots[$slot - 1].degree),
+            )
+            .reset_at(0.0),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_accidental"),
+                concat!("Chord ", $slot, " Accidental"),
+                ControlKind::Discrete,
+                -1.0,
+                1.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.pad.chord_slots[$slot - 1].accidental,
+                |c, v| c.pad.chord_slots[$slot - 1].accidental = v,
+                |c| match c.pad.chord_slots[$slot - 1].accidental.round() as i32 {
+                    -1 => "b".to_string(),
+                    1 => "#".to_string(),
+                    _ => "natural".to_string(),
+                },
+            )
+            .reset_at(0.0),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_extension"),
+                concat!("Chord ", $slot, " Extension"),
+                ControlKind::Discrete,
+                0.0,
+                3.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.pad.chord_slots[$slot - 1].extension,
+                |c, v| c.pad.chord_slots[$slot - 1].extension = v,
+                |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].extension),
+            ),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_inversion"),
+                concat!("Chord ", $slot, " Inversion"),
+                ControlKind::Discrete,
+                0.0,
+                3.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.pad.chord_slots[$slot - 1].inversion,
+                |c, v| c.pad.chord_slots[$slot - 1].inversion = v,
+                |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].inversion),
+            )
+            .reset_at(0.0),
         ]
     };
 }
@@ -1704,7 +1704,10 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
 /// reorders the underlying array.
 pub(crate) fn chords_tab_controls(c: &FluidControls, drill: ChordDrill) -> Vec<ControlItem> {
     match drill {
-        ChordDrill::None => CHORDS_CONTROLS[..11].iter().map(|spec| spec.item(c)).collect(),
+        ChordDrill::None => CHORDS_CONTROLS[..11]
+            .iter()
+            .map(|spec| spec.item(c))
+            .collect(),
         ChordDrill::Progression => {
             let count = (c.pad.chord_count.round() as usize).clamp(1, CHORD_SLOT_COUNT);
             (0..count)
@@ -1770,7 +1773,11 @@ pub(crate) const BEAT_GRID_STEP: f32 = 0.25;
 
 pub(crate) fn beat_grid_snap(value: f32, min: f32, max: f32) -> f32 {
     let clamped = value.clamp(min, max);
-    let low = if min < BEAT_GRID_FLOOR { min } else { BEAT_GRID_FLOOR };
+    let low = if min < BEAT_GRID_FLOOR {
+        min
+    } else {
+        BEAT_GRID_FLOOR
+    };
     if low < BEAT_GRID_FLOOR && clamped <= (low + BEAT_GRID_FLOOR) / 2.0 {
         return low.clamp(min, max);
     }
@@ -1782,7 +1789,11 @@ pub(crate) fn beat_grid_snap(value: f32, min: f32, max: f32) -> f32 {
 
 pub(crate) fn beat_grid_adjust(value: f32, dir: f32, min: f32, max: f32) -> f32 {
     let current = beat_grid_snap(value, min, max);
-    let low = if min < BEAT_GRID_FLOOR { min } else { BEAT_GRID_FLOOR };
+    let low = if min < BEAT_GRID_FLOOR {
+        min
+    } else {
+        BEAT_GRID_FLOOR
+    };
     let next = if dir > 0.0 {
         if current < BEAT_GRID_FLOOR {
             BEAT_GRID_FLOOR

@@ -367,7 +367,10 @@ impl SawBassVoice {
         for (osc, gain) in self.oscillators.iter_mut().zip(BASS_SAW_HARMONIC_GAINS) {
             raw += osc.next() * gain;
         }
-        drive_stage(raw * BASS_SAW_OUTPUT_GAIN * self.envelope.next(), self.drive)
+        drive_stage(
+            raw * BASS_SAW_OUTPUT_GAIN * self.envelope.next(),
+            self.drive,
+        )
     }
 
     pub(crate) fn is_done(&self) -> bool {

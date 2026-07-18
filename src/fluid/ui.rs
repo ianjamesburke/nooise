@@ -280,7 +280,13 @@ pub(crate) fn ui_loop(
                 }
                 KeyCode::Char('f') => {
                     auto.exit(); // touching a modulator exits auto
-                    open_modulator(&mut automation, &items, selected, ModKind::Lfo, &mut lfo_selected);
+                    open_modulator(
+                        &mut automation,
+                        &items,
+                        selected,
+                        ModKind::Lfo,
+                        &mut lfo_selected,
+                    );
                 }
                 KeyCode::Char('e') => {
                     auto.exit(); // touching a modulator exits auto
@@ -504,7 +510,10 @@ fn flipped_step(native: TimeBase, value: f32, dir: f32, bpm: f32) -> f32 {
             bpm,
         ),
         TimeBase::Ms => beats_to_ms(
-            snap_step(ms_to_beats(value, bpm) + dir * FLIP_BEAT_STEP, FLIP_BEAT_STEP),
+            snap_step(
+                ms_to_beats(value, bpm) + dir * FLIP_BEAT_STEP,
+                FLIP_BEAT_STEP,
+            ),
             bpm,
         ),
         TimeBase::None => value,
@@ -557,8 +566,8 @@ pub(crate) fn snap_after_unit_flip(
                 // An ms control now displayed in beats: round to the nearest
                 // divided beat.
                 (TimeBase::Ms, true) => {
-                    let beats = snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP)
-                        .max(FLIP_BEAT_STEP);
+                    let beats =
+                        snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP).max(FLIP_BEAT_STEP);
                     spec.apply_raw(beats_to_ms(beats, bpm), &mut next);
                 }
                 _ => return,
@@ -647,7 +656,11 @@ pub(crate) fn lfo_submenu_rows(
 /// on a field's row after its nested rows appear or disappear, since the
 /// field's own position never shifts (nested rows only ever insert or
 /// remove immediately after it).
-fn field_row_index(automation: &AutomationState, address: ControlAddress, field: LfoField) -> usize {
+fn field_row_index(
+    automation: &AutomationState,
+    address: ControlAddress,
+    field: LfoField,
+) -> usize {
     lfo_submenu_rows(automation, address)
         .iter()
         .position(|row| *row == LfoSubRow::Field(field))
@@ -1488,8 +1501,7 @@ pub(crate) fn render(
                                     flip_display(TimeBase::Beats, route.cycle_beats, bpm)
                                 }
                                 LfoField::Offset
-                                    if flipped
-                                        .contains(&unit_key(item.id, Some("lfo.offset"))) =>
+                                    if flipped.contains(&unit_key(item.id, Some("lfo.offset"))) =>
                                 {
                                     flip_display(TimeBase::Beats, route.phase_offset_beats, bpm)
                                 }
@@ -1548,8 +1560,7 @@ pub(crate) fn render(
                         }
                         EnvField::Decay
                             if route.decay_beats > 0.0
-                                && flipped
-                                    .contains(&unit_key(item.id, Some("env.decay"))) =>
+                                && flipped.contains(&unit_key(item.id, Some("env.decay"))) =>
                         {
                             flip_display(TimeBase::Beats, route.decay_beats, bpm)
                         }

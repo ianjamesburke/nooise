@@ -340,7 +340,10 @@ impl TonalEngine {
         let phrase = tonal_phrase_index(c.phrase);
         self.sync_phrase(phrase);
 
-        if self.step_trigger.pop_swung(timing, c.rate_beats, c.offset_beats, c.swing) {
+        if self
+            .step_trigger
+            .pop_swung(timing, c.rate_beats, c.offset_beats, c.swing)
+        {
             let cycle = tonal_cycle_index(timing.beat, c.step_interval_beats, c.offset_beats);
             if self.last_cycle.is_some_and(|last| last != cycle) {
                 self.evolve_phrase(c.evolve_rate);

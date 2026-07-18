@@ -382,7 +382,9 @@ impl GridSpec {
         // Straight-grid estimate, then walk forward to the first swung slot at
         // or after `beat`. Swing moves a slot by less than one interval, so the
         // true slot is at most one past the estimate — a handful of iterations.
-        let est = ((beat - self.offset_beats) / self.interval_beats).floor().max(0.0) as u64;
+        let est = ((beat - self.offset_beats) / self.interval_beats)
+            .floor()
+            .max(0.0) as u64;
         let mut slot = est.saturating_sub(1);
         loop {
             let hit = self.swung_beat(slot);

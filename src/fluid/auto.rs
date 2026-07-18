@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
-use super::{AutomationState, ControlKind, FluidControls, SongState, all_specs, decode_song_code};
 #[cfg(test)]
 use super::automation::{ControlAddress, LfoRoute, LfoShape};
+use super::{AutomationState, ControlKind, FluidControls, SongState, all_specs, decode_song_code};
 
 /// Bars per morph leg, matching the throttled-writer granularity of one leg
 /// spanning `bars * 4` beats (4/4).
@@ -42,8 +42,9 @@ pub(crate) fn decode_auto_states() -> Vec<SongState> {
     AUTO_STATES
         .iter()
         .map(|code| {
-            decode_song_code(code)
-                .unwrap_or_else(|err| panic!("built-in auto-morph state {code:?} failed to decode: {err:?}"))
+            decode_song_code(code).unwrap_or_else(|err| {
+                panic!("built-in auto-morph state {code:?} failed to decode: {err:?}")
+            })
         })
         .collect()
 }
@@ -171,7 +172,8 @@ impl MorphState {
             .iter()
             .enumerate()
             .min_by(|(_, a), (_, b)| {
-                level_distance(&current, &a.controls).total_cmp(&level_distance(&current, &b.controls))
+                level_distance(&current, &a.controls)
+                    .total_cmp(&level_distance(&current, &b.controls))
             })
             .map(|(i, _)| i)
             .unwrap_or(0);
@@ -231,7 +233,8 @@ impl MorphState {
 
             let value = match spec.kind {
                 ControlKind::Gain | ControlKind::Continuous => {
-                    let tt = ((t_beat - transition_start) / transition_beats).clamp(0.0, 1.0) as f32;
+                    let tt =
+                        ((t_beat - transition_start) / transition_beats).clamp(0.0, 1.0) as f32;
                     from_v + (to_v - from_v) * tt
                 }
                 ControlKind::Timing | ControlKind::Discrete => {
@@ -290,8 +293,16 @@ pub(crate) struct AutoControls {
 }
 
 impl AutoControls {
-    pub(crate) fn new(morph: Arc<ArcSwap<Option<MorphState>>>, states: Vec<SongState>, bars: u32) -> Self {
-        Self { morph, states, bars }
+    pub(crate) fn new(
+        morph: Arc<ArcSwap<Option<MorphState>>>,
+        states: Vec<SongState>,
+        bars: u32,
+    ) -> Self {
+        Self {
+            morph,
+            states,
+            bars,
+        }
     }
 
     /// True while a morph is running (auto mode is on).
@@ -310,7 +321,12 @@ impl AutoControls {
     /// from `current`/`current_automation`, so nothing jumps — any live
     /// LFO/envelope/macro routes ride along with the morph instead of being
     /// left behind; turning off just calls `exit`.
-    pub(crate) fn toggle(&self, current: FluidControls, current_automation: AutomationState, beat: f64) {
+    pub(crate) fn toggle(
+        &self,
+        current: FluidControls,
+        current_automation: AutomationState,
+        beat: f64,
+    ) {
         if self.is_running() {
             self.exit();
         } else {
@@ -338,7 +354,11 @@ pub(crate) struct MorphWriter {
 impl MorphWriter {
     /// `Some((controls, automation))` when a new morph tick is due at `beat`;
     /// `None` otherwise (call site should skip the write).
-    pub(crate) fn tick(&mut self, morph: &MorphState, beat: f64) -> Option<(FluidControls, AutomationState)> {
+    pub(crate) fn tick(
+        &mut self,
+        morph: &MorphState,
+        beat: f64,
+    ) -> Option<(FluidControls, AutomationState)> {
         let due = match self.last_tick_beat {
             None => true,
             Some(last) => beat - last >= MORPH_TICK_BEATS,
@@ -373,7 +393,13 @@ mod tests {
     /// Sum of every performing element's level/gain: the audible-energy proxy
     /// the never-silent invariant is checked against.
     fn total_level(c: &FluidControls) -> f32 {
-        c.pad.level + c.perc.level + c.kick.level + c.tonal.level + c.clap.level + c.bass.level + c.arp.gain
+        c.pad.level
+            + c.perc.level
+            + c.kick.level
+            + c.tonal.level
+            + c.clap.level
+            + c.bass.level
+            + c.arp.gain
     }
 
     #[test]
@@ -474,8 +500,14 @@ mod tests {
         let morph = MorphState::new(vec![song(from.clone()), song(to.clone())], 30);
 
         // Still holds through the structural downbeat and up to its own offset.
-        assert_eq!(morph.controls_at(80.0).tonal.synth_type, from.tonal.synth_type);
-        assert_eq!(morph.controls_at(111.0).tonal.synth_type, from.tonal.synth_type);
+        assert_eq!(
+            morph.controls_at(80.0).tonal.synth_type,
+            from.tonal.synth_type
+        );
+        assert_eq!(
+            morph.controls_at(111.0).tonal.synth_type,
+            from.tonal.synth_type
+        );
         // At its 8-bar offset it hard-switches.
         assert_eq!(morph.controls_at(112.0).tonal.synth_type, 1.0);
     }
@@ -555,7 +587,10 @@ mod tests {
         let morph = MorphState::new(vec![song(state(80.0)), song(state(120.0))], 64);
         let mut writer = MorphWriter::default();
 
-        assert!(writer.tick(&morph, 0.0).is_some(), "first tick always fires");
+        assert!(
+            writer.tick(&morph, 0.0).is_some(),
+            "first tick always fires"
+        );
         assert!(
             writer.tick(&morph, 0.1).is_none(),
             "within the same 1/8 note, no new write"
@@ -584,18 +619,32 @@ mod tests {
         let mut from_auto = AutomationState::default();
         from_auto.set_route(
             address,
-            LfoRoute { depth_ratio: 0.2, shape: LfoShape::Sine, ..LfoRoute::default() },
+            LfoRoute {
+                depth_ratio: 0.2,
+                shape: LfoShape::Sine,
+                ..LfoRoute::default()
+            },
         );
         let mut to_auto = AutomationState::default();
         to_auto.set_route(
             address,
-            LfoRoute { depth_ratio: 0.8, shape: LfoShape::Square, ..LfoRoute::default() },
+            LfoRoute {
+                depth_ratio: 0.8,
+                shape: LfoShape::Square,
+                ..LfoRoute::default()
+            },
         );
 
         let morph = MorphState::new(
             vec![
-                SongState { controls: from_state, automation: from_auto },
-                SongState { controls: to_state, automation: to_auto },
+                SongState {
+                    controls: from_state,
+                    automation: from_auto,
+                },
+                SongState {
+                    controls: to_state,
+                    automation: to_auto,
+                },
             ],
             6,
         );
@@ -626,8 +675,14 @@ mod tests {
 
         let morph = MorphState::new(
             vec![
-                SongState { controls: FluidControls::default(), automation: from_auto },
-                SongState { controls: FluidControls::default(), automation: to_auto },
+                SongState {
+                    controls: FluidControls::default(),
+                    automation: from_auto,
+                },
+                SongState {
+                    controls: FluidControls::default(),
+                    automation: to_auto,
+                },
             ],
             6,
         );
@@ -651,9 +706,18 @@ mod tests {
 
         let morph = MorphState::new(
             vec![
-                SongState { controls: FluidControls::default(), automation: routed },
-                SongState { controls: FluidControls::default(), automation: unrouted.clone() },
-                SongState { controls: FluidControls::default(), automation: unrouted },
+                SongState {
+                    controls: FluidControls::default(),
+                    automation: routed,
+                },
+                SongState {
+                    controls: FluidControls::default(),
+                    automation: unrouted.clone(),
+                },
+                SongState {
+                    controls: FluidControls::default(),
+                    automation: unrouted,
+                },
             ],
             6,
         );
@@ -683,7 +747,11 @@ mod tests {
             0.0,
         );
         assert_eq!(
-            morph.endpoints[0].automation.route(address).unwrap().depth_ratio,
+            morph.endpoints[0]
+                .automation
+                .route(address)
+                .unwrap()
+                .depth_ratio,
             0.5
         );
     }

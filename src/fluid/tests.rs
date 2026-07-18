@@ -259,7 +259,10 @@ fn tonal_decay_control_sets_ring_length() {
     let (long_l, _) = long_decay.next();
     let (short_l, _) = short_decay.next();
 
-    assert!(short_decay.is_done(), "a short-decay note must have ended by 0.25s");
+    assert!(
+        short_decay.is_done(),
+        "a short-decay note must have ended by 0.25s"
+    );
     assert!(
         long_l.abs() > short_l.abs(),
         "a longer tonal.decay should still be ringing when the short note is silent: \
@@ -583,7 +586,11 @@ fn lfo_field_set_snaps_to_eighth_beat_grid() {
 fn discrete_fields_clamp_at_their_ends_instead_of_wrapping() {
     let mut route = LfoRoute::default();
     route.adjust_field_at(LfoField::Shape, -1.0, 0.0);
-    assert_eq!(route.shape, LfoShape::Sine, "shape must not wrap below sine");
+    assert_eq!(
+        route.shape,
+        LfoShape::Sine,
+        "shape must not wrap below sine"
+    );
     for _ in 0..20 {
         route.adjust_field_at(LfoField::Shape, 1.0, 0.0);
     }
@@ -677,10 +684,7 @@ fn same_key_toggles_editor_closed_and_keeps_the_route() {
     // Second tap closes the editor but the route keeps playing.
     open_modulator(&mut automation, &items, 0, ModKind::Lfo, &mut sub);
     assert!(!automation.state().is_editor_open());
-    assert_close(
-        automation.state().route(address).unwrap().depth_ratio,
-        0.4,
-    );
+    assert_close(automation.state().route(address).unwrap().depth_ratio, 0.4);
 }
 
 #[test]
@@ -709,14 +713,20 @@ fn macro_route_scales_target_into_its_range() {
     controls.master.level = 0.2;
     controls.macros.values[0] = 0.5;
     let mut automation = AutomationState::default();
-    automation.set_macro_route(ControlAddress::new("master.level"), single_macro_route(0, 1.0));
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        single_macro_route(0, 1.0),
+    );
 
     let mut effective = controls.clone();
     apply_automation(&mut effective, &automation, timing(0, 120.0));
     assert_near(effective.master.level, 0.7);
 
     // Negative amount dips below the base and clamps at the control minimum.
-    automation.set_macro_route(ControlAddress::new("master.level"), single_macro_route(0, -1.0));
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        single_macro_route(0, -1.0),
+    );
     let mut effective = controls.clone();
     apply_automation(&mut effective, &automation, timing(0, 120.0));
     assert_near(effective.master.level, 0.0);
@@ -743,7 +753,10 @@ fn a_control_can_ride_several_macro_sliders_at_once() {
     assert_near(effective.master.level, 0.1);
 
     // Zeroing one slot doesn't disturb the other.
-    automation.macro_route_mut(ControlAddress::new("master.level")).unwrap().amounts[2] = 0.0;
+    automation
+        .macro_route_mut(ControlAddress::new("master.level"))
+        .unwrap()
+        .amounts[2] = 0.0;
     let mut effective = controls.clone();
     apply_automation(&mut effective, &automation, timing(0, 120.0));
     assert_near(effective.master.level, 0.4);
@@ -931,7 +944,10 @@ fn macro_own_lfo_feeds_targets_in_the_same_pass() {
             ..LfoRoute::default()
         },
     );
-    automation.set_macro_route(ControlAddress::new("master.level"), single_macro_route(0, 1.0));
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        single_macro_route(0, 1.0),
+    );
 
     // Sine peak: beat 0.5 of a 2-beat cycle. At 120 BPM that is 0.25 s.
     let sample = (f64::from(SAMPLE_RATE) * 0.25) as u64;
@@ -958,7 +974,13 @@ fn envelope_opens_only_on_macros_and_macros_never_target_macros() {
 
     // e on a regular control: refused.
     let master_items = tab_controls(Tab::Master, &controls);
-    open_modulator(&mut automation, &master_items, 0, ModKind::Envelope, &mut sub);
+    open_modulator(
+        &mut automation,
+        &master_items,
+        0,
+        ModKind::Envelope,
+        &mut sub,
+    );
     assert!(!automation.state().is_editor_open());
 
     // v on a macro slider: refused.
@@ -967,7 +989,13 @@ fn envelope_opens_only_on_macros_and_macros_never_target_macros() {
     assert!(!automation.state().is_editor_open());
 
     // e on a macro slider and v on a regular control: allowed.
-    open_modulator(&mut automation, &macro_items, 0, ModKind::Envelope, &mut sub);
+    open_modulator(
+        &mut automation,
+        &macro_items,
+        0,
+        ModKind::Envelope,
+        &mut sub,
+    );
     assert_eq!(automation.state().active_kind(), Some(ModKind::Envelope));
     automation.edit(AutomationState::close_editor);
     open_modulator(&mut automation, &master_items, 0, ModKind::Macro, &mut sub);
@@ -1392,19 +1420,15 @@ fn tab_controls_classify_each_slider_kind() {
                 Continuous, Timing, Continuous, Discrete,
             ],
         ),
-        (
-            Tab::Perc,
-            vec![Gain, Gain, Timing, Timing, Timing, Gain],
-        ),
+        (Tab::Perc, vec![Gain, Gain, Timing, Timing, Timing, Gain]),
         (
             Tab::Chords,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain,
-                Gain, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
+                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain, Gain,
                 Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
                 Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
                 Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
-                Discrete,
+                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
             ],
         ),
         (
@@ -1416,7 +1440,9 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (
             Tab::Kick,
-            vec![Gain, Gain, Timing, Timing, Timing, Timing, Continuous, Gain, Gain],
+            vec![
+                Gain, Gain, Timing, Timing, Timing, Timing, Continuous, Gain, Gain,
+            ],
         ),
         (
             Tab::Tonal,
@@ -1589,11 +1615,20 @@ fn full_engine_renders_a_custom_progression_from_song_code_without_panicking() {
     let controls_swap = Arc::new(ArcSwap::from_pointee(decoded.controls));
     let automation = Arc::new(ArcSwap::from_pointee(decoded.automation));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(SAMPLE_RATE, controls_swap, automation, no_morph(), telemetry);
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        controls_swap,
+        automation,
+        no_morph(),
+        telemetry,
+    );
 
     for _ in 0..(SAMPLE_RATE as usize * 4) {
         let (l, r) = engine.next_stereo();
-        assert!(l.is_finite() && r.is_finite(), "engine produced non-finite output");
+        assert!(
+            l.is_finite() && r.is_finite(),
+            "engine produced non-finite output"
+        );
     }
 }
 
@@ -1774,7 +1809,10 @@ fn song_code_predating_tonal_attack_decay_decodes_with_defaults() {
     let code = song::encode_song_code(&SongState::default()).unwrap();
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.controls.tonal.attack, TonalControls::default().attack);
+    assert_close(
+        decoded.controls.tonal.attack,
+        TonalControls::default().attack,
+    );
     assert_close(decoded.controls.tonal.decay, TonalControls::default().decay);
 }
 
@@ -2059,7 +2097,11 @@ fn chords_tab_controls_slot_shows_accidental_extension_inversion() {
     let rows = chords_tab_controls(&controls, ChordDrill::Slot(2));
     assert_eq!(
         rows.iter().map(|r| r.label).collect::<Vec<_>>(),
-        vec!["Chord 3 Accidental", "Chord 3 Extension", "Chord 3 Inversion"]
+        vec![
+            "Chord 3 Accidental",
+            "Chord 3 Extension",
+            "Chord 3 Inversion"
+        ]
     );
 }
 
@@ -2247,7 +2289,7 @@ fn bass_engine_is_monophonic_and_hard_cuts_on_retrigger() {
     let pad = PadControls::default();
     let bass_controls = BassControls {
         interval_beats: 1.0,
-        rhythm: 0.0, // quarter notes: hits every beat
+        rhythm: 0.0,     // quarter notes: hits every beat
         decay_time: 5.0, // deliberately long: a pool would still be ringing
         attack_time: 0.001,
         ..BassControls::default()
@@ -2358,7 +2400,10 @@ fn pad_type_zero_matches_legacy_warm_tone_exactly() {
     let mut legacy = WarmPadTone::new(220.0, 0.2, 0.15, 0.5, 1.0, sample_rate);
 
     for _ in 0..(sample_rate * 0.3) as usize {
-        assert_eq!(dispatched.next_stereo(0.8, 0.5, 0.5), legacy.next_stereo(0.8, 0.5, 0.5));
+        assert_eq!(
+            dispatched.next_stereo(0.8, 0.5, 0.5),
+            legacy.next_stereo(0.8, 0.5, 0.5)
+        );
     }
 }
 
@@ -3237,7 +3282,11 @@ fn lfo_interval_sweep_plays_on_grid_breakdown() {
         let t = timing(sample, 120.0);
         let mut effective = controls.clone();
         apply_automation(&mut effective, &automation, t);
-        if trigger.pop(t, effective.kick.interval_beats, effective.kick.offset_beats) {
+        if trigger.pop(
+            t,
+            effective.kick.interval_beats,
+            effective.kick.offset_beats,
+        ) {
             hit_beats.push(t.beat);
         }
     }
@@ -3404,9 +3453,8 @@ fn reseed_changes_pattern_but_stays_repeatable() {
         seed: 5,
         ..LfoRoute::default()
     };
-    let sample = |route: &LfoRoute| -> Vec<f32> {
-        (0..32).map(|i| route.wave_at(f64::from(i))).collect()
-    };
+    let sample =
+        |route: &LfoRoute| -> Vec<f32> { (0..32).map(|i| route.wave_at(f64::from(i))).collect() };
 
     let original = sample(&base);
     let mut rolled = base;
@@ -3676,8 +3724,20 @@ fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
     // Perc interval (native beats) flipped to ms: h/l moves on the 10 ms
     // grid instead of the beat grid. 0.25 beats = 125 ms -> 140 ms.
     flipped.insert(unit_key("perc.interval_beats", None));
-    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 3, 1.0, 0.0, &flipped);
-    assert_near(beats_to_ms(controls.load().perc.interval_beats, 120.0), 140.0);
+    adjust_lfo_or_control(
+        &mut automation,
+        0,
+        &controls,
+        Tab::Perc,
+        3,
+        1.0,
+        0.0,
+        &flipped,
+    );
+    assert_near(
+        beats_to_ms(controls.load().perc.interval_beats, 120.0),
+        140.0,
+    );
 
     // Flipping back to beats lands the value on the control's own grid.
     flipped.remove(&unit_key("perc.interval_beats", None));
@@ -3692,7 +3752,16 @@ fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
     // And once flipped, it steps on the 0.125-beat grid: 500 ms + an eighth
     // of a beat (62.5 ms) at 120 BPM.
     flipped.insert(unit_key("perc.decay_ms", None));
-    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 2, 1.0, 0.0, &flipped);
+    adjust_lfo_or_control(
+        &mut automation,
+        0,
+        &controls,
+        Tab::Perc,
+        2,
+        1.0,
+        0.0,
+        &flipped,
+    );
     assert_near(controls.load().perc.decay_ms, 562.5);
 }
 
@@ -3715,9 +3784,21 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
 
     // Default cycle is 2 beats = 1000 ms at 120 BPM; one flipped step lands
     // on 1010 ms, off the beat grid. Interval is row 2 (amount is row 1).
-    adjust_lfo_or_control(&mut automation, 2, &controls, Tab::Master, 0, 1.0, 0.0, &flipped);
+    adjust_lfo_or_control(
+        &mut automation,
+        2,
+        &controls,
+        Tab::Master,
+        0,
+        1.0,
+        0.0,
+        &flipped,
+    );
     assert_near(
-        beats_to_ms(automation.state().route(address).unwrap().cycle_beats, 120.0),
+        beats_to_ms(
+            automation.state().route(address).unwrap().cycle_beats,
+            120.0,
+        ),
         1010.0,
     );
 
@@ -3934,19 +4015,31 @@ fn macro_toggle_hides_but_keeps_the_assignment() {
 fn engine_hot_path_timing() {
     let mut automation = AutomationState::default();
     automation.set_route(ControlAddress::new("pad.level"), LfoRoute::default());
-    automation.set_route(ControlAddress::new("kick.interval_beats"), LfoRoute::default());
+    automation.set_route(
+        ControlAddress::new("kick.interval_beats"),
+        LfoRoute::default(),
+    );
     automation.set_route(ControlAddress::new("tonal.level"), LfoRoute::default());
     automation.set_route(ControlAddress::new("macro.1"), LfoRoute::default());
     automation.set_field_macro(
         unit_key("pad.level", Some("lfo.amount")),
         single_macro_route(0, 0.5),
     );
-    automation.set_macro_route(ControlAddress::new("perc.level"), single_macro_route(0, 0.4));
-    automation.set_macro_route(ControlAddress::new("bass.level"), single_macro_route(1, -0.3));
-    automation.set_envelope(ControlAddress::new("macro.1"), EnvelopeRoute {
-        amount: 0.5,
-        ..EnvelopeRoute::default()
-    });
+    automation.set_macro_route(
+        ControlAddress::new("perc.level"),
+        single_macro_route(0, 0.4),
+    );
+    automation.set_macro_route(
+        ControlAddress::new("bass.level"),
+        single_macro_route(1, -0.3),
+    );
+    automation.set_envelope(
+        ControlAddress::new("macro.1"),
+        EnvelopeRoute {
+            amount: 0.5,
+            ..EnvelopeRoute::default()
+        },
+    );
 
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
     let automation = Arc::new(ArcSwap::from_pointee(automation));
@@ -4099,8 +4192,14 @@ fn arp_random_pattern_is_deterministic_for_a_seed_and_differs_across_seeds() {
     let seq_c = arp_advance_sequence(ArpPattern::Random, 8, 20, &mut StdRng::seed_from_u64(6));
 
     assert_eq!(seq_a, seq_b, "same seed must reproduce the same sequence");
-    assert_ne!(seq_a, seq_c, "different seeds should (almost always) diverge");
-    assert!(seq_a.iter().all(|&i| i < 8), "random index must stay in range");
+    assert_ne!(
+        seq_a, seq_c,
+        "different seeds should (almost always) diverge"
+    );
+    assert!(
+        seq_a.iter().all(|&i| i < 8),
+        "random index must stay in range"
+    );
 }
 
 #[test]
@@ -4132,7 +4231,10 @@ fn arp_engine_reseed_via_fluid_engine_reproduces_random_pattern() {
         out_b.push(r);
     }
 
-    assert_eq!(out_a, out_b, "identical reseed must render byte-identical audio");
+    assert_eq!(
+        out_a, out_b,
+        "identical reseed must render byte-identical audio"
+    );
 }
 
 #[test]
@@ -4190,10 +4292,7 @@ fn arp_decay_sets_note_ring_independent_of_step() {
         decay: 0.1,
         ..base.clone()
     };
-    let long_controls = ArpControls {
-        decay: 3.0,
-        ..base
-    };
+    let long_controls = ArpControls { decay: 3.0, ..base };
 
     short.next(&short_controls, &pad, 0.0, t0);
     long.next(&long_controls, &pad, 0.0, t0);

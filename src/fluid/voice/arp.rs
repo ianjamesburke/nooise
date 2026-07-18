@@ -141,7 +141,10 @@ impl ArpEngine {
         }
 
         let rate_beats = c.rate_beats.clamp(ARP_RATE_BEATS_MIN, ARP_RATE_BEATS_MAX);
-        if self.note_trigger.pop_swung(timing, rate_beats, c.offset_beats, c.swing) {
+        if self
+            .note_trigger
+            .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
+        {
             let chord = pad_chord_tones(pad, self.step_index);
             let octaves = arp_octave_span(c.octaves);
             let notes = arp_cycle_notes(chord, octaves);
@@ -153,8 +156,13 @@ impl ArpEngine {
             let pattern = arp_pattern_from_control(c.pattern);
             let note = notes[self.cycle_pos];
 
-            let (next_pos, next_dir) =
-                arp_advance(self.cycle_pos, pattern, len, self.ping_pong_dir, &mut self.rng);
+            let (next_pos, next_dir) = arp_advance(
+                self.cycle_pos,
+                pattern,
+                len,
+                self.ping_pong_dir,
+                &mut self.rng,
+            );
             self.cycle_pos = next_pos;
             self.ping_pong_dir = next_dir;
 
