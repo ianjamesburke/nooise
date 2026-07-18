@@ -1019,7 +1019,7 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // from the peak to silence over `decay`, with the note's whole life = attack +
 // decay and no step-clamped hold. This shifts both the tonal and arp voices in
 // this render (tonal.level 0.5 + arp.gain 0.4); pad/bass paths are unchanged.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0xb71d_8f67_366c_2d4a;
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x08f0_c949_89ea_81c5;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -1416,10 +1416,7 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (
             Tab::Kick,
-            vec![
-                Gain, Gain, Timing, Timing, Timing, Timing, Continuous, Gain, Gain, Timing, Gain,
-                Gain, Gain,
-            ],
+            vec![Gain, Gain, Timing, Timing, Timing, Timing, Continuous, Gain, Gain],
         ),
         (
             Tab::Tonal,
@@ -1505,7 +1502,6 @@ fn song_code_round_trips_quantized_snapshot_values() {
     let mut controls = FluidControls::default();
     controls.master.bpm = 123.4;
     controls.pad.chord_bars = 12.0;
-    controls.kick.echo_time_beats = 0.33;
     controls.clap.slap_count = 6.6;
 
     let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
@@ -1513,7 +1509,6 @@ fn song_code_round_trips_quantized_snapshot_values() {
 
     assert_close(decoded.controls.master.bpm, 123.0);
     assert_close(decoded.controls.pad.chord_bars, 16.0);
-    assert_close(decoded.controls.kick.echo_time_beats, 0.375);
     assert_close(decoded.controls.clap.slap_count, 7.0);
 }
 
@@ -1917,7 +1912,6 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.kick.click = 0.0;
     controls.kick.drive = 0.0;
     controls.kick.filter = 0.0;
-    controls.kick.echo_amount = 0.0;
     controls.tonal.randomness = 0.0;
     controls.clap.filter = 0.5;
     controls.clap.body = 0.0;
@@ -1932,7 +1926,6 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.kick.click = 0.2;
     controls.kick.drive = 1.0;
     controls.kick.filter = 1.0;
-    controls.kick.echo_amount = 0.9;
     controls.tonal.randomness = 1.0;
     controls.clap.filter = 1.0;
     controls.clap.body = 1.0;
@@ -1950,7 +1943,6 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     assert!(next.kick.click > 0.0 && next.kick.click < 0.2);
     assert!(next.kick.drive > 0.0 && next.kick.drive < 1.0);
     assert!(next.kick.filter > 0.0 && next.kick.filter < 1.0);
-    assert!(next.kick.echo_amount > 0.0 && next.kick.echo_amount < 0.9);
     assert!(next.tonal.randomness > 0.0 && next.tonal.randomness < 1.0);
     assert!(next.clap.filter > 0.5 && next.clap.filter < 1.0);
     assert!(next.clap.body > 0.0 && next.clap.body < 1.0);
@@ -2847,15 +2839,6 @@ fn pad_engine_chord_slot_edit_retriggers_immediately() {
         pad.layers.len() > layers_before,
         "editing the current chord slot must push a new layer immediately"
     );
-}
-
-#[test]
-fn kick_delay_buffer_covers_max_echo_at_min_bpm() {
-    let max_delay =
-        ((KICK_ECHO_TIME_BEATS_MAX * 60.0 / MASTER_BPM_MIN) * SAMPLE_RATE).ceil() as usize;
-    let delay = KickDelay::new(max_kick_echo_delay_samples(SAMPLE_RATE));
-
-    assert_eq!(delay.buf_l.len(), max_delay + 1);
 }
 
 #[test]

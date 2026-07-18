@@ -1204,46 +1204,6 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c, v| c.kick.drive = v,
         |c| pct(c.kick.drive),
     ),
-    ControlSpec::new(
-        "kick.echo_time_beats",
-        "Echo Time",
-        ControlKind::Timing,
-        KICK_ECHO_TIME_BEATS_MIN,
-        KICK_ECHO_TIME_BEATS_MAX,
-        Step::Linear(0.125),
-        Entry::Snap,
-        |c| c.kick.echo_time_beats,
-        |c, v| c.kick.echo_time_beats = v,
-        |c| format!("{:.3} beats", c.kick.echo_time_beats),
-    )
-    .in_beats(),
-    ControlSpec::gain(
-        "kick.echo_filter",
-        "Echo Filter",
-        0.0,
-        1.0,
-        |c| c.kick.echo_filter,
-        |c, v| c.kick.echo_filter = v,
-        |c| pct(c.kick.echo_filter),
-    ),
-    ControlSpec::gain(
-        "kick.echo_amount",
-        "Echo Amount",
-        0.0,
-        0.9,
-        |c| c.kick.echo_amount,
-        |c, v| c.kick.echo_amount = v,
-        |c| pct(c.kick.echo_amount / 0.9),
-    ),
-    ControlSpec::gain(
-        "kick.echo_feedback",
-        "Echo Feedback",
-        0.0,
-        0.85,
-        |c| c.kick.echo_feedback,
-        |c, v| c.kick.echo_feedback = v,
-        |c| pct(c.kick.echo_feedback / 0.85),
-    ),
 ];
 
 pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[

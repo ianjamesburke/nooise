@@ -4,8 +4,6 @@
 
 pub(crate) const MASTER_BPM_MIN: f32 = 60.0;
 pub(crate) const MASTER_BPM_MAX: f32 = 200.0;
-pub(crate) const KICK_ECHO_TIME_BEATS_MIN: f32 = 0.125;
-pub(crate) const KICK_ECHO_TIME_BEATS_MAX: f32 = 2.0;
 // bass.cutoff range for BassEngine's one-pole lowpass. The max is treated as
 // a literal bypass in BassEngine::next (not just a high filter coefficient)
 // so the default render stays byte-identical — see BassLowPass in bass.rs.
@@ -139,10 +137,6 @@ pub(crate) struct KickControls {
     pub filter: f32,
     pub interval_beats: f32,
     pub offset_beats: f32,
-    pub echo_time_beats: f32,
-    pub echo_filter: f32,
-    pub echo_amount: f32,
-    pub echo_feedback: f32,
 }
 
 impl Default for KickControls {
@@ -157,10 +151,6 @@ impl Default for KickControls {
             filter: 0.7,
             interval_beats: 1.0,
             offset_beats: 0.0,
-            echo_time_beats: 1.0,
-            echo_filter: 0.5,
-            echo_amount: 0.0,
-            echo_feedback: 0.0,
         }
     }
 }
