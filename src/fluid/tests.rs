@@ -508,6 +508,7 @@ fn render_fluid_draws_without_terminal_backend() {
                 None,
                 &FlippedUnits::new(),
                 ChordDrill::None,
+                0,
                 &[None; 9],
             )
         })
@@ -1203,6 +1204,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
                     None,
                     &FlippedUnits::new(),
                     ChordDrill::None,
+                    0,
                     &[None; 9],
                 )
             })
@@ -2115,6 +2117,7 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
                 footer.as_deref(),
                 &FlippedUnits::new(),
                 ChordDrill::Slot(1),
+                0,
                 &[None; 9],
             )
         })
@@ -2123,6 +2126,91 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
     let text = buffer_text(terminal.backend().buffer());
     assert!(text.contains("Chords › Chord 2"));
     assert!(text.contains("Chord 2   Esc: back"));
+}
+
+fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
+    let fluid = FluidState::new();
+    let automation = AutomationState::default();
+    let rows = chords_tab_controls(controls, ChordDrill::Progression);
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            render(
+                f,
+                &rows,
+                Tab::Chords,
+                0,
+                0,
+                0.0,
+                NumericDisplay::empty(),
+                &fluid,
+                &automation,
+                controls,
+                None,
+                &FlippedUnits::new(),
+                ChordDrill::Progression,
+                active_chord,
+                &[None; 9],
+            )
+        })
+        .unwrap();
+    buffer_text(terminal.backend().buffer())
+}
+
+#[test]
+fn render_marks_single_active_chord_in_progression() {
+    let mut controls = FluidControls::default();
+    controls.pad.chord_count = 4.0;
+    // Exactly one chord in the progression list is badged as sounding.
+    let text = render_progression(&controls, 2);
+    assert_eq!(text.matches('♪').count(), 1);
+}
+
+#[test]
+fn render_active_chord_index_wraps_by_chord_count() {
+    let mut controls = FluidControls::default();
+    controls.pad.chord_count = 4.0;
+    // A step index past the chord count wraps: 6 % 4 == 2, still one badge.
+    let text = render_progression(&controls, 6);
+    assert_eq!(text.matches('♪').count(), 1);
+}
+
+#[test]
+fn render_slot_breadcrumb_marks_live_chord() {
+    let mut controls = FluidControls::default();
+    controls.pad.chord_count = 4.0;
+    let fluid = FluidState::new();
+    let automation = AutomationState::default();
+    let rows = chords_tab_controls(&controls, ChordDrill::Slot(2));
+    let draw = |active_chord: u64| {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &rows,
+                    Tab::Chords,
+                    0,
+                    0,
+                    0.0,
+                    NumericDisplay::empty(),
+                    &fluid,
+                    &automation,
+                    &controls,
+                    None,
+                    &FlippedUnits::new(),
+                    ChordDrill::Slot(2),
+                    active_chord,
+                    &[None; 9],
+                )
+            })
+            .unwrap();
+        buffer_text(terminal.backend().buffer())
+    };
+    // Slot 2 is live when the step index maps to it; otherwise no note.
+    assert!(draw(2).contains("Chord 3 ♪"));
+    assert!(!draw(0).contains("Chord 3 ♪"));
 }
 
 #[test]
@@ -3320,6 +3408,7 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
                 None,
                 &FlippedUnits::new(),
                 ChordDrill::None,
+                0,
                 &[None; 9],
             )
         })
@@ -4326,6 +4415,7 @@ fn render_shows_a_mute_marker_on_muted_tabs_only() {
                 None,
                 &FlippedUnits::new(),
                 ChordDrill::None,
+                0,
                 &mute,
             )
         })
