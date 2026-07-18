@@ -14,8 +14,17 @@ check:
 render out="nooise.wav" seed="7":
     cargo run --quiet -- render --out {{out}} --seed {{seed}}
 
+# Time a release-build render (wall-clock + realtime multiple), for measuring
+# perf changes to the per-sample DSP hot path instead of guessing.
+bench seconds="60" seed="42":
+    bash scripts/bench_render.sh {{seconds}} {{seed}}
+
 install:
     cargo install --path . --locked
+
+# Preview what the next changelog would look like without committing anything.
+changelog:
+    git cliff --unreleased --bump
 
 # Bump version, regenerate CHANGELOG via git-cliff, commit, and tag locally.
 #   just bump          — patch bump
