@@ -42,7 +42,7 @@ pub(crate) fn ui_loop(
     updates: UpdateNotice,
     auto: AutoControls,
 ) -> Result<(), Box<dyn Error>> {
-    let mut tab = Tab::Master;
+    let mut tab = Tab::Chords;
     let mut selected = 0usize;
     let mut lfo_selected = 0usize;
     let mut chord_drill = ChordDrill::None;

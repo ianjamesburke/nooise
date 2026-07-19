@@ -6,30 +6,30 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Tab {
-    Master = 0,
+    Chords = 0,
     Perc = 1,
-    Chords = 2,
-    Bass = 3,
-    Kick = 4,
-    Tonal = 5,
-    Clap = 6,
-    Arp = 7,
-    Macros = 8,
+    Bass = 2,
+    Kick = 3,
+    Tonal = 4,
+    Clap = 5,
+    Arp = 6,
+    Macros = 7,
+    Master = 8,
 }
 
 /// One row per tab: (variant, display name, mute-target level id, control
 /// table) in discriminant order. `Tab::all`/`name`/`level_id`/`tab_specs`
 /// all derive from indexing this single table by `self as usize`.
 const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); 9] = [
-    (Tab::Master, "Master", Some("master.level"), MASTER_CONTROLS),
-    (Tab::Perc, "Perc", Some("perc.level"), PERC_CONTROLS),
     (Tab::Chords, "Chords", Some("pad.level"), CHORDS_CONTROLS),
+    (Tab::Perc, "Perc", Some("perc.level"), PERC_CONTROLS),
     (Tab::Bass, "Bass", Some("bass.level"), BASS_CONTROLS),
     (Tab::Kick, "Kick", Some("kick.level"), KICK_CONTROLS),
     (Tab::Tonal, "Tonal", Some("tonal.level"), TONAL_CONTROLS),
     (Tab::Clap, "Clap", Some("clap.level"), CLAP_CONTROLS),
     (Tab::Arp, "Arp", Some("arp.gain"), ARP_CONTROLS),
     (Tab::Macros, "Macros", None, MACRO_CONTROLS),
+    (Tab::Master, "Master", Some("master.level"), MASTER_CONTROLS),
 ];
 
 impl Tab {

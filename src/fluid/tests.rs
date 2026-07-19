@@ -521,7 +521,7 @@ fn chords_tab_shows_type_row_with_letter_display() {
 fn tab_previous_wraps_back_one_tab() {
     assert_eq!(Tab::Master.previous(), Tab::Macros);
     assert_eq!(Tab::Kick.previous(), Tab::Bass);
-    assert_eq!(Tab::Bass.previous(), Tab::Chords);
+    assert_eq!(Tab::Bass.previous(), Tab::Perc);
 }
 
 #[test]
