@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [1.7.0] — 2026-07-19
+
+### Added
+- feat: add two new morph targets to auto-morph cycle
 ## [1.6.1] — 2026-07-19
 
 ### Added
