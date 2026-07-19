@@ -2469,28 +2469,23 @@ fn kick_types_produce_differing_but_comparably_balanced_audio() {
     let sample_rate = 48_000.0;
     let samples = (sample_rate * 0.3) as usize;
 
-    let types: Vec<SoundVariant> = [
-        (0usize, "sub"),
-        (1, "punch"),
-        (2, "membrane"),
-        (3, "driven"),
-    ]
-    .into_iter()
-    .map(|(voice_type, name)| {
-        let controls = KickControls {
-            level: 0.6,
-            ..Default::default()
-        };
-        let mut construct_rng = StdRng::seed_from_u64(7);
-        let mut voice = KickVoice::new(voice_type, &controls, sample_rate, &mut construct_rng);
-        let mut click_rng = StdRng::seed_from_u64(99);
-        let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
-            let (l, r) = voice.next(&mut click_rng);
-            ((l * l + r * r) / 2.0, l)
-        });
-        (name, step)
-    })
-    .collect();
+    let types: Vec<SoundVariant> = [(0usize, "sub"), (1, "warm"), (2, "wood"), (3, "felt")]
+        .into_iter()
+        .map(|(voice_type, name)| {
+            let controls = KickControls {
+                level: 0.6,
+                ..Default::default()
+            };
+            let mut construct_rng = StdRng::seed_from_u64(7);
+            let mut voice = KickVoice::new(voice_type, &controls, sample_rate, &mut construct_rng);
+            let mut click_rng = StdRng::seed_from_u64(99);
+            let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
+                let (l, r) = voice.next(&mut click_rng);
+                ((l * l + r * r) / 2.0, l)
+            });
+            (name, step)
+        })
+        .collect();
 
     assert_types_differ_but_balanced("kick", samples, types);
 }

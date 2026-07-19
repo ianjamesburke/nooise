@@ -979,9 +979,9 @@ pub(crate) fn pad_type_index(value: f32) -> usize {
 pub(crate) fn kick_type_label(value: f32) -> &'static str {
     match kick_type_index(value) {
         0 => "Sub",
-        1 => "Punch",
-        2 => "Membrane",
-        _ => "Driven",
+        1 => "Warm",
+        2 => "Wood",
+        _ => "Felt",
     }
 }
 
