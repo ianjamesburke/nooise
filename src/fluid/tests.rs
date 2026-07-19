@@ -1499,17 +1499,11 @@ fn tab_controls_classify_each_slider_kind() {
 
 #[test]
 fn control_registry_specs_are_internally_consistent() {
-    let tabs = [
-        Tab::Master,
-        Tab::Perc,
-        Tab::Chords,
-        Tab::Bass,
-        Tab::Kick,
-        Tab::Tonal,
-        Tab::Clap,
-        Tab::Arp,
-    ];
-    for tab in tabs {
+    for (i, tab) in Tab::all().into_iter().enumerate() {
+        assert_eq!(
+            tab as usize, i,
+            "TAB_META row {i} out of discriminant order"
+        );
         for spec in tab_specs(tab) {
             let ctx = format!("{} / {}", tab.name(), spec.label);
             assert!(!spec.id.is_empty(), "{ctx}: empty stable id");
