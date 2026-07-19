@@ -48,3 +48,32 @@ pub(crate) fn drive_stage(sample: f32, drive: f32) -> f32 {
         sample
     }
 }
+
+/// Shared `filter` control -> noise lowpass smoothing coefficient mapping
+/// used by Perc and Clap's noise-based hits (Kick's filter curve is
+/// different and stays local to `kick.rs`).
+#[inline]
+pub(crate) fn noise_filter_smoothing(filter: f32) -> f32 {
+    10_f32.powf(filter * 4.0 - 4.0)
+}
+
+/// Shared sum-then-cull idiom: advance every voice (in order), accumulating
+/// its stereo output, then drop whichever voices are finished. Voice order
+/// and the summation order are unchanged from the equivalent hand-written
+/// loop, so this is a pure extraction.
+#[inline]
+pub(crate) fn mix_and_retain<V>(
+    voices: &mut Vec<V>,
+    mut next: impl FnMut(&mut V) -> (f32, f32),
+    done: impl Fn(&V) -> bool,
+) -> (f32, f32) {
+    let mut dry_l = 0.0f32;
+    let mut dry_r = 0.0f32;
+    for v in voices.iter_mut() {
+        let (l, r) = next(v);
+        dry_l += l;
+        dry_r += r;
+    }
+    voices.retain(|v| !done(v));
+    (dry_l, dry_r)
+}

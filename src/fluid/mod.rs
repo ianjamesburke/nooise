@@ -89,11 +89,7 @@ impl FluidTelemetry {
 const APP_ID: &str = "nooise";
 
 pub(crate) fn run() -> Result<(), Box<dyn Error>> {
-    run_with_controls(FluidControls::default())
-}
-
-pub(crate) fn run_with_controls(initial_controls: FluidControls) -> Result<(), Box<dyn Error>> {
-    run_with_song_state(SongState::from_controls(initial_controls))
+    run_with_song_state(SongState::from_controls(FluidControls::default()))
 }
 
 pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn Error>> {

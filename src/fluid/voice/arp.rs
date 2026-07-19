@@ -190,15 +190,6 @@ impl ArpEngine {
             }
         }
 
-        let mut dry_l = 0.0f32;
-        let mut dry_r = 0.0f32;
-        for voice in &mut self.voices {
-            let (l, r) = voice.next();
-            dry_l += l;
-            dry_r += r;
-        }
-        self.voices.retain(|voice| !voice.is_done());
-
-        (dry_l, dry_r)
+        mix_and_retain(&mut self.voices, |voice| voice.next(), TonalVoice::is_done)
     }
 }

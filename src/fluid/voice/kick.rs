@@ -30,16 +30,8 @@ impl KickEngine {
             self.telemetry.kick_pulse.fetch_add(1, Ordering::Relaxed);
         }
 
-        let mut dry_l = 0.0f32;
-        let mut dry_r = 0.0f32;
-        for v in &mut self.voices {
-            let (l, r) = v.next(&mut self.rng);
-            dry_l += l;
-            dry_r += r;
-        }
-        self.voices.retain(|v| !v.is_done());
-
-        (dry_l, dry_r)
+        let rng = &mut self.rng;
+        mix_and_retain(&mut self.voices, |v| v.next(rng), KickVoice::is_done)
     }
 }
 

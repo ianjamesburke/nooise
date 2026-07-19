@@ -382,14 +382,7 @@ impl TonalEngine {
             }
         }
 
-        let mut dry_l = 0.0f32;
-        let mut dry_r = 0.0f32;
-        for v in &mut self.voices {
-            let (l, r) = v.next();
-            dry_l += l;
-            dry_r += r;
-        }
-        self.voices.retain(|v| !v.is_done());
+        let (dry_l, dry_r) = mix_and_retain(&mut self.voices, |v| v.next(), TonalVoice::is_done);
 
         (self.low_cut_l.process(dry_l), self.low_cut_r.process(dry_r))
     }

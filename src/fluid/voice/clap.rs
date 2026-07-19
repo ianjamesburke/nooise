@@ -73,7 +73,7 @@ impl ClapVoice {
             bursts: Vec::new(),
             current: 0,
             decay_samples: (c.decay_ms * 0.001 * sample_rate).round() as u64,
-            filter_smoothing: 10_f32.powf(c.filter * 4.0 - 4.0),
+            filter_smoothing: noise_filter_smoothing(c.filter),
             body_coeff: c.body * 0.08,
             body_state: 0.0,
             level: c.level,
