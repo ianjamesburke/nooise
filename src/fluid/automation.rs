@@ -22,6 +22,14 @@ const OFFSET_STEP: f32 = 0.125;
 /// Softness of the smoothed square edge; higher = closer to a hard square.
 const SQUARE_SMOOTH: f32 = 6.0;
 
+/// Fraction of a ramp's cycle, right before it wraps, eased toward the next
+/// cycle's start value instead of jumping there in a single sample. Every
+/// other shape is continuous at the wrap already (sine and triangle by
+/// construction, square via SQUARE_SMOOTH); a bare ramp is a sawtooth with a
+/// full-swing discontinuity every cycle, which clicks when applied straight
+/// to a live-read control like level or cutoff.
+const RAMP_WRAP_EASE: f32 = 0.02;
+
 // Envelope route field ranges. Attack/decay reach into the minutes at slow
 // tempos (512 beats is ~6 min at 82 BPM, ~12 min at 40 BPM) so the same
 // one-shot serves both fast swells and set-and-forget macro blooms.
@@ -199,6 +207,18 @@ fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// Blends a ramp's raw value toward `next_cycle_start` over the last
+/// `RAMP_WRAP_EASE` fraction of the cycle, so the value at phase 1 (== the
+/// next cycle's phase 0) is reached smoothly instead of jumping there.
+fn ease_ramp_wrap(phase: f32, raw: f32, next_cycle_start: f32) -> f32 {
+    let window_start = 1.0 - RAMP_WRAP_EASE;
+    if phase < window_start {
+        return raw;
+    }
+    let t = smoothstep((phase - window_start) / RAMP_WRAP_EASE);
+    raw + (next_cycle_start - raw) * t
+}
+
 /// Periodic shape value in -1..1 for a phase in 0..1. Random shapes return 0
 /// here; they are evaluated from absolute beat position in `wave_at`.
 fn periodic_shape_value(shape: LfoShape, phase: f32) -> f32 {
@@ -213,8 +233,8 @@ fn periodic_shape_value(shape: LfoShape, phase: f32) -> f32 {
                 -1.0 + 4.0 * (phase - 0.75)
             }
         }
-        LfoShape::RampUp => 2.0 * phase - 1.0,
-        LfoShape::RampDown => 1.0 - 2.0 * phase,
+        LfoShape::RampUp => ease_ramp_wrap(phase, 2.0 * phase - 1.0, -1.0),
+        LfoShape::RampDown => ease_ramp_wrap(phase, 1.0 - 2.0 * phase, 1.0),
         LfoShape::Square => (SQUARE_SMOOTH * (TAU * phase).sin()).tanh(),
         LfoShape::RandomDrift | LfoShape::SampleHold => 0.0,
     }

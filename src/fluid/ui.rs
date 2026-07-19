@@ -109,6 +109,7 @@ pub(crate) fn ui_loop(
                 footer_message,
                 &flipped,
                 chord_drill,
+                telemetry.chord_index.load(Ordering::Relaxed),
                 &mute,
             )
         })?;
@@ -1271,9 +1272,15 @@ pub(crate) fn render(
     update_message: Option<&str>,
     flipped: &FlippedUnits,
     chord_drill: ChordDrill,
+    active_chord: u64,
     mute: &MuteState,
 ) {
     let bpm = controls.master.bpm;
+    // Which custom-chord slot the pad engine is currently sounding, mapped
+    // from the shared telemetry step index. Only meaningful on the Chords tab.
+    let chord_count =
+        (controls.pad.chord_count.round() as usize).clamp(1, controls.pad.chord_slots.len());
+    let active_slot = (active_chord as usize) % chord_count;
     let mod_ctx = ModContext {
         beat,
         kick_interval_beats: controls.kick.interval_beats,
@@ -1334,7 +1341,10 @@ pub(crate) fn render(
             let name = if *t == Tab::Chords {
                 match chord_drill {
                     ChordDrill::Progression => format!("{} › Progression", t.name()),
-                    ChordDrill::Slot(n) => format!("{} › Chord {}", t.name(), n + 1),
+                    ChordDrill::Slot(n) => {
+                        let live = if n == active_slot { " ♪" } else { "" };
+                        format!("{} › Chord {}{live}", t.name(), n + 1)
+                    }
                     ChordDrill::None => t.name().to_string(),
                 }
             } else {
@@ -1454,6 +1464,19 @@ pub(crate) fn render(
         let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
         spans.extend(slider_spans(item_ratio(item), markers, bar_w, style));
         spans.push(Span::styled(format!(" {display}"), style));
+        // Badge the chord slot the pad engine is currently sounding, so the
+        // progression list shows which chord is live. Distinct from the cursor
+        // ▶ so a row can be both selected and playing.
+        let chord_playing =
+            active_tab == Tab::Chords && chord_drill == ChordDrill::Progression && i == active_slot;
+        if chord_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default()
+                    .fg(Color::Rgb(255, 200, 90))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         rows.push(Line::from(spans));
 
         if let Some(route) = route {

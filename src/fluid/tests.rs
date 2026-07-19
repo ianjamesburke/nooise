@@ -95,6 +95,7 @@ fn render_to_buffer(
     controls: &FluidControls,
     footer: Option<&str>,
     drill: ChordDrill,
+    active_chord: u64,
     mute: &MuteState,
 ) -> Buffer {
     let backend = TestBackend::new(width, height);
@@ -115,6 +116,7 @@ fn render_to_buffer(
                 footer,
                 &FlippedUnits::new(),
                 drill,
+                active_chord,
                 mute,
             )
         })
@@ -542,6 +544,7 @@ fn render_fluid_draws_without_terminal_backend() {
         &controls,
         None,
         ChordDrill::None,
+        0,
         &[None; 9],
     );
 }
@@ -1257,6 +1260,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
             &controls,
             None,
             ChordDrill::None,
+            0,
             &[None; 9],
         )
     };
@@ -2064,12 +2068,98 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
         &controls,
         footer.as_deref(),
         ChordDrill::Slot(1),
+        0,
         &[None; 9],
     );
 
     let text = buffer_text(&buffer);
     assert!(text.contains("Chords › Chord 2"));
     assert!(text.contains("Chord 2   Esc: back"));
+}
+
+fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
+    let fluid = FluidState::new();
+    let automation = AutomationState::default();
+    let rows = chords_tab_controls(controls, ChordDrill::Progression);
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            render(
+                f,
+                &rows,
+                Tab::Chords,
+                0,
+                0,
+                0.0,
+                NumericDisplay::empty(),
+                &fluid,
+                &automation,
+                controls,
+                None,
+                &FlippedUnits::new(),
+                ChordDrill::Progression,
+                active_chord,
+                &[None; 9],
+            )
+        })
+        .unwrap();
+    buffer_text(terminal.backend().buffer())
+}
+
+#[test]
+fn render_marks_single_active_chord_in_progression() {
+    let mut controls = FluidControls::default();
+    controls.pad.chord_count = 4.0;
+    // Exactly one chord in the progression list is badged as sounding.
+    let text = render_progression(&controls, 2);
+    assert_eq!(text.matches('♪').count(), 1);
+}
+
+#[test]
+fn render_active_chord_index_wraps_by_chord_count() {
+    let mut controls = FluidControls::default();
+    controls.pad.chord_count = 4.0;
+    // A step index past the chord count wraps: 6 % 4 == 2, still one badge.
+    let text = render_progression(&controls, 6);
+    assert_eq!(text.matches('♪').count(), 1);
+}
+
+#[test]
+fn render_slot_breadcrumb_marks_live_chord() {
+    let mut controls = FluidControls::default();
+    controls.pad.chord_count = 4.0;
+    let fluid = FluidState::new();
+    let automation = AutomationState::default();
+    let rows = chords_tab_controls(&controls, ChordDrill::Slot(2));
+    let draw = |active_chord: u64| {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|f| {
+                render(
+                    f,
+                    &rows,
+                    Tab::Chords,
+                    0,
+                    0,
+                    0.0,
+                    NumericDisplay::empty(),
+                    &fluid,
+                    &automation,
+                    &controls,
+                    None,
+                    &FlippedUnits::new(),
+                    ChordDrill::Slot(2),
+                    active_chord,
+                    &[None; 9],
+                )
+            })
+            .unwrap();
+        buffer_text(terminal.backend().buffer())
+    };
+    // Slot 2 is live when the step index maps to it; otherwise no note.
+    assert!(draw(2).contains("Chord 3 ♪"));
+    assert!(!draw(0).contains("Chord 3 ♪"));
 }
 
 #[test]
@@ -3242,6 +3332,7 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
         &controls,
         None,
         ChordDrill::None,
+        0,
         &[None; 9],
     );
 
@@ -3273,6 +3364,24 @@ fn lfo_shapes_match_reference_curves() {
     let square = lfo_shape(LfoShape::Square);
     assert!(square.wave_at(0.25) > 0.99, "square high near +1");
     assert!(square.wave_at(0.75) < -0.99, "square low near -1");
+}
+
+#[test]
+fn ramp_shapes_are_continuous_across_the_wrap() {
+    // A value that jumps between adjacent samples is an audible click when
+    // applied directly to a live-read control (e.g. level or cutoff). Every
+    // other shape is continuous at the cycle boundary; ramps must be too.
+    let eps = 1e-4;
+    for shape in [LfoShape::RampUp, LfoShape::RampDown] {
+        let route = lfo_shape(shape);
+        let before = route.wave_at(1.0 - eps);
+        let after = route.wave_at(1.0 + eps);
+        assert!(
+            (after - before).abs() < 0.1,
+            "{shape:?} jumps {} across the wrap",
+            (after - before).abs()
+        );
+    }
 }
 
 #[test]
@@ -4261,6 +4370,7 @@ fn render_shows_a_mute_marker_on_muted_tabs_only() {
         &controls,
         None,
         ChordDrill::None,
+        0,
         &mute,
     );
 
