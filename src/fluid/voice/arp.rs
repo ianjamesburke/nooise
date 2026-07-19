@@ -141,7 +141,10 @@ impl ArpEngine {
         }
 
         let rate_beats = c.rate_beats.clamp(ARP_RATE_BEATS_MIN, ARP_RATE_BEATS_MAX);
-        if self.note_trigger.pop_swung(timing, rate_beats, c.offset_beats, c.swing) {
+        if self
+            .note_trigger
+            .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
+        {
             let chord = pad_chord_tones(pad, self.step_index);
             let octaves = arp_octave_span(c.octaves);
             let notes = arp_cycle_notes(chord, octaves);
@@ -153,8 +156,13 @@ impl ArpEngine {
             let pattern = arp_pattern_from_control(c.pattern);
             let note = notes[self.cycle_pos];
 
-            let (next_pos, next_dir) =
-                arp_advance(self.cycle_pos, pattern, len, self.ping_pong_dir, &mut self.rng);
+            let (next_pos, next_dir) = arp_advance(
+                self.cycle_pos,
+                pattern,
+                len,
+                self.ping_pong_dir,
+                &mut self.rng,
+            );
             self.cycle_pos = next_pos;
             self.ping_pong_dir = next_dir;
 
@@ -182,15 +190,6 @@ impl ArpEngine {
             }
         }
 
-        let mut dry_l = 0.0f32;
-        let mut dry_r = 0.0f32;
-        for voice in &mut self.voices {
-            let (l, r) = voice.next();
-            dry_l += l;
-            dry_r += r;
-        }
-        self.voices.retain(|voice| !voice.is_done());
-
-        (dry_l, dry_r)
+        mix_and_retain(&mut self.voices, |voice| voice.next(), TonalVoice::is_done)
     }
 }

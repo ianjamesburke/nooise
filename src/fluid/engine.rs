@@ -145,26 +145,31 @@ impl StereoEngine for FluidEngine {
 
         self.current_sample += 1;
 
-        let raw_l = (pad_l
-            + perc * 0.6
-            + kick_l * 0.7
-            + ton_l
-            + clap_l * 0.65
-            + bass_l * 0.75
-            + arp_l
-            + wet_l)
-            * fade;
-        let raw_r = (pad_r
-            + perc * 0.6
-            + kick_r * 0.7
-            + ton_r
-            + clap_r * 0.65
-            + bass_r * 0.75
-            + arp_r
-            + wet_r)
-            * fade;
+        let raw_l = mix_voices(
+            pad_l, perc, kick_l, ton_l, clap_l, bass_l, arp_l, wet_l, fade,
+        );
+        let raw_r = mix_voices(
+            pad_r, perc, kick_r, ton_r, clap_r, bass_r, arp_r, wet_r, fade,
+        );
         self.master_bus.process(raw_l, raw_r, &effective.master)
     }
+}
+
+#[inline]
+// One arg per voice channel plus fade; splitting further would obscure the mix expression.
+#[allow(clippy::too_many_arguments)]
+fn mix_voices(
+    pad: f32,
+    perc: f32,
+    kick: f32,
+    ton: f32,
+    clap: f32,
+    bass: f32,
+    arp: f32,
+    wet: f32,
+    fade: f32,
+) -> f32 {
+    (pad + perc * 0.6 + kick * 0.7 + ton + clap * 0.65 + bass * 0.75 + arp + wet) * fade
 }
 
 pub(crate) struct GainSmoother {
@@ -382,7 +387,9 @@ impl GridSpec {
         // Straight-grid estimate, then walk forward to the first swung slot at
         // or after `beat`. Swing moves a slot by less than one interval, so the
         // true slot is at most one past the estimate — a handful of iterations.
-        let est = ((beat - self.offset_beats) / self.interval_beats).floor().max(0.0) as u64;
+        let est = ((beat - self.offset_beats) / self.interval_beats)
+            .floor()
+            .max(0.0) as u64;
         let mut slot = est.saturating_sub(1);
         loop {
             let hit = self.swung_beat(slot);

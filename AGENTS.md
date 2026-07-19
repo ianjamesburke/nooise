@@ -96,6 +96,7 @@ See `docs/NORTH_STAR.md` for product vision and feature-evaluation commandments 
 ## Verification
 
 - `cargo build` and `cargo test` from repo root before committing engine changes.
+- Hard rule: `cargo fmt` (no diff from `cargo fmt --check`) and `cargo clippy --all-targets` with zero warnings before every commit. Fix warnings at the source; `#[allow]` only with a one-line justification comment.
 
 ## Commit Messages
 

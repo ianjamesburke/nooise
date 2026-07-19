@@ -229,42 +229,31 @@ pub(crate) fn ui_loop(
                         selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
                     }
                 }
-                KeyCode::Char('H') => {
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
                     auto.exit(); // touching a param exits auto
-                    reset_lfo_or_control(
-                        &mut automation,
-                        lfo_selected,
-                        &controls,
-                        tab,
-                        chords_selected_index(tab, chord_drill, selected),
-                        beat,
-                    );
-                }
-                KeyCode::Left | KeyCode::Char('h')
-                    if key.modifiers.contains(KeyModifiers::SHIFT) =>
-                {
-                    auto.exit(); // touching a param exits auto
-                    reset_lfo_or_control(
-                        &mut automation,
-                        lfo_selected,
-                        &controls,
-                        tab,
-                        chords_selected_index(tab, chord_drill, selected),
-                        beat,
-                    );
-                }
-                KeyCode::Left | KeyCode::Char('h') => {
-                    auto.exit(); // touching a param exits auto
-                    adjust_lfo_or_control(
-                        &mut automation,
-                        lfo_selected,
-                        &controls,
-                        tab,
-                        chords_selected_index(tab, chord_drill, selected),
-                        -1.0,
-                        beat,
-                        &flipped,
-                    );
+                    let idx = chords_selected_index(tab, chord_drill, selected);
+                    if key.code == KeyCode::Char('H') || key.modifiers.contains(KeyModifiers::SHIFT)
+                    {
+                        reset_lfo_or_control(
+                            &mut automation,
+                            lfo_selected,
+                            &controls,
+                            tab,
+                            idx,
+                            beat,
+                        );
+                    } else {
+                        adjust_lfo_or_control(
+                            &mut automation,
+                            lfo_selected,
+                            &controls,
+                            tab,
+                            idx,
+                            -1.0,
+                            beat,
+                            &flipped,
+                        );
+                    }
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
                     auto.exit(); // touching a param exits auto
@@ -279,19 +268,14 @@ pub(crate) fn ui_loop(
                         &flipped,
                     );
                 }
-                KeyCode::Char('f') => {
+                KeyCode::Char(c @ ('f' | 'e')) => {
                     auto.exit(); // touching a modulator exits auto
-                    open_modulator(&mut automation, &items, selected, ModKind::Lfo, &mut lfo_selected);
-                }
-                KeyCode::Char('e') => {
-                    auto.exit(); // touching a modulator exits auto
-                    open_modulator(
-                        &mut automation,
-                        &items,
-                        selected,
-                        ModKind::Envelope,
-                        &mut lfo_selected,
-                    );
+                    let kind = if c == 'f' {
+                        ModKind::Lfo
+                    } else {
+                        ModKind::Envelope
+                    };
+                    open_modulator(&mut automation, &items, selected, kind, &mut lfo_selected);
                 }
                 KeyCode::Char('v') => {
                     auto.exit(); // touching a modulator exits auto
@@ -406,11 +390,9 @@ pub(crate) fn ui_loop(
                         );
                     }
                 }
-                KeyCode::Char('m') => {
-                    toggle_mute(&controls, tab, &mut mute);
-                }
-                KeyCode::Char('M') => {
-                    toggle_mute(&controls, Tab::Master, &mut mute);
+                KeyCode::Char(c @ ('m' | 'M')) => {
+                    let target = if c == 'm' { tab } else { Tab::Master };
+                    toggle_mute(&controls, target, &mut mute);
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Some(address) = automation.state().active_address()
@@ -505,7 +487,10 @@ fn flipped_step(native: TimeBase, value: f32, dir: f32, bpm: f32) -> f32 {
             bpm,
         ),
         TimeBase::Ms => beats_to_ms(
-            snap_step(ms_to_beats(value, bpm) + dir * FLIP_BEAT_STEP, FLIP_BEAT_STEP),
+            snap_step(
+                ms_to_beats(value, bpm) + dir * FLIP_BEAT_STEP,
+                FLIP_BEAT_STEP,
+            ),
             bpm,
         ),
         TimeBase::None => value,
@@ -558,8 +543,8 @@ pub(crate) fn snap_after_unit_flip(
                 // An ms control now displayed in beats: round to the nearest
                 // divided beat.
                 (TimeBase::Ms, true) => {
-                    let beats = snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP)
-                        .max(FLIP_BEAT_STEP);
+                    let beats =
+                        snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP).max(FLIP_BEAT_STEP);
                     spec.apply_raw(beats_to_ms(beats, bpm), &mut next);
                 }
                 _ => return,
@@ -648,7 +633,11 @@ pub(crate) fn lfo_submenu_rows(
 /// on a field's row after its nested rows appear or disappear, since the
 /// field's own position never shifts (nested rows only ever insert or
 /// remove immediately after it).
-fn field_row_index(automation: &AutomationState, address: ControlAddress, field: LfoField) -> usize {
+fn field_row_index(
+    automation: &AutomationState,
+    address: ControlAddress,
+    field: LfoField,
+) -> usize {
     lfo_submenu_rows(automation, address)
         .iter()
         .position(|row| *row == LfoSubRow::Field(field))
@@ -1289,8 +1278,8 @@ pub(crate) fn render(
     let bpm = controls.master.bpm;
     // Which custom-chord slot the pad engine is currently sounding, mapped
     // from the shared telemetry step index. Only meaningful on the Chords tab.
-    let chord_count = (controls.pad.chord_count.round() as usize)
-        .clamp(1, controls.pad.chord_slots.len());
+    let chord_count =
+        (controls.pad.chord_count.round() as usize).clamp(1, controls.pad.chord_slots.len());
     let active_slot = (active_chord as usize) % chord_count;
     let mod_ctx = ModContext {
         beat,
@@ -1400,16 +1389,8 @@ pub(crate) fn render(
         let editor_open_here = editor_here;
         let parent_active = active && (!editor_open_here || lfo_selected == 0);
         let prefix = if parent_active { "▶ " } else { "  " };
-        let display = if parent_active {
-            if let Some(entry) = numeric.entry {
-                let cursor = if numeric.cursor_visible { "_" } else { " " };
-                format!("> {entry}{cursor}")
-            } else {
-                item.display.clone()
-            }
-        } else {
-            item.display.clone()
-        };
+        let display =
+            numeric_cursor(&numeric, parent_active).unwrap_or_else(|| item.display.clone());
         let display = if (numeric.entry.is_some() && parent_active)
             || !flipped.contains(&unit_key(item.id, None))
         {
@@ -1486,9 +1467,8 @@ pub(crate) fn render(
         // Badge the chord slot the pad engine is currently sounding, so the
         // progression list shows which chord is live. Distinct from the cursor
         // ▶ so a row can be both selected and playing.
-        let chord_playing = active_tab == Tab::Chords
-            && chord_drill == ChordDrill::Progression
-            && i == active_slot;
+        let chord_playing =
+            active_tab == Tab::Chords && chord_drill == ChordDrill::Progression && i == active_slot;
         if chord_playing {
             spans.push(Span::styled(
                 " ♪",
@@ -1512,8 +1492,7 @@ pub(crate) fn render(
                                     flip_display(TimeBase::Beats, route.cycle_beats, bpm)
                                 }
                                 LfoField::Offset
-                                    if flipped
-                                        .contains(&unit_key(item.id, Some("lfo.offset"))) =>
+                                    if flipped.contains(&unit_key(item.id, Some("lfo.offset"))) =>
                                 {
                                     flip_display(TimeBase::Beats, route.phase_offset_beats, bpm)
                                 }
@@ -1572,8 +1551,7 @@ pub(crate) fn render(
                         }
                         EnvField::Decay
                             if route.decay_beats > 0.0
-                                && flipped
-                                    .contains(&unit_key(item.id, Some("env.decay"))) =>
+                                && flipped.contains(&unit_key(item.id, Some("env.decay"))) =>
                         {
                             flip_display(TimeBase::Beats, route.decay_beats, bpm)
                         }
@@ -1663,6 +1641,14 @@ fn macro_chip_line(route: &MacroRoute) -> Line<'static> {
     ))
 }
 
+/// Shared numeric-entry cursor: renders the in-progress typed value with a
+/// blinking cursor when this row is the active numeric-entry target.
+fn numeric_cursor(numeric: &NumericDisplay<'_>, active: bool) -> Option<String> {
+    let entry = active.then_some(numeric.entry).flatten()?;
+    let cursor = if numeric.cursor_visible { "_" } else { " " };
+    Some(format!("> {entry}{cursor}"))
+}
+
 /// Baseline submenu field row: label, clamped ratio bar, live display, shared
 /// numeric-entry cursor. Every modulator field renders through this.
 fn field_line(
@@ -1679,12 +1665,7 @@ fn field_line(
         style = style.add_modifier(Modifier::BOLD);
     }
     let prefix = if active { "▶ " } else { "  " };
-    let display = if active && let Some(entry) = numeric.entry {
-        let cursor = if numeric.cursor_visible { "_" } else { " " };
-        format!("> {entry}{cursor}")
-    } else {
-        value_display
-    };
+    let display = numeric_cursor(numeric, active).unwrap_or(value_display);
     let bar = ratio_bar(ratio, bar_w, '█', '░');
     Line::from(Span::styled(
         format!("{prefix}  {label:<13} {bar} {display}"),
@@ -1703,6 +1684,15 @@ fn lane_glyph(level: f32) -> &'static str {
     LANE_WAVE[((level * (LANE_WAVE.len() - 1) as f32).round() as usize).min(LANE_WAVE.len() - 1)]
 }
 
+/// Blank label-width prefix shared by every modulator lane line, so lane
+/// glyphs line up under the field label column.
+fn lane_prefix() -> Span<'static> {
+    Span::styled(
+        format!("  {:<15} ", ""),
+        Style::default().fg(Color::Rgb(130, 136, 160)),
+    )
+}
+
 /// Live modulator lane. Periodic shapes draw one phase-locked cycle across the
 /// width with a bright head at the current phase. Random shapes scroll the real
 /// generated trajectory right-to-left, head at "now" on the right edge, so what
@@ -1716,10 +1706,7 @@ pub(crate) fn lfo_lane_line(
     let width = width.clamp(6, 80);
     let floor = if active { 0.35 } else { 0.25 };
     let mut spans = Vec::with_capacity(width + 1);
-    spans.push(Span::styled(
-        format!("  {:<15} ", ""),
-        Style::default().fg(Color::Rgb(130, 136, 160)),
-    ));
+    spans.push(lane_prefix());
 
     if route.shape.is_random() {
         let window = f64::from(route.cycle_beats.max(MIN_LFO_CYCLE_BEATS) * RANDOM_LANE_CYCLES);
@@ -1770,10 +1757,7 @@ pub(crate) fn env_lane_line(
     let head = ((head_phase * width as f32) as usize).min(width - 1);
 
     let mut spans = Vec::with_capacity(width + 1);
-    spans.push(Span::styled(
-        format!("  {:<15} ", ""),
-        Style::default().fg(Color::Rgb(130, 136, 160)),
-    ));
+    spans.push(lane_prefix());
     for i in 0..width {
         let col_since = (i as f64 / width as f64 * window) as f32;
         let level = route.level_for_lane(col_since) * route.amount.abs();

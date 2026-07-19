@@ -37,13 +37,16 @@ impl PercEngine {
             // Filter has a comparably audible range in both modes.
             if c.filter != self.last_filter {
                 self.last_filter = c.filter;
-                self.smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
+                self.smoothing = noise_filter_smoothing(c.filter);
             }
             return self.noise.next_filtered(&mut self.rng, self.smoothing) * c.level * 0.4;
         }
 
-        if self.trigger.pop_swung(timing, c.interval_beats, c.offset_beats, c.swing) {
-            let smoothing = 10_f32.powf(c.filter * 4.0 - 4.0);
+        if self
+            .trigger
+            .pop_swung(timing, c.interval_beats, c.offset_beats, c.swing)
+        {
+            let smoothing = noise_filter_smoothing(c.filter);
             self.hits.push(NoiseHit::new(
                 c.level,
                 c.decay_ms,

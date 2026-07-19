@@ -284,13 +284,35 @@ impl BassVoice {
     }
 }
 
+/// Shared envelope + drive construction behind every `bass.type` voice: an
+/// attack/decay-only ADSR (no sustain — Decay carries the note fully to
+/// silence, like the Perc voice's percussive envelope; Decay also doubles as
+/// the release curve, smoothing the cutoff if a hit retriggers before the
+/// previous note has fully decayed) plus the optional soft-clip drive stage.
+pub(crate) struct BassVoiceCore {
+    pub(crate) envelope: Adsr,
+    pub(crate) drive: f32,
+}
+
+impl BassVoiceCore {
+    pub(crate) fn new(attack_time: f32, decay_time: f32, drive: f32, sample_rate: f32) -> Self {
+        Self {
+            envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
+            drive,
+        }
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.envelope.is_done()
+    }
+}
+
 /// Type 0 (default): the original bass voice, byte-for-byte unchanged. A
 /// single sine oscillator through the shared attack/decay envelope, with an
 /// optional soft-clip drive stage.
 pub(crate) struct SubBassVoice {
     pub(crate) osc: SineOscillator,
-    pub(crate) envelope: Adsr,
-    pub(crate) drive: f32,
+    pub(crate) core: BassVoiceCore,
 }
 
 impl SubBassVoice {
@@ -303,21 +325,16 @@ impl SubBassVoice {
     ) -> Self {
         Self {
             osc: SineOscillator::new(hz, sample_rate),
-            // No sustain — Decay carries the note fully to silence, like the
-            // Perc voice's percussive envelope. Decay also doubles as the
-            // release curve, smoothing the cutoff if a hit retriggers before
-            // the previous note has fully decayed.
-            envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
-            drive,
+            core: BassVoiceCore::new(attack_time, decay_time, drive, sample_rate),
         }
     }
 
     pub(crate) fn next(&mut self) -> f32 {
-        drive_stage(self.osc.next() * self.envelope.next(), self.drive)
+        drive_stage(self.osc.next() * self.core.envelope.next(), self.core.drive)
     }
 
     pub(crate) fn is_done(&self) -> bool {
-        self.envelope.is_done()
+        self.core.is_done()
     }
 }
 
@@ -341,8 +358,7 @@ const BASS_SAW_OUTPUT_GAIN: f32 = 0.62;
 /// the top end tame. Shares the Sub voice's envelope shape and drive stage.
 pub(crate) struct SawBassVoice {
     pub(crate) oscillators: [SineOscillator; BASS_SAW_HARMONIC_COUNT],
-    pub(crate) envelope: Adsr,
-    pub(crate) drive: f32,
+    pub(crate) core: BassVoiceCore,
 }
 
 impl SawBassVoice {
@@ -357,8 +373,7 @@ impl SawBassVoice {
             oscillators: std::array::from_fn(|index| {
                 SineOscillator::new(hz * (index + 1) as f32, sample_rate)
             }),
-            envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
-            drive,
+            core: BassVoiceCore::new(attack_time, decay_time, drive, sample_rate),
         }
     }
 
@@ -367,11 +382,14 @@ impl SawBassVoice {
         for (osc, gain) in self.oscillators.iter_mut().zip(BASS_SAW_HARMONIC_GAINS) {
             raw += osc.next() * gain;
         }
-        drive_stage(raw * BASS_SAW_OUTPUT_GAIN * self.envelope.next(), self.drive)
+        drive_stage(
+            raw * BASS_SAW_OUTPUT_GAIN * self.core.envelope.next(),
+            self.core.drive,
+        )
     }
 
     pub(crate) fn is_done(&self) -> bool {
-        self.envelope.is_done()
+        self.core.is_done()
     }
 }
 
@@ -395,10 +413,9 @@ const BASS_PLUCK_OUTPUT_GAIN: f32 = 0.82;
 pub(crate) struct PluckBassVoice {
     pub(crate) osc: SineOscillator,
     pub(crate) transient_osc: SineOscillator,
-    pub(crate) envelope: Adsr,
+    pub(crate) core: BassVoiceCore,
     pub(crate) transient_samples_remaining: u64,
     pub(crate) transient_total_samples: f32,
-    pub(crate) drive: f32,
 }
 
 impl PluckBassVoice {
@@ -415,15 +432,14 @@ impl PluckBassVoice {
         Self {
             osc: SineOscillator::new(hz, sample_rate),
             transient_osc: SineOscillator::new(hz * 2.0, sample_rate),
-            envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
+            core: BassVoiceCore::new(attack_time, decay_time, drive, sample_rate),
             transient_samples_remaining: transient_total_samples as u64,
             transient_total_samples,
-            drive,
         }
     }
 
     pub(crate) fn next(&mut self) -> f32 {
-        let body = self.osc.next() * self.envelope.next();
+        let body = self.osc.next() * self.core.envelope.next();
 
         let transient = if self.transient_samples_remaining > 0 {
             let elapsed = self.transient_total_samples - self.transient_samples_remaining as f32;
@@ -436,11 +452,11 @@ impl PluckBassVoice {
 
         drive_stage(
             (body + transient * BASS_PLUCK_TRANSIENT_MIX) * BASS_PLUCK_OUTPUT_GAIN,
-            self.drive,
+            self.core.drive,
         )
     }
 
     pub(crate) fn is_done(&self) -> bool {
-        self.envelope.is_done()
+        self.core.is_done()
     }
 }

@@ -507,9 +507,7 @@ impl LfoRoute {
 
     pub(crate) fn field_ratio(&self, field: LfoField) -> f32 {
         match field {
-            LfoField::Shape => {
-                self.shape.index() as f32 / (LfoShape::ALL.len() - 1).max(1) as f32
-            }
+            LfoField::Shape => self.shape.index() as f32 / (LfoShape::ALL.len() - 1).max(1) as f32,
             LfoField::Amount => field.spec().ratio(self.depth_ratio),
             LfoField::Interval => field.spec().ratio(self.cycle_beats),
             LfoField::Offset => field.spec().ratio(self.phase_offset_beats),
@@ -538,26 +536,56 @@ impl LfoRoute {
     /// structural-snap treatment. A route missing on one side glides its
     /// depth to/from 0 while holding the present side's other fields — it
     /// fades in or out rather than popping, and naturally disappears once the
-    /// leg's `to` state becomes the next leg's `from`.
-    fn morph(from: Option<&LfoRoute>, to: Option<&LfoRoute>, tt: f32, use_to: bool) -> Option<LfoRoute> {
-        match (from, to) {
-            (Some(f), Some(t)) => {
-                let mut route = if use_to { *t } else { *f };
-                route.depth_ratio = f.depth_ratio + (t.depth_ratio - f.depth_ratio) * tt;
-                Some(route)
-            }
-            (Some(f), None) => {
-                let mut route = *f;
-                route.depth_ratio = f.depth_ratio * (1.0 - tt);
-                Some(route)
-            }
-            (None, Some(t)) => {
-                let mut route = *t;
-                route.depth_ratio = t.depth_ratio * tt;
-                Some(route)
-            }
-            (None, None) => None,
+    /// leg's `to` state becomes the next leg's `from`. See `morph_scalar_route`
+    /// for the shared 4-arm glide/snap logic.
+    fn morph(
+        from: Option<&LfoRoute>,
+        to: Option<&LfoRoute>,
+        tt: f32,
+        use_to: bool,
+    ) -> Option<LfoRoute> {
+        morph_scalar_route(
+            from,
+            to,
+            tt,
+            use_to,
+            |r| r.depth_ratio,
+            |r, v| r.depth_ratio = v,
+        )
+    }
+}
+
+/// Shared glide/snap morph for a route type whose only "level" field crosses
+/// a leg transition on a glide while every other field snaps: on both sides
+/// present, all-but-`get`/`set` fields snap to `to` once `use_to` flips true
+/// while the level field glides `tt` between the two; on only one side
+/// present, the level field glides to/from 0 while the present side's other
+/// fields hold, so the route fades in or out instead of popping.
+fn morph_scalar_route<T: Copy>(
+    from: Option<&T>,
+    to: Option<&T>,
+    tt: f32,
+    use_to: bool,
+    get: fn(&T) -> f32,
+    set: fn(&mut T, f32),
+) -> Option<T> {
+    match (from, to) {
+        (Some(f), Some(t)) => {
+            let mut route = if use_to { *t } else { *f };
+            set(&mut route, get(f) + (get(t) - get(f)) * tt);
+            Some(route)
         }
+        (Some(f), None) => {
+            let mut route = *f;
+            set(&mut route, get(f) * (1.0 - tt));
+            Some(route)
+        }
+        (None, Some(t)) => {
+            let mut route = *t;
+            set(&mut route, get(t) * tt);
+            Some(route)
+        }
+        (None, None) => None,
     }
 }
 
@@ -626,10 +654,7 @@ impl EnvTrigger {
     ];
 
     fn index(self) -> usize {
-        Self::CYCLE
-            .iter()
-            .position(|&t| t == self)
-            .unwrap_or(2) // default: every 4 beats
+        Self::CYCLE.iter().position(|&t| t == self).unwrap_or(2) // default: every 4 beats
     }
 
     fn cycled(self, dir: f32) -> Self {
@@ -852,31 +877,14 @@ impl EnvelopeRoute {
 
     /// Morph an optional envelope route across a leg transition; same
     /// glide/snap split as `LfoRoute::morph` with `amount` as the level
-    /// field. See that method's doc for the full rationale.
+    /// field. See `morph_scalar_route` for the full rationale.
     fn morph(
         from: Option<&EnvelopeRoute>,
         to: Option<&EnvelopeRoute>,
         tt: f32,
         use_to: bool,
     ) -> Option<EnvelopeRoute> {
-        match (from, to) {
-            (Some(f), Some(t)) => {
-                let mut route = if use_to { *t } else { *f };
-                route.amount = f.amount + (t.amount - f.amount) * tt;
-                Some(route)
-            }
-            (Some(f), None) => {
-                let mut route = *f;
-                route.amount = f.amount * (1.0 - tt);
-                Some(route)
-            }
-            (None, Some(t)) => {
-                let mut route = *t;
-                route.amount = t.amount * tt;
-                Some(route)
-            }
-            (None, None) => None,
-        }
+        morph_scalar_route(from, to, tt, use_to, |r| r.amount, |r, v| r.amount = v)
     }
 }
 
@@ -1151,10 +1159,9 @@ impl AutomationState {
                     .get(&open.address)
                     .is_some_and(|route| route.depth_ratio <= f32::EPSILON);
                 let field_macro_prefix = format!("{}#lfo.", open.address.id());
-                let has_live_field_macro = self
-                    .field_macros
-                    .iter()
-                    .any(|(key, route)| key.starts_with(&field_macro_prefix) && !route.is_neutral());
+                let has_live_field_macro = self.field_macros.iter().any(|(key, route)| {
+                    key.starts_with(&field_macro_prefix) && !route.is_neutral()
+                });
                 if base_neutral && !has_live_field_macro {
                     self.routes.remove(&open.address);
                 }
@@ -1324,56 +1331,52 @@ impl AutomationState {
     /// absent route is simply absent from the map again. Editor-open state
     /// (`open`, `open_field`) is UI navigation, not audible, and is never
     /// morphed — the result always has neither open.
-    pub(crate) fn morph(from: &AutomationState, to: &AutomationState, tt: f32, use_to: bool) -> AutomationState {
+    pub(crate) fn morph(
+        from: &AutomationState,
+        to: &AutomationState,
+        tt: f32,
+        use_to: bool,
+    ) -> AutomationState {
         let mut result = AutomationState::default();
-
-        let route_keys: BTreeSet<ControlAddress> =
-            from.routes.keys().chain(to.routes.keys()).copied().collect();
-        for key in route_keys {
-            if let Some(route) = LfoRoute::morph(from.routes.get(&key), to.routes.get(&key), tt, use_to) {
-                result.routes.insert(key, route);
-            }
-        }
-
-        let envelope_keys: BTreeSet<ControlAddress> = from
-            .envelopes
-            .keys()
-            .chain(to.envelopes.keys())
-            .copied()
-            .collect();
-        for key in envelope_keys {
-            if let Some(route) = EnvelopeRoute::morph(
-                from.envelopes.get(&key),
-                to.envelopes.get(&key),
-                tt,
-                use_to,
-            ) {
-                result.envelopes.insert(key, route);
-            }
-        }
-
-        let macro_keys: BTreeSet<ControlAddress> =
-            from.macros.keys().chain(to.macros.keys()).copied().collect();
-        for key in macro_keys {
-            if let Some(route) = MacroRoute::morph(from.macros.get(&key), to.macros.get(&key), tt) {
-                result.macros.insert(key, route);
-            }
-        }
-
-        let field_macro_keys: BTreeSet<&String> = from
-            .field_macros
-            .keys()
-            .chain(to.field_macros.keys())
-            .collect();
-        for key in field_macro_keys {
-            if let Some(route) =
-                MacroRoute::morph(from.field_macros.get(key), to.field_macros.get(key), tt)
-            {
-                result.field_macros.insert(key.clone(), route);
-            }
-        }
-
+        morph_map(&from.routes, &to.routes, &mut result.routes, |f, t| {
+            LfoRoute::morph(f, t, tt, use_to)
+        });
+        morph_map(
+            &from.envelopes,
+            &to.envelopes,
+            &mut result.envelopes,
+            |f, t| EnvelopeRoute::morph(f, t, tt, use_to),
+        );
+        morph_map(&from.macros, &to.macros, &mut result.macros, |f, t| {
+            MacroRoute::morph(f, t, tt)
+        });
+        morph_map(
+            &from.field_macros,
+            &to.field_macros,
+            &mut result.field_macros,
+            |f, t| MacroRoute::morph(f, t, tt),
+        );
         result
+    }
+}
+
+/// Merge two route maps across a leg transition: build the union of both
+/// sides' keys (kept in sorted order via `BTreeSet`, matching the previous
+/// per-map key-collection loops), then insert `morph(from, to)` for each key
+/// that yields a route. A key absent from the result (both morph inputs
+/// `None`, or `morph` returning `None`) is simply left out — this is how a
+/// route naturally disappears once both legs' endpoints lack it.
+fn morph_map<K: Ord + Clone, V>(
+    from: &BTreeMap<K, V>,
+    to: &BTreeMap<K, V>,
+    out: &mut BTreeMap<K, V>,
+    morph: impl Fn(Option<&V>, Option<&V>) -> Option<V>,
+) {
+    let keys: BTreeSet<&K> = from.keys().chain(to.keys()).collect();
+    for key in keys {
+        if let Some(route) = morph(from.get(key), to.get(key)) {
+            out.insert(key.clone(), route);
+        }
     }
 }
 
@@ -1417,7 +1420,14 @@ pub(crate) fn modulated_control_value(
     base: f32,
     beat: f64,
 ) -> f32 {
-    modulated_control_value_full(spec, Some(route), None, None, base, ModContext::lfo_only(beat))
+    modulated_control_value_full(
+        spec,
+        Some(route),
+        None,
+        None,
+        base,
+        ModContext::lfo_only(beat),
+    )
 }
 
 /// Combined contribution of every macro slider a route rides, or None when
@@ -1448,8 +1458,7 @@ fn live_macro_pair(
         if route.amounts[i].abs() <= f32::EPSILON {
             continue;
         }
-        let spec =
-            spec_by_id(MACRO_CONTROLS[i].id).expect("macro sliders are registered controls");
+        let spec = spec_by_id(MACRO_CONTROLS[i].id).expect("macro sliders are registered controls");
         let macro_address = ControlAddress::new(spec.id);
         *value = modulated_control_value_full(
             spec,
@@ -1479,7 +1488,8 @@ pub(crate) fn live_macro_contribution(
 
 /// Slot order for stacked LFO field macros, shared by every fold over them
 /// (`PlannedRoute::field_macros` uses the same indices).
-const LFO_FIELD_MACRO_SLOTS: [LfoField; 3] = [LfoField::Amount, LfoField::Interval, LfoField::Offset];
+const LFO_FIELD_MACRO_SLOTS: [LfoField; 3] =
+    [LfoField::Amount, LfoField::Interval, LfoField::Offset];
 
 /// Fold per-slot combined macro ratios into a modulated copy of the route.
 /// `contribution(slot)` resolves the stacked macro on `LFO_FIELD_MACRO_SLOTS[slot]`,
@@ -1498,8 +1508,7 @@ fn fold_field_macro_contributions(
             .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS);
     }
     if let Some(combined) = contribution(2) {
-        effective.phase_offset_beats = (route.phase_offset_beats
-            + combined * MAX_LFO_OFFSET_BEATS)
+        effective.phase_offset_beats = (route.phase_offset_beats + combined * MAX_LFO_OFFSET_BEATS)
             .clamp(0.0, MAX_LFO_OFFSET_BEATS);
     }
     effective
@@ -1521,9 +1530,7 @@ fn apply_field_macros(
     }
     fold_field_macro_contributions(route, |slot| {
         let key = unit_key(address.id(), LFO_FIELD_MACRO_SLOTS[slot].macro_key());
-        automation
-            .field_macro(&key)
-            .and_then(&mut contribution)
+        automation.field_macro(&key).and_then(&mut contribution)
     })
 }
 

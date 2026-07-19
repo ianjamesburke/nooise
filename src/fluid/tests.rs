@@ -75,6 +75,55 @@ fn buffer_text(buffer: &Buffer) -> String {
         .collect::<String>()
 }
 
+/// Draws one `render()` frame onto a fresh `width`x`height` `TestBackend` and
+/// returns the resulting buffer -- the shared `TestBackend` -> `Terminal` ->
+/// `terminal.draw(|f| render(...))` -> buffer boilerplate behind every
+/// `render_fluid_*`/`render_shows_*` test below. `NumericDisplay::empty()`
+/// and a fresh `FlippedUnits` are identical at every call site, so they stay
+/// fixed inside the helper rather than becoming parameters.
+#[allow(clippy::too_many_arguments)] // mirrors render()'s own signature; every argument is asserted independently across call sites
+fn render_to_buffer(
+    width: u16,
+    height: u16,
+    items: &[ControlItem],
+    tab: Tab,
+    cursor: usize,
+    submenu: usize,
+    beat: f64,
+    fluid: &FluidState,
+    automation: &AutomationState,
+    controls: &FluidControls,
+    footer: Option<&str>,
+    drill: ChordDrill,
+    active_chord: u64,
+    mute: &MuteState,
+) -> Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| {
+            render(
+                f,
+                items,
+                tab,
+                cursor,
+                submenu,
+                beat,
+                NumericDisplay::empty(),
+                fluid,
+                automation,
+                controls,
+                footer,
+                &FlippedUnits::new(),
+                drill,
+                active_chord,
+                mute,
+            )
+        })
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
 #[test]
 fn midi_to_hz_matches_known_notes() {
     assert_close(midi_to_hz(69), 440.0); // A4
@@ -259,7 +308,10 @@ fn tonal_decay_control_sets_ring_length() {
     let (long_l, _) = long_decay.next();
     let (short_l, _) = short_decay.next();
 
-    assert!(short_decay.is_done(), "a short-decay note must have ended by 0.25s");
+    assert!(
+        short_decay.is_done(),
+        "a short-decay note must have ended by 0.25s"
+    );
     assert!(
         long_l.abs() > short_l.abs(),
         "a longer tonal.decay should still be ringing when the short note is silent: \
@@ -420,35 +472,24 @@ fn tonal_evolve_rate_maps_to_actual_notes_per_cycle() {
 }
 
 #[test]
-fn tonal_engine_evolves_one_actual_note_at_low_rate() {
-    let mut tonal = TonalEngine::new(SAMPLE_RATE);
-    tonal.rng = StdRng::seed_from_u64(5);
-    let before = tonal.evolved_phrase.clone();
+fn tonal_engine_evolves_notes_proportional_to_rate() {
+    for (rate, expected_changed) in [(0.01, 1), (1.0, 4)] {
+        let mut tonal = TonalEngine::new(SAMPLE_RATE);
+        tonal.rng = StdRng::seed_from_u64(5);
+        let before = tonal.evolved_phrase.clone();
 
-    tonal.evolve_phrase(0.01);
+        tonal.evolve_phrase(rate);
 
-    let changed = before
-        .iter()
-        .zip(&tonal.evolved_phrase)
-        .filter(|(before, after)| before != after)
-        .count();
-    assert_eq!(changed, 1);
-}
-
-#[test]
-fn tonal_engine_evolves_more_notes_at_high_rate() {
-    let mut tonal = TonalEngine::new(SAMPLE_RATE);
-    tonal.rng = StdRng::seed_from_u64(5);
-    let before = tonal.evolved_phrase.clone();
-
-    tonal.evolve_phrase(1.0);
-
-    let changed = before
-        .iter()
-        .zip(&tonal.evolved_phrase)
-        .filter(|(before, after)| before != after)
-        .count();
-    assert_eq!(changed, 4);
+        let changed = before
+            .iter()
+            .zip(&tonal.evolved_phrase)
+            .filter(|(before, after)| before != after)
+            .count();
+        assert_eq!(
+            changed, expected_changed,
+            "evolve rate {rate}: unexpected changed-note count"
+        );
+    }
 }
 
 #[test]
@@ -487,32 +528,25 @@ fn tab_previous_wraps_back_one_tab() {
 fn render_fluid_draws_without_terminal_backend() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();
-    let backend = TestBackend::new(100, 32);
-    let mut terminal = Terminal::new(backend).unwrap();
     let items = tab_controls(Tab::Master, &controls);
     let automation = AutomationState::default();
 
-    terminal
-        .draw(|f| {
-            render(
-                f,
-                &items,
-                Tab::Master,
-                0,
-                0,
-                0.0,
-                NumericDisplay::empty(),
-                &fluid,
-                &automation,
-                &controls,
-                None,
-                &FlippedUnits::new(),
-                ChordDrill::None,
-                0,
-                &[None; 9],
-            )
-        })
-        .unwrap();
+    render_to_buffer(
+        100,
+        32,
+        &items,
+        Tab::Master,
+        0,
+        0,
+        0.0,
+        &fluid,
+        &automation,
+        &controls,
+        None,
+        ChordDrill::None,
+        0,
+        &[None; 9],
+    );
 }
 
 #[test]
@@ -584,7 +618,11 @@ fn lfo_field_set_snaps_to_eighth_beat_grid() {
 fn discrete_fields_clamp_at_their_ends_instead_of_wrapping() {
     let mut route = LfoRoute::default();
     route.adjust_field_at(LfoField::Shape, -1.0, 0.0);
-    assert_eq!(route.shape, LfoShape::Sine, "shape must not wrap below sine");
+    assert_eq!(
+        route.shape,
+        LfoShape::Sine,
+        "shape must not wrap below sine"
+    );
     for _ in 0..20 {
         route.adjust_field_at(LfoField::Shape, 1.0, 0.0);
     }
@@ -678,10 +716,7 @@ fn same_key_toggles_editor_closed_and_keeps_the_route() {
     // Second tap closes the editor but the route keeps playing.
     open_modulator(&mut automation, &items, 0, ModKind::Lfo, &mut sub);
     assert!(!automation.state().is_editor_open());
-    assert_close(
-        automation.state().route(address).unwrap().depth_ratio,
-        0.4,
-    );
+    assert_close(automation.state().route(address).unwrap().depth_ratio, 0.4);
 }
 
 #[test]
@@ -710,14 +745,20 @@ fn macro_route_scales_target_into_its_range() {
     controls.master.level = 0.2;
     controls.macros.values[0] = 0.5;
     let mut automation = AutomationState::default();
-    automation.set_macro_route(ControlAddress::new("master.level"), single_macro_route(0, 1.0));
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        single_macro_route(0, 1.0),
+    );
 
     let mut effective = controls.clone();
     apply_automation(&mut effective, &automation, timing(0, 120.0));
     assert_near(effective.master.level, 0.7);
 
     // Negative amount dips below the base and clamps at the control minimum.
-    automation.set_macro_route(ControlAddress::new("master.level"), single_macro_route(0, -1.0));
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        single_macro_route(0, -1.0),
+    );
     let mut effective = controls.clone();
     apply_automation(&mut effective, &automation, timing(0, 120.0));
     assert_near(effective.master.level, 0.0);
@@ -744,7 +785,10 @@ fn a_control_can_ride_several_macro_sliders_at_once() {
     assert_near(effective.master.level, 0.1);
 
     // Zeroing one slot doesn't disturb the other.
-    automation.macro_route_mut(ControlAddress::new("master.level")).unwrap().amounts[2] = 0.0;
+    automation
+        .macro_route_mut(ControlAddress::new("master.level"))
+        .unwrap()
+        .amounts[2] = 0.0;
     let mut effective = controls.clone();
     apply_automation(&mut effective, &automation, timing(0, 120.0));
     assert_near(effective.master.level, 0.4);
@@ -932,7 +976,10 @@ fn macro_own_lfo_feeds_targets_in_the_same_pass() {
             ..LfoRoute::default()
         },
     );
-    automation.set_macro_route(ControlAddress::new("master.level"), single_macro_route(0, 1.0));
+    automation.set_macro_route(
+        ControlAddress::new("master.level"),
+        single_macro_route(0, 1.0),
+    );
 
     // Sine peak: beat 0.5 of a 2-beat cycle. At 120 BPM that is 0.25 s.
     let sample = (f64::from(SAMPLE_RATE) * 0.25) as u64;
@@ -959,7 +1006,13 @@ fn envelope_opens_only_on_macros_and_macros_never_target_macros() {
 
     // e on a regular control: refused.
     let master_items = tab_controls(Tab::Master, &controls);
-    open_modulator(&mut automation, &master_items, 0, ModKind::Envelope, &mut sub);
+    open_modulator(
+        &mut automation,
+        &master_items,
+        0,
+        ModKind::Envelope,
+        &mut sub,
+    );
     assert!(!automation.state().is_editor_open());
 
     // v on a macro slider: refused.
@@ -968,7 +1021,13 @@ fn envelope_opens_only_on_macros_and_macros_never_target_macros() {
     assert!(!automation.state().is_editor_open());
 
     // e on a macro slider and v on a regular control: allowed.
-    open_modulator(&mut automation, &macro_items, 0, ModKind::Envelope, &mut sub);
+    open_modulator(
+        &mut automation,
+        &macro_items,
+        0,
+        ModKind::Envelope,
+        &mut sub,
+    );
     assert_eq!(automation.state().active_kind(), Some(ModKind::Envelope));
     automation.edit(AutomationState::close_editor);
     open_modulator(&mut automation, &master_items, 0, ModKind::Macro, &mut sub);
@@ -1084,6 +1143,20 @@ fn ambient_reverb_send_ducks_dry_sources_by_mix() {
     assert_close(frame.wet_r, 0.0);
 }
 
+/// Shared "reverb must not increase perceived loudness" tail behind
+/// full_pad_reverb_does_not_boost_pad_rms/full_tonal_reverb_does_not_boost_tonal_rms:
+/// `rms` is measured dry (`reverb_mix` 0.0) and fully wet (1.0), and wet must
+/// not exceed dry by more than 5%.
+fn assert_reverb_does_not_boost_rms(label: &str, rms: impl Fn(f32) -> f32) {
+    let dry = rms(0.0);
+    let wet = rms(1.0);
+
+    assert!(
+        wet <= dry * 1.05,
+        "full reverb should not make {label} much louder: dry rms {dry}, wet rms {wet}"
+    );
+}
+
 #[test]
 fn full_pad_reverb_does_not_boost_pad_rms() {
     fn pad_rms(reverb_mix: f32) -> f32 {
@@ -1115,13 +1188,7 @@ fn full_pad_reverb_does_not_boost_pad_rms() {
         (sum / count as f32).sqrt()
     }
 
-    let dry = pad_rms(0.0);
-    let wet = pad_rms(1.0);
-
-    assert!(
-        wet <= dry * 1.05,
-        "full reverb should not make pad much louder: dry rms {dry}, wet rms {wet}"
-    );
+    assert_reverb_does_not_boost_rms("pad", pad_rms);
 }
 
 #[test]
@@ -1156,13 +1223,7 @@ fn full_tonal_reverb_does_not_boost_tonal_rms() {
         (sum / count as f32).sqrt()
     }
 
-    let dry = tonal_rms(0.0);
-    let wet = tonal_rms(1.0);
-
-    assert!(
-        wet <= dry * 1.05,
-        "full reverb should not make tonal much louder: dry rms {dry}, wet rms {wet}"
-    );
+    assert_reverb_does_not_boost_rms("tonal", tonal_rms);
 }
 
 #[test]
@@ -1186,30 +1247,22 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     automation.open_or_create(ControlAddress::new(items[0].id));
 
     let draw_at = |beat: f64| {
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                render(
-                    f,
-                    &items,
-                    Tab::Master,
-                    0,
-                    1,
-                    beat,
-                    NumericDisplay::empty(),
-                    &fluid,
-                    &automation,
-                    &controls,
-                    None,
-                    &FlippedUnits::new(),
-                    ChordDrill::None,
-                    0,
-                    &[None; 9],
-                )
-            })
-            .unwrap();
-        terminal.backend().buffer().clone()
+        render_to_buffer(
+            120,
+            40,
+            &items,
+            Tab::Master,
+            0,
+            1,
+            beat,
+            &fluid,
+            &automation,
+            &controls,
+            None,
+            ChordDrill::None,
+            0,
+            &[None; 9],
+        )
     };
 
     let at_start = draw_at(0.0);
@@ -1394,19 +1447,15 @@ fn tab_controls_classify_each_slider_kind() {
                 Continuous, Timing, Continuous, Discrete,
             ],
         ),
-        (
-            Tab::Perc,
-            vec![Gain, Gain, Timing, Timing, Timing, Gain],
-        ),
+        (Tab::Perc, vec![Gain, Gain, Timing, Timing, Timing, Gain]),
         (
             Tab::Chords,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain,
-                Gain, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
+                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain, Gain,
                 Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
                 Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
                 Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
-                Discrete,
+                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
             ],
         ),
         (
@@ -1418,7 +1467,9 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (
             Tab::Kick,
-            vec![Gain, Gain, Timing, Timing, Timing, Timing, Continuous, Gain, Gain],
+            vec![
+                Gain, Gain, Timing, Timing, Timing, Timing, Continuous, Gain, Gain,
+            ],
         ),
         (
             Tab::Tonal,
@@ -1452,17 +1503,11 @@ fn tab_controls_classify_each_slider_kind() {
 
 #[test]
 fn control_registry_specs_are_internally_consistent() {
-    let tabs = [
-        Tab::Master,
-        Tab::Perc,
-        Tab::Chords,
-        Tab::Bass,
-        Tab::Kick,
-        Tab::Tonal,
-        Tab::Clap,
-        Tab::Arp,
-    ];
-    for tab in tabs {
+    for (i, tab) in Tab::all().into_iter().enumerate() {
+        assert_eq!(
+            tab as usize, i,
+            "TAB_META row {i} out of discriminant order"
+        );
         for spec in tab_specs(tab) {
             let ctx = format!("{} / {}", tab.name(), spec.label);
             assert!(!spec.id.is_empty(), "{ctx}: empty stable id");
@@ -1591,193 +1636,100 @@ fn full_engine_renders_a_custom_progression_from_song_code_without_panicking() {
     let controls_swap = Arc::new(ArcSwap::from_pointee(decoded.controls));
     let automation = Arc::new(ArcSwap::from_pointee(decoded.automation));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(SAMPLE_RATE, controls_swap, automation, no_morph(), telemetry);
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        controls_swap,
+        automation,
+        no_morph(),
+        telemetry,
+    );
 
     for _ in 0..(SAMPLE_RATE as usize * 4) {
         let (l, r) = engine.next_stereo();
-        assert!(l.is_finite() && r.is_finite(), "engine produced non-finite output");
+        assert!(
+            l.is_finite() && r.is_finite(),
+            "engine produced non-finite output"
+        );
     }
 }
 
-#[test]
-fn song_code_round_trips_bass_type() {
+/// Encodes `controls` (default, then `set` applied) to a song code, decodes
+/// it back, and returns the decoded controls -- the shared round-trip path
+/// behind every `song_code_round_trips_*`/`song_code_decodes_missing_controls_as_defaults`
+/// test below.
+fn round_trip(set: impl Fn(&mut FluidControls)) -> FluidControls {
     let mut controls = FluidControls::default();
-    controls.bass.voice_type = 2.0;
-
+    set(&mut controls);
     let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.bass.voice_type, 2.0);
+    song::decode_song_code(&code).unwrap().controls
 }
 
-#[test]
-fn song_code_predating_bass_type_decodes_as_default_sub() {
-    // A code written before `bass.type` existed simply omits the id; the
-    // generic snapshot codec (keyed by durable id, not position) already
-    // decodes any missing id to its default, same as every other control.
-    let controls = FluidControls::default();
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.bass.voice_type, 0.0);
-}
-
-#[test]
-fn song_code_round_trips_pad_type() {
-    let mut controls = FluidControls::default();
-    controls.pad.voice_type = 2.0;
-
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.pad.voice_type, 2.0);
-}
-
-#[test]
-fn song_code_predating_pad_type_decodes_as_default_warm() {
-    // Same generic id->f32 snapshot codec as bass.type: a code written
-    // before `pad.type` existed simply omits the id and decodes to default.
-    let controls = FluidControls::default();
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.pad.voice_type, 0.0);
-}
-
-#[test]
-fn song_code_round_trips_bass_cutoff() {
-    let mut controls = FluidControls::default();
-    controls.bass.cutoff = 500.0;
-
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.bass.cutoff, 500.0);
-}
-
-#[test]
-fn song_code_predating_bass_cutoff_decodes_as_default_open() {
-    // Same generic id->f32 snapshot codec as bass.type/pad.type: a code
-    // written before `bass.cutoff` existed simply omits the id and decodes
-    // to the fully-open default (BASS_CUTOFF_MAX_HZ), preserving the
-    // pre-existing sound.
-    let controls = FluidControls::default();
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.bass.cutoff, BASS_CUTOFF_MAX_HZ);
-}
-
-#[test]
-fn song_code_round_trips_tonal_octave() {
-    let mut controls = FluidControls::default();
-    controls.tonal.octave = -1.0;
-
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.tonal.octave, -1.0);
-}
-
-#[test]
-fn song_code_predating_tonal_octave_decodes_as_default_zero() {
-    // Same generic id->f32 snapshot codec as bass.cutoff/bass.type/pad.type: a
-    // code written before `tonal.octave` existed simply omits the id and
-    // decodes to the no-shift default (0.0), preserving the pre-existing
-    // sound.
-    let controls = FluidControls::default();
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.tonal.octave, 0.0);
-}
-
-#[test]
-fn song_code_round_trips_arp_reverb_mix() {
-    let mut controls = FluidControls::default();
-    controls.arp.reverb_mix = 0.9;
-
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.arp.reverb_mix, 0.9);
-}
-
-#[test]
-fn song_code_predating_arp_reverb_mix_decodes_as_default_fixed_mix() {
-    // Same generic id->f32 snapshot codec as tonal.octave/bass.cutoff: a code
-    // written before `arp.reverb_mix` existed simply omits the id and decodes
-    // to the former fixed-mix default (0.5), preserving the pre-existing
-    // sound.
-    let controls = FluidControls::default();
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.arp.reverb_mix, 0.5);
-}
-
-#[test]
-fn song_code_round_trips_arp_offset_beats() {
-    let mut controls = FluidControls::default();
-    controls.arp.offset_beats = 1.5;
-
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.arp.offset_beats, 1.5);
-}
-
-#[test]
-fn song_code_predating_arp_offset_beats_decodes_as_default_zero() {
-    // Same generic id->f32 snapshot codec as arp.reverb_mix/tonal.octave: a
-    // code written before `arp.offset_beats` existed simply omits the id and
-    // decodes to the no-shift default (0.0), preserving the pre-existing
-    // trigger phase.
-    let controls = FluidControls::default();
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(decoded.controls.arp.offset_beats, 0.0);
-}
-
-#[test]
-fn song_code_decodes_missing_controls_as_defaults() {
-    let mut controls = FluidControls::default();
-    controls.master.bpm = 120.0;
-
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(
-        decoded.controls.pad.level,
-        FluidControls::default().pad.level,
+fn assert_close_named(actual: f32, expected: f32, name: &str) {
+    assert!(
+        (actual - expected).abs() < f32::EPSILON,
+        "{name}: expected {expected}, got {actual}"
     );
 }
 
 #[test]
-fn song_code_round_trips_tonal_attack_and_decay() {
-    let mut controls = FluidControls::default();
-    controls.tonal.attack = 0.2;
-    controls.tonal.decay = 1.5;
+fn song_code_round_trips_control_values() {
+    let decoded = round_trip(|c| c.bass.voice_type = 2.0);
+    assert_close_named(decoded.bass.voice_type, 2.0, "bass.type");
 
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
+    let decoded = round_trip(|c| c.pad.voice_type = 2.0);
+    assert_close_named(decoded.pad.voice_type, 2.0, "pad.type");
 
-    assert_close(decoded.controls.tonal.attack, 0.2);
-    assert_close(decoded.controls.tonal.decay, 1.5);
+    let decoded = round_trip(|c| c.bass.cutoff = 500.0);
+    assert_close_named(decoded.bass.cutoff, 500.0, "bass.cutoff");
+
+    let decoded = round_trip(|c| c.tonal.octave = -1.0);
+    assert_close_named(decoded.tonal.octave, -1.0, "tonal.octave");
+
+    let decoded = round_trip(|c| c.arp.reverb_mix = 0.9);
+    assert_close_named(decoded.arp.reverb_mix, 0.9, "arp.reverb_mix");
+
+    let decoded = round_trip(|c| c.arp.offset_beats = 1.5);
+    assert_close_named(decoded.arp.offset_beats, 1.5, "arp.offset_beats");
+
+    let decoded = round_trip(|c| {
+        c.tonal.attack = 0.2;
+        c.tonal.decay = 1.5;
+    });
+    assert_close_named(decoded.tonal.attack, 0.2, "tonal.attack");
+    assert_close_named(decoded.tonal.decay, 1.5, "tonal.decay");
 }
 
-/// A song code encoded before tonal.attack/tonal.decay existed simply has
-/// no entries for those ids; the generic id->f32 snapshot format (unchanged
-/// since it predates this control) already decodes them as defaults with no
-/// version bump required.
+/// Every one of these ids was added after the generic id->f32 snapshot codec
+/// already existed: song.rs only ever writes ids that differ from default, so
+/// a code encoded from an all-default `FluidControls` simply omits them all,
+/// and each decodes back to its own default -- one round trip covers every
+/// case, no format migration required.
 #[test]
-fn song_code_predating_tonal_attack_decay_decodes_with_defaults() {
-    let code = song::encode_song_code(&SongState::default()).unwrap();
-    let decoded = song::decode_song_code(&code).unwrap();
+fn song_code_decodes_missing_controls_as_defaults() {
+    let decoded = round_trip(|_| {});
+    let default = FluidControls::default();
 
-    assert_close(decoded.controls.tonal.attack, TonalControls::default().attack);
-    assert_close(decoded.controls.tonal.decay, TonalControls::default().decay);
+    assert_close_named(
+        decoded.bass.voice_type,
+        default.bass.voice_type,
+        "bass.type",
+    );
+    assert_close_named(decoded.pad.voice_type, default.pad.voice_type, "pad.type");
+    assert_close_named(decoded.bass.cutoff, default.bass.cutoff, "bass.cutoff");
+    assert_close_named(decoded.tonal.octave, default.tonal.octave, "tonal.octave");
+    assert_close_named(
+        decoded.arp.reverb_mix,
+        default.arp.reverb_mix,
+        "arp.reverb_mix",
+    );
+    assert_close_named(
+        decoded.arp.offset_beats,
+        default.arp.offset_beats,
+        "arp.offset_beats",
+    );
+    assert_close_named(decoded.tonal.attack, default.tonal.attack, "tonal.attack");
+    assert_close_named(decoded.tonal.decay, default.tonal.decay, "tonal.decay");
+    assert_close_named(decoded.pad.level, default.pad.level, "pad.level");
 }
 
 #[test]
@@ -2061,7 +2013,11 @@ fn chords_tab_controls_slot_shows_accidental_extension_inversion() {
     let rows = chords_tab_controls(&controls, ChordDrill::Slot(2));
     assert_eq!(
         rows.iter().map(|r| r.label).collect::<Vec<_>>(),
-        vec!["Chord 3 Accidental", "Chord 3 Extension", "Chord 3 Inversion"]
+        vec![
+            "Chord 3 Accidental",
+            "Chord 3 Extension",
+            "Chord 3 Inversion"
+        ]
     );
 }
 
@@ -2099,31 +2055,24 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
     let rows = chords_tab_controls(&controls, ChordDrill::Slot(1));
     let footer = chords_footer(Tab::Chords, ChordDrill::Slot(1));
 
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|f| {
-            render(
-                f,
-                &rows,
-                Tab::Chords,
-                0,
-                0,
-                0.0,
-                NumericDisplay::empty(),
-                &fluid,
-                &automation,
-                &controls,
-                footer.as_deref(),
-                &FlippedUnits::new(),
-                ChordDrill::Slot(1),
-                0,
-                &[None; 9],
-            )
-        })
-        .unwrap();
+    let buffer = render_to_buffer(
+        120,
+        40,
+        &rows,
+        Tab::Chords,
+        0,
+        0,
+        0.0,
+        &fluid,
+        &automation,
+        &controls,
+        footer.as_deref(),
+        ChordDrill::Slot(1),
+        0,
+        &[None; 9],
+    );
 
-    let text = buffer_text(terminal.backend().buffer());
+    let text = buffer_text(&buffer);
     assert!(text.contains("Chords › Chord 2"));
     assert!(text.contains("Chord 2   Esc: back"));
 }
@@ -2335,7 +2284,7 @@ fn bass_engine_is_monophonic_and_hard_cuts_on_retrigger() {
     let pad = PadControls::default();
     let bass_controls = BassControls {
         interval_beats: 1.0,
-        rhythm: 0.0, // quarter notes: hits every beat
+        rhythm: 0.0,     // quarter notes: hits every beat
         decay_time: 5.0, // deliberately long: a pool would still be ringing
         attack_time: 0.001,
         ..BassControls::default()
@@ -2382,61 +2331,83 @@ fn bass_type_zero_matches_legacy_sub_voice_exactly() {
     }
 }
 
+/// Runs each `(name, step)` variant for `samples` ticks, then asserts every
+/// variant is audible, each non-first variant differs from the first beyond
+/// float noise, and no variant is more than 2x (~6dB) louder/quieter than
+/// another -- the shared "differing but comparably balanced" audio check
+/// behind bass_types_*/pad_types_*. `step` returns `(energy_sample,
+/// diff_sample)` per tick: `energy_sample` feeds the RMS level check
+/// (already per-channel-normalized -- pad averages its two channels before
+/// returning), `diff_sample` feeds the cross-type difference check (pad uses
+/// its left channel only, matching the original per-voice comparison).
+/// A named, steppable audio-character variant for `assert_types_differ_but_balanced`:
+/// each step yields `(energy_sample, diff_sample)`.
+type SoundVariant<'a> = (&'a str, Box<dyn FnMut() -> (f32, f32)>);
+
+fn assert_types_differ_but_balanced(label: &str, samples: usize, mut types: Vec<SoundVariant>) {
+    let mut sum_sq = vec![0.0f32; types.len()];
+    let mut diff_samples: Vec<Vec<f32>> = (0..types.len())
+        .map(|_| Vec::with_capacity(samples))
+        .collect();
+
+    for _ in 0..samples {
+        for (i, (_, step)) in types.iter_mut().enumerate() {
+            let (energy, diff) = step();
+            sum_sq[i] += energy;
+            diff_samples[i].push(diff);
+        }
+    }
+
+    let rms: Vec<f32> = sum_sq
+        .iter()
+        .map(|&s| (s / samples as f32).sqrt())
+        .collect();
+
+    for (i, &r) in rms.iter().enumerate() {
+        assert!(r > 0.0, "{label}: {} produced silence", types[i].0);
+    }
+
+    for i in 1..types.len() {
+        let any_diff = diff_samples[0]
+            .iter()
+            .zip(&diff_samples[i])
+            .any(|(a, b)| (a - b).abs() > 1e-6);
+        assert!(
+            any_diff,
+            "{label}: {} does not differ from {}",
+            types[i].0, types[0].0
+        );
+    }
+
+    let max = rms.iter().cloned().fold(f32::MIN, f32::max);
+    let min = rms.iter().cloned().fold(f32::MAX, f32::min);
+    let levels = types
+        .iter()
+        .zip(&rms)
+        .map(|((name, _), r)| format!("{name}={r}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(max / min < 2.0, "{label} types not level-matched: {levels}");
+}
+
 #[test]
 fn bass_types_produce_differing_but_comparably_balanced_audio() {
     let sample_rate = 48_000.0;
     let samples = (sample_rate * 0.4) as usize;
 
-    let rms = |voice_type: usize| -> f32 {
-        let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, 0.0, sample_rate);
-        let mut sum_sq = 0.0f32;
-        for _ in 0..samples {
-            let s = voice.next();
-            sum_sq += s * s;
-        }
-        (sum_sq / samples as f32).sqrt()
-    };
+    let types: Vec<SoundVariant> = [(0usize, "sub"), (1, "saw"), (2, "pluck")]
+        .into_iter()
+        .map(|(voice_type, name)| {
+            let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, 0.0, sample_rate);
+            let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
+                let s = voice.next();
+                (s * s, s)
+            });
+            (name, step)
+        })
+        .collect();
 
-    let sub_rms = rms(0);
-    let saw_rms = rms(1);
-    let pluck_rms = rms(2);
-
-    // Each character actually differs in level (not exactly zero would be a
-    // trivially "different" but useless voice).
-    assert!(sub_rms > 0.0 && saw_rms > 0.0 && pluck_rms > 0.0);
-
-    // Types must sound different from one another, not just be scaled
-    // copies produced by the shared drive/panner tail; sample a few points
-    // in the decay and confirm at least one differs beyond float noise.
-    let mut sub = BassVoice::new(0, 110.0, 0.01, 0.3, 0.0, sample_rate);
-    let mut saw = BassVoice::new(1, 110.0, 0.01, 0.3, 0.0, sample_rate);
-    let mut pluck = BassVoice::new(2, 110.0, 0.01, 0.3, 0.0, sample_rate);
-    let mut any_diff_sub_saw = false;
-    let mut any_diff_sub_pluck = false;
-    for _ in 0..samples {
-        let sl = sub.next();
-        let wl = saw.next();
-        let pl = pluck.next();
-        if (sl - wl).abs() > 1e-6 {
-            any_diff_sub_saw = true;
-        }
-        if (sl - pl).abs() > 1e-6 {
-            any_diff_sub_pluck = true;
-        }
-    }
-    assert!(any_diff_sub_saw);
-    assert!(any_diff_sub_pluck);
-
-    // Authored gains keep the three characters at a comparable perceived
-    // level: no type should be more than 2x (~6 dB) louder or quieter than
-    // the others.
-    let levels = [sub_rms, saw_rms, pluck_rms];
-    let max = levels.iter().cloned().fold(f32::MIN, f32::max);
-    let min = levels.iter().cloned().fold(f32::MAX, f32::min);
-    assert!(
-        max / min < 2.0,
-        "bass types not level-matched: sub={sub_rms}, saw={saw_rms}, pluck={pluck_rms}"
-    );
+    assert_types_differ_but_balanced("bass", samples, types);
 }
 
 #[test]
@@ -2446,7 +2417,10 @@ fn pad_type_zero_matches_legacy_warm_tone_exactly() {
     let mut legacy = WarmPadTone::new(220.0, 0.2, 0.15, 0.5, 1.0, sample_rate);
 
     for _ in 0..(sample_rate * 0.3) as usize {
-        assert_eq!(dispatched.next_stereo(0.8, 0.5, 0.5), legacy.next_stereo(0.8, 0.5, 0.5));
+        assert_eq!(
+            dispatched.next_stereo(0.8, 0.5, 0.5),
+            legacy.next_stereo(0.8, 0.5, 0.5)
+        );
     }
 }
 
@@ -2455,51 +2429,19 @@ fn pad_types_produce_differing_but_comparably_balanced_audio() {
     let sample_rate = 48_000.0;
     let samples = (sample_rate * 0.4) as usize;
 
-    let rms = |character: usize| -> f32 {
-        let mut tone = PadTone::new(character, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
-        let mut sum_sq = 0.0f32;
-        for _ in 0..samples {
-            let (l, r) = tone.next_stereo(0.8, 0.5, 0.5);
-            sum_sq += l * l + r * r;
-        }
-        (sum_sq / (samples as f32 * 2.0)).sqrt()
-    };
+    let types: Vec<SoundVariant> = [(0usize, "warm"), (1, "dark"), (2, "glass")]
+        .into_iter()
+        .map(|(character, name)| {
+            let mut tone = PadTone::new(character, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
+            let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
+                let (l, r) = tone.next_stereo(0.8, 0.5, 0.5);
+                ((l * l + r * r) / 2.0, l)
+            });
+            (name, step)
+        })
+        .collect();
 
-    let warm_rms = rms(0);
-    let dark_rms = rms(1);
-    let glass_rms = rms(2);
-
-    assert!(warm_rms > 0.0 && dark_rms > 0.0 && glass_rms > 0.0);
-
-    let mut warm = PadTone::new(0, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
-    let mut dark = PadTone::new(1, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
-    let mut glass = PadTone::new(2, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
-    let mut any_diff_warm_dark = false;
-    let mut any_diff_warm_glass = false;
-    for _ in 0..samples {
-        let (wl, _) = warm.next_stereo(0.8, 0.5, 0.5);
-        let (dl, _) = dark.next_stereo(0.8, 0.5, 0.5);
-        let (gl, _) = glass.next_stereo(0.8, 0.5, 0.5);
-        if (wl - dl).abs() > 1e-6 {
-            any_diff_warm_dark = true;
-        }
-        if (wl - gl).abs() > 1e-6 {
-            any_diff_warm_glass = true;
-        }
-    }
-    assert!(any_diff_warm_dark);
-    assert!(any_diff_warm_glass);
-
-    // Authored gains keep the three characters at a comparable perceived
-    // level: no type should be more than 2x (~6 dB) louder or quieter than
-    // the others.
-    let levels = [warm_rms, dark_rms, glass_rms];
-    let max = levels.iter().cloned().fold(f32::MIN, f32::max);
-    let min = levels.iter().cloned().fold(f32::MAX, f32::min);
-    assert!(
-        max / min < 2.0,
-        "pad types not level-matched: warm={warm_rms}, dark={dark_rms}, glass={glass_rms}"
-    );
+    assert_types_differ_but_balanced("pad", samples, types);
 }
 
 #[test]
@@ -3060,20 +3002,37 @@ fn max_hit_gap(hit_beats: &[f64], total_beats: f64) -> f64 {
     max_gap.max(total_beats - prev)
 }
 
-#[test]
-fn grid_trigger_survives_continuous_interval_sweep() {
-    let total_beats = 32.0;
+/// Runs a fresh `GridTrigger` sample by sample over `total_beats` at a fixed
+/// 120 BPM, calling `step` each sample and recording the beat of every hit it
+/// reports -- the shared per-sample sweep loop behind the grid_trigger_*
+/// stability tests below. `step` owns the trigger call (`pop` or
+/// `pop_swung`) and any per-sample parameter (interval/offset/swing), and may
+/// mutate its own captured state (e.g. a one-shot nudge) between calls.
+fn run_grid(
+    total_beats: f64,
+    mut step: impl FnMut(&mut GridTrigger, TimingContext) -> bool,
+) -> Vec<f64> {
     let samples = (total_beats * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
     let mut trigger = GridTrigger::new();
     let mut hit_beats = Vec::new();
 
     for sample in 0..samples {
         let t = timing(sample, 120.0);
-        let interval = 1.0 + 0.75 * (std::f64::consts::TAU * t.beat / 8.0).sin() as f32;
-        if trigger.pop(t, interval, 0.0) {
+        if step(&mut trigger, t) {
             hit_beats.push(t.beat);
         }
     }
+
+    hit_beats
+}
+
+#[test]
+fn grid_trigger_survives_continuous_interval_sweep() {
+    let total_beats = 32.0;
+    let hit_beats = run_grid(total_beats, |trigger, t| {
+        let interval = 1.0 + 0.75 * (std::f64::consts::TAU * t.beat / 8.0).sin() as f32;
+        trigger.pop(t, interval, 0.0)
+    });
 
     let max_gap = max_hit_gap(&hit_beats, total_beats);
     // Bound is a hair above one peak interval (1.75): the anti-double-fire floor
@@ -3089,17 +3048,10 @@ fn grid_trigger_survives_continuous_interval_sweep() {
 #[test]
 fn grid_trigger_survives_sliding_offset() {
     let total_beats = 32.0;
-    let samples = (total_beats * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
-    let mut trigger = GridTrigger::new();
-    let mut hit_beats = Vec::new();
-
-    for sample in 0..samples {
-        let t = timing(sample, 120.0);
+    let hit_beats = run_grid(total_beats, |trigger, t| {
         let offset = 2.0 + 2.0 * (std::f64::consts::TAU * t.beat / 8.0).sin() as f32;
-        if trigger.pop(t, 1.0, offset) {
-            hit_beats.push(t.beat);
-        }
-    }
+        trigger.pop(t, 1.0, offset)
+    });
 
     let max_gap = max_hit_gap(&hit_beats, total_beats);
     assert!(
@@ -3122,18 +3074,11 @@ fn min_hit_gap(hit_beats: &[f64]) -> f64 {
 fn grid_trigger_no_double_fire_when_swing_ramps() {
     let interval = 0.5f32;
     let total_beats = 32.0;
-    let samples = (total_beats * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
-    let mut trigger = GridTrigger::new();
-    let mut hit_beats = Vec::new();
-
-    for sample in 0..samples {
-        let t = timing(sample, 120.0);
+    let hit_beats = run_grid(total_beats, |trigger, t| {
         // Sweep swing 0 -> 1 across the run so the reshape lands at every phase.
         let swing = (t.beat / total_beats) as f32;
-        if trigger.pop_swung(t, interval, 0.0, swing) {
-            hit_beats.push(t.beat);
-        }
-    }
+        trigger.pop_swung(t, interval, 0.0, swing)
+    });
 
     let min_gap = min_hit_gap(&hit_beats);
     assert!(
@@ -3150,18 +3095,11 @@ fn grid_trigger_no_double_fire_when_swing_ramps() {
 fn grid_trigger_no_double_fire_when_offset_steps() {
     let interval = 1.0f32;
     let total_beats = 32.0;
-    let samples = (total_beats * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
-    let mut trigger = GridTrigger::new();
-    let mut hit_beats = Vec::new();
-
-    for sample in 0..samples {
-        let t = timing(sample, 120.0);
+    let hit_beats = run_grid(total_beats, |trigger, t| {
         // Step the offset every few beats, straddling slot boundaries.
         let offset = 0.1 * (t.beat as f32 * 0.5).floor();
-        if trigger.pop(t, interval, offset) {
-            hit_beats.push(t.beat);
-        }
-    }
+        trigger.pop(t, interval, offset)
+    });
 
     let min_gap = min_hit_gap(&hit_beats);
     assert!(
@@ -3175,25 +3113,19 @@ fn grid_trigger_no_double_fire_when_offset_steps() {
 /// above, exercised against the exact live-edit gesture that was reported).
 #[test]
 fn grid_trigger_no_double_hit_after_offset_nudge() {
-    let bpm = 120.0;
+    let bpm = 120.0f64;
     let interval = 1.0f32;
-    let total_samples = (SAMPLE_RATE as u64) * 8;
-    let mut trigger = GridTrigger::new();
     let mut offset = 0.0f32;
     let mut nudged = false;
-    let mut hit_beats = Vec::new();
-
-    for sample in 0..total_samples {
-        let t = timing(sample, bpm);
-        if trigger.pop(t, interval, offset) {
-            hit_beats.push(t.beat);
-            if !nudged {
-                // ~10ms nudge, matching the reported live-edit gesture.
-                offset += (0.010 * bpm as f64 / 60.0) as f32;
-                nudged = true;
-            }
+    let hit_beats = run_grid(16.0, |trigger, t| {
+        let fired = trigger.pop(t, interval, offset);
+        if fired && !nudged {
+            // ~10ms nudge, matching the reported live-edit gesture.
+            offset += (0.010 * bpm / 60.0) as f32;
+            nudged = true;
         }
-    }
+        fired
+    });
 
     assert!(nudged, "test never reached a hit to nudge after");
     let min_gap = min_hit_gap(&hit_beats);
@@ -3206,24 +3138,17 @@ fn grid_trigger_no_double_hit_after_offset_nudge() {
 /// Same guard for a live rate nudge landing right as a hit fires.
 #[test]
 fn grid_trigger_no_double_hit_after_rate_nudge() {
-    let bpm = 120.0;
-    let total_samples = (SAMPLE_RATE as u64) * 8;
-    let mut trigger = GridTrigger::new();
     let mut interval = 1.0f32;
     let mut nudged = false;
-    let mut hit_beats = Vec::new();
-
-    for sample in 0..total_samples {
-        let t = timing(sample, bpm);
-        if trigger.pop(t, interval, 0.0) {
-            hit_beats.push(t.beat);
-            if !nudged {
-                // A quick rate tweak right as a hit fires.
-                interval *= 0.4;
-                nudged = true;
-            }
+    let hit_beats = run_grid(16.0, |trigger, t| {
+        let fired = trigger.pop(t, interval, 0.0);
+        if fired && !nudged {
+            // A quick rate tweak right as a hit fires.
+            interval *= 0.4;
+            nudged = true;
         }
-    }
+        fired
+    });
 
     assert!(nudged, "test never reached a hit to nudge after");
     let min_gap = min_hit_gap(&hit_beats);
@@ -3325,7 +3250,11 @@ fn lfo_interval_sweep_plays_on_grid_breakdown() {
         let t = timing(sample, 120.0);
         let mut effective = controls.clone();
         apply_automation(&mut effective, &automation, t);
-        if trigger.pop(t, effective.kick.interval_beats, effective.kick.offset_beats) {
+        if trigger.pop(
+            t,
+            effective.kick.interval_beats,
+            effective.kick.offset_beats,
+        ) {
             hit_beats.push(t.beat);
         }
     }
@@ -3390,31 +3319,24 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
     automation.open_or_create(address).shape = LfoShape::SampleHold;
     automation.open_or_create_envelope(address).amount = 0.5;
 
-    let backend = TestBackend::new(120, 44);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|f| {
-            render(
-                f,
-                &items,
-                Tab::Chords,
-                3,
-                1,
-                2.5,
-                NumericDisplay::empty(),
-                &fluid,
-                &automation,
-                &controls,
-                None,
-                &FlippedUnits::new(),
-                ChordDrill::None,
-                0,
-                &[None; 9],
-            )
-        })
-        .unwrap();
+    let buffer = render_to_buffer(
+        120,
+        44,
+        &items,
+        Tab::Chords,
+        3,
+        1,
+        2.5,
+        &fluid,
+        &automation,
+        &controls,
+        None,
+        ChordDrill::None,
+        0,
+        &[None; 9],
+    );
 
-    let text = buffer_text(terminal.backend().buffer());
+    let text = buffer_text(&buffer);
     assert!(text.contains("attack"));
     assert!(text.contains("decay"));
     assert!(text.contains("trigger"));
@@ -3511,9 +3433,8 @@ fn reseed_changes_pattern_but_stays_repeatable() {
         seed: 5,
         ..LfoRoute::default()
     };
-    let sample = |route: &LfoRoute| -> Vec<f32> {
-        (0..32).map(|i| route.wave_at(f64::from(i))).collect()
-    };
+    let sample =
+        |route: &LfoRoute| -> Vec<f32> { (0..32).map(|i| route.wave_at(f64::from(i))).collect() };
 
     let original = sample(&base);
     let mut rolled = base;
@@ -3783,8 +3704,20 @@ fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
     // Perc interval (native beats) flipped to ms: h/l moves on the 10 ms
     // grid instead of the beat grid. 0.25 beats = 125 ms -> 140 ms.
     flipped.insert(unit_key("perc.interval_beats", None));
-    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 3, 1.0, 0.0, &flipped);
-    assert_near(beats_to_ms(controls.load().perc.interval_beats, 120.0), 140.0);
+    adjust_lfo_or_control(
+        &mut automation,
+        0,
+        &controls,
+        Tab::Perc,
+        3,
+        1.0,
+        0.0,
+        &flipped,
+    );
+    assert_near(
+        beats_to_ms(controls.load().perc.interval_beats, 120.0),
+        140.0,
+    );
 
     // Flipping back to beats lands the value on the control's own grid.
     flipped.remove(&unit_key("perc.interval_beats", None));
@@ -3799,7 +3732,16 @@ fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
     // And once flipped, it steps on the 0.125-beat grid: 500 ms + an eighth
     // of a beat (62.5 ms) at 120 BPM.
     flipped.insert(unit_key("perc.decay_ms", None));
-    adjust_lfo_or_control(&mut automation, 0, &controls, Tab::Perc, 2, 1.0, 0.0, &flipped);
+    adjust_lfo_or_control(
+        &mut automation,
+        0,
+        &controls,
+        Tab::Perc,
+        2,
+        1.0,
+        0.0,
+        &flipped,
+    );
     assert_near(controls.load().perc.decay_ms, 562.5);
 }
 
@@ -3822,9 +3764,21 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
 
     // Default cycle is 2 beats = 1000 ms at 120 BPM; one flipped step lands
     // on 1010 ms, off the beat grid. Interval is row 2 (amount is row 1).
-    adjust_lfo_or_control(&mut automation, 2, &controls, Tab::Master, 0, 1.0, 0.0, &flipped);
+    adjust_lfo_or_control(
+        &mut automation,
+        2,
+        &controls,
+        Tab::Master,
+        0,
+        1.0,
+        0.0,
+        &flipped,
+    );
     assert_near(
-        beats_to_ms(automation.state().route(address).unwrap().cycle_beats, 120.0),
+        beats_to_ms(
+            automation.state().route(address).unwrap().cycle_beats,
+            120.0,
+        ),
         1010.0,
     );
 
@@ -4041,19 +3995,31 @@ fn macro_toggle_hides_but_keeps_the_assignment() {
 fn engine_hot_path_timing() {
     let mut automation = AutomationState::default();
     automation.set_route(ControlAddress::new("pad.level"), LfoRoute::default());
-    automation.set_route(ControlAddress::new("kick.interval_beats"), LfoRoute::default());
+    automation.set_route(
+        ControlAddress::new("kick.interval_beats"),
+        LfoRoute::default(),
+    );
     automation.set_route(ControlAddress::new("tonal.level"), LfoRoute::default());
     automation.set_route(ControlAddress::new("macro.1"), LfoRoute::default());
     automation.set_field_macro(
         unit_key("pad.level", Some("lfo.amount")),
         single_macro_route(0, 0.5),
     );
-    automation.set_macro_route(ControlAddress::new("perc.level"), single_macro_route(0, 0.4));
-    automation.set_macro_route(ControlAddress::new("bass.level"), single_macro_route(1, -0.3));
-    automation.set_envelope(ControlAddress::new("macro.1"), EnvelopeRoute {
-        amount: 0.5,
-        ..EnvelopeRoute::default()
-    });
+    automation.set_macro_route(
+        ControlAddress::new("perc.level"),
+        single_macro_route(0, 0.4),
+    );
+    automation.set_macro_route(
+        ControlAddress::new("bass.level"),
+        single_macro_route(1, -0.3),
+    );
+    automation.set_envelope(
+        ControlAddress::new("macro.1"),
+        EnvelopeRoute {
+            amount: 0.5,
+            ..EnvelopeRoute::default()
+        },
+    );
 
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
     let automation = Arc::new(ArcSwap::from_pointee(automation));
@@ -4077,11 +4043,6 @@ fn engine_hot_path_timing() {
 // ============================================================
 // Arp
 // ============================================================
-
-#[test]
-fn arp_defaults_are_silent() {
-    assert_close(ArpControls::default().gain, 0.0);
-}
 
 #[test]
 fn arp_default_voice_type_matches_former_fixed_pluck_profile() {
@@ -4117,6 +4078,10 @@ fn arp_cycle_notes_duplicates_chord_up_whole_octaves_sorted() {
     assert_eq!(
         arp_cycle_notes(chord, 3),
         vec![45, 48, 52, 55, 57, 60, 64, 67, 69, 72, 76, 79]
+    );
+    assert!(
+        arp_cycle_notes(chord, 2).is_sorted(),
+        "cycle notes must stay sorted ascending across octave spans"
     );
 }
 
@@ -4206,8 +4171,14 @@ fn arp_random_pattern_is_deterministic_for_a_seed_and_differs_across_seeds() {
     let seq_c = arp_advance_sequence(ArpPattern::Random, 8, 20, &mut StdRng::seed_from_u64(6));
 
     assert_eq!(seq_a, seq_b, "same seed must reproduce the same sequence");
-    assert_ne!(seq_a, seq_c, "different seeds should (almost always) diverge");
-    assert!(seq_a.iter().all(|&i| i < 8), "random index must stay in range");
+    assert_ne!(
+        seq_a, seq_c,
+        "different seeds should (almost always) diverge"
+    );
+    assert!(
+        seq_a.iter().all(|&i| i < 8),
+        "random index must stay in range"
+    );
 }
 
 #[test]
@@ -4239,18 +4210,10 @@ fn arp_engine_reseed_via_fluid_engine_reproduces_random_pattern() {
         out_b.push(r);
     }
 
-    assert_eq!(out_a, out_b, "identical reseed must render byte-identical audio");
-}
-
-#[test]
-fn arp_cycle_notes_duplicates_chord_up_whole_octaves_sorted_extra() {
-    // arp_cycle_notes is exercised above via arp_advance_sequence's `len`
-    // arguments; this covers the actual chord->list construction directly.
-    let chord = [45, 48, 52, 55];
-    assert_eq!(arp_cycle_notes(chord, 1).len(), 4);
-    assert_eq!(arp_cycle_notes(chord, 2).len(), 8);
-    assert_eq!(arp_cycle_notes(chord, 3).len(), 12);
-    assert!(arp_cycle_notes(chord, 2).is_sorted());
+    assert_eq!(
+        out_a, out_b,
+        "identical reseed must render byte-identical audio"
+    );
 }
 
 #[test]
@@ -4297,10 +4260,7 @@ fn arp_decay_sets_note_ring_independent_of_step() {
         decay: 0.1,
         ..base.clone()
     };
-    let long_controls = ArpControls {
-        decay: 3.0,
-        ..base
-    };
+    let long_controls = ArpControls { decay: 3.0, ..base };
 
     short.next(&short_controls, &pad, 0.0, t0);
     long.next(&long_controls, &pad, 0.0, t0);
@@ -4397,31 +4357,24 @@ fn render_shows_a_mute_marker_on_muted_tabs_only() {
     let mut mute: MuteState = [None; 9];
     mute[Tab::Perc as usize] = Some(0.7);
 
-    let backend = TestBackend::new(120, 44);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|f| {
-            render(
-                f,
-                &items,
-                Tab::Bass,
-                0,
-                0,
-                0.0,
-                NumericDisplay::empty(),
-                &fluid,
-                &automation,
-                &controls,
-                None,
-                &FlippedUnits::new(),
-                ChordDrill::None,
-                0,
-                &mute,
-            )
-        })
-        .unwrap();
+    let buffer = render_to_buffer(
+        120,
+        44,
+        &items,
+        Tab::Bass,
+        0,
+        0,
+        0.0,
+        &fluid,
+        &automation,
+        &controls,
+        None,
+        ChordDrill::None,
+        0,
+        &mute,
+    );
 
-    let text = buffer_text(terminal.backend().buffer());
+    let text = buffer_text(&buffer);
     assert!(text.contains("Perc (M)"), "muted tab must show a marker");
     assert!(
         !text.contains("Bass (M)"),

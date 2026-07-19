@@ -229,7 +229,7 @@ impl Default for ClapControls {
 #[derive(Clone)]
 pub(crate) struct BassControls {
     pub level: f32,
-    pub voice_type: f32, // 0=Sub (legacy), 1=Saw, 2=Pluck character selector
+    pub voice_type: f32,     // 0=Sub (legacy), 1=Saw, 2=Pluck character selector
     pub interval_beats: f32, // crops the 16-step rhythm phrase to this many beats (step length is fixed)
     pub offset_beats: f32,
     pub rhythm: f32, // 0..=3, A/B/C/D pattern selector
@@ -263,12 +263,12 @@ pub(crate) struct ArpControls {
     pub voice_type: f32, // same Sine/piano-profile set as tonal.synth_type
     pub rate_beats: f32,
     pub offset_beats: f32,
-    pub pattern: f32,   // 0=Up, 1=Down, 2=Up-Down, 3=Random
-    pub octaves: f32,   // 1-3, octave span of the cycled chord tones
+    pub pattern: f32, // 0=Up, 1=Down, 2=Up-Down, 3=Random
+    pub octaves: f32, // 1-3, octave span of the cycled chord tones
     pub attack: f32,
     pub decay: f32,
     pub reverb_mix: f32,
-    pub swing: f32,     // 0 (straight) to 1 (max shuffle) on this voice's grid
+    pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
 impl Default for ArpControls {

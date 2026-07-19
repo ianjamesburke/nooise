@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -138,9 +138,9 @@ where
 
     let engine = engine_factory(sample_rate);
     let stream = match sample_format {
-        SampleFormat::F32 => build_f32_stream(&device, &stream_config, engine, needs_rebuild)?,
-        SampleFormat::I16 => build_i16_stream(&device, &stream_config, engine, needs_rebuild)?,
-        SampleFormat::U16 => build_u16_stream(&device, &stream_config, engine, needs_rebuild)?,
+        SampleFormat::F32 => build_stream(&device, &stream_config, engine, needs_rebuild, |s| s)?,
+        SampleFormat::I16 => build_stream(&device, &stream_config, engine, needs_rebuild, to_i16)?,
+        SampleFormat::U16 => build_stream(&device, &stream_config, engine, needs_rebuild, to_u16)?,
         other => return Err(format!("unsupported sample format: {other:?}").into()),
     };
 
@@ -148,71 +148,26 @@ where
     Ok(stream)
 }
 
-fn build_f32_stream<E>(
+fn build_stream<E, T, C>(
     device: &cpal::Device,
     config: &StreamConfig,
     engine: E,
     needs_rebuild: Arc<AtomicBool>,
+    convert: C,
 ) -> Result<Stream, Box<dyn Error>>
 where
     E: StereoEngine,
+    T: cpal::SizedSample + Send + 'static,
+    C: Fn(f32) -> T + Send + 'static,
 {
     let channels = config.channels as usize;
     let mut engine = engine;
     Ok(device.build_output_stream(
         config,
-        move |data: &mut [f32], _| {
+        move |data: &mut [T], _| {
             for frame in data.chunks_mut(channels) {
                 let (left, right) = engine.next_stereo();
-                write_frame(frame, left, right);
-            }
-        },
-        move |error| audio_error(error, &needs_rebuild),
-        None,
-    )?)
-}
-
-fn build_i16_stream<E>(
-    device: &cpal::Device,
-    config: &StreamConfig,
-    engine: E,
-    needs_rebuild: Arc<AtomicBool>,
-) -> Result<Stream, Box<dyn Error>>
-where
-    E: StereoEngine,
-{
-    let channels = config.channels as usize;
-    let mut engine = engine;
-    Ok(device.build_output_stream(
-        config,
-        move |data: &mut [i16], _| {
-            for frame in data.chunks_mut(channels) {
-                let (left, right) = engine.next_stereo();
-                write_frame(frame, to_i16(left), to_i16(right));
-            }
-        },
-        move |error| audio_error(error, &needs_rebuild),
-        None,
-    )?)
-}
-
-fn build_u16_stream<E>(
-    device: &cpal::Device,
-    config: &StreamConfig,
-    engine: E,
-    needs_rebuild: Arc<AtomicBool>,
-) -> Result<Stream, Box<dyn Error>>
-where
-    E: StereoEngine,
-{
-    let channels = config.channels as usize;
-    let mut engine = engine;
-    Ok(device.build_output_stream(
-        config,
-        move |data: &mut [u16], _| {
-            for frame in data.chunks_mut(channels) {
-                let (left, right) = engine.next_stereo();
-                write_frame(frame, to_u16(left), to_u16(right));
+                write_frame(frame, convert(left), convert(right));
             }
         },
         move |error| audio_error(error, &needs_rebuild),

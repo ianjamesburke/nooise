@@ -340,7 +340,10 @@ impl TonalEngine {
         let phrase = tonal_phrase_index(c.phrase);
         self.sync_phrase(phrase);
 
-        if self.step_trigger.pop_swung(timing, c.rate_beats, c.offset_beats, c.swing) {
+        if self
+            .step_trigger
+            .pop_swung(timing, c.rate_beats, c.offset_beats, c.swing)
+        {
             let cycle = tonal_cycle_index(timing.beat, c.step_interval_beats, c.offset_beats);
             if self.last_cycle.is_some_and(|last| last != cycle) {
                 self.evolve_phrase(c.evolve_rate);
@@ -379,14 +382,7 @@ impl TonalEngine {
             }
         }
 
-        let mut dry_l = 0.0f32;
-        let mut dry_r = 0.0f32;
-        for v in &mut self.voices {
-            let (l, r) = v.next();
-            dry_l += l;
-            dry_r += r;
-        }
-        self.voices.retain(|v| !v.is_done());
+        let (dry_l, dry_r) = mix_and_retain(&mut self.voices, |v| v.next(), TonalVoice::is_done);
 
         (self.low_cut_l.process(dry_l), self.low_cut_r.process(dry_r))
     }

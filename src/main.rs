@@ -16,7 +16,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some(CliCommand::Song(args)) => run_song_code(args),
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::Render(args)) => render(args),
-        Some(CliCommand::Auto(args)) => fluid::run_auto(args.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS)),
+        Some(CliCommand::Auto(args)) => {
+            fluid::run_auto(args.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS))
+        }
     }
 }
 
@@ -213,13 +215,10 @@ mod tests {
             Some(CliCommand::Auto(AutoArgs { bars: Some(32) }))
         );
         assert_eq!(
-            parse(&["auto"])
-                .unwrap()
-                .command
-                .map(|cmd| match cmd {
-                    CliCommand::Auto(args) => args.bars.unwrap_or(crate::fluid::DEFAULT_AUTO_BARS),
-                    _ => unreachable!(),
-                }),
+            parse(&["auto"]).unwrap().command.map(|cmd| match cmd {
+                CliCommand::Auto(args) => args.bars.unwrap_or(crate::fluid::DEFAULT_AUTO_BARS),
+                _ => unreachable!(),
+            }),
             Some(64)
         );
     }

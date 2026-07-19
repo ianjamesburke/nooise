@@ -17,33 +17,28 @@ pub(crate) enum Tab {
     Macros = 8,
 }
 
+/// One row per tab: (variant, display name, mute-target level id, control
+/// table) in discriminant order. `Tab::all`/`name`/`level_id`/`tab_specs`
+/// all derive from indexing this single table by `self as usize`.
+const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); 9] = [
+    (Tab::Master, "Master", Some("master.level"), MASTER_CONTROLS),
+    (Tab::Perc, "Perc", Some("perc.level"), PERC_CONTROLS),
+    (Tab::Chords, "Chords", Some("pad.level"), CHORDS_CONTROLS),
+    (Tab::Bass, "Bass", Some("bass.level"), BASS_CONTROLS),
+    (Tab::Kick, "Kick", Some("kick.level"), KICK_CONTROLS),
+    (Tab::Tonal, "Tonal", Some("tonal.level"), TONAL_CONTROLS),
+    (Tab::Clap, "Clap", Some("clap.level"), CLAP_CONTROLS),
+    (Tab::Arp, "Arp", Some("arp.gain"), ARP_CONTROLS),
+    (Tab::Macros, "Macros", None, MACRO_CONTROLS),
+];
+
 impl Tab {
     pub(crate) fn all() -> [Tab; 9] {
-        [
-            Tab::Master,
-            Tab::Perc,
-            Tab::Chords,
-            Tab::Bass,
-            Tab::Kick,
-            Tab::Tonal,
-            Tab::Clap,
-            Tab::Arp,
-            Tab::Macros,
-        ]
+        TAB_META.map(|(tab, _, _, _)| tab)
     }
 
     pub(crate) fn name(self) -> &'static str {
-        match self {
-            Tab::Master => "Master",
-            Tab::Perc => "Perc",
-            Tab::Chords => "Chords",
-            Tab::Bass => "Bass",
-            Tab::Kick => "Kick",
-            Tab::Tonal => "Tonal",
-            Tab::Clap => "Clap",
-            Tab::Arp => "Arp",
-            Tab::Macros => "Macros",
-        }
+        TAB_META[self as usize].1
     }
 
     // Discriminants match `all()`'s order, so tab cycling is index arithmetic.
@@ -61,17 +56,7 @@ impl Tab {
     /// tab with no single level to mute (`Macros`). The one place that maps
     /// a tab to its mute target, so `m`/`M` never need a per-voice match arm.
     pub(crate) fn level_id(self) -> Option<&'static str> {
-        match self {
-            Tab::Master => Some("master.level"),
-            Tab::Perc => Some("perc.level"),
-            Tab::Chords => Some("pad.level"),
-            Tab::Bass => Some("bass.level"),
-            Tab::Kick => Some("kick.level"),
-            Tab::Tonal => Some("tonal.level"),
-            Tab::Clap => Some("clap.level"),
-            Tab::Arp => Some("arp.gain"),
-            Tab::Macros => None,
-        }
+        TAB_META[self as usize].2
     }
 }
 
@@ -408,11 +393,7 @@ impl ControlSpec {
             Entry::Percent => normalize_unit_input(value) * self.max,
             Entry::BeatsAsBars => nearest_power_of_two(value / 4.0, self.min, self.max),
             Entry::Round => value.round(),
-            Entry::Snap => match self.step {
-                Step::Linear(step) => snap_step(value, step),
-                Step::PowerOfTwo => nearest_power_of_two(value, self.min, self.max),
-                Step::BeatGrid => beat_grid_snap(value, self.min, self.max),
-            },
+            Entry::Snap => self.snap_on_grid(value),
             Entry::Free => value,
         };
         (self.set)(c, next.clamp(self.min, self.max));
@@ -440,6 +421,13 @@ impl ControlSpec {
         if self.is_continuous_tapered() {
             return clamped;
         }
+        self.snap_on_grid(clamped)
+    }
+
+    /// Snap `v` onto this control's step grid, clamped to range. Shared by
+    /// `apply_value`'s `Entry::Snap` arm and `quantize`'s post-clamp match.
+    fn snap_on_grid(&self, v: f32) -> f32 {
+        let clamped = v.clamp(self.min, self.max);
         match self.step {
             Step::Linear(step) => snap_step(clamped, step).clamp(self.min, self.max),
             Step::PowerOfTwo => nearest_power_of_two(clamped, self.min, self.max),
@@ -467,70 +455,128 @@ pub(crate) fn secs(seconds: f32) -> String {
     }
 }
 
+/// Gain row on the plain 0..1 archetype: percent display of the field
+/// itself. `$($f:tt)+` takes any field path, including an indexed one like
+/// `macros.values[0]`. The first arm (tried first so its numeric literals
+/// don't get swallowed by the generic field-path repetition) covers the
+/// rare row with a non-default min/max, e.g. a 0.5..1.0 filter floor.
+macro_rules! gain_pct {
+    ($id:literal, $label:literal, $min:literal, $max:literal, $($f:tt)+) => {
+        ControlSpec::gain(
+            $id,
+            $label,
+            $min,
+            $max,
+            |c| c.$($f)+,
+            |c, v| c.$($f)+ = v,
+            |c| pct(c.$($f)+),
+        )
+    };
+    ($id:literal, $label:literal, $($f:tt)+) => {
+        ControlSpec::gain(
+            $id,
+            $label,
+            0.0,
+            1.0,
+            |c| c.$($f)+,
+            |c, v| c.$($f)+ = v,
+            |c| pct(c.$($f)+),
+        )
+    };
+}
+
+/// Time row stored in seconds: `Timing` kind, exp taper, free numeric entry,
+/// `secs` display of the field directly.
+macro_rules! time_secs {
+    ($id:literal, $label:literal, $min:expr, $max:expr, $step:expr, $($f:tt)+) => {
+        ControlSpec::new(
+            $id,
+            $label,
+            ControlKind::Timing,
+            $min,
+            $max,
+            Step::Linear($step),
+            Entry::Free,
+            |c| c.$($f)+,
+            |c, v| c.$($f)+ = v,
+            |c| secs(c.$($f)+),
+        )
+        .taper(Taper::Exp(TIME_TAPER))
+    };
+}
+
+/// Time row stored in milliseconds: same archetype as `time_secs!`, but the
+/// field is ms so display converts to seconds and the control is flagged
+/// `in_ms()` for the unit toggle.
+macro_rules! time_ms {
+    ($id:literal, $label:literal, $min:expr, $max:expr, $step:expr, $($f:tt)+) => {
+        ControlSpec::new(
+            $id,
+            $label,
+            ControlKind::Timing,
+            $min,
+            $max,
+            Step::Linear($step),
+            Entry::Free,
+            |c| c.$($f)+,
+            |c, v| c.$($f)+ = v,
+            |c| secs(c.$($f)+ / 1000.0),
+        )
+        .taper(Taper::Exp(TIME_TAPER))
+        .in_ms()
+    };
+}
+
+/// Beat-grid interval row: `Timing` kind, `BeatGrid` step, snapped numeric
+/// entry, beats display, LFO modulation snapped to power-of-two subdivisions.
+macro_rules! beat_interval {
+    ($id:literal, $label:literal, $min:expr, $max:expr, $($f:tt)+) => {
+        ControlSpec::new(
+            $id,
+            $label,
+            ControlKind::Timing,
+            $min,
+            $max,
+            Step::BeatGrid,
+            Entry::Snap,
+            |c| c.$($f)+,
+            |c, v| c.$($f)+ = v,
+            |c| beats2(c.$($f)+),
+        )
+        .lfo_snap(LfoSnap::PowerOfTwo)
+        .in_beats()
+    };
+}
+
+/// Beat-grid offset row: same archetype as `beat_interval!` but min fixed at
+/// 0.0 and LFO modulation snapped to the control's own step grid instead.
+macro_rules! beat_offset {
+    ($id:literal, $label:literal, $max:expr, $($f:tt)+) => {
+        ControlSpec::new(
+            $id,
+            $label,
+            ControlKind::Timing,
+            0.0,
+            $max,
+            Step::BeatGrid,
+            Entry::Snap,
+            |c| c.$($f)+,
+            |c, v| c.$($f)+ = v,
+            |c| beats2(c.$($f)+),
+        )
+        .lfo_snap(LfoSnap::Step)
+        .in_beats()
+    };
+}
+
 pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
-    ControlSpec::gain(
-        "pad.level",
-        "Chords Vol",
-        0.0,
-        1.0,
-        |c| c.pad.level,
-        |c, v| c.pad.level = v,
-        |c| pct(c.pad.level),
-    ),
-    ControlSpec::gain(
-        "perc.level",
-        "Perc Vol",
-        0.0,
-        1.0,
-        |c| c.perc.level,
-        |c, v| c.perc.level = v,
-        |c| pct(c.perc.level),
-    ),
-    ControlSpec::gain(
-        "kick.level",
-        "Kick Vol",
-        0.0,
-        1.0,
-        |c| c.kick.level,
-        |c, v| c.kick.level = v,
-        |c| pct(c.kick.level),
-    ),
-    ControlSpec::gain(
-        "tonal.level",
-        "Tonal Vol",
-        0.0,
-        1.0,
-        |c| c.tonal.level,
-        |c, v| c.tonal.level = v,
-        |c| pct(c.tonal.level),
-    ),
-    ControlSpec::gain(
-        "clap.level",
-        "Clap Vol",
-        0.0,
-        1.0,
-        |c| c.clap.level,
-        |c, v| c.clap.level = v,
-        |c| pct(c.clap.level),
-    ),
-    ControlSpec::gain(
-        "bass.level",
-        "Bass Vol",
-        0.0,
-        1.0,
-        |c| c.bass.level,
-        |c, v| c.bass.level = v,
-        |c| pct(c.bass.level),
-    ),
-    ControlSpec::gain(
-        "arp.gain",
-        "Arp Vol",
-        0.0,
-        1.0,
-        |c| c.arp.gain,
-        |c, v| c.arp.gain = v,
-        |c| pct(c.arp.gain),
-    ),
+    gain_pct!("pad.level", "Chords Vol", pad.level),
+    gain_pct!("perc.level", "Perc Vol", perc.level),
+    gain_pct!("kick.level", "Kick Vol", kick.level),
+    gain_pct!("tonal.level", "Tonal Vol", tonal.level),
+    gain_pct!("clap.level", "Clap Vol", clap.level),
+    gain_pct!("bass.level", "Bass Vol", bass.level),
+    gain_pct!("arp.gain", "Arp Vol", arp.gain),
     ControlSpec::new(
         "master.bpm",
         "BPM",
@@ -543,24 +589,8 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c, v| c.master.bpm = v,
         |c| format!("{:.0} bpm", c.master.bpm),
     ),
-    ControlSpec::gain(
-        "master.level",
-        "Master Level",
-        0.0,
-        1.0,
-        |c| c.master.level,
-        |c, v| c.master.level = v,
-        |c| pct(c.master.level),
-    ),
-    ControlSpec::gain(
-        "master.drive",
-        "Drive",
-        0.0,
-        1.0,
-        |c| c.master.drive,
-        |c, v| c.master.drive = v,
-        |c| pct(c.master.drive),
-    ),
+    gain_pct!("master.level", "Master Level", master.level),
+    gain_pct!("master.drive", "Drive", master.drive),
     ControlSpec::new(
         "master.comp_threshold",
         "Comp Threshold",
@@ -585,20 +615,14 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         |c, v| c.master.comp_ratio = v,
         |c| format!("{:.1}:1", c.master.comp_ratio),
     ),
-    ControlSpec::new(
+    time_ms!(
         "master.comp_release_ms",
         "Comp Release",
-        ControlKind::Timing,
         10.0,
         500.0,
-        Step::Linear(1.0),
-        Entry::Free,
-        |c| c.master.comp_release_ms,
-        |c, v| c.master.comp_release_ms = v,
-        |c| secs(c.master.comp_release_ms / 1000.0),
-    )
-    .taper(Taper::Exp(TIME_TAPER))
-    .in_ms(),
+        1.0,
+        master.comp_release_ms
+    ),
     ControlSpec::new(
         "master.tone",
         "Tone",
@@ -641,38 +665,9 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
 ];
 
 pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
-    ControlSpec::gain(
-        "perc.level",
-        "Level",
-        0.0,
-        1.0,
-        |c| c.perc.level,
-        |c, v| c.perc.level = v,
-        |c| pct(c.perc.level),
-    ),
-    ControlSpec::gain(
-        "perc.filter",
-        "Filter",
-        0.5,
-        1.0,
-        |c| c.perc.filter,
-        |c, v| c.perc.filter = v,
-        |c| pct(c.perc.filter),
-    ),
-    ControlSpec::new(
-        "perc.decay_ms",
-        "Decay",
-        ControlKind::Timing,
-        20.0,
-        2000.0,
-        Step::Linear(1.0),
-        Entry::Free,
-        |c| c.perc.decay_ms,
-        |c, v| c.perc.decay_ms = v,
-        |c| secs(c.perc.decay_ms / 1000.0),
-    )
-    .taper(Taper::Exp(TIME_TAPER))
-    .in_ms(),
+    gain_pct!("perc.level", "Level", perc.level),
+    gain_pct!("perc.filter", "Filter", 0.5, 1.0, perc.filter),
+    time_ms!("perc.decay_ms", "Decay", 20.0, 2000.0, 1.0, perc.decay_ms),
     ControlSpec::new(
         "perc.interval_beats",
         "Interval",
@@ -693,29 +688,8 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
     )
     .lfo_snap(LfoSnap::PowerOfTwo)
     .in_beats(),
-    ControlSpec::new(
-        "perc.offset_beats",
-        "Offset",
-        ControlKind::Timing,
-        0.0,
-        4.0,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.perc.offset_beats,
-        |c, v| c.perc.offset_beats = v,
-        |c| beats2(c.perc.offset_beats),
-    )
-    .lfo_snap(LfoSnap::Step)
-    .in_beats(),
-    ControlSpec::gain(
-        "perc.swing",
-        "Swing",
-        0.0,
-        1.0,
-        |c| c.perc.swing,
-        |c, v| c.perc.swing = v,
-        |c| pct(c.perc.swing),
-    ),
+    beat_offset!("perc.offset_beats", "Offset", 4.0, perc.offset_beats),
+    gain_pct!("perc.swing", "Swing", perc.swing),
 ];
 
 /// One chord slot's four fields as `ControlSpec` rows (Root/Accidental/
@@ -724,101 +698,83 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
 macro_rules! chord_slot_rows {
     ($slot:literal) => {
         [
-        ControlSpec::new(
-            concat!("pad.chord", $slot, "_degree"),
-            concat!("Chord ", $slot, " Root"),
-            ControlKind::Discrete,
-            -7.0,
-            7.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.pad.chord_slots[$slot - 1].degree,
-            |c, v| c.pad.chord_slots[$slot - 1].degree = v,
-            |c| format!("{:+.0}", c.pad.chord_slots[$slot - 1].degree),
-        )
-        .reset_at(0.0),
-        ControlSpec::new(
-            concat!("pad.chord", $slot, "_accidental"),
-            concat!("Chord ", $slot, " Accidental"),
-            ControlKind::Discrete,
-            -1.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.pad.chord_slots[$slot - 1].accidental,
-            |c, v| c.pad.chord_slots[$slot - 1].accidental = v,
-            |c| match c.pad.chord_slots[$slot - 1].accidental.round() as i32 {
-                -1 => "b".to_string(),
-                1 => "#".to_string(),
-                _ => "natural".to_string(),
-            },
-        )
-        .reset_at(0.0),
-        ControlSpec::new(
-            concat!("pad.chord", $slot, "_extension"),
-            concat!("Chord ", $slot, " Extension"),
-            ControlKind::Discrete,
-            0.0,
-            3.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.pad.chord_slots[$slot - 1].extension,
-            |c, v| c.pad.chord_slots[$slot - 1].extension = v,
-            |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].extension),
-        ),
-        ControlSpec::new(
-            concat!("pad.chord", $slot, "_inversion"),
-            concat!("Chord ", $slot, " Inversion"),
-            ControlKind::Discrete,
-            0.0,
-            3.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.pad.chord_slots[$slot - 1].inversion,
-            |c, v| c.pad.chord_slots[$slot - 1].inversion = v,
-            |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].inversion),
-        )
-        .reset_at(0.0),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_degree"),
+                concat!("Chord ", $slot, " Root"),
+                ControlKind::Discrete,
+                -7.0,
+                7.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.pad.chord_slots[$slot - 1].degree,
+                |c, v| c.pad.chord_slots[$slot - 1].degree = v,
+                |c| format!("{:+.0}", c.pad.chord_slots[$slot - 1].degree),
+            )
+            .reset_at(0.0),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_accidental"),
+                concat!("Chord ", $slot, " Accidental"),
+                ControlKind::Discrete,
+                -1.0,
+                1.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.pad.chord_slots[$slot - 1].accidental,
+                |c, v| c.pad.chord_slots[$slot - 1].accidental = v,
+                |c| match c.pad.chord_slots[$slot - 1].accidental.round() as i32 {
+                    -1 => "b".to_string(),
+                    1 => "#".to_string(),
+                    _ => "natural".to_string(),
+                },
+            )
+            .reset_at(0.0),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_extension"),
+                concat!("Chord ", $slot, " Extension"),
+                ControlKind::Discrete,
+                0.0,
+                3.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.pad.chord_slots[$slot - 1].extension,
+                |c, v| c.pad.chord_slots[$slot - 1].extension = v,
+                |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].extension),
+            ),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_inversion"),
+                concat!("Chord ", $slot, " Inversion"),
+                ControlKind::Discrete,
+                0.0,
+                3.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.pad.chord_slots[$slot - 1].inversion,
+                |c, v| c.pad.chord_slots[$slot - 1].inversion = v,
+                |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].inversion),
+            )
+            .reset_at(0.0),
         ]
     };
 }
 
 pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
-    ControlSpec::gain(
-        "pad.level",
-        "Level",
-        0.0,
-        1.0,
-        |c| c.pad.level,
-        |c, v| c.pad.level = v,
-        |c| pct(c.pad.level),
-    ),
-    ControlSpec::new(
+    gain_pct!("pad.level", "Level", pad.level),
+    time_secs!(
         "pad.attack_time",
         "Attack",
-        ControlKind::Timing,
         0.05,
         30.0,
-        Step::Linear(0.001),
-        Entry::Free,
-        |c| c.pad.attack_time,
-        |c, v| c.pad.attack_time = v,
-        |c| secs(c.pad.attack_time),
-    )
-    .taper(Taper::Exp(TIME_TAPER)),
-    ControlSpec::new(
+        0.001,
+        pad.attack_time
+    ),
+    time_secs!(
         "pad.release_time",
         "Release",
-        ControlKind::Timing,
         0.05,
         20.0,
-        Step::Linear(0.001),
-        Entry::Free,
-        |c| c.pad.release_time,
-        |c, v| c.pad.release_time = v,
-        |c| secs(c.pad.release_time),
-    )
-    .taper(Taper::Exp(TIME_TAPER)),
+        0.001,
+        pad.release_time
+    ),
     ControlSpec::new(
         "pad.type",
         "Type",
@@ -877,42 +833,10 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
             }
         },
     ),
-    ControlSpec::gain(
-        "pad.reverb_mix",
-        "Reverb Mix",
-        0.0,
-        1.0,
-        |c| c.pad.reverb_mix,
-        |c, v| c.pad.reverb_mix = v,
-        |c| pct(c.pad.reverb_mix),
-    ),
-    ControlSpec::gain(
-        "pad.stereo_width",
-        "Stereo Width",
-        0.0,
-        1.0,
-        |c| c.pad.stereo_width,
-        |c, v| c.pad.stereo_width = v,
-        |c| pct(c.pad.stereo_width),
-    ),
-    ControlSpec::gain(
-        "pad.detune",
-        "Detune",
-        0.0,
-        1.0,
-        |c| c.pad.detune,
-        |c, v| c.pad.detune = v,
-        |c| pct(c.pad.detune),
-    ),
-    ControlSpec::gain(
-        "pad.octave_mix",
-        "Octave Mix",
-        0.0,
-        1.0,
-        |c| c.pad.octave_mix,
-        |c, v| c.pad.octave_mix = v,
-        |c| pct(c.pad.octave_mix),
-    ),
+    gain_pct!("pad.reverb_mix", "Reverb Mix", pad.reverb_mix),
+    gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
+    gain_pct!("pad.detune", "Detune", pad.detune),
+    gain_pct!("pad.octave_mix", "Octave Mix", pad.octave_mix),
     chord_slot_rows!(1)[0],
     chord_slot_rows!(1)[1],
     chord_slot_rows!(1)[2],
@@ -948,15 +872,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
 ];
 
 pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
-    ControlSpec::gain(
-        "bass.level",
-        "Level",
-        0.0,
-        1.0,
-        |c| c.bass.level,
-        |c, v| c.bass.level = v,
-        |c| pct(c.bass.level),
-    ),
+    gain_pct!("bass.level", "Level", bass.level),
     ControlSpec::new(
         "bass.cutoff",
         "Cutoff",
@@ -973,32 +889,22 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
     // evenly across the dial so the sweep is smooth from 80 Hz to fully open.
     .taper(Taper::Log2)
     .reset_at(BASS_CUTOFF_MAX_HZ),
-    ControlSpec::new(
+    time_secs!(
         "bass.attack_time",
         "Attack",
-        ControlKind::Timing,
         0.005,
         1.0,
-        Step::Linear(0.001),
-        Entry::Free,
-        |c| c.bass.attack_time,
-        |c, v| c.bass.attack_time = v,
-        |c| secs(c.bass.attack_time),
-    )
-    .taper(Taper::Exp(TIME_TAPER)),
-    ControlSpec::new(
+        0.001,
+        bass.attack_time
+    ),
+    time_secs!(
         "bass.decay_time",
         "Decay",
-        ControlKind::Timing,
         0.005,
         2.0,
-        Step::Linear(0.001),
-        Entry::Free,
-        |c| c.bass.decay_time,
-        |c, v| c.bass.decay_time = v,
-        |c| secs(c.bass.decay_time),
-    )
-    .taper(Taper::Exp(TIME_TAPER)),
+        0.001,
+        bass.decay_time
+    ),
     ControlSpec::new(
         "bass.type",
         "Type",
@@ -1011,34 +917,14 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c, v| c.bass.voice_type = v,
         |c| bass_type_label(c.bass.voice_type).to_string(),
     ),
-    ControlSpec::new(
+    beat_interval!(
         "bass.interval_beats",
         "Interval",
-        ControlKind::Timing,
         0.125,
         8.0,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.bass.interval_beats,
-        |c, v| c.bass.interval_beats = v,
-        |c| beats2(c.bass.interval_beats),
-    )
-    .lfo_snap(LfoSnap::PowerOfTwo)
-    .in_beats(),
-    ControlSpec::new(
-        "bass.offset_beats",
-        "Offset",
-        ControlKind::Timing,
-        0.0,
-        4.0,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.bass.offset_beats,
-        |c, v| c.bass.offset_beats = v,
-        |c| beats2(c.bass.offset_beats),
-    )
-    .lfo_snap(LfoSnap::Step)
-    .in_beats(),
+        bass.interval_beats
+    ),
+    beat_offset!("bass.offset_beats", "Offset", 4.0, bass.offset_beats),
     ControlSpec::new(
         "bass.rhythm",
         "Rhythm",
@@ -1063,15 +949,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c, v| c.bass.octave = v,
         |c| format!("{:.0}", c.bass.octave),
     ),
-    ControlSpec::gain(
-        "bass.drive",
-        "Drive",
-        0.0,
-        1.0,
-        |c| c.bass.drive,
-        |c, v| c.bass.drive = v,
-        |c| pct(c.bass.drive),
-    ),
+    gain_pct!("bass.drive", "Drive", bass.drive),
 ];
 
 pub(crate) fn bass_type_label(value: f32) -> &'static str {
@@ -1099,80 +977,32 @@ pub(crate) fn pad_type_index(value: f32) -> usize {
 }
 
 pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
-    ControlSpec::gain(
-        "kick.level",
-        "Level",
-        0.0,
-        1.0,
-        |c| c.kick.level,
-        |c, v| c.kick.level = v,
-        |c| pct(c.kick.level),
-    ),
-    ControlSpec::gain(
-        "kick.filter",
-        "Filter",
-        0.0,
-        1.0,
-        |c| c.kick.filter,
-        |c, v| c.kick.filter = v,
-        |c| pct(c.kick.filter),
-    ),
-    ControlSpec::new(
+    gain_pct!("kick.level", "Level", kick.level),
+    gain_pct!("kick.filter", "Filter", kick.filter),
+    time_ms!(
         "kick.pitch_decay_ms",
         "Pitch Decay",
-        ControlKind::Timing,
         10.0,
         300.0,
-        Step::Linear(1.0),
-        Entry::Free,
-        |c| c.kick.pitch_decay_ms,
-        |c, v| c.kick.pitch_decay_ms = v,
-        |c| secs(c.kick.pitch_decay_ms / 1000.0),
-    )
-    .taper(Taper::Exp(TIME_TAPER))
-    .in_ms(),
-    ControlSpec::new(
+        1.0,
+        kick.pitch_decay_ms
+    ),
+    time_ms!(
         "kick.amp_decay_ms",
         "Amp Decay",
-        ControlKind::Timing,
         50.0,
         1000.0,
-        Step::Linear(1.0),
-        Entry::Free,
-        |c| c.kick.amp_decay_ms,
-        |c, v| c.kick.amp_decay_ms = v,
-        |c| secs(c.kick.amp_decay_ms / 1000.0),
-    )
-    .taper(Taper::Exp(TIME_TAPER))
-    .in_ms(),
-    ControlSpec::new(
+        1.0,
+        kick.amp_decay_ms
+    ),
+    beat_interval!(
         "kick.interval_beats",
         "Interval",
-        ControlKind::Timing,
         0.125,
         4.0,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.kick.interval_beats,
-        |c, v| c.kick.interval_beats = v,
-        |c| beats2(c.kick.interval_beats),
-    )
-    .lfo_snap(LfoSnap::PowerOfTwo)
-    .in_beats(),
-    ControlSpec::new(
-        "kick.offset_beats",
-        "Offset",
-        ControlKind::Timing,
-        0.0,
-        4.0,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.kick.offset_beats,
-        |c, v| c.kick.offset_beats = v,
-        |c| beats2(c.kick.offset_beats),
-    )
-    .lfo_snap(LfoSnap::Step)
-    .in_beats(),
+        kick.interval_beats
+    ),
+    beat_offset!("kick.offset_beats", "Offset", 4.0, kick.offset_beats),
     ControlSpec::new(
         "kick.start_freq",
         "Start Freq",
@@ -1195,53 +1025,20 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.kick.click / 0.2),
     )
     .with_step(0.01),
-    ControlSpec::gain(
-        "kick.drive",
-        "Drive",
-        0.0,
-        1.0,
-        |c| c.kick.drive,
-        |c, v| c.kick.drive = v,
-        |c| pct(c.kick.drive),
-    ),
+    gain_pct!("kick.drive", "Drive", kick.drive),
 ];
 
 pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
-    ControlSpec::gain(
-        "tonal.level",
-        "Level",
-        0.0,
-        1.0,
-        |c| c.tonal.level,
-        |c, v| c.tonal.level = v,
-        |c| pct(c.tonal.level),
-    ),
-    ControlSpec::new(
-        "tonal.attack",
-        "Attack",
-        ControlKind::Timing,
-        0.0,
-        1.0,
-        Step::Linear(0.001),
-        Entry::Free,
-        |c| c.tonal.attack,
-        |c, v| c.tonal.attack = v,
-        |c| secs(c.tonal.attack),
-    )
-    .taper(Taper::Exp(TIME_TAPER)),
-    ControlSpec::new(
+    gain_pct!("tonal.level", "Level", tonal.level),
+    time_secs!("tonal.attack", "Attack", 0.0, 1.0, 0.001, tonal.attack),
+    time_secs!(
         "tonal.decay",
         "Decay",
-        ControlKind::Timing,
         TONAL_DECAY_MIN,
         6.0,
-        Step::Linear(0.001),
-        Entry::Free,
-        |c| c.tonal.decay,
-        |c, v| c.tonal.decay = v,
-        |c| secs(c.tonal.decay),
-    )
-    .taper(Taper::Exp(TIME_TAPER)),
+        0.001,
+        tonal.decay
+    ),
     ControlSpec::new(
         "tonal.synth_type",
         "Type",
@@ -1281,66 +1078,23 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
                 .to_string()
         },
     ),
-    ControlSpec::new(
+    beat_interval!(
         "tonal.rate_beats",
         "Rate",
-        ControlKind::Timing,
         TONAL_RATE_BEATS_MIN,
         TONAL_RATE_BEATS_MAX,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.tonal.rate_beats,
-        |c, v| c.tonal.rate_beats = v,
-        |c| beats2(c.tonal.rate_beats),
-    )
-    .lfo_snap(LfoSnap::PowerOfTwo)
-    .in_beats(),
-    ControlSpec::new(
+        tonal.rate_beats
+    ),
+    beat_interval!(
         "tonal.step_interval_beats",
         "Cycle",
-        ControlKind::Timing,
         TONAL_CYCLE_BEATS_MIN,
         TONAL_CYCLE_BEATS_MAX,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.tonal.step_interval_beats,
-        |c, v| c.tonal.step_interval_beats = v,
-        |c| beats2(c.tonal.step_interval_beats),
-    )
-    .lfo_snap(LfoSnap::PowerOfTwo)
-    .in_beats(),
-    ControlSpec::new(
-        "tonal.offset_beats",
-        "Offset",
-        ControlKind::Timing,
-        0.0,
-        4.0,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.tonal.offset_beats,
-        |c, v| c.tonal.offset_beats = v,
-        |c| beats2(c.tonal.offset_beats),
-    )
-    .lfo_snap(LfoSnap::Step)
-    .in_beats(),
-    ControlSpec::gain(
-        "tonal.swing",
-        "Swing",
-        0.0,
-        1.0,
-        |c| c.tonal.swing,
-        |c, v| c.tonal.swing = v,
-        |c| pct(c.tonal.swing),
+        tonal.step_interval_beats
     ),
-    ControlSpec::gain(
-        "tonal.randomness",
-        "Randomness",
-        0.0,
-        1.0,
-        |c| c.tonal.randomness,
-        |c, v| c.tonal.randomness = v,
-        |c| pct(c.tonal.randomness),
-    ),
+    beat_offset!("tonal.offset_beats", "Offset", 4.0, tonal.offset_beats),
+    gain_pct!("tonal.swing", "Swing", tonal.swing),
+    gain_pct!("tonal.randomness", "Randomness", tonal.randomness),
     ControlSpec::new(
         "tonal.evolve_rate",
         "Evolve",
@@ -1353,15 +1107,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c, v| c.tonal.evolve_rate = v,
         |c| pct(c.tonal.evolve_rate),
     ),
-    ControlSpec::gain(
-        "tonal.reverb_mix",
-        "Reverb Mix",
-        0.0,
-        1.0,
-        |c| c.tonal.reverb_mix,
-        |c, v| c.tonal.reverb_mix = v,
-        |c| pct(c.tonal.reverb_mix),
-    ),
+    gain_pct!("tonal.reverb_mix", "Reverb Mix", tonal.reverb_mix),
 ];
 
 pub(crate) fn tonal_synth_type_label(value: f32) -> &'static str {
@@ -1384,66 +1130,17 @@ pub(crate) fn tonal_synth_type_index(value: f32) -> usize {
 }
 
 pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
-    ControlSpec::gain(
-        "clap.level",
-        "Level",
-        0.0,
-        1.0,
-        |c| c.clap.level,
-        |c, v| c.clap.level = v,
-        |c| pct(c.clap.level),
-    ),
-    ControlSpec::gain(
-        "clap.filter",
-        "Filter",
-        0.5,
-        1.0,
-        |c| c.clap.filter,
-        |c, v| c.clap.filter = v,
-        |c| pct(c.clap.filter),
-    ),
-    ControlSpec::new(
-        "clap.decay_ms",
-        "Decay",
-        ControlKind::Timing,
-        10.0,
-        200.0,
-        Step::Linear(1.0),
-        Entry::Free,
-        |c| c.clap.decay_ms,
-        |c, v| c.clap.decay_ms = v,
-        |c| secs(c.clap.decay_ms / 1000.0),
-    )
-    .taper(Taper::Exp(TIME_TAPER))
-    .in_ms(),
-    ControlSpec::new(
+    gain_pct!("clap.level", "Level", clap.level),
+    gain_pct!("clap.filter", "Filter", 0.5, 1.0, clap.filter),
+    time_ms!("clap.decay_ms", "Decay", 10.0, 200.0, 1.0, clap.decay_ms),
+    beat_interval!(
         "clap.interval_beats",
         "Interval",
-        ControlKind::Timing,
         0.5,
         8.0,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.clap.interval_beats,
-        |c, v| c.clap.interval_beats = v,
-        |c| beats2(c.clap.interval_beats),
-    )
-    .lfo_snap(LfoSnap::PowerOfTwo)
-    .in_beats(),
-    ControlSpec::new(
-        "clap.offset_beats",
-        "Offset",
-        ControlKind::Timing,
-        0.0,
-        8.0,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.clap.offset_beats,
-        |c, v| c.clap.offset_beats = v,
-        |c| beats2(c.clap.offset_beats),
-    )
-    .lfo_snap(LfoSnap::Step)
-    .in_beats(),
+        clap.interval_beats
+    ),
+    beat_offset!("clap.offset_beats", "Offset", 8.0, clap.offset_beats),
     ControlSpec::new(
         "clap.slap_count",
         "Slap Count",
@@ -1456,76 +1153,22 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         |c, v| c.clap.slap_count = v,
         |c| format!("{:.0}", c.clap.slap_count),
     ),
-    ControlSpec::new(
+    time_ms!(
         "clap.slap_spread_ms",
         "Slap Spread",
-        ControlKind::Timing,
         0.0,
         100.0,
-        Step::Linear(1.0),
-        Entry::Free,
-        |c| c.clap.slap_spread_ms,
-        |c, v| c.clap.slap_spread_ms = v,
-        |c| secs(c.clap.slap_spread_ms / 1000.0),
-    )
-    .taper(Taper::Exp(TIME_TAPER))
-    .in_ms(),
-    ControlSpec::gain(
-        "clap.room",
-        "Room",
-        0.0,
         1.0,
-        |c| c.clap.room,
-        |c, v| c.clap.room = v,
-        |c| pct(c.clap.room),
+        clap.slap_spread_ms
     ),
-    ControlSpec::gain(
-        "clap.body",
-        "Body",
-        0.0,
-        1.0,
-        |c| c.clap.body,
-        |c, v| c.clap.body = v,
-        |c| pct(c.clap.body),
-    ),
+    gain_pct!("clap.room", "Room", clap.room),
+    gain_pct!("clap.body", "Body", clap.body),
 ];
 
 pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
-    ControlSpec::gain(
-        "arp.gain",
-        "Level",
-        0.0,
-        1.0,
-        |c| c.arp.gain,
-        |c, v| c.arp.gain = v,
-        |c| pct(c.arp.gain),
-    ),
-    ControlSpec::new(
-        "arp.attack",
-        "Attack",
-        ControlKind::Timing,
-        0.0,
-        1.0,
-        Step::Linear(0.001),
-        Entry::Free,
-        |c| c.arp.attack,
-        |c, v| c.arp.attack = v,
-        |c| secs(c.arp.attack),
-    )
-    .taper(Taper::Exp(TIME_TAPER)),
-    ControlSpec::new(
-        "arp.decay",
-        "Decay",
-        ControlKind::Timing,
-        TONAL_DECAY_MIN,
-        6.0,
-        Step::Linear(0.001),
-        Entry::Free,
-        |c| c.arp.decay,
-        |c, v| c.arp.decay = v,
-        |c| secs(c.arp.decay),
-    )
-    .taper(Taper::Exp(TIME_TAPER)),
+    gain_pct!("arp.gain", "Level", arp.gain),
+    time_secs!("arp.attack", "Attack", 0.0, 1.0, 0.001, arp.attack),
+    time_secs!("arp.decay", "Decay", TONAL_DECAY_MIN, 6.0, 0.001, arp.decay),
     ControlSpec::new(
         "arp.type",
         "Type",
@@ -1538,43 +1181,15 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
         |c, v| c.arp.voice_type = v,
         |c| tonal_synth_type_label(c.arp.voice_type).to_string(),
     ),
-    ControlSpec::new(
+    beat_interval!(
         "arp.rate_beats",
         "Rate",
-        ControlKind::Timing,
         ARP_RATE_BEATS_MIN,
         ARP_RATE_BEATS_MAX,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.arp.rate_beats,
-        |c, v| c.arp.rate_beats = v,
-        |c| beats2(c.arp.rate_beats),
-    )
-    .lfo_snap(LfoSnap::PowerOfTwo)
-    .in_beats(),
-    ControlSpec::new(
-        "arp.offset_beats",
-        "Offset",
-        ControlKind::Timing,
-        0.0,
-        4.0,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.arp.offset_beats,
-        |c, v| c.arp.offset_beats = v,
-        |c| beats2(c.arp.offset_beats),
-    )
-    .lfo_snap(LfoSnap::Step)
-    .in_beats(),
-    ControlSpec::gain(
-        "arp.swing",
-        "Swing",
-        0.0,
-        1.0,
-        |c| c.arp.swing,
-        |c, v| c.arp.swing = v,
-        |c| pct(c.arp.swing),
+        arp.rate_beats
     ),
+    beat_offset!("arp.offset_beats", "Offset", 4.0, arp.offset_beats),
+    gain_pct!("arp.swing", "Swing", arp.swing),
     ControlSpec::new(
         "arp.pattern",
         "Pattern",
@@ -1599,54 +1214,14 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
         |c, v| c.arp.octaves = v,
         |c| format!("{:.0}", c.arp.octaves),
     ),
-    ControlSpec::gain(
-        "arp.reverb_mix",
-        "Reverb Mix",
-        0.0,
-        1.0,
-        |c| c.arp.reverb_mix,
-        |c, v| c.arp.reverb_mix = v,
-        |c| pct(c.arp.reverb_mix),
-    ),
+    gain_pct!("arp.reverb_mix", "Reverb Mix", arp.reverb_mix),
 ];
 
 pub(crate) const MACRO_CONTROLS: &[ControlSpec] = &[
-    ControlSpec::gain(
-        "macro.1",
-        "Macro 1",
-        0.0,
-        1.0,
-        |c| c.macros.values[0],
-        |c, v| c.macros.values[0] = v,
-        |c| pct(c.macros.values[0]),
-    ),
-    ControlSpec::gain(
-        "macro.2",
-        "Macro 2",
-        0.0,
-        1.0,
-        |c| c.macros.values[1],
-        |c, v| c.macros.values[1] = v,
-        |c| pct(c.macros.values[1]),
-    ),
-    ControlSpec::gain(
-        "macro.3",
-        "Macro 3",
-        0.0,
-        1.0,
-        |c| c.macros.values[2],
-        |c, v| c.macros.values[2] = v,
-        |c| pct(c.macros.values[2]),
-    ),
-    ControlSpec::gain(
-        "macro.4",
-        "Macro 4",
-        0.0,
-        1.0,
-        |c| c.macros.values[3],
-        |c, v| c.macros.values[3] = v,
-        |c| pct(c.macros.values[3]),
-    ),
+    gain_pct!("macro.1", "Macro 1", macros.values[0]),
+    gain_pct!("macro.2", "Macro 2", macros.values[1]),
+    gain_pct!("macro.3", "Macro 3", macros.values[2]),
+    gain_pct!("macro.4", "Macro 4", macros.values[3]),
 ];
 
 /// Whether a control id names one of the macro sliders. Macro sliders take
@@ -1672,17 +1247,7 @@ pub(crate) fn tab_owning_control(id: &str) -> Option<Tab> {
 }
 
 pub(crate) fn tab_specs(tab: Tab) -> &'static [ControlSpec] {
-    match tab {
-        Tab::Master => MASTER_CONTROLS,
-        Tab::Perc => PERC_CONTROLS,
-        Tab::Chords => CHORDS_CONTROLS,
-        Tab::Bass => BASS_CONTROLS,
-        Tab::Kick => KICK_CONTROLS,
-        Tab::Tonal => TONAL_CONTROLS,
-        Tab::Clap => CLAP_CONTROLS,
-        Tab::Arp => ARP_CONTROLS,
-        Tab::Macros => MACRO_CONTROLS,
-    }
+    TAB_META[tab as usize].3
 }
 
 pub(crate) fn all_specs() -> impl Iterator<Item = &'static ControlSpec> {
@@ -1704,7 +1269,10 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
 /// reorders the underlying array.
 pub(crate) fn chords_tab_controls(c: &FluidControls, drill: ChordDrill) -> Vec<ControlItem> {
     match drill {
-        ChordDrill::None => CHORDS_CONTROLS[..11].iter().map(|spec| spec.item(c)).collect(),
+        ChordDrill::None => CHORDS_CONTROLS[..11]
+            .iter()
+            .map(|spec| spec.item(c))
+            .collect(),
         ChordDrill::Progression => {
             let count = (c.pad.chord_count.round() as usize).clamp(1, CHORD_SLOT_COUNT);
             (0..count)
@@ -1770,7 +1338,11 @@ pub(crate) const BEAT_GRID_STEP: f32 = 0.25;
 
 pub(crate) fn beat_grid_snap(value: f32, min: f32, max: f32) -> f32 {
     let clamped = value.clamp(min, max);
-    let low = if min < BEAT_GRID_FLOOR { min } else { BEAT_GRID_FLOOR };
+    let low = if min < BEAT_GRID_FLOOR {
+        min
+    } else {
+        BEAT_GRID_FLOOR
+    };
     if low < BEAT_GRID_FLOOR && clamped <= (low + BEAT_GRID_FLOOR) / 2.0 {
         return low.clamp(min, max);
     }
@@ -1782,7 +1354,11 @@ pub(crate) fn beat_grid_snap(value: f32, min: f32, max: f32) -> f32 {
 
 pub(crate) fn beat_grid_adjust(value: f32, dir: f32, min: f32, max: f32) -> f32 {
     let current = beat_grid_snap(value, min, max);
-    let low = if min < BEAT_GRID_FLOOR { min } else { BEAT_GRID_FLOOR };
+    let low = if min < BEAT_GRID_FLOOR {
+        min
+    } else {
+        BEAT_GRID_FLOOR
+    };
     let next = if dir > 0.0 {
         if current < BEAT_GRID_FLOOR {
             BEAT_GRID_FLOOR

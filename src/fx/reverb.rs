@@ -79,22 +79,22 @@ impl Freeverb {
         let feedback = 0.28 + room_size.clamp(0.0, 1.0) * 0.68;
         let damp = damp.clamp(0.0, 1.0) * 0.4;
 
-        let combs_left = comb_tunings
-            .iter()
-            .map(|size| Comb::new((*size as f32 * scale) as usize, feedback, damp))
-            .collect();
-        let combs_right = comb_tunings
-            .iter()
-            .map(|size| Comb::new(((*size + 23) as f32 * scale) as usize, feedback, damp))
-            .collect();
-        let allpasses_left = allpass_tunings
-            .iter()
-            .map(|size| AllPass::new((*size as f32 * scale) as usize, 0.5))
-            .collect();
-        let allpasses_right = allpass_tunings
-            .iter()
-            .map(|size| AllPass::new(((*size + 23) as f32 * scale) as usize, 0.5))
-            .collect();
+        let build_combs = |offset: i32| -> Vec<Comb> {
+            comb_tunings
+                .iter()
+                .map(|size| Comb::new(((*size + offset) as f32 * scale) as usize, feedback, damp))
+                .collect()
+        };
+        let combs_left = build_combs(0);
+        let combs_right = build_combs(23);
+        let build_allpasses = |offset: i32| -> Vec<AllPass> {
+            allpass_tunings
+                .iter()
+                .map(|size| AllPass::new(((*size + offset) as f32 * scale) as usize, 0.5))
+                .collect()
+        };
+        let allpasses_left = build_allpasses(0);
+        let allpasses_right = build_allpasses(23);
 
         Self {
             combs_left,
