@@ -516,31 +516,56 @@ impl LfoRoute {
     /// structural-snap treatment. A route missing on one side glides its
     /// depth to/from 0 while holding the present side's other fields — it
     /// fades in or out rather than popping, and naturally disappears once the
-    /// leg's `to` state becomes the next leg's `from`.
+    /// leg's `to` state becomes the next leg's `from`. See `morph_scalar_route`
+    /// for the shared 4-arm glide/snap logic.
     fn morph(
         from: Option<&LfoRoute>,
         to: Option<&LfoRoute>,
         tt: f32,
         use_to: bool,
     ) -> Option<LfoRoute> {
-        match (from, to) {
-            (Some(f), Some(t)) => {
-                let mut route = if use_to { *t } else { *f };
-                route.depth_ratio = f.depth_ratio + (t.depth_ratio - f.depth_ratio) * tt;
-                Some(route)
-            }
-            (Some(f), None) => {
-                let mut route = *f;
-                route.depth_ratio = f.depth_ratio * (1.0 - tt);
-                Some(route)
-            }
-            (None, Some(t)) => {
-                let mut route = *t;
-                route.depth_ratio = t.depth_ratio * tt;
-                Some(route)
-            }
-            (None, None) => None,
+        morph_scalar_route(
+            from,
+            to,
+            tt,
+            use_to,
+            |r| r.depth_ratio,
+            |r, v| r.depth_ratio = v,
+        )
+    }
+}
+
+/// Shared glide/snap morph for a route type whose only "level" field crosses
+/// a leg transition on a glide while every other field snaps: on both sides
+/// present, all-but-`get`/`set` fields snap to `to` once `use_to` flips true
+/// while the level field glides `tt` between the two; on only one side
+/// present, the level field glides to/from 0 while the present side's other
+/// fields hold, so the route fades in or out instead of popping.
+fn morph_scalar_route<T: Copy>(
+    from: Option<&T>,
+    to: Option<&T>,
+    tt: f32,
+    use_to: bool,
+    get: fn(&T) -> f32,
+    set: fn(&mut T, f32),
+) -> Option<T> {
+    match (from, to) {
+        (Some(f), Some(t)) => {
+            let mut route = if use_to { *t } else { *f };
+            set(&mut route, get(f) + (get(t) - get(f)) * tt);
+            Some(route)
         }
+        (Some(f), None) => {
+            let mut route = *f;
+            set(&mut route, get(f) * (1.0 - tt));
+            Some(route)
+        }
+        (None, Some(t)) => {
+            let mut route = *t;
+            set(&mut route, get(t) * tt);
+            Some(route)
+        }
+        (None, None) => None,
     }
 }
 
@@ -832,31 +857,14 @@ impl EnvelopeRoute {
 
     /// Morph an optional envelope route across a leg transition; same
     /// glide/snap split as `LfoRoute::morph` with `amount` as the level
-    /// field. See that method's doc for the full rationale.
+    /// field. See `morph_scalar_route` for the full rationale.
     fn morph(
         from: Option<&EnvelopeRoute>,
         to: Option<&EnvelopeRoute>,
         tt: f32,
         use_to: bool,
     ) -> Option<EnvelopeRoute> {
-        match (from, to) {
-            (Some(f), Some(t)) => {
-                let mut route = if use_to { *t } else { *f };
-                route.amount = f.amount + (t.amount - f.amount) * tt;
-                Some(route)
-            }
-            (Some(f), None) => {
-                let mut route = *f;
-                route.amount = f.amount * (1.0 - tt);
-                Some(route)
-            }
-            (None, Some(t)) => {
-                let mut route = *t;
-                route.amount = t.amount * tt;
-                Some(route)
-            }
-            (None, None) => None,
-        }
+        morph_scalar_route(from, to, tt, use_to, |r| r.amount, |r, v| r.amount = v)
     }
 }
 
@@ -1310,61 +1318,45 @@ impl AutomationState {
         use_to: bool,
     ) -> AutomationState {
         let mut result = AutomationState::default();
-
-        let route_keys: BTreeSet<ControlAddress> = from
-            .routes
-            .keys()
-            .chain(to.routes.keys())
-            .copied()
-            .collect();
-        for key in route_keys {
-            if let Some(route) =
-                LfoRoute::morph(from.routes.get(&key), to.routes.get(&key), tt, use_to)
-            {
-                result.routes.insert(key, route);
-            }
-        }
-
-        let envelope_keys: BTreeSet<ControlAddress> = from
-            .envelopes
-            .keys()
-            .chain(to.envelopes.keys())
-            .copied()
-            .collect();
-        for key in envelope_keys {
-            if let Some(route) =
-                EnvelopeRoute::morph(from.envelopes.get(&key), to.envelopes.get(&key), tt, use_to)
-            {
-                result.envelopes.insert(key, route);
-            }
-        }
-
-        let macro_keys: BTreeSet<ControlAddress> = from
-            .macros
-            .keys()
-            .chain(to.macros.keys())
-            .copied()
-            .collect();
-        for key in macro_keys {
-            if let Some(route) = MacroRoute::morph(from.macros.get(&key), to.macros.get(&key), tt) {
-                result.macros.insert(key, route);
-            }
-        }
-
-        let field_macro_keys: BTreeSet<&String> = from
-            .field_macros
-            .keys()
-            .chain(to.field_macros.keys())
-            .collect();
-        for key in field_macro_keys {
-            if let Some(route) =
-                MacroRoute::morph(from.field_macros.get(key), to.field_macros.get(key), tt)
-            {
-                result.field_macros.insert(key.clone(), route);
-            }
-        }
-
+        morph_map(&from.routes, &to.routes, &mut result.routes, |f, t| {
+            LfoRoute::morph(f, t, tt, use_to)
+        });
+        morph_map(
+            &from.envelopes,
+            &to.envelopes,
+            &mut result.envelopes,
+            |f, t| EnvelopeRoute::morph(f, t, tt, use_to),
+        );
+        morph_map(&from.macros, &to.macros, &mut result.macros, |f, t| {
+            MacroRoute::morph(f, t, tt)
+        });
+        morph_map(
+            &from.field_macros,
+            &to.field_macros,
+            &mut result.field_macros,
+            |f, t| MacroRoute::morph(f, t, tt),
+        );
         result
+    }
+}
+
+/// Merge two route maps across a leg transition: build the union of both
+/// sides' keys (kept in sorted order via `BTreeSet`, matching the previous
+/// per-map key-collection loops), then insert `morph(from, to)` for each key
+/// that yields a route. A key absent from the result (both morph inputs
+/// `None`, or `morph` returning `None`) is simply left out — this is how a
+/// route naturally disappears once both legs' endpoints lack it.
+fn morph_map<K: Ord + Clone, V>(
+    from: &BTreeMap<K, V>,
+    to: &BTreeMap<K, V>,
+    out: &mut BTreeMap<K, V>,
+    morph: impl Fn(Option<&V>, Option<&V>) -> Option<V>,
+) {
+    let keys: BTreeSet<&K> = from.keys().chain(to.keys()).collect();
+    for key in keys {
+        if let Some(route) = morph(from.get(key), to.get(key)) {
+            out.insert(key.clone(), route);
+        }
     }
 }
 

@@ -290,15 +290,7 @@ fn read_automation_v2(
         };
         automation.set_route(
             ControlAddress::new(spec.id),
-            LfoRoute {
-                cycle_beats: finite_or(cycle_beats, 2.0)
-                    .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS),
-                depth_ratio: finite_or(depth_ratio, DEFAULT_LFO_DEPTH_RATIO).clamp(0.0, 1.0),
-                shape,
-                phase_offset_beats: finite_or(phase_offset_beats, 0.0)
-                    .clamp(0.0, MAX_LFO_OFFSET_BEATS),
-                ..LfoRoute::default()
-            },
+            build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, 0),
         );
     }
     Ok(())
@@ -409,18 +401,29 @@ fn read_lfo_section(
         };
         automation.set_route(
             ControlAddress::new(spec.id),
-            LfoRoute {
-                cycle_beats: finite_or(cycle_beats, 2.0)
-                    .clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS),
-                depth_ratio: finite_or(depth_ratio, DEFAULT_LFO_DEPTH_RATIO).clamp(0.0, 1.0),
-                shape,
-                phase_offset_beats: finite_or(phase_offset_beats, 0.0)
-                    .clamp(0.0, MAX_LFO_OFFSET_BEATS),
-                seed,
-            },
+            build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed),
         );
     }
     Ok(())
+}
+
+/// Shared LfoRoute construction for the song-code readers: clamps each field
+/// to its valid range the same way regardless of which payload version
+/// supplied it (v2 has no seed byte and always passes 0).
+fn build_lfo_route(
+    cycle_beats: f32,
+    depth_ratio: f32,
+    shape: LfoShape,
+    phase_offset_beats: f32,
+    seed: u32,
+) -> LfoRoute {
+    LfoRoute {
+        cycle_beats: finite_or(cycle_beats, 2.0).clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS),
+        depth_ratio: finite_or(depth_ratio, DEFAULT_LFO_DEPTH_RATIO).clamp(0.0, 1.0),
+        shape,
+        phase_offset_beats: finite_or(phase_offset_beats, 0.0).clamp(0.0, MAX_LFO_OFFSET_BEATS),
+        seed,
+    }
 }
 
 /// Macro section shared by the v3 and v4 layouts: one target macro slider
@@ -585,22 +588,22 @@ impl<'a> Reader<'a> {
         Ok(self.bytes(1)?[0])
     }
 
+    fn read_array<const N: usize>(&mut self) -> Result<[u8; N], SongCodeError> {
+        let mut bytes = [0u8; N];
+        bytes.copy_from_slice(self.bytes(N)?);
+        Ok(bytes)
+    }
+
     fn u16(&mut self) -> Result<u16, SongCodeError> {
-        let mut bytes = [0u8; 2];
-        bytes.copy_from_slice(self.bytes(2)?);
-        Ok(u16::from_le_bytes(bytes))
+        Ok(u16::from_le_bytes(self.read_array()?))
     }
 
     fn u32(&mut self) -> Result<u32, SongCodeError> {
-        let mut bytes = [0u8; 4];
-        bytes.copy_from_slice(self.bytes(4)?);
-        Ok(u32::from_le_bytes(bytes))
+        Ok(u32::from_le_bytes(self.read_array()?))
     }
 
     fn f32(&mut self) -> Result<f32, SongCodeError> {
-        let mut bytes = [0u8; 4];
-        bytes.copy_from_slice(self.bytes(4)?);
-        Ok(f32::from_le_bytes(bytes))
+        Ok(f32::from_le_bytes(self.read_array()?))
     }
 
     fn string(&mut self) -> Result<&'a str, SongCodeError> {

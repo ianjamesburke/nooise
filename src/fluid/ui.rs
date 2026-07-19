@@ -228,42 +228,31 @@ pub(crate) fn ui_loop(
                         selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
                     }
                 }
-                KeyCode::Char('H') => {
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
                     auto.exit(); // touching a param exits auto
-                    reset_lfo_or_control(
-                        &mut automation,
-                        lfo_selected,
-                        &controls,
-                        tab,
-                        chords_selected_index(tab, chord_drill, selected),
-                        beat,
-                    );
-                }
-                KeyCode::Left | KeyCode::Char('h')
-                    if key.modifiers.contains(KeyModifiers::SHIFT) =>
-                {
-                    auto.exit(); // touching a param exits auto
-                    reset_lfo_or_control(
-                        &mut automation,
-                        lfo_selected,
-                        &controls,
-                        tab,
-                        chords_selected_index(tab, chord_drill, selected),
-                        beat,
-                    );
-                }
-                KeyCode::Left | KeyCode::Char('h') => {
-                    auto.exit(); // touching a param exits auto
-                    adjust_lfo_or_control(
-                        &mut automation,
-                        lfo_selected,
-                        &controls,
-                        tab,
-                        chords_selected_index(tab, chord_drill, selected),
-                        -1.0,
-                        beat,
-                        &flipped,
-                    );
+                    let idx = chords_selected_index(tab, chord_drill, selected);
+                    if key.code == KeyCode::Char('H') || key.modifiers.contains(KeyModifiers::SHIFT)
+                    {
+                        reset_lfo_or_control(
+                            &mut automation,
+                            lfo_selected,
+                            &controls,
+                            tab,
+                            idx,
+                            beat,
+                        );
+                    } else {
+                        adjust_lfo_or_control(
+                            &mut automation,
+                            lfo_selected,
+                            &controls,
+                            tab,
+                            idx,
+                            -1.0,
+                            beat,
+                            &flipped,
+                        );
+                    }
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
                     auto.exit(); // touching a param exits auto
@@ -278,25 +267,14 @@ pub(crate) fn ui_loop(
                         &flipped,
                     );
                 }
-                KeyCode::Char('f') => {
+                KeyCode::Char(c @ ('f' | 'e')) => {
                     auto.exit(); // touching a modulator exits auto
-                    open_modulator(
-                        &mut automation,
-                        &items,
-                        selected,
-                        ModKind::Lfo,
-                        &mut lfo_selected,
-                    );
-                }
-                KeyCode::Char('e') => {
-                    auto.exit(); // touching a modulator exits auto
-                    open_modulator(
-                        &mut automation,
-                        &items,
-                        selected,
-                        ModKind::Envelope,
-                        &mut lfo_selected,
-                    );
+                    let kind = if c == 'f' {
+                        ModKind::Lfo
+                    } else {
+                        ModKind::Envelope
+                    };
+                    open_modulator(&mut automation, &items, selected, kind, &mut lfo_selected);
                 }
                 KeyCode::Char('v') => {
                     auto.exit(); // touching a modulator exits auto
@@ -411,11 +389,9 @@ pub(crate) fn ui_loop(
                         );
                     }
                 }
-                KeyCode::Char('m') => {
-                    toggle_mute(&controls, tab, &mut mute);
-                }
-                KeyCode::Char('M') => {
-                    toggle_mute(&controls, Tab::Master, &mut mute);
+                KeyCode::Char(c @ ('m' | 'M')) => {
+                    let target = if c == 'm' { tab } else { Tab::Master };
+                    toggle_mute(&controls, target, &mut mute);
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Some(address) = automation.state().active_address()
@@ -1403,16 +1379,8 @@ pub(crate) fn render(
         let editor_open_here = editor_here;
         let parent_active = active && (!editor_open_here || lfo_selected == 0);
         let prefix = if parent_active { "▶ " } else { "  " };
-        let display = if parent_active {
-            if let Some(entry) = numeric.entry {
-                let cursor = if numeric.cursor_visible { "_" } else { " " };
-                format!("> {entry}{cursor}")
-            } else {
-                item.display.clone()
-            }
-        } else {
-            item.display.clone()
-        };
+        let display =
+            numeric_cursor(&numeric, parent_active).unwrap_or_else(|| item.display.clone());
         let display = if (numeric.entry.is_some() && parent_active)
             || !flipped.contains(&unit_key(item.id, None))
         {
@@ -1650,6 +1618,14 @@ fn macro_chip_line(route: &MacroRoute) -> Line<'static> {
     ))
 }
 
+/// Shared numeric-entry cursor: renders the in-progress typed value with a
+/// blinking cursor when this row is the active numeric-entry target.
+fn numeric_cursor(numeric: &NumericDisplay<'_>, active: bool) -> Option<String> {
+    let entry = active.then_some(numeric.entry).flatten()?;
+    let cursor = if numeric.cursor_visible { "_" } else { " " };
+    Some(format!("> {entry}{cursor}"))
+}
+
 /// Baseline submenu field row: label, clamped ratio bar, live display, shared
 /// numeric-entry cursor. Every modulator field renders through this.
 fn field_line(
@@ -1666,12 +1642,7 @@ fn field_line(
         style = style.add_modifier(Modifier::BOLD);
     }
     let prefix = if active { "▶ " } else { "  " };
-    let display = if active && let Some(entry) = numeric.entry {
-        let cursor = if numeric.cursor_visible { "_" } else { " " };
-        format!("> {entry}{cursor}")
-    } else {
-        value_display
-    };
+    let display = numeric_cursor(numeric, active).unwrap_or(value_display);
     let bar = ratio_bar(ratio, bar_w, '█', '░');
     Line::from(Span::styled(
         format!("{prefix}  {label:<13} {bar} {display}"),
@@ -1690,6 +1661,15 @@ fn lane_glyph(level: f32) -> &'static str {
     LANE_WAVE[((level * (LANE_WAVE.len() - 1) as f32).round() as usize).min(LANE_WAVE.len() - 1)]
 }
 
+/// Blank label-width prefix shared by every modulator lane line, so lane
+/// glyphs line up under the field label column.
+fn lane_prefix() -> Span<'static> {
+    Span::styled(
+        format!("  {:<15} ", ""),
+        Style::default().fg(Color::Rgb(130, 136, 160)),
+    )
+}
+
 /// Live modulator lane. Periodic shapes draw one phase-locked cycle across the
 /// width with a bright head at the current phase. Random shapes scroll the real
 /// generated trajectory right-to-left, head at "now" on the right edge, so what
@@ -1703,10 +1683,7 @@ pub(crate) fn lfo_lane_line(
     let width = width.clamp(6, 80);
     let floor = if active { 0.35 } else { 0.25 };
     let mut spans = Vec::with_capacity(width + 1);
-    spans.push(Span::styled(
-        format!("  {:<15} ", ""),
-        Style::default().fg(Color::Rgb(130, 136, 160)),
-    ));
+    spans.push(lane_prefix());
 
     if route.shape.is_random() {
         let window = f64::from(route.cycle_beats.max(MIN_LFO_CYCLE_BEATS) * RANDOM_LANE_CYCLES);
@@ -1757,10 +1734,7 @@ pub(crate) fn env_lane_line(
     let head = ((head_phase * width as f32) as usize).min(width - 1);
 
     let mut spans = Vec::with_capacity(width + 1);
-    spans.push(Span::styled(
-        format!("  {:<15} ", ""),
-        Style::default().fg(Color::Rgb(130, 136, 160)),
-    ));
+    spans.push(lane_prefix());
     for i in 0..width {
         let col_since = (i as f64 / width as f64 * window) as f32;
         let level = route.level_for_lane(col_since) * route.amount.abs();
