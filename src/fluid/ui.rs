@@ -1317,7 +1317,7 @@ pub(crate) fn render(
 
     // Borders only (transparent fill) so the scrim shows through.
     let block = Block::default()
-        .title(format!(" {APP_ID} "))
+        .title(format!(" {APP_ID} v{} ", env!("CARGO_PKG_VERSION")))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
     let inner = block.inner(panel);

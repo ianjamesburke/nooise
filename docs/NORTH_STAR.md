@@ -26,6 +26,14 @@ The entire pitch is two rules:
 
 That's the whole floor. Any control that requires more than that to *get started* — before a user has opted into going deeper — breaks this North Star.
 
+## Progressive disclosure: the tucked-away pattern
+
+This isn't a ban on new features or new controls. It's about comfort: an advanced feature should sit inside the flow a beginner is already moving through, findable the way an Easter egg is findable — not signposted, not required to get started, but there to bump into.
+
+The chord progression control is the clearest existing example (`pad.progression`, `src/fluid/registry.rs:817-834`): eight built-in progressions, A through H, and one step past the last one lands on "Custom," which opens a chord builder (`src/fluid/voice/pad.rs:553-628`, `src/fluid/controls.rs:66-87`). A user turning the same knob they've always turned finds the advanced tool sitting at the end of it. Nobody needs to know custom progressions exist to enjoy the eight built-ins.
+
+**Idea (not yet built):** a small "↵" glyph on the right side of a control row whenever its current value can be drilled into — `pad.progression` would show it only when set to "Custom." Gives a curious user a visible hint that more exists without any docs or guessing that Enter does something.
+
 ## Aspirational: advanced ergonomics, vim-motions-for-music
 
 Long-term, layer power-user ergonomics on top of the floor above — fast value entry, fuzzy-find, batched multi-slider edits (already theorycrafted in [[0019]]) — plus a further "vim motions for music" layer: composable, muscle-memory-speed navigation/editing for expert use.
