@@ -206,7 +206,13 @@ pub(crate) fn ui_loop(
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if automation.state().is_editor_open() {
-                        if lfo_selected <= 1 {
+                        if automation.state().active_kind() == Some(ModKind::Lfo) {
+                            lfo_selected = clamp_lfo_selection(
+                                lfo_selected,
+                                -1,
+                                active_field_count(automation.state()),
+                            );
+                        } else if lfo_selected <= 1 {
                             automation.edit(AutomationState::close_editor);
                             lfo_selected = 0;
                         } else {
@@ -218,7 +224,13 @@ pub(crate) fn ui_loop(
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if automation.state().is_editor_open() {
-                        if lfo_selected >= active_field_count(automation.state()) {
+                        if automation.state().active_kind() == Some(ModKind::Lfo) {
+                            lfo_selected = clamp_lfo_selection(
+                                lfo_selected,
+                                1,
+                                active_field_count(automation.state()),
+                            );
+                        } else if lfo_selected >= active_field_count(automation.state()) {
                             automation.edit(AutomationState::close_editor);
                             selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
                             lfo_selected = 0;
@@ -514,12 +526,12 @@ pub(crate) fn snap_after_unit_flip(
 ) {
     let bpm = controls.load().master.bpm;
     match active_field(automation.state(), lfo_selected) {
-        // Modulator time fields are native beats: un-flipping lands back on
-        // their own grid via the snapping setter.
+        // LFO rate accepts exact typed beat values, so an exact ms-authored
+        // value stays exact when returning to beats. Offset retains its grid.
         ActiveField::Lfo(address, field) if !now_flipped => automation.edit(|state| {
             if let Some(route) = state.route_mut(address) {
                 match field {
-                    LfoField::Interval => route.set_field_at(field, route.cycle_beats, beat),
+                    LfoField::Interval => {}
                     LfoField::Offset => route.set_field_at(field, route.phase_offset_beats, beat),
                     _ => {}
                 }
@@ -708,6 +720,15 @@ pub(crate) fn active_field_count(automation: &AutomationState) -> usize {
         Some(ModKind::Macro) => MacroField::ALL.len(),
         None => 0,
     }
+}
+
+/// LFO editors are explicitly collapsed with `f` or Escape. Arrow navigation
+/// stays inside the submenu and clamps at its first and last selectable rows.
+pub(crate) fn clamp_lfo_selection(current: usize, direction: isize, row_count: usize) -> usize {
+    if row_count == 0 {
+        return 0;
+    }
+    current.saturating_add_signed(direction).clamp(1, row_count)
 }
 
 /// Whether a modulator kind can open on a control. Envelopes live only on
@@ -1449,7 +1470,7 @@ pub(crate) fn render(
             let spec = address.spec();
             // Markers all sit on the same tapered bar as the value itself.
             let base = item.value;
-            let ratio_of = |value: f32| spec.taper.ratio(value, spec.min, spec.max);
+            let ratio_of = |value: f32| spec.ratio(value);
             // Ghosts only for sources that actually contribute.
             let lfo = effective_lfo
                 .as_ref()
@@ -1889,7 +1910,7 @@ pub(crate) fn item_ratio(item: &ControlItem) -> f32 {
         ControlKind::Discrete => item.value.round(),
         ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing => item.value,
     };
-    item.taper.ratio(value, item.min, item.max)
+    item.step.ratio(value, item.min, item.max, item.taper)
 }
 
 pub(crate) fn ratio_bar(ratio: f32, width: usize, filled: char, empty: char) -> String {

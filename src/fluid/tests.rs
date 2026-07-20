@@ -575,10 +575,11 @@ fn lfo_field_adjust_steps_and_clamps() {
 
     route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
     assert_close(route.cycle_beats, 2.25);
-    for _ in 0..150 {
+    route.set_field_at(LfoField::Interval, 4.0, 0.0);
+    for expected in [8.0, 12.0, 16.0, 32.0, 64.0, 64.0] {
         route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
+        assert_close(route.cycle_beats, expected);
     }
-    assert_close(route.cycle_beats, 16.0);
     for _ in 0..150 {
         route.adjust_field_at(LfoField::Interval, -1.0, 0.0);
     }
@@ -595,15 +596,34 @@ fn lfo_field_adjust_steps_and_clamps() {
 }
 
 #[test]
-fn lfo_field_set_snaps_to_eighth_beat_grid() {
+fn lfo_submenu_arrow_navigation_clamps_until_explicitly_closed() {
+    assert_eq!(clamp_lfo_selection(1, -1, 4), 1);
+    assert_eq!(clamp_lfo_selection(2, -1, 4), 1);
+    assert_eq!(clamp_lfo_selection(3, 1, 4), 4);
+    assert_eq!(clamp_lfo_selection(4, 1, 4), 4);
+}
+
+#[test]
+fn startup_fade_reaches_full_gain_in_two_seconds() {
+    let halfway = SAMPLE_RATE as u64;
+    let complete = SAMPLE_RATE as u64 * 2;
+
+    assert_near(startup_fade(0, SAMPLE_RATE), 0.0);
+    assert_near(startup_fade(halfway, SAMPLE_RATE), 0.5);
+    assert_near(startup_fade(complete, SAMPLE_RATE), 1.0);
+    assert_near(startup_fade(complete * 2, SAMPLE_RATE), 1.0);
+}
+
+#[test]
+fn lfo_field_set_keeps_exact_rate_and_snaps_offset_to_grid() {
     let mut route = LfoRoute::default();
 
     route.set_field_at(LfoField::Interval, 3.1, 0.0);
-    assert_close(route.cycle_beats, 3.0);
+    assert_close(route.cycle_beats, 3.1);
     route.set_field_at(LfoField::Interval, 0.17, 0.0);
-    assert_close(route.cycle_beats, 0.125);
+    assert_close(route.cycle_beats, 0.17);
     route.set_field_at(LfoField::Interval, 100.0, 0.0);
-    assert_close(route.cycle_beats, 16.0);
+    assert_close(route.cycle_beats, 64.0);
     route.set_field_at(LfoField::Amount, 130.0, 0.0);
     assert_close(route.depth_ratio, 1.0);
     route.set_field_at(LfoField::Amount, 40.0, 0.0);
@@ -612,6 +632,69 @@ fn lfo_field_set_snaps_to_eighth_beat_grid() {
     assert_close(route.phase_offset_beats, 1.25);
     route.set_field_at(LfoField::Offset, 9.0, 0.0);
     assert_close(route.phase_offset_beats, 4.0);
+}
+
+#[test]
+fn lfo_rate_bar_divides_the_full_throw_across_arrow_rungs() {
+    let mut route = LfoRoute::default();
+    let denominator = (LFO_RATE_ARROW_STEPS.len() - 1) as f32;
+
+    for (index, rate) in LFO_RATE_ARROW_STEPS.iter().copied().enumerate() {
+        route.cycle_beats = rate;
+        assert_near(
+            route.field_ratio(LfoField::Interval),
+            index as f32 / denominator,
+        );
+    }
+
+    route.cycle_beats = 6.0;
+    assert_near(
+        route.field_ratio(LfoField::Interval),
+        (16.0 + 0.5) / denominator,
+    );
+}
+
+#[test]
+fn ordered_step_ratio_spans_the_bar_and_interpolates_typed_values() {
+    let steps = [0.125, 0.25, 0.5, 4.0, 8.0, 16.0, 64.0];
+
+    assert_near(ordered_step_ratio(0.125, &steps), 0.0);
+    assert_near(ordered_step_ratio(4.0, &steps), 0.5);
+    assert_near(ordered_step_ratio(6.0, &steps), 7.0 / 12.0);
+    assert_near(ordered_step_ratio(64.0, &steps), 1.0);
+}
+
+#[test]
+fn beat_grid_bars_give_every_arrow_rung_equal_visual_space() {
+    let offset = spec_by_id("kick.offset_beats").unwrap();
+    let offset_ratios = [0.0, 0.125, 0.25, 0.5].map(|value| offset.ratio(value));
+    assert_near(
+        offset_ratios[1] - offset_ratios[0],
+        offset_ratios[2] - offset_ratios[1],
+    );
+    assert_near(
+        offset_ratios[2] - offset_ratios[1],
+        offset_ratios[3] - offset_ratios[2],
+    );
+
+    let interval = spec_by_id("kick.interval_beats").unwrap();
+    let interval_ratios = [0.125, 0.25, 0.5, 0.75].map(|value| interval.ratio(value));
+    assert_near(
+        interval_ratios[1] - interval_ratios[0],
+        interval_ratios[2] - interval_ratios[1],
+    );
+    assert_near(
+        interval_ratios[2] - interval_ratios[1],
+        interval_ratios[3] - interval_ratios[2],
+    );
+}
+
+#[test]
+fn every_registered_slider_visual_mapping_spans_its_full_range() {
+    for spec in all_specs() {
+        assert_near(spec.ratio(spec.min), 0.0);
+        assert_near(spec.ratio(spec.max), 1.0);
+    }
 }
 
 #[test]
@@ -669,19 +752,41 @@ fn lfo_field_reset_uses_slider_minimums() {
 }
 
 #[test]
-fn lfo_interval_edits_preserve_live_phase_when_possible() {
+fn lfo_rate_edit_keeps_offset_and_hands_off_where_waveforms_cross() {
     let mut route = LfoRoute {
         cycle_beats: 2.0,
         phase_offset_beats: 0.0,
         ..LfoRoute::default()
     };
     let beat = 4.0;
-    let before = route.phase_at(beat);
+    let old_route = route;
 
     route.adjust_field_at(LfoField::Interval, 1.0, beat);
 
     assert_close(route.cycle_beats, 2.25);
-    assert!((route.phase_at(beat) - before).abs() < 1e-9);
+    assert_close(route.phase_offset_beats, 0.0);
+    let pickup = route.pickup.expect("rate edit should schedule a pickup");
+    assert!(pickup.at_beat > beat);
+
+    let before_pickup = pickup.at_beat - 1e-6;
+    let after_pickup = pickup.at_beat + 1e-6;
+    assert_near(
+        route.wave_at(before_pickup),
+        old_route.wave_at(before_pickup),
+    );
+    assert!(
+        (route.wave_at(before_pickup) - route.wave_at(after_pickup)).abs() < 1e-4,
+        "handoff must be value-continuous"
+    );
+
+    let globally_anchored = LfoRoute {
+        cycle_beats: 2.25,
+        ..LfoRoute::default()
+    };
+    assert_near(
+        route.wave_at(after_pickup),
+        globally_anchored.wave_at(after_pickup),
+    );
 }
 
 #[test]
@@ -1074,12 +1179,10 @@ fn engine_publishes_beat_telemetry() {
 // GOLDEN_RENDER_CHECKSUM only after confirming the new output is inaudibly
 // close to the old one.
 const GOLDEN_RENDER_SAMPLES: usize = 48_000;
-// Re-blessed when tonal and arp were unified onto one attack+decay envelope
-// (`attack_decay_gain`): every note now ramps in over `attack`, then decays
-// from the peak to silence over `decay`, with the note's whole life = attack +
-// decay and no step-clamped hold. This shifts both the tonal and arp voices in
-// this render (tonal.level 0.5 + arp.gain 0.4); pad/bass paths are unchanged.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x08f0_c949_89ea_81c5;
+// Re-blessed when the deliberate startup fade changed from four seconds to
+// two. The seeded audio remains deterministic; its first second now reaches
+// half gain instead of quarter gain, which intentionally changes this render.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x75c0_c29c_d1ec_3941;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -1239,6 +1342,50 @@ fn lfo_phase_at_uses_cycle_and_offset() {
 }
 
 #[test]
+fn zero_offset_lfos_share_the_global_rate_grid_across_targets() {
+    let mut automation = AutomationState::default();
+    let master = ControlAddress::new("master.level");
+    let pad = ControlAddress::new("pad.level");
+    automation.set_route(
+        master,
+        LfoRoute {
+            cycle_beats: 16.0,
+            ..LfoRoute::default()
+        },
+    );
+    automation.set_route(
+        pad,
+        LfoRoute {
+            cycle_beats: 16.0,
+            depth_ratio: 0.75,
+            ..LfoRoute::default()
+        },
+    );
+
+    let master_route = automation.route(master).unwrap();
+    let pad_route = automation.route(pad).unwrap();
+    for (beat, expected_phase) in [
+        (0.0, 0.0),
+        (4.0, 0.25),
+        (8.0, 0.5),
+        (12.0, 0.75),
+        (16.0, 0.0),
+        (32.0, 0.0),
+    ] {
+        assert!((master_route.phase_at(beat) - expected_phase).abs() < 1e-9);
+        assert_eq!(master_route.phase_at(beat), pad_route.phase_at(beat));
+    }
+
+    let thirty_two = LfoRoute {
+        cycle_beats: 32.0,
+        ..LfoRoute::default()
+    };
+    for beat in [0.0, 32.0, 64.0] {
+        assert!(thirty_two.phase_at(beat).abs() < 1e-9);
+    }
+}
+
+#[test]
 fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();
@@ -1268,7 +1415,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     let at_start = draw_at(0.0);
     let text = buffer_text(&at_start);
     assert!(text.contains("amount"));
-    assert!(text.contains("interval"));
+    assert!(text.contains("rate"));
     assert!(text.contains("offset"));
     assert!(text.contains("0%"));
 
@@ -3977,10 +4124,17 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
         1010.0,
     );
 
-    // Un-flipping snaps the interval back onto the sixteenth grid.
+    // Un-flipping keeps the exact rate; typed beat values are intentionally
+    // not limited to the arrow-key ladder.
     flipped.clear();
     snap_after_unit_flip(&mut automation, 2, &controls, Tab::Master, 0, false, 0.0);
-    assert_close(automation.state().route(address).unwrap().cycle_beats, 2.0);
+    assert_near(
+        beats_to_ms(
+            automation.state().route(address).unwrap().cycle_beats,
+            120.0,
+        ),
+        1010.0,
+    );
 }
 
 // ============================================================

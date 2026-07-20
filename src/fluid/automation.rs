@@ -5,14 +5,14 @@ use std::fmt;
 
 use super::{
     ControlSpec, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TimingContext,
-    beat_grid_adjust, beat_grid_snap, is_macro_id, nearest_power_of_two, normalize_unit_input,
-    snap_step, spec_by_id, unit_key,
+    beat_grid_adjust, beat_grid_ratio, beat_grid_snap, is_macro_id, nearest_power_of_two,
+    normalize_unit_input, ordered_step_ratio, snap_step, spec_by_id, unit_key,
 };
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
 pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.0;
 pub(crate) const MIN_LFO_CYCLE_BEATS: f32 = 0.125;
-pub(crate) const MAX_LFO_CYCLE_BEATS: f32 = 16.0;
+pub(crate) const MAX_LFO_CYCLE_BEATS: f32 = 64.0;
 pub(crate) const MAX_LFO_OFFSET_BEATS: f32 = 4.0;
 
 /// Upper bound on a `Steps` shape's custom automation sequence. Fixed so
@@ -47,6 +47,8 @@ const SQUARE_SMOOTH: f32 = 6.0;
 /// full-swing discontinuity every cycle, which clicks when applied straight
 /// to a live-read control like level or cutoff.
 const RAMP_WRAP_EASE: f32 = 0.02;
+const PICKUP_SCAN_STEP_BEATS: f64 = 1.0 / 256.0;
+const PICKUP_CROSSING_EPSILON: f32 = 1e-4;
 
 // Envelope route field ranges. Attack/decay reach into the minutes at slow
 // tempos (512 beats is ~6 min at 82 BPM, ~12 min at 40 BPM) so the same
@@ -329,6 +331,7 @@ pub(crate) enum StepTarget {
 pub(crate) enum LfoEntry {
     Percent,
     Snap,
+    Exact,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -347,7 +350,9 @@ pub(crate) struct LfoFieldSpec {
 
 impl LfoFieldSpec {
     pub(crate) fn adjust(self, value: f32, dir: f32) -> f32 {
-        if self.beat_grid {
+        if self.field == LfoField::Interval {
+            lfo_rate_adjust(value, dir)
+        } else if self.beat_grid {
             beat_grid_adjust(value, dir, self.min, self.max)
         } else {
             self.quantize(value + dir * self.step)
@@ -358,6 +363,7 @@ impl LfoFieldSpec {
         match self.entry {
             LfoEntry::Percent => normalize_unit_input(value).clamp(self.min, self.max),
             LfoEntry::Snap => self.quantize(value),
+            LfoEntry::Exact => value.clamp(self.min, self.max),
         }
     }
 
@@ -370,6 +376,12 @@ impl LfoFieldSpec {
     }
 
     pub(crate) fn ratio(self, value: f32) -> f32 {
+        if self.field == LfoField::Interval {
+            return ordered_step_ratio(value, LFO_RATE_ARROW_STEPS);
+        }
+        if self.beat_grid {
+            return beat_grid_ratio(value, self.min, self.max);
+        }
         let range = self.max - self.min;
         if range.abs() <= f32::EPSILON {
             0.0
@@ -392,11 +404,11 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
     },
     LfoFieldSpec {
         field: LfoField::Interval,
-        label: "interval",
+        label: "rate",
         min: MIN_LFO_CYCLE_BEATS,
         max: MAX_LFO_CYCLE_BEATS,
         step: INTERVAL_STEP,
-        entry: LfoEntry::Snap,
+        entry: LfoEntry::Exact,
         reset: MIN_LFO_CYCLE_BEATS,
         beat_grid: true,
     },
@@ -411,6 +423,34 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
         beat_grid: true,
     },
 ];
+
+pub(crate) const LFO_RATE_ARROW_STEPS: &[f32] = &[
+    0.125, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0,
+    8.0, 12.0, 16.0, 32.0, 64.0,
+];
+
+fn lfo_rate_adjust(value: f32, dir: f32) -> f32 {
+    if dir > 0.0 {
+        LFO_RATE_ARROW_STEPS
+            .iter()
+            .copied()
+            .find(|step| *step > value + f32::EPSILON)
+            .unwrap_or(MAX_LFO_CYCLE_BEATS)
+    } else {
+        LFO_RATE_ARROW_STEPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|step| *step < value - f32::EPSILON)
+            .unwrap_or(MIN_LFO_CYCLE_BEATS)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LfoPickup {
+    pub(crate) from_cycle_beats: f32,
+    pub(crate) at_beat: f64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LfoRoute {
@@ -429,6 +469,10 @@ pub(crate) struct LfoRoute {
     /// Edge-glide fraction (0..1): how much of each step window eases in from
     /// the previous step's value instead of holding flat. See `step_value_at`.
     pub(crate) step_glide: f32,
+    /// Transient handoff after a live rate edit. The old globally anchored
+    /// clock keeps playing until it next crosses the new clock, then the new
+    /// rate takes over without rewriting the user's offset.
+    pub(crate) pickup: Option<LfoPickup>,
 }
 
 impl Default for LfoRoute {
@@ -442,6 +486,7 @@ impl Default for LfoRoute {
             steps: DEFAULT_LFO_STEPS,
             step_count: DEFAULT_LFO_STEP_COUNT,
             step_glide: DEFAULT_LFO_STEP_GLIDE,
+            pickup: None,
         }
     }
 }
@@ -455,24 +500,34 @@ impl LfoRoute {
     }
 
     pub(crate) fn phase_at(&self, beat: f64) -> f64 {
-        ((beat + f64::from(self.phase_offset_beats))
-            / f64::from(self.cycle_beats.max(MIN_LFO_CYCLE_BEATS)))
-        .rem_euclid(1.0)
+        self.phase_at_cycle(beat, self.active_cycle_at(beat))
+    }
+
+    fn phase_at_cycle(&self, beat: f64, cycle_beats: f32) -> f64 {
+        global_lfo_position(beat, cycle_beats, self.phase_offset_beats).1
+    }
+
+    fn active_cycle_at(&self, beat: f64) -> f32 {
+        self.pickup
+            .filter(|pickup| beat < pickup.at_beat)
+            .map_or(self.cycle_beats, |pickup| pickup.from_cycle_beats)
     }
 
     /// Absolute cycle index and phase-in-cycle for the given beat. Random shapes
     /// hash the cycle index; the fractional part doubles as the periodic phase.
-    fn cycle_index_and_phase(&self, beat: f64) -> (i64, f32) {
-        let cycle = f64::from(self.cycle_beats.max(MIN_LFO_CYCLE_BEATS));
-        let t = (beat + f64::from(self.phase_offset_beats)) / cycle;
-        let index = t.floor();
-        ((index as i64), (t - index) as f32)
+    fn cycle_index_and_phase_for(&self, beat: f64, cycle_beats: f32) -> (i64, f32) {
+        let (index, phase) = global_lfo_position(beat, cycle_beats, self.phase_offset_beats);
+        (index, phase as f32)
     }
 
     /// Oscillator output in -1..1 at the given beat; depth scaling is the
     /// caller's job. Single source of truth for both the engine and the lane.
     pub(crate) fn wave_at(&self, beat: f64) -> f32 {
-        let (index, phase) = self.cycle_index_and_phase(beat);
+        self.wave_at_cycle(beat, self.active_cycle_at(beat))
+    }
+
+    fn wave_at_cycle(&self, beat: f64, cycle_beats: f32) -> f32 {
+        let (index, phase) = self.cycle_index_and_phase_for(beat, cycle_beats);
         match self.shape {
             LfoShape::SampleHold => seeded_unit(self.seed, index),
             LfoShape::RandomDrift => {
@@ -533,7 +588,7 @@ impl LfoRoute {
     pub(crate) fn pattern_phase_at(&self, beat: f64) -> f64 {
         match self.shape {
             LfoShape::Steps => {
-                let cycle = f64::from(self.cycle_beats.max(MIN_LFO_CYCLE_BEATS));
+                let cycle = f64::from(self.active_cycle_at(beat).max(MIN_LFO_CYCLE_BEATS));
                 let t = (beat + f64::from(self.phase_offset_beats)) / cycle;
                 (t / self.active_step_count() as f64).rem_euclid(1.0)
             }
@@ -543,6 +598,7 @@ impl LfoRoute {
 
     /// Adjust a step submenu target by one h/l press.
     pub(crate) fn adjust_step(&mut self, target: StepTarget, dir: f32) {
+        self.pickup = None;
         match target {
             StepTarget::Count => {
                 self.set_step_count(self.step_count as i32 + dir.signum() as i32);
@@ -561,6 +617,7 @@ impl LfoRoute {
     /// Numeric entry for a step target: count is a whole number, glide a
     /// unipolar percent, a step value a bipolar percent (`-100`..`100`).
     pub(crate) fn set_step(&mut self, target: StepTarget, value: f32) {
+        self.pickup = None;
         match target {
             StepTarget::Count => self.set_step_count(value.round() as i32),
             StepTarget::Glide => self.step_glide = (value / 100.0).clamp(0.0, 1.0),
@@ -573,6 +630,7 @@ impl LfoRoute {
     }
 
     pub(crate) fn reset_step(&mut self, target: StepTarget) {
+        self.pickup = None;
         match target {
             StepTarget::Count => self.step_count = DEFAULT_LFO_STEP_COUNT,
             StepTarget::Glide => self.step_glide = DEFAULT_LFO_STEP_GLIDE,
@@ -627,28 +685,36 @@ impl LfoRoute {
 
     pub(crate) fn adjust_field_at(&mut self, field: LfoField, dir: f32, beat: f64) {
         match field {
-            LfoField::Shape => self.shape = self.shape.cycled(dir),
+            LfoField::Shape => {
+                self.shape = self.shape.cycled(dir);
+                self.pickup = None;
+            }
             LfoField::Amount => {
                 self.depth_ratio = field.spec().adjust(self.depth_ratio, dir);
             }
             LfoField::Interval => {
-                self.set_cycle_preserving_phase(field.spec().adjust(self.cycle_beats, dir), beat);
+                self.set_cycle_with_pickup(field.spec().adjust(self.cycle_beats, dir), beat);
             }
             LfoField::Offset => {
                 self.phase_offset_beats = field.spec().adjust(self.phase_offset_beats, dir);
+                self.pickup = None;
             }
         }
     }
 
     pub(crate) fn set_field_at(&mut self, field: LfoField, value: f32, beat: f64) {
         match field {
-            LfoField::Shape => self.shape = LfoShape::from_index(value),
+            LfoField::Shape => {
+                self.shape = LfoShape::from_index(value);
+                self.pickup = None;
+            }
             LfoField::Amount => self.depth_ratio = field.spec().parse_value(value),
             LfoField::Interval => {
-                self.set_cycle_preserving_phase(field.spec().parse_value(value), beat);
+                self.set_cycle_with_pickup(field.spec().parse_value(value), beat);
             }
             LfoField::Offset => {
                 self.phase_offset_beats = field.spec().parse_value(value);
+                self.pickup = None;
             }
         }
     }
@@ -657,12 +723,11 @@ impl LfoRoute {
     /// to the beat grid — used while the field is being driven in ms.
     pub(crate) fn set_field_raw_at(&mut self, field: LfoField, value: f32, beat: f64) {
         match field {
-            LfoField::Interval => self.set_cycle_preserving_phase(
-                value.clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS),
-                beat,
-            ),
+            LfoField::Interval => self
+                .set_cycle_with_pickup(value.clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS), beat),
             LfoField::Offset => {
                 self.phase_offset_beats = value.clamp(0.0, MAX_LFO_OFFSET_BEATS);
+                self.pickup = None;
             }
             _ => self.set_field_at(field, value, beat),
         }
@@ -670,10 +735,16 @@ impl LfoRoute {
 
     pub(crate) fn reset_field_at(&mut self, field: LfoField, beat: f64) {
         match field {
-            LfoField::Shape => self.shape = LfoShape::Sine,
+            LfoField::Shape => {
+                self.shape = LfoShape::Sine;
+                self.pickup = None;
+            }
             LfoField::Amount => self.depth_ratio = field.spec().reset,
-            LfoField::Interval => self.set_cycle_preserving_phase(field.spec().reset, beat),
-            LfoField::Offset => self.phase_offset_beats = field.spec().reset,
+            LfoField::Interval => self.set_cycle_with_pickup(field.spec().reset, beat),
+            LfoField::Offset => {
+                self.phase_offset_beats = field.spec().reset;
+                self.pickup = None;
+            }
         }
     }
 
@@ -695,10 +766,20 @@ impl LfoRoute {
         }
     }
 
-    fn set_cycle_preserving_phase(&mut self, cycle_beats: f32, beat: f64) {
-        let old_phase = self.phase_at(beat);
+    fn set_cycle_with_pickup(&mut self, cycle_beats: f32, beat: f64) {
+        let old_cycle = self.active_cycle_at(beat);
+        if (old_cycle - cycle_beats).abs() <= f32::EPSILON {
+            self.cycle_beats = cycle_beats;
+            self.pickup = None;
+            return;
+        }
         self.cycle_beats = cycle_beats;
-        self.phase_offset_beats = nearest_offset_for_phase(old_phase, beat, cycle_beats);
+        self.pickup = next_wave_crossing(self, old_cycle, cycle_beats, beat).and_then(|at_beat| {
+            (at_beat > beat + f64::EPSILON).then_some(LfoPickup {
+                from_cycle_beats: old_cycle,
+                at_beat,
+            })
+        });
     }
 
     /// Morph an optional route on each side of a leg transition: `depth_ratio`
@@ -725,6 +806,16 @@ impl LfoRoute {
             |r, v| r.depth_ratio = v,
         )
     }
+}
+
+/// Every LFO derives position from the shared transport beat. A zero offset
+/// therefore puts every route with the same rate on the same song-wide grid,
+/// regardless of which control owns it or when its editor was opened.
+fn global_lfo_position(beat: f64, cycle_beats: f32, offset_beats: f32) -> (i64, f64) {
+    let cycle = f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS));
+    let position = (beat + f64::from(offset_beats)) / cycle;
+    let index = position.floor();
+    (index as i64, position - index)
 }
 
 /// Shared glide/snap morph for a route type whose only "level" field crosses
@@ -761,40 +852,53 @@ fn morph_scalar_route<T: Copy>(
     }
 }
 
-fn nearest_offset_for_phase(phase: f64, beat: f64, cycle_beats: f32) -> f32 {
-    let cycle = f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS));
-    let desired = (phase * cycle - beat).rem_euclid(cycle) as f32;
-    let offset_spec = LfoField::Offset.spec();
-    let snapped = offset_spec.quantize(desired);
-    if phase_distance(phase, phase_at_with_offset(beat, cycle, snapped)) < 0.001 {
-        return snapped;
+fn next_wave_crossing(
+    route: &LfoRoute,
+    old_cycle_beats: f32,
+    new_cycle_beats: f32,
+    beat: f64,
+) -> Option<f64> {
+    let delta_at =
+        |at| route.wave_at_cycle(at, old_cycle_beats) - route.wave_at_cycle(at, new_cycle_beats);
+    let mut previous_beat = beat;
+    let mut previous_delta = delta_at(beat);
+    if previous_delta.abs() <= PICKUP_CROSSING_EPSILON {
+        return Some(beat);
     }
 
-    let mut best = snapped;
-    let mut best_distance = phase_distance(phase, phase_at_with_offset(beat, cycle, best));
-    // Scan at the finest grid resolution and re-quantize each sample onto the
-    // control's actual grid, so `best` always lands on a real rung even
-    // though the grid itself is coarser above the floor.
-    let steps = ((offset_spec.max - offset_spec.min) / OFFSET_STEP).round() as usize;
-    for i in 0..=steps {
-        let raw = offset_spec.min + i as f32 * OFFSET_STEP;
-        let candidate = offset_spec.quantize(raw);
-        let distance = phase_distance(phase, phase_at_with_offset(beat, cycle, candidate));
-        if distance < best_distance {
-            best = candidate;
-            best_distance = distance;
+    let horizon = f64::from(old_cycle_beats.max(new_cycle_beats)) * 2.0;
+    let steps = (horizon / PICKUP_SCAN_STEP_BEATS).ceil() as usize;
+    let mut closest = (previous_delta.abs(), beat);
+    for step in 1..=steps {
+        let next_beat = beat + step as f64 * PICKUP_SCAN_STEP_BEATS;
+        let next_delta = delta_at(next_beat);
+        if next_delta.abs() < closest.0 {
+            closest = (next_delta.abs(), next_beat);
         }
+        if next_delta.abs() <= PICKUP_CROSSING_EPSILON {
+            return Some(next_beat);
+        }
+        if previous_delta.signum() != next_delta.signum() {
+            let mut lo = previous_beat;
+            let mut hi = next_beat;
+            let lo_sign = previous_delta.signum();
+            for _ in 0..20 {
+                let mid = (lo + hi) * 0.5;
+                if delta_at(mid).signum() == lo_sign {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            return Some((lo + hi) * 0.5);
+        }
+        previous_beat = next_beat;
+        previous_delta = next_delta;
     }
-    best
-}
 
-fn phase_at_with_offset(beat: f64, cycle: f64, offset: f32) -> f64 {
-    ((beat + f64::from(offset)) / cycle).rem_euclid(1.0)
-}
-
-fn phase_distance(a: f64, b: f64) -> f64 {
-    let diff = (a - b).abs();
-    diff.min(1.0 - diff)
+    // Discrete/random shapes may not have a literal continuous crossing.
+    // Hand off at their closest encounter within two cycles instead.
+    Some(closest.1)
 }
 
 // ============================================================

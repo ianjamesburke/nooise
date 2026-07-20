@@ -2,6 +2,8 @@ use std::collections::BTreeSet;
 
 use super::*;
 
+const STARTUP_FADE_SECONDS: f32 = 2.0;
+
 // ============================================================
 // Fluid Engine
 // ============================================================
@@ -107,7 +109,7 @@ impl StereoEngine for FluidEngine {
             }
         }
 
-        let fade = (self.current_sample as f32 / (self.sample_rate * 4.0)).min(1.0);
+        let fade = startup_fade(self.current_sample, self.sample_rate);
         let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
         let timing = self.tempo.tick(effective.master.bpm);
         if self.current_sample.is_multiple_of(256) {
@@ -153,6 +155,10 @@ impl StereoEngine for FluidEngine {
         );
         self.master_bus.process(raw_l, raw_r, &effective.master)
     }
+}
+
+pub(crate) fn startup_fade(current_sample: u64, sample_rate: f32) -> f32 {
+    (current_sample as f32 / (sample_rate * STARTUP_FADE_SECONDS)).min(1.0)
 }
 
 #[inline]
