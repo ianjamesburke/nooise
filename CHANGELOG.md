@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [1.7.2] — 2026-07-20
+
+### Added
+- feat: add two new auto-morph target states
 ## [1.7.1] — 2026-07-20
 
 ### Added
