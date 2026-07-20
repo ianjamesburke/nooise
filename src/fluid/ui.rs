@@ -305,6 +305,9 @@ pub(crate) fn ui_loop(
                         // on a macro slider's own rows, not a fallthrough
                         // into hijacking the parent LFO editor.
                         ActiveField::Lfo(_, field) if field.macro_key().is_none() => {}
+                        // Step-editor rows carry no macro_key either; v is a
+                        // true no-op, never a fallthrough into the Macro editor.
+                        ActiveField::LfoStep(..) => {}
                         // Anywhere else (including already inside the
                         // top-level Macro editor, where this closes it): v
                         // opens the Macro editor for the selected control,
@@ -587,7 +590,7 @@ fn unit_toggle_key(
         ActiveField::Envelope(address, field) => {
             env_time_key(field).map(|key| unit_key(address.id(), Some(key)))
         }
-        ActiveField::LfoMacro(..) | ActiveField::Macro(..) => None,
+        ActiveField::LfoMacro(..) | ActiveField::Macro(..) | ActiveField::LfoStep(..) => None,
         ActiveField::Control => {
             let item = items.get(selected)?;
             let spec = spec_by_id(item.id)?;
@@ -604,6 +607,10 @@ fn unit_toggle_key(
 pub(crate) enum LfoSubRow {
     Field(LfoField),
     FieldMacro(LfoField, MacroField),
+    /// A row of the Steps shape's inline step editor: sequence length, edge
+    /// glide, or one step value. Present only while the shape is `Steps`,
+    /// listed right after the Shape field (which is last in `LfoField::ALL`).
+    Step(StepTarget),
 }
 
 pub(crate) fn lfo_submenu_rows(
@@ -623,6 +630,15 @@ pub(crate) fn lfo_submenu_rows(
                     rows.push(LfoSubRow::FieldMacro(field, slot));
                 }
             }
+        }
+    }
+    if let Some(route) = automation.route(address)
+        && route.shape == LfoShape::Steps
+    {
+        rows.push(LfoSubRow::Step(StepTarget::Count));
+        rows.push(LfoSubRow::Step(StepTarget::Glide));
+        for i in 0..route.active_step_count() {
+            rows.push(LfoSubRow::Step(StepTarget::Value(i)));
         }
     }
     rows
@@ -772,6 +788,8 @@ enum ActiveField {
     /// A macro's amount/target row nested under an LFO field, only present
     /// while that field's stacked macro is expanded for editing.
     LfoMacro(ControlAddress, LfoField, MacroField),
+    /// A step-editor row of a Steps-shaped LFO (count, glide, or one value).
+    LfoStep(ControlAddress, StepTarget),
     Envelope(ControlAddress, EnvField),
     Macro(ControlAddress, MacroField),
     Control,
@@ -788,6 +806,7 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
         Some(ModKind::Lfo) => match lfo_submenu_rows(automation, address).get(lfo_selected - 1) {
             Some(LfoSubRow::Field(field)) => ActiveField::Lfo(address, *field),
             Some(LfoSubRow::FieldMacro(field, mf)) => ActiveField::LfoMacro(address, *field, *mf),
+            Some(LfoSubRow::Step(target)) => ActiveField::LfoStep(address, *target),
             None => ActiveField::Control,
         },
         Some(ModKind::Envelope) => match env_field_at(lfo_selected) {
@@ -862,6 +881,11 @@ pub(crate) fn adjust_lfo_or_control(
                 route.adjust_field(macro_field, dir);
             }
         }),
+        ActiveField::LfoStep(address, target) => automation.edit(|state| {
+            if let Some(route) = state.route_mut(address) {
+                route.adjust_step(target, dir);
+            }
+        }),
         ActiveField::Macro(address, field) => automation.edit(|state| {
             if let Some(route) = state.macro_route_mut(address) {
                 route.adjust_field(field, dir);
@@ -907,6 +931,11 @@ fn reset_lfo_or_control(
             let key = unit_key(address.id(), field.macro_key());
             if let Some(route) = state.field_macro_mut(&key) {
                 route.reset_field(macro_field);
+            }
+        }),
+        ActiveField::LfoStep(address, target) => automation.edit(|state| {
+            if let Some(route) = state.route_mut(address) {
+                route.reset_step(target);
             }
         }),
         ActiveField::Macro(address, field) => automation.edit(|state| {
@@ -959,6 +988,11 @@ fn set_modulator_or_control(
             let key = unit_key(address.id(), field.macro_key());
             if let Some(route) = state.field_macro_mut(&key) {
                 route.set_field(macro_field, value);
+            }
+        }),
+        ActiveField::LfoStep(address, target) => automation.edit(|state| {
+            if let Some(route) = state.route_mut(address) {
+                route.set_step(target, value);
             }
         }),
         ActiveField::Macro(address, field) => automation.edit(|state| {
@@ -1533,6 +1567,17 @@ pub(crate) fn render(
                                 &numeric,
                                 bar_w,
                                 MACRO_PALETTE,
+                            ));
+                        }
+                        LfoSubRow::Step(target) => {
+                            rows.push(field_line(
+                                &route.step_label(target),
+                                route.step_ratio(target),
+                                route.step_display(target),
+                                lfo_selected == fi + 1,
+                                &numeric,
+                                bar_w,
+                                LFO_PALETTE,
                             ));
                         }
                     }

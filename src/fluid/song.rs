@@ -8,8 +8,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use super::{
     AutomationState, ControlAddress, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger, EnvelopeRoute,
     FluidControls, LfoRoute, LfoShape, MACRO_COUNT, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
-    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MIN_LFO_CYCLE_BEATS, MacroRoute, all_specs,
-    spec_by_id,
+    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MacroRoute,
+    all_specs, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -20,7 +20,8 @@ pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const AUTOMATION_PAYLOAD_VERSION_V2: u8 = 2;
 const AUTOMATION_PAYLOAD_VERSION_V3: u8 = 3;
 const AUTOMATION_PAYLOAD_VERSION_V4: u8 = 4;
-const AUTOMATION_PAYLOAD_VERSION: u8 = 5;
+const AUTOMATION_PAYLOAD_VERSION_V5: u8 = 5;
+const AUTOMATION_PAYLOAD_VERSION: u8 = 6;
 const LFO_SHAPE_SINE: u8 = 0;
 const LFO_SHAPE_TRIANGLE: u8 = 1;
 const LFO_SHAPE_RAMP_UP: u8 = 2;
@@ -28,6 +29,7 @@ const LFO_SHAPE_RAMP_DOWN: u8 = 3;
 const LFO_SHAPE_SQUARE: u8 = 4;
 const LFO_SHAPE_RANDOM_DRIFT: u8 = 5;
 const LFO_SHAPE_SAMPLE_HOLD: u8 = 6;
+const LFO_SHAPE_STEPS: u8 = 7;
 const ENV_TRIGGER_EVERY_BEATS: u8 = 0;
 const ENV_TRIGGER_ON_KICK: u8 = 1;
 const ENV_TRIGGER_ONCE: u8 = 2;
@@ -194,14 +196,13 @@ fn automation_has_content(automation: &AutomationState) -> bool {
             .any(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
 }
 
-/// Automation payload v5: LFO section (with seed), macro section, envelope
-/// section, then a field-macro section (a macro stacked onto a single
-/// numeric field of an LFO editor via its `v` gesture). Macro and
-/// field-macro routes each carry one bipolar amount per macro slider (a
-/// control can ride several macros at once), replacing v4's single
-/// target+amount pair. v2 (LFO only, no seed), v3 (no field-macro section),
-/// and v4 (single-target macros) payloads still decode via their readers
-/// below; only the write path has moved to v5.
+/// Automation payload v6: identical to v5 except each `Steps`-shaped LFO
+/// route appends its custom staircase (step count, glide, then one bipolar
+/// value per live step) after the base route fields. The macro, envelope,
+/// and field-macro sections are byte-identical to v5. v2 (LFO only, no
+/// seed), v3 (no field-macro section), v4 (single-target macros), and v5
+/// (no step block) payloads still decode via their readers below; only the
+/// write path has moved to v6.
 fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     out.push(AUTOMATION_PAYLOAD_VERSION);
 
@@ -213,6 +214,16 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
         out.push(shape_tag(route.shape));
         out.extend_from_slice(&route.phase_offset_beats.to_le_bytes());
         out.extend_from_slice(&route.seed.to_le_bytes());
+        // A Steps route carries its custom staircase inline right after the
+        // base fields; every other shape writes nothing extra, so old-shape
+        // routes stay byte-identical to v5 apart from the payload version tag.
+        if route.shape == LfoShape::Steps {
+            out.push(route.step_count);
+            out.extend_from_slice(&route.step_glide.to_le_bytes());
+            for value in &route.steps[..route.active_step_count()] {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
     }
 
     let macros: Vec<_> = automation
@@ -266,7 +277,8 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         AUTOMATION_PAYLOAD_VERSION_V2 => read_automation_v2(&mut reader, automation),
         AUTOMATION_PAYLOAD_VERSION_V3 => read_automation_v3(&mut reader, automation),
         AUTOMATION_PAYLOAD_VERSION_V4 => read_automation_v4(&mut reader, automation),
-        AUTOMATION_PAYLOAD_VERSION => read_automation_v5(&mut reader, automation),
+        AUTOMATION_PAYLOAD_VERSION_V5 => read_automation_v5(&mut reader, automation),
+        AUTOMATION_PAYLOAD_VERSION => read_automation_v6(&mut reader, automation),
         _ => Ok(()),
     }
 }
@@ -342,7 +354,25 @@ fn read_automation_v5(
     automation: &mut AutomationState,
 ) -> Result<(), SongCodeError> {
     read_lfo_section(reader, automation)?;
+    read_macro_env_fieldmacro_v5(reader, automation)
+}
 
+/// v6 layout: identical to v5 except each Steps LFO route carries an inline
+/// staircase; the macro/envelope/field-macro tail is byte-identical to v5.
+fn read_automation_v6(
+    reader: &mut Reader,
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
+    read_lfo_section_v6(reader, automation)?;
+    read_macro_env_fieldmacro_v5(reader, automation)
+}
+
+/// The per-slot macro, envelope, and field-macro sections shared unchanged by
+/// the v5 and v6 layouts.
+fn read_macro_env_fieldmacro_v5(
+    reader: &mut Reader,
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
     let macro_count = reader.u16()?;
     for _ in 0..macro_count {
         let id = reader.string()?;
@@ -361,6 +391,54 @@ fn read_automation_v5(
         automation.set_field_macro(key.to_string(), route);
     }
 
+    Ok(())
+}
+
+/// v6 LFO section: same base fields as `read_lfo_section`, plus an inline
+/// staircase (count, glide, per-step values) after any route tagged `Steps`.
+/// The step-value count read always equals what the writer emitted because
+/// both clamp `step_count` to `1..=MAX_LFO_STEPS`.
+fn read_lfo_section_v6(
+    reader: &mut Reader,
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
+    let lfo_count = reader.u16()?;
+    for _ in 0..lfo_count {
+        let id = reader.string()?;
+        let cycle_beats = reader.f32()?;
+        let depth_ratio = reader.f32()?;
+        let shape_byte = reader.u8()?;
+        let phase_offset_beats = reader.f32()?;
+        let seed = reader.u32()?;
+
+        let steps = if shape_byte == LFO_SHAPE_STEPS {
+            let step_count = reader.u8()?;
+            let step_glide = reader.f32()?;
+            let live = (step_count as usize).clamp(1, MAX_LFO_STEPS);
+            let mut values = [0.0f32; MAX_LFO_STEPS];
+            for value in values.iter_mut().take(live) {
+                *value = finite_or(reader.f32()?, 0.0).clamp(-1.0, 1.0);
+            }
+            Some((
+                step_count,
+                finite_or(step_glide, 0.0).clamp(0.0, 1.0),
+                values,
+            ))
+        } else {
+            None
+        };
+
+        let (Some(spec), Some(shape)) = (spec_by_id(id), shape_from_tag(shape_byte)) else {
+            continue;
+        };
+        let mut route = build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed);
+        if let Some((step_count, step_glide, values)) = steps {
+            route.step_count = step_count.clamp(1, MAX_LFO_STEPS as u8);
+            route.step_glide = step_glide;
+            route.steps = values;
+        }
+        automation.set_route(ControlAddress::new(spec.id), route);
+    }
     Ok(())
 }
 
@@ -423,6 +501,9 @@ fn build_lfo_route(
         shape,
         phase_offset_beats: finite_or(phase_offset_beats, 0.0).clamp(0.0, MAX_LFO_OFFSET_BEATS),
         seed,
+        // v2..v5 codes carry no step block; a non-Steps route ignores these,
+        // and a v6 Steps route overwrites them from its inline staircase.
+        ..LfoRoute::default()
     }
 }
 
@@ -515,6 +596,7 @@ fn shape_tag(shape: LfoShape) -> u8 {
         LfoShape::Square => LFO_SHAPE_SQUARE,
         LfoShape::RandomDrift => LFO_SHAPE_RANDOM_DRIFT,
         LfoShape::SampleHold => LFO_SHAPE_SAMPLE_HOLD,
+        LfoShape::Steps => LFO_SHAPE_STEPS,
     }
 }
 
@@ -527,6 +609,7 @@ fn shape_from_tag(tag: u8) -> Option<LfoShape> {
         LFO_SHAPE_SQUARE => Some(LfoShape::Square),
         LFO_SHAPE_RANDOM_DRIFT => Some(LfoShape::RandomDrift),
         LFO_SHAPE_SAMPLE_HOLD => Some(LfoShape::SampleHold),
+        LFO_SHAPE_STEPS => Some(LfoShape::Steps),
         _ => None,
     }
 }
