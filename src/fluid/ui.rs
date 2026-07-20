@@ -206,7 +206,13 @@ pub(crate) fn ui_loop(
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if automation.state().is_editor_open() {
-                        if lfo_selected <= 1 {
+                        if automation.state().active_kind() == Some(ModKind::Lfo) {
+                            lfo_selected = clamp_lfo_selection(
+                                lfo_selected,
+                                -1,
+                                active_field_count(automation.state()),
+                            );
+                        } else if lfo_selected <= 1 {
                             automation.edit(AutomationState::close_editor);
                             lfo_selected = 0;
                         } else {
@@ -218,7 +224,13 @@ pub(crate) fn ui_loop(
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if automation.state().is_editor_open() {
-                        if lfo_selected >= active_field_count(automation.state()) {
+                        if automation.state().active_kind() == Some(ModKind::Lfo) {
+                            lfo_selected = clamp_lfo_selection(
+                                lfo_selected,
+                                1,
+                                active_field_count(automation.state()),
+                            );
+                        } else if lfo_selected >= active_field_count(automation.state()) {
                             automation.edit(AutomationState::close_editor);
                             selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
                             lfo_selected = 0;
@@ -708,6 +720,15 @@ pub(crate) fn active_field_count(automation: &AutomationState) -> usize {
         Some(ModKind::Macro) => MacroField::ALL.len(),
         None => 0,
     }
+}
+
+/// LFO editors are explicitly collapsed with `f` or Escape. Arrow navigation
+/// stays inside the submenu and clamps at its first and last selectable rows.
+pub(crate) fn clamp_lfo_selection(current: usize, direction: isize, row_count: usize) -> usize {
+    if row_count == 0 {
+        return 0;
+    }
+    current.saturating_add_signed(direction).clamp(1, row_count)
 }
 
 /// Whether a modulator kind can open on a control. Envelopes live only on

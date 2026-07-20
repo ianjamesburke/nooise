@@ -595,6 +595,14 @@ fn lfo_field_adjust_steps_and_clamps() {
 }
 
 #[test]
+fn lfo_submenu_arrow_navigation_clamps_until_explicitly_closed() {
+    assert_eq!(clamp_lfo_selection(1, -1, 4), 1);
+    assert_eq!(clamp_lfo_selection(2, -1, 4), 1);
+    assert_eq!(clamp_lfo_selection(3, 1, 4), 4);
+    assert_eq!(clamp_lfo_selection(4, 1, 4), 4);
+}
+
+#[test]
 fn lfo_field_set_snaps_to_eighth_beat_grid() {
     let mut route = LfoRoute::default();
 
