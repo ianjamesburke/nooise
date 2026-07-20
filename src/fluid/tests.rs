@@ -575,10 +575,11 @@ fn lfo_field_adjust_steps_and_clamps() {
 
     route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
     assert_close(route.cycle_beats, 2.25);
-    for _ in 0..150 {
+    route.set_field_at(LfoField::Interval, 4.0, 0.0);
+    for expected in [8.0, 12.0, 16.0, 32.0, 64.0, 64.0] {
         route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
+        assert_close(route.cycle_beats, expected);
     }
-    assert_close(route.cycle_beats, 16.0);
     for _ in 0..150 {
         route.adjust_field_at(LfoField::Interval, -1.0, 0.0);
     }
@@ -614,15 +615,15 @@ fn startup_fade_reaches_full_gain_in_two_seconds() {
 }
 
 #[test]
-fn lfo_field_set_snaps_to_eighth_beat_grid() {
+fn lfo_field_set_keeps_exact_rate_and_snaps_offset_to_grid() {
     let mut route = LfoRoute::default();
 
     route.set_field_at(LfoField::Interval, 3.1, 0.0);
-    assert_close(route.cycle_beats, 3.0);
+    assert_close(route.cycle_beats, 3.1);
     route.set_field_at(LfoField::Interval, 0.17, 0.0);
-    assert_close(route.cycle_beats, 0.125);
+    assert_close(route.cycle_beats, 0.17);
     route.set_field_at(LfoField::Interval, 100.0, 0.0);
-    assert_close(route.cycle_beats, 16.0);
+    assert_close(route.cycle_beats, 64.0);
     route.set_field_at(LfoField::Amount, 130.0, 0.0);
     assert_close(route.depth_ratio, 1.0);
     route.set_field_at(LfoField::Amount, 40.0, 0.0);
@@ -1287,7 +1288,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     let at_start = draw_at(0.0);
     let text = buffer_text(&at_start);
     assert!(text.contains("amount"));
-    assert!(text.contains("interval"));
+    assert!(text.contains("rate"));
     assert!(text.contains("offset"));
     assert!(text.contains("0%"));
 
@@ -3996,10 +3997,17 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
         1010.0,
     );
 
-    // Un-flipping snaps the interval back onto the sixteenth grid.
+    // Un-flipping keeps the exact rate; typed beat values are intentionally
+    // not limited to the arrow-key ladder.
     flipped.clear();
     snap_after_unit_flip(&mut automation, 2, &controls, Tab::Master, 0, false, 0.0);
-    assert_close(automation.state().route(address).unwrap().cycle_beats, 2.0);
+    assert_near(
+        beats_to_ms(
+            automation.state().route(address).unwrap().cycle_beats,
+            120.0,
+        ),
+        1010.0,
+    );
 }
 
 // ============================================================

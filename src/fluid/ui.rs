@@ -526,12 +526,12 @@ pub(crate) fn snap_after_unit_flip(
 ) {
     let bpm = controls.load().master.bpm;
     match active_field(automation.state(), lfo_selected) {
-        // Modulator time fields are native beats: un-flipping lands back on
-        // their own grid via the snapping setter.
+        // LFO rate accepts exact typed beat values, so an exact ms-authored
+        // value stays exact when returning to beats. Offset retains its grid.
         ActiveField::Lfo(address, field) if !now_flipped => automation.edit(|state| {
             if let Some(route) = state.route_mut(address) {
                 match field {
-                    LfoField::Interval => route.set_field_at(field, route.cycle_beats, beat),
+                    LfoField::Interval => {}
                     LfoField::Offset => route.set_field_at(field, route.phase_offset_beats, beat),
                     _ => {}
                 }

@@ -12,7 +12,7 @@ use super::{
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
 pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.0;
 pub(crate) const MIN_LFO_CYCLE_BEATS: f32 = 0.125;
-pub(crate) const MAX_LFO_CYCLE_BEATS: f32 = 16.0;
+pub(crate) const MAX_LFO_CYCLE_BEATS: f32 = 64.0;
 pub(crate) const MAX_LFO_OFFSET_BEATS: f32 = 4.0;
 
 /// Upper bound on a `Steps` shape's custom automation sequence. Fixed so
@@ -329,6 +329,7 @@ pub(crate) enum StepTarget {
 pub(crate) enum LfoEntry {
     Percent,
     Snap,
+    Exact,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -347,7 +348,9 @@ pub(crate) struct LfoFieldSpec {
 
 impl LfoFieldSpec {
     pub(crate) fn adjust(self, value: f32, dir: f32) -> f32 {
-        if self.beat_grid {
+        if self.field == LfoField::Interval {
+            lfo_rate_adjust(value, dir)
+        } else if self.beat_grid {
             beat_grid_adjust(value, dir, self.min, self.max)
         } else {
             self.quantize(value + dir * self.step)
@@ -358,6 +361,7 @@ impl LfoFieldSpec {
         match self.entry {
             LfoEntry::Percent => normalize_unit_input(value).clamp(self.min, self.max),
             LfoEntry::Snap => self.quantize(value),
+            LfoEntry::Exact => value.clamp(self.min, self.max),
         }
     }
 
@@ -392,11 +396,11 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
     },
     LfoFieldSpec {
         field: LfoField::Interval,
-        label: "interval",
+        label: "rate",
         min: MIN_LFO_CYCLE_BEATS,
         max: MAX_LFO_CYCLE_BEATS,
         step: INTERVAL_STEP,
-        entry: LfoEntry::Snap,
+        entry: LfoEntry::Exact,
         reset: MIN_LFO_CYCLE_BEATS,
         beat_grid: true,
     },
@@ -411,6 +415,28 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
         beat_grid: true,
     },
 ];
+
+const LFO_RATE_ARROW_STEPS: &[f32] = &[
+    0.125, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0,
+    8.0, 12.0, 16.0, 32.0, 64.0,
+];
+
+fn lfo_rate_adjust(value: f32, dir: f32) -> f32 {
+    if dir > 0.0 {
+        LFO_RATE_ARROW_STEPS
+            .iter()
+            .copied()
+            .find(|step| *step > value + f32::EPSILON)
+            .unwrap_or(MAX_LFO_CYCLE_BEATS)
+    } else {
+        LFO_RATE_ARROW_STEPS
+            .iter()
+            .rev()
+            .copied()
+            .find(|step| *step < value - f32::EPSILON)
+            .unwrap_or(MIN_LFO_CYCLE_BEATS)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LfoRoute {
