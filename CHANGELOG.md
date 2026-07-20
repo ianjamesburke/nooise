@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [1.8.0] — 2026-07-20
+
+### Fixed
+- Fix LFO navigation and timing behavior (#14)
 ## [1.7.2] — 2026-07-20
 
 ### Added
