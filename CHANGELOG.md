@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [1.7.1] — 2026-07-20
+
+### Added
+- feat: custom Steps LFO shape (automation step sequencer) (#13)
+- feat: add 4 selectable kick drum types (#12)
+- feat: reorder tabs to Chords-first, Master-last
 ## [1.7.0] — 2026-07-19
 
 ### Added
