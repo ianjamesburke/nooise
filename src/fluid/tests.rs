@@ -3489,21 +3489,34 @@ fn render_fluid_draws_step_submenu() {
 
 #[test]
 fn steps_shape_defaults_to_three_neutral_then_a_full_up_step() {
-    // Fresh Steps route: 4 steps, first three at 0, fourth at +1. With a
-    // 1-beat cycle each step spans a quarter; sampled mid-step (clear of the
-    // glide ramp) the last quarter reads +1 and the rest read 0.
+    // Fresh Steps route: 4 steps, first three at 0, fourth at +1. Each step
+    // spans one interval (1 beat here), so the pattern lasts 4 beats; sampled
+    // mid-step (clear of the glide ramp) beat 4 reads +1 and the rest read 0.
     let route = lfo_shape(LfoShape::Steps);
     assert_eq!(route.active_step_count(), 4);
-    assert_near(route.wave_at(0.125), 0.0);
-    assert_near(route.wave_at(0.375), 0.0);
-    assert_near(route.wave_at(0.625), 0.0);
-    assert_near(route.wave_at(0.875), 1.0);
+    assert_near(route.wave_at(0.5), 0.0);
+    assert_near(route.wave_at(1.5), 0.0);
+    assert_near(route.wave_at(2.5), 0.0);
+    assert_near(route.wave_at(3.5), 1.0);
+}
+
+#[test]
+fn raising_step_count_extends_the_pattern() {
+    // The pattern lasts count × interval: at 4 steps the up-step (index 3)
+    // recurs every 4 beats, so beat 7.5 lands on it again; at 8 steps beat
+    // 7.5 lands on step 8 (neutral) because the pattern now spans 8 beats.
+    let mut route = lfo_shape(LfoShape::Steps);
+    assert_near(route.wave_at(3.5), 1.0);
+    assert_near(route.wave_at(7.5), 1.0);
+    route.set_step(StepTarget::Count, 8.0);
+    assert_near(route.wave_at(3.5), 1.0);
+    assert_near(route.wave_at(7.5), 0.0);
 }
 
 #[test]
 fn steps_shape_is_continuous_with_glide() {
     // With glide > 0 the staircase eases between steps, so no two adjacent
-    // samples jump — including across the cycle wrap (step 0 eases from the
+    // samples jump — including across the pattern wrap (step 0 eases from the
     // last step). Same click-safety contract the ramps hold.
     let mut route = lfo_shape(LfoShape::Steps); // default glide
     route.steps = [0.0; MAX_LFO_STEPS];
@@ -3513,7 +3526,7 @@ fn steps_shape_is_continuous_with_glide() {
     route.steps[3] = -1.0;
     let eps = 1e-4;
     for i in 0..400 {
-        let beat = f64::from(i) / 100.0; // 4 cycles at cycle_beats = 1
+        let beat = f64::from(i) / 100.0; // full 4-step pattern, 1 beat per step
         let jump = (route.wave_at(beat + eps) - route.wave_at(beat)).abs();
         assert!(jump < 0.1, "steps jump {jump} at beat {beat}");
     }
@@ -3528,8 +3541,8 @@ fn steps_with_zero_glide_hold_flat_then_jump() {
     route.steps = [0.0; MAX_LFO_STEPS];
     route.steps[0] = -1.0;
     route.steps[1] = 1.0;
-    assert_near(route.wave_at(0.1), route.wave_at(0.2));
-    assert!((route.wave_at(0.24) - route.wave_at(0.26)).abs() > 1.0);
+    assert_near(route.wave_at(0.4), route.wave_at(0.8));
+    assert!((route.wave_at(0.99) - route.wave_at(1.01)).abs() > 1.0);
 }
 
 #[test]

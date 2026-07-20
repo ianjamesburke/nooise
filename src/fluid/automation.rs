@@ -21,7 +21,7 @@ pub(crate) const MAX_LFO_OFFSET_BEATS: f32 = 4.0;
 pub(crate) const MAX_LFO_STEPS: usize = 16;
 pub(crate) const DEFAULT_LFO_STEP_COUNT: u8 = 4;
 /// Default edge-glide: a slight slide into each step so the staircase doesn't
-/// click on a live-read control (see `steps_value`). 0 = hard steps.
+/// click on a live-read control (see `step_value_at`). 0 = hard steps.
 pub(crate) const DEFAULT_LFO_STEP_GLIDE: f32 = 0.15;
 /// Default `Steps` pattern: three neutral steps then a full up-step, so a
 /// fresh Steps shape reads as a rhythmic accent on the last beat.
@@ -260,7 +260,7 @@ fn periodic_shape_value(shape: LfoShape, phase: f32) -> f32 {
         LfoShape::RampDown => ease_ramp_wrap(phase, 1.0 - 2.0 * phase, 1.0),
         LfoShape::Square => (SQUARE_SMOOTH * (TAU * phase).sin()).tanh(),
         // Random and Steps shapes are route-dependent: evaluated from seed or
-        // the custom step array in `wave_at`/`steps_value`, not from phase alone.
+        // the custom step array in `wave_at`/`step_value_at`, not from phase alone.
         LfoShape::RandomDrift | LfoShape::SampleHold | LfoShape::Steps => 0.0,
     }
 }
@@ -422,10 +422,12 @@ pub(crate) struct LfoRoute {
     pub(crate) seed: u32,
     /// Custom staircase for `LfoShape::Steps`; only the first `step_count`
     /// entries are live. Bipolar (-1..1), inert unless the shape is `Steps`.
+    /// Each step spans one LFO interval (`cycle_beats`), so the full pattern
+    /// lasts `step_count` intervals — raising the count extends the pattern.
     pub(crate) steps: [f32; MAX_LFO_STEPS],
     pub(crate) step_count: u8,
     /// Edge-glide fraction (0..1): how much of each step window eases in from
-    /// the previous step's value instead of holding flat. See `steps_value`.
+    /// the previous step's value instead of holding flat. See `step_value_at`.
     pub(crate) step_glide: f32,
 }
 
@@ -478,7 +480,10 @@ impl LfoRoute {
                 let b = seeded_unit(self.seed, index + 1);
                 a + (b - a) * smoothstep(phase)
             }
-            LfoShape::Steps => self.steps_value(phase),
+            LfoShape::Steps => {
+                let count = self.active_step_count();
+                self.step_value_at(index.rem_euclid(count as i64) as usize, phase)
+            }
             shape => periodic_shape_value(shape, phase),
         }
     }
@@ -488,22 +493,18 @@ impl LfoRoute {
         (self.step_count as usize).clamp(1, MAX_LFO_STEPS)
     }
 
-    /// Staircase value in -1..1 for a phase in 0..1. Each of the `step_count`
-    /// steps holds its value, easing in from the previous step's value over the
-    /// first `step_glide` fraction of the step. Because step 0 eases from the
-    /// last step, the curve is value-continuous across the cycle wrap too (at
+    /// Staircase value in -1..1 for step `idx` at fraction `frac` (0..1)
+    /// through that step. Each step spans one LFO interval and holds its
+    /// value, easing in from the previous step's value over the first
+    /// `step_glide` fraction of the step. Because step 0 eases from the last
+    /// step, the curve is value-continuous across the pattern wrap too (at
     /// `step_glide` 0 it hard-steps and clicks, same as sample & hold).
-    fn steps_value(&self, phase: f32) -> f32 {
+    fn step_value_at(&self, idx: usize, frac: f32) -> f32 {
         let count = self.active_step_count();
-        let scaled = phase.rem_euclid(1.0) * count as f32;
-        let idx = (scaled.floor() as usize).min(count - 1);
+        let idx = idx.min(count - 1);
         let cur = self.steps[idx];
         let glide = self.step_glide.clamp(0.0, 1.0);
-        if glide <= f32::EPSILON {
-            return cur;
-        }
-        let frac = scaled - idx as f32;
-        if frac >= glide {
+        if glide <= f32::EPSILON || frac >= glide {
             return cur;
         }
         let prev = self.steps[(idx + count - 1) % count];
@@ -511,11 +512,32 @@ impl LfoRoute {
     }
 
     /// Periodic shape value in -1..1 at a phase in 0..1, for lane drawing.
-    /// Random shapes return 0 here; draw them from `wave_at` over time instead.
+    /// For `Steps` the phase spans the whole pattern (`step_count` intervals),
+    /// matching `pattern_phase_at`. Random shapes return 0 here; draw them
+    /// from `wave_at` over time instead.
     pub(crate) fn shape_value_at_phase(&self, phase: f32) -> f32 {
         match self.shape {
-            LfoShape::Steps => self.steps_value(phase),
+            LfoShape::Steps => {
+                let count = self.active_step_count();
+                let scaled = phase.rem_euclid(1.0) * count as f32;
+                let idx = (scaled.floor() as usize).min(count - 1);
+                self.step_value_at(idx, scaled - idx as f32)
+            }
             _ => periodic_shape_value(self.shape, phase),
+        }
+    }
+
+    /// Phase of the full drawn pattern at `beat`: one interval for periodic
+    /// shapes, `step_count` intervals for `Steps` (each step spans one
+    /// interval). Drives the lane's bright head so it tracks what plays.
+    pub(crate) fn pattern_phase_at(&self, beat: f64) -> f64 {
+        match self.shape {
+            LfoShape::Steps => {
+                let cycle = f64::from(self.cycle_beats.max(MIN_LFO_CYCLE_BEATS));
+                let t = (beat + f64::from(self.phase_offset_beats)) / cycle;
+                (t / self.active_step_count() as f64).rem_euclid(1.0)
+            }
+            _ => self.phase_at(beat),
         }
     }
 

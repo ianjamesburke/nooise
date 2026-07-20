@@ -1769,7 +1769,7 @@ pub(crate) fn lfo_lane_line(
         return Line::from(spans);
     }
 
-    let head = (route.phase_at(beat) * width as f64) as usize % width;
+    let head = (route.pattern_phase_at(beat) * width as f64) as usize % width;
     for i in 0..width {
         let phase = i as f32 / width as f32;
         let wave = route.shape_value_at_phase(phase) * route.depth_ratio;
