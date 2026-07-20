@@ -15,9 +15,27 @@ pub(crate) const MIN_LFO_CYCLE_BEATS: f32 = 0.125;
 pub(crate) const MAX_LFO_CYCLE_BEATS: f32 = 16.0;
 pub(crate) const MAX_LFO_OFFSET_BEATS: f32 = 4.0;
 
+/// Upper bound on a `Steps` shape's custom automation sequence. Fixed so
+/// `LfoRoute` stays `Copy` (a `[f32; MAX_LFO_STEPS]` array, no allocation on
+/// the audio thread).
+pub(crate) const MAX_LFO_STEPS: usize = 16;
+pub(crate) const DEFAULT_LFO_STEP_COUNT: u8 = 4;
+/// Default edge-glide: a slight slide into each step so the staircase doesn't
+/// click on a live-read control (see `step_value_at`). 0 = hard steps.
+pub(crate) const DEFAULT_LFO_STEP_GLIDE: f32 = 0.15;
+/// Default `Steps` pattern: three neutral steps then a full up-step, so a
+/// fresh Steps shape reads as a rhythmic accent on the last beat.
+const DEFAULT_LFO_STEPS: [f32; MAX_LFO_STEPS] = {
+    let mut steps = [0.0f32; MAX_LFO_STEPS];
+    steps[3] = 1.0;
+    steps
+};
+
 const AMOUNT_STEP: f32 = 0.01;
 const INTERVAL_STEP: f32 = 0.125;
 const OFFSET_STEP: f32 = 0.125;
+const STEP_VALUE_STEP: f32 = 0.05;
+const STEP_GLIDE_STEP: f32 = 0.05;
 
 /// Softness of the smoothed square edge; higher = closer to a hard square.
 const SQUARE_SMOOTH: f32 = 6.0;
@@ -132,10 +150,13 @@ pub(crate) enum LfoShape {
     Square,
     RandomDrift,
     SampleHold,
+    /// User-drawn staircase: a per-cycle sequence of `step_count` bipolar
+    /// values on `LfoRoute`, edited in the Shape row's inline step submenu.
+    Steps,
 }
 
 impl LfoShape {
-    pub(crate) const ALL: [LfoShape; 7] = [
+    pub(crate) const ALL: [LfoShape; 8] = [
         Self::Sine,
         Self::Triangle,
         Self::RampUp,
@@ -143,6 +164,7 @@ impl LfoShape {
         Self::Square,
         Self::RandomDrift,
         Self::SampleHold,
+        Self::Steps,
     ];
 
     pub(crate) fn label(self) -> &'static str {
@@ -154,6 +176,7 @@ impl LfoShape {
             Self::Square => "square",
             Self::RandomDrift => "random drift",
             Self::SampleHold => "sample & hold",
+            Self::Steps => "steps",
         }
     }
 
@@ -236,7 +259,9 @@ fn periodic_shape_value(shape: LfoShape, phase: f32) -> f32 {
         LfoShape::RampUp => ease_ramp_wrap(phase, 2.0 * phase - 1.0, -1.0),
         LfoShape::RampDown => ease_ramp_wrap(phase, 1.0 - 2.0 * phase, 1.0),
         LfoShape::Square => (SQUARE_SMOOTH * (TAU * phase).sin()).tanh(),
-        LfoShape::RandomDrift | LfoShape::SampleHold => 0.0,
+        // Random and Steps shapes are route-dependent: evaluated from seed or
+        // the custom step array in `wave_at`/`step_value_at`, not from phase alone.
+        LfoShape::RandomDrift | LfoShape::SampleHold | LfoShape::Steps => 0.0,
     }
 }
 
@@ -289,6 +314,15 @@ impl LfoField {
             Self::Shape => None,
         }
     }
+}
+
+/// One editable target inside a `Steps` shape's inline submenu: the sequence
+/// length, the shared edge-glide, or one bipolar step value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StepTarget {
+    Count,
+    Glide,
+    Value(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -386,6 +420,15 @@ pub(crate) struct LfoRoute {
     pub(crate) shape: LfoShape,
     /// Seed for random shapes; hashed with the cycle index to produce values.
     pub(crate) seed: u32,
+    /// Custom staircase for `LfoShape::Steps`; only the first `step_count`
+    /// entries are live. Bipolar (-1..1), inert unless the shape is `Steps`.
+    /// Each step spans one LFO interval (`cycle_beats`), so the full pattern
+    /// lasts `step_count` intervals — raising the count extends the pattern.
+    pub(crate) steps: [f32; MAX_LFO_STEPS],
+    pub(crate) step_count: u8,
+    /// Edge-glide fraction (0..1): how much of each step window eases in from
+    /// the previous step's value instead of holding flat. See `step_value_at`.
+    pub(crate) step_glide: f32,
 }
 
 impl Default for LfoRoute {
@@ -396,6 +439,9 @@ impl Default for LfoRoute {
             phase_offset_beats: 0.0,
             shape: LfoShape::Sine,
             seed: 0,
+            steps: DEFAULT_LFO_STEPS,
+            step_count: DEFAULT_LFO_STEP_COUNT,
+            step_glide: DEFAULT_LFO_STEP_GLIDE,
         }
     }
 }
@@ -434,14 +480,140 @@ impl LfoRoute {
                 let b = seeded_unit(self.seed, index + 1);
                 a + (b - a) * smoothstep(phase)
             }
+            LfoShape::Steps => {
+                let count = self.active_step_count();
+                self.step_value_at(index.rem_euclid(count as i64) as usize, phase)
+            }
             shape => periodic_shape_value(shape, phase),
         }
     }
 
+    /// Live step count, clamped into the valid `1..=MAX_LFO_STEPS` range.
+    pub(crate) fn active_step_count(&self) -> usize {
+        (self.step_count as usize).clamp(1, MAX_LFO_STEPS)
+    }
+
+    /// Staircase value in -1..1 for step `idx` at fraction `frac` (0..1)
+    /// through that step. Each step spans one LFO interval and holds its
+    /// value, easing in from the previous step's value over the first
+    /// `step_glide` fraction of the step. Because step 0 eases from the last
+    /// step, the curve is value-continuous across the pattern wrap too (at
+    /// `step_glide` 0 it hard-steps and clicks, same as sample & hold).
+    fn step_value_at(&self, idx: usize, frac: f32) -> f32 {
+        let count = self.active_step_count();
+        let idx = idx.min(count - 1);
+        let cur = self.steps[idx];
+        let glide = self.step_glide.clamp(0.0, 1.0);
+        if glide <= f32::EPSILON || frac >= glide {
+            return cur;
+        }
+        let prev = self.steps[(idx + count - 1) % count];
+        prev + (cur - prev) * smoothstep(frac / glide)
+    }
+
     /// Periodic shape value in -1..1 at a phase in 0..1, for lane drawing.
-    /// Random shapes return 0 here; draw them from `wave_at` over time instead.
+    /// For `Steps` the phase spans the whole pattern (`step_count` intervals),
+    /// matching `pattern_phase_at`. Random shapes return 0 here; draw them
+    /// from `wave_at` over time instead.
     pub(crate) fn shape_value_at_phase(&self, phase: f32) -> f32 {
-        periodic_shape_value(self.shape, phase)
+        match self.shape {
+            LfoShape::Steps => {
+                let count = self.active_step_count();
+                let scaled = phase.rem_euclid(1.0) * count as f32;
+                let idx = (scaled.floor() as usize).min(count - 1);
+                self.step_value_at(idx, scaled - idx as f32)
+            }
+            _ => periodic_shape_value(self.shape, phase),
+        }
+    }
+
+    /// Phase of the full drawn pattern at `beat`: one interval for periodic
+    /// shapes, `step_count` intervals for `Steps` (each step spans one
+    /// interval). Drives the lane's bright head so it tracks what plays.
+    pub(crate) fn pattern_phase_at(&self, beat: f64) -> f64 {
+        match self.shape {
+            LfoShape::Steps => {
+                let cycle = f64::from(self.cycle_beats.max(MIN_LFO_CYCLE_BEATS));
+                let t = (beat + f64::from(self.phase_offset_beats)) / cycle;
+                (t / self.active_step_count() as f64).rem_euclid(1.0)
+            }
+            _ => self.phase_at(beat),
+        }
+    }
+
+    /// Adjust a step submenu target by one h/l press.
+    pub(crate) fn adjust_step(&mut self, target: StepTarget, dir: f32) {
+        match target {
+            StepTarget::Count => {
+                self.set_step_count(self.step_count as i32 + dir.signum() as i32);
+            }
+            StepTarget::Glide => {
+                self.step_glide = (self.step_glide + dir * STEP_GLIDE_STEP).clamp(0.0, 1.0);
+            }
+            StepTarget::Value(i) => {
+                if let Some(value) = self.steps.get_mut(i) {
+                    *value = (*value + dir * STEP_VALUE_STEP).clamp(-1.0, 1.0);
+                }
+            }
+        }
+    }
+
+    /// Numeric entry for a step target: count is a whole number, glide a
+    /// unipolar percent, a step value a bipolar percent (`-100`..`100`).
+    pub(crate) fn set_step(&mut self, target: StepTarget, value: f32) {
+        match target {
+            StepTarget::Count => self.set_step_count(value.round() as i32),
+            StepTarget::Glide => self.step_glide = (value / 100.0).clamp(0.0, 1.0),
+            StepTarget::Value(i) => {
+                if let Some(step) = self.steps.get_mut(i) {
+                    *step = (value / 100.0).clamp(-1.0, 1.0);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn reset_step(&mut self, target: StepTarget) {
+        match target {
+            StepTarget::Count => self.step_count = DEFAULT_LFO_STEP_COUNT,
+            StepTarget::Glide => self.step_glide = DEFAULT_LFO_STEP_GLIDE,
+            StepTarget::Value(i) => {
+                if let Some(step) = self.steps.get_mut(i) {
+                    *step = 0.0;
+                }
+            }
+        }
+    }
+
+    fn set_step_count(&mut self, count: i32) {
+        self.step_count = count.clamp(1, MAX_LFO_STEPS as i32) as u8;
+    }
+
+    pub(crate) fn step_ratio(&self, target: StepTarget) -> f32 {
+        match target {
+            StepTarget::Count => {
+                (self.active_step_count() - 1) as f32 / (MAX_LFO_STEPS - 1).max(1) as f32
+            }
+            StepTarget::Glide => self.step_glide.clamp(0.0, 1.0),
+            StepTarget::Value(i) => (self.steps.get(i).copied().unwrap_or(0.0) + 1.0) / 2.0,
+        }
+    }
+
+    pub(crate) fn step_display(&self, target: StepTarget) -> String {
+        match target {
+            StepTarget::Count => format!("{}", self.active_step_count()),
+            StepTarget::Glide => format!("{:.0}%", self.step_glide * 100.0),
+            StepTarget::Value(i) => {
+                format!("{:+.0}%", self.steps.get(i).copied().unwrap_or(0.0) * 100.0)
+            }
+        }
+    }
+
+    pub(crate) fn step_label(&self, target: StepTarget) -> String {
+        match target {
+            StepTarget::Count => "steps".to_string(),
+            StepTarget::Glide => "glide".to_string(),
+            StepTarget::Value(i) => format!("· step {}", i + 1),
+        }
     }
 
     /// Re-roll the random seed to a new but repeatable pattern.

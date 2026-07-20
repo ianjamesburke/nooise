@@ -628,13 +628,13 @@ fn discrete_fields_clamp_at_their_ends_instead_of_wrapping() {
     }
     assert_eq!(
         route.shape,
-        LfoShape::SampleHold,
+        LfoShape::Steps,
         "shape must stop at the last entry"
     );
     route.set_field_at(LfoField::Shape, 99.0, 0.0);
     assert_eq!(
         route.shape,
-        LfoShape::SampleHold,
+        LfoShape::Steps,
         "numeric entry clamps, not wraps"
     );
 
@@ -3454,6 +3454,155 @@ fn sample_hold_is_stepped_and_seeded() {
 }
 
 #[test]
+fn render_fluid_draws_step_submenu() {
+    let controls = FluidControls::default();
+    let fluid = FluidState::new();
+    let items = tab_controls(Tab::Chords, &controls);
+    let mut automation = AutomationState::default();
+    let address = ControlAddress::new(items[3].id);
+    let route = automation.open_or_create(address);
+    route.shape = LfoShape::Steps;
+    route.depth_ratio = 0.5;
+
+    let buffer = render_to_buffer(
+        120,
+        44,
+        &items,
+        Tab::Chords,
+        3,
+        1,
+        2.5,
+        &fluid,
+        &automation,
+        &controls,
+        None,
+        ChordDrill::None,
+        0,
+        &[None; 9],
+    );
+
+    let text = buffer_text(&buffer);
+    assert!(text.contains("steps"), "step count row present");
+    assert!(text.contains("glide"), "glide row present");
+    assert!(text.contains("step 1"), "first step value row present");
+}
+
+#[test]
+fn steps_shape_defaults_to_three_neutral_then_a_full_up_step() {
+    // Fresh Steps route: 4 steps, first three at 0, fourth at +1. Each step
+    // spans one interval (1 beat here), so the pattern lasts 4 beats; sampled
+    // mid-step (clear of the glide ramp) beat 4 reads +1 and the rest read 0.
+    let route = lfo_shape(LfoShape::Steps);
+    assert_eq!(route.active_step_count(), 4);
+    assert_near(route.wave_at(0.5), 0.0);
+    assert_near(route.wave_at(1.5), 0.0);
+    assert_near(route.wave_at(2.5), 0.0);
+    assert_near(route.wave_at(3.5), 1.0);
+}
+
+#[test]
+fn raising_step_count_extends_the_pattern() {
+    // The pattern lasts count × interval: at 4 steps the up-step (index 3)
+    // recurs every 4 beats, so beat 7.5 lands on it again; at 8 steps beat
+    // 7.5 lands on step 8 (neutral) because the pattern now spans 8 beats.
+    let mut route = lfo_shape(LfoShape::Steps);
+    assert_near(route.wave_at(3.5), 1.0);
+    assert_near(route.wave_at(7.5), 1.0);
+    route.set_step(StepTarget::Count, 8.0);
+    assert_near(route.wave_at(3.5), 1.0);
+    assert_near(route.wave_at(7.5), 0.0);
+}
+
+#[test]
+fn steps_shape_is_continuous_with_glide() {
+    // With glide > 0 the staircase eases between steps, so no two adjacent
+    // samples jump — including across the pattern wrap (step 0 eases from the
+    // last step). Same click-safety contract the ramps hold.
+    let mut route = lfo_shape(LfoShape::Steps); // default glide
+    route.steps = [0.0; MAX_LFO_STEPS];
+    route.steps[0] = 1.0;
+    route.steps[1] = -1.0;
+    route.steps[2] = 1.0;
+    route.steps[3] = -1.0;
+    let eps = 1e-4;
+    for i in 0..400 {
+        let beat = f64::from(i) / 100.0; // full 4-step pattern, 1 beat per step
+        let jump = (route.wave_at(beat + eps) - route.wave_at(beat)).abs();
+        assert!(jump < 0.1, "steps jump {jump} at beat {beat}");
+    }
+}
+
+#[test]
+fn steps_with_zero_glide_hold_flat_then_jump() {
+    // glide 0 is the opt-in hard staircase: flat within a step, an honest jump
+    // at the boundary (like sample & hold), not a click bug.
+    let mut route = lfo_shape(LfoShape::Steps);
+    route.step_glide = 0.0;
+    route.steps = [0.0; MAX_LFO_STEPS];
+    route.steps[0] = -1.0;
+    route.steps[1] = 1.0;
+    assert_near(route.wave_at(0.4), route.wave_at(0.8));
+    assert!((route.wave_at(0.99) - route.wave_at(1.01)).abs() > 1.0);
+}
+
+#[test]
+fn step_edits_clamp_count_glide_and_values() {
+    let mut route = lfo_shape(LfoShape::Steps);
+    route.set_step(StepTarget::Count, 99.0);
+    assert_eq!(route.active_step_count(), MAX_LFO_STEPS);
+    for _ in 0..100 {
+        route.adjust_step(StepTarget::Count, -1.0);
+    }
+    assert_eq!(route.active_step_count(), 1);
+    // Step values are bipolar percent entry, clamped to -1..1.
+    route.set_step(StepTarget::Value(0), -250.0);
+    assert_near(route.steps[0], -1.0);
+    route.set_step(StepTarget::Value(0), 50.0);
+    assert_near(route.steps[0], 0.5);
+    // Glide is unipolar percent entry.
+    route.set_step(StepTarget::Glide, 40.0);
+    assert_near(route.step_glide, 0.4);
+}
+
+#[test]
+fn song_code_round_trips_steps_shape() {
+    let mut automation = AutomationState::default();
+    let mut route = LfoRoute {
+        shape: LfoShape::Steps,
+        cycle_beats: 2.0,
+        depth_ratio: 0.7,
+        step_count: 5,
+        step_glide: 0.3,
+        ..LfoRoute::default()
+    };
+    route.steps = [0.0; MAX_LFO_STEPS];
+    route.steps[0] = 1.0;
+    route.steps[1] = -0.5;
+    route.steps[2] = 0.25;
+    route.steps[3] = -1.0;
+    route.steps[4] = 0.8;
+    automation.set_route(ControlAddress::new("master.level"), route);
+    let song = SongState {
+        controls: FluidControls::default(),
+        automation,
+    };
+
+    let code = song::encode_song_code(&song).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+    let got = decoded
+        .automation
+        .route(ControlAddress::new("master.level"))
+        .unwrap();
+
+    assert_eq!(got.shape, LfoShape::Steps);
+    assert_eq!(got.step_count, 5);
+    assert_near(got.step_glide, 0.3);
+    for i in 0..5 {
+        assert_near(got.steps[i], route.steps[i]);
+    }
+}
+
+#[test]
 fn random_drift_is_deterministic_for_a_seed() {
     let a = LfoRoute {
         shape: LfoShape::RandomDrift,
@@ -3849,6 +3998,7 @@ fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
             shape: LfoShape::SampleHold,
             phase_offset_beats: 0.5,
             seed: 0xDEAD_BEEF,
+            ..LfoRoute::default()
         },
     );
     automation.set_field_macro(
