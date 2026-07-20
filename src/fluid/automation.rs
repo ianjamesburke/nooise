@@ -498,9 +498,7 @@ impl LfoRoute {
     }
 
     fn phase_at_cycle(&self, beat: f64, cycle_beats: f32) -> f64 {
-        ((beat + f64::from(self.phase_offset_beats))
-            / f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS)))
-        .rem_euclid(1.0)
+        global_lfo_position(beat, cycle_beats, self.phase_offset_beats).1
     }
 
     fn active_cycle_at(&self, beat: f64) -> f32 {
@@ -512,10 +510,8 @@ impl LfoRoute {
     /// Absolute cycle index and phase-in-cycle for the given beat. Random shapes
     /// hash the cycle index; the fractional part doubles as the periodic phase.
     fn cycle_index_and_phase_for(&self, beat: f64, cycle_beats: f32) -> (i64, f32) {
-        let cycle = f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS));
-        let t = (beat + f64::from(self.phase_offset_beats)) / cycle;
-        let index = t.floor();
-        ((index as i64), (t - index) as f32)
+        let (index, phase) = global_lfo_position(beat, cycle_beats, self.phase_offset_beats);
+        (index, phase as f32)
     }
 
     /// Oscillator output in -1..1 at the given beat; depth scaling is the
@@ -804,6 +800,16 @@ impl LfoRoute {
             |r, v| r.depth_ratio = v,
         )
     }
+}
+
+/// Every LFO derives position from the shared transport beat. A zero offset
+/// therefore puts every route with the same rate on the same song-wide grid,
+/// regardless of which control owns it or when its editor was opened.
+fn global_lfo_position(beat: f64, cycle_beats: f32, offset_beats: f32) -> (i64, f64) {
+    let cycle = f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS));
+    let position = (beat + f64::from(offset_beats)) / cycle;
+    let index = position.floor();
+    (index as i64, position - index)
 }
 
 /// Shared glide/snap morph for a route type whose only "level" field crosses

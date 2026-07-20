@@ -1279,6 +1279,50 @@ fn lfo_phase_at_uses_cycle_and_offset() {
 }
 
 #[test]
+fn zero_offset_lfos_share_the_global_rate_grid_across_targets() {
+    let mut automation = AutomationState::default();
+    let master = ControlAddress::new("master.level");
+    let pad = ControlAddress::new("pad.level");
+    automation.set_route(
+        master,
+        LfoRoute {
+            cycle_beats: 16.0,
+            ..LfoRoute::default()
+        },
+    );
+    automation.set_route(
+        pad,
+        LfoRoute {
+            cycle_beats: 16.0,
+            depth_ratio: 0.75,
+            ..LfoRoute::default()
+        },
+    );
+
+    let master_route = automation.route(master).unwrap();
+    let pad_route = automation.route(pad).unwrap();
+    for (beat, expected_phase) in [
+        (0.0, 0.0),
+        (4.0, 0.25),
+        (8.0, 0.5),
+        (12.0, 0.75),
+        (16.0, 0.0),
+        (32.0, 0.0),
+    ] {
+        assert!((master_route.phase_at(beat) - expected_phase).abs() < 1e-9);
+        assert_eq!(master_route.phase_at(beat), pad_route.phase_at(beat));
+    }
+
+    let thirty_two = LfoRoute {
+        cycle_beats: 32.0,
+        ..LfoRoute::default()
+    };
+    for beat in [0.0, 32.0, 64.0] {
+        assert!(thirty_two.phase_at(beat).abs() < 1e-9);
+    }
+}
+
+#[test]
 fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();
