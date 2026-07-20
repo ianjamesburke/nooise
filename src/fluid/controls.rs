@@ -129,6 +129,7 @@ impl Default for PadControls {
 #[derive(Clone)]
 pub(crate) struct KickControls {
     pub level: f32,
+    pub voice_type: f32, // 0=Sub (legacy), 1=Punch, 2=Membrane, 3=Driven character selector
     pub start_freq: f32,
     pub pitch_decay_ms: f32,
     pub amp_decay_ms: f32,
@@ -143,6 +144,7 @@ impl Default for KickControls {
     fn default() -> Self {
         Self {
             level: 0.0,
+            voice_type: 0.0,
             start_freq: 160.0,
             pitch_decay_ms: 55.0,
             amp_decay_ms: 250.0,

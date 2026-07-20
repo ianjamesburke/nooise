@@ -976,6 +976,19 @@ pub(crate) fn pad_type_index(value: f32) -> usize {
     (value.round() as i64).rem_euclid(3) as usize
 }
 
+pub(crate) fn kick_type_label(value: f32) -> &'static str {
+    match kick_type_index(value) {
+        0 => "Sub",
+        1 => "Warm",
+        2 => "Wood",
+        _ => "Felt",
+    }
+}
+
+pub(crate) fn kick_type_index(value: f32) -> usize {
+    (value.round() as i64).rem_euclid(4) as usize
+}
+
 pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
     gain_pct!("kick.level", "Level", kick.level),
     gain_pct!("kick.filter", "Filter", kick.filter),
@@ -994,6 +1007,18 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         1000.0,
         1.0,
         kick.amp_decay_ms
+    ),
+    ControlSpec::new(
+        "kick.type",
+        "Type",
+        ControlKind::Discrete,
+        0.0,
+        3.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.kick.voice_type,
+        |c, v| c.kick.voice_type = v,
+        |c| kick_type_label(c.kick.voice_type).to_string(),
     ),
     beat_interval!(
         "kick.interval_beats",

@@ -1421,10 +1421,10 @@ fn apply_value_accepts_percent_style_unit_controls() {
 fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     let mut controls = FluidControls::default();
 
-    apply_value(Tab::Kick, 4, 1.13, &mut controls);
+    apply_value(Tab::Kick, 5, 1.13, &mut controls);
     assert_close(controls.kick.interval_beats, 1.25);
 
-    apply_value(Tab::Kick, 4, 0.16, &mut controls);
+    apply_value(Tab::Kick, 5, 0.16, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
     apply_value(Tab::Chords, 4, 12.0, &mut controls);
@@ -1468,7 +1468,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Kick,
             vec![
-                Gain, Gain, Timing, Timing, Timing, Timing, Continuous, Gain, Gain,
+                Gain, Gain, Timing, Timing, Discrete, Timing, Timing, Continuous, Gain, Gain,
             ],
         ),
         (
@@ -2445,6 +2445,52 @@ fn pad_types_produce_differing_but_comparably_balanced_audio() {
 }
 
 #[test]
+fn kick_type_zero_matches_legacy_sub_voice_exactly() {
+    let sample_rate = 48_000.0;
+    let controls = KickControls {
+        level: 0.6,
+        ..Default::default()
+    };
+    let mut dispatched = KickVoice::new(0, &controls, sample_rate, &mut StdRng::seed_from_u64(7));
+    let mut legacy = SubKickVoice::new(&controls, sample_rate, &mut StdRng::seed_from_u64(7));
+    let mut click_rng_a = StdRng::seed_from_u64(99);
+    let mut click_rng_b = StdRng::seed_from_u64(99);
+
+    for _ in 0..(sample_rate * 0.3) as usize {
+        assert_eq!(
+            dispatched.next(&mut click_rng_a),
+            legacy.next(&mut click_rng_b)
+        );
+    }
+}
+
+#[test]
+fn kick_types_produce_differing_but_comparably_balanced_audio() {
+    let sample_rate = 48_000.0;
+    let samples = (sample_rate * 0.3) as usize;
+
+    let types: Vec<SoundVariant> = [(0usize, "sub"), (1, "warm"), (2, "wood"), (3, "felt")]
+        .into_iter()
+        .map(|(voice_type, name)| {
+            let controls = KickControls {
+                level: 0.6,
+                ..Default::default()
+            };
+            let mut construct_rng = StdRng::seed_from_u64(7);
+            let mut voice = KickVoice::new(voice_type, &controls, sample_rate, &mut construct_rng);
+            let mut click_rng = StdRng::seed_from_u64(99);
+            let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
+                let (l, r) = voice.next(&mut click_rng);
+                ((l * l + r * r) / 2.0, l)
+            });
+            (name, step)
+        })
+        .collect();
+
+    assert_types_differ_but_balanced("kick", samples, types);
+}
+
+#[test]
 fn bass_interval_crops_phrase_instead_of_stretching_it() {
     // Step duration is always a fixed 16th note; `interval_beats` only
     // decides how many steps of the 16-step phrase play before looping
@@ -2518,11 +2564,11 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
 fn kick_interval_floor_is_eighth_beat() {
     let mut controls = FluidControls::default();
     controls.kick.interval_beats = 1.0;
-    apply_min(Tab::Kick, 4, &mut controls);
+    apply_min(Tab::Kick, 5, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
     controls.kick.interval_beats = 0.125;
-    apply_delta(Tab::Kick, 4, -1.0, &mut controls);
+    apply_delta(Tab::Kick, 5, -1.0, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 }
 
