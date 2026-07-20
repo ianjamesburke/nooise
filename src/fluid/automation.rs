@@ -5,8 +5,8 @@ use std::fmt;
 
 use super::{
     ControlSpec, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TimingContext,
-    beat_grid_adjust, beat_grid_snap, is_macro_id, nearest_power_of_two, normalize_unit_input,
-    snap_step, spec_by_id, unit_key,
+    beat_grid_adjust, beat_grid_ratio, beat_grid_snap, is_macro_id, nearest_power_of_two,
+    normalize_unit_input, ordered_step_ratio, snap_step, spec_by_id, unit_key,
 };
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
@@ -376,6 +376,12 @@ impl LfoFieldSpec {
     }
 
     pub(crate) fn ratio(self, value: f32) -> f32 {
+        if self.field == LfoField::Interval {
+            return ordered_step_ratio(value, LFO_RATE_ARROW_STEPS);
+        }
+        if self.beat_grid {
+            return beat_grid_ratio(value, self.min, self.max);
+        }
         let range = self.max - self.min;
         if range.abs() <= f32::EPSILON {
             0.0
@@ -418,7 +424,7 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
     },
 ];
 
-const LFO_RATE_ARROW_STEPS: &[f32] = &[
+pub(crate) const LFO_RATE_ARROW_STEPS: &[f32] = &[
     0.125, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5, 3.75, 4.0,
     8.0, 12.0, 16.0, 32.0, 64.0,
 ];

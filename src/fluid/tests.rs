@@ -635,6 +635,69 @@ fn lfo_field_set_keeps_exact_rate_and_snaps_offset_to_grid() {
 }
 
 #[test]
+fn lfo_rate_bar_divides_the_full_throw_across_arrow_rungs() {
+    let mut route = LfoRoute::default();
+    let denominator = (LFO_RATE_ARROW_STEPS.len() - 1) as f32;
+
+    for (index, rate) in LFO_RATE_ARROW_STEPS.iter().copied().enumerate() {
+        route.cycle_beats = rate;
+        assert_near(
+            route.field_ratio(LfoField::Interval),
+            index as f32 / denominator,
+        );
+    }
+
+    route.cycle_beats = 6.0;
+    assert_near(
+        route.field_ratio(LfoField::Interval),
+        (16.0 + 0.5) / denominator,
+    );
+}
+
+#[test]
+fn ordered_step_ratio_spans_the_bar_and_interpolates_typed_values() {
+    let steps = [0.125, 0.25, 0.5, 4.0, 8.0, 16.0, 64.0];
+
+    assert_near(ordered_step_ratio(0.125, &steps), 0.0);
+    assert_near(ordered_step_ratio(4.0, &steps), 0.5);
+    assert_near(ordered_step_ratio(6.0, &steps), 7.0 / 12.0);
+    assert_near(ordered_step_ratio(64.0, &steps), 1.0);
+}
+
+#[test]
+fn beat_grid_bars_give_every_arrow_rung_equal_visual_space() {
+    let offset = spec_by_id("kick.offset_beats").unwrap();
+    let offset_ratios = [0.0, 0.125, 0.25, 0.5].map(|value| offset.ratio(value));
+    assert_near(
+        offset_ratios[1] - offset_ratios[0],
+        offset_ratios[2] - offset_ratios[1],
+    );
+    assert_near(
+        offset_ratios[2] - offset_ratios[1],
+        offset_ratios[3] - offset_ratios[2],
+    );
+
+    let interval = spec_by_id("kick.interval_beats").unwrap();
+    let interval_ratios = [0.125, 0.25, 0.5, 0.75].map(|value| interval.ratio(value));
+    assert_near(
+        interval_ratios[1] - interval_ratios[0],
+        interval_ratios[2] - interval_ratios[1],
+    );
+    assert_near(
+        interval_ratios[2] - interval_ratios[1],
+        interval_ratios[3] - interval_ratios[2],
+    );
+}
+
+#[test]
+fn every_registered_slider_visual_mapping_spans_its_full_range() {
+    for spec in all_specs() {
+        assert_near(spec.ratio(spec.min), 0.0);
+        assert_near(spec.ratio(spec.max), 1.0);
+    }
+}
+
+#[test]
 fn discrete_fields_clamp_at_their_ends_instead_of_wrapping() {
     let mut route = LfoRoute::default();
     route.adjust_field_at(LfoField::Shape, -1.0, 0.0);

@@ -1470,7 +1470,7 @@ pub(crate) fn render(
             let spec = address.spec();
             // Markers all sit on the same tapered bar as the value itself.
             let base = item.value;
-            let ratio_of = |value: f32| spec.taper.ratio(value, spec.min, spec.max);
+            let ratio_of = |value: f32| spec.ratio(value);
             // Ghosts only for sources that actually contribute.
             let lfo = effective_lfo
                 .as_ref()
@@ -1910,7 +1910,7 @@ pub(crate) fn item_ratio(item: &ControlItem) -> f32 {
         ControlKind::Discrete => item.value.round(),
         ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing => item.value,
     };
-    item.taper.ratio(value, item.min, item.max)
+    item.step.ratio(value, item.min, item.max, item.taper)
 }
 
 pub(crate) fn ratio_bar(ratio: f32, width: usize, filled: char, empty: char) -> String {

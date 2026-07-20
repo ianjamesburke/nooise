@@ -67,8 +67,8 @@ pub(crate) struct ControlItem {
     pub(crate) value: f32,
     pub(crate) min: f32,
     pub(crate) max: f32,
-    /// How `value` maps onto the 0..1 bar — carried so `item_ratio` and the
-    /// marker math stay one shared computation.
+    /// Step ladder and continuous taper used by the shared 0..1 bar mapping.
+    pub(crate) step: Step,
     pub(crate) taper: Taper,
     pub(crate) display: String,
 }
@@ -130,6 +130,16 @@ pub(crate) enum Step {
     PowerOfTwo,
     /// 0.125 as the floor value, sixteenths (0.25 grid) above it.
     BeatGrid,
+}
+
+impl Step {
+    pub(crate) fn ratio(self, value: f32, min: f32, max: f32, taper: Taper) -> f32 {
+        match self {
+            Self::Linear(_) => taper.ratio(value, min, max),
+            Self::PowerOfTwo => Taper::Log2.ratio(value, min, max),
+            Self::BeatGrid => beat_grid_ratio(value, min, max),
+        }
+    }
 }
 
 /// How direct numeric entry is interpreted.
@@ -343,6 +353,7 @@ impl ControlSpec {
             value: (self.get)(c),
             min: self.min,
             max: self.max,
+            step: self.step,
             taper: self.taper,
             display: (self.display)(c),
         }
@@ -374,6 +385,10 @@ impl ControlSpec {
             }
         };
         (self.set)(c, next);
+    }
+
+    pub(crate) fn ratio(&self, value: f32) -> f32 {
+        self.step.ratio(value, self.min, self.max, self.taper)
     }
 
     /// A continuous dial with a non-linear taper and a plain `Linear` step:
@@ -1353,6 +1368,27 @@ pub(crate) fn snap_step(value: f32, step: f32) -> f32 {
     (value / step).round() * step
 }
 
+/// Position a value across an irregular ordered step ladder. Every adjacent
+/// pair gets the same share of the visual throw; exact values between rungs
+/// interpolate within that share.
+pub(crate) fn ordered_step_ratio(value: f32, steps: &[f32]) -> f32 {
+    let Some((&first, rest)) = steps.split_first() else {
+        return 0.0;
+    };
+    if rest.is_empty() || value <= first {
+        return 0.0;
+    }
+    let last = *rest.last().unwrap_or(&first);
+    if value >= last {
+        return 1.0;
+    }
+
+    let upper = steps.partition_point(|step| *step <= value);
+    let lower = upper - 1;
+    let local = (value - steps[lower]) / (steps[upper] - steps[lower]);
+    (lower as f32 + local) / (steps.len() - 1) as f32
+}
+
 /// Musical grid shared by every interval- and offset-like field: the 32nd
 /// (0.125) survives only as a floor rung; everything above it locks to
 /// sixteenths (0.25 multiples). A control whose own minimum sits below the
@@ -1400,6 +1436,42 @@ pub(crate) fn beat_grid_adjust(value: f32, dir: f32, min: f32, max: f32) -> f32 
         low
     };
     beat_grid_snap(next, min, max)
+}
+
+/// Position on the beat grid by reachable arrow rungs, not raw beat value.
+/// This gives 0 -> 0.125 the same visual distance as 0.125 -> 0.25 and every
+/// later sixteenth step.
+pub(crate) fn beat_grid_ratio(value: f32, min: f32, max: f32) -> f32 {
+    if max <= min {
+        return 0.0;
+    }
+    let value = value.clamp(min, max);
+    let mut rung = min;
+    let mut rung_index = 0usize;
+    let mut value_position = 0.0;
+    let mut found = value <= min;
+
+    while rung < max {
+        let next = beat_grid_adjust(rung, 1.0, min, max);
+        if next <= rung {
+            break;
+        }
+        if !found && value <= next {
+            let local = (value - rung) / (next - rung);
+            value_position = rung_index as f32 + local;
+            found = true;
+        }
+        rung = next;
+        rung_index += 1;
+    }
+
+    if rung_index == 0 {
+        0.0
+    } else if found {
+        value_position / rung_index as f32
+    } else {
+        1.0
+    }
 }
 
 pub(crate) fn nearest_power_of_two(value: f32, min: f32, max: f32) -> f32 {
