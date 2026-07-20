@@ -689,19 +689,41 @@ fn lfo_field_reset_uses_slider_minimums() {
 }
 
 #[test]
-fn lfo_interval_edits_preserve_live_phase_when_possible() {
+fn lfo_rate_edit_keeps_offset_and_hands_off_where_waveforms_cross() {
     let mut route = LfoRoute {
         cycle_beats: 2.0,
         phase_offset_beats: 0.0,
         ..LfoRoute::default()
     };
     let beat = 4.0;
-    let before = route.phase_at(beat);
+    let old_route = route;
 
     route.adjust_field_at(LfoField::Interval, 1.0, beat);
 
     assert_close(route.cycle_beats, 2.25);
-    assert!((route.phase_at(beat) - before).abs() < 1e-9);
+    assert_close(route.phase_offset_beats, 0.0);
+    let pickup = route.pickup.expect("rate edit should schedule a pickup");
+    assert!(pickup.at_beat > beat);
+
+    let before_pickup = pickup.at_beat - 1e-6;
+    let after_pickup = pickup.at_beat + 1e-6;
+    assert_near(
+        route.wave_at(before_pickup),
+        old_route.wave_at(before_pickup),
+    );
+    assert!(
+        (route.wave_at(before_pickup) - route.wave_at(after_pickup)).abs() < 1e-4,
+        "handoff must be value-continuous"
+    );
+
+    let globally_anchored = LfoRoute {
+        cycle_beats: 2.25,
+        ..LfoRoute::default()
+    };
+    assert_near(
+        route.wave_at(after_pickup),
+        globally_anchored.wave_at(after_pickup),
+    );
 }
 
 #[test]
@@ -1094,12 +1116,10 @@ fn engine_publishes_beat_telemetry() {
 // GOLDEN_RENDER_CHECKSUM only after confirming the new output is inaudibly
 // close to the old one.
 const GOLDEN_RENDER_SAMPLES: usize = 48_000;
-// Re-blessed when tonal and arp were unified onto one attack+decay envelope
-// (`attack_decay_gain`): every note now ramps in over `attack`, then decays
-// from the peak to silence over `decay`, with the note's whole life = attack +
-// decay and no step-clamped hold. This shifts both the tonal and arp voices in
-// this render (tonal.level 0.5 + arp.gain 0.4); pad/bass paths are unchanged.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x08f0_c949_89ea_81c5;
+// Re-blessed when the deliberate startup fade changed from four seconds to
+// two. The seeded audio remains deterministic; its first second now reaches
+// half gain instead of quarter gain, which intentionally changes this render.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x75c0_c29c_d1ec_3941;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
