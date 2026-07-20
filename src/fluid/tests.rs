@@ -603,6 +603,17 @@ fn lfo_submenu_arrow_navigation_clamps_until_explicitly_closed() {
 }
 
 #[test]
+fn startup_fade_reaches_full_gain_in_two_seconds() {
+    let halfway = SAMPLE_RATE as u64;
+    let complete = SAMPLE_RATE as u64 * 2;
+
+    assert_near(startup_fade(0, SAMPLE_RATE), 0.0);
+    assert_near(startup_fade(halfway, SAMPLE_RATE), 0.5);
+    assert_near(startup_fade(complete, SAMPLE_RATE), 1.0);
+    assert_near(startup_fade(complete * 2, SAMPLE_RATE), 1.0);
+}
+
+#[test]
 fn lfo_field_set_snaps_to_eighth_beat_grid() {
     let mut route = LfoRoute::default();
 
