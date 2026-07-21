@@ -2,7 +2,7 @@
 // Controls
 // ============================================================
 
-pub(crate) const MASTER_BPM_MIN: f32 = 60.0;
+pub(crate) const MASTER_BPM_MIN: f32 = 30.0;
 pub(crate) const MASTER_BPM_MAX: f32 = 200.0;
 // bass.cutoff range for BassEngine's one-pole lowpass. The max is treated as
 // a literal bypass in BassEngine::next (not just a high filter coefficient)

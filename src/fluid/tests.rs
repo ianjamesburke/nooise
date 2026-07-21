@@ -1587,7 +1587,7 @@ fn apply_min_moves_selected_control_to_floor() {
 
     controls.master.bpm = 120.0;
     apply_min(Tab::Master, 7, &mut controls);
-    assert_close(controls.master.bpm, MASTER_BPM_MIN);
+    assert_close(controls.master.bpm, 30.0);
 
     controls.master.tone = 0.5;
     apply_min(Tab::Master, 13, &mut controls);
