@@ -75,6 +75,9 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 //   Glide (Gain/Continuous) — lerp `from`→`to` across the transition window.
 //       Levels glide too, so total audible energy always stays between the two
 //       endpoints: a morph can never introduce silence the endpoints don't have.
+//       Drum exits are the exception: perc, kick, and clap cut together on the
+//       transition downbeat when the target has no drums. Kick also starts on
+//       that downbeat, rather than fading in with the other drum voices.
 //
 //   Snap (Discrete/Timing)  — never interpolated; hold `from`, then hard-jump.
 //       Structural params (progression + chord count/length + arp pattern) all
@@ -100,8 +103,18 @@ const STRUCTURAL_SNAP_IDS: &[&str] = &[
     "arp.pattern",
 ];
 
+const DRUM_LEVEL_IDS: &[&str] = &["perc.level", "kick.level", "clap.level"];
+
 fn is_structural(spec_id: &str) -> bool {
     STRUCTURAL_SNAP_IDS.contains(&spec_id)
+}
+
+fn is_drum_level(spec_id: &str) -> bool {
+    DRUM_LEVEL_IDS.contains(&spec_id)
+}
+
+fn snaps_drum_level(spec_id: &str, from: f32, to: f32) -> bool {
+    spec_id == "kick.level" || (is_drum_level(spec_id) && from > 0.0 && to == 0.0)
 }
 
 /// Crude "how different do two states sound" metric: the summed absolute
@@ -243,6 +256,13 @@ impl MorphState {
             let to_v = (spec.get)(to);
 
             let value = match spec.kind {
+                ControlKind::Gain if snaps_drum_level(spec.id, from_v, to_v) => {
+                    if t_beat < transition_start {
+                        from_v
+                    } else {
+                        to_v
+                    }
+                }
                 ControlKind::Gain | ControlKind::Continuous => {
                     let tt =
                         ((t_beat - transition_start) / transition_beats).clamp(0.0, 1.0) as f32;
@@ -462,6 +482,43 @@ mod tests {
         let morph = MorphState::new(vec![song(from), song(to)], 1);
         let controls = morph.controls_at(4.0 * 0.25);
         assert!((controls.pad.level - 0.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn drum_exits_cut_together_on_the_transition_downbeat() {
+        let mut from = FluidControls::default();
+        from.perc.level = 0.4;
+        from.kick.level = 0.8;
+        from.clap.level = 0.6;
+        let to = FluidControls::default();
+        // 6 bars/leg -> transition downbeat at beat 16.
+        let morph = MorphState::new(vec![song(from.clone()), song(to)], 6);
+
+        let before = morph.controls_at(15.9);
+        assert_eq!(before.perc.level, from.perc.level);
+        assert_eq!(before.kick.level, from.kick.level);
+        assert_eq!(before.clap.level, from.clap.level);
+
+        let cut = morph.controls_at(16.0);
+        assert_eq!(cut.perc.level, 0.0);
+        assert_eq!(cut.kick.level, 0.0);
+        assert_eq!(cut.clap.level, 0.0);
+    }
+
+    #[test]
+    fn kick_starts_on_the_transition_downbeat_while_other_drums_can_fade_in() {
+        let from = FluidControls::default();
+        let mut to = FluidControls::default();
+        to.perc.level = 0.4;
+        to.kick.level = 0.8;
+        to.clap.level = 0.6;
+        // 6 bars/leg -> transition runs from beat 16 through beat 24.
+        let morph = MorphState::new(vec![song(from), song(to)], 6);
+
+        let mid = morph.controls_at(20.0);
+        assert!((mid.perc.level - 0.2).abs() < 1e-4);
+        assert_eq!(mid.kick.level, 0.8);
+        assert!((mid.clap.level - 0.3).abs() < 1e-4);
     }
 
     #[test]
