@@ -5,6 +5,7 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger, EnvelopeRoute,
     FluidControls, LfoRoute, LfoShape, MACRO_COUNT, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
@@ -17,6 +18,7 @@ const CONTAINER_VERSION: u8 = 1;
 const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
+const TONAL_SEQUENCE_RECORD: u8 = 2;
 const AUTOMATION_PAYLOAD_VERSION_V2: u8 = 2;
 const AUTOMATION_PAYLOAD_VERSION_V3: u8 = 3;
 const AUTOMATION_PAYLOAD_VERSION_V4: u8 = 4;
@@ -44,6 +46,7 @@ const NEUTRAL_ENVELOPE_AMOUNT_EPSILON: f32 = f32::EPSILON;
 pub(crate) struct SongState {
     pub(crate) controls: FluidControls,
     pub(crate) automation: AutomationState,
+    pub(crate) tonal_sequence: Option<TonalSequenceState>,
 }
 
 impl SongState {
@@ -51,6 +54,7 @@ impl SongState {
         Self {
             controls,
             automation: AutomationState::default(),
+            tonal_sequence: None,
         }
     }
 }
@@ -107,6 +111,12 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
         write_record(AUTOMATION_RECORD, &automation, &mut bytes)?;
     }
 
+    if let Some(sequence) = &song.tonal_sequence {
+        let mut tonal_sequence = Vec::new();
+        write_tonal_sequence(sequence, &mut tonal_sequence)?;
+        write_record(TONAL_SEQUENCE_RECORD, &tonal_sequence, &mut bytes)?;
+    }
+
     Ok(format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
@@ -137,11 +147,51 @@ pub(crate) fn decode_song_code(code: &str) -> Result<SongState, SongCodeError> {
         match record_type {
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
             AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
+            TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
             _ => {}
         }
     }
 
     Ok(song)
+}
+
+fn write_tonal_sequence(
+    sequence: &TonalSequenceState,
+    out: &mut Vec<u8>,
+) -> Result<(), SongCodeError> {
+    let note_count = u8::try_from(sequence.notes.len()).map_err(|_| SongCodeError::TooLarge)?;
+    out.push(sequence.phrase as u8);
+    out.push(note_count);
+    for note in &sequence.notes {
+        out.extend_from_slice(&note.to_le_bytes());
+    }
+    out.extend_from_slice(&sequence.evolution_seed.to_le_bytes());
+    out.extend_from_slice(&sequence.evolution_count.to_le_bytes());
+    Ok(())
+}
+
+fn read_tonal_sequence(bytes: &[u8]) -> Result<TonalSequenceState, SongCodeError> {
+    let mut reader = Reader::new(bytes);
+    let phrase = reader.u8()? as usize;
+    let note_count = reader.u8()? as usize;
+    if phrase >= TONAL_PHRASES.len() || note_count == 0 || note_count > TONAL_MAX_LOOP_STEPS {
+        return Err(SongCodeError::Truncated);
+    }
+    let mut notes = Vec::with_capacity(note_count);
+    for _ in 0..note_count {
+        notes.push(reader.i32()?);
+    }
+    let evolution_seed = reader.u64()?;
+    let evolution_count = reader.u64()?;
+    if !reader.is_empty() {
+        return Err(SongCodeError::Truncated);
+    }
+    Ok(TonalSequenceState {
+        phrase,
+        notes,
+        evolution_seed,
+        evolution_count,
+    })
 }
 
 fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
@@ -683,6 +733,14 @@ impl<'a> Reader<'a> {
 
     fn u32(&mut self) -> Result<u32, SongCodeError> {
         Ok(u32::from_le_bytes(self.read_array()?))
+    }
+
+    fn u64(&mut self) -> Result<u64, SongCodeError> {
+        Ok(u64::from_le_bytes(self.read_array()?))
+    }
+
+    fn i32(&mut self) -> Result<i32, SongCodeError> {
+        Ok(i32::from_le_bytes(self.read_array()?))
     }
 
     fn f32(&mut self) -> Result<f32, SongCodeError> {

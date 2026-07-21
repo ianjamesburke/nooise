@@ -44,6 +44,24 @@ impl FluidEngine {
         morph: Arc<ArcSwap<Option<MorphState>>>,
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
+        Self::new_with_tonal_session_state(
+            sample_rate,
+            controls,
+            automation,
+            morph,
+            telemetry,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_tonal_session_state(
+        sample_rate: f32,
+        controls: Arc<ArcSwap<FluidControls>>,
+        automation: Arc<ArcSwap<AutomationState>>,
+        morph: Arc<ArcSwap<Option<MorphState>>>,
+        telemetry: Arc<FluidTelemetry>,
+        tonal_session_state: Option<Arc<ArcSwap<TonalSequenceState>>>,
+    ) -> Self {
         let snapshot = FluidControls::clone(&controls.load());
         let plan_source = automation.load_full();
         let mut plan = AutomationPlan::default();
@@ -56,7 +74,7 @@ impl FluidEngine {
             pad: PadEngine::new(sample_rate, &snapshot.pad, Arc::clone(&telemetry)),
             perc: PercEngine::new(sample_rate),
             kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
-            tonal: TonalEngine::new(sample_rate),
+            tonal: TonalEngine::new_with_session_state(sample_rate, tonal_session_state),
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
             arp: ArpEngine::new(sample_rate),

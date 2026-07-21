@@ -15,6 +15,32 @@ pub(crate) struct TonalEngine {
     pub(crate) low_cut_l: TonalLowCut,
     pub(crate) low_cut_r: TonalLowCut,
     pub(crate) rng: StdRng,
+    evolution_seed: u64,
+    evolution_count: u64,
+    session_state: Option<Arc<ArcSwap<TonalSequenceState>>>,
+}
+
+/// The mutable melodic state a song snapshot needs to resume evolution.
+/// Playback RNG stays separate because it only affects incidental random notes
+/// and panning, not which future evolution mutation occurs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TonalSequenceState {
+    pub(crate) phrase: usize,
+    pub(crate) notes: Vec<i32>,
+    pub(crate) evolution_seed: u64,
+    pub(crate) evolution_count: u64,
+}
+
+impl TonalSequenceState {
+    pub(crate) fn from_phrase(phrase: usize) -> Self {
+        let phrase = phrase % TONAL_PHRASES.len();
+        Self {
+            phrase,
+            notes: tonal_phrase(phrase).to_vec(),
+            evolution_seed: rand::random(),
+            evolution_count: 0,
+        }
+    }
 }
 
 pub(crate) const TONAL_LOW_CUT_HZ: f32 = 70.0;
@@ -316,18 +342,33 @@ pub(crate) const TONAL_PHRASES: [&[i32]; 8] = [
 ];
 
 impl TonalEngine {
+    #[cfg(test)]
     pub(crate) fn new(sample_rate: f32) -> Self {
+        Self::new_with_session_state(sample_rate, None)
+    }
+
+    pub(crate) fn new_with_session_state(
+        sample_rate: f32,
+        session_state: Option<Arc<ArcSwap<TonalSequenceState>>>,
+    ) -> Self {
+        let state = session_state
+            .as_ref()
+            .map(|state| (*state.load_full()).clone())
+            .unwrap_or_else(|| TonalSequenceState::from_phrase(0));
         Self {
             sample_rate,
             step_trigger: GridTrigger::new(),
             step_index: 0,
-            active_phrase: 0,
+            active_phrase: state.phrase,
             last_cycle: None,
-            evolved_phrase: tonal_phrase(0).to_vec(),
+            evolved_phrase: state.notes,
             voices: Vec::with_capacity(8),
             low_cut_l: TonalLowCut::new(sample_rate, TONAL_LOW_CUT_HZ),
             low_cut_r: TonalLowCut::new(sample_rate, TONAL_LOW_CUT_HZ),
             rng: StdRng::from_entropy(),
+            evolution_seed: state.evolution_seed,
+            evolution_count: state.evolution_count,
+            session_state,
         }
     }
 
@@ -393,30 +434,66 @@ impl TonalEngine {
             self.evolved_phrase = tonal_phrase(phrase).to_vec();
             self.step_index = 0;
             self.last_cycle = None;
+            self.evolution_seed = rand::random();
+            self.evolution_count = 0;
+            self.publish_session_state();
         }
     }
 
     pub(crate) fn evolve_phrase(&mut self, rate: f32) {
         let count = tonal_evolve_note_count(rate, self.evolved_phrase.len());
+        if count == 0 {
+            return;
+        }
         let mut changed_positions = [usize::MAX; TONAL_MAX_EVOLVE_NOTES];
         for changed in 0..count {
-            let mut pos = self.rng.gen_range(0..self.evolved_phrase.len());
+            let mut pos = evolve_random(self.evolution_seed, self.evolution_count, changed as u64)
+                as usize
+                % self.evolved_phrase.len();
             while changed_positions[..changed].contains(&pos) {
-                pos = self.rng.gen_range(0..self.evolved_phrase.len());
+                pos = (pos + 1) % self.evolved_phrase.len();
             }
             changed_positions[changed] = pos;
 
             let old = self.evolved_phrase[pos];
             let mut next = old;
-            for _ in 0..8 {
-                next = TONAL_SCALE_MIDI[self.rng.gen_range(0..TONAL_SCALE_MIDI.len())];
+            for attempt in 0..8 {
+                next = TONAL_SCALE_MIDI[evolve_random(
+                    self.evolution_seed,
+                    self.evolution_count,
+                    TONAL_MAX_EVOLVE_NOTES as u64 + changed as u64 * 8 + attempt,
+                ) as usize
+                    % TONAL_SCALE_MIDI.len()];
                 if next != old {
                     break;
                 }
             }
             self.evolved_phrase[pos] = next;
         }
+        self.evolution_count = self.evolution_count.wrapping_add(1);
+        self.publish_session_state();
     }
+
+    fn publish_session_state(&self) {
+        let Some(session_state) = &self.session_state else {
+            return;
+        };
+        session_state.store(Arc::new(TonalSequenceState {
+            phrase: self.active_phrase,
+            notes: self.evolved_phrase.clone(),
+            evolution_seed: self.evolution_seed,
+            evolution_count: self.evolution_count,
+        }));
+    }
+}
+
+fn evolve_random(seed: u64, evolution_count: u64, draw: u64) -> u64 {
+    let mut value = seed
+        ^ evolution_count.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        ^ draw.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
 }
 
 pub(crate) fn tonal_phrase_index(value: f32) -> usize {

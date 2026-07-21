@@ -493,6 +493,28 @@ fn tonal_engine_evolves_notes_proportional_to_rate() {
 }
 
 #[test]
+fn tonal_sequence_snapshot_resumes_the_next_evolution() {
+    let snapshot = TonalSequenceState {
+        phrase: 2,
+        notes: tonal_phrase(2).to_vec(),
+        evolution_seed: 42,
+        evolution_count: 7,
+    };
+    let session = Arc::new(ArcSwap::from_pointee(snapshot.clone()));
+    let mut resumed = TonalEngine::new_with_session_state(SAMPLE_RATE, Some(Arc::clone(&session)));
+    let mut uninterrupted = TonalEngine::new_with_session_state(
+        SAMPLE_RATE,
+        Some(Arc::new(ArcSwap::from_pointee(snapshot))),
+    );
+
+    resumed.evolve_phrase(1.0);
+    uninterrupted.evolve_phrase(1.0);
+
+    assert_eq!(resumed.evolved_phrase, uninterrupted.evolved_phrase);
+    assert_eq!(session.load().evolution_count, 8);
+}
+
+#[test]
 fn pad_defaults_use_progression_a_and_sixteen_beat_chords() {
     let controls = PadControls::default();
     assert_close(controls.chord_bars, 4.0);
@@ -1707,6 +1729,25 @@ fn song_code_round_trips_quantized_snapshot_values() {
 }
 
 #[test]
+fn song_code_round_trips_tonal_sequence_state() {
+    let sequence = TonalSequenceState {
+        phrase: 4,
+        notes: vec![52, 55, 60, 64, 67, 64, 60, 55],
+        evolution_seed: 123,
+        evolution_count: 9,
+    };
+    let song = SongState {
+        controls: FluidControls::default(),
+        automation: AutomationState::default(),
+        tonal_sequence: Some(sequence.clone()),
+    };
+
+    let decoded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
+
+    assert_eq!(decoded.tonal_sequence, Some(sequence));
+}
+
+#[test]
 fn song_code_round_trips_a_custom_progression() {
     let mut controls = FluidControls::default();
     controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
@@ -1908,6 +1949,7 @@ fn song_code_round_trips_lfo_automation_record() {
     let song = SongState {
         controls,
         automation,
+        tonal_sequence: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -3732,6 +3774,7 @@ fn song_code_round_trips_steps_shape() {
     let song = SongState {
         controls: FluidControls::default(),
         automation,
+        tonal_sequence: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -3959,6 +4002,7 @@ fn song_code_round_trips_non_sine_lfo_shape() {
     let song = SongState {
         controls: FluidControls::default(),
         automation,
+        tonal_sequence: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -3986,6 +4030,7 @@ fn song_code_round_trips_envelope_routes() {
     let song = SongState {
         controls: FluidControls::default(),
         automation,
+        tonal_sequence: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4177,6 +4222,7 @@ fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
     let song = SongState {
         controls: FluidControls::default(),
         automation,
+        tonal_sequence: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4288,6 +4334,7 @@ fn song_code_does_not_serialize_neutral_macro_routes() {
     let song = SongState {
         controls: FluidControls::default(),
         automation,
+        tonal_sequence: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
