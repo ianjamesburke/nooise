@@ -1,6 +1,14 @@
 # Changelog
 
 Newest releases appear first.
+## [1.8.1] — 2026-07-21
+
+### Added
+- feat: add a low-tempo auto morph state
+- feat: persist evolved tonal sessions (#15)
+
+### Changed
+- Cut drum exits on morph downbeats (#16)
 ## [1.8.0] — 2026-07-20
 
 ### Fixed
