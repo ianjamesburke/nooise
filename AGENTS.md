@@ -77,6 +77,7 @@ Default section order:
 ## User Preferences
 
 - Currently working on: fluid core (`src/fluid/`)
+- Song saves must restore each user-audible session state as though playback never stopped; new stateful features must persist their runtime state, not only their controls.
 
 ## Purpose
 

@@ -129,16 +129,23 @@ fn run_interactive(
     let morph_for_engine = Arc::clone(&morph);
     let telemetry = Arc::new(FluidTelemetry::default());
     let telemetry_for_engine = Arc::clone(&telemetry);
+    let tonal_sequence = Arc::new(ArcSwap::from_pointee(
+        initial_song.tonal_sequence.clone().unwrap_or_else(|| {
+            TonalSequenceState::from_phrase(tonal_phrase_index(initial_song.controls.tonal.phrase))
+        }),
+    ));
+    let tonal_sequence_for_engine = Arc::clone(&tonal_sequence);
     let updates = UpdateNotice::default();
     spawn_update_check(updates.clone());
 
     let _audio_output = audio::start_stream(APP_ID, move |sr| {
-        FluidEngine::new(
+        FluidEngine::new_with_tonal_session_state(
             sr,
             Arc::clone(&controls_for_engine),
             Arc::clone(&automation_for_engine),
             Arc::clone(&morph_for_engine),
             Arc::clone(&telemetry_for_engine),
+            Some(Arc::clone(&tonal_sequence_for_engine)),
         )
     })?;
 
@@ -150,8 +157,11 @@ fn run_interactive(
 
     let result = ui_loop(
         &mut terminal,
-        controls,
-        automation,
+        UiSession {
+            controls,
+            automation,
+            tonal_sequence,
+        },
         telemetry,
         initial_song.automation,
         updates,

@@ -33,15 +33,25 @@ fn chords_selected_index(tab: Tab, chord_drill: ChordDrill, selected: usize) -> 
     }
 }
 
+pub(crate) struct UiSession {
+    pub(crate) controls: Arc<ArcSwap<FluidControls>>,
+    pub(crate) automation: Arc<ArcSwap<AutomationState>>,
+    pub(crate) tonal_sequence: Arc<ArcSwap<TonalSequenceState>>,
+}
+
 pub(crate) fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    controls: Arc<ArcSwap<FluidControls>>,
-    automation_shared: Arc<ArcSwap<AutomationState>>,
+    session: UiSession,
     telemetry: Arc<FluidTelemetry>,
     initial_automation: AutomationState,
     updates: UpdateNotice,
     auto: AutoControls,
 ) -> Result<(), Box<dyn Error>> {
+    let UiSession {
+        controls,
+        automation: automation_shared,
+        tonal_sequence,
+    } = session;
     let mut tab = Tab::Chords;
     let mut selected = 0usize;
     let mut lfo_selected = 0usize;
@@ -158,10 +168,16 @@ pub(crate) fn ui_loop(
             }
             match key.code {
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    save_message = Some(match copy_launch_line(&controls, automation.state()) {
-                        Ok(()) => ("nooise copied to clipboard".to_string(), Instant::now()),
-                        Err(err) => (format!("Save failed: {err}"), Instant::now()),
-                    });
+                    save_message = Some(
+                        match copy_launch_line(
+                            &controls,
+                            automation.state(),
+                            &tonal_sequence.load(),
+                        ) {
+                            Ok(()) => ("nooise copied to clipboard".to_string(), Instant::now()),
+                            Err(err) => (format!("Save failed: {err}"), Instant::now()),
+                        },
+                    );
                 }
                 // Esc only ever drills out one level (nested field-macro
                 // editor, then the modulator editor, then nothing) — it
@@ -1091,11 +1107,13 @@ pub(crate) fn chords_footer(tab: Tab, chord_drill: ChordDrill) -> Option<String>
 fn copy_launch_line(
     controls: &Arc<ArcSwap<FluidControls>>,
     automation: &AutomationState,
+    tonal_sequence: &TonalSequenceState,
 ) -> Result<(), Box<dyn Error>> {
     let c = FluidControls::clone(&controls.load());
     let line = launch_line(&SongState {
         controls: c,
         automation: automation.clone(),
+        tonal_sequence: Some(tonal_sequence.clone()),
     })?;
     let mut clipboard = arboard::Clipboard::new()?;
     clipboard.set_text(line)?;

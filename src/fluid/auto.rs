@@ -191,6 +191,7 @@ impl MorphState {
         endpoints.push(SongState {
             controls: current,
             automation: current_automation,
+            tonal_sequence: None,
         });
         endpoints.extend(states[nearest..].iter().cloned());
         endpoints.extend(states[..nearest].iter().cloned());
@@ -397,6 +398,7 @@ mod tests {
         SongState {
             controls,
             automation: AutomationState::default(),
+            tonal_sequence: None,
         }
     }
 
@@ -650,10 +652,12 @@ mod tests {
                 SongState {
                     controls: from_state,
                     automation: from_auto,
+                    tonal_sequence: None,
                 },
                 SongState {
                     controls: to_state,
                     automation: to_auto,
+                    tonal_sequence: None,
                 },
             ],
             6,
@@ -688,10 +692,12 @@ mod tests {
                 SongState {
                     controls: FluidControls::default(),
                     automation: from_auto,
+                    tonal_sequence: None,
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: to_auto,
+                    tonal_sequence: None,
                 },
             ],
             6,
@@ -719,14 +725,17 @@ mod tests {
                 SongState {
                     controls: FluidControls::default(),
                     automation: routed,
+                    tonal_sequence: None,
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: unrouted.clone(),
+                    tonal_sequence: None,
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: unrouted,
+                    tonal_sequence: None,
                 },
             ],
             6,
