@@ -847,6 +847,31 @@ fn same_key_toggles_editor_closed_and_keeps_the_route() {
 }
 
 #[test]
+fn published_automation_syncs_auto_snapshot_without_republishing() {
+    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let mut automation = PublishedAutomation::new(AutomationState::default(), Arc::clone(&shared));
+    let address = ControlAddress::new("pad.level");
+    let mut auto_snapshot = AutomationState::default();
+    auto_snapshot.set_route(
+        address,
+        LfoRoute {
+            depth_ratio: 0.6,
+            ..LfoRoute::default()
+        },
+    );
+    let auto_snapshot = Arc::new(auto_snapshot);
+    shared.store(Arc::clone(&auto_snapshot));
+
+    automation.sync_from_shared();
+
+    assert_eq!(
+        automation.state().route(address).unwrap().depth_ratio,
+        auto_snapshot.route(address).unwrap().depth_ratio
+    );
+    assert!(Arc::ptr_eq(&shared.load_full(), &auto_snapshot));
+}
+
+#[test]
 fn x_removes_the_open_route_or_clears_the_whole_control() {
     let address = ControlAddress::new("master.level");
     let mut automation = AutomationState::default();

@@ -41,6 +41,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
 - Chord length (`pad.chord_bars`) stores bars for the pad/bass engines but displays and accepts numeric entry in beats; typed values convert to bars and snap to the existing power-of-two grid.
 - Live-read gain controls are ramped by registry-derived `GainSmoothers` in `FluidEngine`; every unique `ControlKind::Gain` spec must get a smoother automatically.
 - TUI automation edits must go through `PublishedAutomation` so the shared audio-thread snapshot is stored on every mutation.
+- While auto morph runs, `PublishedAutomation` refreshes its read-only UI state from the shared snapshot every frame, so LFO markers and song saves match what the engine hears; the first edit exits auto from that current snapshot.
 - Pitched voices (Pad, Bass, Tonal) route note numbers through `midi_to_hz` and respect master tune; unpitched voices (Perc, Kick, Clap) do not.
 - Tonal separates trigger density from phrase shape: `tonal.rate_beats` controls note trigger spacing; `tonal.step_interval_beats` is the stable cycle-length ID for phrase wrapping and evolution boundaries.
 - Tonal synth selection lives in `tonal.synth_type`; it changes the voice created for new tonal notes while preserving the shared phrase/randomness/timing/master-tune/reverb path. Exploration variants may differ in harmonic tables, spectral tilt, and pitch-scaled harmonic decay; keep piano-family profiles warm and non-metallic unless the user explicitly asks for FM-like brightness.

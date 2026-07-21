@@ -66,6 +66,10 @@ pub(crate) fn ui_loop(
     let mut automation = PublishedAutomation::new(initial_automation, automation_shared);
 
     'ui: loop {
+        let in_auto = auto.is_running();
+        if in_auto {
+            automation.sync_from_shared();
+        }
         let c = FluidControls::clone(&controls.load());
         if save_message
             .as_ref()
@@ -76,7 +80,6 @@ pub(crate) fn ui_loop(
         let update_message = updates.message();
         let automation_message = automation_footer(automation.state());
         let chords_message = chords_footer(tab, chord_drill);
-        let in_auto = auto.is_running();
         let auto_message =
             in_auto.then_some("\u{25cf} AUTO morphing   a or touch any param to exit");
         let footer_message = save_message
@@ -809,6 +812,11 @@ impl PublishedAutomation {
 
     pub(crate) fn state(&self) -> &AutomationState {
         &self.state
+    }
+
+    /// Refresh the read-only UI view from an external writer such as auto morph.
+    pub(crate) fn sync_from_shared(&mut self) {
+        self.state = self.shared.load_full().as_ref().clone();
     }
 
     pub(crate) fn edit(&mut self, edit: impl FnOnce(&mut AutomationState)) {
