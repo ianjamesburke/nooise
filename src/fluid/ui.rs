@@ -74,6 +74,8 @@ pub(crate) fn ui_loop(
     let mut comp_drill = CompDrill::None;
     let mut flipped = FlippedUnits::new();
     let mut numeric_entry: Option<NumericEntry> = None;
+    let mut palette: Option<PaletteState> = None;
+    let mut pending_commit: Option<(f64, Vec<StagedEdit>)> = None;
     let mut mute: MuteState = [None; 9];
     let mut fluid = FluidState::new();
     let mut last = Instant::now();
@@ -86,6 +88,15 @@ pub(crate) fn ui_loop(
         if in_auto {
             automation.sync_from_shared();
         }
+        if pending_commit
+            .as_ref()
+            .is_some_and(|(target, _)| telemetry.beat() >= *target)
+        {
+            let (_, edits) = pending_commit.take().expect("checked above");
+            commit_staged_edits(&controls, &edits);
+            auto.exit(); // touching a param exits auto
+            save_message = Some((staged_applied_message(edits.len()), Instant::now()));
+        }
         let c = FluidControls::clone(&controls.load());
         if save_message
             .as_ref()
@@ -94,6 +105,10 @@ pub(crate) fn ui_loop(
             save_message = None;
         }
         let update_message = updates.message();
+        let pending_message = pending_commit.as_ref().map(|(_, edits)| {
+            let plural = if edits.len() == 1 { "" } else { "s" };
+            format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
+        });
         let automation_message = automation_footer(automation.state());
         let chords_message = chords_footer(tab, chord_drill);
         let master_message = master_footer(tab, comp_drill);
@@ -102,6 +117,7 @@ pub(crate) fn ui_loop(
         let footer_message = save_message
             .as_ref()
             .map(|(message, _)| message.as_str())
+            .or(pending_message.as_deref())
             .or(automation_message.as_deref())
             .or(chords_message.as_deref())
             .or(master_message.as_deref())
@@ -145,6 +161,7 @@ pub(crate) fn ui_loop(
                 comp_drill,
                 telemetry.chord_index.load(Ordering::Relaxed),
                 &mute,
+                palette.as_ref(),
             )
         })?;
 
@@ -187,6 +204,86 @@ pub(crate) fn ui_loop(
                     }
                     KeyCode::Char(c) => entry.push(c),
                     _ => {}
+                }
+                continue;
+            }
+            if palette.is_some() {
+                if key.code == KeyCode::Esc {
+                    palette = None;
+                    continue;
+                }
+                let pal = palette.as_mut().expect("checked above");
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let action = match key.code {
+                    KeyCode::Tab => {
+                        pal.autocomplete();
+                        PaletteAction::None
+                    }
+                    KeyCode::Up => {
+                        pal.move_selection(-1);
+                        PaletteAction::None
+                    }
+                    KeyCode::Down => {
+                        pal.move_selection(1);
+                        PaletteAction::None
+                    }
+                    KeyCode::Char('p') if ctrl => {
+                        pal.move_selection(-1);
+                        PaletteAction::None
+                    }
+                    KeyCode::Char('n') if ctrl => {
+                        pal.move_selection(1);
+                        PaletteAction::None
+                    }
+                    KeyCode::Char('b') if ctrl => pal.commit_at_bar(),
+                    KeyCode::Backspace => {
+                        pal.backspace();
+                        PaletteAction::None
+                    }
+                    KeyCode::Enter => pal.enter(),
+                    KeyCode::Char(c) => {
+                        pal.push_char(c);
+                        PaletteAction::None
+                    }
+                    _ => PaletteAction::None,
+                };
+                match action {
+                    PaletteAction::None => {}
+                    PaletteAction::Jump(index) => {
+                        let entry = pal.entry(index);
+                        let (jump_tab, jump_index) = (entry.tab, entry.index_in_tab);
+                        palette = None;
+                        if automation.state().is_editor_open() {
+                            automation.edit(AutomationState::close_editor);
+                        }
+                        tab = jump_tab;
+                        lfo_selected = 0;
+                        chord_drill = ChordDrill::None;
+                        comp_drill = CompDrill::None;
+                        selected = match tab {
+                            Tab::Chords => {
+                                let (drill, row) = chords_drill_for_index(jump_index);
+                                chord_drill = drill;
+                                row
+                            }
+                            Tab::Master => {
+                                let (drill, row) = master_drill_for_index(jump_index);
+                                comp_drill = drill;
+                                row
+                            }
+                            _ => jump_index,
+                        };
+                    }
+                    PaletteAction::CommitNow(edits) => {
+                        palette = None;
+                        commit_staged_edits(&controls, &edits);
+                        auto.exit(); // touching a param exits auto
+                        save_message = Some((staged_applied_message(edits.len()), Instant::now()));
+                    }
+                    PaletteAction::CommitAtBar(edits) => {
+                        palette = None;
+                        pending_commit = Some((next_bar_beat(beat), edits));
+                    }
                 }
                 continue;
             }
@@ -248,6 +345,9 @@ pub(crate) fn ui_loop(
                 KeyCode::Char('a') => {
                     let current = FluidControls::clone(&controls.load());
                     auto.toggle(current, automation.state().clone(), beat);
+                }
+                KeyCode::Char('/') => {
+                    palette = Some(PaletteState::new());
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if automation.state().is_editor_open() {
@@ -1399,6 +1499,7 @@ pub(crate) fn render(
     comp_drill: CompDrill,
     active_chord: u64,
     mute: &MuteState,
+    palette: Option<&PaletteState>,
 ) {
     let bpm = controls.master.bpm;
     // Which custom-chord slot the pad engine is currently sounding, mapped
@@ -1736,7 +1837,7 @@ pub(crate) fn render(
     f.render_widget(Paragraph::new(rows), layout[4]);
 
     let footer = update_message
-        .unwrap_or("jk select   h/l adjust   f LFO   v macro   a auto   T units   q quit");
+        .unwrap_or("jk select   h/l adjust   / find   f LFO   v macro   a auto   T units   q quit");
     let footer_style = if update_message.is_some() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
@@ -1750,6 +1851,134 @@ pub(crate) fn render(
             .style(footer_style),
         layout[5],
     );
+
+    if let Some(pal) = palette {
+        draw_palette(f, panel, pal, controls, numeric.cursor_visible);
+    }
+}
+
+/// Bottom-anchored palette overlay inside the main panel: prompt line,
+/// best-first matches (fuzzy hits highlighted), staged edits, key help.
+fn draw_palette(
+    f: &mut Frame,
+    panel: Rect,
+    pal: &PaletteState,
+    controls: &FluidControls,
+    cursor_visible: bool,
+) {
+    const MAX_MATCH_ROWS: usize = 8;
+    let shown = pal.matches.len().min(MAX_MATCH_ROWS);
+    let staged_rows = usize::from(!pal.staged.is_empty()) as u16;
+    // prompt + matches + optional staged line + help line, inside a border.
+    let height = (shown as u16 + staged_rows + 4).min(panel.height.saturating_sub(2));
+    let width = panel.width.saturating_sub(6).max(30).min(panel.width);
+    let x = panel.x + (panel.width.saturating_sub(width)) / 2;
+    let y = panel.bottom().saturating_sub(height + 1);
+    let area = Rect::new(x, y, width, height);
+
+    // Opaque scrim so the palette reads over the control rows behind it.
+    {
+        let buf = f.buffer_mut();
+        for row in area.top()..area.bottom() {
+            for col in area.left()..area.right() {
+                let cell = &mut buf[(col, row)];
+                cell.set_char(' ');
+                cell.set_bg(Color::Rgb(18, 22, 32));
+            }
+        }
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let cursor = if cursor_visible { "\u{258c}" } else { " " };
+    let prompt = match pal.locked {
+        Some(entry) => Line::from(vec![
+            Span::styled("/", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled(
+                pal.entry(entry).spec.id,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" = ", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled(
+                format!("{}{cursor}", pal.value_buf),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        None => Line::from(vec![
+            Span::styled("/", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled(
+                format!("{}{cursor}", pal.query),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+    };
+
+    let mut lines = vec![prompt];
+    for (row, m) in pal.matches.iter().take(shown).enumerate() {
+        let entry = pal.entry(m.entry);
+        let is_selected = row == pal.selected;
+        let marker = if is_selected { "\u{25b8} " } else { "  " };
+        let base = if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(150, 158, 175))
+        };
+        let hit = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        let haystack = entry.haystack();
+        let mut spans = vec![Span::styled(marker, base)];
+        for (i, ch) in haystack.chars().enumerate() {
+            let style = if m.hits.contains(&i) { hit } else { base };
+            spans.push(Span::styled(ch.to_string(), style));
+        }
+        spans.push(Span::styled(
+            format!("  {}", (entry.spec.display)(controls)),
+            Style::default().fg(Color::Rgb(120, 200, 170)),
+        ));
+        lines.push(Line::from(spans));
+    }
+    if !pal.staged.is_empty() {
+        let staged = pal
+            .staged
+            .iter()
+            .map(|edit| format!("{}\u{2192}{}", edit.id, edit.value))
+            .collect::<Vec<_>>()
+            .join("  ");
+        lines.push(Line::from(Span::styled(
+            format!("staged: {staged}"),
+            Style::default().fg(Color::Rgb(255, 220, 120)),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "\u{21e5} complete   type value   \u{21b5} stage/jump   \u{21b5}\u{21b5} commit   ^B on bar   Esc cancel",
+        Style::default().fg(Color::Rgb(120, 128, 145)),
+    )));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Apply every staged palette edit in one clone-modify-store pass, through
+/// each control's own entry semantics (percent, snap, ...).
+fn commit_staged_edits(controls: &Arc<ArcSwap<FluidControls>>, edits: &[StagedEdit]) {
+    let mut next = FluidControls::clone(&controls.load());
+    for edit in edits {
+        if let Some(spec) = spec_by_id(edit.id) {
+            spec.apply_value(edit.value, &mut next);
+        }
+    }
+    controls.store(Arc::new(next));
+}
+
+fn staged_applied_message(count: usize) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} edit{plural} applied")
 }
 
 /// Colour pair for a modulator submenu: (active row, idle row).

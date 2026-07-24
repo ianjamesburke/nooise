@@ -37,6 +37,7 @@ mod auto;
 mod automation;
 mod controls;
 mod engine;
+mod palette;
 mod registry;
 mod song;
 mod ui;
@@ -51,6 +52,7 @@ pub(crate) use auto::{
 use automation::*;
 use controls::*;
 use engine::*;
+use palette::*;
 use registry::*;
 pub(crate) use song::{SongState, decode_song_code, launch_line};
 use ui::*;
