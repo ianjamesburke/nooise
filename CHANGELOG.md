@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [1.8.2] — 2026-07-24
+
+### Added
+- feat: add per-chord major/minor quality override to custom chord slots
 ## [1.8.1] — 2026-07-21
 
 ### Added
