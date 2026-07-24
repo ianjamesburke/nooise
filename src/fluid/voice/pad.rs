@@ -100,9 +100,13 @@ impl PadEngine {
 
         let air = self.air.next_filtered(&mut self.rng, 0.0002) * 0.00025;
 
+        // Headroom trim on the summed layer output, not a character control —
+        // `pad.level` at 100% should reach close to full scale on its own,
+        // leaving final safety margin to the master bus's soft-clip/compressor.
+        const OUTPUT_TRIM: f32 = 0.95;
         (
-            (dry_l * 0.72 + air) * c.level,
-            (dry_r * 0.72 + air) * c.level,
+            (dry_l * OUTPUT_TRIM + air) * c.level,
+            (dry_r * OUTPUT_TRIM + air) * c.level,
         )
     }
 }
@@ -601,7 +605,8 @@ pub(crate) fn pad_chord_tones(c: &PadControls, step: usize) -> [i32; 4] {
 }
 
 /// A custom chord slot's four voiced tones: root (tonic-relative diatonic
-/// degree + accidental), then diatonic third/fifth, then a top voice chosen
+/// degree + accidental), then third/fifth (diatonic, with the third
+/// overridable by `quality` for modal interchange), then a top voice chosen
 /// by `extension`, finally reshuffled by `inversion` and de-duplicated
 /// upward so inversions/accidentals never collide two voices onto one note.
 pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
@@ -610,13 +615,18 @@ pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
     let accidental = slot.accidental.round().clamp(-1.0, 1.0) as i32;
     let extension = slot.extension.round().clamp(0.0, 3.0) as i32;
     let inversion = slot.inversion.round().clamp(0.0, 3.0) as i32;
+    let third = match slot.quality.round().clamp(-1.0, 1.0) as i32 {
+        -1 => root + 3,
+        1 => root + 4,
+        _ => shift_diatonic(root, 2),
+    };
     let top = match extension {
         1 => shift_diatonic(root, 6),
         2 => shift_diatonic(root, 8),
         3 => shift_diatonic(root, 10),
         _ => root + 12,
     };
-    let mut notes = [root, shift_diatonic(root, 2), shift_diatonic(root, 4), top];
+    let mut notes = [root, third, shift_diatonic(root, 4), top];
     apply_inversion(&mut notes, inversion);
     if accidental != 0 {
         notes = notes.map(|note| note + accidental);
@@ -632,6 +642,22 @@ pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
     const TONIC: i32 = 45;
     let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
     root + slot.accidental.round().clamp(-1.0, 1.0) as i32
+}
+
+/// Whether a slot's resolved third is minor — honors a forced `quality`,
+/// otherwise reports what the diatonic scale gives at this degree. Drives the
+/// Quality row's "scale (min)"-style display so the inherit position still
+/// tells the user what they're hearing.
+pub(crate) fn pad_chord_slot_is_minor(slot: &ChordSlotControls) -> bool {
+    match slot.quality.round().clamp(-1.0, 1.0) as i32 {
+        -1 => true,
+        1 => false,
+        _ => {
+            const TONIC: i32 = 45;
+            let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
+            shift_diatonic(root, 2) - root == 3
+        }
+    }
 }
 
 /// Move `note` by `steps` positions on the diatonic major scale (not raw

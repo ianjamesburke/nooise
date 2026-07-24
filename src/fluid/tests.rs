@@ -116,6 +116,7 @@ fn render_to_buffer(
                 footer,
                 &FlippedUnits::new(),
                 drill,
+                CompDrill::None,
                 active_chord,
                 mute,
             )
@@ -1226,10 +1227,13 @@ fn engine_publishes_beat_telemetry() {
 // GOLDEN_RENDER_CHECKSUM only after confirming the new output is inaudibly
 // close to the old one.
 const GOLDEN_RENDER_SAMPLES: usize = 48_000;
-// Re-blessed when the deliberate startup fade changed from four seconds to
-// two. The seeded audio remains deterministic; its first second now reaches
-// half gain instead of quarter gain, which intentionally changes this render.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x75c0_c29c_d1ec_3941;
+// Re-blessed twice in the same pass: first for the master compressor gaining
+// makeup gain (`master.comp_amount` macro), then for removing redundant
+// fixed headroom trims baked into pad/perc/clap output (they were cutting
+// level well below where the master bus's own limiting kicks in, on top of
+// the mix's own per-voice balance weights). Both deliberately raise output
+// level to fix quiet default playback.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x196c_3e38_d2c3_4532;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -1590,7 +1594,7 @@ fn apply_min_moves_selected_control_to_floor() {
     assert_close(controls.master.bpm, 30.0);
 
     controls.master.tone = 0.5;
-    apply_min(Tab::Master, 13, &mut controls);
+    apply_min(Tab::Master, 12, &mut controls);
     assert_close(controls.master.tone, -1.0);
 
     controls.pad.chord_bars = 16.0;
@@ -1637,21 +1641,20 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Master,
             vec![
-                Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Gain, Continuous,
-                Continuous, Timing, Continuous, Discrete,
+                Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Gain, Continuous, Timing,
+                Continuous, Discrete, Continuous, Continuous, Continuous,
             ],
         ),
         (Tab::Perc, vec![Gain, Gain, Timing, Timing, Timing, Gain]),
-        (
-            Tab::Chords,
-            vec![
+        (Tab::Chords, {
+            // 11 base rows, then 8 slots x 5 discrete rows
+            // (degree/accidental/quality/extension/inversion).
+            let mut kinds = vec![
                 Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain, Gain,
-                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
-                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
-                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
-                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
-            ],
-        ),
+            ];
+            kinds.extend(vec![Discrete; 40]);
+            kinds
+        }),
         (
             Tab::Bass,
             vec![
@@ -2222,13 +2225,14 @@ fn chords_tab_controls_progression_lists_active_slot_roots() {
 }
 
 #[test]
-fn chords_tab_controls_slot_shows_accidental_extension_inversion() {
+fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, ChordDrill::Slot(2));
     assert_eq!(
         rows.iter().map(|r| r.label).collect::<Vec<_>>(),
         vec![
             "Chord 3 Accidental",
+            "Chord 3 Quality",
             "Chord 3 Extension",
             "Chord 3 Inversion"
         ]
@@ -2239,11 +2243,11 @@ fn chords_tab_controls_slot_shows_accidental_extension_inversion() {
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
     assert_eq!(chords_flat_index(ChordDrill::Progression, 0), 11);
-    assert_eq!(chords_flat_index(ChordDrill::Progression, 2), 19);
-    assert_eq!(chords_flat_index(ChordDrill::Slot(2), 0), 20);
+    assert_eq!(chords_flat_index(ChordDrill::Progression, 2), 21);
+    assert_eq!(chords_flat_index(ChordDrill::Slot(2), 0), 22);
 
     let controls = FluidControls::default();
-    let expected = tab_controls(Tab::Chords, &controls)[20].id;
+    let expected = tab_controls(Tab::Chords, &controls)[22].id;
     assert_eq!(expected, "pad.chord3_accidental");
 }
 
@@ -2313,6 +2317,7 @@ fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
                 None,
                 &FlippedUnits::new(),
                 ChordDrill::Progression,
+                CompDrill::None,
                 active_chord,
                 &[None; 9],
             )
@@ -2364,6 +2369,7 @@ fn render_slot_breadcrumb_marks_live_chord() {
                     None,
                     &FlippedUnits::new(),
                     ChordDrill::Slot(2),
+                    CompDrill::None,
                     active_chord,
                     &[None; 9],
                 )
@@ -2997,6 +3003,7 @@ fn pad_chord_notes_with_slot_builds_notes_from_root_extension_and_inversion() {
     let slot = ChordSlotControls {
         degree: 1.0,
         accidental: -1.0,
+        quality: 0.0,
         extension: 2.0,
         inversion: 1.0,
     };
@@ -3008,6 +3015,53 @@ fn pad_chord_notes_with_slot_builds_notes_from_root_extension_and_inversion() {
     // Strictly ascending: inversion/accidental never collapse two voices
     // onto the same (or a crossed) pitch.
     assert!(notes.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
+fn chord_slot_quality_overrides_the_third_for_modal_interchange() {
+    // The tonic (A over the C-major pitch-class scale) is diatonically an
+    // A-minor triad: third = root + 3.
+    let tonic = ChordSlotControls::default();
+    assert_eq!(pad_chord_notes_with_slot(&tonic)[1], 45 + 3);
+    assert!(pad_chord_slot_is_minor(&tonic));
+
+    // Forcing major raises only the third; root/fifth stay diatonic.
+    let tonic_major = ChordSlotControls {
+        quality: 1.0,
+        ..ChordSlotControls::default()
+    };
+    let notes = pad_chord_notes_with_slot(&tonic_major);
+    assert_eq!(notes[0], 45);
+    assert_eq!(notes[1], 45 + 4);
+    assert_eq!(notes[2], 45 + 7);
+    assert!(!pad_chord_slot_is_minor(&tonic_major));
+
+    // Degree 2 lands on C: diatonically major; forcing minor flattens it.
+    let third_degree = ChordSlotControls {
+        degree: 2.0,
+        ..ChordSlotControls::default()
+    };
+    assert!(!pad_chord_slot_is_minor(&third_degree));
+    let third_degree_minor = ChordSlotControls {
+        degree: 2.0,
+        quality: -1.0,
+        ..ChordSlotControls::default()
+    };
+    let root = pad_chord_notes_with_slot(&third_degree_minor)[0];
+    assert_eq!(pad_chord_notes_with_slot(&third_degree_minor)[1], root + 3);
+    assert!(pad_chord_slot_is_minor(&third_degree_minor));
+
+    // The Quality row's display resolves the inherit position to what the
+    // scale actually gives at this degree.
+    let mut controls = FluidControls::default();
+    let display = spec_by_id("pad.chord1_quality")
+        .expect("quality spec")
+        .display;
+    assert_eq!(display(&controls), "scale (min)");
+    controls.pad.chord_slots[0].degree = 2.0;
+    assert_eq!(display(&controls), "scale (maj)");
+    controls.pad.chord_slots[0].quality = 1.0;
+    assert_eq!(display(&controls), "maj");
 }
 
 #[test]

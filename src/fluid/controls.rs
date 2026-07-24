@@ -18,25 +18,51 @@ pub(crate) struct MasterControls {
     pub bpm: f32,
     pub level: f32,
     pub drive: f32,
+    /// 0-1 macro driving `comp_threshold`/`comp_ratio`/`comp_makeup` via
+    /// `apply_compression_amount`. The single dial most users touch; drilling
+    /// into the Compression row exposes the three derived fields for direct
+    /// override, which the macro overwrites again the next time it's moved.
+    pub comp_amount: f32,
     pub comp_threshold: f32,  // dB, -40 to 0
     pub comp_ratio: f32,      // 1-8
     pub comp_release_ms: f32, // 10-500
-    pub tone: f32,            // -1 (bass) to +1 (treble)
-    pub tune: f32,            // semitones, -12 (1 octave down) to +12 (1 octave up)
+    /// Post-compressor makeup gain, dB. Reclaims the loudness the compressor
+    /// takes away above threshold — the compressor previously had no makeup
+    /// at all, which is why default-settings output read as quiet.
+    pub comp_makeup: f32,
+    pub tone: f32, // -1 (bass) to +1 (treble)
+    pub tune: f32, // semitones, -12 (1 octave down) to +12 (1 octave up)
+}
+
+/// Derives threshold (dB), ratio, and makeup (dB) from a single 0-1
+/// "Compression" amount. Makeup is half the compressor's average gain
+/// reduction at full-scale input — enough to reclaim loudness without
+/// making the knob feel like a limiter ceiling.
+pub(crate) fn apply_compression_amount(m: &mut MasterControls, amount: f32) {
+    let amount = amount.clamp(0.0, 1.0);
+    m.comp_amount = amount;
+    m.comp_threshold = -2.0 - amount * 30.0;
+    m.comp_ratio = 1.0 + amount * 5.0;
+    let full_scale_reduction_db = -m.comp_threshold * (1.0 - 1.0 / m.comp_ratio);
+    m.comp_makeup = (full_scale_reduction_db * 0.5).clamp(0.0, 12.0);
 }
 
 impl Default for MasterControls {
     fn default() -> Self {
-        Self {
+        let mut m = Self {
             bpm: 82.0,
             level: 0.8,
             drive: 0.1,
-            comp_threshold: -8.0,
-            comp_ratio: 2.0,
+            comp_amount: 0.0,
+            comp_threshold: 0.0,
+            comp_ratio: 1.0,
             comp_release_ms: 100.0,
+            comp_makeup: 0.0,
             tone: 0.0,
             tune: 0.0,
-        }
+        };
+        apply_compression_amount(&mut m, 0.2);
+        m
     }
 }
 
@@ -66,6 +92,8 @@ impl Default for PercControls {
 /// One slot of a custom chord progression: `degree` is the chord root as a
 /// tonic-relative scale degree (diatonic steps, -7..7, spanning one octave in
 /// each direction); `accidental` nudges that root a semitone flat/sharp;
+/// `quality` overrides the chord's third for modal interchange (-1=force
+/// minor, 0=whatever the scale gives at this degree, +1=force major);
 /// `extension` picks how high the chord's top voice reaches above the triad
 /// (0=triad, 1/2/3=progressively richer diatonic extensions); `inversion`
 /// moves the lowest voice(s) up an octave. Only read when `PadControls`'s
@@ -75,6 +103,7 @@ impl Default for PercControls {
 pub(crate) struct ChordSlotControls {
     pub degree: f32,
     pub accidental: f32,
+    pub quality: f32,
     pub extension: f32,
     pub inversion: f32,
 }

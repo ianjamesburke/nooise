@@ -653,6 +653,7 @@ pub(crate) struct MasterBus {
     pub(crate) tone_l: f32,
     pub(crate) tone_r: f32,
     pub(crate) thresh_lin: f32,
+    pub(crate) makeup_lin: f32,
     pub(crate) attack_coeff: f32,
     pub(crate) rel_coeff: f32,
 }
@@ -664,6 +665,7 @@ impl MasterBus {
             tone_l: 0.0,
             tone_r: 0.0,
             thresh_lin: 1.0,
+            makeup_lin: 1.0,
             attack_coeff: 0.0,
             rel_coeff: 0.0,
         };
@@ -673,6 +675,7 @@ impl MasterBus {
 
     pub(crate) fn set_controls(&mut self, c: &MasterControls, sample_rate: f32) {
         self.thresh_lin = 10_f32.powf(c.comp_threshold / 20.0);
+        self.makeup_lin = 10_f32.powf(c.comp_makeup / 20.0);
         self.attack_coeff = (-1.0_f32 / (0.001 * sample_rate)).exp();
         self.rel_coeff = (-1.0_f32 / (c.comp_release_ms * 0.001 * sample_rate)).exp();
     }
@@ -711,8 +714,8 @@ impl MasterBus {
         };
 
         (
-            (l * gain_reduction * c.level).clamp(-0.95, 0.95),
-            (r * gain_reduction * c.level).clamp(-0.95, 0.95),
+            (l * gain_reduction * self.makeup_lin * c.level).clamp(-0.95, 0.95),
+            (r * gain_reduction * self.makeup_lin * c.level).clamp(-0.95, 0.95),
         )
     }
 }

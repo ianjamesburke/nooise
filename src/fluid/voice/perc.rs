@@ -4,6 +4,12 @@ use super::*;
 // Perc engine (16th-note white noise hits)
 // ============================================================
 
+/// Headroom trim on filtered-noise output, not a character control —
+/// `perc.level` at 100% should reach close to full scale on its own (for a
+/// single hit / continuous mode), leaving overlap safety margin to the
+/// master bus's soft-clip/compressor plus `mix_voices`'s own perc weight.
+const OUTPUT_TRIM: f32 = 0.5;
+
 pub(crate) struct PercEngine {
     pub(crate) sample_rate: f32,
     pub(crate) trigger: GridTrigger,
@@ -39,7 +45,7 @@ impl PercEngine {
                 self.last_filter = c.filter;
                 self.smoothing = noise_filter_smoothing(c.filter);
             }
-            return self.noise.next_filtered(&mut self.rng, self.smoothing) * c.level * 0.4;
+            return self.noise.next_filtered(&mut self.rng, self.smoothing) * c.level * OUTPUT_TRIM;
         }
 
         if self
@@ -89,7 +95,7 @@ impl NoiseHit {
         }
         let gain = self.samples_remaining as f32 / self.total_samples as f32;
         self.samples_remaining -= 1;
-        self.noise.next_filtered(rng, self.filter) * gain * self.level * 0.4
+        self.noise.next_filtered(rng, self.filter) * gain * self.level * OUTPUT_TRIM
     }
     pub(crate) fn is_done(&self) -> bool {
         self.samples_remaining == 0

@@ -23,13 +23,28 @@ pub(crate) enum ChordDrill {
     Slot(usize),
 }
 
-/// Translates a Chords-tab visible-row index to its real `CHORDS_CONTROLS`
-/// index for the positional registry setters; a no-op on every other tab.
-fn chords_selected_index(tab: Tab, chord_drill: ChordDrill, selected: usize) -> usize {
-    if tab == Tab::Chords {
-        chords_flat_index(chord_drill, selected)
-    } else {
-        selected
+/// Master tab's local navigation depth: top-level params (Compression shown
+/// as one macro row), or drilled into that row's derived Threshold/Ratio/
+/// Makeup fields.
+#[derive(Clone, Copy, PartialEq, Default)]
+pub(crate) enum CompDrill {
+    #[default]
+    None,
+    Detail,
+}
+
+/// Translates a Chords- or Master-tab visible-row index to its real registry
+/// index for the positional setters; a no-op on every other tab.
+fn resolve_selected_index(
+    tab: Tab,
+    chord_drill: ChordDrill,
+    comp_drill: CompDrill,
+    selected: usize,
+) -> usize {
+    match tab {
+        Tab::Chords => chords_flat_index(chord_drill, selected),
+        Tab::Master => master_flat_index(comp_drill, selected),
+        _ => selected,
     }
 }
 
@@ -56,6 +71,7 @@ pub(crate) fn ui_loop(
     let mut selected = 0usize;
     let mut lfo_selected = 0usize;
     let mut chord_drill = ChordDrill::None;
+    let mut comp_drill = CompDrill::None;
     let mut flipped = FlippedUnits::new();
     let mut numeric_entry: Option<NumericEntry> = None;
     let mut mute: MuteState = [None; 9];
@@ -80,6 +96,7 @@ pub(crate) fn ui_loop(
         let update_message = updates.message();
         let automation_message = automation_footer(automation.state());
         let chords_message = chords_footer(tab, chord_drill);
+        let master_message = master_footer(tab, comp_drill);
         let auto_message =
             in_auto.then_some("\u{25cf} AUTO morphing   a or touch any param to exit");
         let footer_message = save_message
@@ -87,10 +104,13 @@ pub(crate) fn ui_loop(
             .map(|(message, _)| message.as_str())
             .or(automation_message.as_deref())
             .or(chords_message.as_deref())
+            .or(master_message.as_deref())
             .or(auto_message)
             .or(update_message.as_deref());
         let items = if tab == Tab::Chords {
             chords_tab_controls(&c, chord_drill)
+        } else if tab == Tab::Master {
+            master_tab_controls(&c, comp_drill)
         } else {
             tab_controls(tab, &c)
         };
@@ -122,6 +142,7 @@ pub(crate) fn ui_loop(
                 footer_message,
                 &flipped,
                 chord_drill,
+                comp_drill,
                 telemetry.chord_index.load(Ordering::Relaxed),
                 &mute,
             )
@@ -152,7 +173,7 @@ pub(crate) fn ui_loop(
                                 lfo_selected,
                                 &controls,
                                 tab,
-                                chords_selected_index(tab, chord_drill, selected),
+                                resolve_selected_index(tab, chord_drill, comp_drill, selected),
                                 value,
                                 beat,
                                 &flipped,
@@ -199,6 +220,10 @@ pub(crate) fn ui_loop(
                         _ => ChordDrill::None,
                     };
                 }
+                KeyCode::Esc if tab == Tab::Master && comp_drill != CompDrill::None => {
+                    selected = MASTER_COMP_AMOUNT_ROW;
+                    comp_drill = CompDrill::None;
+                }
                 KeyCode::Esc => {}
                 KeyCode::Char('q') => break 'ui,
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'ui,
@@ -214,6 +239,7 @@ pub(crate) fn ui_loop(
                     selected = 0;
                     lfo_selected = 0;
                     chord_drill = ChordDrill::None;
+                    comp_drill = CompDrill::None;
                 }
                 // Toggle auto-morph. On -> off swaps in `None` (the engine
                 // stops rewriting controls, leaving the current morphed values
@@ -262,7 +288,7 @@ pub(crate) fn ui_loop(
                 }
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
                     auto.exit(); // touching a param exits auto
-                    let idx = chords_selected_index(tab, chord_drill, selected);
+                    let idx = resolve_selected_index(tab, chord_drill, comp_drill, selected);
                     if key.code == KeyCode::Char('H') || key.modifiers.contains(KeyModifiers::SHIFT)
                     {
                         reset_lfo_or_control(
@@ -293,7 +319,7 @@ pub(crate) fn ui_loop(
                         lfo_selected,
                         &controls,
                         tab,
-                        chords_selected_index(tab, chord_drill, selected),
+                        resolve_selected_index(tab, chord_drill, comp_drill, selected),
                         1.0,
                         beat,
                         &flipped,
@@ -394,6 +420,12 @@ pub(crate) fn ui_loop(
                                 }
                                 _ => {}
                             }
+                        } else if tab == Tab::Master
+                            && comp_drill == CompDrill::None
+                            && items.get(selected).map(|i| i.id) == Some("master.comp_amount")
+                        {
+                            comp_drill = CompDrill::Detail;
+                            selected = 0;
                         } else if let Some(item) = items.get(selected)
                             && let Some(owner) = tab_owning_control(item.id)
                             && owner != tab
@@ -402,6 +434,7 @@ pub(crate) fn ui_loop(
                             selected = 0;
                             lfo_selected = 0;
                             chord_drill = ChordDrill::None;
+                            comp_drill = CompDrill::None;
                         }
                     }
                 }
@@ -418,7 +451,7 @@ pub(crate) fn ui_loop(
                             lfo_selected,
                             &controls,
                             tab,
-                            chords_selected_index(tab, chord_drill, selected),
+                            resolve_selected_index(tab, chord_drill, comp_drill, selected),
                             now_flipped,
                             beat,
                         );
@@ -1112,6 +1145,16 @@ pub(crate) fn chords_footer(tab: Tab, chord_drill: ChordDrill) -> Option<String>
     }
 }
 
+pub(crate) fn master_footer(tab: Tab, comp_drill: CompDrill) -> Option<String> {
+    if tab != Tab::Master {
+        return None;
+    }
+    match comp_drill {
+        CompDrill::None => None,
+        CompDrill::Detail => Some("Compression   Esc: back".to_string()),
+    }
+}
+
 fn copy_launch_line(
     controls: &Arc<ArcSwap<FluidControls>>,
     automation: &AutomationState,
@@ -1353,6 +1396,7 @@ pub(crate) fn render(
     update_message: Option<&str>,
     flipped: &FlippedUnits,
     chord_drill: ChordDrill,
+    comp_drill: CompDrill,
     active_chord: u64,
     mute: &MuteState,
 ) {
@@ -1427,6 +1471,11 @@ pub(crate) fn render(
                         format!("{} › Chord {}{live}", t.name(), n + 1)
                     }
                     ChordDrill::None => t.name().to_string(),
+                }
+            } else if *t == Tab::Master {
+                match comp_drill {
+                    CompDrill::Detail => format!("{} › Compression", t.name()),
+                    CompDrill::None => t.name().to_string(),
                 }
             } else {
                 t.name().to_string()

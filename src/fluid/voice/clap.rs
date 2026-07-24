@@ -4,6 +4,12 @@ use super::*;
 // Clap engine (multi-slap noise burst with room reverb)
 // ============================================================
 
+/// Headroom trim on the summed burst output, not a character control —
+/// `clap.level` at 100% should reach close to full scale on its own. Kept
+/// below `perc`'s trim since up to `slap_count` (max 8) bursts can overlap
+/// and sum before this scale is applied, unlike perc's single hit stream.
+const OUTPUT_TRIM: f32 = 0.42;
+
 pub(crate) struct ClapEngine {
     pub(crate) sample_rate: f32,
     pub(crate) trigger: GridTrigger,
@@ -110,7 +116,7 @@ impl ClapVoice {
         self.bursts.retain(|b| b.remaining > 0);
 
         self.current += 1;
-        out * self.level * 0.35
+        out * self.level * OUTPUT_TRIM
     }
 
     pub(crate) fn is_done(&self) -> bool {

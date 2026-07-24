@@ -607,28 +607,16 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
     gain_pct!("master.level", "Master Level", master.level),
     gain_pct!("master.drive", "Drive", master.drive),
     ControlSpec::new(
-        "master.comp_threshold",
-        "Comp Threshold",
+        "master.comp_amount",
+        "Compression",
         ControlKind::Continuous,
-        -40.0,
         0.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.master.comp_threshold,
-        |c, v| c.master.comp_threshold = v,
-        |c| format!("{:.0} dB", c.master.comp_threshold),
-    ),
-    ControlSpec::new(
-        "master.comp_ratio",
-        "Comp Ratio",
-        ControlKind::Continuous,
         1.0,
-        8.0,
-        Step::Linear(0.25),
-        Entry::Snap,
-        |c| c.master.comp_ratio,
-        |c, v| c.master.comp_ratio = v,
-        |c| format!("{:.1}:1", c.master.comp_ratio),
+        Step::Linear(0.02),
+        Entry::Percent,
+        |c| c.master.comp_amount,
+        |c, v| apply_compression_amount(&mut c.master, v),
+        |c| pct(c.master.comp_amount),
     ),
     time_ms!(
         "master.comp_release_ms",
@@ -677,7 +665,82 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
         },
     )
     .reset_at(0.0),
+    // Compression detail rows: hidden from the top-level Master view, shown
+    // only when drilled into the Compression row (see `master_tab_controls`).
+    // `master.comp_amount`'s setter overwrites these three every time it
+    // moves, so a manual edit here sticks only until the amount is touched.
+    ControlSpec::new(
+        "master.comp_threshold",
+        "Comp Threshold",
+        ControlKind::Continuous,
+        -40.0,
+        0.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.master.comp_threshold,
+        |c, v| c.master.comp_threshold = v,
+        |c| format!("{:.0} dB", c.master.comp_threshold),
+    ),
+    ControlSpec::new(
+        "master.comp_ratio",
+        "Comp Ratio",
+        ControlKind::Continuous,
+        1.0,
+        8.0,
+        Step::Linear(0.25),
+        Entry::Snap,
+        |c| c.master.comp_ratio,
+        |c, v| c.master.comp_ratio = v,
+        |c| format!("{:.1}:1", c.master.comp_ratio),
+    ),
+    ControlSpec::new(
+        "master.comp_makeup",
+        "Makeup Gain",
+        ControlKind::Continuous,
+        0.0,
+        12.0,
+        Step::Linear(0.5),
+        Entry::Free,
+        |c| c.master.comp_makeup,
+        |c, v| c.master.comp_makeup = v,
+        |c| format!("{:.1} dB", c.master.comp_makeup),
+    ),
 ];
+
+/// Index into `MASTER_CONTROLS` where the Compression detail rows
+/// (Threshold/Ratio/Makeup) begin — everything before this index is the
+/// always-visible Master tab.
+const MASTER_DETAIL_START: usize = 14;
+
+/// Visible row of `master.comp_amount` in the top-level Master view —
+/// where Esc restores selection after backing out of the Compression detail.
+pub(crate) const MASTER_COMP_AMOUNT_ROW: usize = 10;
+
+/// Master-tab visible rows for the given drill level: the top-level params
+/// (Compression shown as one macro row), or the Compression row's three
+/// derived fields. Mirrors `chords_tab_controls`'s pattern of re-slicing a
+/// fixed underlying array rather than reordering it.
+pub(crate) fn master_tab_controls(c: &FluidControls, drill: CompDrill) -> Vec<ControlItem> {
+    match drill {
+        CompDrill::None => MASTER_CONTROLS[..MASTER_DETAIL_START]
+            .iter()
+            .map(|spec| spec.item(c))
+            .collect(),
+        CompDrill::Detail => MASTER_CONTROLS[MASTER_DETAIL_START..]
+            .iter()
+            .map(|spec| spec.item(c))
+            .collect(),
+    }
+}
+
+/// Maps a visible-row index under `master_tab_controls` back to its real
+/// index into `MASTER_CONTROLS`, for the positional registry setters below.
+pub(crate) fn master_flat_index(drill: CompDrill, visible_row: usize) -> usize {
+    match drill {
+        CompDrill::None => visible_row,
+        CompDrill::Detail => MASTER_DETAIL_START + visible_row,
+    }
+}
 
 pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
     gain_pct!("perc.level", "Level", perc.level),
@@ -740,6 +803,30 @@ macro_rules! chord_slot_rows {
                     -1 => "b".to_string(),
                     1 => "#".to_string(),
                     _ => "natural".to_string(),
+                },
+            )
+            .reset_at(0.0),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_quality"),
+                concat!("Chord ", $slot, " Quality"),
+                ControlKind::Discrete,
+                -1.0,
+                1.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.pad.chord_slots[$slot - 1].quality,
+                |c, v| c.pad.chord_slots[$slot - 1].quality = v,
+                |c| {
+                    let slot = &c.pad.chord_slots[$slot - 1];
+                    let sound = if pad_chord_slot_is_minor(slot) {
+                        "min"
+                    } else {
+                        "maj"
+                    };
+                    match slot.quality.round() as i32 {
+                        0 => format!("scale ({sound})"),
+                        _ => sound.to_string(),
+                    }
                 },
             )
             .reset_at(0.0),
@@ -856,34 +943,42 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
     chord_slot_rows!(1)[1],
     chord_slot_rows!(1)[2],
     chord_slot_rows!(1)[3],
+    chord_slot_rows!(1)[4],
     chord_slot_rows!(2)[0],
     chord_slot_rows!(2)[1],
     chord_slot_rows!(2)[2],
     chord_slot_rows!(2)[3],
+    chord_slot_rows!(2)[4],
     chord_slot_rows!(3)[0],
     chord_slot_rows!(3)[1],
     chord_slot_rows!(3)[2],
     chord_slot_rows!(3)[3],
+    chord_slot_rows!(3)[4],
     chord_slot_rows!(4)[0],
     chord_slot_rows!(4)[1],
     chord_slot_rows!(4)[2],
     chord_slot_rows!(4)[3],
+    chord_slot_rows!(4)[4],
     chord_slot_rows!(5)[0],
     chord_slot_rows!(5)[1],
     chord_slot_rows!(5)[2],
     chord_slot_rows!(5)[3],
+    chord_slot_rows!(5)[4],
     chord_slot_rows!(6)[0],
     chord_slot_rows!(6)[1],
     chord_slot_rows!(6)[2],
     chord_slot_rows!(6)[3],
+    chord_slot_rows!(6)[4],
     chord_slot_rows!(7)[0],
     chord_slot_rows!(7)[1],
     chord_slot_rows!(7)[2],
     chord_slot_rows!(7)[3],
+    chord_slot_rows!(7)[4],
     chord_slot_rows!(8)[0],
     chord_slot_rows!(8)[1],
     chord_slot_rows!(8)[2],
     chord_slot_rows!(8)[3],
+    chord_slot_rows!(8)[4],
 ];
 
 pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
@@ -1305,7 +1400,7 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
 /// Chords-tab visible rows for the given drill level: the 11 base params,
 /// the active slots' Root list, or one slot's Accidental/Extension/Inversion.
 /// Read-only view over `CHORDS_CONTROLS`'s fixed layout (11 base rows, then
-/// 8 slots x 4 rows in degree/accidental/extension/inversion order) — never
+/// 8 slots x 5 rows in degree/accidental/quality/extension/inversion order) — never
 /// reorders the underlying array.
 pub(crate) fn chords_tab_controls(c: &FluidControls, drill: ChordDrill) -> Vec<ControlItem> {
     match drill {
@@ -1316,12 +1411,12 @@ pub(crate) fn chords_tab_controls(c: &FluidControls, drill: ChordDrill) -> Vec<C
         ChordDrill::Progression => {
             let count = (c.pad.chord_count.round() as usize).clamp(1, CHORD_SLOT_COUNT);
             (0..count)
-                .map(|slot| CHORDS_CONTROLS[11 + 4 * slot].item(c))
+                .map(|slot| CHORDS_CONTROLS[11 + 5 * slot].item(c))
                 .collect()
         }
         ChordDrill::Slot(n) => {
-            let base = 11 + 4 * n;
-            [base + 1, base + 2, base + 3]
+            let base = 11 + 5 * n;
+            [base + 1, base + 2, base + 3, base + 4]
                 .iter()
                 .map(|&i| CHORDS_CONTROLS[i].item(c))
                 .collect()
@@ -1334,8 +1429,8 @@ pub(crate) fn chords_tab_controls(c: &FluidControls, drill: ChordDrill) -> Vec<C
 pub(crate) fn chords_flat_index(drill: ChordDrill, visible_row: usize) -> usize {
     match drill {
         ChordDrill::None => visible_row,
-        ChordDrill::Progression => 11 + 4 * visible_row,
-        ChordDrill::Slot(n) => 11 + 4 * n + 1 + visible_row,
+        ChordDrill::Progression => 11 + 5 * visible_row,
+        ChordDrill::Slot(n) => 11 + 5 * n + 1 + visible_row,
     }
 }
 
