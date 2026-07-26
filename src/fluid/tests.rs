@@ -2044,10 +2044,10 @@ fn song_code_skips_unknown_automation_target_control_ids() {
 }
 
 #[test]
-fn launch_line_is_cli_launchable() {
-    let line = launch_line(&SongState::default()).unwrap();
+fn song_code_is_a_direct_cargo_run_argument() {
+    let code = song::encode_song_code(&SongState::default()).unwrap();
 
-    assert!(line.starts_with("nooise n1_"));
+    assert!(code.starts_with("n1_") && !code.contains(char::is_whitespace));
 }
 
 #[test]
@@ -4894,6 +4894,74 @@ fn palette_fuzzy_ranks_word_start_matches_above_scattered_hits() {
 }
 
 #[test]
+fn palette_empty_query_keeps_global_recent_controls_in_mru_order() {
+    let pal = PaletteState::new(
+        Tab::Bass,
+        &["perc.level", "bass.drive", "bass.decay_time", "pad.level"],
+    );
+    let ids: Vec<&str> = pal
+        .matches
+        .iter()
+        .take(4)
+        .map(|matched| pal.entry(matched.entry).spec.id)
+        .collect();
+    assert_eq!(
+        ids,
+        ["perc.level", "bass.drive", "bass.decay_time", "pad.level"]
+    );
+}
+
+#[test]
+fn palette_first_ten_are_the_global_mru_across_tabs() {
+    let mut recent = RecentControls::default();
+    for id in [
+        "pad.attack_time",
+        "perc.level",
+        "bass.drive",
+        "kick.click",
+        "tonal.decay",
+        "clap.room",
+        "arp.rate_beats",
+        "macro.1",
+        "master.bpm",
+        "pad.reverb_mix",
+        "kick.filter",
+        "tonal.randomness",
+    ] {
+        recent.touch(id);
+    }
+    let pal = PaletteState::new(Tab::Bass, recent.ids());
+    let ids: Vec<&str> = pal
+        .matches
+        .iter()
+        .take(10)
+        .map(|matched| pal.entry(matched.entry).spec.id)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "tonal.randomness",
+            "kick.filter",
+            "pad.reverb_mix",
+            "master.bpm",
+            "macro.1",
+            "arp.rate_beats",
+            "clap.room",
+            "tonal.decay",
+            "kick.click",
+            "bass.drive",
+        ]
+    );
+}
+
+#[test]
+fn palette_empty_query_lists_current_page_before_unused_other_pages() {
+    let pal = PaletteState::new(Tab::Bass, &[]);
+    let first_id = pal.entry(pal.matches[0].entry).spec.id;
+    assert!(tab_specs(Tab::Bass).iter().any(|spec| spec.id == first_id));
+}
+
+#[test]
 fn chords_drill_for_index_inverts_chords_flat_index() {
     for flat in 0..tab_specs(Tab::Chords).len() {
         let (drill, row) = chords_drill_for_index(flat);
@@ -4911,7 +4979,7 @@ fn master_drill_for_index_inverts_master_flat_index() {
 
 #[test]
 fn palette_stage_then_commit_applies_percent_entry_semantics() {
-    let mut pal = PaletteState::new();
+    let mut pal = PaletteState::new(Tab::Bass, &[]);
     for c in "bass.level".chars() {
         pal.push_char(c);
     }
@@ -4939,7 +5007,7 @@ fn palette_stage_then_commit_applies_percent_entry_semantics() {
 
 #[test]
 fn palette_enter_without_value_jumps_to_the_locked_control() {
-    let mut pal = PaletteState::new();
+    let mut pal = PaletteState::new(Tab::Bass, &[]);
     for c in "bass.level".chars() {
         pal.push_char(c);
     }
@@ -4952,7 +5020,7 @@ fn palette_enter_without_value_jumps_to_the_locked_control() {
 
 #[test]
 fn palette_commit_at_bar_stages_a_pending_typed_value_first() {
-    let mut pal = PaletteState::new();
+    let mut pal = PaletteState::new(Tab::Bass, &[]);
     for c in "bass.level".chars() {
         pal.push_char(c);
     }

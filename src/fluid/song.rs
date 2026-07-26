@@ -88,13 +88,6 @@ impl fmt::Display for SongCodeError {
 
 impl Error for SongCodeError {}
 
-pub(crate) fn launch_line(song: &SongState) -> Result<String, SongCodeError> {
-    let code = encode_song_code(song)?;
-    // Compact song payloads stay as inline CLI codes for now. There is no file
-    // handoff UI until the format grows beyond practical copy/paste size.
-    Ok(format!("nooise {code}"))
-}
-
 pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);

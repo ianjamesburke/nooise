@@ -54,7 +54,7 @@ use controls::*;
 use engine::*;
 use palette::*;
 use registry::*;
-pub(crate) use song::{SongState, decode_song_code, launch_line};
+pub(crate) use song::{SongState, decode_song_code, encode_song_code};
 use ui::*;
 use voice::*;
 

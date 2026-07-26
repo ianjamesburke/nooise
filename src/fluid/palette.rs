@@ -85,6 +85,8 @@ pub(crate) enum PaletteAction {
 
 pub(crate) struct PaletteState {
     entries: Vec<PaletteEntry>,
+    current_tab: Tab,
+    recent: Vec<&'static str>,
     pub(crate) query: String,
     pub(crate) matches: Vec<PaletteMatch>,
     pub(crate) selected: usize,
@@ -96,9 +98,13 @@ pub(crate) struct PaletteState {
 }
 
 impl PaletteState {
-    pub(crate) fn new() -> Self {
+    /// `recent` is most-recent-first and intentionally has no usage count:
+    /// touching a control again simply promotes it to the front.
+    pub(crate) fn new(current_tab: Tab, recent: &[&'static str]) -> Self {
         let mut state = Self {
             entries: palette_entries(),
+            current_tab,
+            recent: recent.to_vec(),
             query: String::new(),
             matches: Vec::new(),
             selected: 0,
@@ -201,8 +207,9 @@ impl PaletteState {
     fn recompute(&mut self) {
         self.matches.clear();
         if self.query.is_empty() {
-            // Empty query: list everything in registry order so the palette
-            // doubles as a browsable index.
+            // Empty query is a global MRU navigator: every recent control,
+            // regardless of page, then unused current-page controls, then
+            // the remaining registry order.
             for entry in 0..self.entries.len() {
                 self.matches.push(PaletteMatch {
                     entry,
@@ -210,16 +217,63 @@ impl PaletteState {
                     hits: Vec::new(),
                 });
             }
+            self.sort_by_context();
         } else {
             for (entry, e) in self.entries.iter().enumerate() {
                 if let Some((score, hits)) = fuzzy_score(&self.query, &e.haystack()) {
                     self.matches.push(PaletteMatch { entry, score, hits });
                 }
             }
-            self.matches.sort_by_key(|m| std::cmp::Reverse(m.score));
+            let entries = &self.entries;
+            let recent = &self.recent;
+            let current_tab = self.current_tab;
+            self.matches.sort_by(|left, right| {
+                right.score.cmp(&left.score).then_with(|| {
+                    context_rank(entries, left.entry, current_tab, recent).cmp(&context_rank(
+                        entries,
+                        right.entry,
+                        current_tab,
+                        recent,
+                    ))
+                })
+            });
         }
         self.selected = 0;
     }
+
+    fn sort_by_context(&mut self) {
+        let entries = &self.entries;
+        let recent = &self.recent;
+        let current_tab = self.current_tab;
+        self.matches
+            .sort_by_key(|m| context_rank(entries, m.entry, current_tab, recent));
+    }
+}
+
+/// Recent controls always win, independent of page. Page order only breaks
+/// ties once the user has exhausted their global MRU list.
+fn context_rank(
+    entries: &[PaletteEntry],
+    entry: usize,
+    current_tab: Tab,
+    recent: &[&'static str],
+) -> (u8, usize, usize) {
+    let palette_entry = &entries[entry];
+    let recent_rank = recent.iter().position(|&id| id == palette_entry.spec.id);
+    let page_index = tab_specs(current_tab)
+        .iter()
+        .position(|spec| spec.id == palette_entry.spec.id);
+    let group = match (recent_rank, page_index) {
+        (Some(_), _) => 0,
+        (None, Some(_)) => 1,
+        (None, None) => 2,
+    };
+    let order = match group {
+        0 => recent_rank.unwrap_or(usize::MAX),
+        1 => page_index.unwrap_or(usize::MAX),
+        _ => entry,
+    };
+    (group, order, entry)
 }
 
 /// Beat position of the next bar downbeat (4/4 throughout the engine), for

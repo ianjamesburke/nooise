@@ -16,10 +16,9 @@ pub(crate) const DEFAULT_AUTO_BARS: u32 = 64;
 ///
 /// # Adding a morph target
 /// 1. In a live session, dial in the full sound you want as a destination.
-/// 2. Press `Ctrl+S` to copy its launch line (`nooise n1_…`) to the clipboard.
-/// 3. Add a new entry below with just the `n1_…` code (drop the `nooise `
-///    prefix), in the position you want it to appear in the cycle. Order is
-///    musical, not structural — reorder freely.
+/// 2. Press `Ctrl+S` to copy its `n1_…` song code to the clipboard.
+/// 3. Add that code below in the position you want it to appear in the cycle.
+///    Order is musical, not structural — reorder freely.
 ///
 /// No other code changes are needed: `decode_auto_states` picks up every entry
 /// and the morph scheduler scales to any count. The future TOML mixtape
