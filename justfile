@@ -23,11 +23,13 @@ install:
     cargo install --path . --locked
 
 # Append a song code (from Ctrl+S in a live session) to the built-in
-# auto-morph cycle in src/fluid/auto.rs, then verify it decodes.
+# auto-morph cycle in src/fluid/auto.rs, verify it decodes, and commit it.
 add-morph code:
     python3 scripts/add_morph.py "{{code}}"
     cargo fmt
     cargo test auto:: --quiet
+    git add src/fluid/auto.rs
+    git commit -m "feat: add auto-morph state"
 
 # Preview what the next changelog would look like without committing anything.
 changelog:
