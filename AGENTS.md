@@ -88,7 +88,7 @@ See `docs/NORTH_STAR.md` for product vision and feature-evaluation commandments 
 ## Ownership
 
 - Root: crate manifest (`Cargo.toml`), README, GOTCHAS.md, this DOX rail.
-- `src/`: all engine, UI, and control code — see `src/AGENTS.md`.
+- `src/`: all engine, UI, and control code — see `src/AGENTS.md`. Built-in auto-morph song codes (the ordered `n1_…` cycle) live in `src/fluid/auto.rs`'s `AUTO_STATES` array. Use `just add-morph <code>` to append one — it validates the code decodes before landing; never hand-paste codes into the array.
 - `assets/`: static wordmark/preview images, no code, no local rules needed.
 - `docs/NORTH_STAR.md`: product vision and feature-evaluation commandments.
 - `docs/superpowers/`: local brainstorming specs and plans produced by the superpowers skill workflow; ignored by git and not part of the shipped crate.

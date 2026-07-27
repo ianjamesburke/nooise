@@ -22,6 +22,13 @@ bench seconds="60" seed="42":
 install:
     cargo install --path . --locked
 
+# Append a song code (from Ctrl+S in a live session) to the built-in
+# auto-morph cycle in src/fluid/auto.rs, then verify it decodes.
+add-morph code:
+    python3 scripts/add_morph.py "{{code}}"
+    cargo fmt
+    cargo test auto:: --quiet
+
 # Preview what the next changelog would look like without committing anything.
 changelog:
     git cliff --unreleased --bump
