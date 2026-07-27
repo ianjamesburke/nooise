@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [1.8.4] — 2026-07-27
+
+### Fixed
+- fix: show song indexes during auto morphs
 ## [1.8.3] — 2026-07-27
 
 ### Added
