@@ -119,6 +119,7 @@ fn render_to_buffer(
                 CompDrill::None,
                 active_chord,
                 mute,
+                None,
             )
         })
         .unwrap();
@@ -2043,10 +2044,10 @@ fn song_code_skips_unknown_automation_target_control_ids() {
 }
 
 #[test]
-fn launch_line_is_cli_launchable() {
-    let line = launch_line(&SongState::default()).unwrap();
+fn song_code_is_a_direct_cargo_run_argument() {
+    let code = song::encode_song_code(&SongState::default()).unwrap();
 
-    assert!(line.starts_with("nooise n1_"));
+    assert!(code.starts_with("n1_") && !code.contains(char::is_whitespace));
 }
 
 #[test]
@@ -2320,6 +2321,7 @@ fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
                 CompDrill::None,
                 active_chord,
                 &[None; 9],
+                None,
             )
         })
         .unwrap();
@@ -2372,6 +2374,7 @@ fn render_slot_breadcrumb_marks_live_chord() {
                     CompDrill::None,
                     active_chord,
                     &[None; 9],
+                    None,
                 )
             })
             .unwrap();
@@ -4856,4 +4859,186 @@ fn render_shows_a_mute_marker_on_muted_tabs_only() {
         !text.contains("Bass (M)"),
         "unmuted tab must not show a marker"
     );
+}
+
+// ============================================================
+// Control palette
+// ============================================================
+
+#[test]
+fn palette_entries_cover_every_unique_control_id_exactly_once() {
+    let entries = palette_entries();
+    let mut ids: Vec<&str> = entries.iter().map(|e| e.spec.id).collect();
+    let unique: std::collections::BTreeSet<&str> = all_specs().map(|spec| spec.id).collect();
+    assert_eq!(ids.len(), unique.len(), "one palette entry per unique id");
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), unique.len(), "no duplicate palette entries");
+}
+
+#[test]
+fn palette_entries_jump_targets_stay_inside_their_tab_tables() {
+    for entry in palette_entries() {
+        assert!(entry.index_in_tab < tab_specs(entry.tab).len());
+        assert_eq!(tab_specs(entry.tab)[entry.index_in_tab].id, entry.spec.id);
+    }
+}
+
+#[test]
+fn palette_fuzzy_ranks_word_start_matches_above_scattered_hits() {
+    let (word_start, _) =
+        fuzzy_score("rev", "pad.reverb_mix \u{b7} Chords \u{b7} Reverb Mix").expect("subsequence");
+    let (scattered, _) =
+        fuzzy_score("rev", "perc.interval_beats \u{b7} Perc \u{b7} Interval").expect("subsequence");
+    assert!(word_start > scattered);
+}
+
+#[test]
+fn palette_empty_query_keeps_global_recent_controls_in_mru_order() {
+    let pal = PaletteState::new(
+        Tab::Bass,
+        &["perc.level", "bass.drive", "bass.decay_time", "pad.level"],
+    );
+    let ids: Vec<&str> = pal
+        .matches
+        .iter()
+        .take(4)
+        .map(|matched| pal.entry(matched.entry).spec.id)
+        .collect();
+    assert_eq!(
+        ids,
+        ["perc.level", "bass.drive", "bass.decay_time", "pad.level"]
+    );
+}
+
+#[test]
+fn palette_first_ten_are_the_global_mru_across_tabs() {
+    let mut recent = RecentControls::default();
+    for id in [
+        "pad.attack_time",
+        "perc.level",
+        "bass.drive",
+        "kick.click",
+        "tonal.decay",
+        "clap.room",
+        "arp.rate_beats",
+        "macro.1",
+        "master.bpm",
+        "pad.reverb_mix",
+        "kick.filter",
+        "tonal.randomness",
+    ] {
+        recent.touch(id);
+    }
+    let pal = PaletteState::new(Tab::Bass, recent.ids());
+    let ids: Vec<&str> = pal
+        .matches
+        .iter()
+        .take(10)
+        .map(|matched| pal.entry(matched.entry).spec.id)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "tonal.randomness",
+            "kick.filter",
+            "pad.reverb_mix",
+            "master.bpm",
+            "macro.1",
+            "arp.rate_beats",
+            "clap.room",
+            "tonal.decay",
+            "kick.click",
+            "bass.drive",
+        ]
+    );
+}
+
+#[test]
+fn palette_empty_query_lists_current_page_before_unused_other_pages() {
+    let pal = PaletteState::new(Tab::Bass, &[]);
+    let first_id = pal.entry(pal.matches[0].entry).spec.id;
+    assert!(tab_specs(Tab::Bass).iter().any(|spec| spec.id == first_id));
+}
+
+#[test]
+fn chords_drill_for_index_inverts_chords_flat_index() {
+    for flat in 0..tab_specs(Tab::Chords).len() {
+        let (drill, row) = chords_drill_for_index(flat);
+        assert_eq!(chords_flat_index(drill, row), flat);
+    }
+}
+
+#[test]
+fn master_drill_for_index_inverts_master_flat_index() {
+    for flat in 0..tab_specs(Tab::Master).len() {
+        let (drill, row) = master_drill_for_index(flat);
+        assert_eq!(master_flat_index(drill, row), flat);
+    }
+}
+
+#[test]
+fn palette_stage_then_commit_applies_percent_entry_semantics() {
+    let mut pal = PaletteState::new(Tab::Bass, &[]);
+    for c in "bass.level".chars() {
+        pal.push_char(c);
+    }
+    pal.autocomplete();
+    for c in "45".chars() {
+        pal.push_char(c);
+    }
+    assert!(
+        matches!(pal.enter(), PaletteAction::None),
+        "value Enter stages"
+    );
+    assert_eq!(pal.staged.len(), 1);
+    let PaletteAction::CommitNow(edits) = pal.enter() else {
+        panic!("empty-prompt Enter must commit the stage");
+    };
+    let mut c = FluidControls::default();
+    for edit in &edits {
+        spec_by_id(edit.id)
+            .expect("staged id exists")
+            .apply_value(edit.value, &mut c);
+    }
+    let spec = spec_by_id("bass.level").expect("bass.level exists");
+    assert!((c.bass.level - 0.45 * spec.max).abs() < 1e-6);
+}
+
+#[test]
+fn palette_enter_without_value_jumps_to_the_locked_control() {
+    let mut pal = PaletteState::new(Tab::Bass, &[]);
+    for c in "bass.level".chars() {
+        pal.push_char(c);
+    }
+    pal.autocomplete();
+    let PaletteAction::Jump(index) = pal.enter() else {
+        panic!("locked Enter with no value must jump");
+    };
+    assert_eq!(pal.entry(index).spec.id, "bass.level");
+}
+
+#[test]
+fn palette_commit_at_bar_stages_a_pending_typed_value_first() {
+    let mut pal = PaletteState::new(Tab::Bass, &[]);
+    for c in "bass.level".chars() {
+        pal.push_char(c);
+    }
+    pal.autocomplete();
+    for c in "40".chars() {
+        pal.push_char(c);
+    }
+    let PaletteAction::CommitAtBar(edits) = pal.commit_at_bar() else {
+        panic!("Ctrl+B with a typed value must commit that value");
+    };
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].id, "bass.level");
+    assert_close(edits[0].value, 40.0);
+}
+
+#[test]
+fn next_bar_beat_targets_the_following_downbeat() {
+    assert_eq!(next_bar_beat(12.3), 16.0);
+    assert_eq!(next_bar_beat(16.0), 20.0);
+    assert_eq!(next_bar_beat(0.0), 4.0);
 }

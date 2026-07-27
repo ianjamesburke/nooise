@@ -1434,6 +1434,30 @@ pub(crate) fn chords_flat_index(drill: ChordDrill, visible_row: usize) -> usize 
     }
 }
 
+/// Inverse of `chords_flat_index`: the drill level + visible row that shows a
+/// real `CHORDS_CONTROLS` index, so a palette jump can land on drilled rows.
+pub(crate) fn chords_drill_for_index(flat: usize) -> (ChordDrill, usize) {
+    if flat < 11 {
+        return (ChordDrill::None, flat);
+    }
+    let rel = flat - 11;
+    let (slot, field) = (rel / 5, rel % 5);
+    if field == 0 {
+        (ChordDrill::Progression, slot)
+    } else {
+        (ChordDrill::Slot(slot), field - 1)
+    }
+}
+
+/// Inverse of `master_flat_index`, same purpose as `chords_drill_for_index`.
+pub(crate) fn master_drill_for_index(flat: usize) -> (CompDrill, usize) {
+    if flat < MASTER_DETAIL_START {
+        (CompDrill::None, flat)
+    } else {
+        (CompDrill::Detail, flat - MASTER_DETAIL_START)
+    }
+}
+
 pub(crate) fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {
     if let Some(spec) = tab_specs(tab).get(selected) {
         spec.apply_delta(dir, c);

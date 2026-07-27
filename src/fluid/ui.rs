@@ -74,6 +74,9 @@ pub(crate) fn ui_loop(
     let mut comp_drill = CompDrill::None;
     let mut flipped = FlippedUnits::new();
     let mut numeric_entry: Option<NumericEntry> = None;
+    let mut palette: Option<PaletteState> = None;
+    let mut recent_controls = RecentControls::default();
+    let mut pending_commit: Option<(f64, Vec<StagedEdit>)> = None;
     let mut mute: MuteState = [None; 9];
     let mut fluid = FluidState::new();
     let mut last = Instant::now();
@@ -86,6 +89,16 @@ pub(crate) fn ui_loop(
         if in_auto {
             automation.sync_from_shared();
         }
+        if pending_commit
+            .as_ref()
+            .is_some_and(|(target, _)| telemetry.beat() >= *target)
+        {
+            let (_, edits) = pending_commit.take().expect("checked above");
+            commit_staged_edits(&controls, &edits);
+            recent_controls.touch_edits(&edits);
+            auto.exit(); // touching a param exits auto
+            save_message = Some((staged_applied_message(edits.len()), Instant::now()));
+        }
         let c = FluidControls::clone(&controls.load());
         if save_message
             .as_ref()
@@ -94,6 +107,10 @@ pub(crate) fn ui_loop(
             save_message = None;
         }
         let update_message = updates.message();
+        let pending_message = pending_commit.as_ref().map(|(_, edits)| {
+            let plural = if edits.len() == 1 { "" } else { "s" };
+            format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
+        });
         let automation_message = automation_footer(automation.state());
         let chords_message = chords_footer(tab, chord_drill);
         let master_message = master_footer(tab, comp_drill);
@@ -102,6 +119,7 @@ pub(crate) fn ui_loop(
         let footer_message = save_message
             .as_ref()
             .map(|(message, _)| message.as_str())
+            .or(pending_message.as_deref())
             .or(automation_message.as_deref())
             .or(chords_message.as_deref())
             .or(master_message.as_deref())
@@ -145,6 +163,7 @@ pub(crate) fn ui_loop(
                 comp_drill,
                 telemetry.chord_index.load(Ordering::Relaxed),
                 &mute,
+                palette.as_ref(),
             )
         })?;
 
@@ -178,6 +197,7 @@ pub(crate) fn ui_loop(
                                 beat,
                                 &flipped,
                             );
+                            recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                             auto.exit(); // touching a param exits auto
                         }
                         numeric_entry = None;
@@ -190,15 +210,94 @@ pub(crate) fn ui_loop(
                 }
                 continue;
             }
+            if palette.is_some() {
+                if key.code == KeyCode::Esc {
+                    palette = None;
+                    continue;
+                }
+                let pal = palette.as_mut().expect("checked above");
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let action = match key.code {
+                    KeyCode::Tab => {
+                        pal.autocomplete();
+                        PaletteAction::None
+                    }
+                    KeyCode::Up => {
+                        pal.move_selection(-1);
+                        PaletteAction::None
+                    }
+                    KeyCode::Down => {
+                        pal.move_selection(1);
+                        PaletteAction::None
+                    }
+                    KeyCode::Char('p') if ctrl => {
+                        pal.move_selection(-1);
+                        PaletteAction::None
+                    }
+                    KeyCode::Char('n') if ctrl => {
+                        pal.move_selection(1);
+                        PaletteAction::None
+                    }
+                    KeyCode::Char('b') if ctrl => pal.commit_at_bar(),
+                    KeyCode::Backspace => {
+                        pal.backspace();
+                        PaletteAction::None
+                    }
+                    KeyCode::Enter => pal.enter(),
+                    KeyCode::Char(c) => {
+                        pal.push_char(c);
+                        PaletteAction::None
+                    }
+                    _ => PaletteAction::None,
+                };
+                match action {
+                    PaletteAction::None => {}
+                    PaletteAction::Jump(index) => {
+                        let entry = pal.entry(index);
+                        let (jump_tab, jump_index) = (entry.tab, entry.index_in_tab);
+                        recent_controls.touch(entry.spec.id);
+                        palette = None;
+                        if automation.state().is_editor_open() {
+                            automation.edit(AutomationState::close_editor);
+                        }
+                        tab = jump_tab;
+                        lfo_selected = 0;
+                        chord_drill = ChordDrill::None;
+                        comp_drill = CompDrill::None;
+                        selected = match tab {
+                            Tab::Chords => {
+                                let (drill, row) = chords_drill_for_index(jump_index);
+                                chord_drill = drill;
+                                row
+                            }
+                            Tab::Master => {
+                                let (drill, row) = master_drill_for_index(jump_index);
+                                comp_drill = drill;
+                                row
+                            }
+                            _ => jump_index,
+                        };
+                    }
+                    PaletteAction::CommitNow(edits) => {
+                        palette = None;
+                        commit_staged_edits(&controls, &edits);
+                        recent_controls.touch_edits(&edits);
+                        auto.exit(); // touching a param exits auto
+                        save_message = Some((staged_applied_message(edits.len()), Instant::now()));
+                    }
+                    PaletteAction::CommitAtBar(edits) => {
+                        palette = None;
+                        pending_commit = Some((next_bar_beat(beat), edits));
+                    }
+                }
+                continue;
+            }
             match key.code {
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     save_message = Some(
-                        match copy_launch_line(
-                            &controls,
-                            automation.state(),
-                            &tonal_sequence.load(),
-                        ) {
-                            Ok(()) => ("nooise copied to clipboard".to_string(), Instant::now()),
+                        match copy_song_code(&controls, automation.state(), &tonal_sequence.load())
+                        {
+                            Ok(()) => ("song code copied to clipboard".to_string(), Instant::now()),
                             Err(err) => (format!("Save failed: {err}"), Instant::now()),
                         },
                     );
@@ -248,6 +347,9 @@ pub(crate) fn ui_loop(
                 KeyCode::Char('a') => {
                     let current = FluidControls::clone(&controls.load());
                     auto.toggle(current, automation.state().clone(), beat);
+                }
+                KeyCode::Char('/') => {
+                    palette = Some(PaletteState::new(tab, recent_controls.ids()));
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if automation.state().is_editor_open() {
@@ -311,6 +413,7 @@ pub(crate) fn ui_loop(
                             &flipped,
                         );
                     }
+                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
                     auto.exit(); // touching a param exits auto
@@ -324,6 +427,7 @@ pub(crate) fn ui_loop(
                         beat,
                         &flipped,
                     );
+                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                 }
                 KeyCode::Char(c @ ('f' | 'e')) => {
                     auto.exit(); // touching a modulator exits auto
@@ -333,6 +437,7 @@ pub(crate) fn ui_loop(
                         ModKind::Envelope
                     };
                     open_modulator(&mut automation, &items, selected, kind, &mut lfo_selected);
+                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                 }
                 KeyCode::Char('v') => {
                     auto.exit(); // touching a modulator exits auto
@@ -379,6 +484,7 @@ pub(crate) fn ui_loop(
                             );
                         }
                     }
+                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                 }
                 KeyCode::Char('x') | KeyCode::Char('X') => {
                     auto.exit(); // touching a modulator exits auto
@@ -401,9 +507,11 @@ pub(crate) fn ui_loop(
                             }
                         }
                     }
+                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                 }
                 KeyCode::Enter => {
                     if !automation.state().is_editor_open() {
+                        recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                         if tab == Tab::Chords {
                             match (chord_drill, items.get(selected).map(|i| i.id)) {
                                 (ChordDrill::None, Some("pad.progression"))
@@ -455,17 +563,22 @@ pub(crate) fn ui_loop(
                             now_flipped,
                             beat,
                         );
+                        recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                     }
                 }
                 KeyCode::Char(c @ ('m' | 'M')) => {
                     let target = if c == 'm' { tab } else { Tab::Master };
                     toggle_mute(&controls, target, &mut mute);
+                    if let Some(id) = target.level_id() {
+                        recent_controls.touch(id);
+                    }
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Some(address) = automation.state().active_address()
                         && automation.state().active_kind() == Some(ModKind::Lfo)
                     {
                         auto.exit(); // touching a modulator exits auto
+                        recent_controls.touch(address.id());
                         automation.edit(|state| {
                             if let Some(route) = state.route_mut(address)
                                 && route.shape.is_random()
@@ -1155,19 +1268,19 @@ pub(crate) fn master_footer(tab: Tab, comp_drill: CompDrill) -> Option<String> {
     }
 }
 
-fn copy_launch_line(
+fn copy_song_code(
     controls: &Arc<ArcSwap<FluidControls>>,
     automation: &AutomationState,
     tonal_sequence: &TonalSequenceState,
 ) -> Result<(), Box<dyn Error>> {
     let c = FluidControls::clone(&controls.load());
-    let line = launch_line(&SongState {
+    let code = encode_song_code(&SongState {
         controls: c,
         automation: automation.clone(),
         tonal_sequence: Some(tonal_sequence.clone()),
     })?;
     let mut clipboard = arboard::Clipboard::new()?;
-    clipboard.set_text(line)?;
+    clipboard.set_text(code)?;
     Ok(())
 }
 
@@ -1176,6 +1289,51 @@ fn copy_launch_line(
 /// restores it exactly instead of snapping to a hardcoded level; UI-local
 /// only, never persisted to song code.
 pub(crate) type MuteState = [Option<f32>; 9];
+
+/// Bounded, UI-local MRU list used to make `/` resume the controls the player
+/// is actively shaping. It deliberately stores no counters and is not song
+/// state: a new session starts with the registry's page-aware ordering.
+#[derive(Default)]
+pub(crate) struct RecentControls {
+    ids: Vec<&'static str>,
+}
+
+impl RecentControls {
+    const CAPACITY: usize = 10;
+
+    pub(crate) fn ids(&self) -> &[&'static str] {
+        &self.ids
+    }
+
+    pub(crate) fn touch(&mut self, id: &'static str) {
+        self.ids.retain(|&known| known != id);
+        self.ids.insert(0, id);
+        self.ids.truncate(Self::CAPACITY);
+    }
+
+    fn touch_edits(&mut self, edits: &[StagedEdit]) {
+        for edit in edits.iter().rev() {
+            self.touch(edit.id);
+        }
+    }
+
+    fn touch_selected(
+        &mut self,
+        tab: Tab,
+        chord_drill: ChordDrill,
+        comp_drill: CompDrill,
+        selected: usize,
+    ) {
+        if let Some(spec) = tab_specs(tab).get(resolve_selected_index(
+            tab,
+            chord_drill,
+            comp_drill,
+            selected,
+        )) {
+            self.touch(spec.id);
+        }
+    }
+}
 
 /// Toggle mute on `tab`'s level/gain control: mute stores the live value and
 /// zeroes it, unmute restores the stored value. No-op on a tab with no level
@@ -1399,6 +1557,7 @@ pub(crate) fn render(
     comp_drill: CompDrill,
     active_chord: u64,
     mute: &MuteState,
+    palette: Option<&PaletteState>,
 ) {
     let bpm = controls.master.bpm;
     // Which custom-chord slot the pad engine is currently sounding, mapped
@@ -1736,7 +1895,7 @@ pub(crate) fn render(
     f.render_widget(Paragraph::new(rows), layout[4]);
 
     let footer = update_message
-        .unwrap_or("jk select   h/l adjust   f LFO   v macro   a auto   T units   q quit");
+        .unwrap_or("jk select   h/l adjust   / find   f LFO   v macro   a auto   T units   q quit");
     let footer_style = if update_message.is_some() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
@@ -1750,6 +1909,139 @@ pub(crate) fn render(
             .style(footer_style),
         layout[5],
     );
+
+    if let Some(pal) = palette {
+        draw_palette(f, panel, pal, controls, numeric.cursor_visible);
+    }
+}
+
+/// Bottom-anchored palette overlay inside the main panel: prompt line,
+/// best-first matches (fuzzy hits highlighted), staged edits, key help.
+fn draw_palette(
+    f: &mut Frame,
+    panel: Rect,
+    pal: &PaletteState,
+    controls: &FluidControls,
+    cursor_visible: bool,
+) {
+    const MAX_MATCH_ROWS: usize = 16;
+    let max_rows_that_fit = panel.height.saturating_sub(6) as usize;
+    let shown = pal.matches.len().min(MAX_MATCH_ROWS).min(max_rows_that_fit);
+    let first_row = pal
+        .selected
+        .saturating_sub(shown / 2)
+        .min(pal.matches.len().saturating_sub(shown));
+    let staged_rows = usize::from(!pal.staged.is_empty()) as u16;
+    // prompt + matches + optional staged line + help line, inside a border.
+    let height = (shown as u16 + staged_rows + 4).min(panel.height.saturating_sub(2));
+    let width = panel.width.saturating_sub(6).max(30).min(panel.width);
+    let x = panel.x + (panel.width.saturating_sub(width)) / 2;
+    let y = panel.bottom().saturating_sub(height + 1);
+    let area = Rect::new(x, y, width, height);
+
+    // Opaque scrim so the palette reads over the control rows behind it.
+    {
+        let buf = f.buffer_mut();
+        for row in area.top()..area.bottom() {
+            for col in area.left()..area.right() {
+                let cell = &mut buf[(col, row)];
+                cell.set_char(' ');
+                cell.set_bg(Color::Rgb(18, 22, 32));
+            }
+        }
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let cursor = if cursor_visible { "\u{258c}" } else { " " };
+    let prompt = match pal.locked {
+        Some(entry) => Line::from(vec![
+            Span::styled("/", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled(
+                pal.entry(entry).spec.id,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" = ", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled(
+                format!("{}{cursor}", pal.value_buf),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        None => Line::from(vec![
+            Span::styled("/", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled(
+                format!("{}{cursor}", pal.query),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+    };
+
+    let mut lines = vec![prompt];
+    for (row, m) in pal.matches.iter().skip(first_row).take(shown).enumerate() {
+        let entry = pal.entry(m.entry);
+        let is_selected = first_row + row == pal.selected;
+        let marker = if is_selected { "\u{25b8} " } else { "  " };
+        let base = if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(150, 158, 175))
+        };
+        let hit = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        let haystack = entry.haystack();
+        let mut spans = vec![Span::styled(marker, base)];
+        for (i, ch) in haystack.chars().enumerate() {
+            let style = if m.hits.contains(&i) { hit } else { base };
+            spans.push(Span::styled(ch.to_string(), style));
+        }
+        spans.push(Span::styled(
+            format!("  {}", (entry.spec.display)(controls)),
+            Style::default().fg(Color::Rgb(120, 200, 170)),
+        ));
+        lines.push(Line::from(spans));
+    }
+    if !pal.staged.is_empty() {
+        let staged = pal
+            .staged
+            .iter()
+            .map(|edit| format!("{}\u{2192}{}", edit.id, edit.value))
+            .collect::<Vec<_>>()
+            .join("  ");
+        lines.push(Line::from(Span::styled(
+            format!("staged: {staged}"),
+            Style::default().fg(Color::Rgb(255, 220, 120)),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "\u{21e5} complete   type value   \u{21b5} stage/jump   \u{21b5}\u{21b5} commit   ^B on bar   Esc cancel",
+        Style::default().fg(Color::Rgb(120, 128, 145)),
+    )));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Apply every staged palette edit in one clone-modify-store pass, through
+/// each control's own entry semantics (percent, snap, ...).
+fn commit_staged_edits(controls: &Arc<ArcSwap<FluidControls>>, edits: &[StagedEdit]) {
+    let mut next = FluidControls::clone(&controls.load());
+    for edit in edits {
+        if let Some(spec) = spec_by_id(edit.id) {
+            spec.apply_value(edit.value, &mut next);
+        }
+    }
+    controls.store(Arc::new(next));
+}
+
+fn staged_applied_message(count: usize) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} edit{plural} applied")
 }
 
 /// Colour pair for a modulator submenu: (active row, idle row).
