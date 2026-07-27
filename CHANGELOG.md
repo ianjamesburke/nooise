@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [1.8.5] — 2026-07-27
+
+### Added
+- feat: just add-morph auto-commits its own change
+- feat: add just add-morph tool and new auto-morph states
 ## [1.8.4] — 2026-07-27
 
 ### Fixed
