@@ -153,6 +153,7 @@ fn stepped_offsets(from: &FluidControls, to: &FluidControls) -> Vec<(usize, f64)
 /// it stays deterministic for any future offline render.
 pub(crate) struct MorphState {
     endpoints: Vec<SongState>,
+    morph_ids: Vec<Option<usize>>,
     bars: u32,
     /// Staggered hard-switch offsets for leg i -> i+1 (mod n), precomputed once.
     stepped: Vec<Vec<(usize, f64)>>,
@@ -174,6 +175,7 @@ impl MorphState {
             .collect();
         Self {
             endpoints,
+            morph_ids: (1..=n).map(Some).collect(),
             bars: bars.max(1),
             stepped,
             origin_beat: 0.0,
@@ -212,6 +214,10 @@ impl MorphState {
         endpoints.extend(states[nearest..].iter().cloned());
         endpoints.extend(states[..nearest].iter().cloned());
         let mut morph = Self::new(endpoints, bars);
+        morph.morph_ids = std::iter::once(None)
+            .chain((nearest + 1..=states.len()).map(Some))
+            .chain((1..=nearest).map(Some))
+            .collect();
         morph.origin_beat = start_beat.max(0.0);
         morph
     }
@@ -237,6 +243,11 @@ impl MorphState {
         let from = leg_index.rem_euclid(n) as usize;
         let to = (leg_index + 1).rem_euclid(n) as usize;
         (from, to, t.clamp(0.0, 1.0))
+    }
+
+    pub(crate) fn morph_ids_at(&self, beat: f64) -> (Option<usize>, Option<usize>) {
+        let (from, to, _) = self.leg_at(beat);
+        (self.morph_ids[from], self.morph_ids[to])
     }
 
     /// The morphed `FluidControls` at `beat`: hold `from`, then glide or
@@ -342,6 +353,14 @@ impl AutoControls {
     /// True while a morph is running (auto mode is on).
     pub(crate) fn is_running(&self) -> bool {
         self.morph.load().is_some()
+    }
+
+    pub(crate) fn morph_ids_at(&self, beat: f64) -> Option<(Option<usize>, Option<usize>)> {
+        self.morph
+            .load_full()
+            .as_ref()
+            .as_ref()
+            .map(|morph| morph.morph_ids_at(beat))
     }
 
     /// Leave auto mode. The engine stops rewriting controls and automation,
@@ -463,6 +482,14 @@ mod tests {
         assert_eq!(morph.leg_at(28.0), (7, 0, 0.0));
         assert_eq!(morph.leg_at(30.0), (7, 0, 0.5));
         assert_eq!(morph.leg_at(32.0), (0, 1, 0.0));
+    }
+
+    #[test]
+    fn morph_ids_match_the_one_based_auto_state_list() {
+        let endpoints: Vec<SongState> = (0..3).map(|i| song(state(80.0 + i as f32))).collect();
+        let morph = MorphState::new(endpoints, 1);
+
+        assert_eq!(morph.morph_ids_at(4.0), (Some(2), Some(3)));
     }
 
     #[test]

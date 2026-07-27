@@ -114,8 +114,11 @@ pub(crate) fn ui_loop(
         let automation_message = automation_footer(automation.state());
         let chords_message = chords_footer(tab, chord_drill);
         let master_message = master_footer(tab, comp_drill);
-        let auto_message =
-            in_auto.then_some("\u{25cf} AUTO morphing   a or touch any param to exit");
+        let auto_message = auto.morph_ids_at(telemetry.beat()).map(|(from, to)| {
+            let from = from.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
+            let to = to.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
+            format!("\u{25cf} AUTO morph {from} \u{2192} {to}   a or touch any param to exit")
+        });
         let footer_message = save_message
             .as_ref()
             .map(|(message, _)| message.as_str())
@@ -123,7 +126,7 @@ pub(crate) fn ui_loop(
             .or(automation_message.as_deref())
             .or(chords_message.as_deref())
             .or(master_message.as_deref())
-            .or(auto_message)
+            .or(auto_message.as_deref())
             .or(update_message.as_deref());
         let items = if tab == Tab::Chords {
             chords_tab_controls(&c, chord_drill)
