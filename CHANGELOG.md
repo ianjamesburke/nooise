@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [1.8.3] — 2026-07-27
+
+### Added
+- feat: add control palette
+- feat: prioritize global recent controls and copy raw song codes
+- feat: add / control palette: fuzzy-find any control, inline value entry, staged batch edits with next-bar commit
+- feat: add another auto morph target state
 ## [1.8.2] — 2026-07-24
 
 ### Added
