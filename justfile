@@ -5,6 +5,7 @@ fluid:
 # Run all tests
 test:
     cargo test
+    python3 -m unittest scripts.test_add_morph
 
 # Lint all targets
 check:
@@ -24,12 +25,10 @@ install:
 
 # Append a song code (from Ctrl+S in a live session) to the built-in
 # auto-morph cycle in src/fluid/auto.rs, verify it decodes, and commit it.
+[arg('code', pattern='n1_[A-Za-z0-9_-]+')]
+[positional-arguments]
 add-morph code:
-    python3 scripts/add_morph.py "{{code}}"
-    cargo fmt
-    cargo test auto:: --quiet
-    git add src/fluid/auto.rs
-    git commit -m "feat: add auto-morph state"
+    python3 scripts/add_morph.py "$1"
 
 # Preview what the next changelog would look like without committing anything.
 changelog:
