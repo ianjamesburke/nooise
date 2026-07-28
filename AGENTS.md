@@ -88,7 +88,8 @@ See `docs/NORTH_STAR.md` for product vision and feature-evaluation commandments 
 ## Ownership
 
 - Root: crate manifest (`Cargo.toml`), README, GOTCHAS.md, this DOX rail.
-- `src/`: all engine, UI, and control code — see `src/AGENTS.md`. Built-in auto-morph song codes (the ordered `n1_…` cycle) live in `src/fluid/auto.rs`'s `AUTO_STATES` array. Use `just add-morph <code>` to append one — it validates the code decodes before landing; never hand-paste codes into the array.
+- `scripts/`: release, render-benchmark, and auto-state authoring helpers.
+- `src/`: all engine, UI, and control code. See `src/AGENTS.md`. Built-in auto-morph song codes (the ordered `n1_…` cycle) live in `src/fluid/auto.rs`'s `AUTO_STATES` array. Use `just add-morph <code>` to append one. It requires a clean target file, rejects duplicates, restores the file after failed checks, and commits only the new state; never hand-paste codes into the array.
 - `assets/`: static wordmark/preview images, no code, no local rules needed.
 - `docs/NORTH_STAR.md`: product vision and feature-evaluation commandments.
 - `docs/superpowers/`: local brainstorming specs and plans produced by the superpowers skill workflow; ignored by git and not part of the shipped crate.
@@ -97,6 +98,7 @@ See `docs/NORTH_STAR.md` for product vision and feature-evaluation commandments 
 ## Verification
 
 - `cargo build` and `cargo test` from repo root before committing engine changes.
+- `python3 -m unittest scripts.test_add_morph` after changing the auto-state authoring workflow.
 - Hard rule: `cargo fmt` (no diff from `cargo fmt --check`) and `cargo clippy --all-targets` with zero warnings before every commit. Fix warnings at the source; `#[allow]` only with a one-line justification comment.
 
 ## Commit Messages
