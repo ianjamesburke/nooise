@@ -44,6 +44,11 @@ mod engine;
 mod interaction;
 mod palette;
 mod registry;
+#[expect(
+    dead_code,
+    reason = "staged terminal runtime is wired into production by stint 0042"
+)]
+mod runtime;
 mod song;
 mod ui;
 mod voice;
