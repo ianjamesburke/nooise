@@ -17,17 +17,19 @@ use crossterm::event::{
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
-use super::effect::{Clipboard, EffectAcknowledgement, EffectFailure, InteractionExecutionContext};
+use super::effect::{Clipboard, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
     InteractionMode, InteractionModel, LfoDepth, MasterDrill, Navigation, NumericEntry,
-    PaletteMode, PerformanceKind, PerformanceMode, PhasePolicy, SemanticAction, SequenceStage,
+    PaletteMode, PaletteStagedEdit, PerformanceKind, PerformanceMode, PhasePolicy, SemanticAction,
+    SequenceStage,
 };
 use super::runtime::{
     Clock, EventSource, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
     SanitizedTraceRecorder, Scheduler, SchedulerConfig, TerminalCapabilities, TransportEvent,
-    TransportKey, decode_physical_key, encode_physical_key, map_input, normalize_key_event,
+    TransportKey, decode_physical_key, encode_physical_key, normalize_key_event,
 };
+use super::ui::{ProductionCoordinatorContext, ProductionStep, coordinate_production_tick};
 use super::view::{
     MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH, TelemetryView, UiViewModel, ViewNotices,
     ViewPresentation, ViewProjection,
@@ -405,7 +407,14 @@ struct FrameRecord {
 struct ReplayResult {
     model: InteractionModel,
     session_generation: u64,
+    control_bits: Vec<(&'static str, u32)>,
+    automation_kind: Option<String>,
+    automation_address: Option<&'static str>,
+    automation_open_field: Option<String>,
     effects: Vec<String>,
+    effect_notice: Option<String>,
+    pending_edits: usize,
+    pending_target_bits: Option<u64>,
     frames: Vec<FrameRecord>,
     max_queue: usize,
     unsupported_holds: usize,
@@ -590,10 +599,14 @@ struct ReplayOutcome {
 #[derive(Default)]
 struct FakeClipboard {
     writes: usize,
+    failure: Option<String>,
 }
 
 impl Clipboard for FakeClipboard {
     fn set_text(&mut self, _text: String) -> Result<(), String> {
+        if let Some(error) = &self.failure {
+            return Err(error.clone());
+        }
         self.writes += 1;
         Ok(())
     }
@@ -633,7 +646,7 @@ impl ReplayHarness {
             LiveSession::new(LiveSessionSnapshot::from_controls(FluidControls::default()));
         let executor = EffectExecutor::new(
             session,
-            AutoControls::new(no_morph(), Vec::new(), DEFAULT_AUTO_BARS),
+            AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
         );
         let clock = FakeClock::new();
         Self {
@@ -670,10 +683,20 @@ impl ReplayHarness {
         self
     }
 
+    fn with_session_edit(mut self, edit: impl FnMut(&mut LiveSessionSnapshot)) -> Self {
+        self.executor.edit_session(None, edit);
+        self
+    }
+
+    fn with_clipboard_failure(mut self, error: impl Into<String>) -> Self {
+        self.clipboard.failure = Some(error.into());
+        self
+    }
+
     fn replay(mut self, trace: &ReplayTrace, staged_holds: &[SemanticAction]) -> ReplayOutcome {
         let mut source = ScriptedSource::new(trace, self.capabilities, self.clock.clone());
         let mut turns = 0;
-        let turn_limit = trace.events.len().saturating_mul(32).saturating_add(128);
+        let turn_limit = trace.events.len().saturating_mul(256).saturating_add(512);
         while !source.is_empty()
             || self.scheduler.queue_len() > 0
             || self.scheduler.render_due(self.clock.now())
@@ -702,6 +725,8 @@ impl ReplayHarness {
                 .extend(std::iter::repeat_n(turns as u64, idle_boundaries));
             for _ in 0..explicit_ticks {
                 self.telemetry.publish_beat(self.clock.now().as_secs_f64());
+                coordinate_production_tick(&mut self.executor, self.clock.now().as_secs_f64())
+                    .expect("pending commit has no fallible effects");
                 self.fluid.tick(
                     SchedulerConfig::default().tick_interval.as_secs_f32(),
                     &self.telemetry,
@@ -711,14 +736,35 @@ impl ReplayHarness {
             }
             self.max_queue = self.max_queue.max(self.scheduler.queue_len());
             self.max_queue = self.max_queue.max(turn.events.len());
-            for event in turn.events {
-                self.handle_transport(event);
+            for event in &turn.events {
+                if let TransportEvent::Resize { width, height } = event {
+                    self.width = (*width).max(MIN_TERMINAL_WIDTH);
+                    self.height = (*height).max(MIN_TERMINAL_HEIGHT);
+                    self.scheduler.request_frame();
+                    self.requested_at.get_or_insert(self.clock.now());
+                }
+            }
+            let production = super::ui::coordinate_production_turn(
+                &mut self.model,
+                &turn.events,
+                turn.tick_due,
+                &mut ProductionCoordinatorContext {
+                    effects: &mut self.executor,
+                    fluid: &self.fluid,
+                    flipped: &mut self.flipped,
+                    mute: &mut self.mute,
+                    clipboard: &mut self.clipboard,
+                    capabilities: self.capabilities,
+                    beat: self.clock.now().as_secs_f64(),
+                    active_chord: 0,
+                },
+            )
+            .expect("pending commit has no fallible effects");
+            for step in production.steps {
+                self.consume_production_step(step);
                 if self.violation.is_some() {
                     break;
                 }
-            }
-            if self.violation.is_some() {
-                break;
             }
             if turn.tick_due {
                 self.telemetry.publish_beat(self.clock.now().as_secs_f64());
@@ -727,6 +773,9 @@ impl ReplayHarness {
                     &self.telemetry,
                 );
                 self.scheduler.complete_tick(self.clock.now());
+            }
+            if self.violation.is_some() {
+                break;
             }
             if turn.render_due {
                 self.render();
@@ -773,10 +822,23 @@ impl ReplayHarness {
             self.render();
         }
         let mut violation = self.violation.take();
+        let session = self.executor.session().load();
         let result = ReplayResult {
             model: self.model,
-            session_generation: self.executor.session().load().generation,
+            session_generation: session.generation,
+            control_bits: all_specs()
+                .map(|spec| (spec.id, (spec.get)(&session.controls).to_bits()))
+                .collect(),
+            automation_kind: session
+                .automation
+                .active_kind()
+                .map(|kind| format!("{kind:?}")),
+            automation_address: session.automation.active_address().map(ControlAddress::id),
+            automation_open_field: session.automation.open_field().map(str::to_string),
             effects: self.effects,
+            effect_notice: self.executor.message().map(str::to_string),
+            pending_edits: self.executor.pending().map_or(0, |(_, edits)| edits.len()),
+            pending_target_bits: self.executor.pending().map(|(beat, _)| beat.to_bits()),
             frames: self.frames,
             max_queue: self.max_queue,
             unsupported_holds: self.unsupported_holds,
@@ -796,39 +858,51 @@ impl ReplayHarness {
         ReplayOutcome { result, violation }
     }
 
-    fn handle_transport(&mut self, event: TransportEvent) {
-        match &event {
-            TransportEvent::Key {
-                key: _,
-                phase: _,
-                repeat_count,
-            } => {
-                for _ in 0..*repeat_count {
-                    match map_input(
-                        &self.model.mode,
-                        self.model.navigation,
-                        &event,
-                        self.capabilities,
-                    ) {
-                        InputMapping::Action(action) => self.apply(action),
-                        InputMapping::Deferred(reason) => {
-                            self.deferred_inputs.push(format!("{reason:?}"));
-                        }
-                        InputMapping::Ignored => {}
-                    }
+    fn consume_production_step(&mut self, step: ProductionStep) {
+        if let InputMapping::Deferred(reason) = step.mapping {
+            self.deferred_inputs.push(format!("{reason:?}"));
+        }
+        for action in step.actions {
+            let changed = action.before != action.after || !action.effects.is_empty();
+            let edge_changed = action.action.phase != InputPhase::Press
+                && action.action.intent.phase_policy() == PhasePolicy::Edge
+                && changed;
+            let mut effect_labels = Vec::new();
+            for record in action.effects {
+                if matches!(
+                    record.result,
+                    Err(EffectFailure::UnsupportedInteraction(
+                        InteractionEffect::HoldPerformanceSelector(_)
+                            | InteractionEffect::ReleaseHeldSelector(_)
+                    ))
+                ) {
+                    self.unsupported_holds += 1;
                 }
+                let result = match record.result {
+                    Ok(acknowledgement) => acknowledgement_label(&acknowledgement),
+                    Err(failure) => format!("ERR:{failure:?}"),
+                };
+                let label = format!("{:?}=>{result}", record.effect);
+                self.effects.push(label.clone());
+                effect_labels.push(label);
             }
-            TransportEvent::Resize { width, height } => {
-                self.width = (*width).max(MIN_TERMINAL_WIDTH);
-                self.height = (*height).max(MIN_TERMINAL_HEIGHT);
+            let record = ActionRecord {
+                action: action.action,
+                before: action.before,
+                after: action.after,
+                effects: effect_labels,
+            };
+            self.state_history.push(record.clone());
+            if edge_changed {
+                self.violate(PropertyViolation::EdgeChangedOnNonPress {
+                    record: Box::new(record),
+                });
+            }
+            self.check_legal();
+            if changed {
                 self.scheduler.request_frame();
                 self.requested_at.get_or_insert(self.clock.now());
             }
-            TransportEvent::FocusGained
-            | TransportEvent::FocusLost
-            | TransportEvent::Paste(_)
-            | TransportEvent::Mouse(_)
-            | TransportEvent::Shutdown => {}
         }
     }
 
@@ -859,22 +933,73 @@ impl ReplayHarness {
     fn apply(&mut self, action: SemanticAction) {
         let before = self.model.clone();
         let effect_start = self.effects.len();
-        let selected_control = self.selected_control();
-        let transition = self.model.clone().update(action);
+        let session = self.executor.session().load();
+        let view = self.project(&session);
+        let item_count = view.items.len();
+        let tab = view.navigation.tab;
+        let selected_control = view.items.get(view.navigation.selected).map(|item| item.id);
+        let selected = selected_control
+            .and_then(|id| tab_specs(tab).iter().position(|spec| spec.id == id))
+            .unwrap_or(view.navigation.selected);
+        let automation_selected = self.model.automation_selected();
+        let automation_row_count = match session.automation.active_kind() {
+            Some(ModKind::Lfo) => session
+                .automation
+                .active_address()
+                .map_or(LfoField::ALL.len(), |address| {
+                    lfo_submenu_rows(&session.automation, address).len()
+                }),
+            Some(ModKind::Envelope) => EnvField::ALL.len(),
+            Some(ModKind::Macro) => MacroField::ALL.len(),
+            None => 0,
+        };
+        let macro_supported = action.intent != Intent::ToggleMacro
+            || macro_toggle_is_supported(
+                &session.automation,
+                automation_selected,
+                selected_control,
+            );
+        let automation_supported = match action.intent {
+            Intent::OpenAutomation(kind) => {
+                super::ui::automation_kind_is_supported(selected_control, kind)
+            }
+            _ => true,
+        };
+        drop(view);
+        drop(session);
+        let transition = if macro_supported && automation_supported {
+            self.model
+                .clone()
+                .update_bounded(action, automation_row_count, item_count)
+        } else {
+            super::interaction::Transition {
+                model: self.model.clone(),
+                effects: Vec::new(),
+            }
+        };
         let changed = transition.model != self.model || !transition.effects.is_empty();
         self.model = transition.model;
+        self.model.seed_palette_recent(self.executor.recent().ids());
         let emitted = transition.effects;
         let edge_changed = action.phase != InputPhase::Press
             && action.intent.phase_policy() == PhasePolicy::Edge
             && (self.model != before || !emitted.is_empty());
-        let results = self.executor.execute_interactions_ordered_with_clipboard(
-            emitted.clone(),
-            &InteractionExecutionContext {
-                selected_control,
-                beat: self.clock.now().as_secs_f64(),
-            },
-            &mut self.clipboard,
-        );
+        let mut context = ProductionInteractionContext {
+            selected_control,
+            tab,
+            selected,
+            automation_selected,
+            beat: self.clock.now().as_secs_f64(),
+            flipped: &mut self.flipped,
+            mute: &mut self.mute,
+        };
+        let results = self
+            .executor
+            .execute_production_interactions_with_clipboard(
+                emitted.clone(),
+                &mut context,
+                &mut self.clipboard,
+            );
         for (effect, result) in emitted.into_iter().zip(results) {
             let effect_label = format!("{effect:?}");
             if matches!(
@@ -887,7 +1012,15 @@ impl ReplayHarness {
                 self.unsupported_holds += 1;
             }
             let result_label = match result {
-                Ok(acknowledgement) => acknowledgement_label(&acknowledgement),
+                Ok(acknowledgement) => {
+                    if let EffectAcknowledgement::ControlSelected { tab, index, .. } =
+                        acknowledgement
+                    {
+                        self.model.select_control(tab, index);
+                        self.model.mode = InteractionMode::Browsing;
+                    }
+                    acknowledgement_label(&acknowledgement)
+                }
                 Err(failure) => format!("ERR:{failure:?}"),
             };
             self.effects.push(format!("{effect_label}=>{result_label}"));
@@ -909,12 +1042,6 @@ impl ReplayHarness {
             self.scheduler.request_frame();
             self.requested_at.get_or_insert(self.clock.now());
         }
-    }
-
-    fn selected_control(&self) -> Option<&'static str> {
-        let session = self.executor.session().load();
-        let view = self.project(&session);
-        view.items.get(view.navigation.selected).map(|item| item.id)
     }
 
     fn project<'a>(&'a self, session: &'a LiveSessionSnapshot) -> UiViewModel<'a> {
@@ -1105,18 +1232,59 @@ fn replay_from_model(
     checked_replay(run(trace), trace, run)
 }
 
-fn replay_with_staged_holds(
+fn replay_from_model_with_staged_holds(
+    model: InteractionModel,
     trace: &[TraceEvent],
     staged_holds: &[SemanticAction],
     capabilities: TerminalCapabilities,
 ) -> ReplayResult {
     let run = |candidate: &[TraceEvent]| {
-        ReplayHarness::new(capabilities).replay(
-            &ReplayTrace {
-                events: candidate.to_vec(),
-            },
-            staged_holds,
-        )
+        ReplayHarness::new(capabilities)
+            .with_model(model.clone())
+            .replay(
+                &ReplayTrace {
+                    events: candidate.to_vec(),
+                },
+                staged_holds,
+            )
+    };
+    checked_replay(run(trace), trace, run)
+}
+
+fn replay_with_clipboard_failure(
+    trace: &[TraceEvent],
+    capabilities: TerminalCapabilities,
+    error: &str,
+) -> ReplayResult {
+    let run = |candidate: &[TraceEvent]| {
+        ReplayHarness::new(capabilities)
+            .with_clipboard_failure(error)
+            .replay(
+                &ReplayTrace {
+                    events: candidate.to_vec(),
+                },
+                &[],
+            )
+    };
+    checked_replay(run(trace), trace, run)
+}
+
+fn replay_from_model_with_session_edit(
+    model: InteractionModel,
+    trace: &[TraceEvent],
+    capabilities: TerminalCapabilities,
+    edit: fn(&mut LiveSessionSnapshot),
+) -> ReplayResult {
+    let run = |candidate: &[TraceEvent]| {
+        ReplayHarness::new(capabilities)
+            .with_model(model.clone())
+            .with_session_edit(edit)
+            .replay(
+                &ReplayTrace {
+                    events: candidate.to_vec(),
+                },
+                &[],
+            )
     };
     checked_replay(run(trace), trace, run)
 }
@@ -1502,10 +1670,9 @@ fn explicit_tick_processes_and_idle_delimits_scheduler_turns() {
             .chain(&result.idle_turn_ids)
             .all(|turn| result.scheduler_turn_ids.contains(turn))
     );
-    assert!(matches!(
-        result.model.mode,
-        InteractionMode::Performance(PerformanceMode::Deck { .. })
-    ));
+    assert_eq!(result.model.mode, InteractionMode::Browsing);
+    assert_eq!(result.deferred_inputs.len(), 1);
+    assert!(result.deferred_inputs[0].starts_with("PerformanceGrammar0043"));
 }
 
 #[test]
@@ -1593,7 +1760,7 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
                 key(0, FixtureKey::Character('p'), InputPhase::Press),
                 key(0, FixtureKey::Character('p'), InputPhase::Press),
             ],
-            "DECK",
+            "BROWSE",
         ),
         (
             "double Space",
@@ -1601,7 +1768,7 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
                 key(0, FixtureKey::Character(' '), InputPhase::Press),
                 key(0, FixtureKey::Character(' '), InputPhase::Press),
             ],
-            "SEQUENCE",
+            "BROWSE",
         ),
         (
             "sustained entry key",
@@ -1666,11 +1833,15 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
         }
     }
 
-    let held = replay_with_staged_holds(
-        &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('a'), InputPhase::Press),
-        ],
+    let held = replay_from_model_with_staged_holds(
+        InteractionModel {
+            mode: InteractionMode::Performance(PerformanceMode::Sequence {
+                stage: SequenceStage::ChooseInstrument,
+                held_selector: None,
+            }),
+            ..InteractionModel::default()
+        },
+        &[key(0, FixtureKey::Character('a'), InputPhase::Press)],
         &[
             SemanticAction {
                 phase: InputPhase::Press,
@@ -1690,6 +1861,848 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
 }
 
 #[test]
+fn production_binding_matrix_crosses_the_complete_pipeline() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let ctrl = |code| modified_key(0, code, InputPhase::Press, 1 << 1);
+    let shift = |code| modified_key(0, code, InputPhase::Press, 1);
+    let cases = [
+        ("up", vec![plain(FixtureKey::Up)]),
+        ("k", vec![plain(FixtureKey::Character('k'))]),
+        ("down", vec![plain(FixtureKey::Down)]),
+        ("j", vec![plain(FixtureKey::Character('j'))]),
+        ("left", vec![plain(FixtureKey::Left)]),
+        ("h", vec![plain(FixtureKey::Character('h'))]),
+        ("right", vec![plain(FixtureKey::Right)]),
+        ("l", vec![plain(FixtureKey::Character('l'))]),
+        ("shift reset", vec![shift(FixtureKey::Left)]),
+        ("H reset", vec![shift(FixtureKey::Character('H'))]),
+        ("next page", vec![plain(FixtureKey::Tab)]),
+        ("previous page", vec![shift(FixtureKey::BackTab)]),
+        ("auto", vec![plain(FixtureKey::Character('a'))]),
+        ("palette", vec![plain(FixtureKey::Character('/'))]),
+        ("lfo", vec![plain(FixtureKey::Character('f'))]),
+        ("envelope", vec![plain(FixtureKey::Character('e'))]),
+        ("macro", vec![plain(FixtureKey::Character('v'))]),
+        ("remove automation", vec![plain(FixtureKey::Character('x'))]),
+        ("unit flip", vec![plain(FixtureKey::Character('t'))]),
+        ("track mute", vec![plain(FixtureKey::Character('m'))]),
+        ("master mute", vec![shift(FixtureKey::Character('M'))]),
+        ("reseed", vec![plain(FixtureKey::Character('r'))]),
+        ("numeric", vec![plain(FixtureKey::Character('1'))]),
+        ("touch", vec![plain(FixtureKey::Enter)]),
+        ("save", vec![ctrl(FixtureKey::Character('s'))]),
+        ("quit", vec![plain(FixtureKey::Character('q'))]),
+        ("ctrl-c", vec![ctrl(FixtureKey::Character('c'))]),
+        ("cancel", vec![plain(FixtureKey::Escape)]),
+        (
+            "automation navigation",
+            vec![
+                plain(FixtureKey::Character('f')),
+                plain(FixtureKey::Down),
+                plain(FixtureKey::Right),
+                plain(FixtureKey::Character('t')),
+                plain(FixtureKey::Character('r')),
+                plain(FixtureKey::Escape),
+            ],
+        ),
+        (
+            "automation page close",
+            vec![plain(FixtureKey::Character('f')), plain(FixtureKey::Tab)],
+        ),
+        (
+            "automation palette",
+            vec![
+                plain(FixtureKey::Character('f')),
+                plain(FixtureKey::Character('/')),
+                plain(FixtureKey::Escape),
+            ],
+        ),
+        (
+            "numeric grammar and swallowing",
+            vec![
+                plain(FixtureKey::Character('1')),
+                plain(FixtureKey::Character('.')),
+                plain(FixtureKey::Character('.')),
+                plain(FixtureKey::Character('-')),
+                ctrl(FixtureKey::Character('s')),
+                plain(FixtureKey::Backspace),
+                plain(FixtureKey::Enter),
+            ],
+        ),
+        (
+            "palette typing and navigation",
+            vec![
+                plain(FixtureKey::Character('/')),
+                plain(FixtureKey::Character('b')),
+                plain(FixtureKey::Tab),
+                plain(FixtureKey::Character('4')),
+                plain(FixtureKey::Backspace),
+                plain(FixtureKey::Up),
+                plain(FixtureKey::Down),
+                ctrl(FixtureKey::Character('p')),
+                ctrl(FixtureKey::Character('n')),
+                plain(FixtureKey::Escape),
+            ],
+        ),
+        (
+            "resize",
+            vec![TraceEvent::Resize {
+                after_ms: 0,
+                width: 46,
+                height: 10,
+            }],
+        ),
+    ];
+
+    struct ExpectedBinding {
+        owner: &'static str,
+        generation: u64,
+        automation: Option<&'static str>,
+        intents: Vec<Intent>,
+        effects: Vec<&'static str>,
+        notice: Option<&'static str>,
+    }
+
+    for (name, trace) in cases {
+        let outcome = replay_outcome(&trace, full_capabilities());
+        let expected = match name {
+            "up" | "k" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::MoveSelection(-1)],
+                effects: vec![],
+                notice: None,
+            },
+            "down" | "j" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::MoveSelection(1)],
+                effects: vec![],
+                notice: None,
+            },
+            "left" | "h" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::AdjustSelected(-1)],
+                effects: vec!["AdjustSelected(-1)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "right" | "l" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::AdjustSelected(1)],
+                effects: vec!["AdjustSelected(1)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "shift reset" | "H reset" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::ResetSelected],
+                effects: vec!["ResetSelected=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "next page" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::ChangePage(super::interaction::PageDirection::Next)],
+                effects: vec![],
+                notice: None,
+            },
+            "previous page" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::ChangePage(
+                    super::interaction::PageDirection::Previous,
+                )],
+                effects: vec![],
+                notice: None,
+            },
+            "auto" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::ToggleAuto],
+                effects: vec!["ToggleAuto=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "palette" => ExpectedBinding {
+                owner: "PALETTE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::OpenPalette],
+                effects: vec![],
+                notice: None,
+            },
+            "lfo" => ExpectedBinding {
+                owner: "LFO",
+                generation: 1,
+                automation: Some("Lfo"),
+                intents: vec![Intent::OpenAutomation(AutomationKind::Lfo)],
+                effects: vec!["AutomationConfirm(Lfo)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "envelope" => ExpectedBinding {
+                owner: "ENV",
+                generation: 1,
+                automation: Some("Envelope"),
+                intents: vec![Intent::OpenAutomation(AutomationKind::Envelope)],
+                effects: vec!["AutomationConfirm(Envelope)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "macro" => ExpectedBinding {
+                owner: "MACRO",
+                generation: 1,
+                automation: Some("Macro"),
+                intents: vec![Intent::ToggleMacro],
+                effects: vec!["ToggleMacro=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "remove automation" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::RemoveAutomation],
+                effects: vec!["RemoveAutomation=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "unit flip" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::ToggleUnits],
+                effects: vec!["ToggleUnits=>OK:Published { generation: 0 }"],
+                notice: None,
+            },
+            "track mute" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::ToggleMute { master: false }],
+                effects: vec!["ToggleMute { master: false }=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "master mute" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::ToggleMute { master: true }],
+                effects: vec!["ToggleMute { master: true }=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "reseed" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::ReseedAutomation],
+                effects: vec!["ReseedAutomation=>OK:Published { generation: 0 }"],
+                notice: None,
+            },
+            "numeric" => ExpectedBinding {
+                owner: "NUMERIC",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::BeginNumeric('1')],
+                effects: vec![],
+                notice: None,
+            },
+            "touch" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::TouchSelected],
+                effects: vec![
+                    "TouchSelected=>OK:ControlSelected { tab: Chords, index: 0, id: \"pad.level\" }",
+                ],
+                notice: None,
+            },
+            "save" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::Save],
+                effects: vec!["Save=>OK:Message(\"song code copied to clipboard\")"],
+                notice: Some("song code copied to clipboard"),
+            },
+            "quit" | "ctrl-c" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::Quit],
+                effects: vec!["Quit=>OK:QuitRequested"],
+                notice: None,
+            },
+            "cancel" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::Cancel],
+                effects: vec![],
+                notice: None,
+            },
+            "automation navigation" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 5,
+                automation: None,
+                intents: vec![
+                    Intent::OpenAutomation(AutomationKind::Lfo),
+                    Intent::MoveSelection(1),
+                    Intent::AdjustSelected(1),
+                    Intent::ToggleUnits,
+                    Intent::ReseedAutomation,
+                    Intent::Cancel,
+                ],
+                effects: vec![
+                    "AutomationConfirm(Lfo)=>OK:Published { generation: 1 }",
+                    "AdjustSelected(1)=>OK:Published { generation: 2 }",
+                    "ToggleUnits=>OK:Published { generation: 3 }",
+                    "ReseedAutomation=>OK:Published { generation: 4 }",
+                    "CloseAutomationDepth=>OK:NoChange",
+                ],
+                notice: None,
+            },
+            "automation page close" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 2,
+                automation: None,
+                intents: vec![
+                    Intent::OpenAutomation(AutomationKind::Lfo),
+                    Intent::ChangePage(super::interaction::PageDirection::Next),
+                ],
+                effects: vec![
+                    "AutomationConfirm(Lfo)=>OK:Published { generation: 1 }",
+                    "CloseAutomationAll=>OK:NoChange",
+                ],
+                notice: None,
+            },
+            "automation palette" => ExpectedBinding {
+                owner: "LFO",
+                generation: 1,
+                automation: Some("Lfo"),
+                intents: vec![
+                    Intent::OpenAutomation(AutomationKind::Lfo),
+                    Intent::OpenPalette,
+                    Intent::Cancel,
+                ],
+                effects: vec!["AutomationConfirm(Lfo)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "numeric grammar and swallowing" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![
+                    Intent::BeginNumeric('1'),
+                    Intent::TypeCharacter('.'),
+                    Intent::TypeCharacter('.'),
+                    Intent::TypeCharacter('-'),
+                    Intent::Backspace,
+                    Intent::Confirm,
+                ],
+                effects: vec!["CommitNumeric(1.0)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "palette typing and navigation" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![
+                    Intent::OpenPalette,
+                    Intent::TypeCharacter('b'),
+                    Intent::PaletteAutocomplete,
+                    Intent::TypeCharacter('4'),
+                    Intent::Backspace,
+                    Intent::MoveSelection(-1),
+                    Intent::MoveSelection(1),
+                    Intent::MoveSelection(-1),
+                    Intent::MoveSelection(1),
+                    Intent::Cancel,
+                ],
+                effects: vec![],
+                notice: None,
+            },
+            "resize" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![],
+                effects: vec![],
+                notice: None,
+            },
+            _ => panic!("missing exact matrix expectation for {name}"),
+        };
+        assert_eq!(outcome.violation, None, "{name}: {:?}", outcome.violation);
+        assert!(
+            outcome.result.deferred_inputs.is_empty(),
+            "{name}: {:?}",
+            outcome.result.deferred_inputs
+        );
+        assert!(
+            outcome
+                .result
+                .effects
+                .iter()
+                .all(|effect| !effect.contains("ERR:")),
+            "{name}: {:?}",
+            outcome.result.effects
+        );
+        assert!(!outcome.result.frames.is_empty(), "{name}");
+        assert_eq!(
+            outcome
+                .result
+                .frames
+                .last()
+                .map(|frame| frame.owner.as_str()),
+            Some(expected.owner),
+            "{name}"
+        );
+        assert_eq!(
+            outcome.result.session_generation, expected.generation,
+            "{name}"
+        );
+        assert_eq!(
+            outcome.result.automation_kind.as_deref(),
+            expected.automation,
+            "{name}"
+        );
+        assert_eq!(
+            outcome
+                .result
+                .state_history
+                .iter()
+                .map(|record| record.action.intent)
+                .collect::<Vec<_>>(),
+            expected.intents,
+            "{name}"
+        );
+        assert_eq!(
+            outcome
+                .result
+                .effects
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            expected.effects,
+            "{name}"
+        );
+        assert_eq!(
+            outcome.result.effect_notice.as_deref(),
+            expected.notice,
+            "{name}"
+        );
+    }
+    for (name, code) in [
+        ("deck entry", FixtureKey::Character('p')),
+        ("sequence entry", FixtureKey::Character(' ')),
+    ] {
+        let result = replay(&[plain(code)], full_capabilities());
+        assert_eq!(result.model, InteractionModel::default(), "{name}");
+        assert_eq!(result.session_generation, 0, "{name}");
+        assert_eq!(result.automation_kind, None, "{name}");
+        assert_eq!(result.effect_notice, None, "{name}");
+        assert_eq!(result.deferred_inputs.len(), 1, "{name}");
+        assert!(
+            result.deferred_inputs[0].starts_with("PerformanceGrammar0043"),
+            "{name}: {:?}",
+            result.deferred_inputs
+        );
+        assert!(result.effects.is_empty(), "{name}");
+    }
+
+    let staged = InteractionModel {
+        mode: InteractionMode::Palette(PaletteMode {
+            staged: vec![PaletteStagedEdit {
+                id: "master.bpm",
+                value_bits: 91.0f32.to_bits(),
+            }],
+            ..PaletteMode::default()
+        }),
+        ..InteractionModel::default()
+    };
+    let immediate = replay_from_model(
+        staged.clone(),
+        &[plain(FixtureKey::Enter)],
+        full_capabilities(),
+    );
+    assert!(
+        immediate
+            .effects
+            .iter()
+            .any(|effect| { effect.starts_with("PaletteCommit") && effect.contains("Published") })
+    );
+    let next_bar = replay_from_model(
+        staged,
+        &[ctrl(FixtureKey::Character('b'))],
+        full_capabilities(),
+    );
+    assert!(
+        next_bar.effects.iter().any(|effect| {
+            effect.starts_with("PaletteCommitAtBar") && effect.contains("Staged")
+        })
+    );
+}
+
+#[test]
+fn production_coordinator_keeps_nested_lfo_model_and_session_in_lockstep() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let opened = replay(
+        &[
+            plain(FixtureKey::Character('f')),
+            plain(FixtureKey::Character('v')),
+        ],
+        full_capabilities(),
+    );
+    assert_eq!(
+        opened.model.mode,
+        InteractionMode::Automation(AutomationMode::Lfo {
+            depth: LfoDepth::NestedField,
+            selected: 1,
+        })
+    );
+    assert_eq!(opened.automation_kind.as_deref(), Some("Lfo"));
+    assert_eq!(opened.automation_address, Some("pad.level"));
+    assert_eq!(
+        opened.automation_open_field.as_deref(),
+        Some("pad.level#lfo.amount")
+    );
+
+    for (name, close_key) in [
+        ("escape", FixtureKey::Escape),
+        ("v", FixtureKey::Character('v')),
+    ] {
+        let closed = replay(
+            &[
+                plain(FixtureKey::Character('f')),
+                plain(FixtureKey::Character('v')),
+                plain(FixtureKey::Down),
+                plain(close_key),
+            ],
+            full_capabilities(),
+        );
+        assert_eq!(
+            closed.model.mode,
+            InteractionMode::Automation(AutomationMode::Lfo {
+                depth: LfoDepth::Editor,
+                selected: 1,
+            }),
+            "{name}"
+        );
+        assert_eq!(closed.automation_kind.as_deref(), Some("Lfo"), "{name}");
+        assert_eq!(closed.automation_address, Some("pad.level"), "{name}");
+        assert_eq!(closed.automation_open_field, None, "{name}");
+        assert!(
+            closed
+                .effects
+                .iter()
+                .any(|effect| effect.contains("AutomationPosition")),
+            "{name}: {:?}",
+            closed.effects
+        );
+    }
+}
+
+#[test]
+fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
+    let ctrl_shift_save = replay(
+        &[modified_key(
+            0,
+            FixtureKey::Character('S'),
+            InputPhase::Press,
+            0b000011,
+        )],
+        full_capabilities(),
+    );
+    assert_eq!(ctrl_shift_save.clipboard_writes, 1);
+    assert!(
+        ctrl_shift_save
+            .effects
+            .iter()
+            .any(|effect| effect.starts_with("Save=>OK:Message"))
+    );
+
+    let ctrl_shift_quit = replay(
+        &[modified_key(
+            0,
+            FixtureKey::Character('C'),
+            InputPhase::Press,
+            0b000011,
+        )],
+        full_capabilities(),
+    );
+    assert!(
+        ctrl_shift_quit
+            .effects
+            .iter()
+            .any(|effect| effect.starts_with("Quit=>OK:QuitRequested"))
+    );
+
+    let shifted_palette = replay(
+        &[
+            key(0, FixtureKey::Character('/'), InputPhase::Press),
+            modified_key(0, FixtureKey::Character('B'), InputPhase::Press, 0b000001),
+        ],
+        full_capabilities(),
+    );
+    assert!(matches!(
+        shifted_palette.model.mode,
+        InteractionMode::Palette(PaletteMode { ref query, .. }) if query == "B"
+    ));
+
+    let failed = replay_with_clipboard_failure(
+        &[modified_key(
+            0,
+            FixtureKey::Character('s'),
+            InputPhase::Press,
+            0b000010,
+        )],
+        full_capabilities(),
+        "clipboard unavailable",
+    );
+    assert_eq!(failed.clipboard_writes, 0);
+    assert_eq!(
+        failed.effect_notice.as_deref(),
+        Some("Save failed: Clipboard(\"clipboard unavailable\")")
+    );
+    assert_ne!(
+        failed.effect_notice.as_deref(),
+        Some("Action failed: Clipboard(\"clipboard unavailable\")")
+    );
+}
+
+#[test]
+fn production_tick_commits_pending_palette_edits_at_the_bar() {
+    let staged = InteractionModel {
+        mode: InteractionMode::Palette(PaletteMode {
+            staged: vec![PaletteStagedEdit {
+                id: "master.bpm",
+                value_bits: 91.0f32.to_bits(),
+            }],
+            ..PaletteMode::default()
+        }),
+        ..InteractionModel::default()
+    };
+    let result = replay_from_model(
+        staged,
+        &[
+            modified_key(0, FixtureKey::Character('b'), InputPhase::Press, 0b000010),
+            TraceEvent::Tick { after_ms: 4_000 },
+        ],
+        full_capabilities(),
+    );
+    assert_eq!(result.pending_edits, 0, "{result:#?}");
+    assert_eq!(
+        result
+            .control_bits
+            .iter()
+            .find_map(|(id, bits)| (*id == "master.bpm").then_some(*bits)),
+        Some(91.0f32.to_bits())
+    );
+    assert_eq!(result.model.mode, InteractionMode::Browsing);
+}
+
+#[test]
+fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
+    let staged = InteractionModel {
+        mode: InteractionMode::Palette(PaletteMode {
+            staged: vec![PaletteStagedEdit {
+                id: "pad.level",
+                value_bits: 50.0f32.to_bits(),
+            }],
+            ..PaletteMode::default()
+        }),
+        ..InteractionModel::default()
+    };
+    let mut harness = ReplayHarness::new(full_capabilities()).with_model(staged);
+    let stage_event = TransportEvent::Key {
+        key: TransportKey {
+            code: PhysicalKey::Character('b'),
+            modifiers: Modifiers::CONTROL,
+        },
+        phase: InputPhase::Press,
+        repeat_count: 1,
+    };
+    let staged_turn = super::ui::coordinate_production_turn(
+        &mut harness.model,
+        &[stage_event],
+        false,
+        &mut ProductionCoordinatorContext {
+            effects: &mut harness.executor,
+            fluid: &harness.fluid,
+            flipped: &mut harness.flipped,
+            mute: &mut harness.mute,
+            clipboard: &mut harness.clipboard,
+            capabilities: harness.capabilities,
+            beat: 0.0,
+            active_chord: 0,
+        },
+    )
+    .expect("staging turn");
+    for step in staged_turn.steps {
+        harness.consume_production_step(step);
+    }
+    assert_eq!(
+        harness.executor.pending().map(|(_, edits)| edits.len()),
+        Some(1)
+    );
+    assert_eq!(
+        harness.executor.pending().map(|(target, _)| *target),
+        Some(4.0)
+    );
+
+    let adjust_event = TransportEvent::Key {
+        key: TransportKey {
+            code: PhysicalKey::Right,
+            modifiers: Modifiers::default(),
+        },
+        phase: InputPhase::Press,
+        repeat_count: 1,
+    };
+    let due_turn = super::ui::coordinate_production_turn(
+        &mut harness.model,
+        &[adjust_event],
+        true,
+        &mut ProductionCoordinatorContext {
+            effects: &mut harness.executor,
+            fluid: &harness.fluid,
+            flipped: &mut harness.flipped,
+            mute: &mut harness.mute,
+            clipboard: &mut harness.clipboard,
+            capabilities: harness.capabilities,
+            beat: 4.0,
+            active_chord: 0,
+        },
+    )
+    .expect("due turn");
+    for step in due_turn.steps {
+        harness.consume_production_step(step);
+    }
+    assert!(harness.executor.pending().is_none());
+    let session = harness.executor.session().load();
+    assert_eq!(session.controls.pad.level, 0.52);
+    assert_eq!(session.generation, 2);
+    assert_eq!(
+        harness
+            .state_history
+            .iter()
+            .map(|record| record.action.intent)
+            .collect::<Vec<_>>(),
+        vec![Intent::CommitPaletteAtBar, Intent::AdjustSelected(1)]
+    );
+    assert_eq!(
+        harness.effects,
+        vec![
+            "PaletteCommitAtBar([PaletteStagedEdit { id: \"pad.level\", value_bits: 1112014848 }])=>OK:Staged { count: 1 }",
+            "AdjustSelected(1)=>OK:Published { generation: 2 }"
+        ]
+    );
+}
+
+#[test]
+fn raw_enter_drills_custom_progression_and_master_compression() {
+    fn select_custom_progression(snapshot: &mut LiveSessionSnapshot) {
+        snapshot.controls.pad.progression = super::voice::CUSTOM_PROGRESSION_INDEX as f32;
+    }
+
+    let custom = replay_from_model_with_session_edit(
+        InteractionModel {
+            navigation: Navigation::Chords {
+                selected: 6,
+                drill: ChordDrill::None,
+            },
+            ..InteractionModel::default()
+        },
+        &[
+            key(0, FixtureKey::Enter, InputPhase::Press),
+            key(0, FixtureKey::Enter, InputPhase::Press),
+        ],
+        full_capabilities(),
+        select_custom_progression,
+    );
+    assert_eq!(
+        custom.model,
+        InteractionModel {
+            navigation: Navigation::Chords {
+                selected: 0,
+                drill: ChordDrill::Slot {
+                    slot: 0,
+                    return_to: 6,
+                },
+            },
+            ..InteractionModel::default()
+        }
+    );
+    assert_eq!(
+        custom
+            .state_history
+            .iter()
+            .map(|record| record.action.intent)
+            .collect::<Vec<_>>(),
+        vec![Intent::EnterChordProgression, Intent::EnterChordSlot(0)]
+    );
+    assert!(custom.effects.is_empty());
+    assert_eq!(custom.session_generation, 1);
+    assert_eq!(custom.automation_kind, None);
+    assert_eq!(custom.effect_notice, None);
+    assert_eq!(
+        custom.frames.last().map(|frame| frame.owner.as_str()),
+        Some("BROWSE")
+    );
+    assert_eq!(
+        custom
+            .control_bits
+            .iter()
+            .find_map(|(id, bits)| (*id == "pad.progression").then_some(*bits)),
+        Some((super::voice::CUSTOM_PROGRESSION_INDEX as f32).to_bits())
+    );
+
+    let master = replay_from_model(
+        InteractionModel {
+            navigation: Navigation::Master {
+                selected: MASTER_COMP_AMOUNT_ROW,
+                drill: MasterDrill::None,
+            },
+            ..InteractionModel::default()
+        },
+        &[key(0, FixtureKey::Enter, InputPhase::Press)],
+        full_capabilities(),
+    );
+    assert_eq!(
+        master.model,
+        InteractionModel {
+            navigation: Navigation::Master {
+                selected: 0,
+                drill: MasterDrill::Compression {
+                    return_to: MASTER_COMP_AMOUNT_ROW,
+                },
+            },
+            ..InteractionModel::default()
+        }
+    );
+    assert_eq!(
+        master
+            .state_history
+            .iter()
+            .map(|record| record.action.intent)
+            .collect::<Vec<_>>(),
+        vec![Intent::EnterMasterCompression]
+    );
+    assert!(master.effects.is_empty());
+    assert_eq!(master.session_generation, 0);
+    assert_eq!(master.automation_kind, None);
+    assert_eq!(master.effect_notice, None);
+    assert_eq!(
+        master.frames.last().map(|frame| frame.owner.as_str()),
+        Some("BROWSE")
+    );
+}
+
+#[test]
 fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
     let leaders = vec![
         key(0, FixtureKey::Character('p'), InputPhase::Press),
@@ -1699,13 +2712,8 @@ fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
         key(0, FixtureKey::Character(' '), InputPhase::Repeat),
     ];
     let result = replay(&leaders, full_capabilities());
-    assert!(matches!(
-        result.model.mode,
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::ChooseInstrument,
-            ..
-        })
-    ));
+    assert_eq!(result.model.mode, InteractionMode::Browsing);
+    assert_eq!(result.deferred_inputs.len(), 4);
     assert!(result.effects.is_empty());
 
     let quit = replay(
@@ -1739,10 +2747,7 @@ fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
     );
     assert_eq!(save.clipboard_writes, 1);
 
-    let held_trace = vec![
-        key(0, FixtureKey::Character(' '), InputPhase::Press),
-        key(0, FixtureKey::Character('a'), InputPhase::Press),
-    ];
+    let held_trace = vec![key(0, FixtureKey::Character('a'), InputPhase::Press)];
     let staged_holds = [
         SemanticAction {
             phase: InputPhase::Press,
@@ -1757,7 +2762,19 @@ fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
             intent: Intent::ReleaseHeldSelector,
         },
     ];
-    let full = replay_with_staged_holds(&held_trace, &staged_holds, full_capabilities());
+    let performance_model = InteractionModel {
+        mode: InteractionMode::Performance(PerformanceMode::Sequence {
+            stage: SequenceStage::ChooseInstrument,
+            held_selector: None,
+        }),
+        ..InteractionModel::default()
+    };
+    let full = replay_from_model_with_staged_holds(
+        performance_model.clone(),
+        &held_trace,
+        &staged_holds,
+        full_capabilities(),
+    );
     assert_eq!(
         full.effects
             .iter()
@@ -1774,8 +2791,12 @@ fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
     );
     assert_eq!(full.unsupported_holds, 2);
 
-    let fallback =
-        replay_with_staged_holds(&held_trace, &staged_holds, TerminalCapabilities::default());
+    let fallback = replay_from_model_with_staged_holds(
+        performance_model,
+        &held_trace,
+        &staged_holds,
+        TerminalCapabilities::default(),
+    );
     assert_eq!(fallback.unsupported_holds, 0);
     assert_eq!(
         fallback.deferred_inputs.len(),
@@ -1799,22 +2820,22 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
             key(0, code, InputPhase::Repeat),
         ]
     };
-    for (code, owner) in [
-        (FixtureKey::Character('/'), "PALETTE"),
-        (FixtureKey::Character('p'), "DECK"),
-        (FixtureKey::Character(' '), "SEQUENCE"),
-    ] {
+    let palette = replay(&repeated(FixtureKey::Character('/')), full_capabilities());
+    assert_eq!(
+        palette.frames.last().map(|frame| frame.owner.as_str()),
+        Some("PALETTE")
+    );
+    for code in [FixtureKey::Character('p'), FixtureKey::Character(' ')] {
         let result = replay(&repeated(code), full_capabilities());
-        assert_eq!(
-            result.frames.last().map(|frame| frame.owner.as_str()),
-            Some(owner)
-        );
+        assert_eq!(result.model, InteractionModel::default());
+        assert_eq!(result.deferred_inputs.len(), 2);
     }
 
     let numeric = replay_from_model(
         InteractionModel {
             mode: InteractionMode::Numeric(NumericEntry {
                 buffer: "88".into(),
+                resume: None,
             }),
             ..InteractionModel::default()
         },
@@ -1910,6 +2931,15 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         },
         Intent::HoldPerformanceSelector(0),
         Intent::AdjustSelected(1),
+        Intent::ResetSelected,
+        Intent::ToggleAuto,
+        Intent::ToggleUnits,
+        Intent::ToggleMute { master: false },
+        Intent::ToggleMacro,
+        Intent::RemoveAutomation,
+        Intent::ReseedAutomation,
+        Intent::TouchSelected,
+        Intent::CommitPaletteAtBar,
         Intent::Save,
         Intent::Quit,
         Intent::ReleaseHeldSelector,
@@ -1945,6 +2975,7 @@ fn escape_converges_from_every_owner_and_nested_depth() {
         InteractionModel {
             mode: InteractionMode::Numeric(NumericEntry {
                 buffer: "12".into(),
+                resume: None,
             }),
             ..InteractionModel::default()
         },
@@ -2157,7 +3188,14 @@ fn divergence_signature(left: &ReplayResult, right: &ReplayResult) -> Option<Div
     }
     first_field!(model);
     first_field!(session_generation);
+    first_field!(control_bits);
+    first_field!(automation_kind);
+    first_field!(automation_address);
+    first_field!(automation_open_field);
     first_field!(effects);
+    first_field!(effect_notice);
+    first_field!(pending_edits);
+    first_field!(pending_target_bits);
     first_field!(max_queue);
     first_field!(unsupported_holds);
     first_field!(deferred_inputs);
@@ -2332,7 +3370,10 @@ fn violation_keys_retain_causal_action_identity() {
     );
     let different_before = record_violation(
         InteractionModel {
-            mode: InteractionMode::Numeric(NumericEntry { buffer: "1".into() }),
+            mode: InteractionMode::Numeric(NumericEntry {
+                buffer: "1".into(),
+                resume: None,
+            }),
             ..InteractionModel::default()
         },
         InteractionModel::default(),
@@ -2599,7 +3640,10 @@ fn ddmin_retains_the_exact_edge_transition_record() {
                 },
                 before: InteractionModel::default(),
                 after: InteractionModel {
-                    mode: InteractionMode::Numeric(NumericEntry { buffer: "1".into() }),
+                    mode: InteractionMode::Numeric(NumericEntry {
+                        buffer: "1".into(),
+                        resume: None,
+                    }),
                     ..InteractionModel::default()
                 },
                 effects: vec!["target-effect".into()],
@@ -2615,7 +3659,10 @@ fn ddmin_retains_the_exact_edge_transition_record() {
                     ..InteractionModel::default()
                 },
                 after: InteractionModel {
-                    mode: InteractionMode::Numeric(NumericEntry { buffer: "2".into() }),
+                    mode: InteractionMode::Numeric(NumericEntry {
+                        buffer: "2".into(),
+                        resume: None,
+                    }),
                     ..InteractionModel::default()
                 },
                 effects: vec!["competitor-effect".into()],
@@ -2654,7 +3701,7 @@ fn ddmin_retains_the_exact_edge_transition_record() {
 
 #[test]
 fn property_diagnostic_contains_minimal_trace_and_transition_details() {
-    let minimal = vec![key(0, FixtureKey::Character('p'), InputPhase::Press)];
+    let minimal = vec![key(0, FixtureKey::Character('f'), InputPhase::Press)];
     let left = replay(&minimal, full_capabilities());
     let right = replay(
         &[key(0, FixtureKey::Character('/'), InputPhase::Press)],
@@ -2665,18 +3712,20 @@ fn property_diagnostic_contains_minimal_trace_and_transition_details() {
         left_record.action,
         SemanticAction {
             phase: InputPhase::Press,
-            intent: Intent::ActivatePerformance(PerformanceKind::Deck),
+            intent: Intent::OpenAutomation(AutomationKind::Lfo),
         }
     );
     assert_eq!(left_record.before, InteractionModel::default());
     assert!(matches!(
         left_record.after.mode,
-        InteractionMode::Performance(PerformanceMode::Deck {
-            selected: None,
-            held_selector: None,
-        })
+        InteractionMode::Automation(AutomationMode::Lfo { .. })
     ));
-    assert_eq!(left_record.effects, Vec::<String>::new());
+    assert!(
+        left_record
+            .effects
+            .iter()
+            .any(|effect| effect.starts_with("AutomationConfirm(Lfo)"))
+    );
     assert_eq!(
         right.state_history[0].action,
         SemanticAction {
@@ -2697,7 +3746,7 @@ fn property_diagnostic_contains_minimal_trace_and_transition_details() {
         "before=",
         "after=",
         "effects=",
-        "ActivatePerformance(Deck)",
+        "OpenAutomation(Lfo)",
         "OpenPalette",
     ] {
         assert!(

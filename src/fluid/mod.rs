@@ -1,22 +1,17 @@
 use std::error::Error;
 use std::f32::consts::TAU;
-use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
 
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+#[cfg(test)]
+use ratatui::Terminal;
 use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
+    Frame,
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -38,19 +33,11 @@ mod automation;
 mod controls;
 mod effect;
 mod engine;
-#[expect(
-    dead_code,
-    reason = "staged interaction kernel is wired into production by stint 0042"
-)]
 mod interaction;
 mod palette;
 mod registry;
 #[cfg(test)]
 mod replay;
-#[expect(
-    dead_code,
-    reason = "staged terminal runtime is wired into production by stint 0042"
-)]
 mod runtime;
 mod session;
 mod song;
@@ -160,27 +147,21 @@ fn run_interactive(
         )
     })?;
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = ui_loop(
+    let mut terminal = runtime::TerminalSession::enter()?;
+    let result = production_ui_loop(
         &mut terminal,
         UiSession {
             live: session.clone(),
-            automation: LiveAutomation::new(session.clone()),
         },
         telemetry,
-        initial_song.automation,
         updates,
         AutoControls::new(morph, auto_states, auto_bars),
     );
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    result
+    let restore = terminal.restore();
+    result?;
+    restore?;
+    Ok(())
 }
 
 /// Render the default mix to a wav file without a terminal or audio device.

@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    AutomationMode, ChordDrill as ModelChordDrill, InteractionMode, InteractionModel, MasterDrill,
-    Navigation, PerformanceMode, SequenceStage,
+    AutomationMode, ChordDrill, InteractionMode, InteractionModel, MasterDrill, Navigation,
+    PerformanceMode, SequenceStage,
 };
 
 pub(crate) const MIN_TERMINAL_WIDTH: u16 = 46;
@@ -78,7 +78,7 @@ impl HelpSurface {
 pub(crate) struct NavigationView {
     pub(crate) tab: Tab,
     pub(crate) chord_drill: ChordDrill,
-    pub(crate) comp_drill: CompDrill,
+    pub(crate) comp_drill: MasterDrill,
     pub(crate) selected: usize,
 }
 
@@ -397,12 +397,8 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
     match navigation {
         Navigation::Chords { selected, drill } => NavigationView {
             tab: Tab::Chords,
-            chord_drill: match drill {
-                ModelChordDrill::None => ChordDrill::None,
-                ModelChordDrill::Progression { .. } => ChordDrill::Progression,
-                ModelChordDrill::Slot { slot, .. } => ChordDrill::Slot(slot),
-            },
-            comp_drill: CompDrill::None,
+            chord_drill: drill,
+            comp_drill: MasterDrill::None,
             selected,
         },
         Navigation::Standard { page, selected } => NavigationView {
@@ -416,16 +412,13 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
                 crate::fluid::interaction::StandardPage::Macros => Tab::Macros,
             },
             chord_drill: ChordDrill::None,
-            comp_drill: CompDrill::None,
+            comp_drill: MasterDrill::None,
             selected,
         },
         Navigation::Master { selected, drill } => NavigationView {
             tab: Tab::Master,
             chord_drill: ChordDrill::None,
-            comp_drill: match drill {
-                MasterDrill::None => CompDrill::None,
-                MasterDrill::Compression { .. } => CompDrill::Detail,
-            },
+            comp_drill: drill,
             selected,
         },
     }
@@ -479,13 +472,15 @@ fn help_surface(
         navigation.chord_drill,
         navigation.comp_drill,
     ) {
-        (Tab::Chords, ChordDrill::Progression, _) => {
+        (Tab::Chords, ChordDrill::Progression { .. }, _) => {
             Some("BROWSE · Progression   Enter: open chord   Esc: back".to_string())
         }
-        (Tab::Chords, ChordDrill::Slot(slot), _) => {
+        (Tab::Chords, ChordDrill::Slot { slot, .. }, _) => {
             Some(format!("BROWSE · Chord {}   Esc: back", slot + 1))
         }
-        (Tab::Master, _, CompDrill::Detail) => Some("BROWSE · Compression   Esc: back".to_string()),
+        (Tab::Master, _, MasterDrill::Compression { .. }) => {
+            Some("BROWSE · Compression   Esc: back".to_string())
+        }
         _ => None,
     };
     if let Some(text) = local_help {
@@ -824,6 +819,7 @@ mod tests {
                     id: "master.bpm",
                     value_bits: 91.0f32.to_bits(),
                 }],
+                resume: None,
             }),
         };
         let transition = model.update(SemanticAction::press(Intent::TypeCharacter('5')));
@@ -917,6 +913,7 @@ mod tests {
             navigation: Navigation::default(),
             mode: InteractionMode::Numeric(NumericEntry {
                 buffer: "12".to_string(),
+                resume: None,
             }),
         };
         let fluid = FluidState::new();
@@ -1098,6 +1095,7 @@ mod tests {
                 "numeric",
                 InteractionMode::Numeric(NumericEntry {
                     buffer: "12".to_string(),
+                    resume: None,
                 }),
                 minimum_snapshot(
                     &format!(
