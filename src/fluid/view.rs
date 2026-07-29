@@ -197,6 +197,10 @@ pub(crate) enum PerformanceSurface {
         instrument: Option<usize>,
         held_selector: Option<usize>,
     },
+    SequenceComplete {
+        instrument: Option<usize>,
+        release_pending: bool,
+    },
 }
 
 impl<'a> UiViewModel<'a> {
@@ -272,26 +276,38 @@ fn mode_surface<'a>(
             selected,
             held_selector,
         }) => ModeSurface::Performance(PerformanceSurface::Deck {
-            selected: selected
-                .filter(|&index| index < crate::fluid::interaction::PERFORMANCE_INSTRUMENT_COUNT),
+            selected: selected.map(crate::fluid::interaction::PerformanceInstrument::index),
             held_selector: held_selector
-                .filter(|&index| index < crate::fluid::interaction::PERFORMANCE_SELECTOR_COUNT),
+                .map(crate::fluid::interaction::PerformanceInstrument::index),
         }),
         InteractionMode::Performance(PerformanceMode::Sequence {
             stage: SequenceStage::ChooseInstrument,
             held_selector,
         }) => ModeSurface::Performance(PerformanceSurface::SequenceChoose {
             held_selector: held_selector
-                .filter(|&index| index < crate::fluid::interaction::PERFORMANCE_SELECTOR_COUNT),
+                .map(crate::fluid::interaction::PerformanceInstrument::index),
         }),
         InteractionMode::Performance(PerformanceMode::Sequence {
             stage: SequenceStage::Perform { instrument },
             held_selector,
         }) => ModeSurface::Performance(PerformanceSurface::SequencePerform {
-            instrument: (*instrument < crate::fluid::interaction::PERFORMANCE_INSTRUMENT_COUNT)
-                .then_some(*instrument),
+            instrument: Some(instrument.index()),
             held_selector: held_selector
-                .filter(|&index| index < crate::fluid::interaction::PERFORMANCE_SELECTOR_COUNT),
+                .map(crate::fluid::interaction::PerformanceInstrument::index),
+        }),
+        InteractionMode::Performance(PerformanceMode::Sequence {
+            stage: SequenceStage::AwaitActionRelease { instrument, .. },
+            ..
+        }) => ModeSurface::Performance(PerformanceSurface::SequenceComplete {
+            instrument: Some(instrument.index()),
+            release_pending: true,
+        }),
+        InteractionMode::Performance(PerformanceMode::Sequence {
+            stage: SequenceStage::CompletedFallback { instrument },
+            ..
+        }) => ModeSurface::Performance(PerformanceSurface::SequenceComplete {
+            instrument: Some(instrument.index()),
+            release_pending: false,
         }),
     }
 }
@@ -515,7 +531,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
                 selected,
                 held_selector,
             }) => format!(
-                "DECK · selected {}   held {}   arrows select   Esc: back",
+                "DECK · selected {}   held {}   a/s/d/f choose   h/l j/k u/i act   Esc",
                 selector_text(*selected),
                 selector_text(*held_selector)
             ),
@@ -524,7 +540,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         KeyboardOwner::PerformanceSequence => match mode {
             ModeSurface::Performance(PerformanceSurface::SequenceChoose { held_selector }) => {
                 format!(
-                    "SEQUENCE · choose instrument   held {}   Esc: back",
+                    "SEQUENCE · a/s/d/f choose   held {}   Esc",
                     selector_text(*held_selector)
                 )
             }
@@ -532,10 +548,26 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
                 instrument,
                 held_selector,
             }) => format!(
-                "SEQUENCE · instrument {}   held {}   Esc: back",
+                "SEQUENCE · instrument {}   h/l j/k u/i act once   held {}   Esc",
                 selector_text(*instrument),
                 selector_text(*held_selector)
             ),
+            ModeSurface::Performance(PerformanceSurface::SequenceComplete {
+                instrument,
+                release_pending,
+            }) => {
+                if *release_pending {
+                    format!(
+                        "SEQUENCE · {} applied   release action to return",
+                        selector_text(*instrument)
+                    )
+                } else {
+                    format!(
+                        "SEQUENCE · {} applied   Space: rearm   Esc: back",
+                        selector_text(*instrument)
+                    )
+                }
+            }
             _ => unreachable!("sequence owner requires sequence mode"),
         },
     }
@@ -607,8 +639,8 @@ fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
 mod tests {
     use super::*;
     use crate::fluid::interaction::{
-        AutomationMode, InputPhase, Intent, LfoDepth, NumericEntry, PaletteMode, PerformanceMode,
-        SemanticAction,
+        AutomationMode, InputPhase, Intent, LfoDepth, NumericEntry, PaletteMode,
+        PerformanceInstrument, PerformanceMode, SemanticAction,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -888,22 +920,6 @@ mod tests {
         assert_eq!(palette.state.locked, None);
         assert_eq!(palette.state.value_buf, "");
         assert!(render_mode(invalid_palette).contains("/bass"));
-
-        let deck = render_mode(InteractionMode::Performance(PerformanceMode::Deck {
-            selected: Some(usize::MAX),
-            held_selector: Some(usize::MAX),
-        }));
-        assert!(deck.contains("selected␠·␠none"));
-        assert!(deck.contains("held␠·␠none"));
-
-        let sequence = render_mode(InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::Perform {
-                instrument: usize::MAX,
-            },
-            held_selector: Some(usize::MAX),
-        }));
-        assert!(sequence.contains("instrument␠·␠none"));
-        assert!(sequence.contains("held␠·␠none"));
     }
 
     #[test]
@@ -1188,8 +1204,8 @@ mod tests {
             (
                 "performance_deck",
                 InteractionMode::Performance(PerformanceMode::Deck {
-                    selected: Some(2),
-                    held_selector: Some(3),
+                    selected: Some(PerformanceInstrument::Kick),
+                    held_selector: Some(PerformanceInstrument::Perc),
                 }),
                 performance_snapshot(
                     &format!(
@@ -1197,14 +1213,14 @@ mod tests {
                         env!("CARGO_PKG_VERSION")
                     ),
                     ["PERFORMANCE DECK", "selected · 3", "held · 4"],
-                    "│DECK␠·␠selected␠3␠␠␠held␠4␠␠␠arrows␠select␠␠│",
+                    "│DECK␠·␠selected␠3␠␠␠held␠4␠␠␠a/s/d/f␠choose␠│",
                 ),
             ),
             (
                 "performance_sequence_choose",
                 InteractionMode::Performance(PerformanceMode::Sequence {
                     stage: SequenceStage::ChooseInstrument,
-                    held_selector: Some(1),
+                    held_selector: Some(PerformanceInstrument::Bass),
                 }),
                 performance_snapshot(
                     &format!(
@@ -1216,14 +1232,16 @@ mod tests {
                         "instrument · waiting",
                         "held · 2",
                     ],
-                    "│SEQUENCE␠·␠choose␠instrument␠␠␠held␠2␠␠␠Esc:│",
+                    "│␠␠SEQUENCE␠·␠a/s/d/f␠choose␠␠␠held␠2␠␠␠Esc␠␠│",
                 ),
             ),
             (
                 "performance_sequence_perform",
                 InteractionMode::Performance(PerformanceMode::Sequence {
-                    stage: SequenceStage::Perform { instrument: 2 },
-                    held_selector: Some(3),
+                    stage: SequenceStage::Perform {
+                        instrument: PerformanceInstrument::Kick,
+                    },
+                    held_selector: Some(PerformanceInstrument::Perc),
                 }),
                 performance_snapshot(
                     &format!(
@@ -1231,7 +1249,7 @@ mod tests {
                         env!("CARGO_PKG_VERSION")
                     ),
                     ["SEQUENCE · PERFORM", "instrument · 3", "held · 4"],
-                    "│SEQUENCE␠·␠instrument␠3␠␠␠held␠4␠␠␠Esc:␠back│",
+                    "│SEQUENCE␠·␠instrument␠3␠␠␠h/l␠j/k␠u/i␠act␠on│",
                 ),
             ),
         ];

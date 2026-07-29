@@ -25,6 +25,12 @@ pub(crate) enum EffectAcknowledgement {
         index: usize,
         id: &'static str,
     },
+    PerformanceEdited {
+        tab: Tab,
+        index: usize,
+        id: &'static str,
+        generation: u64,
+    },
     AutomationPosition {
         depth: LfoDepth,
         selected: usize,
@@ -389,7 +395,8 @@ impl EffectExecutor {
             | InteractionEffect::PaletteCommitAtBar(_)
             | InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
-            | InteractionEffect::ReleaseHeldSelector(_)) => {
+            | InteractionEffect::ReleaseHeldSelector(_)
+            | InteractionEffect::PerformanceEdit { .. }) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
         }
@@ -620,6 +627,22 @@ impl EffectExecutor {
                 self.edit_navigation_automation(AutomationState::close_editor);
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
+            InteractionEffect::PerformanceInstrument(_)
+            | InteractionEffect::HoldPerformanceSelector(_)
+            | InteractionEffect::ReleaseHeldSelector(_) => Ok(EffectAcknowledgement::NoChange),
+            InteractionEffect::PerformanceEdit { instrument, action } => {
+                let (tab, index, spec, direction) = performance_target(instrument, action)
+                    .ok_or(EffectFailure::MissingContext("performance target"))?;
+                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                    spec.apply_delta(direction, &mut snapshot.controls);
+                });
+                Ok(EffectAcknowledgement::PerformanceEdited {
+                    tab,
+                    index,
+                    id: spec.id,
+                    generation: snapshot.generation,
+                })
+            }
             other => self.execute_interaction_with_clipboard(
                 other,
                 &InteractionExecutionContext {
@@ -683,6 +706,7 @@ pub(crate) fn toggle_mute(controls: &impl ControlsAccess, tab: Tab, mute: &mut M
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fluid::interaction::PerformanceInstrument;
 
     #[derive(Default)]
     struct FakeClipboard {
@@ -775,11 +799,11 @@ mod tests {
         );
         assert_eq!(
             executor.execute_interaction(
-                InteractionEffect::PerformanceInstrument(2),
+                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Kick),
                 &InteractionExecutionContext::default(),
             ),
             Err(EffectFailure::UnsupportedInteraction(
-                InteractionEffect::PerformanceInstrument(2)
+                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Kick)
             ))
         );
     }
@@ -791,7 +815,7 @@ mod tests {
         let results = executor.execute_interactions_ordered_with_clipboard(
             [
                 InteractionEffect::SelectPage(Page::Bass),
-                InteractionEffect::PerformanceInstrument(1),
+                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Bass),
                 InteractionEffect::Save,
             ],
             &InteractionExecutionContext::default(),
@@ -805,7 +829,7 @@ mod tests {
         assert_eq!(
             results[1],
             Err(EffectFailure::UnsupportedInteraction(
-                InteractionEffect::PerformanceInstrument(1)
+                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Bass)
             ))
         );
         assert_eq!(clipboard.value, None);

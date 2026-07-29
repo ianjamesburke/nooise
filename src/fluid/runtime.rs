@@ -23,8 +23,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
-    ChordDrill, InputPhase, Intent, InteractionMode, MasterDrill, Navigation, Page, PageDirection,
-    PerformanceMode, SemanticAction, SequenceStage,
+    ChordDrill, InputPhase, Intent, InteractionMode, MasterDrill, Navigation, PageDirection,
+    PerformanceAction, PerformanceInstrument, PerformanceKind, PerformanceMode, SemanticAction,
+    SequenceStage,
 };
 
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -584,7 +585,6 @@ fn decode_modifier_key(token: &str) -> Option<ModifierKey> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeferredInput {
     RuntimeContext(&'static str),
-    PerformanceGrammar0043(&'static str),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -658,10 +658,9 @@ pub(crate) fn map_input(
                     Intent::OpenAutomation(super::interaction::AutomationKind::Envelope)
                 }
                 PhysicalKey::Character('v') => Intent::ToggleMacro,
-                PhysicalKey::Character('p' | ' ') => {
-                    return InputMapping::Deferred(DeferredInput::PerformanceGrammar0043(
-                        "performance mode entry belongs to 0043",
-                    ));
+                PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
+                PhysicalKey::Character(' ') => {
+                    Intent::ActivatePerformance(PerformanceKind::Sequence)
                 }
                 PhysicalKey::Character(character)
                     if character.is_ascii_digit() || character == '.' || character == '-' =>
@@ -764,44 +763,56 @@ pub(crate) fn map_input(
                 }
             }
             InteractionMode::Performance(performance) if key.modifiers == Modifiers::default() => {
-                let instrument = match key.code {
-                    PhysicalKey::Character('a') => 0,
-                    PhysicalKey::Character('s') => 1,
-                    PhysicalKey::Character('d') => 2,
-                    PhysicalKey::Character('f') => 3,
-                    PhysicalKey::Character('h' | 'j' | 'k' | 'l' | 'u' | 'i')
-                    | PhysicalKey::Left
-                    | PhysicalKey::Right
-                    | PhysicalKey::Up
-                    | PhysicalKey::Down => {
-                        return InputMapping::Deferred(DeferredInput::PerformanceGrammar0043(
-                            "performance action grammar belongs to 0043",
-                        ));
-                    }
-                    _ => return InputMapping::Ignored,
-                };
-                match (performance, phase) {
-                    (
-                        PerformanceMode::Sequence {
-                            stage: SequenceStage::ChooseInstrument,
-                            ..
+                if matches!(key.code, PhysicalKey::Character('p')) {
+                    Intent::ActivatePerformance(PerformanceKind::Deck)
+                } else if matches!(key.code, PhysicalKey::Character(' ')) {
+                    Intent::ActivatePerformance(PerformanceKind::Sequence)
+                } else if let Some(instrument) = performance_instrument(&key.code) {
+                    match phase {
+                        InputPhase::Release => Intent::ReleaseHeldSelector(instrument),
+                        InputPhase::Press
+                            if matches!(
+                                performance,
+                                PerformanceMode::Deck { .. }
+                                    | PerformanceMode::Sequence {
+                                        stage: SequenceStage::ChooseInstrument
+                                            | SequenceStage::Perform { .. },
+                                        ..
+                                    }
+                            ) =>
+                        {
+                            Intent::SelectPerformanceInstrument {
+                                instrument,
+                                hold: capabilities.supports_holds(),
+                            }
                         }
-                        | PerformanceMode::Deck { .. },
-                        InputPhase::Press,
-                    ) => Intent::SelectPerformanceInstrument {
-                        instrument,
-                        page: [Page::Perc, Page::Bass, Page::Kick, Page::Tonal][instrument],
-                    },
-                    _ => {
-                        let reason = if capabilities.supports_holds() {
-                            "raw hold binding belongs to 0043"
-                        } else {
-                            "hold fallback belongs to 0043"
-                        };
-                        return InputMapping::Deferred(DeferredInput::PerformanceGrammar0043(
-                            reason,
-                        ));
+                        InputPhase::Repeat => return InputMapping::Ignored,
+                        _ => return InputMapping::Ignored,
                     }
+                } else if let Some(action) = performance_action(&key.code) {
+                    match (performance, phase) {
+                        (
+                            PerformanceMode::Sequence {
+                                stage: SequenceStage::AwaitActionRelease { action: armed, .. },
+                                ..
+                            },
+                            InputPhase::Release,
+                        ) if action == *armed => Intent::FinishPerformanceSequence(action),
+                        (PerformanceMode::Deck { .. }, InputPhase::Press | InputPhase::Repeat)
+                        | (
+                            PerformanceMode::Sequence {
+                                stage: SequenceStage::Perform { .. },
+                                ..
+                            },
+                            InputPhase::Press,
+                        ) => Intent::ApplyPerformanceAction {
+                            action,
+                            release_available: capabilities.supports_holds(),
+                        },
+                        _ => return InputMapping::Ignored,
+                    }
+                } else {
+                    return InputMapping::Ignored;
                 }
             }
             _ if key.modifiers != Modifiers::default() => {
@@ -814,6 +825,28 @@ pub(crate) fn map_input(
         phase: *phase,
         intent,
     })
+}
+
+fn performance_instrument(key: &PhysicalKey) -> Option<PerformanceInstrument> {
+    match key {
+        PhysicalKey::Character('a') => Some(PerformanceInstrument::Pads),
+        PhysicalKey::Character('s') => Some(PerformanceInstrument::Bass),
+        PhysicalKey::Character('d') => Some(PerformanceInstrument::Kick),
+        PhysicalKey::Character('f') => Some(PerformanceInstrument::Perc),
+        _ => None,
+    }
+}
+
+fn performance_action(key: &PhysicalKey) -> Option<PerformanceAction> {
+    match key {
+        PhysicalKey::Character('h') => Some(PerformanceAction::Shorter),
+        PhysicalKey::Character('l') => Some(PerformanceAction::Longer),
+        PhysicalKey::Character('j') => Some(PerformanceAction::Quieter),
+        PhysicalKey::Character('k') => Some(PerformanceAction::Louder),
+        PhysicalKey::Character('u') => Some(PerformanceAction::Sparser),
+        PhysicalKey::Character('i') => Some(PerformanceAction::Denser),
+        _ => None,
+    }
 }
 
 fn deferred_runtime(reason: &'static str) -> InputMapping {
@@ -1426,7 +1459,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_mapper_defers_performance_entry_in_every_phase() {
+    fn canonical_mapper_preserves_performance_entry_phase_for_kernel_policy() {
         let event = TransportEvent::Key {
             key: TransportKey {
                 code: PhysicalKey::Character('p'),
@@ -1445,19 +1478,39 @@ mod tests {
                     plain_key_releases: true,
                 }
             ),
-            InputMapping::Deferred(DeferredInput::PerformanceGrammar0043(
-                "performance mode entry belongs to 0043",
-            ))
+            InputMapping::Action(SemanticAction {
+                phase: InputPhase::Repeat,
+                intent: Intent::ActivatePerformance(PerformanceKind::Deck),
+            })
         );
     }
 
     #[test]
-    fn canonical_mapper_does_not_guess_the_deferred_hold_grammar() {
+    fn canonical_mapper_maps_selector_press_repeat_and_matching_release() {
         let model = InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::Perform { instrument: 0 },
+            stage: SequenceStage::Perform {
+                instrument: PerformanceInstrument::Pads,
+            },
             held_selector: None,
         });
-        for phase in [InputPhase::Press, InputPhase::Repeat, InputPhase::Release] {
+        let expected = [
+            InputMapping::Action(SemanticAction {
+                phase: InputPhase::Press,
+                intent: Intent::SelectPerformanceInstrument {
+                    instrument: PerformanceInstrument::Pads,
+                    hold: true,
+                },
+            }),
+            InputMapping::Ignored,
+            InputMapping::Action(SemanticAction {
+                phase: InputPhase::Release,
+                intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Pads),
+            }),
+        ];
+        for (phase, expected) in [InputPhase::Press, InputPhase::Repeat, InputPhase::Release]
+            .into_iter()
+            .zip(expected)
+        {
             let event = TransportEvent::Key {
                 key: TransportKey {
                     code: PhysicalKey::Character('a'),
@@ -1476,9 +1529,7 @@ mod tests {
                         plain_key_releases: true,
                     }
                 ),
-                InputMapping::Deferred(DeferredInput::PerformanceGrammar0043(
-                    "raw hold binding belongs to 0043"
-                ))
+                expected
             );
         }
     }
@@ -1625,16 +1676,19 @@ mod tests {
                 }) if actual == intent
             ));
         }
-        for code in [PhysicalKey::Character('p'), PhysicalKey::Character(' ')] {
-            assert!(matches!(
+        for (code, kind) in [
+            (PhysicalKey::Character('p'), PerformanceKind::Deck),
+            (PhysicalKey::Character(' '), PerformanceKind::Sequence),
+        ] {
+            assert_eq!(
                 map_input(
                     &browsing,
                     Navigation::default(),
                     &event(code, Modifiers::default()),
                     TerminalCapabilities::default()
                 ),
-                InputMapping::Deferred(DeferredInput::PerformanceGrammar0043(_))
-            ));
+                InputMapping::Action(SemanticAction::press(Intent::ActivatePerformance(kind)))
+            );
         }
 
         let automation =

@@ -165,6 +165,9 @@ pub(crate) fn coordinate_production_event(
                     model.select_control(*tab, *index);
                     model.mode = interaction::InteractionMode::Browsing;
                 }
+                Ok(EffectAcknowledgement::PerformanceEdited { tab, index, .. }) => {
+                    model.select_control(*tab, *index);
+                }
                 Ok(EffectAcknowledgement::AutomationPosition { depth, selected }) => {
                     model.apply_lfo_position(*depth, *selected);
                 }
@@ -1630,6 +1633,18 @@ fn performance_lines(surface: PerformanceSurface) -> Vec<Line<'static>> {
             Line::from("SEQUENCE · PERFORM"),
             Line::from(format!("instrument · {}", selector(instrument))),
             Line::from(format!("held · {}", selector(held_selector))),
+        ],
+        PerformanceSurface::SequenceComplete {
+            instrument,
+            release_pending,
+        } => vec![
+            Line::from("SEQUENCE · APPLIED"),
+            Line::from(format!("instrument · {}", selector(instrument))),
+            Line::from(if release_pending {
+                "release action to return"
+            } else {
+                "Space rearm · Esc back"
+            }),
         ],
     }
 }
