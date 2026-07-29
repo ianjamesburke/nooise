@@ -37,6 +37,11 @@ mod auto;
 mod automation;
 mod controls;
 mod engine;
+#[expect(
+    dead_code,
+    reason = "staged interaction kernel is wired into production by stint 0042"
+)]
+mod interaction;
 mod palette;
 mod registry;
 mod song;
