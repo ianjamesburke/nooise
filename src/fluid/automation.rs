@@ -1319,7 +1319,7 @@ struct OpenEditor {
     kind: ModKind,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub(crate) struct AutomationState {
     routes: BTreeMap<ControlAddress, LfoRoute>,
     envelopes: BTreeMap<ControlAddress, EnvelopeRoute>,

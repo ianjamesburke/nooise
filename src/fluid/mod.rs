@@ -36,6 +36,7 @@ use crate::update_check::{UpdateNotice, spawn_update_check};
 mod auto;
 mod automation;
 mod controls;
+mod effect;
 mod engine;
 #[expect(
     dead_code,
@@ -49,6 +50,7 @@ mod registry;
     reason = "staged terminal runtime is wired into production by stint 0042"
 )]
 mod runtime;
+mod session;
 mod song;
 mod ui;
 mod voice;
@@ -61,9 +63,11 @@ pub(crate) use auto::{
 };
 use automation::*;
 use controls::*;
+use effect::*;
 use engine::*;
 use palette::*;
 use registry::*;
+use session::*;
 pub(crate) use song::{SongState, decode_song_code, encode_song_code};
 use ui::*;
 use voice::*;
@@ -125,7 +129,7 @@ pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
-/// around the controls/automation/telemetry/morph quartet. `morph` starts
+/// around the aggregate live session, telemetry, and morph state. `morph` starts
 /// `Some` for `nooise auto` and `None` otherwise; `auto_states`/`auto_bars` let
 /// the UI build a fresh morph when the user toggles auto mode on live.
 fn run_interactive(
@@ -134,30 +138,21 @@ fn run_interactive(
     auto_states: Vec<SongState>,
     auto_bars: u32,
 ) -> Result<(), Box<dyn Error>> {
-    let controls = Arc::new(ArcSwap::from_pointee(initial_song.controls.clone()));
-    let controls_for_engine = Arc::clone(&controls);
-    let automation = Arc::new(ArcSwap::from_pointee(initial_song.automation.clone()));
-    let automation_for_engine = Arc::clone(&automation);
+    let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
+    let session_for_engine = session.clone();
     let morph_for_engine = Arc::clone(&morph);
     let telemetry = Arc::new(FluidTelemetry::default());
     let telemetry_for_engine = Arc::clone(&telemetry);
-    let tonal_sequence = Arc::new(ArcSwap::from_pointee(
-        initial_song.tonal_sequence.clone().unwrap_or_else(|| {
-            TonalSequenceState::from_phrase(tonal_phrase_index(initial_song.controls.tonal.phrase))
-        }),
-    ));
-    let tonal_sequence_for_engine = Arc::clone(&tonal_sequence);
     let updates = UpdateNotice::default();
     spawn_update_check(updates.clone());
 
     let _audio_output = audio::start_stream(APP_ID, move |sr| {
         FluidEngine::new_with_tonal_session_state(
             sr,
-            Arc::clone(&controls_for_engine),
-            Arc::clone(&automation_for_engine),
+            session_for_engine.clone(),
             Arc::clone(&morph_for_engine),
             Arc::clone(&telemetry_for_engine),
-            Some(Arc::clone(&tonal_sequence_for_engine)),
+            true,
         )
     })?;
 
@@ -170,9 +165,8 @@ fn run_interactive(
     let result = ui_loop(
         &mut terminal,
         UiSession {
-            controls,
-            automation,
-            tonal_sequence,
+            live: session.clone(),
+            automation: LiveAutomation::new(session.clone()),
         },
         telemetry,
         initial_song.automation,
@@ -193,16 +187,10 @@ pub(crate) fn render_wav(
 ) -> Result<(), Box<dyn Error>> {
     const RENDER_SAMPLE_RATE: u32 = 44_100;
 
-    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
-    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
+    let song = SongState::from_controls(FluidControls::default());
+    let session = LiveSession::new(LiveSessionSnapshot::from_song(&song));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(
-        RENDER_SAMPLE_RATE as f32,
-        controls,
-        automation,
-        no_morph(),
-        telemetry,
-    );
+    let mut engine = FluidEngine::new(RENDER_SAMPLE_RATE as f32, session, no_morph(), telemetry);
     if let Some(seed) = seed {
         engine.reseed(seed);
     }
