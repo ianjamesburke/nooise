@@ -3,6 +3,9 @@
 //! This module names semantic UI behavior without depending on terminal
 //! events, rendering, clocks, shared publication, or effect execution.
 
+use super::Tab;
+use super::palette::{PaletteEntry, PaletteState, StagedEdit};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum InputPhase {
     #[default]
@@ -232,6 +235,16 @@ pub(crate) struct NumericEntry {
 pub(crate) struct PaletteMode {
     pub(crate) query: String,
     pub(crate) selected: usize,
+    pub(crate) recent: Vec<&'static str>,
+    pub(crate) locked: Option<usize>,
+    pub(crate) value_buffer: String,
+    pub(crate) staged: Vec<PaletteStagedEdit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PaletteStagedEdit {
+    pub(crate) id: &'static str,
+    pub(crate) value_bits: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -289,6 +302,11 @@ pub(crate) enum PerformanceKind {
     Deck,
     Sequence,
 }
+
+/// The retained experiment grammar maps `a`/`s`/`d`/`f` to four instruments.
+pub(crate) const PERFORMANCE_INSTRUMENT_COUNT: usize = 4;
+/// Held performance selectors use that same four-key home-row address space.
+pub(crate) const PERFORMANCE_SELECTOR_COUNT: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SequenceStage {
@@ -376,6 +394,7 @@ pub(crate) enum Intent {
     BeginNumeric(char),
     TypeCharacter(char),
     Backspace,
+    PaletteAutocomplete,
     Confirm,
     OpenPalette,
     OpenAutomation(AutomationKind),
@@ -403,6 +422,7 @@ impl Intent {
             | Self::EnterChordSlot(_)
             | Self::EnterMasterCompression
             | Self::BeginNumeric(_)
+            | Self::PaletteAutocomplete
             | Self::Confirm
             | Self::OpenPalette
             | Self::OpenAutomation(_)
@@ -435,7 +455,12 @@ impl SemanticAction {
 pub(crate) enum InteractionEffect {
     AdjustSelected(i8),
     CommitNumeric(f32),
-    CommitPalette,
+    PaletteJump {
+        tab: Tab,
+        index: usize,
+        id: &'static str,
+    },
+    PaletteCommit(Vec<PaletteStagedEdit>),
     AutomationConfirm(AutomationKind),
     SelectPage(Page),
     PerformanceInstrument(usize),
@@ -488,6 +513,7 @@ impl InteractionModel {
                 | Intent::EnterChordSlot(_)
                 | Intent::EnterMasterCompression
                 | Intent::BeginNumeric(_)
+                | Intent::PaletteAutocomplete
                 | Intent::OpenPalette
                 | Intent::OpenAutomation(_)
                 | Intent::OpenAutomationField
@@ -499,35 +525,97 @@ impl InteractionModel {
                 | Intent::Quit
                 | Intent::ReleaseHeldSelector => {}
             },
-            InteractionMode::Palette(palette) => match action.intent {
-                Intent::Cancel => self.mode = InteractionMode::Browsing,
-                Intent::TypeCharacter(character) => palette.query.push(character),
-                Intent::Backspace => {
-                    palette.query.pop();
+            InteractionMode::Palette(palette) => {
+                let entries = PaletteState::new(tab_for_page(self.navigation.page()), &[]);
+                if palette
+                    .locked
+                    .is_some_and(|index| !entries.contains_entry(index))
+                {
+                    palette.locked = None;
+                    palette.value_buffer.clear();
                 }
-                Intent::MoveSelection(delta) => {
-                    palette.selected = move_unbounded(palette.selected, delta);
+                match action.intent {
+                    Intent::Cancel => self.mode = InteractionMode::Browsing,
+                    Intent::TypeCharacter(character) => {
+                        if palette.locked.is_some() {
+                            push_numeric(&mut palette.value_buffer, character);
+                        } else {
+                            palette.query.push(character);
+                            palette.selected = 0;
+                        }
+                    }
+                    Intent::Backspace => {
+                        if palette.locked.is_some() {
+                            if palette.value_buffer.is_empty() {
+                                palette.locked = None;
+                            } else {
+                                palette.value_buffer.pop();
+                            }
+                        } else {
+                            palette.query.pop();
+                            palette.selected = 0;
+                        }
+                    }
+                    Intent::MoveSelection(delta) => {
+                        let state = project_palette(palette, self.navigation.page());
+                        if palette.locked.is_none() && !state.matches.is_empty() {
+                            palette.selected = (state.selected as isize + delta)
+                                .rem_euclid(state.matches.len() as isize)
+                                as usize;
+                        }
+                    }
+                    Intent::PaletteAutocomplete => {
+                        let state = project_palette(palette, self.navigation.page());
+                        if palette.locked.is_none()
+                            && let Some(found) = state.matches.get(state.selected)
+                        {
+                            palette.locked = Some(found.entry);
+                        }
+                    }
+                    Intent::Confirm => {
+                        let state = project_palette(palette, self.navigation.page());
+                        if let Some(entry_index) = palette.locked {
+                            let entry = state.entry(entry_index);
+                            if let Ok(value) = palette.value_buffer.parse::<f32>() {
+                                palette.staged.push(PaletteStagedEdit {
+                                    id: entry.spec.id,
+                                    value_bits: value.to_bits(),
+                                });
+                                palette.locked = None;
+                                palette.value_buffer.clear();
+                                palette.query.clear();
+                                palette.selected = 0;
+                            } else {
+                                effects.push(palette_jump(entry));
+                                self.mode = InteractionMode::Browsing;
+                            }
+                        } else if !palette.staged.is_empty() && palette.query.is_empty() {
+                            effects.push(InteractionEffect::PaletteCommit(std::mem::take(
+                                &mut palette.staged,
+                            )));
+                            self.mode = InteractionMode::Browsing;
+                        } else if let Some(found) = state.matches.get(state.selected) {
+                            effects.push(palette_jump(state.entry(found.entry)));
+                            self.mode = InteractionMode::Browsing;
+                        }
+                    }
+                    Intent::ChangePage(_)
+                    | Intent::EnterChordProgression
+                    | Intent::EnterChordSlot(_)
+                    | Intent::EnterMasterCompression
+                    | Intent::BeginNumeric(_)
+                    | Intent::OpenPalette
+                    | Intent::OpenAutomation(_)
+                    | Intent::OpenAutomationField
+                    | Intent::ActivatePerformance(_)
+                    | Intent::SelectPerformanceInstrument { .. }
+                    | Intent::HoldPerformanceSelector(_)
+                    | Intent::AdjustSelected(_)
+                    | Intent::Save
+                    | Intent::Quit
+                    | Intent::ReleaseHeldSelector => {}
                 }
-                Intent::Confirm => {
-                    effects.push(InteractionEffect::CommitPalette);
-                    self.mode = InteractionMode::Browsing;
-                }
-                Intent::ChangePage(_)
-                | Intent::EnterChordProgression
-                | Intent::EnterChordSlot(_)
-                | Intent::EnterMasterCompression
-                | Intent::BeginNumeric(_)
-                | Intent::OpenPalette
-                | Intent::OpenAutomation(_)
-                | Intent::OpenAutomationField
-                | Intent::ActivatePerformance(_)
-                | Intent::SelectPerformanceInstrument { .. }
-                | Intent::HoldPerformanceSelector(_)
-                | Intent::AdjustSelected(_)
-                | Intent::Save
-                | Intent::Quit
-                | Intent::ReleaseHeldSelector => {}
-            },
+            }
             InteractionMode::Automation(automation) => match action.intent {
                 Intent::Cancel
                     if matches!(
@@ -566,6 +654,7 @@ impl InteractionModel {
                 | Intent::BeginNumeric(_)
                 | Intent::TypeCharacter(_)
                 | Intent::Backspace
+                | Intent::PaletteAutocomplete
                 | Intent::OpenPalette
                 | Intent::OpenAutomation(_)
                 | Intent::ActivatePerformance(_)
@@ -586,6 +675,12 @@ impl InteractionModel {
                 Intent::ActivatePerformance(kind) if kind == performance.kind() => {}
                 Intent::ActivatePerformance(_) => {}
                 Intent::SelectPerformanceInstrument { instrument, page } => {
+                    if instrument >= PERFORMANCE_INSTRUMENT_COUNT {
+                        return Transition {
+                            model: self,
+                            effects,
+                        };
+                    }
                     match performance {
                         PerformanceMode::Deck { selected, .. } => *selected = Some(instrument),
                         PerformanceMode::Sequence { stage, .. } => {
@@ -599,6 +694,12 @@ impl InteractionModel {
                     ]);
                 }
                 Intent::HoldPerformanceSelector(selector) => {
+                    if selector >= PERFORMANCE_SELECTOR_COUNT {
+                        return Transition {
+                            model: self,
+                            effects,
+                        };
+                    }
                     let held = performance.held_selector_mut();
                     if held.is_none() {
                         *held = Some(selector);
@@ -618,6 +719,7 @@ impl InteractionModel {
                 | Intent::BeginNumeric(_)
                 | Intent::TypeCharacter(_)
                 | Intent::Backspace
+                | Intent::PaletteAutocomplete
                 | Intent::Confirm
                 | Intent::OpenPalette
                 | Intent::OpenAutomation(_)
@@ -690,6 +792,7 @@ fn update_browsing(
         Intent::Quit => effects.push(InteractionEffect::Quit),
         Intent::TypeCharacter(_)
         | Intent::Backspace
+        | Intent::PaletteAutocomplete
         | Intent::Confirm
         | Intent::OpenAutomationField
         | Intent::SelectPerformanceInstrument { .. }
@@ -709,6 +812,49 @@ fn move_unbounded(selected: usize, delta: isize) -> usize {
 fn push_numeric(buffer: &mut String, character: char) {
     if character.is_ascii_digit() || character == '.' || character == '-' {
         buffer.push(character);
+    }
+}
+
+fn project_palette(palette: &PaletteMode, page: Page) -> PaletteState {
+    let mut state = PaletteState::new(tab_for_page(page), &palette.recent);
+    for character in palette.query.chars() {
+        state.push_char(character);
+    }
+    state.selected = palette.selected.min(state.matches.len().saturating_sub(1));
+    state.locked = palette.locked.filter(|&index| state.contains_entry(index));
+    if state.locked.is_some() {
+        state.value_buf.clone_from(&palette.value_buffer);
+    }
+    state.staged = palette
+        .staged
+        .iter()
+        .map(|edit| StagedEdit {
+            id: edit.id,
+            value: f32::from_bits(edit.value_bits),
+        })
+        .collect();
+    state
+}
+
+fn palette_jump(entry: &PaletteEntry) -> InteractionEffect {
+    InteractionEffect::PaletteJump {
+        tab: entry.tab,
+        index: entry.index_in_tab,
+        id: entry.spec.id,
+    }
+}
+
+fn tab_for_page(page: Page) -> Tab {
+    match page {
+        Page::Chords => Tab::Chords,
+        Page::Perc => Tab::Perc,
+        Page::Bass => Tab::Bass,
+        Page::Kick => Tab::Kick,
+        Page::Tonal => Tab::Tonal,
+        Page::Clap => Tab::Clap,
+        Page::Arp => Tab::Arp,
+        Page::Macros => Tab::Macros,
+        Page::Master => Tab::Master,
     }
 }
 
@@ -866,6 +1012,7 @@ mod tests {
             Intent::EnterChordSlot(0),
             Intent::EnterMasterCompression,
             Intent::BeginNumeric('1'),
+            Intent::PaletteAutocomplete,
             Intent::Confirm,
             Intent::OpenPalette,
             Intent::OpenAutomation(AutomationKind::Lfo),
@@ -935,10 +1082,10 @@ mod tests {
         });
         assert!(bare_release.effects.is_empty());
 
-        let held = update(model, Intent::HoldPerformanceSelector(7));
+        let held = update(model, Intent::HoldPerformanceSelector(3));
         assert_eq!(
             held.effects,
-            vec![InteractionEffect::HoldPerformanceSelector(7)]
+            vec![InteractionEffect::HoldPerformanceSelector(3)]
         );
 
         let released = held.model.update(SemanticAction {
@@ -947,7 +1094,7 @@ mod tests {
         });
         assert_eq!(
             released.effects,
-            vec![InteractionEffect::ReleaseHeldSelector(7)]
+            vec![InteractionEffect::ReleaseHeldSelector(3)]
         );
         assert!(
             released
@@ -1072,6 +1219,132 @@ mod tests {
         assert_eq!(invalid.model.mode, InteractionMode::Browsing);
     }
 
+    fn palette_model(palette: PaletteMode) -> InteractionModel {
+        InteractionModel {
+            navigation: Navigation::Standard {
+                page: StandardPage::Bass,
+                selected: 0,
+            },
+            mode: InteractionMode::Palette(palette),
+        }
+    }
+
+    #[test]
+    fn palette_selection_wraps_projected_matches_and_freezes_while_locked() {
+        let palette = PaletteMode {
+            query: "bass".to_string(),
+            ..PaletteMode::default()
+        };
+        let projected = project_palette(&palette, Page::Bass);
+        assert!(projected.matches.len() > 1);
+
+        let wrapped = update(palette_model(palette), Intent::MoveSelection(-1)).model;
+        let InteractionMode::Palette(wrapped_palette) = wrapped.mode else {
+            panic!("selection keeps palette open");
+        };
+        assert_eq!(wrapped_palette.selected, projected.matches.len() - 1);
+
+        let locked = update(
+            palette_model(PaletteMode {
+                query: "bass".to_string(),
+                selected: 1,
+                ..PaletteMode::default()
+            }),
+            Intent::PaletteAutocomplete,
+        )
+        .model;
+        let frozen = update(locked.clone(), Intent::MoveSelection(1)).model;
+        assert_eq!(frozen, locked);
+    }
+
+    #[test]
+    fn palette_confirm_stages_valid_locked_values_and_resets_for_next_edit() {
+        let locked = update(
+            palette_model(PaletteMode {
+                query: "bass".to_string(),
+                ..PaletteMode::default()
+            }),
+            Intent::PaletteAutocomplete,
+        )
+        .model;
+        let typed = update(
+            update(locked, Intent::TypeCharacter('4')).model,
+            Intent::TypeCharacter('2'),
+        )
+        .model;
+        let transition = update(typed, Intent::Confirm);
+        assert!(transition.effects.is_empty());
+        let InteractionMode::Palette(palette) = transition.model.mode else {
+            panic!("staging a valid value keeps palette open");
+        };
+        assert_eq!(palette.query, "");
+        assert_eq!(palette.selected, 0);
+        assert_eq!(palette.locked, None);
+        assert_eq!(palette.value_buffer, "");
+        assert_eq!(palette.staged.len(), 1);
+        assert_eq!(f32::from_bits(palette.staged[0].value_bits), 42.0);
+    }
+
+    #[test]
+    fn palette_confirm_emits_typed_jump_for_locked_or_selected_control() {
+        let base = PaletteMode {
+            query: "bass".to_string(),
+            selected: 1,
+            ..PaletteMode::default()
+        };
+        let projected = project_palette(&base, Page::Bass);
+        let expected = palette_jump(projected.entry(projected.matches[1].entry));
+
+        let ordinary = update(palette_model(base.clone()), Intent::Confirm);
+        assert_eq!(ordinary.effects, vec![expected.clone()]);
+        assert_eq!(ordinary.model.mode, InteractionMode::Browsing);
+
+        let locked = update(palette_model(base), Intent::PaletteAutocomplete).model;
+        let invalid_locked = update(locked, Intent::Confirm);
+        assert_eq!(invalid_locked.effects, vec![expected]);
+        assert_eq!(invalid_locked.model.mode, InteractionMode::Browsing);
+    }
+
+    #[test]
+    fn palette_confirm_commits_existing_stage_only_from_empty_query() {
+        let staged = PaletteStagedEdit {
+            id: "master.bpm",
+            value_bits: 91.0f32.to_bits(),
+        };
+        let transition = update(
+            palette_model(PaletteMode {
+                staged: vec![staged.clone()],
+                ..PaletteMode::default()
+            }),
+            Intent::Confirm,
+        );
+        assert_eq!(
+            transition.effects,
+            vec![InteractionEffect::PaletteCommit(vec![staged])]
+        );
+        assert_eq!(transition.model.mode, InteractionMode::Browsing);
+    }
+
+    #[test]
+    fn palette_update_safely_unlocks_an_invalid_entry_index() {
+        let transition = update(
+            palette_model(PaletteMode {
+                query: "bass".to_string(),
+                locked: Some(usize::MAX),
+                value_buffer: "42".to_string(),
+                ..PaletteMode::default()
+            }),
+            Intent::MoveSelection(1),
+        );
+        assert!(transition.effects.is_empty());
+        let InteractionMode::Palette(palette) = transition.model.mode else {
+            panic!("selection keeps palette open");
+        };
+        assert_eq!(palette.locked, None);
+        assert_eq!(palette.value_buffer, "");
+        assert_eq!(palette.selected, 1);
+    }
+
     #[test]
     fn performance_selection_emits_effects_in_order() {
         let model = update(
@@ -1082,7 +1355,7 @@ mod tests {
         let transition = update(
             model,
             Intent::SelectPerformanceInstrument {
-                instrument: 4,
+                instrument: 3,
                 page: Page::Arp,
             },
         );
@@ -1091,7 +1364,7 @@ mod tests {
             transition.effects,
             vec![
                 InteractionEffect::SelectPage(Page::Arp),
-                InteractionEffect::PerformanceInstrument(4),
+                InteractionEffect::PerformanceInstrument(3),
             ]
         );
         assert_eq!(
@@ -1101,6 +1374,26 @@ mod tests {
                 selected: 0,
             }
         );
+    }
+
+    #[test]
+    fn performance_kernel_rejects_indices_outside_the_four_instrument_grammar() {
+        let deck = update(
+            InteractionModel::default(),
+            Intent::ActivatePerformance(PerformanceKind::Deck),
+        )
+        .model;
+        for intent in [
+            Intent::SelectPerformanceInstrument {
+                instrument: usize::MAX,
+                page: Page::Arp,
+            },
+            Intent::HoldPerformanceSelector(usize::MAX),
+        ] {
+            let transition = update(deck.clone(), intent);
+            assert_eq!(transition.model, deck);
+            assert!(transition.effects.is_empty());
+        }
     }
 
     #[test]

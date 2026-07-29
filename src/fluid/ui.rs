@@ -53,6 +53,117 @@ pub(crate) struct UiSession {
     pub(crate) automation: LiveAutomation,
 }
 
+pub(crate) struct LegacyInteractionState<'a> {
+    pub(crate) tab: Tab,
+    pub(crate) selected: usize,
+    pub(crate) chord_drill: ChordDrill,
+    pub(crate) comp_drill: CompDrill,
+    pub(crate) automation_selected: usize,
+    pub(crate) numeric: Option<&'a NumericEntry>,
+    pub(crate) palette: Option<&'a PaletteState>,
+    pub(crate) automation: &'a AutomationState,
+}
+
+pub(crate) fn legacy_interaction_model(
+    state: LegacyInteractionState<'_>,
+) -> interaction::InteractionModel {
+    let LegacyInteractionState {
+        tab,
+        selected,
+        chord_drill,
+        comp_drill,
+        automation_selected,
+        numeric,
+        palette,
+        automation,
+    } = state;
+    let navigation = match tab {
+        Tab::Chords => interaction::Navigation::Chords {
+            selected,
+            drill: match chord_drill {
+                ChordDrill::None => interaction::ChordDrill::None,
+                ChordDrill::Progression => interaction::ChordDrill::Progression {
+                    return_to: selected,
+                },
+                ChordDrill::Slot(slot) => interaction::ChordDrill::Slot {
+                    slot,
+                    return_to: selected,
+                },
+            },
+        },
+        Tab::Master => interaction::Navigation::Master {
+            selected,
+            drill: match comp_drill {
+                CompDrill::None => interaction::MasterDrill::None,
+                CompDrill::Detail => interaction::MasterDrill::Compression {
+                    return_to: selected,
+                },
+            },
+        },
+        Tab::Perc | Tab::Bass | Tab::Kick | Tab::Tonal | Tab::Clap | Tab::Arp | Tab::Macros => {
+            interaction::Navigation::Standard {
+                page: match tab {
+                    Tab::Perc => interaction::StandardPage::Perc,
+                    Tab::Bass => interaction::StandardPage::Bass,
+                    Tab::Kick => interaction::StandardPage::Kick,
+                    Tab::Tonal => interaction::StandardPage::Tonal,
+                    Tab::Clap => interaction::StandardPage::Clap,
+                    Tab::Arp => interaction::StandardPage::Arp,
+                    Tab::Macros => interaction::StandardPage::Macros,
+                    Tab::Chords | Tab::Master => unreachable!("handled above"),
+                },
+                selected,
+            }
+        }
+    };
+    let mode = if let Some(entry) = numeric {
+        interaction::InteractionMode::Numeric(interaction::NumericEntry {
+            buffer: entry.buffer.clone(),
+        })
+    } else if let Some(palette) = palette {
+        interaction::InteractionMode::Palette(interaction::PaletteMode {
+            query: palette.query.clone(),
+            selected: palette.selected,
+            recent: palette.recent().to_vec(),
+            locked: palette.locked,
+            value_buffer: palette.value_buf.clone(),
+            staged: palette
+                .staged
+                .iter()
+                .map(|edit| interaction::PaletteStagedEdit {
+                    id: edit.id,
+                    value_bits: edit.value.to_bits(),
+                })
+                .collect(),
+        })
+    } else {
+        match automation.active_kind() {
+            Some(ModKind::Lfo) => {
+                interaction::InteractionMode::Automation(interaction::AutomationMode::Lfo {
+                    depth: if automation.open_field().is_some() {
+                        interaction::LfoDepth::NestedField
+                    } else {
+                        interaction::LfoDepth::Editor
+                    },
+                    selected: automation_selected,
+                })
+            }
+            Some(ModKind::Envelope) => {
+                interaction::InteractionMode::Automation(interaction::AutomationMode::Envelope {
+                    selected: automation_selected,
+                })
+            }
+            Some(ModKind::Macro) => {
+                interaction::InteractionMode::Automation(interaction::AutomationMode::Macro {
+                    selected: automation_selected,
+                })
+            }
+            None => interaction::InteractionMode::Browsing,
+        }
+    };
+    interaction::InteractionModel { navigation, mode }
+}
+
 pub(crate) fn ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: UiSession,
@@ -87,39 +198,17 @@ pub(crate) fn ui_loop(
             })
             .expect("pending commit has no fallible effects");
         let frame_session = effects.session().load();
-        let c = frame_session.controls.clone();
         automation.sync_from_snapshot(&frame_session.automation);
         effects.expire_message(SAVE_MESSAGE_TTL);
-        let update_message = updates.message();
         let pending_message = effects.pending().map(|(_, edits)| {
             let plural = if edits.len() == 1 { "" } else { "s" };
             format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
         });
-        let automation_message = automation_footer(automation.state());
-        let chords_message = chords_footer(tab, chord_drill);
-        let master_message = master_footer(tab, comp_drill);
         let auto_message = effects.auto_morph_ids(telemetry.beat()).map(|(from, to)| {
             let from = from.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
             let to = to.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
             format!("\u{25cf} AUTO morph {from} \u{2192} {to}   a or touch any param to exit")
         });
-        let footer_message = effects
-            .message()
-            .or(pending_message.as_deref())
-            .or(automation_message.as_deref())
-            .or(chords_message.as_deref())
-            .or(master_message.as_deref())
-            .or(auto_message.as_deref())
-            .or(update_message.as_deref());
-        let items = if tab == Tab::Chords {
-            chords_tab_controls(&c, chord_drill)
-        } else if tab == Tab::Master {
-            master_tab_controls(&c, comp_drill)
-        } else {
-            tab_controls(tab, &c)
-        };
-        let items_len = items.len();
-        selected = selected.min(items_len.saturating_sub(1));
 
         let now = Instant::now();
         let dt = (now - last).as_secs_f32().min(0.05);
@@ -128,30 +217,42 @@ pub(crate) fn ui_loop(
 
         let cursor_visible = (started.elapsed().as_millis() / 400).is_multiple_of(2);
         let beat = telemetry.beat();
-        terminal.draw(|f| {
-            render(
-                f,
-                &items,
-                tab,
-                selected,
-                lfo_selected,
-                beat,
-                NumericDisplay {
-                    entry: numeric_entry.as_ref().map(|entry| entry.buffer.as_str()),
-                    cursor_visible,
+        let interaction = legacy_interaction_model(LegacyInteractionState {
+            tab,
+            selected,
+            chord_drill,
+            comp_drill,
+            automation_selected: lfo_selected,
+            numeric: numeric_entry.as_ref(),
+            palette: palette.as_ref(),
+            automation: automation.state(),
+        });
+        let items = {
+            let view = UiViewModel::project(ViewProjection {
+                interaction: &interaction,
+                session: &frame_session,
+                telemetry: TelemetryView {
+                    beat,
+                    active_chord: telemetry.chord_index.load(Ordering::Relaxed),
                 },
-                &fluid,
-                automation.state(),
-                &c,
-                footer_message,
-                &flipped,
-                chord_drill,
-                comp_drill,
-                telemetry.chord_index.load(Ordering::Relaxed),
-                &mute,
-                palette.as_ref(),
-            )
-        })?;
+                presentation: ViewPresentation {
+                    fluid: &fluid,
+                    flipped: &flipped,
+                    mute: &mute,
+                    cursor_visible,
+                    notices: ViewNotices {
+                        effect: effects.message().map(str::to_string),
+                        pending_commit: pending_message,
+                        auto: auto_message,
+                        update: updates.message(),
+                    },
+                },
+            });
+            selected = view.navigation.selected;
+            terminal.draw(|frame| render(frame, &view))?;
+            view.items
+        };
+        let items_len = items.len();
 
         // Drain every queued key event before the next draw so a held key
         // never falls behind the frame rate; the first poll doubles as the
@@ -532,7 +633,7 @@ pub(crate) fn ui_loop(
                             match (chord_drill, items.get(selected).map(|i| i.id)) {
                                 (ChordDrill::None, Some("pad.progression"))
                                     if is_custom_progression(progression_index(
-                                        c.pad.progression,
+                                        frame_session.controls.pad.progression,
                                     )) =>
                                 {
                                     chord_drill = ChordDrill::Progression;
@@ -617,15 +718,6 @@ pub(crate) fn ui_loop(
 /// each slider carries its own unit; stepping always stays on the native
 /// grid and conversion happens at the current BPM.
 pub(crate) type FlippedUnits = BTreeSet<String>;
-
-/// Stable key for a flippable field: the control id, plus a submenu field
-/// qualifier for modulator rows (e.g. "kick.level#lfo.interval").
-pub(crate) fn unit_key(id: &str, field: Option<&str>) -> String {
-    match field {
-        Some(field) => format!("{id}#{field}"),
-        None => id.to_string(),
-    }
-}
 
 pub(crate) fn beats_to_ms(beats: f32, bpm: f32) -> f32 {
     beats * 60_000.0 / bpm.max(1.0)
@@ -854,16 +946,6 @@ fn field_row_index(
         .map_or(0, |pos| pos + 1)
 }
 
-/// Which LFO field currently has its nested macro editor expanded, if any.
-fn field_macro_owner(automation: &AutomationState, address: ControlAddress) -> Option<LfoField> {
-    let open_key = automation.open_field()?;
-    LfoField::ALL.into_iter().find(|field| {
-        field
-            .macro_key()
-            .is_some_and(|key_str| unit_key(address.id(), Some(key_str)) == open_key)
-    })
-}
-
 /// Close exactly one level of nesting on the open editor: a field-macro's
 /// own editor if one is expanded, else the whole modulator editor. This is
 /// the single place that governs "close the innermost open thing" — Esc and
@@ -873,7 +955,7 @@ pub(crate) fn close_one_level(automation: &mut PublishedAutomation, lfo_selected
     let Some(address) = automation.state().active_address() else {
         return;
     };
-    if let Some(field) = field_macro_owner(automation.state(), address) {
+    if let Some(field) = automation.state().field_macro_owner(address) {
         automation.edit(AutomationState::close_open_field);
         *lfo_selected = field_row_index(automation.state(), address, field);
     } else {
@@ -1264,78 +1346,9 @@ fn set_modulator_or_control(
     automation.sync_from_snapshot(&published.automation);
 }
 
-fn automation_footer(automation: &AutomationState) -> Option<String> {
-    let address = automation.active_address()?;
-    match automation.active_kind()? {
-        ModKind::Lfo => {
-            let route = automation.route(address)?;
-            let reseed = if route.shape.is_random() {
-                "   r reseed"
-            } else {
-                ""
-            };
-            Some(format!(
-                "LFO {}   {}   {:.2} beats   depth {:.0}%{reseed}   x remove   Esc close",
-                address.id(),
-                route.shape.label(),
-                route.cycle_beats,
-                route.depth_ratio * 100.0
-            ))
-        }
-        ModKind::Envelope => {
-            let route = automation.envelope(address)?;
-            Some(format!(
-                "ENV {}   {}   amount {:+.0}%   x remove   Esc close",
-                address.id(),
-                route.field_display(EnvField::Trigger),
-                route.amount * 100.0
-            ))
-        }
-        ModKind::Macro => {
-            let route = automation.macro_route(address)?;
-            Some(format!(
-                "MACRO {}   {}   x remove   Esc close",
-                address.id(),
-                route.summary(),
-            ))
-        }
-    }
-}
-
-pub(crate) fn chords_footer(tab: Tab, chord_drill: ChordDrill) -> Option<String> {
-    if tab != Tab::Chords {
-        return None;
-    }
-    match chord_drill {
-        ChordDrill::None => None,
-        ChordDrill::Progression => Some("Progression   Enter: open chord   Esc: back".to_string()),
-        ChordDrill::Slot(n) => Some(format!("Chord {}   Esc: back", n + 1)),
-    }
-}
-
-pub(crate) fn master_footer(tab: Tab, comp_drill: CompDrill) -> Option<String> {
-    if tab != Tab::Master {
-        return None;
-    }
-    match comp_drill {
-        CompDrill::None => None,
-        CompDrill::Detail => Some("Compression   Esc: back".to_string()),
-    }
-}
-
 pub(crate) struct NumericDisplay<'a> {
     entry: Option<&'a str>,
     cursor_visible: bool,
-}
-
-#[cfg(test)]
-impl NumericDisplay<'_> {
-    pub(crate) fn empty() -> Self {
-        Self {
-            entry: None,
-            cursor_visible: false,
-        }
-    }
 }
 
 // ============================================================
@@ -1486,26 +1499,31 @@ pub(crate) fn darken(c: Color, factor: f32) -> Color {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn render(
-    f: &mut Frame,
-    items: &[ControlItem],
-    active_tab: Tab,
-    selected: usize,
-    lfo_selected: usize,
-    beat: f64,
-    numeric: NumericDisplay<'_>,
-    fluid: &FluidState,
-    automation: &AutomationState,
-    controls: &FluidControls,
-    update_message: Option<&str>,
-    flipped: &FlippedUnits,
-    chord_drill: ChordDrill,
-    comp_drill: CompDrill,
-    active_chord: u64,
-    mute: &MuteState,
-    palette: Option<&PaletteState>,
-) {
+pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
+    let items = &view.items;
+    let active_tab = view.navigation.tab;
+    let selected = view.navigation.selected;
+    let active_automation = match &view.mode {
+        ModeSurface::Automation(surface) => Some(surface),
+        _ => None,
+    };
+    let lfo_selected = active_automation.map_or(0, |surface| surface.selected());
+    let beat = view.telemetry.beat;
+    let numeric = NumericDisplay {
+        entry: match &view.mode {
+            ModeSurface::Numeric { entry } => Some(entry.as_str()),
+            _ => None,
+        },
+        cursor_visible: view.cursor_visible,
+    };
+    let fluid = view.fluid;
+    let automation = &view.session.automation;
+    let controls = &view.session.controls;
+    let flipped = view.flipped;
+    let chord_drill = view.navigation.chord_drill;
+    let comp_drill = view.navigation.comp_drill;
+    let active_chord = view.telemetry.active_chord;
+    let mute = view.mute;
     let bpm = controls.master.bpm;
     // Which custom-chord slot the pad engine is currently sounding, mapped
     // from the shared telemetry step index. Only meaningful on the Chords tab.
@@ -1522,10 +1540,16 @@ pub(crate) fn render(
 
     // centered control overlay
     let pw = ((area.width as f32 * 0.62) as u16)
-        .clamp(46, area.width.saturating_sub(2).max(46))
+        .clamp(
+            MIN_TERMINAL_WIDTH,
+            area.width.saturating_sub(2).max(MIN_TERMINAL_WIDTH),
+        )
         .min(area.width);
     let ph = ((area.height as f32 * 0.92) as u16)
-        .clamp(10, area.height.saturating_sub(2).max(10))
+        .clamp(
+            MIN_TERMINAL_HEIGHT,
+            area.height.saturating_sub(2).max(MIN_TERMINAL_HEIGHT),
+        )
         .min(area.height);
     let px = area.x + (area.width.saturating_sub(pw)) / 2;
     let py = area.y + (area.height.saturating_sub(ph)) / 2;
@@ -1548,7 +1572,11 @@ pub(crate) fn render(
 
     // Borders only (transparent fill) so the scrim shows through.
     let block = Block::default()
-        .title(format!(" {APP_ID} v{} ", env!("CARGO_PKG_VERSION")))
+        .title(format!(
+            " {APP_ID} v{} · {} ",
+            env!("CARGO_PKG_VERSION"),
+            view.owner.label()
+        ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
     let inner = block.inner(panel);
@@ -1618,10 +1646,29 @@ pub(crate) fn render(
         let envelope = automation.envelope(address);
         let macro_route = automation.macro_route(address);
         let macro_mod = live_macro_contribution(automation, controls, address, mod_ctx);
-        let editor_here = automation.active_address() == Some(address);
-        let lfo_open_here = editor_here && automation.active_kind() == Some(ModKind::Lfo);
-        let env_open_here = editor_here && automation.active_kind() == Some(ModKind::Envelope);
-        let macro_open_here = editor_here && automation.active_kind() == Some(ModKind::Macro);
+        let editor_here =
+            active_automation.and_then(|surface| surface.active_address()) == Some(address);
+        let lfo_open_here = matches!(
+            active_automation,
+            Some(AutomationSurface::Lfo {
+                address: active,
+                ..
+            }) if *active == address
+        );
+        let env_open_here = matches!(
+            active_automation,
+            Some(AutomationSurface::Envelope {
+                address: active,
+                ..
+            }) if *active == address
+        );
+        let macro_open_here = matches!(
+            active_automation,
+            Some(AutomationSurface::Macro {
+                address: active,
+                ..
+            }) if *active == address
+        );
         let editor_open_here = editor_here;
         let parent_active = active && (!editor_open_here || lfo_selected == 0);
         let prefix = if parent_active { "▶ " } else { "  " };
@@ -1717,7 +1764,13 @@ pub(crate) fn render(
 
         if let Some(route) = route {
             if lfo_open_here {
-                for (fi, sub_row) in lfo_submenu_rows(automation, address).iter().enumerate() {
+                let AutomationSurface::Lfo {
+                    state: lfo_state, ..
+                } = active_automation.expect("LFO editor flag requires LFO surface")
+                else {
+                    unreachable!("LFO editor flag requires LFO surface");
+                };
+                for (fi, sub_row) in lfo_submenu_rows(lfo_state, address).iter().enumerate() {
                     match *sub_row {
                         LfoSubRow::Field(field) => {
                             let value_display = match field {
@@ -1749,7 +1802,7 @@ pub(crate) fn render(
                             // regular control's macro assignment.
                             if let Some(key_str) = field.macro_key() {
                                 let key = unit_key(item.id, Some(key_str));
-                                if let Some(field_route) = automation.field_macro(&key)
+                                if let Some(field_route) = lfo_state.field_macro(&key)
                                     && !field_route.is_neutral()
                                 {
                                     rows.push(macro_chip_line(field_route));
@@ -1758,7 +1811,7 @@ pub(crate) fn render(
                         }
                         LfoSubRow::FieldMacro(field, macro_field) => {
                             let key = unit_key(item.id, field.macro_key());
-                            let Some(field_route) = automation.field_macro(&key) else {
+                            let Some(field_route) = lfo_state.field_macro(&key) else {
                                 continue;
                             };
                             rows.push(field_line(
@@ -1839,11 +1892,13 @@ pub(crate) fn render(
             rows.push(Line::from(""));
         }
     }
-    f.render_widget(Paragraph::new(rows), layout[4]);
+    if let ModeSurface::Performance(performance) = &view.mode {
+        f.render_widget(Paragraph::new(performance_lines(*performance)), layout[4]);
+    } else {
+        f.render_widget(Paragraph::new(rows), layout[4]);
+    }
 
-    let footer = update_message
-        .unwrap_or("jk select   h/l adjust   / find   f LFO   v macro   a auto   T units   q quit");
-    let footer_style = if update_message.is_some() {
+    let footer_style = if view.help.emphasized() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
             .add_modifier(Modifier::BOLD)
@@ -1851,14 +1906,45 @@ pub(crate) fn render(
         Style::default().fg(Color::Rgb(120, 128, 145))
     };
     f.render_widget(
-        Paragraph::new(footer)
+        Paragraph::new(view.help.text())
             .alignment(Alignment::Center)
             .style(footer_style),
         layout[5],
     );
 
-    if let Some(pal) = palette {
-        draw_palette(f, panel, pal, controls, numeric.cursor_visible);
+    if let ModeSurface::Palette(palette) = &view.mode {
+        draw_palette(f, panel, &palette.state, controls, numeric.cursor_visible);
+    }
+}
+
+fn performance_lines(surface: PerformanceSurface) -> Vec<Line<'static>> {
+    let selector = |value: Option<usize>| {
+        value
+            .and_then(|index| index.checked_add(1))
+            .map_or_else(|| "none".to_string(), |index| index.to_string())
+    };
+    match surface {
+        PerformanceSurface::Deck {
+            selected,
+            held_selector,
+        } => vec![
+            Line::from("PERFORMANCE DECK"),
+            Line::from(format!("selected · {}", selector(selected))),
+            Line::from(format!("held · {}", selector(held_selector))),
+        ],
+        PerformanceSurface::SequenceChoose { held_selector } => vec![
+            Line::from("SEQUENCE · CHOOSE INSTRUMENT"),
+            Line::from("instrument · waiting"),
+            Line::from(format!("held · {}", selector(held_selector))),
+        ],
+        PerformanceSurface::SequencePerform {
+            instrument,
+            held_selector,
+        } => vec![
+            Line::from("SEQUENCE · PERFORM"),
+            Line::from(format!("instrument · {}", selector(instrument))),
+            Line::from(format!("held · {}", selector(held_selector))),
+        ],
     }
 }
 
