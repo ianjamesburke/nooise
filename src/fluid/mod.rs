@@ -53,6 +53,7 @@ mod runtime;
 mod session;
 mod song;
 mod ui;
+mod view;
 mod voice;
 
 #[cfg(test)]
@@ -70,6 +71,7 @@ use registry::*;
 use session::*;
 pub(crate) use song::{SongState, decode_song_code, encode_song_code};
 use ui::*;
+use view::*;
 use voice::*;
 
 // ============================================================

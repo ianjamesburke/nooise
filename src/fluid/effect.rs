@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::interaction::PaletteStagedEdit;
 use super::interaction::{InteractionEffect, Page};
 use super::*;
 
@@ -91,7 +93,6 @@ pub(crate) enum LiveEffect {
 )]
 pub(crate) struct InteractionExecutionContext {
     pub(crate) selected_control: Option<&'static str>,
-    pub(crate) palette_edits: Vec<StagedEdit>,
     pub(crate) beat: f64,
 }
 
@@ -368,13 +369,23 @@ impl EffectExecutor {
                     edit: ControlEdit::Value(value),
                 })
             }
-            InteractionEffect::CommitPalette => {
-                if context.palette_edits.is_empty() {
-                    return Err(EffectFailure::MissingContext("palette edits"));
+            InteractionEffect::PaletteJump { tab, index, id } => {
+                self.execute(LiveEffect::SelectControl { tab, index, id })
+            }
+            InteractionEffect::PaletteCommit(edits) => {
+                let edits = edits
+                    .into_iter()
+                    .map(|edit| StagedEdit {
+                        id: edit.id,
+                        value: f32::from_bits(edit.value_bits),
+                    })
+                    .collect::<Vec<_>>();
+                if edits.is_empty() {
+                    return Ok(EffectAcknowledgement::NoChange);
                 }
                 self.execute(LiveEffect::StageForBar {
                     target_beat: context.beat,
-                    edits: context.palette_edits.clone(),
+                    edits,
                 })?;
                 self.execute(LiveEffect::CommitPending { beat: context.beat })
             }
@@ -589,6 +600,82 @@ mod tests {
                 InteractionEffect::PerformanceInstrument(2)
             ))
         );
+    }
+
+    #[test]
+    fn typed_palette_jump_is_acknowledged_without_session_mutation() {
+        let mut executor = executor();
+        let acknowledgement = executor
+            .execute_interaction(
+                InteractionEffect::PaletteJump {
+                    tab: Tab::Master,
+                    index: 1,
+                    id: "master.bpm",
+                },
+                &InteractionExecutionContext::default(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            acknowledgement,
+            EffectAcknowledgement::ControlSelected {
+                tab: Tab::Master,
+                index: 1,
+                id: "master.bpm",
+            }
+        );
+        assert_eq!(executor.recent.ids(), &["master.bpm"]);
+        assert_eq!(executor.session.load().generation, 0);
+    }
+
+    #[test]
+    fn typed_palette_commit_applies_payload_atomically() {
+        let mut executor = executor();
+        let acknowledgement = executor
+            .execute_interaction(
+                InteractionEffect::PaletteCommit(vec![
+                    PaletteStagedEdit {
+                        id: "master.bpm",
+                        value_bits: 99.0f32.to_bits(),
+                    },
+                    PaletteStagedEdit {
+                        id: "pad.level",
+                        value_bits: 25.0f32.to_bits(),
+                    },
+                ]),
+                &InteractionExecutionContext {
+                    beat: 12.0,
+                    ..InteractionExecutionContext::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            acknowledgement,
+            EffectAcknowledgement::Published { generation: 1 }
+        );
+        let session = executor.session.load();
+        assert_eq!(session.controls.master.bpm, 99.0);
+        assert_eq!(session.controls.pad.level, 0.25);
+        assert_eq!(executor.recent.ids(), &["master.bpm", "pad.level"]);
+    }
+
+    #[test]
+    fn empty_typed_palette_commit_is_an_explicit_no_change() {
+        let mut executor = executor();
+        assert_eq!(
+            executor.execute_interaction(
+                InteractionEffect::PaletteCommit(Vec::new()),
+                &InteractionExecutionContext {
+                    beat: 12.0,
+                    ..InteractionExecutionContext::default()
+                },
+            ),
+            Ok(EffectAcknowledgement::NoChange)
+        );
+        assert_eq!(executor.session.load().generation, 0);
+        assert!(executor.pending().is_none());
+        assert!(executor.recent.ids().is_empty());
     }
 
     #[test]

@@ -81,54 +81,69 @@ fn buffer_text(buffer: &Buffer) -> String {
         .collect::<String>()
 }
 
-/// Draws one `render()` frame onto a fresh `width`x`height` `TestBackend` and
-/// returns the resulting buffer -- the shared `TestBackend` -> `Terminal` ->
-/// `terminal.draw(|f| render(...))` -> buffer boilerplate behind every
-/// `render_fluid_*`/`render_shows_*` test below. `NumericDisplay::empty()`
-/// and a fresh `FlippedUnits` are identical at every call site, so they stay
-/// fixed inside the helper rather than becoming parameters.
-#[allow(clippy::too_many_arguments)] // mirrors render()'s own signature; every argument is asserted independently across call sites
-fn render_to_buffer(
-    width: u16,
-    height: u16,
-    items: &[ControlItem],
+/// Projects one coherent render generation and draws it to a fresh backend.
+struct RenderTest<'a> {
+    size: (u16, u16),
     tab: Tab,
     cursor: usize,
     submenu: usize,
     beat: f64,
-    fluid: &FluidState,
-    automation: &AutomationState,
-    controls: &FluidControls,
-    footer: Option<&str>,
+    fluid: &'a FluidState,
+    automation: &'a AutomationState,
+    controls: &'a FluidControls,
+    footer: Option<&'a str>,
     drill: ChordDrill,
     active_chord: u64,
-    mute: &MuteState,
-) -> Buffer {
+    mute: &'a MuteState,
+}
+
+fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
+    let RenderTest {
+        size: (width, height),
+        tab,
+        cursor,
+        submenu,
+        beat,
+        fluid,
+        automation,
+        controls,
+        footer,
+        drill,
+        active_chord,
+        mute,
+    } = test;
+    let mut song = SongState::from_controls(controls.clone());
+    song.automation = automation.clone();
+    let session = LiveSessionSnapshot::from_song(&song);
+    let interaction = legacy_interaction_model(LegacyInteractionState {
+        tab,
+        selected: cursor,
+        chord_drill: drill,
+        comp_drill: CompDrill::None,
+        automation_selected: submenu,
+        numeric: None,
+        palette: None,
+        automation,
+    });
+    let flipped = FlippedUnits::new();
+    let view = UiViewModel::project(ViewProjection {
+        interaction: &interaction,
+        session: &session,
+        telemetry: TelemetryView { beat, active_chord },
+        presentation: ViewPresentation {
+            fluid,
+            flipped: &flipped,
+            mute,
+            cursor_visible: false,
+            notices: ViewNotices {
+                effect: footer.map(str::to_string),
+                ..ViewNotices::default()
+            },
+        },
+    });
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|f| {
-            render(
-                f,
-                items,
-                tab,
-                cursor,
-                submenu,
-                beat,
-                NumericDisplay::empty(),
-                fluid,
-                automation,
-                controls,
-                footer,
-                &FlippedUnits::new(),
-                drill,
-                CompDrill::None,
-                active_chord,
-                mute,
-                None,
-            )
-        })
-        .unwrap();
+    terminal.draw(|frame| render(frame, &view)).unwrap();
     terminal.backend().buffer().clone()
 }
 
@@ -559,25 +574,22 @@ fn tab_previous_wraps_back_one_tab() {
 fn render_fluid_draws_without_terminal_backend() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();
-    let items = tab_controls(Tab::Master, &controls);
     let automation = AutomationState::default();
 
-    render_to_buffer(
-        100,
-        32,
-        &items,
-        Tab::Master,
-        0,
-        0,
-        0.0,
-        &fluid,
-        &automation,
-        &controls,
-        None,
-        ChordDrill::None,
-        0,
-        &[None; 9],
-    );
+    render_to_buffer(RenderTest {
+        size: (100, 32),
+        tab: Tab::Master,
+        cursor: 0,
+        submenu: 0,
+        beat: 0.0,
+        fluid: &fluid,
+        automation: &automation,
+        controls: &controls,
+        footer: None,
+        drill: ChordDrill::None,
+        active_chord: 0,
+        mute: &[None; 9],
+    });
 }
 
 #[test]
@@ -1455,22 +1467,20 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     automation.open_or_create(ControlAddress::new(items[0].id));
 
     let draw_at = |beat: f64| {
-        render_to_buffer(
-            120,
-            40,
-            &items,
-            Tab::Master,
-            0,
-            1,
+        render_to_buffer(RenderTest {
+            size: (120, 40),
+            tab: Tab::Master,
+            cursor: 0,
+            submenu: 1,
             beat,
-            &fluid,
-            &automation,
-            &controls,
-            None,
-            ChordDrill::None,
-            0,
-            &[None; 9],
-        )
+            fluid: &fluid,
+            automation: &automation,
+            controls: &controls,
+            footer: None,
+            drill: ChordDrill::None,
+            active_chord: 0,
+            mute: &[None; 9],
+        })
     };
 
     let at_start = draw_at(0.0);
@@ -2260,79 +2270,48 @@ fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
 }
 
 #[test]
-fn chords_footer_signals_drill_depth() {
-    assert_eq!(chords_footer(Tab::Chords, ChordDrill::None), None);
-    assert_eq!(chords_footer(Tab::Master, ChordDrill::Progression), None);
-    assert_eq!(
-        chords_footer(Tab::Chords, ChordDrill::Progression),
-        Some("Progression   Enter: open chord   Esc: back".to_string())
-    );
-    assert_eq!(
-        chords_footer(Tab::Chords, ChordDrill::Slot(2)),
-        Some("Chord 3   Esc: back".to_string())
-    );
-}
-
-#[test]
 fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();
     let automation = AutomationState::default();
-    let rows = chords_tab_controls(&controls, ChordDrill::Slot(1));
-    let footer = chords_footer(Tab::Chords, ChordDrill::Slot(1));
 
-    let buffer = render_to_buffer(
-        120,
-        40,
-        &rows,
-        Tab::Chords,
-        0,
-        0,
-        0.0,
-        &fluid,
-        &automation,
-        &controls,
-        footer.as_deref(),
-        ChordDrill::Slot(1),
-        0,
-        &[None; 9],
-    );
+    let buffer = render_to_buffer(RenderTest {
+        size: (120, 40),
+        tab: Tab::Chords,
+        cursor: 0,
+        submenu: 0,
+        beat: 0.0,
+        fluid: &fluid,
+        automation: &automation,
+        controls: &controls,
+        footer: None,
+        drill: ChordDrill::Slot(1),
+        active_chord: 0,
+        mute: &[None; 9],
+    });
 
     let text = buffer_text(&buffer);
     assert!(text.contains("Chords › Chord 2"));
-    assert!(text.contains("Chord 2   Esc: back"));
+    assert!(text.contains("BROWSE · Chord 2   Esc: back"));
 }
 
 fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
     let fluid = FluidState::new();
     let automation = AutomationState::default();
-    let rows = chords_tab_controls(controls, ChordDrill::Progression);
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal
-        .draw(|f| {
-            render(
-                f,
-                &rows,
-                Tab::Chords,
-                0,
-                0,
-                0.0,
-                NumericDisplay::empty(),
-                &fluid,
-                &automation,
-                controls,
-                None,
-                &FlippedUnits::new(),
-                ChordDrill::Progression,
-                CompDrill::None,
-                active_chord,
-                &[None; 9],
-                None,
-            )
-        })
-        .unwrap();
-    buffer_text(terminal.backend().buffer())
+    buffer_text(&render_to_buffer(RenderTest {
+        size: (120, 40),
+        tab: Tab::Chords,
+        cursor: 0,
+        submenu: 0,
+        beat: 0.0,
+        fluid: &fluid,
+        automation: &automation,
+        controls,
+        footer: None,
+        drill: ChordDrill::Progression,
+        active_chord,
+        mute: &[None; 9],
+    }))
 }
 
 #[test]
@@ -2359,33 +2338,21 @@ fn render_slot_breadcrumb_marks_live_chord() {
     controls.pad.chord_count = 4.0;
     let fluid = FluidState::new();
     let automation = AutomationState::default();
-    let rows = chords_tab_controls(&controls, ChordDrill::Slot(2));
     let draw = |active_chord: u64| {
-        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-        terminal
-            .draw(|f| {
-                render(
-                    f,
-                    &rows,
-                    Tab::Chords,
-                    0,
-                    0,
-                    0.0,
-                    NumericDisplay::empty(),
-                    &fluid,
-                    &automation,
-                    &controls,
-                    None,
-                    &FlippedUnits::new(),
-                    ChordDrill::Slot(2),
-                    CompDrill::None,
-                    active_chord,
-                    &[None; 9],
-                    None,
-                )
-            })
-            .unwrap();
-        buffer_text(terminal.backend().buffer())
+        buffer_text(&render_to_buffer(RenderTest {
+            size: (120, 40),
+            tab: Tab::Chords,
+            cursor: 0,
+            submenu: 0,
+            beat: 0.0,
+            fluid: &fluid,
+            automation: &automation,
+            controls: &controls,
+            footer: None,
+            drill: ChordDrill::Slot(2),
+            active_chord,
+            mute: &[None; 9],
+        }))
     };
     // Slot 2 is live when the step index maps to it; otherwise no note.
     assert!(draw(2).contains("Chord 3 ♪"));
@@ -3643,22 +3610,20 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
     automation.open_or_create(address).shape = LfoShape::SampleHold;
     automation.open_or_create_envelope(address).amount = 0.5;
 
-    let buffer = render_to_buffer(
-        120,
-        44,
-        &items,
-        Tab::Chords,
-        3,
-        1,
-        2.5,
-        &fluid,
-        &automation,
-        &controls,
-        None,
-        ChordDrill::None,
-        0,
-        &[None; 9],
-    );
+    let buffer = render_to_buffer(RenderTest {
+        size: (120, 44),
+        tab: Tab::Chords,
+        cursor: 3,
+        submenu: 1,
+        beat: 2.5,
+        fluid: &fluid,
+        automation: &automation,
+        controls: &controls,
+        footer: None,
+        drill: ChordDrill::None,
+        active_chord: 0,
+        mute: &[None; 9],
+    });
 
     let text = buffer_text(&buffer);
     assert!(text.contains("attack"));
@@ -3742,22 +3707,20 @@ fn render_fluid_draws_step_submenu() {
     route.shape = LfoShape::Steps;
     route.depth_ratio = 0.5;
 
-    let buffer = render_to_buffer(
-        120,
-        44,
-        &items,
-        Tab::Chords,
-        3,
-        1,
-        2.5,
-        &fluid,
-        &automation,
-        &controls,
-        None,
-        ChordDrill::None,
-        0,
-        &[None; 9],
-    );
+    let buffer = render_to_buffer(RenderTest {
+        size: (120, 44),
+        tab: Tab::Chords,
+        cursor: 3,
+        submenu: 1,
+        beat: 2.5,
+        fluid: &fluid,
+        automation: &automation,
+        controls: &controls,
+        footer: None,
+        drill: ChordDrill::None,
+        active_chord: 0,
+        mute: &[None; 9],
+    });
 
     let text = buffer_text(&buffer);
     assert!(text.contains("steps"), "step count row present");
@@ -4847,27 +4810,24 @@ fn toggle_mute_on_macros_tab_is_a_no_op() {
 fn render_shows_a_mute_marker_on_muted_tabs_only() {
     let controls = FluidControls::default();
     let fluid = FluidState::new();
-    let items = tab_controls(Tab::Bass, &controls);
     let automation = AutomationState::default();
     let mut mute: MuteState = [None; 9];
     mute[Tab::Perc as usize] = Some(0.7);
 
-    let buffer = render_to_buffer(
-        120,
-        44,
-        &items,
-        Tab::Bass,
-        0,
-        0,
-        0.0,
-        &fluid,
-        &automation,
-        &controls,
-        None,
-        ChordDrill::None,
-        0,
-        &mute,
-    );
+    let buffer = render_to_buffer(RenderTest {
+        size: (120, 44),
+        tab: Tab::Bass,
+        cursor: 0,
+        submenu: 0,
+        beat: 0.0,
+        fluid: &fluid,
+        automation: &automation,
+        controls: &controls,
+        footer: None,
+        drill: ChordDrill::None,
+        active_chord: 0,
+        mute: &mute,
+    });
 
     let text = buffer_text(&buffer);
     assert!(text.contains("Perc (M)"), "muted tab must show a marker");

@@ -6,7 +6,7 @@ use std::fmt;
 use super::{
     ControlSpec, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TimingContext,
     beat_grid_adjust, beat_grid_ratio, beat_grid_snap, is_macro_id, nearest_power_of_two,
-    normalize_unit_input, ordered_step_ratio, snap_step, spec_by_id, unit_key,
+    normalize_unit_input, ordered_step_ratio, snap_step, spec_by_id,
 };
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
@@ -20,6 +20,14 @@ pub(crate) const MAX_LFO_OFFSET_BEATS: f32 = 4.0;
 /// the audio thread).
 pub(crate) const MAX_LFO_STEPS: usize = 16;
 pub(crate) const DEFAULT_LFO_STEP_COUNT: u8 = 4;
+
+/// Stable key for a control or one of its automation fields.
+pub(crate) fn unit_key(id: &str, field: Option<&str>) -> String {
+    match field {
+        Some(field) => format!("{id}#{field}"),
+        None => id.to_string(),
+    }
+}
 /// Default edge-glide: a slight slide into each step so the staircase doesn't
 /// click on a live-read control (see `step_value_at`). 0 = hard steps.
 pub(crate) const DEFAULT_LFO_STEP_GLIDE: f32 = 0.15;
@@ -1466,6 +1474,22 @@ impl AutomationState {
     /// The field-macro key currently expanded for editing, if any.
     pub(crate) fn open_field(&self) -> Option<&str> {
         self.open_field.as_deref()
+    }
+
+    /// Resolve the exact eligible LFO field whose nested macro editor is open
+    /// on `address`. Foreign controls, discrete fields, macro-slider targets,
+    /// and keys without a backing route are not valid nested editors.
+    pub(crate) fn field_macro_owner(&self, address: ControlAddress) -> Option<LfoField> {
+        if is_macro_id(address.id()) {
+            return None;
+        }
+        let open_key = self.open_field()?;
+        self.field_macro(open_key)?;
+        LfoField::ALL.into_iter().find(|field| {
+            field
+                .macro_key()
+                .is_some_and(|key| unit_key(address.id(), Some(key)) == open_key)
+        })
     }
 
     /// Toggle the nested macro editor for a field: same key closes (pruning

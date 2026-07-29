@@ -120,6 +120,14 @@ impl PaletteState {
         &self.entries[index]
     }
 
+    pub(crate) fn contains_entry(&self, index: usize) -> bool {
+        index < self.entries.len()
+    }
+
+    pub(crate) fn recent(&self) -> &[&'static str] {
+        &self.recent
+    }
+
     pub(crate) fn push_char(&mut self, c: char) {
         if self.locked.is_some() {
             if c.is_ascii_digit() || c == '.' || c == '-' {
