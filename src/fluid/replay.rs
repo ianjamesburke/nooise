@@ -21,8 +21,8 @@ use super::effect::{Clipboard, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
     InteractionMode, InteractionModel, LfoDepth, MasterDrill, Navigation, NumericEntry,
-    PaletteMode, PaletteStagedEdit, PerformanceKind, PerformanceMode, PhasePolicy, SemanticAction,
-    SequenceStage,
+    PaletteMode, PaletteStagedEdit, PerformanceInstrument, PerformanceKind, PerformanceMode,
+    PhasePolicy, SemanticAction, SequenceStage,
 };
 use super::runtime::{
     Clock, EventSource, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
@@ -411,6 +411,8 @@ struct ReplayResult {
     automation_kind: Option<String>,
     automation_address: Option<&'static str>,
     automation_open_field: Option<String>,
+    auto_running: bool,
+    recent_ids: Vec<&'static str>,
     effects: Vec<String>,
     effect_notice: Option<String>,
     pending_edits: usize,
@@ -688,12 +690,17 @@ impl ReplayHarness {
         self
     }
 
+    fn with_auto_running(mut self) -> Self {
+        self.executor.toggle_auto(0.0);
+        self
+    }
+
     fn with_clipboard_failure(mut self, error: impl Into<String>) -> Self {
         self.clipboard.failure = Some(error.into());
         self
     }
 
-    fn replay(mut self, trace: &ReplayTrace, staged_holds: &[SemanticAction]) -> ReplayOutcome {
+    fn replay(mut self, trace: &ReplayTrace) -> ReplayOutcome {
         let mut source = ScriptedSource::new(trace, self.capabilities, self.clock.clone());
         let mut turns = 0;
         let turn_limit = trace.events.len().saturating_mul(256).saturating_add(512);
@@ -784,45 +791,16 @@ impl ReplayHarness {
                 break;
             }
         }
-        let deferred_before_staged = self.deferred_inputs.len();
-        for action in staged_holds {
-            self.apply_staged_hold(*action);
-            if self.violation.is_some() {
-                break;
-            }
-        }
-        let accepted_staged_holds = staged_holds
-            .iter()
-            .filter(|action| action.intent.phase_policy().accepts(action.phase))
-            .count();
-        let observed_staged_deferred = self
-            .deferred_inputs
-            .len()
-            .saturating_sub(deferred_before_staged);
-        if self.violation.is_none()
-            && !staged_holds.is_empty()
-            && self.capabilities.supports_holds()
-            && self.unsupported_holds != accepted_staged_holds
-        {
-            self.violate(PropertyViolation::UnsupportedHoldCount {
-                expected: accepted_staged_holds,
-                observed: self.unsupported_holds,
-            });
-        } else if self.violation.is_none()
-            && !staged_holds.is_empty()
-            && !self.capabilities.supports_holds()
-            && observed_staged_deferred != accepted_staged_holds
-        {
-            self.violate(PropertyViolation::DeferredHoldMissing {
-                expected: accepted_staged_holds,
-                observed: observed_staged_deferred,
-            });
-        }
         if self.violation.is_none() && self.scheduler.render_due(self.clock.now()) {
             self.render();
         }
         let mut violation = self.violation.take();
         let session = self.executor.session().load();
+        let auto_running = self
+            .executor
+            .auto_morph_ids(self.clock.now().as_secs_f64())
+            .is_some();
+        let recent_ids = self.executor.recent().ids().to_vec();
         let result = ReplayResult {
             model: self.model,
             session_generation: session.generation,
@@ -835,6 +813,8 @@ impl ReplayHarness {
                 .map(|kind| format!("{kind:?}")),
             automation_address: session.automation.active_address().map(ControlAddress::id),
             automation_open_field: session.automation.open_field().map(str::to_string),
+            auto_running,
+            recent_ids,
             effects: self.effects,
             effect_notice: self.executor.message().map(str::to_string),
             pending_edits: self.executor.pending().map_or(0, |(_, edits)| edits.len()),
@@ -903,30 +883,6 @@ impl ReplayHarness {
                 self.scheduler.request_frame();
                 self.requested_at.get_or_insert(self.clock.now());
             }
-        }
-    }
-
-    /// Test-only staged adapter for hold semantics. Stint 0043 replaces this
-    /// seam with canonical raw bindings; it is deliberately absent from the
-    /// sanitized recorder and persisted fixture grammar.
-    fn apply_staged_hold(&mut self, action: SemanticAction) {
-        if !matches!(
-            action.intent,
-            Intent::HoldPerformanceSelector(_) | Intent::ReleaseHeldSelector
-        ) {
-            self.violate(PropertyViolation::InvalidPerformanceState {
-                detail: format!("non-hold action passed to staged hold adapter: {action:?}"),
-            });
-            return;
-        }
-        if !action.intent.phase_policy().accepts(action.phase) {
-            return;
-        }
-        if self.capabilities.supports_holds() {
-            self.apply(action);
-        } else {
-            self.deferred_inputs
-                .push("PerformanceGrammar0043(press-only hold fallback is unsupported)".into());
         }
     }
 
@@ -1074,41 +1030,6 @@ impl ReplayHarness {
                 expected,
                 observed: owner,
             });
-            return;
-        }
-        let invalid_performance = match &self.model.mode {
-            InteractionMode::Performance(PerformanceMode::Deck {
-                selected,
-                held_selector,
-            }) => {
-                if !selected.is_none_or(|value| value < 4)
-                    || !held_selector.is_none_or(|value| value < 4)
-                {
-                    Some(format!(
-                        "deck selected={selected:?} held_selector={held_selector:?}"
-                    ))
-                } else {
-                    None
-                }
-            }
-            InteractionMode::Performance(PerformanceMode::Sequence {
-                stage,
-                held_selector,
-            }) => {
-                if !held_selector.is_none_or(|value| value < 4) {
-                    Some(format!("sequence held_selector={held_selector:?}"))
-                } else if let SequenceStage::Perform { instrument } = stage
-                    && *instrument >= 4
-                {
-                    Some(format!("sequence instrument={instrument}"))
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-        if let Some(detail) = invalid_performance {
-            self.violate(PropertyViolation::InvalidPerformanceState { detail });
         }
     }
 
@@ -1204,12 +1125,9 @@ fn modified_key(after_ms: u64, code: FixtureKey, phase: InputPhase, modifiers: u
 
 fn replay(trace: &[TraceEvent], capabilities: TerminalCapabilities) -> ReplayResult {
     let run = |candidate: &[TraceEvent]| {
-        ReplayHarness::new(capabilities).replay(
-            &ReplayTrace {
-                events: candidate.to_vec(),
-            },
-            &[],
-        )
+        ReplayHarness::new(capabilities).replay(&ReplayTrace {
+            events: candidate.to_vec(),
+        })
     };
     checked_replay(run(trace), trace, run)
 }
@@ -1222,31 +1140,9 @@ fn replay_from_model(
     let run = |candidate: &[TraceEvent]| {
         ReplayHarness::new(capabilities)
             .with_model(model.clone())
-            .replay(
-                &ReplayTrace {
-                    events: candidate.to_vec(),
-                },
-                &[],
-            )
-    };
-    checked_replay(run(trace), trace, run)
-}
-
-fn replay_from_model_with_staged_holds(
-    model: InteractionModel,
-    trace: &[TraceEvent],
-    staged_holds: &[SemanticAction],
-    capabilities: TerminalCapabilities,
-) -> ReplayResult {
-    let run = |candidate: &[TraceEvent]| {
-        ReplayHarness::new(capabilities)
-            .with_model(model.clone())
-            .replay(
-                &ReplayTrace {
-                    events: candidate.to_vec(),
-                },
-                staged_holds,
-            )
+            .replay(&ReplayTrace {
+                events: candidate.to_vec(),
+            })
     };
     checked_replay(run(trace), trace, run)
 }
@@ -1259,12 +1155,23 @@ fn replay_with_clipboard_failure(
     let run = |candidate: &[TraceEvent]| {
         ReplayHarness::new(capabilities)
             .with_clipboard_failure(error)
-            .replay(
-                &ReplayTrace {
-                    events: candidate.to_vec(),
-                },
-                &[],
-            )
+            .replay(&ReplayTrace {
+                events: candidate.to_vec(),
+            })
+    };
+    checked_replay(run(trace), trace, run)
+}
+
+fn replay_with_auto_running(
+    trace: &[TraceEvent],
+    capabilities: TerminalCapabilities,
+) -> ReplayResult {
+    let run = |candidate: &[TraceEvent]| {
+        ReplayHarness::new(capabilities)
+            .with_auto_running()
+            .replay(&ReplayTrace {
+                events: candidate.to_vec(),
+            })
     };
     checked_replay(run(trace), trace, run)
 }
@@ -1279,12 +1186,9 @@ fn replay_from_model_with_session_edit(
         ReplayHarness::new(capabilities)
             .with_model(model.clone())
             .with_session_edit(edit)
-            .replay(
-                &ReplayTrace {
-                    events: candidate.to_vec(),
-                },
-                &[],
-            )
+            .replay(&ReplayTrace {
+                events: candidate.to_vec(),
+            })
     };
     checked_replay(run(trace), trace, run)
 }
@@ -1670,9 +1574,11 @@ fn explicit_tick_processes_and_idle_delimits_scheduler_turns() {
             .chain(&result.idle_turn_ids)
             .all(|turn| result.scheduler_turn_ids.contains(turn))
     );
-    assert_eq!(result.model.mode, InteractionMode::Browsing);
-    assert_eq!(result.deferred_inputs.len(), 1);
-    assert!(result.deferred_inputs[0].starts_with("PerformanceGrammar0043"));
+    assert!(matches!(
+        result.model.mode,
+        InteractionMode::Performance(PerformanceMode::Deck { .. })
+    ));
+    assert!(result.deferred_inputs.is_empty());
 }
 
 #[test]
@@ -1760,7 +1666,7 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
                 key(0, FixtureKey::Character('p'), InputPhase::Press),
                 key(0, FixtureKey::Character('p'), InputPhase::Press),
             ],
-            "BROWSE",
+            "DECK",
         ),
         (
             "double Space",
@@ -1768,7 +1674,7 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
                 key(0, FixtureKey::Character(' '), InputPhase::Press),
                 key(0, FixtureKey::Character(' '), InputPhase::Press),
             ],
-            "BROWSE",
+            "SEQUENCE",
         ),
         (
             "sustained entry key",
@@ -1832,32 +1738,6 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
             );
         }
     }
-
-    let held = replay_from_model_with_staged_holds(
-        InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Sequence {
-                stage: SequenceStage::ChooseInstrument,
-                held_selector: None,
-            }),
-            ..InteractionModel::default()
-        },
-        &[key(0, FixtureKey::Character('a'), InputPhase::Press)],
-        &[
-            SemanticAction {
-                phase: InputPhase::Press,
-                intent: Intent::HoldPerformanceSelector(1),
-            },
-            SemanticAction {
-                phase: InputPhase::Release,
-                intent: Intent::ReleaseHeldSelector,
-            },
-        ],
-        full_capabilities(),
-    );
-    assert_eq!(
-        held.frames.last().map(|frame| frame.owner.as_str()),
-        Some("SEQUENCE")
-    );
 }
 
 #[test]
@@ -2297,21 +2177,35 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
             "{name}"
         );
     }
-    for (name, code) in [
-        ("deck entry", FixtureKey::Character('p')),
-        ("sequence entry", FixtureKey::Character(' ')),
+    for (name, code, kind) in [
+        (
+            "deck entry",
+            FixtureKey::Character('p'),
+            PerformanceKind::Deck,
+        ),
+        (
+            "sequence entry",
+            FixtureKey::Character(' '),
+            PerformanceKind::Sequence,
+        ),
     ] {
         let result = replay(&[plain(code)], full_capabilities());
-        assert_eq!(result.model, InteractionModel::default(), "{name}");
+        assert!(
+            matches!(result.model.mode, InteractionMode::Performance(_)),
+            "{name}"
+        );
+        assert_eq!(
+            result
+                .state_history
+                .last()
+                .map(|record| record.action.intent),
+            Some(Intent::ActivatePerformance(kind)),
+            "{name}"
+        );
         assert_eq!(result.session_generation, 0, "{name}");
         assert_eq!(result.automation_kind, None, "{name}");
         assert_eq!(result.effect_notice, None, "{name}");
-        assert_eq!(result.deferred_inputs.len(), 1, "{name}");
-        assert!(
-            result.deferred_inputs[0].starts_with("PerformanceGrammar0043"),
-            "{name}: {:?}",
-            result.deferred_inputs
-        );
+        assert!(result.deferred_inputs.is_empty(), "{name}");
         assert!(result.effects.is_empty(), "{name}");
     }
 
@@ -2703,7 +2597,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
 }
 
 #[test]
-fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
+fn performance_leaders_holds_and_fallback_are_explicit() {
     let leaders = vec![
         key(0, FixtureKey::Character('p'), InputPhase::Press),
         key(0, FixtureKey::Character('p'), InputPhase::Repeat),
@@ -2712,8 +2606,14 @@ fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
         key(0, FixtureKey::Character(' '), InputPhase::Repeat),
     ];
     let result = replay(&leaders, full_capabilities());
-    assert_eq!(result.model.mode, InteractionMode::Browsing);
-    assert_eq!(result.deferred_inputs.len(), 4);
+    assert!(matches!(
+        result.model.mode,
+        InteractionMode::Performance(PerformanceMode::Sequence {
+            stage: SequenceStage::ChooseInstrument,
+            ..
+        })
+    ));
+    assert!(result.deferred_inputs.is_empty());
     assert!(result.effects.is_empty());
 
     let quit = replay(
@@ -2747,32 +2647,13 @@ fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
     );
     assert_eq!(save.clipboard_writes, 1);
 
-    let held_trace = vec![key(0, FixtureKey::Character('a'), InputPhase::Press)];
-    let staged_holds = [
-        SemanticAction {
-            phase: InputPhase::Press,
-            intent: Intent::HoldPerformanceSelector(1),
-        },
-        SemanticAction {
-            phase: InputPhase::Repeat,
-            intent: Intent::HoldPerformanceSelector(1),
-        },
-        SemanticAction {
-            phase: InputPhase::Release,
-            intent: Intent::ReleaseHeldSelector,
-        },
-    ];
-    let performance_model = InteractionModel {
-        mode: InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::ChooseInstrument,
-            held_selector: None,
-        }),
-        ..InteractionModel::default()
-    };
-    let full = replay_from_model_with_staged_holds(
-        performance_model.clone(),
-        &held_trace,
-        &staged_holds,
+    let full = replay(
+        &[
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('s'), InputPhase::Press),
+            key(0, FixtureKey::Character('s'), InputPhase::Repeat),
+            key(0, FixtureKey::Character('s'), InputPhase::Release),
+        ],
         full_capabilities(),
     );
     assert_eq!(
@@ -2789,19 +2670,35 @@ fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
             .count(),
         1
     );
-    assert_eq!(full.unsupported_holds, 2);
+    assert_eq!(full.unsupported_holds, 0);
 
-    let fallback = replay_from_model_with_staged_holds(
-        performance_model,
-        &held_trace,
-        &staged_holds,
+    let fallback = replay(
+        &[
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('s'), InputPhase::Press),
+            key(0, FixtureKey::Character('k'), InputPhase::Press),
+            key(0, FixtureKey::Character('k'), InputPhase::Press),
+        ],
         TerminalCapabilities::default(),
     );
     assert_eq!(fallback.unsupported_holds, 0);
+    assert!(fallback.deferred_inputs.is_empty());
+    assert!(matches!(
+        fallback.model.mode,
+        InteractionMode::Performance(PerformanceMode::Sequence {
+            stage: SequenceStage::CompletedFallback {
+                instrument: PerformanceInstrument::Bass
+            },
+            ..
+        })
+    ));
     assert_eq!(
-        fallback.deferred_inputs.len(),
-        2,
-        "Press hold and Release-held defer; phase-rejected Repeat is ignored"
+        fallback
+            .effects
+            .iter()
+            .filter(|effect| effect.starts_with("PerformanceEdit"))
+            .count(),
+        1
     );
     assert!(
         fallback
@@ -2810,6 +2707,239 @@ fn edge_actions_are_exactly_once_and_hold_fallback_is_explicit() {
             .all(|effect| !effect.starts_with("HoldPerformanceSelector")
                 && !effect.starts_with("ReleaseHeldSelector"))
     );
+}
+
+#[test]
+fn performance_grammars_cover_actions_bursts_delayed_releases_escape_and_rearm() {
+    let deck = replay(
+        &[
+            key(0, FixtureKey::Character('p'), InputPhase::Press),
+            key(0, FixtureKey::Character('a'), InputPhase::Press),
+            key(0, FixtureKey::Character('s'), InputPhase::Press),
+            key(0, FixtureKey::Character('s'), InputPhase::Repeat),
+            TraceEvent::Resize {
+                after_ms: 0,
+                width: 46,
+                height: 10,
+            },
+            key(0, FixtureKey::Character('a'), InputPhase::Release),
+            key(0, FixtureKey::Character('s'), InputPhase::Release),
+            key(0, FixtureKey::Character('k'), InputPhase::Press),
+            key(0, FixtureKey::Character('k'), InputPhase::Repeat),
+            key(0, FixtureKey::Character('k'), InputPhase::Release),
+            key(0, FixtureKey::Character('z'), InputPhase::Press),
+            key(0, FixtureKey::Escape, InputPhase::Press),
+        ],
+        full_capabilities(),
+    );
+    assert_eq!(deck.model.mode, InteractionMode::Browsing);
+    assert_eq!(deck.session_generation, 2);
+    assert!(
+        deck.frames
+            .iter()
+            .any(|frame| frame.width == 46 && frame.height == 10),
+        "held selector burst still renders the resized minimum frame"
+    );
+    assert_eq!(
+        deck.effects
+            .iter()
+            .filter(|effect| effect.starts_with("PerformanceEdit"))
+            .count(),
+        2,
+        "Deck applies Press and Repeat, never Release"
+    );
+    assert_eq!(
+        deck.effects
+            .iter()
+            .filter(|effect| effect.starts_with("ReleaseHeldSelector"))
+            .count(),
+        2,
+        "selector replacement releases Pads; delayed Pads release cannot clear Bass"
+    );
+    assert!(
+        deck.state_history
+            .iter()
+            .all(|record| !matches!(record.action.intent, Intent::TypeCharacter('z'))),
+        "unsupported performance actions stay inert"
+    );
+
+    let sequence = replay(
+        &[
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Release),
+            key(0, FixtureKey::Character('i'), InputPhase::Press),
+            key(0, FixtureKey::Character('i'), InputPhase::Repeat),
+            key(0, FixtureKey::Character('i'), InputPhase::Release),
+        ],
+        full_capabilities(),
+    );
+    assert_eq!(sequence.model.mode, InteractionMode::Browsing);
+    assert_eq!(sequence.session_generation, 1);
+    assert_eq!(
+        sequence
+            .effects
+            .iter()
+            .filter(|effect| effect.starts_with("PerformanceEdit"))
+            .count(),
+        1,
+        "Sequence applies once and owns Repeat until Release"
+    );
+
+    let fallback = replay(
+        &[
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('f'), InputPhase::Press),
+            key(0, FixtureKey::Character('h'), InputPhase::Press),
+            key(0, FixtureKey::Character('h'), InputPhase::Press),
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+        ],
+        TerminalCapabilities::default(),
+    );
+    assert_eq!(fallback.session_generation, 1);
+    assert!(matches!(
+        fallback.model.mode,
+        InteractionMode::Performance(PerformanceMode::Sequence {
+            stage: SequenceStage::ChooseInstrument,
+            held_selector: None,
+        })
+    ));
+}
+
+#[test]
+fn sequence_exits_only_on_the_armed_action_release() {
+    let prefix = [
+        key(0, FixtureKey::Character(' '), InputPhase::Press),
+        key(0, FixtureKey::Character('d'), InputPhase::Press),
+        key(0, FixtureKey::Character('d'), InputPhase::Release),
+        key(0, FixtureKey::Character('k'), InputPhase::Press),
+        key(0, FixtureKey::Character('j'), InputPhase::Release),
+        key(0, FixtureKey::Character('k'), InputPhase::Repeat),
+    ];
+    let contained = replay(&prefix, full_capabilities());
+    assert!(matches!(
+        contained.model.mode,
+        InteractionMode::Performance(PerformanceMode::Sequence {
+            stage: SequenceStage::AwaitActionRelease {
+                instrument: PerformanceInstrument::Kick,
+                action: super::interaction::PerformanceAction::Louder,
+            },
+            ..
+        })
+    ));
+    assert_eq!(contained.session_generation, 1);
+
+    let mut completed = prefix.to_vec();
+    completed.push(key(0, FixtureKey::Character('k'), InputPhase::Release));
+    let completed = replay(&completed, full_capabilities());
+    assert_eq!(completed.model.mode, InteractionMode::Browsing);
+    assert_eq!(
+        completed
+            .effects
+            .iter()
+            .filter(|effect| effect.starts_with("PerformanceEdit"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn performance_action_repeat_phase_is_mode_specific() {
+    let sequence = replay(
+        &[
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Release),
+            key(0, FixtureKey::Character('k'), InputPhase::Repeat),
+        ],
+        full_capabilities(),
+    );
+    assert_eq!(sequence.session_generation, 0);
+    assert_eq!(
+        sequence
+            .effects
+            .iter()
+            .filter(|effect| effect.starts_with("PerformanceEdit"))
+            .count(),
+        0
+    );
+    assert!(matches!(
+        sequence.model.mode,
+        InteractionMode::Performance(PerformanceMode::Sequence {
+            stage: SequenceStage::Perform {
+                instrument: PerformanceInstrument::Kick,
+            },
+            held_selector: None,
+        })
+    ));
+    assert!(
+        sequence
+            .state_history
+            .iter()
+            .all(|record| !matches!(record.action.intent, Intent::ApplyPerformanceAction { .. })),
+        "a raw Sequence Repeat before Press stays inert"
+    );
+
+    let deck = replay(
+        &[
+            key(0, FixtureKey::Character('p'), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Release),
+            key(0, FixtureKey::Character('k'), InputPhase::Repeat),
+        ],
+        full_capabilities(),
+    );
+    assert_eq!(deck.session_generation, 1);
+    assert_eq!(
+        deck.effects
+            .iter()
+            .filter(|effect| effect.starts_with("PerformanceEdit"))
+            .count(),
+        1,
+        "Deck intentionally applies raw Repeat"
+    );
+    assert!(matches!(
+        deck.model.mode,
+        InteractionMode::Performance(PerformanceMode::Deck {
+            selected: Some(PerformanceInstrument::Kick),
+            held_selector: None,
+        })
+    ));
+}
+
+#[test]
+fn raw_performance_edit_acknowledges_real_cursor_target_exits_auto_and_updates_mru() {
+    let result = replay_with_auto_running(
+        &[
+            key(0, FixtureKey::Character('p'), InputPhase::Press),
+            key(0, FixtureKey::Character('s'), InputPhase::Press),
+            key(0, FixtureKey::Character('s'), InputPhase::Release),
+            key(0, FixtureKey::Character('k'), InputPhase::Press),
+        ],
+        full_capabilities(),
+    );
+    assert!(!result.auto_running);
+    assert_eq!(result.recent_ids, ["bass.level"]);
+    assert!(matches!(
+        result.model.navigation,
+        Navigation::Standard {
+            page: super::interaction::StandardPage::Bass,
+            selected: 0,
+        }
+    ));
+    assert_eq!(
+        result
+            .control_bits
+            .iter()
+            .find(|(id, _)| *id == "bass.level")
+            .map(|(_, bits)| *bits),
+        Some(0.02_f32.to_bits())
+    );
+    assert!(result.effects.iter().any(|effect| {
+        effect.starts_with(
+            "PerformanceEdit { instrument: Bass, action: Louder }=>OK:PerformanceEdited { tab: Bass, index: 0, id: \"bass.level\"",
+        )
+    }));
 }
 
 #[test]
@@ -2825,11 +2955,19 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
         palette.frames.last().map(|frame| frame.owner.as_str()),
         Some("PALETTE")
     );
-    for code in [FixtureKey::Character('p'), FixtureKey::Character(' ')] {
-        let result = replay(&repeated(code), full_capabilities());
-        assert_eq!(result.model, InteractionModel::default());
-        assert_eq!(result.deferred_inputs.len(), 2);
-    }
+    let deck = replay(&repeated(FixtureKey::Character('p')), full_capabilities());
+    assert!(matches!(
+        deck.model.mode,
+        InteractionMode::Performance(PerformanceMode::Deck { .. })
+    ));
+    let sequence = replay(&repeated(FixtureKey::Character(' ')), full_capabilities());
+    assert!(matches!(
+        sequence.model.mode,
+        InteractionMode::Performance(PerformanceMode::Sequence {
+            stage: SequenceStage::ChooseInstrument,
+            ..
+        })
+    ));
 
     let numeric = replay_from_model(
         InteractionModel {
@@ -2926,10 +3064,9 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         Intent::OpenAutomationField,
         Intent::ActivatePerformance(PerformanceKind::Deck),
         Intent::SelectPerformanceInstrument {
-            instrument: 0,
-            page: super::interaction::Page::Chords,
+            instrument: PerformanceInstrument::Pads,
+            hold: false,
         },
-        Intent::HoldPerformanceSelector(0),
         Intent::AdjustSelected(1),
         Intent::ResetSelected,
         Intent::ToggleAuto,
@@ -2942,7 +3079,7 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         Intent::CommitPaletteAtBar,
         Intent::Save,
         Intent::Quit,
-        Intent::ReleaseHeldSelector,
+        Intent::ReleaseHeldSelector(PerformanceInstrument::Pads),
     ];
     let edge_intents = candidate_intents
         .into_iter()
@@ -3007,7 +3144,7 @@ fn escape_converges_from_every_owner_and_nested_depth() {
         },
         InteractionModel {
             mode: InteractionMode::Performance(PerformanceMode::Deck {
-                selected: Some(1),
+                selected: Some(PerformanceInstrument::Bass),
                 held_selector: None,
             }),
             ..InteractionModel::default()
@@ -3021,8 +3158,29 @@ fn escape_converges_from_every_owner_and_nested_depth() {
         },
         InteractionModel {
             mode: InteractionMode::Performance(PerformanceMode::Sequence {
-                stage: SequenceStage::Perform { instrument: 2 },
-                held_selector: Some(1),
+                stage: SequenceStage::Perform {
+                    instrument: PerformanceInstrument::Kick,
+                },
+                held_selector: Some(PerformanceInstrument::Bass),
+            }),
+            ..InteractionModel::default()
+        },
+        InteractionModel {
+            mode: InteractionMode::Performance(PerformanceMode::Sequence {
+                stage: SequenceStage::AwaitActionRelease {
+                    instrument: PerformanceInstrument::Kick,
+                    action: super::interaction::PerformanceAction::Louder,
+                },
+                held_selector: None,
+            }),
+            ..InteractionModel::default()
+        },
+        InteractionModel {
+            mode: InteractionMode::Performance(PerformanceMode::Sequence {
+                stage: SequenceStage::CompletedFallback {
+                    instrument: PerformanceInstrument::Perc,
+                },
+                held_selector: None,
             }),
             ..InteractionModel::default()
         },
@@ -3150,12 +3308,9 @@ fn arbitrary_event_streams_preserve_runtime_and_model_invariants() {
 }
 
 fn replay_outcome(trace: &[TraceEvent], capabilities: TerminalCapabilities) -> ReplayOutcome {
-    ReplayHarness::new(capabilities).replay(
-        &ReplayTrace {
-            events: trace.to_vec(),
-        },
-        &[],
-    )
+    ReplayHarness::new(capabilities).replay(&ReplayTrace {
+        events: trace.to_vec(),
+    })
 }
 
 fn nondeterministic_violation(
@@ -3192,6 +3347,8 @@ fn divergence_signature(left: &ReplayResult, right: &ReplayResult) -> Option<Div
     first_field!(automation_kind);
     first_field!(automation_address);
     first_field!(automation_open_field);
+    first_field!(auto_running);
+    first_field!(recent_ids);
     first_field!(effects);
     first_field!(effect_notice);
     first_field!(pending_edits);

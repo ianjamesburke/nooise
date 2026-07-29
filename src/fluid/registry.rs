@@ -1372,6 +1372,51 @@ pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
     all_specs().find(|spec| spec.id == id)
 }
 
+/// Registry-backed target for the shared Deck/Sequence performance grammar.
+/// Musical words stay stable while every actual edit still uses the owning
+/// control's range, taper, and step semantics.
+pub(crate) fn performance_target(
+    instrument: interaction::PerformanceInstrument,
+    action: interaction::PerformanceAction,
+) -> Option<(Tab, usize, &'static ControlSpec, f32)> {
+    let (tab, level, shape, density) = match instrument {
+        interaction::PerformanceInstrument::Pads => (
+            Tab::Chords,
+            "pad.level",
+            "pad.release_time",
+            "pad.chord_bars",
+        ),
+        interaction::PerformanceInstrument::Bass => (
+            Tab::Bass,
+            "bass.level",
+            "bass.decay_time",
+            "bass.interval_beats",
+        ),
+        interaction::PerformanceInstrument::Kick => (
+            Tab::Kick,
+            "kick.level",
+            "kick.amp_decay_ms",
+            "kick.interval_beats",
+        ),
+        interaction::PerformanceInstrument::Perc => (
+            Tab::Perc,
+            "perc.level",
+            "perc.decay_ms",
+            "perc.interval_beats",
+        ),
+    };
+    let (id, direction) = match action {
+        interaction::PerformanceAction::Shorter => (shape, -1.0),
+        interaction::PerformanceAction::Longer => (shape, 1.0),
+        interaction::PerformanceAction::Quieter => (level, -1.0),
+        interaction::PerformanceAction::Louder => (level, 1.0),
+        interaction::PerformanceAction::Sparser => (density, 1.0),
+        interaction::PerformanceAction::Denser => (density, -1.0),
+    };
+    let index = tab_specs(tab).iter().position(|spec| spec.id == id)?;
+    Some((tab, index, &tab_specs(tab)[index], direction))
+}
+
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
     tab_specs(tab).iter().map(|spec| spec.item(c)).collect()
 }
@@ -1588,4 +1633,95 @@ pub(crate) fn nearest_power_of_two(value: f32, min: f32, max: f32) -> f32 {
     let clamped = value.clamp(min, max);
     let exponent = clamped.log2().round();
     2.0f32.powf(exponent).clamp(min, max)
+}
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+    use crate::fluid::interaction::{PerformanceAction, PerformanceInstrument};
+
+    #[test]
+    fn performance_vocabulary_resolves_every_instrument_action_through_registry() {
+        let actions = [
+            PerformanceAction::Shorter,
+            PerformanceAction::Longer,
+            PerformanceAction::Quieter,
+            PerformanceAction::Louder,
+            PerformanceAction::Sparser,
+            PerformanceAction::Denser,
+        ];
+        let expected = [
+            (
+                PerformanceInstrument::Pads,
+                [
+                    ("pad.release_time", -1.0),
+                    ("pad.release_time", 1.0),
+                    ("pad.level", -1.0),
+                    ("pad.level", 1.0),
+                    ("pad.chord_bars", 1.0),
+                    ("pad.chord_bars", -1.0),
+                ],
+            ),
+            (
+                PerformanceInstrument::Bass,
+                [
+                    ("bass.decay_time", -1.0),
+                    ("bass.decay_time", 1.0),
+                    ("bass.level", -1.0),
+                    ("bass.level", 1.0),
+                    ("bass.interval_beats", 1.0),
+                    ("bass.interval_beats", -1.0),
+                ],
+            ),
+            (
+                PerformanceInstrument::Kick,
+                [
+                    ("kick.amp_decay_ms", -1.0),
+                    ("kick.amp_decay_ms", 1.0),
+                    ("kick.level", -1.0),
+                    ("kick.level", 1.0),
+                    ("kick.interval_beats", 1.0),
+                    ("kick.interval_beats", -1.0),
+                ],
+            ),
+            (
+                PerformanceInstrument::Perc,
+                [
+                    ("perc.decay_ms", -1.0),
+                    ("perc.decay_ms", 1.0),
+                    ("perc.level", -1.0),
+                    ("perc.level", 1.0),
+                    ("perc.interval_beats", 1.0),
+                    ("perc.interval_beats", -1.0),
+                ],
+            ),
+        ];
+        for (instrument, targets) in expected {
+            for (action, (expected_id, expected_direction)) in actions.into_iter().zip(targets) {
+                let (tab, index, spec, direction) =
+                    performance_target(instrument, action).expect("closed grammar has a target");
+                assert_eq!(spec.id, expected_id);
+                assert_eq!(direction, expected_direction);
+                assert_eq!(tab, tab_owning_control(spec.id).expect("target has owner"));
+                assert_eq!(tab_specs(tab)[index].id, spec.id);
+
+                let mut controls = FluidControls::default();
+                (spec.set)(&mut controls, (spec.min + spec.max) / 2.0);
+                let before = (spec.get)(&controls);
+                spec.apply_delta(direction, &mut controls);
+                let after = (spec.get)(&controls);
+                let expected_ordering = if direction > 0.0 {
+                    std::cmp::Ordering::Greater
+                } else {
+                    std::cmp::Ordering::Less
+                };
+                assert_eq!(
+                    after.partial_cmp(&before),
+                    Some(expected_ordering),
+                    "{instrument:?}/{action:?} moved {spec_id} with {direction}",
+                    spec_id = spec.id,
+                );
+            }
+        }
+    }
 }

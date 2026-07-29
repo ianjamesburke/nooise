@@ -7,6 +7,8 @@ Durable product direction and architecture decisions.
 ## Ownership
 
 - `NORTH_STAR.md` owns product vision and feature-evaluation commandments.
+- `PERFORMANCE.md` owns the shipped Deck/Sequence grammar, phase/fallback
+  contracts, rejected experiment choices, and manual audio smoke.
 - `adr/` owns accepted architecture decisions. See `adr/AGENTS.md`.
 - `superpowers/` contains ignored local planning artifacts; it is not shipped.
 

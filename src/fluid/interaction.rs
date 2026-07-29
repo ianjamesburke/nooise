@@ -313,29 +313,64 @@ pub(crate) enum PerformanceKind {
     Sequence,
 }
 
-/// The retained experiment grammar maps `a`/`s`/`d`/`f` to four instruments.
-pub(crate) const PERFORMANCE_INSTRUMENT_COUNT: usize = 4;
-/// Held performance selectors use that same four-key home-row address space.
-pub(crate) const PERFORMANCE_SELECTOR_COUNT: usize = 4;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PerformanceInstrument {
+    Pads,
+    Bass,
+    Kick,
+    Perc,
+}
+
+impl PerformanceInstrument {
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) const fn page(self) -> Page {
+        match self {
+            Self::Pads => Page::Chords,
+            Self::Bass => Page::Bass,
+            Self::Kick => Page::Kick,
+            Self::Perc => Page::Perc,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SequenceStage {
     #[default]
     ChooseInstrument,
     Perform {
-        instrument: usize,
+        instrument: PerformanceInstrument,
     },
+    AwaitActionRelease {
+        instrument: PerformanceInstrument,
+        action: PerformanceAction,
+    },
+    CompletedFallback {
+        instrument: PerformanceInstrument,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PerformanceAction {
+    Shorter,
+    Longer,
+    Quieter,
+    Louder,
+    Sparser,
+    Denser,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PerformanceMode {
     Deck {
-        selected: Option<usize>,
-        held_selector: Option<usize>,
+        selected: Option<PerformanceInstrument>,
+        held_selector: Option<PerformanceInstrument>,
     },
     Sequence {
         stage: SequenceStage,
-        held_selector: Option<usize>,
+        held_selector: Option<PerformanceInstrument>,
     },
 }
 
@@ -360,7 +395,7 @@ impl PerformanceMode {
         }
     }
 
-    fn held_selector_mut(&mut self) -> &mut Option<usize> {
+    fn held_selector_mut(&mut self) -> &mut Option<PerformanceInstrument> {
         match self {
             Self::Deck { held_selector, .. } | Self::Sequence { held_selector, .. } => {
                 held_selector
@@ -410,23 +445,22 @@ pub(crate) enum Intent {
     OpenAutomation(AutomationKind),
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "reserved for the staged 0043 input grammar")
+        expect(
+            dead_code,
+            reason = "typed nested automation activation is kernel-tested"
+        )
     )]
     OpenAutomationField,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "reserved for the staged 0043 input grammar")
-    )]
     ActivatePerformance(PerformanceKind),
     SelectPerformanceInstrument {
-        instrument: usize,
-        page: Page,
+        instrument: PerformanceInstrument,
+        hold: bool,
     },
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "reserved for the staged 0043 hold grammar")
-    )]
-    HoldPerformanceSelector(usize),
+    ApplyPerformanceAction {
+        action: PerformanceAction,
+        release_available: bool,
+    },
+    FinishPerformanceSequence(PerformanceAction),
     AdjustSelected(i8),
     ResetSelected,
     ToggleAuto,
@@ -441,11 +475,7 @@ pub(crate) enum Intent {
     CommitPaletteAtBar,
     Save,
     Quit,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "reserved for the staged 0043 hold grammar")
-    )]
-    ReleaseHeldSelector,
+    ReleaseHeldSelector(PerformanceInstrument),
 }
 
 impl Intent {
@@ -455,8 +485,11 @@ impl Intent {
             | Self::ChangePage(_)
             | Self::TypeCharacter(_)
             | Self::Backspace
-            | Self::AdjustSelected(_) => PhasePolicy::Repeatable,
-            Self::ReleaseHeldSelector => PhasePolicy::ReleaseOnly,
+            | Self::AdjustSelected(_)
+            | Self::ApplyPerformanceAction { .. } => PhasePolicy::Repeatable,
+            Self::ReleaseHeldSelector(_) | Self::FinishPerformanceSequence(_) => {
+                PhasePolicy::ReleaseOnly
+            }
             Self::Cancel
             | Self::EnterChordProgression
             | Self::EnterChordSlot(_)
@@ -469,7 +502,6 @@ impl Intent {
             | Self::OpenAutomationField
             | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
-            | Self::HoldPerformanceSelector(_)
             | Self::ResetSelected
             | Self::ToggleAuto
             | Self::ToggleUnits
@@ -526,9 +558,13 @@ pub(crate) enum InteractionEffect {
     TouchSelected,
     PaletteCommitAtBar(Vec<PaletteStagedEdit>),
     SelectPage(Page),
-    PerformanceInstrument(usize),
-    HoldPerformanceSelector(usize),
-    ReleaseHeldSelector(usize),
+    PerformanceInstrument(PerformanceInstrument),
+    HoldPerformanceSelector(PerformanceInstrument),
+    ReleaseHeldSelector(PerformanceInstrument),
+    PerformanceEdit {
+        instrument: PerformanceInstrument,
+        action: PerformanceAction,
+    },
     Save,
     Quit,
 }
@@ -694,7 +730,8 @@ impl InteractionModel {
                 | Intent::OpenAutomationField
                 | Intent::ActivatePerformance(_)
                 | Intent::SelectPerformanceInstrument { .. }
-                | Intent::HoldPerformanceSelector(_)
+                | Intent::ApplyPerformanceAction { .. }
+                | Intent::FinishPerformanceSequence(_)
                 | Intent::AdjustSelected(_)
                 | Intent::ResetSelected
                 | Intent::ToggleAuto
@@ -707,7 +744,7 @@ impl InteractionModel {
                 | Intent::CommitPaletteAtBar
                 | Intent::Save
                 | Intent::Quit
-                | Intent::ReleaseHeldSelector => {}
+                | Intent::ReleaseHeldSelector(_) => {}
             },
             InteractionMode::Palette(palette) => {
                 let entries = PaletteState::new(tab_for_page(self.navigation.page()), &[]);
@@ -819,7 +856,8 @@ impl InteractionModel {
                     | Intent::OpenAutomationField
                     | Intent::ActivatePerformance(_)
                     | Intent::SelectPerformanceInstrument { .. }
-                    | Intent::HoldPerformanceSelector(_)
+                    | Intent::ApplyPerformanceAction { .. }
+                    | Intent::FinishPerformanceSequence(_)
                     | Intent::AdjustSelected(_)
                     | Intent::ResetSelected
                     | Intent::ToggleAuto
@@ -831,7 +869,7 @@ impl InteractionModel {
                     | Intent::TouchSelected
                     | Intent::Save
                     | Intent::Quit
-                    | Intent::ReleaseHeldSelector => {}
+                    | Intent::ReleaseHeldSelector(_) => {}
                 }
             }
             InteractionMode::Automation(automation) => match action.intent {
@@ -944,9 +982,10 @@ impl InteractionModel {
                 | Intent::PaletteAutocomplete
                 | Intent::ActivatePerformance(_)
                 | Intent::SelectPerformanceInstrument { .. }
-                | Intent::HoldPerformanceSelector(_)
+                | Intent::ApplyPerformanceAction { .. }
+                | Intent::FinishPerformanceSequence(_)
                 | Intent::CommitPaletteAtBar
-                | Intent::ReleaseHeldSelector => {}
+                | Intent::ReleaseHeldSelector(_) => {}
             },
             InteractionMode::Performance(performance) => match action.intent {
                 Intent::Cancel => {
@@ -955,14 +994,26 @@ impl InteractionModel {
                     }
                     self.mode = InteractionMode::Browsing;
                 }
-                Intent::ActivatePerformance(kind) if kind == performance.kind() => {}
+                Intent::ActivatePerformance(kind) if kind == performance.kind() => {
+                    if matches!(
+                        performance,
+                        PerformanceMode::Sequence {
+                            stage: SequenceStage::CompletedFallback { .. },
+                            ..
+                        }
+                    ) {
+                        *performance = PerformanceMode::new(PerformanceKind::Sequence);
+                    }
+                }
                 Intent::ActivatePerformance(_) => {}
-                Intent::SelectPerformanceInstrument { instrument, page } => {
-                    if instrument >= PERFORMANCE_INSTRUMENT_COUNT {
-                        return Transition {
-                            model: self,
-                            effects,
-                        };
+                Intent::SelectPerformanceInstrument { instrument, hold } => {
+                    if hold {
+                        let held = performance.held_selector_mut();
+                        if let Some(previous) = held.replace(instrument)
+                            && previous != instrument
+                        {
+                            effects.push(InteractionEffect::ReleaseHeldSelector(previous));
+                        }
                     }
                     match performance {
                         PerformanceMode::Deck { selected, .. } => *selected = Some(instrument),
@@ -970,28 +1021,61 @@ impl InteractionModel {
                             *stage = SequenceStage::Perform { instrument };
                         }
                     }
+                    let page = instrument.page();
                     self.navigation = Navigation::for_page(page);
                     effects.extend([
                         InteractionEffect::SelectPage(page),
                         InteractionEffect::PerformanceInstrument(instrument),
                     ]);
-                }
-                Intent::HoldPerformanceSelector(selector) => {
-                    if selector >= PERFORMANCE_SELECTOR_COUNT {
-                        return Transition {
-                            model: self,
-                            effects,
-                        };
+                    if hold {
+                        effects.push(InteractionEffect::HoldPerformanceSelector(instrument));
                     }
+                }
+                Intent::ReleaseHeldSelector(released) => {
                     let held = performance.held_selector_mut();
-                    if held.is_none() {
-                        *held = Some(selector);
-                        effects.push(InteractionEffect::HoldPerformanceSelector(selector));
+                    if *held == Some(released) {
+                        let selector = held.take().expect("matching held selector");
+                        effects.push(InteractionEffect::ReleaseHeldSelector(selector));
                     }
                 }
-                Intent::ReleaseHeldSelector => {
-                    if let Some(selector) = performance.held_selector_mut().take() {
-                        effects.push(InteractionEffect::ReleaseHeldSelector(selector));
+                Intent::ApplyPerformanceAction {
+                    action,
+                    release_available,
+                } => {
+                    let instrument = match *performance {
+                        PerformanceMode::Deck {
+                            selected: Some(instrument),
+                            ..
+                        }
+                        | PerformanceMode::Sequence {
+                            stage: SequenceStage::Perform { instrument },
+                            ..
+                        } => Some(instrument),
+                        _ => None,
+                    };
+                    if let Some(instrument) = instrument {
+                        effects.push(InteractionEffect::PerformanceEdit { instrument, action });
+                        if let PerformanceMode::Sequence { stage, .. } = performance {
+                            *stage = if release_available {
+                                SequenceStage::AwaitActionRelease { instrument, action }
+                            } else {
+                                SequenceStage::CompletedFallback { instrument }
+                            };
+                        }
+                    }
+                }
+                Intent::FinishPerformanceSequence(released) => {
+                    if matches!(
+                        performance,
+                        PerformanceMode::Sequence {
+                            stage: SequenceStage::AwaitActionRelease { action, .. },
+                            ..
+                        } if *action == released
+                    ) {
+                        if let Some(selector) = performance.held_selector_mut().take() {
+                            effects.push(InteractionEffect::ReleaseHeldSelector(selector));
+                        }
+                        self.mode = InteractionMode::Browsing;
                     }
                 }
                 Intent::MoveSelection(_)
@@ -1103,8 +1187,9 @@ fn update_browsing(
         | Intent::Confirm
         | Intent::OpenAutomationField
         | Intent::SelectPerformanceInstrument { .. }
-        | Intent::HoldPerformanceSelector(_)
-        | Intent::ReleaseHeldSelector => {}
+        | Intent::ApplyPerformanceAction { .. }
+        | Intent::FinishPerformanceSequence(_)
+        | Intent::ReleaseHeldSelector(_) => {}
     }
 }
 
@@ -1223,7 +1308,7 @@ mod tests {
             ),
             (
                 InteractionMode::Performance(PerformanceMode::Deck {
-                    selected: Some(2),
+                    selected: Some(PerformanceInstrument::Kick),
                     held_selector: None,
                 }),
                 InteractionMode::Browsing,
@@ -1344,10 +1429,9 @@ mod tests {
             Intent::OpenAutomationField,
             Intent::ActivatePerformance(PerformanceKind::Deck),
             Intent::SelectPerformanceInstrument {
-                instrument: 0,
-                page: Page::Chords,
+                instrument: PerformanceInstrument::Pads,
+                hold: false,
             },
-            Intent::HoldPerformanceSelector(0),
             Intent::Save,
             Intent::Quit,
         ];
@@ -1356,7 +1440,7 @@ mod tests {
         }
 
         assert_eq!(
-            Intent::ReleaseHeldSelector.phase_policy(),
+            Intent::ReleaseHeldSelector(PerformanceInstrument::Pads).phase_policy(),
             PhasePolicy::ReleaseOnly
         );
     }
@@ -1396,37 +1480,50 @@ mod tests {
             Intent::ActivatePerformance(PerformanceKind::Deck),
         )
         .model;
-        let pressed_release = model
-            .clone()
-            .update(SemanticAction::press(Intent::ReleaseHeldSelector));
+        let pressed_release =
+            model
+                .clone()
+                .update(SemanticAction::press(Intent::ReleaseHeldSelector(
+                    PerformanceInstrument::Perc,
+                )));
         assert!(pressed_release.effects.is_empty());
 
         let bare_release = model.clone().update(SemanticAction {
             phase: InputPhase::Release,
-            intent: Intent::ReleaseHeldSelector,
+            intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Perc),
         });
         assert!(bare_release.effects.is_empty());
 
-        let held = update(model, Intent::HoldPerformanceSelector(3));
+        let held = update(
+            model,
+            Intent::SelectPerformanceInstrument {
+                instrument: PerformanceInstrument::Perc,
+                hold: true,
+            },
+        );
         assert_eq!(
-            held.effects,
-            vec![InteractionEffect::HoldPerformanceSelector(3)]
+            held.effects.last(),
+            Some(&InteractionEffect::HoldPerformanceSelector(
+                PerformanceInstrument::Perc
+            ))
         );
 
         let released = held.model.update(SemanticAction {
             phase: InputPhase::Release,
-            intent: Intent::ReleaseHeldSelector,
+            intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Perc),
         });
         assert_eq!(
             released.effects,
-            vec![InteractionEffect::ReleaseHeldSelector(3)]
+            vec![InteractionEffect::ReleaseHeldSelector(
+                PerformanceInstrument::Perc
+            )]
         );
         assert!(
             released
                 .model
                 .update(SemanticAction {
                     phase: InputPhase::Release,
-                    intent: Intent::ReleaseHeldSelector,
+                    intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Perc),
                 })
                 .effects
                 .is_empty()
@@ -1440,18 +1537,27 @@ mod tests {
             Intent::ActivatePerformance(PerformanceKind::Sequence),
         )
         .model;
-        let held = update(performance, Intent::HoldPerformanceSelector(3)).model;
+        let held = update(
+            performance,
+            Intent::SelectPerformanceInstrument {
+                instrument: PerformanceInstrument::Perc,
+                hold: true,
+            },
+        )
+        .model;
 
         let cancelled = update(held, Intent::Cancel);
         assert_eq!(
             cancelled.effects,
-            vec![InteractionEffect::ReleaseHeldSelector(3)]
+            vec![InteractionEffect::ReleaseHeldSelector(
+                PerformanceInstrument::Perc
+            )]
         );
         assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
 
         let late_release = cancelled.model.update(SemanticAction {
             phase: InputPhase::Release,
-            intent: Intent::ReleaseHeldSelector,
+            intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Perc),
         });
         assert!(late_release.effects.is_empty());
         assert_eq!(late_release.model.mode, InteractionMode::Browsing);
@@ -1676,44 +1782,81 @@ mod tests {
         let transition = update(
             model,
             Intent::SelectPerformanceInstrument {
-                instrument: 3,
-                page: Page::Arp,
+                instrument: PerformanceInstrument::Perc,
+                hold: false,
             },
         );
 
         assert_eq!(
             transition.effects,
             vec![
-                InteractionEffect::SelectPage(Page::Arp),
-                InteractionEffect::PerformanceInstrument(3),
+                InteractionEffect::SelectPage(Page::Perc),
+                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Perc),
             ]
         );
         assert_eq!(
             transition.model.navigation,
             Navigation::Standard {
-                page: StandardPage::Arp,
+                page: StandardPage::Perc,
                 selected: 0,
             }
         );
     }
 
     #[test]
-    fn performance_kernel_rejects_indices_outside_the_four_instrument_grammar() {
+    fn replacing_a_held_selector_releases_before_selecting_the_new_instrument() {
         let deck = update(
             InteractionModel::default(),
             Intent::ActivatePerformance(PerformanceKind::Deck),
         )
         .model;
-        for intent in [
+        let pads = update(
+            deck,
             Intent::SelectPerformanceInstrument {
-                instrument: usize::MAX,
-                page: Page::Arp,
+                instrument: PerformanceInstrument::Pads,
+                hold: true,
             },
-            Intent::HoldPerformanceSelector(usize::MAX),
+        )
+        .model;
+        let bass = update(
+            pads,
+            Intent::SelectPerformanceInstrument {
+                instrument: PerformanceInstrument::Bass,
+                hold: true,
+            },
+        );
+        assert_eq!(
+            bass.effects,
+            vec![
+                InteractionEffect::ReleaseHeldSelector(PerformanceInstrument::Pads),
+                InteractionEffect::SelectPage(Page::Bass),
+                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Bass),
+                InteractionEffect::HoldPerformanceSelector(PerformanceInstrument::Bass),
+            ]
+        );
+    }
+
+    #[test]
+    fn performance_instruments_are_a_closed_four_choice_grammar() {
+        let deck = update(
+            InteractionModel::default(),
+            Intent::ActivatePerformance(PerformanceKind::Deck),
+        )
+        .model;
+        for instrument in [
+            PerformanceInstrument::Pads,
+            PerformanceInstrument::Bass,
+            PerformanceInstrument::Kick,
+            PerformanceInstrument::Perc,
         ] {
-            let transition = update(deck.clone(), intent);
-            assert_eq!(transition.model, deck);
-            assert!(transition.effects.is_empty());
+            let transition = update(
+                deck.clone(),
+                Intent::SelectPerformanceInstrument {
+                    instrument,
+                    hold: false,
+                },
+            );
+            assert_eq!(transition.model.navigation.page(), instrument.page());
         }
     }
 
