@@ -88,10 +88,12 @@ See `docs/NORTH_STAR.md` for product vision and feature-evaluation commandments 
 ## Ownership
 
 - Root: crate manifest (`Cargo.toml`), README, GOTCHAS.md, this DOX rail.
+- `CONTEXT.md`: concise shared domain vocabulary; interaction terms are defined here.
 - `scripts/`: release, render-benchmark, and auto-state authoring helpers.
 - `src/`: all engine, UI, and control code. See `src/AGENTS.md`. Built-in auto-morph song codes (the ordered `n1_…` cycle) live in `src/fluid/auto.rs`'s `AUTO_STATES` array. Use `just add-morph <code>` to append one. It requires a clean target file, rejects duplicates, restores the file after failed checks, and commits only the new state; never hand-paste codes into the array.
 - `assets/`: static wordmark/preview images, no code, no local rules needed.
 - `docs/NORTH_STAR.md`: product vision and feature-evaluation commandments.
+- `docs/adr/`: durable architecture decisions; ADR 0001 owns the interaction-kernel and terminal-runtime contracts.
 - `docs/superpowers/`: local brainstorming specs and plans produced by the superpowers skill workflow; ignored by git and not part of the shipped crate.
 - `.stint/`: local sprint/task tracking tool state, not part of the shipped crate.
 
@@ -112,4 +114,5 @@ See `docs/NORTH_STAR.md` for product vision and feature-evaluation commandments 
 
 ## Child DOX Index
 
+- `docs/AGENTS.md` — product direction and durable architecture records
 - `src/AGENTS.md` — engine/UI source tree (audio, fluid core, fx, synth)
