@@ -35,7 +35,7 @@ pub(crate) enum CompDrill {
 
 /// Translates a Chords- or Master-tab visible-row index to its real registry
 /// index for the positional setters; a no-op on every other tab.
-fn resolve_selected_index(
+pub(crate) fn resolve_selected_index(
     tab: Tab,
     chord_drill: ChordDrill,
     comp_drill: CompDrill,
@@ -49,9 +49,8 @@ fn resolve_selected_index(
 }
 
 pub(crate) struct UiSession {
-    pub(crate) controls: Arc<ArcSwap<FluidControls>>,
-    pub(crate) automation: Arc<ArcSwap<AutomationState>>,
-    pub(crate) tonal_sequence: Arc<ArcSwap<TonalSequenceState>>,
+    pub(crate) live: LiveSession,
+    pub(crate) automation: LiveAutomation,
 }
 
 pub(crate) fn ui_loop(
@@ -63,9 +62,8 @@ pub(crate) fn ui_loop(
     auto: AutoControls,
 ) -> Result<(), Box<dyn Error>> {
     let UiSession {
-        controls,
+        live,
         automation: automation_shared,
-        tonal_sequence,
     } = session;
     let mut tab = Tab::Chords;
     let mut selected = 0usize;
@@ -75,53 +73,38 @@ pub(crate) fn ui_loop(
     let mut flipped = FlippedUnits::new();
     let mut numeric_entry: Option<NumericEntry> = None;
     let mut palette: Option<PaletteState> = None;
-    let mut recent_controls = RecentControls::default();
-    let mut pending_commit: Option<(f64, Vec<StagedEdit>)> = None;
+    let mut effects = EffectExecutor::new(live, auto);
     let mut mute: MuteState = [None; 9];
     let mut fluid = FluidState::new();
     let mut last = Instant::now();
     let started = Instant::now();
-    let mut save_message: Option<(String, Instant)> = None;
     let mut automation = PublishedAutomation::new(initial_automation, automation_shared);
 
     'ui: loop {
-        let in_auto = auto.is_running();
-        if in_auto {
-            automation.sync_from_shared();
-        }
-        if pending_commit
-            .as_ref()
-            .is_some_and(|(target, _)| telemetry.beat() >= *target)
-        {
-            let (_, edits) = pending_commit.take().expect("checked above");
-            commit_staged_edits(&controls, &edits);
-            recent_controls.touch_edits(&edits);
-            auto.exit(); // touching a param exits auto
-            save_message = Some((staged_applied_message(edits.len()), Instant::now()));
-        }
-        let c = FluidControls::clone(&controls.load());
-        if save_message
-            .as_ref()
-            .is_some_and(|(_, shown_at)| shown_at.elapsed() >= SAVE_MESSAGE_TTL)
-        {
-            save_message = None;
-        }
+        effects
+            .execute(LiveEffect::CommitPending {
+                beat: telemetry.beat(),
+            })
+            .expect("pending commit has no fallible effects");
+        let frame_session = effects.session().load();
+        let c = frame_session.controls.clone();
+        automation.sync_from_snapshot(&frame_session.automation);
+        effects.expire_message(SAVE_MESSAGE_TTL);
         let update_message = updates.message();
-        let pending_message = pending_commit.as_ref().map(|(_, edits)| {
+        let pending_message = effects.pending().map(|(_, edits)| {
             let plural = if edits.len() == 1 { "" } else { "s" };
             format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
         });
         let automation_message = automation_footer(automation.state());
         let chords_message = chords_footer(tab, chord_drill);
         let master_message = master_footer(tab, comp_drill);
-        let auto_message = auto.morph_ids_at(telemetry.beat()).map(|(from, to)| {
+        let auto_message = effects.auto_morph_ids(telemetry.beat()).map(|(from, to)| {
             let from = from.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
             let to = to.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
             format!("\u{25cf} AUTO morph {from} \u{2192} {to}   a or touch any param to exit")
         });
-        let footer_message = save_message
-            .as_ref()
-            .map(|(message, _)| message.as_str())
+        let footer_message = effects
+            .message()
             .or(pending_message.as_deref())
             .or(automation_message.as_deref())
             .or(chords_message.as_deref())
@@ -191,17 +174,15 @@ pub(crate) fn ui_loop(
                             && let Ok(value) = entry.buffer.parse::<f32>()
                         {
                             set_modulator_or_control(
+                                &mut effects,
                                 &mut automation,
                                 lfo_selected,
-                                &controls,
                                 tab,
                                 resolve_selected_index(tab, chord_drill, comp_drill, selected),
                                 value,
                                 beat,
                                 &flipped,
                             );
-                            recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
-                            auto.exit(); // touching a param exits auto
                         }
                         numeric_entry = None;
                     }
@@ -257,8 +238,20 @@ pub(crate) fn ui_loop(
                     PaletteAction::None => {}
                     PaletteAction::Jump(index) => {
                         let entry = pal.entry(index);
-                        let (jump_tab, jump_index) = (entry.tab, entry.index_in_tab);
-                        recent_controls.touch(entry.spec.id);
+                        let EffectAcknowledgement::ControlSelected {
+                            tab: jump_tab,
+                            index: jump_index,
+                            ..
+                        } = effects
+                            .execute(LiveEffect::SelectControl {
+                                tab: entry.tab,
+                                index: entry.index_in_tab,
+                                id: entry.spec.id,
+                            })
+                            .expect("palette entries name registered controls")
+                        else {
+                            unreachable!("selection effect returns selection acknowledgement")
+                        };
                         palette = None;
                         if automation.state().is_editor_open() {
                             automation.edit(AutomationState::close_editor);
@@ -283,27 +276,35 @@ pub(crate) fn ui_loop(
                     }
                     PaletteAction::CommitNow(edits) => {
                         palette = None;
-                        commit_staged_edits(&controls, &edits);
-                        recent_controls.touch_edits(&edits);
-                        auto.exit(); // touching a param exits auto
-                        save_message = Some((staged_applied_message(edits.len()), Instant::now()));
+                        effects
+                            .execute(LiveEffect::StageForBar {
+                                target_beat: beat,
+                                edits,
+                            })
+                            .expect("staging is infallible");
+                        effects
+                            .execute(LiveEffect::CommitPending { beat })
+                            .expect("commit is infallible");
                     }
                     PaletteAction::CommitAtBar(edits) => {
                         palette = None;
-                        pending_commit = Some((next_bar_beat(beat), edits));
+                        effects
+                            .execute(LiveEffect::StageForBar {
+                                target_beat: next_bar_beat(beat),
+                                edits,
+                            })
+                            .expect("staging is infallible");
                     }
                 }
                 continue;
             }
             match key.code {
                 KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    save_message = Some(
-                        match copy_song_code(&controls, automation.state(), &tonal_sequence.load())
-                        {
-                            Ok(()) => ("song code copied to clipboard".to_string(), Instant::now()),
-                            Err(err) => (format!("Save failed: {err}"), Instant::now()),
-                        },
-                    );
+                    if let Err(error) = effects.execute(LiveEffect::CopySong) {
+                        effects
+                            .execute(LiveEffect::ShowMessage(format!("Save failed: {error:?}")))
+                            .expect("message is infallible");
+                    }
                 }
                 // Esc only ever drills out one level (nested field-macro
                 // editor, then the modulator editor, then nothing) — it
@@ -348,11 +349,10 @@ pub(crate) fn ui_loop(
                 // live). Off -> on builds a morph from the current state so
                 // nothing jumps, heading to the nearest built-in state first.
                 KeyCode::Char('a') => {
-                    let current = FluidControls::clone(&controls.load());
-                    auto.toggle(current, automation.state().clone(), beat);
+                    effects.toggle_auto(beat);
                 }
                 KeyCode::Char('/') => {
-                    palette = Some(PaletteState::new(tab, recent_controls.ids()));
+                    palette = Some(PaletteState::new(tab, effects.recent().ids()));
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     if automation.state().is_editor_open() {
@@ -392,23 +392,22 @@ pub(crate) fn ui_loop(
                     }
                 }
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
-                    auto.exit(); // touching a param exits auto
                     let idx = resolve_selected_index(tab, chord_drill, comp_drill, selected);
                     if key.code == KeyCode::Char('H') || key.modifiers.contains(KeyModifiers::SHIFT)
                     {
                         reset_lfo_or_control(
+                            &mut effects,
                             &mut automation,
                             lfo_selected,
-                            &controls,
                             tab,
                             idx,
                             beat,
                         );
                     } else {
                         adjust_lfo_or_control(
+                            &mut effects,
                             &mut automation,
                             lfo_selected,
-                            &controls,
                             tab,
                             idx,
                             -1.0,
@@ -416,34 +415,35 @@ pub(crate) fn ui_loop(
                             &flipped,
                         );
                     }
-                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                 }
                 KeyCode::Right | KeyCode::Char('l') => {
-                    auto.exit(); // touching a param exits auto
                     adjust_lfo_or_control(
+                        &mut effects,
                         &mut automation,
                         lfo_selected,
-                        &controls,
                         tab,
                         resolve_selected_index(tab, chord_drill, comp_drill, selected),
                         1.0,
                         beat,
                         &flipped,
                     );
-                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                 }
                 KeyCode::Char(c @ ('f' | 'e')) => {
-                    auto.exit(); // touching a modulator exits auto
                     let kind = if c == 'f' {
                         ModKind::Lfo
                     } else {
                         ModKind::Envelope
                     };
-                    open_modulator(&mut automation, &items, selected, kind, &mut lfo_selected);
-                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
+                    open_modulator_effect(
+                        &mut effects,
+                        &mut automation,
+                        &items,
+                        selected,
+                        kind,
+                        &mut lfo_selected,
+                    );
                 }
                 KeyCode::Char('v') => {
-                    auto.exit(); // touching a modulator exits auto
                     match active_field(automation.state(), lfo_selected) {
                         // On an LFO field row: stack (or un-stack) a macro
                         // onto that specific field, never on by default.
@@ -452,7 +452,9 @@ pub(crate) fn ui_loop(
                         {
                             let key = unit_key(address.id(), field.macro_key());
                             let was_open = automation.state().open_field() == Some(key.as_str());
-                            automation.edit(|state| state.toggle_open_field(key));
+                            effects.edit_automation(address.id(), &mut automation, |state| {
+                                state.toggle_open_field(key.clone());
+                            });
                             let base = field_row_index(automation.state(), address, field);
                             lfo_selected = if was_open { base } else { base + 1 };
                         }
@@ -478,7 +480,8 @@ pub(crate) fn ui_loop(
                         // opens the Macro editor for the selected control,
                         // for any slider.
                         _ => {
-                            open_modulator(
+                            open_modulator_effect(
+                                &mut effects,
                                 &mut automation,
                                 &items,
                                 selected,
@@ -487,34 +490,44 @@ pub(crate) fn ui_loop(
                             );
                         }
                     }
-                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                 }
                 KeyCode::Char('x') | KeyCode::Char('X') => {
-                    auto.exit(); // touching a modulator exits auto
                     match active_field(automation.state(), lfo_selected) {
                         // On an open field-macro row: remove just that
                         // stacked macro, keep the parent LFO editor open.
                         ActiveField::LfoMacro(address, field, _) => {
                             let key = unit_key(address.id(), field.macro_key());
-                            automation.edit(|state| state.remove_field_macro(&key));
+                            effects.edit_automation(address.id(), &mut automation, |state| {
+                                state.remove_field_macro(&key);
+                            });
                             lfo_selected = field_row_index(automation.state(), address, field);
                         }
                         _ if automation.state().is_editor_open() => {
-                            automation.edit(AutomationState::remove_open_route);
+                            let id = automation
+                                .state()
+                                .active_address()
+                                .expect("open editor has an address")
+                                .id();
+                            effects.edit_automation(
+                                id,
+                                &mut automation,
+                                AutomationState::remove_open_route,
+                            );
                             lfo_selected = 0;
                         }
                         _ => {
                             if let Some(item) = items.get(selected) {
                                 let address = ControlAddress::new(item.id);
-                                automation.edit(|state| state.clear_control(address));
+                                effects.edit_automation(item.id, &mut automation, |state| {
+                                    state.clear_control(address);
+                                });
                             }
                         }
                     }
-                    recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                 }
                 KeyCode::Enter => {
                     if !automation.state().is_editor_open() {
-                        recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
+                        effects.touch_selected(tab, chord_drill, comp_drill, selected);
                         if tab == Tab::Chords {
                             match (chord_drill, items.get(selected).map(|i| i.id)) {
                                 (ChordDrill::None, Some("pad.progression"))
@@ -558,31 +571,25 @@ pub(crate) fn ui_loop(
                             flipped.insert(key);
                         }
                         snap_after_unit_flip(
+                            &mut effects,
                             &mut automation,
                             lfo_selected,
-                            &controls,
                             tab,
                             resolve_selected_index(tab, chord_drill, comp_drill, selected),
                             now_flipped,
                             beat,
                         );
-                        recent_controls.touch_selected(tab, chord_drill, comp_drill, selected);
                     }
                 }
                 KeyCode::Char(c @ ('m' | 'M')) => {
                     let target = if c == 'm' { tab } else { Tab::Master };
-                    toggle_mute(&controls, target, &mut mute);
-                    if let Some(id) = target.level_id() {
-                        recent_controls.touch(id);
-                    }
+                    effects.toggle_mute(target, &mut mute);
                 }
                 KeyCode::Char('r') | KeyCode::Char('R') => {
                     if let Some(address) = automation.state().active_address()
                         && automation.state().active_kind() == Some(ModKind::Lfo)
                     {
-                        auto.exit(); // touching a modulator exits auto
-                        recent_controls.touch(address.id());
-                        automation.edit(|state| {
+                        effects.edit_automation(address.id(), &mut automation, |state| {
                             if let Some(route) = state.route_mut(address)
                                 && route.shape.is_random()
                             {
@@ -684,58 +691,65 @@ fn flipped_step(native: TimeBase, value: f32, dir: f32, bpm: f32) -> f32 {
 /// rounds its value onto the beat grid; flipping to ms keeps the exact
 /// equivalent so the value can then move freely in time.
 pub(crate) fn snap_after_unit_flip(
+    effects: &mut EffectExecutor,
     automation: &mut PublishedAutomation,
     lfo_selected: usize,
-    controls: &Arc<ArcSwap<FluidControls>>,
     tab: Tab,
     selected: usize,
     now_flipped: bool,
     beat: f64,
 ) {
-    let bpm = controls.load().master.bpm;
-    match active_field(automation.state(), lfo_selected) {
+    let active = active_field(automation.state(), lfo_selected);
+    let recent_id = automation
+        .state()
+        .active_address()
+        .map(ControlAddress::id)
+        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    let published = effects.edit_session(recent_id, |snapshot| match active {
         // LFO rate accepts exact typed beat values, so an exact ms-authored
         // value stays exact when returning to beats. Offset retains its grid.
-        ActiveField::Lfo(address, field) if !now_flipped => automation.edit(|state| {
-            if let Some(route) = state.route_mut(address) {
+        ActiveField::Lfo(address, field) if !now_flipped => {
+            if let Some(route) = snapshot.automation.route_mut(address) {
                 match field {
                     LfoField::Interval => {}
                     LfoField::Offset => route.set_field_at(field, route.phase_offset_beats, beat),
                     _ => {}
                 }
             }
-        }),
-        ActiveField::Envelope(address, field) if !now_flipped => automation.edit(|state| {
-            if let Some(route) = state.envelope_mut(address) {
+        }
+        ActiveField::Envelope(address, field) if !now_flipped => {
+            if let Some(route) = snapshot.automation.envelope_mut(address) {
                 match field {
                     EnvField::Attack => route.set_field(field, route.attack_beats),
                     EnvField::Decay => route.set_field(field, route.decay_beats),
                     EnvField::Amount | EnvField::Trigger => {}
                 }
             }
-        }),
+        }
         ActiveField::Control => {
             let Some(spec) = tab_specs(tab).get(selected) else {
                 return;
             };
-            let mut next = FluidControls::clone(&controls.load());
-            let current = (spec.get)(&next);
+            let bpm = snapshot.controls.master.bpm;
+            let current = (spec.get)(&snapshot.controls);
             match (spec.time_base, now_flipped) {
                 // Back to native beats: land on the control's own grid.
-                (TimeBase::Beats, false) => spec.apply_quantized_value(current, &mut next),
+                (TimeBase::Beats, false) => {
+                    spec.apply_quantized_value(current, &mut snapshot.controls)
+                }
                 // An ms control now displayed in beats: round to the nearest
                 // divided beat.
                 (TimeBase::Ms, true) => {
                     let beats =
                         snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP).max(FLIP_BEAT_STEP);
-                    spec.apply_raw(beats_to_ms(beats, bpm), &mut next);
+                    spec.apply_raw(beats_to_ms(beats, bpm), &mut snapshot.controls);
                 }
-                _ => return,
+                _ => {}
             }
-            controls.store(Arc::new(next));
         }
         _ => {}
-    }
+    });
+    automation.sync_from_snapshot(&published.automation);
 }
 
 /// The flip key qualifier for a modulator time field, None for unit-less ones.
@@ -902,6 +916,7 @@ pub(crate) fn clamp_lfo_selection(current: usize, direction: isize, row_count: u
 /// Whether a modulator kind can open on a control. Envelopes live only on
 /// macro sliders; macro routes live only on regular controls (no macro
 /// feeding another macro).
+#[cfg(test)]
 fn kind_allowed_on(kind: ModKind, id: &str) -> bool {
     match kind {
         ModKind::Lfo => true,
@@ -914,6 +929,7 @@ fn kind_allowed_on(kind: ModKind, id: &str) -> bool {
 /// the same control closes it (settings kept — x is the remove gesture),
 /// otherwise the open editor is swapped for the requested one (created
 /// audible-neutral).
+#[cfg(test)]
 pub(crate) fn open_modulator(
     automation: &mut PublishedAutomation,
     items: &[ControlItem],
@@ -948,30 +964,39 @@ pub(crate) fn open_modulator(
     }
 }
 
-pub(crate) struct PublishedAutomation {
-    state: AutomationState,
-    shared: Arc<ArcSwap<AutomationState>>,
-}
-
-impl PublishedAutomation {
-    pub(crate) fn new(state: AutomationState, shared: Arc<ArcSwap<AutomationState>>) -> Self {
-        shared.store(Arc::new(state.clone()));
-        Self { state, shared }
+fn open_modulator_effect(
+    effects: &mut EffectExecutor,
+    automation: &mut PublishedAutomation,
+    items: &[ControlItem],
+    selected: usize,
+    kind: ModKind,
+    sub_selected: &mut usize,
+) {
+    let Some(item) = items.get(selected) else {
+        return;
+    };
+    if item.id.starts_with("macro.") && kind != ModKind::Lfo {
+        return;
     }
-
-    pub(crate) fn state(&self) -> &AutomationState {
-        &self.state
-    }
-
-    /// Refresh the read-only UI view from an external writer such as auto morph.
-    pub(crate) fn sync_from_shared(&mut self) {
-        self.state = self.shared.load_full().as_ref().clone();
-    }
-
-    pub(crate) fn edit(&mut self, edit: impl FnOnce(&mut AutomationState)) {
-        edit(&mut self.state);
-        self.shared.store(Arc::new(self.state.clone()));
-    }
+    let address = ControlAddress::new(item.id);
+    effects.edit_automation(item.id, automation, |state| {
+        let already = state.active_address() == Some(address) && state.active_kind() == Some(kind);
+        state.close_editor();
+        if !already {
+            match kind {
+                ModKind::Lfo => {
+                    state.open_or_create(address);
+                }
+                ModKind::Envelope => {
+                    state.open_or_create_envelope(address);
+                }
+                ModKind::Macro => {
+                    state.open_or_create_macro(address);
+                }
+            }
+        }
+    });
+    *sub_selected = 1;
 }
 
 /// Which modulator field (if any) the submenu cursor sits on for the open
@@ -1017,22 +1042,28 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn adjust_lfo_or_control(
+    effects: &mut EffectExecutor,
     automation: &mut PublishedAutomation,
     lfo_selected: usize,
-    controls: &Arc<ArcSwap<FluidControls>>,
     tab: Tab,
     selected: usize,
     dir: f32,
     beat: f64,
     flipped: &FlippedUnits,
 ) {
-    let bpm = controls.load().master.bpm;
-    match active_field(automation.state(), lfo_selected) {
-        ActiveField::Lfo(address, field) => {
-            let is_flipped = lfo_time_key(field)
-                .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
-            automation.edit(|state| {
-                let Some(route) = state.route_mut(address) else {
+    let active = active_field(automation.state(), lfo_selected);
+    let recent_id = automation
+        .state()
+        .active_address()
+        .map(ControlAddress::id)
+        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    let published = effects.edit_session(recent_id, |snapshot| {
+        let bpm = snapshot.controls.master.bpm;
+        match active {
+            ActiveField::Lfo(address, field) => {
+                let is_flipped = lfo_time_key(field)
+                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
+                let Some(route) = snapshot.automation.route_mut(address) else {
                     return;
                 };
                 match (is_flipped, field) {
@@ -1047,13 +1078,11 @@ pub(crate) fn adjust_lfo_or_control(
                     }
                     _ => route.adjust_field_at(field, dir, beat),
                 }
-            });
-        }
-        ActiveField::Envelope(address, field) => {
-            let is_flipped = env_time_key(field)
-                .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
-            automation.edit(|state| {
-                let Some(route) = state.envelope_mut(address) else {
+            }
+            ActiveField::Envelope(address, field) => {
+                let is_flipped = env_time_key(field)
+                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
+                let Some(route) = snapshot.automation.envelope_mut(address) else {
                     return;
                 };
                 match (is_flipped, field) {
@@ -1067,149 +1096,172 @@ pub(crate) fn adjust_lfo_or_control(
                     }
                     _ => route.adjust_field(field, dir),
                 }
-            });
-        }
-        ActiveField::LfoMacro(address, field, macro_field) => automation.edit(|state| {
-            let key = unit_key(address.id(), field.macro_key());
-            if let Some(route) = state.field_macro_mut(&key) {
-                route.adjust_field(macro_field, dir);
             }
-        }),
-        ActiveField::LfoStep(address, target) => automation.edit(|state| {
-            if let Some(route) = state.route_mut(address) {
-                route.adjust_step(target, dir);
-            }
-        }),
-        ActiveField::Macro(address, field) => automation.edit(|state| {
-            if let Some(route) = state.macro_route_mut(address) {
-                route.adjust_field(field, dir);
-            }
-        }),
-        ActiveField::Control => {
-            let flipped_spec = tab_specs(tab).get(selected).filter(|spec| {
-                spec.time_base != TimeBase::None && flipped.contains(&unit_key(spec.id, None))
-            });
-            match flipped_spec {
-                Some(spec) => {
-                    let mut next = FluidControls::clone(&controls.load());
-                    let current = (spec.get)(&next);
-                    spec.apply_raw(flipped_step(spec.time_base, current, dir, bpm), &mut next);
-                    controls.store(Arc::new(next));
+            ActiveField::LfoMacro(address, field, macro_field) => {
+                let key = unit_key(address.id(), field.macro_key());
+                if let Some(route) = snapshot.automation.field_macro_mut(&key) {
+                    route.adjust_field(macro_field, dir);
                 }
-                None => adjust(controls, tab, selected, dir),
+            }
+            ActiveField::LfoStep(address, target) => {
+                if let Some(route) = snapshot.automation.route_mut(address) {
+                    route.adjust_step(target, dir);
+                }
+            }
+            ActiveField::Macro(address, field) => {
+                if let Some(route) = snapshot.automation.macro_route_mut(address) {
+                    route.adjust_field(field, dir);
+                }
+            }
+            ActiveField::Control => {
+                let flipped_spec = tab_specs(tab).get(selected).filter(|spec| {
+                    spec.time_base != TimeBase::None && flipped.contains(&unit_key(spec.id, None))
+                });
+                match flipped_spec {
+                    Some(spec) => {
+                        let current = (spec.get)(&snapshot.controls);
+                        spec.apply_raw(
+                            flipped_step(spec.time_base, current, dir, bpm),
+                            &mut snapshot.controls,
+                        );
+                    }
+                    None => apply_delta(tab, selected, dir, &mut snapshot.controls),
+                }
             }
         }
-    }
+    });
+    automation.sync_from_snapshot(&published.automation);
 }
 
 fn reset_lfo_or_control(
+    effects: &mut EffectExecutor,
     automation: &mut PublishedAutomation,
     lfo_selected: usize,
-    controls: &Arc<ArcSwap<FluidControls>>,
     tab: Tab,
     selected: usize,
     beat: f64,
 ) {
-    match active_field(automation.state(), lfo_selected) {
-        ActiveField::Lfo(address, field) => automation.edit(|state| {
-            if let Some(route) = state.route_mut(address) {
+    let active = active_field(automation.state(), lfo_selected);
+    let recent_id = automation
+        .state()
+        .active_address()
+        .map(ControlAddress::id)
+        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    let published = effects.edit_session(recent_id, |snapshot| match active {
+        ActiveField::Lfo(address, field) => {
+            if let Some(route) = snapshot.automation.route_mut(address) {
                 route.reset_field_at(field, beat);
             }
-        }),
-        ActiveField::Envelope(address, field) => automation.edit(|state| {
-            if let Some(route) = state.envelope_mut(address) {
+        }
+        ActiveField::Envelope(address, field) => {
+            if let Some(route) = snapshot.automation.envelope_mut(address) {
                 route.reset_field(field);
             }
-        }),
-        ActiveField::LfoMacro(address, field, macro_field) => automation.edit(|state| {
+        }
+        ActiveField::LfoMacro(address, field, macro_field) => {
             let key = unit_key(address.id(), field.macro_key());
-            if let Some(route) = state.field_macro_mut(&key) {
+            if let Some(route) = snapshot.automation.field_macro_mut(&key) {
                 route.reset_field(macro_field);
             }
-        }),
-        ActiveField::LfoStep(address, target) => automation.edit(|state| {
-            if let Some(route) = state.route_mut(address) {
+        }
+        ActiveField::LfoStep(address, target) => {
+            if let Some(route) = snapshot.automation.route_mut(address) {
                 route.reset_step(target);
             }
-        }),
-        ActiveField::Macro(address, field) => automation.edit(|state| {
-            if let Some(route) = state.macro_route_mut(address) {
+        }
+        ActiveField::Macro(address, field) => {
+            if let Some(route) = snapshot.automation.macro_route_mut(address) {
                 route.reset_field(field);
             }
-        }),
-        ActiveField::Control => reset_to_min(controls, tab, selected),
-    }
+        }
+        ActiveField::Control => apply_min(tab, selected, &mut snapshot.controls),
+    });
+    automation.sync_from_snapshot(&published.automation);
 }
 
 #[allow(clippy::too_many_arguments)]
 fn set_modulator_or_control(
+    effects: &mut EffectExecutor,
     automation: &mut PublishedAutomation,
     lfo_selected: usize,
-    controls: &Arc<ArcSwap<FluidControls>>,
     tab: Tab,
     selected: usize,
     value: f32,
     beat: f64,
     flipped: &FlippedUnits,
 ) {
-    let bpm = controls.load().master.bpm;
-    match active_field(automation.state(), lfo_selected) {
-        ActiveField::Lfo(address, field) => automation.edit(|state| {
-            let is_flipped = lfo_time_key(field)
-                .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
-            if let Some(route) = state.route_mut(address) {
-                if is_flipped {
-                    // Typed ms is exact: convert and clamp, but don't snap
-                    // back onto the beat grid.
-                    route.set_field_raw_at(field, flip_entry(TimeBase::Beats, value, bpm), beat);
-                } else {
-                    route.set_field_at(field, value, beat);
+    let active = active_field(automation.state(), lfo_selected);
+    let recent_id = automation
+        .state()
+        .active_address()
+        .map(ControlAddress::id)
+        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    let published = effects.edit_session(recent_id, |snapshot| {
+        let bpm = snapshot.controls.master.bpm;
+        match active {
+            ActiveField::Lfo(address, field) => {
+                let is_flipped = lfo_time_key(field)
+                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
+                if let Some(route) = snapshot.automation.route_mut(address) {
+                    if is_flipped {
+                        // Typed ms is exact: convert and clamp, but don't snap
+                        // back onto the beat grid.
+                        route.set_field_raw_at(
+                            field,
+                            flip_entry(TimeBase::Beats, value, bpm),
+                            beat,
+                        );
+                    } else {
+                        route.set_field_at(field, value, beat);
+                    }
                 }
             }
-        }),
-        ActiveField::Envelope(address, field) => automation.edit(|state| {
-            let is_flipped = env_time_key(field)
-                .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
-            if let Some(route) = state.envelope_mut(address) {
-                if is_flipped {
-                    route.set_field_raw(field, flip_entry(TimeBase::Beats, value, bpm));
-                } else {
+            ActiveField::Envelope(address, field) => {
+                let is_flipped = env_time_key(field)
+                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
+                if let Some(route) = snapshot.automation.envelope_mut(address) {
+                    if is_flipped {
+                        route.set_field_raw(field, flip_entry(TimeBase::Beats, value, bpm));
+                    } else {
+                        route.set_field(field, value);
+                    }
+                }
+            }
+            ActiveField::LfoMacro(address, field, macro_field) => {
+                let key = unit_key(address.id(), field.macro_key());
+                if let Some(route) = snapshot.automation.field_macro_mut(&key) {
+                    route.set_field(macro_field, value);
+                }
+            }
+            ActiveField::LfoStep(address, target) => {
+                if let Some(route) = snapshot.automation.route_mut(address) {
+                    route.set_step(target, value);
+                }
+            }
+            ActiveField::Macro(address, field) => {
+                if let Some(route) = snapshot.automation.macro_route_mut(address) {
                     route.set_field(field, value);
                 }
             }
-        }),
-        ActiveField::LfoMacro(address, field, macro_field) => automation.edit(|state| {
-            let key = unit_key(address.id(), field.macro_key());
-            if let Some(route) = state.field_macro_mut(&key) {
-                route.set_field(macro_field, value);
-            }
-        }),
-        ActiveField::LfoStep(address, target) => automation.edit(|state| {
-            if let Some(route) = state.route_mut(address) {
-                route.set_step(target, value);
-            }
-        }),
-        ActiveField::Macro(address, field) => automation.edit(|state| {
-            if let Some(route) = state.macro_route_mut(address) {
-                route.set_field(field, value);
-            }
-        }),
-        ActiveField::Control => {
-            match tab_specs(tab).get(selected) {
-                Some(spec)
-                    if spec.time_base != TimeBase::None
-                        && flipped.contains(&unit_key(spec.id, None)) =>
-                {
-                    // Typed input in the flipped unit is exact: convert and
-                    // clamp, but don't snap onto the native step grid.
-                    let mut next = FluidControls::clone(&controls.load());
-                    spec.apply_raw(flip_entry(spec.time_base, value, bpm), &mut next);
-                    controls.store(Arc::new(next));
+            ActiveField::Control => {
+                match tab_specs(tab).get(selected) {
+                    Some(spec)
+                        if spec.time_base != TimeBase::None
+                            && flipped.contains(&unit_key(spec.id, None)) =>
+                    {
+                        // Typed input in the flipped unit is exact: convert and
+                        // clamp, but don't snap onto the native step grid.
+                        spec.apply_raw(
+                            flip_entry(spec.time_base, value, bpm),
+                            &mut snapshot.controls,
+                        );
+                    }
+                    _ => apply_value(tab, selected, value, &mut snapshot.controls),
                 }
-                _ => set_value(controls, tab, selected, value),
             }
         }
-    }
+    });
+    automation.sync_from_snapshot(&published.automation);
 }
 
 fn automation_footer(automation: &AutomationState) -> Option<String> {
@@ -1269,114 +1321,6 @@ pub(crate) fn master_footer(tab: Tab, comp_drill: CompDrill) -> Option<String> {
         CompDrill::None => None,
         CompDrill::Detail => Some("Compression   Esc: back".to_string()),
     }
-}
-
-fn copy_song_code(
-    controls: &Arc<ArcSwap<FluidControls>>,
-    automation: &AutomationState,
-    tonal_sequence: &TonalSequenceState,
-) -> Result<(), Box<dyn Error>> {
-    let c = FluidControls::clone(&controls.load());
-    let code = encode_song_code(&SongState {
-        controls: c,
-        automation: automation.clone(),
-        tonal_sequence: Some(tonal_sequence.clone()),
-    })?;
-    let mut clipboard = arboard::Clipboard::new()?;
-    clipboard.set_text(code)?;
-    Ok(())
-}
-
-/// Per-tab mute state, indexed by `Tab as usize` (`Tab::Master` included at
-/// its own slot 0). `Some(level)` holds the pre-mute value so unmuting
-/// restores it exactly instead of snapping to a hardcoded level; UI-local
-/// only, never persisted to song code.
-pub(crate) type MuteState = [Option<f32>; 9];
-
-/// Bounded, UI-local MRU list used to make `/` resume the controls the player
-/// is actively shaping. It deliberately stores no counters and is not song
-/// state: a new session starts with the registry's page-aware ordering.
-#[derive(Default)]
-pub(crate) struct RecentControls {
-    ids: Vec<&'static str>,
-}
-
-impl RecentControls {
-    const CAPACITY: usize = 10;
-
-    pub(crate) fn ids(&self) -> &[&'static str] {
-        &self.ids
-    }
-
-    pub(crate) fn touch(&mut self, id: &'static str) {
-        self.ids.retain(|&known| known != id);
-        self.ids.insert(0, id);
-        self.ids.truncate(Self::CAPACITY);
-    }
-
-    fn touch_edits(&mut self, edits: &[StagedEdit]) {
-        for edit in edits.iter().rev() {
-            self.touch(edit.id);
-        }
-    }
-
-    fn touch_selected(
-        &mut self,
-        tab: Tab,
-        chord_drill: ChordDrill,
-        comp_drill: CompDrill,
-        selected: usize,
-    ) {
-        if let Some(spec) = tab_specs(tab).get(resolve_selected_index(
-            tab,
-            chord_drill,
-            comp_drill,
-            selected,
-        )) {
-            self.touch(spec.id);
-        }
-    }
-}
-
-/// Toggle mute on `tab`'s level/gain control: mute stores the live value and
-/// zeroes it, unmute restores the stored value. No-op on a tab with no level
-/// control to mute (`Macros`).
-pub(crate) fn toggle_mute(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, mute: &mut MuteState) {
-    let Some(id) = tab.level_id() else { return };
-    let spec = spec_by_id(id).expect("tab level_id must name a real control");
-    let mut next = FluidControls::clone(&controls.load());
-    let slot = &mut mute[tab as usize];
-    match slot.take() {
-        Some(previous) => (spec.set)(&mut next, previous),
-        None => {
-            *slot = Some((spec.get)(&next));
-            (spec.set)(&mut next, 0.0);
-        }
-    }
-    controls.store(Arc::new(next));
-}
-
-pub(crate) fn adjust(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize, dir: f32) {
-    let mut next = FluidControls::clone(&controls.load());
-    apply_delta(tab, selected, dir, &mut next);
-    controls.store(Arc::new(next));
-}
-
-pub(crate) fn reset_to_min(controls: &Arc<ArcSwap<FluidControls>>, tab: Tab, selected: usize) {
-    let mut next = FluidControls::clone(&controls.load());
-    apply_min(tab, selected, &mut next);
-    controls.store(Arc::new(next));
-}
-
-pub(crate) fn set_value(
-    controls: &Arc<ArcSwap<FluidControls>>,
-    tab: Tab,
-    selected: usize,
-    value: f32,
-) {
-    let mut next = FluidControls::clone(&controls.load());
-    apply_value(tab, selected, value, &mut next);
-    controls.store(Arc::new(next));
 }
 
 pub(crate) struct NumericDisplay<'a> {
@@ -2028,23 +1972,6 @@ fn draw_palette(
         Style::default().fg(Color::Rgb(120, 128, 145)),
     )));
     f.render_widget(Paragraph::new(lines), inner);
-}
-
-/// Apply every staged palette edit in one clone-modify-store pass, through
-/// each control's own entry semantics (percent, snap, ...).
-fn commit_staged_edits(controls: &Arc<ArcSwap<FluidControls>>, edits: &[StagedEdit]) {
-    let mut next = FluidControls::clone(&controls.load());
-    for edit in edits {
-        if let Some(spec) = spec_by_id(edit.id) {
-            spec.apply_value(edit.value, &mut next);
-        }
-    }
-    controls.store(Arc::new(next));
-}
-
-fn staged_applied_message(count: usize) -> String {
-    let plural = if count == 1 { "" } else { "s" };
-    format!("{count} edit{plural} applied")
 }
 
 /// Colour pair for a modulator submenu: (active row, idle row).

@@ -22,16 +22,15 @@ pub(crate) struct FluidEngine {
     pub(crate) arp: ArpEngine,
     pub(crate) ambient_reverb: AmbientReverbSend,
     pub(crate) master_bus: MasterBus,
-    pub(crate) controls: Arc<ArcSwap<FluidControls>>,
-    pub(crate) automation: Arc<ArcSwap<AutomationState>>,
+    pub(crate) session: LiveSession,
     /// `Some` only while running `nooise auto`; rewrites `controls` on a
     /// throttled tick so the morph is audible and visible.
     pub(crate) morph: Arc<ArcSwap<Option<MorphState>>>,
     morph_writer: MorphWriter,
     pub(crate) telemetry: Arc<FluidTelemetry>,
     pub(crate) snapshot: FluidControls,
-    /// Allocation-free per-sample plan, rebuilt only when `plan_source`
-    /// (the last-seen published automation Arc) changes.
+    /// Allocation-free per-sample plan, rebuilt only when aggregate
+    /// automation differs from the last planned state.
     plan: AutomationPlan,
     plan_source: Arc<AutomationState>,
 }
@@ -39,31 +38,23 @@ pub(crate) struct FluidEngine {
 impl FluidEngine {
     pub(crate) fn new(
         sample_rate: f32,
-        controls: Arc<ArcSwap<FluidControls>>,
-        automation: Arc<ArcSwap<AutomationState>>,
+        session: LiveSession,
         morph: Arc<ArcSwap<Option<MorphState>>>,
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
-        Self::new_with_tonal_session_state(
-            sample_rate,
-            controls,
-            automation,
-            morph,
-            telemetry,
-            None,
-        )
+        Self::new_with_tonal_session_state(sample_rate, session, morph, telemetry, false)
     }
 
     pub(crate) fn new_with_tonal_session_state(
         sample_rate: f32,
-        controls: Arc<ArcSwap<FluidControls>>,
-        automation: Arc<ArcSwap<AutomationState>>,
+        session: LiveSession,
         morph: Arc<ArcSwap<Option<MorphState>>>,
         telemetry: Arc<FluidTelemetry>,
-        tonal_session_state: Option<Arc<ArcSwap<TonalSequenceState>>>,
+        publish_tonal_session_state: bool,
     ) -> Self {
-        let snapshot = FluidControls::clone(&controls.load());
-        let plan_source = automation.load_full();
+        let live = session.load();
+        let snapshot = live.controls.clone();
+        let plan_source = Arc::new(live.automation.clone());
         let mut plan = AutomationPlan::default();
         plan.rebuild(&plan_source);
         Self {
@@ -74,14 +65,16 @@ impl FluidEngine {
             pad: PadEngine::new(sample_rate, &snapshot.pad, Arc::clone(&telemetry)),
             perc: PercEngine::new(sample_rate),
             kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
-            tonal: TonalEngine::new_with_session_state(sample_rate, tonal_session_state),
+            tonal: TonalEngine::new_with_session_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+            ),
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
             arp: ArpEngine::new(sample_rate),
             ambient_reverb: AmbientReverbSend::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
-            controls,
-            automation,
+            session,
             morph,
             morph_writer: MorphWriter::default(),
             telemetry,
@@ -108,22 +101,29 @@ impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         if self.current_sample.is_multiple_of(128) {
-            if let Some(morph) = self.morph.load_full().as_ref()
+            let morph_source = self.morph.load_full();
+            if let Some(morph) = morph_source.as_ref()
                 && let Some((next_controls, next_automation)) =
                     self.morph_writer.tick(morph, self.tempo.beat)
             {
-                self.controls.store(Arc::new(next_controls));
-                self.automation.store(Arc::new(next_automation));
+                let _ = self.session.transact(|snapshot| {
+                    if !Arc::ptr_eq(&self.morph.load_full(), &morph_source) {
+                        return Err(());
+                    }
+                    snapshot.controls = next_controls.clone();
+                    snapshot.automation = next_automation.clone();
+                    Ok(())
+                });
             }
-            self.snapshot = FluidControls::clone(&self.controls.load());
+            let session = self.session.load();
+            self.snapshot = session.controls.clone();
             self.gain_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);
             self.master_bus
                 .set_controls(&self.snapshot.master, self.sample_rate);
-            let automation = self.automation.load_full();
-            if !Arc::ptr_eq(&automation, &self.plan_source) {
-                self.plan.rebuild(&automation);
-                self.plan_source = automation;
+            if session.automation != *self.plan_source {
+                self.plan.rebuild(&session.automation);
+                self.plan_source = Arc::new(session.automation.clone());
             }
         }
 

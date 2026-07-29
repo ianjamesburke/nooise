@@ -6,6 +6,12 @@ use ratatui::buffer::Buffer;
 
 const SAMPLE_RATE: f32 = 48_000.0;
 
+fn live_session(controls: FluidControls, automation: AutomationState) -> LiveSession {
+    let mut song = SongState::from_controls(controls);
+    song.automation = automation;
+    LiveSession::new(LiveSessionSnapshot::from_song(&song))
+}
+
 fn assert_close(actual: f32, expected: f32) {
     assert!(
         (actual - expected).abs() < f32::EPSILON,
@@ -502,18 +508,19 @@ fn tonal_sequence_snapshot_resumes_the_next_evolution() {
         evolution_seed: 42,
         evolution_count: 7,
     };
-    let session = Arc::new(ArcSwap::from_pointee(snapshot.clone()));
-    let mut resumed = TonalEngine::new_with_session_state(SAMPLE_RATE, Some(Arc::clone(&session)));
-    let mut uninterrupted = TonalEngine::new_with_session_state(
-        SAMPLE_RATE,
-        Some(Arc::new(ArcSwap::from_pointee(snapshot))),
-    );
+    let session = live_session(FluidControls::default(), AutomationState::default());
+    session.update(|live| live.tonal_sequence = snapshot.clone());
+    let mut resumed = TonalEngine::new_with_session_state(SAMPLE_RATE, Some(session.clone()));
+    let uninterrupted_session = live_session(FluidControls::default(), AutomationState::default());
+    uninterrupted_session.update(|live| live.tonal_sequence = snapshot.clone());
+    let mut uninterrupted =
+        TonalEngine::new_with_session_state(SAMPLE_RATE, Some(uninterrupted_session));
 
     resumed.evolve_phrase(1.0);
     uninterrupted.evolve_phrase(1.0);
 
     assert_eq!(resumed.evolved_phrase, uninterrupted.evolved_phrase);
-    assert_eq!(session.load().evolution_count, 8);
+    assert_eq!(session.load().tonal_sequence.evolution_count, 8);
 }
 
 #[test]
@@ -1194,13 +1201,11 @@ fn engine_publishes_beat_telemetry() {
     let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
     let telemetry = Arc::new(FluidTelemetry::default());
     let bpm = f64::from(controls.load().master.bpm);
-    let mut engine = FluidEngine::new(
-        44_100.0,
-        controls,
-        automation,
-        no_morph(),
-        Arc::clone(&telemetry),
+    let session = live_session(
+        controls.load_full().as_ref().clone(),
+        automation.load_full().as_ref().clone(),
     );
+    let mut engine = FluidEngine::new(44_100.0, session, no_morph(), Arc::clone(&telemetry));
 
     for _ in 0..512 {
         engine.next_stereo();
@@ -1266,7 +1271,11 @@ fn golden_render_is_byte_identical_for_a_seed() {
     }));
     let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(SAMPLE_RATE, controls, automation, no_morph(), telemetry);
+    let session = live_session(
+        controls.load_full().as_ref().clone(),
+        automation.load_full().as_ref().clone(),
+    );
+    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), telemetry);
     engine.reseed(42);
 
     let mut hash = 0xcbf2_9ce4_8422_2325u64; // FNV offset basis
@@ -1853,13 +1862,11 @@ fn full_engine_renders_a_custom_progression_from_song_code_without_panicking() {
     let controls_swap = Arc::new(ArcSwap::from_pointee(decoded.controls));
     let automation = Arc::new(ArcSwap::from_pointee(decoded.automation));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(
-        SAMPLE_RATE,
-        controls_swap,
-        automation,
-        no_morph(),
-        telemetry,
+    let session = live_session(
+        controls_swap.load_full().as_ref().clone(),
+        automation.load_full().as_ref().clone(),
     );
+    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), telemetry);
 
     for _ in 0..(SAMPLE_RATE as usize * 4) {
         let (l, r) = engine.next_stereo();
@@ -4165,18 +4172,22 @@ fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
     let mut c = FluidControls::default();
     c.master.bpm = 120.0; // one beat is exactly 500 ms
     c.perc.decay_ms = 470.0;
-    let controls = Arc::new(ArcSwap::from_pointee(c));
-    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let session = live_session(c, AutomationState::default());
+    let mut effects = EffectExecutor::new(
+        session.clone(),
+        AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+    );
+    let mut automation =
+        PublishedAutomation::new(AutomationState::default(), LiveAutomation::new(session));
     let mut flipped = FlippedUnits::new();
 
     // Perc interval (native beats) flipped to ms: h/l moves on the 10 ms
     // grid instead of the beat grid. 0.25 beats = 125 ms -> 140 ms.
     flipped.insert(unit_key("perc.interval_beats", None));
     adjust_lfo_or_control(
+        &mut effects,
         &mut automation,
         0,
-        &controls,
         Tab::Perc,
         3,
         1.0,
@@ -4184,46 +4195,47 @@ fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
         &flipped,
     );
     assert_near(
-        beats_to_ms(controls.load().perc.interval_beats, 120.0),
+        beats_to_ms(effects.session().load().controls.perc.interval_beats, 120.0),
         140.0,
     );
 
     // Flipping back to beats lands the value on the control's own grid.
     flipped.remove(&unit_key("perc.interval_beats", None));
-    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 3, false, 0.0);
-    assert_close(controls.load().perc.interval_beats, 0.25);
+    snap_after_unit_flip(&mut effects, &mut automation, 0, Tab::Perc, 3, false, 0.0);
+    assert_close(effects.session().load().controls.perc.interval_beats, 0.25);
 
     // An ms-native control flipped to beats rounds to the nearest divided
     // beat: 470 ms at 120 BPM is 0.94 beats -> 1.0 beats -> 500 ms.
-    snap_after_unit_flip(&mut automation, 0, &controls, Tab::Perc, 2, true, 0.0);
-    assert_near(controls.load().perc.decay_ms, 500.0);
+    snap_after_unit_flip(&mut effects, &mut automation, 0, Tab::Perc, 2, true, 0.0);
+    assert_near(effects.session().load().controls.perc.decay_ms, 500.0);
 
     // And once flipped, it steps on the 0.125-beat grid: 500 ms + an eighth
     // of a beat (62.5 ms) at 120 BPM.
     flipped.insert(unit_key("perc.decay_ms", None));
     adjust_lfo_or_control(
+        &mut effects,
         &mut automation,
         0,
-        &controls,
         Tab::Perc,
         2,
         1.0,
         0.0,
         &flipped,
     );
-    assert_near(controls.load().perc.decay_ms, 562.5);
+    assert_near(effects.session().load().controls.perc.decay_ms, 562.5);
 }
 
 #[test]
 fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
-    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
-    {
-        let mut c = FluidControls::clone(&controls.load());
-        c.master.bpm = 120.0;
-        controls.store(Arc::new(c));
-    }
-    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
+    let mut controls = FluidControls::default();
+    controls.master.bpm = 120.0;
+    let session = live_session(controls, AutomationState::default());
+    let mut effects = EffectExecutor::new(
+        session.clone(),
+        AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+    );
+    let mut automation =
+        PublishedAutomation::new(AutomationState::default(), LiveAutomation::new(session));
     let address = ControlAddress::new("master.level");
     automation.edit(|state| {
         state.open_or_create(address);
@@ -4234,9 +4246,9 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
     // Default cycle is 2 beats = 1000 ms at 120 BPM; one flipped step lands
     // on 1010 ms, off the beat grid. Interval is row 2 (amount is row 1).
     adjust_lfo_or_control(
+        &mut effects,
         &mut automation,
         2,
-        &controls,
         Tab::Master,
         0,
         1.0,
@@ -4254,7 +4266,7 @@ fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
     // Un-flipping keeps the exact rate; typed beat values are intentionally
     // not limited to the arrow-key ladder.
     flipped.clear();
-    snap_after_unit_flip(&mut automation, 2, &controls, Tab::Master, 0, false, 0.0);
+    snap_after_unit_flip(&mut effects, &mut automation, 2, Tab::Master, 0, false, 0.0);
     assert_near(
         beats_to_ms(
             automation.state().route(address).unwrap().cycle_beats,
@@ -4503,7 +4515,11 @@ fn engine_hot_path_timing() {
     let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
     let automation = Arc::new(ArcSwap::from_pointee(automation));
     let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(SAMPLE_RATE, controls, automation, no_morph(), telemetry);
+    let session = live_session(
+        controls.load_full().as_ref().clone(),
+        automation.load_full().as_ref().clone(),
+    );
+    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), telemetry);
 
     let frames = SAMPLE_RATE as u64 * 10;
     let start = Instant::now();

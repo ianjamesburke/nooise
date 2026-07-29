@@ -66,7 +66,7 @@ pub(crate) struct PaletteMatch {
 }
 
 /// A value edit waiting in the palette's stage.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StagedEdit {
     pub(crate) id: &'static str,
     pub(crate) value: f32,

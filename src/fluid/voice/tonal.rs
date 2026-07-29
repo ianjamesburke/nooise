@@ -17,7 +17,7 @@ pub(crate) struct TonalEngine {
     pub(crate) rng: StdRng,
     evolution_seed: u64,
     evolution_count: u64,
-    session_state: Option<Arc<ArcSwap<TonalSequenceState>>>,
+    session_state: Option<LiveSession>,
 }
 
 /// The mutable melodic state a song snapshot needs to resume evolution.
@@ -349,11 +349,11 @@ impl TonalEngine {
 
     pub(crate) fn new_with_session_state(
         sample_rate: f32,
-        session_state: Option<Arc<ArcSwap<TonalSequenceState>>>,
+        session_state: Option<LiveSession>,
     ) -> Self {
         let state = session_state
             .as_ref()
-            .map(|state| (*state.load_full()).clone())
+            .map(|state| state.load().tonal_sequence.clone())
             .unwrap_or_else(|| TonalSequenceState::from_phrase(0));
         Self {
             sample_rate,
@@ -478,12 +478,14 @@ impl TonalEngine {
         let Some(session_state) = &self.session_state else {
             return;
         };
-        session_state.store(Arc::new(TonalSequenceState {
-            phrase: self.active_phrase,
-            notes: self.evolved_phrase.clone(),
-            evolution_seed: self.evolution_seed,
-            evolution_count: self.evolution_count,
-        }));
+        session_state.update(|snapshot| {
+            snapshot.tonal_sequence = TonalSequenceState {
+                phrase: self.active_phrase,
+                notes: self.evolved_phrase.clone(),
+                evolution_seed: self.evolution_seed,
+                evolution_count: self.evolution_count,
+            };
+        });
     }
 }
 
