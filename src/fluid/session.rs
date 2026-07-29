@@ -104,58 +104,6 @@ impl ControlsAccess for Arc<ArcSwap<FluidControls>> {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct LiveAutomation {
-    session: LiveSession,
-    #[cfg(test)]
-    legacy: Option<Arc<ArcSwap<AutomationState>>>,
-}
-
-impl LiveAutomation {
-    pub(crate) fn new(session: LiveSession) -> Self {
-        Self {
-            session,
-            #[cfg(test)]
-            legacy: None,
-        }
-    }
-
-    pub(crate) fn load_full(&self) -> Arc<AutomationState> {
-        #[cfg(test)]
-        if let Some(legacy) = &self.legacy {
-            return legacy.load_full();
-        }
-        Arc::new(self.session.load().automation.clone())
-    }
-
-    pub(crate) fn edit(&self, mut edit: impl FnMut(&mut AutomationState)) -> Arc<AutomationState> {
-        #[cfg(test)]
-        if let Some(legacy) = &self.legacy {
-            let mut automation = legacy.load_full().as_ref().clone();
-            edit(&mut automation);
-            let automation = Arc::new(automation);
-            legacy.store(Arc::clone(&automation));
-            return automation;
-        }
-        let published = self
-            .session
-            .update(|snapshot| edit(&mut snapshot.automation));
-        Arc::new(published.automation.clone())
-    }
-}
-
-#[cfg(test)]
-impl From<Arc<ArcSwap<AutomationState>>> for LiveAutomation {
-    fn from(legacy: Arc<ArcSwap<AutomationState>>) -> Self {
-        let mut song = SongState::from_controls(FluidControls::default());
-        song.automation = legacy.load_full().as_ref().clone();
-        Self {
-            session: LiveSession::new(LiveSessionSnapshot::from_song(&song)),
-            legacy: Some(legacy),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Barrier;

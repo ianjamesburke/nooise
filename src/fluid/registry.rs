@@ -41,12 +41,7 @@ impl Tab {
         TAB_META[self as usize].1
     }
 
-    // Discriminants match `all()`'s order, so tab cycling is index arithmetic.
-    pub(crate) fn next(self) -> Self {
-        let all = Self::all();
-        all[(self as usize + 1) % all.len()]
-    }
-
+    #[cfg(test)]
     pub(crate) fn previous(self) -> Self {
         let all = Self::all();
         all[(self as usize + all.len() - 1) % all.len()]
@@ -84,26 +79,6 @@ pub(crate) enum ControlKind {
 impl ControlKind {
     pub(crate) fn smooths_audio(self) -> bool {
         matches!(self, Self::Gain)
-    }
-}
-
-#[derive(Default)]
-pub(crate) struct NumericEntry {
-    pub(crate) buffer: String,
-}
-
-impl NumericEntry {
-    pub(crate) fn push(&mut self, c: char) {
-        match c {
-            '0'..='9' => self.buffer.push(c),
-            '.' if !self.buffer.contains('.') => self.buffer.push(c),
-            '-' if self.buffer.is_empty() => self.buffer.push(c),
-            _ => {}
-        }
-    }
-
-    pub(crate) fn is_complete_number(&self) -> bool {
-        !self.buffer.is_empty() && self.buffer != "." && self.buffer != "-"
     }
 }
 
@@ -720,13 +695,16 @@ pub(crate) const MASTER_COMP_AMOUNT_ROW: usize = 10;
 /// (Compression shown as one macro row), or the Compression row's three
 /// derived fields. Mirrors `chords_tab_controls`'s pattern of re-slicing a
 /// fixed underlying array rather than reordering it.
-pub(crate) fn master_tab_controls(c: &FluidControls, drill: CompDrill) -> Vec<ControlItem> {
+pub(crate) fn master_tab_controls(
+    c: &FluidControls,
+    drill: interaction::MasterDrill,
+) -> Vec<ControlItem> {
     match drill {
-        CompDrill::None => MASTER_CONTROLS[..MASTER_DETAIL_START]
+        interaction::MasterDrill::None => MASTER_CONTROLS[..MASTER_DETAIL_START]
             .iter()
             .map(|spec| spec.item(c))
             .collect(),
-        CompDrill::Detail => MASTER_CONTROLS[MASTER_DETAIL_START..]
+        interaction::MasterDrill::Compression { .. } => MASTER_CONTROLS[MASTER_DETAIL_START..]
             .iter()
             .map(|spec| spec.item(c))
             .collect(),
@@ -735,10 +713,11 @@ pub(crate) fn master_tab_controls(c: &FluidControls, drill: CompDrill) -> Vec<Co
 
 /// Maps a visible-row index under `master_tab_controls` back to its real
 /// index into `MASTER_CONTROLS`, for the positional registry setters below.
-pub(crate) fn master_flat_index(drill: CompDrill, visible_row: usize) -> usize {
+#[cfg(test)]
+pub(crate) fn master_flat_index(drill: interaction::MasterDrill, visible_row: usize) -> usize {
     match drill {
-        CompDrill::None => visible_row,
-        CompDrill::Detail => MASTER_DETAIL_START + visible_row,
+        interaction::MasterDrill::None => visible_row,
+        interaction::MasterDrill::Compression { .. } => MASTER_DETAIL_START + visible_row,
     }
 }
 
@@ -1402,20 +1381,23 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
 /// Read-only view over `CHORDS_CONTROLS`'s fixed layout (11 base rows, then
 /// 8 slots x 5 rows in degree/accidental/quality/extension/inversion order) — never
 /// reorders the underlying array.
-pub(crate) fn chords_tab_controls(c: &FluidControls, drill: ChordDrill) -> Vec<ControlItem> {
+pub(crate) fn chords_tab_controls(
+    c: &FluidControls,
+    drill: interaction::ChordDrill,
+) -> Vec<ControlItem> {
     match drill {
-        ChordDrill::None => CHORDS_CONTROLS[..11]
+        interaction::ChordDrill::None => CHORDS_CONTROLS[..11]
             .iter()
             .map(|spec| spec.item(c))
             .collect(),
-        ChordDrill::Progression => {
+        interaction::ChordDrill::Progression { .. } => {
             let count = (c.pad.chord_count.round() as usize).clamp(1, CHORD_SLOT_COUNT);
             (0..count)
                 .map(|slot| CHORDS_CONTROLS[11 + 5 * slot].item(c))
                 .collect()
         }
-        ChordDrill::Slot(n) => {
-            let base = 11 + 5 * n;
+        interaction::ChordDrill::Slot { slot, .. } => {
+            let base = 11 + 5 * slot;
             [base + 1, base + 2, base + 3, base + 4]
                 .iter()
                 .map(|&i| CHORDS_CONTROLS[i].item(c))
@@ -1426,35 +1408,44 @@ pub(crate) fn chords_tab_controls(c: &FluidControls, drill: ChordDrill) -> Vec<C
 
 /// Maps a visible-row index under `chords_tab_controls` back to its real
 /// index into `CHORDS_CONTROLS`, for the positional registry setters below.
-pub(crate) fn chords_flat_index(drill: ChordDrill, visible_row: usize) -> usize {
+#[cfg(test)]
+pub(crate) fn chords_flat_index(drill: interaction::ChordDrill, visible_row: usize) -> usize {
     match drill {
-        ChordDrill::None => visible_row,
-        ChordDrill::Progression => 11 + 5 * visible_row,
-        ChordDrill::Slot(n) => 11 + 5 * n + 1 + visible_row,
+        interaction::ChordDrill::None => visible_row,
+        interaction::ChordDrill::Progression { .. } => 11 + 5 * visible_row,
+        interaction::ChordDrill::Slot { slot, .. } => 11 + 5 * slot + 1 + visible_row,
     }
 }
 
 /// Inverse of `chords_flat_index`: the drill level + visible row that shows a
 /// real `CHORDS_CONTROLS` index, so a palette jump can land on drilled rows.
-pub(crate) fn chords_drill_for_index(flat: usize) -> (ChordDrill, usize) {
+pub(crate) fn chords_drill_for_index(flat: usize) -> (interaction::ChordDrill, usize) {
     if flat < 11 {
-        return (ChordDrill::None, flat);
+        return (interaction::ChordDrill::None, flat);
     }
     let rel = flat - 11;
     let (slot, field) = (rel / 5, rel % 5);
     if field == 0 {
-        (ChordDrill::Progression, slot)
+        (interaction::ChordDrill::Progression { return_to: 4 }, slot)
     } else {
-        (ChordDrill::Slot(slot), field - 1)
+        (
+            interaction::ChordDrill::Slot { slot, return_to: 4 },
+            field - 1,
+        )
     }
 }
 
 /// Inverse of `master_flat_index`, same purpose as `chords_drill_for_index`.
-pub(crate) fn master_drill_for_index(flat: usize) -> (CompDrill, usize) {
+pub(crate) fn master_drill_for_index(flat: usize) -> (interaction::MasterDrill, usize) {
     if flat < MASTER_DETAIL_START {
-        (CompDrill::None, flat)
+        (interaction::MasterDrill::None, flat)
     } else {
-        (CompDrill::Detail, flat - MASTER_DETAIL_START)
+        (
+            interaction::MasterDrill::Compression {
+                return_to: MASTER_COMP_AMOUNT_ROW,
+            },
+            flat - MASTER_DETAIL_START,
+        )
     }
 }
 

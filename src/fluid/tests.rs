@@ -1,3 +1,4 @@
+use super::interaction::ChordDrill;
 use super::*;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -81,6 +82,14 @@ fn buffer_text(buffer: &Buffer) -> String {
         .collect::<String>()
 }
 
+fn progression_drill() -> ChordDrill {
+    ChordDrill::Progression { return_to: 4 }
+}
+
+fn slot_drill(slot: usize) -> ChordDrill {
+    ChordDrill::Slot { slot, return_to: 4 }
+}
+
 /// Projects one coherent render generation and draws it to a fresh backend.
 struct RenderTest<'a> {
     size: (u16, u16),
@@ -115,16 +124,49 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
     let mut song = SongState::from_controls(controls.clone());
     song.automation = automation.clone();
     let session = LiveSessionSnapshot::from_song(&song);
-    let interaction = legacy_interaction_model(LegacyInteractionState {
-        tab,
-        selected: cursor,
-        chord_drill: drill,
-        comp_drill: CompDrill::None,
-        automation_selected: submenu,
-        numeric: None,
-        palette: None,
-        automation,
-    });
+    let navigation = match tab {
+        Tab::Chords => interaction::Navigation::Chords {
+            selected: cursor,
+            drill,
+        },
+        Tab::Master => interaction::Navigation::Master {
+            selected: cursor,
+            drill: interaction::MasterDrill::None,
+        },
+        page => interaction::Navigation::Standard {
+            page: match page {
+                Tab::Perc => interaction::StandardPage::Perc,
+                Tab::Bass => interaction::StandardPage::Bass,
+                Tab::Kick => interaction::StandardPage::Kick,
+                Tab::Tonal => interaction::StandardPage::Tonal,
+                Tab::Clap => interaction::StandardPage::Clap,
+                Tab::Arp => interaction::StandardPage::Arp,
+                Tab::Macros => interaction::StandardPage::Macros,
+                Tab::Chords | Tab::Master => unreachable!("handled above"),
+            },
+            selected: cursor,
+        },
+    };
+    let mode = match automation.active_kind() {
+        Some(ModKind::Lfo) => {
+            interaction::InteractionMode::Automation(interaction::AutomationMode::Lfo {
+                depth: interaction::LfoDepth::Editor,
+                selected: submenu,
+            })
+        }
+        Some(ModKind::Envelope) => {
+            interaction::InteractionMode::Automation(interaction::AutomationMode::Envelope {
+                selected: submenu,
+            })
+        }
+        Some(ModKind::Macro) => {
+            interaction::InteractionMode::Automation(interaction::AutomationMode::Macro {
+                selected: submenu,
+            })
+        }
+        None => interaction::InteractionMode::Browsing,
+    };
+    let interaction = interaction::InteractionModel { navigation, mode };
     let flipped = FlippedUnits::new();
     let view = UiViewModel::project(ViewProjection {
         interaction: &interaction,
@@ -849,50 +891,6 @@ fn close_editor_deletes_zero_depth_route() {
 }
 
 #[test]
-fn same_key_toggles_editor_closed_and_keeps_the_route() {
-    let controls = FluidControls::default();
-    let items = tab_controls(Tab::Master, &controls);
-    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
-    let address = ControlAddress::new(items[0].id);
-    let mut sub = 0usize;
-
-    open_modulator(&mut automation, &items, 0, ModKind::Lfo, &mut sub);
-    automation.edit(|state| state.route_mut(address).unwrap().depth_ratio = 0.4);
-    assert!(automation.state().is_editor_open());
-
-    // Second tap closes the editor but the route keeps playing.
-    open_modulator(&mut automation, &items, 0, ModKind::Lfo, &mut sub);
-    assert!(!automation.state().is_editor_open());
-    assert_close(automation.state().route(address).unwrap().depth_ratio, 0.4);
-}
-
-#[test]
-fn published_automation_syncs_auto_snapshot_without_republishing() {
-    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let mut automation = PublishedAutomation::new(AutomationState::default(), Arc::clone(&shared));
-    let address = ControlAddress::new("pad.level");
-    let mut auto_snapshot = AutomationState::default();
-    auto_snapshot.set_route(
-        address,
-        LfoRoute {
-            depth_ratio: 0.6,
-            ..LfoRoute::default()
-        },
-    );
-    let auto_snapshot = Arc::new(auto_snapshot);
-    shared.store(Arc::clone(&auto_snapshot));
-
-    automation.sync_from_shared();
-
-    assert_eq!(
-        automation.state().route(address).unwrap().depth_ratio,
-        auto_snapshot.route(address).unwrap().depth_ratio
-    );
-    assert!(Arc::ptr_eq(&shared.load_full(), &auto_snapshot));
-}
-
-#[test]
 fn x_removes_the_open_route_or_clears_the_whole_control() {
     let address = ControlAddress::new("master.level");
     let mut automation = AutomationState::default();
@@ -965,108 +963,6 @@ fn a_control_can_ride_several_macro_sliders_at_once() {
     let mut effective = controls.clone();
     apply_automation(&mut effective, &automation, timing(0, 120.0));
     assert_near(effective.master.level, 0.4);
-}
-
-#[test]
-fn field_macro_on_lfo_amount_is_off_by_default_and_only_appears_after_v() {
-    let controls = FluidControls::default();
-    let items = tab_controls(Tab::Master, &controls);
-    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
-    let address = ControlAddress::new(items[0].id);
-    let key = unit_key(address.id(), Some("lfo.amount"));
-
-    // Opening the LFO editor alone must NOT create a stacked macro on
-    // amount — it only exists after the user explicitly presses v there.
-    automation.edit(|state| {
-        state.open_or_create(address);
-    });
-    assert_eq!(
-        lfo_submenu_rows(automation.state(), address).len(),
-        LfoField::ALL.len(),
-        "no macro rows before v is pressed"
-    );
-    assert!(automation.state().field_macro(&key).is_none());
-
-    // v on the amount row (lfo_selected == 1) expands it.
-    automation.edit(|state| state.toggle_open_field(key.clone()));
-    assert_eq!(
-        lfo_submenu_rows(automation.state(), address).len(),
-        LfoField::ALL.len() + MacroField::ALL.len(),
-        "one row per macro slider nests in once expanded"
-    );
-    assert!(automation.state().field_macro(&key).is_some());
-
-    // Left neutral, closing (v again) prunes it back out — same rule as
-    // every other route kind.
-    automation.edit(|state| state.toggle_open_field(key.clone()));
-    assert!(automation.state().field_macro(&key).is_none());
-    assert_eq!(
-        lfo_submenu_rows(automation.state(), address).len(),
-        LfoField::ALL.len()
-    );
-}
-
-#[test]
-fn close_one_level_collapses_the_nested_field_macro_before_the_whole_lfo_editor() {
-    let controls = FluidControls::default();
-    let items = tab_controls(Tab::Master, &controls);
-    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
-    let address = ControlAddress::new(items[0].id);
-    let key = unit_key(address.id(), Some("lfo.amount"));
-
-    automation.edit(|state| {
-        state.open_or_create(address).depth_ratio = 0.3;
-    });
-    automation.edit(|state| state.toggle_open_field(key.clone()));
-    automation.edit(|state| {
-        state.field_macro_mut(&key).unwrap().amounts[0] = 0.5;
-    });
-    let mut lfo_selected = 5; // sitting on one of the nested macro rows
-
-    // First close: only the nested field-macro editor collapses. The LFO
-    // editor (and its now-non-neutral field macro) stays open.
-    close_one_level(&mut automation, &mut lfo_selected);
-    assert!(automation.state().is_editor_open());
-    assert_eq!(automation.state().active_kind(), Some(ModKind::Lfo));
-    assert!(automation.state().field_macro(&key).is_some());
-    assert_eq!(
-        lfo_selected, 1,
-        "cursor lands back on the amount field's own row"
-    );
-
-    // Second close: nothing nested remains open, so this closes the whole
-    // LFO editor.
-    close_one_level(&mut automation, &mut lfo_selected);
-    assert!(!automation.state().is_editor_open());
-    assert_eq!(lfo_selected, 0);
-    // The route itself survives close — only the editor closed.
-    assert_close(automation.state().route(address).unwrap().depth_ratio, 0.3);
-}
-
-#[test]
-fn close_one_level_prunes_a_neutral_field_macro_left_open() {
-    let controls = FluidControls::default();
-    let items = tab_controls(Tab::Master, &controls);
-    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
-    let address = ControlAddress::new(items[0].id);
-    let key = unit_key(address.id(), Some("lfo.amount"));
-
-    automation.edit(|state| {
-        state.open_or_create(address);
-    });
-    automation.edit(|state| state.toggle_open_field(key.clone()));
-    let mut lfo_selected = 5;
-
-    close_one_level(&mut automation, &mut lfo_selected);
-    assert!(
-        automation.state().field_macro(&key).is_none(),
-        "left neutral, the field macro prunes on close like every other route"
-    );
-    assert!(automation.state().is_editor_open());
-    assert_eq!(lfo_selected, 1);
 }
 
 #[test]
@@ -1168,43 +1064,6 @@ fn macro_own_lfo_feeds_targets_in_the_same_pass() {
         "target should follow the modulated macro, got {}",
         effective.master.level
     );
-}
-
-#[test]
-fn envelope_opens_only_on_macros_and_macros_never_target_macros() {
-    let controls = FluidControls::default();
-    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
-    let mut sub = 0usize;
-
-    // e on a regular control: refused.
-    let master_items = tab_controls(Tab::Master, &controls);
-    open_modulator(
-        &mut automation,
-        &master_items,
-        0,
-        ModKind::Envelope,
-        &mut sub,
-    );
-    assert!(!automation.state().is_editor_open());
-
-    // v on a macro slider: refused.
-    let macro_items = tab_controls(Tab::Macros, &controls);
-    open_modulator(&mut automation, &macro_items, 0, ModKind::Macro, &mut sub);
-    assert!(!automation.state().is_editor_open());
-
-    // e on a macro slider and v on a regular control: allowed.
-    open_modulator(
-        &mut automation,
-        &macro_items,
-        0,
-        ModKind::Envelope,
-        &mut sub,
-    );
-    assert_eq!(automation.state().active_kind(), Some(ModKind::Envelope));
-    automation.edit(AutomationState::close_editor);
-    open_modulator(&mut automation, &master_items, 0, ModKind::Macro, &mut sub);
-    assert_eq!(automation.state().active_kind(), Some(ModKind::Macro));
 }
 
 #[test]
@@ -2230,14 +2089,14 @@ fn chords_tab_controls_progression_lists_active_slot_roots() {
     let mut controls = FluidControls::default();
 
     controls.pad.chord_count = 3.0;
-    let rows = chords_tab_controls(&controls, ChordDrill::Progression);
+    let rows = chords_tab_controls(&controls, progression_drill());
     assert_eq!(
         rows.iter().map(|r| r.label).collect::<Vec<_>>(),
         vec!["Chord 1 Root", "Chord 2 Root", "Chord 3 Root"]
     );
 
     controls.pad.chord_count = 8.0;
-    let rows = chords_tab_controls(&controls, ChordDrill::Progression);
+    let rows = chords_tab_controls(&controls, progression_drill());
     assert_eq!(rows.len(), 8);
     assert_eq!(rows[7].label, "Chord 8 Root");
 }
@@ -2245,7 +2104,7 @@ fn chords_tab_controls_progression_lists_active_slot_roots() {
 #[test]
 fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
     let controls = FluidControls::default();
-    let rows = chords_tab_controls(&controls, ChordDrill::Slot(2));
+    let rows = chords_tab_controls(&controls, slot_drill(2));
     assert_eq!(
         rows.iter().map(|r| r.label).collect::<Vec<_>>(),
         vec![
@@ -2260,9 +2119,9 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 #[test]
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
-    assert_eq!(chords_flat_index(ChordDrill::Progression, 0), 11);
-    assert_eq!(chords_flat_index(ChordDrill::Progression, 2), 21);
-    assert_eq!(chords_flat_index(ChordDrill::Slot(2), 0), 22);
+    assert_eq!(chords_flat_index(progression_drill(), 0), 11);
+    assert_eq!(chords_flat_index(progression_drill(), 2), 21);
+    assert_eq!(chords_flat_index(slot_drill(2), 0), 22);
 
     let controls = FluidControls::default();
     let expected = tab_controls(Tab::Chords, &controls)[22].id;
@@ -2285,7 +2144,7 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
         automation: &automation,
         controls: &controls,
         footer: None,
-        drill: ChordDrill::Slot(1),
+        drill: slot_drill(1),
         active_chord: 0,
         mute: &[None; 9],
     });
@@ -2308,7 +2167,7 @@ fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
         automation: &automation,
         controls,
         footer: None,
-        drill: ChordDrill::Progression,
+        drill: progression_drill(),
         active_chord,
         mute: &[None; 9],
     }))
@@ -2349,7 +2208,7 @@ fn render_slot_breadcrumb_marks_live_chord() {
             automation: &automation,
             controls: &controls,
             footer: None,
-            drill: ChordDrill::Slot(2),
+            drill: slot_drill(2),
             active_chord,
             mute: &[None; 9],
         }))
@@ -4131,119 +3990,6 @@ fn unit_conversion_round_trips_at_current_bpm() {
 }
 
 #[test]
-fn flipped_time_fields_step_in_ms_and_snap_back_onto_the_beat_grid() {
-    let mut c = FluidControls::default();
-    c.master.bpm = 120.0; // one beat is exactly 500 ms
-    c.perc.decay_ms = 470.0;
-    let session = live_session(c, AutomationState::default());
-    let mut effects = EffectExecutor::new(
-        session.clone(),
-        AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
-    );
-    let mut automation =
-        PublishedAutomation::new(AutomationState::default(), LiveAutomation::new(session));
-    let mut flipped = FlippedUnits::new();
-
-    // Perc interval (native beats) flipped to ms: h/l moves on the 10 ms
-    // grid instead of the beat grid. 0.25 beats = 125 ms -> 140 ms.
-    flipped.insert(unit_key("perc.interval_beats", None));
-    adjust_lfo_or_control(
-        &mut effects,
-        &mut automation,
-        0,
-        Tab::Perc,
-        3,
-        1.0,
-        0.0,
-        &flipped,
-    );
-    assert_near(
-        beats_to_ms(effects.session().load().controls.perc.interval_beats, 120.0),
-        140.0,
-    );
-
-    // Flipping back to beats lands the value on the control's own grid.
-    flipped.remove(&unit_key("perc.interval_beats", None));
-    snap_after_unit_flip(&mut effects, &mut automation, 0, Tab::Perc, 3, false, 0.0);
-    assert_close(effects.session().load().controls.perc.interval_beats, 0.25);
-
-    // An ms-native control flipped to beats rounds to the nearest divided
-    // beat: 470 ms at 120 BPM is 0.94 beats -> 1.0 beats -> 500 ms.
-    snap_after_unit_flip(&mut effects, &mut automation, 0, Tab::Perc, 2, true, 0.0);
-    assert_near(effects.session().load().controls.perc.decay_ms, 500.0);
-
-    // And once flipped, it steps on the 0.125-beat grid: 500 ms + an eighth
-    // of a beat (62.5 ms) at 120 BPM.
-    flipped.insert(unit_key("perc.decay_ms", None));
-    adjust_lfo_or_control(
-        &mut effects,
-        &mut automation,
-        0,
-        Tab::Perc,
-        2,
-        1.0,
-        0.0,
-        &flipped,
-    );
-    assert_near(effects.session().load().controls.perc.decay_ms, 562.5);
-}
-
-#[test]
-fn flipped_lfo_interval_steps_in_ms_and_keeps_exact_values() {
-    let mut controls = FluidControls::default();
-    controls.master.bpm = 120.0;
-    let session = live_session(controls, AutomationState::default());
-    let mut effects = EffectExecutor::new(
-        session.clone(),
-        AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
-    );
-    let mut automation =
-        PublishedAutomation::new(AutomationState::default(), LiveAutomation::new(session));
-    let address = ControlAddress::new("master.level");
-    automation.edit(|state| {
-        state.open_or_create(address);
-    });
-    let mut flipped = FlippedUnits::new();
-    flipped.insert(unit_key("master.level", Some("lfo.interval")));
-
-    // Default cycle is 2 beats = 1000 ms at 120 BPM; one flipped step lands
-    // on 1010 ms, off the beat grid. Interval is row 2 (amount is row 1).
-    adjust_lfo_or_control(
-        &mut effects,
-        &mut automation,
-        2,
-        Tab::Master,
-        0,
-        1.0,
-        0.0,
-        &flipped,
-    );
-    assert_near(
-        beats_to_ms(
-            automation.state().route(address).unwrap().cycle_beats,
-            120.0,
-        ),
-        1010.0,
-    );
-
-    // Un-flipping keeps the exact rate; typed beat values are intentionally
-    // not limited to the arrow-key ladder.
-    flipped.clear();
-    snap_after_unit_flip(&mut effects, &mut automation, 2, Tab::Master, 0, false, 0.0);
-    assert_near(
-        beats_to_ms(
-            automation.state().route(address).unwrap().cycle_beats,
-            120.0,
-        ),
-        1010.0,
-    );
-}
-
-// ============================================================
-// Automation payload v3: seeds, macro routes, envelopes
-// ============================================================
-
-#[test]
 fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
     let mut automation = AutomationState::default();
     automation.set_route(
@@ -4421,29 +4167,6 @@ fn enter_expands_into_the_owning_tab() {
     assert_eq!(tab_owning_control("nope.nope"), None);
 }
 
-#[test]
-fn macro_toggle_hides_but_keeps_the_assignment() {
-    let controls = FluidControls::default();
-    let items = tab_controls(Tab::Master, &controls);
-    let shared = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let mut automation = PublishedAutomation::new(AutomationState::default(), shared);
-    let address = ControlAddress::new(items[0].id);
-    let mut sub = 0usize;
-
-    open_modulator(&mut automation, &items, 0, ModKind::Macro, &mut sub);
-    automation.edit(|state| {
-        let route = state.macro_route_mut(address).unwrap();
-        route.amounts[1] = 0.5;
-    });
-
-    open_modulator(&mut automation, &items, 0, ModKind::Macro, &mut sub);
-    assert!(!automation.state().is_editor_open());
-    let route = automation.state().macro_route(address).unwrap();
-    assert_close(route.amounts[1], 0.5);
-}
-
-/// Timing harness for the audio hot path with a busy automation state.
-/// Run with `cargo test --release engine_hot_path_timing -- --ignored --nocapture`.
 #[test]
 #[ignore]
 fn engine_hot_path_timing() {
@@ -4951,65 +4674,6 @@ fn master_drill_for_index_inverts_master_flat_index() {
         let (drill, row) = master_drill_for_index(flat);
         assert_eq!(master_flat_index(drill, row), flat);
     }
-}
-
-#[test]
-fn palette_stage_then_commit_applies_percent_entry_semantics() {
-    let mut pal = PaletteState::new(Tab::Bass, &[]);
-    for c in "bass.level".chars() {
-        pal.push_char(c);
-    }
-    pal.autocomplete();
-    for c in "45".chars() {
-        pal.push_char(c);
-    }
-    assert!(
-        matches!(pal.enter(), PaletteAction::None),
-        "value Enter stages"
-    );
-    assert_eq!(pal.staged.len(), 1);
-    let PaletteAction::CommitNow(edits) = pal.enter() else {
-        panic!("empty-prompt Enter must commit the stage");
-    };
-    let mut c = FluidControls::default();
-    for edit in &edits {
-        spec_by_id(edit.id)
-            .expect("staged id exists")
-            .apply_value(edit.value, &mut c);
-    }
-    let spec = spec_by_id("bass.level").expect("bass.level exists");
-    assert!((c.bass.level - 0.45 * spec.max).abs() < 1e-6);
-}
-
-#[test]
-fn palette_enter_without_value_jumps_to_the_locked_control() {
-    let mut pal = PaletteState::new(Tab::Bass, &[]);
-    for c in "bass.level".chars() {
-        pal.push_char(c);
-    }
-    pal.autocomplete();
-    let PaletteAction::Jump(index) = pal.enter() else {
-        panic!("locked Enter with no value must jump");
-    };
-    assert_eq!(pal.entry(index).spec.id, "bass.level");
-}
-
-#[test]
-fn palette_commit_at_bar_stages_a_pending_typed_value_first() {
-    let mut pal = PaletteState::new(Tab::Bass, &[]);
-    for c in "bass.level".chars() {
-        pal.push_char(c);
-    }
-    pal.autocomplete();
-    for c in "40".chars() {
-        pal.push_char(c);
-    }
-    let PaletteAction::CommitAtBar(edits) = pal.commit_at_bar() else {
-        panic!("Ctrl+B with a typed value must commit that value");
-    };
-    assert_eq!(edits.len(), 1);
-    assert_eq!(edits[0].id, "bass.level");
-    assert_close(edits[0].value, 40.0);
 }
 
 #[test]

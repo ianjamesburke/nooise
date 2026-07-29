@@ -229,6 +229,7 @@ impl Navigation {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct NumericEntry {
     pub(crate) buffer: String,
+    pub(crate) resume: Option<AutomationMode>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -239,6 +240,7 @@ pub(crate) struct PaletteMode {
     pub(crate) locked: Option<usize>,
     pub(crate) value_buffer: String,
     pub(crate) staged: Vec<PaletteStagedEdit>,
+    pub(crate) resume: Option<AutomationMode>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -273,10 +275,10 @@ impl AutomationMode {
         match kind {
             AutomationKind::Lfo => Self::Lfo {
                 depth: LfoDepth::Editor,
-                selected: 0,
+                selected: 1,
             },
-            AutomationKind::Envelope => Self::Envelope { selected: 0 },
-            AutomationKind::Macro => Self::Macro { selected: 0 },
+            AutomationKind::Envelope => Self::Envelope { selected: 1 },
+            AutomationKind::Macro => Self::Macro { selected: 1 },
         }
     }
 
@@ -289,6 +291,14 @@ impl AutomationMode {
     }
 
     fn selected_mut(&mut self) -> &mut usize {
+        match self {
+            Self::Lfo { selected, .. } | Self::Envelope { selected } | Self::Macro { selected } => {
+                selected
+            }
+        }
+    }
+
+    pub(crate) fn selected(self) -> usize {
         match self {
             Self::Lfo { selected, .. } | Self::Envelope { selected } | Self::Macro { selected } => {
                 selected
@@ -398,13 +408,43 @@ pub(crate) enum Intent {
     Confirm,
     OpenPalette,
     OpenAutomation(AutomationKind),
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "reserved for the staged 0043 input grammar")
+    )]
     OpenAutomationField,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "reserved for the staged 0043 input grammar")
+    )]
     ActivatePerformance(PerformanceKind),
-    SelectPerformanceInstrument { instrument: usize, page: Page },
+    SelectPerformanceInstrument {
+        instrument: usize,
+        page: Page,
+    },
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "reserved for the staged 0043 hold grammar")
+    )]
     HoldPerformanceSelector(usize),
     AdjustSelected(i8),
+    ResetSelected,
+    ToggleAuto,
+    ToggleUnits,
+    ToggleMute {
+        master: bool,
+    },
+    ToggleMacro,
+    RemoveAutomation,
+    ReseedAutomation,
+    TouchSelected,
+    CommitPaletteAtBar,
     Save,
     Quit,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "reserved for the staged 0043 hold grammar")
+    )]
     ReleaseHeldSelector,
 }
 
@@ -430,6 +470,15 @@ impl Intent {
             | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
             | Self::HoldPerformanceSelector(_)
+            | Self::ResetSelected
+            | Self::ToggleAuto
+            | Self::ToggleUnits
+            | Self::ToggleMute { .. }
+            | Self::ToggleMacro
+            | Self::RemoveAutomation
+            | Self::ReseedAutomation
+            | Self::TouchSelected
+            | Self::CommitPaletteAtBar
             | Self::Save
             | Self::Quit => PhasePolicy::Edge,
         }
@@ -443,6 +492,7 @@ pub(crate) struct SemanticAction {
 }
 
 impl SemanticAction {
+    #[cfg(test)]
     pub(crate) fn press(intent: Intent) -> Self {
         Self {
             phase: InputPhase::Press,
@@ -462,6 +512,19 @@ pub(crate) enum InteractionEffect {
     },
     PaletteCommit(Vec<PaletteStagedEdit>),
     AutomationConfirm(AutomationKind),
+    ResetSelected,
+    ToggleAuto,
+    ToggleUnits,
+    ToggleMute {
+        master: bool,
+    },
+    ToggleMacro,
+    RemoveAutomation,
+    ReseedAutomation,
+    CloseAutomationDepth,
+    CloseAutomationAll,
+    TouchSelected,
+    PaletteCommitAtBar(Vec<PaletteStagedEdit>),
     SelectPage(Page),
     PerformanceInstrument(usize),
     HoldPerformanceSelector(usize),
@@ -477,6 +540,112 @@ pub(crate) struct Transition {
 }
 
 impl InteractionModel {
+    pub(crate) fn update_bounded(
+        mut self,
+        action: SemanticAction,
+        automation_row_count: usize,
+        item_count: usize,
+    ) -> Transition {
+        if !action.intent.phase_policy().accepts(action.phase) {
+            return Transition {
+                model: self,
+                effects: Vec::new(),
+            };
+        }
+        let Intent::MoveSelection(delta) = action.intent else {
+            return self.update(action);
+        };
+        let InteractionMode::Automation(automation) = &mut self.mode else {
+            return self.update(action);
+        };
+        match automation {
+            AutomationMode::Lfo { selected, .. } => {
+                *selected = move_unbounded(*selected, delta).clamp(1, automation_row_count.max(1));
+                Transition {
+                    model: self,
+                    effects: Vec::new(),
+                }
+            }
+            AutomationMode::Envelope { selected } | AutomationMode::Macro { selected } => {
+                if delta.is_negative() && *selected <= 1 {
+                    self.mode = InteractionMode::Browsing;
+                    Transition {
+                        model: self,
+                        effects: vec![InteractionEffect::CloseAutomationAll],
+                    }
+                } else if !delta.is_negative() && *selected >= automation_row_count {
+                    self.mode = InteractionMode::Browsing;
+                    self.navigation.move_selection(1);
+                    self.clamp_navigation_selection(item_count);
+                    Transition {
+                        model: self,
+                        effects: vec![InteractionEffect::CloseAutomationAll],
+                    }
+                } else {
+                    *selected = move_unbounded(*selected, delta);
+                    Transition {
+                        model: self,
+                        effects: Vec::new(),
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn clamp_navigation_selection(&mut self, item_count: usize) {
+        let last = item_count.saturating_sub(1);
+        match &mut self.navigation {
+            Navigation::Chords { selected, .. }
+            | Navigation::Standard { selected, .. }
+            | Navigation::Master { selected, .. } => *selected = (*selected).min(last),
+        }
+    }
+
+    pub(crate) fn seed_palette_recent(&mut self, recent: &[&'static str]) {
+        if let InteractionMode::Palette(palette) = &mut self.mode
+            && palette.recent.is_empty()
+        {
+            palette.recent.extend_from_slice(recent);
+        }
+    }
+
+    pub(crate) fn automation_selected(&self) -> usize {
+        match &self.mode {
+            InteractionMode::Automation(mode) => mode.selected(),
+            InteractionMode::Numeric(NumericEntry {
+                resume: Some(mode), ..
+            })
+            | InteractionMode::Palette(PaletteMode {
+                resume: Some(mode), ..
+            }) => mode.selected(),
+            _ => 0,
+        }
+    }
+
+    pub(crate) fn apply_lfo_position(&mut self, depth: LfoDepth, selected: usize) {
+        self.mode = InteractionMode::Automation(AutomationMode::Lfo { depth, selected });
+    }
+
+    pub(crate) fn select_control(&mut self, tab: Tab, index: usize) {
+        self.navigation = match tab {
+            Tab::Chords => {
+                let (drill, selected) = super::chords_drill_for_index(index);
+                Navigation::Chords { selected, drill }
+            }
+            Tab::Master => {
+                let (drill, selected) = super::master_drill_for_index(index);
+                Navigation::Master { selected, drill }
+            }
+            _ => {
+                let mut navigation = Navigation::for_page(page_for_tab(tab));
+                if let Navigation::Standard { selected, .. } = &mut navigation {
+                    *selected = index;
+                }
+                navigation
+            }
+        };
+    }
+
     pub(crate) fn update(mut self, action: SemanticAction) -> Transition {
         if !action.intent.phase_policy().accepts(action.phase) {
             return Transition {
@@ -496,7 +665,11 @@ impl InteractionModel {
                 );
             }
             InteractionMode::Numeric(entry) => match action.intent {
-                Intent::Cancel => self.mode = InteractionMode::Browsing,
+                Intent::Cancel => {
+                    self.mode = entry
+                        .resume
+                        .map_or(InteractionMode::Browsing, InteractionMode::Automation);
+                }
                 Intent::TypeCharacter(character) => push_numeric(&mut entry.buffer, character),
                 Intent::Backspace => {
                     entry.buffer.pop();
@@ -505,7 +678,9 @@ impl InteractionModel {
                     if let Ok(value) = entry.buffer.parse::<f32>() {
                         effects.push(InteractionEffect::CommitNumeric(value));
                     }
-                    self.mode = InteractionMode::Browsing;
+                    self.mode = entry
+                        .resume
+                        .map_or(InteractionMode::Browsing, InteractionMode::Automation);
                 }
                 Intent::MoveSelection(_)
                 | Intent::ChangePage(_)
@@ -521,6 +696,15 @@ impl InteractionModel {
                 | Intent::SelectPerformanceInstrument { .. }
                 | Intent::HoldPerformanceSelector(_)
                 | Intent::AdjustSelected(_)
+                | Intent::ResetSelected
+                | Intent::ToggleAuto
+                | Intent::ToggleUnits
+                | Intent::ToggleMute { .. }
+                | Intent::ToggleMacro
+                | Intent::RemoveAutomation
+                | Intent::ReseedAutomation
+                | Intent::TouchSelected
+                | Intent::CommitPaletteAtBar
                 | Intent::Save
                 | Intent::Quit
                 | Intent::ReleaseHeldSelector => {}
@@ -535,7 +719,11 @@ impl InteractionModel {
                     palette.value_buffer.clear();
                 }
                 match action.intent {
-                    Intent::Cancel => self.mode = InteractionMode::Browsing,
+                    Intent::Cancel => {
+                        self.mode = palette
+                            .resume
+                            .map_or(InteractionMode::Browsing, InteractionMode::Automation);
+                    }
                     Intent::TypeCharacter(character) => {
                         if palette.locked.is_some() {
                             push_numeric(&mut palette.value_buffer, character);
@@ -593,10 +781,32 @@ impl InteractionModel {
                             effects.push(InteractionEffect::PaletteCommit(std::mem::take(
                                 &mut palette.staged,
                             )));
-                            self.mode = InteractionMode::Browsing;
+                            self.mode = palette
+                                .resume
+                                .map_or(InteractionMode::Browsing, InteractionMode::Automation);
                         } else if let Some(found) = state.matches.get(state.selected) {
                             effects.push(palette_jump(state.entry(found.entry)));
                             self.mode = InteractionMode::Browsing;
+                        }
+                    }
+                    Intent::CommitPaletteAtBar => {
+                        let state = project_palette(palette, self.navigation.page());
+                        if let Some(entry_index) = palette.locked
+                            && let Ok(value) = palette.value_buffer.parse::<f32>()
+                        {
+                            let entry = state.entry(entry_index);
+                            palette.staged.push(PaletteStagedEdit {
+                                id: entry.spec.id,
+                                value_bits: value.to_bits(),
+                            });
+                        }
+                        if !palette.staged.is_empty() {
+                            effects.push(InteractionEffect::PaletteCommitAtBar(std::mem::take(
+                                &mut palette.staged,
+                            )));
+                            self.mode = palette
+                                .resume
+                                .map_or(InteractionMode::Browsing, InteractionMode::Automation);
                         }
                     }
                     Intent::ChangePage(_)
@@ -611,6 +821,14 @@ impl InteractionModel {
                     | Intent::SelectPerformanceInstrument { .. }
                     | Intent::HoldPerformanceSelector(_)
                     | Intent::AdjustSelected(_)
+                    | Intent::ResetSelected
+                    | Intent::ToggleAuto
+                    | Intent::ToggleUnits
+                    | Intent::ToggleMute { .. }
+                    | Intent::ToggleMacro
+                    | Intent::RemoveAutomation
+                    | Intent::ReseedAutomation
+                    | Intent::TouchSelected
                     | Intent::Save
                     | Intent::Quit
                     | Intent::ReleaseHeldSelector => {}
@@ -626,12 +844,16 @@ impl InteractionModel {
                         }
                     ) =>
                 {
+                    effects.push(InteractionEffect::CloseAutomationDepth);
                     *automation = AutomationMode::Lfo {
                         depth: LfoDepth::Editor,
                         selected: 0,
                     };
                 }
-                Intent::Cancel => self.mode = InteractionMode::Browsing,
+                Intent::Cancel => {
+                    effects.push(InteractionEffect::CloseAutomationDepth);
+                    self.mode = InteractionMode::Browsing;
+                }
                 Intent::OpenAutomationField => {
                     if matches!(automation, AutomationMode::Lfo { .. }) {
                         *automation = AutomationMode::Lfo {
@@ -647,22 +869,83 @@ impl InteractionModel {
                 Intent::Confirm => {
                     effects.push(InteractionEffect::AutomationConfirm(automation.kind()));
                 }
-                Intent::ChangePage(_)
-                | Intent::EnterChordProgression
+                Intent::ChangePage(direction) => {
+                    let page = match direction {
+                        PageDirection::Next => self.navigation.page().next(),
+                        PageDirection::Previous => self.navigation.page().previous(),
+                    };
+                    self.navigation = Navigation::for_page(page);
+                    self.mode = InteractionMode::Browsing;
+                    effects.push(InteractionEffect::CloseAutomationAll);
+                }
+                Intent::OpenAutomation(kind) => {
+                    let same = automation.kind() == kind;
+                    effects.push(InteractionEffect::AutomationConfirm(kind));
+                    self.mode = if same {
+                        InteractionMode::Browsing
+                    } else {
+                        InteractionMode::Automation(AutomationMode::new(kind))
+                    };
+                }
+                Intent::AdjustSelected(delta) => {
+                    effects.push(InteractionEffect::AdjustSelected(delta));
+                }
+                Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
+                Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
+                Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
+                Intent::ToggleMute { master } => {
+                    effects.push(InteractionEffect::ToggleMute { master });
+                }
+                Intent::ToggleMacro => {
+                    match automation {
+                        AutomationMode::Lfo { depth, selected: _ } => {
+                            *depth = match depth {
+                                LfoDepth::Editor => LfoDepth::NestedField,
+                                LfoDepth::NestedField => LfoDepth::Editor,
+                            };
+                        }
+                        AutomationMode::Envelope { .. } => {
+                            self.mode = InteractionMode::Automation(AutomationMode::new(
+                                AutomationKind::Macro,
+                            ));
+                        }
+                        AutomationMode::Macro { .. } => {
+                            self.mode = InteractionMode::Browsing;
+                        }
+                    }
+                    effects.push(InteractionEffect::ToggleMacro);
+                }
+                Intent::RemoveAutomation => {
+                    self.mode = InteractionMode::Browsing;
+                    effects.push(InteractionEffect::RemoveAutomation);
+                }
+                Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
+                Intent::BeginNumeric(character) => {
+                    let mut entry = NumericEntry::default();
+                    push_numeric(&mut entry.buffer, character);
+                    entry.resume = Some(*automation);
+                    self.mode = InteractionMode::Numeric(entry);
+                }
+                Intent::OpenPalette => {
+                    self.mode = InteractionMode::Palette(PaletteMode {
+                        recent: Vec::new(),
+                        resume: Some(*automation),
+                        ..PaletteMode::default()
+                    });
+                }
+                Intent::Save => effects.push(InteractionEffect::Save),
+                Intent::Quit => effects.push(InteractionEffect::Quit),
+                Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
+                Intent::EnterChordProgression
                 | Intent::EnterChordSlot(_)
                 | Intent::EnterMasterCompression
-                | Intent::BeginNumeric(_)
                 | Intent::TypeCharacter(_)
                 | Intent::Backspace
                 | Intent::PaletteAutocomplete
-                | Intent::OpenPalette
-                | Intent::OpenAutomation(_)
                 | Intent::ActivatePerformance(_)
                 | Intent::SelectPerformanceInstrument { .. }
                 | Intent::HoldPerformanceSelector(_)
-                | Intent::AdjustSelected(_)
-                | Intent::Save
-                | Intent::Quit
+                | Intent::CommitPaletteAtBar
                 | Intent::ReleaseHeldSelector => {}
             },
             InteractionMode::Performance(performance) => match action.intent {
@@ -725,6 +1008,15 @@ impl InteractionModel {
                 | Intent::OpenAutomation(_)
                 | Intent::OpenAutomationField
                 | Intent::AdjustSelected(_)
+                | Intent::ResetSelected
+                | Intent::ToggleAuto
+                | Intent::ToggleUnits
+                | Intent::ToggleMute { .. }
+                | Intent::ToggleMacro
+                | Intent::RemoveAutomation
+                | Intent::ReseedAutomation
+                | Intent::TouchSelected
+                | Intent::CommitPaletteAtBar
                 | Intent::Save
                 | Intent::Quit => {}
             },
@@ -783,11 +1075,26 @@ fn update_browsing(
         Intent::OpenPalette => *mode = InteractionMode::Palette(PaletteMode::default()),
         Intent::OpenAutomation(kind) => {
             *mode = InteractionMode::Automation(AutomationMode::new(kind));
+            effects.push(InteractionEffect::AutomationConfirm(kind));
         }
         Intent::ActivatePerformance(kind) => {
             *mode = InteractionMode::Performance(PerformanceMode::new(kind));
         }
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
+        Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
+        Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
+        Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
+        Intent::ToggleMute { master } => {
+            effects.push(InteractionEffect::ToggleMute { master });
+        }
+        Intent::ToggleMacro => {
+            *mode = InteractionMode::Automation(AutomationMode::new(AutomationKind::Macro));
+            effects.push(InteractionEffect::ToggleMacro);
+        }
+        Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
+        Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
+        Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
+        Intent::CommitPaletteAtBar => {}
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
         Intent::TypeCharacter(_)
@@ -810,7 +1117,10 @@ fn move_unbounded(selected: usize, delta: isize) -> usize {
 }
 
 fn push_numeric(buffer: &mut String, character: char) {
-    if character.is_ascii_digit() || character == '.' || character == '-' {
+    let valid = character.is_ascii_digit()
+        || (character == '.' && !buffer.contains('.'))
+        || (character == '-' && buffer.is_empty());
+    if valid {
         buffer.push(character);
     }
 }
@@ -858,6 +1168,20 @@ fn tab_for_page(page: Page) -> Tab {
     }
 }
 
+fn page_for_tab(tab: Tab) -> Page {
+    match tab {
+        Tab::Chords => Page::Chords,
+        Tab::Perc => Page::Perc,
+        Tab::Bass => Page::Bass,
+        Tab::Kick => Page::Kick,
+        Tab::Tonal => Page::Tonal,
+        Tab::Clap => Page::Clap,
+        Tab::Arp => Page::Arp,
+        Tab::Macros => Page::Macros,
+        Tab::Master => Page::Master,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,6 +1196,7 @@ mod tests {
             (
                 InteractionMode::Numeric(NumericEntry {
                     buffer: "12".into(),
+                    resume: None,
                 }),
                 InteractionMode::Browsing,
             ),
@@ -1163,10 +1488,6 @@ mod tests {
             (
                 InteractionMode::Palette(PaletteMode::default()),
                 Intent::OpenAutomation(AutomationKind::Lfo),
-            ),
-            (
-                InteractionMode::Automation(AutomationMode::Envelope { selected: 0 }),
-                Intent::OpenPalette,
             ),
             (
                 InteractionMode::Automation(AutomationMode::Macro { selected: 0 }),

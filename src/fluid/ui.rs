@@ -4,232 +4,308 @@ use super::*;
 
 const SAVE_MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// TUI redraw/frame-pacing interval. 30 fps is smooth for a terminal
-/// visualizer (most terminal emulators don't reliably render faster than
-/// that anyway) and roughly halves the render-thread CPU spent rebuilding
-/// widgets and diffing the terminal buffer versus the previous 16ms (60 fps)
-/// pacing, with no perceptible loss of animation smoothness or key latency
-/// (queued key events are still drained fully every frame, so held keys
-/// never fall behind).
-const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(33);
-
-/// Chords tab's local navigation depth: base params, drilled into the
-/// active slots' Root list, or drilled into one slot's secondary fields.
-#[derive(Clone, Copy, PartialEq, Default)]
-pub(crate) enum ChordDrill {
-    #[default]
-    None,
-    Progression,
-    Slot(usize),
+pub(crate) struct UiSession {
+    pub(crate) live: LiveSession,
 }
 
-/// Master tab's local navigation depth: top-level params (Compression shown
-/// as one macro row), or drilled into that row's derived Threshold/Ratio/
-/// Makeup fields.
-#[derive(Clone, Copy, PartialEq, Default)]
-pub(crate) enum CompDrill {
-    #[default]
-    None,
-    Detail,
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProductionEffectRecord {
+    pub(crate) effect: interaction::InteractionEffect,
+    pub(crate) result: Result<EffectAcknowledgement, EffectFailure>,
 }
 
-/// Translates a Chords- or Master-tab visible-row index to its real registry
-/// index for the positional setters; a no-op on every other tab.
-pub(crate) fn resolve_selected_index(
-    tab: Tab,
-    chord_drill: ChordDrill,
-    comp_drill: CompDrill,
-    selected: usize,
-) -> usize {
-    match tab {
-        Tab::Chords => chords_flat_index(chord_drill, selected),
-        Tab::Master => master_flat_index(comp_drill, selected),
-        _ => selected,
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProductionActionRecord {
+    pub(crate) action: interaction::SemanticAction,
+    pub(crate) before: interaction::InteractionModel,
+    pub(crate) after: interaction::InteractionModel,
+    pub(crate) effects: Vec<ProductionEffectRecord>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProductionStep {
+    pub(crate) mapping: runtime::InputMapping,
+    pub(crate) actions: Vec<ProductionActionRecord>,
+    pub(crate) quit: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ProductionTurn {
+    pub(crate) steps: Vec<ProductionStep>,
+    pub(crate) quit: bool,
+}
+
+pub(crate) struct ProductionCoordinatorContext<'a> {
+    pub(crate) effects: &'a mut EffectExecutor,
+    pub(crate) fluid: &'a FluidState,
+    pub(crate) flipped: &'a mut FlippedUnits,
+    pub(crate) mute: &'a mut MuteState,
+    pub(crate) clipboard: &'a mut dyn Clipboard,
+    pub(crate) capabilities: runtime::TerminalCapabilities,
+    pub(crate) beat: f64,
+    pub(crate) active_chord: u64,
+}
+
+pub(crate) fn coordinate_production_tick(
+    effects: &mut EffectExecutor,
+    beat: f64,
+) -> Result<EffectAcknowledgement, EffectFailure> {
+    effects.execute(LiveEffect::CommitPending { beat })
+}
+
+pub(crate) fn coordinate_production_event(
+    model: &mut interaction::InteractionModel,
+    event: &runtime::TransportEvent,
+    context: &mut ProductionCoordinatorContext<'_>,
+) -> ProductionStep {
+    let frame_session = context.effects.session().load();
+    let view = UiViewModel::project(ViewProjection {
+        interaction: model,
+        session: &frame_session,
+        telemetry: TelemetryView {
+            beat: context.beat,
+            active_chord: context.active_chord,
+        },
+        presentation: ViewPresentation {
+            fluid: context.fluid,
+            flipped: context.flipped,
+            mute: context.mute,
+            cursor_visible: true,
+            notices: ViewNotices::default(),
+        },
+    });
+    let item_count = view.items.len();
+    let selected_control = view.items.get(view.navigation.selected).map(|item| item.id);
+    let selected = selected_control
+        .and_then(|id| {
+            tab_specs(view.navigation.tab)
+                .iter()
+                .position(|spec| spec.id == id)
+        })
+        .unwrap_or(view.navigation.selected);
+    let tab = view.navigation.tab;
+    drop(view);
+    model.clamp_navigation_selection(item_count);
+
+    let mapping = runtime::map_input(&model.mode, model.navigation, event, context.capabilities);
+    let runtime::InputMapping::Action(mut action) = mapping else {
+        return ProductionStep {
+            mapping,
+            actions: Vec::new(),
+            quit: false,
+        };
+    };
+    if action.intent == interaction::Intent::TouchSelected
+        && selected_control == Some("pad.progression")
+        && is_custom_progression(progression_index(frame_session.controls.pad.progression))
+    {
+        action.intent = interaction::Intent::EnterChordProgression;
+    }
+
+    let repeat_count = match event {
+        runtime::TransportEvent::Key { repeat_count, .. } => repeat_count.max(&1),
+        _ => &1,
+    };
+    let mut actions = Vec::new();
+    let mut quit = false;
+    for _ in 0..*repeat_count {
+        let automation_selected = model.automation_selected();
+        if action.intent == interaction::Intent::ToggleMacro
+            && !macro_toggle_is_supported(
+                &frame_session.automation,
+                automation_selected,
+                selected_control,
+            )
+        {
+            break;
+        }
+        if let interaction::Intent::OpenAutomation(kind) = action.intent
+            && !automation_kind_is_supported(selected_control, kind)
+        {
+            break;
+        }
+        let automation_row_count = match frame_session.automation.active_kind() {
+            Some(ModKind::Lfo) => frame_session
+                .automation
+                .active_address()
+                .map_or(LfoField::ALL.len(), |address| {
+                    lfo_submenu_rows(&frame_session.automation, address).len()
+                }),
+            Some(ModKind::Envelope) => EnvField::ALL.len(),
+            Some(ModKind::Macro) => MacroField::ALL.len(),
+            None => 0,
+        };
+        let before = model.clone();
+        let transition = model
+            .clone()
+            .update_bounded(action, automation_row_count, item_count);
+        *model = transition.model;
+        model.seed_palette_recent(context.effects.recent().ids());
+        let emitted = transition.effects;
+        let mut execution = ProductionInteractionContext {
+            selected_control,
+            tab,
+            selected,
+            automation_selected,
+            beat: context.beat,
+            flipped: context.flipped,
+            mute: context.mute,
+        };
+        let results = context
+            .effects
+            .execute_production_interactions_with_clipboard(
+                emitted.clone(),
+                &mut execution,
+                context.clipboard,
+            );
+        let mut effect_records = Vec::new();
+        for (effect, result) in emitted.into_iter().zip(results) {
+            match &result {
+                Ok(EffectAcknowledgement::ControlSelected { tab, index, .. }) => {
+                    model.select_control(*tab, *index);
+                    model.mode = interaction::InteractionMode::Browsing;
+                }
+                Ok(EffectAcknowledgement::AutomationPosition { depth, selected }) => {
+                    model.apply_lfo_position(*depth, *selected);
+                }
+                Ok(EffectAcknowledgement::QuitRequested) => quit = true,
+                Err(error) => {
+                    let prefix = if effect == interaction::InteractionEffect::Save {
+                        "Save failed"
+                    } else {
+                        "Action failed"
+                    };
+                    context
+                        .effects
+                        .execute(LiveEffect::ShowMessage(format!("{prefix}: {error:?}")))
+                        .expect("message is infallible");
+                }
+                Ok(_) => {}
+            }
+            effect_records.push(ProductionEffectRecord { effect, result });
+        }
+        actions.push(ProductionActionRecord {
+            action,
+            before,
+            after: model.clone(),
+            effects: effect_records,
+        });
+        if quit {
+            break;
+        }
+    }
+    ProductionStep {
+        mapping,
+        actions,
+        quit,
     }
 }
 
-pub(crate) struct UiSession {
-    pub(crate) live: LiveSession,
-    pub(crate) automation: LiveAutomation,
-}
-
-pub(crate) struct LegacyInteractionState<'a> {
-    pub(crate) tab: Tab,
-    pub(crate) selected: usize,
-    pub(crate) chord_drill: ChordDrill,
-    pub(crate) comp_drill: CompDrill,
-    pub(crate) automation_selected: usize,
-    pub(crate) numeric: Option<&'a NumericEntry>,
-    pub(crate) palette: Option<&'a PaletteState>,
-    pub(crate) automation: &'a AutomationState,
-}
-
-pub(crate) fn legacy_interaction_model(
-    state: LegacyInteractionState<'_>,
-) -> interaction::InteractionModel {
-    let LegacyInteractionState {
-        tab,
-        selected,
-        chord_drill,
-        comp_drill,
-        automation_selected,
-        numeric,
-        palette,
-        automation,
-    } = state;
-    let navigation = match tab {
-        Tab::Chords => interaction::Navigation::Chords {
-            selected,
-            drill: match chord_drill {
-                ChordDrill::None => interaction::ChordDrill::None,
-                ChordDrill::Progression => interaction::ChordDrill::Progression {
-                    return_to: selected,
-                },
-                ChordDrill::Slot(slot) => interaction::ChordDrill::Slot {
-                    slot,
-                    return_to: selected,
-                },
-            },
-        },
-        Tab::Master => interaction::Navigation::Master {
-            selected,
-            drill: match comp_drill {
-                CompDrill::None => interaction::MasterDrill::None,
-                CompDrill::Detail => interaction::MasterDrill::Compression {
-                    return_to: selected,
-                },
-            },
-        },
-        Tab::Perc | Tab::Bass | Tab::Kick | Tab::Tonal | Tab::Clap | Tab::Arp | Tab::Macros => {
-            interaction::Navigation::Standard {
-                page: match tab {
-                    Tab::Perc => interaction::StandardPage::Perc,
-                    Tab::Bass => interaction::StandardPage::Bass,
-                    Tab::Kick => interaction::StandardPage::Kick,
-                    Tab::Tonal => interaction::StandardPage::Tonal,
-                    Tab::Clap => interaction::StandardPage::Clap,
-                    Tab::Arp => interaction::StandardPage::Arp,
-                    Tab::Macros => interaction::StandardPage::Macros,
-                    Tab::Chords | Tab::Master => unreachable!("handled above"),
-                },
-                selected,
-            }
+pub(crate) fn coordinate_production_turn(
+    model: &mut interaction::InteractionModel,
+    events: &[runtime::TransportEvent],
+    tick_due: bool,
+    context: &mut ProductionCoordinatorContext<'_>,
+) -> Result<ProductionTurn, EffectFailure> {
+    if tick_due {
+        coordinate_production_tick(context.effects, context.beat)?;
+    }
+    let mut steps = Vec::with_capacity(events.len());
+    let mut quit = false;
+    for event in events {
+        if matches!(event, runtime::TransportEvent::Shutdown) {
+            quit = true;
+            break;
         }
-    };
-    let mode = if let Some(entry) = numeric {
-        interaction::InteractionMode::Numeric(interaction::NumericEntry {
-            buffer: entry.buffer.clone(),
-        })
-    } else if let Some(palette) = palette {
-        interaction::InteractionMode::Palette(interaction::PaletteMode {
-            query: palette.query.clone(),
-            selected: palette.selected,
-            recent: palette.recent().to_vec(),
-            locked: palette.locked,
-            value_buffer: palette.value_buf.clone(),
-            staged: palette
-                .staged
-                .iter()
-                .map(|edit| interaction::PaletteStagedEdit {
-                    id: edit.id,
-                    value_bits: edit.value.to_bits(),
-                })
-                .collect(),
-        })
-    } else {
-        match automation.active_kind() {
-            Some(ModKind::Lfo) => {
-                interaction::InteractionMode::Automation(interaction::AutomationMode::Lfo {
-                    depth: if automation.open_field().is_some() {
-                        interaction::LfoDepth::NestedField
-                    } else {
-                        interaction::LfoDepth::Editor
-                    },
-                    selected: automation_selected,
-                })
-            }
-            Some(ModKind::Envelope) => {
-                interaction::InteractionMode::Automation(interaction::AutomationMode::Envelope {
-                    selected: automation_selected,
-                })
-            }
-            Some(ModKind::Macro) => {
-                interaction::InteractionMode::Automation(interaction::AutomationMode::Macro {
-                    selected: automation_selected,
-                })
-            }
-            None => interaction::InteractionMode::Browsing,
+        let step = coordinate_production_event(model, event, context);
+        quit |= step.quit;
+        steps.push(step);
+        if quit {
+            break;
         }
-    };
-    interaction::InteractionModel { navigation, mode }
+    }
+    Ok(ProductionTurn { steps, quit })
 }
 
-pub(crate) fn ui_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+pub(crate) fn production_ui_loop(
+    terminal: &mut runtime::TerminalSession,
     session: UiSession,
     telemetry: Arc<FluidTelemetry>,
-    initial_automation: AutomationState,
     updates: UpdateNotice,
     auto: AutoControls,
 ) -> Result<(), Box<dyn Error>> {
-    let UiSession {
-        live,
-        automation: automation_shared,
-    } = session;
-    let mut tab = Tab::Chords;
-    let mut selected = 0usize;
-    let mut lfo_selected = 0usize;
-    let mut chord_drill = ChordDrill::None;
-    let mut comp_drill = CompDrill::None;
-    let mut flipped = FlippedUnits::new();
-    let mut numeric_entry: Option<NumericEntry> = None;
-    let mut palette: Option<PaletteState> = None;
-    let mut effects = EffectExecutor::new(live, auto);
-    let mut mute: MuteState = [None; 9];
+    let mut model = interaction::InteractionModel::default();
+    let mut effects = EffectExecutor::new(session.live, auto);
+    let mut source = runtime::CrosstermEventSource::new(terminal.capabilities());
+    let clock = runtime::MonotonicClock::start();
+    let mut scheduler = runtime::Scheduler::new(
+        runtime::SchedulerConfig::default(),
+        runtime::Clock::now(&clock),
+    );
     let mut fluid = FluidState::new();
-    let mut last = Instant::now();
+    let mut flipped = FlippedUnits::new();
+    let mut mute: MuteState = [None; 9];
+    let mut clipboard = SystemClipboard;
     let started = Instant::now();
-    let mut automation = PublishedAutomation::new(initial_automation, automation_shared);
+    let mut last_tick = runtime::Clock::now(&clock);
+    let mut quit = false;
 
-    'ui: loop {
-        effects
-            .execute(LiveEffect::CommitPending {
+    while !quit {
+        let turn = scheduler.collect_turn(&mut source, &clock)?;
+        let now = runtime::Clock::now(&clock);
+        let tick_due = turn.tick_due;
+        let render_due = turn.render_due;
+        let events = turn.events;
+        if events
+            .iter()
+            .any(|event| matches!(event, runtime::TransportEvent::Resize { .. }))
+        {
+            scheduler.request_frame();
+        }
+        let production = coordinate_production_turn(
+            &mut model,
+            &events,
+            tick_due,
+            &mut ProductionCoordinatorContext {
+                effects: &mut effects,
+                fluid: &fluid,
+                flipped: &mut flipped,
+                mute: &mut mute,
+                clipboard: &mut clipboard,
+                capabilities: terminal.capabilities(),
                 beat: telemetry.beat(),
-            })
-            .expect("pending commit has no fallible effects");
-        let frame_session = effects.session().load();
-        automation.sync_from_snapshot(&frame_session.automation);
-        effects.expire_message(SAVE_MESSAGE_TTL);
-        let pending_message = effects.pending().map(|(_, edits)| {
-            let plural = if edits.len() == 1 { "" } else { "s" };
-            format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
-        });
-        let auto_message = effects.auto_morph_ids(telemetry.beat()).map(|(from, to)| {
-            let from = from.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
-            let to = to.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
-            format!("\u{25cf} AUTO morph {from} \u{2192} {to}   a or touch any param to exit")
-        });
+                active_chord: telemetry.chord_index.load(Ordering::Relaxed),
+            },
+        )
+        .expect("pending commit has no fallible effects");
+        quit |= production.quit;
+        if !events.is_empty() {
+            scheduler.request_frame();
+        }
 
-        let now = Instant::now();
-        let dt = (now - last).as_secs_f32().min(0.05);
-        last = now;
-        fluid.tick(dt, &telemetry);
+        if tick_due {
+            effects.expire_message(SAVE_MESSAGE_TTL);
+            let dt = now.saturating_sub(last_tick).as_secs_f32().min(0.05);
+            fluid.tick(dt, &telemetry);
+            last_tick = now;
+            scheduler.complete_tick(now);
+            scheduler.request_frame();
+        }
 
-        let cursor_visible = (started.elapsed().as_millis() / 400).is_multiple_of(2);
-        let beat = telemetry.beat();
-        let interaction = legacy_interaction_model(LegacyInteractionState {
-            tab,
-            selected,
-            chord_drill,
-            comp_drill,
-            automation_selected: lfo_selected,
-            numeric: numeric_entry.as_ref(),
-            palette: palette.as_ref(),
-            automation: automation.state(),
-        });
-        let items = {
+        if (render_due || scheduler.render_due(now)) && !quit {
+            let frame_session = effects.session().load();
+            let beat = telemetry.beat();
+            let pending_message = effects.pending().map(|(_, edits)| {
+                let plural = if edits.len() == 1 { "" } else { "s" };
+                format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
+            });
+            let auto_message = effects.auto_morph_ids(beat).map(|(from, to)| {
+                let from = from.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
+                let to = to.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
+                format!("\u{25cf} AUTO morph {from} \u{2192} {to}   a or touch any param to exit")
+            });
             let view = UiViewModel::project(ViewProjection {
-                interaction: &interaction,
+                interaction: &model,
                 session: &frame_session,
                 telemetry: TelemetryView {
                     beat,
@@ -239,7 +315,7 @@ pub(crate) fn ui_loop(
                     fluid: &fluid,
                     flipped: &flipped,
                     mute: &mute,
-                    cursor_visible,
+                    cursor_visible: (started.elapsed().as_millis() / 400).is_multiple_of(2),
                     notices: ViewNotices {
                         effect: effects.message().map(str::to_string),
                         pending_commit: pending_message,
@@ -248,464 +324,11 @@ pub(crate) fn ui_loop(
                     },
                 },
             });
-            selected = view.navigation.selected;
-            terminal.draw(|frame| render(frame, &view))?;
-            view.items
-        };
-        let items_len = items.len();
-
-        // Drain every queued key event before the next draw so a held key
-        // never falls behind the frame rate; the first poll doubles as the
-        // frame pacing wait.
-        let mut pending = event::poll(FRAME_INTERVAL)?;
-        while pending {
-            let event = event::read()?;
-            pending = event::poll(std::time::Duration::ZERO)?;
-            let Event::Key(key) = event else {
-                continue;
-            };
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-            if let Some(entry) = numeric_entry.as_mut() {
-                match key.code {
-                    KeyCode::Esc => numeric_entry = None,
-                    KeyCode::Enter => {
-                        if entry.is_complete_number()
-                            && let Ok(value) = entry.buffer.parse::<f32>()
-                        {
-                            set_modulator_or_control(
-                                &mut effects,
-                                &mut automation,
-                                lfo_selected,
-                                tab,
-                                resolve_selected_index(tab, chord_drill, comp_drill, selected),
-                                value,
-                                beat,
-                                &flipped,
-                            );
-                        }
-                        numeric_entry = None;
-                    }
-                    KeyCode::Backspace => {
-                        entry.buffer.pop();
-                    }
-                    KeyCode::Char(c) => entry.push(c),
-                    _ => {}
-                }
-                continue;
-            }
-            if palette.is_some() {
-                if key.code == KeyCode::Esc {
-                    palette = None;
-                    continue;
-                }
-                let pal = palette.as_mut().expect("checked above");
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                let action = match key.code {
-                    KeyCode::Tab => {
-                        pal.autocomplete();
-                        PaletteAction::None
-                    }
-                    KeyCode::Up => {
-                        pal.move_selection(-1);
-                        PaletteAction::None
-                    }
-                    KeyCode::Down => {
-                        pal.move_selection(1);
-                        PaletteAction::None
-                    }
-                    KeyCode::Char('p') if ctrl => {
-                        pal.move_selection(-1);
-                        PaletteAction::None
-                    }
-                    KeyCode::Char('n') if ctrl => {
-                        pal.move_selection(1);
-                        PaletteAction::None
-                    }
-                    KeyCode::Char('b') if ctrl => pal.commit_at_bar(),
-                    KeyCode::Backspace => {
-                        pal.backspace();
-                        PaletteAction::None
-                    }
-                    KeyCode::Enter => pal.enter(),
-                    KeyCode::Char(c) => {
-                        pal.push_char(c);
-                        PaletteAction::None
-                    }
-                    _ => PaletteAction::None,
-                };
-                match action {
-                    PaletteAction::None => {}
-                    PaletteAction::Jump(index) => {
-                        let entry = pal.entry(index);
-                        let EffectAcknowledgement::ControlSelected {
-                            tab: jump_tab,
-                            index: jump_index,
-                            ..
-                        } = effects
-                            .execute(LiveEffect::SelectControl {
-                                tab: entry.tab,
-                                index: entry.index_in_tab,
-                                id: entry.spec.id,
-                            })
-                            .expect("palette entries name registered controls")
-                        else {
-                            unreachable!("selection effect returns selection acknowledgement")
-                        };
-                        palette = None;
-                        if automation.state().is_editor_open() {
-                            automation.edit(AutomationState::close_editor);
-                        }
-                        tab = jump_tab;
-                        lfo_selected = 0;
-                        chord_drill = ChordDrill::None;
-                        comp_drill = CompDrill::None;
-                        selected = match tab {
-                            Tab::Chords => {
-                                let (drill, row) = chords_drill_for_index(jump_index);
-                                chord_drill = drill;
-                                row
-                            }
-                            Tab::Master => {
-                                let (drill, row) = master_drill_for_index(jump_index);
-                                comp_drill = drill;
-                                row
-                            }
-                            _ => jump_index,
-                        };
-                    }
-                    PaletteAction::CommitNow(edits) => {
-                        palette = None;
-                        effects
-                            .execute(LiveEffect::StageForBar {
-                                target_beat: beat,
-                                edits,
-                            })
-                            .expect("staging is infallible");
-                        effects
-                            .execute(LiveEffect::CommitPending { beat })
-                            .expect("commit is infallible");
-                    }
-                    PaletteAction::CommitAtBar(edits) => {
-                        palette = None;
-                        effects
-                            .execute(LiveEffect::StageForBar {
-                                target_beat: next_bar_beat(beat),
-                                edits,
-                            })
-                            .expect("staging is infallible");
-                    }
-                }
-                continue;
-            }
-            match key.code {
-                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if let Err(error) = effects.execute(LiveEffect::CopySong) {
-                        effects
-                            .execute(LiveEffect::ShowMessage(format!("Save failed: {error:?}")))
-                            .expect("message is infallible");
-                    }
-                }
-                // Esc only ever drills out one level (nested field-macro
-                // editor, then the modulator editor, then nothing) — it
-                // never quits, so escaping a deep edit can't risk exiting
-                // the app. Only q and Ctrl+C do that.
-                KeyCode::Esc if automation.state().is_editor_open() => {
-                    close_one_level(&mut automation, &mut lfo_selected);
-                }
-                KeyCode::Esc if tab == Tab::Chords && chord_drill != ChordDrill::None => {
-                    selected = match chord_drill {
-                        ChordDrill::Slot(n) => n,
-                        _ => 4,
-                    };
-                    chord_drill = match chord_drill {
-                        ChordDrill::Slot(_) => ChordDrill::Progression,
-                        _ => ChordDrill::None,
-                    };
-                }
-                KeyCode::Esc if tab == Tab::Master && comp_drill != CompDrill::None => {
-                    selected = MASTER_COMP_AMOUNT_ROW;
-                    comp_drill = CompDrill::None;
-                }
-                KeyCode::Esc => {}
-                KeyCode::Char('q') => break 'ui,
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'ui,
-                KeyCode::Tab | KeyCode::BackTab => {
-                    if automation.state().is_editor_open() {
-                        automation.edit(AutomationState::close_editor);
-                    }
-                    tab = if key.code == KeyCode::Tab {
-                        tab.next()
-                    } else {
-                        tab.previous()
-                    };
-                    selected = 0;
-                    lfo_selected = 0;
-                    chord_drill = ChordDrill::None;
-                    comp_drill = CompDrill::None;
-                }
-                // Toggle auto-morph. On -> off swaps in `None` (the engine
-                // stops rewriting controls, leaving the current morphed values
-                // live). Off -> on builds a morph from the current state so
-                // nothing jumps, heading to the nearest built-in state first.
-                KeyCode::Char('a') => {
-                    effects.toggle_auto(beat);
-                }
-                KeyCode::Char('/') => {
-                    palette = Some(PaletteState::new(tab, effects.recent().ids()));
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    if automation.state().is_editor_open() {
-                        if automation.state().active_kind() == Some(ModKind::Lfo) {
-                            lfo_selected = clamp_lfo_selection(
-                                lfo_selected,
-                                -1,
-                                active_field_count(automation.state()),
-                            );
-                        } else if lfo_selected <= 1 {
-                            automation.edit(AutomationState::close_editor);
-                            lfo_selected = 0;
-                        } else {
-                            lfo_selected -= 1;
-                        }
-                    } else {
-                        selected = selected.saturating_sub(1);
-                    }
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if automation.state().is_editor_open() {
-                        if automation.state().active_kind() == Some(ModKind::Lfo) {
-                            lfo_selected = clamp_lfo_selection(
-                                lfo_selected,
-                                1,
-                                active_field_count(automation.state()),
-                            );
-                        } else if lfo_selected >= active_field_count(automation.state()) {
-                            automation.edit(AutomationState::close_editor);
-                            selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
-                            lfo_selected = 0;
-                        } else {
-                            lfo_selected += 1;
-                        }
-                    } else {
-                        selected = selected.saturating_add(1).min(items_len.saturating_sub(1));
-                    }
-                }
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('H') => {
-                    let idx = resolve_selected_index(tab, chord_drill, comp_drill, selected);
-                    if key.code == KeyCode::Char('H') || key.modifiers.contains(KeyModifiers::SHIFT)
-                    {
-                        reset_lfo_or_control(
-                            &mut effects,
-                            &mut automation,
-                            lfo_selected,
-                            tab,
-                            idx,
-                            beat,
-                        );
-                    } else {
-                        adjust_lfo_or_control(
-                            &mut effects,
-                            &mut automation,
-                            lfo_selected,
-                            tab,
-                            idx,
-                            -1.0,
-                            beat,
-                            &flipped,
-                        );
-                    }
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    adjust_lfo_or_control(
-                        &mut effects,
-                        &mut automation,
-                        lfo_selected,
-                        tab,
-                        resolve_selected_index(tab, chord_drill, comp_drill, selected),
-                        1.0,
-                        beat,
-                        &flipped,
-                    );
-                }
-                KeyCode::Char(c @ ('f' | 'e')) => {
-                    let kind = if c == 'f' {
-                        ModKind::Lfo
-                    } else {
-                        ModKind::Envelope
-                    };
-                    open_modulator_effect(
-                        &mut effects,
-                        &mut automation,
-                        &items,
-                        selected,
-                        kind,
-                        &mut lfo_selected,
-                    );
-                }
-                KeyCode::Char('v') => {
-                    match active_field(automation.state(), lfo_selected) {
-                        // On an LFO field row: stack (or un-stack) a macro
-                        // onto that specific field, never on by default.
-                        ActiveField::Lfo(address, field)
-                            if !is_macro_id(address.id()) && field.macro_key().is_some() =>
-                        {
-                            let key = unit_key(address.id(), field.macro_key());
-                            let was_open = automation.state().open_field() == Some(key.as_str());
-                            effects.edit_automation(address.id(), &mut automation, |state| {
-                                state.toggle_open_field(key.clone());
-                            });
-                            let base = field_row_index(automation.state(), address, field);
-                            lfo_selected = if was_open { base } else { base + 1 };
-                        }
-                        // Already inside a field's nested macro rows: v
-                        // closes just that, same as Esc — never hijacks the
-                        // parent LFO editor into swapping to a top-level
-                        // Macro editor.
-                        ActiveField::LfoMacro(..) => {
-                            close_one_level(&mut automation, &mut lfo_selected);
-                        }
-                        // Discrete fields (Shape) carry no macro_key and
-                        // can't take a stacked macro — a continuous -1..1
-                        // contribution has no defined meaning against an
-                        // enum index. A true no-op, same as v being refused
-                        // on a macro slider's own rows, not a fallthrough
-                        // into hijacking the parent LFO editor.
-                        ActiveField::Lfo(_, field) if field.macro_key().is_none() => {}
-                        // Step-editor rows carry no macro_key either; v is a
-                        // true no-op, never a fallthrough into the Macro editor.
-                        ActiveField::LfoStep(..) => {}
-                        // Anywhere else (including already inside the
-                        // top-level Macro editor, where this closes it): v
-                        // opens the Macro editor for the selected control,
-                        // for any slider.
-                        _ => {
-                            open_modulator_effect(
-                                &mut effects,
-                                &mut automation,
-                                &items,
-                                selected,
-                                ModKind::Macro,
-                                &mut lfo_selected,
-                            );
-                        }
-                    }
-                }
-                KeyCode::Char('x') | KeyCode::Char('X') => {
-                    match active_field(automation.state(), lfo_selected) {
-                        // On an open field-macro row: remove just that
-                        // stacked macro, keep the parent LFO editor open.
-                        ActiveField::LfoMacro(address, field, _) => {
-                            let key = unit_key(address.id(), field.macro_key());
-                            effects.edit_automation(address.id(), &mut automation, |state| {
-                                state.remove_field_macro(&key);
-                            });
-                            lfo_selected = field_row_index(automation.state(), address, field);
-                        }
-                        _ if automation.state().is_editor_open() => {
-                            let id = automation
-                                .state()
-                                .active_address()
-                                .expect("open editor has an address")
-                                .id();
-                            effects.edit_automation(
-                                id,
-                                &mut automation,
-                                AutomationState::remove_open_route,
-                            );
-                            lfo_selected = 0;
-                        }
-                        _ => {
-                            if let Some(item) = items.get(selected) {
-                                let address = ControlAddress::new(item.id);
-                                effects.edit_automation(item.id, &mut automation, |state| {
-                                    state.clear_control(address);
-                                });
-                            }
-                        }
-                    }
-                }
-                KeyCode::Enter => {
-                    if !automation.state().is_editor_open() {
-                        effects.touch_selected(tab, chord_drill, comp_drill, selected);
-                        if tab == Tab::Chords {
-                            match (chord_drill, items.get(selected).map(|i| i.id)) {
-                                (ChordDrill::None, Some("pad.progression"))
-                                    if is_custom_progression(progression_index(
-                                        frame_session.controls.pad.progression,
-                                    )) =>
-                                {
-                                    chord_drill = ChordDrill::Progression;
-                                    selected = 0;
-                                }
-                                (ChordDrill::Progression, Some(_)) => {
-                                    chord_drill = ChordDrill::Slot(selected);
-                                    selected = 0;
-                                }
-                                _ => {}
-                            }
-                        } else if tab == Tab::Master
-                            && comp_drill == CompDrill::None
-                            && items.get(selected).map(|i| i.id) == Some("master.comp_amount")
-                        {
-                            comp_drill = CompDrill::Detail;
-                            selected = 0;
-                        } else if let Some(item) = items.get(selected)
-                            && let Some(owner) = tab_owning_control(item.id)
-                            && owner != tab
-                        {
-                            tab = owner;
-                            selected = 0;
-                            lfo_selected = 0;
-                            chord_drill = ChordDrill::None;
-                            comp_drill = CompDrill::None;
-                        }
-                    }
-                }
-                KeyCode::Char('t') | KeyCode::Char('T') => {
-                    if let Some(key) =
-                        unit_toggle_key(automation.state(), lfo_selected, &items, selected)
-                    {
-                        let now_flipped = !flipped.remove(&key);
-                        if now_flipped {
-                            flipped.insert(key);
-                        }
-                        snap_after_unit_flip(
-                            &mut effects,
-                            &mut automation,
-                            lfo_selected,
-                            tab,
-                            resolve_selected_index(tab, chord_drill, comp_drill, selected),
-                            now_flipped,
-                            beat,
-                        );
-                    }
-                }
-                KeyCode::Char(c @ ('m' | 'M')) => {
-                    let target = if c == 'm' { tab } else { Tab::Master };
-                    effects.toggle_mute(target, &mut mute);
-                }
-                KeyCode::Char('r') | KeyCode::Char('R') => {
-                    if let Some(address) = automation.state().active_address()
-                        && automation.state().active_kind() == Some(ModKind::Lfo)
-                    {
-                        effects.edit_automation(address.id(), &mut automation, |state| {
-                            if let Some(route) = state.route_mut(address)
-                                && route.shape.is_random()
-                            {
-                                route.reseed();
-                            }
-                        });
-                    }
-                }
-                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
-                    let mut entry = NumericEntry::default();
-                    entry.push(c);
-                    numeric_entry = Some(entry);
-                }
-                _ => {}
-            }
+            let item_count = view.items.len();
+            terminal.terminal_mut().draw(|frame| render(frame, &view))?;
+            drop(view);
+            model.clamp_navigation_selection(item_count);
+            scheduler.complete_frame(runtime::Clock::now(&clock));
         }
     }
 
@@ -784,20 +407,19 @@ fn flipped_step(native: TimeBase, value: f32, dir: f32, bpm: f32) -> f32 {
 /// equivalent so the value can then move freely in time.
 pub(crate) fn snap_after_unit_flip(
     effects: &mut EffectExecutor,
-    automation: &mut PublishedAutomation,
+    automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
     selected: usize,
     now_flipped: bool,
     beat: f64,
 ) {
-    let active = active_field(automation.state(), lfo_selected);
+    let active = active_field(automation, lfo_selected);
     let recent_id = automation
-        .state()
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    let published = effects.edit_session(recent_id, |snapshot| match active {
+    effects.edit_session(recent_id, |snapshot| match active {
         // LFO rate accepts exact typed beat values, so an exact ms-authored
         // value stays exact when returning to beats. Offset retains its grid.
         ActiveField::Lfo(address, field) if !now_flipped => {
@@ -841,7 +463,6 @@ pub(crate) fn snap_after_unit_flip(
         }
         _ => {}
     });
-    automation.sync_from_snapshot(&published.automation);
 }
 
 /// The flip key qualifier for a modulator time field, None for unit-less ones.
@@ -863,28 +484,6 @@ fn env_time_key(field: EnvField) -> Option<&'static str> {
 
 /// The flip key for whatever time field the cursor sits on, or None when the
 /// selection has no time base (T is then a no-op).
-fn unit_toggle_key(
-    automation: &AutomationState,
-    lfo_selected: usize,
-    items: &[ControlItem],
-    selected: usize,
-) -> Option<String> {
-    match active_field(automation, lfo_selected) {
-        ActiveField::Lfo(address, field) => {
-            lfo_time_key(field).map(|key| unit_key(address.id(), Some(key)))
-        }
-        ActiveField::Envelope(address, field) => {
-            env_time_key(field).map(|key| unit_key(address.id(), Some(key)))
-        }
-        ActiveField::LfoMacro(..) | ActiveField::Macro(..) | ActiveField::LfoStep(..) => None,
-        ActiveField::Control => {
-            let item = items.get(selected)?;
-            let spec = spec_by_id(item.id)?;
-            (spec.time_base != TimeBase::None).then(|| unit_key(item.id, None))
-        }
-    }
-}
-
 /// One selectable row inside an open LFO editor: either one of the LFO's own
 /// fields, or one of the two rows (amount, target) of a macro currently
 /// stacked onto that field. The macro rows only exist while that field's `v`
@@ -951,16 +550,18 @@ fn field_row_index(
 /// the single place that governs "close the innermost open thing" — Esc and
 /// re-pressing `v` on a nested field-macro row both route through it, so
 /// drilling out one step never destroys more than what's actually open.
-pub(crate) fn close_one_level(automation: &mut PublishedAutomation, lfo_selected: &mut usize) {
-    let Some(address) = automation.state().active_address() else {
-        return;
-    };
-    if let Some(field) = automation.state().field_macro_owner(address) {
-        automation.edit(AutomationState::close_open_field);
-        *lfo_selected = field_row_index(automation.state(), address, field);
+pub(crate) fn close_one_level_effect(
+    effects: &mut EffectExecutor,
+    automation: &AutomationState,
+) -> Option<usize> {
+    let address = automation.active_address()?;
+    if let Some(field) = automation.field_macro_owner(address) {
+        effects.edit_navigation_automation(AutomationState::close_open_field);
+        let current = effects.session().load();
+        Some(field_row_index(&current.automation, address, field))
     } else {
-        automation.edit(AutomationState::close_editor);
-        *lfo_selected = 0;
+        effects.edit_navigation_automation(AutomationState::close_editor);
+        None
     }
 }
 
@@ -972,22 +573,9 @@ pub(crate) fn macro_field_at(index: usize) -> Option<MacroField> {
     MacroField::ALL.get(index.checked_sub(1)?).copied()
 }
 
-/// Submenu row count for the currently open editor (0 when none is open).
-pub(crate) fn active_field_count(automation: &AutomationState) -> usize {
-    match automation.active_kind() {
-        Some(ModKind::Lfo) => automation
-            .active_address()
-            .map_or(LfoField::ALL.len(), |address| {
-                lfo_submenu_rows(automation, address).len()
-            }),
-        Some(ModKind::Envelope) => EnvField::ALL.len(),
-        Some(ModKind::Macro) => MacroField::ALL.len(),
-        None => 0,
-    }
-}
-
 /// LFO editors are explicitly collapsed with `f` or Escape. Arrow navigation
 /// stays inside the submenu and clamps at its first and last selectable rows.
+#[cfg(test)]
 pub(crate) fn clamp_lfo_selection(current: usize, direction: isize, row_count: usize) -> usize {
     if row_count == 0 {
         return 0;
@@ -995,73 +583,18 @@ pub(crate) fn clamp_lfo_selection(current: usize, direction: isize, row_count: u
     current.saturating_add_signed(direction).clamp(1, row_count)
 }
 
-/// Whether a modulator kind can open on a control. Envelopes live only on
-/// macro sliders; macro routes live only on regular controls (no macro
-/// feeding another macro).
-#[cfg(test)]
-fn kind_allowed_on(kind: ModKind, id: &str) -> bool {
-    match kind {
-        ModKind::Lfo => true,
-        ModKind::Envelope => is_macro_id(id),
-        ModKind::Macro => !is_macro_id(id),
-    }
-}
-
-/// Toggle a modulator editor of `kind` on the selected control: same kind on
-/// the same control closes it (settings kept — x is the remove gesture),
-/// otherwise the open editor is swapped for the requested one (created
-/// audible-neutral).
-#[cfg(test)]
-pub(crate) fn open_modulator(
-    automation: &mut PublishedAutomation,
-    items: &[ControlItem],
-    selected: usize,
-    kind: ModKind,
-    sub_selected: &mut usize,
-) {
-    if let Some(item) = items.get(selected) {
-        if !kind_allowed_on(kind, item.id) {
-            return;
-        }
-        let address = ControlAddress::new(item.id);
-        automation.edit(|state| {
-            let already =
-                state.active_address() == Some(address) && state.active_kind() == Some(kind);
-            state.close_editor();
-            if !already {
-                match kind {
-                    ModKind::Lfo => {
-                        state.open_or_create(address);
-                    }
-                    ModKind::Envelope => {
-                        state.open_or_create_envelope(address);
-                    }
-                    ModKind::Macro => {
-                        state.open_or_create_macro(address);
-                    }
-                }
-            }
-        });
-        *sub_selected = 1;
-    }
-}
-
-fn open_modulator_effect(
+pub(crate) fn open_modulator_effect_for_id(
     effects: &mut EffectExecutor,
-    automation: &mut PublishedAutomation,
-    items: &[ControlItem],
-    selected: usize,
+    id: &'static str,
     kind: ModKind,
     sub_selected: &mut usize,
 ) {
-    let Some(item) = items.get(selected) else {
-        return;
-    };
-    if item.id.starts_with("macro.") && kind != ModKind::Lfo {
+    if id.starts_with("macro.") && kind != ModKind::Lfo {
         return;
     }
-    let address = ControlAddress::new(item.id);
-    effects.edit_automation(item.id, automation, |state| {
+    let address = ControlAddress::new(id);
+    effects.edit_session(Some(id), |snapshot| {
+        let state = &mut snapshot.automation;
         let already = state.active_address() == Some(address) && state.active_kind() == Some(kind);
         state.close_editor();
         if !already {
@@ -1122,10 +655,30 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
     }
 }
 
+pub(crate) fn macro_toggle_is_supported(
+    automation: &AutomationState,
+    lfo_selected: usize,
+    selected_control: Option<&str>,
+) -> bool {
+    match active_field(automation, lfo_selected) {
+        ActiveField::Lfo(_, field) => field.macro_key().is_some(),
+        ActiveField::LfoStep(..) => false,
+        ActiveField::LfoMacro(..) | ActiveField::Envelope(..) | ActiveField::Macro(..) => true,
+        ActiveField::Control => selected_control.is_none_or(|id| !is_macro_id(id)),
+    }
+}
+
+pub(crate) fn automation_kind_is_supported(
+    selected_control: Option<&str>,
+    kind: interaction::AutomationKind,
+) -> bool {
+    kind == interaction::AutomationKind::Lfo || selected_control.is_none_or(|id| !is_macro_id(id))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn adjust_lfo_or_control(
     effects: &mut EffectExecutor,
-    automation: &mut PublishedAutomation,
+    automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
     selected: usize,
@@ -1133,13 +686,12 @@ pub(crate) fn adjust_lfo_or_control(
     beat: f64,
     flipped: &FlippedUnits,
 ) {
-    let active = active_field(automation.state(), lfo_selected);
+    let active = active_field(automation, lfo_selected);
     let recent_id = automation
-        .state()
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    let published = effects.edit_session(recent_id, |snapshot| {
+    effects.edit_session(recent_id, |snapshot| {
         let bpm = snapshot.controls.master.bpm;
         match active {
             ActiveField::Lfo(address, field) => {
@@ -1212,24 +764,22 @@ pub(crate) fn adjust_lfo_or_control(
             }
         }
     });
-    automation.sync_from_snapshot(&published.automation);
 }
 
-fn reset_lfo_or_control(
+pub(crate) fn reset_lfo_or_control(
     effects: &mut EffectExecutor,
-    automation: &mut PublishedAutomation,
+    automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
     selected: usize,
     beat: f64,
 ) {
-    let active = active_field(automation.state(), lfo_selected);
+    let active = active_field(automation, lfo_selected);
     let recent_id = automation
-        .state()
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    let published = effects.edit_session(recent_id, |snapshot| match active {
+    effects.edit_session(recent_id, |snapshot| match active {
         ActiveField::Lfo(address, field) => {
             if let Some(route) = snapshot.automation.route_mut(address) {
                 route.reset_field_at(field, beat);
@@ -1258,13 +808,12 @@ fn reset_lfo_or_control(
         }
         ActiveField::Control => apply_min(tab, selected, &mut snapshot.controls),
     });
-    automation.sync_from_snapshot(&published.automation);
 }
 
 #[allow(clippy::too_many_arguments)]
-fn set_modulator_or_control(
+pub(crate) fn set_modulator_or_control(
     effects: &mut EffectExecutor,
-    automation: &mut PublishedAutomation,
+    automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
     selected: usize,
@@ -1272,13 +821,12 @@ fn set_modulator_or_control(
     beat: f64,
     flipped: &FlippedUnits,
 ) {
-    let active = active_field(automation.state(), lfo_selected);
+    let active = active_field(automation, lfo_selected);
     let recent_id = automation
-        .state()
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    let published = effects.edit_session(recent_id, |snapshot| {
+    effects.edit_session(recent_id, |snapshot| {
         let bpm = snapshot.controls.master.bpm;
         match active {
             ActiveField::Lfo(address, field) => {
@@ -1343,7 +891,140 @@ fn set_modulator_or_control(
             }
         }
     });
-    automation.sync_from_snapshot(&published.automation);
+}
+
+pub(crate) fn toggle_units_effect(
+    effects: &mut EffectExecutor,
+    automation: &AutomationState,
+    flipped: &mut FlippedUnits,
+    lfo_selected: usize,
+    tab: Tab,
+    selected: usize,
+    beat: f64,
+) {
+    let key = match active_field(automation, lfo_selected) {
+        ActiveField::Lfo(address, field) => {
+            lfo_time_key(field).map(|key| unit_key(address.id(), Some(key)))
+        }
+        ActiveField::Envelope(address, field) => {
+            env_time_key(field).map(|key| unit_key(address.id(), Some(key)))
+        }
+        ActiveField::LfoMacro(..) | ActiveField::Macro(..) | ActiveField::LfoStep(..) => None,
+        ActiveField::Control => tab_specs(tab)
+            .get(selected)
+            .filter(|spec| spec.time_base != TimeBase::None)
+            .map(|spec| unit_key(spec.id, None)),
+    };
+    let Some(key) = key else { return };
+    let now_flipped = !flipped.remove(&key);
+    if now_flipped {
+        flipped.insert(key);
+    }
+    snap_after_unit_flip(
+        effects,
+        automation,
+        lfo_selected,
+        tab,
+        selected,
+        now_flipped,
+        beat,
+    );
+}
+
+pub(crate) fn toggle_macro_effect(
+    effects: &mut EffectExecutor,
+    automation: &AutomationState,
+    selected_control: Option<&'static str>,
+    lfo_selected: usize,
+) -> Option<(interaction::LfoDepth, usize)> {
+    match active_field(automation, lfo_selected) {
+        ActiveField::Lfo(address, field)
+            if !is_macro_id(address.id()) && field.macro_key().is_some() =>
+        {
+            let key = unit_key(address.id(), field.macro_key());
+            effects.edit_session(Some(address.id()), |snapshot| {
+                let state = &mut snapshot.automation;
+                state.toggle_open_field(key.clone());
+            });
+            let current = effects.session().load();
+            let depth = if current.automation.field_macro_owner(address).is_some() {
+                interaction::LfoDepth::NestedField
+            } else {
+                interaction::LfoDepth::Editor
+            };
+            Some((depth, field_row_index(&current.automation, address, field)))
+        }
+        ActiveField::LfoMacro(address, field, _) => {
+            effects.edit_session(Some(address.id()), |snapshot| {
+                snapshot.automation.close_open_field();
+            });
+            let current = effects.session().load();
+            Some((
+                interaction::LfoDepth::Editor,
+                field_row_index(&current.automation, address, field),
+            ))
+        }
+        ActiveField::Lfo(_, _)
+        | ActiveField::LfoStep(..)
+        | ActiveField::Envelope(..)
+        | ActiveField::Macro(..)
+        | ActiveField::Control => {
+            if let Some(id) = selected_control {
+                let mut selected = 1;
+                open_modulator_effect_for_id(effects, id, ModKind::Macro, &mut selected);
+            }
+            None
+        }
+    }
+}
+
+pub(crate) fn remove_automation_effect(
+    effects: &mut EffectExecutor,
+    automation: &AutomationState,
+    selected_control: Option<&'static str>,
+    lfo_selected: usize,
+) {
+    match active_field(automation, lfo_selected) {
+        ActiveField::LfoMacro(address, field, _) => {
+            let key = unit_key(address.id(), field.macro_key());
+            effects.edit_session(Some(address.id()), |snapshot| {
+                let state = &mut snapshot.automation;
+                state.remove_field_macro(&key);
+            });
+        }
+        _ if automation.is_editor_open() => {
+            let id = automation
+                .active_address()
+                .expect("open editor has an address")
+                .id();
+            effects.edit_session(Some(id), |snapshot| {
+                snapshot.automation.remove_open_route();
+            });
+        }
+        _ => {
+            if let Some(id) = selected_control {
+                let address = ControlAddress::new(id);
+                effects.edit_session(Some(id), |snapshot| {
+                    snapshot.automation.clear_control(address);
+                });
+            }
+        }
+    }
+}
+
+pub(crate) fn reseed_automation_effect(effects: &mut EffectExecutor, automation: &AutomationState) {
+    if let Some(address) = automation.active_address()
+        && automation.active_kind() == Some(ModKind::Lfo)
+    {
+        effects.edit_session(Some(address.id()), |snapshot| {
+            let state = &mut snapshot.automation;
+            if let Some(route) = state.route_mut(address)
+                && route.shape.is_random()
+            {
+                route.reseed();
+            }
+        });
+    }
 }
 
 pub(crate) struct NumericDisplay<'a> {
@@ -1599,17 +1280,21 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         .map(|t| {
             let name = if *t == Tab::Chords {
                 match chord_drill {
-                    ChordDrill::Progression => format!("{} › Progression", t.name()),
-                    ChordDrill::Slot(n) => {
+                    interaction::ChordDrill::Progression { .. } => {
+                        format!("{} › Progression", t.name())
+                    }
+                    interaction::ChordDrill::Slot { slot: n, .. } => {
                         let live = if n == active_slot { " ♪" } else { "" };
                         format!("{} › Chord {}{live}", t.name(), n + 1)
                     }
-                    ChordDrill::None => t.name().to_string(),
+                    interaction::ChordDrill::None => t.name().to_string(),
                 }
             } else if *t == Tab::Master {
                 match comp_drill {
-                    CompDrill::Detail => format!("{} › Compression", t.name()),
-                    CompDrill::None => t.name().to_string(),
+                    interaction::MasterDrill::Compression { .. } => {
+                        format!("{} › Compression", t.name())
+                    }
+                    interaction::MasterDrill::None => t.name().to_string(),
                 }
             } else {
                 t.name().to_string()
@@ -1750,8 +1435,9 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         // Badge the chord slot the pad engine is currently sounding, so the
         // progression list shows which chord is live. Distinct from the cursor
         // ▶ so a row can be both selected and playing.
-        let chord_playing =
-            active_tab == Tab::Chords && chord_drill == ChordDrill::Progression && i == active_slot;
+        let chord_playing = active_tab == Tab::Chords
+            && matches!(chord_drill, interaction::ChordDrill::Progression { .. })
+            && i == active_slot;
         if chord_playing {
             spans.push(Span::styled(
                 " ♪",

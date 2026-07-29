@@ -1,21 +1,13 @@
 #[cfg(test)]
 use super::interaction::PaletteStagedEdit;
-use super::interaction::{InteractionEffect, Page};
+use super::interaction::{InteractionEffect, LfoDepth, Page};
 use super::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum EffectFailure {
     UnknownControl(&'static str),
     Clipboard(String),
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "interaction kernel is wired by stint 0042")
-    )]
     MissingContext(&'static str),
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "interaction kernel is wired by stint 0042")
-    )]
     UnsupportedInteraction(InteractionEffect),
 }
 
@@ -33,39 +25,23 @@ pub(crate) enum EffectAcknowledgement {
         index: usize,
         id: &'static str,
     },
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "interaction kernel is wired by stint 0042")
-    )]
+    AutomationPosition {
+        depth: LfoDepth,
+        selected: usize,
+    },
     PageSelected(Page),
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "interaction kernel is wired by stint 0042")
-    )]
     QuitRequested,
     NoChange,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum ControlEdit {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "interaction kernel is wired by stint 0042")
-    )]
     Delta(f32),
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "interaction kernel is wired by stint 0042")
-    )]
     Value(f32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LiveEffect {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "interaction kernel is wired by stint 0042")
-    )]
     EditControl {
         id: &'static str,
         edit: ControlEdit,
@@ -87,20 +63,26 @@ pub(crate) enum LiveEffect {
 }
 
 #[derive(Default)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "interaction kernel is wired by stint 0042")
-)]
 pub(crate) struct InteractionExecutionContext {
     pub(crate) selected_control: Option<&'static str>,
     pub(crate) beat: f64,
+}
+
+pub(crate) struct ProductionInteractionContext<'a> {
+    pub(crate) selected_control: Option<&'static str>,
+    pub(crate) tab: Tab,
+    pub(crate) selected: usize,
+    pub(crate) automation_selected: usize,
+    pub(crate) beat: f64,
+    pub(crate) flipped: &'a mut FlippedUnits,
+    pub(crate) mute: &'a mut MuteState,
 }
 
 pub(crate) trait Clipboard {
     fn set_text(&mut self, text: String) -> Result<(), String>;
 }
 
-struct SystemClipboard;
+pub(crate) struct SystemClipboard;
 
 impl Clipboard for SystemClipboard {
     fn set_text(&mut self, text: String) -> Result<(), String> {
@@ -153,17 +135,6 @@ impl EffectExecutor {
 
     pub(crate) fn recent(&self) -> &RecentControls {
         &self.recent
-    }
-
-    pub(crate) fn touch_selected(
-        &mut self,
-        tab: Tab,
-        chord_drill: ChordDrill,
-        comp_drill: CompDrill,
-        selected: usize,
-    ) {
-        self.recent
-            .touch_selected(tab, chord_drill, comp_drill, selected);
     }
 
     pub(crate) fn pending(&self) -> Option<&(f64, Vec<StagedEdit>)> {
@@ -273,7 +244,10 @@ impl EffectExecutor {
 
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "interaction kernel is wired by stint 0042")
+        expect(
+            dead_code,
+            reason = "ordered generic bridge is exercised by adapter tests"
+        )
     )]
     pub(crate) fn execute_ordered(
         &mut self,
@@ -304,16 +278,12 @@ impl EffectExecutor {
         snapshot
     }
 
-    pub(crate) fn edit_automation(
+    pub(crate) fn edit_navigation_automation(
         &mut self,
-        recent_id: &'static str,
-        automation: &mut PublishedAutomation,
         mut edit: impl FnMut(&mut AutomationState),
     ) {
-        let snapshot = self.edit_session(Some(recent_id), |snapshot| {
-            edit(&mut snapshot.automation);
-        });
-        automation.sync_from_snapshot(&snapshot.automation);
+        self.session
+            .update(|snapshot| edit(&mut snapshot.automation));
     }
 
     pub(crate) fn toggle_mute(&mut self, tab: Tab, mute: &mut MuteState) {
@@ -343,7 +313,10 @@ impl EffectExecutor {
     /// `context`; unsupported staged performance effects fail visibly.
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "interaction kernel is wired by stint 0042")
+        expect(
+            dead_code,
+            reason = "generic interaction bridge is exercised by adapter tests"
+        )
     )]
     pub(crate) fn execute_interaction(
         &mut self,
@@ -403,6 +376,17 @@ impl EffectExecutor {
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
             InteractionEffect::Quit => Ok(EffectAcknowledgement::QuitRequested),
             unsupported @ (InteractionEffect::AutomationConfirm(_)
+            | InteractionEffect::ResetSelected
+            | InteractionEffect::ToggleAuto
+            | InteractionEffect::ToggleUnits
+            | InteractionEffect::ToggleMute { .. }
+            | InteractionEffect::ToggleMacro
+            | InteractionEffect::RemoveAutomation
+            | InteractionEffect::ReseedAutomation
+            | InteractionEffect::CloseAutomationDepth
+            | InteractionEffect::CloseAutomationAll
+            | InteractionEffect::TouchSelected
+            | InteractionEffect::PaletteCommitAtBar(_)
             | InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_)) => {
@@ -413,7 +397,10 @@ impl EffectExecutor {
 
     /// Execute one kernel transition's ordered effects and stop at the first
     /// failure. Later effects are never attempted.
-    #[expect(dead_code, reason = "interaction kernel is wired by stint 0042")]
+    #[expect(
+        dead_code,
+        reason = "ordered generic interaction bridge is exercised by adapter tests"
+    )]
     pub(crate) fn execute_interactions_ordered(
         &mut self,
         effects: impl IntoIterator<Item = InteractionEffect>,
@@ -440,36 +427,208 @@ impl EffectExecutor {
         }
         results
     }
-}
 
-pub(crate) struct PublishedAutomation {
-    state: AutomationState,
-    shared: LiveAutomation,
-}
-
-impl PublishedAutomation {
-    pub(crate) fn new(state: AutomationState, shared: impl Into<LiveAutomation>) -> Self {
-        let shared = shared.into();
-        let _ = state;
-        let state = shared.load_full().as_ref().clone();
-        Self { state, shared }
+    pub(crate) fn execute_production_interactions_with_clipboard(
+        &mut self,
+        effects: impl IntoIterator<Item = InteractionEffect>,
+        context: &mut ProductionInteractionContext<'_>,
+        clipboard: &mut dyn Clipboard,
+    ) -> Vec<Result<EffectAcknowledgement, EffectFailure>> {
+        let mut results = Vec::new();
+        for effect in effects {
+            let result = self.execute_production_interaction(effect, context, clipboard);
+            let failed = result.is_err();
+            results.push(result);
+            if failed {
+                break;
+            }
+        }
+        results
     }
 
-    pub(crate) fn state(&self) -> &AutomationState {
-        &self.state
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sync_from_shared(&mut self) {
-        self.state = self.shared.load_full().as_ref().clone();
-    }
-
-    pub(crate) fn sync_from_snapshot(&mut self, snapshot: &AutomationState) {
-        self.state = snapshot.clone();
-    }
-
-    pub(crate) fn edit(&mut self, mut edit: impl FnMut(&mut AutomationState)) {
-        self.state = self.shared.edit(|state| edit(state)).as_ref().clone();
+    fn execute_production_interaction(
+        &mut self,
+        effect: InteractionEffect,
+        context: &mut ProductionInteractionContext<'_>,
+        clipboard: &mut dyn Clipboard,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        match effect {
+            InteractionEffect::AdjustSelected(delta) => {
+                let automation = self.session.load().automation.clone();
+                adjust_lfo_or_control(
+                    self,
+                    &automation,
+                    context.automation_selected,
+                    context.tab,
+                    context.selected,
+                    f32::from(delta),
+                    context.beat,
+                    context.flipped,
+                );
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::CommitNumeric(value) => {
+                let automation = self.session.load().automation.clone();
+                set_modulator_or_control(
+                    self,
+                    &automation,
+                    context.automation_selected,
+                    context.tab,
+                    context.selected,
+                    value,
+                    context.beat,
+                    context.flipped,
+                );
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::AutomationConfirm(kind) => {
+                let id = context
+                    .selected_control
+                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let kind = match kind {
+                    super::interaction::AutomationKind::Lfo => ModKind::Lfo,
+                    super::interaction::AutomationKind::Envelope => ModKind::Envelope,
+                    super::interaction::AutomationKind::Macro => ModKind::Macro,
+                };
+                let mut selected = context.automation_selected;
+                open_modulator_effect_for_id(self, id, kind, &mut selected);
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::ResetSelected => {
+                let automation = self.session.load().automation.clone();
+                reset_lfo_or_control(
+                    self,
+                    &automation,
+                    context.automation_selected,
+                    context.tab,
+                    context.selected,
+                    context.beat,
+                );
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::ToggleAuto => {
+                self.toggle_auto(context.beat);
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::ToggleUnits => {
+                let automation = self.session.load().automation.clone();
+                toggle_units_effect(
+                    self,
+                    &automation,
+                    context.flipped,
+                    context.automation_selected,
+                    context.tab,
+                    context.selected,
+                    context.beat,
+                );
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::ToggleMute { master } => {
+                self.toggle_mute(if master { Tab::Master } else { context.tab }, context.mute);
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::ToggleMacro => {
+                let automation = self.session.load().automation.clone();
+                let position = toggle_macro_effect(
+                    self,
+                    &automation,
+                    context.selected_control,
+                    context.automation_selected,
+                );
+                Ok(position.map_or_else(
+                    || EffectAcknowledgement::Published {
+                        generation: self.session.load().generation,
+                    },
+                    |(depth, selected)| EffectAcknowledgement::AutomationPosition {
+                        depth,
+                        selected,
+                    },
+                ))
+            }
+            InteractionEffect::RemoveAutomation => {
+                let automation = self.session.load().automation.clone();
+                remove_automation_effect(
+                    self,
+                    &automation,
+                    context.selected_control,
+                    context.automation_selected,
+                );
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::ReseedAutomation => {
+                let automation = self.session.load().automation.clone();
+                reseed_automation_effect(self, &automation);
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::CloseAutomationDepth => {
+                let automation = self.session.load().automation.clone();
+                Ok(close_one_level_effect(self, &automation).map_or(
+                    EffectAcknowledgement::NoChange,
+                    |selected| EffectAcknowledgement::AutomationPosition {
+                        depth: LfoDepth::Editor,
+                        selected,
+                    },
+                ))
+            }
+            InteractionEffect::CloseAutomationAll => {
+                self.edit_navigation_automation(AutomationState::close_editor);
+                Ok(EffectAcknowledgement::NoChange)
+            }
+            InteractionEffect::TouchSelected => {
+                let id = context
+                    .selected_control
+                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let tab = tab_owning_control(id).unwrap_or(context.tab);
+                let index = tab_specs(tab)
+                    .iter()
+                    .position(|spec| spec.id == id)
+                    .unwrap_or(context.selected);
+                self.execute(LiveEffect::SelectControl { tab, index, id })
+            }
+            InteractionEffect::PaletteCommitAtBar(edits) => {
+                let edits = edits
+                    .into_iter()
+                    .map(|edit| StagedEdit {
+                        id: edit.id,
+                        value: f32::from_bits(edit.value_bits),
+                    })
+                    .collect::<Vec<_>>();
+                self.execute(LiveEffect::StageForBar {
+                    target_beat: next_bar_beat(context.beat),
+                    edits,
+                })
+            }
+            InteractionEffect::PaletteJump { tab, index, id } => {
+                self.edit_navigation_automation(AutomationState::close_editor);
+                self.execute(LiveEffect::SelectControl { tab, index, id })
+            }
+            other => self.execute_interaction_with_clipboard(
+                other,
+                &InteractionExecutionContext {
+                    selected_control: context.selected_control,
+                    beat: context.beat,
+                },
+                clipboard,
+            ),
+        }
     }
 }
 
@@ -496,23 +655,6 @@ impl RecentControls {
     pub(crate) fn touch_edits(&mut self, edits: &[StagedEdit]) {
         for edit in edits.iter().rev() {
             self.touch(edit.id);
-        }
-    }
-
-    pub(crate) fn touch_selected(
-        &mut self,
-        tab: Tab,
-        chord_drill: ChordDrill,
-        comp_drill: CompDrill,
-        selected: usize,
-    ) {
-        if let Some(spec) = tab_specs(tab).get(resolve_selected_index(
-            tab,
-            chord_drill,
-            comp_drill,
-            selected,
-        )) {
-            self.touch(spec.id);
         }
     }
 }

@@ -72,17 +72,6 @@ pub(crate) struct StagedEdit {
     pub(crate) value: f32,
 }
 
-/// What the event loop should do after a palette keypress.
-pub(crate) enum PaletteAction {
-    None,
-    /// Move the cursor to this entry and close the palette.
-    Jump(usize),
-    /// Apply these edits immediately and close the palette.
-    CommitNow(Vec<StagedEdit>),
-    /// Apply these edits on the next bar downbeat and close the palette.
-    CommitAtBar(Vec<StagedEdit>),
-}
-
 pub(crate) struct PaletteState {
     entries: Vec<PaletteEntry>,
     current_tab: Tab,
@@ -124,10 +113,6 @@ impl PaletteState {
         index < self.entries.len()
     }
 
-    pub(crate) fn recent(&self) -> &[&'static str] {
-        &self.recent
-    }
-
     pub(crate) fn push_char(&mut self, c: char) {
         if self.locked.is_some() {
             if c.is_ascii_digit() || c == '.' || c == '-' {
@@ -137,79 +122,6 @@ impl PaletteState {
             self.query.push(c);
             self.recompute();
         }
-    }
-
-    /// Backspace peels the innermost layer: value digits, then the lock,
-    /// then query characters.
-    pub(crate) fn backspace(&mut self) {
-        if !self.value_buf.is_empty() {
-            self.value_buf.pop();
-        } else if self.locked.is_some() {
-            self.locked = None;
-        } else {
-            self.query.pop();
-            self.recompute();
-        }
-    }
-
-    pub(crate) fn move_selection(&mut self, dir: isize) {
-        if self.matches.is_empty() || self.locked.is_some() {
-            return;
-        }
-        let len = self.matches.len() as isize;
-        self.selected = (self.selected as isize + dir).rem_euclid(len) as usize;
-    }
-
-    /// Tab: lock the highlighted match so subsequent digits type its value.
-    pub(crate) fn autocomplete(&mut self) {
-        if self.locked.is_none()
-            && let Some(m) = self.matches.get(self.selected)
-        {
-            self.locked = Some(m.entry);
-        }
-    }
-
-    /// Enter: stage a typed value, else commit a non-empty stage, else jump
-    /// to the highlighted (or locked) control.
-    pub(crate) fn enter(&mut self) -> PaletteAction {
-        if let Some(entry) = self.locked {
-            if let Ok(value) = self.value_buf.parse::<f32>() {
-                self.staged.push(StagedEdit {
-                    id: self.entries[entry].spec.id,
-                    value,
-                });
-                self.locked = None;
-                self.value_buf.clear();
-                self.query.clear();
-                self.recompute();
-                return PaletteAction::None;
-            }
-            return PaletteAction::Jump(entry);
-        }
-        if !self.staged.is_empty() && self.query.is_empty() {
-            return PaletteAction::CommitNow(std::mem::take(&mut self.staged));
-        }
-        match self.matches.get(self.selected) {
-            Some(m) => PaletteAction::Jump(m.entry),
-            None => PaletteAction::None,
-        }
-    }
-
-    /// Ctrl+B: commit on the next bar downbeat. A value still sitting in the
-    /// prompt is staged first so `/lev⇥40^B` needs no extra Enter.
-    pub(crate) fn commit_at_bar(&mut self) -> PaletteAction {
-        if let (Some(entry), Ok(value)) = (self.locked, self.value_buf.parse::<f32>()) {
-            self.staged.push(StagedEdit {
-                id: self.entries[entry].spec.id,
-                value,
-            });
-            self.locked = None;
-            self.value_buf.clear();
-        }
-        if self.staged.is_empty() {
-            return PaletteAction::None;
-        }
-        PaletteAction::CommitAtBar(std::mem::take(&mut self.staged))
     }
 
     fn recompute(&mut self) {

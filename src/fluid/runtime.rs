@@ -1,12 +1,14 @@
 //! Phase-aware terminal adapter and fair input scheduler.
 //!
 //! The runtime preserves transport facts without assigning musical meaning.
-//! Production switches from the legacy loop to this module in stint 0042.
+//! It is the production boundary for terminal lifecycle and Crossterm events.
 
 use std::collections::VecDeque;
+#[cfg(test)]
 use std::fmt::Write as _;
 use std::io;
 use std::time::Duration;
+use std::time::Instant;
 
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
@@ -22,7 +24,7 @@ use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
     ChordDrill, InputPhase, Intent, InteractionMode, MasterDrill, Navigation, Page, PageDirection,
-    PerformanceKind, PerformanceMode, SemanticAction, SequenceStage,
+    PerformanceMode, SemanticAction, SequenceStage,
 };
 
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -227,6 +229,7 @@ impl Modifiers {
         self.0 & other.0 == other.0
     }
 
+    #[cfg(test)]
     pub(crate) fn from_bits(bits: u8) -> Self {
         Self(bits & 0b11_1111)
     }
@@ -320,17 +323,23 @@ pub(crate) enum TransportEvent {
     FocusLost,
     Paste(String),
     Mouse(String),
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "reserved for an external shutdown source")
+    )]
     Shutdown,
 }
 
 /// In-memory sanitized recorder for capturing a live normalized input stream.
 /// Call `record` at the scheduler seam and persist `finish()` only when the
 /// developer explicitly chooses to retain a regression fixture.
+#[cfg(test)]
 pub(crate) struct SanitizedTraceRecorder {
     previous_at: Duration,
     fixture: String,
 }
 
+#[cfg(test)]
 impl SanitizedTraceRecorder {
     pub(crate) fn new(started_at: Duration) -> Self {
         Self {
@@ -407,6 +416,7 @@ impl SanitizedTraceRecorder {
     }
 }
 
+#[cfg(test)]
 fn recorder_phase_token(phase: InputPhase) -> &'static str {
     match phase {
         InputPhase::Press => "press",
@@ -415,6 +425,7 @@ fn recorder_phase_token(phase: InputPhase) -> &'static str {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn encode_physical_key(code: &PhysicalKey) -> String {
     match code {
         PhysicalKey::Character(character) => format!("char:{:06x}", u32::from(*character)),
@@ -447,6 +458,7 @@ pub(crate) fn encode_physical_key(code: &PhysicalKey) -> String {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn decode_physical_key(token: &str) -> Option<PhysicalKey> {
     Some(match token {
         "escape" => PhysicalKey::Escape,
@@ -489,6 +501,7 @@ pub(crate) fn decode_physical_key(token: &str) -> Option<PhysicalKey> {
     })
 }
 
+#[cfg(test)]
 fn encode_media_key(key: MediaKey) -> &'static str {
     match key {
         MediaKey::Play => "play",
@@ -507,6 +520,7 @@ fn encode_media_key(key: MediaKey) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn decode_media_key(token: &str) -> Option<MediaKey> {
     Some(match token {
         "play" => MediaKey::Play,
@@ -526,6 +540,7 @@ fn decode_media_key(token: &str) -> Option<MediaKey> {
     })
 }
 
+#[cfg(test)]
 fn encode_modifier_key(key: ModifierKey) -> &'static str {
     match key {
         ModifierKey::LeftShift => "left-shift",
@@ -545,6 +560,7 @@ fn encode_modifier_key(key: ModifierKey) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn decode_modifier_key(token: &str) -> Option<ModifierKey> {
     Some(match token {
         "left-shift" => ModifierKey::LeftShift,
@@ -594,19 +610,25 @@ pub(crate) fn map_input(
     else {
         return InputMapping::Ignored;
     };
-    let only_control = key.modifiers == Modifiers::CONTROL;
-    if only_control
-        && matches!(mode, InteractionMode::Browsing)
-        && matches!(key.code, PhysicalKey::Character('s'))
+    let has_control = key.modifiers.contains(Modifiers::CONTROL);
+    if has_control
+        && matches!(
+            mode,
+            InteractionMode::Browsing | InteractionMode::Automation(_)
+        )
+        && matches!(key.code, PhysicalKey::Character('s' | 'S'))
     {
         return InputMapping::Action(SemanticAction {
             phase: *phase,
             intent: Intent::Save,
         });
     }
-    if only_control
-        && matches!(mode, InteractionMode::Browsing)
-        && matches!(key.code, PhysicalKey::Character('c'))
+    if has_control
+        && matches!(
+            mode,
+            InteractionMode::Browsing | InteractionMode::Automation(_)
+        )
+        && matches!(key.code, PhysicalKey::Character('c' | 'C'))
     {
         return InputMapping::Action(SemanticAction {
             phase: *phase,
@@ -629,14 +651,17 @@ pub(crate) fn map_input(
                 PhysicalKey::Right | PhysicalKey::Character('l') => Intent::AdjustSelected(1),
                 PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
                 PhysicalKey::Character('/') => Intent::OpenPalette,
-                PhysicalKey::Character('f' | 'e' | 'v') => {
-                    return deferred_runtime(
-                        "automation opener eligibility/toggle awaits 0042 session context",
-                    );
+                PhysicalKey::Character('f') => {
+                    Intent::OpenAutomation(super::interaction::AutomationKind::Lfo)
                 }
-                PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
-                PhysicalKey::Character(' ') => {
-                    Intent::ActivatePerformance(PerformanceKind::Sequence)
+                PhysicalKey::Character('e') => {
+                    Intent::OpenAutomation(super::interaction::AutomationKind::Envelope)
+                }
+                PhysicalKey::Character('v') => Intent::ToggleMacro,
+                PhysicalKey::Character('p' | ' ') => {
+                    return InputMapping::Deferred(DeferredInput::PerformanceGrammar0043(
+                        "performance mode entry belongs to 0043",
+                    ));
                 }
                 PhysicalKey::Character(character)
                     if character.is_ascii_digit() || character == '.' || character == '-' =>
@@ -656,29 +681,14 @@ pub(crate) fn map_input(
                     Navigation::Chords {
                         drill: ChordDrill::None,
                         ..
-                    } => {
-                        return InputMapping::Deferred(DeferredInput::RuntimeContext(
-                            "Chord Enter needs projected control and live progression",
-                        ));
-                    }
-                    _ => {
-                        return deferred_runtime(
-                            "Enter touch/cross-page behavior awaits 0042 projection context",
-                        );
-                    }
+                    } => Intent::TouchSelected,
+                    _ => Intent::TouchSelected,
                 },
-                PhysicalKey::Character('a') => {
-                    return deferred_runtime("auto toggle awaits 0042 effect wiring");
-                }
-                PhysicalKey::Character('m' | 'M') => {
-                    return deferred_runtime("mute awaits 0042 effect wiring");
-                }
-                PhysicalKey::Character('t' | 'T') => {
-                    return deferred_runtime("unit toggle awaits 0042 projection context");
-                }
-                PhysicalKey::Character('x' | 'X' | 'r' | 'R' | 'H') => {
-                    return deferred_runtime("automation/reset edit awaits 0042 context");
-                }
+                PhysicalKey::Character('a') => Intent::ToggleAuto,
+                PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
+                PhysicalKey::Character('t') => Intent::ToggleUnits,
+                PhysicalKey::Character('x') => Intent::RemoveAutomation,
+                PhysicalKey::Character('r') => Intent::ReseedAutomation,
                 _ => return InputMapping::Ignored,
             },
             InteractionMode::Numeric(_) => match key.code {
@@ -691,7 +701,9 @@ pub(crate) fn map_input(
                 }
                 _ => return InputMapping::Ignored,
             },
-            InteractionMode::Palette(_) if key.modifiers == Modifiers::default() => {
+            InteractionMode::Palette(_)
+                if key.modifiers == Modifiers::default() || key.modifiers == Modifiers::SHIFT =>
+            {
                 match key.code {
                     PhysicalKey::Enter => Intent::Confirm,
                     PhysicalKey::Backspace => Intent::Backspace,
@@ -702,12 +714,10 @@ pub(crate) fn map_input(
                     _ => return InputMapping::Ignored,
                 }
             }
-            InteractionMode::Palette(_) if only_control => match key.code {
-                PhysicalKey::Character('p') => Intent::MoveSelection(-1),
-                PhysicalKey::Character('n') => Intent::MoveSelection(1),
-                PhysicalKey::Character('b') => {
-                    return deferred_runtime("bar palette commit awaits 0042 beat context");
-                }
+            InteractionMode::Palette(_) if has_control => match key.code {
+                PhysicalKey::Character('p' | 'P') => Intent::MoveSelection(-1),
+                PhysicalKey::Character('n' | 'N') => Intent::MoveSelection(1),
+                PhysicalKey::Character('b' | 'B') => Intent::CommitPaletteAtBar,
                 _ => return InputMapping::Ignored,
             },
             InteractionMode::Automation(automation) if key.modifiers == Modifiers::default() => {
@@ -717,25 +727,39 @@ pub(crate) fn map_input(
                     PhysicalKey::Left | PhysicalKey::Character('h') => Intent::AdjustSelected(-1),
                     PhysicalKey::Right | PhysicalKey::Character('l') => Intent::AdjustSelected(1),
                     PhysicalKey::Enter => return InputMapping::Ignored,
-                    PhysicalKey::Character('v') => {
-                        let _ = automation;
-                        return deferred_runtime(
-                            "nested/top-level macro behavior awaits 0042 context",
-                        );
+                    PhysicalKey::Character('v') => Intent::ToggleMacro,
+                    PhysicalKey::Character('x') => Intent::RemoveAutomation,
+                    PhysicalKey::Character('r') => Intent::ReseedAutomation,
+                    PhysicalKey::Character('t') => Intent::ToggleUnits,
+                    PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
+                    PhysicalKey::Character('/') => Intent::OpenPalette,
+                    PhysicalKey::Character('q') => Intent::Quit,
+                    PhysicalKey::Character('a') => Intent::ToggleAuto,
+                    PhysicalKey::Character('f') => {
+                        Intent::OpenAutomation(super::interaction::AutomationKind::Lfo)
                     }
-                    PhysicalKey::Character('x' | 'X' | 'r' | 'R' | 't' | 'T')
-                    | PhysicalKey::Character('H') => {
-                        return deferred_runtime("automation edit awaits 0042 route context");
+                    PhysicalKey::Character('e') => {
+                        Intent::OpenAutomation(super::interaction::AutomationKind::Envelope)
                     }
-                    PhysicalKey::Tab
-                    | PhysicalKey::BackTab
-                    | PhysicalKey::Character(
-                        '/' | 'q' | 'a' | 'f' | 'e' | 'm' | 'M' | '0'..='9' | '.' | '-',
-                    ) => {
-                        return deferred_runtime(
-                            "automation-global binding awaits 0042 mode transition parity",
-                        );
+                    PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
+                    PhysicalKey::Character(character)
+                        if character.is_ascii_digit() || character == '.' || character == '-' =>
+                    {
+                        Intent::BeginNumeric(character)
                     }
+                    _ => return InputMapping::Ignored,
+                }
+            }
+            InteractionMode::Browsing | InteractionMode::Automation(_)
+                if key.modifiers == Modifiers::SHIFT =>
+            {
+                match key.code {
+                    PhysicalKey::Left | PhysicalKey::Character('H' | 'h') => Intent::ResetSelected,
+                    PhysicalKey::Character('M' | 'm') => Intent::ToggleMute { master: true },
+                    PhysicalKey::Character('T' | 't') => Intent::ToggleUnits,
+                    PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
+                    PhysicalKey::Character('R' | 'r') => Intent::ReseedAutomation,
+                    PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
                     _ => return InputMapping::Ignored,
                 }
             }
@@ -963,6 +987,24 @@ pub(crate) trait Clock {
     fn now(&self) -> Duration;
 }
 
+pub(crate) struct MonotonicClock {
+    started: Instant,
+}
+
+impl MonotonicClock {
+    pub(crate) fn start() -> Self {
+        Self {
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Clock for MonotonicClock {
+    fn now(&self) -> Duration {
+        self.started.elapsed()
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SchedulerConfig {
     pub(crate) queue_capacity: usize,
@@ -1117,6 +1159,7 @@ impl Scheduler {
         self.frame_requested = false;
     }
 
+    #[cfg(test)]
     pub(crate) fn queue_len(&self) -> usize {
         self.queue.len()
     }
@@ -1383,7 +1426,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_mapper_preserves_edge_phase_for_kernel_policy() {
+    fn canonical_mapper_defers_performance_entry_in_every_phase() {
         let event = TransportEvent::Key {
             key: TransportKey {
                 code: PhysicalKey::Character('p'),
@@ -1402,10 +1445,9 @@ mod tests {
                     plain_key_releases: true,
                 }
             ),
-            InputMapping::Action(SemanticAction {
-                phase: InputPhase::Repeat,
-                intent: Intent::ActivatePerformance(PerformanceKind::Deck),
-            })
+            InputMapping::Deferred(DeferredInput::PerformanceGrammar0043(
+                "performance mode entry belongs to 0043",
+            ))
         );
     }
 
@@ -1488,7 +1530,10 @@ mod tests {
                 &opener,
                 TerminalCapabilities::default()
             ),
-            InputMapping::Deferred(DeferredInput::RuntimeContext(_))
+            InputMapping::Action(SemanticAction {
+                intent: Intent::OpenAutomation(super::super::interaction::AutomationKind::Lfo),
+                ..
+            })
         ));
 
         let back_tab = TransportEvent::Key {
@@ -1566,14 +1611,6 @@ mod tests {
                 event(PhysicalKey::Character('s'), Modifiers::CONTROL),
                 Intent::Save,
             ),
-            (
-                event(PhysicalKey::Character('p'), Modifiers::default()),
-                Intent::ActivatePerformance(PerformanceKind::Deck),
-            ),
-            (
-                event(PhysicalKey::Character(' '), Modifiers::default()),
-                Intent::ActivatePerformance(PerformanceKind::Sequence),
-            ),
         ] {
             assert!(matches!(
                 map_input(
@@ -1586,6 +1623,17 @@ mod tests {
                     intent: actual,
                     ..
                 }) if actual == intent
+            ));
+        }
+        for code in [PhysicalKey::Character('p'), PhysicalKey::Character(' ')] {
+            assert!(matches!(
+                map_input(
+                    &browsing,
+                    Navigation::default(),
+                    &event(code, Modifiers::default()),
+                    TerminalCapabilities::default()
+                ),
+                InputMapping::Deferred(DeferredInput::PerformanceGrammar0043(_))
             ));
         }
 
@@ -1614,7 +1662,22 @@ mod tests {
             ));
         }
 
-        for code in ['f', 'e', 'v', 'a', 'm', 't', 'x', 'r'] {
+        for (code, expected) in [
+            (
+                'f',
+                Intent::OpenAutomation(super::super::interaction::AutomationKind::Lfo),
+            ),
+            (
+                'e',
+                Intent::OpenAutomation(super::super::interaction::AutomationKind::Envelope),
+            ),
+            ('v', Intent::ToggleMacro),
+            ('a', Intent::ToggleAuto),
+            ('m', Intent::ToggleMute { master: false }),
+            ('t', Intent::ToggleUnits),
+            ('x', Intent::RemoveAutomation),
+            ('r', Intent::ReseedAutomation),
+        ] {
             assert!(matches!(
                 map_input(
                     &browsing,
@@ -1622,7 +1685,10 @@ mod tests {
                     &event(PhysicalKey::Character(code), Modifiers::default()),
                     TerminalCapabilities::default()
                 ),
-                InputMapping::Deferred(DeferredInput::RuntimeContext(_))
+                InputMapping::Action(SemanticAction {
+                    intent: actual,
+                    ..
+                }) if actual == expected
             ));
         }
     }
