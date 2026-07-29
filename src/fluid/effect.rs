@@ -350,6 +350,16 @@ impl EffectExecutor {
         effect: InteractionEffect,
         context: &InteractionExecutionContext,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let mut clipboard = SystemClipboard;
+        self.execute_interaction_with_clipboard(effect, context, &mut clipboard)
+    }
+
+    pub(crate) fn execute_interaction_with_clipboard(
+        &mut self,
+        effect: InteractionEffect,
+        context: &InteractionExecutionContext,
+        clipboard: &mut dyn Clipboard,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
         match effect {
             InteractionEffect::AdjustSelected(delta) => {
                 let id = context
@@ -390,7 +400,7 @@ impl EffectExecutor {
                 self.execute(LiveEffect::CommitPending { beat: context.beat })
             }
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
-            InteractionEffect::Save => self.execute(LiveEffect::CopySong),
+            InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
             InteractionEffect::Quit => Ok(EffectAcknowledgement::QuitRequested),
             unsupported @ (InteractionEffect::AutomationConfirm(_)
             | InteractionEffect::PerformanceInstrument(_)
@@ -399,6 +409,36 @@ impl EffectExecutor {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
         }
+    }
+
+    /// Execute one kernel transition's ordered effects and stop at the first
+    /// failure. Later effects are never attempted.
+    #[expect(dead_code, reason = "interaction kernel is wired by stint 0042")]
+    pub(crate) fn execute_interactions_ordered(
+        &mut self,
+        effects: impl IntoIterator<Item = InteractionEffect>,
+        context: &InteractionExecutionContext,
+    ) -> Vec<Result<EffectAcknowledgement, EffectFailure>> {
+        let mut clipboard = SystemClipboard;
+        self.execute_interactions_ordered_with_clipboard(effects, context, &mut clipboard)
+    }
+
+    pub(crate) fn execute_interactions_ordered_with_clipboard(
+        &mut self,
+        effects: impl IntoIterator<Item = InteractionEffect>,
+        context: &InteractionExecutionContext,
+        clipboard: &mut dyn Clipboard,
+    ) -> Vec<Result<EffectAcknowledgement, EffectFailure>> {
+        let mut results = Vec::new();
+        for effect in effects {
+            let result = self.execute_interaction_with_clipboard(effect, context, clipboard);
+            let failed = result.is_err();
+            results.push(result);
+            if failed {
+                break;
+            }
+        }
+        results
     }
 }
 
@@ -600,6 +640,33 @@ mod tests {
                 InteractionEffect::PerformanceInstrument(2)
             ))
         );
+    }
+
+    #[test]
+    fn ordered_interaction_failure_prevents_later_clipboard_side_effect() {
+        let mut executor = executor();
+        let mut clipboard = FakeClipboard::default();
+        let results = executor.execute_interactions_ordered_with_clipboard(
+            [
+                InteractionEffect::SelectPage(Page::Bass),
+                InteractionEffect::PerformanceInstrument(1),
+                InteractionEffect::Save,
+            ],
+            &InteractionExecutionContext::default(),
+            &mut clipboard,
+        );
+        assert_eq!(results.len(), 2);
+        assert_eq!(
+            results[0],
+            Ok(EffectAcknowledgement::PageSelected(Page::Bass))
+        );
+        assert_eq!(
+            results[1],
+            Err(EffectFailure::UnsupportedInteraction(
+                InteractionEffect::PerformanceInstrument(1)
+            ))
+        );
+        assert_eq!(clipboard.value, None);
     }
 
     #[test]

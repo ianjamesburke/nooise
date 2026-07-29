@@ -22,7 +22,7 @@ pub(crate) enum PhasePolicy {
 }
 
 impl PhasePolicy {
-    fn accepts(self, phase: InputPhase) -> bool {
+    pub(crate) fn accepts(self, phase: InputPhase) -> bool {
         matches!(
             (self, phase),
             (Self::Edge | Self::Repeatable, InputPhase::Press)

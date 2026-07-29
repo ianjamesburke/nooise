@@ -431,7 +431,7 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
     }
 }
 
-fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
+pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
     match mode {
         InteractionMode::Browsing => KeyboardOwner::Browsing,
         InteractionMode::Numeric(_) => KeyboardOwner::Numeric,
