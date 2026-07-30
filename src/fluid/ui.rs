@@ -1189,13 +1189,16 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let selected = view.navigation.selected;
     let active_automation = match &view.mode {
         ModeSurface::Automation(surface) => Some(surface),
+        // Numeric entry opened from inside an editor keeps that editor drawn,
+        // so the typed buffer lands on the field being edited.
+        ModeSurface::Numeric { resume, .. } => resume.as_ref(),
         _ => None,
     };
     let lfo_selected = active_automation.map_or(0, |surface| surface.selected());
     let beat = view.telemetry.beat;
     let numeric = NumericDisplay {
         entry: match &view.mode {
-            ModeSurface::Numeric { entry } => Some(entry.as_str()),
+            ModeSurface::Numeric { entry, .. } => Some(entry.as_str()),
             _ => None,
         },
         cursor_visible: view.cursor_visible,

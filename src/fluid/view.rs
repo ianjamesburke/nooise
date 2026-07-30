@@ -121,7 +121,13 @@ pub(crate) struct UiViewModel<'a> {
 
 pub(crate) enum ModeSurface<'a> {
     Browsing,
-    Numeric { entry: String },
+    /// Numeric entry keeps whatever editor it was opened from projected in
+    /// `resume`, so typing into a drilled-down field renders the buffer in
+    /// place instead of collapsing the editor back to the parent row.
+    Numeric {
+        entry: String,
+        resume: Option<AutomationSurface<'a>>,
+    },
     Palette(PaletteSurface),
     Automation(AutomationSurface<'a>),
     Performance(PerformanceSurface),
@@ -265,6 +271,9 @@ fn mode_surface<'a>(
         InteractionMode::Browsing => ModeSurface::Browsing,
         InteractionMode::Numeric(entry) => ModeSurface::Numeric {
             entry: entry.buffer.clone(),
+            resume: entry
+                .resume
+                .map(|mode| automation_surface(mode, automation)),
         },
         InteractionMode::Palette(palette) => {
             let mut state = PaletteState::new(tab, &palette.recent);
@@ -1050,7 +1059,7 @@ mod tests {
         assert_eq!(view.owner, KeyboardOwner::Numeric);
         assert!(matches!(
             &view.mode,
-            ModeSurface::Numeric { entry } if entry == "12"
+            ModeSurface::Numeric { entry, resume: None } if entry == "12"
         ));
         assert!(matches!(
             view.help,
@@ -1060,6 +1069,38 @@ mod tests {
             }
         ));
         assert!(view.help.text().starts_with("NUMERIC"));
+    }
+
+    #[test]
+    fn numeric_entry_opened_inside_an_editor_keeps_that_editor_on_screen() {
+        let address = ControlAddress::new("pad.level");
+        let mut session = session();
+        session.automation.open_or_create(address);
+        // Second submenu row (`LfoField::Interval`, labelled `rate`).
+        let model = InteractionModel {
+            navigation: Navigation::default(),
+            mode: InteractionMode::Numeric(NumericEntry {
+                buffer: "42".to_string(),
+                resume: Some(AutomationMode::Lfo {
+                    depth: LfoDepth::Editor,
+                    selected: 2,
+                }),
+            }),
+        };
+        let frame = render_model_with_session(&model, &session);
+
+        // The editor stays drawn instead of collapsing to the parent row...
+        assert!(frame.contains("rate"), "editor collapsed:\n{frame}");
+        // ...and the typed buffer lands on the drilled-down field, not the
+        // control row above it.
+        let entry_row = frame
+            .lines()
+            .find(|line| line.contains(">␠42"))
+            .unwrap_or_else(|| panic!("numeric buffer missing:\n{frame}"));
+        assert!(
+            entry_row.contains("rate"),
+            "buffer rendered off its field:\n{frame}"
+        );
     }
 
     #[test]
