@@ -4,4 +4,6 @@ defaults:
 hooks:
   post_create:
     - type: command
+      command: cargo build
+    - type: command
       command: wtp list

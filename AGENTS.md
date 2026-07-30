@@ -85,9 +85,19 @@ nooise is a single Rust binary: terminal UI, audio engine, and live controls for
 
 See `docs/NORTH_STAR.md` for product vision and feature-evaluation commandments — read before proposing any new control or feature.
 
+## Worktrees
+
+All feature work lands in a worktree, never in the root checkout. The root checkout stays on `main` so it is always a clean reference build.
+
+- Create with `wtp add -b <branch>` (or `wtp add <branch>` for an existing one). Never raw `git worktree`.
+- `.wtp.yml`'s `post_create` hook runs `cargo build` automatically, so a fresh worktree is immediately runnable.
+- Hand off by path, not by diff: the deliverable is `cd worktrees/<branch> && cargo run`, hands-on. Do not ask for a PR review as the way to evaluate a change.
+- Open a PR only after the worktree build has been played with and approved.
+- If the root checkout is found on a non-`main` branch, move it back to `main` and give the branch its own worktree.
+
 ## Ownership
 
-- Root: crate manifest (`Cargo.toml`), README, GOTCHAS.md, this DOX rail.
+- Root: crate manifest (`Cargo.toml`), README, GOTCHAS.md, `.wtp.yml` (worktree defaults and post-create hooks), this DOX rail.
 - `CONTEXT.md`: concise shared domain vocabulary; interaction terms are defined here.
 - `scripts/`: release, render-benchmark, and auto-state authoring helpers.
 - `src/`: all engine, UI, and control code. See `src/AGENTS.md`. Built-in auto-morph song codes (the ordered `n1_…` cycle) live in `src/fluid/auto.rs`'s `AUTO_STATES` array. Use `just add-morph <code>` to append one. It requires a clean target file, rejects duplicates, restores the file after failed checks, and commits only the new state; never hand-paste codes into the array.
