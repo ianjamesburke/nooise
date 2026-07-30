@@ -5,16 +5,26 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
-    AutomationState, ControlAddress, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger, EnvelopeRoute,
-    FluidControls, LfoRoute, LfoShape, MACRO_COUNT, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
-    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MacroRoute,
-    all_specs, spec_by_id,
+    AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
+    EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MACRO_COUNT, MAX_ENV_ATTACK_BEATS,
+    MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS,
+    MIN_LFO_CYCLE_BEATS, MacroRoute, Step, all_specs, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
-const CONTAINER_VERSION: u8 = 1;
+/// Container v1: an app-version string followed by records that spell every
+/// control id out in full and store every value as an f32.
+const CONTAINER_VERSION_V1: u8 = 1;
+/// Container v2: no app-version string, control ids interned as
+/// `SONG_ID_TABLE` indexes, and continuous values quantized to a u16 taper
+/// position. The container version is the only version axis — record payloads
+/// carry no version byte of their own.
+const CONTAINER_VERSION: u8 = 2;
+/// Unchanged across container versions: the CLI, `just add-morph`, and both
+/// Python helpers all match song codes on this prefix.
 const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
@@ -68,6 +78,12 @@ pub(crate) enum SongCodeError {
     Truncated,
     InvalidUtf8,
     TooLarge,
+    /// A container-v2 value carried a tag this build has no encoding for.
+    InvalidValueTag(u8),
+    /// A live control has no `SONG_ID_TABLE` slot, so it cannot be saved.
+    /// `song_ids_cover_every_registry_control` exists to stop this reaching a
+    /// user; append the id to the table.
+    UnregisteredControl(&'static str),
 }
 
 impl fmt::Display for SongCodeError {
@@ -82,6 +98,10 @@ impl fmt::Display for SongCodeError {
             Self::Truncated => write!(f, "song code is truncated"),
             Self::InvalidUtf8 => write!(f, "song code contains invalid text"),
             Self::TooLarge => write!(f, "song code payload is too large"),
+            Self::InvalidValueTag(tag) => write!(f, "song code has unknown value tag {tag}"),
+            Self::UnregisteredControl(id) => {
+                write!(f, "control {id} is missing from the song id table")
+            }
         }
     }
 }
@@ -92,15 +112,14 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
     bytes.push(CONTAINER_VERSION);
-    write_str(env!("CARGO_PKG_VERSION"), &mut bytes)?;
 
     let mut snapshot = Vec::new();
-    write_snapshot(&song.controls, &mut snapshot)?;
+    write_snapshot_c2(&song.controls, &mut snapshot)?;
     write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes)?;
 
     if automation_has_content(&song.automation) {
         let mut automation = Vec::new();
-        write_automation(&song.automation, &mut automation)?;
+        write_automation_c2(&song.automation, &mut automation)?;
         write_record(AUTOMATION_RECORD, &automation, &mut bytes)?;
     }
 
@@ -125,11 +144,14 @@ pub(crate) fn decode_song_code(code: &str) -> Result<SongState, SongCodeError> {
     if reader.bytes(MAGIC.len())? != MAGIC {
         return Err(SongCodeError::InvalidMagic);
     }
-    let version = reader.u8()?;
-    if version != CONTAINER_VERSION {
-        return Err(SongCodeError::UnsupportedVersion(version));
+    match reader.u8()? {
+        CONTAINER_VERSION_V1 => decode_container_v1(&mut reader),
+        CONTAINER_VERSION => decode_container_v2(&mut reader),
+        version => Err(SongCodeError::UnsupportedVersion(version)),
     }
+}
 
+fn decode_container_v1(reader: &mut Reader) -> Result<SongState, SongCodeError> {
     let _app_version = reader.string()?;
     let mut song = SongState::default();
 
@@ -140,6 +162,24 @@ pub(crate) fn decode_song_code(code: &str) -> Result<SongState, SongCodeError> {
         match record_type {
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
             AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
+            TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
+            _ => {}
+        }
+    }
+
+    Ok(song)
+}
+
+fn decode_container_v2(reader: &mut Reader) -> Result<SongState, SongCodeError> {
+    let mut song = SongState::default();
+
+    while !reader.is_empty() {
+        let record_type = reader.u8()?;
+        let len = reader.u32()? as usize;
+        let payload = reader.bytes(len)?;
+        match record_type {
+            SNAPSHOT_RECORD => read_snapshot_c2(payload, &mut song.controls)?,
+            AUTOMATION_RECORD => read_automation_c2(payload, &mut song.automation)?,
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
             _ => {}
         }
@@ -187,7 +227,146 @@ fn read_tonal_sequence(bytes: &[u8]) -> Result<TonalSequenceState, SongCodeError
     })
 }
 
-fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
+fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongCodeError> {
+    let mut reader = Reader::new(bytes);
+    let count = reader.u16()?;
+    for _ in 0..count {
+        let id = reader.string()?;
+        let value = reader.f32()?;
+        if let Some(spec) = spec_by_id(id) {
+            spec.apply_quantized_value(value, controls);
+        }
+    }
+    Ok(())
+}
+
+// ============================================================
+// Container v2 codec
+//
+// `_c2` marks a container-v2 reader/writer, distinct from the `_v<n>`
+// suffixes on the v1 container's per-payload automation versions.
+// ============================================================
+
+/// How a container-v2 entry spells its value. The tag travels with the value
+/// so a reader never re-derives the choice from the live `ControlSpec` — a
+/// control's kind or step ladder may change in a later build without
+/// invalidating codes written today — and so an entry naming an unknown
+/// control can still be skipped without losing byte alignment.
+const VALUE_TAG_POSITION: u8 = 0;
+const VALUE_TAG_INT: u8 = 1;
+const VALUE_TAG_FLOAT: u8 = 2;
+
+/// Even span for bipolar `-1..=1` amounts, so exactly 0 — the neutral value
+/// every automation amount rests at — round-trips to exactly 0.
+const BIPOLAR_SPAN: f32 = 65_534.0;
+
+#[derive(Clone, Copy)]
+enum EncodedValue {
+    /// Position along the spec's taper: 0 is `min`, `u16::MAX` is `max`.
+    Position(u16),
+    Int(i16),
+    Float(f32),
+}
+
+impl EncodedValue {
+    /// Continuous rows ride the taper in position space. Discrete rows and
+    /// musical step ladders (`Step::PowerOfTwo`, `Step::BeatGrid`) do not:
+    /// `ControlSpec::ratio` overrides the taper for those and has no inverse,
+    /// so they store their value exactly instead.
+    fn encode(spec: &ControlSpec, value: f32) -> Self {
+        if spec.kind != ControlKind::Discrete && matches!(spec.step, Step::Linear(_)) {
+            Self::Position(unit_to_u16(spec.ratio(value)))
+        } else {
+            Self::exact(value)
+        }
+    }
+
+    /// Exact in two bytes when the value is a whole number in `i16` range —
+    /// which every discrete row and every power-of-two rung above 1 is — and
+    /// in four otherwise.
+    fn exact(value: f32) -> Self {
+        let rounded = value.round();
+        if value == rounded && (i16::MIN as f32..=i16::MAX as f32).contains(&rounded) {
+            Self::Int(rounded as i16)
+        } else {
+            Self::Float(value)
+        }
+    }
+
+    fn write(self, out: &mut Vec<u8>) {
+        match self {
+            Self::Position(position) => {
+                out.push(VALUE_TAG_POSITION);
+                out.extend_from_slice(&position.to_le_bytes());
+            }
+            Self::Int(value) => {
+                out.push(VALUE_TAG_INT);
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+            Self::Float(value) => {
+                out.push(VALUE_TAG_FLOAT);
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+
+    fn read(reader: &mut Reader) -> Result<Self, SongCodeError> {
+        match reader.u8()? {
+            VALUE_TAG_POSITION => Ok(Self::Position(reader.u16()?)),
+            VALUE_TAG_INT => Ok(Self::Int(reader.i16()?)),
+            VALUE_TAG_FLOAT => Ok(Self::Float(reader.f32()?)),
+            tag => Err(SongCodeError::InvalidValueTag(tag)),
+        }
+    }
+
+    fn resolve(self, spec: &ControlSpec) -> f32 {
+        match self {
+            Self::Position(position) => {
+                spec.taper
+                    .value_at(u16_to_unit(position), spec.min, spec.max)
+            }
+            Self::Int(value) => value as f32,
+            Self::Float(value) => value,
+        }
+    }
+}
+
+/// A `0..=1` ratio as a u16; both endpoints land exactly.
+fn unit_to_u16(value: f32) -> u16 {
+    (value.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16
+}
+
+fn u16_to_unit(value: u16) -> f32 {
+    value as f32 / u16::MAX as f32
+}
+
+fn bipolar_to_u16(value: f32) -> u16 {
+    ((value.clamp(-1.0, 1.0) + 1.0) * 0.5 * BIPOLAR_SPAN).round() as u16
+}
+
+fn u16_to_bipolar(value: u16) -> f32 {
+    (value as f32 / BIPOLAR_SPAN).min(1.0) * 2.0 - 1.0
+}
+
+/// The `SONG_ID_TABLE` slot for a live control id. A registry control with no
+/// slot is a table that was not appended to, not a user error.
+fn write_control_index(id: &'static str, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
+    let index = song_id_index(id).ok_or(SongCodeError::UnregisteredControl(id))?;
+    out.extend_from_slice(&index.to_le_bytes());
+    Ok(())
+}
+
+/// The live spec an interned index names, or `None` when this build has no
+/// such slot or no longer registers that control.
+fn control_at(index: u16) -> Option<&'static ControlSpec> {
+    song_id_at(index).and_then(spec_by_id)
+}
+
+/// Snapshot record, container v2:
+/// `u16 entry_count`, then per entry `u16 id_index` + one tagged value.
+/// Entries are still pruned against `FluidControls::default`, still deduped
+/// first-wins over `all_specs()`.
+fn write_snapshot_c2(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     let defaults = FluidControls::default();
     let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
@@ -201,27 +380,200 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
         if (value - default).abs() <= f32::EPSILON {
             continue;
         }
-        entries.push((spec.id, value));
+        let index = song_id_index(spec.id).ok_or(SongCodeError::UnregisteredControl(spec.id))?;
+        entries.push((index, EncodedValue::encode(spec, value)));
     }
 
     write_u16(entries.len(), out)?;
-    for (id, value) in entries {
-        write_str(id, out)?;
-        out.extend_from_slice(&value.to_le_bytes());
+    for (index, value) in entries {
+        out.extend_from_slice(&index.to_le_bytes());
+        value.write(out);
     }
     Ok(())
 }
 
-fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongCodeError> {
+fn read_snapshot_c2(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(bytes);
     let count = reader.u16()?;
     for _ in 0..count {
-        let id = reader.string()?;
-        let value = reader.f32()?;
-        if let Some(spec) = spec_by_id(id) {
-            spec.apply_quantized_value(value, controls);
+        let index = reader.u16()?;
+        let value = EncodedValue::read(&mut reader)?;
+        let Some(spec) = control_at(index) else {
+            continue;
+        };
+        spec.apply_quantized_value(value.resolve(spec), controls);
+    }
+    Ok(())
+}
+
+/// Automation record, container v2. Section order, pruning, and every
+/// read-side clamp match the v1 container's v6 payload; the changes are
+/// interned `u16` control ids in place of length-prefixed strings and u16
+/// quantization for the bounded ratios (`depth_ratio`, `step_glide`, macro
+/// amounts, step values, envelope amount). Beat-valued fields and
+/// `LfoRoute::seed` stay bit-exact — a quantized rate or seed would move
+/// where a modulator sits on the transport grid.
+///
+/// Field-macro keys stay length-prefixed strings: they are composite
+/// `control.id#lfo.field` keys owned by `automation.rs`, not registry control
+/// ids, so `SONG_ID_TABLE` does not cover them.
+fn write_automation_c2(
+    automation: &AutomationState,
+    out: &mut Vec<u8>,
+) -> Result<(), SongCodeError> {
+    write_u16(automation.routes().count(), out)?;
+    for (address, route) in automation.routes() {
+        write_control_index(address.id(), out)?;
+        out.extend_from_slice(&route.cycle_beats.to_le_bytes());
+        out.extend_from_slice(&unit_to_u16(route.depth_ratio).to_le_bytes());
+        out.push(shape_tag(route.shape));
+        out.extend_from_slice(&route.phase_offset_beats.to_le_bytes());
+        out.extend_from_slice(&route.seed.to_le_bytes());
+        if route.shape == LfoShape::Steps {
+            out.push(route.step_count);
+            out.extend_from_slice(&unit_to_u16(route.step_glide).to_le_bytes());
+            for value in &route.steps[..route.active_step_count()] {
+                out.extend_from_slice(&bipolar_to_u16(*value).to_le_bytes());
+            }
         }
     }
+
+    let macros: Vec<_> = automation
+        .macro_routes()
+        .filter(|(_, route)| !route.is_neutral())
+        .collect();
+    write_u16(macros.len(), out)?;
+    for (address, route) in macros {
+        write_control_index(address.id(), out)?;
+        write_macro_amounts_c2(route, out);
+    }
+
+    let envelopes: Vec<_> = automation
+        .envelopes()
+        .filter(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
+        .collect();
+    write_u16(envelopes.len(), out)?;
+    for (address, route) in envelopes {
+        write_control_index(address.id(), out)?;
+        out.extend_from_slice(&bipolar_to_u16(route.amount).to_le_bytes());
+        out.extend_from_slice(&route.attack_beats.to_le_bytes());
+        out.extend_from_slice(&route.decay_beats.to_le_bytes());
+        let (tag, param) = env_trigger_tag(route.trigger);
+        out.push(tag);
+        out.extend_from_slice(&param.to_le_bytes());
+    }
+
+    let field_macros: Vec<_> = automation
+        .field_macros()
+        .filter(|(_, route)| !route.is_neutral())
+        .collect();
+    write_u16(field_macros.len(), out)?;
+    for (key, route) in field_macros {
+        write_str(key, out)?;
+        write_macro_amounts_c2(route, out);
+    }
+
+    Ok(())
+}
+
+fn write_macro_amounts_c2(route: &MacroRoute, out: &mut Vec<u8>) {
+    for amount in route.amounts {
+        out.extend_from_slice(&bipolar_to_u16(amount).to_le_bytes());
+    }
+}
+
+fn read_macro_amounts_c2(reader: &mut Reader) -> Result<MacroRoute, SongCodeError> {
+    let mut amounts = [0.0; MACRO_COUNT];
+    for amount in &mut amounts {
+        *amount = u16_to_bipolar(reader.u16()?);
+    }
+    Ok(MacroRoute { amounts })
+}
+
+fn read_automation_c2(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
+    let mut reader = Reader::new(bytes);
+
+    let lfo_count = reader.u16()?;
+    for _ in 0..lfo_count {
+        let index = reader.u16()?;
+        let cycle_beats = reader.f32()?;
+        let depth_ratio = u16_to_unit(reader.u16()?);
+        let shape_byte = reader.u8()?;
+        let phase_offset_beats = reader.f32()?;
+        let seed = reader.u32()?;
+
+        // Read the staircase before resolving the id and shape, so a route
+        // this build cannot place is still skipped in byte-aligned whole.
+        let steps = if shape_byte == LFO_SHAPE_STEPS {
+            let step_count = reader.u8()?;
+            let step_glide = u16_to_unit(reader.u16()?);
+            let live = (step_count as usize).clamp(1, MAX_LFO_STEPS);
+            let mut values = [0.0f32; MAX_LFO_STEPS];
+            for value in values.iter_mut().take(live) {
+                *value = u16_to_bipolar(reader.u16()?);
+            }
+            Some((step_count, step_glide, values))
+        } else {
+            None
+        };
+
+        let (Some(spec), Some(shape)) = (control_at(index), shape_from_tag(shape_byte)) else {
+            continue;
+        };
+        let mut route = build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed);
+        if let Some((step_count, step_glide, values)) = steps {
+            route.step_count = step_count.clamp(1, MAX_LFO_STEPS as u8);
+            route.step_glide = step_glide;
+            route.steps = values;
+        }
+        automation.set_route(ControlAddress::new(spec.id), route);
+    }
+
+    let macro_count = reader.u16()?;
+    for _ in 0..macro_count {
+        let index = reader.u16()?;
+        let route = read_macro_amounts_c2(&mut reader)?;
+        if let Some(spec) = control_at(index) {
+            automation.set_macro_route(ControlAddress::new(spec.id), route);
+        }
+    }
+
+    let envelope_count = reader.u16()?;
+    for _ in 0..envelope_count {
+        let index = reader.u16()?;
+        let amount = u16_to_bipolar(reader.u16()?);
+        let attack_beats = reader.f32()?;
+        let decay_beats = reader.f32()?;
+        let trigger_tag = reader.u8()?;
+        let trigger_param = reader.f32()?;
+
+        let (Some(spec), Some(trigger)) = (
+            control_at(index),
+            env_trigger_from_tag(
+                trigger_tag,
+                finite_or(trigger_param, DEFAULT_ENV_TRIGGER_BEATS),
+            ),
+        ) else {
+            continue;
+        };
+        automation.set_envelope(
+            ControlAddress::new(spec.id),
+            EnvelopeRoute {
+                amount,
+                attack_beats: finite_or(attack_beats, 0.0).clamp(0.0, MAX_ENV_ATTACK_BEATS),
+                decay_beats: finite_or(decay_beats, 0.0).clamp(0.0, MAX_ENV_DECAY_BEATS),
+                trigger,
+            },
+        );
+    }
+
+    let field_macro_count = reader.u16()?;
+    for _ in 0..field_macro_count {
+        let key = reader.string()?;
+        let route = read_macro_amounts_c2(&mut reader)?;
+        automation.set_field_macro(key.to_string(), route);
+    }
+
     Ok(())
 }
 
@@ -237,80 +589,6 @@ fn automation_has_content(automation: &AutomationState) -> bool {
         || automation
             .envelopes()
             .any(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
-}
-
-/// Automation payload v6: identical to v5 except each `Steps`-shaped LFO
-/// route appends its custom staircase (step count, glide, then one bipolar
-/// value per live step) after the base route fields. The macro, envelope,
-/// and field-macro sections are byte-identical to v5. v2 (LFO only, no
-/// seed), v3 (no field-macro section), v4 (single-target macros), and v5
-/// (no step block) payloads still decode via their readers below; only the
-/// write path has moved to v6.
-fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
-    out.push(AUTOMATION_PAYLOAD_VERSION);
-
-    write_u16(automation.routes().count(), out)?;
-    for (address, route) in automation.routes() {
-        write_str(address.id(), out)?;
-        out.extend_from_slice(&route.cycle_beats.to_le_bytes());
-        out.extend_from_slice(&route.depth_ratio.to_le_bytes());
-        out.push(shape_tag(route.shape));
-        out.extend_from_slice(&route.phase_offset_beats.to_le_bytes());
-        out.extend_from_slice(&route.seed.to_le_bytes());
-        // A Steps route carries its custom staircase inline right after the
-        // base fields; every other shape writes nothing extra, so old-shape
-        // routes stay byte-identical to v5 apart from the payload version tag.
-        if route.shape == LfoShape::Steps {
-            out.push(route.step_count);
-            out.extend_from_slice(&route.step_glide.to_le_bytes());
-            for value in &route.steps[..route.active_step_count()] {
-                out.extend_from_slice(&value.to_le_bytes());
-            }
-        }
-    }
-
-    let macros: Vec<_> = automation
-        .macro_routes()
-        .filter(|(_, route)| !route.is_neutral())
-        .collect();
-    write_u16(macros.len(), out)?;
-    for (address, route) in macros {
-        write_str(address.id(), out)?;
-        write_macro_amounts(route, out);
-    }
-
-    let envelopes: Vec<_> = automation
-        .envelopes()
-        .filter(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
-        .collect();
-    write_u16(envelopes.len(), out)?;
-    for (address, route) in envelopes {
-        write_str(address.id(), out)?;
-        out.extend_from_slice(&route.amount.to_le_bytes());
-        out.extend_from_slice(&route.attack_beats.to_le_bytes());
-        out.extend_from_slice(&route.decay_beats.to_le_bytes());
-        let (tag, param) = env_trigger_tag(route.trigger);
-        out.push(tag);
-        out.extend_from_slice(&param.to_le_bytes());
-    }
-
-    let field_macros: Vec<_> = automation
-        .field_macros()
-        .filter(|(_, route)| !route.is_neutral())
-        .collect();
-    write_u16(field_macros.len(), out)?;
-    for (key, route) in field_macros {
-        write_str(key, out)?;
-        write_macro_amounts(route, out);
-    }
-
-    Ok(())
-}
-
-fn write_macro_amounts(route: &MacroRoute, out: &mut Vec<u8>) {
-    for amount in route.amounts {
-        out.extend_from_slice(&amount.to_le_bytes());
-    }
 }
 
 fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
@@ -730,6 +1008,10 @@ impl<'a> Reader<'a> {
 
     fn u64(&mut self) -> Result<u64, SongCodeError> {
         Ok(u64::from_le_bytes(self.read_array()?))
+    }
+
+    fn i16(&mut self) -> Result<i16, SongCodeError> {
+        Ok(i16::from_le_bytes(self.read_array()?))
     }
 
     fn i32(&mut self) -> Result<i32, SongCodeError> {

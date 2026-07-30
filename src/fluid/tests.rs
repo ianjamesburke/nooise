@@ -1,4 +1,5 @@
 use super::interaction::ChordDrill;
+use super::song_ids::song_id_index;
 use super::*;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -55,6 +56,39 @@ fn append_record_to_code(code: &str, record_type: u8, payload: &[u8]) -> String 
     let mut bytes = URL_SAFE_NO_PAD.decode(encoded).unwrap();
     song::write_record(record_type, payload, &mut bytes).unwrap();
     format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// A container-v1 song code carrying no records, for the hand-built legacy
+/// payload tests: `append_record_to_code` hangs the payload under test off it.
+/// `encode_song_code` writes container v2 now, but every v1 code already in
+/// the wild — `AUTO_STATES` included — must keep decoding.
+fn empty_v1_code() -> String {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"NOOI");
+    bytes.push(1);
+    write_test_str("1.0.0", &mut bytes);
+    format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// Container v2 stores bounded ratios and tapered continuous values as a u16
+/// position, so a round-trip lands within one u16 step rather than exactly on
+/// the original. Relative, because one position step costs a fixed *fraction*
+/// of a tapered dial's value rather than a fixed amount, and the steepest
+/// taper in the registry (`Taper::Exp(TIME_TAPER)`) spends about this much of
+/// it; the `max(1.0)` floor keeps the bound meaningful for the bipolar
+/// `-1..=1` amounts, whose true error is an order of magnitude smaller.
+const QUANTIZED_TOLERANCE: f32 = 1e-4;
+
+fn assert_quantized(actual: f32, expected: f32) {
+    assert_quantized_named(actual, expected, "value");
+}
+
+fn assert_quantized_named(actual: f32, expected: f32, name: &str) {
+    let tolerance = QUANTIZED_TOLERANCE * expected.abs().max(1.0);
+    assert!(
+        (actual - expected).abs() <= tolerance,
+        "{name}: expected {expected} within {tolerance}, got {actual}"
+    );
 }
 
 fn write_test_str(value: &str, out: &mut Vec<u8>) {
@@ -1772,8 +1806,10 @@ fn song_code_round_trips_control_values() {
     let decoded = round_trip(|c| c.pad.voice_type = 2.0);
     assert_close_named(decoded.pad.voice_type, 2.0, "pad.type");
 
+    // Tapered continuous dials carry no value grid, so they land within one
+    // u16 taper step instead of exactly on the original.
     let decoded = round_trip(|c| c.bass.cutoff = 500.0);
-    assert_close_named(decoded.bass.cutoff, 500.0, "bass.cutoff");
+    assert_quantized_named(decoded.bass.cutoff, 500.0, "bass.cutoff");
 
     let decoded = round_trip(|c| c.tonal.octave = -1.0);
     assert_close_named(decoded.tonal.octave, -1.0, "tonal.octave");
@@ -1788,8 +1824,8 @@ fn song_code_round_trips_control_values() {
         c.tonal.attack = 0.2;
         c.tonal.decay = 1.5;
     });
-    assert_close_named(decoded.tonal.attack, 0.2, "tonal.attack");
-    assert_close_named(decoded.tonal.decay, 1.5, "tonal.decay");
+    assert_quantized_named(decoded.tonal.attack, 0.2, "tonal.attack");
+    assert_quantized_named(decoded.tonal.decay, 1.5, "tonal.decay");
 }
 
 /// Every one of these ids was added after the generic id->f32 snapshot codec
@@ -1884,8 +1920,8 @@ fn song_code_skips_unknown_records() {
 }
 
 #[test]
-fn song_code_skips_unknown_control_ids() {
-    let code = song::encode_song_code(&SongState::default()).unwrap();
+fn song_code_v1_skips_unknown_control_ids() {
+    let code = empty_v1_code();
     let mut payload = Vec::new();
     let id = b"future.control.id";
     payload.extend_from_slice(&1u16.to_le_bytes());
@@ -1903,8 +1939,8 @@ fn song_code_skips_unknown_control_ids() {
 }
 
 #[test]
-fn song_code_skips_unknown_automation_target_control_ids() {
-    let code = song::encode_song_code(&SongState::default()).unwrap();
+fn song_code_v1_skips_unknown_automation_target_control_ids() {
+    let code = empty_v1_code();
     let payload = automation_payload(
         "future.control.id",
         LfoRoute {
@@ -1917,6 +1953,34 @@ fn song_code_skips_unknown_automation_target_control_ids() {
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_eq!(decoded.automation.routes().count(), 0);
+}
+
+/// A container-v2 entry naming a `SONG_ID_TABLE` slot this build has no
+/// control for is skipped, and the tagged value keeps the reader aligned so
+/// the entries after it still land.
+#[test]
+fn song_code_v2_skips_unknown_song_id_indexes_without_losing_alignment() {
+    let mut controls = FluidControls::default();
+    controls.master.tune = 5.0;
+    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&2u16.to_le_bytes());
+    payload.extend_from_slice(&u16::MAX.to_le_bytes()); // no such id table slot
+    payload.push(2); // VALUE_TAG_FLOAT
+    payload.extend_from_slice(&0.75f32.to_le_bytes());
+    payload.extend_from_slice(&song_id_index("master.tune").unwrap().to_le_bytes());
+    payload.push(1); // VALUE_TAG_INT
+    payload.extend_from_slice(&7i16.to_le_bytes());
+    let code = append_record_to_code(&code, song::SNAPSHOT_RECORD, &payload);
+
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_close(decoded.controls.master.tune, 7.0);
+    assert_close(
+        decoded.controls.master.level,
+        FluidControls::default().master.level,
+    );
 }
 
 #[test]
@@ -3697,9 +3761,9 @@ fn song_code_round_trips_steps_shape() {
 
     assert_eq!(got.shape, LfoShape::Steps);
     assert_eq!(got.step_count, 5);
-    assert_near(got.step_glide, 0.3);
+    assert_quantized(got.step_glide, 0.3);
     for i in 0..5 {
-        assert_near(got.steps[i], route.steps[i]);
+        assert_quantized(got.steps[i], route.steps[i]);
     }
 }
 
@@ -3951,7 +4015,7 @@ fn song_code_round_trips_envelope_routes() {
         .envelope(ControlAddress::new("pad.reverb_mix"))
         .unwrap();
 
-    assert_close(env.amount, 0.6);
+    assert_quantized(env.amount, 0.6);
     assert_close(env.attack_beats, 1.5);
     assert_close(env.decay_beats, 3.0);
     assert_eq!(env.trigger, EnvTrigger::OnKick);
@@ -4036,7 +4100,7 @@ fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
         .route(ControlAddress::new("master.level"))
         .unwrap();
     assert_close(route.cycle_beats, 4.0);
-    assert_close(route.depth_ratio, 0.4);
+    assert_quantized(route.depth_ratio, 0.4);
     assert_eq!(route.shape, LfoShape::SampleHold);
     assert_close(route.phase_offset_beats, 0.5);
     assert_eq!(route.seed, 0xDEAD_BEEF);
@@ -4045,20 +4109,20 @@ fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
         .automation
         .field_macro(&unit_key("master.level", Some("lfo.amount")))
         .unwrap();
-    assert_close(field_macro.amounts[1], 0.35);
+    assert_quantized(field_macro.amounts[1], 0.35);
 
     let macro_route = decoded
         .automation
         .macro_route(ControlAddress::new("pad.level"))
         .unwrap();
-    assert_close(macro_route.amounts[2], -0.55);
-    assert_close(macro_route.amounts[3], 0.2);
+    assert_quantized(macro_route.amounts[2], -0.55);
+    assert_quantized(macro_route.amounts[3], 0.2);
 
     let env = decoded
         .automation
         .envelope(ControlAddress::new("pad.reverb_mix"))
         .unwrap();
-    assert_close(env.amount, 0.7);
+    assert_quantized(env.amount, 0.7);
     assert_close(env.attack_beats, 1.25);
     assert_close(env.decay_beats, 6.0);
     assert_eq!(env.trigger, EnvTrigger::EveryBeats(8.0));
@@ -4069,7 +4133,7 @@ fn song_code_decodes_hand_built_v2_automation_payload() {
     // Hand-built payload using the pre-v3 layout: version byte 2, LFO count,
     // then per-route (id, cycle, depth, shape tag, offset) with no seed and
     // no macro/envelope sections. Confirms old song codes keep working.
-    let code = song::encode_song_code(&SongState::default()).unwrap();
+    let code = empty_v1_code();
     let mut payload = Vec::new();
     payload.push(2u8); // AUTOMATION_PAYLOAD_VERSION_V2
     payload.extend_from_slice(&1u16.to_le_bytes());
@@ -4102,7 +4166,7 @@ fn song_code_decodes_hand_built_v4_single_target_macro_into_one_slot() {
     // slider plus one amount per address. Confirms song codes authored
     // before the "4 independent amounts" model keep decoding, landing in
     // just that one slot of the new per-slider representation.
-    let code = song::encode_song_code(&SongState::default()).unwrap();
+    let code = empty_v1_code();
     let mut payload = Vec::new();
     payload.push(4u8); // AUTOMATION_PAYLOAD_VERSION_V4
     payload.extend_from_slice(&0u16.to_le_bytes()); // no LFO routes
@@ -4681,4 +4745,22 @@ fn next_bar_beat_targets_the_following_downbeat() {
     assert_eq!(next_bar_beat(12.3), 16.0);
     assert_eq!(next_bar_beat(16.0), 20.0);
     assert_eq!(next_bar_beat(0.0), 4.0);
+}
+
+/// `AUTO_STATES` is entirely container-v1 codes. The v1 reader must keep
+/// decoding them, and every decoded state must re-encode as container v2.
+#[test]
+fn built_in_auto_states_decode_from_container_v1_and_re_encode_as_v2() {
+    let states = decode_auto_states();
+    assert!(!states.is_empty());
+
+    for state in &states {
+        let code = song::encode_song_code(state).unwrap();
+        let bytes = URL_SAFE_NO_PAD
+            .decode(code.strip_prefix("n1_").unwrap())
+            .unwrap();
+        assert_eq!(&bytes[..4], b"NOOI");
+        assert_eq!(bytes[4], 2, "re-encoded state must be container v2");
+        song::decode_song_code(&code).unwrap();
+    }
 }
