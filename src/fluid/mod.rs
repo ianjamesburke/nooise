@@ -41,6 +41,7 @@ mod replay;
 mod runtime;
 mod session;
 mod song;
+mod song_ids;
 mod ui;
 mod view;
 mod voice;
