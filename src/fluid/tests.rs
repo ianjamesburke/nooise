@@ -730,6 +730,39 @@ fn lfo_field_set_keeps_exact_rate_and_snaps_offset_to_grid() {
 }
 
 #[test]
+fn envelope_times_sweep_their_full_range_in_one_taper_sweep() {
+    let mut route = EnvelopeRoute::default();
+    route.set_field_raw(EnvField::Attack, 0.0);
+
+    // A flat 0.5-beat step needed 1024 presses to cross 512 beats. Position
+    // stepping crosses it in one sweep, like every other tapered dial.
+    for _ in 0..(TAPER_STEPS_PER_SWEEP as usize) {
+        route.adjust_field(EnvField::Attack, 1.0);
+    }
+    assert_near(route.attack_beats, MAX_ENV_ATTACK_BEATS);
+
+    for _ in 0..(TAPER_STEPS_PER_SWEEP as usize) {
+        route.adjust_field(EnvField::Attack, -1.0);
+    }
+    assert_near(route.attack_beats, 0.0);
+}
+
+#[test]
+fn envelope_time_bars_give_ordinary_settings_visible_throw() {
+    let mut route = EnvelopeRoute::default();
+    route.set_field_raw(EnvField::Decay, 4.0);
+    // Linearly, 4 of 512 beats is under 1% of the bar — invisible at any
+    // terminal width. The taper has to lift it onto real screen space.
+    assert!(
+        route.field_value(EnvField::Decay) == 4.0
+            && EnvField::Decay.scale().ratio(4.0) > 0.15
+            && EnvField::Decay.scale().ratio(4.0) < 0.5,
+        "4 beats sits at {} of the decay bar",
+        EnvField::Decay.scale().ratio(4.0)
+    );
+}
+
+#[test]
 fn lfo_rate_bar_divides_the_full_throw_across_arrow_rungs() {
     let mut route = LfoRoute::default();
     let denominator = (LFO_RATE_ARROW_STEPS.len() - 1) as f32;
@@ -737,14 +770,14 @@ fn lfo_rate_bar_divides_the_full_throw_across_arrow_rungs() {
     for (index, rate) in LFO_RATE_ARROW_STEPS.iter().copied().enumerate() {
         route.cycle_beats = rate;
         assert_near(
-            route.field_ratio(LfoField::Interval),
+            LfoField::Interval.scale().ratio(route.cycle_beats),
             index as f32 / denominator,
         );
     }
 
     route.cycle_beats = 6.0;
     assert_near(
-        route.field_ratio(LfoField::Interval),
+        LfoField::Interval.scale().ratio(route.cycle_beats),
         (16.0 + 0.5) / denominator,
     );
 }

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use super::widget::{Dial, DialScale};
 use super::*;
 
 const SAVE_MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
@@ -1482,8 +1483,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                             .unwrap_or_else(|| route.field_display(field));
                             rows.push(field_line(
                                 field.label(),
-                                route.field_ratio(field),
-                                value_display,
+                                &Dial::new(route.field_value(field), field.scale(), value_display),
                                 lfo_selected == fi + 1,
                                 &numeric,
                                 bar_w,
@@ -1508,8 +1508,11 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                             };
                             rows.push(field_line(
                                 &format!("· {}", macro_field.label()),
-                                field_route.field_ratio(macro_field),
-                                field_route.field_display(macro_field),
+                                &Dial::new(
+                                    field_route.field_value(macro_field),
+                                    MacroField::SCALE,
+                                    field_route.field_display(macro_field),
+                                ),
                                 lfo_selected == fi + 1,
                                 &numeric,
                                 bar_w,
@@ -1519,8 +1522,11 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                         LfoSubRow::Step(target) => {
                             rows.push(field_line(
                                 &route.step_label(target),
-                                route.step_ratio(target),
-                                route.step_display(target),
+                                &Dial::new(
+                                    route.step_value(target),
+                                    LfoRoute::step_scale(target),
+                                    route.step_display(target),
+                                ),
                                 lfo_selected == fi + 1,
                                 &numeric,
                                 bar_w,
@@ -1552,8 +1558,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                     .unwrap_or_else(|| route.field_display(*field));
                     rows.push(field_line(
                         field.label(),
-                        route.field_ratio(*field),
-                        value_display,
+                        &Dial::new(route.field_value(*field), field.scale(), value_display),
                         lfo_selected == fi + 1,
                         &numeric,
                         bar_w,
@@ -1568,8 +1573,11 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                 for (fi, field) in MacroField::ALL.iter().enumerate() {
                     rows.push(field_line(
                         &field.label(),
-                        route.field_ratio(*field),
-                        route.field_display(*field),
+                        &Dial::new(
+                            route.field_value(*field),
+                            MacroField::SCALE,
+                            route.field_display(*field),
+                        ),
                         lfo_selected == fi + 1,
                         &numeric,
                         bar_w,
@@ -1689,6 +1697,17 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
     }
 }
 
+/// Deck rows carry the same colour language as a browse row: idle grey,
+/// focused cyan, and amber for an instrument the player is physically
+/// holding. Without a style they rendered in the terminal default and read
+/// as a different application.
+const PERFORMANCE_PALETTE: FieldPalette = FieldPalette {
+    active: Color::Rgb(120, 230, 255),
+    idle: Color::Rgb(170, 178, 195),
+};
+
+const PERFORMANCE_HELD: Color = Color::Rgb(255, 200, 90);
+
 fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'static> {
     let marker = if values.held {
         "●"
@@ -1697,17 +1716,46 @@ fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'s
     } else {
         " "
     };
-    Line::from(format!(
-        "{marker} {} {:<4} L{}{} T{}{} D{}{}",
-        performance_key(values.instrument),
-        performance_name(values.instrument),
-        ratio_bar(item_ratio(&values.level), 3, '█', '░'),
-        compact_performance_value(&values.level.display),
-        ratio_bar(item_ratio(&values.length), 3, '█', '░'),
-        compact_performance_value(&values.length.display),
-        ratio_bar(item_ratio(&values.density), 3, '█', '░'),
-        compact_performance_value(&values.density.display),
-    ))
+    let mut style = Style::default().fg(if values.held {
+        PERFORMANCE_HELD
+    } else if values.focused {
+        PERFORMANCE_PALETTE.active
+    } else {
+        PERFORMANCE_PALETTE.idle
+    });
+    if values.held || values.focused {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    let mut spans = vec![Span::styled(
+        format!(
+            "{marker} {} {:<4}",
+            performance_key(values.instrument),
+            performance_name(values.instrument),
+        ),
+        style,
+    )];
+    // Three compact dials per instrument. The deck is deliberately denser
+    // than a browse row, but each bar is the same primitive, so modulation
+    // markers land here the moment the deck learns about routes.
+    for (tag, item) in [
+        ("L", &values.level),
+        ("T", &values.length),
+        ("D", &values.density),
+    ] {
+        let dial = control_dial(item);
+        spans.push(Span::styled(format!(" {tag}"), style));
+        spans.extend(slider_spans(
+            dial.ratio(),
+            SliderMarkers::default(),
+            3,
+            style,
+        ));
+        spans.push(Span::styled(
+            compact_performance_value(&dial.display),
+            style,
+        ));
+    }
+    Line::from(spans)
 }
 
 fn compact_performance_value(value: &str) -> String {
@@ -1885,12 +1933,12 @@ fn numeric_cursor(numeric: &NumericDisplay<'_>, active: bool) -> Option<String> 
     Some(format!("> {entry}{cursor}"))
 }
 
-/// Baseline submenu field row: label, clamped ratio bar, live display, shared
-/// numeric-entry cursor. Every modulator field renders through this.
+/// Baseline submenu field row: label, dial bar, live display, shared
+/// numeric-entry cursor. Every modulator field renders through this, so the
+/// dial's own scale is the single thing deciding where the handle sits.
 fn field_line(
     label: &str,
-    ratio: f32,
-    value_display: String,
+    dial: &Dial,
     active: bool,
     numeric: &NumericDisplay<'_>,
     bar_w: usize,
@@ -1901,12 +1949,26 @@ fn field_line(
         style = style.add_modifier(Modifier::BOLD);
     }
     let prefix = if active { "▶ " } else { "  " };
-    let display = numeric_cursor(numeric, active).unwrap_or(value_display);
-    let bar = ratio_bar(ratio, bar_w, '█', '░');
+    let display = numeric_cursor(numeric, active).unwrap_or_else(|| dial.display.clone());
+    let bar = ratio_bar(dial.ratio(), bar_w, '█', '░');
     Line::from(Span::styled(
         format!("{prefix}  {label:<13} {bar} {display}"),
         style,
     ))
+}
+
+/// A registry control's dial: its declared step and taper decide the mapping,
+/// so a row's bar can never disagree with how its value actually moves.
+pub(crate) fn control_dial(item: &ControlItem) -> Dial {
+    let value = match item.kind {
+        ControlKind::Discrete => item.value.round(),
+        ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing => item.value,
+    };
+    Dial::new(
+        value,
+        DialScale::from_step(item.min, item.max, item.step, item.taper),
+        item.display.clone(),
+    )
 }
 
 const LANE_WAVE: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
@@ -2076,11 +2138,7 @@ fn slider_spans(
 }
 
 pub(crate) fn item_ratio(item: &ControlItem) -> f32 {
-    let value = match item.kind {
-        ControlKind::Discrete => item.value.round(),
-        ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing => item.value,
-    };
-    item.step.ratio(value, item.min, item.max, item.taper)
+    control_dial(item).ratio()
 }
 
 pub(crate) fn ratio_bar(ratio: f32, width: usize, filled: char, empty: char) -> String {

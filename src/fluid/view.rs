@@ -1315,7 +1315,7 @@ mod tests {
                     [
                         "│␠␠Level␠␠␠␠␠␠␠␠␠␠␠███████░░░␠70%␠␠␠␠␠␠␠␠␠␠␠␠│",
                         "│▶␠␠␠amount␠␠␠␠␠␠␠␠█████░░░░░␠+0%␠␠␠␠␠␠␠␠␠␠␠␠│",
-                        "│␠␠␠␠attack␠␠␠␠␠␠␠␠░░░░░░░░░░␠1.00␠beats␠␠␠␠␠│",
+                        "│␠␠␠␠attack␠␠␠␠␠␠␠␠█░░░░░░░░░␠1.00␠beats␠␠␠␠␠│",
                     ],
                     "│ENV␠·␠pad.level␠␠␠every␠4␠beats␠␠␠amount␠+0%│",
                 ),
@@ -1435,6 +1435,62 @@ mod tests {
         assert!(
             rendered.contains("●␠f␠Perc") && rendered.contains("D░░░0.50b"),
             "Perc's live density is visible: {rendered:?}"
+        );
+    }
+
+    /// Deck rows shipped with no `Style` at all, so they rendered in the
+    /// terminal default and read as a different application. Snapshots only
+    /// capture symbols, so only a colour assertion catches a regression.
+    #[test]
+    fn performance_deck_rows_carry_the_apps_colour_language() {
+        let held_selectors = PerformanceTargets::single(PerformanceInstrument::Kick);
+        let interaction = InteractionModel {
+            mode: InteractionMode::Performance(PerformanceMode::Deck {
+                selected: Some(PerformanceInstrument::Kick),
+                held_selectors,
+            }),
+            ..InteractionModel::default()
+        };
+        let session = session();
+        let fluid = FluidState::new();
+        let flipped = FlippedUnits::new();
+        let mute = [None; 9];
+        let view = UiViewModel::project(ViewProjection {
+            interaction: &interaction,
+            session: &session,
+            telemetry: TelemetryView::default(),
+            presentation: ViewPresentation {
+                fluid: &fluid,
+                flipped: &flipped,
+                mute: &mute,
+                cursor_visible: true,
+                notices: ViewNotices::default(),
+            },
+        });
+        let mut terminal =
+            Terminal::new(TestBackend::new(MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT)).unwrap();
+        terminal.draw(|frame| render(frame, &view)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        // Anchor on the held marker, not the name: "Kick" also appears in the
+        // tab bar, which is styled independently.
+        let row = (0..area.height)
+            .find(|&y| {
+                let text = (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>();
+                text.contains('●') && text.contains("Kick")
+            })
+            .expect("the held Kick row is drawn");
+        // A held instrument is amber, distinct from focused cyan and idle
+        // grey, so the player can see what their fingers are on.
+        let held = (0..area.width)
+            .map(|x| buffer[(x, row)].fg)
+            .any(|fg| fg == Color::Rgb(255, 200, 90));
+        assert!(
+            held,
+            "held deck row must be amber, not the terminal default"
         );
     }
 
