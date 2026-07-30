@@ -147,15 +147,27 @@ impl PaletteState {
             let entries = &self.entries;
             let recent = &self.recent;
             let current_tab = self.current_tab;
+            let query = self.query.as_str();
+            // The layer-primary boost outranks the fuzzy score deliberately.
+            // Score alone puts `pad.stereo_width` above `pad.level` for the
+            // query "pads", because its `s` follows the dot and collects a
+            // word-start bonus. Typing a bare layer name must reach that
+            // layer's level regardless.
+            let primary_key = |entry: usize| {
+                layer_primary_rank(entries[entry].spec.id, query).unwrap_or(usize::MAX)
+            };
             self.matches.sort_by(|left, right| {
-                right.score.cmp(&left.score).then_with(|| {
-                    context_rank(entries, left.entry, current_tab, recent).cmp(&context_rank(
-                        entries,
-                        right.entry,
-                        current_tab,
-                        recent,
-                    ))
-                })
+                primary_key(left.entry)
+                    .cmp(&primary_key(right.entry))
+                    .then_with(|| right.score.cmp(&left.score))
+                    .then_with(|| {
+                        context_rank(entries, left.entry, current_tab, recent).cmp(&context_rank(
+                            entries,
+                            right.entry,
+                            current_tab,
+                            recent,
+                        ))
+                    })
             });
         }
         self.selected = 0;
@@ -168,6 +180,36 @@ impl PaletteState {
         self.matches
             .sort_by_key(|m| context_rank(entries, m.entry, current_tab, recent));
     }
+}
+
+/// A layer's primary control outranks everything while the query is still
+/// just that layer's name, so typing `bass` always lands on Bass Level
+/// whatever the MRU holds. Matches the id namespace (`bass.`) and the tab
+/// name (`Bass`) alike, since `Tab::Chords` is spelled `Pads` but owns
+/// `pad.*`. Returns the tab's discriminant so ambiguous prefixes (`m` hits
+/// both Macros and Master) stay deterministically ordered.
+///
+/// The boost falls away on its own once the query grows past the namespace
+/// (`bass.d` is no longer a prefix of `bass`), handing ranking back to the
+/// fuzzy score.
+fn layer_primary_rank(id: &str, query: &str) -> Option<usize> {
+    if query.is_empty() {
+        return None;
+    }
+    Tab::all().iter().position(|&tab| {
+        tab.level_id() == Some(id) && {
+            let namespace = id.split('.').next().unwrap_or(id);
+            starts_with_ignore_case(namespace, query) || starts_with_ignore_case(tab.name(), query)
+        }
+    })
+}
+
+fn starts_with_ignore_case(haystack: &str, prefix: &str) -> bool {
+    haystack.len() >= prefix.len()
+        && haystack
+            .chars()
+            .zip(prefix.chars())
+            .all(|(h, p)| h.eq_ignore_ascii_case(&p))
 }
 
 /// Recent controls always win, independent of page. Page order only breaks

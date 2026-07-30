@@ -4593,6 +4593,43 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
     );
 }
 
+/// Types `query` into a fresh palette and returns the top hit's control id.
+fn palette_top_hit(current_tab: Tab, recent: &[&'static str], query: &str) -> &'static str {
+    let mut pal = PaletteState::new(current_tab, recent);
+    for character in query.chars() {
+        pal.push_char(character);
+    }
+    pal.entry(pal.matches[0].entry).spec.id
+}
+
+#[test]
+fn palette_layer_name_lands_on_that_layers_level_over_the_mru() {
+    // The MRU is stacked against us: every recent control is a bass control
+    // other than the one a bare "bass" should reach.
+    let recent = ["bass.decay_time", "bass.drive", "bass.cutoff"];
+    assert_eq!(palette_top_hit(Tab::Master, &recent, "bass"), "bass.level");
+    // Partial namespaces count too, so the boost applies while typing.
+    assert_eq!(palette_top_hit(Tab::Master, &recent, "bas"), "bass.level");
+}
+
+#[test]
+fn palette_layer_boost_matches_tab_name_and_id_namespace_alike() {
+    // Tab::Chords is spelled "Pads" but owns `pad.*`; both must reach it.
+    assert_eq!(palette_top_hit(Tab::Bass, &[], "pad"), "pad.level");
+    assert_eq!(palette_top_hit(Tab::Bass, &[], "pads"), "pad.level");
+}
+
+#[test]
+fn palette_layer_boost_releases_once_the_query_outgrows_the_namespace() {
+    // "bass.d" is no longer a prefix of "bass", so the fuzzy score governs
+    // again and the specific control the user is spelling out wins.
+    let recent = ["bass.decay_time"];
+    assert_eq!(
+        palette_top_hit(Tab::Master, &recent, "bass.d"),
+        "bass.decay_time"
+    );
+}
+
 #[test]
 fn palette_empty_query_lists_current_page_before_unused_other_pages() {
     let pal = PaletteState::new(Tab::Bass, &[]);
