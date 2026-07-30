@@ -1582,7 +1582,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         }
     }
     if let ModeSurface::Performance(performance) = &view.mode {
-        f.render_widget(Paragraph::new(performance_lines(*performance)), layout[4]);
+        f.render_widget(Paragraph::new(performance_lines(performance)), layout[4]);
     } else {
         f.render_widget(Paragraph::new(rows), layout[4]);
     }
@@ -1606,7 +1606,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     }
 }
 
-fn performance_lines(surface: PerformanceSurface) -> Vec<Line<'static>> {
+fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
     let selector = |value: Option<usize>| {
         value
             .and_then(|index| index.checked_add(1))
@@ -1615,37 +1615,120 @@ fn performance_lines(surface: PerformanceSurface) -> Vec<Line<'static>> {
     match surface {
         PerformanceSurface::Deck {
             selected,
-            held_selector,
-        } => vec![
-            Line::from("PERFORMANCE DECK"),
-            Line::from(format!("selected · {}", selector(selected))),
-            Line::from(format!("held · {}", selector(held_selector))),
-        ],
+            held_selectors,
+            instruments,
+        } => {
+            let held = if held_selectors.is_empty() {
+                "none".to_string()
+            } else {
+                held_selectors
+                    .iter()
+                    .map(performance_key)
+                    .collect::<Vec<_>>()
+                    .join("+")
+            };
+            let mut lines = vec![Line::from(format!(
+                "DECK · selected {} · held {held}",
+                selector(*selected)
+            ))];
+            if instruments.is_empty() {
+                lines.push(Line::from("hold a/s/d/f, then tap h/l j/k u/i"));
+            } else {
+                lines.extend(instruments.iter().map(performance_instrument_line));
+            }
+            lines
+        }
         PerformanceSurface::SequenceChoose { held_selector } => vec![
             Line::from("SEQUENCE · CHOOSE INSTRUMENT"),
             Line::from("instrument · waiting"),
-            Line::from(format!("held · {}", selector(held_selector))),
+            Line::from(format!("held · {}", selector(*held_selector))),
         ],
         PerformanceSurface::SequencePerform {
             instrument,
             held_selector,
-        } => vec![
-            Line::from("SEQUENCE · PERFORM"),
-            Line::from(format!("instrument · {}", selector(instrument))),
-            Line::from(format!("held · {}", selector(held_selector))),
-        ],
+            values,
+        } => {
+            let mut lines = vec![Line::from(format!(
+                "SEQUENCE · PERFORM · held {}",
+                selector(*held_selector)
+            ))];
+            if let Some(values) = values {
+                lines.push(performance_instrument_line(values));
+            } else {
+                lines.push(Line::from(format!(
+                    "instrument · {}",
+                    selector(*instrument)
+                )));
+            }
+            lines
+        }
         PerformanceSurface::SequenceComplete {
             instrument,
             release_pending,
-        } => vec![
-            Line::from("SEQUENCE · APPLIED"),
-            Line::from(format!("instrument · {}", selector(instrument))),
-            Line::from(if release_pending {
+            values,
+        } => {
+            let mut lines = vec![Line::from("SEQUENCE · APPLIED")];
+            if let Some(values) = values {
+                lines.push(performance_instrument_line(values));
+            } else {
+                lines.push(Line::from(format!(
+                    "instrument · {}",
+                    selector(*instrument)
+                )));
+            }
+            lines.push(Line::from(if *release_pending {
                 "release action to return"
             } else {
                 "Space rearm · Esc back"
-            }),
-        ],
+            }));
+            lines
+        }
+    }
+}
+
+fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'static> {
+    let marker = if values.held {
+        "●"
+    } else if values.focused {
+        "▶"
+    } else {
+        " "
+    };
+    Line::from(format!(
+        "{marker} {} {:<4} L{}{} T{}{} D{}{}",
+        performance_key(values.instrument),
+        performance_name(values.instrument),
+        ratio_bar(item_ratio(&values.level), 3, '█', '░'),
+        compact_performance_value(&values.level.display),
+        ratio_bar(item_ratio(&values.length), 3, '█', '░'),
+        compact_performance_value(&values.length.display),
+        ratio_bar(item_ratio(&values.density), 3, '█', '░'),
+        compact_performance_value(&values.density.display),
+    ))
+}
+
+fn compact_performance_value(value: &str) -> String {
+    value
+        .replace(" beats", "b")
+        .replace(" beat", "b")
+        .replace(' ', "")
+}
+
+fn performance_key(instrument: interaction::PerformanceInstrument) -> &'static str {
+    match instrument {
+        interaction::PerformanceInstrument::Pads => "a",
+        interaction::PerformanceInstrument::Bass => "s",
+        interaction::PerformanceInstrument::Kick => "d",
+        interaction::PerformanceInstrument::Perc => "f",
+    }
+}
+
+fn performance_name(instrument: interaction::PerformanceInstrument) -> &'static str {
+    match instrument {
+        interaction::PerformanceInstrument::Pads => "Pads",
+        interaction::PerformanceInstrument::Bass => "Bass",
+        interaction::PerformanceInstrument::Kick => "Kick",
+        interaction::PerformanceInstrument::Perc => "Perc",
     }
 }
 

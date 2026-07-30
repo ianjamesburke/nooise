@@ -6,7 +6,7 @@
 use super::*;
 use crate::fluid::interaction::{
     AutomationMode, ChordDrill, InteractionMode, InteractionModel, MasterDrill, Navigation,
-    PerformanceMode, SequenceStage,
+    PerformanceAction, PerformanceInstrument, PerformanceMode, PerformanceTargets, SequenceStage,
 };
 
 pub(crate) const MIN_TERMINAL_WIDTH: u16 = 46;
@@ -184,11 +184,20 @@ impl AutomationSurface<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PerformanceInstrumentSurface {
+    pub(crate) instrument: PerformanceInstrument,
+    pub(crate) focused: bool,
+    pub(crate) held: bool,
+    pub(crate) level: ControlItem,
+    pub(crate) length: ControlItem,
+    pub(crate) density: ControlItem,
+}
+
 pub(crate) enum PerformanceSurface {
     Deck {
         selected: Option<usize>,
-        held_selector: Option<usize>,
+        held_selectors: PerformanceTargets,
+        instruments: Vec<PerformanceInstrumentSurface>,
     },
     SequenceChoose {
         held_selector: Option<usize>,
@@ -196,10 +205,12 @@ pub(crate) enum PerformanceSurface {
     SequencePerform {
         instrument: Option<usize>,
         held_selector: Option<usize>,
+        values: Option<PerformanceInstrumentSurface>,
     },
     SequenceComplete {
         instrument: Option<usize>,
         release_pending: bool,
+        values: Option<PerformanceInstrumentSurface>,
     },
 }
 
@@ -220,7 +231,12 @@ impl<'a> UiViewModel<'a> {
         let mut navigation = navigation;
         navigation.selected = navigation.selected.min(items.len().saturating_sub(1));
         let owner = keyboard_owner(&interaction.mode);
-        let mode = mode_surface(&interaction.mode, navigation.tab, &session.automation);
+        let mode = mode_surface(
+            &interaction.mode,
+            navigation.tab,
+            &session.controls,
+            &session.automation,
+        );
         let help = help_surface(owner, &mode, navigation, presentation.notices);
 
         Self {
@@ -242,6 +258,7 @@ impl<'a> UiViewModel<'a> {
 fn mode_surface<'a>(
     mode: &InteractionMode,
     tab: Tab,
+    controls: &FluidControls,
     automation: &'a AutomationState,
 ) -> ModeSurface<'a> {
     match mode {
@@ -274,11 +291,26 @@ fn mode_surface<'a>(
         }
         InteractionMode::Performance(PerformanceMode::Deck {
             selected,
-            held_selector,
+            held_selectors,
         }) => ModeSurface::Performance(PerformanceSurface::Deck {
             selected: selected.map(crate::fluid::interaction::PerformanceInstrument::index),
-            held_selector: held_selector
-                .map(crate::fluid::interaction::PerformanceInstrument::index),
+            held_selectors: *held_selectors,
+            instruments: if held_selectors.is_empty() {
+                selected
+                    .iter()
+                    .copied()
+                    .map(|instrument| {
+                        performance_instrument_surface(controls, instrument, *selected, false)
+                    })
+                    .collect()
+            } else {
+                held_selectors
+                    .iter()
+                    .map(|instrument| {
+                        performance_instrument_surface(controls, instrument, *selected, true)
+                    })
+                    .collect()
+            },
         }),
         InteractionMode::Performance(PerformanceMode::Sequence {
             stage: SequenceStage::ChooseInstrument,
@@ -294,6 +326,12 @@ fn mode_surface<'a>(
             instrument: Some(instrument.index()),
             held_selector: held_selector
                 .map(crate::fluid::interaction::PerformanceInstrument::index),
+            values: Some(performance_instrument_surface(
+                controls,
+                *instrument,
+                Some(*instrument),
+                held_selector.is_some_and(|held| held == *instrument),
+            )),
         }),
         InteractionMode::Performance(PerformanceMode::Sequence {
             stage: SequenceStage::AwaitActionRelease { instrument, .. },
@@ -301,6 +339,12 @@ fn mode_surface<'a>(
         }) => ModeSurface::Performance(PerformanceSurface::SequenceComplete {
             instrument: Some(instrument.index()),
             release_pending: true,
+            values: Some(performance_instrument_surface(
+                controls,
+                *instrument,
+                Some(*instrument),
+                false,
+            )),
         }),
         InteractionMode::Performance(PerformanceMode::Sequence {
             stage: SequenceStage::CompletedFallback { instrument },
@@ -308,7 +352,34 @@ fn mode_surface<'a>(
         }) => ModeSurface::Performance(PerformanceSurface::SequenceComplete {
             instrument: Some(instrument.index()),
             release_pending: false,
+            values: Some(performance_instrument_surface(
+                controls,
+                *instrument,
+                Some(*instrument),
+                false,
+            )),
         }),
+    }
+}
+
+fn performance_instrument_surface(
+    controls: &FluidControls,
+    instrument: PerformanceInstrument,
+    selected: Option<PerformanceInstrument>,
+    held: bool,
+) -> PerformanceInstrumentSurface {
+    let item = |action| {
+        let (_, _, spec, _) = performance_target(instrument, action)
+            .expect("closed performance grammar has every target");
+        spec.item(controls)
+    };
+    PerformanceInstrumentSurface {
+        instrument,
+        focused: selected == Some(instrument),
+        held,
+        level: item(PerformanceAction::Louder),
+        length: item(PerformanceAction::Longer),
+        density: item(PerformanceAction::Denser),
     }
 }
 
@@ -529,11 +600,12 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         KeyboardOwner::PerformanceDeck => match mode {
             ModeSurface::Performance(PerformanceSurface::Deck {
                 selected,
-                held_selector,
+                held_selectors,
+                ..
             }) => format!(
                 "DECK · selected {}   held {}   a/s/d/f choose   h/l j/k u/i act   Esc",
                 selector_text(*selected),
-                selector_text(*held_selector)
+                performance_targets_text(*held_selectors)
             ),
             _ => unreachable!("deck owner requires deck mode"),
         },
@@ -547,6 +619,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             ModeSurface::Performance(PerformanceSurface::SequencePerform {
                 instrument,
                 held_selector,
+                ..
             }) => format!(
                 "SEQUENCE · instrument {}   h/l j/k u/i act once   held {}   Esc",
                 selector_text(*instrument),
@@ -555,6 +628,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             ModeSurface::Performance(PerformanceSurface::SequenceComplete {
                 instrument,
                 release_pending,
+                ..
             }) => {
                 if *release_pending {
                     format!(
@@ -577,6 +651,23 @@ fn selector_text(selector: Option<usize>) -> String {
     selector
         .and_then(|index| index.checked_add(1))
         .map_or_else(|| "none".to_string(), |index| index.to_string())
+}
+
+fn performance_targets_text(targets: PerformanceTargets) -> String {
+    let held = targets
+        .iter()
+        .map(|instrument| match instrument {
+            PerformanceInstrument::Pads => "a",
+            PerformanceInstrument::Bass => "s",
+            PerformanceInstrument::Kick => "d",
+            PerformanceInstrument::Perc => "f",
+        })
+        .collect::<Vec<_>>();
+    if held.is_empty() {
+        "none".to_string()
+    } else {
+        held.join("+")
+    }
 }
 
 fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
@@ -912,9 +1003,12 @@ mod tests {
             ..PaletteMode::default()
         });
         let session = session();
-        let ModeSurface::Palette(palette) =
-            mode_surface(&invalid_palette, Tab::Bass, &session.automation)
-        else {
+        let ModeSurface::Palette(palette) = mode_surface(
+            &invalid_palette,
+            Tab::Bass,
+            &session.controls,
+            &session.automation,
+        ) else {
             panic!("palette mode projects a palette surface");
         };
         assert_eq!(palette.state.locked, None);
@@ -1205,15 +1299,19 @@ mod tests {
                 "performance_deck",
                 InteractionMode::Performance(PerformanceMode::Deck {
                     selected: Some(PerformanceInstrument::Kick),
-                    held_selector: Some(PerformanceInstrument::Perc),
+                    held_selectors: PerformanceTargets::single(PerformanceInstrument::Perc),
                 }),
                 performance_snapshot(
                     &format!(
                         "┌␠nooise␠v{}␠·␠DECK␠──────────────────────┐",
                         env!("CARGO_PKG_VERSION")
                     ),
-                    ["PERFORMANCE DECK", "selected · 3", "held · 4"],
-                    "│DECK␠·␠selected␠3␠␠␠held␠4␠␠␠a/s/d/f␠choose␠│",
+                    [
+                        "DECK · selected 3 · held f",
+                        "● f Perc L░░░0% T█░░200ms D░░░0.25b",
+                        "",
+                    ],
+                    "│DECK␠·␠selected␠3␠␠␠held␠f␠␠␠a/s/d/f␠choose␠│",
                 ),
             ),
             (
@@ -1248,7 +1346,11 @@ mod tests {
                         "┌␠nooise␠v{}␠·␠SEQUENCE␠──────────────────┐",
                         env!("CARGO_PKG_VERSION")
                     ),
-                    ["SEQUENCE · PERFORM", "instrument · 3", "held · 4"],
+                    [
+                        "SEQUENCE · PERFORM · held 4",
+                        "▶ d Kick L░░░0% T█░░250ms D█░░1.00b",
+                        "",
+                    ],
                     "│SEQUENCE␠·␠instrument␠3␠␠␠h/l␠j/k␠u/i␠act␠on│",
                 ),
             ),
@@ -1266,6 +1368,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn performance_deck_shows_live_values_for_every_held_instrument() {
+        let mut held_selectors = PerformanceTargets::single(PerformanceInstrument::Kick);
+        held_selectors.insert(PerformanceInstrument::Perc);
+        let interaction = InteractionModel {
+            mode: InteractionMode::Performance(PerformanceMode::Deck {
+                selected: Some(PerformanceInstrument::Perc),
+                held_selectors,
+            }),
+            ..InteractionModel::default()
+        };
+        let mut session = session();
+        session.controls.kick.interval_beats = 1.25;
+        session.controls.perc.interval_beats = 0.5;
+
+        let rendered = render_model_with_session(&interaction, &session);
+
+        assert!(
+            rendered.contains("●␠d␠Kick") && rendered.contains("D█░░1.25b"),
+            "Kick's live density is visible: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("●␠f␠Perc") && rendered.contains("D░░░0.50b"),
+            "Perc's live density is visible: {rendered:?}"
+        );
     }
 
     #[test]

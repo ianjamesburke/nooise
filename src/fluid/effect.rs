@@ -630,16 +630,33 @@ impl EffectExecutor {
             InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_) => Ok(EffectAcknowledgement::NoChange),
-            InteractionEffect::PerformanceEdit { instrument, action } => {
-                let (tab, index, spec, direction) = performance_target(instrument, action)
-                    .ok_or(EffectFailure::MissingContext("performance target"))?;
-                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
-                    spec.apply_delta(direction, &mut snapshot.controls);
+            InteractionEffect::PerformanceEdit {
+                targets,
+                focus,
+                action,
+            } => {
+                let edits = targets
+                    .iter()
+                    .map(|instrument| {
+                        performance_target(instrument, action)
+                            .ok_or(EffectFailure::MissingContext("performance target"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let (tab, index, focus_spec, _) = performance_target(focus, action)
+                    .ok_or(EffectFailure::MissingContext("performance focus"))?;
+                let snapshot = self.edit_session(None, |snapshot| {
+                    for (_, _, spec, direction) in &edits {
+                        spec.apply_delta(*direction, &mut snapshot.controls);
+                    }
                 });
+                for (_, _, spec, _) in &edits {
+                    self.recent.touch(spec.id);
+                }
+                self.recent.touch(focus_spec.id);
                 Ok(EffectAcknowledgement::PerformanceEdited {
                     tab,
                     index,
-                    id: spec.id,
+                    id: focus_spec.id,
                     generation: snapshot.generation,
                 })
             }

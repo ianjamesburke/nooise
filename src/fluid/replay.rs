@@ -2902,9 +2902,38 @@ fn performance_action_repeat_phase_is_mode_specific() {
         deck.model.mode,
         InteractionMode::Performance(PerformanceMode::Deck {
             selected: Some(PerformanceInstrument::Kick),
-            held_selector: None,
-        })
+            held_selectors,
+        }) if held_selectors.is_empty()
     ));
+}
+
+#[test]
+fn deck_chorded_selectors_apply_one_action_to_every_held_instrument() {
+    let result = replay(
+        &[
+            key(0, FixtureKey::Character('p'), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Press),
+            key(0, FixtureKey::Character('f'), InputPhase::Press),
+            key(0, FixtureKey::Character('u'), InputPhase::Press),
+        ],
+        full_capabilities(),
+    );
+
+    let control = |id| {
+        result
+            .control_bits
+            .iter()
+            .find(|(known, _)| *known == id)
+            .map(|(_, bits)| f32::from_bits(*bits))
+    };
+    assert_eq!(
+        (
+            control("kick.interval_beats"),
+            control("perc.interval_beats")
+        ),
+        (Some(1.25), Some(0.5))
+    );
+    assert_eq!(result.session_generation, 1);
 }
 
 #[test]
@@ -2936,9 +2965,8 @@ fn raw_performance_edit_acknowledges_real_cursor_target_exits_auto_and_updates_m
         Some(0.02_f32.to_bits())
     );
     assert!(result.effects.iter().any(|effect| {
-        effect.starts_with(
-            "PerformanceEdit { instrument: Bass, action: Louder }=>OK:PerformanceEdited { tab: Bass, index: 0, id: \"bass.level\"",
-        )
+        effect.contains("focus: Bass, action: Louder")
+            && effect.contains("OK:PerformanceEdited { tab: Bass, index: 0, id: \"bass.level\"")
     }));
 }
 
@@ -3009,7 +3037,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
         InteractionModel {
             mode: InteractionMode::Performance(PerformanceMode::Deck {
                 selected: None,
-                held_selector: None,
+                held_selectors: Default::default(),
             }),
             ..InteractionModel::default()
         },
@@ -3145,7 +3173,7 @@ fn escape_converges_from_every_owner_and_nested_depth() {
         InteractionModel {
             mode: InteractionMode::Performance(PerformanceMode::Deck {
                 selected: Some(PerformanceInstrument::Bass),
-                held_selector: None,
+                held_selectors: Default::default(),
             }),
             ..InteractionModel::default()
         },
