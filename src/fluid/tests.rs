@@ -748,6 +748,46 @@ fn envelope_times_sweep_their_full_range_in_one_taper_sweep() {
 }
 
 #[test]
+fn lfo_depth_means_the_same_musical_amount_wherever_the_base_sits() {
+    let spec = spec_by_id("bass.cutoff").unwrap();
+    let route = LfoRoute {
+        depth_ratio: 0.25,
+        ..LfoRoute::default()
+    };
+
+    // Peak of the wave, sampled from three very different base cutoffs. A
+    // depth is a fraction of the dial's throw, so on a log-tapered control it
+    // has to move the same number of octaves from anywhere it starts, not a
+    // fixed number of Hz.
+    let octaves_up = |base: f32| {
+        let peak = spec
+            .taper
+            .value_at(
+                spec.taper.ratio(base, spec.min, spec.max) + 0.25,
+                spec.min,
+                spec.max,
+            )
+            .clamp(spec.min, spec.max);
+        (peak / base).log2()
+    };
+    let low = octaves_up(200.0);
+    let mid = octaves_up(800.0);
+    assert!(
+        (low - mid).abs() < 0.01,
+        "same depth must move the same interval: {low} vs {mid} octaves"
+    );
+
+    // And the engine has to agree with that mapping, not add a flat Hz offset.
+    let engine_peak = (0..64)
+        .map(|i| modulated_control_value(spec, &route, 800.0, i as f64 / 8.0))
+        .fold(f32::MIN, f32::max);
+    assert!(
+        (engine_peak / 800.0).log2() > 1.0,
+        "a quarter-depth LFO should open well over an octave, got {engine_peak} Hz"
+    );
+}
+
+#[test]
 fn envelope_time_bars_give_ordinary_settings_visible_throw() {
     let mut route = EnvelopeRoute::default();
     route.set_field_raw(EnvField::Decay, 4.0);

@@ -76,6 +76,15 @@ impl DialScale {
         }
     }
 
+    /// Move `value` by `delta` fractions of the dial's throw and read back the
+    /// value that lands on. This is the scale's whole point: a shift means the
+    /// same thing wherever it starts, so a modulation depth reads as one
+    /// musical amount instead of changing meaning with the base value.
+    /// `None` for scales with no inverse.
+    pub(crate) fn offset_in_position(self, value: f32, delta: f32) -> Option<f32> {
+        self.value_at((self.ratio(value) + delta).clamp(0.0, 1.0))
+    }
+
     /// One press worth of movement in position space, so a tapered dial gets
     /// the same number of steps end to end whatever its range. Returns `None`
     /// for scales that own their own stepping.
@@ -85,8 +94,7 @@ impl DialScale {
         dir: f32,
         steps_per_sweep: f32,
     ) -> Option<f32> {
-        let stepped = (self.ratio(value) + dir / steps_per_sweep).clamp(0.0, 1.0);
-        self.value_at(stepped)
+        self.offset_in_position(value, dir / steps_per_sweep)
     }
 }
 

@@ -1741,17 +1741,27 @@ pub(crate) fn modulated_control_value_full(
     base: f32,
     ctx: ModContext,
 ) -> f32 {
-    let range = spec.max - spec.min;
-    let mut value = base;
+    // Every source contributes a signed fraction of the dial's throw, summed
+    // once. Applying that sum in position space is what makes a depth mean a
+    // fixed musical amount: a flat offset in raw value space made "50%" swing
+    // four octaves up from a low cutoff and nothing at all from a high one,
+    // because the control's own taper was ignored.
+    let mut delta = 0.0;
     if let Some(route) = lfo {
-        value += route.wave_at(ctx.beat) * range * route.depth_ratio.clamp(0.0, 1.0);
+        delta += route.wave_at(ctx.beat) * route.depth_ratio.clamp(0.0, 1.0);
     }
     if let Some(route) = envelope {
-        value += route.level_at(ctx) * range * route.amount.clamp(-1.0, 1.0);
+        delta += route.level_at(ctx) * route.amount.clamp(-1.0, 1.0);
     }
     if let Some(combined) = macro_mod {
-        value += combined * range;
+        delta += combined;
     }
+    let scale = DialScale::from_step(spec.min, spec.max, spec.step, spec.taper);
+    // Grid and rung scales have no inverse, so they keep the value-space
+    // offset. Their taper is Linear anyway, so nothing else changes.
+    let value = scale
+        .offset_in_position(base, delta)
+        .unwrap_or(base + delta * (spec.max - spec.min));
     let value = value.clamp(spec.min, spec.max);
     match spec.lfo_snap {
         LfoSnap::None => value,
