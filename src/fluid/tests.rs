@@ -58,18 +58,6 @@ fn append_record_to_code(code: &str, record_type: u8, payload: &[u8]) -> String 
     format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
-/// A container-v1 song code carrying no records, for the hand-built legacy
-/// payload tests: `append_record_to_code` hangs the payload under test off it.
-/// `encode_song_code` writes container v2 now, but every v1 code already in
-/// the wild — `AUTO_STATES` included — must keep decoding.
-fn empty_v1_code() -> String {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"NOOI");
-    bytes.push(1);
-    write_test_str("1.0.0", &mut bytes);
-    format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
-}
-
 /// Container v2 stores bounded ratios and tapered continuous values as a u16
 /// position, so a round-trip lands within one u16 step rather than exactly on
 /// the original. Relative, because one position step costs a fixed *fraction*
@@ -94,18 +82,6 @@ fn assert_quantized_named(actual: f32, expected: f32, name: &str) {
 fn write_test_str(value: &str, out: &mut Vec<u8>) {
     out.push(value.len() as u8);
     out.extend_from_slice(value.as_bytes());
-}
-
-fn automation_payload(target_id: &str, route: LfoRoute) -> Vec<u8> {
-    let mut payload = Vec::new();
-    payload.push(2);
-    payload.extend_from_slice(&1u16.to_le_bytes());
-    write_test_str(target_id, &mut payload);
-    payload.extend_from_slice(&route.cycle_beats.to_le_bytes());
-    payload.extend_from_slice(&route.depth_ratio.to_le_bytes());
-    payload.push(0);
-    payload.extend_from_slice(&route.phase_offset_beats.to_le_bytes());
-    payload
 }
 
 fn buffer_text(buffer: &Buffer) -> String {
@@ -1917,42 +1893,6 @@ fn song_code_skips_unknown_records() {
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_close(decoded.controls.master.tune, 5.0);
-}
-
-#[test]
-fn song_code_v1_skips_unknown_control_ids() {
-    let code = empty_v1_code();
-    let mut payload = Vec::new();
-    let id = b"future.control.id";
-    payload.extend_from_slice(&1u16.to_le_bytes());
-    payload.push(id.len() as u8);
-    payload.extend_from_slice(id);
-    payload.extend_from_slice(&0.75f32.to_le_bytes());
-    let code = append_record_to_code(&code, song::SNAPSHOT_RECORD, &payload);
-
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_close(
-        decoded.controls.master.level,
-        FluidControls::default().master.level,
-    );
-}
-
-#[test]
-fn song_code_v1_skips_unknown_automation_target_control_ids() {
-    let code = empty_v1_code();
-    let payload = automation_payload(
-        "future.control.id",
-        LfoRoute {
-            depth_ratio: 0.2,
-            ..LfoRoute::default()
-        },
-    );
-    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
-
-    let decoded = song::decode_song_code(&code).unwrap();
-
-    assert_eq!(decoded.automation.routes().count(), 0);
 }
 
 /// A container-v2 entry naming a `SONG_ID_TABLE` slot this build has no
@@ -4129,70 +4069,6 @@ fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
 }
 
 #[test]
-fn song_code_decodes_hand_built_v2_automation_payload() {
-    // Hand-built payload using the pre-v3 layout: version byte 2, LFO count,
-    // then per-route (id, cycle, depth, shape tag, offset) with no seed and
-    // no macro/envelope sections. Confirms old song codes keep working.
-    let code = empty_v1_code();
-    let mut payload = Vec::new();
-    payload.push(2u8); // AUTOMATION_PAYLOAD_VERSION_V2
-    payload.extend_from_slice(&1u16.to_le_bytes());
-    write_test_str("master.level", &mut payload);
-    payload.extend_from_slice(&4.0f32.to_le_bytes()); // cycle_beats
-    payload.extend_from_slice(&0.4f32.to_le_bytes()); // depth_ratio
-    payload.push(0); // LFO_SHAPE_SINE
-    payload.extend_from_slice(&0.25f32.to_le_bytes()); // phase_offset_beats
-    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
-
-    let decoded = song::decode_song_code(&code).unwrap();
-    let route = decoded
-        .automation
-        .route(ControlAddress::new("master.level"))
-        .unwrap();
-
-    assert_close(route.cycle_beats, 4.0);
-    assert_close(route.depth_ratio, 0.4);
-    assert_eq!(route.shape, LfoShape::Sine);
-    assert_close(route.phase_offset_beats, 0.25);
-    // v2 payloads carry no seed; decoding must fall back to the route default.
-    assert_eq!(route.seed, 0);
-    assert!(decoded.automation.macro_routes().next().is_none());
-    assert!(decoded.automation.envelopes().next().is_none());
-}
-
-#[test]
-fn song_code_decodes_hand_built_v4_single_target_macro_into_one_slot() {
-    // Hand-built v4 payload: the pre-v5 macro shape named one target macro
-    // slider plus one amount per address. Confirms song codes authored
-    // before the "4 independent amounts" model keep decoding, landing in
-    // just that one slot of the new per-slider representation.
-    let code = empty_v1_code();
-    let mut payload = Vec::new();
-    payload.push(4u8); // AUTOMATION_PAYLOAD_VERSION_V4
-    payload.extend_from_slice(&0u16.to_le_bytes()); // no LFO routes
-    payload.extend_from_slice(&1u16.to_le_bytes()); // one legacy macro route
-    write_test_str("pad.level", &mut payload);
-    payload.push(2); // target: macro slider index 2
-    payload.extend_from_slice(&(-0.6f32).to_le_bytes()); // amount
-    payload.extend_from_slice(&0u16.to_le_bytes()); // no envelopes
-    payload.extend_from_slice(&0u16.to_le_bytes()); // no legacy field macros
-    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
-
-    let decoded = song::decode_song_code(&code).unwrap();
-    let route = decoded
-        .automation
-        .macro_route(ControlAddress::new("pad.level"))
-        .unwrap();
-    for (i, amount) in route.amounts.iter().enumerate() {
-        if i == 2 {
-            assert_close(*amount, -0.6);
-        } else {
-            assert_close(*amount, 0.0);
-        }
-    }
-}
-
-#[test]
 fn song_code_does_not_serialize_neutral_macro_routes() {
     let mut automation = AutomationState::default();
     // Every slot at zero: neutral, must not be written.
@@ -4994,4 +4870,50 @@ fn baked_in_auto_state_codes_are_container_v2_on_disk() {
             .unwrap();
         assert_eq!(bytes[4], 2, "{code} is not a container-v2 code");
     }
+}
+
+/// An automation record naming a `SONG_ID_TABLE` slot this build has no
+/// control for drops that route rather than failing the whole decode.
+#[test]
+fn song_code_skips_unknown_automation_target_indexes() {
+    let code = song::encode_song_code(&SongState::default()).unwrap();
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&1u16.to_le_bytes()); // one LFO route
+    payload.extend_from_slice(&u16::MAX.to_le_bytes()); // no such id table slot
+    payload.extend_from_slice(&4.0f32.to_le_bytes()); // cycle_beats
+    payload.extend_from_slice(&32_768u16.to_le_bytes()); // depth_ratio
+    payload.push(0); // LFO_SHAPE_SINE
+    payload.extend_from_slice(&0.25f32.to_le_bytes()); // phase_offset_beats
+    payload.extend_from_slice(&7u32.to_le_bytes()); // seed
+    payload.extend_from_slice(&0u16.to_le_bytes()); // no macros
+    payload.extend_from_slice(&0u16.to_le_bytes()); // no envelopes
+    payload.extend_from_slice(&0u16.to_le_bytes()); // no field macros
+    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
+
+    let decoded = song::decode_song_code(&code).unwrap();
+
+    assert_eq!(decoded.automation.routes().count(), 0);
+}
+
+/// A container-v1 code is refused outright with a message that says why,
+/// rather than silently decoding to an empty session.
+#[test]
+fn container_v1_song_codes_are_rejected_with_an_explanation() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"NOOI");
+    bytes.push(1);
+    write_test_str("1.8.5", &mut bytes);
+    let code = format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes));
+
+    let Err(err) = song::decode_song_code(&code) else {
+        panic!("a container-v1 code must not decode");
+    };
+
+    assert_eq!(err, song::SongCodeError::UnsupportedVersion(1));
+    let message = err.to_string();
+    assert!(
+        message.contains("older nooise") && message.contains("version 2"),
+        "unhelpful message: {message}"
+    );
 }

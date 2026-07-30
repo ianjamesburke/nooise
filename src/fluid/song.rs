@@ -15,13 +15,11 @@ use super::{
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
-/// Container v1: an app-version string followed by records that spell every
-/// control id out in full and store every value as an f32.
-const CONTAINER_VERSION_V1: u8 = 1;
-/// Container v2: no app-version string, control ids interned as
-/// `SONG_ID_TABLE` indexes, and continuous values quantized to a u16 taper
-/// position. The container version is the only version axis — record payloads
-/// carry no version byte of their own.
+/// Control ids are interned as `SONG_ID_TABLE` indexes and continuous values
+/// are quantized to a u16 taper position. This is the only version axis —
+/// record payloads carry no version byte of their own. Version 1 (length-
+/// prefixed ids, f32 values, its own nested automation payload versions) is
+/// gone; a v1 code is rejected with a message telling the user why.
 const CONTAINER_VERSION: u8 = 2;
 /// Unchanged across container versions: the CLI, `just add-morph`, and both
 /// Python helpers all match song codes on this prefix.
@@ -29,11 +27,6 @@ const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const TONAL_SEQUENCE_RECORD: u8 = 2;
-const AUTOMATION_PAYLOAD_VERSION_V2: u8 = 2;
-const AUTOMATION_PAYLOAD_VERSION_V3: u8 = 3;
-const AUTOMATION_PAYLOAD_VERSION_V4: u8 = 4;
-const AUTOMATION_PAYLOAD_VERSION_V5: u8 = 5;
-const AUTOMATION_PAYLOAD_VERSION: u8 = 6;
 const LFO_SHAPE_SINE: u8 = 0;
 const LFO_SHAPE_TRIANGLE: u8 = 1;
 const LFO_SHAPE_RAMP_UP: u8 = 2;
@@ -45,8 +38,8 @@ const LFO_SHAPE_STEPS: u8 = 7;
 const ENV_TRIGGER_EVERY_BEATS: u8 = 0;
 const ENV_TRIGGER_ON_KICK: u8 = 1;
 const ENV_TRIGGER_ONCE: u8 = 2;
-/// Default `EveryBeats` interval used when a v3 payload's trigger param is
-/// missing or non-finite; matches `EnvTrigger`'s own "every 4 beats" default.
+/// Fallback `EveryBeats` interval for an envelope whose stored trigger param
+/// is non-finite; matches `EnvTrigger`'s own "every 4 beats" default.
 const DEFAULT_ENV_TRIGGER_BEATS: f32 = 4.0;
 /// A macro or envelope route with no audible effect is dead weight; skip it
 /// on encode exactly like the LFO editor already prunes zero-depth routes.
@@ -78,7 +71,7 @@ pub(crate) enum SongCodeError {
     Truncated,
     InvalidUtf8,
     TooLarge,
-    /// A container-v2 value carried a tag this build has no encoding for.
+    /// A stored value carried a tag this build has no encoding for.
     InvalidValueTag(u8),
     /// A live control has no `SONG_ID_TABLE` slot, so it cannot be saved.
     /// `song_ids_cover_every_registry_control` exists to stop this reaching a
@@ -92,9 +85,11 @@ impl fmt::Display for SongCodeError {
             Self::MissingPrefix => write!(f, "song code must start with {CODE_PREFIX}"),
             Self::InvalidBase64 => write!(f, "song code is not valid base64url"),
             Self::InvalidMagic => write!(f, "song code is not a nooise snapshot"),
-            Self::UnsupportedVersion(version) => {
-                write!(f, "unsupported song code version {version}")
-            }
+            Self::UnsupportedVersion(version) => write!(
+                f,
+                "song code version {version} is from an older nooise and can no longer be read \
+                 (this build writes and reads version {CONTAINER_VERSION})"
+            ),
             Self::Truncated => write!(f, "song code is truncated"),
             Self::InvalidUtf8 => write!(f, "song code contains invalid text"),
             Self::TooLarge => write!(f, "song code payload is too large"),
@@ -114,12 +109,12 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
     bytes.push(CONTAINER_VERSION);
 
     let mut snapshot = Vec::new();
-    write_snapshot_c2(&song.controls, &mut snapshot)?;
+    write_snapshot(&song.controls, &mut snapshot)?;
     write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes)?;
 
     if automation_has_content(&song.automation) {
         let mut automation = Vec::new();
-        write_automation_c2(&song.automation, &mut automation)?;
+        write_automation(&song.automation, &mut automation)?;
         write_record(AUTOMATION_RECORD, &automation, &mut bytes)?;
     }
 
@@ -145,14 +140,12 @@ pub(crate) fn decode_song_code(code: &str) -> Result<SongState, SongCodeError> {
         return Err(SongCodeError::InvalidMagic);
     }
     match reader.u8()? {
-        CONTAINER_VERSION_V1 => decode_container_v1(&mut reader),
-        CONTAINER_VERSION => decode_container_v2(&mut reader),
+        CONTAINER_VERSION => decode_container(&mut reader),
         version => Err(SongCodeError::UnsupportedVersion(version)),
     }
 }
 
-fn decode_container_v1(reader: &mut Reader) -> Result<SongState, SongCodeError> {
-    let _app_version = reader.string()?;
+fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
     let mut song = SongState::default();
 
     while !reader.is_empty() {
@@ -163,24 +156,12 @@ fn decode_container_v1(reader: &mut Reader) -> Result<SongState, SongCodeError> 
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
             AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
-            _ => {}
-        }
-    }
-
-    Ok(song)
-}
-
-fn decode_container_v2(reader: &mut Reader) -> Result<SongState, SongCodeError> {
-    let mut song = SongState::default();
-
-    while !reader.is_empty() {
-        let record_type = reader.u8()?;
-        let len = reader.u32()? as usize;
-        let payload = reader.bytes(len)?;
-        match record_type {
-            SNAPSHOT_RECORD => read_snapshot_c2(payload, &mut song.controls)?,
-            AUTOMATION_RECORD => read_automation_c2(payload, &mut song.automation)?,
-            TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
+            // Records are length-prefixed, so an unknown one is skipped
+            // without losing alignment. This stays permissive on purpose: it
+            // is how a code from a newer nooise carrying a record this build
+            // has never heard of still loads everything else. Version
+            // mismatches are caught at the container version, which is a hard
+            // error — this is forward compatibility, not a silent fallback.
             _ => {}
         }
     }
@@ -227,27 +208,11 @@ fn read_tonal_sequence(bytes: &[u8]) -> Result<TonalSequenceState, SongCodeError
     })
 }
 
-fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongCodeError> {
-    let mut reader = Reader::new(bytes);
-    let count = reader.u16()?;
-    for _ in 0..count {
-        let id = reader.string()?;
-        let value = reader.f32()?;
-        if let Some(spec) = spec_by_id(id) {
-            spec.apply_quantized_value(value, controls);
-        }
-    }
-    Ok(())
-}
-
 // ============================================================
-// Container v2 codec
-//
-// `_c2` marks a container-v2 reader/writer, distinct from the `_v<n>`
-// suffixes on the v1 container's per-payload automation versions.
+// Codec
 // ============================================================
 
-/// How a container-v2 entry spells its value. The tag travels with the value
+/// How a snapshot entry spells its value. The tag travels with the value
 /// so a reader never re-derives the choice from the live `ControlSpec` — a
 /// control's kind or step ladder may change in a later build without
 /// invalidating codes written today — and so an entry naming an unknown
@@ -385,21 +350,21 @@ fn control_at(index: u16) -> Option<&'static ControlSpec> {
     song_id_at(index).and_then(spec_by_id)
 }
 
-/// Snapshot record, container v2:
+/// Snapshot record:
 /// `u16 entry_count`, then per entry `u16 id_index` + one tagged value.
 /// Entries are still deduped first-wins over `all_specs()` and still pruned
 /// against `FluidControls::default`.
 ///
 /// The prune compares the *encoded* value against the encoded default rather
-/// than the two raw floats. v1's absolute `f32::EPSILON` comparison was only
-/// safe because `quantize` was a no-op for tapered dials: a position round
+/// than the two raw floats. A plain absolute `f32::EPSILON` comparison is
+/// only safe while `quantize` is a no-op for tapered dials: a position round
 /// trip carries relative error, so on a large-magnitude control (`bass.cutoff`
 /// at 8 kHz, `perc.decay_ms` at 2 s) a value that decoded to its own default
 /// would re-encode as a spurious entry, growing the code on every save/load
 /// cycle. Equal encodings are provably redundant — the reader would
 /// reconstruct the default from either — so this both fixes that and prunes
 /// slightly harder.
-fn write_snapshot_c2(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
+fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     let defaults = FluidControls::default();
     let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
@@ -425,7 +390,7 @@ fn write_snapshot_c2(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), 
     Ok(())
 }
 
-fn read_snapshot_c2(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongCodeError> {
+fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(bytes);
     let count = reader.u16()?;
     for _ in 0..count {
@@ -439,21 +404,16 @@ fn read_snapshot_c2(bytes: &[u8], controls: &mut FluidControls) -> Result<(), So
     Ok(())
 }
 
-/// Automation record, container v2. Section order, pruning, and every
-/// read-side clamp match the v1 container's v6 payload; the changes are
-/// interned `u16` control ids in place of length-prefixed strings and u16
-/// quantization for the bounded ratios (`depth_ratio`, `step_glide`, macro
-/// amounts, step values, envelope amount). Beat-valued fields and
+/// Automation record. Control ids are interned `u16` indexes and the bounded
+/// ratios (`depth_ratio`, `step_glide`, macro amounts, step values, envelope
+/// amount) are u16-quantized. Beat-valued fields and
 /// `LfoRoute::seed` stay bit-exact — a quantized rate or seed would move
 /// where a modulator sits on the transport grid.
 ///
 /// Field-macro keys stay length-prefixed strings: they are composite
 /// `control.id#lfo.field` keys owned by `automation.rs`, not registry control
 /// ids, so `SONG_ID_TABLE` does not cover them.
-fn write_automation_c2(
-    automation: &AutomationState,
-    out: &mut Vec<u8>,
-) -> Result<(), SongCodeError> {
+fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     write_u16(automation.routes().count(), out)?;
     for (address, route) in automation.routes() {
         write_control_index(address.id(), out)?;
@@ -478,7 +438,7 @@ fn write_automation_c2(
     write_u16(macros.len(), out)?;
     for (address, route) in macros {
         write_control_index(address.id(), out)?;
-        write_macro_amounts_c2(route, out);
+        write_macro_amounts(route, out);
     }
 
     let envelopes: Vec<_> = automation
@@ -503,19 +463,19 @@ fn write_automation_c2(
     write_u16(field_macros.len(), out)?;
     for (key, route) in field_macros {
         write_str(key, out)?;
-        write_macro_amounts_c2(route, out);
+        write_macro_amounts(route, out);
     }
 
     Ok(())
 }
 
-fn write_macro_amounts_c2(route: &MacroRoute, out: &mut Vec<u8>) {
+fn write_macro_amounts(route: &MacroRoute, out: &mut Vec<u8>) {
     for amount in route.amounts {
         out.extend_from_slice(&bipolar_to_u16(amount).to_le_bytes());
     }
 }
 
-fn read_macro_amounts_c2(reader: &mut Reader) -> Result<MacroRoute, SongCodeError> {
+fn read_macro_amounts(reader: &mut Reader) -> Result<MacroRoute, SongCodeError> {
     let mut amounts = [0.0; MACRO_COUNT];
     for amount in &mut amounts {
         *amount = u16_to_bipolar(reader.u16()?);
@@ -523,7 +483,7 @@ fn read_macro_amounts_c2(reader: &mut Reader) -> Result<MacroRoute, SongCodeErro
     Ok(MacroRoute { amounts })
 }
 
-fn read_automation_c2(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
+fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(bytes);
 
     let lfo_count = reader.u16()?;
@@ -565,7 +525,7 @@ fn read_automation_c2(bytes: &[u8], automation: &mut AutomationState) -> Result<
     let macro_count = reader.u16()?;
     for _ in 0..macro_count {
         let index = reader.u16()?;
-        let route = read_macro_amounts_c2(&mut reader)?;
+        let route = read_macro_amounts(&mut reader)?;
         if let Some(spec) = control_at(index) {
             automation.set_macro_route(ControlAddress::new(spec.id), route);
         }
@@ -603,7 +563,7 @@ fn read_automation_c2(bytes: &[u8], automation: &mut AutomationState) -> Result<
     let field_macro_count = reader.u16()?;
     for _ in 0..field_macro_count {
         let key = reader.string()?;
-        let route = read_macro_amounts_c2(&mut reader)?;
+        let route = read_macro_amounts(&mut reader)?;
         automation.set_field_macro(key.to_string(), route);
     }
 
@@ -624,224 +584,9 @@ fn automation_has_content(automation: &AutomationState) -> bool {
             .any(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
 }
 
-fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
-    let mut reader = Reader::new(bytes);
-    let version = reader.u8()?;
-    match version {
-        AUTOMATION_PAYLOAD_VERSION_V2 => read_automation_v2(&mut reader, automation),
-        AUTOMATION_PAYLOAD_VERSION_V3 => read_automation_v3(&mut reader, automation),
-        AUTOMATION_PAYLOAD_VERSION_V4 => read_automation_v4(&mut reader, automation),
-        AUTOMATION_PAYLOAD_VERSION_V5 => read_automation_v5(&mut reader, automation),
-        AUTOMATION_PAYLOAD_VERSION => read_automation_v6(&mut reader, automation),
-        _ => Ok(()),
-    }
-}
-
-/// Legacy v2 layout: LFO routes only, no seed, no macros, no envelopes.
-/// Kept so song codes authored before this change keep decoding.
-fn read_automation_v2(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    let count = reader.u16()?;
-    for _ in 0..count {
-        let id = reader.string()?;
-        let cycle_beats = reader.f32()?;
-        let depth_ratio = reader.f32()?;
-        let shape = reader.u8()?;
-        let phase_offset_beats = reader.f32()?;
-
-        let (Some(spec), Some(shape)) = (spec_by_id(id), shape_from_tag(shape)) else {
-            continue;
-        };
-        automation.set_route(
-            ControlAddress::new(spec.id),
-            build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, 0),
-        );
-    }
-    Ok(())
-}
-
-/// v3 layout: LFO section (with seed), macro section (single target+amount
-/// per address), envelope section.
-fn read_automation_v3(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    read_lfo_section(reader, automation)?;
-    read_legacy_macro_section(reader, automation)?;
-    read_envelope_section(reader, automation)
-}
-
-/// v4 layout: identical LFO/macro/envelope sections to v3, plus a trailing
-/// field-macro section (a macro stacked onto one numeric LFO field), both
-/// still in the single target+amount shape superseded by v5's per-slider
-/// amounts.
-fn read_automation_v4(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    read_lfo_section(reader, automation)?;
-    read_legacy_macro_section(reader, automation)?;
-    read_envelope_section(reader, automation)?;
-
-    let field_macro_count = reader.u16()?;
-    for _ in 0..field_macro_count {
-        let key = reader.string()?;
-        let target = reader.u8()? as usize;
-        let amount = reader.f32()?;
-
-        if target >= MACRO_COUNT {
-            continue;
-        }
-        automation.set_field_macro(key.to_string(), single_slot_macro_route(target, amount));
-    }
-
-    Ok(())
-}
-
-/// v5 layout: identical LFO/envelope sections, but macro and field-macro
-/// sections now carry one bipolar amount per macro slider per address/key,
-/// so a control (or stacked field) can ride several macros at once.
-fn read_automation_v5(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    read_lfo_section(reader, automation)?;
-    read_macro_env_fieldmacro_v5(reader, automation)
-}
-
-/// v6 layout: identical to v5 except each Steps LFO route carries an inline
-/// staircase; the macro/envelope/field-macro tail is byte-identical to v5.
-fn read_automation_v6(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    read_lfo_section_v6(reader, automation)?;
-    read_macro_env_fieldmacro_v5(reader, automation)
-}
-
-/// The per-slot macro, envelope, and field-macro sections shared unchanged by
-/// the v5 and v6 layouts.
-fn read_macro_env_fieldmacro_v5(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    let macro_count = reader.u16()?;
-    for _ in 0..macro_count {
-        let id = reader.string()?;
-        let route = read_macro_amounts(reader)?;
-        if let Some(spec) = spec_by_id(id) {
-            automation.set_macro_route(ControlAddress::new(spec.id), route);
-        }
-    }
-
-    read_envelope_section(reader, automation)?;
-
-    let field_macro_count = reader.u16()?;
-    for _ in 0..field_macro_count {
-        let key = reader.string()?;
-        let route = read_macro_amounts(reader)?;
-        automation.set_field_macro(key.to_string(), route);
-    }
-
-    Ok(())
-}
-
-/// v6 LFO section: same base fields as `read_lfo_section`, plus an inline
-/// staircase (count, glide, per-step values) after any route tagged `Steps`.
-/// The step-value count read always equals what the writer emitted because
-/// both clamp `step_count` to `1..=MAX_LFO_STEPS`.
-fn read_lfo_section_v6(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    let lfo_count = reader.u16()?;
-    for _ in 0..lfo_count {
-        let id = reader.string()?;
-        let cycle_beats = reader.f32()?;
-        let depth_ratio = reader.f32()?;
-        let shape_byte = reader.u8()?;
-        let phase_offset_beats = reader.f32()?;
-        let seed = reader.u32()?;
-
-        let steps = if shape_byte == LFO_SHAPE_STEPS {
-            let step_count = reader.u8()?;
-            let step_glide = reader.f32()?;
-            let live = (step_count as usize).clamp(1, MAX_LFO_STEPS);
-            let mut values = [0.0f32; MAX_LFO_STEPS];
-            for value in values.iter_mut().take(live) {
-                *value = finite_or(reader.f32()?, 0.0).clamp(-1.0, 1.0);
-            }
-            Some((
-                step_count,
-                finite_or(step_glide, 0.0).clamp(0.0, 1.0),
-                values,
-            ))
-        } else {
-            None
-        };
-
-        let (Some(spec), Some(shape)) = (spec_by_id(id), shape_from_tag(shape_byte)) else {
-            continue;
-        };
-        let mut route = build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed);
-        if let Some((step_count, step_glide, values)) = steps {
-            route.step_count = step_count.clamp(1, MAX_LFO_STEPS as u8);
-            route.step_glide = step_glide;
-            route.steps = values;
-        }
-        automation.set_route(ControlAddress::new(spec.id), route);
-    }
-    Ok(())
-}
-
-fn read_macro_amounts(reader: &mut Reader) -> Result<MacroRoute, SongCodeError> {
-    let mut amounts = [0.0; MACRO_COUNT];
-    for amount in &mut amounts {
-        *amount = finite_or(reader.f32()?, 0.0).clamp(-1.0, 1.0);
-    }
-    Ok(MacroRoute { amounts })
-}
-
-/// A v3/v4-era macro assignment named one target macro slider; fold it into
-/// the current per-slot representation with only that slot set.
-fn single_slot_macro_route(target: usize, amount: f32) -> MacroRoute {
-    let mut amounts = [0.0; MACRO_COUNT];
-    if target < MACRO_COUNT {
-        amounts[target] = finite_or(amount, 0.0).clamp(-1.0, 1.0);
-    }
-    MacroRoute { amounts }
-}
-
-/// LFO section shared by the v3 and v4 layouts (identical byte shape).
-fn read_lfo_section(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    let lfo_count = reader.u16()?;
-    for _ in 0..lfo_count {
-        let id = reader.string()?;
-        let cycle_beats = reader.f32()?;
-        let depth_ratio = reader.f32()?;
-        let shape = reader.u8()?;
-        let phase_offset_beats = reader.f32()?;
-        let seed = reader.u32()?;
-
-        let (Some(spec), Some(shape)) = (spec_by_id(id), shape_from_tag(shape)) else {
-            continue;
-        };
-        automation.set_route(
-            ControlAddress::new(spec.id),
-            build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed),
-        );
-    }
-    Ok(())
-}
-
-/// Shared LfoRoute construction for the song-code readers: clamps each field
-/// to its valid range the same way regardless of which payload version
-/// supplied it (v2 has no seed byte and always passes 0).
+/// Shared `LfoRoute` construction for the reader: clamps every field to its
+/// valid range and substitutes a default for anything non-finite, so a
+/// corrupt or hand-edited code cannot install an out-of-range modulator.
 fn build_lfo_route(
     cycle_beats: f32,
     depth_ratio: f32,
@@ -855,73 +600,10 @@ fn build_lfo_route(
         shape,
         phase_offset_beats: finite_or(phase_offset_beats, 0.0).clamp(0.0, MAX_LFO_OFFSET_BEATS),
         seed,
-        // v2..v5 codes carry no step block; a non-Steps route ignores these,
-        // and a v6 Steps route overwrites them from its inline staircase.
+        // A non-Steps route ignores these; a Steps route overwrites them
+        // from its inline staircase.
         ..LfoRoute::default()
     }
-}
-
-/// Macro section shared by the v3 and v4 layouts: one target macro slider
-/// plus one amount per address, superseded by v5's per-slot amounts.
-fn read_legacy_macro_section(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    let macro_count = reader.u16()?;
-    for _ in 0..macro_count {
-        let id = reader.string()?;
-        let target = reader.u8()? as usize;
-        let amount = reader.f32()?;
-
-        let Some(spec) = spec_by_id(id) else {
-            continue;
-        };
-        if target >= MACRO_COUNT {
-            continue;
-        }
-        automation.set_macro_route(
-            ControlAddress::new(spec.id),
-            single_slot_macro_route(target, amount),
-        );
-    }
-    Ok(())
-}
-
-/// Envelope section shared by the v3, v4, and v5 layouts (identical shape).
-fn read_envelope_section(
-    reader: &mut Reader,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
-    let envelope_count = reader.u16()?;
-    for _ in 0..envelope_count {
-        let id = reader.string()?;
-        let amount = reader.f32()?;
-        let attack_beats = reader.f32()?;
-        let decay_beats = reader.f32()?;
-        let trigger_tag = reader.u8()?;
-        let trigger_param = reader.f32()?;
-
-        let (Some(spec), Some(trigger)) = (
-            spec_by_id(id),
-            env_trigger_from_tag(
-                trigger_tag,
-                finite_or(trigger_param, DEFAULT_ENV_TRIGGER_BEATS),
-            ),
-        ) else {
-            continue;
-        };
-        automation.set_envelope(
-            ControlAddress::new(spec.id),
-            EnvelopeRoute {
-                amount: finite_or(amount, 0.0).clamp(-1.0, 1.0),
-                attack_beats: finite_or(attack_beats, 0.0).clamp(0.0, MAX_ENV_ATTACK_BEATS),
-                decay_beats: finite_or(decay_beats, 0.0).clamp(0.0, MAX_ENV_DECAY_BEATS),
-                trigger,
-            },
-        );
-    }
-
-    Ok(())
 }
 
 fn env_trigger_tag(trigger: EnvTrigger) -> (u8, f32) {
