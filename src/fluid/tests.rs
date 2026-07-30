@@ -2150,7 +2150,7 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
     });
 
     let text = buffer_text(&buffer);
-    assert!(text.contains("Chords › Chord 2"));
+    assert!(text.contains("Pads › Chord 2"));
     assert!(text.contains("BROWSE · Chord 2   Esc: back"));
 }
 
@@ -4586,7 +4586,7 @@ fn palette_entries_jump_targets_stay_inside_their_tab_tables() {
 #[test]
 fn palette_fuzzy_ranks_word_start_matches_above_scattered_hits() {
     let (word_start, _) =
-        fuzzy_score("rev", "pad.reverb_mix \u{b7} Chords \u{b7} Reverb Mix").expect("subsequence");
+        fuzzy_score("rev", "pad.reverb_mix \u{b7} Pads \u{b7} Reverb Mix").expect("subsequence");
     let (scattered, _) =
         fuzzy_score("rev", "perc.interval_beats \u{b7} Perc \u{b7} Interval").expect("subsequence");
     assert!(word_start > scattered);

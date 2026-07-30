@@ -21,7 +21,7 @@ pub(crate) enum Tab {
 /// table) in discriminant order. `Tab::all`/`name`/`level_id`/`tab_specs`
 /// all derive from indexing this single table by `self as usize`.
 const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); 9] = [
-    (Tab::Chords, "Chords", Some("pad.level"), CHORDS_CONTROLS),
+    (Tab::Chords, "Pads", Some("pad.level"), CHORDS_CONTROLS),
     (Tab::Perc, "Perc", Some("perc.level"), PERC_CONTROLS),
     (Tab::Bass, "Bass", Some("bass.level"), BASS_CONTROLS),
     (Tab::Kick, "Kick", Some("kick.level"), KICK_CONTROLS),
@@ -560,7 +560,7 @@ macro_rules! beat_offset {
 }
 
 pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &[
-    gain_pct!("pad.level", "Chords Vol", pad.level),
+    gain_pct!("pad.level", "Pads Vol", pad.level),
     gain_pct!("perc.level", "Perc Vol", perc.level),
     gain_pct!("kick.level", "Kick Vol", kick.level),
     gain_pct!("tonal.level", "Tonal Vol", tonal.level),
