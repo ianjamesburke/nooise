@@ -4747,12 +4747,13 @@ fn next_bar_beat_targets_the_following_downbeat() {
     assert_eq!(next_bar_beat(0.0), 4.0);
 }
 
-/// `AUTO_STATES` is entirely container-v1 codes. The v1 reader must keep
-/// decoding them, and every decoded state must re-encode as container v2.
+/// Every baked-in state is a container-v2 code, and re-encoding one produces
+/// a container-v2 code. Guards against a v1 code being pasted back into
+/// `AUTO_STATES` by hand once the v1 reader is gone.
 #[test]
-fn built_in_auto_states_decode_from_container_v1_and_re_encode_as_v2() {
+fn built_in_auto_states_are_container_v2() {
     let states = decode_auto_states();
-    assert!(!states.is_empty());
+    assert_eq!(states.len(), 18);
 
     for state in &states {
         let code = song::encode_song_code(state).unwrap();
@@ -4825,5 +4826,172 @@ fn re_encoding_a_decoded_song_reproduces_the_same_code() {
         let once = song::encode_song_code(&state).unwrap();
         let twice = song::encode_song_code(&song::decode_song_code(&once).unwrap()).unwrap();
         assert_eq!(once, twice, "re-encoding changed the code");
+    }
+}
+
+/// One u16 position step — the resolution a container-v2 tapered value is
+/// stored at.
+const POSITION_STEP: f32 = 1.0 / 65_535.0;
+
+/// Semantic equality for a song round trip. Byte equality was never the
+/// contract: the readers clamp and substitute defaults on the way in, and
+/// container v2 deliberately stores tapered continuous values at u16
+/// resolution. So compare exactly what the codec promises to carry, at the
+/// precision it promises, and nothing else.
+///
+/// Deliberately not `AutomationState`'s derived `PartialEq`, which also
+/// compares `open`, `open_field`, and `LfoRoute::pickup` — live editor and
+/// transport state that is not persisted and must not be.
+fn assert_song_states_agree(a: &SongState, b: &SongState, label: &str) {
+    let mut seen = std::collections::BTreeSet::new();
+    for spec in all_specs() {
+        if !seen.insert(spec.id) {
+            continue;
+        }
+        let before = spec.quantized_value(&a.controls);
+        let after = spec.quantized_value(&b.controls);
+        if !matches!(spec.taper, Taper::Linear) && matches!(spec.step, Step::Linear(_)) {
+            // Tapered dials are the one lossy group, and their error is a
+            // fixed fraction of the throw — so compare in position space.
+            let drift = (spec.ratio(before) - spec.ratio(after)).abs();
+            assert!(
+                drift <= POSITION_STEP,
+                "{label}: {} drifted {drift} in position space ({before} -> {after})",
+                spec.id
+            );
+        } else {
+            assert_eq!(
+                before, after,
+                "{label}: {} must round-trip exactly",
+                spec.id
+            );
+        }
+    }
+
+    let routes_a: Vec<_> = a.automation.routes().collect();
+    let routes_b: Vec<_> = b.automation.routes().collect();
+    assert_eq!(routes_a.len(), routes_b.len(), "{label}: LFO route count");
+    for ((address_a, route_a), (address_b, route_b)) in routes_a.iter().zip(&routes_b) {
+        let id = address_a.id();
+        assert_eq!(id, address_b.id(), "{label}: LFO route order");
+        assert_eq!(route_a.shape, route_b.shape, "{label}: {id} shape");
+        assert_eq!(
+            route_a.seed, route_b.seed,
+            "{label}: {id} seed must be exact"
+        );
+        assert_eq!(
+            route_a.cycle_beats, route_b.cycle_beats,
+            "{label}: {id} cycle_beats must be exact"
+        );
+        assert_eq!(
+            route_a.phase_offset_beats, route_b.phase_offset_beats,
+            "{label}: {id} phase_offset_beats must be exact"
+        );
+        assert_quantized_named(route_b.depth_ratio, route_a.depth_ratio, "depth_ratio");
+        // `steps`/`step_glide` only persist for a Steps route, and entries past
+        // the live count keep whatever defaults the reader built.
+        if route_a.shape == LfoShape::Steps {
+            assert_eq!(
+                route_a.step_count, route_b.step_count,
+                "{label}: {id} steps"
+            );
+            assert_quantized_named(route_b.step_glide, route_a.step_glide, "step_glide");
+            for i in 0..route_a.active_step_count() {
+                assert_quantized_named(route_b.steps[i], route_a.steps[i], "step");
+            }
+        }
+    }
+
+    let macros_a: Vec<_> = a.automation.macro_routes().collect();
+    let macros_b: Vec<_> = b.automation.macro_routes().collect();
+    assert_eq!(macros_a.len(), macros_b.len(), "{label}: macro route count");
+    for ((address_a, route_a), (address_b, route_b)) in macros_a.iter().zip(&macros_b) {
+        assert_eq!(address_a.id(), address_b.id(), "{label}: macro route order");
+        for slot in 0..MACRO_COUNT {
+            assert_quantized_named(route_b.amounts[slot], route_a.amounts[slot], address_a.id());
+        }
+    }
+
+    let envelopes_a: Vec<_> = a.automation.envelopes().collect();
+    let envelopes_b: Vec<_> = b.automation.envelopes().collect();
+    assert_eq!(
+        envelopes_a.len(),
+        envelopes_b.len(),
+        "{label}: envelope count"
+    );
+    for ((address_a, env_a), (address_b, env_b)) in envelopes_a.iter().zip(&envelopes_b) {
+        let id = address_a.id();
+        assert_eq!(id, address_b.id(), "{label}: envelope order");
+        assert_quantized_named(env_b.amount, env_a.amount, id);
+        assert_eq!(
+            env_a.attack_beats, env_b.attack_beats,
+            "{label}: {id} attack_beats must be exact"
+        );
+        assert_eq!(
+            env_a.decay_beats, env_b.decay_beats,
+            "{label}: {id} decay_beats must be exact"
+        );
+        assert_eq!(env_a.trigger, env_b.trigger, "{label}: {id} trigger");
+    }
+
+    let fields_a: Vec<_> = a.automation.field_macros().collect();
+    let fields_b: Vec<_> = b.automation.field_macros().collect();
+    assert_eq!(fields_a.len(), fields_b.len(), "{label}: field macro count");
+    for ((key_a, route_a), (key_b, route_b)) in fields_a.iter().zip(&fields_b) {
+        assert_eq!(key_a, key_b, "{label}: field macro key");
+        for slot in 0..MACRO_COUNT {
+            assert_quantized_named(route_b.amounts[slot], route_a.amounts[slot], key_a);
+        }
+    }
+
+    match (&a.tonal_sequence, &b.tonal_sequence) {
+        (None, None) => {}
+        (Some(before), Some(after)) => {
+            assert_eq!(before.phrase, after.phrase, "{label}: tonal phrase");
+            assert_eq!(
+                before.notes, after.notes,
+                "{label}: tonal notes must be exact"
+            );
+            assert_eq!(
+                before.evolution_seed, after.evolution_seed,
+                "{label}: evolution_seed must be exact"
+            );
+            assert_eq!(
+                before.evolution_count, after.evolution_count,
+                "{label}: evolution_count must be exact"
+            );
+        }
+        _ => panic!("{label}: tonal sequence presence changed"),
+    }
+}
+
+/// Every built-in state survives a full encode/decode cycle with every
+/// persisted field intact, at the precision the format guarantees.
+#[test]
+fn song_codes_round_trip_every_built_in_state() {
+    for (index, state) in decode_auto_states().iter().enumerate() {
+        let code = encode_song_code(state).unwrap();
+        let again = decode_song_code(&code).unwrap();
+        assert_song_states_agree(state, &again, &format!("AUTO_STATES[{index}]"));
+    }
+}
+
+/// The literal codes in `auto.rs` are container v2 on disk, not merely
+/// re-encodable as v2.
+#[test]
+fn baked_in_auto_state_codes_are_container_v2_on_disk() {
+    let source = include_str!("auto.rs");
+    let codes: Vec<&str> = source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix('"')?.strip_suffix("\","))
+        .filter(|code| code.starts_with("n1_"))
+        .collect();
+    assert_eq!(codes.len(), 18);
+
+    for code in codes {
+        let bytes = URL_SAFE_NO_PAD
+            .decode(code.strip_prefix("n1_").unwrap())
+            .unwrap();
+        assert_eq!(bytes[4], 2, "{code} is not a container-v2 code");
     }
 }
