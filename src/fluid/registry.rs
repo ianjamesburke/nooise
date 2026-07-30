@@ -406,8 +406,10 @@ impl ControlSpec {
     pub(crate) fn quantize(&self, value: f32) -> f32 {
         let clamped = value.clamp(self.min, self.max);
         // Tapered continuous dials move in position space, so they carry no
-        // value grid: store the exact value (full precision, exact song-code
-        // round-trip) rather than snapping to a spurious step.
+        // value grid: keep the exact value rather than snapping to a spurious
+        // step. These are the only rows a song code cannot round-trip exactly
+        // — with no grid to re-snap onto, they decode from a u16 taper
+        // position and land within one position step of the original.
         if self.is_continuous_tapered() {
             return clamped;
         }

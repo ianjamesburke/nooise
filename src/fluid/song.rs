@@ -255,15 +255,17 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
 const VALUE_TAG_POSITION: u8 = 0;
 const VALUE_TAG_INT: u8 = 1;
 const VALUE_TAG_FLOAT: u8 = 2;
+const VALUE_TAG_SMALL_INT: u8 = 3;
 
 /// Even span for bipolar `-1..=1` amounts, so exactly 0 — the neutral value
 /// every automation amount rests at — round-trips to exactly 0.
 const BIPOLAR_SPAN: f32 = 65_534.0;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum EncodedValue {
     /// Position along the spec's taper: 0 is `min`, `u16::MAX` is `max`.
     Position(u16),
+    SmallInt(i8),
     Int(i16),
     Float(f32),
 }
@@ -271,8 +273,11 @@ enum EncodedValue {
 impl EncodedValue {
     /// Continuous rows ride the taper in position space. Discrete rows and
     /// musical step ladders (`Step::PowerOfTwo`, `Step::BeatGrid`) do not:
-    /// `ControlSpec::ratio` overrides the taper for those and has no inverse,
-    /// so they store their value exactly instead.
+    /// `ControlSpec::ratio` overrides the taper for both ladders and neither
+    /// `beat_grid_ratio` nor the `Log2` override has an inverse in the crate,
+    /// so they store their value exactly instead. Discrete rows are already
+    /// whole numbers and would gain nothing but error from a round trip
+    /// through 0..1.
     fn encode(spec: &ControlSpec, value: f32) -> Self {
         if spec.kind != ControlKind::Discrete && matches!(spec.step, Step::Linear(_)) {
             Self::Position(unit_to_u16(spec.ratio(value)))
@@ -281,12 +286,20 @@ impl EncodedValue {
         }
     }
 
-    /// Exact in two bytes when the value is a whole number in `i16` range —
-    /// which every discrete row and every power-of-two rung above 1 is — and
-    /// in four otherwise.
+    /// Smallest exactly-lossless spelling of a whole number: one byte through
+    /// `i8` (which covers every discrete row — the widest is `master.tune` at
+    /// -12..12 — and the low power-of-two/beat-grid rungs), two through `i16`,
+    /// four as a raw `f32` for anything fractional. The value is absolute, not
+    /// relative to `spec.min`, so a later build that retunes a control's range
+    /// cannot silently reinterpret a code written today.
     fn exact(value: f32) -> Self {
         let rounded = value.round();
-        if value == rounded && (i16::MIN as f32..=i16::MAX as f32).contains(&rounded) {
+        if value != rounded {
+            return Self::Float(value);
+        }
+        if (i8::MIN as f32..=i8::MAX as f32).contains(&rounded) {
+            Self::SmallInt(rounded as i8)
+        } else if (i16::MIN as f32..=i16::MAX as f32).contains(&rounded) {
             Self::Int(rounded as i16)
         } else {
             Self::Float(value)
@@ -298,6 +311,10 @@ impl EncodedValue {
             Self::Position(position) => {
                 out.push(VALUE_TAG_POSITION);
                 out.extend_from_slice(&position.to_le_bytes());
+            }
+            Self::SmallInt(value) => {
+                out.push(VALUE_TAG_SMALL_INT);
+                out.extend_from_slice(&value.to_le_bytes());
             }
             Self::Int(value) => {
                 out.push(VALUE_TAG_INT);
@@ -313,21 +330,27 @@ impl EncodedValue {
     fn read(reader: &mut Reader) -> Result<Self, SongCodeError> {
         match reader.u8()? {
             VALUE_TAG_POSITION => Ok(Self::Position(reader.u16()?)),
+            VALUE_TAG_SMALL_INT => Ok(Self::SmallInt(reader.i8()?)),
             VALUE_TAG_INT => Ok(Self::Int(reader.i16()?)),
             VALUE_TAG_FLOAT => Ok(Self::Float(reader.f32()?)),
             tag => Err(SongCodeError::InvalidValueTag(tag)),
         }
     }
 
+    /// `Taper::value_at` clamps its ratio but not its output, so the inverse
+    /// can land a float hair outside the range; clamp here rather than relying
+    /// on every caller to route through `apply_quantized_value`.
     fn resolve(self, spec: &ControlSpec) -> f32 {
-        match self {
+        let value = match self {
             Self::Position(position) => {
                 spec.taper
                     .value_at(u16_to_unit(position), spec.min, spec.max)
             }
+            Self::SmallInt(value) => value as f32,
             Self::Int(value) => value as f32,
             Self::Float(value) => value,
-        }
+        };
+        value.clamp(spec.min, spec.max)
     }
 }
 
@@ -364,8 +387,18 @@ fn control_at(index: u16) -> Option<&'static ControlSpec> {
 
 /// Snapshot record, container v2:
 /// `u16 entry_count`, then per entry `u16 id_index` + one tagged value.
-/// Entries are still pruned against `FluidControls::default`, still deduped
-/// first-wins over `all_specs()`.
+/// Entries are still deduped first-wins over `all_specs()` and still pruned
+/// against `FluidControls::default`.
+///
+/// The prune compares the *encoded* value against the encoded default rather
+/// than the two raw floats. v1's absolute `f32::EPSILON` comparison was only
+/// safe because `quantize` was a no-op for tapered dials: a position round
+/// trip carries relative error, so on a large-magnitude control (`bass.cutoff`
+/// at 8 kHz, `perc.decay_ms` at 2 s) a value that decoded to its own default
+/// would re-encode as a spurious entry, growing the code on every save/load
+/// cycle. Equal encodings are provably redundant — the reader would
+/// reconstruct the default from either — so this both fixes that and prunes
+/// slightly harder.
 fn write_snapshot_c2(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     let defaults = FluidControls::default();
     let mut entries = Vec::new();
@@ -375,13 +408,13 @@ fn write_snapshot_c2(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), 
         if !seen.insert(spec.id) {
             continue;
         }
-        let value = spec.quantized_value(controls);
-        let default = spec.quantized_value(&defaults);
-        if (value - default).abs() <= f32::EPSILON {
+        let value = EncodedValue::encode(spec, spec.quantized_value(controls));
+        let default = EncodedValue::encode(spec, spec.quantized_value(&defaults));
+        if value == default {
             continue;
         }
         let index = song_id_index(spec.id).ok_or(SongCodeError::UnregisteredControl(spec.id))?;
-        entries.push((index, EncodedValue::encode(spec, value)));
+        entries.push((index, value));
     }
 
     write_u16(entries.len(), out)?;
@@ -1008,6 +1041,10 @@ impl<'a> Reader<'a> {
 
     fn u64(&mut self) -> Result<u64, SongCodeError> {
         Ok(u64::from_le_bytes(self.read_array()?))
+    }
+
+    fn i8(&mut self) -> Result<i8, SongCodeError> {
+        Ok(self.u8()? as i8)
     }
 
     fn i16(&mut self) -> Result<i16, SongCodeError> {

@@ -4764,3 +4764,66 @@ fn built_in_auto_states_decode_from_container_v1_and_re_encode_as_v2() {
         song::decode_song_code(&code).unwrap();
     }
 }
+
+/// Every control except the tapered continuous dials round-trips a song code
+/// bit-exactly: discrete rows and the `PowerOfTwo`/`BeatGrid` ladders are
+/// stored verbatim, and the plain-taper rows re-snap onto their own step grid
+/// after decoding, which absorbs the u16 position error entirely.
+#[test]
+fn song_codes_round_trip_every_non_tapered_control_exactly() {
+    let mut seen = std::collections::BTreeSet::new();
+    for spec in all_specs() {
+        if !seen.insert(spec.id) {
+            continue;
+        }
+        // `ControlSpec::is_continuous_tapered`, the one lossy group.
+        if !matches!(spec.taper, Taper::Linear) && matches!(spec.step, Step::Linear(_)) {
+            continue;
+        }
+
+        let defaults = FluidControls::default();
+        let default_raw = (spec.get)(&defaults);
+
+        for rung in 0..=16 {
+            let raw = spec.min + (spec.max - spec.min) * rung as f32 / 16.0;
+            let mut controls = FluidControls::default();
+            spec.apply_quantized_value(raw, &mut controls);
+            // A value the writer prunes as equal to the default decodes to the
+            // *raw* default, which for the handful of specs whose default sits
+            // off their own step grid is not the quantized value. That is the
+            // codec's actual contract, so assert against it rather than
+            // pretending the pruned entry survives.
+            let expected = if spec.quantize(raw) == spec.quantize(default_raw) {
+                default_raw
+            } else {
+                (spec.get)(&controls)
+            };
+
+            let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+            let decoded = song::decode_song_code(&code).unwrap().controls;
+
+            // Exact float equality, not bit equality: a signed zero loses its
+            // sign through the integer encodings, and -0.0 is numerically and
+            // audibly identical to 0.0 everywhere downstream.
+            assert_eq!(
+                (spec.get)(&decoded),
+                expected,
+                "{} did not round-trip exactly at {raw}",
+                spec.id
+            );
+        }
+    }
+}
+
+/// Encoding is stable across a save/load cycle. The snapshot prune compares
+/// encoded values, not raw floats, so a large-magnitude control that decodes
+/// to its own default is not re-emitted as a spurious entry on the next save —
+/// which would grow the code a little on every cycle.
+#[test]
+fn re_encoding_a_decoded_song_reproduces_the_same_code() {
+    for state in decode_auto_states() {
+        let once = song::encode_song_code(&state).unwrap();
+        let twice = song::encode_song_code(&song::decode_song_code(&once).unwrap()).unwrap();
+        assert_eq!(once, twice, "re-encoding changed the code");
+    }
+}
