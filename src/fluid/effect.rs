@@ -97,6 +97,22 @@ impl Clipboard for SystemClipboard {
     }
 }
 
+/// Whether a session edit claims the controls away from auto mode.
+///
+/// Every `edit_session` caller states this explicitly. Auto mode is driving
+/// the controls, so a deliberate edit has to stand it down or the morph would
+/// immediately overwrite the user; but a gesture that writes a control without
+/// claiming authorship must not, or muting would silently end the morph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutoOwnership {
+    /// The user is steering now. Auto mode stands down and whatever the morph
+    /// has already written stays as the new starting point.
+    TakeOver,
+    /// A reversible gesture layered over whatever is playing (mute/unmute).
+    /// Auto mode keeps driving.
+    Preserve,
+}
+
 /// Stateful boundary for executing ordered interaction effects. All
 /// user-audible edits delegate to one `LiveSession` transaction; UI-only
 /// consequences are acknowledged only after publication succeeds.
@@ -177,10 +193,15 @@ impl EffectExecutor {
         match effect {
             LiveEffect::EditControl { id, edit } => {
                 let spec = spec_by_id(id).ok_or(EffectFailure::UnknownControl(id))?;
-                let snapshot = self.edit_session(Some(id), |snapshot| match edit {
-                    ControlEdit::Delta(delta) => spec.apply_delta(delta, &mut snapshot.controls),
-                    ControlEdit::Value(value) => spec.apply_value(value, &mut snapshot.controls),
-                });
+                let snapshot =
+                    self.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| match edit {
+                        ControlEdit::Delta(delta) => {
+                            spec.apply_delta(delta, &mut snapshot.controls)
+                        }
+                        ControlEdit::Value(value) => {
+                            spec.apply_value(value, &mut snapshot.controls)
+                        }
+                    });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
@@ -271,12 +292,24 @@ impl EffectExecutor {
         results
     }
 
+    /// Apply an edit to the live session.
+    ///
+    /// `ownership` is required and has no default on purpose. Standing auto
+    /// mode down is a user-visible consequence, and it used to be an implicit
+    /// side effect of calling this helper, so gestures that merely write a
+    /// control — mute — silently killed the morph and stranded whatever
+    /// automation it had just installed. Making every caller name its intent
+    /// is what stops that from being reintroduced by accident: a new effect
+    /// cannot compile without deciding.
     pub(crate) fn edit_session(
         &mut self,
+        ownership: AutoOwnership,
         recent_id: Option<&'static str>,
         mut edit: impl FnMut(&mut LiveSessionSnapshot),
     ) -> Arc<LiveSessionSnapshot> {
-        self.auto.exit();
+        if ownership == AutoOwnership::TakeOver {
+            self.auto.exit();
+        }
         let snapshot = self.session.update(|snapshot| edit(snapshot));
         if let Some(id) = recent_id {
             self.recent.touch(id);
@@ -292,20 +325,23 @@ impl EffectExecutor {
             .update(|snapshot| edit(&mut snapshot.automation));
     }
 
+    /// Mute/unmute a tab's level. This writes a control, but it is a
+    /// performance gesture rather than authorship: the stored level comes
+    /// straight back on the second press, so auto mode keeps driving.
     pub(crate) fn toggle_mute(&mut self, tab: Tab, mute: &mut MuteState) {
         let Some(id) = tab.level_id() else { return };
         let spec = spec_by_id(id).expect("tab level_id must name a real control");
         let slot = &mut mute[tab as usize];
         match *slot {
             Some(previous) => {
-                self.edit_session(Some(id), |snapshot| {
+                self.edit_session(AutoOwnership::Preserve, Some(id), |snapshot| {
                     (spec.set)(&mut snapshot.controls, previous);
                 });
                 *slot = None;
             }
             None => {
                 let previous = std::cell::Cell::new(0.0);
-                self.edit_session(Some(id), |snapshot| {
+                self.edit_session(AutoOwnership::Preserve, Some(id), |snapshot| {
                     previous.set((spec.get)(&snapshot.controls));
                     (spec.set)(&mut snapshot.controls, 0.0);
                 });
@@ -644,7 +680,7 @@ impl EffectExecutor {
                     .collect::<Result<Vec<_>, _>>()?;
                 let (tab, index, focus_spec, _) = performance_target(focus, action)
                     .ok_or(EffectFailure::MissingContext("performance focus"))?;
-                let snapshot = self.edit_session(None, |snapshot| {
+                let snapshot = self.edit_session(AutoOwnership::TakeOver, None, |snapshot| {
                     for (_, _, spec, direction) in &edits {
                         spec.apply_delta(*direction, &mut snapshot.controls);
                     }
@@ -700,26 +736,6 @@ impl RecentControls {
 }
 
 #[cfg(test)]
-pub(crate) fn toggle_mute(controls: &impl ControlsAccess, tab: Tab, mute: &mut MuteState) {
-    let Some(id) = tab.level_id() else { return };
-    let spec = spec_by_id(id).expect("tab level_id must name a real control");
-    let slot = &mut mute[tab as usize];
-    match *slot {
-        Some(previous) => {
-            controls.edit(|next| (spec.set)(next, previous));
-            *slot = None;
-        }
-        None => {
-            let previous = std::cell::Cell::new(0.0);
-            controls.edit(|next| {
-                previous.set((spec.get)(next));
-                (spec.set)(next, 0.0);
-            });
-            *slot = Some(previous.get());
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,6 +765,106 @@ mod tests {
             session,
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
         )
+    }
+
+    fn executor_with(controls: FluidControls) -> EffectExecutor {
+        EffectExecutor::new(
+            LiveSession::new(LiveSessionSnapshot::from_controls(controls)),
+            AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+        )
+    }
+
+    #[test]
+    fn toggle_mute_zeroes_and_restores_the_track_level() {
+        let mut controls = FluidControls::default();
+        controls.perc.level = 0.65;
+        let mut executor = executor_with(controls);
+        let mut mute: MuteState = [None; 9];
+
+        executor.toggle_mute(Tab::Perc, &mut mute);
+        assert_eq!(executor.session().load().controls.perc.level, 0.0);
+        assert!(mute[Tab::Perc as usize].is_some());
+
+        executor.toggle_mute(Tab::Perc, &mut mute);
+        assert_eq!(executor.session().load().controls.perc.level, 0.65);
+        assert!(mute[Tab::Perc as usize].is_none());
+    }
+
+    #[test]
+    fn toggle_mute_on_master_is_independent_of_track_mute() {
+        let mut controls = FluidControls::default();
+        controls.master.level = 0.8;
+        controls.bass.level = 0.5;
+        let mut executor = executor_with(controls);
+        let mut mute: MuteState = [None; 9];
+
+        executor.toggle_mute(Tab::Master, &mut mute);
+        assert_eq!(executor.session().load().controls.master.level, 0.0);
+        assert_eq!(executor.session().load().controls.bass.level, 0.5);
+
+        executor.toggle_mute(Tab::Bass, &mut mute);
+        assert_eq!(executor.session().load().controls.bass.level, 0.0);
+        // Master stays muted; muting bass didn't disturb it or restore it early.
+        assert_eq!(executor.session().load().controls.master.level, 0.0);
+
+        executor.toggle_mute(Tab::Master, &mut mute);
+        assert_eq!(executor.session().load().controls.master.level, 0.8);
+        assert_eq!(executor.session().load().controls.bass.level, 0.0);
+    }
+
+    #[test]
+    fn toggle_mute_on_macros_tab_is_a_no_op() {
+        let mut executor = executor_with(FluidControls::default());
+        let mut mute: MuteState = [None; 9];
+
+        executor.toggle_mute(Tab::Macros, &mut mute);
+        assert!(mute[Tab::Macros as usize].is_none());
+    }
+
+    /// Muting used to stand auto mode down, because `edit_session` exited auto
+    /// unconditionally. The morph then stopped mid-write and stranded whatever
+    /// automation it had just installed, which kept rendering as lanes on
+    /// controls that never had routes.
+    #[test]
+    fn muting_never_stands_auto_mode_down() {
+        let mut executor = executor_with(FluidControls::default());
+        let mut mute: MuteState = [None; 9];
+        executor.toggle_auto(0.0);
+        assert!(
+            executor.auto_morph_ids(0.0).is_some(),
+            "auto should be running"
+        );
+
+        executor.toggle_mute(Tab::Master, &mut mute);
+        assert!(
+            executor.auto_morph_ids(0.0).is_some(),
+            "mute must not end the morph"
+        );
+        executor.toggle_mute(Tab::Master, &mut mute);
+        assert!(
+            executor.auto_morph_ids(0.0).is_some(),
+            "unmute must not end the morph either"
+        );
+    }
+
+    /// The other half of the contract: a deliberate edit *does* take over, or
+    /// the morph would immediately overwrite what the user just set.
+    #[test]
+    fn editing_a_control_stands_auto_mode_down() {
+        let mut executor = executor_with(FluidControls::default());
+        executor.toggle_auto(0.0);
+        assert!(executor.auto_morph_ids(0.0).is_some());
+
+        executor
+            .execute(LiveEffect::EditControl {
+                id: "bass.level",
+                edit: ControlEdit::Delta(1.0),
+            })
+            .expect("editing a real control succeeds");
+        assert!(
+            executor.auto_morph_ids(0.0).is_none(),
+            "a deliberate edit takes the controls over"
+        );
     }
 
     #[test]

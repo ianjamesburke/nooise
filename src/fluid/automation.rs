@@ -3,10 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::TAU;
 use std::fmt;
 
+use super::widget::DialScale;
 use super::{
-    ControlSpec, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TimingContext,
-    beat_grid_adjust, beat_grid_ratio, beat_grid_snap, is_macro_id, nearest_power_of_two,
-    normalize_unit_input, ordered_step_ratio, snap_step, spec_by_id,
+    ControlSpec, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TAPER_STEPS_PER_SWEEP,
+    TIME_TAPER, Taper, TimingContext, beat_grid_adjust, beat_grid_snap, is_macro_id,
+    nearest_power_of_two, normalize_unit_input, snap_step, spec_by_id,
 };
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
@@ -304,6 +305,15 @@ impl LfoField {
         }
     }
 
+    /// How this field maps onto bar position. Shape is a discrete enum and
+    /// carries no numeric spec, so it spans the bar by variant index.
+    pub(crate) fn scale(self) -> DialScale {
+        match self {
+            Self::Shape => DialScale::enumerated(LfoShape::ALL.len()),
+            _ => self.spec().scale(),
+        }
+    }
+
     /// Only continuous slider fields carry a numeric spec; Shape is discrete.
     fn spec(self) -> &'static LfoFieldSpec {
         LFO_FIELD_SPECS
@@ -383,18 +393,18 @@ impl LfoFieldSpec {
         }
     }
 
-    pub(crate) fn ratio(self, value: f32) -> f32 {
+    /// Rate rides its own arrow ladder, other beat-grid fields the musical
+    /// grid, everything else a plain linear span.
+    pub(crate) fn scale(self) -> DialScale {
         if self.field == LfoField::Interval {
-            return ordered_step_ratio(value, LFO_RATE_ARROW_STEPS);
-        }
-        if self.beat_grid {
-            return beat_grid_ratio(value, self.min, self.max);
-        }
-        let range = self.max - self.min;
-        if range.abs() <= f32::EPSILON {
-            0.0
+            DialScale::Rungs(LFO_RATE_ARROW_STEPS)
+        } else if self.beat_grid {
+            DialScale::BeatGrid {
+                min: self.min,
+                max: self.max,
+            }
         } else {
-            ((value - self.min) / range).clamp(0.0, 1.0)
+            DialScale::linear(self.min, self.max)
         }
     }
 }
@@ -654,13 +664,22 @@ impl LfoRoute {
         self.step_count = count.clamp(1, MAX_LFO_STEPS as i32) as u8;
     }
 
-    pub(crate) fn step_ratio(&self, target: StepTarget) -> f32 {
+    /// How each inline staircase target maps onto bar position: the length
+    /// spans the reachable step count, glide a plain unit span, and each step
+    /// value is a bipolar depth like every other modulation amount.
+    pub(crate) fn step_scale(target: StepTarget) -> DialScale {
         match target {
-            StepTarget::Count => {
-                (self.active_step_count() - 1) as f32 / (MAX_LFO_STEPS - 1).max(1) as f32
-            }
-            StepTarget::Glide => self.step_glide.clamp(0.0, 1.0),
-            StepTarget::Value(i) => (self.steps.get(i).copied().unwrap_or(0.0) + 1.0) / 2.0,
+            StepTarget::Count => DialScale::linear(1.0, MAX_LFO_STEPS as f32),
+            StepTarget::Glide => DialScale::linear(0.0, 1.0),
+            StepTarget::Value(_) => DialScale::bipolar(),
+        }
+    }
+
+    pub(crate) fn step_value(&self, target: StepTarget) -> f32 {
+        match target {
+            StepTarget::Count => self.active_step_count() as f32,
+            StepTarget::Glide => self.step_glide,
+            StepTarget::Value(i) => self.steps.get(i).copied().unwrap_or(0.0),
         }
     }
 
@@ -756,12 +775,13 @@ impl LfoRoute {
         }
     }
 
-    pub(crate) fn field_ratio(&self, field: LfoField) -> f32 {
+    /// The field's value in the units its own scale is expressed in.
+    pub(crate) fn field_value(&self, field: LfoField) -> f32 {
         match field {
-            LfoField::Shape => self.shape.index() as f32 / (LfoShape::ALL.len() - 1).max(1) as f32,
-            LfoField::Amount => field.spec().ratio(self.depth_ratio),
-            LfoField::Interval => field.spec().ratio(self.cycle_beats),
-            LfoField::Offset => field.spec().ratio(self.phase_offset_beats),
+            LfoField::Shape => self.shape.index() as f32,
+            LfoField::Amount => self.depth_ratio,
+            LfoField::Interval => self.cycle_beats,
+            LfoField::Offset => self.phase_offset_beats,
         }
     }
 
@@ -969,6 +989,19 @@ pub(crate) enum EnvField {
 impl EnvField {
     pub(crate) const ALL: [EnvField; 4] = [Self::Amount, Self::Attack, Self::Decay, Self::Trigger];
 
+    /// How this field maps onto bar position. Attack and decay span 512 beats
+    /// but every musically ordinary setting lives in the first few, so they
+    /// take the same exp taper the registry gives its time controls; a linear
+    /// sweep buried 4 beats inside the first 1% of the bar.
+    pub(crate) fn scale(self) -> DialScale {
+        match self {
+            Self::Amount => DialScale::bipolar(),
+            Self::Attack => DialScale::tapered(0.0, MAX_ENV_ATTACK_BEATS, Taper::Exp(TIME_TAPER)),
+            Self::Decay => DialScale::tapered(0.0, MAX_ENV_DECAY_BEATS, Taper::Exp(TIME_TAPER)),
+            Self::Trigger => DialScale::enumerated(EnvTrigger::CYCLE.len()),
+        }
+    }
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Amount => "amount",
@@ -1083,15 +1116,24 @@ impl EnvelopeRoute {
             EnvField::Amount => {
                 self.amount = (self.amount + dir * ENV_AMOUNT_STEP).clamp(-1.0, 1.0);
             }
+            // Tapered time fields step in position space, so one press moves
+            // an equal fraction of the throw and a full sweep costs 48
+            // presses instead of the 1024 a flat 0.5-beat step needed. Full
+            // precision is stored, matching how the registry treats its own
+            // tapered dials.
             EnvField::Attack => {
-                self.attack_beats =
-                    snap_step(self.attack_beats + dir * ENV_BEATS_STEP, ENV_BEATS_STEP)
-                        .clamp(0.0, MAX_ENV_ATTACK_BEATS);
+                self.attack_beats = field
+                    .scale()
+                    .step_in_position(self.attack_beats, dir, TAPER_STEPS_PER_SWEEP)
+                    .expect("envelope attack is tapered, so it steps in position space")
+                    .clamp(0.0, MAX_ENV_ATTACK_BEATS);
             }
             EnvField::Decay => {
-                self.decay_beats =
-                    snap_step(self.decay_beats + dir * ENV_BEATS_STEP, ENV_BEATS_STEP)
-                        .clamp(0.0, MAX_ENV_DECAY_BEATS);
+                self.decay_beats = field
+                    .scale()
+                    .step_in_position(self.decay_beats, dir, TAPER_STEPS_PER_SWEEP)
+                    .expect("envelope decay is tapered, so it steps in position space")
+                    .clamp(0.0, MAX_ENV_DECAY_BEATS);
             }
             EnvField::Trigger => self.trigger = self.trigger.cycled(dir),
         }
@@ -1133,14 +1175,13 @@ impl EnvelopeRoute {
         }
     }
 
-    pub(crate) fn field_ratio(&self, field: EnvField) -> f32 {
+    /// The field's value in the units its own scale is expressed in.
+    pub(crate) fn field_value(&self, field: EnvField) -> f32 {
         match field {
-            EnvField::Amount => (self.amount * 0.5 + 0.5).clamp(0.0, 1.0),
-            EnvField::Attack => (self.attack_beats / MAX_ENV_ATTACK_BEATS).clamp(0.0, 1.0),
-            EnvField::Decay => (self.decay_beats / MAX_ENV_DECAY_BEATS).clamp(0.0, 1.0),
-            EnvField::Trigger => {
-                self.trigger.index() as f32 / (EnvTrigger::CYCLE.len() - 1).max(1) as f32
-            }
+            EnvField::Amount => self.amount,
+            EnvField::Attack => self.attack_beats,
+            EnvField::Decay => self.decay_beats,
+            EnvField::Trigger => self.trigger.index() as f32,
         }
     }
 
@@ -1187,6 +1228,13 @@ const MACRO_AMOUNT_STEP: f32 = 0.01;
 pub(crate) struct MacroField(usize);
 
 impl MacroField {
+    /// Every macro slot is a bipolar depth, so they all share one scale.
+    pub(crate) const SCALE: DialScale = DialScale::Tapered {
+        min: -1.0,
+        max: 1.0,
+        taper: Taper::Linear,
+    };
+
     pub(crate) const ALL: [MacroField; MACRO_COUNT] = {
         let mut all = [MacroField(0); MACRO_COUNT];
         let mut i = 0;
@@ -1242,8 +1290,8 @@ impl MacroRoute {
         self.amounts[field.index()] = 0.0;
     }
 
-    pub(crate) fn field_ratio(self, field: MacroField) -> f32 {
-        (self.amounts[field.index()] * 0.5 + 0.5).clamp(0.0, 1.0)
+    pub(crate) fn field_value(self, field: MacroField) -> f32 {
+        self.amounts[field.index()]
     }
 
     pub(crate) fn field_display(self, field: MacroField) -> String {
@@ -1693,17 +1741,27 @@ pub(crate) fn modulated_control_value_full(
     base: f32,
     ctx: ModContext,
 ) -> f32 {
-    let range = spec.max - spec.min;
-    let mut value = base;
+    // Every source contributes a signed fraction of the dial's throw, summed
+    // once. Applying that sum in position space is what makes a depth mean a
+    // fixed musical amount: a flat offset in raw value space made "50%" swing
+    // four octaves up from a low cutoff and nothing at all from a high one,
+    // because the control's own taper was ignored.
+    let mut delta = 0.0;
     if let Some(route) = lfo {
-        value += route.wave_at(ctx.beat) * range * route.depth_ratio.clamp(0.0, 1.0);
+        delta += route.wave_at(ctx.beat) * route.depth_ratio.clamp(0.0, 1.0);
     }
     if let Some(route) = envelope {
-        value += route.level_at(ctx) * range * route.amount.clamp(-1.0, 1.0);
+        delta += route.level_at(ctx) * route.amount.clamp(-1.0, 1.0);
     }
     if let Some(combined) = macro_mod {
-        value += combined * range;
+        delta += combined;
     }
+    let scale = DialScale::from_step(spec.min, spec.max, spec.step, spec.taper);
+    // Grid and rung scales have no inverse, so they keep the value-space
+    // offset. Their taper is Linear anyway, so nothing else changes.
+    let value = scale
+        .offset_in_position(base, delta)
+        .unwrap_or(base + delta * (spec.max - spec.min));
     let value = value.clamp(spec.min, spec.max);
     match spec.lfo_snap {
         LfoSnap::None => value,

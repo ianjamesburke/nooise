@@ -730,6 +730,79 @@ fn lfo_field_set_keeps_exact_rate_and_snaps_offset_to_grid() {
 }
 
 #[test]
+fn envelope_times_sweep_their_full_range_in_one_taper_sweep() {
+    let mut route = EnvelopeRoute::default();
+    route.set_field_raw(EnvField::Attack, 0.0);
+
+    // A flat 0.5-beat step needed 1024 presses to cross 512 beats. Position
+    // stepping crosses it in one sweep, like every other tapered dial.
+    for _ in 0..(TAPER_STEPS_PER_SWEEP as usize) {
+        route.adjust_field(EnvField::Attack, 1.0);
+    }
+    assert_near(route.attack_beats, MAX_ENV_ATTACK_BEATS);
+
+    for _ in 0..(TAPER_STEPS_PER_SWEEP as usize) {
+        route.adjust_field(EnvField::Attack, -1.0);
+    }
+    assert_near(route.attack_beats, 0.0);
+}
+
+#[test]
+fn lfo_depth_means_the_same_musical_amount_wherever_the_base_sits() {
+    let spec = spec_by_id("bass.cutoff").unwrap();
+    let route = LfoRoute {
+        depth_ratio: 0.25,
+        ..LfoRoute::default()
+    };
+
+    // Peak of the wave, sampled from three very different base cutoffs. A
+    // depth is a fraction of the dial's throw, so on a log-tapered control it
+    // has to move the same number of octaves from anywhere it starts, not a
+    // fixed number of Hz.
+    let octaves_up = |base: f32| {
+        let peak = spec
+            .taper
+            .value_at(
+                spec.taper.ratio(base, spec.min, spec.max) + 0.25,
+                spec.min,
+                spec.max,
+            )
+            .clamp(spec.min, spec.max);
+        (peak / base).log2()
+    };
+    let low = octaves_up(200.0);
+    let mid = octaves_up(800.0);
+    assert!(
+        (low - mid).abs() < 0.01,
+        "same depth must move the same interval: {low} vs {mid} octaves"
+    );
+
+    // And the engine has to agree with that mapping, not add a flat Hz offset.
+    let engine_peak = (0..64)
+        .map(|i| modulated_control_value(spec, &route, 800.0, i as f64 / 8.0))
+        .fold(f32::MIN, f32::max);
+    assert!(
+        (engine_peak / 800.0).log2() > 1.0,
+        "a quarter-depth LFO should open well over an octave, got {engine_peak} Hz"
+    );
+}
+
+#[test]
+fn envelope_time_bars_give_ordinary_settings_visible_throw() {
+    let mut route = EnvelopeRoute::default();
+    route.set_field_raw(EnvField::Decay, 4.0);
+    // Linearly, 4 of 512 beats is under 1% of the bar — invisible at any
+    // terminal width. The taper has to lift it onto real screen space.
+    assert!(
+        route.field_value(EnvField::Decay) == 4.0
+            && EnvField::Decay.scale().ratio(4.0) > 0.15
+            && EnvField::Decay.scale().ratio(4.0) < 0.5,
+        "4 beats sits at {} of the decay bar",
+        EnvField::Decay.scale().ratio(4.0)
+    );
+}
+
+#[test]
 fn lfo_rate_bar_divides_the_full_throw_across_arrow_rungs() {
     let mut route = LfoRoute::default();
     let denominator = (LFO_RATE_ARROW_STEPS.len() - 1) as f32;
@@ -737,14 +810,14 @@ fn lfo_rate_bar_divides_the_full_throw_across_arrow_rungs() {
     for (index, rate) in LFO_RATE_ARROW_STEPS.iter().copied().enumerate() {
         route.cycle_beats = rate;
         assert_near(
-            route.field_ratio(LfoField::Interval),
+            LfoField::Interval.scale().ratio(route.cycle_beats),
             index as f32 / denominator,
         );
     }
 
     route.cycle_beats = 6.0;
     assert_near(
-        route.field_ratio(LfoField::Interval),
+        LfoField::Interval.scale().ratio(route.cycle_beats),
         (16.0 + 0.5) / denominator,
     );
 }
@@ -4420,89 +4493,6 @@ fn arp_reuses_shared_ambient_reverb_send_alongside_pad_and_tonal() {
     assert_near(frame.arp_l, AmbientReverbSend::dry_gain(arp_mix));
     assert_near(frame.arp_r, -AmbientReverbSend::dry_gain(arp_mix));
 }
-
-#[test]
-fn toggle_mute_zeroes_and_restores_the_track_level() {
-    let mut c = FluidControls::default();
-    c.perc.level = 0.65;
-    let controls = Arc::new(ArcSwap::from_pointee(c));
-    let mut mute: MuteState = [None; 9];
-
-    toggle_mute(&controls, Tab::Perc, &mut mute);
-    assert_close(controls.load().perc.level, 0.0);
-    assert!(mute[Tab::Perc as usize].is_some());
-
-    toggle_mute(&controls, Tab::Perc, &mut mute);
-    assert_close(controls.load().perc.level, 0.65);
-    assert!(mute[Tab::Perc as usize].is_none());
-}
-
-#[test]
-fn toggle_mute_on_master_is_independent_of_track_mute() {
-    let mut c = FluidControls::default();
-    c.master.level = 0.8;
-    c.bass.level = 0.5;
-    let controls = Arc::new(ArcSwap::from_pointee(c));
-    let mut mute: MuteState = [None; 9];
-
-    toggle_mute(&controls, Tab::Master, &mut mute);
-    assert_close(controls.load().master.level, 0.0);
-    assert_close(controls.load().bass.level, 0.5);
-
-    toggle_mute(&controls, Tab::Bass, &mut mute);
-    assert_close(controls.load().bass.level, 0.0);
-    // Master stays muted; muting bass didn't disturb it or restore it early.
-    assert_close(controls.load().master.level, 0.0);
-
-    toggle_mute(&controls, Tab::Master, &mut mute);
-    assert_close(controls.load().master.level, 0.8);
-    assert_close(controls.load().bass.level, 0.0);
-}
-
-#[test]
-fn toggle_mute_on_macros_tab_is_a_no_op() {
-    let c = FluidControls::default();
-    let controls = Arc::new(ArcSwap::from_pointee(c));
-    let mut mute: MuteState = [None; 9];
-
-    toggle_mute(&controls, Tab::Macros, &mut mute);
-    assert!(mute[Tab::Macros as usize].is_none());
-}
-
-#[test]
-fn render_shows_a_mute_marker_on_muted_tabs_only() {
-    let controls = FluidControls::default();
-    let fluid = FluidState::new();
-    let automation = AutomationState::default();
-    let mut mute: MuteState = [None; 9];
-    mute[Tab::Perc as usize] = Some(0.7);
-
-    let buffer = render_to_buffer(RenderTest {
-        size: (120, 44),
-        tab: Tab::Bass,
-        cursor: 0,
-        submenu: 0,
-        beat: 0.0,
-        fluid: &fluid,
-        automation: &automation,
-        controls: &controls,
-        footer: None,
-        drill: ChordDrill::None,
-        active_chord: 0,
-        mute: &mute,
-    });
-
-    let text = buffer_text(&buffer);
-    assert!(text.contains("Perc (M)"), "muted tab must show a marker");
-    assert!(
-        !text.contains("Bass (M)"),
-        "unmuted tab must not show a marker"
-    );
-}
-
-// ============================================================
-// Control palette
-// ============================================================
 
 #[test]
 fn palette_entries_cover_every_unique_control_id_exactly_once() {

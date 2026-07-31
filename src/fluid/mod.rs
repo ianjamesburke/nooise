@@ -45,6 +45,7 @@ mod song_ids;
 mod ui;
 mod view;
 mod voice;
+mod widget;
 
 #[cfg(test)]
 mod tests;

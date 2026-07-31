@@ -686,7 +686,8 @@ impl ReplayHarness {
     }
 
     fn with_session_edit(mut self, edit: impl FnMut(&mut LiveSessionSnapshot)) -> Self {
-        self.executor.edit_session(None, edit);
+        self.executor
+            .edit_session(AutoOwnership::TakeOver, None, edit);
         self
     }
 
