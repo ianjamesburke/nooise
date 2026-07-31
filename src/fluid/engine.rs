@@ -134,6 +134,7 @@ impl StereoEngine for FluidEngine {
             self.telemetry.publish_beat(timing.beat);
         }
         self.plan.apply(&mut effective, timing);
+        resolve_module_chain(&mut effective);
 
         let tune = effective.master.tune;
         let (pad_l, pad_r) = self.pad.next(&effective.pad, tune, timing);

@@ -74,6 +74,12 @@ pub(crate) const MODULE_CATALOG: &[ModuleKind] = &[
         family: Family::SingleAmount,
     },
     ModuleKind {
+        id: "room",
+        display_name: "Room",
+        domain: Domain::Post,
+        family: Family::SingleAmount,
+    },
+    ModuleKind {
         id: "sidechain",
         display_name: "Sidechain",
         domain: Domain::Post,
@@ -125,9 +131,39 @@ impl ModuleSlot {
     }
 }
 
+/// Index a catalog id occupies as a stored `kind` value. Panics on an unknown
+/// id, which can only be a typo in a compile-time constant.
+pub(crate) fn module_kind_value(id: &str) -> f32 {
+    MODULE_CATALOG
+        .iter()
+        .position(|kind| kind.id == id)
+        .map(|index| index as f32 + 1.0)
+        .expect("catalog id must exist")
+}
+
+/// One slot pre-loaded with a module at a factory amount. Used for the
+/// effects that shipped as bespoke per-voice sliders before the module chain
+/// existed, so the default sound is byte-identical.
+pub(crate) fn preset_slot(id: &str, amount: f32) -> ModuleSlot {
+    ModuleSlot {
+        kind: module_kind_value(id),
+        amount,
+        time: 0.0,
+    }
+}
+
+/// Amount of the first slot holding `id`, or zero when the chain has none.
+/// The single read path for an effect that used to be a bespoke field.
+pub(crate) fn chain_amount(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) -> f32 {
+    slots
+        .iter()
+        .find(|slot| slot.kind().is_some_and(|kind| kind.id == id))
+        .map_or(0.0, |slot| slot.amount)
+}
+
 /// Every layer's slots. Held on `FluidControls` rather than inside each voice
 /// struct so the voices stay unaware of the module chain until execution.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LayerModules {
     pub pad: [ModuleSlot; MODULE_SLOTS],
     pub perc: [ModuleSlot; MODULE_SLOTS],
@@ -136,6 +172,42 @@ pub(crate) struct LayerModules {
     pub tonal: [ModuleSlot; MODULE_SLOTS],
     pub clap: [ModuleSlot; MODULE_SLOTS],
     pub arp: [ModuleSlot; MODULE_SLOTS],
+}
+
+impl Default for LayerModules {
+    /// Slot 1 of each layer carries whatever that voice shipped as a bespoke
+    /// effect slider, at its old default, so folding those controls into the
+    /// chain changed no sound. Every other slot is empty.
+    fn default() -> Self {
+        let empty = [ModuleSlot::default(); MODULE_SLOTS];
+        let with_preset = |id: &str, amount: f32| {
+            let mut slots = empty;
+            slots[0] = preset_slot(id, amount);
+            slots
+        };
+        Self {
+            pad: empty,
+            perc: with_preset("swing", 0.0),
+            bass: with_preset("drive", 0.15),
+            kick: with_preset("drive", 0.2),
+            tonal: with_preset("swing", 0.0),
+            clap: with_preset("room", 0.0),
+            arp: with_preset("swing", 0.0),
+        }
+    }
+}
+
+/// Resolve every layer's module chain into the per-voice fields the engines
+/// read. The slot is the single source of truth; this is the single place it
+/// is derived, run once per sample right before the voices see `effective`.
+/// The voices stay unaware that a module chain exists.
+pub(crate) fn resolve_module_chain(c: &mut super::FluidControls) {
+    c.perc.swing = chain_amount(&c.modules.perc, "swing");
+    c.tonal.swing = chain_amount(&c.modules.tonal, "swing");
+    c.arp.swing = chain_amount(&c.modules.arp, "swing");
+    c.bass.drive = chain_amount(&c.modules.bass, "drive");
+    c.kick.drive = chain_amount(&c.modules.kick, "drive");
+    c.clap.room = chain_amount(&c.modules.clap, "room");
 }
 
 #[cfg(test)]

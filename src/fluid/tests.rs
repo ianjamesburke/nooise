@@ -1594,15 +1594,90 @@ fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     assert_close(controls.clap.slap_count, 4.0);
 }
 
+/// The whole point of the fold: the shipped sound is byte-identical. Every
+/// effect that used to be a bespoke slider now comes from its slot, at the
+/// same value it had as a hardcoded default.
+#[test]
+fn folding_effect_sliders_into_slots_preserved_the_default_sound() {
+    let mut controls = FluidControls::default();
+    resolve_module_chain(&mut controls);
+
+    assert_close(controls.kick.drive, 0.2);
+    assert_close(controls.bass.drive, 0.15);
+    assert_close(controls.perc.swing, 0.0);
+    assert_close(controls.tonal.swing, 0.0);
+    assert_close(controls.arp.swing, 0.0);
+    assert_close(controls.clap.room, 0.0);
+}
+
+/// Turning the slot has to be what moves the voice, or the slider is a
+/// decoration over a stale field.
+#[test]
+fn a_slots_amount_drives_the_voice_it_belongs_to() {
+    let mut controls = FluidControls::default();
+    controls.modules.kick[0].amount = 0.75;
+    controls.modules.perc[0].amount = 0.4;
+    resolve_module_chain(&mut controls);
+
+    assert_close(controls.kick.drive, 0.75);
+    assert_close(controls.perc.swing, 0.4);
+
+    // Clearing the slot silences that effect entirely, rather than leaving
+    // the last value stranded on the voice.
+    controls.modules.kick[0] = ModuleSlot::default();
+    resolve_module_chain(&mut controls);
+    assert_close(controls.kick.drive, 0.0);
+}
+
+/// A loaded slot must read as the module it holds, not as its index.
+#[test]
+fn a_loaded_slot_row_is_labelled_with_its_module() {
+    let controls = FluidControls::default();
+    let row = tab_controls(Tab::Kick, &controls)
+        .into_iter()
+        .find(|item| item.id == "kick.slot1.amount")
+        .expect("kick slot 1 ships pre-loaded with Drive");
+    assert_eq!(row.label, "Drive");
+
+    let row = tab_controls(Tab::Tonal, &controls)
+        .into_iter()
+        .find(|item| item.id == "tonal.slot1.amount")
+        .expect("tonal slot 1 ships pre-loaded with Swing");
+    assert_eq!(row.label, "Swing");
+}
+
+/// The retired ids keep their `SONG_ID_TABLE` slots forever, but nothing may
+/// resolve them as live controls any more.
+#[test]
+fn the_folded_slider_ids_are_gone_from_the_registry() {
+    for id in [
+        "perc.swing",
+        "tonal.swing",
+        "arp.swing",
+        "bass.drive",
+        "kick.drive",
+        "clap.room",
+    ] {
+        assert!(spec_by_id(id).is_none(), "{id} should be retired");
+    }
+    // Master is not a module layer yet, so its drive stays a real control.
+    assert!(spec_by_id("master.drive").is_some());
+}
+
 #[test]
 fn empty_module_slots_never_render() {
     let controls = FluidControls::default();
     for tab in Tab::all() {
-        let rows = tab_controls(tab, &controls);
-        assert!(
-            !rows.iter().any(|item| item.id.contains(".slot")),
-            "{tab:?} shows a slot row while every slot is empty"
-        );
+        for item in tab_controls(tab, &controls) {
+            // Slot 1 ships pre-loaded on the layers whose effects were folded
+            // in from bespoke sliders. Every other slot is empty and must not
+            // put a row on screen.
+            assert!(
+                !item.id.contains(".slot") || item.id.contains(".slot1."),
+                "{tab:?} shows empty slot row {}",
+                item.id
+            );
+        }
     }
 }
 
@@ -1626,8 +1701,9 @@ fn an_occupied_slot_shows_only_the_params_its_family_uses() {
         .map(|item| item.id)
         .filter(|id| id.contains(".slot"))
         .collect();
-    // Single-amount family: no `time` row, because that knob does nothing.
-    assert_eq!(ids, ["bass.slot1.kind", "bass.slot1.amount"]);
+    // A loaded slot collapses to one row: the amount, wearing the module's
+    // name. No `time` row, because that knob does nothing for this family.
+    assert_eq!(ids, ["bass.slot1.amount"]);
 
     controls.modules.bass[0].kind = sidechain;
     let ids: Vec<&str> = tab_controls(Tab::Bass, &controls)
@@ -1635,10 +1711,7 @@ fn an_occupied_slot_shows_only_the_params_its_family_uses() {
         .map(|item| item.id)
         .filter(|id| id.contains(".slot"))
         .collect();
-    assert_eq!(
-        ids,
-        ["bass.slot1.kind", "bass.slot1.amount", "bass.slot1.time"]
-    );
+    assert_eq!(ids, ["bass.slot1.amount", "bass.slot1.time"]);
 }
 
 /// The whole point of storing module identity as a value: a slot survives a
@@ -1723,7 +1796,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Tonal,
             vec![
                 Gain, Timing, Timing, Discrete, Discrete, Discrete, Timing, Timing, Timing, Gain,
-                Gain, Continuous, Gain,
+                Continuous, Gain, Gain,
             ],
         ),
         (
@@ -1735,7 +1808,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Arp,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Gain, Discrete, Discrete, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain, Gain,
             ],
         ),
     ];
@@ -2146,7 +2219,8 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.master.level = 0.5;
     controls.master.drive = 1.0;
     controls.master.bpm = 123.0;
-    controls.bass.drive = 1.0;
+    controls.modules.bass[0].amount = 1.0;
+    controls.modules.kick[0].amount = 1.0;
     smoothers.set_targets(&controls, 100.0);
 
     let next = smoothers.next_controls(&controls);
@@ -2155,14 +2229,16 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     assert!(next.pad.reverb_mix > 0.0 && next.pad.reverb_mix < 1.0);
     assert!(next.perc.filter > 0.5 && next.perc.filter < 1.0);
     assert!(next.kick.click > 0.0 && next.kick.click < 0.2);
-    assert!(next.kick.drive > 0.0 && next.kick.drive < 1.0);
     assert!(next.kick.filter > 0.0 && next.kick.filter < 1.0);
     assert!(next.tonal.randomness > 0.0 && next.tonal.randomness < 1.0);
     assert!(next.clap.filter > 0.5 && next.clap.filter < 1.0);
     assert!(next.clap.body > 0.0 && next.clap.body < 1.0);
     assert!(next.master.level > 0.0 && next.master.level < 0.5);
     assert!(next.master.drive > 0.0 && next.master.drive < 1.0);
-    assert!(next.bass.drive > 0.0 && next.bass.drive < 1.0);
+    // Drive now lives in the module chain, so it is the slot amount that has
+    // to ramp; the voice field is derived from it downstream.
+    assert!(next.modules.bass[0].amount > 0.0 && next.modules.bass[0].amount < 1.0);
+    assert!(next.modules.kick[0].amount > 0.0 && next.modules.kick[0].amount < 1.0);
 }
 
 #[test]
@@ -2257,7 +2333,7 @@ fn chords_tab_controls_progression_lists_active_slot_roots() {
     controls.pad.chord_count = 3.0;
     let rows = chords_tab_controls(&controls, progression_drill());
     assert_eq!(
-        rows.iter().map(|r| r.label).collect::<Vec<_>>(),
+        rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
         vec!["Chord 1 Root", "Chord 2 Root", "Chord 3 Root"]
     );
 
@@ -2272,7 +2348,7 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, slot_drill(2));
     assert_eq!(
-        rows.iter().map(|r| r.label).collect::<Vec<_>>(),
+        rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
         vec![
             "Chord 3 Accidental",
             "Chord 3 Quality",
@@ -4625,7 +4701,7 @@ fn palette_empty_query_keeps_global_recent_controls_in_mru_order() {
         .collect();
     assert_eq!(
         ids,
-        ["perc.level", "bass.drive", "bass.decay_time", "pad.level"]
+        ["perc.level", "bass.decay_time", "pad.level", "bass.level"]
     );
 }
 
@@ -4635,10 +4711,10 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
     for id in [
         "pad.attack_time",
         "perc.level",
-        "bass.drive",
+        "bass.cutoff",
         "kick.click",
         "tonal.decay",
-        "clap.room",
+        "clap.filter",
         "arp.rate_beats",
         "macro.1",
         "master.bpm",
@@ -4664,10 +4740,10 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
             "master.bpm",
             "macro.1",
             "arp.rate_beats",
-            "clap.room",
+            "clap.filter",
             "tonal.decay",
             "kick.click",
-            "bass.drive",
+            "bass.cutoff",
         ]
     );
 }
