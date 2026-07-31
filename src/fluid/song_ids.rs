@@ -304,6 +304,7 @@ const SONG_ID_TABLE: &[&str] = &[
     "arp.slot8.kind",
     "arp.slot8.amount",
     "arp.slot8.time",
+    "pad.mode",
 ];
 
 /// Index of `id` in the song-code id table, or `None` if the control has

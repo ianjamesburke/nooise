@@ -102,6 +102,7 @@ const STAGGER_STEP_BARS: f64 = 8.0;
 /// and the chord shape it implies must arrive as one musical event.
 const STRUCTURAL_SNAP_IDS: &[&str] = &[
     "pad.progression",
+    "pad.mode",
     "pad.chord_count",
     "pad.chord_bars",
     "arp.pattern",

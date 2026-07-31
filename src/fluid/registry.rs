@@ -872,7 +872,8 @@ macro_rules! chord_slot_rows {
                 |c, v| c.pad.chord_slots[$slot - 1].quality = v,
                 |c| {
                     let slot = &c.pad.chord_slots[$slot - 1];
-                    let sound = if pad_chord_slot_is_minor(slot) {
+                    let mode = ScaleMode::from_control(c.pad.mode);
+                    let sound = if pad_chord_slot_is_minor(slot, mode) {
                         "min"
                     } else {
                         "maj"
@@ -912,6 +913,11 @@ macro_rules! chord_slot_rows {
         ]
     };
 }
+
+/// How many non-slot rows lead `CHORDS_CONTROLS` before the 8 chord slots'
+/// 5-row blocks begin. Every drill slice below is derived from this, so
+/// inserting a base row (like `pad.mode`) only needs this number bumped.
+pub(crate) const CHORDS_BASE_ROWS: usize = 12;
 
 pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
     gain_pct!("pad.level", "Level", pad.level),
@@ -989,6 +995,19 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
             }
         },
     ),
+    ControlSpec::new(
+        "pad.mode",
+        "Mode",
+        ControlKind::Discrete,
+        0.0,
+        (SCALE_MODE_COUNT - 1) as f32,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.mode,
+        |c, v| c.pad.mode = v,
+        |c| ScaleMode::from_control(c.pad.mode).label().to_string(),
+    )
+    .reset_at(0.0),
     gain_pct!("pad.reverb_mix", "Reverb Mix", pad.reverb_mix),
     gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
     gain_pct!("pad.detune", "Detune", pad.detune),
@@ -1698,28 +1717,29 @@ fn module_slot_row<'a>(
     slots.get(index).map(|slot| (slot, field))
 }
 
-/// Chords-tab visible rows for the given drill level: the 11 base params,
-/// the active slots' Root list, or one slot's Accidental/Extension/Inversion.
-/// Read-only view over `CHORDS_CONTROLS`'s fixed layout (11 base rows, then
-/// 8 slots x 5 rows in degree/accidental/quality/extension/inversion order) — never
-/// reorders the underlying array.
+/// Chords-tab visible rows for the given drill level: the base params, the
+/// active slots' Root list, or one slot's Accidental/Quality/Extension/
+/// Inversion. Read-only view over `CHORDS_CONTROLS`'s fixed layout
+/// (`CHORDS_BASE_ROWS` base rows, then 8 slots x 5 rows in
+/// degree/accidental/quality/extension/inversion order) — never reorders the
+/// underlying array.
 pub(crate) fn chords_tab_controls(
     c: &FluidControls,
     drill: interaction::ChordDrill,
 ) -> Vec<ControlItem> {
     match drill {
-        interaction::ChordDrill::None => CHORDS_CONTROLS[..11]
+        interaction::ChordDrill::None => CHORDS_CONTROLS[..CHORDS_BASE_ROWS]
             .iter()
             .map(|spec| spec.item(c))
             .collect(),
         interaction::ChordDrill::Progression { .. } => {
             let count = (c.pad.chord_count.round() as usize).clamp(1, CHORD_SLOT_COUNT);
             (0..count)
-                .map(|slot| CHORDS_CONTROLS[11 + 5 * slot].item(c))
+                .map(|slot| CHORDS_CONTROLS[CHORDS_BASE_ROWS + 5 * slot].item(c))
                 .collect()
         }
         interaction::ChordDrill::Slot { slot, .. } => {
-            let base = 11 + 5 * slot;
+            let base = CHORDS_BASE_ROWS + 5 * slot;
             [base + 1, base + 2, base + 3, base + 4]
                 .iter()
                 .map(|&i| CHORDS_CONTROLS[i].item(c))
@@ -1734,18 +1754,18 @@ pub(crate) fn chords_tab_controls(
 pub(crate) fn chords_flat_index(drill: interaction::ChordDrill, visible_row: usize) -> usize {
     match drill {
         interaction::ChordDrill::None => visible_row,
-        interaction::ChordDrill::Progression { .. } => 11 + 5 * visible_row,
-        interaction::ChordDrill::Slot { slot, .. } => 11 + 5 * slot + 1 + visible_row,
+        interaction::ChordDrill::Progression { .. } => CHORDS_BASE_ROWS + 5 * visible_row,
+        interaction::ChordDrill::Slot { slot, .. } => CHORDS_BASE_ROWS + 5 * slot + 1 + visible_row,
     }
 }
 
 /// Inverse of `chords_flat_index`: the drill level + visible row that shows a
 /// real `CHORDS_CONTROLS` index, so a palette jump can land on drilled rows.
 pub(crate) fn chords_drill_for_index(flat: usize) -> (interaction::ChordDrill, usize) {
-    if flat < 11 {
+    if flat < CHORDS_BASE_ROWS {
         return (interaction::ChordDrill::None, flat);
     }
-    let rel = flat - 11;
+    let rel = flat - CHORDS_BASE_ROWS;
     let (slot, field) = (rel / 5, rel % 5);
     if field == 0 {
         (interaction::ChordDrill::Progression { return_to: 4 }, slot)
