@@ -58,6 +58,18 @@ impl DialScale {
         }
     }
 
+    /// The top of the dial's throw, in the same units the scale's own
+    /// `value`/`field_value` are expressed in. This is the single source of a
+    /// field's ceiling — the `Shift+L` gesture reads it rather than each
+    /// family re-deriving a max from its own constants. `Rungs` tops out at
+    /// its last reachable rung, which is what the bar's right edge draws.
+    pub(crate) fn max_value(self) -> f32 {
+        match self {
+            Self::Tapered { max, .. } | Self::BeatGrid { max, .. } => max,
+            Self::Rungs(steps) => steps.last().copied().unwrap_or(0.0),
+        }
+    }
+
     pub(crate) fn ratio(self, value: f32) -> f32 {
         match self {
             Self::Tapered { min, max, taper } => taper.ratio(value, min, max),

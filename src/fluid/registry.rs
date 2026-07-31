@@ -1789,6 +1789,12 @@ pub(crate) fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
     }
 }
 
+pub(crate) fn apply_max(tab: Tab, selected: usize, c: &mut FluidControls) {
+    if let Some(spec) = tab_specs(tab).get(selected) {
+        spec.apply_max(c);
+    }
+}
+
 pub(crate) fn apply_value(tab: Tab, selected: usize, value: f32, c: &mut FluidControls) {
     if let Some(spec) = tab_specs(tab).get(selected) {
         spec.apply_value(value, c);
