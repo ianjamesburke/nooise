@@ -1653,6 +1653,17 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
         .collect()
 }
 
+/// The `amount` control id for a tab's slot, which is the row a loaded slot
+/// actually renders. Compile-time strings, so this is a lookup rather than a
+/// format, and returns `None` for a tab with no chain.
+pub(crate) fn module_slot_amount_id(tab: Tab, slot: usize) -> Option<&'static str> {
+    let suffix = format!(".slot{}.amount", slot + 1);
+    tab_specs(tab)
+        .iter()
+        .map(|spec| spec.id)
+        .find(|id| id.ends_with(&suffix))
+}
+
 /// Whether a module-slot row belongs on screen. Every layer carries
 /// `MODULE_SLOTS` slots whether or not anything is loaded, so an empty slot's
 /// three rows must not render: eight empty slots per layer would bury every

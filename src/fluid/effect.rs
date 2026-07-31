@@ -325,6 +325,68 @@ impl EffectExecutor {
             .update(|snapshot| edit(&mut snapshot.automation));
     }
 
+    /// Resolve a palette module row. The chain already holding this module
+    /// means the user wants the one that is there, not a second copy, so this
+    /// jumps instead of adding. A full chain fails loudly with the count
+    /// rather than silently doing nothing.
+    fn place_module(
+        &mut self,
+        tab: Tab,
+        catalog: usize,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let kind = MODULE_CATALOG
+            .get(catalog)
+            .ok_or(EffectFailure::MissingContext("catalog module"))?;
+        let existing = self
+            .session
+            .load()
+            .controls
+            .modules
+            .for_tab(tab)
+            .and_then(|slots| chain_amount_slot(slots, kind.id));
+        let slot = match existing {
+            Some(slot) => slot,
+            None => {
+                let placed = self.edit_session(AutoOwnership::TakeOver, None, |snapshot| {
+                    if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
+                        && let Some(free) = slots.iter().position(ModuleSlot::is_empty)
+                    {
+                        // Added modules always start inert, whatever a
+                        // pre-loaded slot's factory amount happens to be, so
+                        // adding one is audibly free and needs no confirming.
+                        slots[free] = ModuleSlot {
+                            kind: module_kind_value(kind.id),
+                            amount: 0.0,
+                            time: 0.0,
+                        };
+                    }
+                });
+                let Some(slot) = placed
+                    .controls
+                    .modules
+                    .for_tab(tab)
+                    .and_then(|slots| chain_amount_slot(slots, kind.id))
+                else {
+                    return Ok(EffectAcknowledgement::Message(format!(
+                        "{} chain full ({}/{})",
+                        tab.name(),
+                        MODULE_SLOTS,
+                        MODULE_SLOTS
+                    )));
+                };
+                slot
+            }
+        };
+        let id = module_slot_amount_id(tab, slot)
+            .ok_or(EffectFailure::MissingContext("module slot control"))?;
+        let index = tab_specs(tab)
+            .iter()
+            .position(|spec| spec.id == id)
+            .ok_or(EffectFailure::UnknownControl(id))?;
+        self.recent.touch(id);
+        self.execute(LiveEffect::SelectControl { tab, index, id })
+    }
+
     /// Mute/unmute a tab's level. This writes a control, but it is a
     /// performance gesture rather than authorship: the stored level comes
     /// straight back on the second press, so auto mode keeps driving.
@@ -397,6 +459,9 @@ impl EffectExecutor {
             InteractionEffect::PaletteJump { tab, index, id } => {
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
+            // Needs only the session, so the generic bridge can resolve it;
+            // the production path adds closing the open editor first.
+            InteractionEffect::PaletteModule { tab, catalog } => self.place_module(tab, catalog),
             InteractionEffect::PaletteCommit(edits) => {
                 let edits = edits
                     .into_iter()
@@ -666,6 +731,10 @@ impl EffectExecutor {
             InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_) => Ok(EffectAcknowledgement::NoChange),
+            InteractionEffect::PaletteModule { tab, catalog } => {
+                self.edit_navigation_automation(AutomationState::close_editor);
+                self.place_module(tab, catalog)
+            }
             InteractionEffect::PerformanceEdit {
                 targets,
                 focus,
@@ -865,6 +934,97 @@ mod tests {
             executor.auto_morph_ids(0.0).is_none(),
             "a deliberate edit takes the controls over"
         );
+    }
+
+    /// Typing a module name adds it to the current layer, inert, and lands
+    /// the cursor on the row it just created.
+    #[test]
+    fn confirming_a_module_row_adds_it_inert_and_selects_it() {
+        let mut executor = executor_with(FluidControls::default());
+        let sidechain = MODULE_CATALOG
+            .iter()
+            .position(|kind| kind.id == "sidechain")
+            .expect("sidechain is in the v1 catalog");
+
+        let ack = executor
+            .execute_interaction(
+                InteractionEffect::PaletteModule {
+                    tab: Tab::Bass,
+                    catalog: sidechain,
+                },
+                &InteractionExecutionContext::default(),
+            )
+            .expect("adding to a layer with free slots succeeds");
+
+        let slots = executor.session().load().controls.modules.bass;
+        let placed = chain_amount_slot(&slots, "sidechain").expect("sidechain was placed");
+        // Added modules start silent whatever the factory preset does, so
+        // adding one can never change what is playing.
+        assert_eq!(slots[placed].amount, 0.0);
+        assert!(matches!(
+            ack,
+            EffectAcknowledgement::ControlSelected { tab: Tab::Bass, .. }
+        ));
+    }
+
+    /// The rule that stops three compressors piling up: a layer that already
+    /// holds the module gets a jump, never a second copy.
+    #[test]
+    fn confirming_a_module_already_on_the_layer_jumps_instead_of_duplicating() {
+        let mut executor = executor_with(FluidControls::default());
+        let drive = MODULE_CATALOG
+            .iter()
+            .position(|kind| kind.id == "drive")
+            .expect("drive is in the v1 catalog");
+
+        // Kick ships with Drive pre-loaded at 0.2.
+        let before = executor.session().load().controls.modules.kick;
+        executor
+            .execute_interaction(
+                InteractionEffect::PaletteModule {
+                    tab: Tab::Kick,
+                    catalog: drive,
+                },
+                &InteractionExecutionContext::default(),
+            )
+            .expect("jumping to an existing module succeeds");
+
+        let after = executor.session().load().controls.modules.kick;
+        assert_eq!(
+            before, after,
+            "no second Drive, and the amount is untouched"
+        );
+    }
+
+    /// A full chain says so with the count rather than silently doing nothing.
+    #[test]
+    fn a_full_chain_refuses_loudly() {
+        let mut controls = FluidControls::default();
+        for slot in controls.modules.pad.iter_mut() {
+            *slot = preset_slot("alcohol", 0.0);
+        }
+        let mut executor = executor_with(controls);
+        let sidechain = MODULE_CATALOG
+            .iter()
+            .position(|kind| kind.id == "sidechain")
+            .expect("sidechain is in the v1 catalog");
+
+        let ack = executor
+            .execute_interaction(
+                InteractionEffect::PaletteModule {
+                    tab: Tab::Chords,
+                    catalog: sidechain,
+                },
+                &InteractionExecutionContext::default(),
+            )
+            .expect("a full chain is a message, not a failure");
+        match ack {
+            EffectAcknowledgement::Message(text) => {
+                assert!(text.contains("full"), "unhelpful message: {text}");
+                assert!(text.contains(&MODULE_SLOTS.to_string()), "no count: {text}");
+            }
+            other => panic!("expected a full-chain message, got {other:?}"),
+        }
     }
 
     #[test]

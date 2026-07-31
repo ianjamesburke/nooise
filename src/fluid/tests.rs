@@ -4662,19 +4662,45 @@ fn arp_reuses_shared_ambient_reverb_send_alongside_pad_and_tonal() {
 #[test]
 fn palette_entries_cover_every_unique_control_id_exactly_once() {
     let entries = palette_entries();
-    let mut ids: Vec<&str> = entries.iter().map(|e| e.spec.id).collect();
-    let unique: std::collections::BTreeSet<&str> = all_specs().map(|spec| spec.id).collect();
+    let mut ids: Vec<&str> = entries.iter().filter_map(|e| e.id()).collect();
+    // Module slot rows are deliberately absent as controls: a module is
+    // reached through its own row, which knows how to find or create it.
+    let unique: std::collections::BTreeSet<&str> = all_specs()
+        .map(|spec| spec.id)
+        .filter(|id| !id.contains(".slot"))
+        .collect();
     assert_eq!(ids.len(), unique.len(), "one palette entry per unique id");
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), unique.len(), "no duplicate palette entries");
+
+    // One module row per layer that owns a chain.
+    let module_rows = entries
+        .iter()
+        .filter(|e| matches!(e, PaletteEntry::Module { .. }))
+        .count();
+    let chains = Tab::all()
+        .into_iter()
+        .filter(|&t| tab_has_module_chain(t))
+        .count();
+    assert_eq!(module_rows, chains * MODULE_CATALOG.len());
 }
 
 #[test]
 fn palette_entries_jump_targets_stay_inside_their_tab_tables() {
     for entry in palette_entries() {
-        assert!(entry.index_in_tab < tab_specs(entry.tab).len());
-        assert_eq!(tab_specs(entry.tab)[entry.index_in_tab].id, entry.spec.id);
+        let PaletteEntry::Control {
+            tab,
+            index_in_tab,
+            spec,
+        } = entry
+        else {
+            // Module rows resolve their target in the adapter, so they carry
+            // no index to check here.
+            continue;
+        };
+        assert!(index_in_tab < tab_specs(tab).len());
+        assert_eq!(tab_specs(tab)[index_in_tab].id, spec.id);
     }
 }
 
@@ -4697,7 +4723,7 @@ fn palette_empty_query_keeps_global_recent_controls_in_mru_order() {
         .matches
         .iter()
         .take(4)
-        .map(|matched| pal.entry(matched.entry).spec.id)
+        .map(|matched| pal.entry(matched.entry).id().unwrap_or(""))
         .collect();
     assert_eq!(
         ids,
@@ -4729,7 +4755,7 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
         .matches
         .iter()
         .take(10)
-        .map(|matched| pal.entry(matched.entry).spec.id)
+        .map(|matched| pal.entry(matched.entry).id().unwrap_or(""))
         .collect();
     assert_eq!(
         ids,
@@ -4754,7 +4780,7 @@ fn palette_top_hit(current_tab: Tab, recent: &[&'static str], query: &str) -> &'
     for character in query.chars() {
         pal.push_char(character);
     }
-    pal.entry(pal.matches[0].entry).spec.id
+    pal.entry(pal.matches[0].entry).id().unwrap_or("")
 }
 
 #[test]
@@ -4788,7 +4814,7 @@ fn palette_layer_boost_releases_once_the_query_outgrows_the_namespace() {
 #[test]
 fn palette_empty_query_lists_current_page_before_unused_other_pages() {
     let pal = PaletteState::new(Tab::Bass, &[]);
-    let first_id = pal.entry(pal.matches[0].entry).spec.id;
+    let first_id = pal.entry(pal.matches[0].entry).id().unwrap_or("");
     assert!(tab_specs(Tab::Bass).iter().any(|spec| spec.id == first_id));
 }
 

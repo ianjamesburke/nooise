@@ -155,10 +155,7 @@ pub(crate) fn preset_slot(id: &str, amount: f32) -> ModuleSlot {
 /// Amount of the first slot holding `id`, or zero when the chain has none.
 /// The single read path for an effect that used to be a bespoke field.
 pub(crate) fn chain_amount(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) -> f32 {
-    slots
-        .iter()
-        .find(|slot| slot.kind().is_some_and(|kind| kind.id == id))
-        .map_or(0.0, |slot| slot.amount)
+    chain_amount_slot(slots, id).map_or(0.0, |index| slots[index].amount)
 }
 
 /// Every layer's slots. Held on `FluidControls` rather than inside each voice
@@ -195,6 +192,51 @@ impl Default for LayerModules {
             arp: with_preset("swing", 0.0),
         }
     }
+}
+
+impl LayerModules {
+    /// The slots a tab owns, or `None` for a tab with no chain of its own.
+    pub(crate) fn for_tab(&self, tab: super::Tab) -> Option<&[ModuleSlot; MODULE_SLOTS]> {
+        match tab {
+            super::Tab::Chords => Some(&self.pad),
+            super::Tab::Perc => Some(&self.perc),
+            super::Tab::Bass => Some(&self.bass),
+            super::Tab::Kick => Some(&self.kick),
+            super::Tab::Tonal => Some(&self.tonal),
+            super::Tab::Clap => Some(&self.clap),
+            super::Tab::Arp => Some(&self.arp),
+            super::Tab::Macros | super::Tab::Master => None,
+        }
+    }
+
+    pub(crate) fn for_tab_mut(
+        &mut self,
+        tab: super::Tab,
+    ) -> Option<&mut [ModuleSlot; MODULE_SLOTS]> {
+        match tab {
+            super::Tab::Chords => Some(&mut self.pad),
+            super::Tab::Perc => Some(&mut self.perc),
+            super::Tab::Bass => Some(&mut self.bass),
+            super::Tab::Kick => Some(&mut self.kick),
+            super::Tab::Tonal => Some(&mut self.tonal),
+            super::Tab::Clap => Some(&mut self.clap),
+            super::Tab::Arp => Some(&mut self.arp),
+            super::Tab::Macros | super::Tab::Master => None,
+        }
+    }
+}
+
+/// Whether this tab owns a module chain at all. Pure: the palette's entry
+/// list depends on it and must not read live controls.
+pub(crate) fn tab_has_module_chain(tab: super::Tab) -> bool {
+    !matches!(tab, super::Tab::Macros | super::Tab::Master)
+}
+
+/// Index of the first slot holding `id`.
+pub(crate) fn chain_amount_slot(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) -> Option<usize> {
+    slots
+        .iter()
+        .position(|slot| slot.kind().is_some_and(|kind| kind.id == id))
 }
 
 /// Resolve every layer's module chain into the per-voice fields the engines
