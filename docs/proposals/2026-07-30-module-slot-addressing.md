@@ -131,11 +131,15 @@ dynamic `Vec<Box<dyn Effect>>` cannot produce one.
 
 - `song_ids_cover_every_registry_control` fails the build if any of the 168 new
   controls lacks a table slot, so none can become unsaveable.
-- **Unresolved, inherited from [[0017]]:** `tonal.swing`, `clap.room`,
-  `master.drive`, `bass.drive`, `kick.drive` already exist as bespoke sliders
-  that the catalog would duplicate. [[0017]] flagged this for reverb and never
-  answered it. It must be answered before the catalog ships, or there will be
-  two ways to do swing.
+- **Resolved 2026-07-31, closing [[0017]]:** the six per-voice effect sliders
+  (`perc.swing`, `tonal.swing`, `arp.swing`, `bass.drive`, `kick.drive`,
+  `clap.room`) were folded into pre-loaded slot 1 on their layer at their old
+  defaults. One mechanism, unchanged factory sound, and a layer that never had
+  an effect can now be given one. Done before the release deliberately:
+  container v2 had already broken every old song code and nothing had shipped,
+  so retiring those ids cost no migration. That window closes at Volume 1.
+  `master.drive` is untouched — Master has no module slots yet and needs its
+  own reconciliation pass alongside tone and compression.
 - Slot reordering is out of scope, as in [[0020]]. Processing order is slot
   order.
 - This lands before the format is frozen and Volume 1 mixtapes are cut.

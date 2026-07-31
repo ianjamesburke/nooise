@@ -57,7 +57,9 @@ impl Tab {
 
 pub(crate) struct ControlItem {
     pub(crate) id: &'static str,
-    pub(crate) label: &'static str,
+    /// Resolved at projection time: module-slot rows label themselves with
+    /// whichever module is loaded, so a slot reads "Swing", not "Slot 1".
+    pub(crate) label: String,
     pub(crate) kind: ControlKind,
     pub(crate) value: f32,
     pub(crate) min: f32,
@@ -232,6 +234,9 @@ pub(crate) struct ControlSpec {
     pub(crate) get: GetFn,
     pub(crate) set: SetFn,
     pub(crate) display: DisplayFn,
+    /// Overrides `label` per render. Only module-slot rows use it, so a slot
+    /// names the module it holds instead of its index.
+    pub(crate) label_of: Option<DisplayFn>,
 }
 
 impl ControlSpec {
@@ -263,6 +268,7 @@ impl ControlSpec {
             get,
             set,
             display,
+            label_of: None,
         }
     }
 
@@ -288,6 +294,12 @@ impl ControlSpec {
             set,
             display,
         )
+    }
+
+    /// Resolve this row's label per render instead of using the static one.
+    pub(crate) const fn labeled_by(mut self, label_of: DisplayFn) -> Self {
+        self.label_of = Some(label_of);
+        self
     }
 
     pub(crate) const fn with_step(mut self, step: f32) -> Self {
@@ -323,7 +335,9 @@ impl ControlSpec {
     pub(crate) fn item(&self, c: &FluidControls) -> ControlItem {
         ControlItem {
             id: self.id,
-            label: self.label,
+            label: self
+                .label_of
+                .map_or_else(|| self.label.to_string(), |resolve| resolve(c)),
             kind: self.kind,
             value: (self.get)(c),
             min: self.min,
@@ -754,6 +768,7 @@ macro_rules! module_slot_rows {
                 |c, v| c.modules.$layer[$slot - 1].amount = v,
                 |c| format!("{:.0}%", c.modules.$layer[$slot - 1].amount * 100.0),
             )
+            .labeled_by(|c| module_kind_label(c.modules.$layer[$slot - 1].kind))
             .reset_at(0.0),
             ControlSpec::new(
                 concat!($prefix, ".slot", $slot, ".time"),
@@ -797,7 +812,6 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
     .lfo_snap(LfoSnap::PowerOfTwo)
     .in_beats(),
     beat_offset!("perc.offset_beats", "Offset", 4.0, perc.offset_beats),
-    gain_pct!("perc.swing", "Swing", perc.swing),
     module_slot_rows!(perc, "perc", 1)[0],
     module_slot_rows!(perc, "perc", 1)[1],
     module_slot_rows!(perc, "perc", 1)[2],
@@ -1137,7 +1151,6 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c, v| c.bass.octave = v,
         |c| format!("{:.0}", c.bass.octave),
     ),
-    gain_pct!("bass.drive", "Drive", bass.drive),
     module_slot_rows!(bass, "bass", 1)[0],
     module_slot_rows!(bass, "bass", 1)[1],
     module_slot_rows!(bass, "bass", 1)[2],
@@ -1262,7 +1275,6 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.kick.click / 0.2),
     )
     .with_step(0.01),
-    gain_pct!("kick.drive", "Drive", kick.drive),
     module_slot_rows!(kick, "kick", 1)[0],
     module_slot_rows!(kick, "kick", 1)[1],
     module_slot_rows!(kick, "kick", 1)[2],
@@ -1354,7 +1366,6 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         tonal.step_interval_beats
     ),
     beat_offset!("tonal.offset_beats", "Offset", 4.0, tonal.offset_beats),
-    gain_pct!("tonal.swing", "Swing", tonal.swing),
     gain_pct!("tonal.randomness", "Randomness", tonal.randomness),
     ControlSpec::new(
         "tonal.evolve_rate",
@@ -1446,7 +1457,6 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
         1.0,
         clap.slap_spread_ms
     ),
-    gain_pct!("clap.room", "Room", clap.room),
     gain_pct!("clap.body", "Body", clap.body),
     module_slot_rows!(clap, "clap", 1)[0],
     module_slot_rows!(clap, "clap", 1)[1],
@@ -1498,7 +1508,6 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
         arp.rate_beats
     ),
     beat_offset!("arp.offset_beats", "Offset", 4.0, arp.offset_beats),
-    gain_pct!("arp.swing", "Swing", arp.swing),
     ControlSpec::new(
         "arp.pattern",
         "Pattern",
@@ -1658,7 +1667,11 @@ pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {
         return false;
     }
     match field {
-        ModuleSlotField::Kind | ModuleSlotField::Amount => true,
+        // A loaded slot collapses to one row: its amount, labelled with the
+        // module's name. Which module is loaded is chosen through the palette,
+        // so `kind` needs no row of its own.
+        ModuleSlotField::Kind => false,
+        ModuleSlotField::Amount => true,
         ModuleSlotField::Time => slot.kind().is_some_and(|kind| kind.family.uses_time()),
     }
 }
