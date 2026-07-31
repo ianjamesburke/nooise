@@ -1595,6 +1595,95 @@ fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
 }
 
 #[test]
+fn empty_module_slots_never_render() {
+    let controls = FluidControls::default();
+    for tab in Tab::all() {
+        let rows = tab_controls(tab, &controls);
+        assert!(
+            !rows.iter().any(|item| item.id.contains(".slot")),
+            "{tab:?} shows a slot row while every slot is empty"
+        );
+    }
+}
+
+#[test]
+fn an_occupied_slot_shows_only_the_params_its_family_uses() {
+    let alcohol = MODULE_CATALOG
+        .iter()
+        .position(|kind| kind.id == "alcohol")
+        .expect("alcohol is in the v1 catalog") as f32
+        + 1.0;
+    let sidechain = MODULE_CATALOG
+        .iter()
+        .position(|kind| kind.id == "sidechain")
+        .expect("sidechain is in the v1 catalog") as f32
+        + 1.0;
+
+    let mut controls = FluidControls::default();
+    controls.modules.bass[0].kind = alcohol;
+    let ids: Vec<&str> = tab_controls(Tab::Bass, &controls)
+        .iter()
+        .map(|item| item.id)
+        .filter(|id| id.contains(".slot"))
+        .collect();
+    // Single-amount family: no `time` row, because that knob does nothing.
+    assert_eq!(ids, ["bass.slot1.kind", "bass.slot1.amount"]);
+
+    controls.modules.bass[0].kind = sidechain;
+    let ids: Vec<&str> = tab_controls(Tab::Bass, &controls)
+        .iter()
+        .map(|item| item.id)
+        .filter(|id| id.contains(".slot"))
+        .collect();
+    assert_eq!(
+        ids,
+        ["bass.slot1.kind", "bass.slot1.amount", "bass.slot1.time"]
+    );
+}
+
+/// The whole point of storing module identity as a value: a slot survives a
+/// song code without the catalog appearing anywhere in the id space.
+#[test]
+fn module_slots_round_trip_through_a_song_code() {
+    let mut controls = FluidControls::default();
+    controls.modules.kick[2].kind = MODULE_CATALOG.len() as f32;
+    controls.modules.kick[2].amount = 0.5;
+    controls.modules.arp[7].kind = 1.0;
+
+    let state = SongState::from_controls(controls.clone());
+    let code = encode_song_code(&state).expect("encode");
+    let decoded = decode_song_code(&code).expect("round trip");
+
+    assert_eq!(
+        decoded.controls.modules.kick[2].kind,
+        controls.modules.kick[2].kind
+    );
+    assert_eq!(decoded.controls.modules.kick[2].amount, 0.5);
+    assert_eq!(decoded.controls.modules.arp[7].kind, 1.0);
+    assert!(decoded.controls.modules.pad[0].is_empty());
+}
+
+/// Adding 168 slot controls must not make a plain song any bigger. Container
+/// v2 prunes defaults, and an empty slot is all defaults.
+#[test]
+fn empty_module_slots_cost_no_song_code_bytes() {
+    let bare = encode_song_code(&SongState::from_controls(FluidControls::default()))
+        .expect("encode defaults");
+
+    let mut controls = FluidControls::default();
+    controls.bass.level = 0.42;
+    let with_edit = encode_song_code(&SongState::from_controls(controls)).expect("encode one edit");
+
+    // One edited control's worth of growth, not 168 slots' worth.
+    assert!(
+        with_edit.len() < bare.len() + 16,
+        "empty slots leaked into the code: {} -> {}",
+        bare.len(),
+        with_edit.len()
+    );
+}
+
+#[test]
 fn tab_controls_classify_each_slider_kind() {
     use ControlKind::{Continuous, Discrete, Gain, Timing};
 
