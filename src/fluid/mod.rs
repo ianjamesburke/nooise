@@ -34,6 +34,7 @@ mod controls;
 mod effect;
 mod engine;
 mod interaction;
+mod module;
 mod palette;
 mod registry;
 #[cfg(test)]
@@ -57,6 +58,7 @@ use automation::*;
 use controls::*;
 use effect::*;
 use engine::*;
+use module::*;
 use palette::*;
 use registry::*;
 use session::*;

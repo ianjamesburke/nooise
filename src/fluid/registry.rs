@@ -723,6 +723,55 @@ pub(crate) fn master_flat_index(drill: interaction::MasterDrill, visible_row: us
     }
 }
 
+/// Three rows per module slot: which module is loaded (a value, never part of
+/// the id) plus the family-shaped params. Generalises `chord_slot_rows!`.
+/// Slot numbers are 1-based in ids and labels, 0-based into the array.
+macro_rules! module_slot_rows {
+    ($layer:ident, $prefix:literal, $slot:literal) => {
+        [
+            ControlSpec::new(
+                concat!($prefix, ".slot", $slot, ".kind"),
+                concat!("Slot ", $slot),
+                ControlKind::Discrete,
+                MODULE_EMPTY,
+                module_kind_max(),
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| c.modules.$layer[$slot - 1].kind,
+                |c, v| c.modules.$layer[$slot - 1].kind = v,
+                |c| module_kind_label(c.modules.$layer[$slot - 1].kind),
+            )
+            .reset_at(MODULE_EMPTY),
+            ControlSpec::new(
+                concat!($prefix, ".slot", $slot, ".amount"),
+                concat!("Slot ", $slot, " Amount"),
+                ControlKind::Gain,
+                0.0,
+                1.0,
+                Step::Linear(0.01),
+                Entry::Percent,
+                |c| c.modules.$layer[$slot - 1].amount,
+                |c, v| c.modules.$layer[$slot - 1].amount = v,
+                |c| format!("{:.0}%", c.modules.$layer[$slot - 1].amount * 100.0),
+            )
+            .reset_at(0.0),
+            ControlSpec::new(
+                concat!($prefix, ".slot", $slot, ".time"),
+                concat!("Slot ", $slot, " Time"),
+                ControlKind::Gain,
+                0.0,
+                1.0,
+                Step::Linear(0.01),
+                Entry::Percent,
+                |c| c.modules.$layer[$slot - 1].time,
+                |c, v| c.modules.$layer[$slot - 1].time = v,
+                |c| format!("{:.0}%", c.modules.$layer[$slot - 1].time * 100.0),
+            )
+            .reset_at(0.0),
+        ]
+    };
+}
+
 pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
     gain_pct!("perc.level", "Level", perc.level),
     gain_pct!("perc.filter", "Filter", 0.5, 1.0, perc.filter),
@@ -749,6 +798,30 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
     .in_beats(),
     beat_offset!("perc.offset_beats", "Offset", 4.0, perc.offset_beats),
     gain_pct!("perc.swing", "Swing", perc.swing),
+    module_slot_rows!(perc, "perc", 1)[0],
+    module_slot_rows!(perc, "perc", 1)[1],
+    module_slot_rows!(perc, "perc", 1)[2],
+    module_slot_rows!(perc, "perc", 2)[0],
+    module_slot_rows!(perc, "perc", 2)[1],
+    module_slot_rows!(perc, "perc", 2)[2],
+    module_slot_rows!(perc, "perc", 3)[0],
+    module_slot_rows!(perc, "perc", 3)[1],
+    module_slot_rows!(perc, "perc", 3)[2],
+    module_slot_rows!(perc, "perc", 4)[0],
+    module_slot_rows!(perc, "perc", 4)[1],
+    module_slot_rows!(perc, "perc", 4)[2],
+    module_slot_rows!(perc, "perc", 5)[0],
+    module_slot_rows!(perc, "perc", 5)[1],
+    module_slot_rows!(perc, "perc", 5)[2],
+    module_slot_rows!(perc, "perc", 6)[0],
+    module_slot_rows!(perc, "perc", 6)[1],
+    module_slot_rows!(perc, "perc", 6)[2],
+    module_slot_rows!(perc, "perc", 7)[0],
+    module_slot_rows!(perc, "perc", 7)[1],
+    module_slot_rows!(perc, "perc", 7)[2],
+    module_slot_rows!(perc, "perc", 8)[0],
+    module_slot_rows!(perc, "perc", 8)[1],
+    module_slot_rows!(perc, "perc", 8)[2],
 ];
 
 /// One chord slot's four fields as `ControlSpec` rows (Root/Accidental/
@@ -960,6 +1033,30 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
     chord_slot_rows!(8)[2],
     chord_slot_rows!(8)[3],
     chord_slot_rows!(8)[4],
+    module_slot_rows!(pad, "pad", 1)[0],
+    module_slot_rows!(pad, "pad", 1)[1],
+    module_slot_rows!(pad, "pad", 1)[2],
+    module_slot_rows!(pad, "pad", 2)[0],
+    module_slot_rows!(pad, "pad", 2)[1],
+    module_slot_rows!(pad, "pad", 2)[2],
+    module_slot_rows!(pad, "pad", 3)[0],
+    module_slot_rows!(pad, "pad", 3)[1],
+    module_slot_rows!(pad, "pad", 3)[2],
+    module_slot_rows!(pad, "pad", 4)[0],
+    module_slot_rows!(pad, "pad", 4)[1],
+    module_slot_rows!(pad, "pad", 4)[2],
+    module_slot_rows!(pad, "pad", 5)[0],
+    module_slot_rows!(pad, "pad", 5)[1],
+    module_slot_rows!(pad, "pad", 5)[2],
+    module_slot_rows!(pad, "pad", 6)[0],
+    module_slot_rows!(pad, "pad", 6)[1],
+    module_slot_rows!(pad, "pad", 6)[2],
+    module_slot_rows!(pad, "pad", 7)[0],
+    module_slot_rows!(pad, "pad", 7)[1],
+    module_slot_rows!(pad, "pad", 7)[2],
+    module_slot_rows!(pad, "pad", 8)[0],
+    module_slot_rows!(pad, "pad", 8)[1],
+    module_slot_rows!(pad, "pad", 8)[2],
 ];
 
 pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
@@ -1041,6 +1138,30 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.0}", c.bass.octave),
     ),
     gain_pct!("bass.drive", "Drive", bass.drive),
+    module_slot_rows!(bass, "bass", 1)[0],
+    module_slot_rows!(bass, "bass", 1)[1],
+    module_slot_rows!(bass, "bass", 1)[2],
+    module_slot_rows!(bass, "bass", 2)[0],
+    module_slot_rows!(bass, "bass", 2)[1],
+    module_slot_rows!(bass, "bass", 2)[2],
+    module_slot_rows!(bass, "bass", 3)[0],
+    module_slot_rows!(bass, "bass", 3)[1],
+    module_slot_rows!(bass, "bass", 3)[2],
+    module_slot_rows!(bass, "bass", 4)[0],
+    module_slot_rows!(bass, "bass", 4)[1],
+    module_slot_rows!(bass, "bass", 4)[2],
+    module_slot_rows!(bass, "bass", 5)[0],
+    module_slot_rows!(bass, "bass", 5)[1],
+    module_slot_rows!(bass, "bass", 5)[2],
+    module_slot_rows!(bass, "bass", 6)[0],
+    module_slot_rows!(bass, "bass", 6)[1],
+    module_slot_rows!(bass, "bass", 6)[2],
+    module_slot_rows!(bass, "bass", 7)[0],
+    module_slot_rows!(bass, "bass", 7)[1],
+    module_slot_rows!(bass, "bass", 7)[2],
+    module_slot_rows!(bass, "bass", 8)[0],
+    module_slot_rows!(bass, "bass", 8)[1],
+    module_slot_rows!(bass, "bass", 8)[2],
 ];
 
 pub(crate) fn bass_type_label(value: f32) -> &'static str {
@@ -1142,6 +1263,30 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
     )
     .with_step(0.01),
     gain_pct!("kick.drive", "Drive", kick.drive),
+    module_slot_rows!(kick, "kick", 1)[0],
+    module_slot_rows!(kick, "kick", 1)[1],
+    module_slot_rows!(kick, "kick", 1)[2],
+    module_slot_rows!(kick, "kick", 2)[0],
+    module_slot_rows!(kick, "kick", 2)[1],
+    module_slot_rows!(kick, "kick", 2)[2],
+    module_slot_rows!(kick, "kick", 3)[0],
+    module_slot_rows!(kick, "kick", 3)[1],
+    module_slot_rows!(kick, "kick", 3)[2],
+    module_slot_rows!(kick, "kick", 4)[0],
+    module_slot_rows!(kick, "kick", 4)[1],
+    module_slot_rows!(kick, "kick", 4)[2],
+    module_slot_rows!(kick, "kick", 5)[0],
+    module_slot_rows!(kick, "kick", 5)[1],
+    module_slot_rows!(kick, "kick", 5)[2],
+    module_slot_rows!(kick, "kick", 6)[0],
+    module_slot_rows!(kick, "kick", 6)[1],
+    module_slot_rows!(kick, "kick", 6)[2],
+    module_slot_rows!(kick, "kick", 7)[0],
+    module_slot_rows!(kick, "kick", 7)[1],
+    module_slot_rows!(kick, "kick", 7)[2],
+    module_slot_rows!(kick, "kick", 8)[0],
+    module_slot_rows!(kick, "kick", 8)[1],
+    module_slot_rows!(kick, "kick", 8)[2],
 ];
 
 pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
@@ -1224,6 +1369,30 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
         |c| pct(c.tonal.evolve_rate),
     ),
     gain_pct!("tonal.reverb_mix", "Reverb Mix", tonal.reverb_mix),
+    module_slot_rows!(tonal, "tonal", 1)[0],
+    module_slot_rows!(tonal, "tonal", 1)[1],
+    module_slot_rows!(tonal, "tonal", 1)[2],
+    module_slot_rows!(tonal, "tonal", 2)[0],
+    module_slot_rows!(tonal, "tonal", 2)[1],
+    module_slot_rows!(tonal, "tonal", 2)[2],
+    module_slot_rows!(tonal, "tonal", 3)[0],
+    module_slot_rows!(tonal, "tonal", 3)[1],
+    module_slot_rows!(tonal, "tonal", 3)[2],
+    module_slot_rows!(tonal, "tonal", 4)[0],
+    module_slot_rows!(tonal, "tonal", 4)[1],
+    module_slot_rows!(tonal, "tonal", 4)[2],
+    module_slot_rows!(tonal, "tonal", 5)[0],
+    module_slot_rows!(tonal, "tonal", 5)[1],
+    module_slot_rows!(tonal, "tonal", 5)[2],
+    module_slot_rows!(tonal, "tonal", 6)[0],
+    module_slot_rows!(tonal, "tonal", 6)[1],
+    module_slot_rows!(tonal, "tonal", 6)[2],
+    module_slot_rows!(tonal, "tonal", 7)[0],
+    module_slot_rows!(tonal, "tonal", 7)[1],
+    module_slot_rows!(tonal, "tonal", 7)[2],
+    module_slot_rows!(tonal, "tonal", 8)[0],
+    module_slot_rows!(tonal, "tonal", 8)[1],
+    module_slot_rows!(tonal, "tonal", 8)[2],
 ];
 
 pub(crate) fn tonal_synth_type_label(value: f32) -> &'static str {
@@ -1279,6 +1448,30 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
     ),
     gain_pct!("clap.room", "Room", clap.room),
     gain_pct!("clap.body", "Body", clap.body),
+    module_slot_rows!(clap, "clap", 1)[0],
+    module_slot_rows!(clap, "clap", 1)[1],
+    module_slot_rows!(clap, "clap", 1)[2],
+    module_slot_rows!(clap, "clap", 2)[0],
+    module_slot_rows!(clap, "clap", 2)[1],
+    module_slot_rows!(clap, "clap", 2)[2],
+    module_slot_rows!(clap, "clap", 3)[0],
+    module_slot_rows!(clap, "clap", 3)[1],
+    module_slot_rows!(clap, "clap", 3)[2],
+    module_slot_rows!(clap, "clap", 4)[0],
+    module_slot_rows!(clap, "clap", 4)[1],
+    module_slot_rows!(clap, "clap", 4)[2],
+    module_slot_rows!(clap, "clap", 5)[0],
+    module_slot_rows!(clap, "clap", 5)[1],
+    module_slot_rows!(clap, "clap", 5)[2],
+    module_slot_rows!(clap, "clap", 6)[0],
+    module_slot_rows!(clap, "clap", 6)[1],
+    module_slot_rows!(clap, "clap", 6)[2],
+    module_slot_rows!(clap, "clap", 7)[0],
+    module_slot_rows!(clap, "clap", 7)[1],
+    module_slot_rows!(clap, "clap", 7)[2],
+    module_slot_rows!(clap, "clap", 8)[0],
+    module_slot_rows!(clap, "clap", 8)[1],
+    module_slot_rows!(clap, "clap", 8)[2],
 ];
 
 pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
@@ -1331,6 +1524,30 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
         |c| format!("{:.0}", c.arp.octaves),
     ),
     gain_pct!("arp.reverb_mix", "Reverb Mix", arp.reverb_mix),
+    module_slot_rows!(arp, "arp", 1)[0],
+    module_slot_rows!(arp, "arp", 1)[1],
+    module_slot_rows!(arp, "arp", 1)[2],
+    module_slot_rows!(arp, "arp", 2)[0],
+    module_slot_rows!(arp, "arp", 2)[1],
+    module_slot_rows!(arp, "arp", 2)[2],
+    module_slot_rows!(arp, "arp", 3)[0],
+    module_slot_rows!(arp, "arp", 3)[1],
+    module_slot_rows!(arp, "arp", 3)[2],
+    module_slot_rows!(arp, "arp", 4)[0],
+    module_slot_rows!(arp, "arp", 4)[1],
+    module_slot_rows!(arp, "arp", 4)[2],
+    module_slot_rows!(arp, "arp", 5)[0],
+    module_slot_rows!(arp, "arp", 5)[1],
+    module_slot_rows!(arp, "arp", 5)[2],
+    module_slot_rows!(arp, "arp", 6)[0],
+    module_slot_rows!(arp, "arp", 6)[1],
+    module_slot_rows!(arp, "arp", 6)[2],
+    module_slot_rows!(arp, "arp", 7)[0],
+    module_slot_rows!(arp, "arp", 7)[1],
+    module_slot_rows!(arp, "arp", 7)[2],
+    module_slot_rows!(arp, "arp", 8)[0],
+    module_slot_rows!(arp, "arp", 8)[1],
+    module_slot_rows!(arp, "arp", 8)[2],
 ];
 
 pub(crate) const MACRO_CONTROLS: &[ControlSpec] = &[
@@ -1420,7 +1637,65 @@ pub(crate) fn performance_target(
 }
 
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
-    tab_specs(tab).iter().map(|spec| spec.item(c)).collect()
+    tab_specs(tab)
+        .iter()
+        .filter(|spec| module_slot_row_visible(spec.id, c))
+        .map(|spec| spec.item(c))
+        .collect()
+}
+
+/// Whether a module-slot row belongs on screen. Every layer carries
+/// `MODULE_SLOTS` slots whether or not anything is loaded, so an empty slot's
+/// three rows must not render: eight empty slots per layer would bury every
+/// page under blank rows and break the 15-second floor. Non-slot ids always
+/// show. An occupied slot shows its kind row plus whichever params its
+/// family actually uses.
+pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {
+    let Some((slot, field)) = module_slot_row(id, c) else {
+        return true;
+    };
+    if slot.is_empty() {
+        return false;
+    }
+    match field {
+        ModuleSlotField::Kind | ModuleSlotField::Amount => true,
+        ModuleSlotField::Time => slot.kind().is_some_and(|kind| kind.family.uses_time()),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModuleSlotField {
+    Kind,
+    Amount,
+    Time,
+}
+
+/// Parse `<layer>.slot<N>.<field>` back to the slot it addresses. `None` for
+/// any id that is not a module-slot row.
+fn module_slot_row<'a>(
+    id: &str,
+    c: &'a FluidControls,
+) -> Option<(&'a ModuleSlot, ModuleSlotField)> {
+    let (layer, rest) = id.split_once(".slot")?;
+    let (index, field) = rest.split_once('.')?;
+    let field = match field {
+        "kind" => ModuleSlotField::Kind,
+        "amount" => ModuleSlotField::Amount,
+        "time" => ModuleSlotField::Time,
+        _ => return None,
+    };
+    let index = index.parse::<usize>().ok()?.checked_sub(1)?;
+    let slots: &[ModuleSlot; MODULE_SLOTS] = match layer {
+        "pad" => &c.modules.pad,
+        "perc" => &c.modules.perc,
+        "bass" => &c.modules.bass,
+        "kick" => &c.modules.kick,
+        "tonal" => &c.modules.tonal,
+        "clap" => &c.modules.clap,
+        "arp" => &c.modules.arp,
+        _ => return None,
+    };
+    slots.get(index).map(|slot| (slot, field))
 }
 
 /// Chords-tab visible rows for the given drill level: the 11 base params,
