@@ -423,50 +423,56 @@ pub(crate) fn snap_after_unit_flip(
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    effects.edit_session(recent_id, |snapshot| match active {
-        // LFO rate accepts exact typed beat values, so an exact ms-authored
-        // value stays exact when returning to beats. Offset retains its grid.
-        ActiveField::Lfo(address, field) if !now_flipped => {
-            if let Some(route) = snapshot.automation.route_mut(address) {
-                match field {
-                    LfoField::Interval => {}
-                    LfoField::Offset => route.set_field_at(field, route.phase_offset_beats, beat),
+    effects.edit_session(
+        AutoOwnership::TakeOver,
+        recent_id,
+        |snapshot| match active {
+            // LFO rate accepts exact typed beat values, so an exact ms-authored
+            // value stays exact when returning to beats. Offset retains its grid.
+            ActiveField::Lfo(address, field) if !now_flipped => {
+                if let Some(route) = snapshot.automation.route_mut(address) {
+                    match field {
+                        LfoField::Interval => {}
+                        LfoField::Offset => {
+                            route.set_field_at(field, route.phase_offset_beats, beat)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ActiveField::Envelope(address, field) if !now_flipped => {
+                if let Some(route) = snapshot.automation.envelope_mut(address) {
+                    match field {
+                        EnvField::Attack => route.set_field(field, route.attack_beats),
+                        EnvField::Decay => route.set_field(field, route.decay_beats),
+                        EnvField::Amount | EnvField::Trigger => {}
+                    }
+                }
+            }
+            ActiveField::Control => {
+                let Some(spec) = tab_specs(tab).get(selected) else {
+                    return;
+                };
+                let bpm = snapshot.controls.master.bpm;
+                let current = (spec.get)(&snapshot.controls);
+                match (spec.time_base, now_flipped) {
+                    // Back to native beats: land on the control's own grid.
+                    (TimeBase::Beats, false) => {
+                        spec.apply_quantized_value(current, &mut snapshot.controls)
+                    }
+                    // An ms control now displayed in beats: round to the nearest
+                    // divided beat.
+                    (TimeBase::Ms, true) => {
+                        let beats = snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP)
+                            .max(FLIP_BEAT_STEP);
+                        spec.apply_raw(beats_to_ms(beats, bpm), &mut snapshot.controls);
+                    }
                     _ => {}
                 }
             }
-        }
-        ActiveField::Envelope(address, field) if !now_flipped => {
-            if let Some(route) = snapshot.automation.envelope_mut(address) {
-                match field {
-                    EnvField::Attack => route.set_field(field, route.attack_beats),
-                    EnvField::Decay => route.set_field(field, route.decay_beats),
-                    EnvField::Amount | EnvField::Trigger => {}
-                }
-            }
-        }
-        ActiveField::Control => {
-            let Some(spec) = tab_specs(tab).get(selected) else {
-                return;
-            };
-            let bpm = snapshot.controls.master.bpm;
-            let current = (spec.get)(&snapshot.controls);
-            match (spec.time_base, now_flipped) {
-                // Back to native beats: land on the control's own grid.
-                (TimeBase::Beats, false) => {
-                    spec.apply_quantized_value(current, &mut snapshot.controls)
-                }
-                // An ms control now displayed in beats: round to the nearest
-                // divided beat.
-                (TimeBase::Ms, true) => {
-                    let beats =
-                        snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP).max(FLIP_BEAT_STEP);
-                    spec.apply_raw(beats_to_ms(beats, bpm), &mut snapshot.controls);
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    });
+            _ => {}
+        },
+    );
 }
 
 /// The flip key qualifier for a modulator time field, None for unit-less ones.
@@ -597,7 +603,7 @@ pub(crate) fn open_modulator_effect_for_id(
         return;
     }
     let address = ControlAddress::new(id);
-    effects.edit_session(Some(id), |snapshot| {
+    effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
         let state = &mut snapshot.automation;
         let already = state.active_address() == Some(address) && state.active_kind() == Some(kind);
         state.close_editor();
@@ -695,7 +701,7 @@ pub(crate) fn adjust_lfo_or_control(
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    effects.edit_session(recent_id, |snapshot| {
+    effects.edit_session(AutoOwnership::TakeOver, recent_id, |snapshot| {
         let bpm = snapshot.controls.master.bpm;
         match active {
             ActiveField::Lfo(address, field) => {
@@ -783,35 +789,39 @@ pub(crate) fn reset_lfo_or_control(
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    effects.edit_session(recent_id, |snapshot| match active {
-        ActiveField::Lfo(address, field) => {
-            if let Some(route) = snapshot.automation.route_mut(address) {
-                route.reset_field_at(field, beat);
+    effects.edit_session(
+        AutoOwnership::TakeOver,
+        recent_id,
+        |snapshot| match active {
+            ActiveField::Lfo(address, field) => {
+                if let Some(route) = snapshot.automation.route_mut(address) {
+                    route.reset_field_at(field, beat);
+                }
             }
-        }
-        ActiveField::Envelope(address, field) => {
-            if let Some(route) = snapshot.automation.envelope_mut(address) {
-                route.reset_field(field);
+            ActiveField::Envelope(address, field) => {
+                if let Some(route) = snapshot.automation.envelope_mut(address) {
+                    route.reset_field(field);
+                }
             }
-        }
-        ActiveField::LfoMacro(address, field, macro_field) => {
-            let key = unit_key(address.id(), field.macro_key());
-            if let Some(route) = snapshot.automation.field_macro_mut(&key) {
-                route.reset_field(macro_field);
+            ActiveField::LfoMacro(address, field, macro_field) => {
+                let key = unit_key(address.id(), field.macro_key());
+                if let Some(route) = snapshot.automation.field_macro_mut(&key) {
+                    route.reset_field(macro_field);
+                }
             }
-        }
-        ActiveField::LfoStep(address, target) => {
-            if let Some(route) = snapshot.automation.route_mut(address) {
-                route.reset_step(target);
+            ActiveField::LfoStep(address, target) => {
+                if let Some(route) = snapshot.automation.route_mut(address) {
+                    route.reset_step(target);
+                }
             }
-        }
-        ActiveField::Macro(address, field) => {
-            if let Some(route) = snapshot.automation.macro_route_mut(address) {
-                route.reset_field(field);
+            ActiveField::Macro(address, field) => {
+                if let Some(route) = snapshot.automation.macro_route_mut(address) {
+                    route.reset_field(field);
+                }
             }
-        }
-        ActiveField::Control => apply_min(tab, selected, &mut snapshot.controls),
-    });
+            ActiveField::Control => apply_min(tab, selected, &mut snapshot.controls),
+        },
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -830,7 +840,7 @@ pub(crate) fn set_modulator_or_control(
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    effects.edit_session(recent_id, |snapshot| {
+    effects.edit_session(AutoOwnership::TakeOver, recent_id, |snapshot| {
         let bpm = snapshot.controls.master.bpm;
         match active {
             ActiveField::Lfo(address, field) => {
@@ -946,7 +956,7 @@ pub(crate) fn toggle_macro_effect(
             if !is_macro_id(address.id()) && field.macro_key().is_some() =>
         {
             let key = unit_key(address.id(), field.macro_key());
-            effects.edit_session(Some(address.id()), |snapshot| {
+            effects.edit_session(AutoOwnership::TakeOver, Some(address.id()), |snapshot| {
                 let state = &mut snapshot.automation;
                 state.toggle_open_field(key.clone());
             });
@@ -959,7 +969,7 @@ pub(crate) fn toggle_macro_effect(
             Some((depth, field_row_index(&current.automation, address, field)))
         }
         ActiveField::LfoMacro(address, field, _) => {
-            effects.edit_session(Some(address.id()), |snapshot| {
+            effects.edit_session(AutoOwnership::TakeOver, Some(address.id()), |snapshot| {
                 snapshot.automation.close_open_field();
             });
             let current = effects.session().load();
@@ -991,7 +1001,7 @@ pub(crate) fn remove_automation_effect(
     match active_field(automation, lfo_selected) {
         ActiveField::LfoMacro(address, field, _) => {
             let key = unit_key(address.id(), field.macro_key());
-            effects.edit_session(Some(address.id()), |snapshot| {
+            effects.edit_session(AutoOwnership::TakeOver, Some(address.id()), |snapshot| {
                 let state = &mut snapshot.automation;
                 state.remove_field_macro(&key);
             });
@@ -1001,14 +1011,14 @@ pub(crate) fn remove_automation_effect(
                 .active_address()
                 .expect("open editor has an address")
                 .id();
-            effects.edit_session(Some(id), |snapshot| {
+            effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
                 snapshot.automation.remove_open_route();
             });
         }
         _ => {
             if let Some(id) = selected_control {
                 let address = ControlAddress::new(id);
-                effects.edit_session(Some(id), |snapshot| {
+                effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
                     snapshot.automation.clear_control(address);
                 });
             }
@@ -1020,7 +1030,7 @@ pub(crate) fn reseed_automation_effect(effects: &mut EffectExecutor, automation:
     if let Some(address) = automation.active_address()
         && automation.active_kind() == Some(ModKind::Lfo)
     {
-        effects.edit_session(Some(address.id()), |snapshot| {
+        effects.edit_session(AutoOwnership::TakeOver, Some(address.id()), |snapshot| {
             let state = &mut snapshot.automation;
             if let Some(route) = state.route_mut(address)
                 && route.shape.is_random()

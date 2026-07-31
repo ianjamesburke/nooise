@@ -84,27 +84,6 @@ impl LiveSession {
 }
 
 #[cfg(test)]
-pub(crate) trait ControlsAccess {
-    fn load(&self) -> Arc<FluidControls>;
-    fn edit(&self, edit: impl FnMut(&mut FluidControls)) -> Arc<FluidControls>;
-}
-
-#[cfg(test)]
-impl ControlsAccess for Arc<ArcSwap<FluidControls>> {
-    fn load(&self) -> Arc<FluidControls> {
-        self.load_full()
-    }
-
-    fn edit(&self, mut edit: impl FnMut(&mut FluidControls)) -> Arc<FluidControls> {
-        let mut controls = self.load_full().as_ref().clone();
-        edit(&mut controls);
-        let controls = Arc::new(controls);
-        self.store(Arc::clone(&controls));
-        controls
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use std::sync::Barrier;
     use std::thread;
