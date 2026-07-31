@@ -1,3 +1,4 @@
+use super::module::{MODULE_CATALOG, chain_amount_slot, tab_has_module_chain};
 use super::*;
 
 // ============================================================
@@ -13,45 +14,102 @@ use super::*;
 // (deepest) editing surface.
 // ============================================================
 
-/// One addressable control: the tab that natively owns it plus its index in
-/// that tab's registry table, so a jump can restore the exact row (including
-/// the Chords/Master drill state mapped by `chords_drill_for_index` /
-/// `master_drill_for_index`).
-pub(crate) struct PaletteEntry {
-    pub(crate) tab: Tab,
-    pub(crate) index_in_tab: usize,
-    pub(crate) spec: &'static ControlSpec,
+/// What a palette row does when confirmed.
+///
+/// Entries are a pure function of the current tab, deliberately: the
+/// interaction kernel and the renderer each build this list independently and
+/// confirm works by index, so anything that made the list depend on live
+/// controls could desync them and jump to the wrong control. Live state is
+/// resolved where it exists — in the adapter, and in the value column.
+pub(crate) enum PaletteEntry {
+    /// Jump to a control at the tab that natively owns it.
+    Control {
+        tab: Tab,
+        index_in_tab: usize,
+        spec: &'static ControlSpec,
+    },
+    /// A catalog module on `tab`'s chain. Whether confirming adds it or jumps
+    /// to the copy already there is decided at execution time, so the palette
+    /// can never silently create a second copy.
+    Module { tab: Tab, catalog: usize },
 }
 
 impl PaletteEntry {
-    /// Display string the query matches against: id first (so dotted paths
-    /// like `bass.decay_time` are directly typeable), then tab and label.
+    /// Text the query matches against. Must stay a pure function of the
+    /// entry, for the reason on the enum.
     pub(crate) fn haystack(&self) -> String {
-        format!(
-            "{} \u{b7} {} \u{b7} {}",
-            self.spec.id,
-            self.tab.name(),
-            self.spec.label
-        )
+        match self {
+            Self::Control { tab, spec, .. } => {
+                format!("{} · {} · {}", spec.id, tab.name(), spec.label)
+            }
+            Self::Module { tab, catalog } => {
+                format!("{} · {} · module", MODULE_CATALOG[*catalog].id, tab.name())
+            }
+        }
+    }
+
+    pub(crate) fn spec(&self) -> Option<&'static ControlSpec> {
+        match self {
+            Self::Control { spec, .. } => Some(spec),
+            Self::Module { .. } => None,
+        }
+    }
+
+    pub(crate) fn id(&self) -> Option<&'static str> {
+        self.spec().map(|spec| spec.id)
+    }
+
+    /// Value column. This one may read live controls: it is rendered, never
+    /// matched against, so it cannot affect indices.
+    pub(crate) fn value(&self, c: &FluidControls) -> String {
+        match self {
+            Self::Control { spec, .. } => (spec.display)(c),
+            Self::Module { tab, catalog } => {
+                let kind = MODULE_CATALOG[*catalog];
+                c.modules
+                    .for_tab(*tab)
+                    .and_then(|slots| chain_amount_slot(slots, kind.id))
+                    .map_or_else(
+                        || "add".to_string(),
+                        |slot| {
+                            format!(
+                                "{:.0}%",
+                                c.modules.for_tab(*tab).expect("layer exists")[slot].amount * 100.0
+                            )
+                        },
+                    )
+            }
+        }
     }
 }
 
-/// Flat address space over every unique control id. Duplicated placements
-/// (e.g. `pad.level` on both Master and Chords) collapse to the owning tab so
-/// a jump always lands on the control's deepest editing surface.
+/// Flat address space the palette searches: every unique control at its
+/// owning tab, plus every catalog module on every layer that has a chain.
+/// Duplicated placements (e.g. `pad.level` on both Master and Chords) collapse
+/// to the owning tab. Module slot rows are excluded as controls — a module is
+/// reached through its `Module` entry, which knows how to find or create it.
 pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
     let mut entries: Vec<PaletteEntry> = Vec::new();
     for tab in Tab::all() {
         for (index_in_tab, spec) in tab_specs(tab).iter().enumerate() {
             if tab_owning_control(spec.id) == Some(tab)
-                && !entries.iter().any(|e| e.spec.id == spec.id)
+                && !spec.id.contains(".slot")
+                && !entries.iter().any(|e| e.id() == Some(spec.id))
             {
-                entries.push(PaletteEntry {
+                entries.push(PaletteEntry::Control {
                     tab,
                     index_in_tab,
                     spec,
                 });
             }
+        }
+    }
+    for tab in Tab::all() {
+        if !tab_has_module_chain(tab) {
+            continue;
+        }
+        for catalog in 0..MODULE_CATALOG.len() {
+            entries.push(PaletteEntry::Module { tab, catalog });
         }
     }
     entries
@@ -154,7 +212,10 @@ impl PaletteState {
             // word-start bonus. Typing a bare layer name must reach that
             // layer's level regardless.
             let primary_key = |entry: usize| {
-                layer_primary_rank(entries[entry].spec.id, query).unwrap_or(usize::MAX)
+                entries[entry]
+                    .id()
+                    .and_then(|id| layer_primary_rank(id, query))
+                    .unwrap_or(usize::MAX)
             };
             self.matches.sort_by(|left, right| {
                 primary_key(left.entry)
@@ -221,10 +282,17 @@ fn context_rank(
     recent: &[&'static str],
 ) -> (u8, usize, usize) {
     let palette_entry = &entries[entry];
-    let recent_rank = recent.iter().position(|&id| id == palette_entry.spec.id);
-    let page_index = tab_specs(current_tab)
-        .iter()
-        .position(|spec| spec.id == palette_entry.spec.id);
+    let recent_rank = recent.iter().position(|&id| Some(id) == palette_entry.id());
+    // A module offered for the page you are on ranks with that page's own
+    // controls, so "swing" on Bass reaches Bass before it reaches Tonal.
+    let page_index = match palette_entry {
+        PaletteEntry::Module { tab, catalog } => {
+            (*tab == current_tab).then_some(tab_specs(current_tab).len() + catalog)
+        }
+        PaletteEntry::Control { spec, .. } => tab_specs(current_tab)
+            .iter()
+            .position(|other| other.id == spec.id),
+    };
     let group = match (recent_rank, page_index) {
         (Some(_), _) => 0,
         (None, Some(_)) => 1,
@@ -287,7 +355,7 @@ pub(crate) fn fuzzy_score(query: &str, haystack: &str) -> Option<(i32, Vec<usize
         }
         // Word-start bonus (start of string or preceded by a separator).
         let at_word_start =
-            idx == 0 || matches!(hay.get(idx - 1), Some(' ') | Some('\u{b7}') | Some('.'));
+            idx == 0 || matches!(hay.get(idx - 1), Some(' ') | Some('·') | Some('.'));
         if at_word_start {
             score += 6;
         }

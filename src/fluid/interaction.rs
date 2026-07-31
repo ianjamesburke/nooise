@@ -573,6 +573,13 @@ pub(crate) enum InteractionEffect {
         id: &'static str,
     },
     PaletteCommit(Vec<PaletteStagedEdit>),
+    /// Put catalog module `catalog` on `tab`'s chain, or jump to it when the
+    /// chain already holds it. The kernel cannot tell which, so it says what
+    /// was asked for and lets the adapter resolve it.
+    PaletteModule {
+        tab: Tab,
+        catalog: usize,
+    },
     AutomationConfirm(AutomationKind),
     ResetSelected,
     ToggleAuto,
@@ -832,9 +839,11 @@ impl InteractionModel {
                         let state = project_palette(palette, self.navigation.page());
                         if let Some(entry_index) = palette.locked {
                             let entry = state.entry(entry_index);
-                            if let Ok(value) = palette.value_buffer.parse::<f32>() {
+                            if let (Some(id), Ok(value)) =
+                                (entry.id(), palette.value_buffer.parse::<f32>())
+                            {
                                 palette.staged.push(PaletteStagedEdit {
-                                    id: entry.spec.id,
+                                    id,
                                     value_bits: value.to_bits(),
                                 });
                                 palette.locked = None;
@@ -842,7 +851,7 @@ impl InteractionModel {
                                 palette.query.clear();
                                 palette.selected = 0;
                             } else {
-                                effects.push(palette_jump(entry));
+                                effects.push(palette_confirm(entry));
                                 self.mode = InteractionMode::Browsing;
                             }
                         } else if !palette.staged.is_empty() && palette.query.is_empty() {
@@ -853,7 +862,7 @@ impl InteractionModel {
                                 .resume
                                 .map_or(InteractionMode::Browsing, InteractionMode::Automation);
                         } else if let Some(found) = state.matches.get(state.selected) {
-                            effects.push(palette_jump(state.entry(found.entry)));
+                            effects.push(palette_confirm(state.entry(found.entry)));
                             self.mode = InteractionMode::Browsing;
                         }
                     }
@@ -863,10 +872,12 @@ impl InteractionModel {
                             && let Ok(value) = palette.value_buffer.parse::<f32>()
                         {
                             let entry = state.entry(entry_index);
-                            palette.staged.push(PaletteStagedEdit {
-                                id: entry.spec.id,
-                                value_bits: value.to_bits(),
-                            });
+                            if let Some(id) = entry.id() {
+                                palette.staged.push(PaletteStagedEdit {
+                                    id,
+                                    value_bits: value.to_bits(),
+                                });
+                            }
                         }
                         if !palette.staged.is_empty() {
                             effects.push(InteractionEffect::PaletteCommitAtBar(std::mem::take(
@@ -1305,11 +1316,24 @@ fn project_palette(palette: &PaletteMode, page: Page) -> PaletteState {
     state
 }
 
-fn palette_jump(entry: &PaletteEntry) -> InteractionEffect {
-    InteractionEffect::PaletteJump {
-        tab: entry.tab,
-        index: entry.index_in_tab,
-        id: entry.spec.id,
+/// What confirming a palette row does. A module row resolves to add-or-jump
+/// in the adapter, which is the only place that can see whether the layer
+/// already holds it.
+fn palette_confirm(entry: &PaletteEntry) -> InteractionEffect {
+    match entry {
+        PaletteEntry::Control {
+            tab,
+            index_in_tab,
+            spec,
+        } => InteractionEffect::PaletteJump {
+            tab: *tab,
+            index: *index_in_tab,
+            id: spec.id,
+        },
+        PaletteEntry::Module { tab, catalog } => InteractionEffect::PaletteModule {
+            tab: *tab,
+            catalog: *catalog,
+        },
     }
 }
 
@@ -1794,7 +1818,7 @@ mod tests {
             ..PaletteMode::default()
         };
         let projected = project_palette(&base, Page::Bass);
-        let expected = palette_jump(projected.entry(projected.matches[1].entry));
+        let expected = palette_confirm(projected.entry(projected.matches[1].entry));
 
         let ordinary = update(palette_model(base.clone()), Intent::Confirm);
         assert_eq!(ordinary.effects, vec![expected.clone()]);

@@ -1839,7 +1839,7 @@ fn draw_palette(
         Some(entry) => Line::from(vec![
             Span::styled("/", Style::default().fg(Color::Rgb(120, 128, 145))),
             Span::styled(
-                pal.entry(entry).spec.id,
+                pal.entry(entry).id().unwrap_or("module"),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
@@ -1881,7 +1881,7 @@ fn draw_palette(
             spans.push(Span::styled(ch.to_string(), style));
         }
         spans.push(Span::styled(
-            format!("  {}", (entry.spec.display)(controls)),
+            format!("  {}", entry.value(controls)),
             Style::default().fg(Color::Rgb(120, 200, 170)),
         ));
         lines.push(Line::from(spans));
