@@ -824,6 +824,59 @@ pub(crate) fn reset_lfo_or_control(
     );
 }
 
+/// The ceiling half of the extremes gesture, deliberately kept the same shape
+/// as `reset_lfo_or_control` above: same `ActiveField` arms in the same order,
+/// same `edit_session` boundary. Each family reads its ceiling from its own
+/// `DialScale` rather than re-deriving a max, so a field's range is declared
+/// in exactly one place.
+pub(crate) fn max_lfo_or_control(
+    effects: &mut EffectExecutor,
+    automation: &AutomationState,
+    lfo_selected: usize,
+    tab: Tab,
+    selected: usize,
+    beat: f64,
+) {
+    let active = active_field(automation, lfo_selected);
+    let recent_id = automation
+        .active_address()
+        .map(ControlAddress::id)
+        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    effects.edit_session(
+        AutoOwnership::TakeOver,
+        recent_id,
+        |snapshot| match active {
+            ActiveField::Lfo(address, field) => {
+                if let Some(route) = snapshot.automation.route_mut(address) {
+                    route.max_field_at(field, beat);
+                }
+            }
+            ActiveField::Envelope(address, field) => {
+                if let Some(route) = snapshot.automation.envelope_mut(address) {
+                    route.max_field(field);
+                }
+            }
+            ActiveField::LfoMacro(address, field, macro_field) => {
+                let key = unit_key(address.id(), field.macro_key());
+                if let Some(route) = snapshot.automation.field_macro_mut(&key) {
+                    route.max_field(macro_field);
+                }
+            }
+            ActiveField::LfoStep(address, target) => {
+                if let Some(route) = snapshot.automation.route_mut(address) {
+                    route.max_step(target);
+                }
+            }
+            ActiveField::Macro(address, field) => {
+                if let Some(route) = snapshot.automation.macro_route_mut(address) {
+                    route.max_field(field);
+                }
+            }
+            ActiveField::Control => apply_max(tab, selected, &mut snapshot.controls),
+        },
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn set_modulator_or_control(
     effects: &mut EffectExecutor,

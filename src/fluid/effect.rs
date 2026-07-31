@@ -394,21 +394,6 @@ impl EffectExecutor {
                     edit: ControlEdit::Value(value),
                 })
             }
-            InteractionEffect::MaxSelected => {
-                // Controls only. Modulator fields already have the reset
-                // gesture for their floor; a ceiling gesture for them needs
-                // each field's own unit semantics and is tracked separately.
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
-                let spec = spec_by_id(id).ok_or(EffectFailure::UnknownControl(id))?;
-                let snapshot = self.edit_session(AutoOwnership::TakeOver, Some(id), |s| {
-                    spec.apply_max(&mut s.controls);
-                });
-                Ok(EffectAcknowledgement::Published {
-                    generation: snapshot.generation,
-                })
-            }
             InteractionEffect::PaletteJump { tab, index, id } => {
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
@@ -434,6 +419,7 @@ impl EffectExecutor {
             InteractionEffect::Quit => Ok(EffectAcknowledgement::QuitRequested),
             unsupported @ (InteractionEffect::AutomationConfirm(_)
             | InteractionEffect::ResetSelected
+            | InteractionEffect::MaxSelected
             | InteractionEffect::ToggleAuto
             | InteractionEffect::ToggleUnits
             | InteractionEffect::ToggleMute { .. }
@@ -561,6 +547,20 @@ impl EffectExecutor {
             InteractionEffect::ResetSelected => {
                 let automation = self.session.load().automation.clone();
                 reset_lfo_or_control(
+                    self,
+                    &automation,
+                    context.automation_selected,
+                    context.tab,
+                    context.selected,
+                    context.beat,
+                );
+                Ok(EffectAcknowledgement::Published {
+                    generation: self.session.load().generation,
+                })
+            }
+            InteractionEffect::MaxSelected => {
+                let automation = self.session.load().automation.clone();
+                max_lfo_or_control(
                     self,
                     &automation,
                     context.automation_selected,
@@ -755,6 +755,7 @@ impl RecentControls {
 mod tests {
     use super::*;
     use crate::fluid::interaction::PerformanceInstrument;
+    use crate::fluid::widget::DialScale;
 
     #[derive(Default)]
     struct FakeClipboard {
@@ -787,6 +788,127 @@ mod tests {
             LiveSession::new(LiveSessionSnapshot::from_controls(controls)),
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
         )
+    }
+
+    /// Assert a family's field landed exactly on its own scale's ceiling and
+    /// inside its declared range — the range is read from the same
+    /// `DialScale` the bar draws, so a retuned range can never leave the
+    /// gesture pointing at a stale constant.
+    fn assert_at_ceiling(label: &str, value: f32, scale: DialScale) {
+        let max = scale.max_value();
+        assert!(
+            (value - max).abs() < f32::EPSILON,
+            "{label} did not reach its ceiling: {value} vs {max}"
+        );
+        assert!(
+            scale.ratio(value) >= 1.0 - f32::EPSILON,
+            "{label} landed outside its own throw at {value}"
+        );
+    }
+
+    /// The ceiling gesture must reach every modulator field family, not fall
+    /// through to the control underneath — that fall-through is the whole bug.
+    /// One case per `ActiveField` arm, driven through the real
+    /// `max_lfo_or_control` dispatch rather than the route methods directly.
+    #[test]
+    fn ceiling_gesture_tops_out_every_modulator_field_family() {
+        const ID: &str = "pad.level";
+        let address = ControlAddress::new(ID);
+        let mut selected = 0;
+
+        // LFO fields. Rows are `LfoField::ALL` in order while no field macro
+        // is expanded, and Shape is last, so maxing it into `Steps` cannot
+        // shift the rows under this loop.
+        let mut effects = executor();
+        open_modulator_effect_for_id(&mut effects, ID, ModKind::Lfo, &mut selected);
+        for (row, field) in LfoField::ALL.iter().enumerate() {
+            let automation = effects.session().load().automation.clone();
+            max_lfo_or_control(&mut effects, &automation, row + 1, Tab::Chords, 0, 0.0);
+            let snapshot = effects.session().load();
+            let route = snapshot.automation.route(address).unwrap();
+            assert_at_ceiling(field.label(), route.field_value(*field), field.scale());
+        }
+
+        // Steps staircase, now reachable because Shape maxed into `Steps`.
+        for target in [StepTarget::Count, StepTarget::Glide, StepTarget::Value(0)] {
+            let automation = effects.session().load().automation.clone();
+            let row = lfo_submenu_rows(&automation, address)
+                .iter()
+                .position(|r| matches!(r, LfoSubRow::Step(t) if *t == target))
+                .expect("a Steps-shaped LFO exposes its staircase rows");
+            max_lfo_or_control(&mut effects, &automation, row + 1, Tab::Chords, 0, 0.0);
+            let snapshot = effects.session().load();
+            let route = snapshot.automation.route(address).unwrap();
+            assert_at_ceiling(
+                &route.step_label(target),
+                route.step_value(target),
+                LfoRoute::step_scale(target),
+            );
+        }
+
+        // A macro stacked on an LFO field.
+        let key = unit_key(ID, LfoField::Amount.macro_key());
+        effects.edit_session(AutoOwnership::TakeOver, Some(ID), |snapshot| {
+            snapshot.automation.toggle_open_field(key.clone());
+        });
+        let automation = effects.session().load().automation.clone();
+        let row = lfo_submenu_rows(&automation, address)
+            .iter()
+            .position(|r| matches!(r, LfoSubRow::FieldMacro(LfoField::Amount, slot) if *slot == MacroField::ALL[0]))
+            .expect("an expanded field macro exposes its slot rows");
+        max_lfo_or_control(&mut effects, &automation, row + 1, Tab::Chords, 0, 0.0);
+        let snapshot = effects.session().load();
+        let route = *snapshot
+            .automation
+            .field_macro(&key)
+            .expect("the field macro exists once expanded");
+        drop(snapshot);
+        assert_at_ceiling(
+            "lfo field macro",
+            route.field_value(MacroField::ALL[0]),
+            MacroField::SCALE,
+        );
+
+        // Envelope fields.
+        let mut effects = executor();
+        open_modulator_effect_for_id(&mut effects, ID, ModKind::Envelope, &mut selected);
+        for (row, field) in EnvField::ALL.iter().enumerate() {
+            let automation = effects.session().load().automation.clone();
+            max_lfo_or_control(&mut effects, &automation, row + 1, Tab::Chords, 0, 0.0);
+            let snapshot = effects.session().load();
+            let route = snapshot.automation.envelope(address).unwrap();
+            assert_at_ceiling(field.label(), route.field_value(*field), field.scale());
+        }
+
+        // A control's own macro slots.
+        let mut effects = executor();
+        open_modulator_effect_for_id(&mut effects, ID, ModKind::Macro, &mut selected);
+        for (row, field) in MacroField::ALL.iter().enumerate() {
+            let automation = effects.session().load().automation.clone();
+            max_lfo_or_control(&mut effects, &automation, row + 1, Tab::Chords, 0, 0.0);
+            let snapshot = effects.session().load();
+            let route = snapshot.automation.macro_route(address).unwrap();
+            assert_at_ceiling(&field.label(), route.field_value(*field), MacroField::SCALE);
+        }
+    }
+
+    /// Row 0 is the parent slider, so the gesture still reaches the control
+    /// itself while an editor is open — the reset gesture behaves the same way.
+    #[test]
+    fn ceiling_gesture_still_reaches_the_control_on_the_parent_row() {
+        let mut effects = executor();
+        let mut selected = 0;
+        open_modulator_effect_for_id(&mut effects, "pad.level", ModKind::Lfo, &mut selected);
+        let automation = effects.session().load().automation.clone();
+        let spec = spec_by_id("pad.level").expect("pad.level exists");
+
+        max_lfo_or_control(&mut effects, &automation, 0, Tab::Chords, 0, 0.0);
+
+        let level = effects.session().load().controls.pad.level;
+        assert!(
+            (level - spec.max).abs() < f32::EPSILON,
+            "parent row should max the control, got {level}"
+        );
     }
 
     #[test]

@@ -647,6 +647,25 @@ impl LfoRoute {
         }
     }
 
+    /// Mirror of `reset_step`: take a step target to the top of its own
+    /// `step_scale` range. The scale owns the ceiling and each arm writes
+    /// storage directly, exactly as reset does — routing through `set_step`
+    /// would re-apply its percent entry semantics to a value that is already
+    /// in storage units.
+    pub(crate) fn max_step(&mut self, target: StepTarget) {
+        self.pickup = None;
+        let max = Self::step_scale(target).max_value();
+        match target {
+            StepTarget::Count => self.set_step_count(max.round() as i32),
+            StepTarget::Glide => self.step_glide = max,
+            StepTarget::Value(i) => {
+                if let Some(step) = self.steps.get_mut(i) {
+                    *step = max;
+                }
+            }
+        }
+    }
+
     pub(crate) fn reset_step(&mut self, target: StepTarget) {
         self.pickup = None;
         match target {
@@ -757,6 +776,25 @@ impl LfoRoute {
                 self.pickup = None;
             }
             _ => self.set_field_at(field, value, beat),
+        }
+    }
+
+    /// Mirror of `reset_field_at`: take the field to the top of its own
+    /// `DialScale` range. Interval still hands off through the rate pickup so
+    /// a live jump to the slowest rate does not click.
+    pub(crate) fn max_field_at(&mut self, field: LfoField, beat: f64) {
+        let max = field.scale().max_value();
+        match field {
+            LfoField::Shape => {
+                self.shape = LfoShape::from_index(max);
+                self.pickup = None;
+            }
+            LfoField::Amount => self.depth_ratio = max,
+            LfoField::Interval => self.set_cycle_with_pickup(max, beat),
+            LfoField::Offset => {
+                self.phase_offset_beats = max;
+                self.pickup = None;
+            }
         }
     }
 
@@ -1165,6 +1203,20 @@ impl EnvelopeRoute {
         }
     }
 
+    /// Mirror of `reset_field`: take the field to the top of its own
+    /// `DialScale` range. Storage is written directly rather than through
+    /// `set_field`, which expects amount in percent and snaps times to the
+    /// beat step — both wrong for a value already in the scale's own units.
+    pub(crate) fn max_field(&mut self, field: EnvField) {
+        let max = field.scale().max_value();
+        match field {
+            EnvField::Amount => self.amount = max,
+            EnvField::Attack => self.attack_beats = max,
+            EnvField::Decay => self.decay_beats = max,
+            EnvField::Trigger => self.trigger = EnvTrigger::from_index(max),
+        }
+    }
+
     pub(crate) fn reset_field(&mut self, field: EnvField) {
         let defaults = EnvelopeRoute::default();
         match field {
@@ -1284,6 +1336,12 @@ impl MacroRoute {
 
     pub(crate) fn set_field(&mut self, field: MacroField, value: f32) {
         self.amounts[field.index()] = (value / 100.0).clamp(-1.0, 1.0);
+    }
+
+    /// Mirror of `reset_field`: take the slot to the top of the shared macro
+    /// scale. `set_field` divides by 100, so storage is written directly.
+    pub(crate) fn max_field(&mut self, field: MacroField) {
+        self.amounts[field.index()] = MacroField::SCALE.max_value();
     }
 
     pub(crate) fn reset_field(&mut self, field: MacroField) {
