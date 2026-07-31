@@ -493,6 +493,9 @@ pub(crate) enum Intent {
     FinishPerformanceSequence(PerformanceAction),
     AdjustSelected(i8),
     ResetSelected,
+    /// Jump the selected control to the top of its range. Mirror of the
+    /// reset gesture, which already owns the bottom.
+    MaxSelected,
     ToggleAuto,
     ToggleUnits,
     ToggleMute {
@@ -533,6 +536,7 @@ impl Intent {
             | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
             | Self::ResetSelected
+            | Self::MaxSelected
             | Self::ToggleAuto
             | Self::ToggleUnits
             | Self::ToggleMute { .. }
@@ -575,6 +579,7 @@ pub(crate) enum InteractionEffect {
     PaletteCommit(Vec<PaletteStagedEdit>),
     AutomationConfirm(AutomationKind),
     ResetSelected,
+    MaxSelected,
     ToggleAuto,
     ToggleUnits,
     ToggleMute {
@@ -765,6 +770,7 @@ impl InteractionModel {
                 | Intent::FinishPerformanceSequence(_)
                 | Intent::AdjustSelected(_)
                 | Intent::ResetSelected
+                | Intent::MaxSelected
                 | Intent::ToggleAuto
                 | Intent::ToggleUnits
                 | Intent::ToggleMute { .. }
@@ -891,6 +897,7 @@ impl InteractionModel {
                     | Intent::FinishPerformanceSequence(_)
                     | Intent::AdjustSelected(_)
                     | Intent::ResetSelected
+                    | Intent::MaxSelected
                     | Intent::ToggleAuto
                     | Intent::ToggleUnits
                     | Intent::ToggleMute { .. }
@@ -960,6 +967,7 @@ impl InteractionModel {
                     effects.push(InteractionEffect::AdjustSelected(delta));
                 }
                 Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
+                Intent::MaxSelected => effects.push(InteractionEffect::MaxSelected),
                 Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
                 Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
                 Intent::ToggleMute { master } => {
@@ -1167,6 +1175,7 @@ impl InteractionModel {
                 | Intent::OpenAutomationField
                 | Intent::AdjustSelected(_)
                 | Intent::ResetSelected
+                | Intent::MaxSelected
                 | Intent::ToggleAuto
                 | Intent::ToggleUnits
                 | Intent::ToggleMute { .. }
@@ -1240,6 +1249,7 @@ fn update_browsing(
         }
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
         Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
+        Intent::MaxSelected => effects.push(InteractionEffect::MaxSelected),
         Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
         Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
         Intent::ToggleMute { master } => {

@@ -394,6 +394,21 @@ impl EffectExecutor {
                     edit: ControlEdit::Value(value),
                 })
             }
+            InteractionEffect::MaxSelected => {
+                // Controls only. Modulator fields already have the reset
+                // gesture for their floor; a ceiling gesture for them needs
+                // each field's own unit semantics and is tracked separately.
+                let id = context
+                    .selected_control
+                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let spec = spec_by_id(id).ok_or(EffectFailure::UnknownControl(id))?;
+                let snapshot = self.edit_session(AutoOwnership::TakeOver, Some(id), |s| {
+                    spec.apply_max(&mut s.controls);
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::PaletteJump { tab, index, id } => {
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }

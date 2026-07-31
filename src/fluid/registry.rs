@@ -378,6 +378,12 @@ impl ControlSpec {
         (self.set)(c, self.reset);
     }
 
+    /// Jump to the top of the control's range. The mirror of `apply_min`,
+    /// which goes to the reset target rather than literally the floor.
+    pub(crate) fn apply_max(&self, c: &mut FluidControls) {
+        (self.set)(c, self.max);
+    }
+
     pub(crate) fn apply_value(&self, value: f32, c: &mut FluidControls) {
         let next = match self.entry {
             Entry::Percent => normalize_unit_input(value) * self.max,

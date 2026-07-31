@@ -1683,6 +1683,45 @@ fn empty_module_slots_cost_no_song_code_bytes() {
     );
 }
 
+/// Shift+L is the mirror of the reset gesture: reset already owns the bottom
+/// of a range, this takes the top.
+#[test]
+fn shift_l_takes_a_control_to_the_top_of_its_range() {
+    let mut controls = FluidControls::default();
+    let spec = spec_by_id("bass.level").expect("bass.level exists");
+
+    spec.apply_max(&mut controls);
+    assert_close(controls.bass.level, spec.max);
+
+    // And its opposite still lands on the reset target, not the raw floor,
+    // so a control whose reset sits mid-range keeps that behaviour.
+    spec.apply_min(&mut controls);
+    assert_close(controls.bass.level, spec.reset);
+}
+
+/// Both ends have to work on every registered control, including the
+/// grid-stepped and discrete ones.
+#[test]
+fn both_range_extremes_land_in_range_for_every_control() {
+    for spec in all_specs() {
+        let mut controls = FluidControls::default();
+        spec.apply_max(&mut controls);
+        let at_max = (spec.get)(&controls);
+        assert!(
+            at_max >= spec.min && at_max <= spec.max,
+            "{} left its range at max: {at_max}",
+            spec.id
+        );
+        spec.apply_min(&mut controls);
+        let at_min = (spec.get)(&controls);
+        assert!(
+            at_min >= spec.min && at_min <= spec.max,
+            "{} left its range at min: {at_min}",
+            spec.id
+        );
+    }
+}
+
 #[test]
 fn tab_controls_classify_each_slider_kind() {
     use ControlKind::{Continuous, Discrete, Gain, Timing};
