@@ -451,6 +451,77 @@ pub(crate) fn pad_tones(
         .collect()
 }
 
+// ============================================================
+// Progression-level scale mode
+//
+// Every chord source in the engine — the built-in `PROGRESSIONS`/`BASS_LINES`
+// tables and the custom chord slots' diatonic degree walk alike — is spelled
+// around one tonal center (`TONIC`, A2) through one seven-note scale.
+// `pad.mode` selects which scale that is. Mode 0 is the scale the engine has
+// always used and must stay first and byte-identical.
+// ============================================================
+
+/// The tonal center every chord source is spelled around.
+const TONIC: i32 = 45; // A2
+
+/// Each mode's pitch classes, ascending within an octave.
+///
+/// Index 0 is the engine's original scale: the C-major pitch-class set read
+/// from A2, i.e. A natural minor — the engine's home quality has always been
+/// minor, since stacking diatonic thirds on the tonic yields A-C-E. Index 1
+/// raises the third, sixth and seventh of that scale, giving A major.
+const MODE_SCALES: [[i32; 7]; 2] = [
+    [0, 2, 4, 5, 7, 9, 11], // Minor: A B C D E F G
+    [1, 2, 4, 6, 8, 9, 11], // Major: A B C# D E F# G#
+];
+
+const MODE_LABELS: [&str; MODE_SCALES.len()] = ["Minor", "Major"];
+
+/// Number of selectable modes; the `pad.mode` row's upper bound.
+pub(crate) const SCALE_MODE_COUNT: usize = MODE_SCALES.len();
+
+/// Which seven pitch classes the harmony engine walks. Resolved once from
+/// `pad.mode` and threaded into every chord-source function, so no caller can
+/// silently fall back to a different scale than the one being heard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct ScaleMode(usize);
+
+impl ScaleMode {
+    /// Resolve `pad.mode`'s raw control value, wrapping across the modes.
+    pub(crate) fn from_control(value: f32) -> Self {
+        Self((value.round() as i64).rem_euclid(MODE_SCALES.len() as i64) as usize)
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        MODE_LABELS[self.0]
+    }
+
+    fn pitch_classes(self) -> &'static [i32; 7] {
+        &MODE_SCALES[self.0]
+    }
+
+    /// Re-spell a note authored in the home scale (`MODE_SCALES[0]`) into this
+    /// mode, keeping its diatonic degree. This is how the eight built-in
+    /// progressions and bass lines follow the mode switch instead of needing a
+    /// hand-written minor and major copy of each: the two scales share a tonic
+    /// and seven degrees, so a mode change is exactly "re-voice degrees 3, 6
+    /// and 7". A pitch class already present in the target scale is returned
+    /// untouched, so borrowed chromatics (progression H's D-major chord holds
+    /// an F#) survive the switch instead of being pushed off their own scale
+    /// tone. On `MINOR` this is the identity function for every note.
+    pub(crate) fn respell(self, note: i32) -> i32 {
+        let scale = self.pitch_classes();
+        let pitch = note.rem_euclid(12);
+        if scale.contains(&pitch) {
+            return note;
+        }
+        let home = &MODE_SCALES[0];
+        // `home[0]` is 0, so some degree always sits at or below `pitch`.
+        let degree = home.iter().rposition(|&pc| pc <= pitch).unwrap_or(0);
+        note.div_euclid(12) * 12 + scale[degree] + (pitch - home[degree])
+    }
+}
+
 pub(crate) const PROGRESSIONS: [[[i32; 4]; 8]; 8] = [
     // Progression A: with an 8s release, each chord rings well into the next
     // (and beyond), so voicings are chosen to hold at least one common tone
@@ -596,11 +667,12 @@ pub(crate) fn pad_chord_count(c: &PadControls) -> usize {
 /// all resolve their current chord through this one function.
 pub(crate) fn pad_chord_tones(c: &PadControls, step: usize) -> [i32; 4] {
     let progression = progression_index(c.progression);
+    let mode = ScaleMode::from_control(c.mode);
     if is_custom_progression(progression) {
         let count = pad_chord_count(c);
-        pad_chord_notes_with_slot(&c.chord_slots[step % count])
+        pad_chord_notes_with_slot(&c.chord_slots[step % count], mode)
     } else {
-        pad_chord_midi(progression, step)
+        pad_chord_midi(progression, step).map(|note| mode.respell(note))
     }
 }
 
@@ -609,38 +681,36 @@ pub(crate) fn pad_chord_tones(c: &PadControls, step: usize) -> [i32; 4] {
 /// overridable by `quality` for modal interchange), then a top voice chosen
 /// by `extension`, finally reshuffled by `inversion` and de-duplicated
 /// upward so inversions/accidentals never collide two voices onto one note.
-pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
-    const TONIC: i32 = 45; // A2, matching PROGRESSIONS' shared tonal center
-    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
+pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls, mode: ScaleMode) -> [i32; 4] {
+    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32, mode);
     let accidental = slot.accidental.round().clamp(-1.0, 1.0) as i32;
     let extension = slot.extension.round().clamp(0.0, 3.0) as i32;
     let inversion = slot.inversion.round().clamp(0.0, 3.0) as i32;
     let third = match slot.quality.round().clamp(-1.0, 1.0) as i32 {
         -1 => root + 3,
         1 => root + 4,
-        _ => shift_diatonic(root, 2),
+        _ => shift_diatonic(root, 2, mode),
     };
     let top = match extension {
-        1 => shift_diatonic(root, 6),
-        2 => shift_diatonic(root, 8),
-        3 => shift_diatonic(root, 10),
+        1 => shift_diatonic(root, 6, mode),
+        2 => shift_diatonic(root, 8, mode),
+        3 => shift_diatonic(root, 10, mode),
         _ => root + 12,
     };
-    let mut notes = [root, third, shift_diatonic(root, 4), top];
+    let mut notes = [root, third, shift_diatonic(root, 4, mode), top];
     apply_inversion(&mut notes, inversion);
     if accidental != 0 {
         notes = notes.map(|note| note + accidental);
     }
-    dedupe_upwards(&mut notes);
+    dedupe_upwards(&mut notes, mode);
     notes
 }
 
 /// A custom chord slot's root note alone (root + accidental, before
 /// extension/inversion reshuffle) — what Bass follows instead of the pad's
 /// full voicing.
-pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
-    const TONIC: i32 = 45;
-    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
+pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls, mode: ScaleMode) -> i32 {
+    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32, mode);
     root + slot.accidental.round().clamp(-1.0, 1.0) as i32
 }
 
@@ -648,25 +718,24 @@ pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
 /// otherwise reports what the diatonic scale gives at this degree. Drives the
 /// Quality row's "scale (min)"-style display so the inherit position still
 /// tells the user what they're hearing.
-pub(crate) fn pad_chord_slot_is_minor(slot: &ChordSlotControls) -> bool {
+pub(crate) fn pad_chord_slot_is_minor(slot: &ChordSlotControls, mode: ScaleMode) -> bool {
     match slot.quality.round().clamp(-1.0, 1.0) as i32 {
         -1 => true,
         1 => false,
         _ => {
-            const TONIC: i32 = 45;
-            let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
-            shift_diatonic(root, 2) - root == 3
+            let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32, mode);
+            shift_diatonic(root, 2, mode) - root == 3
         }
     }
 }
 
-/// Move `note` by `steps` positions on the diatonic major scale (not raw
+/// Move `note` by `steps` positions on `mode`'s diatonic scale (not raw
 /// semitones), preserving octave-crossing correctly in either direction.
-fn shift_diatonic(note: i32, steps: i32) -> i32 {
-    const SCALE: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+fn shift_diatonic(note: i32, steps: i32, mode: ScaleMode) -> i32 {
+    let scale = mode.pitch_classes();
     let octave = note.div_euclid(12);
     let pitch = note.rem_euclid(12);
-    let degree = SCALE
+    let degree = scale
         .iter()
         .position(|&pc| pc == pitch)
         .map(|index| octave * 7 + index as i32)
@@ -674,7 +743,7 @@ fn shift_diatonic(note: i32, steps: i32) -> i32 {
     let shifted = degree + steps;
     let shifted_octave = shifted.div_euclid(7);
     let shifted_degree = shifted.rem_euclid(7) as usize;
-    shifted_octave * 12 + SCALE[shifted_degree]
+    shifted_octave * 12 + scale[shifted_degree]
 }
 
 /// Move the lowest voice(s) up an octave `inversion` times, re-sorting after
@@ -690,11 +759,11 @@ fn apply_inversion(notes: &mut [i32; 4], inversion: i32) {
 /// Nudge any voice that lands on or below the one before it up by diatonic
 /// steps until the chord is strictly ascending — accidentals or inversions
 /// can otherwise stack two voices onto the same (or a crossed) pitch.
-fn dedupe_upwards(notes: &mut [i32; 4]) {
+fn dedupe_upwards(notes: &mut [i32; 4], mode: ScaleMode) {
     notes.sort_unstable();
     for i in 1..notes.len() {
         while notes[i] <= notes[i - 1] {
-            notes[i] = shift_diatonic(notes[i], 1);
+            notes[i] = shift_diatonic(notes[i], 1, mode);
         }
     }
 }

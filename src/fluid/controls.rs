@@ -126,6 +126,11 @@ pub(crate) struct PadControls {
     pub chord_bars: f32, // 1,2,4,8,16,32,64
     pub chord_count: f32,
     pub progression: f32,
+    /// Progression-level scale: 0=Minor (the engine's original scale), 1=Major.
+    /// Selects the seven pitch classes every chord source is spelled through —
+    /// the built-in progressions/bass lines are re-spelled degree-for-degree,
+    /// and the custom chord slots walk their degrees on it (`voice::ScaleMode`).
+    pub mode: f32,
     pub chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
     pub reverb_mix: f32,
     pub stereo_width: f32,
@@ -143,6 +148,7 @@ impl Default for PadControls {
             chord_bars: 4.0,
             chord_count: 8.0,
             progression: 0.0,
+            mode: 0.0,
             chord_slots: std::array::from_fn(|slot| ChordSlotControls {
                 degree: DEFAULT_CHORD_SLOT_DEGREES[slot],
                 ..ChordSlotControls::default()

@@ -21,6 +21,13 @@ fn assert_close(actual: f32, expected: f32) {
     );
 }
 
+/// The scale mode a fresh `PadControls` resolves to. Read from the shipped
+/// default rather than named directly, so a change to `pad.mode`'s default
+/// would fail the assertions below instead of silently retuning them.
+fn default_mode() -> ScaleMode {
+    ScaleMode::from_control(PadControls::default().mode)
+}
+
 /// Test-only reconstruction of the pad's built-in chord frequencies, from
 /// the two building blocks production code actually uses
 /// (`pad_chord_midi`, `midi_to_hz`, `tune_ratio`) now that the custom
@@ -253,17 +260,25 @@ fn new_progressions_hold_a_common_tone_between_consecutive_steps() {
     // their doc comments. A-D predate this test and include one documented
     // exception (progression A, step 4->5, an intentional stepwise glide
     // with no shared tone), so they are left unchecked here.
-    for (progression_index, progression) in PROGRESSIONS.iter().enumerate().skip(4) {
-        for step in 0..8 {
-            let current = progression[step];
-            let next = progression[(step + 1) % 8];
-            let shares_a_tone = current.iter().any(|note| next.contains(note));
-            assert!(
-                shares_a_tone,
-                "progression {progression_index} step {step} -> {} shares no common tone \
-                 (an 8s release needs at least one held tone so chords don't clash)",
-                (step + 1) % 8
-            );
+    // Checked under every `pad.mode`: re-spelling maps each note to the same
+    // degree in the same octave, so a common tone stays a common tone and this
+    // discipline survives the mode switch.
+    for mode_value in 0..SCALE_MODE_COUNT {
+        let mode = ScaleMode::from_control(mode_value as f32);
+        for (progression_index, progression) in PROGRESSIONS.iter().enumerate().skip(4) {
+            for step in 0..8 {
+                let current = progression[step].map(|note| mode.respell(note));
+                let next = progression[(step + 1) % 8].map(|note| mode.respell(note));
+                let shares_a_tone = current.iter().any(|note| next.contains(note));
+                assert!(
+                    shares_a_tone,
+                    "progression {progression_index} step {step} -> {} shares no common tone \
+                     in {} mode (an 8s release needs at least one held tone so chords \
+                     don't clash)",
+                    (step + 1) % 8,
+                    mode.label()
+                );
+            }
         }
     }
 }
@@ -1698,10 +1713,11 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (Tab::Perc, vec![Gain, Gain, Timing, Timing, Timing, Gain]),
         (Tab::Chords, {
-            // 11 base rows, then 8 slots x 5 discrete rows
+            // `CHORDS_BASE_ROWS` base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
             let mut kinds = vec![
-                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Gain, Gain,
+                Gain, Gain,
             ];
             kinds.extend(vec![Discrete; 40]);
             kinds
@@ -2243,9 +2259,10 @@ fn chords_progression_adjusts_and_clamps() {
 fn chords_tab_controls_none_shows_only_base_params() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, ChordDrill::None);
-    assert_eq!(rows.len(), 11);
+    assert_eq!(rows.len(), CHORDS_BASE_ROWS);
     assert_eq!(rows[0].id, "pad.level");
     assert_eq!(rows[6].id, "pad.progression");
+    assert_eq!(rows[7].id, "pad.mode");
     assert_eq!(rows[2].id, "pad.release_time");
     assert!(rows.iter().all(|r| !r.label.contains("Root")));
 }
@@ -2285,12 +2302,15 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 #[test]
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0), 11);
-    assert_eq!(chords_flat_index(progression_drill(), 2), 21);
-    assert_eq!(chords_flat_index(slot_drill(2), 0), 22);
+    assert_eq!(chords_flat_index(progression_drill(), 0), CHORDS_BASE_ROWS);
+    assert_eq!(
+        chords_flat_index(progression_drill(), 2),
+        CHORDS_BASE_ROWS + 10
+    );
+    assert_eq!(chords_flat_index(slot_drill(2), 0), CHORDS_BASE_ROWS + 11);
 
     let controls = FluidControls::default();
-    let expected = tab_controls(Tab::Chords, &controls)[22].id;
+    let expected = tab_controls(Tab::Chords, &controls)[CHORDS_BASE_ROWS + 11].id;
     assert_eq!(expected, "pad.chord3_accidental");
 }
 
@@ -2410,7 +2430,10 @@ fn bass_root_note_follows_custom_chord_slot_root_when_selected() {
     pad.chord_slots[3].accidental = 1.0;
 
     let root = bass_root_note(CUSTOM_PROGRESSION_INDEX, 3, &pad);
-    assert_eq!(root, pad_chord_root_note(&pad.chord_slots[3]));
+    assert_eq!(
+        root,
+        pad_chord_root_note(&pad.chord_slots[3], default_mode())
+    );
 }
 
 #[test]
@@ -2739,10 +2762,12 @@ fn bass_interval_crops_phrase_instead_of_stretching_it() {
 }
 
 #[test]
-fn chords_reverb_mix_row_shifted_to_index_four() {
+fn chords_reverb_mix_row_follows_the_progression_and_mode_rows() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[7].label, "Reverb Mix");
+    assert_eq!(rows[6].label, "Progression");
+    assert_eq!(rows[7].label, "Mode");
+    assert_eq!(rows[8].label, "Reverb Mix");
 }
 
 #[test]
@@ -3010,9 +3035,9 @@ fn pad_chord_notes_with_slot_builds_notes_from_root_extension_and_inversion() {
         inversion: 1.0,
     };
 
-    let notes = pad_chord_notes_with_slot(&slot);
+    let notes = pad_chord_notes_with_slot(&slot, default_mode());
 
-    assert_eq!(notes, pad_chord_notes_with_slot(&slot));
+    assert_eq!(notes, pad_chord_notes_with_slot(&slot, default_mode()));
     assert_eq!(notes.len(), 4);
     // Strictly ascending: inversion/accidental never collapse two voices
     // onto the same (or a crossed) pitch.
@@ -3024,34 +3049,37 @@ fn chord_slot_quality_overrides_the_third_for_modal_interchange() {
     // The tonic (A over the C-major pitch-class scale) is diatonically an
     // A-minor triad: third = root + 3.
     let tonic = ChordSlotControls::default();
-    assert_eq!(pad_chord_notes_with_slot(&tonic)[1], 45 + 3);
-    assert!(pad_chord_slot_is_minor(&tonic));
+    assert_eq!(pad_chord_notes_with_slot(&tonic, default_mode())[1], 45 + 3);
+    assert!(pad_chord_slot_is_minor(&tonic, default_mode()));
 
     // Forcing major raises only the third; root/fifth stay diatonic.
     let tonic_major = ChordSlotControls {
         quality: 1.0,
         ..ChordSlotControls::default()
     };
-    let notes = pad_chord_notes_with_slot(&tonic_major);
+    let notes = pad_chord_notes_with_slot(&tonic_major, default_mode());
     assert_eq!(notes[0], 45);
     assert_eq!(notes[1], 45 + 4);
     assert_eq!(notes[2], 45 + 7);
-    assert!(!pad_chord_slot_is_minor(&tonic_major));
+    assert!(!pad_chord_slot_is_minor(&tonic_major, default_mode()));
 
     // Degree 2 lands on C: diatonically major; forcing minor flattens it.
     let third_degree = ChordSlotControls {
         degree: 2.0,
         ..ChordSlotControls::default()
     };
-    assert!(!pad_chord_slot_is_minor(&third_degree));
+    assert!(!pad_chord_slot_is_minor(&third_degree, default_mode()));
     let third_degree_minor = ChordSlotControls {
         degree: 2.0,
         quality: -1.0,
         ..ChordSlotControls::default()
     };
-    let root = pad_chord_notes_with_slot(&third_degree_minor)[0];
-    assert_eq!(pad_chord_notes_with_slot(&third_degree_minor)[1], root + 3);
-    assert!(pad_chord_slot_is_minor(&third_degree_minor));
+    let root = pad_chord_notes_with_slot(&third_degree_minor, default_mode())[0];
+    assert_eq!(
+        pad_chord_notes_with_slot(&third_degree_minor, default_mode())[1],
+        root + 3
+    );
+    assert!(pad_chord_slot_is_minor(&third_degree_minor, default_mode()));
 
     // The Quality row's display resolves the inherit position to what the
     // scale actually gives at this degree.
@@ -3069,7 +3097,7 @@ fn chord_slot_quality_overrides_the_third_for_modal_interchange() {
 #[test]
 fn pad_chord_root_note_applies_degree_and_accidental() {
     let flat_default = ChordSlotControls::default();
-    assert_eq!(pad_chord_root_note(&flat_default), 45); // A2 tonic
+    assert_eq!(pad_chord_root_note(&flat_default, default_mode()), 45); // A2 tonic
 
     let sharp_second = ChordSlotControls {
         degree: 1.0,
@@ -3077,7 +3105,7 @@ fn pad_chord_root_note_applies_degree_and_accidental() {
         ..ChordSlotControls::default()
     };
     // A2 up one diatonic degree (B2, MIDI 47) plus a sharp.
-    assert_eq!(pad_chord_root_note(&sharp_second), 48);
+    assert_eq!(pad_chord_root_note(&sharp_second, default_mode()), 48);
 }
 
 #[test]
@@ -3096,7 +3124,10 @@ fn custom_progression_pad_bass_and_arp_read_the_same_chord_source() {
 
     // Bass's root matches the pad chord's own root voice, and both derive
     // from the same slot data via the shared chord-source path.
-    assert_eq!(root, pad_chord_root_note(&pad.chord_slots[2]));
+    assert_eq!(
+        root,
+        pad_chord_root_note(&pad.chord_slots[2], default_mode())
+    );
     assert_eq!(root, tones[0]);
 
     // Arp cycles the same 4 chord tones the pad voices (span 1 = no octave
@@ -3106,6 +3137,128 @@ fn custom_progression_pad_bass_and_arp_read_the_same_chord_source() {
         sorted.sort_unstable();
         sorted.to_vec()
     });
+}
+
+/// The whole `pad.mode` feature is additive: at its default every chord and
+/// bass note the engine has ever produced must come out bit-for-bit the same,
+/// through every voice's shared chord source.
+#[test]
+fn default_mode_leaves_every_built_in_chord_and_bass_note_unchanged() {
+    assert_close(PadControls::default().mode, 0.0);
+    assert_eq!(default_mode().label(), "Minor");
+
+    for progression in 0..PROGRESSIONS.len() {
+        let pad = PadControls {
+            progression: progression as f32,
+            ..PadControls::default()
+        };
+        for step in 0..8 {
+            assert_eq!(
+                pad_chord_tones(&pad, step),
+                PROGRESSIONS[progression][step],
+                "progression {progression} step {step} chord moved at the default mode"
+            );
+            assert_eq!(
+                bass_root_note(progression, step, &pad),
+                BASS_LINES[progression][step],
+                "progression {progression} step {step} bass moved at the default mode"
+            );
+        }
+    }
+
+    // The custom chord-slot path walks the same scale, so its default
+    // progression is untouched too: slot 0 is the A-minor tonic triad.
+    let custom = PadControls {
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        ..PadControls::default()
+    };
+    assert_eq!(pad_chord_tones(&custom, 0), [45, 48, 52, 57]);
+    assert!(pad_chord_slot_is_minor(
+        &custom.chord_slots[0],
+        default_mode()
+    ));
+
+    // Every note in every scale respells to itself at the default.
+    for note in 0..128 {
+        assert_eq!(default_mode().respell(note), note);
+    }
+}
+
+/// Major mode is exactly "raise degrees 3, 6 and 7 of the home scale": it
+/// keeps every root and fifth where it was and re-voices only the notes that
+/// carry the minor colour.
+#[test]
+fn major_mode_raises_the_third_sixth_and_seventh_of_the_home_scale() {
+    let major = ScaleMode::from_control(1.0);
+    assert_eq!(major.label(), "Major");
+
+    // A B D E (root, second, fourth, fifth) are shared by both scales.
+    for note in [45, 47, 50, 52, 57, 59, 62, 64] {
+        assert_eq!(major.respell(note), note);
+    }
+    // C D E -> C# F# G#: third, sixth and seventh each go up a semitone.
+    for note in [48, 53, 55, 60, 65, 67] {
+        assert_eq!(major.respell(note), note + 1);
+    }
+}
+
+/// A note already belonging to the target scale is left alone, so chords
+/// borrowed from outside the home scale survive the switch instead of being
+/// pushed off their own scale tone. Progression H's D-major chord holds an F#,
+/// which is diatonic in A major.
+#[test]
+fn major_mode_keeps_borrowed_notes_that_already_belong_to_the_target_scale() {
+    let major = ScaleMode::from_control(1.0);
+    assert_eq!(major.respell(54), 54); // F#3
+    let pad = PadControls {
+        progression: 7.0,
+        mode: 1.0,
+        ..PadControls::default()
+    };
+    assert_eq!(pad_chord_tones(&pad, 1), [50, 54, 57, 62]); // D major, intact
+}
+
+/// The audible headline: the same progression's tonic chord flips quality, and
+/// Pad, Bass and the Quality row's display all follow the one switch.
+#[test]
+fn major_mode_flips_the_tonic_chord_and_every_voice_follows() {
+    let mut pad = PadControls {
+        progression: 0.0,
+        ..PadControls::default()
+    };
+    // Progression A step 0 is Am (A D E A); its second step holds a C.
+    assert_eq!(pad_chord_tones(&pad, 1), PROGRESSIONS[0][1]);
+    pad.mode = 1.0;
+    let minor_step = PROGRESSIONS[0][1];
+    let major_step = pad_chord_tones(&pad, 1);
+    assert_ne!(
+        major_step, minor_step,
+        "major mode must change what is heard"
+    );
+
+    // Custom slots: the tonic's diatonic third becomes major, and the Quality
+    // row's inherit position reports it.
+    let custom = PadControls {
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        mode: 1.0,
+        ..PadControls::default()
+    };
+    let tonic = pad_chord_tones(&custom, 0);
+    assert_eq!(tonic[0], 45);
+    assert_eq!(tonic[1], 45 + 4, "tonic third is major in major mode");
+    let major = ScaleMode::from_control(1.0);
+    assert!(!pad_chord_slot_is_minor(&custom.chord_slots[0], major));
+
+    // Bass follows the same scale rather than spelling a degree the chord
+    // above it has re-voiced: progression A's step 5 sits on an F (degree 6),
+    // which major mode raises, while its step 4 E is shared and stays put.
+    let bass_pad = PadControls {
+        progression: 0.0,
+        mode: 1.0,
+        ..PadControls::default()
+    };
+    assert_eq!(bass_root_note(0, 5, &bass_pad), BASS_LINES[0][5] + 1);
+    assert_eq!(bass_root_note(0, 4, &bass_pad), BASS_LINES[0][4]);
 }
 
 #[test]

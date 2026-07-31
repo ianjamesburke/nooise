@@ -21,13 +21,16 @@ pub(crate) const BASS_LINES: [[i32; 8]; 8] = [
 /// Bass follows the same chord source as Pad/Arp: for a custom progression
 /// it reads the pad's chord-slot root directly (`pad_chord_root_note`); for
 /// a built-in progression it keeps its own authored `BASS_LINES`, which
-/// deliberately diverge from the pad's chord roots (see above).
+/// deliberately diverge from the pad's chord roots (see above). Both branches
+/// resolve through the same `pad.mode` scale the pad uses, so the bass never
+/// spells a degree the chord above it has already re-voiced.
 pub(crate) fn bass_root_note(progression: usize, step: usize, pad: &PadControls) -> i32 {
+    let mode = ScaleMode::from_control(pad.mode);
     if is_custom_progression(progression) {
         let count = pad_chord_count(pad);
-        pad_chord_root_note(&pad.chord_slots[step % count])
+        pad_chord_root_note(&pad.chord_slots[step % count], mode)
     } else {
-        BASS_LINES[progression % BASS_LINES.len()][step % 8]
+        mode.respell(BASS_LINES[progression % BASS_LINES.len()][step % 8])
     }
 }
 
