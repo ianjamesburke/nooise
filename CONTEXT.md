@@ -19,6 +19,9 @@
 - **Effect:** an ordered request from the pure interaction kernel to the
   outside world, such as atomically publishing session edits, copying a song
   code, or quitting. Effects cannot mutate the interaction model directly.
+- **Effect module:** an addable, slot-addressed musical processor on a voice
+  layer or Master. Its stored catalog kind selects shared pre-trigger or
+  post-synthesis behavior; this is distinct from an interaction **Effect**.
 - **Live-session snapshot:** one immutable aggregate containing controls,
   automation, and user-audible runtime session state that must change
   coherently. Writers publish the aggregate with one atomic `ArcSwap`

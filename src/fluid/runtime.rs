@@ -23,9 +23,8 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
-    ChordDrill, InputPhase, Intent, InteractionMode, MasterDrill, Navigation, PageDirection,
-    PerformanceAction, PerformanceInstrument, PerformanceKind, PerformanceMode, SemanticAction,
-    SequenceStage,
+    ChordDrill, InputPhase, Intent, InteractionMode, Navigation, PageDirection, PerformanceAction,
+    PerformanceInstrument, PerformanceKind, PerformanceMode, SemanticAction, SequenceStage,
 };
 
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -673,10 +672,6 @@ pub(crate) fn map_input(
                         selected,
                         drill: ChordDrill::Progression { .. },
                     } => Intent::EnterChordSlot(selected),
-                    Navigation::Master {
-                        selected: super::MASTER_COMP_AMOUNT_ROW,
-                        drill: MasterDrill::None,
-                    } => Intent::EnterMasterCompression,
                     Navigation::Chords {
                         drill: ChordDrill::None,
                         ..

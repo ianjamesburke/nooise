@@ -24,7 +24,10 @@ impl KickEngine {
     }
 
     pub(crate) fn next(&mut self, c: &KickControls, timing: TimingContext) -> (f32, f32) {
-        if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
+        if self
+            .trigger
+            .pop_swung(timing, c.interval_beats, c.offset_beats, c.swing)
+        {
             self.voices.push(KickVoice::new(
                 kick_type_index(c.voice_type),
                 c,
@@ -39,11 +42,11 @@ impl KickEngine {
     }
 }
 
-/// Shared click transient + amplitude envelope + drive + soft-attack + pan
+/// Shared click transient + amplitude envelope + soft-attack + pan
 /// machinery behind every `kick.type` voice: a single exponential amplitude
 /// decay (also gates voice life via `is_done`), an optional short noise click
-/// layered in at onset, the shared soft-clip `drive_stage`, an optional
-/// linear fade-in that rounds off the onset transient, and a fixed per-voice
+/// layered in at onset, an optional linear fade-in that rounds off the onset
+/// transient, and a fixed per-voice
 /// stereo pan drawn once at construction. Each variant supplies its own
 /// pitch/oscillator body and filter around this; `shape` only covers the
 /// parts identical across all four types. `shape` updates `amp` for the
@@ -61,7 +64,6 @@ pub(crate) struct KickVoiceCore {
     pub(crate) amp_decay: f32,
     pub(crate) click_remaining: u64,
     pub(crate) click_level: f32,
-    pub(crate) drive: f32,
     pub(crate) attack_remaining: u64,
     pub(crate) attack_gain: f32,
     pub(crate) attack_inc: f32,
@@ -83,7 +85,6 @@ impl KickVoiceCore {
             amp_decay: (-1.0 / amp_tau).exp(),
             click_remaining: (c.amp_decay_ms * 0.001 * sample_rate * 0.04).round() as u64,
             click_level: c.click * click_scale,
-            drive: c.drive,
             attack_remaining: attack_samples,
             attack_gain: 0.0,
             attack_inc: if attack_samples == 0 {
@@ -102,7 +103,6 @@ impl KickVoiceCore {
             s += rng.gen_range(-1.0f32..1.0) * self.click_level * self.amp;
             self.click_remaining -= 1;
         }
-        s = drive_stage(s, self.drive);
         // Applied to the output sample, never to `amp`, so the decay envelope
         // math (and `is_done`) is identical with or without an attack ramp.
         if self.attack_remaining > 0 {
@@ -169,8 +169,8 @@ impl KickVoice {
 /// Type 0 (default): the original kick voice, byte-for-byte unchanged. A
 /// sine carrier phase-modulated by a 2x-ratio sine modulator with decaying
 /// depth (a tight FM thud), an exponential pitch glide from `start_freq` down
-/// to `start_freq * 0.28`, an onset noise click, the shared drive stage, and
-/// a one-pole lowpass mapped from `kick.filter`.
+/// to `start_freq * 0.28`, an onset noise click, and a one-pole lowpass mapped
+/// from `kick.filter`. Drive runs later in the shared layer module chain.
 pub(crate) struct SubKickVoice {
     pub(crate) core: KickVoiceCore,
     pub(crate) phase: f32,
@@ -267,7 +267,7 @@ const KICK_WARM_OUTPUT_GAIN: f32 = 0.9;
 /// Type 1: a warm, round FM body. Same FM-thud/pitch-glide approach as Sub,
 /// but with a shallow FM depth at a hollow, woody modulator ratio, a slightly
 /// shallower pitch drop, a soft attack ramp, and a scaled-down click. Shares
-/// Sub's click/drive/one-pole-lowpass/pan machinery via `KickVoiceCore`.
+/// Sub's click/one-pole-lowpass/pan machinery via `KickVoiceCore`.
 pub(crate) struct WarmKickVoice {
     pub(crate) core: KickVoiceCore,
     pub(crate) phase: f32,
@@ -357,7 +357,7 @@ const KICK_WOOD_DAMP: f32 = 0.9;
 /// has a clearer starting pitch to color.
 const KICK_WOOD_PITCH_DROP_RATIO: f32 = 0.35;
 /// Bandpass/dry blend. The bandpass alone throws away the carrier's low end
-/// and reads thin; blending the post-drive dry signal back in keeps the
+/// and reads thin; blending the unfiltered dry signal back in keeps the
 /// weight underneath the wooden coloration.
 const KICK_WOOD_BANDPASS_MIX: f32 = 0.6;
 /// Linear onset fade-in, rounding off the transient snap.
@@ -371,12 +371,12 @@ const KICK_WOOD_CLICK_SCALE: f32 = 0.35;
 /// loudness.
 const KICK_WOOD_OUTPUT_GAIN: f32 = 1.7;
 
-/// Type 2: a soft wooden body. Runs the post-drive signal through a
+/// Type 2: a soft wooden body. Runs the dry voice signal through a
 /// hand-rolled, heavily-damped 2-pole bandpass (Chamberlin state-variable
 /// filter) centered in the 110-400Hz range via `kick.filter`, then blends
 /// that band back against the dry signal so the struck-wood coloration sits
 /// on top of the kick's own low end rather than replacing it. Keeps the same
-/// trigger/pitch-envelope/click/drive/pan structure as Sub.
+/// trigger/pitch-envelope/click/pan structure as Sub.
 pub(crate) struct WoodKickVoice {
     pub(crate) core: KickVoiceCore,
     pub(crate) phase: f32,
@@ -487,9 +487,9 @@ const KICK_FELT_OUTPUT_GAIN: f32 = 0.95;
 /// (non-band-limited, consistent with this codebase's additive-approximation
 /// approach elsewhere — see `bass.rs`'s Saw voice) triangle: odd harmonics
 /// only, falling off as 1/n², so it thickens the body without adding edge.
-/// Uses the user's `kick.drive` unmodified via `KickVoiceCore` and a darker
-/// lowpass mapping than Sub. Keeps the same pitch-envelope/click/pan
-/// structure as Sub.
+/// Uses a darker lowpass mapping than Sub and keeps the same
+/// pitch-envelope/click/pan structure. Optional Drive follows all kick types
+/// through the shared layer chain.
 pub(crate) struct FeltKickVoice {
     pub(crate) core: KickVoiceCore,
     pub(crate) phase: f32,
@@ -566,5 +566,31 @@ impl FeltKickVoice {
 
     pub(crate) fn is_done(&self) -> bool {
         self.core.is_done()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn swing_delays_the_kicks_odd_subdivision() {
+        let telemetry = Arc::new(FluidTelemetry::default());
+        let mut kick = KickEngine::new(48_000.0, Arc::clone(&telemetry));
+        let controls = KickControls {
+            level: 1.0,
+            interval_beats: 0.5,
+            swing: 1.0,
+            ..KickControls::default()
+        };
+
+        kick.next(&controls, TimingContext::new(48_000.0, 120.0, 0.0));
+        kick.next(&controls, TimingContext::new(48_000.0, 120.0, 0.5));
+        assert_eq!(telemetry.kick_pulse.load(Ordering::Relaxed), 1);
+
+        kick.next(&controls, TimingContext::new(48_000.0, 120.0, 0.75));
+        assert_eq!(telemetry.kick_pulse.load(Ordering::Relaxed), 2);
     }
 }

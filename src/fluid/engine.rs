@@ -1,8 +1,313 @@
 use std::collections::BTreeSet;
 
+use crate::fx::compression::StereoCompressor;
+use crate::fx::delay::{DelayParams, StereoDelay};
+use crate::fx::drive;
+use crate::fx::reverb::Freeverb;
+
 use super::*;
 
 const STARTUP_FADE_SECONDS: f32 = 2.0;
+
+/// Stateful post-synthesis Delay instances, addressed by the stable
+/// `(layer, slot)` storage identity rather than a catalog name.
+enum SlotFx {
+    Delay(StereoDelay),
+    Reverb(Freeverb),
+    Compression(StereoCompressor),
+}
+
+struct ModuleFxBank {
+    slots: [Option<SlotFx>; MODULE_LAYERS * MODULE_SLOTS],
+    max_delay_samples: usize,
+    sample_rate: f32,
+}
+
+impl ModuleFxBank {
+    fn new(sample_rate: f32) -> Self {
+        Self {
+            slots: std::array::from_fn(|_| None),
+            max_delay_samples: (sample_rate * (DELAY_FREE_MAX_MS / 1_000.0)).ceil() as usize,
+            sample_rate,
+        }
+    }
+
+    fn from_state(sample_rate: f32, state: &ModuleFxRuntimeState) -> Self {
+        let mut bank = Self::new(sample_rate);
+        for (target, source) in bank.slots.iter_mut().zip(&state.slots) {
+            *target = match source {
+                ModuleFxRuntimeSlot::Empty => None,
+                ModuleFxRuntimeSlot::Delay(state) => {
+                    StereoDelay::from_state(state.clone()).map(SlotFx::Delay)
+                }
+                ModuleFxRuntimeSlot::Reverb(state) => {
+                    Freeverb::from_state(state.clone()).map(SlotFx::Reverb)
+                }
+                ModuleFxRuntimeSlot::Compression { envelope } => {
+                    Some(SlotFx::Compression(StereoCompressor::new(*envelope)))
+                }
+            };
+        }
+        bank
+    }
+
+    fn process(
+        &mut self,
+        tab: Tab,
+        slots: &[ModuleSlot; MODULE_SLOTS],
+        mut sample: (f32, f32),
+        timing: TimingContext,
+    ) -> (f32, f32) {
+        let Some(layer) = module_layer_index(tab) else {
+            return sample;
+        };
+        for (slot_index, slot) in slots.iter().enumerate() {
+            let Some(kind) = slot.kind() else {
+                continue;
+            };
+            let processor = &mut self.slots[layer * MODULE_SLOTS + slot_index];
+            if slot.amount <= 0.0 && processor.is_none() {
+                continue;
+            }
+            match kind.family {
+                Family::Delay => {
+                    if !matches!(processor, Some(SlotFx::Delay(_))) {
+                        *processor = Some(SlotFx::Delay(StereoDelay::new(self.max_delay_samples)));
+                    }
+                    let Some(SlotFx::Delay(line)) = processor else {
+                        continue;
+                    };
+                    let left = delay_time_ms(
+                        slot.time,
+                        DelayClock::from_value(slot.clock),
+                        timing.bpm as f32,
+                    );
+                    let right = delay_time_ms(
+                        slot.right_time,
+                        DelayClock::from_value(slot.right_clock),
+                        timing.bpm as f32,
+                    );
+                    let samples = |ms: f32| {
+                        ((ms * timing.sample_rate as f32 / 1_000.0).round() as usize)
+                            .clamp(1, self.max_delay_samples)
+                    };
+                    sample = line.process(
+                        sample,
+                        DelayParams {
+                            left_delay_samples: samples(left),
+                            right_delay_samples: samples(right),
+                            feedback: slot.feedback,
+                            amount: slot.amount,
+                            vintage: slot.vintage,
+                            sample_rate: timing.sample_rate as f32,
+                        },
+                    );
+                }
+                Family::Reverb => {
+                    if !matches!(processor, Some(SlotFx::Reverb(_))) {
+                        *processor = Some(SlotFx::Reverb(Freeverb::new(
+                            self.sample_rate,
+                            slot.time,
+                            slot.feedback,
+                            1.0,
+                        )));
+                    }
+                    let Some(SlotFx::Reverb(reverb)) = processor else {
+                        continue;
+                    };
+                    reverb.set_character(slot.time, slot.feedback);
+                    let input = if slot.amount > 0.0 {
+                        sample
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    let wet = reverb.process(input.0, input.1);
+                    sample.0 += wet.0 * slot.amount;
+                    sample.1 += wet.1 * slot.amount;
+                }
+                Family::Compression => {
+                    if !matches!(processor, Some(SlotFx::Compression(_))) {
+                        *processor = Some(SlotFx::Compression(StereoCompressor::new(0.0)));
+                    }
+                    let Some(SlotFx::Compression(compressor)) = processor else {
+                        continue;
+                    };
+                    sample = compressor.process(
+                        sample,
+                        self.sample_rate,
+                        slot.time.clamp(-40.0, 0.0),
+                        slot.right_time.clamp(1.0, 8.0),
+                        slot.feedback.clamp(10.0, 500.0),
+                        slot.vintage.clamp(0.0, 12.0),
+                        slot.amount,
+                    );
+                }
+                Family::SingleAmount => {
+                    *processor = None;
+                    if kind.id == "drive" {
+                        sample = drive::process(sample, slot.amount);
+                    }
+                }
+                Family::TwoKnob => *processor = None,
+            }
+        }
+        sample
+    }
+
+    fn state(&self) -> ModuleFxRuntimeState {
+        ModuleFxRuntimeState {
+            slots: self
+                .slots
+                .iter()
+                .map(|processor| match processor {
+                    Some(SlotFx::Delay(line)) => ModuleFxRuntimeSlot::Delay(line.state()),
+                    Some(SlotFx::Reverb(reverb)) => ModuleFxRuntimeSlot::Reverb(reverb.state()),
+                    Some(SlotFx::Compression(compressor)) => ModuleFxRuntimeSlot::Compression {
+                        envelope: compressor.envelope(),
+                    },
+                    None => ModuleFxRuntimeSlot::Empty,
+                })
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod module_fx_tests {
+    use super::*;
+
+    #[test]
+    fn reverb_and_compression_execute_through_the_same_slot_chain() {
+        let timing = TimingContext::new(44_100.0, 120.0, 0.0);
+        let mut reverb_bank = ModuleFxBank::new(44_100.0);
+        let mut reverb_slots = [ModuleSlot::default(); MODULE_SLOTS];
+        reverb_slots[0] = preset_slot("room", 1.0);
+        reverb_slots[0].time = 0.72;
+        reverb_slots[0].feedback = 0.45;
+        reverb_bank.process(Tab::Kick, &reverb_slots, (1.0, 1.0), timing);
+        let mut tail = (0.0, 0.0);
+        for _ in 0..2_000 {
+            tail = reverb_bank.process(Tab::Kick, &reverb_slots, (0.0, 0.0), timing);
+            if tail != (0.0, 0.0) {
+                break;
+            }
+        }
+        assert_ne!(tail, (0.0, 0.0));
+
+        let mut compression_bank = ModuleFxBank::new(44_100.0);
+        let mut compression_slots = [ModuleSlot::default(); MODULE_SLOTS];
+        compression_slots[0] = preset_slot("compression", 1.0);
+        compression_slots[0].time = -20.0;
+        compression_slots[0].right_time = 4.0;
+        compression_slots[0].vintage = 0.0;
+        let mut compressed = (1.0, 1.0);
+        for _ in 0..256 {
+            compressed =
+                compression_bank.process(Tab::Kick, &compression_slots, (1.0, 1.0), timing);
+        }
+        assert!(compressed.0 < 1.0);
+    }
+
+    #[test]
+    fn zero_delay_amount_preserves_the_dry_track() {
+        let timing = TimingContext::new(44_100.0, 120.0, 0.0);
+        let mut bank = ModuleFxBank::new(44_100.0);
+        let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
+        slots[0] = preset_slot("delay", 0.0);
+
+        let output = bank.process(Tab::Clap, &slots, (0.4, -0.2), timing);
+
+        assert_eq!(output, (0.4, -0.2));
+    }
+
+    #[test]
+    fn every_post_effect_executes_on_every_layer_chain() {
+        let timing = TimingContext::new(44_100.0, 120.0, 0.0);
+        let tabs = [
+            Tab::Chords,
+            Tab::Perc,
+            Tab::Bass,
+            Tab::Kick,
+            Tab::Tonal,
+            Tab::Clap,
+            Tab::Arp,
+            Tab::Master,
+        ];
+
+        for tab in tabs {
+            let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
+            slots[0] = preset_slot("drive", 0.7);
+            let mut bank = ModuleFxBank::new(44_100.0);
+            assert_ne!(
+                bank.process(tab, &slots, (0.4, -0.2), timing),
+                (0.4, -0.2),
+                "Drive is inert on {}",
+                tab.name()
+            );
+
+            slots[0] = preset_slot("compression", 1.0);
+            slots[0].time = -20.0;
+            slots[0].right_time = 4.0;
+            slots[0].vintage = 0.0;
+            let mut bank = ModuleFxBank::new(44_100.0);
+            let mut compressed = (1.0, 1.0);
+            for _ in 0..256 {
+                compressed = bank.process(tab, &slots, (1.0, 1.0), timing);
+            }
+            assert!(compressed.0 < 1.0, "Compression is inert on {}", tab.name());
+
+            slots[0] = preset_slot("room", 1.0);
+            let mut bank = ModuleFxBank::new(44_100.0);
+            bank.process(tab, &slots, (1.0, 1.0), timing);
+            let mut reverb_tail = (0.0, 0.0);
+            for _ in 0..2_000 {
+                reverb_tail = bank.process(tab, &slots, (0.0, 0.0), timing);
+                if reverb_tail != (0.0, 0.0) {
+                    break;
+                }
+            }
+            assert_ne!(reverb_tail, (0.0, 0.0), "Reverb is inert on {}", tab.name());
+
+            slots[0] = preset_slot("delay", 1.0);
+            slots[0].clock = DelayClock::Free.value();
+            slots[0].right_clock = DelayClock::Free.value();
+            slots[0].time = 10.0;
+            slots[0].right_time = 10.0;
+            slots[0].feedback = 0.0;
+            let mut bank = ModuleFxBank::new(44_100.0);
+            bank.process(tab, &slots, (1.0, -1.0), timing);
+            let mut echo = (0.0, 0.0);
+            for _ in 0..500 {
+                echo = bank.process(tab, &slots, (0.0, 0.0), timing);
+                if echo != (0.0, 0.0) {
+                    break;
+                }
+            }
+            assert_ne!(echo, (0.0, 0.0), "Delay is inert on {}", tab.name());
+        }
+    }
+
+    #[test]
+    fn zero_amount_is_an_exact_dry_bypass_for_every_post_family() {
+        let timing = TimingContext::new(44_100.0, 120.0, 0.0);
+        for kind in ["drive", "room", "delay", "compression"] {
+            let mut bank = ModuleFxBank::new(44_100.0);
+            let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
+            slots[0] = preset_slot(kind, 0.0);
+            assert_eq!(
+                bank.process(Tab::Clap, &slots, (0.4, -0.2), timing),
+                (0.4, -0.2),
+                "{kind} amount zero changed the dry signal"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_bank_covers_every_layer_slot_address() {
+        let bank = ModuleFxBank::new(44_100.0);
+        assert_eq!(bank.state().slots.len(), MODULE_LAYERS * MODULE_SLOTS);
+    }
+}
 
 // ============================================================
 // Fluid Engine
@@ -20,7 +325,7 @@ pub(crate) struct FluidEngine {
     pub(crate) clap: ClapEngine,
     pub(crate) bass: BassEngine,
     pub(crate) arp: ArpEngine,
-    pub(crate) ambient_reverb: AmbientReverbSend,
+    module_fx: ModuleFxBank,
     pub(crate) master_bus: MasterBus,
     pub(crate) session: LiveSession,
     /// `Some` only while running `nooise auto`; rewrites `controls` on a
@@ -33,6 +338,7 @@ pub(crate) struct FluidEngine {
     /// automation differs from the last planned state.
     plan: AutomationPlan,
     plan_source: Arc<AutomationState>,
+    last_module_fx_capture_request: u64,
 }
 
 impl FluidEngine {
@@ -72,7 +378,7 @@ impl FluidEngine {
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
             arp: ArpEngine::new(sample_rate),
-            ambient_reverb: AmbientReverbSend::new(sample_rate),
+            module_fx: ModuleFxBank::from_state(sample_rate, &session.module_fx_capture().state),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
             session,
             morph,
@@ -81,6 +387,7 @@ impl FluidEngine {
             snapshot,
             plan,
             plan_source,
+            last_module_fx_capture_request: 0,
         }
     }
 }
@@ -99,6 +406,12 @@ impl FluidEngine {
 
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
+        let capture_request = self.session.pending_module_fx_capture();
+        if capture_request > self.last_module_fx_capture_request {
+            self.session
+                .publish_module_fx_capture(capture_request, self.module_fx.state());
+            self.last_module_fx_capture_request = capture_request;
+        }
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         if self.current_sample.is_multiple_of(128) {
             let morph_source = self.morph.load_full();
@@ -137,42 +450,64 @@ impl StereoEngine for FluidEngine {
         resolve_module_chain(&mut effective);
 
         let tune = effective.master.tune;
-        let (pad_l, pad_r) = self.pad.next(&effective.pad, tune, timing);
-        let perc = self.perc.next(&effective.perc, timing);
-        let (kick_l, kick_r) = self.kick.next(&effective.kick, timing);
-        let (ton_l, ton_r) = self.tonal.next(&effective.tonal, tune, timing);
-        let (clap_l, clap_r) = self.clap.next(&effective.clap, timing);
-        let (bass_l, bass_r) = self
-            .bass
-            .next(&effective.bass, &effective.pad, tune, timing);
-        let (arp_l, arp_r) = self.arp.next(&effective.arp, &effective.pad, tune, timing);
-        let AmbientReverbFrame {
-            pad_l,
-            pad_r,
-            tonal_l: ton_l,
-            tonal_r: ton_r,
-            arp_l,
-            arp_r,
-            wet_l,
-            wet_r,
-        } = self.ambient_reverb.process(
-            (pad_l, pad_r),
-            (ton_l, ton_r),
-            (arp_l, arp_r),
-            effective.pad.reverb_mix,
-            effective.tonal.reverb_mix,
-            effective.arp.reverb_mix,
+        let (pad_l, pad_r) = self.module_fx.process(
+            Tab::Chords,
+            &effective.modules.pad,
+            self.pad.next(&effective.pad, tune, timing),
+            timing,
         );
-
+        let (perc_l, perc_r) = self.module_fx.process(
+            Tab::Perc,
+            &effective.modules.perc,
+            {
+                let perc = self.perc.next(&effective.perc, timing);
+                (perc, perc)
+            },
+            timing,
+        );
+        let (kick_l, kick_r) = self.module_fx.process(
+            Tab::Kick,
+            &effective.modules.kick,
+            self.kick.next(&effective.kick, timing),
+            timing,
+        );
+        let (ton_l, ton_r) = self.module_fx.process(
+            Tab::Tonal,
+            &effective.modules.tonal,
+            self.tonal.next(&effective.tonal, tune, timing),
+            timing,
+        );
+        let (clap_l, clap_r) = self.module_fx.process(
+            Tab::Clap,
+            &effective.modules.clap,
+            self.clap.next(&effective.clap, timing),
+            timing,
+        );
+        let (bass_l, bass_r) = self.module_fx.process(
+            Tab::Bass,
+            &effective.modules.bass,
+            self.bass
+                .next(&effective.bass, &effective.pad, tune, timing),
+            timing,
+        );
+        let (arp_l, arp_r) = self.module_fx.process(
+            Tab::Arp,
+            &effective.modules.arp,
+            self.arp.next(&effective.arp, &effective.pad, tune, timing),
+            timing,
+        );
         self.current_sample += 1;
 
-        let raw_l = mix_voices(
-            pad_l, perc, kick_l, ton_l, clap_l, bass_l, arp_l, wet_l, fade,
+        let raw_l = mix_voices(pad_l, perc_l, kick_l, ton_l, clap_l, bass_l, arp_l, fade);
+        let raw_r = mix_voices(pad_r, perc_r, kick_r, ton_r, clap_r, bass_r, arp_r, fade);
+        let master = self.module_fx.process(
+            Tab::Master,
+            &effective.modules.master,
+            (raw_l, raw_r),
+            timing,
         );
-        let raw_r = mix_voices(
-            pad_r, perc, kick_r, ton_r, clap_r, bass_r, arp_r, wet_r, fade,
-        );
-        self.master_bus.process(raw_l, raw_r, &effective.master)
+        self.master_bus
+            .process(master.0, master.1, &effective.master)
     }
 }
 
@@ -191,10 +526,9 @@ fn mix_voices(
     clap: f32,
     bass: f32,
     arp: f32,
-    wet: f32,
     fade: f32,
 ) -> f32 {
-    (pad + perc * 0.6 + kick * 0.7 + ton + clap * 0.65 + bass * 0.75 + arp + wet) * fade
+    (pad + perc * 0.6 + kick * 0.7 + ton + clap * 0.65 + bass * 0.75 + arp) * fade
 }
 
 pub(crate) struct GainSmoother {
@@ -573,121 +907,25 @@ impl GridTrigger {
 }
 
 // ============================================================
-// Ambient reverb send
-// ============================================================
-
-pub(crate) const AMBIENT_REVERB_DRY_DUCK: f32 = 0.3;
-pub(crate) const AMBIENT_REVERB_PAD_SEND: f32 = 0.4;
-pub(crate) const AMBIENT_REVERB_TONAL_SEND: f32 = 0.32;
-pub(crate) const AMBIENT_REVERB_RETURN: f32 = 0.22;
-/// Arp's send level stays fixed (unlike its mix, `arp.reverb_mix`, which is a
-/// user-facing control) — tuned in the same range as Tonal's default send.
-pub(crate) const AMBIENT_REVERB_ARP_SEND: f32 = 0.3;
-
-pub(crate) struct AmbientReverbSend {
-    pub(crate) reverb: Freeverb,
-}
-
-pub(crate) struct AmbientReverbFrame {
-    pub(crate) pad_l: f32,
-    pub(crate) pad_r: f32,
-    pub(crate) tonal_l: f32,
-    pub(crate) tonal_r: f32,
-    pub(crate) arp_l: f32,
-    pub(crate) arp_r: f32,
-    pub(crate) wet_l: f32,
-    pub(crate) wet_r: f32,
-}
-
-impl AmbientReverbSend {
-    pub(crate) fn new(sample_rate: f32) -> Self {
-        Self {
-            reverb: Freeverb::new(sample_rate, 0.9, 0.44, 1.0),
-        }
-    }
-
-    pub(crate) fn process(
-        &mut self,
-        pad: (f32, f32),
-        tonal: (f32, f32),
-        arp: (f32, f32),
-        pad_mix: f32,
-        tonal_mix: f32,
-        arp_mix: f32,
-    ) -> AmbientReverbFrame {
-        let pad_mix = pad_mix.clamp(0.0, 1.0);
-        let tonal_mix = tonal_mix.clamp(0.0, 1.0);
-        let arp_mix = arp_mix.clamp(0.0, 1.0);
-        let pad_dry = Self::dry_gain(pad_mix);
-        let tonal_dry = Self::dry_gain(tonal_mix);
-        let arp_dry = Self::dry_gain(arp_mix);
-        let pad_send = pad_mix * AMBIENT_REVERB_PAD_SEND;
-        let tonal_send = tonal_mix * AMBIENT_REVERB_TONAL_SEND;
-        let arp_send = arp_mix * AMBIENT_REVERB_ARP_SEND;
-        let send_l = pad.0 * pad_send + tonal.0 * tonal_send + arp.0 * arp_send;
-        let send_r = pad.1 * pad_send + tonal.1 * tonal_send + arp.1 * arp_send;
-        let (wet_l, wet_r) = self.reverb.process(send_l, send_r);
-
-        AmbientReverbFrame {
-            pad_l: pad.0 * pad_dry,
-            pad_r: pad.1 * pad_dry,
-            tonal_l: tonal.0 * tonal_dry,
-            tonal_r: tonal.1 * tonal_dry,
-            arp_l: arp.0 * arp_dry,
-            arp_r: arp.1 * arp_dry,
-            wet_l: wet_l * AMBIENT_REVERB_RETURN,
-            wet_r: wet_r * AMBIENT_REVERB_RETURN,
-        }
-    }
-
-    pub(crate) fn dry_gain(mix: f32) -> f32 {
-        1.0 - mix.clamp(0.0, 1.0) * AMBIENT_REVERB_DRY_DUCK
-    }
-}
-
-// ============================================================
-// Master bus (drive, tilt EQ, compressor)
+// Master bus (tilt EQ and final level)
 // ============================================================
 
 pub(crate) struct MasterBus {
-    pub(crate) comp_env: f32,
     pub(crate) tone_l: f32,
     pub(crate) tone_r: f32,
-    pub(crate) thresh_lin: f32,
-    pub(crate) makeup_lin: f32,
-    pub(crate) attack_coeff: f32,
-    pub(crate) rel_coeff: f32,
 }
 
 impl MasterBus {
-    pub(crate) fn new(c: &MasterControls, sample_rate: f32) -> Self {
-        let mut bus = Self {
-            comp_env: 0.0,
+    pub(crate) fn new(_c: &MasterControls, _sample_rate: f32) -> Self {
+        Self {
             tone_l: 0.0,
             tone_r: 0.0,
-            thresh_lin: 1.0,
-            makeup_lin: 1.0,
-            attack_coeff: 0.0,
-            rel_coeff: 0.0,
-        };
-        bus.set_controls(c, sample_rate);
-        bus
+        }
     }
 
-    pub(crate) fn set_controls(&mut self, c: &MasterControls, sample_rate: f32) {
-        self.thresh_lin = 10_f32.powf(c.comp_threshold / 20.0);
-        self.makeup_lin = 10_f32.powf(c.comp_makeup / 20.0);
-        self.attack_coeff = (-1.0_f32 / (0.001 * sample_rate)).exp();
-        self.rel_coeff = (-1.0_f32 / (c.comp_release_ms * 0.001 * sample_rate)).exp();
-    }
+    pub(crate) fn set_controls(&mut self, _c: &MasterControls, _sample_rate: f32) {}
 
     pub(crate) fn process(&mut self, mut l: f32, mut r: f32, c: &MasterControls) -> (f32, f32) {
-        if c.drive > 0.001 {
-            let gain = 1.0 + c.drive * 6.0;
-            l = soft_clip(l * gain);
-            r = soft_clip(r * gain);
-        }
-
         if c.tone.abs() > 0.01 {
             let coeff = (0.05 + c.tone.abs() * 0.7).min(0.99);
             self.tone_l += coeff * (l - self.tone_l);
@@ -701,22 +939,9 @@ impl MasterBus {
             }
         }
 
-        let peak = l.abs().max(r.abs());
-        self.comp_env = if peak > self.comp_env {
-            peak + self.attack_coeff * (self.comp_env - peak)
-        } else {
-            peak + self.rel_coeff * (self.comp_env - peak)
-        };
-        let gain_reduction = if self.comp_env > self.thresh_lin && c.comp_ratio > 1.001 {
-            (self.thresh_lin / self.comp_env)
-                * (self.comp_env / self.thresh_lin).powf(1.0 / c.comp_ratio)
-        } else {
-            1.0
-        };
-
         (
-            (l * gain_reduction * self.makeup_lin * c.level).clamp(-0.95, 0.95),
-            (r * gain_reduction * self.makeup_lin * c.level).clamp(-0.95, 0.95),
+            (l * c.level).clamp(-0.95, 0.95),
+            (r * c.level).clamp(-0.95, 0.95),
         )
     }
 }

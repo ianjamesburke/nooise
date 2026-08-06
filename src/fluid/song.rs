@@ -5,14 +5,18 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use super::session::{ModuleFxRuntimeSlot, ModuleFxRuntimeState};
 use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
     EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MACRO_COUNT, MAX_ENV_ATTACK_BEATS,
     MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS,
-    MIN_LFO_CYCLE_BEATS, MacroRoute, Step, all_specs, spec_by_id,
+    MIN_LFO_CYCLE_BEATS, MacroRoute, ModuleSlot, Step, TIME_TAPER, Tab, Taper, all_specs,
+    chain_amount_slot, preset_slot, spec_by_id, tab_specs,
 };
+use crate::fx::delay::StereoDelayState;
+use crate::fx::reverb::{AllPassState, CombState, FreeverbState};
 
 const MAGIC: &[u8; 4] = b"NOOI";
 /// Control ids are interned as `SONG_ID_TABLE` indexes and continuous values
@@ -27,6 +31,7 @@ const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const TONAL_SEQUENCE_RECORD: u8 = 2;
+const MODULE_FX_RUNTIME_RECORD: u8 = 3;
 const LFO_SHAPE_SINE: u8 = 0;
 const LFO_SHAPE_TRIANGLE: u8 = 1;
 const LFO_SHAPE_RAMP_UP: u8 = 2;
@@ -50,6 +55,7 @@ pub(crate) struct SongState {
     pub(crate) controls: FluidControls,
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: Option<TonalSequenceState>,
+    pub(crate) module_fx_runtime: Option<ModuleFxRuntimeState>,
 }
 
 impl SongState {
@@ -58,6 +64,7 @@ impl SongState {
             controls,
             automation: AutomationState::default(),
             tonal_sequence: None,
+            module_fx_runtime: None,
         }
     }
 }
@@ -123,6 +130,11 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
         write_tonal_sequence(sequence, &mut tonal_sequence)?;
         write_record(TONAL_SEQUENCE_RECORD, &tonal_sequence, &mut bytes)?;
     }
+    if let Some(module_fx) = &song.module_fx_runtime {
+        let mut module_fx_record = Vec::new();
+        write_module_fx_runtime(module_fx, &mut module_fx_record)?;
+        write_record(MODULE_FX_RUNTIME_RECORD, &module_fx_record, &mut bytes)?;
+    }
 
     Ok(format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
@@ -154,8 +166,11 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
         let payload = reader.bytes(len)?;
         match record_type {
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
-            AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
+            AUTOMATION_RECORD => read_automation(payload, &song.controls, &mut song.automation)?,
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
+            MODULE_FX_RUNTIME_RECORD => {
+                song.module_fx_runtime = Some(read_module_fx_runtime(payload)?)
+            }
             // Records are length-prefixed, so an unknown one is skipped
             // without losing alignment. This stays permissive on purpose: it
             // is how a code from a newer nooise carrying a record this build
@@ -167,6 +182,230 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
     }
 
     Ok(song)
+}
+
+fn write_module_fx_runtime(
+    state: &ModuleFxRuntimeState,
+    out: &mut Vec<u8>,
+) -> Result<(), SongCodeError> {
+    let count = u8::try_from(state.slots.len()).map_err(|_| SongCodeError::TooLarge)?;
+    out.push(count);
+    for slot in &state.slots {
+        match slot {
+            ModuleFxRuntimeSlot::Empty => out.push(0),
+            ModuleFxRuntimeSlot::Delay(line) => {
+                let len = u32::try_from(line.left.len()).map_err(|_| SongCodeError::TooLarge)?;
+                if line.left.len() != line.right.len() {
+                    return Err(SongCodeError::Truncated);
+                }
+                let write = u32::try_from(line.write).map_err(|_| SongCodeError::TooLarge)?;
+                out.push(5);
+                out.extend_from_slice(&len.to_le_bytes());
+                out.extend_from_slice(&write.to_le_bytes());
+                out.extend_from_slice(&line.left_current.unwrap_or(-1.0).to_le_bytes());
+                out.extend_from_slice(&line.left_previous.unwrap_or(-1.0).to_le_bytes());
+                out.extend_from_slice(&line.left_fade.to_le_bytes());
+                out.extend_from_slice(&line.right_current.unwrap_or(-1.0).to_le_bytes());
+                out.extend_from_slice(&line.right_previous.unwrap_or(-1.0).to_le_bytes());
+                out.extend_from_slice(&line.right_fade.to_le_bytes());
+                write_samples(&line.left, out)?;
+                write_samples(&line.right, out)?;
+            }
+            ModuleFxRuntimeSlot::Reverb(reverb) => {
+                out.push(2);
+                write_reverb_state(reverb, out)?;
+            }
+            ModuleFxRuntimeSlot::Compression { envelope } => {
+                out.push(3);
+                out.extend_from_slice(&envelope.to_le_bytes());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_module_fx_runtime(bytes: &[u8]) -> Result<ModuleFxRuntimeState, SongCodeError> {
+    let mut reader = Reader::new(bytes);
+    let count = reader.u8()? as usize;
+    let mut slots = Vec::with_capacity(count);
+    for _ in 0..count {
+        match reader.u8()? {
+            0 => slots.push(ModuleFxRuntimeSlot::Empty),
+            1 => {
+                let len = reader.u32()? as usize;
+                let write = reader.u32()? as usize;
+                let left = read_samples(&mut reader, len)?;
+                let right = read_samples(&mut reader, len)?;
+                slots.push(ModuleFxRuntimeSlot::Delay(StereoDelayState {
+                    left,
+                    right,
+                    write,
+                    left_current: None,
+                    left_previous: None,
+                    left_fade: 1.0,
+                    right_current: None,
+                    right_previous: None,
+                    right_fade: 1.0,
+                }));
+            }
+            2 => slots.push(ModuleFxRuntimeSlot::Reverb(read_reverb_state(&mut reader)?)),
+            3 => slots.push(ModuleFxRuntimeSlot::Compression {
+                envelope: reader.f32()?.max(0.0),
+            }),
+            4 => {
+                // Legacy format: single chased position per channel, no
+                // in-flight crossfade. Restore settled, with no fade pending.
+                let len = reader.u32()? as usize;
+                let write = reader.u32()? as usize;
+                let left_current = reader.f32()?;
+                let right_current = reader.f32()?;
+                let left = read_samples(&mut reader, len)?;
+                let right = read_samples(&mut reader, len)?;
+                slots.push(ModuleFxRuntimeSlot::Delay(StereoDelayState {
+                    left,
+                    right,
+                    write,
+                    left_current: (left_current >= 0.0).then_some(left_current),
+                    left_previous: None,
+                    left_fade: 1.0,
+                    right_current: (right_current >= 0.0).then_some(right_current),
+                    right_previous: None,
+                    right_fade: 1.0,
+                }));
+            }
+            5 => {
+                let len = reader.u32()? as usize;
+                let write = reader.u32()? as usize;
+                let left_current = reader.f32()?;
+                let left_previous = reader.f32()?;
+                let left_fade = reader.f32()?;
+                let right_current = reader.f32()?;
+                let right_previous = reader.f32()?;
+                let right_fade = reader.f32()?;
+                let left = read_samples(&mut reader, len)?;
+                let right = read_samples(&mut reader, len)?;
+                slots.push(ModuleFxRuntimeSlot::Delay(StereoDelayState {
+                    left,
+                    right,
+                    write,
+                    left_current: (left_current >= 0.0).then_some(left_current),
+                    left_previous: (left_previous >= 0.0).then_some(left_previous),
+                    left_fade,
+                    right_current: (right_current >= 0.0).then_some(right_current),
+                    right_previous: (right_previous >= 0.0).then_some(right_previous),
+                    right_fade,
+                }));
+            }
+            _ => return Err(SongCodeError::Truncated),
+        }
+    }
+    if !reader.is_empty() {
+        return Err(SongCodeError::Truncated);
+    }
+    Ok(ModuleFxRuntimeState { slots })
+}
+
+fn write_samples(samples: &[f32], out: &mut Vec<u8>) -> Result<(), SongCodeError> {
+    let _ = u32::try_from(samples.len()).map_err(|_| SongCodeError::TooLarge)?;
+    for sample in samples {
+        out.extend_from_slice(&sample.to_le_bytes());
+    }
+    Ok(())
+}
+
+fn read_samples(reader: &mut Reader<'_>, len: usize) -> Result<Vec<f32>, SongCodeError> {
+    (0..len).map(|_| reader.f32()).collect()
+}
+
+fn write_reverb_state(state: &FreeverbState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
+    out.extend_from_slice(&state.wet.to_le_bytes());
+    out.push(u8::from(state.active));
+    write_combs(&state.combs_left, out)?;
+    write_combs(&state.combs_right, out)?;
+    write_allpasses(&state.allpasses_left, out)?;
+    write_allpasses(&state.allpasses_right, out)
+}
+
+fn write_combs(states: &[CombState], out: &mut Vec<u8>) -> Result<(), SongCodeError> {
+    out.push(u8::try_from(states.len()).map_err(|_| SongCodeError::TooLarge)?);
+    for state in states {
+        out.extend_from_slice(
+            &u32::try_from(state.buffer.len())
+                .map_err(|_| SongCodeError::TooLarge)?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &u32::try_from(state.index)
+                .map_err(|_| SongCodeError::TooLarge)?
+                .to_le_bytes(),
+        );
+        for value in [state.feedback, state.filter_store, state.damp1, state.damp2] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        write_samples(&state.buffer, out)?;
+    }
+    Ok(())
+}
+
+fn write_allpasses(states: &[AllPassState], out: &mut Vec<u8>) -> Result<(), SongCodeError> {
+    out.push(u8::try_from(states.len()).map_err(|_| SongCodeError::TooLarge)?);
+    for state in states {
+        out.extend_from_slice(
+            &u32::try_from(state.buffer.len())
+                .map_err(|_| SongCodeError::TooLarge)?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(
+            &u32::try_from(state.index)
+                .map_err(|_| SongCodeError::TooLarge)?
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(&state.feedback.to_le_bytes());
+        write_samples(&state.buffer, out)?;
+    }
+    Ok(())
+}
+
+fn read_reverb_state(reader: &mut Reader<'_>) -> Result<FreeverbState, SongCodeError> {
+    Ok(FreeverbState {
+        wet: reader.f32()?,
+        active: reader.u8()? != 0,
+        combs_left: read_combs(reader)?,
+        combs_right: read_combs(reader)?,
+        allpasses_left: read_allpasses(reader)?,
+        allpasses_right: read_allpasses(reader)?,
+    })
+}
+
+fn read_combs(reader: &mut Reader<'_>) -> Result<Vec<CombState>, SongCodeError> {
+    let count = reader.u8()? as usize;
+    (0..count)
+        .map(|_| {
+            let len = reader.u32()? as usize;
+            Ok(CombState {
+                index: reader.u32()? as usize,
+                feedback: reader.f32()?,
+                filter_store: reader.f32()?,
+                damp1: reader.f32()?,
+                damp2: reader.f32()?,
+                buffer: read_samples(reader, len)?,
+            })
+        })
+        .collect()
+}
+
+fn read_allpasses(reader: &mut Reader<'_>) -> Result<Vec<AllPassState>, SongCodeError> {
+    let count = reader.u8()? as usize;
+    (0..count)
+        .map(|_| {
+            let len = reader.u32()? as usize;
+            Ok(AllPassState {
+                index: reader.u32()? as usize,
+                feedback: reader.f32()?,
+                buffer: read_samples(reader, len)?,
+            })
+        })
+        .collect()
 }
 
 fn write_tonal_sequence(
@@ -244,7 +483,10 @@ impl EncodedValue {
     /// whole numbers and would gain nothing but error from a round trip
     /// through 0..1.
     fn encode(spec: &ControlSpec, value: f32) -> Self {
-        if spec.kind != ControlKind::Discrete && matches!(spec.step, Step::Linear(_)) {
+        if !spec.exact_in_song
+            && spec.kind != ControlKind::Discrete
+            && matches!(spec.step, Step::Linear(_))
+        {
             Self::Position(unit_to_u16(spec.ratio(value)))
         } else {
             Self::exact(value)
@@ -317,6 +559,16 @@ impl EncodedValue {
         };
         value.clamp(spec.min, spec.max)
     }
+
+    fn resolve_range(self, min: f32, max: f32, taper: Taper) -> f32 {
+        match self {
+            Self::Position(position) => taper.value_at(u16_to_unit(position), min, max),
+            Self::SmallInt(value) => value as f32,
+            Self::Int(value) => value as f32,
+            Self::Float(value) => value,
+        }
+        .clamp(min, max)
+    }
 }
 
 /// A `0..=1` ratio as a u16; both endpoints land exactly.
@@ -373,8 +625,11 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
         if !seen.insert(spec.id) {
             continue;
         }
-        let value = EncodedValue::encode(spec, spec.quantized_value(controls));
-        let default = EncodedValue::encode(spec, spec.quantized_value(&defaults));
+        // Slot fields borrow their units from the loaded module. Encode the
+        // value and prune baseline through that same semantic view.
+        let spec = spec.contextual(controls);
+        let value = EncodedValue::encode(&spec, spec.quantized_value(controls));
+        let default = EncodedValue::encode(&spec, spec.quantized_value(&defaults));
         if value == default {
             continue;
         }
@@ -393,15 +648,88 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
 fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(bytes);
     let count = reader.u16()?;
+    let mut entries = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let index = reader.u16()?;
         let value = EncodedValue::read(&mut reader)?;
-        let Some(spec) = control_at(index) else {
-            continue;
-        };
-        spec.apply_quantized_value(value.resolve(spec), controls);
+        entries.push((index, value));
+    }
+
+    // A slot's kind and Delay clock modes define the units of its remaining
+    // fields. Resolve those structural values first regardless of registry or
+    // song-id order, then decode the parameters through the established unit.
+    for structural in [true, false] {
+        for &(index, value) in &entries {
+            let id = song_id_at(index).unwrap_or_default();
+            let is_structural = id.ends_with(".kind") || id.ends_with("clock");
+            if is_structural != structural {
+                continue;
+            }
+            if let Some(spec) = control_at(index) {
+                let spec = spec.contextual(controls);
+                spec.apply_quantized_value(value.resolve(&spec), controls);
+            } else if !structural {
+                migrate_legacy_effect_control(id, value, controls);
+            }
+        }
     }
     Ok(())
+}
+
+fn migrate_legacy_effect_control(id: &str, value: EncodedValue, controls: &mut FluidControls) {
+    let amount = || value.resolve_range(0.0, 1.0, Taper::Linear);
+    let (tab, kind) = match id {
+        "pad.reverb_mix" => (Some(Tab::Chords), "room"),
+        "tonal.reverb_mix" => (Some(Tab::Tonal), "room"),
+        "clap.room" => (Some(Tab::Clap), "room"),
+        "arp.reverb_mix" => (Some(Tab::Arp), "room"),
+        "bass.drive" => (Some(Tab::Bass), "drive"),
+        "kick.drive" => (Some(Tab::Kick), "drive"),
+        "master.drive" => (Some(Tab::Master), "drive"),
+        "perc.swing" => (Some(Tab::Perc), "swing"),
+        "tonal.swing" => (Some(Tab::Tonal), "swing"),
+        "arp.swing" => (Some(Tab::Arp), "swing"),
+        _ => (None, ""),
+    };
+    if let Some(tab) = tab {
+        set_migrated_module_amount(controls, tab, kind, amount());
+        return;
+    }
+
+    let Some(slots) = controls.modules.for_tab_mut(Tab::Master) else {
+        return;
+    };
+    let Some(slot) = chain_amount_slot(slots, "compression") else {
+        return;
+    };
+    match id {
+        "master.comp_amount" => slots[slot].amount = amount(),
+        "master.comp_threshold" => {
+            slots[slot].time = value.resolve_range(-40.0, 0.0, Taper::Linear)
+        }
+        "master.comp_ratio" => {
+            slots[slot].right_time = value.resolve_range(1.0, 8.0, Taper::Linear)
+        }
+        "master.comp_release_ms" => {
+            slots[slot].feedback = value.resolve_range(10.0, 500.0, Taper::Exp(TIME_TAPER))
+        }
+        "master.comp_makeup" => slots[slot].vintage = value.resolve_range(0.0, 12.0, Taper::Linear),
+        _ => {}
+    }
+}
+
+fn set_migrated_module_amount(controls: &mut FluidControls, tab: Tab, kind: &str, amount: f32) {
+    let Some(slots) = controls.modules.for_tab_mut(tab) else {
+        return;
+    };
+    let slot = chain_amount_slot(slots, kind).or_else(|| {
+        let free = slots.iter().position(ModuleSlot::is_empty)?;
+        slots[free] = preset_slot(kind, 0.0);
+        Some(free)
+    });
+    if let Some(slot) = slot {
+        slots[slot].amount = amount;
+    }
 }
 
 /// Automation record. Control ids are interned `u16` indexes and the bounded
@@ -483,7 +811,11 @@ fn read_macro_amounts(reader: &mut Reader) -> Result<MacroRoute, SongCodeError> 
     Ok(MacroRoute { amounts })
 }
 
-fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
+fn read_automation(
+    bytes: &[u8],
+    controls: &FluidControls,
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(bytes);
 
     let lfo_count = reader.u16()?;
@@ -510,7 +842,10 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
             None
         };
 
-        let (Some(spec), Some(shape)) = (control_at(index), shape_from_tag(shape_byte)) else {
+        let (Some(spec), Some(shape)) = (
+            automation_spec_at(index, controls),
+            shape_from_tag(shape_byte),
+        ) else {
             continue;
         };
         let mut route = build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed);
@@ -526,7 +861,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
     for _ in 0..macro_count {
         let index = reader.u16()?;
         let route = read_macro_amounts(&mut reader)?;
-        if let Some(spec) = control_at(index) {
+        if let Some(spec) = automation_spec_at(index, controls) {
             automation.set_macro_route(ControlAddress::new(spec.id), route);
         }
     }
@@ -541,7 +876,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         let trigger_param = reader.f32()?;
 
         let (Some(spec), Some(trigger)) = (
-            control_at(index),
+            automation_spec_at(index, controls),
             env_trigger_from_tag(
                 trigger_tag,
                 finite_or(trigger_param, DEFAULT_ENV_TRIGGER_BEATS),
@@ -564,10 +899,53 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
     for _ in 0..field_macro_count {
         let key = reader.string()?;
         let route = read_macro_amounts(&mut reader)?;
-        automation.set_field_macro(key.to_string(), route);
+        automation.set_field_macro(migrate_legacy_field_macro_key(key, controls), route);
     }
 
     Ok(())
+}
+
+fn automation_spec_at(index: u16, controls: &FluidControls) -> Option<&'static ControlSpec> {
+    control_at(index).or_else(|| {
+        let migrated = migrated_effect_control_id(song_id_at(index)?, controls)?;
+        spec_by_id(migrated)
+    })
+}
+
+fn migrated_effect_control_id(id: &str, controls: &FluidControls) -> Option<&'static str> {
+    let (tab, kind, field) = match id {
+        "pad.reverb_mix" => (Tab::Chords, "room", "amount"),
+        "tonal.reverb_mix" => (Tab::Tonal, "room", "amount"),
+        "clap.room" => (Tab::Clap, "room", "amount"),
+        "arp.reverb_mix" => (Tab::Arp, "room", "amount"),
+        "bass.drive" => (Tab::Bass, "drive", "amount"),
+        "kick.drive" => (Tab::Kick, "drive", "amount"),
+        "master.drive" => (Tab::Master, "drive", "amount"),
+        "perc.swing" => (Tab::Perc, "swing", "amount"),
+        "tonal.swing" => (Tab::Tonal, "swing", "amount"),
+        "arp.swing" => (Tab::Arp, "swing", "amount"),
+        "master.comp_amount" => (Tab::Master, "compression", "amount"),
+        "master.comp_threshold" => (Tab::Master, "compression", "time"),
+        "master.comp_ratio" => (Tab::Master, "compression", "right_time"),
+        "master.comp_release_ms" => (Tab::Master, "compression", "feedback"),
+        "master.comp_makeup" => (Tab::Master, "compression", "vintage"),
+        _ => return None,
+    };
+    let slots = controls.modules.for_tab(tab)?;
+    let slot = chain_amount_slot(slots, kind)?;
+    let suffix = format!(".slot{}.{}", slot + 1, field);
+    tab_specs(tab)
+        .iter()
+        .find(|spec| spec.id.ends_with(&suffix))
+        .map(|spec| spec.id)
+}
+
+fn migrate_legacy_field_macro_key(key: &str, controls: &FluidControls) -> String {
+    let Some((id, field)) = key.split_once('#') else {
+        return key.to_string();
+    };
+    migrated_effect_control_id(id, controls)
+        .map_or_else(|| key.to_string(), |id| format!("{id}#{field}"))
 }
 
 /// A route, macro assignment, or envelope worth persisting. Mirrors the
@@ -745,5 +1123,47 @@ impl<'a> Reader<'a> {
         let len = self.u8()? as usize;
         let bytes = self.bytes(len)?;
         std::str::from_utf8(bytes).map_err(|_| SongCodeError::InvalidUtf8)
+    }
+}
+
+#[cfg(test)]
+mod effect_migration_tests {
+    use super::*;
+
+    #[test]
+    fn retired_effect_controls_migrate_into_shared_slots() {
+        let mut controls = FluidControls::default();
+        migrate_legacy_effect_control(
+            "pad.reverb_mix",
+            EncodedValue::Position(unit_to_u16(0.35)),
+            &mut controls,
+        );
+        migrate_legacy_effect_control(
+            "master.comp_threshold",
+            EncodedValue::SmallInt(-18),
+            &mut controls,
+        );
+
+        assert_eq!(controls.modules.pad[0].kind().unwrap().id, "room");
+        assert!((controls.modules.pad[0].amount - 0.35).abs() < 0.001);
+        assert_eq!(controls.modules.master[1].kind().unwrap().id, "compression");
+        assert_eq!(controls.modules.master[1].time, -18.0);
+    }
+
+    #[test]
+    fn retired_effect_automation_addresses_follow_the_migrated_slot() {
+        let controls = FluidControls::default();
+        assert_eq!(
+            migrated_effect_control_id("arp.reverb_mix", &controls),
+            Some("arp.slot1.amount")
+        );
+        assert_eq!(
+            migrated_effect_control_id("master.comp_release_ms", &controls),
+            Some("master.slot2.feedback")
+        );
+        assert_eq!(
+            migrate_legacy_field_macro_key("master.comp_threshold#lfo.rate", &controls),
+            "master.slot2.time#lfo.rate"
+        );
     }
 }

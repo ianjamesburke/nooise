@@ -37,6 +37,33 @@ struct AllPass {
     feedback: f32,
 }
 
+#[derive(Clone)]
+pub(crate) struct CombState {
+    pub(crate) buffer: Vec<f32>,
+    pub(crate) index: usize,
+    pub(crate) feedback: f32,
+    pub(crate) filter_store: f32,
+    pub(crate) damp1: f32,
+    pub(crate) damp2: f32,
+}
+
+#[derive(Clone)]
+pub(crate) struct AllPassState {
+    pub(crate) buffer: Vec<f32>,
+    pub(crate) index: usize,
+    pub(crate) feedback: f32,
+}
+
+#[derive(Clone)]
+pub(crate) struct FreeverbState {
+    pub(crate) combs_left: Vec<CombState>,
+    pub(crate) combs_right: Vec<CombState>,
+    pub(crate) allpasses_left: Vec<AllPassState>,
+    pub(crate) allpasses_right: Vec<AllPassState>,
+    pub(crate) wet: f32,
+    pub(crate) active: bool,
+}
+
 impl AllPass {
     fn new(size: usize, feedback: f32) -> Self {
         Self {
@@ -133,5 +160,83 @@ impl Freeverb {
         }
 
         (left * self.wet * 0.18, right * self.wet * 0.18)
+    }
+
+    pub(crate) fn set_character(&mut self, room_size: f32, damp: f32) {
+        let feedback = 0.28 + room_size.clamp(0.0, 1.0) * 0.68;
+        let damp1 = damp.clamp(0.0, 1.0) * 0.4;
+        for comb in self.combs_left.iter_mut().chain(&mut self.combs_right) {
+            comb.feedback = feedback;
+            comb.damp1 = damp1;
+            comb.damp2 = 1.0 - damp1;
+        }
+    }
+
+    pub(crate) fn state(&self) -> FreeverbState {
+        let comb = |value: &Comb| CombState {
+            buffer: value.buffer.clone(),
+            index: value.index,
+            feedback: value.feedback,
+            filter_store: value.filter_store,
+            damp1: value.damp1,
+            damp2: value.damp2,
+        };
+        let allpass = |value: &AllPass| AllPassState {
+            buffer: value.buffer.clone(),
+            index: value.index,
+            feedback: value.feedback,
+        };
+        FreeverbState {
+            combs_left: self.combs_left.iter().map(comb).collect(),
+            combs_right: self.combs_right.iter().map(comb).collect(),
+            allpasses_left: self.allpasses_left.iter().map(allpass).collect(),
+            allpasses_right: self.allpasses_right.iter().map(allpass).collect(),
+            wet: self.wet,
+            active: self.active,
+        }
+    }
+
+    pub(crate) fn from_state(state: FreeverbState) -> Option<Self> {
+        let comb = |value: CombState| {
+            (!value.buffer.is_empty()).then(|| Comb {
+                index: value.index % value.buffer.len(),
+                buffer: value.buffer,
+                feedback: value.feedback,
+                filter_store: value.filter_store,
+                damp1: value.damp1,
+                damp2: value.damp2,
+            })
+        };
+        let allpass = |value: AllPassState| {
+            (!value.buffer.is_empty()).then(|| AllPass {
+                index: value.index % value.buffer.len(),
+                buffer: value.buffer,
+                feedback: value.feedback,
+            })
+        };
+        Some(Self {
+            combs_left: state
+                .combs_left
+                .into_iter()
+                .map(comb)
+                .collect::<Option<_>>()?,
+            combs_right: state
+                .combs_right
+                .into_iter()
+                .map(comb)
+                .collect::<Option<_>>()?,
+            allpasses_left: state
+                .allpasses_left
+                .into_iter()
+                .map(allpass)
+                .collect::<Option<_>>()?,
+            allpasses_right: state
+                .allpasses_right
+                .into_iter()
+                .map(allpass)
+                .collect::<Option<_>>()?,
+            wet: state.wet.clamp(0.0, 1.0),
+            active: state.active,
+        })
     }
 }

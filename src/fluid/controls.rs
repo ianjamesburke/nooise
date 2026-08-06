@@ -19,52 +19,18 @@ pub(crate) const LEVEL_RAMP_MS: f32 = 30.0;
 pub(crate) struct MasterControls {
     pub bpm: f32,
     pub level: f32,
-    pub drive: f32,
-    /// 0-1 macro driving `comp_threshold`/`comp_ratio`/`comp_makeup` via
-    /// `apply_compression_amount`. The single dial most users touch; drilling
-    /// into the Compression row exposes the three derived fields for direct
-    /// override, which the macro overwrites again the next time it's moved.
-    pub comp_amount: f32,
-    pub comp_threshold: f32,  // dB, -40 to 0
-    pub comp_ratio: f32,      // 1-8
-    pub comp_release_ms: f32, // 10-500
-    /// Post-compressor makeup gain, dB. Reclaims the loudness the compressor
-    /// takes away above threshold — the compressor previously had no makeup
-    /// at all, which is why default-settings output read as quiet.
-    pub comp_makeup: f32,
     pub tone: f32, // -1 (bass) to +1 (treble)
     pub tune: f32, // semitones, -12 (1 octave down) to +12 (1 octave up)
 }
 
-/// Derives threshold (dB), ratio, and makeup (dB) from a single 0-1
-/// "Compression" amount. Makeup is half the compressor's average gain
-/// reduction at full-scale input — enough to reclaim loudness without
-/// making the knob feel like a limiter ceiling.
-pub(crate) fn apply_compression_amount(m: &mut MasterControls, amount: f32) {
-    let amount = amount.clamp(0.0, 1.0);
-    m.comp_amount = amount;
-    m.comp_threshold = -2.0 - amount * 30.0;
-    m.comp_ratio = 1.0 + amount * 5.0;
-    let full_scale_reduction_db = -m.comp_threshold * (1.0 - 1.0 / m.comp_ratio);
-    m.comp_makeup = (full_scale_reduction_db * 0.5).clamp(0.0, 12.0);
-}
-
 impl Default for MasterControls {
     fn default() -> Self {
-        let mut m = Self {
+        Self {
             bpm: 82.0,
             level: 0.8,
-            drive: 0.1,
-            comp_amount: 0.0,
-            comp_threshold: 0.0,
-            comp_ratio: 1.0,
-            comp_release_ms: 100.0,
-            comp_makeup: 0.0,
             tone: 0.0,
             tune: 0.0,
-        };
-        apply_compression_amount(&mut m, 0.2);
-        m
+        }
     }
 }
 
@@ -127,7 +93,6 @@ pub(crate) struct PadControls {
     pub chord_count: f32,
     pub progression: f32,
     pub chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
-    pub reverb_mix: f32,
     pub stereo_width: f32,
     pub detune: f32,
     pub octave_mix: f32,
@@ -147,7 +112,6 @@ impl Default for PadControls {
                 degree: DEFAULT_CHORD_SLOT_DEGREES[slot],
                 ..ChordSlotControls::default()
             }),
-            reverb_mix: 0.8,
             stereo_width: 0.8,
             detune: 0.5,
             octave_mix: 0.5,
@@ -165,10 +129,10 @@ pub(crate) struct KickControls {
     pub pitch_decay_ms: f32,
     pub amp_decay_ms: f32,
     pub click: f32, // 0–0.2 UI range
-    pub drive: f32,
     pub filter: f32,
     pub interval_beats: f32,
     pub offset_beats: f32,
+    pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
 impl Default for KickControls {
@@ -180,10 +144,10 @@ impl Default for KickControls {
             pitch_decay_ms: 55.0,
             amp_decay_ms: 250.0,
             click: 0.0,
-            drive: 0.2,
             filter: 0.7,
             interval_beats: 1.0,
             offset_beats: 0.0,
+            swing: 0.0,
         }
     }
 }
@@ -201,7 +165,6 @@ pub(crate) struct TonalControls {
     pub offset_beats: f32,
     pub attack: f32,
     pub decay: f32,
-    pub reverb_mix: f32,
     pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
@@ -224,7 +187,6 @@ impl Default for TonalControls {
             // rings.
             attack: 0.03,
             decay: 1.2,
-            reverb_mix: 0.6,
             swing: 0.0,
         }
     }
@@ -235,11 +197,11 @@ pub(crate) struct ClapControls {
     pub level: f32,
     pub interval_beats: f32,
     pub offset_beats: f32,
+    pub swing: f32,          // 0 (straight) to 1 (max shuffle) on this voice's grid
     pub slap_count: f32,     // 1-8
     pub slap_spread_ms: f32, // 0-100 ms
     pub decay_ms: f32,       // 10-200 ms
     pub filter: f32,         // 0=dark 1=bright
-    pub room: f32,           // 0-1 reverb send
     pub body: f32,           // 0-1 low-freq flesh mix
 }
 
@@ -249,11 +211,11 @@ impl Default for ClapControls {
             level: 0.0,
             interval_beats: 2.0,
             offset_beats: 1.0,
+            swing: 0.0,
             slap_count: 3.0,
             slap_spread_ms: 8.0,
             decay_ms: 40.0,
             filter: 0.75,
-            room: 0.0,
             body: 0.2,
         }
     }
@@ -269,8 +231,8 @@ pub(crate) struct BassControls {
     pub octave: f32, // octaves relative to the chord root, e.g. -1.0 = one octave down
     pub attack_time: f32,
     pub decay_time: f32, // also used as the cutoff curve when a hit retriggers mid-decay
-    pub drive: f32,
-    pub cutoff: f32, // one-pole lowpass cutoff, Hz; BASS_CUTOFF_MAX_HZ = fully open (bypass)
+    pub cutoff: f32,     // one-pole lowpass cutoff, Hz; BASS_CUTOFF_MAX_HZ = fully open (bypass)
+    pub swing: f32,      // derived from the optional Swing module
 }
 
 impl Default for BassControls {
@@ -284,8 +246,8 @@ impl Default for BassControls {
             octave: -1.0,
             decay_time: 0.3,
             attack_time: 0.01,
-            drive: 0.15,
             cutoff: BASS_CUTOFF_MAX_HZ,
+            swing: 0.0,
         }
     }
 }
@@ -300,7 +262,6 @@ pub(crate) struct ArpControls {
     pub octaves: f32, // 1-3, octave span of the cycled chord tones
     pub attack: f32,
     pub decay: f32,
-    pub reverb_mix: f32,
     pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
@@ -319,9 +280,6 @@ impl Default for ArpControls {
             octaves: 1.0,
             attack: 0.005,
             decay: 0.4,
-            // Matches the former AMBIENT_REVERB_ARP_MIX_FIXED constant so the
-            // default sound is unchanged.
-            reverb_mix: 0.5,
             swing: 0.0,
         }
     }

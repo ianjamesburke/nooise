@@ -20,9 +20,9 @@ use ratatui::backend::TestBackend;
 use super::effect::{Clipboard, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
-    InteractionMode, InteractionModel, LfoDepth, MasterDrill, Navigation, NumericEntry,
-    PaletteMode, PaletteStagedEdit, PerformanceInstrument, PerformanceKind, PerformanceMode,
-    PhasePolicy, SemanticAction, SequenceStage,
+    InteractionMode, InteractionModel, LfoDepth, Navigation, NumericEntry, PaletteMode,
+    PaletteStagedEdit, PerformanceInstrument, PerformanceKind, PerformanceMode, PhasePolicy,
+    SemanticAction, SequenceStage,
 };
 use super::runtime::{
     Clock, EventSource, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
@@ -646,6 +646,9 @@ impl ReplayHarness {
     fn new(capabilities: TerminalCapabilities) -> Self {
         let session =
             LiveSession::new(LiveSessionSnapshot::from_controls(FluidControls::default()));
+        // Replay has no audio callback, so acknowledge capture requests with
+        // a deterministic empty bank newer than every request in the test.
+        session.publish_module_fx_capture(u64::MAX, ModuleFxRuntimeState::default());
         let executor = EffectExecutor::new(
             session,
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
@@ -1610,13 +1613,7 @@ fn recorded_backtab_round_trips_through_the_full_pipeline() {
         }]
     );
     let result = replay(&trace.events, full_capabilities());
-    assert!(matches!(
-        result.model.navigation,
-        Navigation::Master {
-            drill: MasterDrill::None,
-            ..
-        }
-    ));
+    assert!(matches!(result.model.navigation, Navigation::Master { .. }));
     assert!(result.state_history.iter().any(|record| {
         record.action.intent == Intent::ChangePage(super::interaction::PageDirection::Previous)
     }));
@@ -2555,46 +2552,6 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
             .find_map(|(id, bits)| (*id == "pad.progression").then_some(*bits)),
         Some((super::voice::CUSTOM_PROGRESSION_INDEX as f32).to_bits())
     );
-
-    let master = replay_from_model(
-        InteractionModel {
-            navigation: Navigation::Master {
-                selected: MASTER_COMP_AMOUNT_ROW,
-                drill: MasterDrill::None,
-            },
-            ..InteractionModel::default()
-        },
-        &[key(0, FixtureKey::Enter, InputPhase::Press)],
-        full_capabilities(),
-    );
-    assert_eq!(
-        master.model,
-        InteractionModel {
-            navigation: Navigation::Master {
-                selected: 0,
-                drill: MasterDrill::Compression {
-                    return_to: MASTER_COMP_AMOUNT_ROW,
-                },
-            },
-            ..InteractionModel::default()
-        }
-    );
-    assert_eq!(
-        master
-            .state_history
-            .iter()
-            .map(|record| record.action.intent)
-            .collect::<Vec<_>>(),
-        vec![Intent::EnterMasterCompression]
-    );
-    assert!(master.effects.is_empty());
-    assert_eq!(master.session_generation, 0);
-    assert_eq!(master.automation_kind, None);
-    assert_eq!(master.effect_notice, None);
-    assert_eq!(
-        master.frames.last().map(|frame| frame.owner.as_str()),
-        Some("BROWSE")
-    );
 }
 
 #[test]
@@ -3082,7 +3039,6 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         Intent::Cancel,
         Intent::EnterChordProgression,
         Intent::EnterChordSlot(0),
-        Intent::EnterMasterCompression,
         Intent::BeginNumeric('1'),
         Intent::TypeCharacter('x'),
         Intent::Backspace,
@@ -3223,13 +3179,6 @@ fn escape_converges_from_every_owner_and_nested_depth() {
             },
             mode: InteractionMode::Browsing,
         },
-        InteractionModel {
-            navigation: Navigation::Master {
-                selected: 1,
-                drill: MasterDrill::Compression { return_to: 0 },
-            },
-            mode: InteractionMode::Browsing,
-        },
     ];
     for model in models {
         let result = replay_from_model(
@@ -3248,10 +3197,8 @@ fn escape_converges_from_every_owner_and_nested_depth() {
                 Navigation::Chords {
                     drill: ChordDrill::None,
                     ..
-                } | Navigation::Master {
-                    drill: MasterDrill::None,
-                    ..
-                } | Navigation::Standard { .. }
+                } | Navigation::Master { .. }
+                    | Navigation::Standard { .. }
             ),
             "Escape left a navigation drill open: {:?}",
             result.model

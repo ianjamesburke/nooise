@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    AutomationMode, ChordDrill, InteractionMode, InteractionModel, MasterDrill, Navigation,
-    PerformanceAction, PerformanceInstrument, PerformanceMode, PerformanceTargets, SequenceStage,
+    AutomationMode, ChordDrill, InteractionMode, InteractionModel, Navigation, PerformanceAction,
+    PerformanceInstrument, PerformanceMode, PerformanceTargets, SequenceStage,
 };
 
 pub(crate) const MIN_TERMINAL_WIDTH: u16 = 46;
@@ -78,7 +78,7 @@ impl HelpSurface {
 pub(crate) struct NavigationView {
     pub(crate) tab: Tab,
     pub(crate) chord_drill: ChordDrill,
-    pub(crate) comp_drill: MasterDrill,
+    pub(crate) module_slot: Option<usize>,
     pub(crate) selected: usize,
 }
 
@@ -229,10 +229,12 @@ impl<'a> UiViewModel<'a> {
             presentation,
         } = projection;
         let navigation = navigation_view(interaction.navigation);
-        let items = match navigation.tab {
-            Tab::Chords => chords_tab_controls(&session.controls, navigation.chord_drill),
-            Tab::Master => master_tab_controls(&session.controls, navigation.comp_drill),
-            tab => tab_controls(tab, &session.controls),
+        let items = match navigation.module_slot {
+            Some(slot) => module_detail_controls(navigation.tab, slot, &session.controls),
+            None => match navigation.tab {
+                Tab::Chords => chords_tab_controls(&session.controls, navigation.chord_drill),
+                tab => tab_controls(tab, &session.controls),
+            },
         };
         let mut navigation = navigation;
         navigation.selected = navigation.selected.min(items.len().saturating_sub(1));
@@ -276,7 +278,7 @@ fn mode_surface<'a>(
                 .map(|mode| automation_surface(mode, automation)),
         },
         InteractionMode::Palette(palette) => {
-            let mut state = PaletteState::new(tab, &palette.recent);
+            let mut state = PaletteState::new(tab, &palette.recent, palette.module_scope);
             for character in palette.query.chars() {
                 state.push_char(character);
             }
@@ -494,7 +496,7 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
         Navigation::Chords { selected, drill } => NavigationView {
             tab: Tab::Chords,
             chord_drill: drill,
-            comp_drill: MasterDrill::None,
+            module_slot: None,
             selected,
         },
         Navigation::Standard { page, selected } => NavigationView {
@@ -508,13 +510,24 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
                 crate::fluid::interaction::StandardPage::Macros => Tab::Macros,
             },
             chord_drill: ChordDrill::None,
-            comp_drill: MasterDrill::None,
+            module_slot: None,
             selected,
         },
-        Navigation::Master { selected, drill } => NavigationView {
+        Navigation::Master { selected } => NavigationView {
             tab: Tab::Master,
             chord_drill: ChordDrill::None,
-            comp_drill: drill,
+            module_slot: None,
+            selected,
+        },
+        Navigation::Module {
+            tab,
+            slot,
+            selected,
+            ..
+        } => NavigationView {
+            tab,
+            chord_drill: ChordDrill::None,
+            module_slot: Some(slot),
             selected,
         },
     }
@@ -566,16 +579,14 @@ fn help_surface(
     let local_help = match (
         navigation.tab,
         navigation.chord_drill,
-        navigation.comp_drill,
+        navigation.module_slot,
     ) {
-        (Tab::Chords, ChordDrill::Progression { .. }, _) => {
+        (_, _, Some(_)) => Some("BROWSE · Module detail   Esc: back".to_string()),
+        (Tab::Chords, ChordDrill::Progression { .. }, None) => {
             Some("BROWSE · Progression   Enter: open chord   Esc: back".to_string())
         }
-        (Tab::Chords, ChordDrill::Slot { slot, .. }, _) => {
+        (Tab::Chords, ChordDrill::Slot { slot, .. }, None) => {
             Some(format!("BROWSE · Chord {}   Esc: back", slot + 1))
-        }
-        (Tab::Master, _, MasterDrill::Compression { .. }) => {
-            Some("BROWSE · Compression   Esc: back".to_string())
         }
         _ => None,
     };
@@ -911,7 +922,6 @@ mod tests {
         let interaction = InteractionModel {
             navigation: Navigation::Master {
                 selected: usize::MAX,
-                drill: MasterDrill::None,
             },
             mode: InteractionMode::Browsing,
         };
@@ -952,6 +962,7 @@ mod tests {
                     value_bits: 91.0f32.to_bits(),
                 }],
                 resume: None,
+                module_scope: None,
             }),
         };
         let transition = model.update(SemanticAction::press(Intent::TypeCharacter('5')));

@@ -8,6 +8,7 @@ pub(crate) enum EffectFailure {
     UnknownControl(&'static str),
     Clipboard(String),
     MissingContext(&'static str),
+    ModuleFxCaptureTimeout,
     UnsupportedInteraction(InteractionEffect),
 }
 
@@ -251,10 +252,30 @@ impl EffectExecutor {
             }
             LiveEffect::CopySong => {
                 let snapshot = self.session.load();
+                let module_fx_runtime = if has_stateful_module(&snapshot.controls) {
+                    let request = self.session.request_module_fx_capture();
+                    let deadline = Instant::now() + std::time::Duration::from_millis(50);
+                    Some(
+                        loop {
+                            let capture = self.session.module_fx_capture();
+                            if capture.request >= request {
+                                break Some(capture.state.clone());
+                            }
+                            if Instant::now() >= deadline {
+                                break None;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                        .ok_or(EffectFailure::ModuleFxCaptureTimeout)?,
+                    )
+                } else {
+                    None
+                };
                 let code = encode_song_code(&SongState {
                     controls: snapshot.controls.clone(),
                     automation: snapshot.automation.clone(),
                     tonal_sequence: Some(snapshot.tonal_sequence.clone()),
+                    module_fx_runtime,
                 })
                 .map_err(|error| EffectFailure::Clipboard(error.to_string()))?;
                 clipboard.set_text(code).map_err(EffectFailure::Clipboard)?;
@@ -337,6 +358,11 @@ impl EffectExecutor {
         let kind = MODULE_CATALOG
             .get(catalog)
             .ok_or(EffectFailure::MissingContext("catalog module"))?;
+        if !module_available_on(*kind, tab) {
+            return Err(EffectFailure::MissingContext(
+                "module is unavailable on this layer",
+            ));
+        }
         let existing = self
             .session
             .load()
@@ -354,11 +380,7 @@ impl EffectExecutor {
                         // Added modules always start inert, whatever a
                         // pre-loaded slot's factory amount happens to be, so
                         // adding one is audibly free and needs no confirming.
-                        slots[free] = ModuleSlot {
-                            kind: module_kind_value(kind.id),
-                            amount: 0.0,
-                            time: 0.0,
-                        };
+                        slots[free] = preset_slot(kind.id, 0.0);
                     }
                 });
                 let Some(slot) = placed
@@ -777,6 +799,21 @@ impl EffectExecutor {
     }
 }
 
+fn has_stateful_module(controls: &FluidControls) -> bool {
+    Tab::all().into_iter().any(|tab| {
+        controls.modules.for_tab(tab).is_some_and(|slots| {
+            slots.iter().any(|slot| {
+                slot.kind().is_some_and(|kind| {
+                    matches!(
+                        kind.family,
+                        Family::Delay | Family::Reverb | Family::Compression
+                    )
+                })
+            })
+        })
+    })
+}
+
 pub(crate) type MuteState = [Option<f32>; 9];
 
 #[derive(Default)]
@@ -828,17 +865,14 @@ mod tests {
     }
 
     fn executor() -> EffectExecutor {
-        let controls = FluidControls::default();
-        let session = LiveSession::new(LiveSessionSnapshot::from_controls(controls));
-        EffectExecutor::new(
-            session,
-            AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
-        )
+        executor_with(FluidControls::default())
     }
 
     fn executor_with(controls: FluidControls) -> EffectExecutor {
+        let session = LiveSession::new(LiveSessionSnapshot::from_controls(controls));
+        session.publish_module_fx_capture(u64::MAX, ModuleFxRuntimeState::default());
         EffectExecutor::new(
-            LiveSession::new(LiveSessionSnapshot::from_controls(controls)),
+            session,
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
         )
     }
@@ -941,23 +975,23 @@ mod tests {
     #[test]
     fn confirming_a_module_row_adds_it_inert_and_selects_it() {
         let mut executor = executor_with(FluidControls::default());
-        let sidechain = MODULE_CATALOG
+        let delay = MODULE_CATALOG
             .iter()
-            .position(|kind| kind.id == "sidechain")
-            .expect("sidechain is in the v1 catalog");
+            .position(|kind| kind.id == "delay")
+            .expect("delay is in the catalog");
 
         let ack = executor
             .execute_interaction(
                 InteractionEffect::PaletteModule {
                     tab: Tab::Bass,
-                    catalog: sidechain,
+                    catalog: delay,
                 },
                 &InteractionExecutionContext::default(),
             )
             .expect("adding to a layer with free slots succeeds");
 
         let slots = executor.session().load().controls.modules.bass;
-        let placed = chain_amount_slot(&slots, "sidechain").expect("sidechain was placed");
+        let placed = chain_amount_slot(&slots, "delay").expect("delay was placed");
         // Added modules start silent whatever the factory preset does, so
         // adding one can never change what is playing.
         assert_eq!(slots[placed].amount, 0.0);
@@ -1001,19 +1035,19 @@ mod tests {
     fn a_full_chain_refuses_loudly() {
         let mut controls = FluidControls::default();
         for slot in controls.modules.pad.iter_mut() {
-            *slot = preset_slot("alcohol", 0.0);
+            *slot = preset_slot("room", 0.0);
         }
         let mut executor = executor_with(controls);
-        let sidechain = MODULE_CATALOG
+        let delay = MODULE_CATALOG
             .iter()
-            .position(|kind| kind.id == "sidechain")
-            .expect("sidechain is in the v1 catalog");
+            .position(|kind| kind.id == "delay")
+            .expect("delay is in the catalog");
 
         let ack = executor
             .execute_interaction(
                 InteractionEffect::PaletteModule {
                     tab: Tab::Chords,
-                    catalog: sidechain,
+                    catalog: delay,
                 },
                 &InteractionExecutionContext::default(),
             )

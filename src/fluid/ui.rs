@@ -102,6 +102,18 @@ pub(crate) fn coordinate_production_event(
     {
         action.intent = interaction::Intent::EnterChordProgression;
     }
+    if action.intent == interaction::Intent::TouchSelected
+        && let Some(id) = selected_control
+        && let Some((slot, module)) = module_slot_at_amount_id(tab, id, &frame_session.controls)
+        && let Some(kind) = module.kind()
+        && kind.parameters().len() > 1
+    {
+        action.intent = interaction::Intent::EnterModuleDetail {
+            tab,
+            slot,
+            catalog: module.kind.round() as usize - 1,
+        };
+    }
 
     let repeat_count = match event {
         runtime::TransportEvent::Key { repeat_count, .. } => repeat_count.max(&1),
@@ -163,7 +175,68 @@ pub(crate) fn coordinate_production_event(
         for (effect, result) in emitted.into_iter().zip(results) {
             match &result {
                 Ok(EffectAcknowledgement::ControlSelected { tab, index, .. }) => {
-                    model.select_control(*tab, *index);
+                    let selected_spec = tab_specs(*tab).get(*index);
+                    let current_session = context.effects.session().load();
+                    let mut opened_module = false;
+                    if let Some(spec) = selected_spec
+                        && let Some((slot, module)) =
+                            module_slot_at_amount_id(*tab, spec.id, &current_session.controls)
+                        && let Some(kind) = module.kind()
+                        && kind.parameters().len() > 1
+                    {
+                        let return_to = match *tab {
+                            Tab::Chords => chords_tab_controls(
+                                &current_session.controls,
+                                interaction::ChordDrill::None,
+                            ),
+                            _ => tab_controls(*tab, &current_session.controls),
+                        }
+                        .iter()
+                        .position(|item| item.id == spec.id)
+                        .unwrap_or(0);
+                        model.navigation = interaction::Navigation::Module {
+                            tab: *tab,
+                            slot,
+                            catalog: module.kind.round() as usize - 1,
+                            selected: 0,
+                            return_to,
+                        };
+                        model.mode = interaction::InteractionMode::Browsing;
+                        opened_module = true;
+                    }
+                    if !opened_module
+                        && let interaction::Navigation::Module {
+                            tab: scoped_tab,
+                            slot,
+                            selected,
+                            ..
+                        } = &mut model.navigation
+                        && *scoped_tab == *tab
+                        && let Some(spec) = tab_specs(*tab).get(*index)
+                    {
+                        let suffix = format!(".slot{}.", *slot + 1);
+                        if spec.id.contains(&suffix) {
+                            if let Some(kind) = frame_session
+                                .controls
+                                .modules
+                                .for_tab(*tab)
+                                .and_then(|slots| slots.get(*slot))
+                                .and_then(ModuleSlot::kind)
+                            {
+                                *selected = kind
+                                    .parameters()
+                                    .iter()
+                                    .position(|parameter| {
+                                        spec.id.rsplit('.').next() == Some(parameter.field.id())
+                                    })
+                                    .unwrap_or(*selected);
+                            }
+                        } else {
+                            model.select_control(*tab, *index);
+                        }
+                    } else if !opened_module {
+                        model.select_control(*tab, *index);
+                    }
                     model.mode = interaction::InteractionMode::Browsing;
                 }
                 Ok(EffectAcknowledgement::PerformanceEdited { tab, index, .. }) => {
@@ -345,14 +418,6 @@ pub(crate) fn production_ui_loop(
 /// each slider carries its own unit; stepping always stays on the native
 /// grid and conversion happens at the current BPM.
 pub(crate) type FlippedUnits = BTreeSet<String>;
-
-pub(crate) fn beats_to_ms(beats: f32, bpm: f32) -> f32 {
-    beats * 60_000.0 / bpm.max(1.0)
-}
-
-pub(crate) fn ms_to_beats(ms: f32, bpm: f32) -> f32 {
-    ms * bpm.max(1.0) / 60_000.0
-}
 
 fn fmt_ms(ms: f32) -> String {
     secs(ms / 1000.0)
@@ -758,6 +823,49 @@ pub(crate) fn adjust_lfo_or_control(
                 }
             }
             ActiveField::Control => {
+                if let Some(spec) = tab_specs(tab).get(selected)
+                    && let Some((slot, module)) =
+                        module_slot_at_id(tab, spec.id, &snapshot.controls)
+                    && let Some(kind) = module.kind()
+                {
+                    let field = spec.id.rsplit('.').next();
+                    if kind.family == Family::Delay && field == Some("clock") {
+                        if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
+                            && let Some(module) = slots.get_mut(slot)
+                        {
+                            switch_delay_clock(module, false, bpm);
+                        }
+                        return;
+                    }
+                    if kind.family == Family::Delay && matches!(field, Some("time" | "right_time"))
+                    {
+                        if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
+                            && let Some(module) = slots.get_mut(slot)
+                        {
+                            let value = if field == Some("time") {
+                                &mut module.time
+                            } else {
+                                &mut module.right_time
+                            };
+                            let clock = if field == Some("right_time") {
+                                module.right_clock
+                            } else {
+                                module.clock
+                            };
+                            *value = match DelayClock::from_value(clock) {
+                                DelayClock::Sync => beat_grid_adjust(
+                                    *value,
+                                    dir,
+                                    DELAY_SYNC_MIN_BEATS,
+                                    DELAY_SYNC_MAX_BEATS,
+                                ),
+                                DelayClock::Free => (*value + dir * 10.0)
+                                    .clamp(DELAY_FREE_MIN_MS, DELAY_FREE_MAX_MS),
+                            };
+                        }
+                        return;
+                    }
+                }
                 let flipped_spec = tab_specs(tab).get(selected).filter(|spec| {
                     spec.time_base != TimeBase::None && flipped.contains(&unit_key(spec.id, None))
                 });
@@ -888,6 +996,36 @@ pub(crate) fn set_modulator_or_control(
                 }
             }
             ActiveField::Control => {
+                if let Some(spec) = tab_specs(tab).get(selected)
+                    && let Some((slot, module)) =
+                        module_slot_at_id(tab, spec.id, &snapshot.controls)
+                    && module
+                        .kind()
+                        .is_some_and(|kind| kind.family == Family::Delay)
+                    && matches!(spec.id.rsplit('.').next(), Some("time" | "right_time"))
+                {
+                    if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
+                        && let Some(module) = slots.get_mut(slot)
+                    {
+                        let clock = if spec.id.ends_with(".right_time") {
+                            module.right_clock
+                        } else {
+                            module.clock
+                        };
+                        let value = match DelayClock::from_value(clock) {
+                            DelayClock::Sync => {
+                                value.clamp(DELAY_SYNC_MIN_BEATS, DELAY_SYNC_MAX_BEATS)
+                            }
+                            DelayClock::Free => value.clamp(DELAY_FREE_MIN_MS, DELAY_FREE_MAX_MS),
+                        };
+                        if spec.id.ends_with(".time") {
+                            module.time = value;
+                        } else {
+                            module.right_time = value;
+                        }
+                    }
+                    return;
+                }
                 match tab_specs(tab).get(selected) {
                     Some(spec)
                         if spec.time_base != TimeBase::None
@@ -916,6 +1054,25 @@ pub(crate) fn toggle_units_effect(
     selected: usize,
     beat: f64,
 ) {
+    if matches!(active_field(automation, lfo_selected), ActiveField::Control)
+        && let Some(spec) = tab_specs(tab).get(selected)
+        && matches!(spec.id.rsplit('.').next(), Some("time" | "right_time"))
+        && let snapshot = effects.session().load()
+        && let Some((slot, module)) = module_slot_at_id(tab, spec.id, &snapshot.controls)
+        && module
+            .kind()
+            .is_some_and(|kind| kind.family == Family::Delay)
+    {
+        effects.edit_session(AutoOwnership::TakeOver, Some(spec.id), |snapshot| {
+            let bpm = snapshot.controls.master.bpm;
+            if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
+                && let Some(module) = slots.get_mut(slot)
+            {
+                switch_delay_clock(module, spec.id.ends_with(".right_time"), bpm);
+            }
+        });
+        return;
+    }
     let key = match active_field(automation, lfo_selected) {
         ActiveField::Lfo(address, field) => {
             lfo_time_key(field).map(|key| unit_key(address.id(), Some(key)))
@@ -1219,7 +1376,6 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let controls = &view.session.controls;
     let flipped = view.flipped;
     let chord_drill = view.navigation.chord_drill;
-    let comp_drill = view.navigation.comp_drill;
     let active_chord = view.telemetry.active_chord;
     let mute = view.mute;
     let bpm = controls.master.bpm;
@@ -1295,7 +1451,19 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let tab_line: String = Tab::all()
         .iter()
         .map(|t| {
-            let name = if *t == Tab::Chords {
+            let name = if *t == active_tab
+                && let Some(slot) = view.navigation.module_slot
+            {
+                let module = controls
+                    .modules
+                    .for_tab(*t)
+                    .and_then(|slots| slots[slot].kind());
+                format!(
+                    "{} › {}",
+                    t.name(),
+                    module.map_or("Module", |kind| kind.display_name)
+                )
+            } else if *t == Tab::Chords {
                 match chord_drill {
                     interaction::ChordDrill::Progression { .. } => {
                         format!("{} › Progression", t.name())
@@ -1305,13 +1473,6 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                         format!("{} › Chord {}{live}", t.name(), n + 1)
                     }
                     interaction::ChordDrill::None => t.name().to_string(),
-                }
-            } else if *t == Tab::Master {
-                match comp_drill {
-                    interaction::MasterDrill::Compression { .. } => {
-                        format!("{} › Compression", t.name())
-                    }
-                    interaction::MasterDrill::None => t.name().to_string(),
                 }
             } else {
                 t.name().to_string()

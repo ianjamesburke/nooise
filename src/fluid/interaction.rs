@@ -81,15 +81,6 @@ pub(crate) enum ChordDrill {
     },
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum MasterDrill {
-    #[default]
-    None,
-    Compression {
-        return_to: usize,
-    },
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StandardPage {
     Perc,
@@ -119,9 +110,26 @@ impl StandardPage {
 /// any other page, impossible to construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Navigation {
-    Chords { selected: usize, drill: ChordDrill },
-    Standard { page: StandardPage, selected: usize },
-    Master { selected: usize, drill: MasterDrill },
+    Chords {
+        selected: usize,
+        drill: ChordDrill,
+    },
+    Standard {
+        page: StandardPage,
+        selected: usize,
+    },
+    Master {
+        selected: usize,
+    },
+    /// A module owns a reusable detail scope while keeping its layer as the
+    /// active page. `return_to` restores the collapsed module row on Esc.
+    Module {
+        tab: Tab,
+        slot: usize,
+        catalog: usize,
+        selected: usize,
+        return_to: usize,
+    },
 }
 
 impl Default for Navigation {
@@ -137,10 +145,7 @@ impl Navigation {
                 selected: 0,
                 drill: ChordDrill::None,
             },
-            Page::Master => Self::Master {
-                selected: 0,
-                drill: MasterDrill::None,
-            },
+            Page::Master => Self::Master { selected: 0 },
             Page::Perc => Self::Standard {
                 page: StandardPage::Perc,
                 selected: 0,
@@ -177,6 +182,7 @@ impl Navigation {
             Self::Chords { .. } => Page::Chords,
             Self::Standard { page, .. } => page.page(),
             Self::Master { .. } => Page::Master,
+            Self::Module { tab, .. } => page_for_tab(tab),
         }
     }
 
@@ -184,7 +190,8 @@ impl Navigation {
         match self {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
-            | Self::Master { selected, .. } => selected,
+            | Self::Master { selected, .. }
+            | Self::Module { selected, .. } => selected,
         }
     }
 
@@ -198,7 +205,8 @@ impl Navigation {
         match self {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
-            | Self::Master { selected, .. } => *selected = next,
+            | Self::Master { selected, .. }
+            | Self::Module { selected, .. } => *selected = next,
         }
     }
 
@@ -215,11 +223,18 @@ impl Navigation {
                 }
                 ChordDrill::None => {}
             },
-            Self::Master { selected, drill } => {
-                if let MasterDrill::Compression { return_to } = *drill {
-                    *selected = return_to;
-                    *drill = MasterDrill::None;
+            Self::Master { .. } => {}
+            Self::Module { tab, return_to, .. } => {
+                let mut parent = Self::for_page(page_for_tab(*tab));
+                match &mut parent {
+                    Self::Chords { selected, .. }
+                    | Self::Standard { selected, .. }
+                    | Self::Master { selected, .. } => *selected = *return_to,
+                    Self::Module { .. } => {
+                        unreachable!("page navigation cannot create a module drill")
+                    }
                 }
+                *self = parent;
             }
             Self::Standard { .. } => {}
         }
@@ -241,6 +256,7 @@ pub(crate) struct PaletteMode {
     pub(crate) value_buffer: String,
     pub(crate) staged: Vec<PaletteStagedEdit>,
     pub(crate) resume: Option<AutomationMode>,
+    pub(crate) module_scope: Option<(Tab, usize, usize)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -465,7 +481,11 @@ pub(crate) enum Intent {
     Cancel,
     EnterChordProgression,
     EnterChordSlot(usize),
-    EnterMasterCompression,
+    EnterModuleDetail {
+        tab: Tab,
+        slot: usize,
+        catalog: usize,
+    },
     BeginNumeric(char),
     TypeCharacter(char),
     Backspace,
@@ -523,7 +543,7 @@ impl Intent {
             Self::Cancel
             | Self::EnterChordProgression
             | Self::EnterChordSlot(_)
-            | Self::EnterMasterCompression
+            | Self::EnterModuleDetail { .. }
             | Self::BeginNumeric(_)
             | Self::PaletteAutocomplete
             | Self::Confirm
@@ -671,7 +691,8 @@ impl InteractionModel {
         match &mut self.navigation {
             Navigation::Chords { selected, .. }
             | Navigation::Standard { selected, .. }
-            | Navigation::Master { selected, .. } => *selected = (*selected).min(last),
+            | Navigation::Master { selected, .. }
+            | Navigation::Module { selected, .. } => *selected = (*selected).min(last),
         }
     }
 
@@ -706,10 +727,7 @@ impl InteractionModel {
                 let (drill, selected) = super::chords_drill_for_index(index);
                 Navigation::Chords { selected, drill }
             }
-            Tab::Master => {
-                let (drill, selected) = super::master_drill_for_index(index);
-                Navigation::Master { selected, drill }
-            }
+            Tab::Master => Navigation::Master { selected: index },
             _ => {
                 let mut navigation = Navigation::for_page(page_for_tab(tab));
                 if let Navigation::Standard { selected, .. } = &mut navigation {
@@ -760,7 +778,7 @@ impl InteractionModel {
                 | Intent::ChangePage(_)
                 | Intent::EnterChordProgression
                 | Intent::EnterChordSlot(_)
-                | Intent::EnterMasterCompression
+                | Intent::EnterModuleDetail { .. }
                 | Intent::BeginNumeric(_)
                 | Intent::PaletteAutocomplete
                 | Intent::OpenPalette
@@ -785,7 +803,11 @@ impl InteractionModel {
                 | Intent::ReleaseHeldSelector(_) => {}
             },
             InteractionMode::Palette(palette) => {
-                let entries = PaletteState::new(tab_for_page(self.navigation.page()), &[]);
+                let entries = PaletteState::new(
+                    tab_for_page(self.navigation.page()),
+                    &[],
+                    palette.module_scope,
+                );
                 if palette
                     .locked
                     .is_some_and(|index| !entries.contains_entry(index))
@@ -891,7 +913,7 @@ impl InteractionModel {
                     Intent::ChangePage(_)
                     | Intent::EnterChordProgression
                     | Intent::EnterChordSlot(_)
-                    | Intent::EnterMasterCompression
+                    | Intent::EnterModuleDetail { .. }
                     | Intent::BeginNumeric(_)
                     | Intent::OpenPalette
                     | Intent::OpenAutomation(_)
@@ -1018,7 +1040,7 @@ impl InteractionModel {
                 Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
                 Intent::EnterChordProgression
                 | Intent::EnterChordSlot(_)
-                | Intent::EnterMasterCompression
+                | Intent::EnterModuleDetail { .. }
                 | Intent::TypeCharacter(_)
                 | Intent::Backspace
                 | Intent::PaletteAutocomplete
@@ -1167,7 +1189,7 @@ impl InteractionModel {
                 | Intent::ChangePage(_)
                 | Intent::EnterChordProgression
                 | Intent::EnterChordSlot(_)
-                | Intent::EnterMasterCompression
+                | Intent::EnterModuleDetail { .. }
                 | Intent::BeginNumeric(_)
                 | Intent::TypeCharacter(_)
                 | Intent::Backspace
@@ -1229,19 +1251,32 @@ fn update_browsing(
                 *drill = ChordDrill::Slot { slot, return_to };
             }
         }
-        Intent::EnterMasterCompression => {
-            if let Navigation::Master { selected, drill } = navigation {
-                let return_to = *selected;
-                *selected = 0;
-                *drill = MasterDrill::Compression { return_to };
-            }
+        Intent::EnterModuleDetail { tab, slot, catalog } => {
+            let return_to = navigation.selected();
+            *navigation = Navigation::Module {
+                tab,
+                slot,
+                catalog,
+                selected: 0,
+                return_to,
+            };
         }
         Intent::BeginNumeric(character) => {
             let mut entry = NumericEntry::default();
             push_numeric(&mut entry.buffer, character);
             *mode = InteractionMode::Numeric(entry);
         }
-        Intent::OpenPalette => *mode = InteractionMode::Palette(PaletteMode::default()),
+        Intent::OpenPalette => {
+            *mode = InteractionMode::Palette(PaletteMode {
+                module_scope: match navigation {
+                    Navigation::Module {
+                        tab, slot, catalog, ..
+                    } => Some((*tab, *slot, *catalog)),
+                    _ => None,
+                },
+                ..PaletteMode::default()
+            })
+        }
         Intent::OpenAutomation(kind) => {
             *mode = InteractionMode::Automation(AutomationMode::new(kind));
             effects.push(InteractionEffect::AutomationConfirm(kind));
@@ -1296,7 +1331,7 @@ fn push_numeric(buffer: &mut String, character: char) {
 }
 
 fn project_palette(palette: &PaletteMode, page: Page) -> PaletteState {
-    let mut state = PaletteState::new(tab_for_page(page), &palette.recent);
+    let mut state = PaletteState::new(tab_for_page(page), &palette.recent, palette.module_scope);
     for character in palette.query.chars() {
         state.push_char(character);
     }
@@ -1333,6 +1368,14 @@ fn palette_confirm(entry: &PaletteEntry) -> InteractionEffect {
         PaletteEntry::Module { tab, catalog } => InteractionEffect::PaletteModule {
             tab: *tab,
             catalog: *catalog,
+        },
+        PaletteEntry::ModuleControl { tab, spec, .. } => InteractionEffect::PaletteJump {
+            tab: *tab,
+            index: super::tab_specs(*tab)
+                .iter()
+                .position(|candidate| candidate.id == spec.id)
+                .expect("scoped module entry uses its owning tab spec"),
+            id: spec.id,
         },
     }
 }
@@ -1460,6 +1503,43 @@ mod tests {
     }
 
     #[test]
+    fn module_detail_enters_and_returns_to_its_collapsed_row() {
+        let model = InteractionModel {
+            navigation: Navigation::Standard {
+                page: StandardPage::Clap,
+                selected: 6,
+            },
+            ..InteractionModel::default()
+        };
+        let detail = update(
+            model,
+            Intent::EnterModuleDetail {
+                tab: Tab::Clap,
+                slot: 2,
+                catalog: 5,
+            },
+        )
+        .model;
+        assert_eq!(
+            detail.navigation,
+            Navigation::Module {
+                tab: Tab::Clap,
+                slot: 2,
+                catalog: 5,
+                selected: 0,
+                return_to: 6,
+            }
+        );
+        assert_eq!(
+            update(detail, Intent::Cancel).model.navigation,
+            Navigation::Standard {
+                page: StandardPage::Clap,
+                selected: 6,
+            }
+        );
+    }
+
+    #[test]
     fn page_change_resets_selection_and_page_local_drill() {
         let model = InteractionModel {
             navigation: Navigation::Chords {
@@ -1473,32 +1553,18 @@ mod tests {
             update(model, Intent::ChangePage(PageDirection::Previous))
                 .model
                 .navigation,
-            Navigation::Master {
-                selected: 0,
-                drill: MasterDrill::None,
-            }
+            Navigation::Master { selected: 0 }
         );
     }
 
     #[test]
-    fn browsing_cancel_walks_master_drill_outward_and_then_stops() {
+    fn browsing_cancel_on_master_is_a_no_op() {
         let model = InteractionModel {
-            navigation: Navigation::Master {
-                selected: 2,
-                drill: MasterDrill::Compression { return_to: 10 },
-            },
+            navigation: Navigation::Master { selected: 2 },
             ..InteractionModel::default()
         };
 
-        let browsing = update(model, Intent::Cancel).model;
-        assert_eq!(
-            browsing.navigation,
-            Navigation::Master {
-                selected: 10,
-                drill: MasterDrill::None,
-            }
-        );
-        assert_eq!(update(browsing.clone(), Intent::Cancel).model, browsing);
+        assert_eq!(update(model.clone(), Intent::Cancel).model, model);
     }
 
     #[test]
@@ -1518,7 +1584,6 @@ mod tests {
             Intent::Cancel,
             Intent::EnterChordProgression,
             Intent::EnterChordSlot(0),
-            Intent::EnterMasterCompression,
             Intent::BeginNumeric('1'),
             Intent::PaletteAutocomplete,
             Intent::Confirm,

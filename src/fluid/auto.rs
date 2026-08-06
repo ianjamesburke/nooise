@@ -211,6 +211,7 @@ impl MorphState {
             controls: current,
             automation: current_automation,
             tonal_sequence: None,
+            module_fx_runtime: None,
         });
         endpoints.extend(states[nearest..].iter().cloned());
         endpoints.extend(states[..nearest].iter().cloned());
@@ -442,6 +443,7 @@ mod tests {
             controls,
             automation: AutomationState::default(),
             tonal_sequence: None,
+            module_fx_runtime: None,
         }
     }
 
@@ -555,17 +557,17 @@ mod tests {
     #[test]
     fn glide_holds_through_hold_window_then_lerps() {
         let mut from = FluidControls::default();
-        from.master.drive = 0.0;
+        from.modules.master[0].amount = 0.0;
         let mut to = FluidControls::default();
-        to.master.drive = 1.0;
+        to.modules.master[0].amount = 1.0;
         // 6 bars/leg: hold 4 bars (transition_start=16 beats), transition 8 beats.
         let morph = MorphState::new(vec![song(from), song(to)], 6);
         // Deep in the hold window: still `from`.
-        assert!((morph.controls_at(8.0).master.drive - 0.0).abs() < 1e-4);
+        assert!((morph.controls_at(8.0).modules.master[0].amount - 0.0).abs() < 1e-4);
         // Halfway through the transition (beat 20 of 24): ~0.5.
-        assert!((morph.controls_at(20.0).master.drive - 0.5).abs() < 1e-3);
+        assert!((morph.controls_at(20.0).modules.master[0].amount - 0.5).abs() < 1e-3);
         // Near the end of the transition: essentially `to`.
-        assert!(morph.controls_at(23.9).master.drive > 0.98);
+        assert!(morph.controls_at(23.9).modules.master[0].amount > 0.98);
     }
 
     #[test]
@@ -711,9 +713,9 @@ mod tests {
     #[test]
     fn automation_route_present_on_both_sides_glides_depth_and_snaps_shape() {
         let mut from_state = FluidControls::default();
-        from_state.master.drive = 0.0;
+        from_state.modules.master[0].amount = 0.0;
         let mut to_state = FluidControls::default();
-        to_state.master.drive = 0.0;
+        to_state.modules.master[0].amount = 0.0;
 
         let address = ControlAddress::new("pad.level");
         let mut from_auto = AutomationState::default();
@@ -741,11 +743,13 @@ mod tests {
                     controls: from_state,
                     automation: from_auto,
                     tonal_sequence: None,
+                    module_fx_runtime: None,
                 },
                 SongState {
                     controls: to_state,
                     automation: to_auto,
                     tonal_sequence: None,
+                    module_fx_runtime: None,
                 },
             ],
             6,
@@ -781,11 +785,13 @@ mod tests {
                     controls: FluidControls::default(),
                     automation: from_auto,
                     tonal_sequence: None,
+                    module_fx_runtime: None,
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: to_auto,
                     tonal_sequence: None,
+                    module_fx_runtime: None,
                 },
             ],
             6,
@@ -814,16 +820,19 @@ mod tests {
                     controls: FluidControls::default(),
                     automation: routed,
                     tonal_sequence: None,
+                    module_fx_runtime: None,
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: unrouted.clone(),
                     tonal_sequence: None,
+                    module_fx_runtime: None,
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: unrouted,
                     tonal_sequence: None,
+                    module_fx_runtime: None,
                 },
             ],
             6,

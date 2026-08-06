@@ -1997,10 +1997,10 @@ impl AutomationPlan {
             if lfo.is_none() && envelope.is_none() && macro_mod.is_none() {
                 continue;
             }
-            let base = (planned.spec.get)(controls);
-            let value =
-                modulated_control_value_full(planned.spec, lfo, envelope, macro_mod, base, ctx);
-            (planned.spec.set)(controls, value);
+            let spec = planned.spec.contextual(controls);
+            let base = (spec.get)(controls);
+            let value = modulated_control_value_full(&spec, lfo, envelope, macro_mod, base, ctx);
+            (spec.set)(controls, value);
         }
     }
 }

@@ -162,7 +162,7 @@ impl BassEngine {
             .clamp(1.0, 32.0) as usize;
         if self
             .step_trigger
-            .pop(timing, BASS_STEP_BEATS, c.offset_beats)
+            .pop_swung(timing, BASS_STEP_BEATS, c.offset_beats, c.swing)
         {
             self.rhythm_step = (self.rhythm_step + 1) % loop_len;
             let rhythm = (c.rhythm.round() as usize) % BASS_RHYTHMS.len();
@@ -182,7 +182,6 @@ impl BassEngine {
                     hz,
                     c.attack_time,
                     c.decay_time,
-                    c.drive,
                     self.sample_rate,
                 ));
             }
@@ -239,29 +238,15 @@ impl BassVoice {
         hz: f32,
         attack_time: f32,
         decay_time: f32,
-        drive: f32,
         sample_rate: f32,
     ) -> Self {
         match voice_type {
-            0 => Self::Sub(SubBassVoice::new(
-                hz,
-                attack_time,
-                decay_time,
-                drive,
-                sample_rate,
-            )),
-            1 => Self::Saw(SawBassVoice::new(
-                hz,
-                attack_time,
-                decay_time,
-                drive,
-                sample_rate,
-            )),
+            0 => Self::Sub(SubBassVoice::new(hz, attack_time, decay_time, sample_rate)),
+            1 => Self::Saw(SawBassVoice::new(hz, attack_time, decay_time, sample_rate)),
             _ => Self::Pluck(PluckBassVoice::new(
                 hz,
                 attack_time,
                 decay_time,
-                drive,
                 sample_rate,
             )),
         }
@@ -284,21 +269,20 @@ impl BassVoice {
     }
 }
 
-/// Shared envelope + drive construction behind every `bass.type` voice: an
+/// Shared envelope construction behind every `bass.type` voice: an
 /// attack/decay-only ADSR (no sustain — Decay carries the note fully to
 /// silence, like the Perc voice's percussive envelope; Decay also doubles as
 /// the release curve, smoothing the cutoff if a hit retriggers before the
-/// previous note has fully decayed) plus the optional soft-clip drive stage.
+/// previous note has fully decayed). Drive belongs to the post-synthesis
+/// module chain so every layer uses the same processor.
 pub(crate) struct BassVoiceCore {
     pub(crate) envelope: Adsr,
-    pub(crate) drive: f32,
 }
 
 impl BassVoiceCore {
-    pub(crate) fn new(attack_time: f32, decay_time: f32, drive: f32, sample_rate: f32) -> Self {
+    pub(crate) fn new(attack_time: f32, decay_time: f32, sample_rate: f32) -> Self {
         Self {
             envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
-            drive,
         }
     }
 
@@ -307,30 +291,24 @@ impl BassVoiceCore {
     }
 }
 
-/// Type 0 (default): the original bass voice, byte-for-byte unchanged. A
-/// single sine oscillator through the shared attack/decay envelope, with an
-/// optional soft-clip drive stage.
+/// Type 0 (default): a single sine oscillator through the shared
+/// attack/decay envelope. Optional Drive is applied later by the layer's
+/// shared post-synthesis module chain.
 pub(crate) struct SubBassVoice {
     pub(crate) osc: SineOscillator,
     pub(crate) core: BassVoiceCore,
 }
 
 impl SubBassVoice {
-    pub(crate) fn new(
-        hz: f32,
-        attack_time: f32,
-        decay_time: f32,
-        drive: f32,
-        sample_rate: f32,
-    ) -> Self {
+    pub(crate) fn new(hz: f32, attack_time: f32, decay_time: f32, sample_rate: f32) -> Self {
         Self {
             osc: SineOscillator::new(hz, sample_rate),
-            core: BassVoiceCore::new(attack_time, decay_time, drive, sample_rate),
+            core: BassVoiceCore::new(attack_time, decay_time, sample_rate),
         }
     }
 
     pub(crate) fn next(&mut self) -> f32 {
-        drive_stage(self.osc.next() * self.core.envelope.next(), self.core.drive)
+        self.osc.next() * self.core.envelope.next()
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -355,25 +333,19 @@ const BASS_SAW_OUTPUT_GAIN: f32 = 0.62;
 /// harmonics (not a literal bandlimited sawtooth oscillator — none exists in
 /// `synth::oscillator` — but a steeper-than-`1/n` weighted approximation)
 /// gives it more harmonic content than the Sub voice while a fast tilt keeps
-/// the top end tame. Shares the Sub voice's envelope shape and drive stage.
+/// the top end tame. Shares the Sub voice's envelope shape.
 pub(crate) struct SawBassVoice {
     pub(crate) oscillators: [SineOscillator; BASS_SAW_HARMONIC_COUNT],
     pub(crate) core: BassVoiceCore,
 }
 
 impl SawBassVoice {
-    pub(crate) fn new(
-        hz: f32,
-        attack_time: f32,
-        decay_time: f32,
-        drive: f32,
-        sample_rate: f32,
-    ) -> Self {
+    pub(crate) fn new(hz: f32, attack_time: f32, decay_time: f32, sample_rate: f32) -> Self {
         Self {
             oscillators: std::array::from_fn(|index| {
                 SineOscillator::new(hz * (index + 1) as f32, sample_rate)
             }),
-            core: BassVoiceCore::new(attack_time, decay_time, drive, sample_rate),
+            core: BassVoiceCore::new(attack_time, decay_time, sample_rate),
         }
     }
 
@@ -382,10 +354,7 @@ impl SawBassVoice {
         for (osc, gain) in self.oscillators.iter_mut().zip(BASS_SAW_HARMONIC_GAINS) {
             raw += osc.next() * gain;
         }
-        drive_stage(
-            raw * BASS_SAW_OUTPUT_GAIN * self.core.envelope.next(),
-            self.core.drive,
-        )
+        raw * BASS_SAW_OUTPUT_GAIN * self.core.envelope.next()
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -419,20 +388,14 @@ pub(crate) struct PluckBassVoice {
 }
 
 impl PluckBassVoice {
-    pub(crate) fn new(
-        hz: f32,
-        attack_time: f32,
-        decay_time: f32,
-        drive: f32,
-        sample_rate: f32,
-    ) -> Self {
+    pub(crate) fn new(hz: f32, attack_time: f32, decay_time: f32, sample_rate: f32) -> Self {
         let attack_time = (attack_time * BASS_PLUCK_ENVELOPE_SCALE).max(0.001);
         let decay_time = (decay_time * BASS_PLUCK_ENVELOPE_SCALE).max(0.001);
         let transient_total_samples = (BASS_PLUCK_TRANSIENT_DECAY_SECONDS * sample_rate).max(1.0);
         Self {
             osc: SineOscillator::new(hz, sample_rate),
             transient_osc: SineOscillator::new(hz * 2.0, sample_rate),
-            core: BassVoiceCore::new(attack_time, decay_time, drive, sample_rate),
+            core: BassVoiceCore::new(attack_time, decay_time, sample_rate),
             transient_samples_remaining: transient_total_samples as u64,
             transient_total_samples,
         }
@@ -450,10 +413,7 @@ impl PluckBassVoice {
             0.0
         };
 
-        drive_stage(
-            (body + transient * BASS_PLUCK_TRANSIENT_MIX) * BASS_PLUCK_OUTPUT_GAIN,
-            self.core.drive,
-        )
+        (body + transient * BASS_PLUCK_TRANSIENT_MIX) * BASS_PLUCK_OUTPUT_GAIN
     }
 
     pub(crate) fn is_done(&self) -> bool {

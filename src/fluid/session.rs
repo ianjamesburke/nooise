@@ -1,4 +1,28 @@
 use super::*;
+use crate::fx::delay::StereoDelayState;
+use crate::fx::reverb::FreeverbState;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Audio-thread state for all module delay lines. Empty entries are inactive
+/// slots and cost nothing in a song snapshot.
+#[derive(Clone)]
+pub(crate) enum ModuleFxRuntimeSlot {
+    Empty,
+    Delay(StereoDelayState),
+    Reverb(FreeverbState),
+    Compression { envelope: f32 },
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ModuleFxRuntimeState {
+    pub(crate) slots: Vec<ModuleFxRuntimeSlot>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ModuleFxCapture {
+    pub(crate) request: u64,
+    pub(crate) state: ModuleFxRuntimeState,
+}
 
 /// One coherent, immutable generation of every user-audible live-session
 /// value shared by the UI and audio threads.
@@ -8,6 +32,7 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) controls: FluidControls,
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: TonalSequenceState,
+    pub(crate) module_fx_runtime: Option<ModuleFxRuntimeState>,
 }
 
 impl LiveSessionSnapshot {
@@ -19,6 +44,7 @@ impl LiveSessionSnapshot {
             tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
                 TonalSequenceState::from_phrase(tonal_phrase_index(song.controls.tonal.phrase))
             }),
+            module_fx_runtime: song.module_fx_runtime.clone(),
         }
     }
 
@@ -31,6 +57,7 @@ impl LiveSessionSnapshot {
             )),
             controls,
             automation: AutomationState::default(),
+            module_fx_runtime: None,
         }
     }
 }
@@ -38,17 +65,44 @@ impl LiveSessionSnapshot {
 #[derive(Clone)]
 pub(crate) struct LiveSession {
     published: Arc<ArcSwap<LiveSessionSnapshot>>,
+    module_fx_capture_request: Arc<AtomicU64>,
+    module_fx_capture: Arc<ArcSwap<ModuleFxCapture>>,
 }
 
 impl LiveSession {
     pub(crate) fn new(snapshot: LiveSessionSnapshot) -> Self {
+        let module_fx_runtime = snapshot.module_fx_runtime.clone().unwrap_or_default();
         Self {
             published: Arc::new(ArcSwap::from_pointee(snapshot)),
+            module_fx_capture_request: Arc::new(AtomicU64::new(0)),
+            module_fx_capture: Arc::new(ArcSwap::from_pointee(ModuleFxCapture {
+                request: 0,
+                state: module_fx_runtime,
+            })),
         }
     }
 
     pub(crate) fn load(&self) -> Arc<LiveSessionSnapshot> {
         self.published.load_full()
+    }
+
+    pub(crate) fn request_module_fx_capture(&self) -> u64 {
+        self.module_fx_capture_request
+            .fetch_add(1, Ordering::AcqRel)
+            + 1
+    }
+
+    pub(crate) fn pending_module_fx_capture(&self) -> u64 {
+        self.module_fx_capture_request.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn publish_module_fx_capture(&self, request: u64, state: ModuleFxRuntimeState) {
+        self.module_fx_capture
+            .store(Arc::new(ModuleFxCapture { request, state }));
+    }
+
+    pub(crate) fn module_fx_capture(&self) -> Arc<ModuleFxCapture> {
+        self.module_fx_capture.load_full()
     }
 
     /// Apply a pure aggregate edit with optimistic retry. A conflicting writer

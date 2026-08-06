@@ -139,10 +139,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
             selected: cursor,
             drill,
         },
-        Tab::Master => interaction::Navigation::Master {
-            selected: cursor,
-            drill: interaction::MasterDrill::None,
-        },
+        Tab::Master => interaction::Navigation::Master { selected: cursor },
         page => interaction::Navigation::Standard {
             page: match page {
                 Tab::Perc => interaction::StandardPage::Perc,
@@ -1187,13 +1184,9 @@ fn engine_publishes_beat_telemetry() {
 // GOLDEN_RENDER_CHECKSUM only after confirming the new output is inaudibly
 // close to the old one.
 const GOLDEN_RENDER_SAMPLES: usize = 48_000;
-// Re-blessed twice in the same pass: first for the master compressor gaining
-// makeup gain (`master.comp_amount` macro), then for removing redundant
-// fixed headroom trims baked into pad/perc/clap output (they were cutting
-// level well below where the master bus's own limiting kicks in, on top of
-// the mix's own per-voice balance weights). Both deliberately raise output
-// level to fix quiet default playback.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x196c_3e38_d2c3_4532;
+// Re-blessed for the deliberate full routing migration: every default effect,
+// including Pads Reverb and Master Drive/Compression, now uses slot DSP.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0xc6f2_6d29_bf90_b406;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -1245,103 +1238,6 @@ fn golden_render_is_byte_identical_for_a_seed() {
          unintentionally, or is an expected result of a deliberate DSP change. \
          If the latter, re-bless GOLDEN_RENDER_CHECKSUM (checksum was {hash:#x})"
     );
-}
-
-#[test]
-fn ambient_reverb_send_ducks_dry_sources_by_mix() {
-    let mut send = AmbientReverbSend::new(SAMPLE_RATE);
-
-    let frame = send.process((1.0, -1.0), (0.5, -0.5), (0.0, 0.0), 1.0, 0.5, 0.0);
-
-    assert_near(frame.pad_l, AmbientReverbSend::dry_gain(1.0));
-    assert_near(frame.pad_r, -AmbientReverbSend::dry_gain(1.0));
-    assert_near(frame.tonal_l, 0.5 * AmbientReverbSend::dry_gain(0.5));
-    assert_near(frame.tonal_r, -0.5 * AmbientReverbSend::dry_gain(0.5));
-    assert_close(frame.wet_l, 0.0);
-    assert_close(frame.wet_r, 0.0);
-}
-
-/// Shared "reverb must not increase perceived loudness" tail behind
-/// full_pad_reverb_does_not_boost_pad_rms/full_tonal_reverb_does_not_boost_tonal_rms:
-/// `rms` is measured dry (`reverb_mix` 0.0) and fully wet (1.0), and wet must
-/// not exceed dry by more than 5%.
-fn assert_reverb_does_not_boost_rms(label: &str, rms: impl Fn(f32) -> f32) {
-    let dry = rms(0.0);
-    let wet = rms(1.0);
-
-    assert!(
-        wet <= dry * 1.05,
-        "full reverb should not make {label} much louder: dry rms {dry}, wet rms {wet}"
-    );
-}
-
-#[test]
-fn full_pad_reverb_does_not_boost_pad_rms() {
-    fn pad_rms(reverb_mix: f32) -> f32 {
-        let controls = PadControls {
-            reverb_mix,
-            attack_time: 0.01,
-            release_time: 0.1,
-            ..PadControls::default()
-        };
-        let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
-        pad.rng = StdRng::seed_from_u64(7);
-        let mut send = AmbientReverbSend::new(SAMPLE_RATE);
-        let mut sum = 0.0;
-        let mut count = 0;
-        let total = SAMPLE_RATE as u64 * 4;
-        let warmup = SAMPLE_RATE as u64;
-
-        for sample in 0..total {
-            let dry = pad.next(&controls, 0.0, timing(sample, 120.0));
-            let frame = send.process(dry, (0.0, 0.0), (0.0, 0.0), controls.reverb_mix, 0.0, 0.0);
-            if sample >= warmup {
-                let l = frame.pad_l + frame.wet_l;
-                let r = frame.pad_r + frame.wet_r;
-                sum += l * l + r * r;
-                count += 2;
-            }
-        }
-
-        (sum / count as f32).sqrt()
-    }
-
-    assert_reverb_does_not_boost_rms("pad", pad_rms);
-}
-
-#[test]
-fn full_tonal_reverb_does_not_boost_tonal_rms() {
-    fn tonal_rms(reverb_mix: f32) -> f32 {
-        let controls = TonalControls {
-            level: 0.8,
-            randomness: 0.0,
-            step_interval_beats: 4.0,
-            reverb_mix,
-            ..TonalControls::default()
-        };
-        let mut tonal = TonalEngine::new(SAMPLE_RATE);
-        tonal.rng = StdRng::seed_from_u64(11);
-        let mut send = AmbientReverbSend::new(SAMPLE_RATE);
-        let mut sum = 0.0;
-        let mut count = 0;
-        let total = SAMPLE_RATE as u64 * 4;
-        let warmup = SAMPLE_RATE as u64;
-
-        for sample in 0..total {
-            let dry = tonal.next(&controls, 0.0, timing(sample, 120.0));
-            let frame = send.process((0.0, 0.0), dry, (0.0, 0.0), 0.0, controls.reverb_mix, 0.0);
-            if sample >= warmup {
-                let l = frame.tonal_l + frame.wet_l;
-                let r = frame.tonal_r + frame.wet_r;
-                sum += l * l + r * r;
-                count += 2;
-            }
-        }
-
-        (sum / count as f32).sqrt()
-    }
-
-    assert_reverb_does_not_boost_rms("tonal", tonal_rms);
 }
 
 #[test]
@@ -1520,8 +1416,10 @@ fn defaults_match_current_mix() {
     let controls = FluidControls::default();
 
     assert_close(controls.master.bpm, 82.0);
-    assert_close(controls.master.drive, 0.1);
-    assert_close(controls.master.comp_threshold, -8.0);
+    assert_eq!(controls.modules.master[0].kind().unwrap().id, "drive");
+    assert_close(controls.modules.master[0].amount, 0.1);
+    assert_eq!(controls.modules.master[1].kind().unwrap().id, "compression");
+    assert_close(controls.modules.master[1].time, -8.0);
 
     assert_close(controls.perc.decay_ms, 200.0);
     assert_close(controls.perc.filter, 0.7);
@@ -1540,23 +1438,30 @@ fn defaults_match_current_mix() {
     assert_close(controls.tonal.randomness, 0.5);
     assert_close(controls.tonal.evolve_rate, 0.0);
 
-    assert_close(controls.clap.room, 0.0);
+    assert_eq!(controls.modules.pad[0].kind().unwrap().id, "room");
+    assert_close(controls.modules.pad[0].amount, 0.8);
+    assert_eq!(controls.modules.tonal[0].kind().unwrap().id, "room");
+    assert_close(controls.modules.tonal[0].amount, 0.6);
+    assert_eq!(controls.modules.clap[0].kind().unwrap().id, "room");
+    assert_close(controls.modules.clap[0].amount, 0.0);
 }
 
 #[test]
 fn apply_min_moves_selected_control_to_floor() {
     let mut controls = FluidControls::default();
 
-    controls.master.drive = 0.8;
-    apply_min(Tab::Master, 9, &mut controls);
-    assert_close(controls.master.drive, 0.0);
+    controls.modules.master[0].amount = 0.8;
+    spec_by_id("master.slot1.amount")
+        .unwrap()
+        .apply_min(&mut controls);
+    assert_close(controls.modules.master[0].amount, 0.0);
 
     controls.master.bpm = 120.0;
     apply_min(Tab::Master, 7, &mut controls);
     assert_close(controls.master.bpm, 30.0);
 
     controls.master.tone = 0.5;
-    apply_min(Tab::Master, 12, &mut controls);
+    spec_by_id("master.tone").unwrap().apply_min(&mut controls);
     assert_close(controls.master.tone, -1.0);
 
     controls.pad.chord_bars = 16.0;
@@ -1594,20 +1499,18 @@ fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     assert_close(controls.clap.slap_count, 4.0);
 }
 
-/// The whole point of the fold: the shipped sound is byte-identical. Every
-/// effect that used to be a bespoke slider now comes from its slot, at the
-/// same value it had as a hardcoded default.
 #[test]
-fn folding_effect_sliders_into_slots_preserved_the_default_sound() {
+fn default_template_preloads_shared_effect_modules() {
     let mut controls = FluidControls::default();
     resolve_module_chain(&mut controls);
 
-    assert_close(controls.kick.drive, 0.2);
-    assert_close(controls.bass.drive, 0.15);
+    assert_close(controls.modules.kick[0].amount, 0.2);
+    assert_close(controls.modules.bass[0].amount, 0.15);
+    assert_close(controls.modules.pad[0].amount, 0.8);
+    assert_close(controls.modules.tonal[0].amount, 0.6);
     assert_close(controls.perc.swing, 0.0);
     assert_close(controls.tonal.swing, 0.0);
     assert_close(controls.arp.swing, 0.0);
-    assert_close(controls.clap.room, 0.0);
 }
 
 /// Turning the slot has to be what moves the voice, or the slider is a
@@ -1615,34 +1518,41 @@ fn folding_effect_sliders_into_slots_preserved_the_default_sound() {
 #[test]
 fn a_slots_amount_drives_the_voice_it_belongs_to() {
     let mut controls = FluidControls::default();
-    controls.modules.kick[0].amount = 0.75;
-    controls.modules.perc[0].amount = 0.4;
+    controls.modules.kick[1] = preset_slot("swing", 0.4);
+    controls.modules.perc[0] = preset_slot("swing", 0.4);
+    controls.modules.bass[1] = preset_slot("swing", 0.4);
+    controls.modules.tonal[1] = preset_slot("swing", 0.4);
+    controls.modules.clap[1] = preset_slot("swing", 0.4);
+    controls.modules.arp[1] = preset_slot("swing", 0.4);
     resolve_module_chain(&mut controls);
 
-    assert_close(controls.kick.drive, 0.75);
+    assert_close(controls.kick.swing, 0.4);
     assert_close(controls.perc.swing, 0.4);
+    assert_close(controls.bass.swing, 0.4);
+    assert_close(controls.tonal.swing, 0.4);
+    assert_close(controls.clap.swing, 0.4);
+    assert_close(controls.arp.swing, 0.4);
 
-    // Clearing the slot silences that effect entirely, rather than leaving
-    // the last value stranded on the voice.
-    controls.modules.kick[0] = ModuleSlot::default();
+    controls.modules.kick[1] = ModuleSlot::default();
     resolve_module_chain(&mut controls);
-    assert_close(controls.kick.drive, 0.0);
+    assert_close(controls.kick.swing, 0.0);
 }
 
 /// A loaded slot must read as the module it holds, not as its index.
 #[test]
 fn a_loaded_slot_row_is_labelled_with_its_module() {
-    let controls = FluidControls::default();
+    let mut controls = FluidControls::default();
     let row = tab_controls(Tab::Kick, &controls)
         .into_iter()
         .find(|item| item.id == "kick.slot1.amount")
         .expect("kick slot 1 ships pre-loaded with Drive");
     assert_eq!(row.label, "Drive");
 
+    controls.modules.tonal[0] = preset_slot("swing", 0.0);
     let row = tab_controls(Tab::Tonal, &controls)
         .into_iter()
         .find(|item| item.id == "tonal.slot1.amount")
-        .expect("tonal slot 1 ships pre-loaded with Swing");
+        .expect("an explicitly added zero-amount Swing remains visible");
     assert_eq!(row.label, "Swing");
 }
 
@@ -1657,11 +1567,18 @@ fn the_folded_slider_ids_are_gone_from_the_registry() {
         "bass.drive",
         "kick.drive",
         "clap.room",
+        "pad.reverb_mix",
+        "tonal.reverb_mix",
+        "arp.reverb_mix",
+        "master.drive",
+        "master.comp_amount",
+        "master.comp_release_ms",
+        "master.comp_threshold",
+        "master.comp_ratio",
+        "master.comp_makeup",
     ] {
         assert!(spec_by_id(id).is_none(), "{id} should be retired");
     }
-    // Master is not a module layer yet, so its drive stays a real control.
-    assert!(spec_by_id("master.drive").is_some());
 }
 
 #[test]
@@ -1669,11 +1586,10 @@ fn empty_module_slots_never_render() {
     let controls = FluidControls::default();
     for tab in Tab::all() {
         for item in tab_controls(tab, &controls) {
-            // Slot 1 ships pre-loaded on the layers whose effects were folded
-            // in from bespoke sliders. Every other slot is empty and must not
-            // put a row on screen.
+            let is_template_slot =
+                item.id.contains(".slot1.") || (tab == Tab::Master && item.id.contains(".slot2."));
             assert!(
-                !item.id.contains(".slot") || item.id.contains(".slot1."),
+                !item.id.contains(".slot") || is_template_slot,
                 "{tab:?} shows empty slot row {}",
                 item.id
             );
@@ -1714,13 +1630,99 @@ fn an_occupied_slot_shows_only_the_params_its_family_uses() {
     assert_eq!(ids, ["bass.slot1.amount", "bass.slot1.time"]);
 }
 
+#[test]
+fn effect_families_project_complete_coherent_detail_rows() {
+    let mut controls = FluidControls::default();
+    controls.modules.clap[1] = preset_slot("delay", 0.5);
+    controls.modules.clap[2] = preset_slot("room", 0.5);
+    controls.modules.clap[3] = preset_slot("compression", 0.5);
+
+    let labels = |slot| {
+        module_detail_controls(Tab::Clap, slot, &controls)
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        labels(1),
+        ["Amount", "Left Time", "Right Time", "Feedback", "Vintage"]
+    );
+    assert_eq!(labels(2), ["Amount", "Size", "Damping"]);
+    assert_eq!(
+        labels(3),
+        ["Amount", "Threshold", "Ratio", "Release", "Makeup"]
+    );
+}
+
+#[test]
+fn module_context_owns_edit_reset_and_automation_units() {
+    let mut controls = FluidControls::default();
+    controls.modules.clap[1] = preset_slot("delay", 0.5);
+    controls.modules.clap[2] = preset_slot("room", 0.5);
+    controls.modules.clap[3] = preset_slot("compression", 0.5);
+
+    let left = spec_by_id("clap.slot2.time").unwrap();
+    let right = spec_by_id("clap.slot2.right_time").unwrap();
+    switch_delay_clock(&mut controls.modules.clap[1], true, 120.0);
+    left.apply_min(&mut controls);
+    right.apply_min(&mut controls);
+    assert_eq!(controls.modules.clap[1].time, DELAY_SYNC_MIN_BEATS);
+    assert_eq!(controls.modules.clap[1].right_time, DELAY_FREE_MIN_MS);
+
+    spec_by_id("clap.slot3.time")
+        .unwrap()
+        .apply_value(55.0, &mut controls);
+    assert_close(controls.modules.clap[2].time, 0.55);
+
+    spec_by_id("clap.slot4.time")
+        .unwrap()
+        .apply_value(-17.0, &mut controls);
+    assert_eq!(controls.modules.clap[3].time, -17.0);
+
+    let mut automation = AutomationState::default();
+    let route = automation.open_or_create(ControlAddress::new("clap.slot4.time"));
+    route.depth_ratio = 0.5;
+    apply_automation(
+        &mut controls,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+    assert!(controls.modules.clap[3].time >= -40.0);
+    assert!(controls.modules.clap[3].time <= 0.0);
+    assert_ne!(controls.modules.clap[3].time, -17.0);
+}
+
+#[test]
+fn master_compression_uses_the_shared_module_detail_shape() {
+    let controls = FluidControls::default();
+    let root_labels: Vec<_> = tab_controls(Tab::Master, &controls)
+        .into_iter()
+        .map(|item| item.label)
+        .collect();
+    assert!(root_labels.iter().any(|label| label == "Compression"));
+    assert!(!root_labels.iter().any(|label| label == "Comp Release"));
+
+    let labels: Vec<_> = module_detail_controls(Tab::Master, 1, &controls)
+        .into_iter()
+        .map(|item| item.label)
+        .collect();
+    assert_eq!(
+        labels,
+        ["Amount", "Threshold", "Ratio", "Release", "Makeup"]
+    );
+}
+
 /// The whole point of storing module identity as a value: a slot survives a
 /// song code without the catalog appearing anywhere in the id space.
 #[test]
 fn module_slots_round_trip_through_a_song_code() {
     let mut controls = FluidControls::default();
-    controls.modules.kick[2].kind = MODULE_CATALOG.len() as f32;
-    controls.modules.kick[2].amount = 0.5;
+    controls.modules.kick[2] = preset_slot("delay", 0.5);
+    controls.modules.kick[2].time = 0.5;
+    controls.modules.kick[2].right_time = 750.0;
+    controls.modules.kick[2].right_clock = DelayClock::Free.value();
+    controls.modules.kick[2].feedback = 0.35;
+    controls.modules.kick[2].vintage = 0.4;
     controls.modules.arp[7].kind = 1.0;
 
     let state = SongState::from_controls(controls.clone());
@@ -1732,11 +1734,17 @@ fn module_slots_round_trip_through_a_song_code() {
         controls.modules.kick[2].kind
     );
     assert_eq!(decoded.controls.modules.kick[2].amount, 0.5);
+    assert_eq!(decoded.controls.modules.kick[2].time, 0.5);
+    assert_eq!(decoded.controls.modules.kick[2].right_time, 750.0);
+    assert_eq!(decoded.controls.modules.kick[2].clock, 0.0);
+    assert_eq!(decoded.controls.modules.kick[2].right_clock, 1.0);
+    assert_eq!(decoded.controls.modules.kick[2].feedback, 0.35);
+    assert_near(decoded.controls.modules.kick[2].vintage, 0.4);
     assert_eq!(decoded.controls.modules.arp[7].kind, 1.0);
-    assert!(decoded.controls.modules.pad[0].is_empty());
+    assert_eq!(decoded.controls.modules.pad[0].kind().unwrap().id, "room");
 }
 
-/// Adding 168 slot controls must not make a plain song any bigger. Container
+/// Adding fixed slot controls must not make a plain song any bigger. Container
 /// v2 prunes defaults, and an empty slot is all defaults.
 #[test]
 fn empty_module_slots_cost_no_song_code_bytes() {
@@ -1747,7 +1755,7 @@ fn empty_module_slots_cost_no_song_code_bytes() {
     controls.bass.level = 0.42;
     let with_edit = encode_song_code(&SongState::from_controls(controls)).expect("encode one edit");
 
-    // One edited control's worth of growth, not 168 slots' worth.
+    // One edited control's worth of growth, not every fixed slot field.
     assert!(
         with_edit.len() < bare.len() + 16,
         "empty slots leaked into the code: {} -> {}",
@@ -1765,18 +1773,19 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Master,
             vec![
-                Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Gain, Continuous, Timing,
-                Continuous, Discrete, Continuous, Continuous, Continuous,
+                Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Continuous, Discrete, Gain,
+                Gain,
             ],
         ),
-        (Tab::Perc, vec![Gain, Gain, Timing, Timing, Timing, Gain]),
+        (Tab::Perc, vec![Gain, Gain, Timing, Timing, Timing]),
         (Tab::Chords, {
-            // 11 base rows, then 8 slots x 5 discrete rows
+            // 10 base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
             let mut kinds = vec![
-                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain,
             ];
             kinds.extend(vec![Discrete; 40]);
+            kinds.push(Gain); // pre-loaded shared Reverb
             kinds
         }),
         (
@@ -1796,7 +1805,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Tonal,
             vec![
                 Gain, Timing, Timing, Discrete, Discrete, Discrete, Timing, Timing, Timing, Gain,
-                Continuous, Gain, Gain,
+                Continuous, Gain,
             ],
         ),
         (
@@ -1808,7 +1817,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Arp,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain,
             ],
         ),
     ];
@@ -1892,11 +1901,102 @@ fn song_code_round_trips_tonal_sequence_state() {
         controls: FluidControls::default(),
         automation: AutomationState::default(),
         tonal_sequence: Some(sequence.clone()),
+        module_fx_runtime: None,
     };
 
     let decoded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
 
     assert_eq!(decoded.tonal_sequence, Some(sequence));
+}
+
+#[test]
+fn song_code_round_trips_delay_tail_state() {
+    let module_fx_runtime = ModuleFxRuntimeState {
+        slots: vec![
+            ModuleFxRuntimeSlot::Delay(crate::fx::delay::StereoDelayState {
+                left: vec![0.0, 0.25, -0.5],
+                right: vec![0.75, 0.0, -0.25],
+                write: 2,
+                left_current: Some(120.0),
+                left_previous: Some(90.0),
+                left_fade: 0.4,
+                right_current: Some(180.0),
+                right_previous: None,
+                right_fade: 1.0,
+            }),
+            ModuleFxRuntimeSlot::Empty,
+        ],
+    };
+    let song = SongState {
+        controls: FluidControls::default(),
+        automation: AutomationState::default(),
+        tonal_sequence: None,
+        module_fx_runtime: Some(module_fx_runtime.clone()),
+    };
+
+    let decoded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
+    let restored = decoded.module_fx_runtime.expect("delay runtime record");
+    assert_eq!(restored.slots.len(), 2);
+    let ModuleFxRuntimeSlot::Delay(line) = &restored.slots[0] else {
+        panic!("first slot should be delay");
+    };
+    let ModuleFxRuntimeSlot::Delay(source) = &module_fx_runtime.slots[0] else {
+        panic!("source slot should be delay");
+    };
+    assert_eq!(line.left, source.left);
+    assert_eq!(line.right, source.right);
+    assert_eq!(line.write, 2);
+    assert_eq!(line.left_current, source.left_current);
+    assert_eq!(line.left_previous, source.left_previous);
+    assert_eq!(line.left_fade, source.left_fade);
+    assert_eq!(line.right_current, source.right_current);
+    assert_eq!(line.right_previous, source.right_previous);
+    assert!(matches!(restored.slots[1], ModuleFxRuntimeSlot::Empty));
+}
+
+#[test]
+fn pads_root_projects_effect_modules_outside_the_chord_drill() {
+    let mut controls = FluidControls::default();
+    controls.modules.pad[0] = preset_slot("delay", 0.4);
+
+    let root = chords_tab_controls(&controls, ChordDrill::None);
+    let progression = chords_tab_controls(&controls, ChordDrill::Progression { return_to: 4 });
+
+    assert!(root.iter().any(|item| item.id == "pad.slot1.amount"));
+    assert!(!progression.iter().any(|item| item.id == "pad.slot1.amount"));
+}
+
+#[test]
+fn song_code_round_trips_reverb_tail_and_compressor_envelope() {
+    let mut reverb = Freeverb::new(SAMPLE_RATE, 0.72, 0.45, 1.0);
+    reverb.process(0.5, -0.25);
+    let source = reverb.state();
+    let runtime = ModuleFxRuntimeState {
+        slots: vec![
+            ModuleFxRuntimeSlot::Reverb(source.clone()),
+            ModuleFxRuntimeSlot::Compression { envelope: 0.42 },
+        ],
+    };
+    let song = SongState {
+        controls: FluidControls::default(),
+        automation: AutomationState::default(),
+        tonal_sequence: None,
+        module_fx_runtime: Some(runtime),
+    };
+
+    let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+    let restored = decoded.module_fx_runtime.expect("module fx runtime record");
+    let ModuleFxRuntimeSlot::Reverb(restored_reverb) = &restored.slots[0] else {
+        panic!("first slot should be reverb");
+    };
+    assert_eq!(
+        restored_reverb.combs_left[0].buffer,
+        source.combs_left[0].buffer
+    );
+    assert!(matches!(
+        restored.slots[1],
+        ModuleFxRuntimeSlot::Compression { envelope } if (envelope - 0.42).abs() < f32::EPSILON
+    ));
 }
 
 #[test]
@@ -2025,8 +2125,8 @@ fn song_code_round_trips_control_values() {
     let decoded = round_trip(|c| c.tonal.octave = -1.0);
     assert_close_named(decoded.tonal.octave, -1.0, "tonal.octave");
 
-    let decoded = round_trip(|c| c.arp.reverb_mix = 0.9);
-    assert_close_named(decoded.arp.reverb_mix, 0.9, "arp.reverb_mix");
+    let decoded = round_trip(|c| c.modules.arp[0].amount = 0.9);
+    assert_close_named(decoded.modules.arp[0].amount, 0.9, "arp reverb amount");
 
     let decoded = round_trip(|c| c.arp.offset_beats = 1.5);
     assert_close_named(decoded.arp.offset_beats, 1.5, "arp.offset_beats");
@@ -2058,9 +2158,9 @@ fn song_code_decodes_missing_controls_as_defaults() {
     assert_close_named(decoded.bass.cutoff, default.bass.cutoff, "bass.cutoff");
     assert_close_named(decoded.tonal.octave, default.tonal.octave, "tonal.octave");
     assert_close_named(
-        decoded.arp.reverb_mix,
-        default.arp.reverb_mix,
-        "arp.reverb_mix",
+        decoded.modules.arp[0].amount,
+        default.modules.arp[0].amount,
+        "arp reverb amount",
     );
     assert_close_named(
         decoded.arp.offset_beats,
@@ -2102,6 +2202,7 @@ fn song_code_round_trips_lfo_automation_record() {
         controls,
         automation,
         tonal_sequence: None,
+        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -2194,30 +2295,28 @@ fn gain_smoother_reaches_target_over_ramp() {
 fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     let mut controls = FluidControls::default();
     controls.pad.level = 0.0;
-    controls.pad.reverb_mix = 0.0;
+    controls.modules.pad[0].amount = 0.0;
     controls.perc.filter = 0.5;
     controls.kick.click = 0.0;
-    controls.kick.drive = 0.0;
     controls.kick.filter = 0.0;
     controls.tonal.randomness = 0.0;
     controls.clap.filter = 0.5;
     controls.clap.body = 0.0;
     controls.master.level = 0.0;
-    controls.master.drive = 0.0;
-    controls.bass.drive = 0.0;
+    controls.modules.master[0].amount = 0.0;
+    controls.modules.bass[0].amount = 0.0;
 
     let mut smoothers = GainSmoothers::new(&controls);
     controls.pad.level = 1.0;
-    controls.pad.reverb_mix = 1.0;
+    controls.modules.pad[0].amount = 1.0;
     controls.perc.filter = 1.0;
     controls.kick.click = 0.2;
-    controls.kick.drive = 1.0;
     controls.kick.filter = 1.0;
     controls.tonal.randomness = 1.0;
     controls.clap.filter = 1.0;
     controls.clap.body = 1.0;
     controls.master.level = 0.5;
-    controls.master.drive = 1.0;
+    controls.modules.master[0].amount = 1.0;
     controls.master.bpm = 123.0;
     controls.modules.bass[0].amount = 1.0;
     controls.modules.kick[0].amount = 1.0;
@@ -2226,7 +2325,7 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     let next = smoothers.next_controls(&controls);
     assert_close(next.master.bpm, 123.0);
     assert!(next.pad.level > 0.0 && next.pad.level < 1.0);
-    assert!(next.pad.reverb_mix > 0.0 && next.pad.reverb_mix < 1.0);
+    assert!(next.modules.pad[0].amount > 0.0 && next.modules.pad[0].amount < 1.0);
     assert!(next.perc.filter > 0.5 && next.perc.filter < 1.0);
     assert!(next.kick.click > 0.0 && next.kick.click < 0.2);
     assert!(next.kick.filter > 0.0 && next.kick.filter < 1.0);
@@ -2234,7 +2333,7 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     assert!(next.clap.filter > 0.5 && next.clap.filter < 1.0);
     assert!(next.clap.body > 0.0 && next.clap.body < 1.0);
     assert!(next.master.level > 0.0 && next.master.level < 0.5);
-    assert!(next.master.drive > 0.0 && next.master.drive < 1.0);
+    assert!(next.modules.master[0].amount > 0.0 && next.modules.master[0].amount < 1.0);
     // Drive now lives in the module chain, so it is the slot amount that has
     // to ramp; the voice field is derived from it downstream.
     assert!(next.modules.bass[0].amount > 0.0 && next.modules.bass[0].amount < 1.0);
@@ -2361,12 +2460,12 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 #[test]
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0), 11);
-    assert_eq!(chords_flat_index(progression_drill(), 2), 21);
-    assert_eq!(chords_flat_index(slot_drill(2), 0), 22);
+    assert_eq!(chords_flat_index(progression_drill(), 0), 10);
+    assert_eq!(chords_flat_index(progression_drill(), 2), 20);
+    assert_eq!(chords_flat_index(slot_drill(2), 0), 21);
 
     let controls = FluidControls::default();
-    let expected = tab_controls(Tab::Chords, &controls)[22].id;
+    let expected = tab_controls(Tab::Chords, &controls)[21].id;
     assert_eq!(expected, "pad.chord3_accidental");
 }
 
@@ -2607,7 +2706,7 @@ fn bass_engine_is_monophonic_and_hard_cuts_on_retrigger() {
 #[test]
 fn bass_voice_decays_to_silence_without_sustaining() {
     let sample_rate = 48_000.0;
-    let mut voice = BassVoice::new(0, 110.0, 0.005, 0.05, 0.0, sample_rate);
+    let mut voice = BassVoice::new(0, 110.0, 0.005, 0.05, sample_rate);
 
     // Well past attack+decay (0.055s); a sustaining envelope would still
     // be holding at ~0.85 gain here, an AD envelope has decayed to ~0.
@@ -2621,8 +2720,8 @@ fn bass_voice_decays_to_silence_without_sustaining() {
 #[test]
 fn bass_type_zero_matches_legacy_sub_voice_exactly() {
     let sample_rate = 48_000.0;
-    let mut dispatched = BassVoice::new(0, 110.0, 0.01, 0.05, 0.15, sample_rate);
-    let mut legacy = SubBassVoice::new(110.0, 0.01, 0.05, 0.15, sample_rate);
+    let mut dispatched = BassVoice::new(0, 110.0, 0.01, 0.05, sample_rate);
+    let mut legacy = SubBassVoice::new(110.0, 0.01, 0.05, sample_rate);
 
     for _ in 0..(sample_rate * 0.3) as usize {
         assert_eq!(dispatched.next(), legacy.next());
@@ -2696,7 +2795,7 @@ fn bass_types_produce_differing_but_comparably_balanced_audio() {
     let types: Vec<SoundVariant> = [(0usize, "sub"), (1, "saw"), (2, "pluck")]
         .into_iter()
         .map(|(voice_type, name)| {
-            let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, 0.0, sample_rate);
+            let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, sample_rate);
             let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
                 let s = voice.next();
                 (s * s, s)
@@ -2815,10 +2914,10 @@ fn bass_interval_crops_phrase_instead_of_stretching_it() {
 }
 
 #[test]
-fn chords_reverb_mix_row_shifted_to_index_four() {
+fn chords_shows_the_preloaded_shared_reverb_module() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[7].label, "Reverb Mix");
+    assert!(rows.iter().any(|row| row.label == "Reverb"));
 }
 
 #[test]
@@ -2935,7 +3034,7 @@ fn perc_continuous_mode_has_no_periodic_rms_dips() {
 fn perc_tab_controls_include_interval_and_offset() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Perc, &controls);
-    assert_eq!(rows.len(), 6);
+    assert_eq!(rows.len(), 5);
     assert_eq!(rows[3].label, "Interval");
     assert_close(rows[3].min, 0.125);
     assert_close(rows[3].max, 4.25);
@@ -3706,7 +3805,7 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
     let fluid = FluidState::new();
     let items = tab_controls(Tab::Chords, &controls);
     let mut automation = AutomationState::default();
-    let address = ControlAddress::new(items[3].id); // Reverb Mix
+    let address = ControlAddress::new(items[3].id); // Progression
     // A random LFO plus an open envelope editor exercises both new lanes.
     automation.open_or_create(address).shape = LfoShape::SampleHold;
     automation.open_or_create_envelope(address).amount = 0.5;
@@ -3928,6 +4027,7 @@ fn song_code_round_trips_steps_shape() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4095,7 +4195,7 @@ fn close_editor_deletes_zero_amount_envelope() {
 #[test]
 fn lfo_and_envelope_coexist_on_one_control() {
     let mut automation = AutomationState::default();
-    let address = ControlAddress::new("pad.reverb_mix");
+    let address = ControlAddress::new("pad.slot1.amount");
     automation.open_or_create(address).depth_ratio = 0.3;
     automation.open_or_create_envelope(address).amount = 0.4;
 
@@ -4156,6 +4256,7 @@ fn song_code_round_trips_non_sine_lfo_shape() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4172,7 +4273,7 @@ fn song_code_round_trips_non_sine_lfo_shape() {
 fn song_code_round_trips_envelope_routes() {
     let mut automation = AutomationState::default();
     automation.set_envelope(
-        ControlAddress::new("pad.reverb_mix"),
+        ControlAddress::new("pad.slot1.amount"),
         EnvelopeRoute {
             amount: 0.6,
             attack_beats: 1.5,
@@ -4184,13 +4285,14 @@ fn song_code_round_trips_envelope_routes() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
     let decoded = song::decode_song_code(&code).unwrap();
     let env = decoded
         .automation
-        .envelope(ControlAddress::new("pad.reverb_mix"))
+        .envelope(ControlAddress::new("pad.slot1.amount"))
         .unwrap();
 
     assert_quantized(env.amount, 0.6);
@@ -4256,7 +4358,7 @@ fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
     pad_route.amounts[3] = 0.2;
     automation.set_macro_route(ControlAddress::new("pad.level"), pad_route);
     automation.set_envelope(
-        ControlAddress::new("pad.reverb_mix"),
+        ControlAddress::new("pad.slot1.amount"),
         EnvelopeRoute {
             amount: 0.7,
             attack_beats: 1.25,
@@ -4268,6 +4370,7 @@ fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4298,7 +4401,7 @@ fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
 
     let env = decoded
         .automation
-        .envelope(ControlAddress::new("pad.reverb_mix"))
+        .envelope(ControlAddress::new("pad.slot1.amount"))
         .unwrap();
     assert_quantized(env.amount, 0.7);
     assert_close(env.attack_beats, 1.25);
@@ -4316,6 +4419,7 @@ fn song_code_does_not_serialize_neutral_macro_routes() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4651,39 +4755,32 @@ fn arp_defaults_are_silent_and_do_not_change_default_render() {
 }
 
 #[test]
-fn arp_reuses_shared_ambient_reverb_send_alongside_pad_and_tonal() {
-    let mut send = AmbientReverbSend::new(SAMPLE_RATE);
-    let arp_mix = ArpControls::default().reverb_mix;
-    let frame = send.process((0.0, 0.0), (0.0, 0.0), (1.0, -1.0), 0.0, 0.0, arp_mix);
-    assert_near(frame.arp_l, AmbientReverbSend::dry_gain(arp_mix));
-    assert_near(frame.arp_r, -AmbientReverbSend::dry_gain(arp_mix));
+fn arp_reverb_is_a_shared_module_not_a_bespoke_mix_control() {
+    let controls = FluidControls::default();
+    assert_eq!(controls.modules.arp[0].kind().unwrap().id, "room");
+    assert!(spec_by_id("arp.reverb_mix").is_none());
 }
 
 #[test]
 fn palette_entries_cover_every_unique_control_id_exactly_once() {
     let entries = palette_entries();
     let mut ids: Vec<&str> = entries.iter().filter_map(|e| e.id()).collect();
-    // Module slot rows are deliberately absent as controls: a module is
-    // reached through its own row, which knows how to find or create it.
-    let unique: std::collections::BTreeSet<&str> = all_specs()
-        .map(|spec| spec.id)
-        .filter(|id| !id.contains(".slot"))
-        .collect();
-    assert_eq!(ids.len(), unique.len(), "one palette entry per unique id");
     ids.sort_unstable();
+    let before_dedup = ids.len();
     ids.dedup();
-    assert_eq!(ids.len(), unique.len(), "no duplicate palette entries");
+    assert_eq!(ids.len(), before_dedup, "no duplicate palette controls");
 
-    // One module row per layer that owns a chain.
+    // Exactly one row for every module/layer pair backed by real behavior.
     let module_rows = entries
         .iter()
         .filter(|e| matches!(e, PaletteEntry::Module { .. }))
         .count();
-    let chains = Tab::all()
+    let available = Tab::all()
         .into_iter()
-        .filter(|&t| tab_has_module_chain(t))
+        .flat_map(|tab| MODULE_CATALOG.iter().map(move |kind| (tab, *kind)))
+        .filter(|(tab, kind)| module_available_on(*kind, *tab))
         .count();
-    assert_eq!(module_rows, chains * MODULE_CATALOG.len());
+    assert_eq!(module_rows, available);
 }
 
 #[test]
@@ -4707,7 +4804,7 @@ fn palette_entries_jump_targets_stay_inside_their_tab_tables() {
 #[test]
 fn palette_fuzzy_ranks_word_start_matches_above_scattered_hits() {
     let (word_start, _) =
-        fuzzy_score("rev", "pad.reverb_mix \u{b7} Pads \u{b7} Reverb Mix").expect("subsequence");
+        fuzzy_score("rev", "room \u{b7} Reverb \u{b7} Pads \u{b7} module").expect("subsequence");
     let (scattered, _) =
         fuzzy_score("rev", "perc.interval_beats \u{b7} Perc \u{b7} Interval").expect("subsequence");
     assert!(word_start > scattered);
@@ -4717,7 +4814,13 @@ fn palette_fuzzy_ranks_word_start_matches_above_scattered_hits() {
 fn palette_empty_query_keeps_global_recent_controls_in_mru_order() {
     let pal = PaletteState::new(
         Tab::Bass,
-        &["perc.level", "bass.drive", "bass.decay_time", "pad.level"],
+        &[
+            "perc.level",
+            "bass.attack_time",
+            "bass.decay_time",
+            "pad.level",
+        ],
+        None,
     );
     let ids: Vec<&str> = pal
         .matches
@@ -4727,7 +4830,12 @@ fn palette_empty_query_keeps_global_recent_controls_in_mru_order() {
         .collect();
     assert_eq!(
         ids,
-        ["perc.level", "bass.decay_time", "pad.level", "bass.level"]
+        [
+            "perc.level",
+            "bass.attack_time",
+            "bass.decay_time",
+            "pad.level"
+        ]
     );
 }
 
@@ -4744,13 +4852,13 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
         "arp.rate_beats",
         "macro.1",
         "master.bpm",
-        "pad.reverb_mix",
+        "pad.stereo_width",
         "kick.filter",
         "tonal.randomness",
     ] {
         recent.touch(id);
     }
-    let pal = PaletteState::new(Tab::Bass, recent.ids());
+    let pal = PaletteState::new(Tab::Bass, recent.ids(), None);
     let ids: Vec<&str> = pal
         .matches
         .iter()
@@ -4762,7 +4870,7 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
         [
             "tonal.randomness",
             "kick.filter",
-            "pad.reverb_mix",
+            "pad.stereo_width",
             "master.bpm",
             "macro.1",
             "arp.rate_beats",
@@ -4776,7 +4884,7 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
 
 /// Types `query` into a fresh palette and returns the top hit's control id.
 fn palette_top_hit(current_tab: Tab, recent: &[&'static str], query: &str) -> &'static str {
-    let mut pal = PaletteState::new(current_tab, recent);
+    let mut pal = PaletteState::new(current_tab, recent, None);
     for character in query.chars() {
         pal.push_char(character);
     }
@@ -4787,7 +4895,7 @@ fn palette_top_hit(current_tab: Tab, recent: &[&'static str], query: &str) -> &'
 fn palette_layer_name_lands_on_that_layers_level_over_the_mru() {
     // The MRU is stacked against us: every recent control is a bass control
     // other than the one a bare "bass" should reach.
-    let recent = ["bass.decay_time", "bass.drive", "bass.cutoff"];
+    let recent = ["bass.decay_time", "bass.attack_time", "bass.cutoff"];
     assert_eq!(palette_top_hit(Tab::Master, &recent, "bass"), "bass.level");
     // Partial namespaces count too, so the boost applies while typing.
     assert_eq!(palette_top_hit(Tab::Master, &recent, "bas"), "bass.level");
@@ -4813,7 +4921,7 @@ fn palette_layer_boost_releases_once_the_query_outgrows_the_namespace() {
 
 #[test]
 fn palette_empty_query_lists_current_page_before_unused_other_pages() {
-    let pal = PaletteState::new(Tab::Bass, &[]);
+    let pal = PaletteState::new(Tab::Bass, &[], None);
     let first_id = pal.entry(pal.matches[0].entry).id().unwrap_or("");
     assert!(tab_specs(Tab::Bass).iter().any(|spec| spec.id == first_id));
 }
@@ -4823,14 +4931,6 @@ fn chords_drill_for_index_inverts_chords_flat_index() {
     for flat in 0..tab_specs(Tab::Chords).len() {
         let (drill, row) = chords_drill_for_index(flat);
         assert_eq!(chords_flat_index(drill, row), flat);
-    }
-}
-
-#[test]
-fn master_drill_for_index_inverts_master_flat_index() {
-    for flat in 0..tab_specs(Tab::Master).len() {
-        let (drill, row) = master_drill_for_index(flat);
-        assert_eq!(master_flat_index(drill, row), flat);
     }
 }
 
@@ -4867,22 +4967,23 @@ fn built_in_auto_states_are_container_v2() {
 #[test]
 fn song_codes_round_trip_every_non_tapered_control_exactly() {
     let mut seen = std::collections::BTreeSet::new();
-    for spec in all_specs() {
-        if !seen.insert(spec.id) {
+    for base_spec in all_specs() {
+        if !seen.insert(base_spec.id) {
             continue;
         }
+        let defaults = FluidControls::default();
+        let spec = base_spec.contextual(&defaults);
         // `ControlSpec::is_continuous_tapered`, the one lossy group.
         if !matches!(spec.taper, Taper::Linear) && matches!(spec.step, Step::Linear(_)) {
             continue;
         }
 
-        let defaults = FluidControls::default();
         let default_raw = (spec.get)(&defaults);
 
         for rung in 0..=16 {
             let raw = spec.min + (spec.max - spec.min) * rung as f32 / 16.0;
             let mut controls = FluidControls::default();
-            spec.apply_quantized_value(raw, &mut controls);
+            base_spec.apply_quantized_value(raw, &mut controls);
             // A value the writer prunes as equal to the default decodes to the
             // *raw* default, which for the handful of specs whose default sits
             // off their own step grid is not the quantized value. That is the

@@ -1,7 +1,7 @@
 use super::*;
 
 // ============================================================
-// Clap engine (multi-slap noise burst with room reverb)
+// Clap engine (multi-slap noise burst)
 // ============================================================
 
 /// Headroom trim on the summed burst output, not a character control —
@@ -14,7 +14,6 @@ pub(crate) struct ClapEngine {
     pub(crate) sample_rate: f32,
     pub(crate) trigger: GridTrigger,
     pub(crate) voices: Vec<ClapVoice>,
-    pub(crate) reverb: Freeverb,
     pub(crate) rng: StdRng,
 }
 
@@ -24,13 +23,15 @@ impl ClapEngine {
             sample_rate,
             trigger: GridTrigger::new(),
             voices: Vec::with_capacity(4),
-            reverb: Freeverb::new(sample_rate, 0.28, 0.62, 0.85),
             rng: StdRng::from_entropy(),
         }
     }
 
     pub(crate) fn next(&mut self, c: &ClapControls, timing: TimingContext) -> (f32, f32) {
-        if self.trigger.pop(timing, c.interval_beats, c.offset_beats) {
+        if self
+            .trigger
+            .pop_swung(timing, c.interval_beats, c.offset_beats, c.swing)
+        {
             self.voices
                 .push(ClapVoice::new(c, self.sample_rate, &mut self.rng));
         }
@@ -41,9 +42,7 @@ impl ClapEngine {
         }
         self.voices.retain(|v| !v.is_done());
 
-        let (wet_l, wet_r) = self.reverb.process(dry * c.room, dry * c.room);
-        let dry_scale = 1.0 - c.room * 0.5;
-        (dry * dry_scale + wet_l, dry * dry_scale + wet_r)
+        (dry, dry)
     }
 }
 
@@ -127,4 +126,27 @@ impl ClapVoice {
 pub(crate) struct ClapBurst {
     pub(crate) remaining: u64,
     pub(crate) total: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn swing_delays_the_claps_odd_subdivision() {
+        let mut clap = ClapEngine::new(48_000.0);
+        let controls = ClapControls {
+            level: 1.0,
+            interval_beats: 0.5,
+            swing: 1.0,
+            ..ClapControls::default()
+        };
+
+        clap.next(&controls, TimingContext::new(48_000.0, 120.0, 0.0));
+        clap.next(&controls, TimingContext::new(48_000.0, 120.0, 0.5));
+        assert_eq!(clap.voices.len(), 1);
+
+        clap.next(&controls, TimingContext::new(48_000.0, 120.0, 0.75));
+        assert_eq!(clap.voices.len(), 2);
+    }
 }

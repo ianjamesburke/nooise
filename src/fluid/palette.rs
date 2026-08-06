@@ -1,4 +1,4 @@
-use super::module::{MODULE_CATALOG, chain_amount_slot, tab_has_module_chain};
+use super::module::{MODULE_CATALOG, chain_amount_slot, module_available_on, tab_has_module_chain};
 use super::*;
 
 // ============================================================
@@ -32,6 +32,14 @@ pub(crate) enum PaletteEntry {
     /// to the copy already there is decided at execution time, so the palette
     /// can never silently create a second copy.
     Module { tab: Tab, catalog: usize },
+    /// A stable slot control projected under the active module's human-facing
+    /// dotted scope; its backing id remains slot-addressed for song codes.
+    ModuleControl {
+        tab: Tab,
+        spec: &'static ControlSpec,
+        module_name: &'static str,
+        parameter: &'static str,
+    },
 }
 
 impl PaletteEntry {
@@ -43,7 +51,27 @@ impl PaletteEntry {
                 format!("{} · {} · {}", spec.id, tab.name(), spec.label)
             }
             Self::Module { tab, catalog } => {
-                format!("{} · {} · module", MODULE_CATALOG[*catalog].id, tab.name())
+                let kind = MODULE_CATALOG[*catalog];
+                format!(
+                    "{} · {} · {} · module",
+                    kind.id,
+                    kind.display_name,
+                    tab.name()
+                )
+            }
+            Self::ModuleControl {
+                tab,
+                spec,
+                module_name,
+                parameter,
+            } => {
+                format!(
+                    "{}.{}.{} · {}",
+                    tab.name().to_lowercase(),
+                    module_name.to_lowercase(),
+                    parameter.to_lowercase().replace(' ', "_"),
+                    spec.label
+                )
             }
         }
     }
@@ -52,6 +80,7 @@ impl PaletteEntry {
         match self {
             Self::Control { spec, .. } => Some(spec),
             Self::Module { .. } => None,
+            Self::ModuleControl { spec, .. } => Some(spec),
         }
     }
 
@@ -79,6 +108,7 @@ impl PaletteEntry {
                         },
                     )
             }
+            Self::ModuleControl { spec, .. } => (spec.display)(c),
         }
     }
 }
@@ -108,8 +138,10 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
         if !tab_has_module_chain(tab) {
             continue;
         }
-        for catalog in 0..MODULE_CATALOG.len() {
-            entries.push(PaletteEntry::Module { tab, catalog });
+        for (catalog, kind) in MODULE_CATALOG.iter().copied().enumerate() {
+            if module_available_on(kind, tab) {
+                entries.push(PaletteEntry::Module { tab, catalog });
+            }
         }
     }
     entries
@@ -147,9 +179,15 @@ pub(crate) struct PaletteState {
 impl PaletteState {
     /// `recent` is most-recent-first and intentionally has no usage count:
     /// touching a control again simply promotes it to the front.
-    pub(crate) fn new(current_tab: Tab, recent: &[&'static str]) -> Self {
+    pub(crate) fn new(
+        current_tab: Tab,
+        recent: &[&'static str],
+        module_scope: Option<(Tab, usize, usize)>,
+    ) -> Self {
         let mut state = Self {
-            entries: palette_entries(),
+            entries: module_scope.map_or_else(palette_entries, |(tab, slot, catalog)| {
+                module_palette_entries(tab, slot, catalog)
+            }),
             current_tab,
             recent: recent.to_vec(),
             query: String::new(),
@@ -243,6 +281,26 @@ impl PaletteState {
     }
 }
 
+fn module_palette_entries(tab: Tab, slot: usize, catalog: usize) -> Vec<PaletteEntry> {
+    MODULE_CATALOG[catalog]
+        .parameters()
+        .iter()
+        .filter_map(|parameter| {
+            let field = parameter.field.id();
+            let suffix = format!(".slot{}.{}", slot + 1, field);
+            tab_specs(tab)
+                .iter()
+                .find(|spec| spec.id.ends_with(&suffix))
+                .map(|spec| PaletteEntry::ModuleControl {
+                    tab,
+                    spec,
+                    module_name: MODULE_CATALOG[catalog].display_name,
+                    parameter: parameter.label,
+                })
+        })
+        .collect()
+}
+
 /// A layer's primary control outranks everything while the query is still
 /// just that layer's name, so typing `bass` always lands on Bass Level
 /// whatever the MRU holds. Matches the id namespace (`bass.`) and the tab
@@ -292,6 +350,13 @@ fn context_rank(
         PaletteEntry::Control { spec, .. } => tab_specs(current_tab)
             .iter()
             .position(|other| other.id == spec.id),
+        PaletteEntry::ModuleControl { tab, spec, .. } => (*tab == current_tab)
+            .then(|| {
+                tab_specs(current_tab)
+                    .iter()
+                    .position(|other| other.id == spec.id)
+            })
+            .flatten(),
     };
     let group = match (recent_rank, page_index) {
         (Some(_), _) => 0,
@@ -318,7 +383,7 @@ pub(crate) fn next_bar_beat(beat: f64) -> f64 {
 /// better) plus the matched char indices into `haystack` for highlighting.
 ///
 /// Scoring rewards contiguous runs and word-start matches, and penalises how
-/// deep the first match sits, so "rev" ranks "Reverb Mix" above a scattered
+/// deep the first match sits, so "rev" ranks a Reverb module above a scattered
 /// hit inside another label.
 pub(crate) fn fuzzy_score(query: &str, haystack: &str) -> Option<(i32, Vec<usize>)> {
     let needle: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();

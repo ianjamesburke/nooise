@@ -1,6 +1,9 @@
-# Effects module system: `Effect` trait / per-instrument stackable chain
+# Effects module system: historical trait exploration
 
-Design-only proposal for stint 0017. No engine code changes accompany this doc.
+**Superseded by [Module slot addressing](2026-07-30-module-slot-addressing.md).**
+This document preserves the alternatives considered before the shipped bounded,
+slot-addressed module bank. Its “current state” and migration plan are historical,
+not operating contracts.
 
 ## Current state (grounded in code)
 
