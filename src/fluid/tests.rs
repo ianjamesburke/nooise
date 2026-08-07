@@ -1184,9 +1184,12 @@ fn engine_publishes_beat_telemetry() {
 // GOLDEN_RENDER_CHECKSUM only after confirming the new output is inaudibly
 // close to the old one.
 const GOLDEN_RENDER_SAMPLES: usize = 48_000;
-// Re-blessed for the deliberate full routing migration: every default effect,
-// including Pads Reverb and Master Drive/Compression, now uses slot DSP.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0xc6f2_6d29_bf90_b406;
+// Re-blessed for the deliberate Drive recalibration: the knob's range now
+// tops out at the old curve's 50% point (twice the resolution, half the
+// maximum) and output gain is compensated down as drive increases instead of
+// boosted up — an intentional, audible loudness/intensity change, not a
+// rounding artifact.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x6983_97b7_d975_2c36;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -1417,7 +1420,7 @@ fn defaults_match_current_mix() {
 
     assert_close(controls.master.bpm, 82.0);
     assert_eq!(controls.modules.master[0].kind().unwrap().id, "drive");
-    assert_close(controls.modules.master[0].amount, 0.1);
+    assert_close(controls.modules.master[0].amount, 0.2);
     assert_eq!(controls.modules.master[1].kind().unwrap().id, "compression");
     assert_close(controls.modules.master[1].time, -8.0);
 
@@ -1504,8 +1507,8 @@ fn default_template_preloads_shared_effect_modules() {
     let mut controls = FluidControls::default();
     resolve_module_chain(&mut controls);
 
-    assert_close(controls.modules.kick[0].amount, 0.2);
-    assert_close(controls.modules.bass[0].amount, 0.15);
+    assert_close(controls.modules.kick[0].amount, 0.4);
+    assert_close(controls.modules.bass[0].amount, 0.3);
     assert_close(controls.modules.pad[0].amount, 0.8);
     assert_close(controls.modules.tonal[0].amount, 0.6);
     assert_close(controls.perc.swing, 0.0);

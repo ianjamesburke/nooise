@@ -413,14 +413,14 @@ impl Default for LayerModules {
         Self {
             pad: with_preset("room", 0.8),
             perc: empty,
-            bass: with_preset("drive", 0.15),
-            kick: with_preset("drive", 0.2),
+            bass: with_preset("drive", 0.3),
+            kick: with_preset("drive", 0.4),
             tonal: with_preset("room", 0.6),
             clap: with_preset("room", 0.0),
             arp: with_preset("room", 0.0),
             master: {
                 let mut slots = empty;
-                slots[0] = preset_slot("drive", 0.1);
+                slots[0] = preset_slot("drive", 0.2);
                 slots[1] = preset_slot("compression", 0.2);
                 slots
             },
