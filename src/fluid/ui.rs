@@ -232,15 +232,16 @@ pub(crate) fn coordinate_production_event(
                                     .unwrap_or(*selected);
                             }
                         } else {
-                            model.select_control(*tab, *index);
+                            model.select_control(*tab, *index, &current_session.controls);
                         }
                     } else if !opened_module {
-                        model.select_control(*tab, *index);
+                        model.select_control(*tab, *index, &current_session.controls);
                     }
                     model.mode = interaction::InteractionMode::Browsing;
                 }
                 Ok(EffectAcknowledgement::PerformanceEdited { tab, index, .. }) => {
-                    model.select_control(*tab, *index);
+                    let current_session = context.effects.session().load();
+                    model.select_control(*tab, *index, &current_session.controls);
                 }
                 Ok(EffectAcknowledgement::AutomationPosition { depth, selected }) => {
                     model.apply_lfo_position(*depth, *selected);

@@ -976,7 +976,9 @@ impl ReplayHarness {
                     if let EffectAcknowledgement::ControlSelected { tab, index, .. } =
                         acknowledgement
                     {
-                        self.model.select_control(tab, index);
+                        let current_session = self.executor.session().load();
+                        self.model
+                            .select_control(tab, index, &current_session.controls);
                         self.model.mode = InteractionMode::Browsing;
                     }
                     acknowledgement_label(&acknowledgement)

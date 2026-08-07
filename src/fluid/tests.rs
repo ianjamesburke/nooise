@@ -4928,10 +4928,45 @@ fn palette_empty_query_lists_current_page_before_unused_other_pages() {
 
 #[test]
 fn chords_drill_for_index_inverts_chords_flat_index() {
-    for flat in 0..tab_specs(Tab::Chords).len() {
-        let (drill, row) = chords_drill_for_index(flat);
+    // Only the base and chord-slot region has a controls-independent inverse;
+    // `chords_flat_index` doesn't cover module-slot rows (their visible
+    // position depends on which slots are occupied — see the dedicated
+    // module-slot regression test below).
+    let controls = FluidControls::default();
+    for flat in 0..(10 + CHORD_SLOT_COUNT * 5) {
+        let (drill, row) = chords_drill_for_index(flat, &controls);
         assert_eq!(chords_flat_index(drill, row), flat);
     }
+}
+
+/// Regression test for the "adding Drive to Pads sometimes opens inside the
+/// custom chord progression" bug: `chords_drill_for_index` used to divide
+/// every index past the base rows by the chord-slot stride unconditionally,
+/// so a module-slot row's flat index (appended after the chord-slot region)
+/// decoded into a bogus chord slot/field instead of staying on the Pads
+/// root. A module-slot row must always resolve to `ChordDrill::None`, at
+/// whatever position it actually renders in that projection.
+#[test]
+fn chords_drill_for_index_keeps_module_slot_rows_out_of_the_chord_drill() {
+    let mut controls = FluidControls::default();
+    // Mirrors the real scenario: Pads ships with Reverb in slot 1
+    // (module.rs's default), and Drive gets placed in the next free slot.
+    controls.modules.pad[1] = preset_slot("drive", 0.0);
+
+    let id = module_slot_amount_id(Tab::Chords, 1).expect("pads has a slot 2");
+    let flat = tab_specs(Tab::Chords)
+        .iter()
+        .position(|spec| spec.id == id)
+        .expect("slot 2 amount is a real control");
+
+    let (drill, selected) = chords_drill_for_index(flat, &controls);
+    assert_eq!(drill, ChordDrill::None);
+
+    let expected = chords_tab_controls(&controls, ChordDrill::None)
+        .iter()
+        .position(|item| item.id == id)
+        .expect("slot 2 amount renders once occupied");
+    assert_eq!(selected, expected);
 }
 
 #[test]

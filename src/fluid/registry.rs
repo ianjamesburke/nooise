@@ -2295,12 +2295,12 @@ impl ModuleSlotField {
     }
 }
 
-/// Parse `<layer>.slot<N>.<field>` back to the slot it addresses. `None` for
-/// any id that is not a module-slot row.
-fn module_slot_row<'a>(
-    id: &str,
-    c: &'a FluidControls,
-) -> Option<(&'a ModuleSlot, ModuleSlotField)> {
+/// Parse `<layer>.slot<N>.<field>` into its layer prefix, 0-based slot index,
+/// and field, independent of any `FluidControls`. `None` for anything else.
+/// The single place that recognizes a module-slot id from its shape alone —
+/// every other module-slot-aware lookup (including the Chords-tab drill
+/// addressing below) goes through this rather than re-deriving the pattern.
+fn parse_module_slot_id(id: &str) -> Option<(&str, usize, ModuleSlotField)> {
     let (layer, rest) = id.split_once(".slot")?;
     let (index, field) = rest.split_once('.')?;
     let field = match field {
@@ -2315,6 +2315,35 @@ fn module_slot_row<'a>(
         _ => return None,
     };
     let index = index.parse::<usize>().ok()?.checked_sub(1)?;
+    Some((layer, index, field))
+}
+
+/// Parse `pad.chord<N>_<field>` into its 0-based chord slot and field index
+/// (root, accidental, quality, extension, inversion — `chord_slot_rows!`'s
+/// emission order). `None` for anything else, including module-slot ids
+/// (`.slotN.`, not `chordN_`), so it never misclassifies one as the other.
+fn parse_chord_slot_id(id: &str) -> Option<(usize, usize)> {
+    let rest = id.strip_prefix("pad.chord")?;
+    let (num, field) = rest.split_once('_')?;
+    let field = match field {
+        "degree" => 0,
+        "accidental" => 1,
+        "quality" => 2,
+        "extension" => 3,
+        "inversion" => 4,
+        _ => return None,
+    };
+    let slot = num.parse::<usize>().ok()?.checked_sub(1)?;
+    Some((slot, field))
+}
+
+/// Parse `<layer>.slot<N>.<field>` back to the slot it addresses. `None` for
+/// any id that is not a module-slot row.
+fn module_slot_row<'a>(
+    id: &str,
+    c: &'a FluidControls,
+) -> Option<(&'a ModuleSlot, ModuleSlotField)> {
+    let (layer, index, field) = parse_module_slot_id(id)?;
     let slots: &[ModuleSlot; MODULE_SLOTS] = match layer {
         "pad" => &c.modules.pad,
         "perc" => &c.modules.perc,
@@ -2329,11 +2358,13 @@ fn module_slot_row<'a>(
     slots.get(index).map(|slot| (slot, field))
 }
 
-/// Chords-tab visible rows for the given drill level: the 11 base params,
-/// the active slots' Root list, or one slot's Accidental/Extension/Inversion.
-/// Read-only view over `CHORDS_CONTROLS`'s fixed layout (11 base rows, then
-/// 8 slots x 5 rows in degree/accidental/quality/extension/inversion order) — never
-/// reorders the underlying array.
+/// Chords-tab visible rows for the given drill level: the 10 base params
+/// plus any occupied module slots, the active chord slots' Root list, or one
+/// chord slot's Accidental/Quality/Extension/Inversion. Read-only view over
+/// `CHORDS_CONTROLS`'s fixed layout (10 base rows, then 8 chord slots x 5
+/// rows, then 8 module slots x 8 rows) — never reorders the underlying
+/// array. `chords_drill_for_index` below is this projection's inverse and
+/// must stay consistent with it for every region.
 pub(crate) fn chords_tab_controls(
     c: &FluidControls,
     drill: interaction::ChordDrill,
@@ -2362,7 +2393,11 @@ pub(crate) fn chords_tab_controls(
 }
 
 /// Maps a visible-row index under `chords_tab_controls` back to its real
-/// index into `CHORDS_CONTROLS`, for the positional registry setters below.
+/// index into `CHORDS_CONTROLS`, for the chord-slot drill tests below. Covers
+/// only the base and chord-slot regions, where the mapping is fixed; it is
+/// not a complete inverse for module-slot rows, whose visible position
+/// depends on which slots are occupied (see `chords_drill_for_index`, which
+/// handles all three regions and is the real inverse of `chords_tab_controls`).
 #[cfg(test)]
 pub(crate) fn chords_flat_index(drill: interaction::ChordDrill, visible_row: usize) -> usize {
     match drill {
@@ -2374,22 +2409,40 @@ pub(crate) fn chords_flat_index(drill: interaction::ChordDrill, visible_row: usi
     }
 }
 
-/// Inverse of `chords_flat_index`: the drill level + visible row that shows a
-/// real `CHORDS_CONTROLS` index, so a palette jump can land on drilled rows.
-pub(crate) fn chords_drill_for_index(flat: usize) -> (interaction::ChordDrill, usize) {
-    if flat < CHORD_BASE_CONTROL_COUNT {
-        return (interaction::ChordDrill::None, flat);
+/// Inverse of `chords_tab_controls`: the drill level + visible row that
+/// shows a real `CHORDS_CONTROLS` index, so a palette jump or a freshly
+/// placed module can land on the right row. A control's region is read from
+/// its own id via `parse_chord_slot_id`, never re-derived from its position
+/// — position-based arithmetic on every index past the base rows is exactly
+/// what silently broke this function when the module-slot region was
+/// appended after the chord-slot region (module-slot rows have no chord-slot
+/// meaning, but old code divided their index by the chord-slot stride
+/// anyway). Base rows and module-slot rows share `ChordDrill::None`'s
+/// projection, so their visible row is resolved by asking that same
+/// projection, which keeps this function correct automatically if its
+/// filtering rules ever change instead of requiring a second hand-edit here.
+pub(crate) fn chords_drill_for_index(
+    flat: usize,
+    c: &FluidControls,
+) -> (interaction::ChordDrill, usize) {
+    let Some(spec) = CHORDS_CONTROLS.get(flat) else {
+        return (interaction::ChordDrill::None, 0);
+    };
+    if let Some((slot, field)) = parse_chord_slot_id(spec.id) {
+        return if field == 0 {
+            (interaction::ChordDrill::Progression { return_to: 4 }, slot)
+        } else {
+            (
+                interaction::ChordDrill::Slot { slot, return_to: 4 },
+                field - 1,
+            )
+        };
     }
-    let rel = flat - CHORD_BASE_CONTROL_COUNT;
-    let (slot, field) = (rel / 5, rel % 5);
-    if field == 0 {
-        (interaction::ChordDrill::Progression { return_to: 4 }, slot)
-    } else {
-        (
-            interaction::ChordDrill::Slot { slot, return_to: 4 },
-            field - 1,
-        )
-    }
+    let selected = chords_tab_controls(c, interaction::ChordDrill::None)
+        .iter()
+        .position(|item| item.id == spec.id)
+        .unwrap_or(0);
+    (interaction::ChordDrill::None, selected)
 }
 
 pub(crate) fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidControls) {

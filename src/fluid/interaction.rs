@@ -3,6 +3,7 @@
 //! This module names semantic UI behavior without depending on terminal
 //! events, rendering, clocks, shared publication, or effect execution.
 
+use super::FluidControls;
 use super::Tab;
 use super::palette::{PaletteEntry, PaletteState, StagedEdit};
 
@@ -721,10 +722,10 @@ impl InteractionModel {
         self.mode = InteractionMode::Automation(AutomationMode::Lfo { depth, selected });
     }
 
-    pub(crate) fn select_control(&mut self, tab: Tab, index: usize) {
+    pub(crate) fn select_control(&mut self, tab: Tab, index: usize, controls: &FluidControls) {
         self.navigation = match tab {
             Tab::Chords => {
-                let (drill, selected) = super::chords_drill_for_index(index);
+                let (drill, selected) = super::chords_drill_for_index(index, controls);
                 Navigation::Chords { selected, drill }
             }
             Tab::Master => Navigation::Master { selected: index },
@@ -1497,6 +1498,46 @@ mod tests {
             update(progression, Intent::Cancel).model.navigation,
             Navigation::Chords {
                 selected: 4,
+                drill: ChordDrill::None,
+            }
+        );
+    }
+
+    /// Regression test for the "adding Drive to Pads sometimes opens inside
+    /// the custom chord progression" bug: jumping `select_control` straight
+    /// to a module-slot row's flat index must land on the Pads root
+    /// (`ChordDrill::None`), never inside a chord-slot drill, regardless of
+    /// which chord drill the model happened to be in before the jump.
+    #[test]
+    fn select_control_on_a_module_slot_row_stays_out_of_the_chord_drill() {
+        let mut controls = super::super::FluidControls::default();
+        controls.modules.pad[1] = super::super::preset_slot("drive", 0.0);
+        let id = super::super::module_slot_amount_id(Tab::Chords, 1).expect("pads has a slot 2");
+        let flat = super::super::tab_specs(Tab::Chords)
+            .iter()
+            .position(|spec| spec.id == id)
+            .expect("slot 2 amount is a real control");
+
+        let mut model = InteractionModel {
+            navigation: Navigation::Chords {
+                selected: 4,
+                drill: ChordDrill::Slot {
+                    slot: 3,
+                    return_to: 4,
+                },
+            },
+            ..InteractionModel::default()
+        };
+        model.select_control(Tab::Chords, flat, &controls);
+
+        let expected_selected = super::super::chords_tab_controls(&controls, ChordDrill::None)
+            .iter()
+            .position(|item| item.id == id)
+            .expect("slot 2 amount renders once occupied");
+        assert_eq!(
+            model.navigation,
+            Navigation::Chords {
+                selected: expected_selected,
                 drill: ChordDrill::None,
             }
         );
