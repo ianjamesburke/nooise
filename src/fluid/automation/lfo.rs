@@ -3,10 +3,10 @@
 
 use std::f32::consts::TAU;
 
+use crate::fluid::Entry;
 use crate::fluid::widget::DialScale;
-use crate::fluid::{Entry, beat_grid_adjust, beat_grid_snap, normalize_unit_input, snap_step};
 
-use super::{clamped_index, morph_scalar_route, stepped_index};
+use super::{FieldSpec, Stepping, clamped_index, morph_scalar_route, stepped_index};
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
 pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.0;
@@ -198,12 +198,12 @@ impl LfoField {
     pub(crate) fn scale(self) -> DialScale {
         match self {
             Self::Shape => DialScale::enumerated(LfoShape::ALL.len()),
-            _ => self.spec().scale(),
+            _ => self.spec().scale,
         }
     }
 
     /// Only continuous slider fields carry a numeric spec; Shape is discrete.
-    fn spec(self) -> &'static LfoFieldSpec {
+    fn spec(self) -> &'static FieldSpec<LfoField> {
         LFO_FIELD_SPECS
             .iter()
             .find(|spec| spec.field == self)
@@ -233,96 +233,42 @@ pub(crate) enum StepTarget {
     Value(usize),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct LfoFieldSpec {
-    pub(crate) field: LfoField,
-    pub(crate) label: &'static str,
-    pub(crate) min: f32,
-    pub(crate) max: f32,
-    pub(crate) step: f32,
-    pub(crate) entry: Entry,
-    pub(crate) reset: f32,
-    /// Interval-like fields lock to the musical beat grid (0.125 floor,
-    /// sixteenths above) instead of a fixed linear step.
-    pub(crate) beat_grid: bool,
-}
-
-impl LfoFieldSpec {
-    pub(crate) fn adjust(self, value: f32, dir: f32) -> f32 {
-        if self.field == LfoField::Interval {
-            lfo_rate_adjust(value, dir)
-        } else if self.beat_grid {
-            beat_grid_adjust(value, dir, self.min, self.max)
-        } else {
-            self.quantize(value + dir * self.step)
-        }
-    }
-
-    pub(crate) fn parse_value(self, value: f32) -> f32 {
-        match self.entry {
-            Entry::Percent => normalize_unit_input(value).clamp(self.min, self.max),
-            Entry::Snap => self.quantize(value),
-            Entry::Round => value.round().clamp(self.min, self.max),
-            // No automation field is stored in bars, so BeatsAsBars carries
-            // no extra meaning here and reads as a plain exact value.
-            Entry::BeatsAsBars | Entry::Free => value.clamp(self.min, self.max),
-        }
-    }
-
-    pub(crate) fn quantize(self, value: f32) -> f32 {
-        if self.beat_grid {
-            beat_grid_snap(value, self.min, self.max)
-        } else {
-            snap_step(value.clamp(self.min, self.max), self.step).clamp(self.min, self.max)
-        }
-    }
-
-    /// Rate rides its own arrow ladder, other beat-grid fields the musical
-    /// grid, everything else a plain linear span.
-    pub(crate) fn scale(self) -> DialScale {
-        if self.field == LfoField::Interval {
-            DialScale::Rungs(LFO_RATE_ARROW_STEPS)
-        } else if self.beat_grid {
-            DialScale::BeatGrid {
-                min: self.min,
-                max: self.max,
-            }
-        } else {
-            DialScale::linear(self.min, self.max)
-        }
-    }
-}
-
-pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
-    LfoFieldSpec {
+const LFO_FIELD_SPECS: &[FieldSpec<LfoField>] = &[
+    FieldSpec {
         field: LfoField::Amount,
         label: "amount",
         min: 0.0,
         max: 1.0,
         step: AMOUNT_STEP,
+        scale: DialScale::linear(0.0, 1.0),
+        stepping: Stepping::Snapped,
         entry: Entry::Percent,
         reset: 0.0,
-        beat_grid: false,
     },
-    LfoFieldSpec {
+    FieldSpec {
         field: LfoField::Interval,
         label: "rate",
         min: MIN_LFO_CYCLE_BEATS,
         max: MAX_LFO_CYCLE_BEATS,
         step: INTERVAL_STEP,
+        scale: DialScale::Rungs(LFO_RATE_ARROW_STEPS),
+        stepping: Stepping::Ladder(LFO_RATE_ARROW_STEPS),
         entry: Entry::Free,
         reset: MIN_LFO_CYCLE_BEATS,
-        beat_grid: true,
     },
-    LfoFieldSpec {
+    FieldSpec {
         field: LfoField::Offset,
         label: "offset",
         min: 0.0,
         max: MAX_LFO_OFFSET_BEATS,
         step: OFFSET_STEP,
+        scale: DialScale::BeatGrid {
+            min: 0.0,
+            max: MAX_LFO_OFFSET_BEATS,
+        },
+        stepping: Stepping::BeatGrid,
         entry: Entry::Snap,
         reset: 0.0,
-        beat_grid: true,
     },
 ];
 
@@ -331,20 +277,54 @@ pub(crate) const LFO_RATE_ARROW_STEPS: &[f32] = &[
     8.0, 12.0, 16.0, 32.0, 64.0,
 ];
 
-fn lfo_rate_adjust(value: f32, dir: f32) -> f32 {
-    if dir > 0.0 {
-        LFO_RATE_ARROW_STEPS
+/// The inline `Steps` submenu's fields. Every `Value(i)` shares one spec —
+/// each step is the same bipolar depth, only its index differs.
+const STEP_FIELD_SPECS: &[FieldSpec<StepTarget>] = &[
+    FieldSpec {
+        field: StepTarget::Count,
+        label: "steps",
+        min: 1.0,
+        max: MAX_LFO_STEPS as f32,
+        step: 1.0,
+        scale: DialScale::linear(1.0, MAX_LFO_STEPS as f32),
+        stepping: Stepping::Linear,
+        entry: Entry::Round,
+        reset: DEFAULT_LFO_STEP_COUNT as f32,
+    },
+    FieldSpec {
+        field: StepTarget::Glide,
+        label: "glide",
+        min: 0.0,
+        max: 1.0,
+        step: STEP_GLIDE_STEP,
+        scale: DialScale::linear(0.0, 1.0),
+        stepping: Stepping::Linear,
+        entry: Entry::Percent,
+        reset: DEFAULT_LFO_STEP_GLIDE,
+    },
+    FieldSpec {
+        field: StepTarget::Value(0),
+        label: "step",
+        min: -1.0,
+        max: 1.0,
+        step: STEP_VALUE_STEP,
+        scale: DialScale::bipolar(),
+        stepping: Stepping::Linear,
+        entry: Entry::Percent,
+        reset: 0.0,
+    },
+];
+
+impl StepTarget {
+    fn spec(self) -> &'static FieldSpec<StepTarget> {
+        let key = match self {
+            Self::Value(_) => Self::Value(0),
+            other => other,
+        };
+        STEP_FIELD_SPECS
             .iter()
-            .copied()
-            .find(|step| *step > value + f32::EPSILON)
-            .unwrap_or(MAX_LFO_CYCLE_BEATS)
-    } else {
-        LFO_RATE_ARROW_STEPS
-            .iter()
-            .rev()
-            .copied()
-            .find(|step| *step < value - f32::EPSILON)
-            .unwrap_or(MIN_LFO_CYCLE_BEATS)
+            .find(|spec| spec.field == key)
+            .expect("every step target has a spec")
     }
 }
 
@@ -500,63 +480,39 @@ impl LfoRoute {
 
     /// Adjust a step submenu target by one h/l press.
     pub(crate) fn adjust_step(&mut self, target: StepTarget, dir: f32) {
-        self.pickup = None;
-        match target {
-            StepTarget::Count => {
-                self.set_step_count(self.step_count as i32 + dir.signum() as i32);
-            }
-            StepTarget::Glide => {
-                self.step_glide = (self.step_glide + dir * STEP_GLIDE_STEP).clamp(0.0, 1.0);
-            }
-            StepTarget::Value(i) => {
-                if let Some(value) = self.steps.get_mut(i) {
-                    *value = (*value + dir * STEP_VALUE_STEP).clamp(-1.0, 1.0);
-                }
-            }
-        }
+        let next = target.spec().adjust(self.step_value(target), dir);
+        self.write_step(target, next);
     }
 
     /// Numeric entry for a step target: count is a whole number, glide a
     /// unipolar percent, a step value a bipolar percent (`-100`..`100`).
     pub(crate) fn set_step(&mut self, target: StepTarget, value: f32) {
-        self.pickup = None;
-        match target {
-            StepTarget::Count => self.set_step_count(value.round() as i32),
-            StepTarget::Glide => self.step_glide = (value / 100.0).clamp(0.0, 1.0),
-            StepTarget::Value(i) => {
-                if let Some(step) = self.steps.get_mut(i) {
-                    *step = (value / 100.0).clamp(-1.0, 1.0);
-                }
-            }
-        }
+        self.write_step(target, target.spec().parse_value(value));
     }
 
     pub(crate) fn reset_step(&mut self, target: StepTarget) {
+        self.write_step(target, target.spec().reset);
+    }
+
+    /// Store an already ranged value on the target its spec came from.
+    fn write_step(&mut self, target: StepTarget, value: f32) {
         self.pickup = None;
         match target {
-            StepTarget::Count => self.step_count = DEFAULT_LFO_STEP_COUNT,
-            StepTarget::Glide => self.step_glide = DEFAULT_LFO_STEP_GLIDE,
+            StepTarget::Count => self.step_count = value.round() as u8,
+            StepTarget::Glide => self.step_glide = value,
             StepTarget::Value(i) => {
                 if let Some(step) = self.steps.get_mut(i) {
-                    *step = 0.0;
+                    *step = value;
                 }
             }
         }
-    }
-
-    fn set_step_count(&mut self, count: i32) {
-        self.step_count = count.clamp(1, MAX_LFO_STEPS as i32) as u8;
     }
 
     /// How each inline staircase target maps onto bar position: the length
     /// spans the reachable step count, glide a plain unit span, and each step
     /// value is a bipolar depth like every other modulation amount.
     pub(crate) fn step_scale(target: StepTarget) -> DialScale {
-        match target {
-            StepTarget::Count => DialScale::linear(1.0, MAX_LFO_STEPS as f32),
-            StepTarget::Glide => DialScale::linear(0.0, 1.0),
-            StepTarget::Value(_) => DialScale::bipolar(),
-        }
+        target.spec().scale
     }
 
     pub(crate) fn step_value(&self, target: StepTarget) -> f32 {

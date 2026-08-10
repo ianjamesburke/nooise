@@ -1,8 +1,8 @@
 //! Macro routes: a control's independent bipolar amount for each of the four
 //! macro sliders.
 
+use crate::fluid::MACRO_COUNT;
 use crate::fluid::widget::DialScale;
-use crate::fluid::{MACRO_COUNT, Taper};
 
 // ============================================================
 // Macro routes
@@ -20,11 +20,7 @@ pub(crate) struct MacroField(usize);
 
 impl MacroField {
     /// Every macro slot is a bipolar depth, so they all share one scale.
-    pub(crate) const SCALE: DialScale = DialScale::Tapered {
-        min: -1.0,
-        max: 1.0,
-        taper: Taper::Linear,
-    };
+    pub(crate) const SCALE: DialScale = DialScale::bipolar();
 
     pub(crate) const ALL: [MacroField; MACRO_COUNT] = {
         let mut all = [MacroField(0); MACRO_COUNT];

@@ -9,8 +9,9 @@ use std::fmt;
 
 use super::widget::DialScale;
 use super::{
-    ControlSpec, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TimingContext, is_macro_id,
-    nearest_power_of_two, spec_by_id,
+    ControlSpec, Entry, FluidControls, LfoSnap, MACRO_CONTROLS, MACRO_COUNT, TAPER_STEPS_PER_SWEEP,
+    TimingContext, beat_grid_adjust, beat_grid_snap, is_macro_id, nearest_power_of_two, snap_step,
+    spec_by_id,
 };
 
 mod envelope;
@@ -73,6 +74,98 @@ impl Ord for ControlAddress {
 impl PartialOrd for ControlAddress {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
+    }
+}
+
+/// How one h/l press moves a continuous automation field.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Stepping {
+    /// Add `step`, then clamp to the field's range.
+    Linear,
+    /// Add `step`, then snap back onto the field's own grid — for fields
+    /// whose stored value is meant to stay on that grid.
+    Snapped,
+    /// Move to the next value of an explicit ordered ladder, so a field with
+    /// musically uneven rungs steps rung to rung instead of by a raw amount.
+    Ladder(&'static [f32]),
+    /// Move to the next musical beat-grid value (0.125 floor, sixteenths up).
+    BeatGrid,
+    /// Move an equal fraction of a tapered throw, so one press covers the
+    /// same share of the bar wherever the value currently sits.
+    Position,
+}
+
+/// One continuous automation field's range, stepping, numeric entry, and
+/// reset target — the same table treatment the registry gives control rows,
+/// shared by LFO fields, envelope fields, and the inline step targets.
+/// Discrete fields (LFO shape, envelope trigger) are enums cycled by index
+/// and carry no spec.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct FieldSpec<F: 'static> {
+    pub(super) field: F,
+    pub(super) label: &'static str,
+    pub(super) min: f32,
+    pub(super) max: f32,
+    pub(super) step: f32,
+    /// How the field maps onto bar position; display and stepping read the
+    /// same scale so they cannot disagree.
+    pub(super) scale: DialScale,
+    pub(super) stepping: Stepping,
+    pub(super) entry: Entry,
+    pub(super) reset: f32,
+}
+
+impl<F: Copy + PartialEq> FieldSpec<F> {
+    /// One h/l press.
+    pub(super) fn adjust(&self, value: f32, dir: f32) -> f32 {
+        match self.stepping {
+            Stepping::Linear => (value + dir * self.step).clamp(self.min, self.max),
+            Stepping::Snapped => self.quantize(value + dir * self.step),
+            Stepping::Ladder(rungs) => self.next_rung(rungs, value, dir),
+            Stepping::BeatGrid => beat_grid_adjust(value, dir, self.min, self.max),
+            Stepping::Position => self
+                .scale
+                .step_in_position(value, dir, TAPER_STEPS_PER_SWEEP)
+                .expect("a position-stepped field is tapered, so it has an inverse")
+                .clamp(self.min, self.max),
+        }
+    }
+
+    /// Numeric entry, in the field's own unit.
+    pub(super) fn parse_value(&self, value: f32) -> f32 {
+        match self.entry {
+            Entry::Percent => (value / 100.0).clamp(self.min, self.max),
+            Entry::Snap => self.quantize(value),
+            Entry::Round => value.round().clamp(self.min, self.max),
+            // No automation field is stored in bars, so BeatsAsBars carries
+            // no extra meaning here and reads as a plain exact value.
+            Entry::BeatsAsBars | Entry::Free => value.clamp(self.min, self.max),
+        }
+    }
+
+    pub(super) fn quantize(&self, value: f32) -> f32 {
+        if matches!(self.scale, DialScale::BeatGrid { .. }) {
+            beat_grid_snap(value, self.min, self.max)
+        } else {
+            snap_step(value.clamp(self.min, self.max), self.step).clamp(self.min, self.max)
+        }
+    }
+
+    fn next_rung(&self, rungs: &[f32], value: f32, dir: f32) -> f32 {
+        if dir > 0.0 {
+            rungs
+                .iter()
+                .copied()
+                .find(|rung| *rung > value + f32::EPSILON)
+                .unwrap_or(self.max)
+        } else {
+            rungs
+                .iter()
+                .rev()
+                .copied()
+                .find(|rung| *rung < value - f32::EPSILON)
+                .unwrap_or(self.min)
+        }
     }
 }
 

@@ -2,9 +2,9 @@
 //! attack/decay curve both the engine and the animated lane read.
 
 use crate::fluid::widget::DialScale;
-use crate::fluid::{TAPER_STEPS_PER_SWEEP, TIME_TAPER, Taper, snap_step};
+use crate::fluid::{Entry, TIME_TAPER, Taper};
 
-use super::{ModContext, clamped_index, morph_scalar_route, stepped_index};
+use super::{FieldSpec, ModContext, Stepping, clamped_index, morph_scalar_route, stepped_index};
 
 // Envelope route field ranges. Attack/decay reach into the minutes at slow
 // tempos (512 beats is ~6 min at 82 BPM, ~12 min at 40 BPM) so the same
@@ -75,28 +75,70 @@ pub(crate) enum EnvField {
 impl EnvField {
     pub(crate) const ALL: [EnvField; 4] = [Self::Amount, Self::Attack, Self::Decay, Self::Trigger];
 
-    /// How this field maps onto bar position. Attack and decay span 512 beats
-    /// but every musically ordinary setting lives in the first few, so they
-    /// take the same exp taper the registry gives its time controls; a linear
-    /// sweep buried 4 beats inside the first 1% of the bar.
+    /// How this field maps onto bar position. Trigger is a discrete enum and
+    /// carries no numeric spec, so it spans the bar by variant index.
     pub(crate) fn scale(self) -> DialScale {
         match self {
-            Self::Amount => DialScale::bipolar(),
-            Self::Attack => DialScale::tapered(0.0, MAX_ENV_ATTACK_BEATS, Taper::Exp(TIME_TAPER)),
-            Self::Decay => DialScale::tapered(0.0, MAX_ENV_DECAY_BEATS, Taper::Exp(TIME_TAPER)),
             Self::Trigger => DialScale::enumerated(EnvTrigger::CYCLE.len()),
+            _ => self.spec().scale,
         }
     }
 
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Amount => "amount",
-            Self::Attack => "attack",
-            Self::Decay => "decay",
             Self::Trigger => "trigger",
+            _ => self.spec().label,
         }
     }
+
+    /// Only continuous slider fields carry a numeric spec; Trigger is discrete.
+    fn spec(self) -> &'static FieldSpec<EnvField> {
+        ENV_FIELD_SPECS
+            .iter()
+            .find(|spec| spec.field == self)
+            .expect("every continuous envelope field has a spec")
+    }
 }
+
+/// Attack and decay span 512 beats but every musically ordinary setting lives
+/// in the first few, so they take the same exp taper the registry gives its
+/// time controls and step in position space: a linear sweep buried 4 beats
+/// inside the first 1% of the bar and cost 1024 presses end to end.
+const ENV_FIELD_SPECS: &[FieldSpec<EnvField>] = &[
+    FieldSpec {
+        field: EnvField::Amount,
+        label: "amount",
+        min: -1.0,
+        max: 1.0,
+        step: ENV_AMOUNT_STEP,
+        scale: DialScale::bipolar(),
+        stepping: Stepping::Linear,
+        entry: Entry::Percent,
+        reset: 0.0,
+    },
+    FieldSpec {
+        field: EnvField::Attack,
+        label: "attack",
+        min: 0.0,
+        max: MAX_ENV_ATTACK_BEATS,
+        step: ENV_BEATS_STEP,
+        scale: DialScale::tapered(0.0, MAX_ENV_ATTACK_BEATS, Taper::Exp(TIME_TAPER)),
+        stepping: Stepping::Position,
+        entry: Entry::Snap,
+        reset: DEFAULT_ENV_ATTACK_BEATS,
+    },
+    FieldSpec {
+        field: EnvField::Decay,
+        label: "decay",
+        min: 0.0,
+        max: MAX_ENV_DECAY_BEATS,
+        step: ENV_BEATS_STEP,
+        scale: DialScale::tapered(0.0, MAX_ENV_DECAY_BEATS, Taper::Exp(TIME_TAPER)),
+        stepping: Stepping::Position,
+        entry: Entry::Snap,
+        reset: DEFAULT_ENV_DECAY_BEATS,
+    },
+];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct EnvelopeRoute {
@@ -199,45 +241,18 @@ impl EnvelopeRoute {
 
     pub(crate) fn adjust_field(&mut self, field: EnvField, dir: f32) {
         match field {
-            EnvField::Amount => {
-                self.amount = (self.amount + dir * ENV_AMOUNT_STEP).clamp(-1.0, 1.0);
-            }
-            // Tapered time fields step in position space, so one press moves
-            // an equal fraction of the throw and a full sweep costs 48
-            // presses instead of the 1024 a flat 0.5-beat step needed. Full
-            // precision is stored, matching how the registry treats its own
-            // tapered dials.
-            EnvField::Attack => {
-                self.attack_beats = field
-                    .scale()
-                    .step_in_position(self.attack_beats, dir, TAPER_STEPS_PER_SWEEP)
-                    .expect("envelope attack is tapered, so it steps in position space")
-                    .clamp(0.0, MAX_ENV_ATTACK_BEATS);
-            }
-            EnvField::Decay => {
-                self.decay_beats = field
-                    .scale()
-                    .step_in_position(self.decay_beats, dir, TAPER_STEPS_PER_SWEEP)
-                    .expect("envelope decay is tapered, so it steps in position space")
-                    .clamp(0.0, MAX_ENV_DECAY_BEATS);
-            }
             EnvField::Trigger => self.trigger = self.trigger.cycled(dir),
+            _ => {
+                let next = field.spec().adjust(self.field_value(field), dir);
+                self.write_field(field, next);
+            }
         }
     }
 
     pub(crate) fn set_field(&mut self, field: EnvField, value: f32) {
         match field {
-            EnvField::Amount => {
-                self.amount = (value / 100.0).clamp(-1.0, 1.0);
-            }
-            EnvField::Attack => {
-                self.attack_beats =
-                    snap_step(value, ENV_BEATS_STEP).clamp(0.0, MAX_ENV_ATTACK_BEATS);
-            }
-            EnvField::Decay => {
-                self.decay_beats = snap_step(value, ENV_BEATS_STEP).clamp(0.0, MAX_ENV_DECAY_BEATS);
-            }
             EnvField::Trigger => self.trigger = EnvTrigger::from_index(value),
+            _ => self.write_field(field, field.spec().parse_value(value)),
         }
     }
 
@@ -245,19 +260,29 @@ impl EnvelopeRoute {
     /// to the beat grid — used while the field is being driven in ms.
     pub(crate) fn set_field_raw(&mut self, field: EnvField, value: f32) {
         match field {
-            EnvField::Attack => self.attack_beats = value.clamp(0.0, MAX_ENV_ATTACK_BEATS),
-            EnvField::Decay => self.decay_beats = value.clamp(0.0, MAX_ENV_DECAY_BEATS),
+            EnvField::Attack | EnvField::Decay => {
+                let spec = field.spec();
+                self.write_field(field, value.clamp(spec.min, spec.max));
+            }
             EnvField::Amount | EnvField::Trigger => self.set_field(field, value),
         }
     }
 
     pub(crate) fn reset_field(&mut self, field: EnvField) {
-        let defaults = EnvelopeRoute::default();
         match field {
-            EnvField::Amount => self.amount = defaults.amount,
-            EnvField::Attack => self.attack_beats = defaults.attack_beats,
-            EnvField::Decay => self.decay_beats = defaults.decay_beats,
-            EnvField::Trigger => self.trigger = defaults.trigger,
+            EnvField::Trigger => self.trigger = EnvelopeRoute::default().trigger,
+            _ => self.write_field(field, field.spec().reset),
+        }
+    }
+
+    /// Store an already ranged value on the field its spec came from. Trigger
+    /// is discrete and never routed here.
+    fn write_field(&mut self, field: EnvField, value: f32) {
+        match field {
+            EnvField::Amount => self.amount = value,
+            EnvField::Attack => self.attack_beats = value,
+            EnvField::Decay => self.decay_beats = value,
+            EnvField::Trigger => {}
         }
     }
 
