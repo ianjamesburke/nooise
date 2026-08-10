@@ -784,6 +784,12 @@ macro_rules! module_slot_rows {
                 Step::Linear(0.01),
                 Entry::Percent,
                 |c| c.modules.$layer[$slot - 1].feedback,
+                // Not redundant with `contextual`'s 0.95 Delay max: auto morph
+                // writes through the base spec, and a leg whose slot changes
+                // family glides this field from the old module's range (Reverb
+                // damping to 1.0, Compression release to 500 ms) while the
+                // discrete kind row has already snapped to Delay. Without this
+                // the delay line would run above unity for that window.
                 |c, v| {
                     let slot = &mut c.modules.$layer[$slot - 1];
                     slot.feedback = if slot.kind().is_some_and(|kind| kind.family == Family::Delay)
