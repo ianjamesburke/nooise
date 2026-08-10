@@ -235,39 +235,83 @@ impl Modifiers {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum MediaKey {
-    Play,
-    Pause,
-    PlayPause,
-    Reverse,
-    Stop,
-    FastForward,
-    Rewind,
-    TrackNext,
-    TrackPrevious,
-    Record,
-    LowerVolume,
-    RaiseVolume,
-    MuteVolume,
+/// Declares a payload-free transport key identity once: every variant names its
+/// Crossterm counterpart and its fixture token in a single list, so a Crossterm
+/// variant that gains no mapping fails to compile rather than losing its token.
+macro_rules! transport_key {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident from $source:ident {
+            $($variant:ident = $source_variant:ident as $token:literal,)+
+        }
+    ) => {
+        $(#[$meta])*
+        $vis enum $name {
+            $($variant,)+
+        }
+
+        impl $name {
+            fn from_crossterm(source: $source) -> Self {
+                match source {
+                    $($source::$source_variant => Self::$variant,)+
+                }
+            }
+
+            #[cfg(test)]
+            fn token(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $token,)+
+                }
+            }
+
+            #[cfg(test)]
+            fn from_token(token: &str) -> Option<Self> {
+                match token {
+                    $($token => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum ModifierKey {
-    LeftShift,
-    LeftControl,
-    LeftAlt,
-    LeftSuper,
-    LeftHyper,
-    LeftMeta,
-    RightShift,
-    RightControl,
-    RightAlt,
-    RightSuper,
-    RightHyper,
-    RightMeta,
-    IsoLevel3Shift,
-    IsoLevel5Shift,
+transport_key! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub(crate) enum MediaKey from MediaKeyCode {
+        Play = Play as "play",
+        Pause = Pause as "pause",
+        PlayPause = PlayPause as "play-pause",
+        Reverse = Reverse as "reverse",
+        Stop = Stop as "stop",
+        FastForward = FastForward as "fast-forward",
+        Rewind = Rewind as "rewind",
+        TrackNext = TrackNext as "track-next",
+        TrackPrevious = TrackPrevious as "track-previous",
+        Record = Record as "record",
+        LowerVolume = LowerVolume as "lower-volume",
+        RaiseVolume = RaiseVolume as "raise-volume",
+        MuteVolume = MuteVolume as "mute-volume",
+    }
+}
+
+transport_key! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub(crate) enum ModifierKey from ModifierKeyCode {
+        LeftShift = LeftShift as "left-shift",
+        LeftControl = LeftControl as "left-control",
+        LeftAlt = LeftAlt as "left-alt",
+        LeftSuper = LeftSuper as "left-super",
+        LeftHyper = LeftHyper as "left-hyper",
+        LeftMeta = LeftMeta as "left-meta",
+        RightShift = RightShift as "right-shift",
+        RightControl = RightControl as "right-control",
+        RightAlt = RightAlt as "right-alt",
+        RightSuper = RightSuper as "right-super",
+        RightHyper = RightHyper as "right-hyper",
+        RightMeta = RightMeta as "right-meta",
+        IsoLevel3Shift = IsoLevel3Shift as "iso-level3-shift",
+        IsoLevel5Shift = IsoLevel5Shift as "iso-level5-shift",
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -425,160 +469,68 @@ fn recorder_phase_token(phase: InputPhase) -> &'static str {
     }
 }
 
+/// Fixture tokens for the payload-free `PhysicalKey` identities. Parameterized
+/// variants prefix their payload instead and are handled directly below.
+#[cfg(test)]
+const PHYSICAL_KEY_TOKENS: &[(PhysicalKey, &str)] = &[
+    (PhysicalKey::Escape, "escape"),
+    (PhysicalKey::Home, "home"),
+    (PhysicalKey::End, "end"),
+    (PhysicalKey::PageUp, "page-up"),
+    (PhysicalKey::PageDown, "page-down"),
+    (PhysicalKey::Enter, "enter"),
+    (PhysicalKey::Backspace, "backspace"),
+    (PhysicalKey::Left, "left"),
+    (PhysicalKey::Right, "right"),
+    (PhysicalKey::Up, "up"),
+    (PhysicalKey::Down, "down"),
+    (PhysicalKey::Tab, "tab"),
+    (PhysicalKey::BackTab, "backtab"),
+    (PhysicalKey::Delete, "delete"),
+    (PhysicalKey::Insert, "insert"),
+    (PhysicalKey::Null, "null"),
+    (PhysicalKey::CapsLock, "caps-lock"),
+    (PhysicalKey::ScrollLock, "scroll-lock"),
+    (PhysicalKey::NumLock, "num-lock"),
+    (PhysicalKey::PrintScreen, "print-screen"),
+    (PhysicalKey::Pause, "pause"),
+    (PhysicalKey::Menu, "menu"),
+    (PhysicalKey::KeypadBegin, "keypad-begin"),
+];
+
 #[cfg(test)]
 pub(crate) fn encode_physical_key(code: &PhysicalKey) -> String {
     match code {
         PhysicalKey::Character(character) => format!("char:{:06x}", u32::from(*character)),
-        PhysicalKey::Escape => "escape".into(),
-        PhysicalKey::Home => "home".into(),
-        PhysicalKey::End => "end".into(),
-        PhysicalKey::PageUp => "page-up".into(),
-        PhysicalKey::PageDown => "page-down".into(),
-        PhysicalKey::Enter => "enter".into(),
-        PhysicalKey::Backspace => "backspace".into(),
-        PhysicalKey::Left => "left".into(),
-        PhysicalKey::Right => "right".into(),
-        PhysicalKey::Up => "up".into(),
-        PhysicalKey::Down => "down".into(),
-        PhysicalKey::Tab => "tab".into(),
-        PhysicalKey::BackTab => "backtab".into(),
-        PhysicalKey::Delete => "delete".into(),
-        PhysicalKey::Insert => "insert".into(),
         PhysicalKey::Function(number) => format!("f:{number}"),
-        PhysicalKey::Null => "null".into(),
-        PhysicalKey::CapsLock => "caps-lock".into(),
-        PhysicalKey::ScrollLock => "scroll-lock".into(),
-        PhysicalKey::NumLock => "num-lock".into(),
-        PhysicalKey::PrintScreen => "print-screen".into(),
-        PhysicalKey::Pause => "pause".into(),
-        PhysicalKey::Menu => "menu".into(),
-        PhysicalKey::KeypadBegin => "keypad-begin".into(),
-        PhysicalKey::Media(key) => format!("media:{}", encode_media_key(*key)),
-        PhysicalKey::Modifier(key) => format!("modifier:{}", encode_modifier_key(*key)),
+        PhysicalKey::Media(key) => format!("media:{}", key.token()),
+        PhysicalKey::Modifier(key) => format!("modifier:{}", key.token()),
+        code => PHYSICAL_KEY_TOKENS
+            .iter()
+            .find(|(candidate, _)| candidate == code)
+            .map(|(_, token)| (*token).to_owned())
+            .expect("every payload-free PhysicalKey needs a PHYSICAL_KEY_TOKENS entry"),
     }
 }
 
 #[cfg(test)]
 pub(crate) fn decode_physical_key(token: &str) -> Option<PhysicalKey> {
-    Some(match token {
-        "escape" => PhysicalKey::Escape,
-        "home" => PhysicalKey::Home,
-        "end" => PhysicalKey::End,
-        "page-up" => PhysicalKey::PageUp,
-        "page-down" => PhysicalKey::PageDown,
-        "enter" => PhysicalKey::Enter,
-        "backspace" => PhysicalKey::Backspace,
-        "left" => PhysicalKey::Left,
-        "right" => PhysicalKey::Right,
-        "up" => PhysicalKey::Up,
-        "down" => PhysicalKey::Down,
-        "tab" => PhysicalKey::Tab,
-        "backtab" => PhysicalKey::BackTab,
-        "delete" => PhysicalKey::Delete,
-        "insert" => PhysicalKey::Insert,
-        "null" => PhysicalKey::Null,
-        "caps-lock" => PhysicalKey::CapsLock,
-        "scroll-lock" => PhysicalKey::ScrollLock,
-        "num-lock" => PhysicalKey::NumLock,
-        "print-screen" => PhysicalKey::PrintScreen,
-        "pause" => PhysicalKey::Pause,
-        "menu" => PhysicalKey::Menu,
-        "keypad-begin" => PhysicalKey::KeypadBegin,
-        _ if token.starts_with("char:") => {
-            let scalar = u32::from_str_radix(token.strip_prefix("char:")?, 16).ok()?;
-            PhysicalKey::Character(char::from_u32(scalar)?)
-        }
-        _ if token.starts_with("f:") => {
-            PhysicalKey::Function(token.strip_prefix("f:")?.parse().ok()?)
-        }
-        _ if token.starts_with("media:") => {
-            PhysicalKey::Media(decode_media_key(token.strip_prefix("media:")?)?)
-        }
-        _ if token.starts_with("modifier:") => {
-            PhysicalKey::Modifier(decode_modifier_key(token.strip_prefix("modifier:")?)?)
-        }
-        _ => return None,
-    })
-}
-
-#[cfg(test)]
-fn encode_media_key(key: MediaKey) -> &'static str {
-    match key {
-        MediaKey::Play => "play",
-        MediaKey::Pause => "pause",
-        MediaKey::PlayPause => "play-pause",
-        MediaKey::Reverse => "reverse",
-        MediaKey::Stop => "stop",
-        MediaKey::FastForward => "fast-forward",
-        MediaKey::Rewind => "rewind",
-        MediaKey::TrackNext => "track-next",
-        MediaKey::TrackPrevious => "track-previous",
-        MediaKey::Record => "record",
-        MediaKey::LowerVolume => "lower-volume",
-        MediaKey::RaiseVolume => "raise-volume",
-        MediaKey::MuteVolume => "mute-volume",
+    if let Some(scalar) = token.strip_prefix("char:") {
+        return char::from_u32(u32::from_str_radix(scalar, 16).ok()?).map(PhysicalKey::Character);
     }
-}
-
-#[cfg(test)]
-fn decode_media_key(token: &str) -> Option<MediaKey> {
-    Some(match token {
-        "play" => MediaKey::Play,
-        "pause" => MediaKey::Pause,
-        "play-pause" => MediaKey::PlayPause,
-        "reverse" => MediaKey::Reverse,
-        "stop" => MediaKey::Stop,
-        "fast-forward" => MediaKey::FastForward,
-        "rewind" => MediaKey::Rewind,
-        "track-next" => MediaKey::TrackNext,
-        "track-previous" => MediaKey::TrackPrevious,
-        "record" => MediaKey::Record,
-        "lower-volume" => MediaKey::LowerVolume,
-        "raise-volume" => MediaKey::RaiseVolume,
-        "mute-volume" => MediaKey::MuteVolume,
-        _ => return None,
-    })
-}
-
-#[cfg(test)]
-fn encode_modifier_key(key: ModifierKey) -> &'static str {
-    match key {
-        ModifierKey::LeftShift => "left-shift",
-        ModifierKey::LeftControl => "left-control",
-        ModifierKey::LeftAlt => "left-alt",
-        ModifierKey::LeftSuper => "left-super",
-        ModifierKey::LeftHyper => "left-hyper",
-        ModifierKey::LeftMeta => "left-meta",
-        ModifierKey::RightShift => "right-shift",
-        ModifierKey::RightControl => "right-control",
-        ModifierKey::RightAlt => "right-alt",
-        ModifierKey::RightSuper => "right-super",
-        ModifierKey::RightHyper => "right-hyper",
-        ModifierKey::RightMeta => "right-meta",
-        ModifierKey::IsoLevel3Shift => "iso-level3-shift",
-        ModifierKey::IsoLevel5Shift => "iso-level5-shift",
+    if let Some(number) = token.strip_prefix("f:") {
+        return number.parse().ok().map(PhysicalKey::Function);
     }
-}
-
-#[cfg(test)]
-fn decode_modifier_key(token: &str) -> Option<ModifierKey> {
-    Some(match token {
-        "left-shift" => ModifierKey::LeftShift,
-        "left-control" => ModifierKey::LeftControl,
-        "left-alt" => ModifierKey::LeftAlt,
-        "left-super" => ModifierKey::LeftSuper,
-        "left-hyper" => ModifierKey::LeftHyper,
-        "left-meta" => ModifierKey::LeftMeta,
-        "right-shift" => ModifierKey::RightShift,
-        "right-control" => ModifierKey::RightControl,
-        "right-alt" => ModifierKey::RightAlt,
-        "right-super" => ModifierKey::RightSuper,
-        "right-hyper" => ModifierKey::RightHyper,
-        "right-meta" => ModifierKey::RightMeta,
-        "iso-level3-shift" => ModifierKey::IsoLevel3Shift,
-        "iso-level5-shift" => ModifierKey::IsoLevel5Shift,
-        _ => return None,
-    })
+    if let Some(media) = token.strip_prefix("media:") {
+        return MediaKey::from_token(media).map(PhysicalKey::Media);
+    }
+    if let Some(modifier) = token.strip_prefix("modifier:") {
+        return ModifierKey::from_token(modifier).map(PhysicalKey::Modifier);
+    }
+    PHYSICAL_KEY_TOKENS
+        .iter()
+        .find(|(_, candidate)| *candidate == token)
+        .map(|(key, _)| key.clone())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -935,37 +887,8 @@ fn normalize_key_code(code: KeyCode) -> PhysicalKey {
         KeyCode::Pause => PhysicalKey::Pause,
         KeyCode::Menu => PhysicalKey::Menu,
         KeyCode::KeypadBegin => PhysicalKey::KeypadBegin,
-        KeyCode::Media(media) => PhysicalKey::Media(match media {
-            MediaKeyCode::Play => MediaKey::Play,
-            MediaKeyCode::Pause => MediaKey::Pause,
-            MediaKeyCode::PlayPause => MediaKey::PlayPause,
-            MediaKeyCode::Reverse => MediaKey::Reverse,
-            MediaKeyCode::Stop => MediaKey::Stop,
-            MediaKeyCode::FastForward => MediaKey::FastForward,
-            MediaKeyCode::Rewind => MediaKey::Rewind,
-            MediaKeyCode::TrackNext => MediaKey::TrackNext,
-            MediaKeyCode::TrackPrevious => MediaKey::TrackPrevious,
-            MediaKeyCode::Record => MediaKey::Record,
-            MediaKeyCode::LowerVolume => MediaKey::LowerVolume,
-            MediaKeyCode::RaiseVolume => MediaKey::RaiseVolume,
-            MediaKeyCode::MuteVolume => MediaKey::MuteVolume,
-        }),
-        KeyCode::Modifier(modifier) => PhysicalKey::Modifier(match modifier {
-            ModifierKeyCode::LeftShift => ModifierKey::LeftShift,
-            ModifierKeyCode::LeftControl => ModifierKey::LeftControl,
-            ModifierKeyCode::LeftAlt => ModifierKey::LeftAlt,
-            ModifierKeyCode::LeftSuper => ModifierKey::LeftSuper,
-            ModifierKeyCode::LeftHyper => ModifierKey::LeftHyper,
-            ModifierKeyCode::LeftMeta => ModifierKey::LeftMeta,
-            ModifierKeyCode::RightShift => ModifierKey::RightShift,
-            ModifierKeyCode::RightControl => ModifierKey::RightControl,
-            ModifierKeyCode::RightAlt => ModifierKey::RightAlt,
-            ModifierKeyCode::RightSuper => ModifierKey::RightSuper,
-            ModifierKeyCode::RightHyper => ModifierKey::RightHyper,
-            ModifierKeyCode::RightMeta => ModifierKey::RightMeta,
-            ModifierKeyCode::IsoLevel3Shift => ModifierKey::IsoLevel3Shift,
-            ModifierKeyCode::IsoLevel5Shift => ModifierKey::IsoLevel5Shift,
-        }),
+        KeyCode::Media(media) => PhysicalKey::Media(MediaKey::from_crossterm(media)),
+        KeyCode::Modifier(modifier) => PhysicalKey::Modifier(ModifierKey::from_crossterm(modifier)),
     }
 }
 
