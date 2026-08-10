@@ -179,13 +179,15 @@ impl ArpEngine {
             if c.gain != 0.0 {
                 self.voices.push(TonalVoice::new(
                     tonal_synth_type_index(c.voice_type),
-                    note,
-                    hz,
-                    pan,
-                    c.gain,
-                    self.sample_rate,
-                    c.attack,
-                    c.decay,
+                    TonalNote {
+                        midi: note,
+                        hz,
+                        pan,
+                        level: c.gain,
+                        sample_rate: self.sample_rate,
+                        attack_time: c.attack,
+                        decay_time: c.decay,
+                    },
                 ));
             }
         }
