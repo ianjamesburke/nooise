@@ -82,10 +82,10 @@ use voice::*;
 /// mirrors the pad engine's current chord.
 #[derive(Default)]
 pub(crate) struct FluidTelemetry {
-    pub chord_index: AtomicU64,
-    pub kick_pulse: AtomicU64,
+    pub(crate) chord_index: AtomicU64,
+    pub(crate) kick_pulse: AtomicU64,
     /// Engine beat position as `f64::to_bits`, for beat-synced UI animation.
-    pub beat_bits: AtomicU64,
+    pub(crate) beat_bits: AtomicU64,
 }
 
 impl FluidTelemetry {
