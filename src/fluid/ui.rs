@@ -928,7 +928,7 @@ pub(crate) fn reset_lfo_or_control(
                     route.reset_field(field);
                 }
             }
-            ActiveField::Control => apply_min(tab, selected, &mut snapshot.controls),
+            ActiveField::Control => apply_reset(tab, selected, &mut snapshot.controls),
         },
     );
 }

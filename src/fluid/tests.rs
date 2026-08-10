@@ -1450,25 +1450,27 @@ fn defaults_match_current_mix() {
 }
 
 #[test]
-fn apply_min_moves_selected_control_to_floor() {
+fn apply_reset_moves_selected_control_to_floor() {
     let mut controls = FluidControls::default();
 
     controls.modules.master[0].amount = 0.8;
     spec_by_id("master.slot1.amount")
         .unwrap()
-        .apply_min(&mut controls);
+        .apply_reset(&mut controls);
     assert_close(controls.modules.master[0].amount, 0.0);
 
     controls.master.bpm = 120.0;
-    apply_min(Tab::Master, 7, &mut controls);
+    apply_reset(Tab::Master, 7, &mut controls);
     assert_close(controls.master.bpm, 30.0);
 
     controls.master.tone = 0.5;
-    spec_by_id("master.tone").unwrap().apply_min(&mut controls);
+    spec_by_id("master.tone")
+        .unwrap()
+        .apply_reset(&mut controls);
     assert_close(controls.master.tone, -1.0);
 
     controls.pad.chord_bars = 16.0;
-    apply_min(Tab::Chords, 4, &mut controls);
+    apply_reset(Tab::Chords, 4, &mut controls);
     assert_close(controls.pad.chord_bars, 1.0);
 }
 
@@ -1667,8 +1669,8 @@ fn module_context_owns_edit_reset_and_automation_units() {
     let left = spec_by_id("clap.slot2.time").unwrap();
     let right = spec_by_id("clap.slot2.right_time").unwrap();
     switch_delay_clock(&mut controls.modules.clap[1], true, 120.0);
-    left.apply_min(&mut controls);
-    right.apply_min(&mut controls);
+    left.apply_reset(&mut controls);
+    right.apply_reset(&mut controls);
     assert_eq!(controls.modules.clap[1].time, DELAY_SYNC_MIN_BEATS);
     assert_eq!(controls.modules.clap[1].right_time, DELAY_FREE_MIN_MS);
 
@@ -2353,7 +2355,7 @@ fn chords_progression_adjusts_and_clamps() {
     assert_close(controls.pad.progression, 0.0);
 
     controls.pad.progression = 2.0;
-    apply_min(Tab::Chords, 6, &mut controls);
+    apply_reset(Tab::Chords, 6, &mut controls);
     assert_close(controls.pad.progression, 0.0);
 }
 
@@ -2580,14 +2582,14 @@ fn bass_controls_adjust_and_clamp() {
     apply_delta(Tab::Bass, 8, -1.0, &mut controls);
     assert_close(controls.bass.octave, -3.0);
 
-    apply_min(Tab::Bass, 0, &mut controls);
+    apply_reset(Tab::Bass, 0, &mut controls);
     assert_close(controls.bass.level, 0.0);
 
     controls.bass.decay_time = 0.4;
     apply_delta(Tab::Bass, 3, 1.0, &mut controls);
     assert!(controls.bass.decay_time > 0.4);
 
-    apply_min(Tab::Bass, 3, &mut controls);
+    apply_reset(Tab::Bass, 3, &mut controls);
     assert_close(controls.bass.decay_time, 0.005);
 }
 
@@ -2881,12 +2883,12 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
 
     // Exp-tapered dials step in position space, so a single press near the
     // floor is a small move (fine control), not a jump to the min. Stepping
-    // down lowers the value but stays in range; apply_min snaps to the floor;
+    // down lowers the value but stays in range; apply_reset snaps to the floor;
     // and stepping down again at the floor holds there.
     controls.pad.attack_time = 0.1;
     apply_delta(Tab::Chords, 1, -1.0, &mut controls);
     assert!(controls.pad.attack_time < 0.1 && controls.pad.attack_time >= 0.05);
-    apply_min(Tab::Chords, 1, &mut controls);
+    apply_reset(Tab::Chords, 1, &mut controls);
     assert_close(controls.pad.attack_time, 0.05);
     apply_delta(Tab::Chords, 1, -1.0, &mut controls);
     assert_close(controls.pad.attack_time, 0.05);
@@ -2894,7 +2896,7 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
     controls.pad.release_time = 0.1;
     apply_delta(Tab::Chords, 2, -1.0, &mut controls);
     assert!(controls.pad.release_time < 0.1 && controls.pad.release_time >= 0.05);
-    apply_min(Tab::Chords, 2, &mut controls);
+    apply_reset(Tab::Chords, 2, &mut controls);
     assert_close(controls.pad.release_time, 0.05);
     apply_delta(Tab::Chords, 2, -1.0, &mut controls);
     assert_close(controls.pad.release_time, 0.05);
@@ -2904,7 +2906,7 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
 fn kick_interval_floor_is_eighth_beat() {
     let mut controls = FluidControls::default();
     controls.kick.interval_beats = 1.0;
-    apply_min(Tab::Kick, 5, &mut controls);
+    apply_reset(Tab::Kick, 5, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
     controls.kick.interval_beats = 0.125;
@@ -3018,10 +3020,10 @@ fn perc_interval_and_offset_adjust_and_clamp() {
     apply_delta(Tab::Perc, 4, 1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 4.0);
 
-    apply_min(Tab::Perc, 3, &mut controls);
+    apply_reset(Tab::Perc, 3, &mut controls);
     assert_close(controls.perc.interval_beats, 0.125);
 
-    apply_min(Tab::Perc, 4, &mut controls);
+    apply_reset(Tab::Perc, 4, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 }
 
