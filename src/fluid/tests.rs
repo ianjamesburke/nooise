@@ -3287,13 +3287,13 @@ fn custom_progression_pad_bass_and_arp_read_the_same_chord_source() {
 }
 
 #[test]
-fn pad_chord_count_gates_step_wrap_only_in_custom_mode() {
+fn pad_chord_count_gates_step_wrap_in_every_progression_mode() {
     let built_in = PadControls {
         progression: 0.0,
-        chord_count: 2.0, // inert: built-ins always wrap at 8
+        chord_count: 2.0, // truncates the built-in table to its first 2 chords
         ..PadControls::default()
     };
-    assert_eq!(pad_chord_count(&built_in), 8);
+    assert_eq!(pad_chord_count(&built_in), 2);
 
     let custom = PadControls {
         progression: CUSTOM_PROGRESSION_INDEX as f32,
@@ -3301,6 +3301,26 @@ fn pad_chord_count_gates_step_wrap_only_in_custom_mode() {
         ..PadControls::default()
     };
     assert_eq!(pad_chord_count(&custom), 2);
+}
+
+/// The bug this guards: Chord Count read 2 while a built-in progression
+/// looped all 8 of its chords, because the count only applied to Custom.
+#[test]
+fn pad_engine_step_index_wraps_at_pad_chord_count_on_a_built_in_progression() {
+    let controls = PadControls {
+        chord_bars: 1.0,
+        progression: 0.0,
+        chord_count: 2.0,
+        attack_time: 1.0,
+        ..PadControls::default()
+    };
+    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+    for chord in 1..=5 {
+        let sample = chord * SAMPLE_RATE as u64 * 2;
+        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+        assert!(pad.step_index < 2);
+    }
 }
 
 #[test]

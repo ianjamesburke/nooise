@@ -579,15 +579,13 @@ pub(crate) fn is_custom_progression(progression: usize) -> bool {
     progression == CUSTOM_PROGRESSION_INDEX
 }
 
-/// Number of chord slots actually cycled through: `pad.chord_count` when
-/// Custom is selected (so a shorter user progression loops correctly),
-/// otherwise the built-ins' fixed 8-step length.
+/// Number of chords actually cycled through, for every progression: a
+/// built-in's 8-step table is truncated to its first `chord_count` chords
+/// exactly as a custom progression is, so the control never reads a length
+/// the engines don't play. `CHORD_SLOT_COUNT` matches the built-in tables'
+/// fixed 8-step length, so it bounds both cases.
 pub(crate) fn pad_chord_count(c: &PadControls) -> usize {
-    if is_custom_progression(progression_index(c.progression)) {
-        c.chord_count.round().clamp(1.0, CHORD_SLOT_COUNT as f32) as usize
-    } else {
-        8
-    }
+    c.chord_count.round().clamp(1.0, CHORD_SLOT_COUNT as f32) as usize
 }
 
 /// The shared chord-source entry point: the 4 chord tones (raw MIDI) at
