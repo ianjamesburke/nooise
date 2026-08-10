@@ -280,16 +280,7 @@ impl EffectExecutor {
         &mut self,
         effects: impl IntoIterator<Item = LiveEffect>,
     ) -> Vec<Result<EffectAcknowledgement, EffectFailure>> {
-        let mut results = Vec::new();
-        for effect in effects {
-            let result = self.execute(effect);
-            let failed = result.is_err();
-            results.push(result);
-            if failed {
-                break;
-            }
-        }
-        results
+        run_ordered(effects, |effect| self.execute(effect))
     }
 
     /// Apply an edit to the live session.
@@ -315,6 +306,28 @@ impl EffectExecutor {
             self.recent.touch(id);
         }
         snapshot
+    }
+
+    /// Acknowledge the generation the session currently holds. Every effect
+    /// that publishes reports the generation its own edit produced, so this
+    /// is only ever read after the edit.
+    fn published(&self) -> EffectAcknowledgement {
+        EffectAcknowledgement::Published {
+            generation: self.session.load().generation,
+        }
+    }
+
+    /// Run an automation edit against a detached copy of the automation the
+    /// frame started from, then acknowledge what it published. The copy is
+    /// what lets the edit read the route it is about to replace while the
+    /// executor holds the session mutably.
+    fn with_automation(
+        &mut self,
+        edit: impl FnOnce(&mut Self, &AutomationState),
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let automation = self.session.load().automation.clone();
+        edit(self, &automation);
+        Ok(self.published())
     }
 
     pub(crate) fn edit_navigation_automation(
@@ -505,36 +518,19 @@ impl EffectExecutor {
     }
 
     /// Execute one kernel transition's ordered effects and stop at the first
-    /// failure. Later effects are never attempted.
-    #[expect(
-        dead_code,
-        reason = "ordered generic interaction bridge is exercised by adapter tests"
-    )]
-    pub(crate) fn execute_interactions_ordered(
-        &mut self,
-        effects: impl IntoIterator<Item = InteractionEffect>,
-        context: &InteractionExecutionContext,
-    ) -> Vec<Result<EffectAcknowledgement, EffectFailure>> {
-        let mut clipboard = SystemClipboard;
-        self.execute_interactions_ordered_with_clipboard(effects, context, &mut clipboard)
-    }
-
+    /// failure. Later effects are never attempted. The production path has its
+    /// own bridge below, so this generic one exists only for the tests that
+    /// drive ordering without adapter-owned context.
+    #[cfg(test)]
     pub(crate) fn execute_interactions_ordered_with_clipboard(
         &mut self,
         effects: impl IntoIterator<Item = InteractionEffect>,
         context: &InteractionExecutionContext,
         clipboard: &mut dyn Clipboard,
     ) -> Vec<Result<EffectAcknowledgement, EffectFailure>> {
-        let mut results = Vec::new();
-        for effect in effects {
-            let result = self.execute_interaction_with_clipboard(effect, context, clipboard);
-            let failed = result.is_err();
-            results.push(result);
-            if failed {
-                break;
-            }
-        }
-        results
+        run_ordered(effects, |effect| {
+            self.execute_interaction_with_clipboard(effect, context, clipboard)
+        })
     }
 
     pub(crate) fn execute_production_interactions_with_clipboard(
@@ -543,16 +539,9 @@ impl EffectExecutor {
         context: &mut ProductionInteractionContext<'_>,
         clipboard: &mut dyn Clipboard,
     ) -> Vec<Result<EffectAcknowledgement, EffectFailure>> {
-        let mut results = Vec::new();
-        for effect in effects {
-            let result = self.execute_production_interaction(effect, context, clipboard);
-            let failed = result.is_err();
-            results.push(result);
-            if failed {
-                break;
-            }
-        }
-        results
+        run_ordered(effects, |effect| {
+            self.execute_production_interaction(effect, context, clipboard)
+        })
     }
 
     fn execute_production_interaction(
@@ -563,35 +552,31 @@ impl EffectExecutor {
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         match effect {
             InteractionEffect::AdjustSelected(delta) => {
-                let automation = self.session.load().automation.clone();
-                adjust_lfo_or_control(
-                    self,
-                    &automation,
-                    context.automation_selected,
-                    context.tab,
-                    context.selected,
-                    f32::from(delta),
-                    context.beat,
-                    context.flipped,
-                );
-                Ok(EffectAcknowledgement::Published {
-                    generation: self.session.load().generation,
+                self.with_automation(|executor, automation| {
+                    adjust_lfo_or_control(
+                        executor,
+                        automation,
+                        context.automation_selected,
+                        context.tab,
+                        context.selected,
+                        f32::from(delta),
+                        context.beat,
+                        context.flipped,
+                    );
                 })
             }
             InteractionEffect::CommitNumeric(value) => {
-                let automation = self.session.load().automation.clone();
-                set_modulator_or_control(
-                    self,
-                    &automation,
-                    context.automation_selected,
-                    context.tab,
-                    context.selected,
-                    value,
-                    context.beat,
-                    context.flipped,
-                );
-                Ok(EffectAcknowledgement::Published {
-                    generation: self.session.load().generation,
+                self.with_automation(|executor, automation| {
+                    set_modulator_or_control(
+                        executor,
+                        automation,
+                        context.automation_selected,
+                        context.tab,
+                        context.selected,
+                        value,
+                        context.beat,
+                        context.flipped,
+                    );
                 })
             }
             InteractionEffect::AutomationConfirm(kind) => {
@@ -605,50 +590,36 @@ impl EffectExecutor {
                 };
                 let mut selected = context.automation_selected;
                 open_modulator_effect_for_id(self, id, kind, &mut selected);
-                Ok(EffectAcknowledgement::Published {
-                    generation: self.session.load().generation,
-                })
+                Ok(self.published())
             }
-            InteractionEffect::ResetSelected => {
-                let automation = self.session.load().automation.clone();
+            InteractionEffect::ResetSelected => self.with_automation(|executor, automation| {
                 reset_lfo_or_control(
-                    self,
-                    &automation,
+                    executor,
+                    automation,
                     context.automation_selected,
                     context.tab,
                     context.selected,
                     context.beat,
                 );
-                Ok(EffectAcknowledgement::Published {
-                    generation: self.session.load().generation,
-                })
-            }
+            }),
             InteractionEffect::ToggleAuto => {
                 self.toggle_auto(context.beat);
-                Ok(EffectAcknowledgement::Published {
-                    generation: self.session.load().generation,
-                })
+                Ok(self.published())
             }
-            InteractionEffect::ToggleUnits => {
-                let automation = self.session.load().automation.clone();
+            InteractionEffect::ToggleUnits => self.with_automation(|executor, automation| {
                 toggle_units_effect(
-                    self,
-                    &automation,
+                    executor,
+                    automation,
                     context.flipped,
                     context.automation_selected,
                     context.tab,
                     context.selected,
                     context.beat,
                 );
-                Ok(EffectAcknowledgement::Published {
-                    generation: self.session.load().generation,
-                })
-            }
+            }),
             InteractionEffect::ToggleMute { master } => {
                 self.toggle_mute(if master { Tab::Master } else { context.tab }, context.mute);
-                Ok(EffectAcknowledgement::Published {
-                    generation: self.session.load().generation,
-                })
+                Ok(self.published())
             }
             InteractionEffect::ToggleMacro => {
                 let automation = self.session.load().automation.clone();
@@ -659,34 +630,22 @@ impl EffectExecutor {
                     context.automation_selected,
                 );
                 Ok(position.map_or_else(
-                    || EffectAcknowledgement::Published {
-                        generation: self.session.load().generation,
-                    },
+                    || self.published(),
                     |(depth, selected)| EffectAcknowledgement::AutomationPosition {
                         depth,
                         selected,
                     },
                 ))
             }
-            InteractionEffect::RemoveAutomation => {
-                let automation = self.session.load().automation.clone();
+            InteractionEffect::RemoveAutomation => self.with_automation(|executor, automation| {
                 remove_automation_effect(
-                    self,
-                    &automation,
+                    executor,
+                    automation,
                     context.selected_control,
                     context.automation_selected,
                 );
-                Ok(EffectAcknowledgement::Published {
-                    generation: self.session.load().generation,
-                })
-            }
-            InteractionEffect::ReseedAutomation => {
-                let automation = self.session.load().automation.clone();
-                reseed_automation_effect(self, &automation);
-                Ok(EffectAcknowledgement::Published {
-                    generation: self.session.load().generation,
-                })
-            }
+            }),
+            InteractionEffect::ReseedAutomation => self.with_automation(reseed_automation_effect),
             InteractionEffect::CloseAutomationDepth => {
                 let automation = self.session.load().automation.clone();
                 Ok(close_one_level_effect(self, &automation).map_or(
@@ -776,6 +735,25 @@ impl EffectExecutor {
             ),
         }
     }
+}
+
+/// Run an ordered effect list and stop at the first failure: every bridge
+/// executes its transition's effects in order, and none of them may attempt
+/// an effect after one has failed.
+fn run_ordered<T>(
+    effects: impl IntoIterator<Item = T>,
+    mut execute: impl FnMut(T) -> Result<EffectAcknowledgement, EffectFailure>,
+) -> Vec<Result<EffectAcknowledgement, EffectFailure>> {
+    let mut results = Vec::new();
+    for effect in effects {
+        let result = execute(effect);
+        let failed = result.is_err();
+        results.push(result);
+        if failed {
+            break;
+        }
+    }
+    results
 }
 
 pub(crate) type MuteState = [Option<f32>; 9];
