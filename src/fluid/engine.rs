@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::fx::compression::StereoCompressor;
+use crate::fx::compression::{CompressorParams, StereoCompressor};
 use crate::fx::delay::{DelayParams, StereoDelay};
 use crate::fx::drive;
 use crate::fx::reverb::Freeverb;
@@ -115,12 +115,14 @@ impl ModuleFxBank {
                     };
                     sample = compressor.process(
                         sample,
-                        self.sample_rate,
-                        slot.time.clamp(-40.0, 0.0),
-                        slot.right_time.clamp(1.0, 8.0),
-                        slot.feedback.clamp(10.0, 500.0),
-                        slot.vintage.clamp(0.0, 12.0),
-                        slot.amount,
+                        CompressorParams {
+                            sample_rate: self.sample_rate,
+                            threshold_db: slot.time.clamp(-40.0, 0.0),
+                            ratio: slot.right_time.clamp(1.0, 8.0),
+                            release_ms: slot.feedback.clamp(10.0, 500.0),
+                            makeup_db: slot.vintage.clamp(0.0, 12.0),
+                            amount: slot.amount,
+                        },
                     );
                 }
                 Family::SingleAmount => {
