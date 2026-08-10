@@ -4,8 +4,6 @@
 //! It is the production boundary for terminal lifecycle and Crossterm events.
 
 use std::collections::VecDeque;
-#[cfg(test)]
-use std::fmt::Write as _;
 use std::io;
 use std::time::Duration;
 use std::time::Instant;
@@ -372,165 +370,6 @@ pub(crate) enum TransportEvent {
         expect(dead_code, reason = "reserved for an external shutdown source")
     )]
     Shutdown,
-}
-
-/// In-memory sanitized recorder for capturing a live normalized input stream.
-/// Call `record` at the scheduler seam and persist `finish()` only when the
-/// developer explicitly chooses to retain a regression fixture.
-#[cfg(test)]
-pub(crate) struct SanitizedTraceRecorder {
-    previous_at: Duration,
-    fixture: String,
-}
-
-#[cfg(test)]
-impl SanitizedTraceRecorder {
-    pub(crate) fn new(started_at: Duration) -> Self {
-        Self {
-            previous_at: started_at,
-            fixture: "nooise-replay-v1\n".into(),
-        }
-    }
-
-    pub(crate) fn record(&mut self, now: Duration, event: &TransportEvent) {
-        let after_ms = self.advance(now);
-        match event {
-            TransportEvent::Key {
-                key,
-                phase,
-                repeat_count,
-            } => {
-                let token = encode_physical_key(&key.code);
-                writeln!(
-                    self.fixture,
-                    "+{after_ms} key {token} {} mods:{} repeats:{repeat_count}",
-                    recorder_phase_token(*phase),
-                    key.modifiers.0
-                )
-                .expect("writing to String cannot fail");
-            }
-            TransportEvent::Resize { width, height } => {
-                writeln!(self.fixture, "+{after_ms} resize {width}x{height}")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::Paste(_) => {
-                writeln!(self.fixture, "+{after_ms} redacted paste")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::Mouse(_) => {
-                writeln!(self.fixture, "+{after_ms} redacted mouse")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::FocusGained => {
-                writeln!(self.fixture, "+{after_ms} focus-gained")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::FocusLost => {
-                writeln!(self.fixture, "+{after_ms} focus-lost")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::Shutdown => {
-                writeln!(self.fixture, "+{after_ms} shutdown")
-                    .expect("writing to String cannot fail");
-            }
-        }
-    }
-
-    pub(crate) fn record_tick(&mut self, now: Duration) {
-        let after_ms = self.advance(now);
-        writeln!(self.fixture, "+{after_ms} tick").expect("writing to String cannot fail");
-    }
-
-    pub(crate) fn record_idle(&mut self, now: Duration) {
-        let after_ms = self.advance(now);
-        writeln!(self.fixture, "+{after_ms} idle").expect("writing to String cannot fail");
-    }
-
-    pub(crate) fn finish(self) -> String {
-        self.fixture
-    }
-
-    fn advance(&mut self, now: Duration) -> u64 {
-        let after_ms = now
-            .saturating_sub(self.previous_at)
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
-        self.previous_at = now;
-        after_ms
-    }
-}
-
-#[cfg(test)]
-fn recorder_phase_token(phase: InputPhase) -> &'static str {
-    match phase {
-        InputPhase::Press => "press",
-        InputPhase::Repeat => "repeat",
-        InputPhase::Release => "release",
-    }
-}
-
-/// Fixture tokens for the payload-free `PhysicalKey` identities. Parameterized
-/// variants prefix their payload instead and are handled directly below.
-#[cfg(test)]
-const PHYSICAL_KEY_TOKENS: &[(PhysicalKey, &str)] = &[
-    (PhysicalKey::Escape, "escape"),
-    (PhysicalKey::Home, "home"),
-    (PhysicalKey::End, "end"),
-    (PhysicalKey::PageUp, "page-up"),
-    (PhysicalKey::PageDown, "page-down"),
-    (PhysicalKey::Enter, "enter"),
-    (PhysicalKey::Backspace, "backspace"),
-    (PhysicalKey::Left, "left"),
-    (PhysicalKey::Right, "right"),
-    (PhysicalKey::Up, "up"),
-    (PhysicalKey::Down, "down"),
-    (PhysicalKey::Tab, "tab"),
-    (PhysicalKey::BackTab, "backtab"),
-    (PhysicalKey::Delete, "delete"),
-    (PhysicalKey::Insert, "insert"),
-    (PhysicalKey::Null, "null"),
-    (PhysicalKey::CapsLock, "caps-lock"),
-    (PhysicalKey::ScrollLock, "scroll-lock"),
-    (PhysicalKey::NumLock, "num-lock"),
-    (PhysicalKey::PrintScreen, "print-screen"),
-    (PhysicalKey::Pause, "pause"),
-    (PhysicalKey::Menu, "menu"),
-    (PhysicalKey::KeypadBegin, "keypad-begin"),
-];
-
-#[cfg(test)]
-pub(crate) fn encode_physical_key(code: &PhysicalKey) -> String {
-    match code {
-        PhysicalKey::Character(character) => format!("char:{:06x}", u32::from(*character)),
-        PhysicalKey::Function(number) => format!("f:{number}"),
-        PhysicalKey::Media(key) => format!("media:{}", key.token()),
-        PhysicalKey::Modifier(key) => format!("modifier:{}", key.token()),
-        code => PHYSICAL_KEY_TOKENS
-            .iter()
-            .find(|(candidate, _)| candidate == code)
-            .map(|(_, token)| (*token).to_owned())
-            .expect("every payload-free PhysicalKey needs a PHYSICAL_KEY_TOKENS entry"),
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn decode_physical_key(token: &str) -> Option<PhysicalKey> {
-    if let Some(scalar) = token.strip_prefix("char:") {
-        return char::from_u32(u32::from_str_radix(scalar, 16).ok()?).map(PhysicalKey::Character);
-    }
-    if let Some(number) = token.strip_prefix("f:") {
-        return number.parse().ok().map(PhysicalKey::Function);
-    }
-    if let Some(media) = token.strip_prefix("media:") {
-        return MediaKey::from_token(media).map(PhysicalKey::Media);
-    }
-    if let Some(modifier) = token.strip_prefix("modifier:") {
-        return ModifierKey::from_token(modifier).map(PhysicalKey::Modifier);
-    }
-    PHYSICAL_KEY_TOKENS
-        .iter()
-        .find(|(_, candidate)| *candidate == token)
-        .map(|(key, _)| key.clone())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1131,6 +970,179 @@ impl Scheduler {
         until_tick.min(until_frame)
     }
 }
+
+/// Test-only sanitized fixture recording and key-token codec. Lives beside
+/// the transport types it encodes; `replay` is its only consumer.
+#[cfg(test)]
+mod recording {
+    use std::fmt::Write as _;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// In-memory sanitized recorder for capturing a live normalized input stream.
+    /// Call `record` at the scheduler seam and persist `finish()` only when the
+    /// developer explicitly chooses to retain a regression fixture.
+    #[cfg(test)]
+    pub(crate) struct SanitizedTraceRecorder {
+        previous_at: Duration,
+        fixture: String,
+    }
+
+    #[cfg(test)]
+    impl SanitizedTraceRecorder {
+        pub(crate) fn new(started_at: Duration) -> Self {
+            Self {
+                previous_at: started_at,
+                fixture: "nooise-replay-v1\n".into(),
+            }
+        }
+
+        pub(crate) fn record(&mut self, now: Duration, event: &TransportEvent) {
+            let after_ms = self.advance(now);
+            match event {
+                TransportEvent::Key {
+                    key,
+                    phase,
+                    repeat_count,
+                } => {
+                    let token = encode_physical_key(&key.code);
+                    writeln!(
+                        self.fixture,
+                        "+{after_ms} key {token} {} mods:{} repeats:{repeat_count}",
+                        recorder_phase_token(*phase),
+                        key.modifiers.0
+                    )
+                    .expect("writing to String cannot fail");
+                }
+                TransportEvent::Resize { width, height } => {
+                    writeln!(self.fixture, "+{after_ms} resize {width}x{height}")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::Paste(_) => {
+                    writeln!(self.fixture, "+{after_ms} redacted paste")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::Mouse(_) => {
+                    writeln!(self.fixture, "+{after_ms} redacted mouse")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::FocusGained => {
+                    writeln!(self.fixture, "+{after_ms} focus-gained")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::FocusLost => {
+                    writeln!(self.fixture, "+{after_ms} focus-lost")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::Shutdown => {
+                    writeln!(self.fixture, "+{after_ms} shutdown")
+                        .expect("writing to String cannot fail");
+                }
+            }
+        }
+
+        pub(crate) fn record_tick(&mut self, now: Duration) {
+            let after_ms = self.advance(now);
+            writeln!(self.fixture, "+{after_ms} tick").expect("writing to String cannot fail");
+        }
+
+        pub(crate) fn record_idle(&mut self, now: Duration) {
+            let after_ms = self.advance(now);
+            writeln!(self.fixture, "+{after_ms} idle").expect("writing to String cannot fail");
+        }
+
+        pub(crate) fn finish(self) -> String {
+            self.fixture
+        }
+
+        fn advance(&mut self, now: Duration) -> u64 {
+            let after_ms = now
+                .saturating_sub(self.previous_at)
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+            self.previous_at = now;
+            after_ms
+        }
+    }
+
+    #[cfg(test)]
+    fn recorder_phase_token(phase: InputPhase) -> &'static str {
+        match phase {
+            InputPhase::Press => "press",
+            InputPhase::Repeat => "repeat",
+            InputPhase::Release => "release",
+        }
+    }
+
+    /// Fixture tokens for the payload-free `PhysicalKey` identities. Parameterized
+    /// variants prefix their payload instead and are handled directly below.
+    #[cfg(test)]
+    const PHYSICAL_KEY_TOKENS: &[(PhysicalKey, &str)] = &[
+        (PhysicalKey::Escape, "escape"),
+        (PhysicalKey::Home, "home"),
+        (PhysicalKey::End, "end"),
+        (PhysicalKey::PageUp, "page-up"),
+        (PhysicalKey::PageDown, "page-down"),
+        (PhysicalKey::Enter, "enter"),
+        (PhysicalKey::Backspace, "backspace"),
+        (PhysicalKey::Left, "left"),
+        (PhysicalKey::Right, "right"),
+        (PhysicalKey::Up, "up"),
+        (PhysicalKey::Down, "down"),
+        (PhysicalKey::Tab, "tab"),
+        (PhysicalKey::BackTab, "backtab"),
+        (PhysicalKey::Delete, "delete"),
+        (PhysicalKey::Insert, "insert"),
+        (PhysicalKey::Null, "null"),
+        (PhysicalKey::CapsLock, "caps-lock"),
+        (PhysicalKey::ScrollLock, "scroll-lock"),
+        (PhysicalKey::NumLock, "num-lock"),
+        (PhysicalKey::PrintScreen, "print-screen"),
+        (PhysicalKey::Pause, "pause"),
+        (PhysicalKey::Menu, "menu"),
+        (PhysicalKey::KeypadBegin, "keypad-begin"),
+    ];
+
+    #[cfg(test)]
+    pub(crate) fn encode_physical_key(code: &PhysicalKey) -> String {
+        match code {
+            PhysicalKey::Character(character) => format!("char:{:06x}", u32::from(*character)),
+            PhysicalKey::Function(number) => format!("f:{number}"),
+            PhysicalKey::Media(key) => format!("media:{}", key.token()),
+            PhysicalKey::Modifier(key) => format!("modifier:{}", key.token()),
+            code => PHYSICAL_KEY_TOKENS
+                .iter()
+                .find(|(candidate, _)| candidate == code)
+                .map(|(_, token)| (*token).to_owned())
+                .expect("every payload-free PhysicalKey needs a PHYSICAL_KEY_TOKENS entry"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decode_physical_key(token: &str) -> Option<PhysicalKey> {
+        if let Some(scalar) = token.strip_prefix("char:") {
+            return char::from_u32(u32::from_str_radix(scalar, 16).ok()?)
+                .map(PhysicalKey::Character);
+        }
+        if let Some(number) = token.strip_prefix("f:") {
+            return number.parse().ok().map(PhysicalKey::Function);
+        }
+        if let Some(media) = token.strip_prefix("media:") {
+            return MediaKey::from_token(media).map(PhysicalKey::Media);
+        }
+        if let Some(modifier) = token.strip_prefix("modifier:") {
+            return ModifierKey::from_token(modifier).map(PhysicalKey::Modifier);
+        }
+        PHYSICAL_KEY_TOKENS
+            .iter()
+            .find(|(_, candidate)| *candidate == token)
+            .map(|(key, _)| key.clone())
+    }
+}
+
+#[cfg(test)]
+pub(crate) use recording::{SanitizedTraceRecorder, decode_physical_key, encode_physical_key};
 
 #[cfg(test)]
 mod tests {
