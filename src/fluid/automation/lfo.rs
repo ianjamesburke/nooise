@@ -552,37 +552,18 @@ impl LfoRoute {
 
     pub(crate) fn adjust_field_at(&mut self, field: LfoField, dir: f32, beat: f64) {
         match field {
-            LfoField::Shape => {
-                self.shape = self.shape.cycled(dir);
-                self.pickup = None;
-            }
-            LfoField::Amount => {
-                self.depth_ratio = field.spec().adjust(self.depth_ratio, dir);
-            }
-            LfoField::Interval => {
-                self.set_cycle_with_pickup(field.spec().adjust(self.cycle_beats, dir), beat);
-            }
-            LfoField::Offset => {
-                self.phase_offset_beats = field.spec().adjust(self.phase_offset_beats, dir);
-                self.pickup = None;
+            LfoField::Shape => self.write_shape(self.shape.cycled(dir)),
+            _ => {
+                let next = field.spec().adjust(self.field_value(field), dir);
+                self.write_field_at(field, next, beat);
             }
         }
     }
 
     pub(crate) fn set_field_at(&mut self, field: LfoField, value: f32, beat: f64) {
         match field {
-            LfoField::Shape => {
-                self.shape = LfoShape::from_index(value);
-                self.pickup = None;
-            }
-            LfoField::Amount => self.depth_ratio = field.spec().parse_value(value),
-            LfoField::Interval => {
-                self.set_cycle_with_pickup(field.spec().parse_value(value), beat);
-            }
-            LfoField::Offset => {
-                self.phase_offset_beats = field.spec().parse_value(value);
-                self.pickup = None;
-            }
+            LfoField::Shape => self.write_shape(LfoShape::from_index(value)),
+            _ => self.write_field_at(field, field.spec().parse_value(value), beat),
         }
     }
 
@@ -590,11 +571,9 @@ impl LfoRoute {
     /// to the beat grid — used while the field is being driven in ms.
     pub(crate) fn set_field_raw_at(&mut self, field: LfoField, value: f32, beat: f64) {
         match field {
-            LfoField::Interval => self
-                .set_cycle_with_pickup(value.clamp(MIN_LFO_CYCLE_BEATS, MAX_LFO_CYCLE_BEATS), beat),
-            LfoField::Offset => {
-                self.phase_offset_beats = value.clamp(0.0, MAX_LFO_OFFSET_BEATS);
-                self.pickup = None;
+            LfoField::Interval | LfoField::Offset => {
+                let spec = field.spec();
+                self.write_field_at(field, value.clamp(spec.min, spec.max), beat);
             }
             _ => self.set_field_at(field, value, beat),
         }
@@ -602,17 +581,30 @@ impl LfoRoute {
 
     pub(crate) fn reset_field_at(&mut self, field: LfoField, beat: f64) {
         match field {
-            LfoField::Shape => {
-                self.shape = LfoShape::Sine;
-                self.pickup = None;
-            }
-            LfoField::Amount => self.depth_ratio = field.spec().reset,
-            LfoField::Interval => self.set_cycle_with_pickup(field.spec().reset, beat),
-            LfoField::Offset => {
-                self.phase_offset_beats = field.spec().reset;
-                self.pickup = None;
-            }
+            LfoField::Shape => self.write_shape(LfoShape::Sine),
+            _ => self.write_field_at(field, field.spec().reset, beat),
         }
+    }
+
+    /// Store an already ranged value on the field its spec came from. A rate
+    /// change hands the old waveform over at its next crossing instead of
+    /// rewriting the offset; every other edit drops a pending handoff. Shape
+    /// is discrete and goes through `write_shape` instead.
+    fn write_field_at(&mut self, field: LfoField, value: f32, beat: f64) {
+        match field {
+            LfoField::Amount => self.depth_ratio = value,
+            LfoField::Interval => self.set_cycle_with_pickup(value, beat),
+            LfoField::Offset => {
+                self.phase_offset_beats = value;
+                self.pickup = None;
+            }
+            LfoField::Shape => {}
+        }
+    }
+
+    fn write_shape(&mut self, shape: LfoShape) {
+        self.shape = shape;
+        self.pickup = None;
     }
 
     /// The field's value in the units its own scale is expressed in.
