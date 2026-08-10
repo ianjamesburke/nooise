@@ -60,20 +60,6 @@ pub(crate) struct StereoDelay {
     right_tap: Tap,
 }
 
-/// Immutable capture of one active feedback line for song-session restore.
-#[derive(Clone, Default)]
-pub(crate) struct StereoDelayState {
-    pub(crate) left: Vec<f32>,
-    pub(crate) right: Vec<f32>,
-    pub(crate) write: usize,
-    pub(crate) left_current: Option<f32>,
-    pub(crate) left_previous: Option<f32>,
-    pub(crate) left_fade: f32,
-    pub(crate) right_current: Option<f32>,
-    pub(crate) right_previous: Option<f32>,
-    pub(crate) right_fade: f32,
-}
-
 impl StereoDelay {
     pub(crate) fn new(max_delay_samples: usize) -> Self {
         let len = max_delay_samples.max(1) + 1;
@@ -86,39 +72,16 @@ impl StereoDelay {
         }
     }
 
-    pub(crate) fn from_state(state: StereoDelayState) -> Option<Self> {
-        if state.left.is_empty() || state.left.len() != state.right.len() {
-            return None;
-        }
-        Some(Self {
-            write: state.write % state.left.len(),
-            left: state.left,
-            right: state.right,
-            left_tap: Tap {
-                current: state.left_current,
-                previous: state.left_previous,
-                fade: state.left_fade,
-            },
-            right_tap: Tap {
-                current: state.right_current,
-                previous: state.right_previous,
-                fade: state.right_fade,
-            },
-        })
-    }
-
-    pub(crate) fn state(&self) -> StereoDelayState {
-        StereoDelayState {
-            left: self.left.clone(),
-            right: self.right.clone(),
-            write: self.write,
-            left_current: self.left_tap.current,
-            left_previous: self.left_tap.previous,
-            left_fade: self.left_tap.fade,
-            right_current: self.right_tap.current,
-            right_previous: self.right_tap.previous,
-            right_fade: self.right_tap.fade,
-        }
+    /// Left read-tap crossfade state: `(current, previous, fade)`. Exists so
+    /// the retarget tests can assert the tap's behaviour without a public
+    /// snapshot type.
+    #[cfg(test)]
+    fn left_tap(&self) -> (Option<f32>, Option<f32>, f32) {
+        (
+            self.left_tap.current,
+            self.left_tap.previous,
+            self.left_tap.fade,
+        )
     }
 
     pub(crate) fn process(&mut self, input: (f32, f32), params: DelayParams) -> (f32, f32) {
@@ -236,12 +199,12 @@ mod tests {
         let mut delay = StereoDelay::new(2_000);
         delay.process((0.0, 0.0), params(100, 100, 0.0, 0.0));
         delay.process((0.0, 0.0), params(1_000, 1_000, 0.0, 0.0));
-        let state = delay.state();
+        let (current, previous, fade) = delay.left_tap();
         // The new target is latched immediately; the old position fades out
         // in the background rather than the read head sliding toward it.
-        assert_eq!(state.left_current, Some(1_000.0));
-        assert_eq!(state.left_previous, Some(100.0));
-        assert!(state.left_fade > 0.0 && state.left_fade < 1.0);
+        assert_eq!(current, Some(1_000.0));
+        assert_eq!(previous, Some(100.0));
+        assert!(fade > 0.0 && fade < 1.0);
     }
 
     #[test]
@@ -249,11 +212,11 @@ mod tests {
         let mut delay = StereoDelay::new(100_000);
         delay.process((0.0, 0.0), params(441, 441, 0.0, 0.0));
         delay.process((0.0, 0.0), params(88_200, 88_200, 0.0, 0.0));
-        let state = delay.state();
+        let (current, previous, _) = delay.left_tap();
         // A huge jump snaps the target immediately; only the amplitude
         // blend is gradual, so there's no cap on how far it can move.
-        assert_eq!(state.left_current, Some(88_200.0));
-        assert_eq!(state.left_previous, Some(441.0));
+        assert_eq!(current, Some(88_200.0));
+        assert_eq!(previous, Some(441.0));
     }
 
     #[test]
@@ -262,9 +225,9 @@ mod tests {
         delay.process((0.0, 0.0), params(100, 100, 0.0, 0.0));
         delay.process((0.0, 0.0), params(500, 500, 0.0, 0.0));
         delay.process((0.0, 0.0), params(900, 900, 0.0, 0.0));
-        let state = delay.state();
-        assert_eq!(state.left_current, Some(500.0));
-        assert_eq!(state.left_previous, Some(100.0));
+        let (current, previous, _) = delay.left_tap();
+        assert_eq!(current, Some(500.0));
+        assert_eq!(previous, Some(100.0));
     }
 
     #[test]
@@ -276,8 +239,8 @@ mod tests {
         for _ in 0..window {
             delay.process((0.0, 0.0), params(1_000, 1_000, 0.0, 0.0));
         }
-        let state = delay.state();
-        assert_eq!(state.left_current, Some(1_000.0));
-        assert_eq!(state.left_previous, None);
+        let (current, previous, _) = delay.left_tap();
+        assert_eq!(current, Some(1_000.0));
+        assert_eq!(previous, None);
     }
 }

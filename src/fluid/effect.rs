@@ -8,7 +8,6 @@ pub(crate) enum EffectFailure {
     UnknownControl(&'static str),
     Clipboard(String),
     MissingContext(&'static str),
-    ModuleFxCaptureTimeout,
     UnsupportedInteraction(InteractionEffect),
 }
 
@@ -252,30 +251,10 @@ impl EffectExecutor {
             }
             LiveEffect::CopySong => {
                 let snapshot = self.session.load();
-                let module_fx_runtime = if has_stateful_module(&snapshot.controls) {
-                    let request = self.session.request_module_fx_capture();
-                    let deadline = Instant::now() + std::time::Duration::from_millis(50);
-                    Some(
-                        loop {
-                            let capture = self.session.module_fx_capture();
-                            if capture.request >= request {
-                                break Some(capture.state.clone());
-                            }
-                            if Instant::now() >= deadline {
-                                break None;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(1));
-                        }
-                        .ok_or(EffectFailure::ModuleFxCaptureTimeout)?,
-                    )
-                } else {
-                    None
-                };
                 let code = encode_song_code(&SongState {
                     controls: snapshot.controls.clone(),
                     automation: snapshot.automation.clone(),
                     tonal_sequence: Some(snapshot.tonal_sequence.clone()),
-                    module_fx_runtime,
                 })
                 .map_err(|error| EffectFailure::Clipboard(error.to_string()))?;
                 clipboard.set_text(code).map_err(EffectFailure::Clipboard)?;
@@ -799,21 +778,6 @@ impl EffectExecutor {
     }
 }
 
-fn has_stateful_module(controls: &FluidControls) -> bool {
-    Tab::all().into_iter().any(|tab| {
-        controls.modules.for_tab(tab).is_some_and(|slots| {
-            slots.iter().any(|slot| {
-                slot.kind().is_some_and(|kind| {
-                    matches!(
-                        kind.family,
-                        Family::Delay | Family::Reverb | Family::Compression
-                    )
-                })
-            })
-        })
-    })
-}
-
 pub(crate) type MuteState = [Option<f32>; 9];
 
 #[derive(Default)]
@@ -870,7 +834,6 @@ mod tests {
 
     fn executor_with(controls: FluidControls) -> EffectExecutor {
         let session = LiveSession::new(LiveSessionSnapshot::from_controls(controls));
-        session.publish_module_fx_capture(u64::MAX, ModuleFxRuntimeState::default());
         EffectExecutor::new(
             session,
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),

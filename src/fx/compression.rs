@@ -11,10 +11,6 @@ impl StereoCompressor {
         }
     }
 
-    pub(crate) fn envelope(&self) -> f32 {
-        self.envelope
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn process(
         &mut self,

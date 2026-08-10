@@ -32,25 +32,6 @@ impl ModuleFxBank {
         }
     }
 
-    fn from_state(sample_rate: f32, state: &ModuleFxRuntimeState) -> Self {
-        let mut bank = Self::new(sample_rate);
-        for (target, source) in bank.slots.iter_mut().zip(&state.slots) {
-            *target = match source {
-                ModuleFxRuntimeSlot::Empty => None,
-                ModuleFxRuntimeSlot::Delay(state) => {
-                    StereoDelay::from_state(state.clone()).map(SlotFx::Delay)
-                }
-                ModuleFxRuntimeSlot::Reverb(state) => {
-                    Freeverb::from_state(state.clone()).map(SlotFx::Reverb)
-                }
-                ModuleFxRuntimeSlot::Compression { envelope } => {
-                    Some(SlotFx::Compression(StereoCompressor::new(*envelope)))
-                }
-            };
-        }
-        bank
-    }
-
     fn process(
         &mut self,
         tab: Tab,
@@ -152,23 +133,6 @@ impl ModuleFxBank {
             }
         }
         sample
-    }
-
-    fn state(&self) -> ModuleFxRuntimeState {
-        ModuleFxRuntimeState {
-            slots: self
-                .slots
-                .iter()
-                .map(|processor| match processor {
-                    Some(SlotFx::Delay(line)) => ModuleFxRuntimeSlot::Delay(line.state()),
-                    Some(SlotFx::Reverb(reverb)) => ModuleFxRuntimeSlot::Reverb(reverb.state()),
-                    Some(SlotFx::Compression(compressor)) => ModuleFxRuntimeSlot::Compression {
-                        envelope: compressor.envelope(),
-                    },
-                    None => ModuleFxRuntimeSlot::Empty,
-                })
-                .collect(),
-        }
     }
 }
 
@@ -301,12 +265,6 @@ mod module_fx_tests {
             );
         }
     }
-
-    #[test]
-    fn runtime_bank_covers_every_layer_slot_address() {
-        let bank = ModuleFxBank::new(44_100.0);
-        assert_eq!(bank.state().slots.len(), MODULE_LAYERS * MODULE_SLOTS);
-    }
 }
 
 // ============================================================
@@ -338,7 +296,6 @@ pub(crate) struct FluidEngine {
     /// automation differs from the last planned state.
     plan: AutomationPlan,
     plan_source: Arc<AutomationState>,
-    last_module_fx_capture_request: u64,
 }
 
 impl FluidEngine {
@@ -378,7 +335,7 @@ impl FluidEngine {
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
             arp: ArpEngine::new(sample_rate),
-            module_fx: ModuleFxBank::from_state(sample_rate, &session.module_fx_capture().state),
+            module_fx: ModuleFxBank::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
             session,
             morph,
@@ -387,7 +344,6 @@ impl FluidEngine {
             snapshot,
             plan,
             plan_source,
-            last_module_fx_capture_request: 0,
         }
     }
 }
@@ -406,12 +362,6 @@ impl FluidEngine {
 
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
-        let capture_request = self.session.pending_module_fx_capture();
-        if capture_request > self.last_module_fx_capture_request {
-            self.session
-                .publish_module_fx_capture(capture_request, self.module_fx.state());
-            self.last_module_fx_capture_request = capture_request;
-        }
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         if self.current_sample.is_multiple_of(128) {
             let morph_source = self.morph.load_full();

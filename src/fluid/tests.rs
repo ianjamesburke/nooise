@@ -1892,6 +1892,26 @@ fn song_code_round_trips_quantized_snapshot_values() {
     assert_close(decoded.controls.clap.slap_count, 7.0);
 }
 
+/// Song codes carry control state only. A code once embedded every module
+/// delay line and reverb buffer sample-for-sample, so a single Delay slot
+/// pushed it past a million characters and made it unshareable; tails are
+/// transients that rebuild within a second of playback, not saved state.
+#[test]
+fn song_code_stays_short_with_every_stateful_module_filled() {
+    let mut controls = FluidControls::default();
+    controls.modules.pad[0] = preset_slot("delay", 0.8);
+    controls.modules.pad[1] = preset_slot("room", 0.8);
+    controls.modules.bass[0] = preset_slot("compression", 0.8);
+
+    let code = encode_song_code(&SongState::from_controls(controls)).unwrap();
+
+    assert!(
+        code.len() < 2_000,
+        "song code grew to {} characters",
+        code.len()
+    );
+}
+
 #[test]
 fn song_code_round_trips_tonal_sequence_state() {
     let sequence = TonalSequenceState {
@@ -1904,57 +1924,11 @@ fn song_code_round_trips_tonal_sequence_state() {
         controls: FluidControls::default(),
         automation: AutomationState::default(),
         tonal_sequence: Some(sequence.clone()),
-        module_fx_runtime: None,
     };
 
     let decoded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
 
     assert_eq!(decoded.tonal_sequence, Some(sequence));
-}
-
-#[test]
-fn song_code_round_trips_delay_tail_state() {
-    let module_fx_runtime = ModuleFxRuntimeState {
-        slots: vec![
-            ModuleFxRuntimeSlot::Delay(crate::fx::delay::StereoDelayState {
-                left: vec![0.0, 0.25, -0.5],
-                right: vec![0.75, 0.0, -0.25],
-                write: 2,
-                left_current: Some(120.0),
-                left_previous: Some(90.0),
-                left_fade: 0.4,
-                right_current: Some(180.0),
-                right_previous: None,
-                right_fade: 1.0,
-            }),
-            ModuleFxRuntimeSlot::Empty,
-        ],
-    };
-    let song = SongState {
-        controls: FluidControls::default(),
-        automation: AutomationState::default(),
-        tonal_sequence: None,
-        module_fx_runtime: Some(module_fx_runtime.clone()),
-    };
-
-    let decoded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
-    let restored = decoded.module_fx_runtime.expect("delay runtime record");
-    assert_eq!(restored.slots.len(), 2);
-    let ModuleFxRuntimeSlot::Delay(line) = &restored.slots[0] else {
-        panic!("first slot should be delay");
-    };
-    let ModuleFxRuntimeSlot::Delay(source) = &module_fx_runtime.slots[0] else {
-        panic!("source slot should be delay");
-    };
-    assert_eq!(line.left, source.left);
-    assert_eq!(line.right, source.right);
-    assert_eq!(line.write, 2);
-    assert_eq!(line.left_current, source.left_current);
-    assert_eq!(line.left_previous, source.left_previous);
-    assert_eq!(line.left_fade, source.left_fade);
-    assert_eq!(line.right_current, source.right_current);
-    assert_eq!(line.right_previous, source.right_previous);
-    assert!(matches!(restored.slots[1], ModuleFxRuntimeSlot::Empty));
 }
 
 #[test]
@@ -1967,39 +1941,6 @@ fn pads_root_projects_effect_modules_outside_the_chord_drill() {
 
     assert!(root.iter().any(|item| item.id == "pad.slot1.amount"));
     assert!(!progression.iter().any(|item| item.id == "pad.slot1.amount"));
-}
-
-#[test]
-fn song_code_round_trips_reverb_tail_and_compressor_envelope() {
-    let mut reverb = Freeverb::new(SAMPLE_RATE, 0.72, 0.45, 1.0);
-    reverb.process(0.5, -0.25);
-    let source = reverb.state();
-    let runtime = ModuleFxRuntimeState {
-        slots: vec![
-            ModuleFxRuntimeSlot::Reverb(source.clone()),
-            ModuleFxRuntimeSlot::Compression { envelope: 0.42 },
-        ],
-    };
-    let song = SongState {
-        controls: FluidControls::default(),
-        automation: AutomationState::default(),
-        tonal_sequence: None,
-        module_fx_runtime: Some(runtime),
-    };
-
-    let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-    let restored = decoded.module_fx_runtime.expect("module fx runtime record");
-    let ModuleFxRuntimeSlot::Reverb(restored_reverb) = &restored.slots[0] else {
-        panic!("first slot should be reverb");
-    };
-    assert_eq!(
-        restored_reverb.combs_left[0].buffer,
-        source.combs_left[0].buffer
-    );
-    assert!(matches!(
-        restored.slots[1],
-        ModuleFxRuntimeSlot::Compression { envelope } if (envelope - 0.42).abs() < f32::EPSILON
-    ));
 }
 
 #[test]
@@ -2205,7 +2146,6 @@ fn song_code_round_trips_lfo_automation_record() {
         controls,
         automation,
         tonal_sequence: None,
-        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4050,7 +3990,6 @@ fn song_code_round_trips_steps_shape() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
-        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4279,7 +4218,6 @@ fn song_code_round_trips_non_sine_lfo_shape() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
-        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4308,7 +4246,6 @@ fn song_code_round_trips_envelope_routes() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
-        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4393,7 +4330,6 @@ fn song_code_v5_round_trips_seed_macro_envelope_and_field_macro() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
-        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4442,7 +4378,6 @@ fn song_code_does_not_serialize_neutral_macro_routes() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
-        module_fx_runtime: None,
     };
 
     let code = song::encode_song_code(&song).unwrap();

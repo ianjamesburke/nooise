@@ -22,8 +22,6 @@ use ratatui::{
 use crate::audio::{self, StereoEngine};
 use crate::fx::lfo::DriftingLfo;
 use crate::fx::panner::StereoPanner;
-#[cfg(test)]
-use crate::fx::reverb::Freeverb;
 use crate::synth::envelope::Adsr;
 use crate::synth::noise::WhiteNoise;
 use crate::synth::oscillator::SineOscillator;

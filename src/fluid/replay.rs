@@ -648,7 +648,6 @@ impl ReplayHarness {
             LiveSession::new(LiveSessionSnapshot::from_controls(FluidControls::default()));
         // Replay has no audio callback, so acknowledge capture requests with
         // a deterministic empty bank newer than every request in the test.
-        session.publish_module_fx_capture(u64::MAX, ModuleFxRuntimeState::default());
         let executor = EffectExecutor::new(
             session,
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),

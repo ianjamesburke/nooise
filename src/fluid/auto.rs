@@ -213,7 +213,6 @@ impl MorphState {
             controls: current,
             automation: current_automation,
             tonal_sequence: None,
-            module_fx_runtime: None,
         });
         endpoints.extend(states[nearest..].iter().cloned());
         endpoints.extend(states[..nearest].iter().cloned());
@@ -445,7 +444,6 @@ mod tests {
             controls,
             automation: AutomationState::default(),
             tonal_sequence: None,
-            module_fx_runtime: None,
         }
     }
 
@@ -745,13 +743,11 @@ mod tests {
                     controls: from_state,
                     automation: from_auto,
                     tonal_sequence: None,
-                    module_fx_runtime: None,
                 },
                 SongState {
                     controls: to_state,
                     automation: to_auto,
                     tonal_sequence: None,
-                    module_fx_runtime: None,
                 },
             ],
             6,
@@ -787,13 +783,11 @@ mod tests {
                     controls: FluidControls::default(),
                     automation: from_auto,
                     tonal_sequence: None,
-                    module_fx_runtime: None,
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: to_auto,
                     tonal_sequence: None,
-                    module_fx_runtime: None,
                 },
             ],
             6,
@@ -822,19 +816,16 @@ mod tests {
                     controls: FluidControls::default(),
                     automation: routed,
                     tonal_sequence: None,
-                    module_fx_runtime: None,
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: unrouted.clone(),
                     tonal_sequence: None,
-                    module_fx_runtime: None,
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: unrouted,
                     tonal_sequence: None,
-                    module_fx_runtime: None,
                 },
             ],
             6,

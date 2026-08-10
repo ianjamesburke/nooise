@@ -5,7 +5,6 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-use super::session::{ModuleFxRuntimeSlot, ModuleFxRuntimeState};
 use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
@@ -15,8 +14,6 @@ use super::{
     MIN_LFO_CYCLE_BEATS, MacroRoute, ModuleSlot, Step, TIME_TAPER, Tab, Taper, all_specs,
     chain_amount_slot, preset_slot, spec_by_id, tab_specs,
 };
-use crate::fx::delay::StereoDelayState;
-use crate::fx::reverb::{AllPassState, CombState, FreeverbState};
 
 const MAGIC: &[u8; 4] = b"NOOI";
 /// Control ids are interned as `SONG_ID_TABLE` indexes and continuous values
@@ -31,7 +28,6 @@ const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const TONAL_SEQUENCE_RECORD: u8 = 2;
-const MODULE_FX_RUNTIME_RECORD: u8 = 3;
 const LFO_SHAPE_SINE: u8 = 0;
 const LFO_SHAPE_TRIANGLE: u8 = 1;
 const LFO_SHAPE_RAMP_UP: u8 = 2;
@@ -55,7 +51,6 @@ pub(crate) struct SongState {
     pub(crate) controls: FluidControls,
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: Option<TonalSequenceState>,
-    pub(crate) module_fx_runtime: Option<ModuleFxRuntimeState>,
 }
 
 impl SongState {
@@ -64,7 +59,6 @@ impl SongState {
             controls,
             automation: AutomationState::default(),
             tonal_sequence: None,
-            module_fx_runtime: None,
         }
     }
 }
@@ -130,12 +124,6 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
         write_tonal_sequence(sequence, &mut tonal_sequence)?;
         write_record(TONAL_SEQUENCE_RECORD, &tonal_sequence, &mut bytes)?;
     }
-    if let Some(module_fx) = &song.module_fx_runtime {
-        let mut module_fx_record = Vec::new();
-        write_module_fx_runtime(module_fx, &mut module_fx_record)?;
-        write_record(MODULE_FX_RUNTIME_RECORD, &module_fx_record, &mut bytes)?;
-    }
-
     Ok(format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
@@ -168,9 +156,6 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
             AUTOMATION_RECORD => read_automation(payload, &song.controls, &mut song.automation)?,
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
-            MODULE_FX_RUNTIME_RECORD => {
-                song.module_fx_runtime = Some(read_module_fx_runtime(payload)?)
-            }
             // Records are length-prefixed, so an unknown one is skipped
             // without losing alignment. This stays permissive on purpose: it
             // is how a code from a newer nooise carrying a record this build
@@ -182,230 +167,6 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
     }
 
     Ok(song)
-}
-
-fn write_module_fx_runtime(
-    state: &ModuleFxRuntimeState,
-    out: &mut Vec<u8>,
-) -> Result<(), SongCodeError> {
-    let count = u8::try_from(state.slots.len()).map_err(|_| SongCodeError::TooLarge)?;
-    out.push(count);
-    for slot in &state.slots {
-        match slot {
-            ModuleFxRuntimeSlot::Empty => out.push(0),
-            ModuleFxRuntimeSlot::Delay(line) => {
-                let len = u32::try_from(line.left.len()).map_err(|_| SongCodeError::TooLarge)?;
-                if line.left.len() != line.right.len() {
-                    return Err(SongCodeError::Truncated);
-                }
-                let write = u32::try_from(line.write).map_err(|_| SongCodeError::TooLarge)?;
-                out.push(5);
-                out.extend_from_slice(&len.to_le_bytes());
-                out.extend_from_slice(&write.to_le_bytes());
-                out.extend_from_slice(&line.left_current.unwrap_or(-1.0).to_le_bytes());
-                out.extend_from_slice(&line.left_previous.unwrap_or(-1.0).to_le_bytes());
-                out.extend_from_slice(&line.left_fade.to_le_bytes());
-                out.extend_from_slice(&line.right_current.unwrap_or(-1.0).to_le_bytes());
-                out.extend_from_slice(&line.right_previous.unwrap_or(-1.0).to_le_bytes());
-                out.extend_from_slice(&line.right_fade.to_le_bytes());
-                write_samples(&line.left, out)?;
-                write_samples(&line.right, out)?;
-            }
-            ModuleFxRuntimeSlot::Reverb(reverb) => {
-                out.push(2);
-                write_reverb_state(reverb, out)?;
-            }
-            ModuleFxRuntimeSlot::Compression { envelope } => {
-                out.push(3);
-                out.extend_from_slice(&envelope.to_le_bytes());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn read_module_fx_runtime(bytes: &[u8]) -> Result<ModuleFxRuntimeState, SongCodeError> {
-    let mut reader = Reader::new(bytes);
-    let count = reader.u8()? as usize;
-    let mut slots = Vec::with_capacity(count);
-    for _ in 0..count {
-        match reader.u8()? {
-            0 => slots.push(ModuleFxRuntimeSlot::Empty),
-            1 => {
-                let len = reader.u32()? as usize;
-                let write = reader.u32()? as usize;
-                let left = read_samples(&mut reader, len)?;
-                let right = read_samples(&mut reader, len)?;
-                slots.push(ModuleFxRuntimeSlot::Delay(StereoDelayState {
-                    left,
-                    right,
-                    write,
-                    left_current: None,
-                    left_previous: None,
-                    left_fade: 1.0,
-                    right_current: None,
-                    right_previous: None,
-                    right_fade: 1.0,
-                }));
-            }
-            2 => slots.push(ModuleFxRuntimeSlot::Reverb(read_reverb_state(&mut reader)?)),
-            3 => slots.push(ModuleFxRuntimeSlot::Compression {
-                envelope: reader.f32()?.max(0.0),
-            }),
-            4 => {
-                // Legacy format: single chased position per channel, no
-                // in-flight crossfade. Restore settled, with no fade pending.
-                let len = reader.u32()? as usize;
-                let write = reader.u32()? as usize;
-                let left_current = reader.f32()?;
-                let right_current = reader.f32()?;
-                let left = read_samples(&mut reader, len)?;
-                let right = read_samples(&mut reader, len)?;
-                slots.push(ModuleFxRuntimeSlot::Delay(StereoDelayState {
-                    left,
-                    right,
-                    write,
-                    left_current: (left_current >= 0.0).then_some(left_current),
-                    left_previous: None,
-                    left_fade: 1.0,
-                    right_current: (right_current >= 0.0).then_some(right_current),
-                    right_previous: None,
-                    right_fade: 1.0,
-                }));
-            }
-            5 => {
-                let len = reader.u32()? as usize;
-                let write = reader.u32()? as usize;
-                let left_current = reader.f32()?;
-                let left_previous = reader.f32()?;
-                let left_fade = reader.f32()?;
-                let right_current = reader.f32()?;
-                let right_previous = reader.f32()?;
-                let right_fade = reader.f32()?;
-                let left = read_samples(&mut reader, len)?;
-                let right = read_samples(&mut reader, len)?;
-                slots.push(ModuleFxRuntimeSlot::Delay(StereoDelayState {
-                    left,
-                    right,
-                    write,
-                    left_current: (left_current >= 0.0).then_some(left_current),
-                    left_previous: (left_previous >= 0.0).then_some(left_previous),
-                    left_fade,
-                    right_current: (right_current >= 0.0).then_some(right_current),
-                    right_previous: (right_previous >= 0.0).then_some(right_previous),
-                    right_fade,
-                }));
-            }
-            _ => return Err(SongCodeError::Truncated),
-        }
-    }
-    if !reader.is_empty() {
-        return Err(SongCodeError::Truncated);
-    }
-    Ok(ModuleFxRuntimeState { slots })
-}
-
-fn write_samples(samples: &[f32], out: &mut Vec<u8>) -> Result<(), SongCodeError> {
-    let _ = u32::try_from(samples.len()).map_err(|_| SongCodeError::TooLarge)?;
-    for sample in samples {
-        out.extend_from_slice(&sample.to_le_bytes());
-    }
-    Ok(())
-}
-
-fn read_samples(reader: &mut Reader<'_>, len: usize) -> Result<Vec<f32>, SongCodeError> {
-    (0..len).map(|_| reader.f32()).collect()
-}
-
-fn write_reverb_state(state: &FreeverbState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
-    out.extend_from_slice(&state.wet.to_le_bytes());
-    out.push(u8::from(state.active));
-    write_combs(&state.combs_left, out)?;
-    write_combs(&state.combs_right, out)?;
-    write_allpasses(&state.allpasses_left, out)?;
-    write_allpasses(&state.allpasses_right, out)
-}
-
-fn write_combs(states: &[CombState], out: &mut Vec<u8>) -> Result<(), SongCodeError> {
-    out.push(u8::try_from(states.len()).map_err(|_| SongCodeError::TooLarge)?);
-    for state in states {
-        out.extend_from_slice(
-            &u32::try_from(state.buffer.len())
-                .map_err(|_| SongCodeError::TooLarge)?
-                .to_le_bytes(),
-        );
-        out.extend_from_slice(
-            &u32::try_from(state.index)
-                .map_err(|_| SongCodeError::TooLarge)?
-                .to_le_bytes(),
-        );
-        for value in [state.feedback, state.filter_store, state.damp1, state.damp2] {
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-        write_samples(&state.buffer, out)?;
-    }
-    Ok(())
-}
-
-fn write_allpasses(states: &[AllPassState], out: &mut Vec<u8>) -> Result<(), SongCodeError> {
-    out.push(u8::try_from(states.len()).map_err(|_| SongCodeError::TooLarge)?);
-    for state in states {
-        out.extend_from_slice(
-            &u32::try_from(state.buffer.len())
-                .map_err(|_| SongCodeError::TooLarge)?
-                .to_le_bytes(),
-        );
-        out.extend_from_slice(
-            &u32::try_from(state.index)
-                .map_err(|_| SongCodeError::TooLarge)?
-                .to_le_bytes(),
-        );
-        out.extend_from_slice(&state.feedback.to_le_bytes());
-        write_samples(&state.buffer, out)?;
-    }
-    Ok(())
-}
-
-fn read_reverb_state(reader: &mut Reader<'_>) -> Result<FreeverbState, SongCodeError> {
-    Ok(FreeverbState {
-        wet: reader.f32()?,
-        active: reader.u8()? != 0,
-        combs_left: read_combs(reader)?,
-        combs_right: read_combs(reader)?,
-        allpasses_left: read_allpasses(reader)?,
-        allpasses_right: read_allpasses(reader)?,
-    })
-}
-
-fn read_combs(reader: &mut Reader<'_>) -> Result<Vec<CombState>, SongCodeError> {
-    let count = reader.u8()? as usize;
-    (0..count)
-        .map(|_| {
-            let len = reader.u32()? as usize;
-            Ok(CombState {
-                index: reader.u32()? as usize,
-                feedback: reader.f32()?,
-                filter_store: reader.f32()?,
-                damp1: reader.f32()?,
-                damp2: reader.f32()?,
-                buffer: read_samples(reader, len)?,
-            })
-        })
-        .collect()
-}
-
-fn read_allpasses(reader: &mut Reader<'_>) -> Result<Vec<AllPassState>, SongCodeError> {
-    let count = reader.u8()? as usize;
-    (0..count)
-        .map(|_| {
-            let len = reader.u32()? as usize;
-            Ok(AllPassState {
-                index: reader.u32()? as usize,
-                feedback: reader.f32()?,
-                buffer: read_samples(reader, len)?,
-            })
-        })
-        .collect()
 }
 
 fn write_tonal_sequence(
