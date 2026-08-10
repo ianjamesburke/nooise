@@ -697,71 +697,10 @@ macro_rules! beat_offset {
     };
 }
 
-const MASTER_BASE_CONTROLS: [ControlSpec; 11] = [
-    gain_pct!("pad.level", "Pads Vol", pad.level),
-    gain_pct!("perc.level", "Perc Vol", perc.level),
-    gain_pct!("kick.level", "Kick Vol", kick.level),
-    gain_pct!("tonal.level", "Tonal Vol", tonal.level),
-    gain_pct!("clap.level", "Clap Vol", clap.level),
-    gain_pct!("bass.level", "Bass Vol", bass.level),
-    gain_pct!("arp.gain", "Arp Vol", arp.gain),
-    ControlSpec::new(
-        "master.bpm",
-        "BPM",
-        ControlKind::Timing,
-        MASTER_BPM_MIN,
-        MASTER_BPM_MAX,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.master.bpm,
-        |c, v| c.master.bpm = v,
-        |c| format!("{:.0} bpm", c.master.bpm),
-    ),
-    gain_pct!("master.level", "Master Level", master.level),
-    ControlSpec::new(
-        "master.tone",
-        "Tone",
-        ControlKind::Continuous,
-        -1.0,
-        1.0,
-        Step::Linear(0.05),
-        Entry::Free,
-        |c| c.master.tone,
-        |c, v| c.master.tone = v,
-        |c| {
-            if c.master.tone < -0.05 {
-                format!("bass {:.0}%", -c.master.tone * 100.0)
-            } else if c.master.tone > 0.05 {
-                format!("treble {:.0}%", c.master.tone * 100.0)
-            } else {
-                "flat".to_string()
-            }
-        },
-    ),
-    ControlSpec::new(
-        "master.tune",
-        "Tune",
-        ControlKind::Discrete,
-        -12.0,
-        12.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.master.tune,
-        |c, v| c.master.tune = v,
-        |c| {
-            if c.master.tune.abs() < 0.05 {
-                "0 st".to_string()
-            } else {
-                format!("{:+.0} st", c.master.tune)
-            }
-        },
-    )
-    .reset_at(0.0),
-];
-
-/// Three rows per module slot: which module is loaded (a value, never part of
+/// One module slot's rows: which module is loaded (a value, never part of
 /// the id) plus the family-shaped params. Generalises `chord_slot_rows!`.
 /// Slot numbers are 1-based in ids and labels, 0-based into the array.
+/// Reached only through `layer_controls!`, which appends every slot.
 macro_rules! module_slot_rows {
     ($layer:ident, $prefix:literal, $slot:literal) => {
         [
@@ -892,186 +831,9 @@ macro_rules! module_slot_rows {
     };
 }
 
-const MASTER_MODULE_CONTROLS: [ControlSpec; MODULE_SLOTS * 8] = [
-    module_slot_rows!(master, "master", 1)[0],
-    module_slot_rows!(master, "master", 1)[1],
-    module_slot_rows!(master, "master", 1)[2],
-    module_slot_rows!(master, "master", 1)[3],
-    module_slot_rows!(master, "master", 1)[4],
-    module_slot_rows!(master, "master", 1)[5],
-    module_slot_rows!(master, "master", 1)[6],
-    module_slot_rows!(master, "master", 1)[7],
-    module_slot_rows!(master, "master", 2)[0],
-    module_slot_rows!(master, "master", 2)[1],
-    module_slot_rows!(master, "master", 2)[2],
-    module_slot_rows!(master, "master", 2)[3],
-    module_slot_rows!(master, "master", 2)[4],
-    module_slot_rows!(master, "master", 2)[5],
-    module_slot_rows!(master, "master", 2)[6],
-    module_slot_rows!(master, "master", 2)[7],
-    module_slot_rows!(master, "master", 3)[0],
-    module_slot_rows!(master, "master", 3)[1],
-    module_slot_rows!(master, "master", 3)[2],
-    module_slot_rows!(master, "master", 3)[3],
-    module_slot_rows!(master, "master", 3)[4],
-    module_slot_rows!(master, "master", 3)[5],
-    module_slot_rows!(master, "master", 3)[6],
-    module_slot_rows!(master, "master", 3)[7],
-    module_slot_rows!(master, "master", 4)[0],
-    module_slot_rows!(master, "master", 4)[1],
-    module_slot_rows!(master, "master", 4)[2],
-    module_slot_rows!(master, "master", 4)[3],
-    module_slot_rows!(master, "master", 4)[4],
-    module_slot_rows!(master, "master", 4)[5],
-    module_slot_rows!(master, "master", 4)[6],
-    module_slot_rows!(master, "master", 4)[7],
-    module_slot_rows!(master, "master", 5)[0],
-    module_slot_rows!(master, "master", 5)[1],
-    module_slot_rows!(master, "master", 5)[2],
-    module_slot_rows!(master, "master", 5)[3],
-    module_slot_rows!(master, "master", 5)[4],
-    module_slot_rows!(master, "master", 5)[5],
-    module_slot_rows!(master, "master", 5)[6],
-    module_slot_rows!(master, "master", 5)[7],
-    module_slot_rows!(master, "master", 6)[0],
-    module_slot_rows!(master, "master", 6)[1],
-    module_slot_rows!(master, "master", 6)[2],
-    module_slot_rows!(master, "master", 6)[3],
-    module_slot_rows!(master, "master", 6)[4],
-    module_slot_rows!(master, "master", 6)[5],
-    module_slot_rows!(master, "master", 6)[6],
-    module_slot_rows!(master, "master", 6)[7],
-    module_slot_rows!(master, "master", 7)[0],
-    module_slot_rows!(master, "master", 7)[1],
-    module_slot_rows!(master, "master", 7)[2],
-    module_slot_rows!(master, "master", 7)[3],
-    module_slot_rows!(master, "master", 7)[4],
-    module_slot_rows!(master, "master", 7)[5],
-    module_slot_rows!(master, "master", 7)[6],
-    module_slot_rows!(master, "master", 7)[7],
-    module_slot_rows!(master, "master", 8)[0],
-    module_slot_rows!(master, "master", 8)[1],
-    module_slot_rows!(master, "master", 8)[2],
-    module_slot_rows!(master, "master", 8)[3],
-    module_slot_rows!(master, "master", 8)[4],
-    module_slot_rows!(master, "master", 8)[5],
-    module_slot_rows!(master, "master", 8)[6],
-    module_slot_rows!(master, "master", 8)[7],
-];
-
-const fn master_controls()
--> [ControlSpec; MASTER_BASE_CONTROLS.len() + MASTER_MODULE_CONTROLS.len()] {
-    let mut controls =
-        [MASTER_BASE_CONTROLS[0]; MASTER_BASE_CONTROLS.len() + MASTER_MODULE_CONTROLS.len()];
-    let mut index = 0;
-    while index < MASTER_BASE_CONTROLS.len() {
-        controls[index] = MASTER_BASE_CONTROLS[index];
-        index += 1;
-    }
-    let mut module_index = 0;
-    while module_index < MASTER_MODULE_CONTROLS.len() {
-        controls[index + module_index] = MASTER_MODULE_CONTROLS[module_index];
-        module_index += 1;
-    }
-    controls
-}
-
-pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &master_controls();
-
-pub(crate) const PERC_CONTROLS: &[ControlSpec] = &[
-    gain_pct!("perc.level", "Level", perc.level),
-    gain_pct!("perc.filter", "Filter", 0.5, 1.0, perc.filter),
-    time_ms!("perc.decay_ms", "Decay", 20.0, 2000.0, 1.0, perc.decay_ms),
-    ControlSpec::new(
-        "perc.interval_beats",
-        "Interval",
-        ControlKind::Timing,
-        0.125,
-        4.25,
-        Step::BeatGrid,
-        Entry::Snap,
-        |c| c.perc.interval_beats,
-        |c, v| c.perc.interval_beats = v,
-        |c| {
-            if c.perc.interval_beats >= 4.25 {
-                "Continuous".to_string()
-            } else {
-                beats2(c.perc.interval_beats)
-            }
-        },
-    )
-    .lfo_snap(LfoSnap::PowerOfTwo)
-    .in_beats(),
-    beat_offset!("perc.offset_beats", "Offset", 4.0, perc.offset_beats),
-    module_slot_rows!(perc, "perc", 1)[0],
-    module_slot_rows!(perc, "perc", 1)[1],
-    module_slot_rows!(perc, "perc", 1)[2],
-    module_slot_rows!(perc, "perc", 1)[3],
-    module_slot_rows!(perc, "perc", 1)[4],
-    module_slot_rows!(perc, "perc", 1)[5],
-    module_slot_rows!(perc, "perc", 1)[6],
-    module_slot_rows!(perc, "perc", 1)[7],
-    module_slot_rows!(perc, "perc", 2)[0],
-    module_slot_rows!(perc, "perc", 2)[1],
-    module_slot_rows!(perc, "perc", 2)[2],
-    module_slot_rows!(perc, "perc", 2)[3],
-    module_slot_rows!(perc, "perc", 2)[4],
-    module_slot_rows!(perc, "perc", 2)[5],
-    module_slot_rows!(perc, "perc", 2)[6],
-    module_slot_rows!(perc, "perc", 2)[7],
-    module_slot_rows!(perc, "perc", 3)[0],
-    module_slot_rows!(perc, "perc", 3)[1],
-    module_slot_rows!(perc, "perc", 3)[2],
-    module_slot_rows!(perc, "perc", 3)[3],
-    module_slot_rows!(perc, "perc", 3)[4],
-    module_slot_rows!(perc, "perc", 3)[5],
-    module_slot_rows!(perc, "perc", 3)[6],
-    module_slot_rows!(perc, "perc", 3)[7],
-    module_slot_rows!(perc, "perc", 4)[0],
-    module_slot_rows!(perc, "perc", 4)[1],
-    module_slot_rows!(perc, "perc", 4)[2],
-    module_slot_rows!(perc, "perc", 4)[3],
-    module_slot_rows!(perc, "perc", 4)[4],
-    module_slot_rows!(perc, "perc", 4)[5],
-    module_slot_rows!(perc, "perc", 4)[6],
-    module_slot_rows!(perc, "perc", 4)[7],
-    module_slot_rows!(perc, "perc", 5)[0],
-    module_slot_rows!(perc, "perc", 5)[1],
-    module_slot_rows!(perc, "perc", 5)[2],
-    module_slot_rows!(perc, "perc", 5)[3],
-    module_slot_rows!(perc, "perc", 5)[4],
-    module_slot_rows!(perc, "perc", 5)[5],
-    module_slot_rows!(perc, "perc", 5)[6],
-    module_slot_rows!(perc, "perc", 5)[7],
-    module_slot_rows!(perc, "perc", 6)[0],
-    module_slot_rows!(perc, "perc", 6)[1],
-    module_slot_rows!(perc, "perc", 6)[2],
-    module_slot_rows!(perc, "perc", 6)[3],
-    module_slot_rows!(perc, "perc", 6)[4],
-    module_slot_rows!(perc, "perc", 6)[5],
-    module_slot_rows!(perc, "perc", 6)[6],
-    module_slot_rows!(perc, "perc", 6)[7],
-    module_slot_rows!(perc, "perc", 7)[0],
-    module_slot_rows!(perc, "perc", 7)[1],
-    module_slot_rows!(perc, "perc", 7)[2],
-    module_slot_rows!(perc, "perc", 7)[3],
-    module_slot_rows!(perc, "perc", 7)[4],
-    module_slot_rows!(perc, "perc", 7)[5],
-    module_slot_rows!(perc, "perc", 7)[6],
-    module_slot_rows!(perc, "perc", 7)[7],
-    module_slot_rows!(perc, "perc", 8)[0],
-    module_slot_rows!(perc, "perc", 8)[1],
-    module_slot_rows!(perc, "perc", 8)[2],
-    module_slot_rows!(perc, "perc", 8)[3],
-    module_slot_rows!(perc, "perc", 8)[4],
-    module_slot_rows!(perc, "perc", 8)[5],
-    module_slot_rows!(perc, "perc", 8)[6],
-    module_slot_rows!(perc, "perc", 8)[7],
-];
-
 /// One chord slot's four fields as `ControlSpec` rows (Root/Accidental/
-/// Extension/Inversion), expanded inline into `CHORDS_CONTROLS`. Slot
-/// numbers are 1-based in ids/labels, 0-based into `chord_slots`.
+/// Extension/Inversion), appended to `CHORDS_CONTROLS` by `layer_controls!`.
+/// Slot numbers are 1-based in ids/labels, 0-based into `chord_slots`.
 macro_rules! chord_slot_rows {
     ($slot:literal) => {
         [
@@ -1158,9 +920,151 @@ macro_rules! chord_slot_rows {
     };
 }
 
+/// One layer's whole `ControlSpec` table: its hand-written base rows, then
+/// the pad's eight chord slots (Pads only), then the eight module slots.
+/// The tail rows are identical for every layer, so each table names only what
+/// is specific to it.
+macro_rules! layer_controls {
+    ($layer:ident, $prefix:literal, [$($base:expr),* $(,)?]) => {
+        layer_controls!(@rows $layer, $prefix, [$($base),*], [], [1, 2, 3, 4, 5, 6, 7, 8])
+    };
+    (chords $layer:ident, $prefix:literal, [$($base:expr),* $(,)?]) => {
+        layer_controls!(
+            @rows $layer,
+            $prefix,
+            [$($base),*],
+            [1, 2, 3, 4, 5, 6, 7, 8],
+            [1, 2, 3, 4, 5, 6, 7, 8]
+        )
+    };
+    (@rows $layer:ident, $prefix:literal, [$($base:expr),*], [$($chord:literal),*], [$($slot:literal),*]) => {
+        [
+            $($base,)*
+            $(
+                chord_slot_rows!($chord)[0],
+                chord_slot_rows!($chord)[1],
+                chord_slot_rows!($chord)[2],
+                chord_slot_rows!($chord)[3],
+                chord_slot_rows!($chord)[4],
+            )*
+            $(
+                module_slot_rows!($layer, $prefix, $slot)[0],
+                module_slot_rows!($layer, $prefix, $slot)[1],
+                module_slot_rows!($layer, $prefix, $slot)[2],
+                module_slot_rows!($layer, $prefix, $slot)[3],
+                module_slot_rows!($layer, $prefix, $slot)[4],
+                module_slot_rows!($layer, $prefix, $slot)[5],
+                module_slot_rows!($layer, $prefix, $slot)[6],
+                module_slot_rows!($layer, $prefix, $slot)[7],
+            )*
+        ]
+    };
+}
+
+/// `layer_controls!` enumerates its slots literally.
+const _: () = assert!(MODULE_SLOTS == 8);
+const _: () = assert!(CHORD_SLOT_COUNT == 8);
+
+pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
+    master,
+    "master",
+    [
+        gain_pct!("pad.level", "Pads Vol", pad.level),
+        gain_pct!("perc.level", "Perc Vol", perc.level),
+        gain_pct!("kick.level", "Kick Vol", kick.level),
+        gain_pct!("tonal.level", "Tonal Vol", tonal.level),
+        gain_pct!("clap.level", "Clap Vol", clap.level),
+        gain_pct!("bass.level", "Bass Vol", bass.level),
+        gain_pct!("arp.gain", "Arp Vol", arp.gain),
+        ControlSpec::new(
+            "master.bpm",
+            "BPM",
+            ControlKind::Timing,
+            MASTER_BPM_MIN,
+            MASTER_BPM_MAX,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.master.bpm,
+            |c, v| c.master.bpm = v,
+            |c| format!("{:.0} bpm", c.master.bpm),
+        ),
+        gain_pct!("master.level", "Master Level", master.level),
+        ControlSpec::new(
+            "master.tone",
+            "Tone",
+            ControlKind::Continuous,
+            -1.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Free,
+            |c| c.master.tone,
+            |c, v| c.master.tone = v,
+            |c| {
+                if c.master.tone < -0.05 {
+                    format!("bass {:.0}%", -c.master.tone * 100.0)
+                } else if c.master.tone > 0.05 {
+                    format!("treble {:.0}%", c.master.tone * 100.0)
+                } else {
+                    "flat".to_string()
+                }
+            },
+        ),
+        ControlSpec::new(
+            "master.tune",
+            "Tune",
+            ControlKind::Discrete,
+            -12.0,
+            12.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.master.tune,
+            |c, v| c.master.tune = v,
+            |c| {
+                if c.master.tune.abs() < 0.05 {
+                    "0 st".to_string()
+                } else {
+                    format!("{:+.0} st", c.master.tune)
+                }
+            },
+        )
+        .reset_at(0.0),
+    ]
+);
+
+pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
+    perc,
+    "perc",
+    [
+        gain_pct!("perc.level", "Level", perc.level),
+        gain_pct!("perc.filter", "Filter", 0.5, 1.0, perc.filter),
+        time_ms!("perc.decay_ms", "Decay", 20.0, 2000.0, 1.0, perc.decay_ms),
+        ControlSpec::new(
+            "perc.interval_beats",
+            "Interval",
+            ControlKind::Timing,
+            0.125,
+            4.25,
+            Step::BeatGrid,
+            Entry::Snap,
+            |c| c.perc.interval_beats,
+            |c, v| c.perc.interval_beats = v,
+            |c| {
+                if c.perc.interval_beats >= 4.25 {
+                    "Continuous".to_string()
+                } else {
+                    beats2(c.perc.interval_beats)
+                }
+            },
+        )
+        .lfo_snap(LfoSnap::PowerOfTwo)
+        .in_beats(),
+        beat_offset!("perc.offset_beats", "Offset", 4.0, perc.offset_beats),
+    ]
+);
+
 const CHORD_BASE_CONTROL_COUNT: usize = 10;
 
-pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
+pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, "pad", [
     gain_pct!("pad.level", "Level", pad.level),
     time_secs!(
         "pad.attack_time",
@@ -1239,255 +1143,91 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &[
     gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
     gain_pct!("pad.detune", "Detune", pad.detune),
     gain_pct!("pad.octave_mix", "Octave Mix", pad.octave_mix),
-    chord_slot_rows!(1)[0],
-    chord_slot_rows!(1)[1],
-    chord_slot_rows!(1)[2],
-    chord_slot_rows!(1)[3],
-    chord_slot_rows!(1)[4],
-    chord_slot_rows!(2)[0],
-    chord_slot_rows!(2)[1],
-    chord_slot_rows!(2)[2],
-    chord_slot_rows!(2)[3],
-    chord_slot_rows!(2)[4],
-    chord_slot_rows!(3)[0],
-    chord_slot_rows!(3)[1],
-    chord_slot_rows!(3)[2],
-    chord_slot_rows!(3)[3],
-    chord_slot_rows!(3)[4],
-    chord_slot_rows!(4)[0],
-    chord_slot_rows!(4)[1],
-    chord_slot_rows!(4)[2],
-    chord_slot_rows!(4)[3],
-    chord_slot_rows!(4)[4],
-    chord_slot_rows!(5)[0],
-    chord_slot_rows!(5)[1],
-    chord_slot_rows!(5)[2],
-    chord_slot_rows!(5)[3],
-    chord_slot_rows!(5)[4],
-    chord_slot_rows!(6)[0],
-    chord_slot_rows!(6)[1],
-    chord_slot_rows!(6)[2],
-    chord_slot_rows!(6)[3],
-    chord_slot_rows!(6)[4],
-    chord_slot_rows!(7)[0],
-    chord_slot_rows!(7)[1],
-    chord_slot_rows!(7)[2],
-    chord_slot_rows!(7)[3],
-    chord_slot_rows!(7)[4],
-    chord_slot_rows!(8)[0],
-    chord_slot_rows!(8)[1],
-    chord_slot_rows!(8)[2],
-    chord_slot_rows!(8)[3],
-    chord_slot_rows!(8)[4],
-    module_slot_rows!(pad, "pad", 1)[0],
-    module_slot_rows!(pad, "pad", 1)[1],
-    module_slot_rows!(pad, "pad", 1)[2],
-    module_slot_rows!(pad, "pad", 1)[3],
-    module_slot_rows!(pad, "pad", 1)[4],
-    module_slot_rows!(pad, "pad", 1)[5],
-    module_slot_rows!(pad, "pad", 1)[6],
-    module_slot_rows!(pad, "pad", 1)[7],
-    module_slot_rows!(pad, "pad", 2)[0],
-    module_slot_rows!(pad, "pad", 2)[1],
-    module_slot_rows!(pad, "pad", 2)[2],
-    module_slot_rows!(pad, "pad", 2)[3],
-    module_slot_rows!(pad, "pad", 2)[4],
-    module_slot_rows!(pad, "pad", 2)[5],
-    module_slot_rows!(pad, "pad", 2)[6],
-    module_slot_rows!(pad, "pad", 2)[7],
-    module_slot_rows!(pad, "pad", 3)[0],
-    module_slot_rows!(pad, "pad", 3)[1],
-    module_slot_rows!(pad, "pad", 3)[2],
-    module_slot_rows!(pad, "pad", 3)[3],
-    module_slot_rows!(pad, "pad", 3)[4],
-    module_slot_rows!(pad, "pad", 3)[5],
-    module_slot_rows!(pad, "pad", 3)[6],
-    module_slot_rows!(pad, "pad", 3)[7],
-    module_slot_rows!(pad, "pad", 4)[0],
-    module_slot_rows!(pad, "pad", 4)[1],
-    module_slot_rows!(pad, "pad", 4)[2],
-    module_slot_rows!(pad, "pad", 4)[3],
-    module_slot_rows!(pad, "pad", 4)[4],
-    module_slot_rows!(pad, "pad", 4)[5],
-    module_slot_rows!(pad, "pad", 4)[6],
-    module_slot_rows!(pad, "pad", 4)[7],
-    module_slot_rows!(pad, "pad", 5)[0],
-    module_slot_rows!(pad, "pad", 5)[1],
-    module_slot_rows!(pad, "pad", 5)[2],
-    module_slot_rows!(pad, "pad", 5)[3],
-    module_slot_rows!(pad, "pad", 5)[4],
-    module_slot_rows!(pad, "pad", 5)[5],
-    module_slot_rows!(pad, "pad", 5)[6],
-    module_slot_rows!(pad, "pad", 5)[7],
-    module_slot_rows!(pad, "pad", 6)[0],
-    module_slot_rows!(pad, "pad", 6)[1],
-    module_slot_rows!(pad, "pad", 6)[2],
-    module_slot_rows!(pad, "pad", 6)[3],
-    module_slot_rows!(pad, "pad", 6)[4],
-    module_slot_rows!(pad, "pad", 6)[5],
-    module_slot_rows!(pad, "pad", 6)[6],
-    module_slot_rows!(pad, "pad", 6)[7],
-    module_slot_rows!(pad, "pad", 7)[0],
-    module_slot_rows!(pad, "pad", 7)[1],
-    module_slot_rows!(pad, "pad", 7)[2],
-    module_slot_rows!(pad, "pad", 7)[3],
-    module_slot_rows!(pad, "pad", 7)[4],
-    module_slot_rows!(pad, "pad", 7)[5],
-    module_slot_rows!(pad, "pad", 7)[6],
-    module_slot_rows!(pad, "pad", 7)[7],
-    module_slot_rows!(pad, "pad", 8)[0],
-    module_slot_rows!(pad, "pad", 8)[1],
-    module_slot_rows!(pad, "pad", 8)[2],
-    module_slot_rows!(pad, "pad", 8)[3],
-    module_slot_rows!(pad, "pad", 8)[4],
-    module_slot_rows!(pad, "pad", 8)[5],
-    module_slot_rows!(pad, "pad", 8)[6],
-    module_slot_rows!(pad, "pad", 8)[7],
-];
+]);
 
-pub(crate) const BASS_CONTROLS: &[ControlSpec] = &[
-    gain_pct!("bass.level", "Level", bass.level),
-    ControlSpec::new(
-        "bass.cutoff",
-        "Cutoff",
-        ControlKind::Continuous,
-        BASS_CUTOFF_MIN_HZ,
-        BASS_CUTOFF_MAX_HZ,
-        Step::Linear(100.0),
-        Entry::Free,
-        |c| c.bass.cutoff,
-        |c, v| c.bass.cutoff = v,
-        |c| format!("{:.0} Hz", c.bass.cutoff),
-    )
-    // Frequency is perceptually logarithmic: a Log2 taper spaces octaves
-    // evenly across the dial so the sweep is smooth from 80 Hz to fully open.
-    .taper(Taper::Log2)
-    .reset_at(BASS_CUTOFF_MAX_HZ),
-    time_secs!(
-        "bass.attack_time",
-        "Attack",
-        0.005,
-        1.0,
-        0.001,
-        bass.attack_time
-    ),
-    time_secs!(
-        "bass.decay_time",
-        "Decay",
-        0.005,
-        2.0,
-        0.001,
-        bass.decay_time
-    ),
-    ControlSpec::new(
-        "bass.type",
-        "Type",
-        ControlKind::Discrete,
-        0.0,
-        2.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.bass.voice_type,
-        |c, v| c.bass.voice_type = v,
-        |c| bass_type_label(c.bass.voice_type).to_string(),
-    ),
-    beat_interval!(
-        "bass.interval_beats",
-        "Interval",
-        0.125,
-        8.0,
-        bass.interval_beats
-    ),
-    beat_offset!("bass.offset_beats", "Offset", 4.0, bass.offset_beats),
-    ControlSpec::new(
-        "bass.rhythm",
-        "Rhythm",
-        ControlKind::Discrete,
-        0.0,
-        3.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.bass.rhythm,
-        |c, v| c.bass.rhythm = v,
-        |c| ["A", "B", "C", "D"][c.bass.rhythm.round() as usize % 4].to_string(),
-    ),
-    ControlSpec::new(
-        "bass.octave",
-        "Octave",
-        ControlKind::Discrete,
-        -3.0,
-        0.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.bass.octave,
-        |c, v| c.bass.octave = v,
-        |c| format!("{:.0}", c.bass.octave),
-    ),
-    module_slot_rows!(bass, "bass", 1)[0],
-    module_slot_rows!(bass, "bass", 1)[1],
-    module_slot_rows!(bass, "bass", 1)[2],
-    module_slot_rows!(bass, "bass", 1)[3],
-    module_slot_rows!(bass, "bass", 1)[4],
-    module_slot_rows!(bass, "bass", 1)[5],
-    module_slot_rows!(bass, "bass", 1)[6],
-    module_slot_rows!(bass, "bass", 1)[7],
-    module_slot_rows!(bass, "bass", 2)[0],
-    module_slot_rows!(bass, "bass", 2)[1],
-    module_slot_rows!(bass, "bass", 2)[2],
-    module_slot_rows!(bass, "bass", 2)[3],
-    module_slot_rows!(bass, "bass", 2)[4],
-    module_slot_rows!(bass, "bass", 2)[5],
-    module_slot_rows!(bass, "bass", 2)[6],
-    module_slot_rows!(bass, "bass", 2)[7],
-    module_slot_rows!(bass, "bass", 3)[0],
-    module_slot_rows!(bass, "bass", 3)[1],
-    module_slot_rows!(bass, "bass", 3)[2],
-    module_slot_rows!(bass, "bass", 3)[3],
-    module_slot_rows!(bass, "bass", 3)[4],
-    module_slot_rows!(bass, "bass", 3)[5],
-    module_slot_rows!(bass, "bass", 3)[6],
-    module_slot_rows!(bass, "bass", 3)[7],
-    module_slot_rows!(bass, "bass", 4)[0],
-    module_slot_rows!(bass, "bass", 4)[1],
-    module_slot_rows!(bass, "bass", 4)[2],
-    module_slot_rows!(bass, "bass", 4)[3],
-    module_slot_rows!(bass, "bass", 4)[4],
-    module_slot_rows!(bass, "bass", 4)[5],
-    module_slot_rows!(bass, "bass", 4)[6],
-    module_slot_rows!(bass, "bass", 4)[7],
-    module_slot_rows!(bass, "bass", 5)[0],
-    module_slot_rows!(bass, "bass", 5)[1],
-    module_slot_rows!(bass, "bass", 5)[2],
-    module_slot_rows!(bass, "bass", 5)[3],
-    module_slot_rows!(bass, "bass", 5)[4],
-    module_slot_rows!(bass, "bass", 5)[5],
-    module_slot_rows!(bass, "bass", 5)[6],
-    module_slot_rows!(bass, "bass", 5)[7],
-    module_slot_rows!(bass, "bass", 6)[0],
-    module_slot_rows!(bass, "bass", 6)[1],
-    module_slot_rows!(bass, "bass", 6)[2],
-    module_slot_rows!(bass, "bass", 6)[3],
-    module_slot_rows!(bass, "bass", 6)[4],
-    module_slot_rows!(bass, "bass", 6)[5],
-    module_slot_rows!(bass, "bass", 6)[6],
-    module_slot_rows!(bass, "bass", 6)[7],
-    module_slot_rows!(bass, "bass", 7)[0],
-    module_slot_rows!(bass, "bass", 7)[1],
-    module_slot_rows!(bass, "bass", 7)[2],
-    module_slot_rows!(bass, "bass", 7)[3],
-    module_slot_rows!(bass, "bass", 7)[4],
-    module_slot_rows!(bass, "bass", 7)[5],
-    module_slot_rows!(bass, "bass", 7)[6],
-    module_slot_rows!(bass, "bass", 7)[7],
-    module_slot_rows!(bass, "bass", 8)[0],
-    module_slot_rows!(bass, "bass", 8)[1],
-    module_slot_rows!(bass, "bass", 8)[2],
-    module_slot_rows!(bass, "bass", 8)[3],
-    module_slot_rows!(bass, "bass", 8)[4],
-    module_slot_rows!(bass, "bass", 8)[5],
-    module_slot_rows!(bass, "bass", 8)[6],
-    module_slot_rows!(bass, "bass", 8)[7],
-];
+pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
+    bass,
+    "bass",
+    [
+        gain_pct!("bass.level", "Level", bass.level),
+        ControlSpec::new(
+            "bass.cutoff",
+            "Cutoff",
+            ControlKind::Continuous,
+            BASS_CUTOFF_MIN_HZ,
+            BASS_CUTOFF_MAX_HZ,
+            Step::Linear(100.0),
+            Entry::Free,
+            |c| c.bass.cutoff,
+            |c, v| c.bass.cutoff = v,
+            |c| format!("{:.0} Hz", c.bass.cutoff),
+        )
+        // Frequency is perceptually logarithmic: a Log2 taper spaces octaves
+        // evenly across the dial so the sweep is smooth from 80 Hz to fully open.
+        .taper(Taper::Log2)
+        .reset_at(BASS_CUTOFF_MAX_HZ),
+        time_secs!(
+            "bass.attack_time",
+            "Attack",
+            0.005,
+            1.0,
+            0.001,
+            bass.attack_time
+        ),
+        time_secs!(
+            "bass.decay_time",
+            "Decay",
+            0.005,
+            2.0,
+            0.001,
+            bass.decay_time
+        ),
+        ControlSpec::new(
+            "bass.type",
+            "Type",
+            ControlKind::Discrete,
+            0.0,
+            2.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.bass.voice_type,
+            |c, v| c.bass.voice_type = v,
+            |c| bass_type_label(c.bass.voice_type).to_string(),
+        ),
+        beat_interval!(
+            "bass.interval_beats",
+            "Interval",
+            0.125,
+            8.0,
+            bass.interval_beats
+        ),
+        beat_offset!("bass.offset_beats", "Offset", 4.0, bass.offset_beats),
+        ControlSpec::new(
+            "bass.rhythm",
+            "Rhythm",
+            ControlKind::Discrete,
+            0.0,
+            3.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.bass.rhythm,
+            |c, v| c.bass.rhythm = v,
+            |c| ["A", "B", "C", "D"][c.bass.rhythm.round() as usize % 4].to_string(),
+        ),
+        ControlSpec::new(
+            "bass.octave",
+            "Octave",
+            ControlKind::Discrete,
+            -3.0,
+            0.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.bass.octave,
+            |c, v| c.bass.octave = v,
+            |c| format!("{:.0}", c.bass.octave),
+        ),
+    ]
+);
 
 pub(crate) fn bass_type_label(value: f32) -> &'static str {
     match bass_type_index(value) {
@@ -1526,276 +1266,156 @@ pub(crate) fn kick_type_index(value: f32) -> usize {
     (value.round() as i64).rem_euclid(4) as usize
 }
 
-pub(crate) const KICK_CONTROLS: &[ControlSpec] = &[
-    gain_pct!("kick.level", "Level", kick.level),
-    gain_pct!("kick.filter", "Filter", kick.filter),
-    time_ms!(
-        "kick.pitch_decay_ms",
-        "Pitch Decay",
-        10.0,
-        300.0,
-        1.0,
-        kick.pitch_decay_ms
-    ),
-    time_ms!(
-        "kick.amp_decay_ms",
-        "Amp Decay",
-        50.0,
-        1000.0,
-        1.0,
-        kick.amp_decay_ms
-    ),
-    ControlSpec::new(
-        "kick.type",
-        "Type",
-        ControlKind::Discrete,
-        0.0,
-        3.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.kick.voice_type,
-        |c, v| c.kick.voice_type = v,
-        |c| kick_type_label(c.kick.voice_type).to_string(),
-    ),
-    beat_interval!(
-        "kick.interval_beats",
-        "Interval",
-        0.125,
-        4.0,
-        kick.interval_beats
-    ),
-    beat_offset!("kick.offset_beats", "Offset", 4.0, kick.offset_beats),
-    ControlSpec::new(
-        "kick.start_freq",
-        "Start Freq",
-        ControlKind::Continuous,
-        40.0,
-        200.0,
-        Step::Linear(5.0),
-        Entry::Snap,
-        |c| c.kick.start_freq,
-        |c, v| c.kick.start_freq = v,
-        |c| format!("{:.0} Hz", c.kick.start_freq),
-    ),
-    ControlSpec::gain(
-        "kick.click",
-        "Click",
-        0.0,
-        0.2,
-        |c| c.kick.click,
-        |c, v| c.kick.click = v,
-        |c| pct(c.kick.click / 0.2),
-    )
-    .with_step(0.01),
-    module_slot_rows!(kick, "kick", 1)[0],
-    module_slot_rows!(kick, "kick", 1)[1],
-    module_slot_rows!(kick, "kick", 1)[2],
-    module_slot_rows!(kick, "kick", 1)[3],
-    module_slot_rows!(kick, "kick", 1)[4],
-    module_slot_rows!(kick, "kick", 1)[5],
-    module_slot_rows!(kick, "kick", 1)[6],
-    module_slot_rows!(kick, "kick", 1)[7],
-    module_slot_rows!(kick, "kick", 2)[0],
-    module_slot_rows!(kick, "kick", 2)[1],
-    module_slot_rows!(kick, "kick", 2)[2],
-    module_slot_rows!(kick, "kick", 2)[3],
-    module_slot_rows!(kick, "kick", 2)[4],
-    module_slot_rows!(kick, "kick", 2)[5],
-    module_slot_rows!(kick, "kick", 2)[6],
-    module_slot_rows!(kick, "kick", 2)[7],
-    module_slot_rows!(kick, "kick", 3)[0],
-    module_slot_rows!(kick, "kick", 3)[1],
-    module_slot_rows!(kick, "kick", 3)[2],
-    module_slot_rows!(kick, "kick", 3)[3],
-    module_slot_rows!(kick, "kick", 3)[4],
-    module_slot_rows!(kick, "kick", 3)[5],
-    module_slot_rows!(kick, "kick", 3)[6],
-    module_slot_rows!(kick, "kick", 3)[7],
-    module_slot_rows!(kick, "kick", 4)[0],
-    module_slot_rows!(kick, "kick", 4)[1],
-    module_slot_rows!(kick, "kick", 4)[2],
-    module_slot_rows!(kick, "kick", 4)[3],
-    module_slot_rows!(kick, "kick", 4)[4],
-    module_slot_rows!(kick, "kick", 4)[5],
-    module_slot_rows!(kick, "kick", 4)[6],
-    module_slot_rows!(kick, "kick", 4)[7],
-    module_slot_rows!(kick, "kick", 5)[0],
-    module_slot_rows!(kick, "kick", 5)[1],
-    module_slot_rows!(kick, "kick", 5)[2],
-    module_slot_rows!(kick, "kick", 5)[3],
-    module_slot_rows!(kick, "kick", 5)[4],
-    module_slot_rows!(kick, "kick", 5)[5],
-    module_slot_rows!(kick, "kick", 5)[6],
-    module_slot_rows!(kick, "kick", 5)[7],
-    module_slot_rows!(kick, "kick", 6)[0],
-    module_slot_rows!(kick, "kick", 6)[1],
-    module_slot_rows!(kick, "kick", 6)[2],
-    module_slot_rows!(kick, "kick", 6)[3],
-    module_slot_rows!(kick, "kick", 6)[4],
-    module_slot_rows!(kick, "kick", 6)[5],
-    module_slot_rows!(kick, "kick", 6)[6],
-    module_slot_rows!(kick, "kick", 6)[7],
-    module_slot_rows!(kick, "kick", 7)[0],
-    module_slot_rows!(kick, "kick", 7)[1],
-    module_slot_rows!(kick, "kick", 7)[2],
-    module_slot_rows!(kick, "kick", 7)[3],
-    module_slot_rows!(kick, "kick", 7)[4],
-    module_slot_rows!(kick, "kick", 7)[5],
-    module_slot_rows!(kick, "kick", 7)[6],
-    module_slot_rows!(kick, "kick", 7)[7],
-    module_slot_rows!(kick, "kick", 8)[0],
-    module_slot_rows!(kick, "kick", 8)[1],
-    module_slot_rows!(kick, "kick", 8)[2],
-    module_slot_rows!(kick, "kick", 8)[3],
-    module_slot_rows!(kick, "kick", 8)[4],
-    module_slot_rows!(kick, "kick", 8)[5],
-    module_slot_rows!(kick, "kick", 8)[6],
-    module_slot_rows!(kick, "kick", 8)[7],
-];
+pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
+    kick,
+    "kick",
+    [
+        gain_pct!("kick.level", "Level", kick.level),
+        gain_pct!("kick.filter", "Filter", kick.filter),
+        time_ms!(
+            "kick.pitch_decay_ms",
+            "Pitch Decay",
+            10.0,
+            300.0,
+            1.0,
+            kick.pitch_decay_ms
+        ),
+        time_ms!(
+            "kick.amp_decay_ms",
+            "Amp Decay",
+            50.0,
+            1000.0,
+            1.0,
+            kick.amp_decay_ms
+        ),
+        ControlSpec::new(
+            "kick.type",
+            "Type",
+            ControlKind::Discrete,
+            0.0,
+            3.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.kick.voice_type,
+            |c, v| c.kick.voice_type = v,
+            |c| kick_type_label(c.kick.voice_type).to_string(),
+        ),
+        beat_interval!(
+            "kick.interval_beats",
+            "Interval",
+            0.125,
+            4.0,
+            kick.interval_beats
+        ),
+        beat_offset!("kick.offset_beats", "Offset", 4.0, kick.offset_beats),
+        ControlSpec::new(
+            "kick.start_freq",
+            "Start Freq",
+            ControlKind::Continuous,
+            40.0,
+            200.0,
+            Step::Linear(5.0),
+            Entry::Snap,
+            |c| c.kick.start_freq,
+            |c, v| c.kick.start_freq = v,
+            |c| format!("{:.0} Hz", c.kick.start_freq),
+        ),
+        ControlSpec::gain(
+            "kick.click",
+            "Click",
+            0.0,
+            0.2,
+            |c| c.kick.click,
+            |c, v| c.kick.click = v,
+            |c| pct(c.kick.click / 0.2),
+        )
+        .with_step(0.01),
+    ]
+);
 
-pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &[
-    gain_pct!("tonal.level", "Level", tonal.level),
-    time_secs!("tonal.attack", "Attack", 0.0, 1.0, 0.001, tonal.attack),
-    time_secs!(
-        "tonal.decay",
-        "Decay",
-        TONAL_DECAY_MIN,
-        6.0,
-        0.001,
-        tonal.decay
-    ),
-    ControlSpec::new(
-        "tonal.synth_type",
-        "Type",
-        ControlKind::Discrete,
-        0.0,
-        9.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.tonal.synth_type,
-        |c, v| c.tonal.synth_type = v,
-        |c| tonal_synth_type_label(c.tonal.synth_type).to_string(),
-    ),
-    ControlSpec::new(
-        "tonal.octave",
-        "Octave",
-        ControlKind::Discrete,
-        -2.0,
-        2.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.tonal.octave,
-        |c, v| c.tonal.octave = v,
-        |c| format!("{:.0}", c.tonal.octave),
-    ),
-    ControlSpec::new(
-        "tonal.phrase",
-        "Phrase",
-        ControlKind::Discrete,
-        0.0,
-        7.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.tonal.phrase,
-        |c, v| c.tonal.phrase = v,
-        |c| {
-            ["A", "B", "C", "D", "E", "F", "G", "H"][c.tonal.phrase.round() as usize % 8]
-                .to_string()
-        },
-    ),
-    beat_interval!(
-        "tonal.rate_beats",
-        "Rate",
-        TONAL_RATE_BEATS_MIN,
-        TONAL_RATE_BEATS_MAX,
-        tonal.rate_beats
-    ),
-    beat_interval!(
-        "tonal.step_interval_beats",
-        "Cycle",
-        TONAL_CYCLE_BEATS_MIN,
-        TONAL_CYCLE_BEATS_MAX,
-        tonal.step_interval_beats
-    ),
-    beat_offset!("tonal.offset_beats", "Offset", 4.0, tonal.offset_beats),
-    gain_pct!("tonal.randomness", "Randomness", tonal.randomness),
-    ControlSpec::new(
-        "tonal.evolve_rate",
-        "Evolve",
-        ControlKind::Continuous,
-        0.0,
-        1.0,
-        Step::Linear(0.05),
-        Entry::Percent,
-        |c| c.tonal.evolve_rate,
-        |c, v| c.tonal.evolve_rate = v,
-        |c| pct(c.tonal.evolve_rate),
-    ),
-    module_slot_rows!(tonal, "tonal", 1)[0],
-    module_slot_rows!(tonal, "tonal", 1)[1],
-    module_slot_rows!(tonal, "tonal", 1)[2],
-    module_slot_rows!(tonal, "tonal", 1)[3],
-    module_slot_rows!(tonal, "tonal", 1)[4],
-    module_slot_rows!(tonal, "tonal", 1)[5],
-    module_slot_rows!(tonal, "tonal", 1)[6],
-    module_slot_rows!(tonal, "tonal", 1)[7],
-    module_slot_rows!(tonal, "tonal", 2)[0],
-    module_slot_rows!(tonal, "tonal", 2)[1],
-    module_slot_rows!(tonal, "tonal", 2)[2],
-    module_slot_rows!(tonal, "tonal", 2)[3],
-    module_slot_rows!(tonal, "tonal", 2)[4],
-    module_slot_rows!(tonal, "tonal", 2)[5],
-    module_slot_rows!(tonal, "tonal", 2)[6],
-    module_slot_rows!(tonal, "tonal", 2)[7],
-    module_slot_rows!(tonal, "tonal", 3)[0],
-    module_slot_rows!(tonal, "tonal", 3)[1],
-    module_slot_rows!(tonal, "tonal", 3)[2],
-    module_slot_rows!(tonal, "tonal", 3)[3],
-    module_slot_rows!(tonal, "tonal", 3)[4],
-    module_slot_rows!(tonal, "tonal", 3)[5],
-    module_slot_rows!(tonal, "tonal", 3)[6],
-    module_slot_rows!(tonal, "tonal", 3)[7],
-    module_slot_rows!(tonal, "tonal", 4)[0],
-    module_slot_rows!(tonal, "tonal", 4)[1],
-    module_slot_rows!(tonal, "tonal", 4)[2],
-    module_slot_rows!(tonal, "tonal", 4)[3],
-    module_slot_rows!(tonal, "tonal", 4)[4],
-    module_slot_rows!(tonal, "tonal", 4)[5],
-    module_slot_rows!(tonal, "tonal", 4)[6],
-    module_slot_rows!(tonal, "tonal", 4)[7],
-    module_slot_rows!(tonal, "tonal", 5)[0],
-    module_slot_rows!(tonal, "tonal", 5)[1],
-    module_slot_rows!(tonal, "tonal", 5)[2],
-    module_slot_rows!(tonal, "tonal", 5)[3],
-    module_slot_rows!(tonal, "tonal", 5)[4],
-    module_slot_rows!(tonal, "tonal", 5)[5],
-    module_slot_rows!(tonal, "tonal", 5)[6],
-    module_slot_rows!(tonal, "tonal", 5)[7],
-    module_slot_rows!(tonal, "tonal", 6)[0],
-    module_slot_rows!(tonal, "tonal", 6)[1],
-    module_slot_rows!(tonal, "tonal", 6)[2],
-    module_slot_rows!(tonal, "tonal", 6)[3],
-    module_slot_rows!(tonal, "tonal", 6)[4],
-    module_slot_rows!(tonal, "tonal", 6)[5],
-    module_slot_rows!(tonal, "tonal", 6)[6],
-    module_slot_rows!(tonal, "tonal", 6)[7],
-    module_slot_rows!(tonal, "tonal", 7)[0],
-    module_slot_rows!(tonal, "tonal", 7)[1],
-    module_slot_rows!(tonal, "tonal", 7)[2],
-    module_slot_rows!(tonal, "tonal", 7)[3],
-    module_slot_rows!(tonal, "tonal", 7)[4],
-    module_slot_rows!(tonal, "tonal", 7)[5],
-    module_slot_rows!(tonal, "tonal", 7)[6],
-    module_slot_rows!(tonal, "tonal", 7)[7],
-    module_slot_rows!(tonal, "tonal", 8)[0],
-    module_slot_rows!(tonal, "tonal", 8)[1],
-    module_slot_rows!(tonal, "tonal", 8)[2],
-    module_slot_rows!(tonal, "tonal", 8)[3],
-    module_slot_rows!(tonal, "tonal", 8)[4],
-    module_slot_rows!(tonal, "tonal", 8)[5],
-    module_slot_rows!(tonal, "tonal", 8)[6],
-    module_slot_rows!(tonal, "tonal", 8)[7],
-];
+pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
+    tonal,
+    "tonal",
+    [
+        gain_pct!("tonal.level", "Level", tonal.level),
+        time_secs!("tonal.attack", "Attack", 0.0, 1.0, 0.001, tonal.attack),
+        time_secs!(
+            "tonal.decay",
+            "Decay",
+            TONAL_DECAY_MIN,
+            6.0,
+            0.001,
+            tonal.decay
+        ),
+        ControlSpec::new(
+            "tonal.synth_type",
+            "Type",
+            ControlKind::Discrete,
+            0.0,
+            9.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.tonal.synth_type,
+            |c, v| c.tonal.synth_type = v,
+            |c| tonal_synth_type_label(c.tonal.synth_type).to_string(),
+        ),
+        ControlSpec::new(
+            "tonal.octave",
+            "Octave",
+            ControlKind::Discrete,
+            -2.0,
+            2.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.tonal.octave,
+            |c, v| c.tonal.octave = v,
+            |c| format!("{:.0}", c.tonal.octave),
+        ),
+        ControlSpec::new(
+            "tonal.phrase",
+            "Phrase",
+            ControlKind::Discrete,
+            0.0,
+            7.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.tonal.phrase,
+            |c, v| c.tonal.phrase = v,
+            |c| {
+                ["A", "B", "C", "D", "E", "F", "G", "H"][c.tonal.phrase.round() as usize % 8]
+                    .to_string()
+            },
+        ),
+        beat_interval!(
+            "tonal.rate_beats",
+            "Rate",
+            TONAL_RATE_BEATS_MIN,
+            TONAL_RATE_BEATS_MAX,
+            tonal.rate_beats
+        ),
+        beat_interval!(
+            "tonal.step_interval_beats",
+            "Cycle",
+            TONAL_CYCLE_BEATS_MIN,
+            TONAL_CYCLE_BEATS_MAX,
+            tonal.step_interval_beats
+        ),
+        beat_offset!("tonal.offset_beats", "Offset", 4.0, tonal.offset_beats),
+        gain_pct!("tonal.randomness", "Randomness", tonal.randomness),
+        ControlSpec::new(
+            "tonal.evolve_rate",
+            "Evolve",
+            ControlKind::Continuous,
+            0.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Percent,
+            |c| c.tonal.evolve_rate,
+            |c, v| c.tonal.evolve_rate = v,
+            |c| pct(c.tonal.evolve_rate),
+        ),
+    ]
+);
 
 pub(crate) fn tonal_synth_type_label(value: f32) -> &'static str {
     match tonal_synth_type_index(value) {
@@ -1816,218 +1436,98 @@ pub(crate) fn tonal_synth_type_index(value: f32) -> usize {
     (value.round() as i64).rem_euclid(10) as usize
 }
 
-pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &[
-    gain_pct!("clap.level", "Level", clap.level),
-    gain_pct!("clap.filter", "Filter", 0.5, 1.0, clap.filter),
-    time_ms!("clap.decay_ms", "Decay", 10.0, 200.0, 1.0, clap.decay_ms),
-    beat_interval!(
-        "clap.interval_beats",
-        "Interval",
-        0.5,
-        8.0,
-        clap.interval_beats
-    ),
-    beat_offset!("clap.offset_beats", "Offset", 8.0, clap.offset_beats),
-    ControlSpec::new(
-        "clap.slap_count",
-        "Slap Count",
-        ControlKind::Discrete,
-        1.0,
-        8.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.clap.slap_count,
-        |c, v| c.clap.slap_count = v,
-        |c| format!("{:.0}", c.clap.slap_count),
-    ),
-    time_ms!(
-        "clap.slap_spread_ms",
-        "Slap Spread",
-        0.0,
-        100.0,
-        1.0,
-        clap.slap_spread_ms
-    ),
-    gain_pct!("clap.body", "Body", clap.body),
-    module_slot_rows!(clap, "clap", 1)[0],
-    module_slot_rows!(clap, "clap", 1)[1],
-    module_slot_rows!(clap, "clap", 1)[2],
-    module_slot_rows!(clap, "clap", 1)[3],
-    module_slot_rows!(clap, "clap", 1)[4],
-    module_slot_rows!(clap, "clap", 1)[5],
-    module_slot_rows!(clap, "clap", 1)[6],
-    module_slot_rows!(clap, "clap", 1)[7],
-    module_slot_rows!(clap, "clap", 2)[0],
-    module_slot_rows!(clap, "clap", 2)[1],
-    module_slot_rows!(clap, "clap", 2)[2],
-    module_slot_rows!(clap, "clap", 2)[3],
-    module_slot_rows!(clap, "clap", 2)[4],
-    module_slot_rows!(clap, "clap", 2)[5],
-    module_slot_rows!(clap, "clap", 2)[6],
-    module_slot_rows!(clap, "clap", 2)[7],
-    module_slot_rows!(clap, "clap", 3)[0],
-    module_slot_rows!(clap, "clap", 3)[1],
-    module_slot_rows!(clap, "clap", 3)[2],
-    module_slot_rows!(clap, "clap", 3)[3],
-    module_slot_rows!(clap, "clap", 3)[4],
-    module_slot_rows!(clap, "clap", 3)[5],
-    module_slot_rows!(clap, "clap", 3)[6],
-    module_slot_rows!(clap, "clap", 3)[7],
-    module_slot_rows!(clap, "clap", 4)[0],
-    module_slot_rows!(clap, "clap", 4)[1],
-    module_slot_rows!(clap, "clap", 4)[2],
-    module_slot_rows!(clap, "clap", 4)[3],
-    module_slot_rows!(clap, "clap", 4)[4],
-    module_slot_rows!(clap, "clap", 4)[5],
-    module_slot_rows!(clap, "clap", 4)[6],
-    module_slot_rows!(clap, "clap", 4)[7],
-    module_slot_rows!(clap, "clap", 5)[0],
-    module_slot_rows!(clap, "clap", 5)[1],
-    module_slot_rows!(clap, "clap", 5)[2],
-    module_slot_rows!(clap, "clap", 5)[3],
-    module_slot_rows!(clap, "clap", 5)[4],
-    module_slot_rows!(clap, "clap", 5)[5],
-    module_slot_rows!(clap, "clap", 5)[6],
-    module_slot_rows!(clap, "clap", 5)[7],
-    module_slot_rows!(clap, "clap", 6)[0],
-    module_slot_rows!(clap, "clap", 6)[1],
-    module_slot_rows!(clap, "clap", 6)[2],
-    module_slot_rows!(clap, "clap", 6)[3],
-    module_slot_rows!(clap, "clap", 6)[4],
-    module_slot_rows!(clap, "clap", 6)[5],
-    module_slot_rows!(clap, "clap", 6)[6],
-    module_slot_rows!(clap, "clap", 6)[7],
-    module_slot_rows!(clap, "clap", 7)[0],
-    module_slot_rows!(clap, "clap", 7)[1],
-    module_slot_rows!(clap, "clap", 7)[2],
-    module_slot_rows!(clap, "clap", 7)[3],
-    module_slot_rows!(clap, "clap", 7)[4],
-    module_slot_rows!(clap, "clap", 7)[5],
-    module_slot_rows!(clap, "clap", 7)[6],
-    module_slot_rows!(clap, "clap", 7)[7],
-    module_slot_rows!(clap, "clap", 8)[0],
-    module_slot_rows!(clap, "clap", 8)[1],
-    module_slot_rows!(clap, "clap", 8)[2],
-    module_slot_rows!(clap, "clap", 8)[3],
-    module_slot_rows!(clap, "clap", 8)[4],
-    module_slot_rows!(clap, "clap", 8)[5],
-    module_slot_rows!(clap, "clap", 8)[6],
-    module_slot_rows!(clap, "clap", 8)[7],
-];
+pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
+    clap,
+    "clap",
+    [
+        gain_pct!("clap.level", "Level", clap.level),
+        gain_pct!("clap.filter", "Filter", 0.5, 1.0, clap.filter),
+        time_ms!("clap.decay_ms", "Decay", 10.0, 200.0, 1.0, clap.decay_ms),
+        beat_interval!(
+            "clap.interval_beats",
+            "Interval",
+            0.5,
+            8.0,
+            clap.interval_beats
+        ),
+        beat_offset!("clap.offset_beats", "Offset", 8.0, clap.offset_beats),
+        ControlSpec::new(
+            "clap.slap_count",
+            "Slap Count",
+            ControlKind::Discrete,
+            1.0,
+            8.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.clap.slap_count,
+            |c, v| c.clap.slap_count = v,
+            |c| format!("{:.0}", c.clap.slap_count),
+        ),
+        time_ms!(
+            "clap.slap_spread_ms",
+            "Slap Spread",
+            0.0,
+            100.0,
+            1.0,
+            clap.slap_spread_ms
+        ),
+        gain_pct!("clap.body", "Body", clap.body),
+    ]
+);
 
-pub(crate) const ARP_CONTROLS: &[ControlSpec] = &[
-    gain_pct!("arp.gain", "Level", arp.gain),
-    time_secs!("arp.attack", "Attack", 0.0, 1.0, 0.001, arp.attack),
-    time_secs!("arp.decay", "Decay", TONAL_DECAY_MIN, 6.0, 0.001, arp.decay),
-    ControlSpec::new(
-        "arp.type",
-        "Type",
-        ControlKind::Discrete,
-        0.0,
-        9.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.arp.voice_type,
-        |c, v| c.arp.voice_type = v,
-        |c| tonal_synth_type_label(c.arp.voice_type).to_string(),
-    ),
-    beat_interval!(
-        "arp.rate_beats",
-        "Rate",
-        ARP_RATE_BEATS_MIN,
-        ARP_RATE_BEATS_MAX,
-        arp.rate_beats
-    ),
-    beat_offset!("arp.offset_beats", "Offset", 4.0, arp.offset_beats),
-    ControlSpec::new(
-        "arp.pattern",
-        "Pattern",
-        ControlKind::Discrete,
-        0.0,
-        3.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.arp.pattern,
-        |c, v| c.arp.pattern = v,
-        |c| arp_pattern_label(c.arp.pattern).to_string(),
-    ),
-    ControlSpec::new(
-        "arp.octaves",
-        "Octaves",
-        ControlKind::Discrete,
-        ARP_OCTAVES_MIN,
-        ARP_OCTAVES_MAX,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.arp.octaves,
-        |c, v| c.arp.octaves = v,
-        |c| format!("{:.0}", c.arp.octaves),
-    ),
-    module_slot_rows!(arp, "arp", 1)[0],
-    module_slot_rows!(arp, "arp", 1)[1],
-    module_slot_rows!(arp, "arp", 1)[2],
-    module_slot_rows!(arp, "arp", 1)[3],
-    module_slot_rows!(arp, "arp", 1)[4],
-    module_slot_rows!(arp, "arp", 1)[5],
-    module_slot_rows!(arp, "arp", 1)[6],
-    module_slot_rows!(arp, "arp", 1)[7],
-    module_slot_rows!(arp, "arp", 2)[0],
-    module_slot_rows!(arp, "arp", 2)[1],
-    module_slot_rows!(arp, "arp", 2)[2],
-    module_slot_rows!(arp, "arp", 2)[3],
-    module_slot_rows!(arp, "arp", 2)[4],
-    module_slot_rows!(arp, "arp", 2)[5],
-    module_slot_rows!(arp, "arp", 2)[6],
-    module_slot_rows!(arp, "arp", 2)[7],
-    module_slot_rows!(arp, "arp", 3)[0],
-    module_slot_rows!(arp, "arp", 3)[1],
-    module_slot_rows!(arp, "arp", 3)[2],
-    module_slot_rows!(arp, "arp", 3)[3],
-    module_slot_rows!(arp, "arp", 3)[4],
-    module_slot_rows!(arp, "arp", 3)[5],
-    module_slot_rows!(arp, "arp", 3)[6],
-    module_slot_rows!(arp, "arp", 3)[7],
-    module_slot_rows!(arp, "arp", 4)[0],
-    module_slot_rows!(arp, "arp", 4)[1],
-    module_slot_rows!(arp, "arp", 4)[2],
-    module_slot_rows!(arp, "arp", 4)[3],
-    module_slot_rows!(arp, "arp", 4)[4],
-    module_slot_rows!(arp, "arp", 4)[5],
-    module_slot_rows!(arp, "arp", 4)[6],
-    module_slot_rows!(arp, "arp", 4)[7],
-    module_slot_rows!(arp, "arp", 5)[0],
-    module_slot_rows!(arp, "arp", 5)[1],
-    module_slot_rows!(arp, "arp", 5)[2],
-    module_slot_rows!(arp, "arp", 5)[3],
-    module_slot_rows!(arp, "arp", 5)[4],
-    module_slot_rows!(arp, "arp", 5)[5],
-    module_slot_rows!(arp, "arp", 5)[6],
-    module_slot_rows!(arp, "arp", 5)[7],
-    module_slot_rows!(arp, "arp", 6)[0],
-    module_slot_rows!(arp, "arp", 6)[1],
-    module_slot_rows!(arp, "arp", 6)[2],
-    module_slot_rows!(arp, "arp", 6)[3],
-    module_slot_rows!(arp, "arp", 6)[4],
-    module_slot_rows!(arp, "arp", 6)[5],
-    module_slot_rows!(arp, "arp", 6)[6],
-    module_slot_rows!(arp, "arp", 6)[7],
-    module_slot_rows!(arp, "arp", 7)[0],
-    module_slot_rows!(arp, "arp", 7)[1],
-    module_slot_rows!(arp, "arp", 7)[2],
-    module_slot_rows!(arp, "arp", 7)[3],
-    module_slot_rows!(arp, "arp", 7)[4],
-    module_slot_rows!(arp, "arp", 7)[5],
-    module_slot_rows!(arp, "arp", 7)[6],
-    module_slot_rows!(arp, "arp", 7)[7],
-    module_slot_rows!(arp, "arp", 8)[0],
-    module_slot_rows!(arp, "arp", 8)[1],
-    module_slot_rows!(arp, "arp", 8)[2],
-    module_slot_rows!(arp, "arp", 8)[3],
-    module_slot_rows!(arp, "arp", 8)[4],
-    module_slot_rows!(arp, "arp", 8)[5],
-    module_slot_rows!(arp, "arp", 8)[6],
-    module_slot_rows!(arp, "arp", 8)[7],
-];
+pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
+    arp,
+    "arp",
+    [
+        gain_pct!("arp.gain", "Level", arp.gain),
+        time_secs!("arp.attack", "Attack", 0.0, 1.0, 0.001, arp.attack),
+        time_secs!("arp.decay", "Decay", TONAL_DECAY_MIN, 6.0, 0.001, arp.decay),
+        ControlSpec::new(
+            "arp.type",
+            "Type",
+            ControlKind::Discrete,
+            0.0,
+            9.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.arp.voice_type,
+            |c, v| c.arp.voice_type = v,
+            |c| tonal_synth_type_label(c.arp.voice_type).to_string(),
+        ),
+        beat_interval!(
+            "arp.rate_beats",
+            "Rate",
+            ARP_RATE_BEATS_MIN,
+            ARP_RATE_BEATS_MAX,
+            arp.rate_beats
+        ),
+        beat_offset!("arp.offset_beats", "Offset", 4.0, arp.offset_beats),
+        ControlSpec::new(
+            "arp.pattern",
+            "Pattern",
+            ControlKind::Discrete,
+            0.0,
+            3.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.arp.pattern,
+            |c, v| c.arp.pattern = v,
+            |c| arp_pattern_label(c.arp.pattern).to_string(),
+        ),
+        ControlSpec::new(
+            "arp.octaves",
+            "Octaves",
+            ControlKind::Discrete,
+            ARP_OCTAVES_MIN,
+            ARP_OCTAVES_MAX,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.arp.octaves,
+            |c, v| c.arp.octaves = v,
+            |c| format!("{:.0}", c.arp.octaves),
+        ),
+    ]
+);
 
 pub(crate) const MACRO_CONTROLS: &[ControlSpec] = &[
     gain_pct!("macro.1", "Macro 1", macros.values[0]),
