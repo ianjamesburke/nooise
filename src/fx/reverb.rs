@@ -8,14 +8,16 @@ struct Comb {
 }
 
 impl Comb {
-    fn new(size: usize, feedback: f32, damp: f32) -> Self {
+    /// Feedback and damping are left at pass-through values: `Freeverb::process`
+    /// writes both from its per-call params before any sample is read.
+    fn new(size: usize) -> Self {
         Self {
             buffer: vec![0.0; size.max(1)],
             index: 0,
-            feedback,
+            feedback: 0.0,
             filter_store: 0.0,
-            damp1: damp,
-            damp2: 1.0 - damp,
+            damp1: 0.0,
+            damp2: 1.0,
         }
     }
 
@@ -63,7 +65,6 @@ pub(crate) struct Freeverb {
     combs_right: Vec<Comb>,
     allpasses_left: Vec<AllPass>,
     allpasses_right: Vec<AllPass>,
-    wet: f32,
     /// Sticky: false until the first nonzero input sample. While every input
     /// so far has been zero, every comb/allpass buffer and filter holds exact
     /// zeros and the output is exact silence, so `process` skips all work.
@@ -72,17 +73,15 @@ pub(crate) struct Freeverb {
 }
 
 impl Freeverb {
-    pub(crate) fn new(sample_rate: f32, room_size: f32, damp: f32, wet: f32) -> Self {
+    pub(crate) fn new(sample_rate: f32) -> Self {
         let scale = sample_rate / 44_100.0;
         let comb_tunings = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
         let allpass_tunings = [556, 441, 341, 225];
-        let feedback = 0.28 + room_size.clamp(0.0, 1.0) * 0.68;
-        let damp = damp.clamp(0.0, 1.0) * 0.4;
 
         let build_combs = |offset: i32| -> Vec<Comb> {
             comb_tunings
                 .iter()
-                .map(|size| Comb::new(((*size + offset) as f32 * scale) as usize, feedback, damp))
+                .map(|size| Comb::new(((*size + offset) as f32 * scale) as usize))
                 .collect()
         };
         let combs_left = build_combs(0);
@@ -101,12 +100,17 @@ impl Freeverb {
             combs_right,
             allpasses_left,
             allpasses_right,
-            wet: wet.clamp(0.0, 1.0),
             active: false,
         }
     }
 
-    pub(crate) fn process(&mut self, input_left: f32, input_right: f32) -> (f32, f32) {
+    pub(crate) fn process(
+        &mut self,
+        input_left: f32,
+        input_right: f32,
+        params: ReverbParams,
+    ) -> (f32, f32) {
+        self.set_character(params);
         let input = (input_left + input_right) * 0.5;
         if !self.active {
             if input == 0.0 {
@@ -132,16 +136,26 @@ impl Freeverb {
             right = allpass.process(right);
         }
 
-        (left * self.wet * 0.18, right * self.wet * 0.18)
+        (left * 0.18, right * 0.18)
     }
 
-    pub(crate) fn set_character(&mut self, room_size: f32, damp: f32) {
-        let feedback = 0.28 + room_size.clamp(0.0, 1.0) * 0.68;
-        let damp1 = damp.clamp(0.0, 1.0) * 0.4;
+    fn set_character(&mut self, params: ReverbParams) {
+        let feedback = 0.28 + params.room_size.clamp(0.0, 1.0) * 0.68;
+        let damp1 = params.damp.clamp(0.0, 1.0) * 0.4;
         for comb in self.combs_left.iter_mut().chain(&mut self.combs_right) {
             comb.feedback = feedback;
             comb.damp1 = damp1;
             comb.damp2 = 1.0 - damp1;
         }
     }
+}
+
+/// Per-call character, matching the `DelayParams` convention. Comb/allpass
+/// buffer lengths stay construction-time because they depend only on the
+/// sample rate; Size and Damping are plain coefficients the caller is free to
+/// move every sample.
+#[derive(Clone, Copy)]
+pub(crate) struct ReverbParams {
+    pub(crate) room_size: f32,
+    pub(crate) damp: f32,
 }

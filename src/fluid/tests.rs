@@ -2310,7 +2310,7 @@ fn gain_smoothers_cover_every_unique_gain_spec() {
     let actual: std::collections::BTreeSet<_> = smoothers
         .smoothers
         .iter()
-        .map(|smoother| smoother.spec.unwrap().id)
+        .map(|smoother| smoother.spec.id)
         .collect();
 
     assert_eq!(actual, expected);

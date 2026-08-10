@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
-use crate::fx::compression::StereoCompressor;
+use crate::fx::compression::{CompressorParams, StereoCompressor};
 use crate::fx::delay::{DelayParams, StereoDelay};
 use crate::fx::drive;
-use crate::fx::reverb::Freeverb;
+use crate::fx::reverb::{Freeverb, ReverbParams};
 
 use super::*;
 
@@ -86,23 +86,24 @@ impl ModuleFxBank {
                 }
                 Family::Reverb => {
                     if !matches!(processor, Some(SlotFx::Reverb(_))) {
-                        *processor = Some(SlotFx::Reverb(Freeverb::new(
-                            self.sample_rate,
-                            slot.time,
-                            slot.feedback,
-                            1.0,
-                        )));
+                        *processor = Some(SlotFx::Reverb(Freeverb::new(self.sample_rate)));
                     }
                     let Some(SlotFx::Reverb(reverb)) = processor else {
                         continue;
                     };
-                    reverb.set_character(slot.time, slot.feedback);
                     let input = if slot.amount > 0.0 {
                         sample
                     } else {
                         (0.0, 0.0)
                     };
-                    let wet = reverb.process(input.0, input.1);
+                    let wet = reverb.process(
+                        input.0,
+                        input.1,
+                        ReverbParams {
+                            room_size: slot.time,
+                            damp: slot.feedback,
+                        },
+                    );
                     sample.0 += wet.0 * slot.amount;
                     sample.1 += wet.1 * slot.amount;
                 }
@@ -115,12 +116,14 @@ impl ModuleFxBank {
                     };
                     sample = compressor.process(
                         sample,
-                        self.sample_rate,
-                        slot.time.clamp(-40.0, 0.0),
-                        slot.right_time.clamp(1.0, 8.0),
-                        slot.feedback.clamp(10.0, 500.0),
-                        slot.vintage.clamp(0.0, 12.0),
-                        slot.amount,
+                        CompressorParams {
+                            sample_rate: self.sample_rate,
+                            threshold_db: slot.time,
+                            ratio: slot.right_time,
+                            release_ms: slot.feedback,
+                            makeup_db: slot.vintage,
+                            amount: slot.amount,
+                        },
                     );
                 }
                 Family::SingleAmount => {
@@ -139,6 +142,34 @@ impl ModuleFxBank {
 #[cfg(test)]
 mod module_fx_tests {
     use super::*;
+
+    /// The engine hands Compression slot fields straight to the DSP, which
+    /// was written against these ranges. `ControlSpec::apply_value` and the
+    /// song decoder both clamp to the spec, so the spec is the only bound
+    /// there is — re-clamping at the engine would just let a spec change
+    /// drift past what the DSP expects without anything noticing.
+    #[test]
+    fn compression_slot_specs_bound_every_field_the_dsp_reads() {
+        let mut controls = FluidControls::default();
+        controls.modules.master[1] = preset_slot("compression", 1.0);
+
+        for (field, min, max) in [
+            ("time", -40.0, 0.0),
+            ("right_time", 1.0, 8.0),
+            ("feedback", 10.0, 500.0),
+            ("vintage", 0.0, 12.0),
+        ] {
+            let id = format!("master.slot2.{field}");
+            let spec = spec_by_id(&id)
+                .unwrap_or_else(|| panic!("{id} is a registry control"))
+                .contextual(&controls);
+            assert_eq!(
+                (spec.min, spec.max),
+                (min, max),
+                "{id} no longer carries the range the compressor DSP assumes"
+            );
+        }
+    }
 
     #[test]
     fn reverb_and_compression_execute_through_the_same_slot_chain() {
@@ -482,7 +513,7 @@ fn mix_voices(
 }
 
 pub(crate) struct GainSmoother {
-    pub(crate) spec: Option<&'static ControlSpec>,
+    pub(crate) spec: &'static ControlSpec,
     pub(crate) start: f32,
     pub(crate) current: f32,
     pub(crate) target: f32,
@@ -497,12 +528,17 @@ pub(crate) struct GainSmoother {
 }
 
 impl GainSmoother {
+    /// A smoother on the first registry gain control, for tests that exercise
+    /// the ramp itself rather than which control it drives.
     #[cfg(test)]
     pub(crate) fn new(value: f32) -> Self {
-        Self::for_spec(None, value)
+        let spec = all_specs()
+            .find(|spec| spec.kind.smooths_audio())
+            .expect("the registry declares at least one gain control");
+        Self::for_spec(spec, value)
     }
 
-    pub(crate) fn for_spec(spec: Option<&'static ControlSpec>, value: f32) -> Self {
+    pub(crate) fn for_spec(spec: &'static ControlSpec, value: f32) -> Self {
         Self {
             spec,
             start: value,
@@ -551,7 +587,7 @@ impl GainSmoothers {
         let smoothers = all_specs()
             .filter(|spec| spec.kind.smooths_audio())
             .filter(|spec| seen.insert(spec.id))
-            .map(|spec| GainSmoother::for_spec(Some(spec), (spec.get)(c)))
+            .map(|spec| GainSmoother::for_spec(spec, (spec.get)(c)))
             .collect();
         Self { smoothers }
     }
@@ -559,10 +595,7 @@ impl GainSmoothers {
     pub(crate) fn set_targets(&mut self, c: &FluidControls, sample_rate: f32) {
         let ramp_samples = (LEVEL_RAMP_MS * 0.001 * sample_rate).round() as u32;
         for smoother in &mut self.smoothers {
-            let spec = smoother
-                .spec
-                .expect("registry-derived gain smoothers carry a control spec");
-            let snapshot_value = (spec.get)(c);
+            let snapshot_value = (smoother.spec.get)(c);
             smoother.set_target(snapshot_value, ramp_samples);
             smoother.idle = smoother.samples_remaining == 0 && smoother.target == snapshot_value;
         }
@@ -574,10 +607,7 @@ impl GainSmoothers {
             if smoother.idle {
                 continue;
             }
-            let spec = smoother
-                .spec
-                .expect("registry-derived gain smoothers carry a control spec");
-            (spec.set)(&mut next, smoother.next());
+            (smoother.spec.set)(&mut next, smoother.next());
         }
         next
     }
