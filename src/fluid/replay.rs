@@ -922,7 +922,7 @@ impl ReplayHarness {
             );
         let automation_supported = match action.intent {
             Intent::OpenAutomation(kind) => {
-                super::ui::automation_kind_is_supported(selected_control, kind)
+                super::edit::automation_kind_is_supported(selected_control, kind)
             }
             _ => true,
         };

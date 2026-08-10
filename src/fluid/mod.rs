@@ -31,6 +31,7 @@ mod auto;
 mod automation;
 mod controls;
 mod coordinator;
+mod edit;
 mod effect;
 mod engine;
 mod interaction;
@@ -58,6 +59,7 @@ pub(crate) use auto::{
 use automation::*;
 use controls::*;
 use coordinator::*;
+use edit::*;
 use effect::*;
 use engine::*;
 use module::*;
