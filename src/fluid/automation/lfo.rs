@@ -4,7 +4,7 @@
 use std::f32::consts::TAU;
 
 use crate::fluid::widget::DialScale;
-use crate::fluid::{beat_grid_adjust, beat_grid_snap, normalize_unit_input, snap_step};
+use crate::fluid::{Entry, beat_grid_adjust, beat_grid_snap, normalize_unit_input, snap_step};
 
 use super::{clamped_index, morph_scalar_route, stepped_index};
 
@@ -233,13 +233,6 @@ pub(crate) enum StepTarget {
     Value(usize),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LfoEntry {
-    Percent,
-    Snap,
-    Exact,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LfoFieldSpec {
     pub(crate) field: LfoField,
@@ -247,7 +240,7 @@ pub(crate) struct LfoFieldSpec {
     pub(crate) min: f32,
     pub(crate) max: f32,
     pub(crate) step: f32,
-    pub(crate) entry: LfoEntry,
+    pub(crate) entry: Entry,
     pub(crate) reset: f32,
     /// Interval-like fields lock to the musical beat grid (0.125 floor,
     /// sixteenths above) instead of a fixed linear step.
@@ -267,9 +260,12 @@ impl LfoFieldSpec {
 
     pub(crate) fn parse_value(self, value: f32) -> f32 {
         match self.entry {
-            LfoEntry::Percent => normalize_unit_input(value).clamp(self.min, self.max),
-            LfoEntry::Snap => self.quantize(value),
-            LfoEntry::Exact => value.clamp(self.min, self.max),
+            Entry::Percent => normalize_unit_input(value).clamp(self.min, self.max),
+            Entry::Snap => self.quantize(value),
+            Entry::Round => value.round().clamp(self.min, self.max),
+            // No automation field is stored in bars, so BeatsAsBars carries
+            // no extra meaning here and reads as a plain exact value.
+            Entry::BeatsAsBars | Entry::Free => value.clamp(self.min, self.max),
         }
     }
 
@@ -304,7 +300,7 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
         min: 0.0,
         max: 1.0,
         step: AMOUNT_STEP,
-        entry: LfoEntry::Percent,
+        entry: Entry::Percent,
         reset: 0.0,
         beat_grid: false,
     },
@@ -314,7 +310,7 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
         min: MIN_LFO_CYCLE_BEATS,
         max: MAX_LFO_CYCLE_BEATS,
         step: INTERVAL_STEP,
-        entry: LfoEntry::Exact,
+        entry: Entry::Free,
         reset: MIN_LFO_CYCLE_BEATS,
         beat_grid: true,
     },
@@ -324,7 +320,7 @@ pub(crate) const LFO_FIELD_SPECS: &[LfoFieldSpec] = &[
         min: 0.0,
         max: MAX_LFO_OFFSET_BEATS,
         step: OFFSET_STEP,
-        entry: LfoEntry::Snap,
+        entry: Entry::Snap,
         reset: 0.0,
         beat_grid: true,
     },
