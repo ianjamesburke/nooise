@@ -1,3 +1,10 @@
+//! The nooise engine.
+//!
+//! This root wires the pieces together for each entry point: `run` and
+//! `run_auto` for live audio plus TUI, `render_wav` for a headless render. It
+//! also owns `FluidTelemetry`, the lock-free audio-to-UI counters the
+//! visualizer animates from.
+
 use std::error::Error;
 use std::f32::consts::TAU;
 use std::sync::Arc;
@@ -82,10 +89,10 @@ use voice::*;
 /// mirrors the pad engine's current chord.
 #[derive(Default)]
 pub(crate) struct FluidTelemetry {
-    pub chord_index: AtomicU64,
-    pub kick_pulse: AtomicU64,
+    pub(crate) chord_index: AtomicU64,
+    pub(crate) kick_pulse: AtomicU64,
     /// Engine beat position as `f64::to_bits`, for beat-synced UI animation.
-    pub beat_bits: AtomicU64,
+    pub(crate) beat_bits: AtomicU64,
 }
 
 impl FluidTelemetry {

@@ -1,3 +1,9 @@
+//! Every control and automation mutation a UI gesture performs.
+//!
+//! `active_field` resolves the cursor to exactly one target and
+//! `with_active_field` applies one `FieldOp` to it, so adjust, reset, and set
+//! cannot drift apart. `effect.rs` calls into this module; never the reverse.
+
 use super::*;
 
 /// Numeric entry typed in a flipped field's display unit, converted back to
@@ -58,14 +64,12 @@ pub(crate) fn snap_after_unit_flip(
             // LFO rate accepts exact typed beat values, so an exact ms-authored
             // value stays exact when returning to beats. Offset retains its grid.
             ActiveField::Lfo(address, field) if !now_flipped => {
-                if let Some(route) = snapshot.automation.route_mut(address) {
-                    match field {
-                        LfoField::Interval => {}
-                        LfoField::Offset => {
-                            route.set_field_at(field, route.phase_offset_beats, beat)
-                        }
-                        _ => {}
-                    }
+                // Interval is deliberately untouched: an exact ms-authored
+                // rate must stay exact when the unit flips back to beats.
+                if let Some(route) = snapshot.automation.route_mut(address)
+                    && field == LfoField::Offset
+                {
+                    route.set_field_at(field, route.phase_offset_beats, beat);
                 }
             }
             ActiveField::Envelope(address, field) if !now_flipped => {

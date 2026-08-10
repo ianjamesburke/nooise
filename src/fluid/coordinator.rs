@@ -1,3 +1,8 @@
+//! The shared production turn coordinator, and the live UI loop built on it.
+//!
+//! One ordering seam that both the live scheduler loop and the replay harness
+//! cross: a scheduler-due tick commits before that turn's events.
+
 use super::*;
 
 const SAVE_MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(3);
@@ -108,7 +113,7 @@ pub(crate) fn coordinate_production_event(
         action.intent = interaction::Intent::EnterModuleDetail {
             tab,
             slot,
-            catalog: module.kind.round() as usize - 1,
+            catalog_index: module.kind.round() as usize - 1,
         };
     }
 
@@ -194,7 +199,7 @@ pub(crate) fn coordinate_production_event(
                         model.navigation = interaction::Navigation::Module {
                             tab: *tab,
                             slot,
-                            catalog: module.kind.round() as usize - 1,
+                            catalog_index: module.kind.round() as usize - 1,
                             selected: 0,
                             return_to,
                         };
@@ -252,7 +257,7 @@ pub(crate) fn coordinate_production_event(
                     };
                     context
                         .effects
-                        .execute(LiveEffect::ShowMessage(format!("{prefix}: {error:?}")))
+                        .execute(LiveEffect::ShowMessage(format!("{prefix}: {error}")))
                         .expect("message is infallible");
                 }
                 Ok(_) => {}

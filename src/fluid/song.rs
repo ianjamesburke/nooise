@@ -1,3 +1,11 @@
+//! Song codes: the binary snapshot format behind `Ctrl+S` and
+//! `nooise <code>`.
+//!
+//! This module owns the container version and every value encoding. Control
+//! values are generic over `all_specs()`; anything that is not a flat control
+//! value (automation routes, runtime session records) gets its own record
+//! type. Unknown record types skip; an unknown container version is fatal.
+
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
@@ -62,7 +70,7 @@ impl SongState {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SongCodeError {
     MissingPrefix,
     InvalidBase64,

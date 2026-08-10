@@ -1,3 +1,6 @@
+//! Constant-power stereo panning shared by every voice that places itself in
+//! the field.
+
 pub(crate) struct StereoPanner;
 
 impl StereoPanner {

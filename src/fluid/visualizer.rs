@@ -1,9 +1,9 @@
-use super::*;
+//! The ripple visualizer: chords drive the field colour, kicks spawn ripples.
+//!
+//! Driven entirely by live audio-thread telemetry. Presentation only — this
+//! module never reaches back into the engine.
 
-// ============================================================
-// Fluid visualizer: chords drive the field colour, kicks
-// spawn ripples. Driven entirely by live audio-thread telemetry.
-// ============================================================
+use super::*;
 
 pub(crate) const FLUID_GRADIENT: &[char] = &[' ', '·', '∙', '•', '●', '◉', '⬤'];
 pub(crate) const RIPPLE_LIFETIME: f32 = 3.0;

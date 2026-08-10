@@ -1,8 +1,7 @@
-use super::*;
+//! The Tonal voice: melodic steps over a pentatonic scale, with an
+//! evolving phrase and per-step randomness.
 
-// ============================================================
-// Tonal engine (melodic steps with randomness)
-// ============================================================
+use super::*;
 
 pub(crate) struct TonalEngine {
     pub(crate) sample_rate: f32,
@@ -425,7 +424,8 @@ impl TonalEngine {
             }
         }
 
-        let (dry_l, dry_r) = mix_and_retain(&mut self.voices, |v| v.next(), TonalVoice::is_done);
+        let (dry_l, dry_r) =
+            mix_and_retain(&mut self.voices, TonalVoice::next, TonalVoice::is_done);
 
         (self.low_cut_l.process(dry_l), self.low_cut_r.process(dry_r))
     }

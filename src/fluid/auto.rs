@@ -1,3 +1,11 @@
+//! Slow auto-morph: the built-in destinations and the clock that walks
+//! between them.
+//!
+//! `AUTO_STATES` decodes to full `SongState` endpoints at startup, `MorphState`
+//! derives leg index and progress purely from the live beat clock so renders
+//! stay deterministic, and `MorphWriter` throttles how often the engine's
+//! controls and automation are recomputed and stored.
+
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;

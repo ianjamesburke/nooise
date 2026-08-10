@@ -1,8 +1,6 @@
-use super::*;
+//! The Clap voice: a burst of several noise slaps per hit.
 
-// ============================================================
-// Clap engine (multi-slap noise burst)
-// ============================================================
+use super::*;
 
 /// Headroom trim on the summed burst output, not a character control —
 /// `clap.level` at 100% should reach close to full scale on its own. Kept

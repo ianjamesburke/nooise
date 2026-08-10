@@ -1,4 +1,9 @@
+//! Audio backend plumbing: the dedicated cpal output thread, the stream it
+//! rebuilds when the OS default device changes, and the sample callback that
+//! pulls stereo frames from a [`StereoEngine`].
+
 use std::error::Error;
+use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
@@ -9,6 +14,53 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 
 pub(crate) trait StereoEngine: Send + 'static {
     fn next_stereo(&mut self) -> (f32, f32);
+}
+
+/// Why playback never started.
+///
+/// The audio thread reports its startup outcome back across a channel, so this
+/// has to be `Send`; that is why a backend error arrives boxed rather than as
+/// the concrete cpal type.
+#[derive(Debug)]
+pub(crate) enum AudioStartError {
+    /// The host offered no default output device.
+    NoOutputDevice,
+    /// The device's native sample format is one nooise cannot write.
+    UnsupportedSampleFormat(SampleFormat),
+    /// The backend refused to open, configure, or play the stream.
+    Backend(Box<dyn Error + Send + Sync>),
+    /// The audio thread died before reporting either outcome.
+    ThreadExited,
+}
+
+impl AudioStartError {
+    fn backend(error: impl Error + Send + Sync + 'static) -> Self {
+        Self::Backend(Box::new(error))
+    }
+}
+
+impl fmt::Display for AudioStartError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoOutputDevice => write!(f, "no default output audio device found"),
+            Self::UnsupportedSampleFormat(format) => {
+                write!(f, "unsupported sample format: {format:?}")
+            }
+            Self::Backend(error) => write!(f, "{error}"),
+            Self::ThreadExited => {
+                write!(f, "audio thread exited before starting the stream")
+            }
+        }
+    }
+}
+
+impl Error for AudioStartError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Backend(error) => Some(error.as_ref()),
+            _ => None,
+        }
+    }
 }
 
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -36,7 +88,7 @@ impl Drop for AudioOutput {
 pub(crate) fn start_stream<E>(
     app_id: &str,
     engine_factory: impl Fn(f32) -> E + Send + 'static,
-) -> Result<AudioOutput, Box<dyn Error>>
+) -> Result<AudioOutput, AudioStartError>
 where
     E: StereoEngine,
 {
@@ -48,13 +100,14 @@ where
         let stop = Arc::clone(&stop);
         thread::Builder::new()
             .name("nooise-audio".into())
-            .spawn(move || run_audio_thread(app_id, engine_factory, stop, init_tx))?
+            .spawn(move || run_audio_thread(app_id, engine_factory, stop, init_tx))
+            .map_err(AudioStartError::backend)?
     };
 
     match init_rx.recv() {
         Ok(Ok(())) => {}
-        Ok(Err(message)) => return Err(message.into()),
-        Err(_) => return Err("audio thread exited before starting the stream".into()),
+        Ok(Err(error)) => return Err(error),
+        Err(_) => return Err(AudioStartError::ThreadExited),
     }
 
     Ok(AudioOutput {
@@ -70,7 +123,7 @@ fn run_audio_thread<E>(
     app_id: String,
     engine_factory: impl Fn(f32) -> E,
     stop: Arc<AtomicBool>,
-    init_tx: mpsc::Sender<Result<(), String>>,
+    init_tx: mpsc::Sender<Result<(), AudioStartError>>,
 ) where
     E: StereoEngine,
 {
@@ -80,8 +133,8 @@ fn run_audio_thread<E>(
             let _ = init_tx.send(Ok(()));
             stream
         }
-        Err(err) => {
-            let _ = init_tx.send(Err(err.to_string()));
+        Err(error) => {
+            let _ = init_tx.send(Err(error));
             return;
         }
     };
@@ -117,15 +170,17 @@ fn open_stream<E>(
     app_id: &str,
     engine_factory: &impl Fn(f32) -> E,
     needs_rebuild: Arc<AtomicBool>,
-) -> Result<Stream, Box<dyn Error>>
+) -> Result<Stream, AudioStartError>
 where
     E: StereoEngine,
 {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
-        .ok_or("no default output audio device found")?;
-    let supported_config = device.default_output_config()?;
+        .ok_or(AudioStartError::NoOutputDevice)?;
+    let supported_config = device
+        .default_output_config()
+        .map_err(AudioStartError::backend)?;
     let sample_format = supported_config.sample_format();
     let stream_config: StreamConfig = supported_config.into();
     let sample_rate = stream_config.sample_rate.0 as f32;
@@ -133,7 +188,7 @@ where
     println!(
         "running {app_id} at {} Hz on {}",
         sample_rate as u32,
-        device.name()?
+        device.name().map_err(AudioStartError::backend)?
     );
 
     let engine = engine_factory(sample_rate);
@@ -141,10 +196,10 @@ where
         SampleFormat::F32 => build_stream(&device, &stream_config, engine, needs_rebuild, |s| s)?,
         SampleFormat::I16 => build_stream(&device, &stream_config, engine, needs_rebuild, to_i16)?,
         SampleFormat::U16 => build_stream(&device, &stream_config, engine, needs_rebuild, to_u16)?,
-        other => return Err(format!("unsupported sample format: {other:?}").into()),
+        other => return Err(AudioStartError::UnsupportedSampleFormat(other)),
     };
 
-    stream.play()?;
+    stream.play().map_err(AudioStartError::backend)?;
     Ok(stream)
 }
 
@@ -154,7 +209,7 @@ fn build_stream<E, T, C>(
     engine: E,
     needs_rebuild: Arc<AtomicBool>,
     convert: C,
-) -> Result<Stream, Box<dyn Error>>
+) -> Result<Stream, AudioStartError>
 where
     E: StereoEngine,
     T: cpal::SizedSample + Send + 'static,
@@ -162,17 +217,19 @@ where
 {
     let channels = config.channels as usize;
     let mut engine = engine;
-    Ok(device.build_output_stream(
-        config,
-        move |data: &mut [T], _| {
-            for frame in data.chunks_mut(channels) {
-                let (left, right) = engine.next_stereo();
-                write_frame(frame, convert(left), convert(right));
-            }
-        },
-        move |error| audio_error(error, &needs_rebuild),
-        None,
-    )?)
+    device
+        .build_output_stream(
+            config,
+            move |data: &mut [T], _| {
+                for frame in data.chunks_mut(channels) {
+                    let (left, right) = engine.next_stereo();
+                    write_frame(frame, convert(left), convert(right));
+                }
+            },
+            move |error| audio_error(error, &needs_rebuild),
+            None,
+        )
+        .map_err(AudioStartError::backend)
 }
 
 fn write_frame<T: Copy>(frame: &mut [T], left: T, right: T) {

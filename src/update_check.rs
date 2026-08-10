@@ -1,3 +1,9 @@
+//! Passive crates.io update notification.
+//!
+//! Checks in the background and exposes a short TUI-safe message. It must
+//! never block the UI loop or the audio callback, and shows nothing on
+//! failure.
+
 use std::fmt::Display;
 use std::sync::{Arc, Mutex};
 use std::thread;

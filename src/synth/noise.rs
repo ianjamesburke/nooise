@@ -1,3 +1,6 @@
+//! White noise plus its one-pole tone shaping, the source behind Perc and
+//! Clap.
+
 use rand::Rng;
 
 pub(crate) struct WhiteNoise {

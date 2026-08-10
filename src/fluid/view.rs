@@ -9,10 +9,14 @@ use crate::fluid::interaction::{
     PerformanceInstrument, PerformanceMode, PerformanceTargets, SequenceStage,
 };
 
+/// The minimum supported frame. Every top-level and nested owner must render
+/// a full buffer at this size.
 pub(crate) const MIN_TERMINAL_WIDTH: u16 = 46;
 pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Who the keyboard belongs to this frame. Exactly one owner is live, which
+/// is what makes mode-local key handling unambiguous.
 pub(crate) enum KeyboardOwner {
     Browsing,
     Numeric,
@@ -56,6 +60,8 @@ pub(crate) struct ViewNotices {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// The footer's typed content. Precedence between notices and help is
+/// decided here, once — `ui::render` must not recreate it.
 pub(crate) enum HelpSurface {
     Owner { owner: KeyboardOwner, text: String },
     Notice { kind: NoticeKind, text: String },
@@ -88,6 +94,8 @@ pub(crate) struct TelemetryView {
     pub(crate) active_chord: u64,
 }
 
+/// Presentation-only state: never read by the engine, never persisted, and
+/// free to differ between two views of the same session generation.
 pub(crate) struct ViewPresentation<'a> {
     pub(crate) fluid: &'a RippleField,
     pub(crate) flipped: &'a FlippedUnits,
@@ -96,6 +104,9 @@ pub(crate) struct ViewPresentation<'a> {
     pub(crate) notices: ViewNotices,
 }
 
+/// Everything a projection consumes. The session is *one* generation: fields
+/// are never combined across generations, which is what keeps a rendered
+/// frame internally consistent.
 pub(crate) struct ViewProjection<'a> {
     pub(crate) interaction: &'a InteractionModel,
     pub(crate) session: &'a LiveSessionSnapshot,
@@ -119,6 +130,10 @@ pub(crate) struct UiViewModel<'a> {
     pub(crate) help: HelpSurface,
 }
 
+/// The active mode's own render state, and only that mode's.
+///
+/// One variant is live per frame, matching the single keyboard owner. Render
+/// and help must read this rather than re-deriving a mode from session state.
 pub(crate) enum ModeSurface<'a> {
     Browsing,
     /// Numeric entry keeps whatever editor it was opened from projected in
@@ -133,11 +148,15 @@ pub(crate) enum ModeSurface<'a> {
     Performance(PerformanceSurface),
 }
 
+/// Everything the palette overlay draws: the projected match list plus the
+/// query, lock, and staged edits it was built from.
 pub(crate) struct PaletteSurface {
     pub(crate) state: PaletteState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why an automation editor could not be projected. Kept explicit so the
+/// renderer shows the absence rather than falling back to another editor.
 pub(crate) enum AutomationUnavailable {
     NoOpenEditor,
     KindMismatch { active: ModKind },
@@ -145,6 +164,12 @@ pub(crate) enum AutomationUnavailable {
     DepthMismatch,
 }
 
+/// The one place automation resolves for a frame.
+///
+/// A mode/session mismatch, or a nested LFO key that identifies no eligible
+/// field on the active address, becomes `Unavailable` — never a silently
+/// substituted editor. Render and help consume this; they must not infer a
+/// different editor from the session.
 pub(crate) enum AutomationSurface<'a> {
     Lfo {
         depth: crate::fluid::interaction::LfoDepth,
@@ -190,6 +215,9 @@ impl AutomationSurface<'_> {
     }
 }
 
+/// One instrument's live row on the performance deck. Level, length, and
+/// density come from the registry, so they read exactly what the control rows
+/// would.
 pub(crate) struct PerformanceInstrumentSurface {
     pub(crate) instrument: PerformanceInstrument,
     pub(crate) focused: bool,
@@ -199,6 +227,9 @@ pub(crate) struct PerformanceInstrumentSurface {
     pub(crate) density: ControlItem,
 }
 
+/// Performance render state: the closed instrument choices, which selectors
+/// are held, and how the current gesture completes under full versus reduced
+/// terminal capability.
 pub(crate) enum PerformanceSurface {
     Deck {
         selected: Option<usize>,
@@ -533,6 +564,9 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
     }
 }
 
+/// The single keyboard owner for a mode. Exhaustive over `InteractionMode` on
+/// purpose: a new mode cannot compile without naming who owns the keyboard
+/// while it is open.
 pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
     match mode {
         InteractionMode::Browsing => KeyboardOwner::Browsing,

@@ -5,9 +5,12 @@
 
 use super::FluidControls;
 use super::Tab;
-use super::palette::{PaletteEntry, PaletteState, StagedEdit};
+use super::palette::{ModuleScope, PaletteEntry, PaletteState, StagedEdit};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Which edge of a physical key produced this event. A legacy terminal can
+/// only report `Press`; `Repeat` and `Release` exist solely where keyboard
+/// enhancement is negotiated.
 pub(crate) enum InputPhase {
     #[default]
     Press,
@@ -16,6 +19,9 @@ pub(crate) enum InputPhase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which phases an intent accepts, declared per `Intent` so a new variant
+/// must decide before it can be dispatched. Checked *before* any transition
+/// runs, so no transition function restates it.
 pub(crate) enum PhasePolicy {
     Edge,
     Repeatable,
@@ -66,6 +72,10 @@ enum LayerNavigation {
     Master,
 }
 
+/// One row of `LAYERS`: a page, the tab it shows, and the navigation opening
+/// it creates. The table is indexed in `Page`/`Tab` discriminant order, which
+/// is test-enforced, so page-tab translation stays a lookup rather than a
+/// match that could drift.
 struct Layer {
     page: Page,
     tab: Tab,
@@ -177,7 +187,7 @@ pub(crate) enum Navigation {
     Module {
         tab: Tab,
         slot: usize,
-        catalog: usize,
+        catalog_index: usize,
         selected: usize,
         return_to: usize,
     },
@@ -247,7 +257,6 @@ impl Navigation {
                 }
                 ChordDrill::None => {}
             },
-            Self::Master { .. } => {}
             Self::Module { tab, return_to, .. } => {
                 let mut parent = Self::for_page(page_for_tab(*tab));
                 match &mut parent {
@@ -260,7 +269,7 @@ impl Navigation {
                 }
                 *self = parent;
             }
-            Self::Standard { .. } => {}
+            Self::Master { .. } | Self::Standard { .. } => {}
         }
     }
 }
@@ -280,7 +289,7 @@ pub(crate) struct PaletteMode {
     pub(crate) value_buffer: String,
     pub(crate) staged: Vec<PaletteStagedEdit>,
     pub(crate) resume: Option<AutomationMode>,
-    pub(crate) module_scope: Option<(Tab, usize, usize)>,
+    pub(crate) module_scope: Option<ModuleScope>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -498,6 +507,13 @@ pub(crate) enum InteractionMode {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The entire interaction state: where the cursor is, and who owns the
+/// keyboard. Nothing else — no terminal facts, no clock, no session data.
+///
+/// `update` is a deterministic pure function of this plus one action, and
+/// emits ordered data-only effects for an adapter to execute. Two runs of the
+/// same action sequence must produce identical models and identical effects;
+/// the replay property tests assert exactly that.
 pub(crate) struct InteractionModel {
     pub(crate) navigation: Navigation,
     pub(crate) mode: InteractionMode,
@@ -510,6 +526,11 @@ pub(crate) enum PageDirection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The closed vocabulary of things a user can mean. Terminal keys map onto
+/// these; nothing downstream of the mapper looks at a key again.
+///
+/// Every variant declares its accepted phases (`phase_policy`) and its owning
+/// modes (`handled_by`), both exhaustive, so adding one forces both decisions.
 pub(crate) enum Intent {
     MoveSelection(isize),
     ChangePage(PageDirection),
@@ -519,7 +540,7 @@ pub(crate) enum Intent {
     EnterModuleDetail {
         tab: Tab,
         slot: usize,
-        catalog: usize,
+        catalog_index: usize,
     },
     BeginNumeric(char),
     TypeCharacter(char),
@@ -652,6 +673,7 @@ impl Intent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One intent at one phase — the only input the kernel accepts.
 pub(crate) struct SemanticAction {
     pub(crate) phase: InputPhase,
     pub(crate) intent: Intent,
@@ -668,6 +690,12 @@ impl SemanticAction {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// A data-only consequence of a transition, for an adapter to execute.
+///
+/// Effects carry their complete typed payload so no adapter has to
+/// reconstruct what the kernel already knew. They are ordered and execution
+/// stops at the first failure; an executor that does not implement one must
+/// reject it explicitly rather than drop it.
 pub(crate) enum InteractionEffect {
     AdjustSelected(i8),
     CommitNumeric(f32),
@@ -677,12 +705,12 @@ pub(crate) enum InteractionEffect {
         id: &'static str,
     },
     PaletteCommit(Vec<PaletteStagedEdit>),
-    /// Put catalog module `catalog` on `tab`'s chain, or jump to it when the
+    /// Put catalog module `catalog_index` on `tab`'s chain, or jump to it when the
     /// chain already holds it. The kernel cannot tell which, so it says what
     /// was asked for and lets the adapter resolve it.
     PaletteModule {
         tab: Tab,
-        catalog: usize,
+        catalog_index: usize,
     },
     AutomationConfirm(AutomationKind),
     ResetSelected,
@@ -712,6 +740,8 @@ pub(crate) enum InteractionEffect {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// The result of one `update`: the next model, and the effects that must run
+/// in this order for the model to be true.
 pub(crate) struct Transition {
     pub(crate) model: InteractionModel,
     pub(crate) effects: Vec<InteractionEffect>,
@@ -910,12 +940,16 @@ fn update_browsing(
                 *drill = ChordDrill::Slot { slot, return_to };
             }
         }
-        Intent::EnterModuleDetail { tab, slot, catalog } => {
+        Intent::EnterModuleDetail {
+            tab,
+            slot,
+            catalog_index,
+        } => {
             let return_to = navigation.selected();
             *navigation = Navigation::Module {
                 tab,
                 slot,
-                catalog,
+                catalog_index,
                 selected: 0,
                 return_to,
             };
@@ -929,8 +963,15 @@ fn update_browsing(
             *next_mode = Some(InteractionMode::Palette(PaletteMode {
                 module_scope: match navigation {
                     Navigation::Module {
-                        tab, slot, catalog, ..
-                    } => Some((*tab, *slot, *catalog)),
+                        tab,
+                        slot,
+                        catalog_index,
+                        ..
+                    } => Some(ModuleScope {
+                        tab: *tab,
+                        slot: *slot,
+                        catalog_index: *catalog_index,
+                    }),
                     _ => None,
                 },
                 ..PaletteMode::default()
@@ -1043,7 +1084,7 @@ fn update_palette(
             if palette.locked.is_none()
                 && let Some(found) = state.matches.get(state.selected)
             {
-                palette.locked = Some(found.entry);
+                palette.locked = Some(found.entry_index);
             }
         }
         Intent::Confirm => {
@@ -1069,7 +1110,7 @@ fn update_palette(
                 )));
                 *next_mode = Some(resume_mode(palette.resume));
             } else if let Some(found) = state.matches.get(state.selected) {
-                effects.push(palette_confirm(state.entry(found.entry)));
+                effects.push(palette_confirm(state.entry(found.entry_index)));
                 *next_mode = Some(InteractionMode::Browsing);
             }
         }
@@ -1413,9 +1454,9 @@ fn palette_confirm(entry: &PaletteEntry) -> InteractionEffect {
             index: *index_in_tab,
             id: spec.id,
         },
-        PaletteEntry::Module { tab, catalog } => InteractionEffect::PaletteModule {
+        PaletteEntry::Module { tab, catalog_index } => InteractionEffect::PaletteModule {
             tab: *tab,
-            catalog: *catalog,
+            catalog_index: *catalog_index,
         },
         PaletteEntry::ModuleControl { tab, spec, .. } => InteractionEffect::PaletteJump {
             tab: *tab,
@@ -1615,7 +1656,7 @@ mod tests {
             Intent::EnterModuleDetail {
                 tab: Tab::Clap,
                 slot: 2,
-                catalog: 5,
+                catalog_index: 5,
             },
         )
         .model;
@@ -1624,7 +1665,7 @@ mod tests {
             Navigation::Module {
                 tab: Tab::Clap,
                 slot: 2,
-                catalog: 5,
+                catalog_index: 5,
                 selected: 0,
                 return_to: 6,
             }
@@ -1982,7 +2023,7 @@ mod tests {
             ..PaletteMode::default()
         };
         let projected = project_palette(&base, Page::Bass);
-        let expected = palette_confirm(projected.entry(projected.matches[1].entry));
+        let expected = palette_confirm(projected.entry(projected.matches[1].entry_index));
 
         let ordinary = update(palette_model(base.clone()), Intent::Confirm);
         assert_eq!(ordinary.effects, vec![expected.clone()]);

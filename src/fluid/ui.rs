@@ -1,3 +1,10 @@
+//! Ratatui rendering, and nothing else.
+//!
+//! Draws one frame from an immutable `UiViewModel` and the frame area. It must
+//! not mutate session state, execute effects, or poll input. Owns the control
+//! and modulator row widgets, the shared lane renderer, and display-unit
+//! formatting.
+
 use std::collections::BTreeSet;
 
 use super::widget::{Dial, DialScale};
@@ -122,7 +129,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let frame = PanelFrame {
         view,
         automation,
-        lfo_selected: automation.map_or(0, |surface| surface.selected()),
+        lfo_selected: automation.map_or(0, AutomationSurface::selected),
         numeric: NumericDisplay {
             entry: match &view.mode {
                 ModeSurface::Numeric { entry, .. } => Some(entry.as_str()),
@@ -252,10 +259,8 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         let route = automation.route(address);
         let envelope = automation.envelope(address);
         let macro_route = automation.macro_route(address);
-        let editor_here = frame
-            .automation
-            .and_then(|surface| surface.active_address())
-            == Some(address);
+        let editor_here =
+            frame.automation.and_then(AutomationSurface::active_address) == Some(address);
         let open_here = |kind: ModKind| match (frame.automation, kind) {
             (Some(AutomationSurface::Lfo { address: open, .. }), ModKind::Lfo)
             | (Some(AutomationSurface::Envelope { address: open, .. }), ModKind::Envelope)
@@ -790,7 +795,7 @@ fn draw_palette(
 
     let mut lines = vec![prompt];
     for (row, m) in pal.matches.iter().skip(first_row).take(shown).enumerate() {
-        let entry = pal.entry(m.entry);
+        let entry = pal.entry(m.entry_index);
         let is_selected = first_row + row == pal.selected;
         let marker = if is_selected { "\u{25b8} " } else { "  " };
         let base = if is_selected {

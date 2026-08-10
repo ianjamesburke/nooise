@@ -1,6 +1,6 @@
-// ============================================================
-// Controls
-// ============================================================
+//! The live control values themselves: `FluidControls` and the per-voice
+//! structs it aggregates, each a plain field bag with a default. Meaning,
+//! range, and presentation all live in the registry, never here.
 
 use super::module::LayerModules;
 
@@ -17,10 +17,10 @@ pub(crate) const LEVEL_RAMP_MS: f32 = 30.0;
 
 #[derive(Clone)]
 pub(crate) struct MasterControls {
-    pub bpm: f32,
-    pub level: f32,
-    pub tone: f32, // -1 (bass) to +1 (treble)
-    pub tune: f32, // semitones, -12 (1 octave down) to +12 (1 octave up)
+    pub(crate) bpm: f32,
+    pub(crate) level: f32,
+    pub(crate) tone: f32, // -1 (bass) to +1 (treble)
+    pub(crate) tune: f32, // semitones, -12 (1 octave down) to +12 (1 octave up)
 }
 
 impl Default for MasterControls {
@@ -36,12 +36,12 @@ impl Default for MasterControls {
 
 #[derive(Clone)]
 pub(crate) struct PercControls {
-    pub level: f32,
-    pub decay_ms: f32,
-    pub filter: f32,
-    pub interval_beats: f32,
-    pub offset_beats: f32,
-    pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
+    pub(crate) level: f32,
+    pub(crate) decay_ms: f32,
+    pub(crate) filter: f32,
+    pub(crate) interval_beats: f32,
+    pub(crate) offset_beats: f32,
+    pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
 impl Default for PercControls {
@@ -69,11 +69,11 @@ impl Default for PercControls {
 /// otherwise inert.
 #[derive(Clone, Default)]
 pub(crate) struct ChordSlotControls {
-    pub degree: f32,
-    pub accidental: f32,
-    pub quality: f32,
-    pub extension: f32,
-    pub inversion: f32,
+    pub(crate) degree: f32,
+    pub(crate) accidental: f32,
+    pub(crate) quality: f32,
+    pub(crate) extension: f32,
+    pub(crate) inversion: f32,
 }
 
 /// Default per-slot root degrees for a fresh custom progression: a stepwise
@@ -87,17 +87,17 @@ pub(crate) const CHORD_SLOT_COUNT: usize = 8;
 
 #[derive(Clone)]
 pub(crate) struct PadControls {
-    pub level: f32,
-    pub voice_type: f32, // 0=Warm (legacy), 1=Dark, 2=Glass character selector
-    pub chord_bars: f32, // 1,2,4,8,16,32,64
-    pub chord_count: f32,
-    pub progression: f32,
-    pub chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
-    pub stereo_width: f32,
-    pub detune: f32,
-    pub octave_mix: f32,
-    pub attack_time: f32,
-    pub release_time: f32,
+    pub(crate) level: f32,
+    pub(crate) voice_type: f32, // 0=Warm (legacy), 1=Dark, 2=Glass character selector
+    pub(crate) chord_bars: f32, // 1,2,4,8,16,32,64
+    pub(crate) chord_count: f32,
+    pub(crate) progression: f32,
+    pub(crate) chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
+    pub(crate) stereo_width: f32,
+    pub(crate) detune: f32,
+    pub(crate) octave_mix: f32,
+    pub(crate) attack_time: f32,
+    pub(crate) release_time: f32,
 }
 
 impl Default for PadControls {
@@ -123,16 +123,16 @@ impl Default for PadControls {
 
 #[derive(Clone)]
 pub(crate) struct KickControls {
-    pub level: f32,
-    pub voice_type: f32, // 0=Sub (legacy), 1=Punch, 2=Membrane, 3=Driven character selector
-    pub start_freq: f32,
-    pub pitch_decay_ms: f32,
-    pub amp_decay_ms: f32,
-    pub click: f32, // 0–0.2 UI range
-    pub filter: f32,
-    pub interval_beats: f32,
-    pub offset_beats: f32,
-    pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
+    pub(crate) level: f32,
+    pub(crate) voice_type: f32, // 0=Sub (legacy), 1=Punch, 2=Membrane, 3=Driven character selector
+    pub(crate) start_freq: f32,
+    pub(crate) pitch_decay_ms: f32,
+    pub(crate) amp_decay_ms: f32,
+    pub(crate) click: f32, // 0–0.2 UI range
+    pub(crate) filter: f32,
+    pub(crate) interval_beats: f32,
+    pub(crate) offset_beats: f32,
+    pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
 impl Default for KickControls {
@@ -154,18 +154,18 @@ impl Default for KickControls {
 
 #[derive(Clone)]
 pub(crate) struct TonalControls {
-    pub level: f32,
-    pub synth_type: f32,
-    pub octave: f32,
-    pub phrase: f32,
-    pub randomness: f32,
-    pub evolve_rate: f32,
-    pub rate_beats: f32,
-    pub step_interval_beats: f32,
-    pub offset_beats: f32,
-    pub attack: f32,
-    pub decay: f32,
-    pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
+    pub(crate) level: f32,
+    pub(crate) synth_type: f32,
+    pub(crate) octave: f32,
+    pub(crate) phrase: f32,
+    pub(crate) randomness: f32,
+    pub(crate) evolve_rate: f32,
+    pub(crate) rate_beats: f32,
+    pub(crate) step_interval_beats: f32,
+    pub(crate) offset_beats: f32,
+    pub(crate) attack: f32,
+    pub(crate) decay: f32,
+    pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
 impl Default for TonalControls {
@@ -194,15 +194,15 @@ impl Default for TonalControls {
 
 #[derive(Clone)]
 pub(crate) struct ClapControls {
-    pub level: f32,
-    pub interval_beats: f32,
-    pub offset_beats: f32,
-    pub swing: f32,          // 0 (straight) to 1 (max shuffle) on this voice's grid
-    pub slap_count: f32,     // 1-8
-    pub slap_spread_ms: f32, // 0-100 ms
-    pub decay_ms: f32,       // 10-200 ms
-    pub filter: f32,         // 0=dark 1=bright
-    pub body: f32,           // 0-1 low-freq flesh mix
+    pub(crate) level: f32,
+    pub(crate) interval_beats: f32,
+    pub(crate) offset_beats: f32,
+    pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
+    pub(crate) slap_count: f32, // 1-8
+    pub(crate) slap_spread_ms: f32, // 0-100 ms
+    pub(crate) decay_ms: f32, // 10-200 ms
+    pub(crate) filter: f32, // 0=dark 1=bright
+    pub(crate) body: f32,  // 0-1 low-freq flesh mix
 }
 
 impl Default for ClapControls {
@@ -223,16 +223,16 @@ impl Default for ClapControls {
 
 #[derive(Clone)]
 pub(crate) struct BassControls {
-    pub level: f32,
-    pub voice_type: f32,     // 0=Sub (legacy), 1=Saw, 2=Pluck character selector
-    pub interval_beats: f32, // crops the 16-step rhythm phrase to this many beats (step length is fixed)
-    pub offset_beats: f32,
-    pub rhythm: f32, // 0..=3, A/B/C/D pattern selector
-    pub octave: f32, // octaves relative to the chord root, e.g. -1.0 = one octave down
-    pub attack_time: f32,
-    pub decay_time: f32, // also used as the cutoff curve when a hit retriggers mid-decay
-    pub cutoff: f32,     // one-pole lowpass cutoff, Hz; BASS_CUTOFF_MAX_HZ = fully open (bypass)
-    pub swing: f32,      // derived from the optional Swing module
+    pub(crate) level: f32,
+    pub(crate) voice_type: f32, // 0=Sub (legacy), 1=Saw, 2=Pluck character selector
+    pub(crate) interval_beats: f32, // crops the 16-step rhythm phrase to this many beats (step length is fixed)
+    pub(crate) offset_beats: f32,
+    pub(crate) rhythm: f32, // 0..=3, A/B/C/D pattern selector
+    pub(crate) octave: f32, // octaves relative to the chord root, e.g. -1.0 = one octave down
+    pub(crate) attack_time: f32,
+    pub(crate) decay_time: f32, // also used as the cutoff curve when a hit retriggers mid-decay
+    pub(crate) cutoff: f32, // one-pole lowpass cutoff, Hz; BASS_CUTOFF_MAX_HZ = fully open (bypass)
+    pub(crate) swing: f32,  // derived from the optional Swing module
 }
 
 impl Default for BassControls {
@@ -254,15 +254,15 @@ impl Default for BassControls {
 
 #[derive(Clone)]
 pub(crate) struct ArpControls {
-    pub gain: f32,
-    pub voice_type: f32, // same Sine/piano-profile set as tonal.synth_type
-    pub rate_beats: f32,
-    pub offset_beats: f32,
-    pub pattern: f32, // 0=Up, 1=Down, 2=Up-Down, 3=Random
-    pub octaves: f32, // 1-3, octave span of the cycled chord tones
-    pub attack: f32,
-    pub decay: f32,
-    pub swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
+    pub(crate) gain: f32,
+    pub(crate) voice_type: f32, // same Sine/piano-profile set as tonal.synth_type
+    pub(crate) rate_beats: f32,
+    pub(crate) offset_beats: f32,
+    pub(crate) pattern: f32, // 0=Up, 1=Down, 2=Up-Down, 3=Random
+    pub(crate) octaves: f32, // 1-3, octave span of the cycled chord tones
+    pub(crate) attack: f32,
+    pub(crate) decay: f32,
+    pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
 impl Default for ArpControls {
@@ -292,21 +292,21 @@ pub(crate) const MACRO_COUNT: usize = 4;
 /// control's range.
 #[derive(Clone, Default)]
 pub(crate) struct MacroControls {
-    pub values: [f32; MACRO_COUNT],
+    pub(crate) values: [f32; MACRO_COUNT],
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct FluidControls {
-    pub master: MasterControls,
-    pub perc: PercControls,
-    pub pad: PadControls,
-    pub kick: KickControls,
-    pub tonal: TonalControls,
-    pub clap: ClapControls,
-    pub bass: BassControls,
-    pub arp: ArpControls,
-    pub macros: MacroControls,
+    pub(crate) master: MasterControls,
+    pub(crate) perc: PercControls,
+    pub(crate) pad: PadControls,
+    pub(crate) kick: KickControls,
+    pub(crate) tonal: TonalControls,
+    pub(crate) clap: ClapControls,
+    pub(crate) bass: BassControls,
+    pub(crate) arp: ArpControls,
+    pub(crate) macros: MacroControls,
     /// Per-layer module chain. Every slot defaults to empty, so this adds no
     /// audible state and prunes entirely out of a song code.
-    pub modules: LayerModules,
+    pub(crate) modules: LayerModules,
 }

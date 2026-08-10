@@ -1,3 +1,6 @@
+//! ADSR envelope. Voices whose whole sounding life is one attack-decay shape
+//! use their own inline envelopes instead.
+
 #[derive(Clone, Copy)]
 enum Stage {
     Attack,

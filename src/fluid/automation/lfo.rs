@@ -430,21 +430,21 @@ impl LfoRoute {
         (self.step_count as usize).clamp(1, MAX_LFO_STEPS)
     }
 
-    /// Staircase value in -1..1 for step `idx` at fraction `frac` (0..1)
+    /// Staircase value in -1..1 for step `step_index` at fraction `frac` (0..1)
     /// through that step. Each step spans one LFO interval and holds its
     /// value, easing in from the previous step's value over the first
     /// `step_glide` fraction of the step. Because step 0 eases from the last
     /// step, the curve is value-continuous across the pattern wrap too (at
     /// `step_glide` 0 it hard-steps and clicks, same as sample & hold).
-    fn step_value_at(&self, idx: usize, frac: f32) -> f32 {
+    fn step_value_at(&self, step_index: usize, frac: f32) -> f32 {
         let count = self.active_step_count();
-        let idx = idx.min(count - 1);
-        let cur = self.steps[idx];
+        let step_index = step_index.min(count - 1);
+        let cur = self.steps[step_index];
         let glide = self.step_glide.clamp(0.0, 1.0);
         if glide <= f32::EPSILON || frac >= glide {
             return cur;
         }
-        let prev = self.steps[(idx + count - 1) % count];
+        let prev = self.steps[(step_index + count - 1) % count];
         prev + (cur - prev) * smoothstep(frac / glide)
     }
 
@@ -457,8 +457,8 @@ impl LfoRoute {
             LfoShape::Steps => {
                 let count = self.active_step_count();
                 let scaled = phase.rem_euclid(1.0) * count as f32;
-                let idx = (scaled.floor() as usize).min(count - 1);
-                self.step_value_at(idx, scaled - idx as f32)
+                let step_index = (scaled.floor() as usize).min(count - 1);
+                self.step_value_at(step_index, scaled - step_index as f32)
             }
             _ => periodic_shape_value(self.shape, phase),
         }

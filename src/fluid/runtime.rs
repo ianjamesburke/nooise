@@ -26,11 +26,22 @@ use super::interaction::{
     SequenceStage,
 };
 
+/// Target spacing between drawn frames.
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+/// Hard ceiling on how long continuous input may postpone a visible frame.
+/// ADR 0001 states this as the runtime's contract; the scheduler preempts
+/// queued input to hold it.
 pub(crate) const MAX_FRAME_GAP: Duration = Duration::from_millis(50);
+/// Spacing between scheduler ticks, which commit bar-quantized work.
 pub(crate) const TICK_INTERVAL: Duration = Duration::from_millis(33);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What this terminal actually reports, negotiated once at startup.
+///
+/// Everything phase-dependent branches on these rather than assuming: without
+/// `key_event_types` there is no trustworthy repeat/release distinction, and
+/// hold gestures fall back to a visibly kernel-owned completion instead of
+/// silently misreading autorepeat as a hold.
 pub(crate) struct TerminalCapabilities {
     pub(crate) key_event_types: bool,
     pub(crate) plain_key_releases: bool,
@@ -42,6 +53,8 @@ impl TerminalCapabilities {
     }
 }
 
+/// Every process-wide terminal mode the runtime touches, behind one trait so
+/// lifecycle ordering can be tested without a real terminal.
 trait TerminalControl {
     fn enable_raw(&mut self) -> io::Result<()>;
     fn enter_alternate_screen(&mut self) -> io::Result<()>;
@@ -91,6 +104,8 @@ impl TerminalControl for CrosstermControl {
     }
 }
 
+/// Tracks which modes were actually entered, so every exit path — normal,
+/// error, panic — restores exactly those, in reverse order.
 struct TerminalLifecycle<C: TerminalControl> {
     control: C,
     raw_enabled: bool,
@@ -179,6 +194,9 @@ fn record_first_error(first: &mut Option<io::Error>, result: io::Result<()>) {
     }
 }
 
+/// The live terminal: a Ratatui backend plus the lifecycle that must outlive
+/// it. `enter` negotiates capabilities; `restore` is the only correct way to
+/// give the terminal back, and it must run on every exit path.
 pub(crate) struct TerminalSession {
     // Drop the Ratatui terminal before restoring process-wide terminal modes.
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
@@ -314,6 +332,9 @@ transport_key! {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// Closed key identity. Media and modifier keys are typed variants rather
+/// than debug strings, so every identity round-trips through a fixture
+/// without loss.
 pub(crate) enum PhysicalKey {
     Backspace,
     Enter,
@@ -351,6 +372,9 @@ pub(crate) struct TransportKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// A terminal event with transport facts preserved and no meaning assigned.
+/// Paste and mouse text is redacted at this boundary and never reaches a
+/// fixture.
 pub(crate) enum TransportEvent {
     Key {
         key: TransportKey,
@@ -379,6 +403,9 @@ pub(crate) enum DeferredInput {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What the canonical mapper made of one transport event: a semantic
+/// `Action`, `Ignored`, or a typed `Deferred` reason. There is no fourth
+/// answer, and no silent drop.
 pub(crate) enum InputMapping {
     Action(SemanticAction),
     Ignored,
@@ -685,6 +712,13 @@ fn normalize_event(event: Event, capabilities: TerminalCapabilities) -> Transpor
     }
 }
 
+/// Turn a Crossterm key event into transport facts — identity, phase,
+/// modifiers, repeat count — and nothing else.
+///
+/// Phase is the load-bearing part: with keyboard enhancement the reported kind
+/// is trusted, and without it every event is a Press, because a legacy
+/// terminal's repeat and release reports cannot be told apart. No musical or
+/// semantic meaning is assigned here; that is the kernel's job.
 pub(crate) fn normalize_key_event(
     event: KeyEvent,
     capabilities: TerminalCapabilities,
@@ -760,11 +794,15 @@ fn normalize_modifiers(modifiers: KeyModifiers) -> Modifiers {
     normalized
 }
 
+/// Where transport events come from. Production reads Crossterm; replay
+/// scripts them, so the same scheduler code runs in both.
 pub(crate) trait EventSource {
     fn poll(&mut self, timeout: Duration) -> io::Result<bool>;
     fn read(&mut self) -> io::Result<TransportEvent>;
 }
 
+/// The production `EventSource`. Normalizes every event through
+/// `normalize_event` on the way out, so nothing downstream sees Crossterm.
 pub(crate) struct CrosstermEventSource {
     capabilities: TerminalCapabilities,
 }
@@ -785,10 +823,14 @@ impl EventSource for CrosstermEventSource {
     }
 }
 
+/// Application-controlled time. Every deadline in the scheduler is measured
+/// against this, never against `Instant::now` directly, so replay is
+/// deterministic.
 pub(crate) trait Clock {
     fn now(&self) -> Duration;
 }
 
+/// The production `Clock`: elapsed time since the session started.
 pub(crate) struct MonotonicClock {
     started: Instant,
 }
@@ -808,6 +850,8 @@ impl Clock for MonotonicClock {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// The scheduler's bounds: how much input one turn may admit, and how long
+/// ticks and frames may wait.
 pub(crate) struct SchedulerConfig {
     pub(crate) queue_capacity: usize,
     pub(crate) max_reads_per_turn: usize,
@@ -838,6 +882,14 @@ pub(crate) struct RuntimeTurn {
     pub(crate) shutdown_seen: bool,
 }
 
+/// Fair admission of input against tick and frame deadlines.
+///
+/// Holds three guarantees: an input turn is bounded by both read count and
+/// elapsed time; reliable events backpressure at a fixed queue capacity rather
+/// than growing without limit; and a due or requested frame preempts queued
+/// input, so `MAX_FRAME_GAP` survives a key held down. Only adjacent identical
+/// Repeat events are run-length encoded — collapsing anything else would lose
+/// ordering the kernel depends on.
 pub(crate) struct Scheduler {
     config: SchedulerConfig,
     queue: VecDeque<TransportEvent>,

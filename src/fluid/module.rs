@@ -317,14 +317,14 @@ pub(crate) fn module_kind_label(value: f32) -> String {
 /// until a knob moves.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct ModuleSlot {
-    pub kind: f32,
-    pub amount: f32,
-    pub time: f32,
-    pub right_time: f32,
-    pub clock: f32,
-    pub right_clock: f32,
-    pub feedback: f32,
-    pub vintage: f32,
+    pub(crate) kind: f32,
+    pub(crate) amount: f32,
+    pub(crate) time: f32,
+    pub(crate) right_time: f32,
+    pub(crate) clock: f32,
+    pub(crate) right_clock: f32,
+    pub(crate) feedback: f32,
+    pub(crate) vintage: f32,
 }
 
 impl ModuleSlot {
@@ -389,14 +389,14 @@ pub(crate) fn chain_amount(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) -> f32 
 /// struct so the voices stay unaware of the module chain until execution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LayerModules {
-    pub pad: [ModuleSlot; MODULE_SLOTS],
-    pub perc: [ModuleSlot; MODULE_SLOTS],
-    pub bass: [ModuleSlot; MODULE_SLOTS],
-    pub kick: [ModuleSlot; MODULE_SLOTS],
-    pub tonal: [ModuleSlot; MODULE_SLOTS],
-    pub clap: [ModuleSlot; MODULE_SLOTS],
-    pub arp: [ModuleSlot; MODULE_SLOTS],
-    pub master: [ModuleSlot; MODULE_SLOTS],
+    pub(crate) pad: [ModuleSlot; MODULE_SLOTS],
+    pub(crate) perc: [ModuleSlot; MODULE_SLOTS],
+    pub(crate) bass: [ModuleSlot; MODULE_SLOTS],
+    pub(crate) kick: [ModuleSlot; MODULE_SLOTS],
+    pub(crate) tonal: [ModuleSlot; MODULE_SLOTS],
+    pub(crate) clap: [ModuleSlot; MODULE_SLOTS],
+    pub(crate) arp: [ModuleSlot; MODULE_SLOTS],
+    pub(crate) master: [ModuleSlot; MODULE_SLOTS],
 }
 
 impl Default for LayerModules {

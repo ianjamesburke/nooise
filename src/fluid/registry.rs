@@ -1,8 +1,8 @@
-use super::*;
+//! The control registry: one `ControlSpec` table per tab, and the single
+//! source of truth for every control row, its range and stepping, its stable
+//! song-snapshot id, and how a value reads on screen.
 
-// ============================================================
-// UI
-// ============================================================
+use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tab {

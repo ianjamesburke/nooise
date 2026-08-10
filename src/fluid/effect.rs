@@ -1,15 +1,82 @@
+//! Ordered interaction-effect execution: the adapter-side consequences of a
+//! kernel transition.
+//!
+//! Effects run in order and stop at the first failure. Control and automation
+//! mutations call *down* into `edit.rs`; this module must never call into
+//! `ui.rs`.
+
+use std::error::Error;
+use std::fmt;
+
 #[cfg(test)]
 use super::interaction::PaletteStagedEdit;
 use super::interaction::{InteractionEffect, LfoDepth, Page};
+use super::song::SongCodeError;
 use super::*;
 
+/// Why one effect in a transition's ordered list did not run.
+///
+/// Execution stops at the first failure, so a failure is also the reason the
+/// effects behind it never ran.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum EffectFailure {
+    /// The effect named a control id no registry spec claims.
     UnknownControl(&'static str),
-    Clipboard(String),
+    /// The song state could not be encoded, so there was nothing to copy.
+    SongEncode(SongCodeError),
+    /// The clipboard refused the write.
+    Clipboard(ClipboardError),
+    /// The effect needs a piece of live context the frame did not carry.
     MissingContext(&'static str),
+    /// The kernel emitted an effect this executor does not implement. New
+    /// effects are rejected explicitly rather than silently dropped.
     UnsupportedInteraction(InteractionEffect),
 }
+
+impl fmt::Display for EffectFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownControl(id) => write!(f, "no control named {id}"),
+            Self::SongEncode(error) => write!(f, "{error}"),
+            Self::Clipboard(error) => write!(f, "{error}"),
+            Self::MissingContext(what) => write!(f, "no {what} in this frame"),
+            Self::UnsupportedInteraction(effect) => {
+                write!(f, "unsupported interaction effect {effect:?}")
+            }
+        }
+    }
+}
+
+impl Error for EffectFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::SongEncode(error) => Some(error),
+            Self::Clipboard(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Why a clipboard write did not land. The detail string is the system
+/// backend's own message; the variant names which step it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ClipboardError {
+    /// No system clipboard could be opened at all.
+    Unavailable(String),
+    /// The clipboard opened but rejected the text.
+    WriteRejected(String),
+}
+
+impl fmt::Display for ClipboardError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable(detail) => write!(f, "clipboard unavailable: {detail}"),
+            Self::WriteRejected(detail) => write!(f, "clipboard write rejected: {detail}"),
+        }
+    }
+}
+
+impl Error for ClipboardError {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum EffectAcknowledgement {
@@ -84,16 +151,21 @@ pub(crate) struct ProductionInteractionContext<'a> {
     pub(crate) mute: &'a mut MuteState,
 }
 
+/// The one seam that reaches the system clipboard, so replay can substitute a
+/// deterministic one.
 pub(crate) trait Clipboard {
-    fn set_text(&mut self, text: String) -> Result<(), String>;
+    fn set_text(&mut self, text: String) -> Result<(), ClipboardError>;
 }
 
 pub(crate) struct SystemClipboard;
 
 impl Clipboard for SystemClipboard {
-    fn set_text(&mut self, text: String) -> Result<(), String> {
-        let mut clipboard = arboard::Clipboard::new().map_err(|error| error.to_string())?;
-        clipboard.set_text(text).map_err(|error| error.to_string())
+    fn set_text(&mut self, text: String) -> Result<(), ClipboardError> {
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|error| ClipboardError::Unavailable(error.to_string()))?;
+        clipboard
+            .set_text(text)
+            .map_err(|error| ClipboardError::WriteRejected(error.to_string()))
     }
 }
 
@@ -256,7 +328,7 @@ impl EffectExecutor {
                     automation: snapshot.automation.clone(),
                     tonal_sequence: Some(snapshot.tonal_sequence.clone()),
                 })
-                .map_err(|error| EffectFailure::Clipboard(error.to_string()))?;
+                .map_err(EffectFailure::SongEncode)?;
                 clipboard.set_text(code).map_err(EffectFailure::Clipboard)?;
                 let message = "song code copied to clipboard".to_string();
                 self.message = Some((message.clone(), Instant::now()));
@@ -269,13 +341,10 @@ impl EffectExecutor {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ordered generic bridge is exercised by adapter tests"
-        )
-    )]
+    /// Ordered generic bridge. Production drives effects through
+    /// `execute_interaction_with_clipboard`; this shape exists for the
+    /// adapter tests that assert stop-at-first-failure ordering.
+    #[cfg(test)]
     pub(crate) fn execute_ordered(
         &mut self,
         effects: impl IntoIterator<Item = LiveEffect>,
@@ -345,10 +414,10 @@ impl EffectExecutor {
     fn place_module(
         &mut self,
         tab: Tab,
-        catalog: usize,
+        catalog_index: usize,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         let kind = MODULE_CATALOG
-            .get(catalog)
+            .get(catalog_index)
             .ok_or(EffectFailure::MissingContext("catalog module"))?;
         if !module_available_on(*kind, tab) {
             return Err(EffectFailure::MissingContext(
@@ -406,6 +475,9 @@ impl EffectExecutor {
     /// straight back on the second press, so auto mode keeps driving.
     pub(crate) fn toggle_mute(&mut self, tab: Tab, mute: &mut MuteState) {
         let Some(id) = tab.level_id() else { return };
+        // `TAB_META`'s level ids are asserted against the registry by
+        // `control_registry_specs_are_internally_consistent`, so a miss here
+        // is a table edit that could not have reached a release.
         let spec = spec_by_id(id).expect("tab level_id must name a real control");
         let slot = &mut mute[tab as usize];
         match *slot {
@@ -429,13 +501,7 @@ impl EffectExecutor {
     /// Typed bridge from the pure interaction kernel to effect execution.
     /// Effects needing adapter-owned data must receive it explicitly through
     /// `context`; unsupported staged performance effects fail visibly.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "generic interaction bridge is exercised by adapter tests"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn execute_interaction(
         &mut self,
         effect: InteractionEffect,
@@ -475,7 +541,9 @@ impl EffectExecutor {
             }
             // Needs only the session, so the generic bridge can resolve it;
             // the production path adds closing the open editor first.
-            InteractionEffect::PaletteModule { tab, catalog } => self.place_module(tab, catalog),
+            InteractionEffect::PaletteModule { tab, catalog_index } => {
+                self.place_module(tab, catalog_index)
+            }
             InteractionEffect::PaletteCommit(edits) => {
                 let edits = edits
                     .into_iter()
@@ -691,9 +759,9 @@ impl EffectExecutor {
             InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_) => Ok(EffectAcknowledgement::NoChange),
-            InteractionEffect::PaletteModule { tab, catalog } => {
+            InteractionEffect::PaletteModule { tab, catalog_index } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
-                self.place_module(tab, catalog)
+                self.place_module(tab, catalog_index)
             }
             InteractionEffect::PerformanceEdit {
                 targets,
@@ -792,11 +860,11 @@ mod tests {
     #[derive(Default)]
     struct FakeClipboard {
         value: Option<String>,
-        failure: Option<String>,
+        failure: Option<ClipboardError>,
     }
 
     impl Clipboard for FakeClipboard {
-        fn set_text(&mut self, text: String) -> Result<(), String> {
+        fn set_text(&mut self, text: String) -> Result<(), ClipboardError> {
             if let Some(error) = self.failure.take() {
                 Err(error)
             } else {
@@ -925,7 +993,7 @@ mod tests {
             .execute_interaction(
                 InteractionEffect::PaletteModule {
                     tab: Tab::Bass,
-                    catalog: delay,
+                    catalog_index: delay,
                 },
                 &InteractionExecutionContext::default(),
             )
@@ -958,7 +1026,7 @@ mod tests {
             .execute_interaction(
                 InteractionEffect::PaletteModule {
                     tab: Tab::Kick,
-                    catalog: drive,
+                    catalog_index: drive,
                 },
                 &InteractionExecutionContext::default(),
             )
@@ -988,7 +1056,7 @@ mod tests {
             .execute_interaction(
                 InteractionEffect::PaletteModule {
                     tab: Tab::Chords,
-                    catalog: delay,
+                    catalog_index: delay,
                 },
                 &InteractionExecutionContext::default(),
             )
@@ -1045,12 +1113,14 @@ mod tests {
     fn failed_clipboard_is_reported_without_false_success_message() {
         let mut executor = executor();
         let mut clipboard = FakeClipboard {
-            failure: Some("denied".into()),
+            failure: Some(ClipboardError::WriteRejected("denied".into())),
             ..FakeClipboard::default()
         };
         assert_eq!(
             executor.execute_with_clipboard(LiveEffect::CopySong, &mut clipboard),
-            Err(EffectFailure::Clipboard("denied".into()))
+            Err(EffectFailure::Clipboard(ClipboardError::WriteRejected(
+                "denied".into()
+            )))
         );
         assert_eq!(executor.message(), None);
     }

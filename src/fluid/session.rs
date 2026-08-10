@@ -1,3 +1,9 @@
+//! The one publication boundary for user-audible live state.
+//!
+//! `LiveSessionSnapshot` is an immutable generation of controls, automation,
+//! and tonal state; every writer goes through `LiveSession::transact` so the
+//! audio thread only ever reads one coherent generation.
+
 use super::*;
 
 /// One coherent, immutable generation of every user-audible live-session
