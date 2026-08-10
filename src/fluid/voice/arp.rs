@@ -1,8 +1,6 @@
-use super::*;
+//! The Arp voice: cycles the Pad's current chord tones on its own grid.
 
-// ============================================================
-// Arp engine (follows the Pad's current chord on its own grid)
-// ============================================================
+use super::*;
 
 pub(crate) const ARP_RATE_BEATS_MIN: f32 = 0.125;
 pub(crate) const ARP_RATE_BEATS_MAX: f32 = 4.0;

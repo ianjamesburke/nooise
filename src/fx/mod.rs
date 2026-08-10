@@ -1,3 +1,5 @@
+//! Shared DSP building blocks consumed by voices and module slots.
+
 pub(crate) mod compression;
 pub(crate) mod delay;
 pub(crate) mod drive;

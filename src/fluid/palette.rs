@@ -1,18 +1,16 @@
+//! The `/` control palette.
+//!
+//! `/` opens a fuzzy-find prompt over every control id in the registry.
+//! Typing filters; Tab locks the highlighted control; digits typed after the
+//! lock become a value. Enter stages the edit (or jumps when no value was
+//! typed); Enter on an empty prompt commits every staged edit at once, and
+//! Ctrl+B commits them on the next bar downbeat instead. The registry tables
+//! stay the single source of truth — the palette only builds a flat address
+//! space over them, exactly one entry per unique control id at its native
+//! (deepest) editing surface.
+
 use super::module::{MODULE_CATALOG, chain_amount_slot, module_available_on, tab_has_module_chain};
 use super::*;
-
-// ============================================================
-// Control palette
-//
-// `/` opens a fuzzy-find prompt over every control id in the registry.
-// Typing filters; Tab locks the highlighted control; digits typed after the
-// lock become a value. Enter stages the edit (or jumps when no value was
-// typed); Enter on an empty prompt commits every staged edit at once, and
-// Ctrl+B commits them on the next bar downbeat instead. The registry tables
-// stay the single source of truth — the palette only builds a flat address
-// space over them, exactly one entry per unique control id at its native
-// (deepest) editing surface.
-// ============================================================
 
 /// What a palette row does when confirmed.
 ///

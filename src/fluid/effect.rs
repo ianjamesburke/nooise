@@ -1,3 +1,10 @@
+//! Ordered interaction-effect execution: the adapter-side consequences of a
+//! kernel transition.
+//!
+//! Effects run in order and stop at the first failure. Control and automation
+//! mutations call *down* into `edit.rs`; this module must never call into
+//! `ui.rs`.
+
 use std::error::Error;
 use std::fmt;
 

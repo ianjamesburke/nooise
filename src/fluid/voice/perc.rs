@@ -1,8 +1,6 @@
-use super::*;
+//! The Perc voice: filtered white-noise hits on a grid.
 
-// ============================================================
-// Perc engine (16th-note white noise hits)
-// ============================================================
+use super::*;
 
 /// Headroom trim on filtered-noise output, not a character control —
 /// `perc.level` at 100% should reach close to full scale on its own (for a

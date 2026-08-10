@@ -1,3 +1,8 @@
+//! The shared production turn coordinator, and the live UI loop built on it.
+//!
+//! One ordering seam that both the live scheduler loop and the replay harness
+//! cross: a scheduler-due tick commits before that turn's events.
+
 use super::*;
 
 const SAVE_MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(3);

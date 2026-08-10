@@ -1,3 +1,6 @@
+//! Binary entry point: CLI parsing for `run`/`version`/`update`/`render`/`auto`
+//! and a bare song code, then handoff to the matching `fluid` entry.
+
 use clap::{Args, Parser, Subcommand};
 use std::error::Error;
 use std::path::PathBuf;

@@ -1,3 +1,6 @@
+//! A slowly drifting LFO for voice-internal movement, retargeting its rate at
+//! random intervals rather than running at one fixed speed.
+
 use rand::Rng;
 
 pub(crate) struct DriftingLfo {

@@ -1,3 +1,6 @@
+//! The Bass voice: a monophonic line following the Pad's progression, in
+//! three characters over one shared trigger, pitch, and filter path.
+
 use super::*;
 
 /// Bass line for each progression, authored independently of the Pad's

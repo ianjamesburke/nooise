@@ -1,3 +1,10 @@
+//! Ratatui rendering, and nothing else.
+//!
+//! Draws one frame from an immutable `UiViewModel` and the frame area. It must
+//! not mutate session state, execute effects, or poll input. Owns the control
+//! and modulator row widgets, the shared lane renderer, and display-unit
+//! formatting.
+
 use std::collections::BTreeSet;
 
 use super::widget::{Dial, DialScale};

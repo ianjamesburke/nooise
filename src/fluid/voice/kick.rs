@@ -1,8 +1,7 @@
-use super::*;
+//! The Kick voice: a pitch-glide FM body shared by all four kick
+//! characters, plus their click, drive, and amp envelope.
 
-// ============================================================
-// Kick engine
-// ============================================================
+use super::*;
 
 pub(crate) struct KickEngine {
     pub(crate) sample_rate: f32,

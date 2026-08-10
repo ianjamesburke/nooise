@@ -1,3 +1,9 @@
+//! `FluidEngine`: the voice mixer that the audio callback pulls frames from.
+//!
+//! Owns the tempo clock and its `TimingContext`, the grid triggers voices fire
+//! on, registry-derived gain smoothing, the per-layer and master module effect
+//! banks, and the master bus.
+
 use std::collections::BTreeSet;
 
 use crate::fx::compression::{CompressorParams, StereoCompressor};

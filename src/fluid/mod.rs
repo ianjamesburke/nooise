@@ -1,3 +1,10 @@
+//! The nooise engine.
+//!
+//! This root wires the pieces together for each entry point: `run` and
+//! `run_auto` for live audio plus TUI, `render_wav` for a headless render. It
+//! also owns `FluidTelemetry`, the lock-free audio-to-UI counters the
+//! visualizer animates from.
+
 use std::error::Error;
 use std::f32::consts::TAU;
 use std::sync::Arc;

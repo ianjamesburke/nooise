@@ -1,3 +1,6 @@
+//! Freeverb-style stereo reverb: damped comb filters into allpass diffusers.
+//! Used by Reverb module slots.
+
 struct Comb {
     buffer: Vec<f32>,
     index: usize,

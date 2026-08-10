@@ -1,8 +1,7 @@
-use super::*;
+//! The Pad voice: sustained chord drones, the chord source Bass and Arp
+//! both follow.
 
-// ============================================================
-// Pad engine (chord drones)
-// ============================================================
+use super::*;
 
 pub(crate) const MAX_PAD_LAYERS: usize = 4;
 

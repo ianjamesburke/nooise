@@ -1,3 +1,6 @@
+//! One module per voice, plus the helpers they share: pitch conversion,
+//! soft clipping, normalized LFO shaping, and voice-pool mixing.
+
 use super::*;
 
 mod arp;

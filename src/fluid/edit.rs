@@ -1,3 +1,9 @@
+//! Every control and automation mutation a UI gesture performs.
+//!
+//! `active_field` resolves the cursor to exactly one target and
+//! `with_active_field` applies one `FieldOp` to it, so adjust, reset, and set
+//! cannot drift apart. `effect.rs` calls into this module; never the reverse.
+
 use super::*;
 
 /// Numeric entry typed in a flipped field's display unit, converted back to

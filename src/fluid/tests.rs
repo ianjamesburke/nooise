@@ -1,3 +1,8 @@
+//! Engine, registry, song-code, and interaction tests.
+//!
+//! Interaction regressions belong in `replay.rs` instead, entering through
+//! recorded raw events rather than semantic calls.
+
 use super::interaction::ChordDrill;
 use super::song_ids::song_id_index;
 use super::*;

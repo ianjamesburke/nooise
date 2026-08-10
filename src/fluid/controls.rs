@@ -1,6 +1,6 @@
-// ============================================================
-// Controls
-// ============================================================
+//! The live control values themselves: `FluidControls` and the per-voice
+//! structs it aggregates, each a plain field bag with a default. Meaning,
+//! range, and presentation all live in the registry, never here.
 
 use super::module::LayerModules;
 

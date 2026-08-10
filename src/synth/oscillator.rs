@@ -1,3 +1,5 @@
+//! Basic waveform oscillators shared by the pitched voices.
+
 use std::f32::consts::TAU;
 
 pub(crate) struct SineOscillator {
