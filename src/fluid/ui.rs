@@ -930,6 +930,30 @@ fn lane_prefix() -> Span<'static> {
     )
 }
 
+/// The shared modulator lane: label-width prefix, then one glyph per column.
+/// `column` supplies that column's level (0..1 glyph height), hue, and focus
+/// — 1 at the live head, falling toward 0 away from it — so each lane only
+/// describes its own trajectory and never its own brightness ramp or layout.
+fn lane_line(
+    width: usize,
+    active: bool,
+    saturation: f32,
+    column: impl Fn(usize) -> (f32, f32, f32),
+) -> Line<'static> {
+    let floor = if active { 0.35 } else { 0.25 };
+    let mut spans = Vec::with_capacity(width + 1);
+    spans.push(lane_prefix());
+    for i in 0..width {
+        let (level, hue, focus) = column(i);
+        let brightness = (floor + focus.max(0.0) * 0.6).clamp(0.0, 1.0);
+        spans.push(Span::styled(
+            lane_glyph(level),
+            Style::default().fg(fluid_hsv(hue, saturation, brightness)),
+        ));
+    }
+    Line::from(spans)
+}
+
 /// Live modulator lane. Periodic shapes draw one phase-locked cycle across the
 /// width with a bright head at the current phase. Random shapes scroll the real
 /// generated trajectory right-to-left, head at "now" on the right edge, so what
@@ -941,42 +965,32 @@ pub(crate) fn lfo_lane_line(
     active: bool,
 ) -> Line<'static> {
     let width = width.clamp(6, 80);
-    let floor = if active { 0.35 } else { 0.25 };
-    let mut spans = Vec::with_capacity(width + 1);
-    spans.push(lane_prefix());
-
     if route.shape.is_random() {
         let window = f64::from(route.cycle_beats.max(MIN_LFO_CYCLE_BEATS) * RANDOM_LANE_CYCLES);
-        for i in 0..width {
+        return lane_line(width, active, 0.6, |i| {
             let age = (width - 1 - i) as f64 / width as f64;
             let wave = route.wave_at(beat - age * window) * route.depth_ratio;
-            let level = wave * 0.5 + 0.5;
-            let brightness = (floor + (i as f32 / (width - 1) as f32) * 0.6).clamp(0.0, 1.0);
-            let hue = 300.0 + wave * 25.0;
-            spans.push(Span::styled(
-                lane_glyph(level),
-                Style::default().fg(fluid_hsv(hue, 0.6, brightness)),
-            ));
-        }
-        return Line::from(spans);
+            (
+                wave * 0.5 + 0.5,
+                300.0 + wave * 25.0,
+                i as f32 / (width - 1) as f32,
+            )
+        });
     }
 
     let head = (route.pattern_phase_at(beat) * width as f64) as usize % width;
-    for i in 0..width {
+    lane_line(width, active, 0.6, |i| {
         let phase = i as f32 / width as f32;
         let wave = route.shape_value_at_phase(phase) * route.depth_ratio;
-        let level = wave * 0.5 + 0.5;
+        // One cycle wraps, so the head's falloff wraps with it.
         let raw = i.abs_diff(head);
         let wrapped = raw.min(width - raw);
-        let falloff = 1.0 - (wrapped as f32 / width as f32) * 2.0;
-        let brightness = (floor + falloff.max(0.0) * 0.6).clamp(0.0, 1.0);
-        let hue = 300.0 + wave * 25.0;
-        spans.push(Span::styled(
-            lane_glyph(level),
-            Style::default().fg(fluid_hsv(hue, 0.6, brightness)),
-        ));
-    }
-    Line::from(spans)
+        (
+            wave * 0.5 + 0.5,
+            300.0 + wave * 25.0,
+            1.0 - (wrapped as f32 / width as f32) * 2.0,
+        )
+    })
 }
 
 /// Envelope lane: the one-shot AD ramp across one trigger period, with a bright
@@ -988,26 +1002,18 @@ pub(crate) fn env_lane_line(
     active: bool,
 ) -> Line<'static> {
     let width = width.clamp(6, 80);
-    let floor = if active { 0.35 } else { 0.25 };
     let window = f64::from(route.window_beats());
-    let head_phase = route.lane_head_phase(ctx);
-    let head = ((head_phase * width as f32) as usize).min(width - 1);
-
-    let mut spans = Vec::with_capacity(width + 1);
-    spans.push(lane_prefix());
-    for i in 0..width {
+    let head = ((route.lane_head_phase(ctx) * width as f32) as usize).min(width - 1);
+    let hue = if route.amount >= 0.0 { 150.0 } else { 15.0 };
+    lane_line(width, active, 0.55, |i| {
         let col_since = (i as f64 / width as f64 * window) as f32;
-        let level = route.level_for_lane(col_since) * route.amount.abs();
-        let raw = i.abs_diff(head);
-        let falloff = 1.0 - (raw as f32 / width as f32) * 2.0;
-        let brightness = (floor + falloff.max(0.0) * 0.6).clamp(0.0, 1.0);
-        let hue = if route.amount >= 0.0 { 150.0 } else { 15.0 };
-        spans.push(Span::styled(
-            lane_glyph(level).to_string(),
-            Style::default().fg(fluid_hsv(hue, 0.55, brightness)),
-        ));
-    }
-    Line::from(spans)
+        (
+            route.level_for_lane(col_since) * route.amount.abs(),
+            hue,
+            // The ramp does not wrap: it runs once from trigger to release.
+            1.0 - (i.abs_diff(head) as f32 / width as f32) * 2.0,
+        )
+    })
 }
 
 /// Live marker positions on a slider, all as 0..1 bar ratios. `effective` is
