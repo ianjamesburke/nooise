@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::fx::compression::{CompressorParams, StereoCompressor};
 use crate::fx::delay::{DelayParams, StereoDelay};
 use crate::fx::drive;
-use crate::fx::reverb::Freeverb;
+use crate::fx::reverb::{Freeverb, ReverbParams};
 
 use super::*;
 
@@ -86,23 +86,24 @@ impl ModuleFxBank {
                 }
                 Family::Reverb => {
                     if !matches!(processor, Some(SlotFx::Reverb(_))) {
-                        *processor = Some(SlotFx::Reverb(Freeverb::new(
-                            self.sample_rate,
-                            slot.time,
-                            slot.feedback,
-                            1.0,
-                        )));
+                        *processor = Some(SlotFx::Reverb(Freeverb::new(self.sample_rate)));
                     }
                     let Some(SlotFx::Reverb(reverb)) = processor else {
                         continue;
                     };
-                    reverb.set_character(slot.time, slot.feedback);
                     let input = if slot.amount > 0.0 {
                         sample
                     } else {
                         (0.0, 0.0)
                     };
-                    let wet = reverb.process(input.0, input.1);
+                    let wet = reverb.process(
+                        input.0,
+                        input.1,
+                        ReverbParams {
+                            room_size: slot.time,
+                            damp: slot.feedback,
+                        },
+                    );
                     sample.0 += wet.0 * slot.amount;
                     sample.1 += wet.1 * slot.amount;
                 }
