@@ -90,7 +90,7 @@ impl ControlKind {
 // Single source of truth for every UI control row. Each row is one
 // ControlSpec: range, step, numeric-entry semantics, reset target,
 // accessors, and display formatting. tab_controls / apply_delta /
-// apply_min / apply_value all derive from these tables — adding a
+// apply_reset / apply_value all derive from these tables — adding a
 // control means adding one entry here.
 // ============================================================
 
@@ -504,7 +504,7 @@ impl ControlSpec {
         !matches!(self.taper, Taper::Linear) && matches!(self.step, Step::Linear(_))
     }
 
-    pub(crate) fn apply_min(&self, c: &mut FluidControls) {
+    pub(crate) fn apply_reset(&self, c: &mut FluidControls) {
         let spec = self.contextual(c);
         (spec.set)(c, spec.reset);
     }
@@ -1961,9 +1961,9 @@ pub(crate) fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidCont
     }
 }
 
-pub(crate) fn apply_min(tab: Tab, selected: usize, c: &mut FluidControls) {
+pub(crate) fn apply_reset(tab: Tab, selected: usize, c: &mut FluidControls) {
     if let Some(spec) = tab_specs(tab).get(selected) {
-        spec.apply_min(c);
+        spec.apply_reset(c);
     }
 }
 
