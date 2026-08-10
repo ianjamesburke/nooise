@@ -120,8 +120,6 @@ fn env_time_key(field: EnvField) -> Option<&'static str> {
     }
 }
 
-/// The flip key for whatever time field the cursor sits on, or None when the
-/// selection has no time base (T is then a no-op).
 /// One selectable row inside an open LFO editor: either one of the LFO's own
 /// fields, or one of the two rows (amount, target) of a macro currently
 /// stacked onto that field. The macro rows only exist while that field's `v`
@@ -255,6 +253,7 @@ pub(crate) fn open_modulator_effect_for_id(
 /// Which modulator field (if any) the submenu cursor sits on for the open
 /// editor. Returns None when the parent slider row (index 0) is selected or no
 /// editor is open, so the caller edits the underlying control instead.
+#[derive(Clone, Copy)]
 enum ActiveField {
     Lfo(ControlAddress, LfoField),
     /// A macro's amount/target row nested under an LFO field, only present
@@ -313,6 +312,277 @@ pub(crate) fn automation_kind_is_supported(
     kind == interaction::AutomationKind::Lfo || selected_control.is_none_or(|id| !is_macro_id(id))
 }
 
+/// The one verb an active-field edit applies. Every field kind — LFO,
+/// envelope, macro, step, plain control — accepts all three, so the routing
+/// from cursor position to target lives in one place and only the verb
+/// differs between an arrow press, a reset, and a typed value.
+#[derive(Clone, Copy)]
+enum FieldOp<'a> {
+    /// One h/l step in `dir`, in the field's displayed unit.
+    Adjust {
+        dir: f32,
+        flipped: &'a FlippedUnits,
+    },
+    Reset,
+    /// A typed value, exact in the field's displayed unit.
+    Set {
+        value: f32,
+        flipped: &'a FlippedUnits,
+    },
+}
+
+impl<'a> FieldOp<'a> {
+    /// The flipped-unit set for the ops that take user-entered values; None
+    /// for a reset, which always lands on the native grid.
+    fn flipped(self) -> Option<&'a FlippedUnits> {
+        match self {
+            FieldOp::Adjust { flipped, .. } | FieldOp::Set { flipped, .. } => Some(flipped),
+            FieldOp::Reset => None,
+        }
+    }
+}
+
+/// Apply `op` to whatever the cursor currently addresses: a modulator field
+/// inside an open editor, or the selected control itself. Resolves the target
+/// once, records the touched control as recent, and publishes one aggregate
+/// session edit.
+fn with_active_field(
+    effects: &mut EffectExecutor,
+    automation: &AutomationState,
+    lfo_selected: usize,
+    tab: Tab,
+    selected: usize,
+    beat: f64,
+    op: FieldOp<'_>,
+) {
+    let active = active_field(automation, lfo_selected);
+    let recent_id = automation
+        .active_address()
+        .map(ControlAddress::id)
+        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    effects.edit_session(AutoOwnership::TakeOver, recent_id, |snapshot| {
+        apply_field_op(snapshot, active, tab, selected, beat, op);
+    });
+}
+
+fn apply_field_op(
+    snapshot: &mut LiveSessionSnapshot,
+    active: ActiveField,
+    tab: Tab,
+    selected: usize,
+    beat: f64,
+    op: FieldOp<'_>,
+) {
+    let bpm = snapshot.controls.master.bpm;
+    match active {
+        ActiveField::Lfo(address, field) => {
+            // Only interval and offset carry a time base, so a flipped LFO
+            // field is always one of those two.
+            let is_flipped = op.flipped().is_some_and(|flipped| {
+                lfo_time_key(field)
+                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))))
+            });
+            let Some(route) = snapshot.automation.route_mut(address) else {
+                return;
+            };
+            match op {
+                FieldOp::Adjust { dir, .. } if is_flipped => {
+                    let current = match field {
+                        LfoField::Offset => route.phase_offset_beats,
+                        _ => route.cycle_beats,
+                    };
+                    let next = flipped_step(TimeBase::Beats, current, dir, bpm);
+                    route.set_field_raw_at(field, next, beat);
+                }
+                FieldOp::Adjust { dir, .. } => route.adjust_field_at(field, dir, beat),
+                FieldOp::Reset => route.reset_field_at(field, beat),
+                // Typed ms is exact: convert and clamp, but don't snap back
+                // onto the beat grid.
+                FieldOp::Set { value, .. } if is_flipped => {
+                    route.set_field_raw_at(field, flip_entry(TimeBase::Beats, value, bpm), beat);
+                }
+                FieldOp::Set { value, .. } => route.set_field_at(field, value, beat),
+            }
+        }
+        ActiveField::Envelope(address, field) => {
+            let is_flipped = op.flipped().is_some_and(|flipped| {
+                env_time_key(field)
+                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))))
+            });
+            let Some(route) = snapshot.automation.envelope_mut(address) else {
+                return;
+            };
+            match op {
+                FieldOp::Adjust { dir, .. } if is_flipped => {
+                    let current = match field {
+                        EnvField::Decay => route.decay_beats,
+                        _ => route.attack_beats,
+                    };
+                    let next = flipped_step(TimeBase::Beats, current, dir, bpm);
+                    route.set_field_raw(field, next);
+                }
+                FieldOp::Adjust { dir, .. } => route.adjust_field(field, dir),
+                FieldOp::Reset => route.reset_field(field),
+                FieldOp::Set { value, .. } if is_flipped => {
+                    route.set_field_raw(field, flip_entry(TimeBase::Beats, value, bpm));
+                }
+                FieldOp::Set { value, .. } => route.set_field(field, value),
+            }
+        }
+        ActiveField::LfoMacro(address, field, macro_field) => {
+            let key = unit_key(address.id(), field.macro_key());
+            if let Some(route) = snapshot.automation.field_macro_mut(&key) {
+                match op {
+                    FieldOp::Adjust { dir, .. } => route.adjust_field(macro_field, dir),
+                    FieldOp::Reset => route.reset_field(macro_field),
+                    FieldOp::Set { value, .. } => route.set_field(macro_field, value),
+                }
+            }
+        }
+        ActiveField::LfoStep(address, target) => {
+            if let Some(route) = snapshot.automation.route_mut(address) {
+                match op {
+                    FieldOp::Adjust { dir, .. } => route.adjust_step(target, dir),
+                    FieldOp::Reset => route.reset_step(target),
+                    FieldOp::Set { value, .. } => route.set_step(target, value),
+                }
+            }
+        }
+        ActiveField::Macro(address, field) => {
+            if let Some(route) = snapshot.automation.macro_route_mut(address) {
+                match op {
+                    FieldOp::Adjust { dir, .. } => route.adjust_field(field, dir),
+                    FieldOp::Reset => route.reset_field(field),
+                    FieldOp::Set { value, .. } => route.set_field(field, value),
+                }
+            }
+        }
+        ActiveField::Control => match op {
+            FieldOp::Reset => apply_reset(tab, selected, &mut snapshot.controls),
+            FieldOp::Adjust { .. } | FieldOp::Set { .. } => {
+                apply_control_value_op(snapshot, tab, selected, op, bpm)
+            }
+        },
+    }
+}
+
+/// The selected control taking a user-entered value: a Delay time row first,
+/// which owns its own clock-derived range, then a field displayed in a
+/// flipped unit, then the ordinary registry path.
+fn apply_control_value_op(
+    snapshot: &mut LiveSessionSnapshot,
+    tab: Tab,
+    selected: usize,
+    op: FieldOp<'_>,
+    bpm: f32,
+) {
+    let spec = tab_specs(tab).get(selected);
+    if let Some(spec) = spec
+        && apply_delay_row(snapshot, tab, spec, op, bpm)
+    {
+        return;
+    }
+    let flipped = op.flipped().expect("only Reset carries no flipped set");
+    let flipped_spec = spec.filter(|spec| {
+        spec.time_base != TimeBase::None && flipped.contains(&unit_key(spec.id, None))
+    });
+    match (flipped_spec, op) {
+        (Some(spec), FieldOp::Adjust { dir, .. }) => {
+            let current = (spec.get)(&snapshot.controls);
+            spec.apply_raw(
+                flipped_step(spec.time_base, current, dir, bpm),
+                &mut snapshot.controls,
+            );
+        }
+        // Typed input in the flipped unit is exact: convert and clamp, but
+        // don't snap onto the native step grid.
+        (Some(spec), FieldOp::Set { value, .. }) => {
+            spec.apply_raw(
+                flip_entry(spec.time_base, value, bpm),
+                &mut snapshot.controls,
+            );
+        }
+        (None, FieldOp::Adjust { dir, .. }) => {
+            apply_delta(tab, selected, dir, &mut snapshot.controls)
+        }
+        (None, FieldOp::Set { value, .. }) => {
+            apply_value(tab, selected, value, &mut snapshot.controls)
+        }
+        (_, FieldOp::Reset) => unreachable!("a reset never reaches the value path"),
+    }
+}
+
+/// A Delay slot's time rows are not registry-stepped: each side carries its
+/// own Sync/Free clock, so the row's range and step come from that clock
+/// rather than the spec. Returns true when the row belongs to a Delay slot
+/// and the edit has been applied there.
+fn apply_delay_row(
+    snapshot: &mut LiveSessionSnapshot,
+    tab: Tab,
+    spec: &ControlSpec,
+    op: FieldOp<'_>,
+    bpm: f32,
+) -> bool {
+    let Some((slot, module)) = module_slot_at_id(tab, spec.id, &snapshot.controls) else {
+        return false;
+    };
+    if !module
+        .kind()
+        .is_some_and(|kind| kind.family == Family::Delay)
+    {
+        return false;
+    }
+    let field = spec.id.rsplit('.').next();
+    // The clock row itself flips Sync/Free on an arrow press; a typed value
+    // goes through the ordinary discrete-control path instead.
+    if field == Some("clock") {
+        if !matches!(op, FieldOp::Adjust { .. }) {
+            return false;
+        }
+        if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
+            && let Some(module) = slots.get_mut(slot)
+        {
+            switch_delay_clock(module, false, bpm);
+        }
+        return true;
+    }
+    let right = match field {
+        Some("time") => false,
+        Some("right_time") => true,
+        _ => return false,
+    };
+    if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
+        && let Some(module) = slots.get_mut(slot)
+    {
+        let clock = DelayClock::from_value(if right {
+            module.right_clock
+        } else {
+            module.clock
+        });
+        let current = if right {
+            &mut module.right_time
+        } else {
+            &mut module.time
+        };
+        *current = match (clock, op) {
+            (DelayClock::Sync, FieldOp::Adjust { dir, .. }) => {
+                beat_grid_adjust(*current, dir, DELAY_SYNC_MIN_BEATS, DELAY_SYNC_MAX_BEATS)
+            }
+            (DelayClock::Free, FieldOp::Adjust { dir, .. }) => {
+                (*current + dir * 10.0).clamp(DELAY_FREE_MIN_MS, DELAY_FREE_MAX_MS)
+            }
+            (DelayClock::Sync, FieldOp::Set { value, .. }) => {
+                value.clamp(DELAY_SYNC_MIN_BEATS, DELAY_SYNC_MAX_BEATS)
+            }
+            (DelayClock::Free, FieldOp::Set { value, .. }) => {
+                value.clamp(DELAY_FREE_MIN_MS, DELAY_FREE_MAX_MS)
+            }
+            (_, FieldOp::Reset) => unreachable!("a reset never reaches the delay rows"),
+        };
+    }
+    true
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn adjust_lfo_or_control(
     effects: &mut EffectExecutor,
@@ -324,127 +594,15 @@ pub(crate) fn adjust_lfo_or_control(
     beat: f64,
     flipped: &FlippedUnits,
 ) {
-    let active = active_field(automation, lfo_selected);
-    let recent_id = automation
-        .active_address()
-        .map(ControlAddress::id)
-        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    effects.edit_session(AutoOwnership::TakeOver, recent_id, |snapshot| {
-        let bpm = snapshot.controls.master.bpm;
-        match active {
-            ActiveField::Lfo(address, field) => {
-                let is_flipped = lfo_time_key(field)
-                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
-                let Some(route) = snapshot.automation.route_mut(address) else {
-                    return;
-                };
-                match (is_flipped, field) {
-                    (true, LfoField::Interval) => {
-                        let next = flipped_step(TimeBase::Beats, route.cycle_beats, dir, bpm);
-                        route.set_field_raw_at(field, next, beat);
-                    }
-                    (true, LfoField::Offset) => {
-                        let next =
-                            flipped_step(TimeBase::Beats, route.phase_offset_beats, dir, bpm);
-                        route.set_field_raw_at(field, next, beat);
-                    }
-                    _ => route.adjust_field_at(field, dir, beat),
-                }
-            }
-            ActiveField::Envelope(address, field) => {
-                let is_flipped = env_time_key(field)
-                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
-                let Some(route) = snapshot.automation.envelope_mut(address) else {
-                    return;
-                };
-                match (is_flipped, field) {
-                    (true, EnvField::Attack) => {
-                        let next = flipped_step(TimeBase::Beats, route.attack_beats, dir, bpm);
-                        route.set_field_raw(field, next);
-                    }
-                    (true, EnvField::Decay) => {
-                        let next = flipped_step(TimeBase::Beats, route.decay_beats, dir, bpm);
-                        route.set_field_raw(field, next);
-                    }
-                    _ => route.adjust_field(field, dir),
-                }
-            }
-            ActiveField::LfoMacro(address, field, macro_field) => {
-                let key = unit_key(address.id(), field.macro_key());
-                if let Some(route) = snapshot.automation.field_macro_mut(&key) {
-                    route.adjust_field(macro_field, dir);
-                }
-            }
-            ActiveField::LfoStep(address, target) => {
-                if let Some(route) = snapshot.automation.route_mut(address) {
-                    route.adjust_step(target, dir);
-                }
-            }
-            ActiveField::Macro(address, field) => {
-                if let Some(route) = snapshot.automation.macro_route_mut(address) {
-                    route.adjust_field(field, dir);
-                }
-            }
-            ActiveField::Control => {
-                if let Some(spec) = tab_specs(tab).get(selected)
-                    && let Some((slot, module)) =
-                        module_slot_at_id(tab, spec.id, &snapshot.controls)
-                    && let Some(kind) = module.kind()
-                {
-                    let field = spec.id.rsplit('.').next();
-                    if kind.family == Family::Delay && field == Some("clock") {
-                        if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
-                            && let Some(module) = slots.get_mut(slot)
-                        {
-                            switch_delay_clock(module, false, bpm);
-                        }
-                        return;
-                    }
-                    if kind.family == Family::Delay && matches!(field, Some("time" | "right_time"))
-                    {
-                        if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
-                            && let Some(module) = slots.get_mut(slot)
-                        {
-                            let value = if field == Some("time") {
-                                &mut module.time
-                            } else {
-                                &mut module.right_time
-                            };
-                            let clock = if field == Some("right_time") {
-                                module.right_clock
-                            } else {
-                                module.clock
-                            };
-                            *value = match DelayClock::from_value(clock) {
-                                DelayClock::Sync => beat_grid_adjust(
-                                    *value,
-                                    dir,
-                                    DELAY_SYNC_MIN_BEATS,
-                                    DELAY_SYNC_MAX_BEATS,
-                                ),
-                                DelayClock::Free => (*value + dir * 10.0)
-                                    .clamp(DELAY_FREE_MIN_MS, DELAY_FREE_MAX_MS),
-                            };
-                        }
-                        return;
-                    }
-                }
-                let flipped_spec = tab_specs(tab).get(selected).filter(|spec| {
-                    spec.time_base != TimeBase::None && flipped.contains(&unit_key(spec.id, None))
-                });
-                match flipped_spec {
-                    Some(spec) => {
-                        let current = (spec.get)(&snapshot.controls);
-                        spec.apply_raw(
-                            flipped_step(spec.time_base, current, dir, bpm),
-                            &mut snapshot.controls,
-                        );
-                    }
-                    None => apply_delta(tab, selected, dir, &mut snapshot.controls),
-                }
-            }
-        }
-    });
+    with_active_field(
+        effects,
+        automation,
+        lfo_selected,
+        tab,
+        selected,
+        beat,
+        FieldOp::Adjust { dir, flipped },
+    );
 }
 
 pub(crate) fn reset_lfo_or_control(
@@ -455,43 +613,14 @@ pub(crate) fn reset_lfo_or_control(
     selected: usize,
     beat: f64,
 ) {
-    let active = active_field(automation, lfo_selected);
-    let recent_id = automation
-        .active_address()
-        .map(ControlAddress::id)
-        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    effects.edit_session(
-        AutoOwnership::TakeOver,
-        recent_id,
-        |snapshot| match active {
-            ActiveField::Lfo(address, field) => {
-                if let Some(route) = snapshot.automation.route_mut(address) {
-                    route.reset_field_at(field, beat);
-                }
-            }
-            ActiveField::Envelope(address, field) => {
-                if let Some(route) = snapshot.automation.envelope_mut(address) {
-                    route.reset_field(field);
-                }
-            }
-            ActiveField::LfoMacro(address, field, macro_field) => {
-                let key = unit_key(address.id(), field.macro_key());
-                if let Some(route) = snapshot.automation.field_macro_mut(&key) {
-                    route.reset_field(macro_field);
-                }
-            }
-            ActiveField::LfoStep(address, target) => {
-                if let Some(route) = snapshot.automation.route_mut(address) {
-                    route.reset_step(target);
-                }
-            }
-            ActiveField::Macro(address, field) => {
-                if let Some(route) = snapshot.automation.macro_route_mut(address) {
-                    route.reset_field(field);
-                }
-            }
-            ActiveField::Control => apply_reset(tab, selected, &mut snapshot.controls),
-        },
+    with_active_field(
+        effects,
+        automation,
+        lfo_selected,
+        tab,
+        selected,
+        beat,
+        FieldOp::Reset,
     );
 }
 
@@ -506,106 +635,15 @@ pub(crate) fn set_modulator_or_control(
     beat: f64,
     flipped: &FlippedUnits,
 ) {
-    let active = active_field(automation, lfo_selected);
-    let recent_id = automation
-        .active_address()
-        .map(ControlAddress::id)
-        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    effects.edit_session(AutoOwnership::TakeOver, recent_id, |snapshot| {
-        let bpm = snapshot.controls.master.bpm;
-        match active {
-            ActiveField::Lfo(address, field) => {
-                let is_flipped = lfo_time_key(field)
-                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
-                if let Some(route) = snapshot.automation.route_mut(address) {
-                    if is_flipped {
-                        // Typed ms is exact: convert and clamp, but don't snap
-                        // back onto the beat grid.
-                        route.set_field_raw_at(
-                            field,
-                            flip_entry(TimeBase::Beats, value, bpm),
-                            beat,
-                        );
-                    } else {
-                        route.set_field_at(field, value, beat);
-                    }
-                }
-            }
-            ActiveField::Envelope(address, field) => {
-                let is_flipped = env_time_key(field)
-                    .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))));
-                if let Some(route) = snapshot.automation.envelope_mut(address) {
-                    if is_flipped {
-                        route.set_field_raw(field, flip_entry(TimeBase::Beats, value, bpm));
-                    } else {
-                        route.set_field(field, value);
-                    }
-                }
-            }
-            ActiveField::LfoMacro(address, field, macro_field) => {
-                let key = unit_key(address.id(), field.macro_key());
-                if let Some(route) = snapshot.automation.field_macro_mut(&key) {
-                    route.set_field(macro_field, value);
-                }
-            }
-            ActiveField::LfoStep(address, target) => {
-                if let Some(route) = snapshot.automation.route_mut(address) {
-                    route.set_step(target, value);
-                }
-            }
-            ActiveField::Macro(address, field) => {
-                if let Some(route) = snapshot.automation.macro_route_mut(address) {
-                    route.set_field(field, value);
-                }
-            }
-            ActiveField::Control => {
-                if let Some(spec) = tab_specs(tab).get(selected)
-                    && let Some((slot, module)) =
-                        module_slot_at_id(tab, spec.id, &snapshot.controls)
-                    && module
-                        .kind()
-                        .is_some_and(|kind| kind.family == Family::Delay)
-                    && matches!(spec.id.rsplit('.').next(), Some("time" | "right_time"))
-                {
-                    if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
-                        && let Some(module) = slots.get_mut(slot)
-                    {
-                        let clock = if spec.id.ends_with(".right_time") {
-                            module.right_clock
-                        } else {
-                            module.clock
-                        };
-                        let value = match DelayClock::from_value(clock) {
-                            DelayClock::Sync => {
-                                value.clamp(DELAY_SYNC_MIN_BEATS, DELAY_SYNC_MAX_BEATS)
-                            }
-                            DelayClock::Free => value.clamp(DELAY_FREE_MIN_MS, DELAY_FREE_MAX_MS),
-                        };
-                        if spec.id.ends_with(".time") {
-                            module.time = value;
-                        } else {
-                            module.right_time = value;
-                        }
-                    }
-                    return;
-                }
-                match tab_specs(tab).get(selected) {
-                    Some(spec)
-                        if spec.time_base != TimeBase::None
-                            && flipped.contains(&unit_key(spec.id, None)) =>
-                    {
-                        // Typed input in the flipped unit is exact: convert and
-                        // clamp, but don't snap onto the native step grid.
-                        spec.apply_raw(
-                            flip_entry(spec.time_base, value, bpm),
-                            &mut snapshot.controls,
-                        );
-                    }
-                    _ => apply_value(tab, selected, value, &mut snapshot.controls),
-                }
-            }
-        }
-    });
+    with_active_field(
+        effects,
+        automation,
+        lfo_selected,
+        tab,
+        selected,
+        beat,
+        FieldOp::Set { value, flipped },
+    );
 }
 
 pub(crate) fn toggle_units_effect(
