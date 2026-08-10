@@ -29,16 +29,16 @@ pub(crate) enum DialScale {
 }
 
 impl DialScale {
-    pub(crate) fn tapered(min: f32, max: f32, taper: Taper) -> Self {
+    pub(crate) const fn tapered(min: f32, max: f32, taper: Taper) -> Self {
         Self::Tapered { min, max, taper }
     }
 
-    pub(crate) fn linear(min: f32, max: f32) -> Self {
+    pub(crate) const fn linear(min: f32, max: f32) -> Self {
         Self::tapered(min, max, Taper::Linear)
     }
 
     /// Bipolar amount centred at half throw, for `-1..=1` modulation depths.
-    pub(crate) fn bipolar() -> Self {
+    pub(crate) const fn bipolar() -> Self {
         Self::linear(-1.0, 1.0)
     }
 
