@@ -11,8 +11,7 @@ use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
     EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MACRO_COUNT, MAX_ENV_ATTACK_BEATS,
     MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS,
-    MIN_LFO_CYCLE_BEATS, MacroRoute, ModuleSlot, Step, TIME_TAPER, Tab, Taper, all_specs,
-    chain_amount_slot, preset_slot, spec_by_id, tab_specs,
+    MIN_LFO_CYCLE_BEATS, MacroRoute, Step, all_specs, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -74,6 +73,9 @@ pub(crate) enum SongCodeError {
     TooLarge,
     /// A stored value carried a tag this build has no encoding for.
     InvalidValueTag(u8),
+    /// The code sets a control this build retired. Its value has nowhere to
+    /// go, so the code is refused rather than loaded with that value missing.
+    RetiredControl(&'static str),
     /// A live control has no `SONG_ID_TABLE` slot, so it cannot be saved.
     /// `song_ids_cover_every_registry_control` exists to stop this reaching a
     /// user; append the id to the table.
@@ -95,6 +97,11 @@ impl fmt::Display for SongCodeError {
             Self::InvalidUtf8 => write!(f, "song code contains invalid text"),
             Self::TooLarge => write!(f, "song code payload is too large"),
             Self::InvalidValueTag(tag) => write!(f, "song code has unknown value tag {tag}"),
+            Self::RetiredControl(id) => write!(
+                f,
+                "song code sets {id}, a control this build no longer has; the code predates the \
+                 change that retired it and can no longer be loaded"
+            ),
             Self::UnregisteredControl(id) => {
                 write!(f, "control {id} is missing from the song id table")
             }
@@ -154,7 +161,7 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
         let payload = reader.bytes(len)?;
         match record_type {
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
-            AUTOMATION_RECORD => read_automation(payload, &song.controls, &mut song.automation)?,
+            AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
             // Records are length-prefixed, so an unknown one is skipped
             // without losing alignment. This stays permissive on purpose: it
@@ -320,16 +327,6 @@ impl EncodedValue {
         };
         value.clamp(spec.min, spec.max)
     }
-
-    fn resolve_range(self, min: f32, max: f32, taper: Taper) -> f32 {
-        match self {
-            Self::Position(position) => taper.value_at(u16_to_unit(position), min, max),
-            Self::SmallInt(value) => value as f32,
-            Self::Int(value) => value as f32,
-            Self::Float(value) => value,
-        }
-        .clamp(min, max)
-    }
 }
 
 /// A `0..=1` ratio as a u16; both endpoints land exactly.
@@ -430,66 +427,22 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
                 let spec = spec.contextual(controls);
                 spec.apply_quantized_value(value.resolve(&spec), controls);
             } else if !structural {
-                migrate_legacy_effect_control(id, value, controls);
+                reject_retired_control(index)?;
             }
         }
     }
     Ok(())
 }
 
-fn migrate_legacy_effect_control(id: &str, value: EncodedValue, controls: &mut FluidControls) {
-    let amount = || value.resolve_range(0.0, 1.0, Taper::Linear);
-    let (tab, kind) = match id {
-        "pad.reverb_mix" => (Some(Tab::Chords), "room"),
-        "tonal.reverb_mix" => (Some(Tab::Tonal), "room"),
-        "clap.room" => (Some(Tab::Clap), "room"),
-        "arp.reverb_mix" => (Some(Tab::Arp), "room"),
-        "bass.drive" => (Some(Tab::Bass), "drive"),
-        "kick.drive" => (Some(Tab::Kick), "drive"),
-        "master.drive" => (Some(Tab::Master), "drive"),
-        "perc.swing" => (Some(Tab::Perc), "swing"),
-        "tonal.swing" => (Some(Tab::Tonal), "swing"),
-        "arp.swing" => (Some(Tab::Arp), "swing"),
-        _ => (None, ""),
-    };
-    if let Some(tab) = tab {
-        set_migrated_module_amount(controls, tab, kind, amount());
-        return;
-    }
-
-    let Some(slots) = controls.modules.for_tab_mut(Tab::Master) else {
-        return;
-    };
-    let Some(slot) = chain_amount_slot(slots, "compression") else {
-        return;
-    };
-    match id {
-        "master.comp_amount" => slots[slot].amount = amount(),
-        "master.comp_threshold" => {
-            slots[slot].time = value.resolve_range(-40.0, 0.0, Taper::Linear)
-        }
-        "master.comp_ratio" => {
-            slots[slot].right_time = value.resolve_range(1.0, 8.0, Taper::Linear)
-        }
-        "master.comp_release_ms" => {
-            slots[slot].feedback = value.resolve_range(10.0, 500.0, Taper::Exp(TIME_TAPER))
-        }
-        "master.comp_makeup" => slots[slot].vintage = value.resolve_range(0.0, 12.0, Taper::Linear),
-        _ => {}
-    }
-}
-
-fn set_migrated_module_amount(controls: &mut FluidControls, tab: Tab, kind: &str, amount: f32) {
-    let Some(slots) = controls.modules.for_tab_mut(tab) else {
-        return;
-    };
-    let slot = chain_amount_slot(slots, kind).or_else(|| {
-        let free = slots.iter().position(ModuleSlot::is_empty)?;
-        slots[free] = preset_slot(kind, 0.0);
-        Some(free)
-    });
-    if let Some(slot) = slot {
-        slots[slot].amount = amount;
+/// An index inside `SONG_ID_TABLE` whose id no registry control claims names
+/// a control this build retired. There is nowhere to put its value, so the
+/// code is rejected instead of decoded with that value silently missing.
+/// An index past the table's end is a control from a *newer* build and stays
+/// skipped — that is forward compatibility, not a retirement.
+fn reject_retired_control(index: u16) -> Result<(), SongCodeError> {
+    match song_id_at(index) {
+        Some(id) if spec_by_id(id).is_none() => Err(SongCodeError::RetiredControl(id)),
+        _ => Ok(()),
     }
 }
 
@@ -572,11 +525,7 @@ fn read_macro_amounts(reader: &mut Reader) -> Result<MacroRoute, SongCodeError> 
     Ok(MacroRoute { amounts })
 }
 
-fn read_automation(
-    bytes: &[u8],
-    controls: &FluidControls,
-    automation: &mut AutomationState,
-) -> Result<(), SongCodeError> {
+fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(bytes);
 
     let lfo_count = reader.u16()?;
@@ -603,10 +552,8 @@ fn read_automation(
             None
         };
 
-        let (Some(spec), Some(shape)) = (
-            automation_spec_at(index, controls),
-            shape_from_tag(shape_byte),
-        ) else {
+        reject_retired_control(index)?;
+        let (Some(spec), Some(shape)) = (control_at(index), shape_from_tag(shape_byte)) else {
             continue;
         };
         let mut route = build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed);
@@ -622,7 +569,8 @@ fn read_automation(
     for _ in 0..macro_count {
         let index = reader.u16()?;
         let route = read_macro_amounts(&mut reader)?;
-        if let Some(spec) = automation_spec_at(index, controls) {
+        reject_retired_control(index)?;
+        if let Some(spec) = control_at(index) {
             automation.set_macro_route(ControlAddress::new(spec.id), route);
         }
     }
@@ -636,8 +584,9 @@ fn read_automation(
         let trigger_tag = reader.u8()?;
         let trigger_param = reader.f32()?;
 
+        reject_retired_control(index)?;
         let (Some(spec), Some(trigger)) = (
-            automation_spec_at(index, controls),
+            control_at(index),
             env_trigger_from_tag(
                 trigger_tag,
                 finite_or(trigger_param, DEFAULT_ENV_TRIGGER_BEATS),
@@ -660,53 +609,10 @@ fn read_automation(
     for _ in 0..field_macro_count {
         let key = reader.string()?;
         let route = read_macro_amounts(&mut reader)?;
-        automation.set_field_macro(migrate_legacy_field_macro_key(key, controls), route);
+        automation.set_field_macro(key.to_string(), route);
     }
 
     Ok(())
-}
-
-fn automation_spec_at(index: u16, controls: &FluidControls) -> Option<&'static ControlSpec> {
-    control_at(index).or_else(|| {
-        let migrated = migrated_effect_control_id(song_id_at(index)?, controls)?;
-        spec_by_id(migrated)
-    })
-}
-
-fn migrated_effect_control_id(id: &str, controls: &FluidControls) -> Option<&'static str> {
-    let (tab, kind, field) = match id {
-        "pad.reverb_mix" => (Tab::Chords, "room", "amount"),
-        "tonal.reverb_mix" => (Tab::Tonal, "room", "amount"),
-        "clap.room" => (Tab::Clap, "room", "amount"),
-        "arp.reverb_mix" => (Tab::Arp, "room", "amount"),
-        "bass.drive" => (Tab::Bass, "drive", "amount"),
-        "kick.drive" => (Tab::Kick, "drive", "amount"),
-        "master.drive" => (Tab::Master, "drive", "amount"),
-        "perc.swing" => (Tab::Perc, "swing", "amount"),
-        "tonal.swing" => (Tab::Tonal, "swing", "amount"),
-        "arp.swing" => (Tab::Arp, "swing", "amount"),
-        "master.comp_amount" => (Tab::Master, "compression", "amount"),
-        "master.comp_threshold" => (Tab::Master, "compression", "time"),
-        "master.comp_ratio" => (Tab::Master, "compression", "right_time"),
-        "master.comp_release_ms" => (Tab::Master, "compression", "feedback"),
-        "master.comp_makeup" => (Tab::Master, "compression", "vintage"),
-        _ => return None,
-    };
-    let slots = controls.modules.for_tab(tab)?;
-    let slot = chain_amount_slot(slots, kind)?;
-    let suffix = format!(".slot{}.{}", slot + 1, field);
-    tab_specs(tab)
-        .iter()
-        .find(|spec| spec.id.ends_with(&suffix))
-        .map(|spec| spec.id)
-}
-
-fn migrate_legacy_field_macro_key(key: &str, controls: &FluidControls) -> String {
-    let Some((id, field)) = key.split_once('#') else {
-        return key.to_string();
-    };
-    migrated_effect_control_id(id, controls)
-        .map_or_else(|| key.to_string(), |id| format!("{id}#{field}"))
 }
 
 /// A route, macro assignment, or envelope worth persisting. Mirrors the
@@ -888,43 +794,51 @@ impl<'a> Reader<'a> {
 }
 
 #[cfg(test)]
-mod effect_migration_tests {
+mod retired_control_tests {
     use super::*;
 
-    #[test]
-    fn retired_effect_controls_migrate_into_shared_slots() {
-        let mut controls = FluidControls::default();
-        migrate_legacy_effect_control(
-            "pad.reverb_mix",
-            EncodedValue::Position(unit_to_u16(0.35)),
-            &mut controls,
-        );
-        migrate_legacy_effect_control(
-            "master.comp_threshold",
-            EncodedValue::SmallInt(-18),
-            &mut controls,
-        );
+    /// One snapshot entry naming `id`, wrapped in a valid container.
+    fn code_setting(id: &str) -> String {
+        let index = song_id_index(id).expect("id is in the table");
+        let mut snapshot = Vec::new();
+        write_u16(1usize, &mut snapshot).unwrap();
+        snapshot.extend_from_slice(&index.to_le_bytes());
+        EncodedValue::Position(unit_to_u16(0.35)).write(&mut snapshot);
 
-        assert_eq!(controls.modules.pad[0].kind().unwrap().id, "room");
-        assert!((controls.modules.pad[0].amount - 0.35).abs() < 0.001);
-        assert_eq!(controls.modules.master[1].kind().unwrap().id, "compression");
-        assert_eq!(controls.modules.master[1].time, -18.0);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.push(CONTAINER_VERSION);
+        write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes).unwrap();
+        format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
     }
 
+    /// A code from before the per-voice effect sliders folded into module
+    /// slots names controls that no longer exist. Loading it and quietly
+    /// leaving those values at their defaults would hand back a song that
+    /// sounds wrong with no explanation, so the code is refused instead.
     #[test]
-    fn retired_effect_automation_addresses_follow_the_migrated_slot() {
-        let controls = FluidControls::default();
+    fn a_code_setting_a_retired_control_is_refused() {
         assert_eq!(
-            migrated_effect_control_id("arp.reverb_mix", &controls),
-            Some("arp.slot1.amount")
+            decode_song_code(&code_setting("pad.reverb_mix")).err(),
+            Some(SongCodeError::RetiredControl("pad.reverb_mix"))
         );
-        assert_eq!(
-            migrated_effect_control_id("master.comp_release_ms", &controls),
-            Some("master.slot2.feedback")
-        );
-        assert_eq!(
-            migrate_legacy_field_macro_key("master.comp_threshold#lfo.rate", &controls),
-            "master.slot2.time#lfo.rate"
-        );
+    }
+
+    /// The same skip that makes a retired id fatal must not catch an id from
+    /// a newer build: that index is past the table's end, not inside it.
+    #[test]
+    fn a_code_setting_an_id_this_build_has_never_heard_of_still_loads() {
+        let mut snapshot = Vec::new();
+        write_u16(1usize, &mut snapshot).unwrap();
+        snapshot.extend_from_slice(&u16::MAX.to_le_bytes());
+        EncodedValue::Position(unit_to_u16(0.35)).write(&mut snapshot);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC);
+        bytes.push(CONTAINER_VERSION);
+        write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes).unwrap();
+        let code = format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes));
+
+        assert!(decode_song_code(&code).is_ok());
     }
 }

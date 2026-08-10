@@ -157,15 +157,15 @@ dynamic `Vec<Box<dyn Effect>>` cannot produce one.
 - **Resolved:** every legacy Reverb, Drive, Swing, and Master Compression
   control was folded into the shared chains. The default song template
   preloads the former factory effects, while Swing stays optional. Retired IDs
-  remain in the append-only table and decode migrates both their values and
-  automation addresses into the corresponding slots.
+  remain in the append-only table, but nothing translates them: a code that
+  sets one is refused, and the built-in `AUTO_STATES` were re-authored through
+  the current encoder instead.
 - Slot reordering is out of scope, as in [[0020]]. Processing order is slot
   order.
 - Delay, Reverb, and Compression run through one slot-addressed post-DSP bank
   in chain order. Delay buffers, Reverb tails, and compressor envelopes are
-  captured only when a song is saved, through one request/publication handoff
-  that does not lock the audio callback; the song runtime record restores them
-  before the first rendered sample.
+  never saved — a song code carries controls only, and a loaded song rebuilds
+  every tail from playback.
 - Pads, Tonal, Clap, and Arp have no separate ambient or voice-local Reverb
   paths. Their template Reverb slots and every newly added effect use the same
   module bank. Master Release exists only inside shared Compression detail.

@@ -12,6 +12,10 @@ Before adding any control or feature, weigh it against all three:
 2. **Is it a mechanical problem?** Controls exist to solve mechanical/expressive problems (timing, pitch, texture), not to compensate for something that's off.
 3. **Could it be fixed upstream instead?** If a control exists only to correct an imbalance between layers, the fix is better mixing/default balance in the engine, not a knob that hands the user a mixing job.
 
+4. **Does it change what a song code carries?** A code saves the state a person chose, and nothing else. It never saves audio — no delay lines, no reverb tails, no analysis buffers, no envelope followers. If it rebuilds itself from a second of playback, it is not state, it is sound, and sound is not saved. A code has to stay short enough to paste into a message; the day one Delay slot pushed a code past a million characters, the code stopped being shareable and the feature stopped existing.
+
+**Retirement, not migration.** When a control goes away, its saved values go away with it. Codes that carry a retired control are refused with a message naming it (`SongCodeError::RetiredControl`), never loaded with the value silently dropped to a default. Built-in songs are re-authored through the current encoder instead; nooise carries no translation layer between old and new control names.
+
 If a proposed control fails #3 — it's there to let the user manually correct something that should already sound right — don't ship the control. Fix the balance instead.
 
 **Concrete case:** an EQ-tilt ("brighten/darken") control is mixing-desk territory — surgical, not playful. `master.tone` already exists (`src/fluid/controls.rs:26`, `registry.rs:506-524`) and should be re-evaluated against this commandment rather than extended (e.g. folded into the [[0020]] effects-module catalog as a stint task, [[0017]]) — open question, not yet decided.
