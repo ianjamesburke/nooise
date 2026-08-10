@@ -48,26 +48,80 @@ pub(crate) enum Page {
 }
 
 impl Page {
-    const ALL: [Self; 9] = [
-        Self::Chords,
-        Self::Perc,
-        Self::Bass,
-        Self::Kick,
-        Self::Tonal,
-        Self::Clap,
-        Self::Arp,
-        Self::Macros,
-        Self::Master,
-    ];
-
     fn next(self) -> Self {
-        Self::ALL[(self as usize + 1) % Self::ALL.len()]
+        LAYERS[(self as usize + 1) % LAYERS.len()].page
     }
 
     fn previous(self) -> Self {
-        Self::ALL[(self as usize + Self::ALL.len() - 1) % Self::ALL.len()]
+        LAYERS[(self as usize + LAYERS.len() - 1) % LAYERS.len()].page
     }
 }
+
+/// The navigation a layer opens on. Chords and Master own page-local drills
+/// no other layer can construct; the rest share one standard list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LayerNavigation {
+    Chords,
+    Standard(StandardPage),
+    Master,
+}
+
+struct Layer {
+    page: Page,
+    tab: Tab,
+    navigation: LayerNavigation,
+}
+
+/// One row per layer in `Page`/`Tab` discriminant order (test-enforced), so
+/// page order, page↔tab translation, and the navigation each page opens all
+/// index this single table instead of restating the layer list.
+const LAYERS: [Layer; 9] = [
+    Layer {
+        page: Page::Chords,
+        tab: Tab::Chords,
+        navigation: LayerNavigation::Chords,
+    },
+    Layer {
+        page: Page::Perc,
+        tab: Tab::Perc,
+        navigation: LayerNavigation::Standard(StandardPage::Perc),
+    },
+    Layer {
+        page: Page::Bass,
+        tab: Tab::Bass,
+        navigation: LayerNavigation::Standard(StandardPage::Bass),
+    },
+    Layer {
+        page: Page::Kick,
+        tab: Tab::Kick,
+        navigation: LayerNavigation::Standard(StandardPage::Kick),
+    },
+    Layer {
+        page: Page::Tonal,
+        tab: Tab::Tonal,
+        navigation: LayerNavigation::Standard(StandardPage::Tonal),
+    },
+    Layer {
+        page: Page::Clap,
+        tab: Tab::Clap,
+        navigation: LayerNavigation::Standard(StandardPage::Clap),
+    },
+    Layer {
+        page: Page::Arp,
+        tab: Tab::Arp,
+        navigation: LayerNavigation::Standard(StandardPage::Arp),
+    },
+    Layer {
+        page: Page::Macros,
+        tab: Tab::Macros,
+        navigation: LayerNavigation::Standard(StandardPage::Macros),
+    },
+    Layer {
+        page: Page::Master,
+        tab: Tab::Master,
+        navigation: LayerNavigation::Master,
+    },
+];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ChordDrill {
@@ -95,15 +149,11 @@ pub(crate) enum StandardPage {
 
 impl StandardPage {
     fn page(self) -> Page {
-        match self {
-            Self::Perc => Page::Perc,
-            Self::Bass => Page::Bass,
-            Self::Kick => Page::Kick,
-            Self::Tonal => Page::Tonal,
-            Self::Clap => Page::Clap,
-            Self::Arp => Page::Arp,
-            Self::Macros => Page::Macros,
-        }
+        LAYERS
+            .iter()
+            .find(|layer| layer.navigation == LayerNavigation::Standard(self))
+            .expect("every standard page owns a layer row")
+            .page
     }
 }
 
@@ -141,40 +191,13 @@ impl Default for Navigation {
 
 impl Navigation {
     pub(crate) fn for_page(page: Page) -> Self {
-        match page {
-            Page::Chords => Self::Chords {
+        match LAYERS[page as usize].navigation {
+            LayerNavigation::Chords => Self::Chords {
                 selected: 0,
                 drill: ChordDrill::None,
             },
-            Page::Master => Self::Master { selected: 0 },
-            Page::Perc => Self::Standard {
-                page: StandardPage::Perc,
-                selected: 0,
-            },
-            Page::Bass => Self::Standard {
-                page: StandardPage::Bass,
-                selected: 0,
-            },
-            Page::Kick => Self::Standard {
-                page: StandardPage::Kick,
-                selected: 0,
-            },
-            Page::Tonal => Self::Standard {
-                page: StandardPage::Tonal,
-                selected: 0,
-            },
-            Page::Clap => Self::Standard {
-                page: StandardPage::Clap,
-                selected: 0,
-            },
-            Page::Arp => Self::Standard {
-                page: StandardPage::Arp,
-                selected: 0,
-            },
-            Page::Macros => Self::Standard {
-                page: StandardPage::Macros,
-                selected: 0,
-            },
+            LayerNavigation::Standard(page) => Self::Standard { page, selected: 0 },
+            LayerNavigation::Master => Self::Master { selected: 0 },
         }
     }
 
@@ -451,6 +474,17 @@ impl PerformanceMode {
     }
 }
 
+/// A keyboard owner without its mode-local data, so an intent can name the
+/// owners that act on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModeKind {
+    Browsing,
+    Numeric,
+    Palette,
+    Automation,
+    Performance,
+}
+
 /// Exactly one variant owns the keyboard. Mode-local data cannot coexist with
 /// another owner.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -530,6 +564,55 @@ pub(crate) enum Intent {
 }
 
 impl Intent {
+    /// The keyboard owners whose transition table acts on this intent; every
+    /// other owner ignores it. Exhaustive over `Intent`, so a new variant
+    /// cannot compile without deciding which modes own it.
+    fn handled_by(self) -> &'static [ModeKind] {
+        match self {
+            Self::Cancel => &[
+                ModeKind::Browsing,
+                ModeKind::Numeric,
+                ModeKind::Palette,
+                ModeKind::Automation,
+                ModeKind::Performance,
+            ],
+            Self::MoveSelection(_) => {
+                &[ModeKind::Browsing, ModeKind::Palette, ModeKind::Automation]
+            }
+            Self::Confirm => &[ModeKind::Numeric, ModeKind::Palette, ModeKind::Automation],
+            Self::TypeCharacter(_) | Self::Backspace => &[ModeKind::Numeric, ModeKind::Palette],
+            Self::PaletteAutocomplete | Self::CommitPaletteAtBar => &[ModeKind::Palette],
+            Self::OpenAutomationField => &[ModeKind::Automation],
+            Self::EnterChordProgression
+            | Self::EnterChordSlot(_)
+            | Self::EnterModuleDetail { .. } => &[ModeKind::Browsing],
+            Self::ChangePage(_)
+            | Self::BeginNumeric(_)
+            | Self::OpenPalette
+            | Self::OpenAutomation(_)
+            | Self::AdjustSelected(_)
+            | Self::ResetSelected
+            | Self::ToggleAuto
+            | Self::ToggleUnits
+            | Self::ToggleMute { .. }
+            | Self::ToggleMacro
+            | Self::RemoveAutomation
+            | Self::ReseedAutomation
+            | Self::TouchSelected
+            | Self::Save
+            | Self::Quit => &[ModeKind::Browsing, ModeKind::Automation],
+            Self::ActivatePerformance(_) => &[ModeKind::Browsing, ModeKind::Performance],
+            Self::SelectPerformanceInstrument { .. }
+            | Self::ApplyPerformanceAction { .. }
+            | Self::FinishPerformanceSequence(_)
+            | Self::ReleaseHeldSelector(_) => &[ModeKind::Performance],
+        }
+    }
+
+    fn is_handled_by(self, mode: ModeKind) -> bool {
+        self.handled_by().contains(&mode)
+    }
+
     pub(crate) fn phase_policy(self) -> PhasePolicy {
         match self {
             Self::MoveSelection(_)
@@ -747,471 +830,37 @@ impl InteractionModel {
             };
         }
 
+        let intent = action.intent;
+        let page = self.navigation.page();
         let mut effects = Vec::new();
+        let mut next_mode = None;
         match &mut self.mode {
             InteractionMode::Browsing => {
-                update_browsing(
-                    &mut self.navigation,
-                    action.intent,
-                    &mut self.mode,
-                    &mut effects,
-                );
+                update_browsing(&mut self.navigation, intent, &mut next_mode, &mut effects);
             }
-            InteractionMode::Numeric(entry) => match action.intent {
-                Intent::Cancel => {
-                    self.mode = entry
-                        .resume
-                        .map_or(InteractionMode::Browsing, InteractionMode::Automation);
-                }
-                Intent::TypeCharacter(character) => push_numeric(&mut entry.buffer, character),
-                Intent::Backspace => {
-                    entry.buffer.pop();
-                }
-                Intent::Confirm => {
-                    if let Ok(value) = entry.buffer.parse::<f32>() {
-                        effects.push(InteractionEffect::CommitNumeric(value));
-                    }
-                    self.mode = entry
-                        .resume
-                        .map_or(InteractionMode::Browsing, InteractionMode::Automation);
-                }
-                Intent::MoveSelection(_)
-                | Intent::ChangePage(_)
-                | Intent::EnterChordProgression
-                | Intent::EnterChordSlot(_)
-                | Intent::EnterModuleDetail { .. }
-                | Intent::BeginNumeric(_)
-                | Intent::PaletteAutocomplete
-                | Intent::OpenPalette
-                | Intent::OpenAutomation(_)
-                | Intent::OpenAutomationField
-                | Intent::ActivatePerformance(_)
-                | Intent::SelectPerformanceInstrument { .. }
-                | Intent::ApplyPerformanceAction { .. }
-                | Intent::FinishPerformanceSequence(_)
-                | Intent::AdjustSelected(_)
-                | Intent::ResetSelected
-                | Intent::ToggleAuto
-                | Intent::ToggleUnits
-                | Intent::ToggleMute { .. }
-                | Intent::ToggleMacro
-                | Intent::RemoveAutomation
-                | Intent::ReseedAutomation
-                | Intent::TouchSelected
-                | Intent::CommitPaletteAtBar
-                | Intent::Save
-                | Intent::Quit
-                | Intent::ReleaseHeldSelector(_) => {}
-            },
+            InteractionMode::Numeric(entry) => {
+                update_numeric(entry, intent, &mut next_mode, &mut effects);
+            }
             InteractionMode::Palette(palette) => {
-                let entries = PaletteState::new(
-                    tab_for_page(self.navigation.page()),
-                    &[],
-                    palette.module_scope,
-                );
-                if palette
-                    .locked
-                    .is_some_and(|index| !entries.contains_entry(index))
-                {
-                    palette.locked = None;
-                    palette.value_buffer.clear();
-                }
-                match action.intent {
-                    Intent::Cancel => {
-                        self.mode = palette
-                            .resume
-                            .map_or(InteractionMode::Browsing, InteractionMode::Automation);
-                    }
-                    Intent::TypeCharacter(character) => {
-                        if palette.locked.is_some() {
-                            push_numeric(&mut palette.value_buffer, character);
-                        } else {
-                            palette.query.push(character);
-                            palette.selected = 0;
-                        }
-                    }
-                    Intent::Backspace => {
-                        if palette.locked.is_some() {
-                            if palette.value_buffer.is_empty() {
-                                palette.locked = None;
-                            } else {
-                                palette.value_buffer.pop();
-                            }
-                        } else {
-                            palette.query.pop();
-                            palette.selected = 0;
-                        }
-                    }
-                    Intent::MoveSelection(delta) => {
-                        let state = project_palette(palette, self.navigation.page());
-                        if palette.locked.is_none() && !state.matches.is_empty() {
-                            palette.selected = (state.selected as isize + delta)
-                                .rem_euclid(state.matches.len() as isize)
-                                as usize;
-                        }
-                    }
-                    Intent::PaletteAutocomplete => {
-                        let state = project_palette(palette, self.navigation.page());
-                        if palette.locked.is_none()
-                            && let Some(found) = state.matches.get(state.selected)
-                        {
-                            palette.locked = Some(found.entry);
-                        }
-                    }
-                    Intent::Confirm => {
-                        let state = project_palette(palette, self.navigation.page());
-                        if let Some(entry_index) = palette.locked {
-                            let entry = state.entry(entry_index);
-                            if let (Some(id), Ok(value)) =
-                                (entry.id(), palette.value_buffer.parse::<f32>())
-                            {
-                                palette.staged.push(PaletteStagedEdit {
-                                    id,
-                                    value_bits: value.to_bits(),
-                                });
-                                palette.locked = None;
-                                palette.value_buffer.clear();
-                                palette.query.clear();
-                                palette.selected = 0;
-                            } else {
-                                effects.push(palette_confirm(entry));
-                                self.mode = InteractionMode::Browsing;
-                            }
-                        } else if !palette.staged.is_empty() && palette.query.is_empty() {
-                            effects.push(InteractionEffect::PaletteCommit(std::mem::take(
-                                &mut palette.staged,
-                            )));
-                            self.mode = palette
-                                .resume
-                                .map_or(InteractionMode::Browsing, InteractionMode::Automation);
-                        } else if let Some(found) = state.matches.get(state.selected) {
-                            effects.push(palette_confirm(state.entry(found.entry)));
-                            self.mode = InteractionMode::Browsing;
-                        }
-                    }
-                    Intent::CommitPaletteAtBar => {
-                        let state = project_palette(palette, self.navigation.page());
-                        if let Some(entry_index) = palette.locked
-                            && let Ok(value) = palette.value_buffer.parse::<f32>()
-                        {
-                            let entry = state.entry(entry_index);
-                            if let Some(id) = entry.id() {
-                                palette.staged.push(PaletteStagedEdit {
-                                    id,
-                                    value_bits: value.to_bits(),
-                                });
-                            }
-                        }
-                        if !palette.staged.is_empty() {
-                            effects.push(InteractionEffect::PaletteCommitAtBar(std::mem::take(
-                                &mut palette.staged,
-                            )));
-                            self.mode = palette
-                                .resume
-                                .map_or(InteractionMode::Browsing, InteractionMode::Automation);
-                        }
-                    }
-                    Intent::ChangePage(_)
-                    | Intent::EnterChordProgression
-                    | Intent::EnterChordSlot(_)
-                    | Intent::EnterModuleDetail { .. }
-                    | Intent::BeginNumeric(_)
-                    | Intent::OpenPalette
-                    | Intent::OpenAutomation(_)
-                    | Intent::OpenAutomationField
-                    | Intent::ActivatePerformance(_)
-                    | Intent::SelectPerformanceInstrument { .. }
-                    | Intent::ApplyPerformanceAction { .. }
-                    | Intent::FinishPerformanceSequence(_)
-                    | Intent::AdjustSelected(_)
-                    | Intent::ResetSelected
-                    | Intent::ToggleAuto
-                    | Intent::ToggleUnits
-                    | Intent::ToggleMute { .. }
-                    | Intent::ToggleMacro
-                    | Intent::RemoveAutomation
-                    | Intent::ReseedAutomation
-                    | Intent::TouchSelected
-                    | Intent::Save
-                    | Intent::Quit
-                    | Intent::ReleaseHeldSelector(_) => {}
-                }
+                update_palette(palette, page, intent, &mut next_mode, &mut effects);
             }
-            InteractionMode::Automation(automation) => match action.intent {
-                Intent::Cancel
-                    if matches!(
-                        automation,
-                        AutomationMode::Lfo {
-                            depth: LfoDepth::NestedField,
-                            ..
-                        }
-                    ) =>
-                {
-                    effects.push(InteractionEffect::CloseAutomationDepth);
-                    *automation = AutomationMode::Lfo {
-                        depth: LfoDepth::Editor,
-                        selected: 0,
-                    };
-                }
-                Intent::Cancel => {
-                    effects.push(InteractionEffect::CloseAutomationDepth);
-                    self.mode = InteractionMode::Browsing;
-                }
-                Intent::OpenAutomationField => {
-                    if matches!(automation, AutomationMode::Lfo { .. }) {
-                        *automation = AutomationMode::Lfo {
-                            depth: LfoDepth::NestedField,
-                            selected: 0,
-                        };
-                    }
-                }
-                Intent::MoveSelection(delta) => {
-                    let selected = automation.selected_mut();
-                    *selected = move_unbounded(*selected, delta);
-                }
-                Intent::Confirm => {
-                    effects.push(InteractionEffect::AutomationConfirm(automation.kind()));
-                }
-                Intent::ChangePage(direction) => {
-                    let page = match direction {
-                        PageDirection::Next => self.navigation.page().next(),
-                        PageDirection::Previous => self.navigation.page().previous(),
-                    };
-                    self.navigation = Navigation::for_page(page);
-                    self.mode = InteractionMode::Browsing;
-                    effects.push(InteractionEffect::CloseAutomationAll);
-                }
-                Intent::OpenAutomation(kind) => {
-                    let same = automation.kind() == kind;
-                    effects.push(InteractionEffect::AutomationConfirm(kind));
-                    self.mode = if same {
-                        InteractionMode::Browsing
-                    } else {
-                        InteractionMode::Automation(AutomationMode::new(kind))
-                    };
-                }
-                Intent::AdjustSelected(delta) => {
-                    effects.push(InteractionEffect::AdjustSelected(delta));
-                }
-                Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
-                Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
-                Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
-                Intent::ToggleMute { master } => {
-                    effects.push(InteractionEffect::ToggleMute { master });
-                }
-                Intent::ToggleMacro => {
-                    match automation {
-                        AutomationMode::Lfo { depth, selected: _ } => {
-                            *depth = match depth {
-                                LfoDepth::Editor => LfoDepth::NestedField,
-                                LfoDepth::NestedField => LfoDepth::Editor,
-                            };
-                        }
-                        AutomationMode::Envelope { .. } => {
-                            self.mode = InteractionMode::Automation(AutomationMode::new(
-                                AutomationKind::Macro,
-                            ));
-                        }
-                        AutomationMode::Macro { .. } => {
-                            self.mode = InteractionMode::Browsing;
-                        }
-                    }
-                    effects.push(InteractionEffect::ToggleMacro);
-                }
-                Intent::RemoveAutomation => {
-                    self.mode = InteractionMode::Browsing;
-                    effects.push(InteractionEffect::RemoveAutomation);
-                }
-                Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
-                Intent::BeginNumeric(character) => {
-                    let mut entry = NumericEntry::default();
-                    push_numeric(&mut entry.buffer, character);
-                    entry.resume = Some(*automation);
-                    self.mode = InteractionMode::Numeric(entry);
-                }
-                Intent::OpenPalette => {
-                    self.mode = InteractionMode::Palette(PaletteMode {
-                        recent: Vec::new(),
-                        resume: Some(*automation),
-                        ..PaletteMode::default()
-                    });
-                }
-                Intent::Save => effects.push(InteractionEffect::Save),
-                Intent::Quit => effects.push(InteractionEffect::Quit),
-                Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
-                Intent::EnterChordProgression
-                | Intent::EnterChordSlot(_)
-                | Intent::EnterModuleDetail { .. }
-                | Intent::TypeCharacter(_)
-                | Intent::Backspace
-                | Intent::PaletteAutocomplete
-                | Intent::ActivatePerformance(_)
-                | Intent::SelectPerformanceInstrument { .. }
-                | Intent::ApplyPerformanceAction { .. }
-                | Intent::FinishPerformanceSequence(_)
-                | Intent::CommitPaletteAtBar
-                | Intent::ReleaseHeldSelector(_) => {}
-            },
-            InteractionMode::Performance(performance) => match action.intent {
-                Intent::Cancel => {
-                    match performance {
-                        PerformanceMode::Deck { held_selectors, .. } => {
-                            effects.extend(
-                                held_selectors
-                                    .iter()
-                                    .map(InteractionEffect::ReleaseHeldSelector),
-                            );
-                        }
-                        PerformanceMode::Sequence { held_selector, .. } => {
-                            if let Some(selector) = held_selector.take() {
-                                effects.push(InteractionEffect::ReleaseHeldSelector(selector));
-                            }
-                        }
-                    }
-                    self.mode = InteractionMode::Browsing;
-                }
-                Intent::ActivatePerformance(kind) if kind == performance.kind() => {
-                    if matches!(
-                        performance,
-                        PerformanceMode::Sequence {
-                            stage: SequenceStage::CompletedFallback { .. },
-                            ..
-                        }
-                    ) {
-                        *performance = PerformanceMode::new(PerformanceKind::Sequence);
-                    }
-                }
-                Intent::ActivatePerformance(_) => {}
-                Intent::SelectPerformanceInstrument { instrument, hold } => {
-                    match performance {
-                        PerformanceMode::Deck {
-                            selected,
-                            held_selectors,
-                        } => {
-                            *selected = Some(instrument);
-                            if hold {
-                                held_selectors.insert(instrument);
-                            }
-                        }
-                        PerformanceMode::Sequence {
-                            stage,
-                            held_selector,
-                        } => {
-                            if hold
-                                && let Some(previous) = held_selector.replace(instrument)
-                                && previous != instrument
-                            {
-                                effects.push(InteractionEffect::ReleaseHeldSelector(previous));
-                            }
-                            *stage = SequenceStage::Perform { instrument };
-                        }
-                    }
-                    let page = instrument.page();
-                    self.navigation = Navigation::for_page(page);
-                    effects.extend([
-                        InteractionEffect::SelectPage(page),
-                        InteractionEffect::PerformanceInstrument(instrument),
-                    ]);
-                    if hold {
-                        effects.push(InteractionEffect::HoldPerformanceSelector(instrument));
-                    }
-                }
-                Intent::ReleaseHeldSelector(released) => match performance {
-                    PerformanceMode::Deck { held_selectors, .. } => {
-                        if held_selectors.remove(released) {
-                            effects.push(InteractionEffect::ReleaseHeldSelector(released));
-                        }
-                    }
-                    PerformanceMode::Sequence { held_selector, .. } => {
-                        if *held_selector == Some(released) {
-                            held_selector.take();
-                            effects.push(InteractionEffect::ReleaseHeldSelector(released));
-                        }
-                    }
-                },
-                Intent::ApplyPerformanceAction {
-                    action,
-                    release_available,
-                } => {
-                    let edit = match *performance {
-                        PerformanceMode::Deck {
-                            selected: Some(instrument),
-                            held_selectors,
-                        } => Some((
-                            if held_selectors.is_empty() {
-                                PerformanceTargets::single(instrument)
-                            } else {
-                                held_selectors
-                            },
-                            instrument,
-                        )),
-                        PerformanceMode::Sequence {
-                            stage: SequenceStage::Perform { instrument },
-                            ..
-                        } => Some((PerformanceTargets::single(instrument), instrument)),
-                        _ => None,
-                    };
-                    if let Some((targets, focus)) = edit {
-                        effects.push(InteractionEffect::PerformanceEdit {
-                            targets,
-                            focus,
-                            action,
-                        });
-                        if let PerformanceMode::Sequence { stage, .. } = performance {
-                            *stage = if release_available {
-                                SequenceStage::AwaitActionRelease {
-                                    instrument: focus,
-                                    action,
-                                }
-                            } else {
-                                SequenceStage::CompletedFallback { instrument: focus }
-                            };
-                        }
-                    }
-                }
-                Intent::FinishPerformanceSequence(released) => {
-                    if matches!(
-                        performance,
-                        PerformanceMode::Sequence {
-                            stage: SequenceStage::AwaitActionRelease { action, .. },
-                            ..
-                        } if *action == released
-                    ) {
-                        let PerformanceMode::Sequence { held_selector, .. } = performance else {
-                            unreachable!("completion is sequence-only");
-                        };
-                        if let Some(selector) = held_selector.take() {
-                            effects.push(InteractionEffect::ReleaseHeldSelector(selector));
-                        }
-                        self.mode = InteractionMode::Browsing;
-                    }
-                }
-                Intent::MoveSelection(_)
-                | Intent::ChangePage(_)
-                | Intent::EnterChordProgression
-                | Intent::EnterChordSlot(_)
-                | Intent::EnterModuleDetail { .. }
-                | Intent::BeginNumeric(_)
-                | Intent::TypeCharacter(_)
-                | Intent::Backspace
-                | Intent::PaletteAutocomplete
-                | Intent::Confirm
-                | Intent::OpenPalette
-                | Intent::OpenAutomation(_)
-                | Intent::OpenAutomationField
-                | Intent::AdjustSelected(_)
-                | Intent::ResetSelected
-                | Intent::ToggleAuto
-                | Intent::ToggleUnits
-                | Intent::ToggleMute { .. }
-                | Intent::ToggleMacro
-                | Intent::RemoveAutomation
-                | Intent::ReseedAutomation
-                | Intent::TouchSelected
-                | Intent::CommitPaletteAtBar
-                | Intent::Save
-                | Intent::Quit => {}
-            },
+            InteractionMode::Automation(automation) => update_automation(
+                automation,
+                &mut self.navigation,
+                intent,
+                &mut next_mode,
+                &mut effects,
+            ),
+            InteractionMode::Performance(performance) => update_performance(
+                performance,
+                &mut self.navigation,
+                intent,
+                &mut next_mode,
+                &mut effects,
+            ),
+        }
+        if let Some(mode) = next_mode {
+            self.mode = mode;
         }
 
         Transition {
@@ -1221,12 +870,21 @@ impl InteractionModel {
     }
 }
 
+/// The editor a nested mode was opened from, or browsing when it was opened
+/// from the top level.
+fn resume_mode(resume: Option<AutomationMode>) -> InteractionMode {
+    resume.map_or(InteractionMode::Browsing, InteractionMode::Automation)
+}
+
 fn update_browsing(
     navigation: &mut Navigation,
     intent: Intent,
-    mode: &mut InteractionMode,
+    next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
 ) {
+    if !intent.is_handled_by(ModeKind::Browsing) {
+        return;
+    }
     match intent {
         Intent::MoveSelection(delta) => navigation.move_selection(delta),
         Intent::ChangePage(direction) => {
@@ -1265,10 +923,10 @@ fn update_browsing(
         Intent::BeginNumeric(character) => {
             let mut entry = NumericEntry::default();
             push_numeric(&mut entry.buffer, character);
-            *mode = InteractionMode::Numeric(entry);
+            *next_mode = Some(InteractionMode::Numeric(entry));
         }
         Intent::OpenPalette => {
-            *mode = InteractionMode::Palette(PaletteMode {
+            *next_mode = Some(InteractionMode::Palette(PaletteMode {
                 module_scope: match navigation {
                     Navigation::Module {
                         tab, slot, catalog, ..
@@ -1276,14 +934,14 @@ fn update_browsing(
                     _ => None,
                 },
                 ..PaletteMode::default()
-            })
+            }));
         }
         Intent::OpenAutomation(kind) => {
-            *mode = InteractionMode::Automation(AutomationMode::new(kind));
+            *next_mode = Some(InteractionMode::Automation(AutomationMode::new(kind)));
             effects.push(InteractionEffect::AutomationConfirm(kind));
         }
         Intent::ActivatePerformance(kind) => {
-            *mode = InteractionMode::Performance(PerformanceMode::new(kind));
+            *next_mode = Some(InteractionMode::Performance(PerformanceMode::new(kind)));
         }
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
         Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
@@ -1293,24 +951,413 @@ fn update_browsing(
             effects.push(InteractionEffect::ToggleMute { master });
         }
         Intent::ToggleMacro => {
-            *mode = InteractionMode::Automation(AutomationMode::new(AutomationKind::Macro));
+            *next_mode = Some(InteractionMode::Automation(AutomationMode::new(
+                AutomationKind::Macro,
+            )));
             effects.push(InteractionEffect::ToggleMacro);
         }
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
         Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
-        Intent::CommitPaletteAtBar => {}
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
-        Intent::TypeCharacter(_)
-        | Intent::Backspace
-        | Intent::PaletteAutocomplete
-        | Intent::Confirm
-        | Intent::OpenAutomationField
-        | Intent::SelectPerformanceInstrument { .. }
-        | Intent::ApplyPerformanceAction { .. }
-        | Intent::FinishPerformanceSequence(_)
-        | Intent::ReleaseHeldSelector(_) => {}
+        _ => {}
+    }
+}
+
+fn update_numeric(
+    entry: &mut NumericEntry,
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    if !intent.is_handled_by(ModeKind::Numeric) {
+        return;
+    }
+    match intent {
+        Intent::Cancel => *next_mode = Some(resume_mode(entry.resume)),
+        Intent::TypeCharacter(character) => push_numeric(&mut entry.buffer, character),
+        Intent::Backspace => {
+            entry.buffer.pop();
+        }
+        Intent::Confirm => {
+            if let Ok(value) = entry.buffer.parse::<f32>() {
+                effects.push(InteractionEffect::CommitNumeric(value));
+            }
+            *next_mode = Some(resume_mode(entry.resume));
+        }
+        _ => {}
+    }
+}
+
+fn update_palette(
+    palette: &mut PaletteMode,
+    page: Page,
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    let entries = PaletteState::new(tab_for_page(page), &[], palette.module_scope);
+    if palette
+        .locked
+        .is_some_and(|index| !entries.contains_entry(index))
+    {
+        palette.locked = None;
+        palette.value_buffer.clear();
+    }
+    if !intent.is_handled_by(ModeKind::Palette) {
+        return;
+    }
+    match intent {
+        Intent::Cancel => *next_mode = Some(resume_mode(palette.resume)),
+        Intent::TypeCharacter(character) => {
+            if palette.locked.is_some() {
+                push_numeric(&mut palette.value_buffer, character);
+            } else {
+                palette.query.push(character);
+                palette.selected = 0;
+            }
+        }
+        Intent::Backspace => {
+            if palette.locked.is_some() {
+                if palette.value_buffer.is_empty() {
+                    palette.locked = None;
+                } else {
+                    palette.value_buffer.pop();
+                }
+            } else {
+                palette.query.pop();
+                palette.selected = 0;
+            }
+        }
+        Intent::MoveSelection(delta) => {
+            let state = project_palette(palette, page);
+            if palette.locked.is_none() && !state.matches.is_empty() {
+                palette.selected = (state.selected as isize + delta)
+                    .rem_euclid(state.matches.len() as isize)
+                    as usize;
+            }
+        }
+        Intent::PaletteAutocomplete => {
+            let state = project_palette(palette, page);
+            if palette.locked.is_none()
+                && let Some(found) = state.matches.get(state.selected)
+            {
+                palette.locked = Some(found.entry);
+            }
+        }
+        Intent::Confirm => {
+            let state = project_palette(palette, page);
+            if let Some(entry_index) = palette.locked {
+                let entry = state.entry(entry_index);
+                if let (Some(id), Ok(value)) = (entry.id(), palette.value_buffer.parse::<f32>()) {
+                    palette.staged.push(PaletteStagedEdit {
+                        id,
+                        value_bits: value.to_bits(),
+                    });
+                    palette.locked = None;
+                    palette.value_buffer.clear();
+                    palette.query.clear();
+                    palette.selected = 0;
+                } else {
+                    effects.push(palette_confirm(entry));
+                    *next_mode = Some(InteractionMode::Browsing);
+                }
+            } else if !palette.staged.is_empty() && palette.query.is_empty() {
+                effects.push(InteractionEffect::PaletteCommit(std::mem::take(
+                    &mut palette.staged,
+                )));
+                *next_mode = Some(resume_mode(palette.resume));
+            } else if let Some(found) = state.matches.get(state.selected) {
+                effects.push(palette_confirm(state.entry(found.entry)));
+                *next_mode = Some(InteractionMode::Browsing);
+            }
+        }
+        Intent::CommitPaletteAtBar => {
+            let state = project_palette(palette, page);
+            if let Some(entry_index) = palette.locked
+                && let Ok(value) = palette.value_buffer.parse::<f32>()
+            {
+                let entry = state.entry(entry_index);
+                if let Some(id) = entry.id() {
+                    palette.staged.push(PaletteStagedEdit {
+                        id,
+                        value_bits: value.to_bits(),
+                    });
+                }
+            }
+            if !palette.staged.is_empty() {
+                effects.push(InteractionEffect::PaletteCommitAtBar(std::mem::take(
+                    &mut palette.staged,
+                )));
+                *next_mode = Some(resume_mode(palette.resume));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn update_automation(
+    automation: &mut AutomationMode,
+    navigation: &mut Navigation,
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    if !intent.is_handled_by(ModeKind::Automation) {
+        return;
+    }
+    match intent {
+        Intent::Cancel
+            if matches!(
+                automation,
+                AutomationMode::Lfo {
+                    depth: LfoDepth::NestedField,
+                    ..
+                }
+            ) =>
+        {
+            effects.push(InteractionEffect::CloseAutomationDepth);
+            *automation = AutomationMode::Lfo {
+                depth: LfoDepth::Editor,
+                selected: 0,
+            };
+        }
+        Intent::Cancel => {
+            effects.push(InteractionEffect::CloseAutomationDepth);
+            *next_mode = Some(InteractionMode::Browsing);
+        }
+        Intent::OpenAutomationField => {
+            if matches!(automation, AutomationMode::Lfo { .. }) {
+                *automation = AutomationMode::Lfo {
+                    depth: LfoDepth::NestedField,
+                    selected: 0,
+                };
+            }
+        }
+        Intent::MoveSelection(delta) => {
+            let selected = automation.selected_mut();
+            *selected = move_unbounded(*selected, delta);
+        }
+        Intent::Confirm => {
+            effects.push(InteractionEffect::AutomationConfirm(automation.kind()));
+        }
+        Intent::ChangePage(direction) => {
+            let page = match direction {
+                PageDirection::Next => navigation.page().next(),
+                PageDirection::Previous => navigation.page().previous(),
+            };
+            *navigation = Navigation::for_page(page);
+            *next_mode = Some(InteractionMode::Browsing);
+            effects.push(InteractionEffect::CloseAutomationAll);
+        }
+        Intent::OpenAutomation(kind) => {
+            let same = automation.kind() == kind;
+            effects.push(InteractionEffect::AutomationConfirm(kind));
+            *next_mode = Some(if same {
+                InteractionMode::Browsing
+            } else {
+                InteractionMode::Automation(AutomationMode::new(kind))
+            });
+        }
+        Intent::AdjustSelected(delta) => {
+            effects.push(InteractionEffect::AdjustSelected(delta));
+        }
+        Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
+        Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
+        Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
+        Intent::ToggleMute { master } => {
+            effects.push(InteractionEffect::ToggleMute { master });
+        }
+        Intent::ToggleMacro => {
+            match automation {
+                AutomationMode::Lfo { depth, selected: _ } => {
+                    *depth = match depth {
+                        LfoDepth::Editor => LfoDepth::NestedField,
+                        LfoDepth::NestedField => LfoDepth::Editor,
+                    };
+                }
+                AutomationMode::Envelope { .. } => {
+                    *next_mode = Some(InteractionMode::Automation(AutomationMode::new(
+                        AutomationKind::Macro,
+                    )));
+                }
+                AutomationMode::Macro { .. } => {
+                    *next_mode = Some(InteractionMode::Browsing);
+                }
+            }
+            effects.push(InteractionEffect::ToggleMacro);
+        }
+        Intent::RemoveAutomation => {
+            *next_mode = Some(InteractionMode::Browsing);
+            effects.push(InteractionEffect::RemoveAutomation);
+        }
+        Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
+        Intent::BeginNumeric(character) => {
+            let mut entry = NumericEntry::default();
+            push_numeric(&mut entry.buffer, character);
+            entry.resume = Some(*automation);
+            *next_mode = Some(InteractionMode::Numeric(entry));
+        }
+        Intent::OpenPalette => {
+            *next_mode = Some(InteractionMode::Palette(PaletteMode {
+                recent: Vec::new(),
+                resume: Some(*automation),
+                ..PaletteMode::default()
+            }));
+        }
+        Intent::Save => effects.push(InteractionEffect::Save),
+        Intent::Quit => effects.push(InteractionEffect::Quit),
+        Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
+        _ => {}
+    }
+}
+
+fn update_performance(
+    performance: &mut PerformanceMode,
+    navigation: &mut Navigation,
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    if !intent.is_handled_by(ModeKind::Performance) {
+        return;
+    }
+    match intent {
+        Intent::Cancel => {
+            match performance {
+                PerformanceMode::Deck { held_selectors, .. } => {
+                    effects.extend(
+                        held_selectors
+                            .iter()
+                            .map(InteractionEffect::ReleaseHeldSelector),
+                    );
+                }
+                PerformanceMode::Sequence { held_selector, .. } => {
+                    if let Some(selector) = held_selector.take() {
+                        effects.push(InteractionEffect::ReleaseHeldSelector(selector));
+                    }
+                }
+            }
+            *next_mode = Some(InteractionMode::Browsing);
+        }
+        Intent::ActivatePerformance(kind) if kind == performance.kind() => {
+            if matches!(
+                performance,
+                PerformanceMode::Sequence {
+                    stage: SequenceStage::CompletedFallback { .. },
+                    ..
+                }
+            ) {
+                *performance = PerformanceMode::new(PerformanceKind::Sequence);
+            }
+        }
+        Intent::ActivatePerformance(_) => {}
+        Intent::SelectPerformanceInstrument { instrument, hold } => {
+            match performance {
+                PerformanceMode::Deck {
+                    selected,
+                    held_selectors,
+                } => {
+                    *selected = Some(instrument);
+                    if hold {
+                        held_selectors.insert(instrument);
+                    }
+                }
+                PerformanceMode::Sequence {
+                    stage,
+                    held_selector,
+                } => {
+                    if hold
+                        && let Some(previous) = held_selector.replace(instrument)
+                        && previous != instrument
+                    {
+                        effects.push(InteractionEffect::ReleaseHeldSelector(previous));
+                    }
+                    *stage = SequenceStage::Perform { instrument };
+                }
+            }
+            let page = instrument.page();
+            *navigation = Navigation::for_page(page);
+            effects.extend([
+                InteractionEffect::SelectPage(page),
+                InteractionEffect::PerformanceInstrument(instrument),
+            ]);
+            if hold {
+                effects.push(InteractionEffect::HoldPerformanceSelector(instrument));
+            }
+        }
+        Intent::ReleaseHeldSelector(released) => match performance {
+            PerformanceMode::Deck { held_selectors, .. } => {
+                if held_selectors.remove(released) {
+                    effects.push(InteractionEffect::ReleaseHeldSelector(released));
+                }
+            }
+            PerformanceMode::Sequence { held_selector, .. } => {
+                if *held_selector == Some(released) {
+                    held_selector.take();
+                    effects.push(InteractionEffect::ReleaseHeldSelector(released));
+                }
+            }
+        },
+        Intent::ApplyPerformanceAction {
+            action,
+            release_available,
+        } => {
+            let edit = match *performance {
+                PerformanceMode::Deck {
+                    selected: Some(instrument),
+                    held_selectors,
+                } => Some((
+                    if held_selectors.is_empty() {
+                        PerformanceTargets::single(instrument)
+                    } else {
+                        held_selectors
+                    },
+                    instrument,
+                )),
+                PerformanceMode::Sequence {
+                    stage: SequenceStage::Perform { instrument },
+                    ..
+                } => Some((PerformanceTargets::single(instrument), instrument)),
+                _ => None,
+            };
+            if let Some((targets, focus)) = edit {
+                effects.push(InteractionEffect::PerformanceEdit {
+                    targets,
+                    focus,
+                    action,
+                });
+                if let PerformanceMode::Sequence { stage, .. } = performance {
+                    *stage = if release_available {
+                        SequenceStage::AwaitActionRelease {
+                            instrument: focus,
+                            action,
+                        }
+                    } else {
+                        SequenceStage::CompletedFallback { instrument: focus }
+                    };
+                }
+            }
+        }
+        Intent::FinishPerformanceSequence(released) => {
+            if matches!(
+                performance,
+                PerformanceMode::Sequence {
+                    stage: SequenceStage::AwaitActionRelease { action, .. },
+                    ..
+                } if *action == released
+            ) {
+                let PerformanceMode::Sequence { held_selector, .. } = performance else {
+                    unreachable!("completion is sequence-only");
+                };
+                if let Some(selector) = held_selector.take() {
+                    effects.push(InteractionEffect::ReleaseHeldSelector(selector));
+                }
+                *next_mode = Some(InteractionMode::Browsing);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1382,31 +1429,11 @@ fn palette_confirm(entry: &PaletteEntry) -> InteractionEffect {
 }
 
 fn tab_for_page(page: Page) -> Tab {
-    match page {
-        Page::Chords => Tab::Chords,
-        Page::Perc => Tab::Perc,
-        Page::Bass => Tab::Bass,
-        Page::Kick => Tab::Kick,
-        Page::Tonal => Tab::Tonal,
-        Page::Clap => Tab::Clap,
-        Page::Arp => Tab::Arp,
-        Page::Macros => Tab::Macros,
-        Page::Master => Tab::Master,
-    }
+    LAYERS[page as usize].tab
 }
 
 fn page_for_tab(tab: Tab) -> Page {
-    match tab {
-        Tab::Chords => Page::Chords,
-        Tab::Perc => Page::Perc,
-        Tab::Bass => Page::Bass,
-        Tab::Kick => Page::Kick,
-        Tab::Tonal => Page::Tonal,
-        Tab::Clap => Page::Clap,
-        Tab::Arp => Page::Arp,
-        Tab::Macros => Page::Macros,
-        Tab::Master => Page::Master,
-    }
+    LAYERS[tab as usize].page
 }
 
 #[cfg(test)]
@@ -1415,6 +1442,37 @@ mod tests {
 
     fn update(model: InteractionModel, intent: Intent) -> Transition {
         model.update(SemanticAction::press(intent))
+    }
+
+    /// Page and tab lookups index `LAYERS` directly, so a row out of
+    /// discriminant order would silently translate a page to another layer's
+    /// tab.
+    #[test]
+    fn every_layer_row_sits_at_its_page_and_tab_discriminant() {
+        for (index, layer) in LAYERS.iter().enumerate() {
+            assert_eq!(layer.page as usize, index);
+            assert_eq!(layer.tab as usize, index);
+            assert_eq!(tab_for_page(layer.page), layer.tab);
+            assert_eq!(page_for_tab(layer.tab), layer.page);
+        }
+    }
+
+    #[test]
+    fn every_standard_page_round_trips_through_its_layer_row() {
+        for page in [
+            StandardPage::Perc,
+            StandardPage::Bass,
+            StandardPage::Kick,
+            StandardPage::Tonal,
+            StandardPage::Clap,
+            StandardPage::Arp,
+            StandardPage::Macros,
+        ] {
+            assert_eq!(
+                Navigation::for_page(page.page()),
+                Navigation::Standard { page, selected: 0 }
+            );
+        }
     }
 
     #[test]
