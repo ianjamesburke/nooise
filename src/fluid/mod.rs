@@ -30,6 +30,8 @@ use crate::update_check::{UpdateNotice, spawn_update_check};
 mod auto;
 mod automation;
 mod controls;
+mod coordinator;
+mod edit;
 mod effect;
 mod engine;
 mod interaction;
@@ -44,6 +46,7 @@ mod song;
 mod song_ids;
 mod ui;
 mod view;
+mod visualizer;
 mod voice;
 mod widget;
 
@@ -55,6 +58,8 @@ pub(crate) use auto::{
 };
 use automation::*;
 use controls::*;
+use coordinator::*;
+use edit::*;
 use effect::*;
 use engine::*;
 use module::*;
@@ -64,6 +69,7 @@ use session::*;
 pub(crate) use song::{SongState, decode_song_code, encode_song_code};
 use ui::*;
 use view::*;
+use visualizer::*;
 use voice::*;
 
 // ============================================================
