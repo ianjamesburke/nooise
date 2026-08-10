@@ -190,6 +190,6 @@ impl ArpEngine {
             }
         }
 
-        mix_and_retain(&mut self.voices, |voice| voice.next(), TonalVoice::is_done)
+        mix_and_retain(&mut self.voices, TonalVoice::next, TonalVoice::is_done)
     }
 }

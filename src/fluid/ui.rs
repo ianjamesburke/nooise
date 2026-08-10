@@ -129,7 +129,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let frame = PanelFrame {
         view,
         automation,
-        lfo_selected: automation.map_or(0, |surface| surface.selected()),
+        lfo_selected: automation.map_or(0, AutomationSurface::selected),
         numeric: NumericDisplay {
             entry: match &view.mode {
                 ModeSurface::Numeric { entry, .. } => Some(entry.as_str()),
@@ -259,10 +259,8 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         let route = automation.route(address);
         let envelope = automation.envelope(address);
         let macro_route = automation.macro_route(address);
-        let editor_here = frame
-            .automation
-            .and_then(|surface| surface.active_address())
-            == Some(address);
+        let editor_here =
+            frame.automation.and_then(AutomationSurface::active_address) == Some(address);
         let open_here = |kind: ModKind| match (frame.automation, kind) {
             (Some(AutomationSurface::Lfo { address: open, .. }), ModKind::Lfo)
             | (Some(AutomationSurface::Envelope { address: open, .. }), ModKind::Envelope)

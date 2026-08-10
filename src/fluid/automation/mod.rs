@@ -523,11 +523,7 @@ impl AutomationState {
         let Some(key) = self.open_field.take() else {
             return;
         };
-        if self
-            .field_macros
-            .get(&key)
-            .is_some_and(|route| route.is_neutral())
-        {
+        if self.field_macros.get(&key).is_some_and(Route::is_neutral) {
             self.field_macros.remove(&key);
         }
     }

@@ -93,7 +93,7 @@ fn buffer_text(buffer: &Buffer) -> String {
     buffer
         .content
         .iter()
-        .map(|cell| cell.symbol())
+        .map(ratatui::buffer::Cell::symbol)
         .collect::<String>()
 }
 
@@ -4747,7 +4747,7 @@ fn arp_reverb_is_a_shared_module_not_a_bespoke_mix_control() {
 #[test]
 fn palette_entries_cover_every_unique_control_id_exactly_once() {
     let entries = palette_entries();
-    let mut ids: Vec<&str> = entries.iter().filter_map(|e| e.id()).collect();
+    let mut ids: Vec<&str> = entries.iter().filter_map(PaletteEntry::id).collect();
     ids.sort_unstable();
     let before_dedup = ids.len();
     ids.dedup();

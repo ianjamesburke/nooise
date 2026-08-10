@@ -76,9 +76,8 @@ impl PaletteEntry {
 
     pub(crate) fn spec(&self) -> Option<&'static ControlSpec> {
         match self {
-            Self::Control { spec, .. } => Some(spec),
+            Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => Some(spec),
             Self::Module { .. } => None,
-            Self::ModuleControl { spec, .. } => Some(spec),
         }
     }
 
@@ -90,7 +89,7 @@ impl PaletteEntry {
     /// matched against, so it cannot affect indices.
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
-            Self::Control { spec, .. } => (spec.display)(c),
+            Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => (spec.display)(c),
             Self::Module { tab, catalog_index } => {
                 let kind = MODULE_CATALOG[*catalog_index];
                 c.modules
@@ -106,7 +105,6 @@ impl PaletteEntry {
                         },
                     )
             }
-            Self::ModuleControl { spec, .. } => (spec.display)(c),
         }
     }
 }
@@ -397,7 +395,7 @@ pub(crate) fn next_bar_beat(beat: f64) -> f64 {
 /// deep the first match sits, so "rev" ranks a Reverb module above a scattered
 /// hit inside another label.
 pub(crate) fn fuzzy_score(query: &str, haystack: &str) -> Option<(i32, Vec<usize>)> {
-    let needle: Vec<char> = query.chars().flat_map(|c| c.to_lowercase()).collect();
+    let needle: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
     if needle.is_empty() {
         return Some((0, Vec::new()));
     }

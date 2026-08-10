@@ -424,7 +424,8 @@ impl TonalEngine {
             }
         }
 
-        let (dry_l, dry_r) = mix_and_retain(&mut self.voices, |v| v.next(), TonalVoice::is_done);
+        let (dry_l, dry_r) =
+            mix_and_retain(&mut self.voices, TonalVoice::next, TonalVoice::is_done);
 
         (self.low_cut_l.process(dry_l), self.low_cut_r.process(dry_r))
     }

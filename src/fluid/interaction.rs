@@ -247,7 +247,6 @@ impl Navigation {
                 }
                 ChordDrill::None => {}
             },
-            Self::Master { .. } => {}
             Self::Module { tab, return_to, .. } => {
                 let mut parent = Self::for_page(page_for_tab(*tab));
                 match &mut parent {
@@ -260,7 +259,7 @@ impl Navigation {
                 }
                 *self = parent;
             }
-            Self::Standard { .. } => {}
+            Self::Master { .. } | Self::Standard { .. } => {}
         }
     }
 }
