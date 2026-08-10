@@ -17,6 +17,9 @@ use crossterm::event::{
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
+use super::coordinator::{
+    ProductionCoordinatorContext, ProductionStep, coordinate_production_tick,
+};
 use super::effect::{Clipboard, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
@@ -29,7 +32,6 @@ use super::runtime::{
     SanitizedTraceRecorder, Scheduler, SchedulerConfig, TerminalCapabilities, TransportEvent,
     TransportKey, decode_physical_key, encode_physical_key, normalize_key_event,
 };
-use super::ui::{ProductionCoordinatorContext, ProductionStep, coordinate_production_tick};
 use super::view::{
     MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH, TelemetryView, UiViewModel, ViewNotices,
     ViewPresentation, ViewProjection,
@@ -754,7 +756,7 @@ impl ReplayHarness {
                     self.requested_at.get_or_insert(self.clock.now());
                 }
             }
-            let production = super::ui::coordinate_production_turn(
+            let production = super::coordinator::coordinate_production_turn(
                 &mut self.model,
                 &turn.events,
                 turn.tick_due,
@@ -2420,7 +2422,7 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
         phase: InputPhase::Press,
         repeat_count: 1,
     };
-    let staged_turn = super::ui::coordinate_production_turn(
+    let staged_turn = super::coordinator::coordinate_production_turn(
         &mut harness.model,
         &[stage_event],
         false,
@@ -2456,7 +2458,7 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
         phase: InputPhase::Press,
         repeat_count: 1,
     };
-    let due_turn = super::ui::coordinate_production_turn(
+    let due_turn = super::coordinator::coordinate_production_turn(
         &mut harness.model,
         &[adjust_event],
         true,
