@@ -29,7 +29,7 @@ pub(crate) enum PaletteEntry {
     /// A catalog module on `tab`'s chain. Whether confirming adds it or jumps
     /// to the copy already there is decided at execution time, so the palette
     /// can never silently create a second copy.
-    Module { tab: Tab, catalog: usize },
+    Module { tab: Tab, catalog_index: usize },
     /// A stable slot control projected under the active module's human-facing
     /// dotted scope; its backing id remains slot-addressed for song codes.
     ModuleControl {
@@ -48,8 +48,8 @@ impl PaletteEntry {
             Self::Control { tab, spec, .. } => {
                 format!("{} · {} · {}", spec.id, tab.name(), spec.label)
             }
-            Self::Module { tab, catalog } => {
-                let kind = MODULE_CATALOG[*catalog];
+            Self::Module { tab, catalog_index } => {
+                let kind = MODULE_CATALOG[*catalog_index];
                 format!(
                     "{} · {} · {} · module",
                     kind.id,
@@ -91,8 +91,8 @@ impl PaletteEntry {
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
             Self::Control { spec, .. } => (spec.display)(c),
-            Self::Module { tab, catalog } => {
-                let kind = MODULE_CATALOG[*catalog];
+            Self::Module { tab, catalog_index } => {
+                let kind = MODULE_CATALOG[*catalog_index];
                 c.modules
                     .for_tab(*tab)
                     .and_then(|slots| chain_amount_slot(slots, kind.id))
@@ -136,9 +136,9 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
         if !tab_has_module_chain(tab) {
             continue;
         }
-        for (catalog, kind) in MODULE_CATALOG.iter().copied().enumerate() {
+        for (catalog_index, kind) in MODULE_CATALOG.iter().copied().enumerate() {
             if module_available_on(kind, tab) {
-                entries.push(PaletteEntry::Module { tab, catalog });
+                entries.push(PaletteEntry::Module { tab, catalog_index });
             }
         }
     }
@@ -148,9 +148,21 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
 /// One fuzzy candidate: which entry, how well it scored, and which characters
 /// of its haystack matched (for highlighting).
 pub(crate) struct PaletteMatch {
-    pub(crate) entry: usize,
+    pub(crate) entry_index: usize,
     pub(crate) score: i32,
     pub(crate) hits: Vec<usize>,
+}
+
+/// The module detail surface the palette was opened from.
+///
+/// While this is set the palette lists that module's own parameters instead of
+/// the whole registry, so `/` inside a module drill stays inside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ModuleScope {
+    pub(crate) tab: Tab,
+    /// Storage slot on `tab`'s chain, not a catalog position.
+    pub(crate) slot: usize,
+    pub(crate) catalog_index: usize,
 }
 
 /// A value edit waiting in the palette's stage.
@@ -180,11 +192,11 @@ impl PaletteState {
     pub(crate) fn new(
         current_tab: Tab,
         recent: &[&'static str],
-        module_scope: Option<(Tab, usize, usize)>,
+        module_scope: Option<ModuleScope>,
     ) -> Self {
         let mut state = Self {
-            entries: module_scope.map_or_else(palette_entries, |(tab, slot, catalog)| {
-                module_palette_entries(tab, slot, catalog)
+            entries: module_scope.map_or_else(palette_entries, |scope| {
+                module_palette_entries(scope.tab, scope.slot, scope.catalog_index)
             }),
             current_tab,
             recent: recent.to_vec(),
@@ -224,18 +236,22 @@ impl PaletteState {
             // Empty query is a global MRU navigator: every recent control,
             // regardless of page, then unused current-page controls, then
             // the remaining registry order.
-            for entry in 0..self.entries.len() {
+            for entry_index in 0..self.entries.len() {
                 self.matches.push(PaletteMatch {
-                    entry,
+                    entry_index,
                     score: 0,
                     hits: Vec::new(),
                 });
             }
             self.sort_by_context();
         } else {
-            for (entry, e) in self.entries.iter().enumerate() {
-                if let Some((score, hits)) = fuzzy_score(&self.query, &e.haystack()) {
-                    self.matches.push(PaletteMatch { entry, score, hits });
+            for (entry_index, entry) in self.entries.iter().enumerate() {
+                if let Some((score, hits)) = fuzzy_score(&self.query, &entry.haystack()) {
+                    self.matches.push(PaletteMatch {
+                        entry_index,
+                        score,
+                        hits,
+                    });
                 }
             }
             let entries = &self.entries;
@@ -254,16 +270,13 @@ impl PaletteState {
                     .unwrap_or(usize::MAX)
             };
             self.matches.sort_by(|left, right| {
-                primary_key(left.entry)
-                    .cmp(&primary_key(right.entry))
+                primary_key(left.entry_index)
+                    .cmp(&primary_key(right.entry_index))
                     .then_with(|| right.score.cmp(&left.score))
                     .then_with(|| {
-                        context_rank(entries, left.entry, current_tab, recent).cmp(&context_rank(
-                            entries,
-                            right.entry,
-                            current_tab,
-                            recent,
-                        ))
+                        context_rank(entries, left.entry_index, current_tab, recent).cmp(
+                            &context_rank(entries, right.entry_index, current_tab, recent),
+                        )
                     })
             });
         }
@@ -275,12 +288,12 @@ impl PaletteState {
         let recent = &self.recent;
         let current_tab = self.current_tab;
         self.matches
-            .sort_by_key(|m| context_rank(entries, m.entry, current_tab, recent));
+            .sort_by_key(|m| context_rank(entries, m.entry_index, current_tab, recent));
     }
 }
 
-fn module_palette_entries(tab: Tab, slot: usize, catalog: usize) -> Vec<PaletteEntry> {
-    MODULE_CATALOG[catalog]
+fn module_palette_entries(tab: Tab, slot: usize, catalog_index: usize) -> Vec<PaletteEntry> {
+    MODULE_CATALOG[catalog_index]
         .parameters()
         .iter()
         .filter_map(|parameter| {
@@ -292,7 +305,7 @@ fn module_palette_entries(tab: Tab, slot: usize, catalog: usize) -> Vec<PaletteE
                 .map(|spec| PaletteEntry::ModuleControl {
                     tab,
                     spec,
-                    module_name: MODULE_CATALOG[catalog].display_name,
+                    module_name: MODULE_CATALOG[catalog_index].display_name,
                     parameter: parameter.label,
                 })
         })
@@ -342,8 +355,8 @@ fn context_rank(
     // A module offered for the page you are on ranks with that page's own
     // controls, so "swing" on Bass reaches Bass before it reaches Tonal.
     let page_index = match palette_entry {
-        PaletteEntry::Module { tab, catalog } => {
-            (*tab == current_tab).then_some(tab_specs(current_tab).len() + catalog)
+        PaletteEntry::Module { tab, catalog_index } => {
+            (*tab == current_tab).then_some(tab_specs(current_tab).len() + catalog_index)
         }
         PaletteEntry::Control { spec, .. } => tab_specs(current_tab)
             .iter()
@@ -411,24 +424,24 @@ pub(crate) fn fuzzy_score(query: &str, haystack: &str) -> Option<(i32, Vec<usize
             }
             hay_i += 1;
         }
-        let idx = found?;
+        let hit_index = found?;
         // Contiguous with previous match.
-        if prev_hit == Some(idx.wrapping_sub(1)) {
+        if prev_hit == Some(hit_index.wrapping_sub(1)) {
             score += 8;
         }
         // Word-start bonus (start of string or preceded by a separator).
         let at_word_start =
-            idx == 0 || matches!(hay.get(idx - 1), Some(' ') | Some('·') | Some('.'));
+            hit_index == 0 || matches!(hay.get(hit_index - 1), Some(' ') | Some('·') | Some('.'));
         if at_word_start {
             score += 6;
         }
         if hits.is_empty() {
             // Penalise a deep first match so shallow, leading matches win.
-            score -= idx as i32;
+            score -= hit_index as i32;
         }
-        hits.push(idx);
-        prev_hit = Some(idx);
-        hay_i = idx + 1;
+        hits.push(hit_index);
+        prev_hit = Some(hit_index);
+        hay_i = hit_index + 1;
     }
     // Reward matching a larger fraction of the label.
     score += (needle.len() as i32) * 2;

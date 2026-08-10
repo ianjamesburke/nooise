@@ -5,7 +5,7 @@
 
 use super::FluidControls;
 use super::Tab;
-use super::palette::{PaletteEntry, PaletteState, StagedEdit};
+use super::palette::{ModuleScope, PaletteEntry, PaletteState, StagedEdit};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum InputPhase {
@@ -177,7 +177,7 @@ pub(crate) enum Navigation {
     Module {
         tab: Tab,
         slot: usize,
-        catalog: usize,
+        catalog_index: usize,
         selected: usize,
         return_to: usize,
     },
@@ -280,7 +280,7 @@ pub(crate) struct PaletteMode {
     pub(crate) value_buffer: String,
     pub(crate) staged: Vec<PaletteStagedEdit>,
     pub(crate) resume: Option<AutomationMode>,
-    pub(crate) module_scope: Option<(Tab, usize, usize)>,
+    pub(crate) module_scope: Option<ModuleScope>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -519,7 +519,7 @@ pub(crate) enum Intent {
     EnterModuleDetail {
         tab: Tab,
         slot: usize,
-        catalog: usize,
+        catalog_index: usize,
     },
     BeginNumeric(char),
     TypeCharacter(char),
@@ -677,12 +677,12 @@ pub(crate) enum InteractionEffect {
         id: &'static str,
     },
     PaletteCommit(Vec<PaletteStagedEdit>),
-    /// Put catalog module `catalog` on `tab`'s chain, or jump to it when the
+    /// Put catalog module `catalog_index` on `tab`'s chain, or jump to it when the
     /// chain already holds it. The kernel cannot tell which, so it says what
     /// was asked for and lets the adapter resolve it.
     PaletteModule {
         tab: Tab,
-        catalog: usize,
+        catalog_index: usize,
     },
     AutomationConfirm(AutomationKind),
     ResetSelected,
@@ -910,12 +910,16 @@ fn update_browsing(
                 *drill = ChordDrill::Slot { slot, return_to };
             }
         }
-        Intent::EnterModuleDetail { tab, slot, catalog } => {
+        Intent::EnterModuleDetail {
+            tab,
+            slot,
+            catalog_index,
+        } => {
             let return_to = navigation.selected();
             *navigation = Navigation::Module {
                 tab,
                 slot,
-                catalog,
+                catalog_index,
                 selected: 0,
                 return_to,
             };
@@ -929,8 +933,15 @@ fn update_browsing(
             *next_mode = Some(InteractionMode::Palette(PaletteMode {
                 module_scope: match navigation {
                     Navigation::Module {
-                        tab, slot, catalog, ..
-                    } => Some((*tab, *slot, *catalog)),
+                        tab,
+                        slot,
+                        catalog_index,
+                        ..
+                    } => Some(ModuleScope {
+                        tab: *tab,
+                        slot: *slot,
+                        catalog_index: *catalog_index,
+                    }),
                     _ => None,
                 },
                 ..PaletteMode::default()
@@ -1043,7 +1054,7 @@ fn update_palette(
             if palette.locked.is_none()
                 && let Some(found) = state.matches.get(state.selected)
             {
-                palette.locked = Some(found.entry);
+                palette.locked = Some(found.entry_index);
             }
         }
         Intent::Confirm => {
@@ -1069,7 +1080,7 @@ fn update_palette(
                 )));
                 *next_mode = Some(resume_mode(palette.resume));
             } else if let Some(found) = state.matches.get(state.selected) {
-                effects.push(palette_confirm(state.entry(found.entry)));
+                effects.push(palette_confirm(state.entry(found.entry_index)));
                 *next_mode = Some(InteractionMode::Browsing);
             }
         }
@@ -1413,9 +1424,9 @@ fn palette_confirm(entry: &PaletteEntry) -> InteractionEffect {
             index: *index_in_tab,
             id: spec.id,
         },
-        PaletteEntry::Module { tab, catalog } => InteractionEffect::PaletteModule {
+        PaletteEntry::Module { tab, catalog_index } => InteractionEffect::PaletteModule {
             tab: *tab,
-            catalog: *catalog,
+            catalog_index: *catalog_index,
         },
         PaletteEntry::ModuleControl { tab, spec, .. } => InteractionEffect::PaletteJump {
             tab: *tab,
@@ -1615,7 +1626,7 @@ mod tests {
             Intent::EnterModuleDetail {
                 tab: Tab::Clap,
                 slot: 2,
-                catalog: 5,
+                catalog_index: 5,
             },
         )
         .model;
@@ -1624,7 +1635,7 @@ mod tests {
             Navigation::Module {
                 tab: Tab::Clap,
                 slot: 2,
-                catalog: 5,
+                catalog_index: 5,
                 selected: 0,
                 return_to: 6,
             }
@@ -1982,7 +1993,7 @@ mod tests {
             ..PaletteMode::default()
         };
         let projected = project_palette(&base, Page::Bass);
-        let expected = palette_confirm(projected.entry(projected.matches[1].entry));
+        let expected = palette_confirm(projected.entry(projected.matches[1].entry_index));
 
         let ordinary = update(palette_model(base.clone()), Intent::Confirm);
         assert_eq!(ordinary.effects, vec![expected.clone()]);

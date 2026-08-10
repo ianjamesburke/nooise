@@ -797,7 +797,7 @@ fn draw_palette(
 
     let mut lines = vec![prompt];
     for (row, m) in pal.matches.iter().skip(first_row).take(shown).enumerate() {
-        let entry = pal.entry(m.entry);
+        let entry = pal.entry(m.entry_index);
         let is_selected = first_row + row == pal.selected;
         let marker = if is_selected { "\u{25b8} " } else { "  " };
         let base = if is_selected {

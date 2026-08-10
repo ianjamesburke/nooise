@@ -113,7 +113,7 @@ pub(crate) fn coordinate_production_event(
         action.intent = interaction::Intent::EnterModuleDetail {
             tab,
             slot,
-            catalog: module.kind.round() as usize - 1,
+            catalog_index: module.kind.round() as usize - 1,
         };
     }
 
@@ -199,7 +199,7 @@ pub(crate) fn coordinate_production_event(
                         model.navigation = interaction::Navigation::Module {
                             tab: *tab,
                             slot,
-                            catalog: module.kind.round() as usize - 1,
+                            catalog_index: module.kind.round() as usize - 1,
                             selected: 0,
                             return_to,
                         };

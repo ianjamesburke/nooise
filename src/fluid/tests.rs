@@ -4809,7 +4809,7 @@ fn palette_empty_query_keeps_global_recent_controls_in_mru_order() {
         .matches
         .iter()
         .take(4)
-        .map(|matched| pal.entry(matched.entry).id().unwrap_or(""))
+        .map(|matched| pal.entry(matched.entry_index).id().unwrap_or(""))
         .collect();
     assert_eq!(
         ids,
@@ -4846,7 +4846,7 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
         .matches
         .iter()
         .take(10)
-        .map(|matched| pal.entry(matched.entry).id().unwrap_or(""))
+        .map(|matched| pal.entry(matched.entry_index).id().unwrap_or(""))
         .collect();
     assert_eq!(
         ids,
@@ -4871,7 +4871,7 @@ fn palette_top_hit(current_tab: Tab, recent: &[&'static str], query: &str) -> &'
     for character in query.chars() {
         pal.push_char(character);
     }
-    pal.entry(pal.matches[0].entry).id().unwrap_or("")
+    pal.entry(pal.matches[0].entry_index).id().unwrap_or("")
 }
 
 #[test]
@@ -4905,7 +4905,7 @@ fn palette_layer_boost_releases_once_the_query_outgrows_the_namespace() {
 #[test]
 fn palette_empty_query_lists_current_page_before_unused_other_pages() {
     let pal = PaletteState::new(Tab::Bass, &[], None);
-    let first_id = pal.entry(pal.matches[0].entry).id().unwrap_or("");
+    let first_id = pal.entry(pal.matches[0].entry_index).id().unwrap_or("");
     assert!(tab_specs(Tab::Bass).iter().any(|spec| spec.id == first_id));
 }
 

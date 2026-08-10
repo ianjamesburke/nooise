@@ -414,10 +414,10 @@ impl EffectExecutor {
     fn place_module(
         &mut self,
         tab: Tab,
-        catalog: usize,
+        catalog_index: usize,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         let kind = MODULE_CATALOG
-            .get(catalog)
+            .get(catalog_index)
             .ok_or(EffectFailure::MissingContext("catalog module"))?;
         if !module_available_on(*kind, tab) {
             return Err(EffectFailure::MissingContext(
@@ -541,7 +541,9 @@ impl EffectExecutor {
             }
             // Needs only the session, so the generic bridge can resolve it;
             // the production path adds closing the open editor first.
-            InteractionEffect::PaletteModule { tab, catalog } => self.place_module(tab, catalog),
+            InteractionEffect::PaletteModule { tab, catalog_index } => {
+                self.place_module(tab, catalog_index)
+            }
             InteractionEffect::PaletteCommit(edits) => {
                 let edits = edits
                     .into_iter()
@@ -757,9 +759,9 @@ impl EffectExecutor {
             InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_) => Ok(EffectAcknowledgement::NoChange),
-            InteractionEffect::PaletteModule { tab, catalog } => {
+            InteractionEffect::PaletteModule { tab, catalog_index } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
-                self.place_module(tab, catalog)
+                self.place_module(tab, catalog_index)
             }
             InteractionEffect::PerformanceEdit {
                 targets,
@@ -991,7 +993,7 @@ mod tests {
             .execute_interaction(
                 InteractionEffect::PaletteModule {
                     tab: Tab::Bass,
-                    catalog: delay,
+                    catalog_index: delay,
                 },
                 &InteractionExecutionContext::default(),
             )
@@ -1024,7 +1026,7 @@ mod tests {
             .execute_interaction(
                 InteractionEffect::PaletteModule {
                     tab: Tab::Kick,
-                    catalog: drive,
+                    catalog_index: drive,
                 },
                 &InteractionExecutionContext::default(),
             )
@@ -1054,7 +1056,7 @@ mod tests {
             .execute_interaction(
                 InteractionEffect::PaletteModule {
                     tab: Tab::Chords,
-                    catalog: delay,
+                    catalog_index: delay,
                 },
                 &InteractionExecutionContext::default(),
             )
