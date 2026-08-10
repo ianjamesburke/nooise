@@ -178,38 +178,137 @@ pub(crate) struct AutomationState {
     open_field: Option<String>,
 }
 
+/// One family of modulation route stored on `AutomationState`. The three
+/// families differ only in which map they live in, how a fresh route is
+/// seeded, and what counts as neutral, so every accessor and the close-time
+/// prune below is written once against this instead of three times.
+pub(super) trait Route: Copy + Sized + 'static {
+    const KIND: ModKind;
+
+    fn map(state: &AutomationState) -> &BTreeMap<ControlAddress, Self>;
+    fn map_mut(state: &mut AutomationState) -> &mut BTreeMap<ControlAddress, Self>;
+    /// The route the editor creates when opened on a control with none.
+    fn fresh(address: ControlAddress) -> Self;
+    /// A neutral route contributes nothing; closing its editor prunes it.
+    fn is_neutral(&self) -> bool;
+}
+
+impl Route for LfoRoute {
+    const KIND: ModKind = ModKind::Lfo;
+
+    fn map(state: &AutomationState) -> &BTreeMap<ControlAddress, Self> {
+        &state.routes
+    }
+
+    fn map_mut(state: &mut AutomationState) -> &mut BTreeMap<ControlAddress, Self> {
+        &mut state.routes
+    }
+
+    fn fresh(address: ControlAddress) -> Self {
+        Self::with_seed(seed_for_id(address.id()))
+    }
+
+    fn is_neutral(&self) -> bool {
+        self.depth_ratio <= f32::EPSILON
+    }
+}
+
+impl Route for EnvelopeRoute {
+    const KIND: ModKind = ModKind::Envelope;
+
+    fn map(state: &AutomationState) -> &BTreeMap<ControlAddress, Self> {
+        &state.envelopes
+    }
+
+    fn map_mut(state: &mut AutomationState) -> &mut BTreeMap<ControlAddress, Self> {
+        &mut state.envelopes
+    }
+
+    fn fresh(_address: ControlAddress) -> Self {
+        Self::default()
+    }
+
+    fn is_neutral(&self) -> bool {
+        self.amount.abs() <= f32::EPSILON
+    }
+}
+
+impl Route for MacroRoute {
+    const KIND: ModKind = ModKind::Macro;
+
+    fn map(state: &AutomationState) -> &BTreeMap<ControlAddress, Self> {
+        &state.macros
+    }
+
+    fn map_mut(state: &mut AutomationState) -> &mut BTreeMap<ControlAddress, Self> {
+        &mut state.macros
+    }
+
+    fn fresh(_address: ControlAddress) -> Self {
+        Self::default()
+    }
+
+    fn is_neutral(&self) -> bool {
+        // The inherent method of the same name; field macros reach for it
+        // through a plain `MacroRoute`, outside this trait.
+        MacroRoute::is_neutral(*self)
+    }
+}
+
 impl AutomationState {
-    pub(crate) fn open_or_create(&mut self, address: ControlAddress) -> &mut LfoRoute {
-        let route = self
-            .routes
-            .entry(address)
-            .or_insert_with(|| LfoRoute::with_seed(seed_for_id(address.id())));
+    fn open_or_create_route<R: Route>(&mut self, address: ControlAddress) -> &mut R {
         self.open = Some(OpenEditor {
             address,
-            kind: ModKind::Lfo,
+            kind: R::KIND,
         });
-        route
+        R::map_mut(self)
+            .entry(address)
+            .or_insert_with(|| R::fresh(address))
+    }
+
+    fn route_of<R: Route>(&self, address: ControlAddress) -> Option<&R> {
+        R::map(self).get(&address)
+    }
+
+    fn route_of_mut<R: Route>(&mut self, address: ControlAddress) -> Option<&mut R> {
+        R::map_mut(self).get_mut(&address)
+    }
+
+    fn set_route_of<R: Route>(&mut self, address: ControlAddress, route: R) {
+        R::map_mut(self).insert(address, route);
+    }
+
+    fn routes_of<R: Route>(&self) -> impl Iterator<Item = (ControlAddress, &R)> {
+        R::map(self)
+            .iter()
+            .map(|(address, route)| (*address, route))
+    }
+
+    fn remove_route_of<R: Route>(&mut self, address: ControlAddress) {
+        R::map_mut(self).remove(&address);
+    }
+
+    /// Drop the route if it is neutral; a route left contributing nothing is
+    /// dead weight that would still colour the UI and the song code.
+    fn prune_neutral_route<R: Route>(&mut self, address: ControlAddress) {
+        if R::map(self).get(&address).is_some_and(R::is_neutral) {
+            R::map_mut(self).remove(&address);
+        }
+    }
+
+    pub(crate) fn open_or_create(&mut self, address: ControlAddress) -> &mut LfoRoute {
+        self.open_or_create_route(address)
     }
 
     pub(crate) fn open_or_create_envelope(
         &mut self,
         address: ControlAddress,
     ) -> &mut EnvelopeRoute {
-        let route = self.envelopes.entry(address).or_default();
-        self.open = Some(OpenEditor {
-            address,
-            kind: ModKind::Envelope,
-        });
-        route
+        self.open_or_create_route(address)
     }
 
     pub(crate) fn open_or_create_macro(&mut self, address: ControlAddress) -> &mut MacroRoute {
-        let route = self.macros.entry(address).or_default();
-        self.open = Some(OpenEditor {
-            address,
-            kind: ModKind::Macro,
-        });
-        route
+        self.open_or_create_route(address)
     }
 
     /// Remove the route backing the open editor and close it. The x gesture:
@@ -220,15 +319,11 @@ impl AutomationState {
         };
         match open.kind {
             ModKind::Lfo => {
-                self.routes.remove(&open.address);
+                self.remove_route_of::<LfoRoute>(open.address);
                 self.remove_field_macros_for(open.address, "lfo.");
             }
-            ModKind::Envelope => {
-                self.envelopes.remove(&open.address);
-            }
-            ModKind::Macro => {
-                self.macros.remove(&open.address);
-            }
+            ModKind::Envelope => self.remove_route_of::<EnvelopeRoute>(open.address),
+            ModKind::Macro => self.remove_route_of::<MacroRoute>(open.address),
         }
         self.open_field = None;
     }
@@ -265,43 +360,25 @@ impl AutomationState {
             return;
         };
         match open.kind {
-            ModKind::Lfo => {
-                // depth_ratio alone isn't the whole story: a field macro
-                // stacked on lfo.amount (or interval/offset) can still be
-                // driving the route externally even while its own base
-                // amount sits at neutral, so the route stays live and must
-                // not be pruned out from under it.
-                let base_neutral = self
-                    .routes
-                    .get(&open.address)
-                    .is_some_and(|route| route.depth_ratio <= f32::EPSILON);
-                let field_macro_prefix = format!("{}#lfo.", open.address.id());
-                let has_live_field_macro = self.field_macros.iter().any(|(key, route)| {
-                    key.starts_with(&field_macro_prefix) && !route.is_neutral()
-                });
-                if base_neutral && !has_live_field_macro {
-                    self.routes.remove(&open.address);
-                }
-            }
-            ModKind::Envelope => {
-                if self
-                    .envelopes
-                    .get(&open.address)
-                    .is_some_and(|route| route.amount.abs() <= f32::EPSILON)
-                {
-                    self.envelopes.remove(&open.address);
-                }
-            }
-            ModKind::Macro => {
-                if self
-                    .macros
-                    .get(&open.address)
-                    .is_some_and(|route| route.is_neutral())
-                {
-                    self.macros.remove(&open.address);
-                }
-            }
+            // depth_ratio alone isn't the whole story for an LFO: a field
+            // macro stacked on lfo.amount (or interval/offset) can still be
+            // driving the route externally even while its own base amount
+            // sits at neutral, so the route stays live and must not be pruned
+            // out from under it.
+            ModKind::Lfo if self.has_live_field_macro(open.address) => {}
+            ModKind::Lfo => self.prune_neutral_route::<LfoRoute>(open.address),
+            ModKind::Envelope => self.prune_neutral_route::<EnvelopeRoute>(open.address),
+            ModKind::Macro => self.prune_neutral_route::<MacroRoute>(open.address),
         }
+    }
+
+    /// Whether any macro stacked onto this control's LFO fields is still
+    /// contributing, which keeps the parent LFO route alive on close.
+    fn has_live_field_macro(&self, address: ControlAddress) -> bool {
+        let prefix = format!("{}#lfo.", address.id());
+        self.field_macros
+            .iter()
+            .any(|(key, route)| key.starts_with(&prefix) && !route.is_neutral())
     }
 
     /// The field-macro key currently expanded for editing, if any.
@@ -392,53 +469,51 @@ impl AutomationState {
     }
 
     pub(crate) fn route(&self, address: ControlAddress) -> Option<&LfoRoute> {
-        self.routes.get(&address)
+        self.route_of(address)
     }
 
     pub(crate) fn route_mut(&mut self, address: ControlAddress) -> Option<&mut LfoRoute> {
-        self.routes.get_mut(&address)
+        self.route_of_mut(address)
     }
 
     pub(crate) fn set_route(&mut self, address: ControlAddress, route: LfoRoute) {
-        self.routes.insert(address, route);
+        self.set_route_of(address, route);
     }
 
     pub(crate) fn routes(&self) -> impl Iterator<Item = (ControlAddress, &LfoRoute)> {
-        self.routes.iter().map(|(address, route)| (*address, route))
+        self.routes_of()
     }
 
     pub(crate) fn envelope(&self, address: ControlAddress) -> Option<&EnvelopeRoute> {
-        self.envelopes.get(&address)
+        self.route_of(address)
     }
 
     pub(crate) fn envelope_mut(&mut self, address: ControlAddress) -> Option<&mut EnvelopeRoute> {
-        self.envelopes.get_mut(&address)
+        self.route_of_mut(address)
     }
 
     pub(crate) fn set_envelope(&mut self, address: ControlAddress, route: EnvelopeRoute) {
-        self.envelopes.insert(address, route);
-    }
-
-    pub(crate) fn macro_route(&self, address: ControlAddress) -> Option<&MacroRoute> {
-        self.macros.get(&address)
-    }
-
-    pub(crate) fn macro_route_mut(&mut self, address: ControlAddress) -> Option<&mut MacroRoute> {
-        self.macros.get_mut(&address)
-    }
-
-    pub(crate) fn set_macro_route(&mut self, address: ControlAddress, route: MacroRoute) {
-        self.macros.insert(address, route);
-    }
-
-    pub(crate) fn macro_routes(&self) -> impl Iterator<Item = (ControlAddress, &MacroRoute)> {
-        self.macros.iter().map(|(address, route)| (*address, route))
+        self.set_route_of(address, route);
     }
 
     pub(crate) fn envelopes(&self) -> impl Iterator<Item = (ControlAddress, &EnvelopeRoute)> {
-        self.envelopes
-            .iter()
-            .map(|(address, route)| (*address, route))
+        self.routes_of()
+    }
+
+    pub(crate) fn macro_route(&self, address: ControlAddress) -> Option<&MacroRoute> {
+        self.route_of(address)
+    }
+
+    pub(crate) fn macro_route_mut(&mut self, address: ControlAddress) -> Option<&mut MacroRoute> {
+        self.route_of_mut(address)
+    }
+
+    pub(crate) fn set_macro_route(&mut self, address: ControlAddress, route: MacroRoute) {
+        self.set_route_of(address, route);
+    }
+
+    pub(crate) fn macro_routes(&self) -> impl Iterator<Item = (ControlAddress, &MacroRoute)> {
+        self.routes_of()
     }
 
     fn modulated_addresses(&self) -> BTreeSet<ControlAddress> {
