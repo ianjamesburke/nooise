@@ -33,46 +33,40 @@ pub(crate) struct NumericDisplay<'a> {
     cursor_visible: bool,
 }
 
+/// Everything the panel's sections derive from the view model once, so the
+/// tab bar, control rows, and footer all draw from one reading of the frame.
+struct PanelFrame<'a, 'v> {
+    view: &'a UiViewModel<'v>,
+    /// The modulator editor drawn this frame, if any — including the one a
+    /// numeric entry was opened from, so the typed buffer lands on the field
+    /// being edited rather than collapsing back to its parent row.
+    automation: Option<&'a AutomationSurface<'v>>,
+    lfo_selected: usize,
+    numeric: NumericDisplay<'a>,
+    mod_ctx: ModContext,
+    /// Which custom-chord slot the pad engine is currently sounding, mapped
+    /// from the shared telemetry step index. Only meaningful on Chords.
+    active_slot: usize,
+    bar_w: usize,
+}
+
+impl PanelFrame<'_, '_> {
+    fn controls(&self) -> &FluidControls {
+        &self.view.session.controls
+    }
+
+    fn automation_state(&self) -> &AutomationState {
+        &self.view.session.automation
+    }
+
+    fn bpm(&self) -> f32 {
+        self.view.session.controls.master.bpm
+    }
+}
+
 pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
-    let items = &view.items;
-    let active_tab = view.navigation.tab;
-    let selected = view.navigation.selected;
-    let active_automation = match &view.mode {
-        ModeSurface::Automation(surface) => Some(surface),
-        // Numeric entry opened from inside an editor keeps that editor drawn,
-        // so the typed buffer lands on the field being edited.
-        ModeSurface::Numeric { resume, .. } => resume.as_ref(),
-        _ => None,
-    };
-    let lfo_selected = active_automation.map_or(0, |surface| surface.selected());
-    let beat = view.telemetry.beat;
-    let numeric = NumericDisplay {
-        entry: match &view.mode {
-            ModeSurface::Numeric { entry, .. } => Some(entry.as_str()),
-            _ => None,
-        },
-        cursor_visible: view.cursor_visible,
-    };
-    let fluid = view.fluid;
-    let automation = &view.session.automation;
-    let controls = &view.session.controls;
-    let flipped = view.flipped;
-    let chord_drill = view.navigation.chord_drill;
-    let active_chord = view.telemetry.active_chord;
-    let mute = view.mute;
-    let bpm = controls.master.bpm;
-    // Which custom-chord slot the pad engine is currently sounding, mapped
-    // from the shared telemetry step index. Only meaningful on the Chords tab.
-    let chord_count =
-        (controls.pad.chord_count.round() as usize).clamp(1, controls.pad.chord_slots.len());
-    let active_slot = (active_chord as usize) % chord_count;
-    let mod_ctx = ModContext {
-        beat,
-        kick_interval_beats: controls.kick.interval_beats,
-        kick_offset_beats: controls.kick.offset_beats,
-    };
     let area = f.area();
-    f.render_widget(FluidWidget { fluid }, area);
+    f.render_widget(FluidWidget { fluid: view.fluid }, area);
 
     // centered control overlay
     let pw = ((area.width as f32 * 0.62) as u16)
@@ -91,20 +85,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let py = area.y + (area.height.saturating_sub(ph)) / 2;
     let panel = Rect::new(px, py, pw, ph);
 
-    // Frosted-glass scrim: darken the live fluid underneath instead of covering
-    // it, so the visualizer still shows through the panel.
-    {
-        let buf = f.buffer_mut();
-        for y in panel.top()..panel.bottom() {
-            for x in panel.left()..panel.right() {
-                let cell = &mut buf[(x, y)];
-                let tint = darken(cell.fg, 0.30);
-                cell.set_char(' ');
-                cell.set_bg(tint);
-                cell.set_fg(Color::Rgb(30, 34, 44));
-            }
-        }
-    }
+    draw_scrim(f, panel);
 
     // Borders only (transparent fill) so the scrim shows through.
     let block = Block::default()
@@ -130,6 +111,72 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         ])
         .split(inner);
 
+    let automation = match &view.mode {
+        ModeSurface::Automation(surface) => Some(surface),
+        ModeSurface::Numeric { resume, .. } => resume.as_ref(),
+        _ => None,
+    };
+    let controls = &view.session.controls;
+    let chord_count =
+        (controls.pad.chord_count.round() as usize).clamp(1, controls.pad.chord_slots.len());
+    let frame = PanelFrame {
+        view,
+        automation,
+        lfo_selected: automation.map_or(0, |surface| surface.selected()),
+        numeric: NumericDisplay {
+            entry: match &view.mode {
+                ModeSurface::Numeric { entry, .. } => Some(entry.as_str()),
+                _ => None,
+            },
+            cursor_visible: view.cursor_visible,
+        },
+        mod_ctx: ModContext {
+            beat: view.telemetry.beat,
+            kick_interval_beats: controls.kick.interval_beats,
+            kick_offset_beats: controls.kick.offset_beats,
+        },
+        active_slot: (view.telemetry.active_chord as usize) % chord_count,
+        // One text row per control, blank line between for vertical breathing
+        // room.
+        bar_w: (inner.width as usize).saturating_sub(34).clamp(6, 80),
+    };
+
+    draw_tabs(f, layout[2], &frame);
+    draw_control_rows(f, layout[4], &frame);
+    draw_footer(f, layout[5], view);
+
+    if let ModeSurface::Palette(palette) = &view.mode {
+        draw_palette(
+            f,
+            panel,
+            &palette.state,
+            controls,
+            frame.numeric.cursor_visible,
+        );
+    }
+}
+
+/// Frosted-glass scrim: darken the live fluid underneath instead of covering
+/// it, so the visualizer still shows through the panel.
+fn draw_scrim(f: &mut Frame, panel: Rect) {
+    let buf = f.buffer_mut();
+    for y in panel.top()..panel.bottom() {
+        for x in panel.left()..panel.right() {
+            let cell = &mut buf[(x, y)];
+            let tint = darken(cell.fg, 0.30);
+            cell.set_char(' ');
+            cell.set_bg(tint);
+            cell.set_fg(Color::Rgb(30, 34, 44));
+        }
+    }
+}
+
+/// The tab strip, with the active tab bracketed and carrying whatever it is
+/// drilled into (a module, a chord slot, the progression).
+fn draw_tabs(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
+    let view = frame.view;
+    let active_tab = view.navigation.tab;
+    let controls = frame.controls();
     let tab_line: String = Tab::all()
         .iter()
         .map(|t| {
@@ -146,12 +193,12 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                     module.map_or("Module", |kind| kind.display_name)
                 )
             } else if *t == Tab::Chords {
-                match chord_drill {
+                match view.navigation.chord_drill {
                     interaction::ChordDrill::Progression { .. } => {
                         format!("{} › Progression", t.name())
                     }
                     interaction::ChordDrill::Slot { slot: n, .. } => {
-                        let live = if n == active_slot { " ♪" } else { "" };
+                        let live = if n == frame.active_slot { " ♪" } else { "" };
                         format!("{} › Chord {}{live}", t.name(), n + 1)
                     }
                     interaction::ChordDrill::None => t.name().to_string(),
@@ -159,7 +206,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             } else {
                 t.name().to_string()
             };
-            let name = if mute[*t as usize].is_some() {
+            let name = if view.mute[*t as usize].is_some() {
                 format!("{name} (M)")
             } else {
                 name
@@ -178,48 +225,51 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         ),
-        layout[2],
+        area,
     );
+}
 
-    // One text row per control, blank line between for vertical breathing room.
-    let bar_w = (inner.width as usize).saturating_sub(34).clamp(6, 80);
-    let mut rows: Vec<Line> = Vec::with_capacity(items.len() * 3);
+/// The control list: one row per control, each followed by whatever
+/// modulation it carries — an open editor's fields, the live lanes, a closed
+/// macro chip. Performance takes the same area over entirely.
+fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
+    let view = frame.view;
+    if let ModeSurface::Performance(performance) = &view.mode {
+        f.render_widget(Paragraph::new(performance_lines(performance)), area);
+        return;
+    }
+    let items = &view.items;
+    let selected = view.navigation.selected;
+    let automation = frame.automation_state();
+    let flipped = view.flipped;
+    let bpm = frame.bpm();
+    let beat = view.telemetry.beat;
+
+    let mut rows: Vec<Line<'static>> = Vec::with_capacity(items.len() * 3);
     for (i, item) in items.iter().enumerate() {
         let active = i == selected;
         let address = ControlAddress::new(item.id);
         let route = automation.route(address);
         let envelope = automation.envelope(address);
         let macro_route = automation.macro_route(address);
-        let macro_mod = live_macro_contribution(automation, controls, address, mod_ctx);
-        let editor_here =
-            active_automation.and_then(|surface| surface.active_address()) == Some(address);
-        let lfo_open_here = matches!(
-            active_automation,
-            Some(AutomationSurface::Lfo {
-                address: active,
-                ..
-            }) if *active == address
-        );
-        let env_open_here = matches!(
-            active_automation,
-            Some(AutomationSurface::Envelope {
-                address: active,
-                ..
-            }) if *active == address
-        );
-        let macro_open_here = matches!(
-            active_automation,
-            Some(AutomationSurface::Macro {
-                address: active,
-                ..
-            }) if *active == address
-        );
-        let editor_open_here = editor_here;
-        let parent_active = active && (!editor_open_here || lfo_selected == 0);
+        let editor_here = frame
+            .automation
+            .and_then(|surface| surface.active_address())
+            == Some(address);
+        let open_here = |kind: ModKind| match (frame.automation, kind) {
+            (Some(AutomationSurface::Lfo { address: open, .. }), ModKind::Lfo)
+            | (Some(AutomationSurface::Envelope { address: open, .. }), ModKind::Envelope)
+            | (Some(AutomationSurface::Macro { address: open, .. }), ModKind::Macro) => {
+                *open == address
+            }
+            _ => false,
+        };
+        let lfo_open_here = open_here(ModKind::Lfo);
+        let parent_active = active && (!editor_here || frame.lfo_selected == 0);
         let prefix = if parent_active { "▶ " } else { "  " };
         let display =
-            numeric_cursor(&numeric, parent_active).unwrap_or_else(|| item.display.clone());
-        let display = if (numeric.entry.is_some() && parent_active)
+            numeric_cursor(&frame.numeric, parent_active).unwrap_or_else(|| item.display.clone());
+        let display = if (frame.numeric.entry.is_some() && parent_active)
             || !flipped.contains(&unit_key(item.id, None))
         {
             display
@@ -235,69 +285,19 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         if parent_active {
             style = style.add_modifier(Modifier::BOLD);
         }
-        // The LFO route folded with any macro stacked onto its own fields
-        // (amount/interval/offset), so markers show what the engine hears.
-        let effective_lfo =
-            route.map(|r| live_effective_lfo_route(automation, controls, address, r, mod_ctx));
-        let markers = {
-            let spec = address.spec();
-            // Markers all sit on the same tapered bar as the value itself.
-            let base = item.value;
-            let ratio_of = |value: f32| spec.ratio(value);
-            // Ghosts only for sources that actually contribute.
-            let lfo = effective_lfo
-                .as_ref()
-                .filter(|r| r.depth_ratio > f32::EPSILON);
-            let env = envelope.filter(|r| r.amount.abs() > f32::EPSILON);
-            let single = |l: Option<&LfoRoute>, e: Option<&EnvelopeRoute>, m: Option<f32>| {
-                ratio_of(modulated_control_value_full(spec, l, e, m, base, mod_ctx))
-            };
-            // While an editor is open on this control, faintly shade the full
-            // reach of every active source (its full throw, not just the
-            // live instant) so turning a depth/amount knob previews how far
-            // it can push the effective value.
-            let mod_range = spec.max - spec.min;
-            let shadow = editor_here.then(|| {
-                let mut lo = base;
-                let mut hi = base;
-                if let Some(r) = effective_lfo.as_ref() {
-                    let swing = mod_range * r.depth_ratio.clamp(0.0, 1.0);
-                    lo = lo.min(base - swing);
-                    hi = hi.max(base + swing);
-                }
-                if let Some(r) = envelope {
-                    let swing = mod_range * r.amount.clamp(-1.0, 1.0);
-                    lo = lo.min(base + swing.min(0.0));
-                    hi = hi.max(base + swing.max(0.0));
-                }
-                if let Some(r) = macro_route {
-                    let (swing_lo, swing_hi) = r.swing(mod_range);
-                    lo = lo.min(base + swing_lo);
-                    hi = hi.max(base + swing_hi);
-                }
-                (
-                    ratio_of(lo.clamp(spec.min, spec.max)),
-                    ratio_of(hi.clamp(spec.min, spec.max)),
-                )
-            });
-            SliderMarkers {
-                effective: (lfo.is_some() || env.is_some() || macro_mod.is_some())
-                    .then(|| single(lfo, env, macro_mod)),
-                lfo: lfo.map(|r| single(Some(r), None, None)),
-                envelope: env.map(|r| single(None, Some(r), None)),
-                macro_: macro_mod.map(|combined| single(None, None, Some(combined))),
-                shadow,
-            }
-        };
+        let markers = slider_markers(item, address, editor_here, frame);
         let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
-        spans.extend(slider_spans(item_ratio(item), markers, bar_w, style));
+        spans.extend(slider_spans(item_ratio(item), markers, frame.bar_w, style));
         spans.push(Span::styled(format!(" {display}"), style));
         // Badge the chord slot the pad engine is currently sounding, so the
         // progression list shows which chord is live. Distinct from the cursor
         // ▶ so a row can be both selected and playing.
-        let chord_playing = active_tab == Tab::Chords
-            && matches!(chord_drill, interaction::ChordDrill::Progression { .. })
-            && i == active_slot;
+        let chord_playing = view.navigation.tab == Tab::Chords
+            && matches!(
+                view.navigation.chord_drill,
+                interaction::ChordDrill::Progression { .. }
+            )
+            && i == frame.active_slot;
         if chord_playing {
             spans.push(Span::styled(
                 " ♪",
@@ -312,86 +312,18 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             if lfo_open_here {
                 let AutomationSurface::Lfo {
                     state: lfo_state, ..
-                } = active_automation.expect("LFO editor flag requires LFO surface")
+                } = frame
+                    .automation
+                    .expect("LFO editor flag requires LFO surface")
                 else {
                     unreachable!("LFO editor flag requires LFO surface");
                 };
-                for (fi, sub_row) in lfo_submenu_rows(lfo_state, address).iter().enumerate() {
-                    match *sub_row {
-                        LfoSubRow::Field(field) => {
-                            let value_display = match field {
-                                LfoField::Interval
-                                    if flipped
-                                        .contains(&unit_key(item.id, Some("lfo.interval"))) =>
-                                {
-                                    flip_display(TimeBase::Beats, route.cycle_beats, bpm)
-                                }
-                                LfoField::Offset
-                                    if flipped.contains(&unit_key(item.id, Some("lfo.offset"))) =>
-                                {
-                                    flip_display(TimeBase::Beats, route.phase_offset_beats, bpm)
-                                }
-                                _ => None,
-                            }
-                            .unwrap_or_else(|| route.field_display(field));
-                            rows.push(field_line(
-                                field.label(),
-                                &Dial::new(route.field_value(field), field.scale(), value_display),
-                                lfo_selected == fi + 1,
-                                &numeric,
-                                bar_w,
-                                LFO_PALETTE,
-                            ));
-                            // A macro stacked on this field but not currently
-                            // expanded shows as a closed chip, same as a
-                            // regular control's macro assignment.
-                            if let Some(key_str) = field.macro_key() {
-                                let key = unit_key(item.id, Some(key_str));
-                                if let Some(field_route) = lfo_state.field_macro(&key)
-                                    && !field_route.is_neutral()
-                                {
-                                    rows.push(macro_chip_line(field_route));
-                                }
-                            }
-                        }
-                        LfoSubRow::FieldMacro(field, macro_field) => {
-                            let key = unit_key(item.id, field.macro_key());
-                            let Some(field_route) = lfo_state.field_macro(&key) else {
-                                continue;
-                            };
-                            rows.push(field_line(
-                                &format!("· {}", macro_field.label()),
-                                &Dial::new(
-                                    field_route.field_value(macro_field),
-                                    MacroField::SCALE,
-                                    field_route.field_display(macro_field),
-                                ),
-                                lfo_selected == fi + 1,
-                                &numeric,
-                                bar_w,
-                                MACRO_PALETTE,
-                            ));
-                        }
-                        LfoSubRow::Step(target) => {
-                            rows.push(field_line(
-                                &route.step_label(target),
-                                &Dial::new(
-                                    route.step_value(target),
-                                    LfoRoute::step_scale(target),
-                                    route.step_display(target),
-                                ),
-                                lfo_selected == fi + 1,
-                                &numeric,
-                                bar_w,
-                                LFO_PALETTE,
-                            ));
-                        }
-                    }
-                }
+                push_lfo_editor_rows(&mut rows, lfo_state, route, address, frame);
             }
-            rows.push(lfo_lane_line(route, beat, bar_w, lfo_open_here));
+            rows.push(lfo_lane_line(route, beat, frame.bar_w, lfo_open_here));
         }
         if let Some(route) = envelope {
+            let env_open_here = open_here(ModKind::Envelope);
             if env_open_here {
                 for (fi, field) in EnvField::ALL.iter().enumerate() {
                     let value_display = match field {
@@ -412,17 +344,22 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                     rows.push(field_line(
                         field.label(),
                         &Dial::new(route.field_value(*field), field.scale(), value_display),
-                        lfo_selected == fi + 1,
-                        &numeric,
-                        bar_w,
+                        frame.lfo_selected == fi + 1,
+                        &frame.numeric,
+                        frame.bar_w,
                         ENV_PALETTE,
                     ));
                 }
             }
-            rows.push(env_lane_line(route, mod_ctx, bar_w, env_open_here));
+            rows.push(env_lane_line(
+                route,
+                frame.mod_ctx,
+                frame.bar_w,
+                env_open_here,
+            ));
         }
         if let Some(route) = macro_route {
-            if macro_open_here {
+            if open_here(ModKind::Macro) {
                 for (fi, field) in MacroField::ALL.iter().enumerate() {
                     rows.push(field_line(
                         &field.label(),
@@ -431,9 +368,9 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                             MacroField::SCALE,
                             route.field_display(*field),
                         ),
-                        lfo_selected == fi + 1,
-                        &numeric,
-                        bar_w,
+                        frame.lfo_selected == fi + 1,
+                        &frame.numeric,
+                        frame.bar_w,
                         MACRO_PALETTE,
                     ));
                 }
@@ -445,12 +382,165 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             rows.push(Line::from(""));
         }
     }
-    if let ModeSurface::Performance(performance) = &view.mode {
-        f.render_widget(Paragraph::new(performance_lines(performance)), layout[4]);
-    } else {
-        f.render_widget(Paragraph::new(rows), layout[4]);
-    }
+    f.render_widget(Paragraph::new(rows), area);
+}
 
+/// The rows of an open LFO editor: its own fields, any macro stacked on one
+/// of them, and the inline step editor a Steps shape adds.
+fn push_lfo_editor_rows(
+    rows: &mut Vec<Line<'static>>,
+    lfo_state: &AutomationState,
+    route: &LfoRoute,
+    address: ControlAddress,
+    frame: &PanelFrame<'_, '_>,
+) {
+    let id = address.id();
+    let flipped = frame.view.flipped;
+    let bpm = frame.bpm();
+    for (fi, sub_row) in lfo_submenu_rows(lfo_state, address).iter().enumerate() {
+        let active = frame.lfo_selected == fi + 1;
+        match *sub_row {
+            LfoSubRow::Field(field) => {
+                let value_display = match field {
+                    LfoField::Interval if flipped.contains(&unit_key(id, Some("lfo.interval"))) => {
+                        flip_display(TimeBase::Beats, route.cycle_beats, bpm)
+                    }
+                    LfoField::Offset if flipped.contains(&unit_key(id, Some("lfo.offset"))) => {
+                        flip_display(TimeBase::Beats, route.phase_offset_beats, bpm)
+                    }
+                    _ => None,
+                }
+                .unwrap_or_else(|| route.field_display(field));
+                rows.push(field_line(
+                    field.label(),
+                    &Dial::new(route.field_value(field), field.scale(), value_display),
+                    active,
+                    &frame.numeric,
+                    frame.bar_w,
+                    LFO_PALETTE,
+                ));
+                // A macro stacked on this field but not currently expanded
+                // shows as a closed chip, same as a regular control's macro
+                // assignment.
+                if let Some(key_str) = field.macro_key() {
+                    let key = unit_key(id, Some(key_str));
+                    if let Some(field_route) = lfo_state.field_macro(&key)
+                        && !field_route.is_neutral()
+                    {
+                        rows.push(macro_chip_line(field_route));
+                    }
+                }
+            }
+            LfoSubRow::FieldMacro(field, macro_field) => {
+                let key = unit_key(id, field.macro_key());
+                let Some(field_route) = lfo_state.field_macro(&key) else {
+                    continue;
+                };
+                rows.push(field_line(
+                    &format!("· {}", macro_field.label()),
+                    &Dial::new(
+                        field_route.field_value(macro_field),
+                        MacroField::SCALE,
+                        field_route.field_display(macro_field),
+                    ),
+                    active,
+                    &frame.numeric,
+                    frame.bar_w,
+                    MACRO_PALETTE,
+                ));
+            }
+            LfoSubRow::Step(target) => {
+                rows.push(field_line(
+                    &route.step_label(target),
+                    &Dial::new(
+                        route.step_value(target),
+                        LfoRoute::step_scale(target),
+                        route.step_display(target),
+                    ),
+                    active,
+                    &frame.numeric,
+                    frame.bar_w,
+                    LFO_PALETTE,
+                ));
+            }
+        }
+    }
+}
+
+/// Where every modulation source puts this row's handle: one bright marker at
+/// the value the engine plays, a dim ghost per contributing source, and — while
+/// an editor is open here — the faint band of their full reach.
+fn slider_markers(
+    item: &ControlItem,
+    address: ControlAddress,
+    editor_here: bool,
+    frame: &PanelFrame<'_, '_>,
+) -> SliderMarkers {
+    let automation = frame.automation_state();
+    let controls = frame.controls();
+    let mod_ctx = frame.mod_ctx;
+    let spec = address.spec();
+    // Markers all sit on the same tapered bar as the value itself.
+    let base = item.value;
+    let ratio_of = |value: f32| spec.ratio(value);
+    let macro_route = automation.macro_route(address);
+    let macro_mod = live_macro_contribution(automation, controls, address, mod_ctx);
+    // The LFO route folded with any macro stacked onto its own fields
+    // (amount/interval/offset), so markers show what the engine hears.
+    let effective_lfo = automation
+        .route(address)
+        .map(|r| live_effective_lfo_route(automation, controls, address, r, mod_ctx));
+    // Ghosts only for sources that actually contribute.
+    let lfo = effective_lfo
+        .as_ref()
+        .filter(|r| r.depth_ratio > f32::EPSILON);
+    let envelope = automation
+        .envelope(address)
+        .filter(|r| r.amount.abs() > f32::EPSILON);
+    let single = |l: Option<&LfoRoute>, e: Option<&EnvelopeRoute>, m: Option<f32>| {
+        ratio_of(modulated_control_value_full(spec, l, e, m, base, mod_ctx))
+    };
+    // While an editor is open on this control, faintly shade the full reach of
+    // every active source (its full throw, not just the live instant) so
+    // turning a depth/amount knob previews how far it can push the effective
+    // value.
+    let mod_range = spec.max - spec.min;
+    let shadow = editor_here.then(|| {
+        let mut lo = base;
+        let mut hi = base;
+        if let Some(r) = effective_lfo.as_ref() {
+            let swing = mod_range * r.depth_ratio.clamp(0.0, 1.0);
+            lo = lo.min(base - swing);
+            hi = hi.max(base + swing);
+        }
+        if let Some(r) = automation.envelope(address) {
+            let swing = mod_range * r.amount.clamp(-1.0, 1.0);
+            lo = lo.min(base + swing.min(0.0));
+            hi = hi.max(base + swing.max(0.0));
+        }
+        if let Some(r) = macro_route {
+            let (swing_lo, swing_hi) = r.swing(mod_range);
+            lo = lo.min(base + swing_lo);
+            hi = hi.max(base + swing_hi);
+        }
+        (
+            ratio_of(lo.clamp(spec.min, spec.max)),
+            ratio_of(hi.clamp(spec.min, spec.max)),
+        )
+    });
+    SliderMarkers {
+        effective: (lfo.is_some() || envelope.is_some() || macro_mod.is_some())
+            .then(|| single(lfo, envelope, macro_mod)),
+        lfo: lfo.map(|r| single(Some(r), None, None)),
+        envelope: envelope.map(|r| single(None, Some(r), None)),
+        macro_: macro_mod.map(|combined| single(None, None, Some(combined))),
+        shadow,
+    }
+}
+
+/// The one help/notice line, emphasized when it is carrying something the
+/// user needs to act on.
+fn draw_footer(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
     let footer_style = if view.help.emphasized() {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
@@ -462,12 +552,8 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         Paragraph::new(view.help.text())
             .alignment(Alignment::Center)
             .style(footer_style),
-        layout[5],
+        area,
     );
-
-    if let ModeSurface::Palette(palette) = &view.mode {
-        draw_palette(f, panel, &palette.state, controls, numeric.cursor_visible);
-    }
 }
 
 fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
