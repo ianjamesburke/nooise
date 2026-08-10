@@ -48,26 +48,80 @@ pub(crate) enum Page {
 }
 
 impl Page {
-    const ALL: [Self; 9] = [
-        Self::Chords,
-        Self::Perc,
-        Self::Bass,
-        Self::Kick,
-        Self::Tonal,
-        Self::Clap,
-        Self::Arp,
-        Self::Macros,
-        Self::Master,
-    ];
-
     fn next(self) -> Self {
-        Self::ALL[(self as usize + 1) % Self::ALL.len()]
+        LAYERS[(self as usize + 1) % LAYERS.len()].page
     }
 
     fn previous(self) -> Self {
-        Self::ALL[(self as usize + Self::ALL.len() - 1) % Self::ALL.len()]
+        LAYERS[(self as usize + LAYERS.len() - 1) % LAYERS.len()].page
     }
 }
+
+/// The navigation a layer opens on. Chords and Master own page-local drills
+/// no other layer can construct; the rest share one standard list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LayerNavigation {
+    Chords,
+    Standard(StandardPage),
+    Master,
+}
+
+struct Layer {
+    page: Page,
+    tab: Tab,
+    navigation: LayerNavigation,
+}
+
+/// One row per layer in `Page`/`Tab` discriminant order (test-enforced), so
+/// page order, page↔tab translation, and the navigation each page opens all
+/// index this single table instead of restating the layer list.
+const LAYERS: [Layer; 9] = [
+    Layer {
+        page: Page::Chords,
+        tab: Tab::Chords,
+        navigation: LayerNavigation::Chords,
+    },
+    Layer {
+        page: Page::Perc,
+        tab: Tab::Perc,
+        navigation: LayerNavigation::Standard(StandardPage::Perc),
+    },
+    Layer {
+        page: Page::Bass,
+        tab: Tab::Bass,
+        navigation: LayerNavigation::Standard(StandardPage::Bass),
+    },
+    Layer {
+        page: Page::Kick,
+        tab: Tab::Kick,
+        navigation: LayerNavigation::Standard(StandardPage::Kick),
+    },
+    Layer {
+        page: Page::Tonal,
+        tab: Tab::Tonal,
+        navigation: LayerNavigation::Standard(StandardPage::Tonal),
+    },
+    Layer {
+        page: Page::Clap,
+        tab: Tab::Clap,
+        navigation: LayerNavigation::Standard(StandardPage::Clap),
+    },
+    Layer {
+        page: Page::Arp,
+        tab: Tab::Arp,
+        navigation: LayerNavigation::Standard(StandardPage::Arp),
+    },
+    Layer {
+        page: Page::Macros,
+        tab: Tab::Macros,
+        navigation: LayerNavigation::Standard(StandardPage::Macros),
+    },
+    Layer {
+        page: Page::Master,
+        tab: Tab::Master,
+        navigation: LayerNavigation::Master,
+    },
+];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ChordDrill {
@@ -95,15 +149,11 @@ pub(crate) enum StandardPage {
 
 impl StandardPage {
     fn page(self) -> Page {
-        match self {
-            Self::Perc => Page::Perc,
-            Self::Bass => Page::Bass,
-            Self::Kick => Page::Kick,
-            Self::Tonal => Page::Tonal,
-            Self::Clap => Page::Clap,
-            Self::Arp => Page::Arp,
-            Self::Macros => Page::Macros,
-        }
+        LAYERS
+            .iter()
+            .find(|layer| layer.navigation == LayerNavigation::Standard(self))
+            .expect("every standard page owns a layer row")
+            .page
     }
 }
 
@@ -141,40 +191,13 @@ impl Default for Navigation {
 
 impl Navigation {
     pub(crate) fn for_page(page: Page) -> Self {
-        match page {
-            Page::Chords => Self::Chords {
+        match LAYERS[page as usize].navigation {
+            LayerNavigation::Chords => Self::Chords {
                 selected: 0,
                 drill: ChordDrill::None,
             },
-            Page::Master => Self::Master { selected: 0 },
-            Page::Perc => Self::Standard {
-                page: StandardPage::Perc,
-                selected: 0,
-            },
-            Page::Bass => Self::Standard {
-                page: StandardPage::Bass,
-                selected: 0,
-            },
-            Page::Kick => Self::Standard {
-                page: StandardPage::Kick,
-                selected: 0,
-            },
-            Page::Tonal => Self::Standard {
-                page: StandardPage::Tonal,
-                selected: 0,
-            },
-            Page::Clap => Self::Standard {
-                page: StandardPage::Clap,
-                selected: 0,
-            },
-            Page::Arp => Self::Standard {
-                page: StandardPage::Arp,
-                selected: 0,
-            },
-            Page::Macros => Self::Standard {
-                page: StandardPage::Macros,
-                selected: 0,
-            },
+            LayerNavigation::Standard(page) => Self::Standard { page, selected: 0 },
+            LayerNavigation::Master => Self::Master { selected: 0 },
         }
     }
 
@@ -1406,31 +1429,11 @@ fn palette_confirm(entry: &PaletteEntry) -> InteractionEffect {
 }
 
 fn tab_for_page(page: Page) -> Tab {
-    match page {
-        Page::Chords => Tab::Chords,
-        Page::Perc => Tab::Perc,
-        Page::Bass => Tab::Bass,
-        Page::Kick => Tab::Kick,
-        Page::Tonal => Tab::Tonal,
-        Page::Clap => Tab::Clap,
-        Page::Arp => Tab::Arp,
-        Page::Macros => Tab::Macros,
-        Page::Master => Tab::Master,
-    }
+    LAYERS[page as usize].tab
 }
 
 fn page_for_tab(tab: Tab) -> Page {
-    match tab {
-        Tab::Chords => Page::Chords,
-        Tab::Perc => Page::Perc,
-        Tab::Bass => Page::Bass,
-        Tab::Kick => Page::Kick,
-        Tab::Tonal => Page::Tonal,
-        Tab::Clap => Page::Clap,
-        Tab::Arp => Page::Arp,
-        Tab::Macros => Page::Macros,
-        Tab::Master => Page::Master,
-    }
+    LAYERS[tab as usize].page
 }
 
 #[cfg(test)]
@@ -1439,6 +1442,37 @@ mod tests {
 
     fn update(model: InteractionModel, intent: Intent) -> Transition {
         model.update(SemanticAction::press(intent))
+    }
+
+    /// Page and tab lookups index `LAYERS` directly, so a row out of
+    /// discriminant order would silently translate a page to another layer's
+    /// tab.
+    #[test]
+    fn every_layer_row_sits_at_its_page_and_tab_discriminant() {
+        for (index, layer) in LAYERS.iter().enumerate() {
+            assert_eq!(layer.page as usize, index);
+            assert_eq!(layer.tab as usize, index);
+            assert_eq!(tab_for_page(layer.page), layer.tab);
+            assert_eq!(page_for_tab(layer.tab), layer.page);
+        }
+    }
+
+    #[test]
+    fn every_standard_page_round_trips_through_its_layer_row() {
+        for page in [
+            StandardPage::Perc,
+            StandardPage::Bass,
+            StandardPage::Kick,
+            StandardPage::Tonal,
+            StandardPage::Clap,
+            StandardPage::Arp,
+            StandardPage::Macros,
+        ] {
+            assert_eq!(
+                Navigation::for_page(page.page()),
+                Navigation::Standard { page, selected: 0 }
+            );
+        }
     }
 
     #[test]
