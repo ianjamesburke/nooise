@@ -107,7 +107,7 @@ struct RenderTest<'a> {
     cursor: usize,
     submenu: usize,
     beat: f64,
-    fluid: &'a FluidState,
+    fluid: &'a RippleField,
     automation: &'a AutomationState,
     controls: &'a FluidControls,
     footer: Option<&'a str>,
@@ -636,7 +636,7 @@ fn tab_previous_wraps_back_one_tab() {
 #[test]
 fn render_fluid_draws_without_terminal_backend() {
     let controls = FluidControls::default();
-    let fluid = FluidState::new();
+    let fluid = RippleField::new();
     let automation = AutomationState::default();
 
     render_to_buffer(RenderTest {
@@ -1316,7 +1316,7 @@ fn zero_offset_lfos_share_the_global_rate_grid_across_targets() {
 #[test]
 fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     let controls = FluidControls::default();
-    let fluid = FluidState::new();
+    let fluid = RippleField::new();
     let items = tab_controls(Tab::Master, &controls);
     let mut automation = AutomationState::default();
     automation.open_or_create(ControlAddress::new(items[0].id));
@@ -2431,7 +2431,7 @@ fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
 #[test]
 fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
     let controls = FluidControls::default();
-    let fluid = FluidState::new();
+    let fluid = RippleField::new();
     let automation = AutomationState::default();
 
     let buffer = render_to_buffer(RenderTest {
@@ -2455,7 +2455,7 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
 }
 
 fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
-    let fluid = FluidState::new();
+    let fluid = RippleField::new();
     let automation = AutomationState::default();
     buffer_text(&render_to_buffer(RenderTest {
         size: (120, 40),
@@ -2495,7 +2495,7 @@ fn render_active_chord_index_wraps_by_chord_count() {
 fn render_slot_breadcrumb_marks_live_chord() {
     let mut controls = FluidControls::default();
     controls.pad.chord_count = 4.0;
-    let fluid = FluidState::new();
+    let fluid = RippleField::new();
     let automation = AutomationState::default();
     let draw = |active_chord: u64| {
         buffer_text(&render_to_buffer(RenderTest {
@@ -3778,7 +3778,7 @@ fn env_ctx(beat: f64) -> ModContext {
 #[test]
 fn render_fluid_draws_envelope_submenu_and_lane() {
     let controls = FluidControls::default();
-    let fluid = FluidState::new();
+    let fluid = RippleField::new();
     let items = tab_controls(Tab::Chords, &controls);
     let mut automation = AutomationState::default();
     let address = ControlAddress::new(items[3].id); // Progression
@@ -3875,7 +3875,7 @@ fn sample_hold_is_stepped_and_seeded() {
 #[test]
 fn render_fluid_draws_step_submenu() {
     let controls = FluidControls::default();
-    let fluid = FluidState::new();
+    let fluid = RippleField::new();
     let items = tab_controls(Tab::Chords, &controls);
     let mut automation = AutomationState::default();
     let address = ControlAddress::new(items[3].id);

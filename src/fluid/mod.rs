@@ -45,6 +45,7 @@ mod song;
 mod song_ids;
 mod ui;
 mod view;
+mod visualizer;
 mod voice;
 mod widget;
 
@@ -66,6 +67,7 @@ use session::*;
 pub(crate) use song::{SongState, decode_song_code, encode_song_code};
 use ui::*;
 use view::*;
+use visualizer::*;
 use voice::*;
 
 // ============================================================

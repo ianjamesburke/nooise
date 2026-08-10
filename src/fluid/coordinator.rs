@@ -35,7 +35,7 @@ pub(crate) struct ProductionTurn {
 
 pub(crate) struct ProductionCoordinatorContext<'a> {
     pub(crate) effects: &'a mut EffectExecutor,
-    pub(crate) fluid: &'a FluidState,
+    pub(crate) fluid: &'a RippleField,
     pub(crate) flipped: &'a mut FlippedUnits,
     pub(crate) mute: &'a mut MuteState,
     pub(crate) clipboard: &'a mut dyn Clipboard,
@@ -317,7 +317,7 @@ pub(crate) fn production_ui_loop(
         runtime::SchedulerConfig::default(),
         runtime::Clock::now(&clock),
     );
-    let mut fluid = FluidState::new();
+    let mut fluid = RippleField::new();
     let mut flipped = FlippedUnits::new();
     let mut mute: MuteState = [None; 9];
     let mut clipboard = SystemClipboard;

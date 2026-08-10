@@ -89,7 +89,7 @@ pub(crate) struct TelemetryView {
 }
 
 pub(crate) struct ViewPresentation<'a> {
-    pub(crate) fluid: &'a FluidState,
+    pub(crate) fluid: &'a RippleField,
     pub(crate) flipped: &'a FlippedUnits,
     pub(crate) mute: &'a MuteState,
     pub(crate) cursor_visible: bool,
@@ -112,7 +112,7 @@ pub(crate) struct UiViewModel<'a> {
     pub(crate) items: Vec<ControlItem>,
     pub(crate) session: &'a LiveSessionSnapshot,
     pub(crate) telemetry: TelemetryView,
-    pub(crate) fluid: &'a FluidState,
+    pub(crate) fluid: &'a RippleField,
     pub(crate) flipped: &'a FlippedUnits,
     pub(crate) mute: &'a MuteState,
     pub(crate) cursor_visible: bool,
@@ -780,7 +780,7 @@ mod tests {
         interaction: &InteractionModel,
         session: &LiveSessionSnapshot,
     ) -> String {
-        let fluid = FluidState::new();
+        let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
         let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
@@ -925,7 +925,7 @@ mod tests {
             },
             mode: InteractionMode::Browsing,
         };
-        let fluid = FluidState::new();
+        let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
         let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
@@ -967,7 +967,7 @@ mod tests {
         };
         let transition = model.update(SemanticAction::press(Intent::TypeCharacter('5')));
         let session = session();
-        let fluid = FluidState::new();
+        let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
         let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
@@ -1046,7 +1046,7 @@ mod tests {
                 resume: None,
             }),
         };
-        let fluid = FluidState::new();
+        let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
         let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
@@ -1463,7 +1463,7 @@ mod tests {
             ..InteractionModel::default()
         };
         let session = session();
-        let fluid = FluidState::new();
+        let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
         let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
