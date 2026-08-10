@@ -484,10 +484,12 @@ fn slider_markers(
     let automation = frame.automation_state();
     let controls = frame.controls();
     let mod_ctx = frame.mod_ctx;
-    let spec = address.spec();
-    // Markers all sit on the same tapered bar as the value itself.
+    // Markers all sit on the same tapered bar as the value itself, so the
+    // spec must be the contextual one — a loaded slot's family bounds, not
+    // the registry's raw row.
+    let spec = address.spec().contextual(controls);
     let base = item.value;
-    let ratio_of = |value: f32| spec.ratio(value);
+    let ratio_of = |value: f32| spec.ratio(value, controls);
     let macro_route = automation.macro_route(address);
     let macro_mod = live_macro_contribution(automation, controls, address, mod_ctx);
     // The LFO route folded with any macro stacked onto its own fields
@@ -503,7 +505,7 @@ fn slider_markers(
         .envelope(address)
         .filter(|r| r.amount.abs() > f32::EPSILON);
     let single = |l: Option<&LfoRoute>, e: Option<&EnvelopeRoute>, m: Option<f32>| {
-        ratio_of(modulated_control_value_full(spec, l, e, m, base, mod_ctx))
+        ratio_of(modulated_control_value_full(&spec, l, e, m, base, mod_ctx))
     };
     // While an editor is open on this control, faintly shade the full reach of
     // every active source (its full throw, not just the live instant) so

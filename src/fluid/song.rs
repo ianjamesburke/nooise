@@ -258,12 +258,12 @@ impl EncodedValue {
     /// so they store their value exactly instead. Discrete rows are already
     /// whole numbers and would gain nothing but error from a round trip
     /// through 0..1.
-    fn encode(spec: &ControlSpec, value: f32) -> Self {
+    fn encode(spec: &ControlSpec, value: f32, c: &FluidControls) -> Self {
         if !spec.exact_in_song
             && spec.kind != ControlKind::Discrete
             && matches!(spec.step, Step::Linear(_))
         {
-            Self::Position(unit_to_u16(spec.ratio(value)))
+            Self::Position(unit_to_u16(spec.ratio(value, c)))
         } else {
             Self::exact(value)
         }
@@ -394,8 +394,11 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
         // Slot fields borrow their units from the loaded module. Encode the
         // value and prune baseline through that same semantic view.
         let spec = spec.contextual(controls);
-        let value = EncodedValue::encode(&spec, spec.quantized_value(controls));
-        let default = EncodedValue::encode(&spec, spec.quantized_value(&defaults));
+        // Both encodes map through the live session's contextual view (spec is
+        // already contextual to `controls`, and `contextual` is idempotent) so
+        // the baseline prune compares positions on one mapping.
+        let value = EncodedValue::encode(&spec, spec.quantized_value(controls), controls);
+        let default = EncodedValue::encode(&spec, spec.quantized_value(&defaults), controls);
         if value == default {
             continue;
         }

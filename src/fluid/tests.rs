@@ -850,8 +850,9 @@ fn ordered_step_ratio_spans_the_bar_and_interpolates_typed_values() {
 
 #[test]
 fn beat_grid_bars_give_every_arrow_rung_equal_visual_space() {
+    let controls = FluidControls::default();
     let offset = spec_by_id("kick.offset_beats").unwrap();
-    let offset_ratios = [0.0, 0.125, 0.25, 0.5].map(|value| offset.ratio(value));
+    let offset_ratios = [0.0, 0.125, 0.25, 0.5].map(|value| offset.ratio(value, &controls));
     assert_near(
         offset_ratios[1] - offset_ratios[0],
         offset_ratios[2] - offset_ratios[1],
@@ -862,7 +863,7 @@ fn beat_grid_bars_give_every_arrow_rung_equal_visual_space() {
     );
 
     let interval = spec_by_id("kick.interval_beats").unwrap();
-    let interval_ratios = [0.125, 0.25, 0.5, 0.75].map(|value| interval.ratio(value));
+    let interval_ratios = [0.125, 0.25, 0.5, 0.75].map(|value| interval.ratio(value, &controls));
     assert_near(
         interval_ratios[1] - interval_ratios[0],
         interval_ratios[2] - interval_ratios[1],
@@ -875,9 +876,11 @@ fn beat_grid_bars_give_every_arrow_rung_equal_visual_space() {
 
 #[test]
 fn every_registered_slider_visual_mapping_spans_its_full_range() {
+    let controls = FluidControls::default();
     for spec in all_specs() {
-        assert_near(spec.ratio(spec.min), 0.0);
-        assert_near(spec.ratio(spec.max), 1.0);
+        let spec = spec.contextual(&controls);
+        assert_near(spec.ratio(spec.min, &controls), 0.0);
+        assert_near(spec.ratio(spec.max, &controls), 1.0);
     }
 }
 
@@ -5066,7 +5069,7 @@ fn assert_song_states_agree(a: &SongState, b: &SongState, label: &str) {
         if !matches!(spec.taper, Taper::Linear) && matches!(spec.step, Step::Linear(_)) {
             // Tapered dials are the one lossy group, and their error is a
             // fixed fraction of the throw — so compare in position space.
-            let drift = (spec.ratio(before) - spec.ratio(after)).abs();
+            let drift = (spec.ratio(before, &a.controls) - spec.ratio(after, &b.controls)).abs();
             assert!(
                 drift <= POSITION_STEP,
                 "{label}: {} drifted {drift} in position space ({before} -> {after})",

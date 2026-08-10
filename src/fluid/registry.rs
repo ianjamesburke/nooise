@@ -492,8 +492,9 @@ impl ControlSpec {
         (spec.set)(c, next);
     }
 
-    pub(crate) fn ratio(&self, value: f32) -> f32 {
-        self.step.ratio(value, self.min, self.max, self.taper)
+    pub(crate) fn ratio(&self, value: f32, c: &FluidControls) -> f32 {
+        let spec = self.contextual(c);
+        spec.step.ratio(value, spec.min, spec.max, spec.taper)
     }
 
     /// A continuous dial with a non-linear taper and a plain `Linear` step:
