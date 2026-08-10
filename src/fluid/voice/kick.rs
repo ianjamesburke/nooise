@@ -166,54 +166,55 @@ impl KickVoice {
     }
 }
 
-/// Type 0 (default): the original kick voice, byte-for-byte unchanged. A
-/// sine carrier phase-modulated by a 2x-ratio sine modulator with decaying
-/// depth (a tight FM thud), an exponential pitch glide from `start_freq` down
-/// to `start_freq * 0.28`, an onset noise click, and a one-pole lowpass mapped
-/// from `kick.filter`. Drive runs later in the shared layer module chain.
-pub(crate) struct SubKickVoice {
-    pub(crate) core: KickVoiceCore,
+/// Shared FM body behind every `kick.type` voice: an exponential pitch glide
+/// from `start_freq` toward a per-type drop ratio, plus a sine modulator at a
+/// per-type carrier ratio whose depth decays ~3x faster than the pitch, which
+/// is what makes the onset read as a tight thud. Each variant supplies its own
+/// constants and shapes the returned carrier phase into a waveform itself, so
+/// carrier shape and any post-body filter stay per-type.
+pub(crate) struct KickFmBody {
     pub(crate) phase: f32,
     pub(crate) mod_phase: f32,
     pub(crate) freq: f32,
     pub(crate) target_freq: f32,
     pub(crate) freq_glide: f32,
+    pub(crate) mod_ratio: f32,
     pub(crate) fm_depth: f32,
     pub(crate) fm_depth_decay: f32,
-    pub(crate) lp_state: f32,
-    pub(crate) lp_coeff: f32,
     pub(crate) sample_rate: f32,
 }
 
-impl SubKickVoice {
-    pub(crate) fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
+impl KickFmBody {
+    pub(crate) fn new(
+        c: &KickControls,
+        sample_rate: f32,
+        pitch_drop_ratio: f32,
+        mod_ratio: f32,
+        fm_depth: f32,
+    ) -> Self {
         let tau = (c.pitch_decay_ms * 0.001 * sample_rate / 3.0).max(1.0);
-        // FM depth decays ~3x faster than pitch for a tight transient thud
         let fm_tau = (c.pitch_decay_ms * 0.001 * sample_rate / 9.0).max(1.0);
         Self {
-            core: KickVoiceCore::new(c, sample_rate, rng, 0.0, 1.0),
             phase: 0.0,
             mod_phase: 0.0,
             freq: c.start_freq,
-            target_freq: c.start_freq * 0.28,
+            target_freq: c.start_freq * pitch_drop_ratio,
             freq_glide: 1.0 / tau,
-            fm_depth: 3.5,
+            mod_ratio,
+            fm_depth,
             fm_depth_decay: (-1.0 / fm_tau).exp(),
-            lp_state: 0.0,
-            lp_coeff: 10_f32.powf(c.filter * 3.0 - 2.5).clamp(0.01, 0.99),
             sample_rate,
         }
     }
 
-    pub(crate) fn next<R: Rng>(&mut self, rng: &mut R) -> (f32, f32) {
-        if self.core.is_done() {
-            return (0.0, 0.0);
-        }
-
+    /// Advances the glide, the modulator, and the carrier by one sample and
+    /// returns the carrier phase. FM can push that phase outside `[0, TAU)`, so
+    /// a caller's waveform shaper must be well-defined for any value.
+    #[inline]
+    pub(crate) fn next_phase(&mut self) -> f32 {
         self.freq += (self.target_freq - self.freq) * self.freq_glide;
 
-        // FM: modulator at 2x carrier freq, decaying depth
-        let mod_freq = self.freq * 2.0;
+        let mod_freq = self.freq * self.mod_ratio;
         self.mod_phase += TAU * mod_freq / self.sample_rate;
         if self.mod_phase >= TAU {
             self.mod_phase -= TAU;
@@ -225,12 +226,78 @@ impl SubKickVoice {
         if self.phase >= TAU {
             self.phase -= TAU;
         }
+        self.phase
+    }
+}
 
-        let body = self.phase.sin();
-        let mut s = self.core.shape(body, rng);
+/// One-pole lowpass mapped exponentially from `kick.filter`, shared by every
+/// type that ends in a lowpass (Sub, Warm, Felt). `bias` shifts the same
+/// mapping darker or brighter per type.
+pub(crate) struct KickLowPass {
+    pub(crate) state: f32,
+    pub(crate) coeff: f32,
+}
 
-        self.lp_state += self.lp_coeff * (s - self.lp_state);
-        s = self.lp_state;
+impl KickLowPass {
+    pub(crate) fn new(filter: f32, bias: f32) -> Self {
+        Self {
+            state: 0.0,
+            coeff: 10_f32.powf(filter * 3.0 + bias).clamp(0.01, 0.99),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn process(&mut self, s: f32) -> f32 {
+        self.state += self.coeff * (s - self.state);
+        self.state
+    }
+}
+
+/// Pitch drop: the body settles at 0.28x its starting frequency.
+const KICK_SUB_PITCH_DROP_RATIO: f32 = 0.28;
+/// Modulator-to-carrier ratio: 2x puts sidebands on the harmonic series, which
+/// is what keeps this voice reading as one fused low body.
+const KICK_SUB_FM_MOD_RATIO: f32 = 2.0;
+/// FM depth, the deepest of the four types: this is the hard transient edge the
+/// three ambient types deliberately back away from.
+const KICK_SUB_FM_DEPTH: f32 = 3.5;
+/// Lowpass mapping bias; the reference every other type's bias is stated
+/// relative to.
+const KICK_SUB_FILTER_BIAS: f32 = -2.5;
+
+/// Type 0 (default): the original kick voice, byte-for-byte unchanged. A
+/// sine carrier phase-modulated by a 2x-ratio sine modulator with decaying
+/// depth (a tight FM thud), an exponential pitch glide from `start_freq` down
+/// to `start_freq * 0.28`, an onset noise click, and a one-pole lowpass mapped
+/// from `kick.filter`. Drive runs later in the shared layer module chain.
+pub(crate) struct SubKickVoice {
+    pub(crate) core: KickVoiceCore,
+    pub(crate) body: KickFmBody,
+    pub(crate) lowpass: KickLowPass,
+}
+
+impl SubKickVoice {
+    pub(crate) fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
+        Self {
+            core: KickVoiceCore::new(c, sample_rate, rng, 0.0, 1.0),
+            body: KickFmBody::new(
+                c,
+                sample_rate,
+                KICK_SUB_PITCH_DROP_RATIO,
+                KICK_SUB_FM_MOD_RATIO,
+                KICK_SUB_FM_DEPTH,
+            ),
+            lowpass: KickLowPass::new(c.filter, KICK_SUB_FILTER_BIAS),
+        }
+    }
+
+    pub(crate) fn next<R: Rng>(&mut self, rng: &mut R) -> (f32, f32) {
+        if self.core.is_done() {
+            return (0.0, 0.0);
+        }
+
+        let body = self.body.next_phase().sin();
+        let s = self.lowpass.process(self.core.shape(body, rng));
 
         (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
     }
@@ -270,22 +337,12 @@ const KICK_WARM_OUTPUT_GAIN: f32 = 0.9;
 /// Sub's click/one-pole-lowpass/pan machinery via `KickVoiceCore`.
 pub(crate) struct WarmKickVoice {
     pub(crate) core: KickVoiceCore,
-    pub(crate) phase: f32,
-    pub(crate) mod_phase: f32,
-    pub(crate) freq: f32,
-    pub(crate) target_freq: f32,
-    pub(crate) freq_glide: f32,
-    pub(crate) fm_depth: f32,
-    pub(crate) fm_depth_decay: f32,
-    pub(crate) lp_state: f32,
-    pub(crate) lp_coeff: f32,
-    pub(crate) sample_rate: f32,
+    pub(crate) body: KickFmBody,
+    pub(crate) lowpass: KickLowPass,
 }
 
 impl WarmKickVoice {
     pub(crate) fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
-        let tau = (c.pitch_decay_ms * 0.001 * sample_rate / 3.0).max(1.0);
-        let fm_tau = (c.pitch_decay_ms * 0.001 * sample_rate / 9.0).max(1.0);
         Self {
             core: KickVoiceCore::new(
                 c,
@@ -294,18 +351,14 @@ impl WarmKickVoice {
                 KICK_WARM_ATTACK_MS,
                 KICK_WARM_CLICK_SCALE,
             ),
-            phase: 0.0,
-            mod_phase: 0.0,
-            freq: c.start_freq,
-            target_freq: c.start_freq * KICK_WARM_PITCH_DROP_RATIO,
-            freq_glide: 1.0 / tau,
-            fm_depth: KICK_WARM_FM_DEPTH,
-            fm_depth_decay: (-1.0 / fm_tau).exp(),
-            lp_state: 0.0,
-            lp_coeff: 10_f32
-                .powf(c.filter * 3.0 + KICK_WARM_FILTER_BIAS)
-                .clamp(0.01, 0.99),
-            sample_rate,
+            body: KickFmBody::new(
+                c,
+                sample_rate,
+                KICK_WARM_PITCH_DROP_RATIO,
+                KICK_WARM_FM_MOD_RATIO,
+                KICK_WARM_FM_DEPTH,
+            ),
+            lowpass: KickLowPass::new(c.filter, KICK_WARM_FILTER_BIAS),
         }
     }
 
@@ -314,26 +367,10 @@ impl WarmKickVoice {
             return (0.0, 0.0);
         }
 
-        self.freq += (self.target_freq - self.freq) * self.freq_glide;
-
-        let mod_freq = self.freq * KICK_WARM_FM_MOD_RATIO;
-        self.mod_phase += TAU * mod_freq / self.sample_rate;
-        if self.mod_phase >= TAU {
-            self.mod_phase -= TAU;
-        }
-        let fm = self.mod_phase.sin() * self.fm_depth * self.freq;
-        self.fm_depth *= self.fm_depth_decay;
-
-        self.phase += TAU * (self.freq + fm) / self.sample_rate;
-        if self.phase >= TAU {
-            self.phase -= TAU;
-        }
-
-        let body = self.phase.sin();
-        let mut s = self.core.shape(body, rng) * KICK_WARM_OUTPUT_GAIN;
-
-        self.lp_state += self.lp_coeff * (s - self.lp_state);
-        s = self.lp_state;
+        let body = self.body.next_phase().sin();
+        let s = self
+            .lowpass
+            .process(self.core.shape(body, rng) * KICK_WARM_OUTPUT_GAIN);
 
         (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
     }
@@ -379,23 +416,14 @@ const KICK_WOOD_OUTPUT_GAIN: f32 = 1.7;
 /// trigger/pitch-envelope/click/pan structure as Sub.
 pub(crate) struct WoodKickVoice {
     pub(crate) core: KickVoiceCore,
-    pub(crate) phase: f32,
-    pub(crate) mod_phase: f32,
-    pub(crate) freq: f32,
-    pub(crate) target_freq: f32,
-    pub(crate) freq_glide: f32,
-    pub(crate) fm_depth: f32,
-    pub(crate) fm_depth_decay: f32,
+    pub(crate) body: KickFmBody,
     pub(crate) svf_low: f32,
     pub(crate) svf_band: f32,
     pub(crate) svf_f: f32,
-    pub(crate) sample_rate: f32,
 }
 
 impl WoodKickVoice {
     pub(crate) fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
-        let tau = (c.pitch_decay_ms * 0.001 * sample_rate / 3.0).max(1.0);
-        let fm_tau = (c.pitch_decay_ms * 0.001 * sample_rate / 9.0).max(1.0);
         let filter = c.filter.clamp(0.0, 1.0);
         let center_hz = KICK_WOOD_CENTER_MIN_HZ
             * (KICK_WOOD_CENTER_MAX_HZ / KICK_WOOD_CENTER_MIN_HZ).powf(filter);
@@ -411,17 +439,16 @@ impl WoodKickVoice {
                 KICK_WOOD_ATTACK_MS,
                 KICK_WOOD_CLICK_SCALE,
             ),
-            phase: 0.0,
-            mod_phase: 0.0,
-            freq: c.start_freq,
-            target_freq: c.start_freq * KICK_WOOD_PITCH_DROP_RATIO,
-            freq_glide: 1.0 / tau,
-            fm_depth: 3.5,
-            fm_depth_decay: (-1.0 / fm_tau).exp(),
+            body: KickFmBody::new(
+                c,
+                sample_rate,
+                KICK_WOOD_PITCH_DROP_RATIO,
+                KICK_SUB_FM_MOD_RATIO,
+                KICK_SUB_FM_DEPTH,
+            ),
             svf_low: 0.0,
             svf_band: 0.0,
             svf_f,
-            sample_rate,
         }
     }
 
@@ -430,22 +457,7 @@ impl WoodKickVoice {
             return (0.0, 0.0);
         }
 
-        self.freq += (self.target_freq - self.freq) * self.freq_glide;
-
-        let mod_freq = self.freq * 2.0;
-        self.mod_phase += TAU * mod_freq / self.sample_rate;
-        if self.mod_phase >= TAU {
-            self.mod_phase -= TAU;
-        }
-        let fm = self.mod_phase.sin() * self.fm_depth * self.freq;
-        self.fm_depth *= self.fm_depth_decay;
-
-        self.phase += TAU * (self.freq + fm) / self.sample_rate;
-        if self.phase >= TAU {
-            self.phase -= TAU;
-        }
-
-        let body = self.phase.sin();
+        let body = self.body.next_phase().sin();
         let dry = self.core.shape(body, rng);
 
         // Chamberlin state-variable filter, bandpass output: two running
@@ -492,22 +504,12 @@ const KICK_FELT_OUTPUT_GAIN: f32 = 0.95;
 /// through the shared layer chain.
 pub(crate) struct FeltKickVoice {
     pub(crate) core: KickVoiceCore,
-    pub(crate) phase: f32,
-    pub(crate) mod_phase: f32,
-    pub(crate) freq: f32,
-    pub(crate) target_freq: f32,
-    pub(crate) freq_glide: f32,
-    pub(crate) fm_depth: f32,
-    pub(crate) fm_depth_decay: f32,
-    pub(crate) lp_state: f32,
-    pub(crate) lp_coeff: f32,
-    pub(crate) sample_rate: f32,
+    pub(crate) body: KickFmBody,
+    pub(crate) lowpass: KickLowPass,
 }
 
 impl FeltKickVoice {
     pub(crate) fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
-        let tau = (c.pitch_decay_ms * 0.001 * sample_rate / 3.0).max(1.0);
-        let fm_tau = (c.pitch_decay_ms * 0.001 * sample_rate / 9.0).max(1.0);
         Self {
             core: KickVoiceCore::new(
                 c,
@@ -516,18 +518,14 @@ impl FeltKickVoice {
                 KICK_FELT_ATTACK_MS,
                 KICK_FELT_CLICK_SCALE,
             ),
-            phase: 0.0,
-            mod_phase: 0.0,
-            freq: c.start_freq,
-            target_freq: c.start_freq * KICK_FELT_PITCH_DROP_RATIO,
-            freq_glide: 1.0 / tau,
-            fm_depth: KICK_FELT_FM_DEPTH,
-            fm_depth_decay: (-1.0 / fm_tau).exp(),
-            lp_state: 0.0,
-            lp_coeff: 10_f32
-                .powf(c.filter * 3.0 + KICK_FELT_FILTER_BIAS)
-                .clamp(0.01, 0.99),
-            sample_rate,
+            body: KickFmBody::new(
+                c,
+                sample_rate,
+                KICK_FELT_PITCH_DROP_RATIO,
+                KICK_SUB_FM_MOD_RATIO,
+                KICK_FELT_FM_DEPTH,
+            ),
+            lowpass: KickLowPass::new(c.filter, KICK_FELT_FILTER_BIAS),
         }
     }
 
@@ -536,30 +534,14 @@ impl FeltKickVoice {
             return (0.0, 0.0);
         }
 
-        self.freq += (self.target_freq - self.freq) * self.freq_glide;
-
-        let mod_freq = self.freq * 2.0;
-        self.mod_phase += TAU * mod_freq / self.sample_rate;
-        if self.mod_phase >= TAU {
-            self.mod_phase -= TAU;
-        }
-        let fm = self.mod_phase.sin() * self.fm_depth * self.freq;
-        self.fm_depth *= self.fm_depth_decay;
-
-        self.phase += TAU * (self.freq + fm) / self.sample_rate;
-        if self.phase >= TAU {
-            self.phase -= TAU;
-        }
-
         // Naive bipolar triangle from the (FM-modulated) phase. Written to be
-        // well-defined for any phase value, since FM can push `phase` outside
-        // the wrapped [0, TAU) range.
-        let t = self.phase / TAU;
+        // well-defined for any phase value, since FM can push the carrier phase
+        // outside the wrapped [0, TAU) range.
+        let t = self.body.next_phase() / TAU;
         let body = 4.0 * (t - (t + 0.5).floor()).abs() - 1.0;
-        let mut s = self.core.shape(body, rng) * KICK_FELT_OUTPUT_GAIN;
-
-        self.lp_state += self.lp_coeff * (s - self.lp_state);
-        s = self.lp_state;
+        let s = self
+            .lowpass
+            .process(self.core.shape(body, rng) * KICK_FELT_OUTPUT_GAIN);
 
         (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
     }
