@@ -21,8 +21,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
-    ChordDrill, InputPhase, Intent, InteractionMode, Navigation, PageDirection, PerformanceAction,
-    PerformanceInstrument, PerformanceKind, PerformanceMode, SemanticAction, SequenceStage,
+    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, Navigation, PageDirection,
+    PerformanceAction, PerformanceInstrument, PerformanceKind, PerformanceMode, SemanticAction,
+    SequenceStage,
 };
 
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -401,216 +402,227 @@ pub(crate) fn map_input(
         return InputMapping::Ignored;
     };
     let has_control = key.modifiers.contains(Modifiers::CONTROL);
+    let unmodified = key.modifiers == Modifiers::default();
+    let shifted = key.modifiers == Modifiers::SHIFT;
+
+    // Global bindings resolve before any mode claims the key.
     if has_control
         && matches!(
             mode,
             InteractionMode::Browsing | InteractionMode::Automation(_)
         )
-        && matches!(key.code, PhysicalKey::Character('s' | 'S'))
     {
-        return InputMapping::Action(SemanticAction {
-            phase: *phase,
-            intent: Intent::Save,
-        });
+        match key.code {
+            PhysicalKey::Character('s' | 'S') => return semantic(*phase, Intent::Save),
+            PhysicalKey::Character('c' | 'C') => return semantic(*phase, Intent::Quit),
+            _ => {}
+        }
     }
-    if has_control
-        && matches!(
-            mode,
-            InteractionMode::Browsing | InteractionMode::Automation(_)
-        )
-        && matches!(key.code, PhysicalKey::Character('c' | 'C'))
-    {
-        return InputMapping::Action(SemanticAction {
-            phase: *phase,
-            intent: Intent::Quit,
-        });
+    if matches!(key.code, PhysicalKey::Escape) {
+        return semantic(*phase, Intent::Cancel);
     }
-    let intent = if matches!(key.code, PhysicalKey::Escape) {
-        Intent::Cancel
-    } else if matches!(mode, InteractionMode::Browsing)
-        && matches!(key.code, PhysicalKey::BackTab)
-        && (key.modifiers == Modifiers::default() || key.modifiers == Modifiers::SHIFT)
-    {
-        Intent::ChangePage(PageDirection::Previous)
-    } else {
-        match mode {
-            InteractionMode::Browsing if key.modifiers == Modifiers::default() => match key.code {
-                PhysicalKey::Up | PhysicalKey::Character('k') => Intent::MoveSelection(-1),
-                PhysicalKey::Down | PhysicalKey::Character('j') => Intent::MoveSelection(1),
-                PhysicalKey::Left | PhysicalKey::Character('h') => Intent::AdjustSelected(-1),
-                PhysicalKey::Right | PhysicalKey::Character('l') => Intent::AdjustSelected(1),
-                PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
-                PhysicalKey::Character('/') => Intent::OpenPalette,
-                PhysicalKey::Character('f') => {
-                    Intent::OpenAutomation(super::interaction::AutomationKind::Lfo)
-                }
-                PhysicalKey::Character('e') => {
-                    Intent::OpenAutomation(super::interaction::AutomationKind::Envelope)
-                }
-                PhysicalKey::Character('v') => Intent::ToggleMacro,
-                PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
-                PhysicalKey::Character(' ') => {
-                    Intent::ActivatePerformance(PerformanceKind::Sequence)
-                }
-                PhysicalKey::Character(character)
-                    if character.is_ascii_digit() || character == '.' || character == '-' =>
-                {
-                    Intent::BeginNumeric(character)
-                }
-                PhysicalKey::Character('q') => Intent::Quit,
-                PhysicalKey::Enter => match navigation {
-                    Navigation::Chords {
-                        selected,
-                        drill: ChordDrill::Progression { .. },
-                    } => Intent::EnterChordSlot(selected),
-                    Navigation::Chords {
-                        drill: ChordDrill::None,
-                        ..
-                    } => Intent::TouchSelected,
-                    _ => Intent::TouchSelected,
-                },
-                PhysicalKey::Character('a') => Intent::ToggleAuto,
-                PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
-                PhysicalKey::Character('t') => Intent::ToggleUnits,
-                PhysicalKey::Character('x') => Intent::RemoveAutomation,
-                PhysicalKey::Character('r') => Intent::ReseedAutomation,
-                _ => return InputMapping::Ignored,
-            },
-            InteractionMode::Numeric(_) => match key.code {
-                PhysicalKey::Enter => Intent::Confirm,
-                PhysicalKey::Backspace => Intent::Backspace,
-                PhysicalKey::Character(character)
-                    if character.is_ascii_digit() || character == '.' || character == '-' =>
-                {
-                    Intent::TypeCharacter(character)
-                }
-                _ => return InputMapping::Ignored,
-            },
-            InteractionMode::Palette(_)
-                if key.modifiers == Modifiers::default() || key.modifiers == Modifiers::SHIFT =>
-            {
-                match key.code {
-                    PhysicalKey::Enter => Intent::Confirm,
-                    PhysicalKey::Backspace => Intent::Backspace,
-                    PhysicalKey::Tab => Intent::PaletteAutocomplete,
-                    PhysicalKey::Up => Intent::MoveSelection(-1),
-                    PhysicalKey::Down => Intent::MoveSelection(1),
-                    PhysicalKey::Character(character) => Intent::TypeCharacter(character),
-                    _ => return InputMapping::Ignored,
-                }
+
+    let intent = match mode {
+        InteractionMode::Browsing => {
+            if unmodified {
+                browsing_binding(&key.code, navigation)
+            } else if shifted {
+                shifted_binding(&key.code)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
-            InteractionMode::Palette(_) if has_control => match key.code {
-                PhysicalKey::Character('p' | 'P') => Intent::MoveSelection(-1),
-                PhysicalKey::Character('n' | 'N') => Intent::MoveSelection(1),
-                PhysicalKey::Character('b' | 'B') => Intent::CommitPaletteAtBar,
-                _ => return InputMapping::Ignored,
-            },
-            InteractionMode::Automation(automation) if key.modifiers == Modifiers::default() => {
-                match key.code {
-                    PhysicalKey::Up | PhysicalKey::Character('k') => Intent::MoveSelection(-1),
-                    PhysicalKey::Down | PhysicalKey::Character('j') => Intent::MoveSelection(1),
-                    PhysicalKey::Left | PhysicalKey::Character('h') => Intent::AdjustSelected(-1),
-                    PhysicalKey::Right | PhysicalKey::Character('l') => Intent::AdjustSelected(1),
-                    PhysicalKey::Enter => return InputMapping::Ignored,
-                    PhysicalKey::Character('v') => Intent::ToggleMacro,
-                    PhysicalKey::Character('x') => Intent::RemoveAutomation,
-                    PhysicalKey::Character('r') => Intent::ReseedAutomation,
-                    PhysicalKey::Character('t') => Intent::ToggleUnits,
-                    PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
-                    PhysicalKey::Character('/') => Intent::OpenPalette,
-                    PhysicalKey::Character('q') => Intent::Quit,
-                    PhysicalKey::Character('a') => Intent::ToggleAuto,
-                    PhysicalKey::Character('f') => {
-                        Intent::OpenAutomation(super::interaction::AutomationKind::Lfo)
-                    }
-                    PhysicalKey::Character('e') => {
-                        Intent::OpenAutomation(super::interaction::AutomationKind::Envelope)
-                    }
-                    PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
-                    PhysicalKey::Character(character)
-                        if character.is_ascii_digit() || character == '.' || character == '-' =>
-                    {
-                        Intent::BeginNumeric(character)
-                    }
-                    _ => return InputMapping::Ignored,
-                }
+        }
+        InteractionMode::Automation(_) => {
+            if unmodified {
+                automation_binding(&key.code)
+            } else if shifted {
+                shifted_binding(&key.code)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
-            InteractionMode::Browsing | InteractionMode::Automation(_)
-                if key.modifiers == Modifiers::SHIFT =>
-            {
-                match key.code {
-                    PhysicalKey::Left | PhysicalKey::Character('H' | 'h') => Intent::ResetSelected,
-                    PhysicalKey::Character('M' | 'm') => Intent::ToggleMute { master: true },
-                    PhysicalKey::Character('T' | 't') => Intent::ToggleUnits,
-                    PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
-                    PhysicalKey::Character('R' | 'r') => Intent::ReseedAutomation,
-                    PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
-                    _ => return InputMapping::Ignored,
-                }
+        }
+        InteractionMode::Numeric(_) => numeric_binding(&key.code),
+        InteractionMode::Palette(_) => {
+            if unmodified || shifted {
+                palette_binding(&key.code)
+            } else if has_control {
+                palette_control_binding(&key.code)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
-            InteractionMode::Performance(performance) if key.modifiers == Modifiers::default() => {
-                if matches!(key.code, PhysicalKey::Character('p')) {
-                    Intent::ActivatePerformance(PerformanceKind::Deck)
-                } else if matches!(key.code, PhysicalKey::Character(' ')) {
-                    Intent::ActivatePerformance(PerformanceKind::Sequence)
-                } else if let Some(instrument) = performance_instrument(&key.code) {
-                    match phase {
-                        InputPhase::Release => Intent::ReleaseHeldSelector(instrument),
-                        InputPhase::Press
-                            if matches!(
-                                performance,
-                                PerformanceMode::Deck { .. }
-                                    | PerformanceMode::Sequence {
-                                        stage: SequenceStage::ChooseInstrument
-                                            | SequenceStage::Perform { .. },
-                                        ..
-                                    }
-                            ) =>
-                        {
-                            Intent::SelectPerformanceInstrument {
-                                instrument,
-                                hold: capabilities.supports_holds(),
-                            }
-                        }
-                        InputPhase::Repeat => return InputMapping::Ignored,
-                        _ => return InputMapping::Ignored,
-                    }
-                } else if let Some(action) = performance_action(&key.code) {
-                    match (performance, phase) {
-                        (
-                            PerformanceMode::Sequence {
-                                stage: SequenceStage::AwaitActionRelease { action: armed, .. },
-                                ..
-                            },
-                            InputPhase::Release,
-                        ) if action == *armed => Intent::FinishPerformanceSequence(action),
-                        (PerformanceMode::Deck { .. }, InputPhase::Press | InputPhase::Repeat)
-                        | (
-                            PerformanceMode::Sequence {
-                                stage: SequenceStage::Perform { .. },
-                                ..
-                            },
-                            InputPhase::Press,
-                        ) => Intent::ApplyPerformanceAction {
-                            action,
-                            release_available: capabilities.supports_holds(),
-                        },
-                        _ => return InputMapping::Ignored,
-                    }
-                } else {
-                    return InputMapping::Ignored;
-                }
+        }
+        InteractionMode::Performance(performance) => {
+            if unmodified {
+                performance_binding(performance, &key.code, *phase, capabilities)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
-            _ if key.modifiers != Modifiers::default() => {
-                return deferred_runtime("modified binding is not in the current kernel");
-            }
-            _ => return InputMapping::Ignored,
         }
     };
-    InputMapping::Action(SemanticAction {
-        phase: *phase,
-        intent,
+    intent.map_or(InputMapping::Ignored, |intent| semantic(*phase, intent))
+}
+
+const MODIFIED_BINDING_UNOWNED: &str = "modified binding is not in the current kernel";
+
+fn semantic(phase: InputPhase, intent: Intent) -> InputMapping {
+    InputMapping::Action(SemanticAction { phase, intent })
+}
+
+fn starts_numeric_entry(character: char) -> bool {
+    character.is_ascii_digit() || character == '.' || character == '-'
+}
+
+/// Unmodified bindings Browsing and Automation answer to identically.
+fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Up | PhysicalKey::Character('k') => Intent::MoveSelection(-1),
+        PhysicalKey::Down | PhysicalKey::Character('j') => Intent::MoveSelection(1),
+        PhysicalKey::Left | PhysicalKey::Character('h') => Intent::AdjustSelected(-1),
+        PhysicalKey::Right | PhysicalKey::Character('l') => Intent::AdjustSelected(1),
+        PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
+        PhysicalKey::Character('/') => Intent::OpenPalette,
+        PhysicalKey::Character('f') => Intent::OpenAutomation(AutomationKind::Lfo),
+        PhysicalKey::Character('e') => Intent::OpenAutomation(AutomationKind::Envelope),
+        PhysicalKey::Character('v') => Intent::ToggleMacro,
+        PhysicalKey::Character('q') => Intent::Quit,
+        PhysicalKey::Character('a') => Intent::ToggleAuto,
+        PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
+        PhysicalKey::Character('t') => Intent::ToggleUnits,
+        PhysicalKey::Character('x') => Intent::RemoveAutomation,
+        PhysicalKey::Character('r') => Intent::ReseedAutomation,
+        PhysicalKey::Character(character) if starts_numeric_entry(character) => {
+            Intent::BeginNumeric(character)
+        }
+        _ => return None,
     })
+}
+
+fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
+        PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Sequence),
+        PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
+        PhysicalKey::Enter => match navigation {
+            Navigation::Chords {
+                selected,
+                drill: ChordDrill::Progression { .. },
+            } => Intent::EnterChordSlot(selected),
+            _ => Intent::TouchSelected,
+        },
+        _ => return slider_binding(code),
+    })
+}
+
+fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
+    match *code {
+        // Enter stays inert while an automation editor owns the keyboard.
+        PhysicalKey::Enter => None,
+        _ => slider_binding(code),
+    }
+}
+
+fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Left | PhysicalKey::Character('H' | 'h') => Intent::ResetSelected,
+        PhysicalKey::Character('M' | 'm') => Intent::ToggleMute { master: true },
+        PhysicalKey::Character('T' | 't') => Intent::ToggleUnits,
+        PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
+        PhysicalKey::Character('R' | 'r') => Intent::ReseedAutomation,
+        PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
+        _ => return None,
+    })
+}
+
+fn numeric_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Enter => Intent::Confirm,
+        PhysicalKey::Backspace => Intent::Backspace,
+        PhysicalKey::Character(character) if starts_numeric_entry(character) => {
+            Intent::TypeCharacter(character)
+        }
+        _ => return None,
+    })
+}
+
+fn palette_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Enter => Intent::Confirm,
+        PhysicalKey::Backspace => Intent::Backspace,
+        PhysicalKey::Tab => Intent::PaletteAutocomplete,
+        PhysicalKey::Up => Intent::MoveSelection(-1),
+        PhysicalKey::Down => Intent::MoveSelection(1),
+        PhysicalKey::Character(character) => Intent::TypeCharacter(character),
+        _ => return None,
+    })
+}
+
+fn palette_control_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Character('p' | 'P') => Intent::MoveSelection(-1),
+        PhysicalKey::Character('n' | 'N') => Intent::MoveSelection(1),
+        PhysicalKey::Character('b' | 'B') => Intent::CommitPaletteAtBar,
+        _ => return None,
+    })
+}
+
+fn performance_binding(
+    performance: &PerformanceMode,
+    code: &PhysicalKey,
+    phase: InputPhase,
+    capabilities: TerminalCapabilities,
+) -> Option<Intent> {
+    match *code {
+        PhysicalKey::Character('p') => {
+            return Some(Intent::ActivatePerformance(PerformanceKind::Deck));
+        }
+        PhysicalKey::Character(' ') => {
+            return Some(Intent::ActivatePerformance(PerformanceKind::Sequence));
+        }
+        _ => {}
+    }
+    if let Some(instrument) = performance_instrument(code) {
+        return match phase {
+            InputPhase::Release => Some(Intent::ReleaseHeldSelector(instrument)),
+            InputPhase::Press
+                if matches!(
+                    performance,
+                    PerformanceMode::Deck { .. }
+                        | PerformanceMode::Sequence {
+                            stage: SequenceStage::ChooseInstrument | SequenceStage::Perform { .. },
+                            ..
+                        }
+                ) =>
+            {
+                Some(Intent::SelectPerformanceInstrument {
+                    instrument,
+                    hold: capabilities.supports_holds(),
+                })
+            }
+            _ => None,
+        };
+    }
+    let action = performance_action(code)?;
+    match (performance, phase) {
+        (
+            PerformanceMode::Sequence {
+                stage: SequenceStage::AwaitActionRelease { action: armed, .. },
+                ..
+            },
+            InputPhase::Release,
+        ) if action == *armed => Some(Intent::FinishPerformanceSequence(action)),
+        (PerformanceMode::Deck { .. }, InputPhase::Press | InputPhase::Repeat)
+        | (
+            PerformanceMode::Sequence {
+                stage: SequenceStage::Perform { .. },
+                ..
+            },
+            InputPhase::Press,
+        ) => Some(Intent::ApplyPerformanceAction {
+            action,
+            release_available: capabilities.supports_holds(),
+        }),
+        _ => None,
+    }
 }
 
 fn performance_instrument(key: &PhysicalKey) -> Option<PerformanceInstrument> {
@@ -1146,6 +1158,7 @@ pub(crate) use recording::{SanitizedTraceRecorder, decode_physical_key, encode_p
 
 #[cfg(test)]
 mod tests {
+
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -1512,7 +1525,7 @@ mod tests {
                 TerminalCapabilities::default()
             ),
             InputMapping::Action(SemanticAction {
-                intent: Intent::OpenAutomation(super::super::interaction::AutomationKind::Lfo),
+                intent: Intent::OpenAutomation(super::AutomationKind::Lfo),
                 ..
             })
         ));
@@ -1647,14 +1660,8 @@ mod tests {
         }
 
         for (code, expected) in [
-            (
-                'f',
-                Intent::OpenAutomation(super::super::interaction::AutomationKind::Lfo),
-            ),
-            (
-                'e',
-                Intent::OpenAutomation(super::super::interaction::AutomationKind::Envelope),
-            ),
+            ('f', Intent::OpenAutomation(super::AutomationKind::Lfo)),
+            ('e', Intent::OpenAutomation(super::AutomationKind::Envelope)),
             ('v', Intent::ToggleMacro),
             ('a', Intent::ToggleAuto),
             ('m', Intent::ToggleMute { master: false }),
