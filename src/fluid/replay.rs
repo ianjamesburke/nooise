@@ -307,6 +307,9 @@ impl Clock for FakeClock {
     }
 }
 
+/// One step of a scripted session: a clock advance, a transport event, or an
+/// explicit tick/idle boundary. Boundaries are part of the fixture because
+/// where a turn ends is itself behavior under test.
 enum PlaybackEvent {
     Advance(Duration),
     Transport(TransportEvent),
@@ -314,6 +317,8 @@ enum PlaybackEvent {
     IdleBoundary,
 }
 
+/// Plays a `ReplayTrace` back as an `EventSource` against a `FakeClock`, so
+/// the production scheduler sees the same shape of input it sees live.
 struct ScriptedSource {
     clock: FakeClock,
     events: VecDeque<PlaybackEvent>,
@@ -655,6 +660,13 @@ impl Clipboard for FakeClipboard {
     }
 }
 
+/// One replay run: real normalizer, real scheduler, real kernel, real effect
+/// executor, real view projection, and a Ratatui `TestBackend`.
+///
+/// Nothing here may shortcut the production path — a harness that reached past
+/// the mapper would let a binding regression pass. Only the clock, the input
+/// source, and the clipboard are substituted, and each is a seam production
+/// also goes through.
 struct ReplayHarness {
     capabilities: TerminalCapabilities,
     model: InteractionModel,

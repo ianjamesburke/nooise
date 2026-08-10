@@ -8,6 +8,9 @@ use super::Tab;
 use super::palette::{ModuleScope, PaletteEntry, PaletteState, StagedEdit};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Which edge of a physical key produced this event. A legacy terminal can
+/// only report `Press`; `Repeat` and `Release` exist solely where keyboard
+/// enhancement is negotiated.
 pub(crate) enum InputPhase {
     #[default]
     Press,
@@ -16,6 +19,9 @@ pub(crate) enum InputPhase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which phases an intent accepts, declared per `Intent` so a new variant
+/// must decide before it can be dispatched. Checked *before* any transition
+/// runs, so no transition function restates it.
 pub(crate) enum PhasePolicy {
     Edge,
     Repeatable,
@@ -66,6 +72,10 @@ enum LayerNavigation {
     Master,
 }
 
+/// One row of `LAYERS`: a page, the tab it shows, and the navigation opening
+/// it creates. The table is indexed in `Page`/`Tab` discriminant order, which
+/// is test-enforced, so page-tab translation stays a lookup rather than a
+/// match that could drift.
 struct Layer {
     page: Page,
     tab: Tab,
@@ -497,6 +507,13 @@ pub(crate) enum InteractionMode {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The entire interaction state: where the cursor is, and who owns the
+/// keyboard. Nothing else — no terminal facts, no clock, no session data.
+///
+/// `update` is a deterministic pure function of this plus one action, and
+/// emits ordered data-only effects for an adapter to execute. Two runs of the
+/// same action sequence must produce identical models and identical effects;
+/// the replay property tests assert exactly that.
 pub(crate) struct InteractionModel {
     pub(crate) navigation: Navigation,
     pub(crate) mode: InteractionMode,
@@ -509,6 +526,11 @@ pub(crate) enum PageDirection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The closed vocabulary of things a user can mean. Terminal keys map onto
+/// these; nothing downstream of the mapper looks at a key again.
+///
+/// Every variant declares its accepted phases (`phase_policy`) and its owning
+/// modes (`handled_by`), both exhaustive, so adding one forces both decisions.
 pub(crate) enum Intent {
     MoveSelection(isize),
     ChangePage(PageDirection),
@@ -651,6 +673,7 @@ impl Intent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// One intent at one phase — the only input the kernel accepts.
 pub(crate) struct SemanticAction {
     pub(crate) phase: InputPhase,
     pub(crate) intent: Intent,
@@ -667,6 +690,12 @@ impl SemanticAction {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// A data-only consequence of a transition, for an adapter to execute.
+///
+/// Effects carry their complete typed payload so no adapter has to
+/// reconstruct what the kernel already knew. They are ordered and execution
+/// stops at the first failure; an executor that does not implement one must
+/// reject it explicitly rather than drop it.
 pub(crate) enum InteractionEffect {
     AdjustSelected(i8),
     CommitNumeric(f32),
@@ -711,6 +740,8 @@ pub(crate) enum InteractionEffect {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// The result of one `update`: the next model, and the effects that must run
+/// in this order for the model to be true.
 pub(crate) struct Transition {
     pub(crate) model: InteractionModel,
     pub(crate) effects: Vec<InteractionEffect>,
