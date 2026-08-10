@@ -1087,7 +1087,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         "Type",
         ControlKind::Discrete,
         0.0,
-        2.0,
+        last_index_of(PAD_TYPES),
         Step::Linear(1.0),
         Entry::Round,
         |c| c.pad.voice_type,
@@ -1187,7 +1187,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
             "Type",
             ControlKind::Discrete,
             0.0,
-            2.0,
+            last_index_of(BASS_TYPES),
             Step::Linear(1.0),
             Entry::Round,
             |c| c.bass.voice_type,
@@ -1229,41 +1229,62 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
+/// The character choices behind each voice-type control, in stored-value
+/// order. A control's `max` is `last_index_of` its own table, so a table and
+/// its slider range can never disagree.
+pub(crate) const BASS_TYPES: &[&str] = &["Sub", "Saw", "Pluck"];
+pub(crate) const PAD_TYPES: &[&str] = &["Warm", "Dark", "Glass"];
+pub(crate) const KICK_TYPES: &[&str] = &["Sub", "Warm", "Wood", "Felt"];
+pub(crate) const TONAL_SYNTH_TYPES: &[&str] = &[
+    "Sine",
+    "Rhodes",
+    "Wurli",
+    "Felt",
+    "Marimba",
+    "Kalimba",
+    "Pluck",
+    "Dulcet",
+    "Cloud Keys",
+    "Haze",
+];
+
+/// A voice-type value wraps into its table, so the dial cycles rather than
+/// dying at either end.
+fn type_index(value: f32, types: &[&str]) -> usize {
+    (value.round() as i64).rem_euclid(types.len() as i64) as usize
+}
+
+fn type_label(value: f32, types: &'static [&'static str]) -> &'static str {
+    types[type_index(value, types)]
+}
+
+/// Highest value a voice-type control accepts, for its `ControlSpec` max.
+const fn last_index_of(types: &[&str]) -> f32 {
+    (types.len() - 1) as f32
+}
+
 pub(crate) fn bass_type_label(value: f32) -> &'static str {
-    match bass_type_index(value) {
-        0 => "Sub",
-        1 => "Saw",
-        _ => "Pluck",
-    }
+    type_label(value, BASS_TYPES)
 }
 
 pub(crate) fn bass_type_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid(3) as usize
+    type_index(value, BASS_TYPES)
 }
 
 pub(crate) fn pad_type_label(value: f32) -> &'static str {
-    match pad_type_index(value) {
-        0 => "Warm",
-        1 => "Dark",
-        _ => "Glass",
-    }
+    type_label(value, PAD_TYPES)
 }
 
 pub(crate) fn pad_type_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid(3) as usize
+    type_index(value, PAD_TYPES)
 }
 
 pub(crate) fn kick_type_label(value: f32) -> &'static str {
-    match kick_type_index(value) {
-        0 => "Sub",
-        1 => "Warm",
-        2 => "Wood",
-        _ => "Felt",
-    }
+    type_label(value, KICK_TYPES)
 }
 
 pub(crate) fn kick_type_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid(4) as usize
+    type_index(value, KICK_TYPES)
 }
 
 pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
@@ -1293,7 +1314,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
             "Type",
             ControlKind::Discrete,
             0.0,
-            3.0,
+            last_index_of(KICK_TYPES),
             Step::Linear(1.0),
             Entry::Round,
             |c| c.kick.voice_type,
@@ -1352,7 +1373,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             "Type",
             ControlKind::Discrete,
             0.0,
-            9.0,
+            last_index_of(TONAL_SYNTH_TYPES),
             Step::Linear(1.0),
             Entry::Round,
             |c| c.tonal.synth_type,
@@ -1418,22 +1439,11 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
 );
 
 pub(crate) fn tonal_synth_type_label(value: f32) -> &'static str {
-    match tonal_synth_type_index(value) {
-        0 => "Sine",
-        1 => "Rhodes",
-        2 => "Wurli",
-        3 => "Felt",
-        4 => "Marimba",
-        5 => "Kalimba",
-        6 => "Pluck",
-        7 => "Dulcet",
-        8 => "Cloud Keys",
-        _ => "Haze",
-    }
+    type_label(value, TONAL_SYNTH_TYPES)
 }
 
 pub(crate) fn tonal_synth_type_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid(10) as usize
+    type_index(value, TONAL_SYNTH_TYPES)
 }
 
 pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
@@ -1487,7 +1497,7 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
             "Type",
             ControlKind::Discrete,
             0.0,
-            9.0,
+            last_index_of(TONAL_SYNTH_TYPES),
             Step::Linear(1.0),
             Entry::Round,
             |c| c.arp.voice_type,
