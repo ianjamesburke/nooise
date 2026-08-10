@@ -334,13 +334,10 @@ impl EffectExecutor {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "ordered generic bridge is exercised by adapter tests"
-        )
-    )]
+    /// Ordered generic bridge. Production drives effects through
+    /// `execute_interaction_with_clipboard`; this shape exists for the
+    /// adapter tests that assert stop-at-first-failure ordering.
+    #[cfg(test)]
     pub(crate) fn execute_ordered(
         &mut self,
         effects: impl IntoIterator<Item = LiveEffect>,
@@ -497,13 +494,7 @@ impl EffectExecutor {
     /// Typed bridge from the pure interaction kernel to effect execution.
     /// Effects needing adapter-owned data must receive it explicitly through
     /// `context`; unsupported staged performance effects fail visibly.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "generic interaction bridge is exercised by adapter tests"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn execute_interaction(
         &mut self,
         effect: InteractionEffect,
