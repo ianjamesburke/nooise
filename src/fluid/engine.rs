@@ -118,10 +118,10 @@ impl ModuleFxBank {
                         sample,
                         CompressorParams {
                             sample_rate: self.sample_rate,
-                            threshold_db: slot.time.clamp(-40.0, 0.0),
-                            ratio: slot.right_time.clamp(1.0, 8.0),
-                            release_ms: slot.feedback.clamp(10.0, 500.0),
-                            makeup_db: slot.vintage.clamp(0.0, 12.0),
+                            threshold_db: slot.time,
+                            ratio: slot.right_time,
+                            release_ms: slot.feedback,
+                            makeup_db: slot.vintage,
                             amount: slot.amount,
                         },
                     );
@@ -142,6 +142,34 @@ impl ModuleFxBank {
 #[cfg(test)]
 mod module_fx_tests {
     use super::*;
+
+    /// The engine hands Compression slot fields straight to the DSP, which
+    /// was written against these ranges. `ControlSpec::apply_value` and the
+    /// song decoder both clamp to the spec, so the spec is the only bound
+    /// there is — re-clamping at the engine would just let a spec change
+    /// drift past what the DSP expects without anything noticing.
+    #[test]
+    fn compression_slot_specs_bound_every_field_the_dsp_reads() {
+        let mut controls = FluidControls::default();
+        controls.modules.master[1] = preset_slot("compression", 1.0);
+
+        for (field, min, max) in [
+            ("time", -40.0, 0.0),
+            ("right_time", 1.0, 8.0),
+            ("feedback", 10.0, 500.0),
+            ("vintage", 0.0, 12.0),
+        ] {
+            let id = format!("master.slot2.{field}");
+            let spec = spec_by_id(&id)
+                .unwrap_or_else(|| panic!("{id} is a registry control"))
+                .contextual(&controls);
+            assert_eq!(
+                (spec.min, spec.max),
+                (min, max),
+                "{id} no longer carries the range the compressor DSP assumes"
+            );
+        }
+    }
 
     #[test]
     fn reverb_and_compression_execute_through_the_same_slot_chain() {
