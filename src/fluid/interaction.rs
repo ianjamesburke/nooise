@@ -451,6 +451,17 @@ impl PerformanceMode {
     }
 }
 
+/// A keyboard owner without its mode-local data, so an intent can name the
+/// owners that act on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModeKind {
+    Browsing,
+    Numeric,
+    Palette,
+    Automation,
+    Performance,
+}
+
 /// Exactly one variant owns the keyboard. Mode-local data cannot coexist with
 /// another owner.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -530,6 +541,55 @@ pub(crate) enum Intent {
 }
 
 impl Intent {
+    /// The keyboard owners whose transition table acts on this intent; every
+    /// other owner ignores it. Exhaustive over `Intent`, so a new variant
+    /// cannot compile without deciding which modes own it.
+    fn handled_by(self) -> &'static [ModeKind] {
+        match self {
+            Self::Cancel => &[
+                ModeKind::Browsing,
+                ModeKind::Numeric,
+                ModeKind::Palette,
+                ModeKind::Automation,
+                ModeKind::Performance,
+            ],
+            Self::MoveSelection(_) => {
+                &[ModeKind::Browsing, ModeKind::Palette, ModeKind::Automation]
+            }
+            Self::Confirm => &[ModeKind::Numeric, ModeKind::Palette, ModeKind::Automation],
+            Self::TypeCharacter(_) | Self::Backspace => &[ModeKind::Numeric, ModeKind::Palette],
+            Self::PaletteAutocomplete | Self::CommitPaletteAtBar => &[ModeKind::Palette],
+            Self::OpenAutomationField => &[ModeKind::Automation],
+            Self::EnterChordProgression
+            | Self::EnterChordSlot(_)
+            | Self::EnterModuleDetail { .. } => &[ModeKind::Browsing],
+            Self::ChangePage(_)
+            | Self::BeginNumeric(_)
+            | Self::OpenPalette
+            | Self::OpenAutomation(_)
+            | Self::AdjustSelected(_)
+            | Self::ResetSelected
+            | Self::ToggleAuto
+            | Self::ToggleUnits
+            | Self::ToggleMute { .. }
+            | Self::ToggleMacro
+            | Self::RemoveAutomation
+            | Self::ReseedAutomation
+            | Self::TouchSelected
+            | Self::Save
+            | Self::Quit => &[ModeKind::Browsing, ModeKind::Automation],
+            Self::ActivatePerformance(_) => &[ModeKind::Browsing, ModeKind::Performance],
+            Self::SelectPerformanceInstrument { .. }
+            | Self::ApplyPerformanceAction { .. }
+            | Self::FinishPerformanceSequence(_)
+            | Self::ReleaseHeldSelector(_) => &[ModeKind::Performance],
+        }
+    }
+
+    fn is_handled_by(self, mode: ModeKind) -> bool {
+        self.handled_by().contains(&mode)
+    }
+
     pub(crate) fn phase_policy(self) -> PhasePolicy {
         match self {
             Self::MoveSelection(_)
@@ -799,6 +859,9 @@ fn update_browsing(
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
 ) {
+    if !intent.is_handled_by(ModeKind::Browsing) {
+        return;
+    }
     match intent {
         Intent::MoveSelection(delta) => navigation.move_selection(delta),
         Intent::ChangePage(direction) => {
@@ -873,18 +936,9 @@ fn update_browsing(
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
         Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
-        Intent::CommitPaletteAtBar => {}
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
-        Intent::TypeCharacter(_)
-        | Intent::Backspace
-        | Intent::PaletteAutocomplete
-        | Intent::Confirm
-        | Intent::OpenAutomationField
-        | Intent::SelectPerformanceInstrument { .. }
-        | Intent::ApplyPerformanceAction { .. }
-        | Intent::FinishPerformanceSequence(_)
-        | Intent::ReleaseHeldSelector(_) => {}
+        _ => {}
     }
 }
 
@@ -894,6 +948,9 @@ fn update_numeric(
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
 ) {
+    if !intent.is_handled_by(ModeKind::Numeric) {
+        return;
+    }
     match intent {
         Intent::Cancel => *next_mode = Some(resume_mode(entry.resume)),
         Intent::TypeCharacter(character) => push_numeric(&mut entry.buffer, character),
@@ -906,33 +963,7 @@ fn update_numeric(
             }
             *next_mode = Some(resume_mode(entry.resume));
         }
-        Intent::MoveSelection(_)
-        | Intent::ChangePage(_)
-        | Intent::EnterChordProgression
-        | Intent::EnterChordSlot(_)
-        | Intent::EnterModuleDetail { .. }
-        | Intent::BeginNumeric(_)
-        | Intent::PaletteAutocomplete
-        | Intent::OpenPalette
-        | Intent::OpenAutomation(_)
-        | Intent::OpenAutomationField
-        | Intent::ActivatePerformance(_)
-        | Intent::SelectPerformanceInstrument { .. }
-        | Intent::ApplyPerformanceAction { .. }
-        | Intent::FinishPerformanceSequence(_)
-        | Intent::AdjustSelected(_)
-        | Intent::ResetSelected
-        | Intent::ToggleAuto
-        | Intent::ToggleUnits
-        | Intent::ToggleMute { .. }
-        | Intent::ToggleMacro
-        | Intent::RemoveAutomation
-        | Intent::ReseedAutomation
-        | Intent::TouchSelected
-        | Intent::CommitPaletteAtBar
-        | Intent::Save
-        | Intent::Quit
-        | Intent::ReleaseHeldSelector(_) => {}
+        _ => {}
     }
 }
 
@@ -950,6 +981,9 @@ fn update_palette(
     {
         palette.locked = None;
         palette.value_buffer.clear();
+    }
+    if !intent.is_handled_by(ModeKind::Palette) {
+        return;
     }
     match intent {
         Intent::Cancel => *next_mode = Some(resume_mode(palette.resume)),
@@ -1036,30 +1070,7 @@ fn update_palette(
                 *next_mode = Some(resume_mode(palette.resume));
             }
         }
-        Intent::ChangePage(_)
-        | Intent::EnterChordProgression
-        | Intent::EnterChordSlot(_)
-        | Intent::EnterModuleDetail { .. }
-        | Intent::BeginNumeric(_)
-        | Intent::OpenPalette
-        | Intent::OpenAutomation(_)
-        | Intent::OpenAutomationField
-        | Intent::ActivatePerformance(_)
-        | Intent::SelectPerformanceInstrument { .. }
-        | Intent::ApplyPerformanceAction { .. }
-        | Intent::FinishPerformanceSequence(_)
-        | Intent::AdjustSelected(_)
-        | Intent::ResetSelected
-        | Intent::ToggleAuto
-        | Intent::ToggleUnits
-        | Intent::ToggleMute { .. }
-        | Intent::ToggleMacro
-        | Intent::RemoveAutomation
-        | Intent::ReseedAutomation
-        | Intent::TouchSelected
-        | Intent::Save
-        | Intent::Quit
-        | Intent::ReleaseHeldSelector(_) => {}
+        _ => {}
     }
 }
 
@@ -1070,6 +1081,9 @@ fn update_automation(
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
 ) {
+    if !intent.is_handled_by(ModeKind::Automation) {
+        return;
+    }
     match intent {
         Intent::Cancel
             if matches!(
@@ -1172,18 +1186,7 @@ fn update_automation(
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
-        Intent::EnterChordProgression
-        | Intent::EnterChordSlot(_)
-        | Intent::EnterModuleDetail { .. }
-        | Intent::TypeCharacter(_)
-        | Intent::Backspace
-        | Intent::PaletteAutocomplete
-        | Intent::ActivatePerformance(_)
-        | Intent::SelectPerformanceInstrument { .. }
-        | Intent::ApplyPerformanceAction { .. }
-        | Intent::FinishPerformanceSequence(_)
-        | Intent::CommitPaletteAtBar
-        | Intent::ReleaseHeldSelector(_) => {}
+        _ => {}
     }
 }
 
@@ -1194,6 +1197,9 @@ fn update_performance(
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
 ) {
+    if !intent.is_handled_by(ModeKind::Performance) {
+        return;
+    }
     match intent {
         Intent::Cancel => {
             match performance {
@@ -1328,31 +1334,7 @@ fn update_performance(
                 *next_mode = Some(InteractionMode::Browsing);
             }
         }
-        Intent::MoveSelection(_)
-        | Intent::ChangePage(_)
-        | Intent::EnterChordProgression
-        | Intent::EnterChordSlot(_)
-        | Intent::EnterModuleDetail { .. }
-        | Intent::BeginNumeric(_)
-        | Intent::TypeCharacter(_)
-        | Intent::Backspace
-        | Intent::PaletteAutocomplete
-        | Intent::Confirm
-        | Intent::OpenPalette
-        | Intent::OpenAutomation(_)
-        | Intent::OpenAutomationField
-        | Intent::AdjustSelected(_)
-        | Intent::ResetSelected
-        | Intent::ToggleAuto
-        | Intent::ToggleUnits
-        | Intent::ToggleMute { .. }
-        | Intent::ToggleMacro
-        | Intent::RemoveAutomation
-        | Intent::ReseedAutomation
-        | Intent::TouchSelected
-        | Intent::CommitPaletteAtBar
-        | Intent::Save
-        | Intent::Quit => {}
+        _ => {}
     }
 }
 
