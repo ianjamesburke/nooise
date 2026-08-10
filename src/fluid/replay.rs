@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::fmt;
 use std::fmt::Write as _;
 use std::io;
 use std::rc::Rc;
@@ -20,7 +21,7 @@ use ratatui::backend::TestBackend;
 use super::coordinator::{
     ProductionCoordinatorContext, ProductionStep, coordinate_production_tick,
 };
-use super::effect::{Clipboard, EffectAcknowledgement, EffectFailure};
+use super::effect::{Clipboard, ClipboardError, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
     InteractionMode, InteractionModel, LfoDepth, Navigation, NumericEntry, PaletteMode,
@@ -135,10 +136,10 @@ impl ReplayTrace {
         fixture
     }
 
-    fn parse(fixture: &str) -> Result<Self, String> {
+    fn parse(fixture: &str) -> Result<Self, FixtureError> {
         let mut lines = fixture.lines();
         if lines.next() != Some("nooise-replay-v1") {
-            return Err("unsupported or missing replay fixture version".into());
+            return Err(FixtureError::VERSION);
         }
         let mut events = Vec::new();
         for (line_index, line) in lines.enumerate() {
@@ -146,34 +147,34 @@ impl ReplayTrace {
             let after_ms = parts
                 .next()
                 .and_then(|part| part.strip_prefix('+'))
-                .ok_or_else(|| format!("line {}: missing clock advance", line_index + 1))?
+                .ok_or(FixtureError::at(line_index + 1, "missing clock advance"))?
                 .parse()
-                .map_err(|_| format!("line {}: invalid clock advance", line_index + 1))?;
+                .map_err(|_| FixtureError::at(line_index + 1, "invalid clock advance"))?;
             let kind = parts
                 .next()
-                .ok_or_else(|| format!("line {}: missing event kind", line_index + 1))?;
+                .ok_or(FixtureError::at(line_index + 1, "missing event kind"))?;
             let event = match kind {
                 "key" => {
                     let code = parts
                         .next()
                         .and_then(decode_physical_key)
-                        .ok_or_else(|| format!("line {}: invalid key", line_index + 1))?;
+                        .ok_or(FixtureError::at(line_index + 1, "invalid key"))?;
                     let phase = parts
                         .next()
                         .and_then(parse_phase)
-                        .ok_or_else(|| format!("line {}: invalid phase", line_index + 1))?;
+                        .ok_or(FixtureError::at(line_index + 1, "invalid phase"))?;
                     let modifiers = parts
                         .next()
                         .and_then(|part| part.strip_prefix("mods:"))
                         .and_then(|bits| bits.parse().ok())
                         .filter(|bits| *bits <= 0b11_1111)
-                        .ok_or_else(|| format!("line {}: invalid modifiers", line_index + 1))?;
+                        .ok_or(FixtureError::at(line_index + 1, "invalid modifiers"))?;
                     let repeat_count = parts
                         .next()
                         .and_then(|part| part.strip_prefix("repeats:"))
                         .and_then(|count| count.parse().ok())
                         .filter(|count| *count > 0)
-                        .ok_or_else(|| format!("line {}: invalid repeat count", line_index + 1))?;
+                        .ok_or(FixtureError::at(line_index + 1, "invalid repeat count"))?;
                     TraceEvent::Key {
                         after_ms,
                         code,
@@ -185,18 +186,18 @@ impl ReplayTrace {
                 "resize" => {
                     let dimensions = parts
                         .next()
-                        .ok_or_else(|| format!("line {}: missing dimensions", line_index + 1))?;
+                        .ok_or(FixtureError::at(line_index + 1, "missing dimensions"))?;
                     let (width, height) = dimensions
                         .split_once('x')
-                        .ok_or_else(|| format!("line {}: invalid dimensions", line_index + 1))?;
+                        .ok_or(FixtureError::at(line_index + 1, "invalid dimensions"))?;
                     TraceEvent::Resize {
                         after_ms,
                         width: width
                             .parse()
-                            .map_err(|_| format!("line {}: invalid width", line_index + 1))?,
+                            .map_err(|_| FixtureError::at(line_index + 1, "invalid width"))?,
                         height: height
                             .parse()
-                            .map_err(|_| format!("line {}: invalid height", line_index + 1))?,
+                            .map_err(|_| FixtureError::at(line_index + 1, "invalid height"))?,
                     }
                 }
                 "tick" => TraceEvent::Tick { after_ms },
@@ -204,11 +205,11 @@ impl ReplayTrace {
                 "redacted" => {
                     let kind = parts
                         .next()
-                        .ok_or_else(|| format!("line {}: missing redacted kind", line_index + 1))?;
+                        .ok_or(FixtureError::at(line_index + 1, "missing redacted kind"))?;
                     let kind = match kind {
                         "paste" => "paste",
                         "mouse" => "mouse",
-                        _ => return Err(format!("line {}: invalid redacted kind", line_index + 1)),
+                        _ => return Err(FixtureError::at(line_index + 1, "invalid redacted kind")),
                     };
                     TraceEvent::Redacted { after_ms, kind }
                 }
@@ -221,16 +222,54 @@ impl ReplayTrace {
                     gained: false,
                 },
                 "shutdown" => TraceEvent::Shutdown { after_ms },
-                _ => return Err(format!("line {}: invalid event kind", line_index + 1)),
+                _ => return Err(FixtureError::at(line_index + 1, "invalid event kind")),
             };
             if parts.next().is_some() {
-                return Err(format!("line {}: trailing fixture data", line_index + 1));
+                return Err(FixtureError::at(line_index + 1, "trailing fixture data"));
             }
             events.push(event);
         }
         Ok(Self { events })
     }
 }
+
+/// A fixture line the parser could not read.
+///
+/// Nothing branches on a parse failure — fixtures are authored, not received —
+/// so the payload is a diagnostic: which line, and what the parser expected
+/// there. `expected` is a compile-time constant rather than a formatted string
+/// so the error's identity stays data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FixtureError {
+    /// One-based fixture line, or `None` for the version header.
+    line: Option<usize>,
+    expected: &'static str,
+}
+
+impl FixtureError {
+    const VERSION: Self = Self {
+        line: None,
+        expected: "unsupported or missing replay fixture version",
+    };
+
+    fn at(line: usize, expected: &'static str) -> Self {
+        Self {
+            line: Some(line),
+            expected,
+        }
+    }
+}
+
+impl fmt::Display for FixtureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.line {
+            Some(line) => write!(f, "line {line}: {}", self.expected),
+            None => write!(f, "{}", self.expected),
+        }
+    }
+}
+
+impl std::error::Error for FixtureError {}
 
 fn phase_token(phase: InputPhase) -> &'static str {
     match phase {
@@ -603,11 +642,11 @@ struct ReplayOutcome {
 #[derive(Default)]
 struct FakeClipboard {
     writes: usize,
-    failure: Option<String>,
+    failure: Option<ClipboardError>,
 }
 
 impl Clipboard for FakeClipboard {
-    fn set_text(&mut self, _text: String) -> Result<(), String> {
+    fn set_text(&mut self, _text: String) -> Result<(), ClipboardError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
@@ -700,8 +739,8 @@ impl ReplayHarness {
         self
     }
 
-    fn with_clipboard_failure(mut self, error: impl Into<String>) -> Self {
-        self.clipboard.failure = Some(error.into());
+    fn with_clipboard_failure(mut self, error: ClipboardError) -> Self {
+        self.clipboard.failure = Some(error);
         self
     }
 
@@ -1157,11 +1196,11 @@ fn replay_from_model(
 fn replay_with_clipboard_failure(
     trace: &[TraceEvent],
     capabilities: TerminalCapabilities,
-    error: &str,
+    error: &ClipboardError,
 ) -> ReplayResult {
     let run = |candidate: &[TraceEvent]| {
         ReplayHarness::new(capabilities)
-            .with_clipboard_failure(error)
+            .with_clipboard_failure(error.clone())
             .replay(&ReplayTrace {
                 events: candidate.to_vec(),
             })
@@ -2357,16 +2396,16 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
             0b000010,
         )],
         full_capabilities(),
-        "clipboard unavailable",
+        &ClipboardError::Unavailable("no display server".into()),
     );
     assert_eq!(failed.clipboard_writes, 0);
     assert_eq!(
         failed.effect_notice.as_deref(),
-        Some("Save failed: Clipboard(\"clipboard unavailable\")")
+        Some("Save failed: clipboard unavailable: no display server")
     );
     assert_ne!(
         failed.effect_notice.as_deref(),
-        Some("Action failed: Clipboard(\"clipboard unavailable\")")
+        Some("Action failed: clipboard unavailable: no display server")
     );
 }
 

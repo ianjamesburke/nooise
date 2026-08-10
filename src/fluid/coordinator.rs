@@ -252,7 +252,7 @@ pub(crate) fn coordinate_production_event(
                     };
                     context
                         .effects
-                        .execute(LiveEffect::ShowMessage(format!("{prefix}: {error:?}")))
+                        .execute(LiveEffect::ShowMessage(format!("{prefix}: {error}")))
                         .expect("message is infallible");
                 }
                 Ok(_) => {}

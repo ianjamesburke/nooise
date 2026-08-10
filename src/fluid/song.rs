@@ -62,7 +62,7 @@ impl SongState {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SongCodeError {
     MissingPrefix,
     InvalidBase64,

@@ -1857,6 +1857,13 @@ fn control_registry_specs_are_internally_consistent() {
             tab as usize, i,
             "TAB_META row {i} out of discriminant order"
         );
+        if let Some(id) = tab.level_id() {
+            assert!(
+                spec_by_id(id).is_some(),
+                "{}: level_id {id} names no registry control",
+                tab.name()
+            );
+        }
         for spec in tab_specs(tab) {
             let ctx = format!("{} / {}", tab.name(), spec.label);
             assert!(!spec.id.is_empty(), "{ctx}: empty stable id");

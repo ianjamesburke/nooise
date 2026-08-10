@@ -37,6 +37,14 @@ pub(crate) struct ControlAddress {
 }
 
 impl ControlAddress {
+    /// Resolve a registry control id to the one spec every route is keyed by.
+    ///
+    /// Infallible by construction rather than by luck: `id` is always a
+    /// `ControlSpec::id` — read back off a spec, a `ControlItem`, or
+    /// `Tab::level_id` — never a hand-typed literal that could drift. An
+    /// unregistered id is a programming error with no sensible runtime
+    /// recovery: silently dropping the route would lose the user's automation
+    /// without telling anyone.
     pub(crate) fn new(id: &'static str) -> Self {
         let spec = spec_by_id(id).expect("control address must reference a registered control");
         Self { spec }
@@ -769,7 +777,7 @@ fn live_macro_pair(
         if route.amounts[i].abs() <= f32::EPSILON {
             continue;
         }
-        let spec = spec_by_id(MACRO_CONTROLS[i].id).expect("macro sliders are registered controls");
+        let spec = &MACRO_CONTROLS[i];
         let macro_address = ControlAddress::new(spec.id);
         *value = modulated_control_value_full(
             spec,
