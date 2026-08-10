@@ -513,7 +513,7 @@ fn mix_voices(
 }
 
 pub(crate) struct GainSmoother {
-    pub(crate) spec: Option<&'static ControlSpec>,
+    pub(crate) spec: &'static ControlSpec,
     pub(crate) start: f32,
     pub(crate) current: f32,
     pub(crate) target: f32,
@@ -528,12 +528,17 @@ pub(crate) struct GainSmoother {
 }
 
 impl GainSmoother {
+    /// A smoother on the first registry gain control, for tests that exercise
+    /// the ramp itself rather than which control it drives.
     #[cfg(test)]
     pub(crate) fn new(value: f32) -> Self {
-        Self::for_spec(None, value)
+        let spec = all_specs()
+            .find(|spec| spec.kind.smooths_audio())
+            .expect("the registry declares at least one gain control");
+        Self::for_spec(spec, value)
     }
 
-    pub(crate) fn for_spec(spec: Option<&'static ControlSpec>, value: f32) -> Self {
+    pub(crate) fn for_spec(spec: &'static ControlSpec, value: f32) -> Self {
         Self {
             spec,
             start: value,
@@ -582,7 +587,7 @@ impl GainSmoothers {
         let smoothers = all_specs()
             .filter(|spec| spec.kind.smooths_audio())
             .filter(|spec| seen.insert(spec.id))
-            .map(|spec| GainSmoother::for_spec(Some(spec), (spec.get)(c)))
+            .map(|spec| GainSmoother::for_spec(spec, (spec.get)(c)))
             .collect();
         Self { smoothers }
     }
@@ -590,10 +595,7 @@ impl GainSmoothers {
     pub(crate) fn set_targets(&mut self, c: &FluidControls, sample_rate: f32) {
         let ramp_samples = (LEVEL_RAMP_MS * 0.001 * sample_rate).round() as u32;
         for smoother in &mut self.smoothers {
-            let spec = smoother
-                .spec
-                .expect("registry-derived gain smoothers carry a control spec");
-            let snapshot_value = (spec.get)(c);
+            let snapshot_value = (smoother.spec.get)(c);
             smoother.set_target(snapshot_value, ramp_samples);
             smoother.idle = smoother.samples_remaining == 0 && smoother.target == snapshot_value;
         }
@@ -605,10 +607,7 @@ impl GainSmoothers {
             if smoother.idle {
                 continue;
             }
-            let spec = smoother
-                .spec
-                .expect("registry-derived gain smoothers carry a control spec");
-            (spec.set)(&mut next, smoother.next());
+            (smoother.spec.set)(&mut next, smoother.next());
         }
         next
     }
