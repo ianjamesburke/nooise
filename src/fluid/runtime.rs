@@ -4,8 +4,6 @@
 //! It is the production boundary for terminal lifecycle and Crossterm events.
 
 use std::collections::VecDeque;
-#[cfg(test)]
-use std::fmt::Write as _;
 use std::io;
 use std::time::Duration;
 use std::time::Instant;
@@ -23,8 +21,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
-    ChordDrill, InputPhase, Intent, InteractionMode, Navigation, PageDirection, PerformanceAction,
-    PerformanceInstrument, PerformanceKind, PerformanceMode, SemanticAction, SequenceStage,
+    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, Navigation, PageDirection,
+    PerformanceAction, PerformanceInstrument, PerformanceKind, PerformanceMode, SemanticAction,
+    SequenceStage,
 };
 
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -235,39 +234,83 @@ impl Modifiers {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum MediaKey {
-    Play,
-    Pause,
-    PlayPause,
-    Reverse,
-    Stop,
-    FastForward,
-    Rewind,
-    TrackNext,
-    TrackPrevious,
-    Record,
-    LowerVolume,
-    RaiseVolume,
-    MuteVolume,
+/// Declares a payload-free transport key identity once: every variant names its
+/// Crossterm counterpart and its fixture token in a single list, so a Crossterm
+/// variant that gains no mapping fails to compile rather than losing its token.
+macro_rules! transport_key {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident from $source:ident {
+            $($variant:ident = $source_variant:ident as $token:literal,)+
+        }
+    ) => {
+        $(#[$meta])*
+        $vis enum $name {
+            $($variant,)+
+        }
+
+        impl $name {
+            fn from_crossterm(source: $source) -> Self {
+                match source {
+                    $($source::$source_variant => Self::$variant,)+
+                }
+            }
+
+            #[cfg(test)]
+            fn token(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $token,)+
+                }
+            }
+
+            #[cfg(test)]
+            fn from_token(token: &str) -> Option<Self> {
+                match token {
+                    $($token => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum ModifierKey {
-    LeftShift,
-    LeftControl,
-    LeftAlt,
-    LeftSuper,
-    LeftHyper,
-    LeftMeta,
-    RightShift,
-    RightControl,
-    RightAlt,
-    RightSuper,
-    RightHyper,
-    RightMeta,
-    IsoLevel3Shift,
-    IsoLevel5Shift,
+transport_key! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub(crate) enum MediaKey from MediaKeyCode {
+        Play = Play as "play",
+        Pause = Pause as "pause",
+        PlayPause = PlayPause as "play-pause",
+        Reverse = Reverse as "reverse",
+        Stop = Stop as "stop",
+        FastForward = FastForward as "fast-forward",
+        Rewind = Rewind as "rewind",
+        TrackNext = TrackNext as "track-next",
+        TrackPrevious = TrackPrevious as "track-previous",
+        Record = Record as "record",
+        LowerVolume = LowerVolume as "lower-volume",
+        RaiseVolume = RaiseVolume as "raise-volume",
+        MuteVolume = MuteVolume as "mute-volume",
+    }
+}
+
+transport_key! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub(crate) enum ModifierKey from ModifierKeyCode {
+        LeftShift = LeftShift as "left-shift",
+        LeftControl = LeftControl as "left-control",
+        LeftAlt = LeftAlt as "left-alt",
+        LeftSuper = LeftSuper as "left-super",
+        LeftHyper = LeftHyper as "left-hyper",
+        LeftMeta = LeftMeta as "left-meta",
+        RightShift = RightShift as "right-shift",
+        RightControl = RightControl as "right-control",
+        RightAlt = RightAlt as "right-alt",
+        RightSuper = RightSuper as "right-super",
+        RightHyper = RightHyper as "right-hyper",
+        RightMeta = RightMeta as "right-meta",
+        IsoLevel3Shift = IsoLevel3Shift as "iso-level3-shift",
+        IsoLevel5Shift = IsoLevel5Shift as "iso-level5-shift",
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -330,257 +373,6 @@ pub(crate) enum TransportEvent {
     Shutdown,
 }
 
-/// In-memory sanitized recorder for capturing a live normalized input stream.
-/// Call `record` at the scheduler seam and persist `finish()` only when the
-/// developer explicitly chooses to retain a regression fixture.
-#[cfg(test)]
-pub(crate) struct SanitizedTraceRecorder {
-    previous_at: Duration,
-    fixture: String,
-}
-
-#[cfg(test)]
-impl SanitizedTraceRecorder {
-    pub(crate) fn new(started_at: Duration) -> Self {
-        Self {
-            previous_at: started_at,
-            fixture: "nooise-replay-v1\n".into(),
-        }
-    }
-
-    pub(crate) fn record(&mut self, now: Duration, event: &TransportEvent) {
-        let after_ms = self.advance(now);
-        match event {
-            TransportEvent::Key {
-                key,
-                phase,
-                repeat_count,
-            } => {
-                let token = encode_physical_key(&key.code);
-                writeln!(
-                    self.fixture,
-                    "+{after_ms} key {token} {} mods:{} repeats:{repeat_count}",
-                    recorder_phase_token(*phase),
-                    key.modifiers.0
-                )
-                .expect("writing to String cannot fail");
-            }
-            TransportEvent::Resize { width, height } => {
-                writeln!(self.fixture, "+{after_ms} resize {width}x{height}")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::Paste(_) => {
-                writeln!(self.fixture, "+{after_ms} redacted paste")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::Mouse(_) => {
-                writeln!(self.fixture, "+{after_ms} redacted mouse")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::FocusGained => {
-                writeln!(self.fixture, "+{after_ms} focus-gained")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::FocusLost => {
-                writeln!(self.fixture, "+{after_ms} focus-lost")
-                    .expect("writing to String cannot fail");
-            }
-            TransportEvent::Shutdown => {
-                writeln!(self.fixture, "+{after_ms} shutdown")
-                    .expect("writing to String cannot fail");
-            }
-        }
-    }
-
-    pub(crate) fn record_tick(&mut self, now: Duration) {
-        let after_ms = self.advance(now);
-        writeln!(self.fixture, "+{after_ms} tick").expect("writing to String cannot fail");
-    }
-
-    pub(crate) fn record_idle(&mut self, now: Duration) {
-        let after_ms = self.advance(now);
-        writeln!(self.fixture, "+{after_ms} idle").expect("writing to String cannot fail");
-    }
-
-    pub(crate) fn finish(self) -> String {
-        self.fixture
-    }
-
-    fn advance(&mut self, now: Duration) -> u64 {
-        let after_ms = now
-            .saturating_sub(self.previous_at)
-            .as_millis()
-            .min(u128::from(u64::MAX)) as u64;
-        self.previous_at = now;
-        after_ms
-    }
-}
-
-#[cfg(test)]
-fn recorder_phase_token(phase: InputPhase) -> &'static str {
-    match phase {
-        InputPhase::Press => "press",
-        InputPhase::Repeat => "repeat",
-        InputPhase::Release => "release",
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn encode_physical_key(code: &PhysicalKey) -> String {
-    match code {
-        PhysicalKey::Character(character) => format!("char:{:06x}", u32::from(*character)),
-        PhysicalKey::Escape => "escape".into(),
-        PhysicalKey::Home => "home".into(),
-        PhysicalKey::End => "end".into(),
-        PhysicalKey::PageUp => "page-up".into(),
-        PhysicalKey::PageDown => "page-down".into(),
-        PhysicalKey::Enter => "enter".into(),
-        PhysicalKey::Backspace => "backspace".into(),
-        PhysicalKey::Left => "left".into(),
-        PhysicalKey::Right => "right".into(),
-        PhysicalKey::Up => "up".into(),
-        PhysicalKey::Down => "down".into(),
-        PhysicalKey::Tab => "tab".into(),
-        PhysicalKey::BackTab => "backtab".into(),
-        PhysicalKey::Delete => "delete".into(),
-        PhysicalKey::Insert => "insert".into(),
-        PhysicalKey::Function(number) => format!("f:{number}"),
-        PhysicalKey::Null => "null".into(),
-        PhysicalKey::CapsLock => "caps-lock".into(),
-        PhysicalKey::ScrollLock => "scroll-lock".into(),
-        PhysicalKey::NumLock => "num-lock".into(),
-        PhysicalKey::PrintScreen => "print-screen".into(),
-        PhysicalKey::Pause => "pause".into(),
-        PhysicalKey::Menu => "menu".into(),
-        PhysicalKey::KeypadBegin => "keypad-begin".into(),
-        PhysicalKey::Media(key) => format!("media:{}", encode_media_key(*key)),
-        PhysicalKey::Modifier(key) => format!("modifier:{}", encode_modifier_key(*key)),
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn decode_physical_key(token: &str) -> Option<PhysicalKey> {
-    Some(match token {
-        "escape" => PhysicalKey::Escape,
-        "home" => PhysicalKey::Home,
-        "end" => PhysicalKey::End,
-        "page-up" => PhysicalKey::PageUp,
-        "page-down" => PhysicalKey::PageDown,
-        "enter" => PhysicalKey::Enter,
-        "backspace" => PhysicalKey::Backspace,
-        "left" => PhysicalKey::Left,
-        "right" => PhysicalKey::Right,
-        "up" => PhysicalKey::Up,
-        "down" => PhysicalKey::Down,
-        "tab" => PhysicalKey::Tab,
-        "backtab" => PhysicalKey::BackTab,
-        "delete" => PhysicalKey::Delete,
-        "insert" => PhysicalKey::Insert,
-        "null" => PhysicalKey::Null,
-        "caps-lock" => PhysicalKey::CapsLock,
-        "scroll-lock" => PhysicalKey::ScrollLock,
-        "num-lock" => PhysicalKey::NumLock,
-        "print-screen" => PhysicalKey::PrintScreen,
-        "pause" => PhysicalKey::Pause,
-        "menu" => PhysicalKey::Menu,
-        "keypad-begin" => PhysicalKey::KeypadBegin,
-        _ if token.starts_with("char:") => {
-            let scalar = u32::from_str_radix(token.strip_prefix("char:")?, 16).ok()?;
-            PhysicalKey::Character(char::from_u32(scalar)?)
-        }
-        _ if token.starts_with("f:") => {
-            PhysicalKey::Function(token.strip_prefix("f:")?.parse().ok()?)
-        }
-        _ if token.starts_with("media:") => {
-            PhysicalKey::Media(decode_media_key(token.strip_prefix("media:")?)?)
-        }
-        _ if token.starts_with("modifier:") => {
-            PhysicalKey::Modifier(decode_modifier_key(token.strip_prefix("modifier:")?)?)
-        }
-        _ => return None,
-    })
-}
-
-#[cfg(test)]
-fn encode_media_key(key: MediaKey) -> &'static str {
-    match key {
-        MediaKey::Play => "play",
-        MediaKey::Pause => "pause",
-        MediaKey::PlayPause => "play-pause",
-        MediaKey::Reverse => "reverse",
-        MediaKey::Stop => "stop",
-        MediaKey::FastForward => "fast-forward",
-        MediaKey::Rewind => "rewind",
-        MediaKey::TrackNext => "track-next",
-        MediaKey::TrackPrevious => "track-previous",
-        MediaKey::Record => "record",
-        MediaKey::LowerVolume => "lower-volume",
-        MediaKey::RaiseVolume => "raise-volume",
-        MediaKey::MuteVolume => "mute-volume",
-    }
-}
-
-#[cfg(test)]
-fn decode_media_key(token: &str) -> Option<MediaKey> {
-    Some(match token {
-        "play" => MediaKey::Play,
-        "pause" => MediaKey::Pause,
-        "play-pause" => MediaKey::PlayPause,
-        "reverse" => MediaKey::Reverse,
-        "stop" => MediaKey::Stop,
-        "fast-forward" => MediaKey::FastForward,
-        "rewind" => MediaKey::Rewind,
-        "track-next" => MediaKey::TrackNext,
-        "track-previous" => MediaKey::TrackPrevious,
-        "record" => MediaKey::Record,
-        "lower-volume" => MediaKey::LowerVolume,
-        "raise-volume" => MediaKey::RaiseVolume,
-        "mute-volume" => MediaKey::MuteVolume,
-        _ => return None,
-    })
-}
-
-#[cfg(test)]
-fn encode_modifier_key(key: ModifierKey) -> &'static str {
-    match key {
-        ModifierKey::LeftShift => "left-shift",
-        ModifierKey::LeftControl => "left-control",
-        ModifierKey::LeftAlt => "left-alt",
-        ModifierKey::LeftSuper => "left-super",
-        ModifierKey::LeftHyper => "left-hyper",
-        ModifierKey::LeftMeta => "left-meta",
-        ModifierKey::RightShift => "right-shift",
-        ModifierKey::RightControl => "right-control",
-        ModifierKey::RightAlt => "right-alt",
-        ModifierKey::RightSuper => "right-super",
-        ModifierKey::RightHyper => "right-hyper",
-        ModifierKey::RightMeta => "right-meta",
-        ModifierKey::IsoLevel3Shift => "iso-level3-shift",
-        ModifierKey::IsoLevel5Shift => "iso-level5-shift",
-    }
-}
-
-#[cfg(test)]
-fn decode_modifier_key(token: &str) -> Option<ModifierKey> {
-    Some(match token {
-        "left-shift" => ModifierKey::LeftShift,
-        "left-control" => ModifierKey::LeftControl,
-        "left-alt" => ModifierKey::LeftAlt,
-        "left-super" => ModifierKey::LeftSuper,
-        "left-hyper" => ModifierKey::LeftHyper,
-        "left-meta" => ModifierKey::LeftMeta,
-        "right-shift" => ModifierKey::RightShift,
-        "right-control" => ModifierKey::RightControl,
-        "right-alt" => ModifierKey::RightAlt,
-        "right-super" => ModifierKey::RightSuper,
-        "right-hyper" => ModifierKey::RightHyper,
-        "right-meta" => ModifierKey::RightMeta,
-        "iso-level3-shift" => ModifierKey::IsoLevel3Shift,
-        "iso-level5-shift" => ModifierKey::IsoLevel5Shift,
-        _ => return None,
-    })
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeferredInput {
     RuntimeContext(&'static str),
@@ -610,216 +402,227 @@ pub(crate) fn map_input(
         return InputMapping::Ignored;
     };
     let has_control = key.modifiers.contains(Modifiers::CONTROL);
+    let unmodified = key.modifiers == Modifiers::default();
+    let shifted = key.modifiers == Modifiers::SHIFT;
+
+    // Global bindings resolve before any mode claims the key.
     if has_control
         && matches!(
             mode,
             InteractionMode::Browsing | InteractionMode::Automation(_)
         )
-        && matches!(key.code, PhysicalKey::Character('s' | 'S'))
     {
-        return InputMapping::Action(SemanticAction {
-            phase: *phase,
-            intent: Intent::Save,
-        });
+        match key.code {
+            PhysicalKey::Character('s' | 'S') => return semantic(*phase, Intent::Save),
+            PhysicalKey::Character('c' | 'C') => return semantic(*phase, Intent::Quit),
+            _ => {}
+        }
     }
-    if has_control
-        && matches!(
-            mode,
-            InteractionMode::Browsing | InteractionMode::Automation(_)
-        )
-        && matches!(key.code, PhysicalKey::Character('c' | 'C'))
-    {
-        return InputMapping::Action(SemanticAction {
-            phase: *phase,
-            intent: Intent::Quit,
-        });
+    if matches!(key.code, PhysicalKey::Escape) {
+        return semantic(*phase, Intent::Cancel);
     }
-    let intent = if matches!(key.code, PhysicalKey::Escape) {
-        Intent::Cancel
-    } else if matches!(mode, InteractionMode::Browsing)
-        && matches!(key.code, PhysicalKey::BackTab)
-        && (key.modifiers == Modifiers::default() || key.modifiers == Modifiers::SHIFT)
-    {
-        Intent::ChangePage(PageDirection::Previous)
-    } else {
-        match mode {
-            InteractionMode::Browsing if key.modifiers == Modifiers::default() => match key.code {
-                PhysicalKey::Up | PhysicalKey::Character('k') => Intent::MoveSelection(-1),
-                PhysicalKey::Down | PhysicalKey::Character('j') => Intent::MoveSelection(1),
-                PhysicalKey::Left | PhysicalKey::Character('h') => Intent::AdjustSelected(-1),
-                PhysicalKey::Right | PhysicalKey::Character('l') => Intent::AdjustSelected(1),
-                PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
-                PhysicalKey::Character('/') => Intent::OpenPalette,
-                PhysicalKey::Character('f') => {
-                    Intent::OpenAutomation(super::interaction::AutomationKind::Lfo)
-                }
-                PhysicalKey::Character('e') => {
-                    Intent::OpenAutomation(super::interaction::AutomationKind::Envelope)
-                }
-                PhysicalKey::Character('v') => Intent::ToggleMacro,
-                PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
-                PhysicalKey::Character(' ') => {
-                    Intent::ActivatePerformance(PerformanceKind::Sequence)
-                }
-                PhysicalKey::Character(character)
-                    if character.is_ascii_digit() || character == '.' || character == '-' =>
-                {
-                    Intent::BeginNumeric(character)
-                }
-                PhysicalKey::Character('q') => Intent::Quit,
-                PhysicalKey::Enter => match navigation {
-                    Navigation::Chords {
-                        selected,
-                        drill: ChordDrill::Progression { .. },
-                    } => Intent::EnterChordSlot(selected),
-                    Navigation::Chords {
-                        drill: ChordDrill::None,
-                        ..
-                    } => Intent::TouchSelected,
-                    _ => Intent::TouchSelected,
-                },
-                PhysicalKey::Character('a') => Intent::ToggleAuto,
-                PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
-                PhysicalKey::Character('t') => Intent::ToggleUnits,
-                PhysicalKey::Character('x') => Intent::RemoveAutomation,
-                PhysicalKey::Character('r') => Intent::ReseedAutomation,
-                _ => return InputMapping::Ignored,
-            },
-            InteractionMode::Numeric(_) => match key.code {
-                PhysicalKey::Enter => Intent::Confirm,
-                PhysicalKey::Backspace => Intent::Backspace,
-                PhysicalKey::Character(character)
-                    if character.is_ascii_digit() || character == '.' || character == '-' =>
-                {
-                    Intent::TypeCharacter(character)
-                }
-                _ => return InputMapping::Ignored,
-            },
-            InteractionMode::Palette(_)
-                if key.modifiers == Modifiers::default() || key.modifiers == Modifiers::SHIFT =>
-            {
-                match key.code {
-                    PhysicalKey::Enter => Intent::Confirm,
-                    PhysicalKey::Backspace => Intent::Backspace,
-                    PhysicalKey::Tab => Intent::PaletteAutocomplete,
-                    PhysicalKey::Up => Intent::MoveSelection(-1),
-                    PhysicalKey::Down => Intent::MoveSelection(1),
-                    PhysicalKey::Character(character) => Intent::TypeCharacter(character),
-                    _ => return InputMapping::Ignored,
-                }
+
+    let intent = match mode {
+        InteractionMode::Browsing => {
+            if unmodified {
+                browsing_binding(&key.code, navigation)
+            } else if shifted {
+                shifted_binding(&key.code)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
-            InteractionMode::Palette(_) if has_control => match key.code {
-                PhysicalKey::Character('p' | 'P') => Intent::MoveSelection(-1),
-                PhysicalKey::Character('n' | 'N') => Intent::MoveSelection(1),
-                PhysicalKey::Character('b' | 'B') => Intent::CommitPaletteAtBar,
-                _ => return InputMapping::Ignored,
-            },
-            InteractionMode::Automation(automation) if key.modifiers == Modifiers::default() => {
-                match key.code {
-                    PhysicalKey::Up | PhysicalKey::Character('k') => Intent::MoveSelection(-1),
-                    PhysicalKey::Down | PhysicalKey::Character('j') => Intent::MoveSelection(1),
-                    PhysicalKey::Left | PhysicalKey::Character('h') => Intent::AdjustSelected(-1),
-                    PhysicalKey::Right | PhysicalKey::Character('l') => Intent::AdjustSelected(1),
-                    PhysicalKey::Enter => return InputMapping::Ignored,
-                    PhysicalKey::Character('v') => Intent::ToggleMacro,
-                    PhysicalKey::Character('x') => Intent::RemoveAutomation,
-                    PhysicalKey::Character('r') => Intent::ReseedAutomation,
-                    PhysicalKey::Character('t') => Intent::ToggleUnits,
-                    PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
-                    PhysicalKey::Character('/') => Intent::OpenPalette,
-                    PhysicalKey::Character('q') => Intent::Quit,
-                    PhysicalKey::Character('a') => Intent::ToggleAuto,
-                    PhysicalKey::Character('f') => {
-                        Intent::OpenAutomation(super::interaction::AutomationKind::Lfo)
-                    }
-                    PhysicalKey::Character('e') => {
-                        Intent::OpenAutomation(super::interaction::AutomationKind::Envelope)
-                    }
-                    PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
-                    PhysicalKey::Character(character)
-                        if character.is_ascii_digit() || character == '.' || character == '-' =>
-                    {
-                        Intent::BeginNumeric(character)
-                    }
-                    _ => return InputMapping::Ignored,
-                }
+        }
+        InteractionMode::Automation(_) => {
+            if unmodified {
+                automation_binding(&key.code)
+            } else if shifted {
+                shifted_binding(&key.code)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
-            InteractionMode::Browsing | InteractionMode::Automation(_)
-                if key.modifiers == Modifiers::SHIFT =>
-            {
-                match key.code {
-                    PhysicalKey::Left | PhysicalKey::Character('H' | 'h') => Intent::ResetSelected,
-                    PhysicalKey::Character('M' | 'm') => Intent::ToggleMute { master: true },
-                    PhysicalKey::Character('T' | 't') => Intent::ToggleUnits,
-                    PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
-                    PhysicalKey::Character('R' | 'r') => Intent::ReseedAutomation,
-                    PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
-                    _ => return InputMapping::Ignored,
-                }
+        }
+        InteractionMode::Numeric(_) => numeric_binding(&key.code),
+        InteractionMode::Palette(_) => {
+            if unmodified || shifted {
+                palette_binding(&key.code)
+            } else if has_control {
+                palette_control_binding(&key.code)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
-            InteractionMode::Performance(performance) if key.modifiers == Modifiers::default() => {
-                if matches!(key.code, PhysicalKey::Character('p')) {
-                    Intent::ActivatePerformance(PerformanceKind::Deck)
-                } else if matches!(key.code, PhysicalKey::Character(' ')) {
-                    Intent::ActivatePerformance(PerformanceKind::Sequence)
-                } else if let Some(instrument) = performance_instrument(&key.code) {
-                    match phase {
-                        InputPhase::Release => Intent::ReleaseHeldSelector(instrument),
-                        InputPhase::Press
-                            if matches!(
-                                performance,
-                                PerformanceMode::Deck { .. }
-                                    | PerformanceMode::Sequence {
-                                        stage: SequenceStage::ChooseInstrument
-                                            | SequenceStage::Perform { .. },
-                                        ..
-                                    }
-                            ) =>
-                        {
-                            Intent::SelectPerformanceInstrument {
-                                instrument,
-                                hold: capabilities.supports_holds(),
-                            }
-                        }
-                        InputPhase::Repeat => return InputMapping::Ignored,
-                        _ => return InputMapping::Ignored,
-                    }
-                } else if let Some(action) = performance_action(&key.code) {
-                    match (performance, phase) {
-                        (
-                            PerformanceMode::Sequence {
-                                stage: SequenceStage::AwaitActionRelease { action: armed, .. },
-                                ..
-                            },
-                            InputPhase::Release,
-                        ) if action == *armed => Intent::FinishPerformanceSequence(action),
-                        (PerformanceMode::Deck { .. }, InputPhase::Press | InputPhase::Repeat)
-                        | (
-                            PerformanceMode::Sequence {
-                                stage: SequenceStage::Perform { .. },
-                                ..
-                            },
-                            InputPhase::Press,
-                        ) => Intent::ApplyPerformanceAction {
-                            action,
-                            release_available: capabilities.supports_holds(),
-                        },
-                        _ => return InputMapping::Ignored,
-                    }
-                } else {
-                    return InputMapping::Ignored;
-                }
+        }
+        InteractionMode::Performance(performance) => {
+            if unmodified {
+                performance_binding(performance, &key.code, *phase, capabilities)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
-            _ if key.modifiers != Modifiers::default() => {
-                return deferred_runtime("modified binding is not in the current kernel");
-            }
-            _ => return InputMapping::Ignored,
         }
     };
-    InputMapping::Action(SemanticAction {
-        phase: *phase,
-        intent,
+    intent.map_or(InputMapping::Ignored, |intent| semantic(*phase, intent))
+}
+
+const MODIFIED_BINDING_UNOWNED: &str = "modified binding is not in the current kernel";
+
+fn semantic(phase: InputPhase, intent: Intent) -> InputMapping {
+    InputMapping::Action(SemanticAction { phase, intent })
+}
+
+fn starts_numeric_entry(character: char) -> bool {
+    character.is_ascii_digit() || character == '.' || character == '-'
+}
+
+/// Unmodified bindings Browsing and Automation answer to identically.
+fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Up | PhysicalKey::Character('k') => Intent::MoveSelection(-1),
+        PhysicalKey::Down | PhysicalKey::Character('j') => Intent::MoveSelection(1),
+        PhysicalKey::Left | PhysicalKey::Character('h') => Intent::AdjustSelected(-1),
+        PhysicalKey::Right | PhysicalKey::Character('l') => Intent::AdjustSelected(1),
+        PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
+        PhysicalKey::Character('/') => Intent::OpenPalette,
+        PhysicalKey::Character('f') => Intent::OpenAutomation(AutomationKind::Lfo),
+        PhysicalKey::Character('e') => Intent::OpenAutomation(AutomationKind::Envelope),
+        PhysicalKey::Character('v') => Intent::ToggleMacro,
+        PhysicalKey::Character('q') => Intent::Quit,
+        PhysicalKey::Character('a') => Intent::ToggleAuto,
+        PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
+        PhysicalKey::Character('t') => Intent::ToggleUnits,
+        PhysicalKey::Character('x') => Intent::RemoveAutomation,
+        PhysicalKey::Character('r') => Intent::ReseedAutomation,
+        PhysicalKey::Character(character) if starts_numeric_entry(character) => {
+            Intent::BeginNumeric(character)
+        }
+        _ => return None,
     })
+}
+
+fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
+        PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Sequence),
+        PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
+        PhysicalKey::Enter => match navigation {
+            Navigation::Chords {
+                selected,
+                drill: ChordDrill::Progression { .. },
+            } => Intent::EnterChordSlot(selected),
+            _ => Intent::TouchSelected,
+        },
+        _ => return slider_binding(code),
+    })
+}
+
+fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
+    match *code {
+        // Enter stays inert while an automation editor owns the keyboard.
+        PhysicalKey::Enter => None,
+        _ => slider_binding(code),
+    }
+}
+
+fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Left | PhysicalKey::Character('H' | 'h') => Intent::ResetSelected,
+        PhysicalKey::Character('M' | 'm') => Intent::ToggleMute { master: true },
+        PhysicalKey::Character('T' | 't') => Intent::ToggleUnits,
+        PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
+        PhysicalKey::Character('R' | 'r') => Intent::ReseedAutomation,
+        PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
+        _ => return None,
+    })
+}
+
+fn numeric_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Enter => Intent::Confirm,
+        PhysicalKey::Backspace => Intent::Backspace,
+        PhysicalKey::Character(character) if starts_numeric_entry(character) => {
+            Intent::TypeCharacter(character)
+        }
+        _ => return None,
+    })
+}
+
+fn palette_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Enter => Intent::Confirm,
+        PhysicalKey::Backspace => Intent::Backspace,
+        PhysicalKey::Tab => Intent::PaletteAutocomplete,
+        PhysicalKey::Up => Intent::MoveSelection(-1),
+        PhysicalKey::Down => Intent::MoveSelection(1),
+        PhysicalKey::Character(character) => Intent::TypeCharacter(character),
+        _ => return None,
+    })
+}
+
+fn palette_control_binding(code: &PhysicalKey) -> Option<Intent> {
+    Some(match *code {
+        PhysicalKey::Character('p' | 'P') => Intent::MoveSelection(-1),
+        PhysicalKey::Character('n' | 'N') => Intent::MoveSelection(1),
+        PhysicalKey::Character('b' | 'B') => Intent::CommitPaletteAtBar,
+        _ => return None,
+    })
+}
+
+fn performance_binding(
+    performance: &PerformanceMode,
+    code: &PhysicalKey,
+    phase: InputPhase,
+    capabilities: TerminalCapabilities,
+) -> Option<Intent> {
+    match *code {
+        PhysicalKey::Character('p') => {
+            return Some(Intent::ActivatePerformance(PerformanceKind::Deck));
+        }
+        PhysicalKey::Character(' ') => {
+            return Some(Intent::ActivatePerformance(PerformanceKind::Sequence));
+        }
+        _ => {}
+    }
+    if let Some(instrument) = performance_instrument(code) {
+        return match phase {
+            InputPhase::Release => Some(Intent::ReleaseHeldSelector(instrument)),
+            InputPhase::Press
+                if matches!(
+                    performance,
+                    PerformanceMode::Deck { .. }
+                        | PerformanceMode::Sequence {
+                            stage: SequenceStage::ChooseInstrument | SequenceStage::Perform { .. },
+                            ..
+                        }
+                ) =>
+            {
+                Some(Intent::SelectPerformanceInstrument {
+                    instrument,
+                    hold: capabilities.supports_holds(),
+                })
+            }
+            _ => None,
+        };
+    }
+    let action = performance_action(code)?;
+    match (performance, phase) {
+        (
+            PerformanceMode::Sequence {
+                stage: SequenceStage::AwaitActionRelease { action: armed, .. },
+                ..
+            },
+            InputPhase::Release,
+        ) if action == *armed => Some(Intent::FinishPerformanceSequence(action)),
+        (PerformanceMode::Deck { .. }, InputPhase::Press | InputPhase::Repeat)
+        | (
+            PerformanceMode::Sequence {
+                stage: SequenceStage::Perform { .. },
+                ..
+            },
+            InputPhase::Press,
+        ) => Some(Intent::ApplyPerformanceAction {
+            action,
+            release_available: capabilities.supports_holds(),
+        }),
+        _ => None,
+    }
 }
 
 fn performance_instrument(key: &PhysicalKey) -> Option<PerformanceInstrument> {
@@ -935,37 +738,8 @@ fn normalize_key_code(code: KeyCode) -> PhysicalKey {
         KeyCode::Pause => PhysicalKey::Pause,
         KeyCode::Menu => PhysicalKey::Menu,
         KeyCode::KeypadBegin => PhysicalKey::KeypadBegin,
-        KeyCode::Media(media) => PhysicalKey::Media(match media {
-            MediaKeyCode::Play => MediaKey::Play,
-            MediaKeyCode::Pause => MediaKey::Pause,
-            MediaKeyCode::PlayPause => MediaKey::PlayPause,
-            MediaKeyCode::Reverse => MediaKey::Reverse,
-            MediaKeyCode::Stop => MediaKey::Stop,
-            MediaKeyCode::FastForward => MediaKey::FastForward,
-            MediaKeyCode::Rewind => MediaKey::Rewind,
-            MediaKeyCode::TrackNext => MediaKey::TrackNext,
-            MediaKeyCode::TrackPrevious => MediaKey::TrackPrevious,
-            MediaKeyCode::Record => MediaKey::Record,
-            MediaKeyCode::LowerVolume => MediaKey::LowerVolume,
-            MediaKeyCode::RaiseVolume => MediaKey::RaiseVolume,
-            MediaKeyCode::MuteVolume => MediaKey::MuteVolume,
-        }),
-        KeyCode::Modifier(modifier) => PhysicalKey::Modifier(match modifier {
-            ModifierKeyCode::LeftShift => ModifierKey::LeftShift,
-            ModifierKeyCode::LeftControl => ModifierKey::LeftControl,
-            ModifierKeyCode::LeftAlt => ModifierKey::LeftAlt,
-            ModifierKeyCode::LeftSuper => ModifierKey::LeftSuper,
-            ModifierKeyCode::LeftHyper => ModifierKey::LeftHyper,
-            ModifierKeyCode::LeftMeta => ModifierKey::LeftMeta,
-            ModifierKeyCode::RightShift => ModifierKey::RightShift,
-            ModifierKeyCode::RightControl => ModifierKey::RightControl,
-            ModifierKeyCode::RightAlt => ModifierKey::RightAlt,
-            ModifierKeyCode::RightSuper => ModifierKey::RightSuper,
-            ModifierKeyCode::RightHyper => ModifierKey::RightHyper,
-            ModifierKeyCode::RightMeta => ModifierKey::RightMeta,
-            ModifierKeyCode::IsoLevel3Shift => ModifierKey::IsoLevel3Shift,
-            ModifierKeyCode::IsoLevel5Shift => ModifierKey::IsoLevel5Shift,
-        }),
+        KeyCode::Media(media) => PhysicalKey::Media(MediaKey::from_crossterm(media)),
+        KeyCode::Modifier(modifier) => PhysicalKey::Modifier(ModifierKey::from_crossterm(modifier)),
     }
 }
 
@@ -1209,8 +983,182 @@ impl Scheduler {
     }
 }
 
+/// Test-only sanitized fixture recording and key-token codec. Lives beside
+/// the transport types it encodes; `replay` is its only consumer.
+#[cfg(test)]
+mod recording {
+    use std::fmt::Write as _;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// In-memory sanitized recorder for capturing a live normalized input stream.
+    /// Call `record` at the scheduler seam and persist `finish()` only when the
+    /// developer explicitly chooses to retain a regression fixture.
+    #[cfg(test)]
+    pub(crate) struct SanitizedTraceRecorder {
+        previous_at: Duration,
+        fixture: String,
+    }
+
+    #[cfg(test)]
+    impl SanitizedTraceRecorder {
+        pub(crate) fn new(started_at: Duration) -> Self {
+            Self {
+                previous_at: started_at,
+                fixture: "nooise-replay-v1\n".into(),
+            }
+        }
+
+        pub(crate) fn record(&mut self, now: Duration, event: &TransportEvent) {
+            let after_ms = self.advance(now);
+            match event {
+                TransportEvent::Key {
+                    key,
+                    phase,
+                    repeat_count,
+                } => {
+                    let token = encode_physical_key(&key.code);
+                    writeln!(
+                        self.fixture,
+                        "+{after_ms} key {token} {} mods:{} repeats:{repeat_count}",
+                        recorder_phase_token(*phase),
+                        key.modifiers.0
+                    )
+                    .expect("writing to String cannot fail");
+                }
+                TransportEvent::Resize { width, height } => {
+                    writeln!(self.fixture, "+{after_ms} resize {width}x{height}")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::Paste(_) => {
+                    writeln!(self.fixture, "+{after_ms} redacted paste")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::Mouse(_) => {
+                    writeln!(self.fixture, "+{after_ms} redacted mouse")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::FocusGained => {
+                    writeln!(self.fixture, "+{after_ms} focus-gained")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::FocusLost => {
+                    writeln!(self.fixture, "+{after_ms} focus-lost")
+                        .expect("writing to String cannot fail");
+                }
+                TransportEvent::Shutdown => {
+                    writeln!(self.fixture, "+{after_ms} shutdown")
+                        .expect("writing to String cannot fail");
+                }
+            }
+        }
+
+        pub(crate) fn record_tick(&mut self, now: Duration) {
+            let after_ms = self.advance(now);
+            writeln!(self.fixture, "+{after_ms} tick").expect("writing to String cannot fail");
+        }
+
+        pub(crate) fn record_idle(&mut self, now: Duration) {
+            let after_ms = self.advance(now);
+            writeln!(self.fixture, "+{after_ms} idle").expect("writing to String cannot fail");
+        }
+
+        pub(crate) fn finish(self) -> String {
+            self.fixture
+        }
+
+        fn advance(&mut self, now: Duration) -> u64 {
+            let after_ms = now
+                .saturating_sub(self.previous_at)
+                .as_millis()
+                .min(u128::from(u64::MAX)) as u64;
+            self.previous_at = now;
+            after_ms
+        }
+    }
+
+    #[cfg(test)]
+    fn recorder_phase_token(phase: InputPhase) -> &'static str {
+        match phase {
+            InputPhase::Press => "press",
+            InputPhase::Repeat => "repeat",
+            InputPhase::Release => "release",
+        }
+    }
+
+    /// Fixture tokens for the payload-free `PhysicalKey` identities. Parameterized
+    /// variants prefix their payload instead and are handled directly below.
+    #[cfg(test)]
+    const PHYSICAL_KEY_TOKENS: &[(PhysicalKey, &str)] = &[
+        (PhysicalKey::Escape, "escape"),
+        (PhysicalKey::Home, "home"),
+        (PhysicalKey::End, "end"),
+        (PhysicalKey::PageUp, "page-up"),
+        (PhysicalKey::PageDown, "page-down"),
+        (PhysicalKey::Enter, "enter"),
+        (PhysicalKey::Backspace, "backspace"),
+        (PhysicalKey::Left, "left"),
+        (PhysicalKey::Right, "right"),
+        (PhysicalKey::Up, "up"),
+        (PhysicalKey::Down, "down"),
+        (PhysicalKey::Tab, "tab"),
+        (PhysicalKey::BackTab, "backtab"),
+        (PhysicalKey::Delete, "delete"),
+        (PhysicalKey::Insert, "insert"),
+        (PhysicalKey::Null, "null"),
+        (PhysicalKey::CapsLock, "caps-lock"),
+        (PhysicalKey::ScrollLock, "scroll-lock"),
+        (PhysicalKey::NumLock, "num-lock"),
+        (PhysicalKey::PrintScreen, "print-screen"),
+        (PhysicalKey::Pause, "pause"),
+        (PhysicalKey::Menu, "menu"),
+        (PhysicalKey::KeypadBegin, "keypad-begin"),
+    ];
+
+    #[cfg(test)]
+    pub(crate) fn encode_physical_key(code: &PhysicalKey) -> String {
+        match code {
+            PhysicalKey::Character(character) => format!("char:{:06x}", u32::from(*character)),
+            PhysicalKey::Function(number) => format!("f:{number}"),
+            PhysicalKey::Media(key) => format!("media:{}", key.token()),
+            PhysicalKey::Modifier(key) => format!("modifier:{}", key.token()),
+            code => PHYSICAL_KEY_TOKENS
+                .iter()
+                .find(|(candidate, _)| candidate == code)
+                .map(|(_, token)| (*token).to_owned())
+                .expect("every payload-free PhysicalKey needs a PHYSICAL_KEY_TOKENS entry"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decode_physical_key(token: &str) -> Option<PhysicalKey> {
+        if let Some(scalar) = token.strip_prefix("char:") {
+            return char::from_u32(u32::from_str_radix(scalar, 16).ok()?)
+                .map(PhysicalKey::Character);
+        }
+        if let Some(number) = token.strip_prefix("f:") {
+            return number.parse().ok().map(PhysicalKey::Function);
+        }
+        if let Some(media) = token.strip_prefix("media:") {
+            return MediaKey::from_token(media).map(PhysicalKey::Media);
+        }
+        if let Some(modifier) = token.strip_prefix("modifier:") {
+            return ModifierKey::from_token(modifier).map(PhysicalKey::Modifier);
+        }
+        PHYSICAL_KEY_TOKENS
+            .iter()
+            .find(|(_, candidate)| *candidate == token)
+            .map(|(key, _)| key.clone())
+    }
+}
+
+#[cfg(test)]
+pub(crate) use recording::{SanitizedTraceRecorder, decode_physical_key, encode_physical_key};
+
 #[cfg(test)]
 mod tests {
+
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -1577,7 +1525,7 @@ mod tests {
                 TerminalCapabilities::default()
             ),
             InputMapping::Action(SemanticAction {
-                intent: Intent::OpenAutomation(super::super::interaction::AutomationKind::Lfo),
+                intent: Intent::OpenAutomation(super::AutomationKind::Lfo),
                 ..
             })
         ));
@@ -1712,14 +1660,8 @@ mod tests {
         }
 
         for (code, expected) in [
-            (
-                'f',
-                Intent::OpenAutomation(super::super::interaction::AutomationKind::Lfo),
-            ),
-            (
-                'e',
-                Intent::OpenAutomation(super::super::interaction::AutomationKind::Envelope),
-            ),
+            ('f', Intent::OpenAutomation(super::AutomationKind::Lfo)),
+            ('e', Intent::OpenAutomation(super::AutomationKind::Envelope)),
             ('v', Intent::ToggleMacro),
             ('a', Intent::ToggleAuto),
             ('m', Intent::ToggleMute { master: false }),
