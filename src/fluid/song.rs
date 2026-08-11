@@ -17,9 +17,9 @@ use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
-    EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MACRO_COUNT, MAX_ENV_ATTACK_BEATS,
-    MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS,
-    MIN_LFO_CYCLE_BEATS, MacroRoute, Step, all_specs, spec_by_id,
+    EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
+    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, Step, all_specs,
+    spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -77,7 +77,6 @@ pub(crate) enum SongCodeError {
     InvalidMagic,
     UnsupportedVersion(u8),
     Truncated,
-    InvalidUtf8,
     TooLarge,
     /// A stored value carried a tag this build has no encoding for.
     InvalidValueTag(u8),
@@ -102,7 +101,6 @@ impl fmt::Display for SongCodeError {
                  (this build writes and reads version {CONTAINER_VERSION})"
             ),
             Self::Truncated => write!(f, "song code is truncated"),
-            Self::InvalidUtf8 => write!(f, "song code contains invalid text"),
             Self::TooLarge => write!(f, "song code payload is too large"),
             Self::InvalidValueTag(tag) => write!(f, "song code has unknown value tag {tag}"),
             Self::RetiredControl(id) => write!(
@@ -484,15 +482,8 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
         }
     }
 
-    let macros: Vec<_> = automation
-        .macro_routes()
-        .filter(|(_, route)| !route.is_neutral())
-        .collect();
-    write_u16(macros.len(), out)?;
-    for (address, route) in macros {
-        write_control_index(address.id(), out)?;
-        write_macro_amounts(route, out);
-    }
+    // Reserved legacy macro-route section. Always empty in current codes.
+    write_u16(0, out)?;
 
     let envelopes: Vec<_> = automation
         .envelopes()
@@ -509,31 +500,10 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
         out.extend_from_slice(&param.to_le_bytes());
     }
 
-    let field_macros: Vec<_> = automation
-        .field_macros()
-        .filter(|(_, route)| !route.is_neutral())
-        .collect();
-    write_u16(field_macros.len(), out)?;
-    for (key, route) in field_macros {
-        write_str(key, out)?;
-        write_macro_amounts(route, out);
-    }
+    // Reserved legacy field-macro section. Always empty in current codes.
+    write_u16(0, out)?;
 
     Ok(())
-}
-
-fn write_macro_amounts(route: &MacroRoute, out: &mut Vec<u8>) {
-    for amount in route.amounts {
-        out.extend_from_slice(&bipolar_to_u16(amount).to_le_bytes());
-    }
-}
-
-fn read_macro_amounts(reader: &mut Reader) -> Result<MacroRoute, SongCodeError> {
-    let mut amounts = [0.0; MACRO_COUNT];
-    for amount in &mut amounts {
-        *amount = u16_to_bipolar(reader.u16()?);
-    }
-    Ok(MacroRoute { amounts })
 }
 
 fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
@@ -577,13 +547,8 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
     }
 
     let macro_count = reader.u16()?;
-    for _ in 0..macro_count {
-        let index = reader.u16()?;
-        let route = read_macro_amounts(&mut reader)?;
-        reject_retired_control(index)?;
-        if let Some(spec) = control_at(index) {
-            automation.set_macro_route(ControlAddress::new(spec.id), route);
-        }
+    if macro_count > 0 {
+        return Err(SongCodeError::RetiredControl("macro route"));
     }
 
     let envelope_count = reader.u16()?;
@@ -617,24 +582,19 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
     }
 
     let field_macro_count = reader.u16()?;
-    for _ in 0..field_macro_count {
-        let key = reader.string()?;
-        let route = read_macro_amounts(&mut reader)?;
-        automation.set_field_macro(key.to_string(), route);
+    if field_macro_count > 0 {
+        return Err(SongCodeError::RetiredControl("macro route"));
     }
 
     Ok(())
 }
 
-/// A route, macro assignment, or envelope worth persisting. Mirrors the
+/// A route or envelope worth persisting. Mirrors the
 /// pruning `AutomationState::close_editor` already applies in the UI, so a
 /// route the editor would delete on close never round-trips through a song
 /// code either.
 fn automation_has_content(automation: &AutomationState) -> bool {
     automation.routes().next().is_some()
-        || automation
-            .macro_routes()
-            .any(|(_, route)| !route.is_neutral())
         || automation
             .envelopes()
             .any(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
@@ -722,14 +682,6 @@ pub(crate) fn write_record(
     Ok(())
 }
 
-fn write_str(value: &str, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
-    let bytes = value.as_bytes();
-    let len = u8::try_from(bytes.len()).map_err(|_| SongCodeError::TooLarge)?;
-    out.push(len);
-    out.extend_from_slice(bytes);
-    Ok(())
-}
-
 fn write_u16(value: usize, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     let value = u16::try_from(value).map_err(|_| SongCodeError::TooLarge)?;
     out.extend_from_slice(&value.to_le_bytes());
@@ -795,12 +747,6 @@ impl<'a> Reader<'a> {
 
     fn f32(&mut self) -> Result<f32, SongCodeError> {
         Ok(f32::from_le_bytes(self.read_array()?))
-    }
-
-    fn string(&mut self) -> Result<&'a str, SongCodeError> {
-        let len = self.u8()? as usize;
-        let bytes = self.bytes(len)?;
-        std::str::from_utf8(bytes).map_err(|_| SongCodeError::InvalidUtf8)
     }
 }
 

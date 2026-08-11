@@ -238,7 +238,7 @@ fn draw_tabs(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
 
 /// The control list: one row per control, each followed by whatever
 /// modulation it carries — an open editor's fields, the live lanes, a closed
-/// macro chip. Performance takes the same area over entirely.
+/// modulation chip. Performance takes the same area over entirely.
 fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
     let view = frame.view;
     if let ModeSurface::Performance(performance) = &view.mode {
@@ -258,13 +258,11 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         let address = ControlAddress::new(item.id);
         let route = automation.route(address);
         let envelope = automation.envelope(address);
-        let macro_route = automation.macro_route(address);
         let editor_here =
             frame.automation.and_then(AutomationSurface::active_address) == Some(address);
         let open_here = |kind: ModKind| match (frame.automation, kind) {
             (Some(AutomationSurface::Lfo { address: open, .. }), ModKind::Lfo)
-            | (Some(AutomationSurface::Envelope { address: open, .. }), ModKind::Envelope)
-            | (Some(AutomationSurface::Macro { address: open, .. }), ModKind::Macro) => {
+            | (Some(AutomationSurface::Envelope { address: open, .. }), ModKind::Envelope) => {
                 *open == address
             }
             _ => false,
@@ -363,26 +361,6 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 env_open_here,
             ));
         }
-        if let Some(route) = macro_route {
-            if open_here(ModKind::Macro) {
-                for (fi, field) in MacroField::ALL.iter().enumerate() {
-                    rows.push(field_line(
-                        &field.label(),
-                        &Dial::new(
-                            route.field_value(*field),
-                            MacroField::SCALE,
-                            route.field_display(*field),
-                        ),
-                        frame.lfo_selected == fi + 1,
-                        &frame.numeric,
-                        frame.bar_w,
-                        MACRO_PALETTE,
-                    ));
-                }
-            } else {
-                rows.push(macro_chip_line(route));
-            }
-        }
         if i + 1 < items.len() {
             rows.push(Line::from(""));
         }
@@ -390,8 +368,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
     f.render_widget(Paragraph::new(rows), area);
 }
 
-/// The rows of an open LFO editor: its own fields, any macro stacked on one
-/// of them, and the inline step editor a Steps shape adds.
+/// The rows of an open LFO editor and its inline step editor.
 fn push_lfo_editor_rows(
     rows: &mut Vec<Line<'static>>,
     lfo_state: &AutomationState,
@@ -423,35 +400,6 @@ fn push_lfo_editor_rows(
                     &frame.numeric,
                     frame.bar_w,
                     LFO_PALETTE,
-                ));
-                // A macro stacked on this field but not currently expanded
-                // shows as a closed chip, same as a regular control's macro
-                // assignment.
-                if let Some(key_str) = field.macro_key() {
-                    let key = unit_key(id, Some(key_str));
-                    if let Some(field_route) = lfo_state.field_macro(&key)
-                        && !field_route.is_neutral()
-                    {
-                        rows.push(macro_chip_line(field_route));
-                    }
-                }
-            }
-            LfoSubRow::FieldMacro(field, macro_field) => {
-                let key = unit_key(id, field.macro_key());
-                let Some(field_route) = lfo_state.field_macro(&key) else {
-                    continue;
-                };
-                rows.push(field_line(
-                    &format!("· {}", macro_field.label()),
-                    &Dial::new(
-                        field_route.field_value(macro_field),
-                        MacroField::SCALE,
-                        field_route.field_display(macro_field),
-                    ),
-                    active,
-                    &frame.numeric,
-                    frame.bar_w,
-                    MACRO_PALETTE,
                 ));
             }
             LfoSubRow::Step(target) => {
@@ -490,13 +438,7 @@ fn slider_markers(
     let spec = address.spec().contextual(controls);
     let base = item.value;
     let ratio_of = |value: f32| spec.ratio(value, controls);
-    let macro_route = automation.macro_route(address);
-    let macro_mod = live_macro_contribution(automation, controls, address, mod_ctx);
-    // The LFO route folded with any macro stacked onto its own fields
-    // (amount/interval/offset), so markers show what the engine hears.
-    let effective_lfo = automation
-        .route(address)
-        .map(|r| live_effective_lfo_route(automation, controls, address, r, mod_ctx));
+    let effective_lfo = automation.route(address).copied();
     // Ghosts only for sources that actually contribute.
     let lfo = effective_lfo
         .as_ref()
@@ -504,8 +446,8 @@ fn slider_markers(
     let envelope = automation
         .envelope(address)
         .filter(|r| r.amount.abs() > f32::EPSILON);
-    let single = |l: Option<&LfoRoute>, e: Option<&EnvelopeRoute>, m: Option<f32>| {
-        ratio_of(modulated_control_value_full(&spec, l, e, m, base, mod_ctx))
+    let single = |l: Option<&LfoRoute>, e: Option<&EnvelopeRoute>| {
+        ratio_of(modulated_control_value_full(&spec, l, e, base, mod_ctx))
     };
     // While an editor is open on this control, faintly shade the full reach of
     // every active source (its full throw, not just the live instant) so
@@ -525,22 +467,15 @@ fn slider_markers(
             lo = lo.min(base + swing.min(0.0));
             hi = hi.max(base + swing.max(0.0));
         }
-        if let Some(r) = macro_route {
-            let (swing_lo, swing_hi) = r.swing(mod_range);
-            lo = lo.min(base + swing_lo);
-            hi = hi.max(base + swing_hi);
-        }
         (
             ratio_of(lo.clamp(spec.min, spec.max)),
             ratio_of(hi.clamp(spec.min, spec.max)),
         )
     });
     SliderMarkers {
-        effective: (lfo.is_some() || envelope.is_some() || macro_mod.is_some())
-            .then(|| single(lfo, envelope, macro_mod)),
-        lfo: lfo.map(|r| single(Some(r), None, None)),
-        envelope: envelope.map(|r| single(None, Some(r), None)),
-        macro_: macro_mod.map(|combined| single(None, None, Some(combined))),
+        effective: (lfo.is_some() || envelope.is_some()).then(|| single(lfo, envelope)),
+        lfo: lfo.map(|r| single(Some(r), None)),
+        envelope: envelope.map(|r| single(None, Some(r))),
         shadow,
     }
 }
@@ -858,19 +793,6 @@ pub(crate) const ENV_PALETTE: FieldPalette = FieldPalette {
     idle: Color::Rgb(95, 195, 140),
 };
 
-pub(crate) const MACRO_PALETTE: FieldPalette = FieldPalette {
-    active: Color::Rgb(255, 200, 120),
-    idle: Color::Rgb(210, 160, 90),
-};
-
-/// Compact one-line reminder of a closed macro assignment under its control.
-fn macro_chip_line(route: &MacroRoute) -> Line<'static> {
-    Line::from(Span::styled(
-        format!("    {:<15} ⇒ {}", "", route.summary()),
-        Style::default().fg(MACRO_PALETTE.idle),
-    ))
-}
-
 /// Shared numeric-entry cursor: renders the in-progress typed value with a
 /// blinking cursor when this row is the active numeric-entry target.
 fn numeric_cursor(numeric: &NumericDisplay<'_>, active: bool) -> Option<String> {
@@ -1026,13 +948,12 @@ pub(crate) fn env_lane_line(
 /// Live marker positions on a slider, all as 0..1 bar ratios. `effective` is
 /// the summed value the engine plays; the per-source entries are base plus
 /// that source alone, drawn as dim ghost diamonds so a diverging cursor is
-/// explained at a glance (pink = LFO, green = envelope, amber = macro).
+/// explained at a glance (pink = LFO, green = envelope).
 #[derive(Default, Clone, Copy)]
 pub(crate) struct SliderMarkers {
     pub(crate) effective: Option<f32>,
     pub(crate) lfo: Option<f32>,
     pub(crate) envelope: Option<f32>,
-    pub(crate) macro_: Option<f32>,
     /// Faint reach band (lo, hi ratios) showing the full throw of every
     /// active source while its editor is open — a preview of how far the
     /// effective value could swing, not just where it sits this instant.
@@ -1060,7 +981,6 @@ fn slider_spans(
     let ghosts = [
         (cell(markers.lfo), LFO_PALETTE.idle),
         (cell(markers.envelope), ENV_PALETTE.idle),
-        (cell(markers.macro_), MACRO_PALETTE.idle),
     ];
     let shadow_range = markers.shadow.map(|(lo, hi)| {
         let lo = cell(Some(lo)).unwrap_or(0);

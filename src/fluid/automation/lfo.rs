@@ -209,19 +209,6 @@ impl LfoField {
             .find(|spec| spec.field == self)
             .expect("every continuous LFO field has a spec")
     }
-
-    /// Stable key qualifier for a field a macro can stack onto (see
-    /// `AutomationState::field_macros`); None for Shape, which is discrete.
-    /// Only meaningful on regular controls — a macro slider's own LFO never
-    /// takes a stacked macro (no macro chasing itself).
-    pub(crate) fn macro_key(self) -> Option<&'static str> {
-        match self {
-            Self::Amount => Some("lfo.amount"),
-            Self::Interval => Some("lfo.interval"),
-            Self::Offset => Some("lfo.offset"),
-            Self::Shape => None,
-        }
-    }
 }
 
 /// One editable target inside a `Steps` shape's inline submenu: the sequence

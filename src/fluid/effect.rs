@@ -569,7 +569,6 @@ impl EffectExecutor {
             | InteractionEffect::ToggleAuto
             | InteractionEffect::ToggleUnits
             | InteractionEffect::ToggleMute { .. }
-            | InteractionEffect::ToggleMacro
             | InteractionEffect::RemoveAutomation
             | InteractionEffect::ReseedAutomation
             | InteractionEffect::CloseAutomationDepth
@@ -654,7 +653,6 @@ impl EffectExecutor {
                 let kind = match kind {
                     super::interaction::AutomationKind::Lfo => ModKind::Lfo,
                     super::interaction::AutomationKind::Envelope => ModKind::Envelope,
-                    super::interaction::AutomationKind::Macro => ModKind::Macro,
                 };
                 let mut selected = context.automation_selected;
                 open_modulator_effect_for_id(self, id, kind, &mut selected);
@@ -688,22 +686,6 @@ impl EffectExecutor {
             InteractionEffect::ToggleMute { master } => {
                 self.toggle_mute(if master { Tab::Master } else { context.tab }, context.mute);
                 Ok(self.published())
-            }
-            InteractionEffect::ToggleMacro => {
-                let automation = self.session.load().automation.clone();
-                let position = toggle_macro_effect(
-                    self,
-                    &automation,
-                    context.selected_control,
-                    context.automation_selected,
-                );
-                Ok(position.map_or_else(
-                    || self.published(),
-                    |(depth, selected)| EffectAcknowledgement::AutomationPosition {
-                        depth,
-                        selected,
-                    },
-                ))
             }
             InteractionEffect::RemoveAutomation => self.with_automation(|executor, automation| {
                 remove_automation_effect(
@@ -922,15 +904,6 @@ mod tests {
         executor.toggle_mute(Tab::Master, &mut mute);
         assert_eq!(executor.session().load().controls.master.level, 0.8);
         assert_eq!(executor.session().load().controls.bass.level, 0.0);
-    }
-
-    #[test]
-    fn toggle_mute_on_macros_tab_is_a_no_op() {
-        let mut executor = executor_with(FluidControls::default());
-        let mut mute: MuteState = [None; 9];
-
-        executor.toggle_mute(Tab::Macros, &mut mute);
-        assert!(mute[Tab::Macros as usize].is_none());
     }
 
     /// Muting used to stand auto mode down, because `edit_session` exited auto

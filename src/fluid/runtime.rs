@@ -510,7 +510,6 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('/') => Intent::OpenPalette,
         PhysicalKey::Character('f') => Intent::OpenAutomation(AutomationKind::Lfo),
         PhysicalKey::Character('e') => Intent::OpenAutomation(AutomationKind::Envelope),
-        PhysicalKey::Character('v') => Intent::ToggleMacro,
         PhysicalKey::Character('q') => Intent::Quit,
         PhysicalKey::Character('a') => Intent::ToggleAuto,
         PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
@@ -1714,7 +1713,6 @@ mod tests {
         for (code, expected) in [
             ('f', Intent::OpenAutomation(super::AutomationKind::Lfo)),
             ('e', Intent::OpenAutomation(super::AutomationKind::Envelope)),
-            ('v', Intent::ToggleMacro),
             ('a', Intent::ToggleAuto),
             ('m', Intent::ToggleMute { master: false }),
             ('t', Intent::ToggleUnits),

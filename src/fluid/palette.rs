@@ -315,7 +315,7 @@ fn module_palette_entries(tab: Tab, slot: usize, catalog_index: usize) -> Vec<Pa
 /// whatever the MRU holds. Matches the id namespace (`bass.`) and the tab
 /// name (`Bass`) alike, since `Tab::Chords` is spelled `Pads` but owns
 /// `pad.*`. Returns the tab's discriminant so ambiguous prefixes (`m` hits
-/// both Macros and Master) stay deterministically ordered.
+/// both Arp and Master) stay deterministically ordered.
 ///
 /// The boost falls away on its own once the query grows past the namespace
 /// (`bass.d` is no longer a prefix of `bass`), handing ranking back to the

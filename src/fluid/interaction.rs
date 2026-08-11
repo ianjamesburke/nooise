@@ -49,7 +49,6 @@ pub(crate) enum Page {
     Tonal,
     Clap,
     Arp,
-    Macros,
     Master,
 }
 
@@ -85,7 +84,7 @@ struct Layer {
 /// One row per layer in `Page`/`Tab` discriminant order (test-enforced), so
 /// page order, page↔tab translation, and the navigation each page opens all
 /// index this single table instead of restating the layer list.
-const LAYERS: [Layer; 9] = [
+const LAYERS: [Layer; 8] = [
     Layer {
         page: Page::Chords,
         tab: Tab::Chords,
@@ -122,11 +121,6 @@ const LAYERS: [Layer; 9] = [
         navigation: LayerNavigation::Standard(StandardPage::Arp),
     },
     Layer {
-        page: Page::Macros,
-        tab: Tab::Macros,
-        navigation: LayerNavigation::Standard(StandardPage::Macros),
-    },
-    Layer {
         page: Page::Master,
         tab: Tab::Master,
         navigation: LayerNavigation::Master,
@@ -154,7 +148,6 @@ pub(crate) enum StandardPage {
     Tonal,
     Clap,
     Arp,
-    Macros,
 }
 
 impl StandardPage {
@@ -302,21 +295,18 @@ pub(crate) struct PaletteStagedEdit {
 pub(crate) enum AutomationKind {
     Lfo,
     Envelope,
-    Macro,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum LfoDepth {
     #[default]
     Editor,
-    NestedField,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AutomationMode {
     Lfo { depth: LfoDepth, selected: usize },
     Envelope { selected: usize },
-    Macro { selected: usize },
 }
 
 impl AutomationMode {
@@ -327,7 +317,6 @@ impl AutomationMode {
                 selected: 1,
             },
             AutomationKind::Envelope => Self::Envelope { selected: 1 },
-            AutomationKind::Macro => Self::Macro { selected: 1 },
         }
     }
 
@@ -335,23 +324,18 @@ impl AutomationMode {
         match self {
             Self::Lfo { .. } => AutomationKind::Lfo,
             Self::Envelope { .. } => AutomationKind::Envelope,
-            Self::Macro { .. } => AutomationKind::Macro,
         }
     }
 
     fn selected_mut(&mut self) -> &mut usize {
         match self {
-            Self::Lfo { selected, .. } | Self::Envelope { selected } | Self::Macro { selected } => {
-                selected
-            }
+            Self::Lfo { selected, .. } | Self::Envelope { selected } => selected,
         }
     }
 
     pub(crate) fn selected(self) -> usize {
         match self {
-            Self::Lfo { selected, .. } | Self::Envelope { selected } | Self::Macro { selected } => {
-                selected
-            }
+            Self::Lfo { selected, .. } | Self::Envelope { selected } => selected,
         }
     }
 }
@@ -574,7 +558,6 @@ pub(crate) enum Intent {
     ToggleMute {
         master: bool,
     },
-    ToggleMacro,
     RemoveAutomation,
     ReseedAutomation,
     TouchSelected,
@@ -616,7 +599,6 @@ impl Intent {
             | Self::ToggleAuto
             | Self::ToggleUnits
             | Self::ToggleMute { .. }
-            | Self::ToggleMacro
             | Self::RemoveAutomation
             | Self::ReseedAutomation
             | Self::TouchSelected
@@ -661,7 +643,6 @@ impl Intent {
             | Self::ToggleAuto
             | Self::ToggleUnits
             | Self::ToggleMute { .. }
-            | Self::ToggleMacro
             | Self::RemoveAutomation
             | Self::ReseedAutomation
             | Self::TouchSelected
@@ -719,7 +700,6 @@ pub(crate) enum InteractionEffect {
     ToggleMute {
         master: bool,
     },
-    ToggleMacro,
     RemoveAutomation,
     ReseedAutomation,
     CloseAutomationDepth,
@@ -774,7 +754,7 @@ impl InteractionModel {
                     effects: Vec::new(),
                 }
             }
-            AutomationMode::Envelope { selected } | AutomationMode::Macro { selected } => {
+            AutomationMode::Envelope { selected } => {
                 if delta.is_negative() && *selected <= 1 {
                     self.mode = InteractionMode::Browsing;
                     Transition {
@@ -991,12 +971,6 @@ fn update_browsing(
         Intent::ToggleMute { master } => {
             effects.push(InteractionEffect::ToggleMute { master });
         }
-        Intent::ToggleMacro => {
-            *next_mode = Some(InteractionMode::Automation(AutomationMode::new(
-                AutomationKind::Macro,
-            )));
-            effects.push(InteractionEffect::ToggleMacro);
-        }
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
         Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
@@ -1153,7 +1127,7 @@ fn update_automation(
             if matches!(
                 automation,
                 AutomationMode::Lfo {
-                    depth: LfoDepth::NestedField,
+                    depth: LfoDepth::Editor,
                     ..
                 }
             ) =>
@@ -1171,7 +1145,7 @@ fn update_automation(
         Intent::OpenAutomationField => {
             if matches!(automation, AutomationMode::Lfo { .. }) {
                 *automation = AutomationMode::Lfo {
-                    depth: LfoDepth::NestedField,
+                    depth: LfoDepth::Editor,
                     selected: 0,
                 };
             }
@@ -1209,25 +1183,6 @@ fn update_automation(
         Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
         Intent::ToggleMute { master } => {
             effects.push(InteractionEffect::ToggleMute { master });
-        }
-        Intent::ToggleMacro => {
-            match automation {
-                AutomationMode::Lfo { depth, selected: _ } => {
-                    *depth = match depth {
-                        LfoDepth::Editor => LfoDepth::NestedField,
-                        LfoDepth::NestedField => LfoDepth::Editor,
-                    };
-                }
-                AutomationMode::Envelope { .. } => {
-                    *next_mode = Some(InteractionMode::Automation(AutomationMode::new(
-                        AutomationKind::Macro,
-                    )));
-                }
-                AutomationMode::Macro { .. } => {
-                    *next_mode = Some(InteractionMode::Browsing);
-                }
-            }
-            effects.push(InteractionEffect::ToggleMacro);
         }
         Intent::RemoveAutomation => {
             *next_mode = Some(InteractionMode::Browsing);
@@ -1507,7 +1462,6 @@ mod tests {
             StandardPage::Tonal,
             StandardPage::Clap,
             StandardPage::Arp,
-            StandardPage::Macros,
         ] {
             assert_eq!(
                 Navigation::for_page(page.page()),
@@ -1533,13 +1487,6 @@ mod tests {
             (
                 InteractionMode::Automation(AutomationMode::Lfo {
                     depth: LfoDepth::Editor,
-                    selected: 2,
-                }),
-                InteractionMode::Browsing,
-            ),
-            (
-                InteractionMode::Automation(AutomationMode::Lfo {
-                    depth: LfoDepth::NestedField,
                     selected: 2,
                 }),
                 InteractionMode::Automation(AutomationMode::Lfo {
@@ -1899,10 +1846,6 @@ mod tests {
                 Intent::OpenAutomation(AutomationKind::Lfo),
             ),
             (
-                InteractionMode::Automation(AutomationMode::Macro { selected: 0 }),
-                Intent::ActivatePerformance(PerformanceKind::Deck),
-            ),
-            (
                 InteractionMode::Performance(PerformanceMode::Sequence {
                     stage: SequenceStage::ChooseInstrument,
                     held_selector: None,
@@ -2173,7 +2116,7 @@ mod tests {
     #[test]
     fn identical_inputs_are_deterministic() {
         let model = InteractionModel::default();
-        let action = SemanticAction::press(Intent::OpenAutomation(AutomationKind::Macro));
+        let action = SemanticAction::press(Intent::OpenAutomation(AutomationKind::Lfo));
         assert_eq!(model.clone().update(action), model.update(action),);
     }
 }

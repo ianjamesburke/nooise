@@ -194,7 +194,7 @@ impl MorphState {
     }
 
     /// Build a morph for a live toggle at `start_beat`: endpoint 0 is the
-    /// caller's current controls and automation (LFO/envelope/macro routes),
+    /// caller's current controls and automation (LFO/envelope routes),
     /// so nothing changes instantly — the morph just starts moving from where
     /// it already is, taking whatever modulators are live along for the ride
     /// instead of leaving them running unmodified forever. It heads to the
@@ -314,7 +314,7 @@ impl MorphState {
     }
 
     /// The morphed `AutomationState` at `beat`: the `AutomationState`
-    /// counterpart to `controls_at`. Every LFO/envelope/macro route snaps its
+    /// counterpart to `controls_at`. Every LFO/envelope route snaps its
     /// non-level fields together at the single transition downbeat (no
     /// per-field staggering, unlike `controls_at`'s grid params) while its
     /// level field glides continuously — see `AutomationState::morph` for the
@@ -383,7 +383,7 @@ impl AutoControls {
 
     /// Flip auto mode. Turning on builds a morph anchored at `beat` starting
     /// from `current`/`current_automation`, so nothing jumps — any live
-    /// LFO/envelope/macro routes ride along with the morph instead of being
+    /// LFO/envelope routes ride along with the morph instead of being
     /// left behind; turning off just calls `exit`.
     pub(crate) fn toggle(
         &self,

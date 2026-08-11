@@ -420,7 +420,7 @@ impl Default for LayerModules {
             arp: with_preset("room", 0.0),
             master: {
                 let mut slots = empty;
-                slots[0] = preset_slot("drive", 0.2);
+                slots[0] = preset_slot("drive", 0.1);
                 slots[1] = preset_slot("compression", 0.2);
                 slots
             },
@@ -440,7 +440,6 @@ impl LayerModules {
             super::Tab::Clap => Some(&self.clap),
             super::Tab::Arp => Some(&self.arp),
             super::Tab::Master => Some(&self.master),
-            super::Tab::Macros => None,
         }
     }
 
@@ -457,15 +456,14 @@ impl LayerModules {
             super::Tab::Clap => Some(&mut self.clap),
             super::Tab::Arp => Some(&mut self.arp),
             super::Tab::Master => Some(&mut self.master),
-            super::Tab::Macros => None,
         }
     }
 }
 
 /// Whether this tab owns a module chain at all. Pure: the palette's entry
 /// list depends on it and must not read live controls.
-pub(crate) fn tab_has_module_chain(tab: super::Tab) -> bool {
-    tab != super::Tab::Macros
+pub(crate) fn tab_has_module_chain(_tab: super::Tab) -> bool {
+    true
 }
 
 /// Whether a catalog entry has a real processor on this layer. Alcohol and
@@ -473,10 +471,7 @@ pub(crate) fn tab_has_module_chain(tab: super::Tab) -> bool {
 /// palette until they have DSP; an addable row must never be inert.
 pub(crate) fn module_available_on(kind: ModuleKind, tab: super::Tab) -> bool {
     match kind.id {
-        "swing" => !matches!(
-            tab,
-            super::Tab::Chords | super::Tab::Macros | super::Tab::Master
-        ),
+        "swing" => !matches!(tab, super::Tab::Chords | super::Tab::Master),
         "drive" | "room" | "delay" | "compression" => tab_has_module_chain(tab),
         _ => false,
     }
@@ -492,7 +487,6 @@ pub(crate) fn module_layer_index(tab: super::Tab) -> Option<usize> {
         super::Tab::Clap => Some(5),
         super::Tab::Arp => Some(6),
         super::Tab::Master => Some(7),
-        super::Tab::Macros => None,
     }
 }
 

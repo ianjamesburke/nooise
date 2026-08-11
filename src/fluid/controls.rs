@@ -285,16 +285,6 @@ impl Default for ArpControls {
     }
 }
 
-pub(crate) const MACRO_COUNT: usize = 4;
-
-/// The macro sliders: bare 0..1 values with no direct audio path. They only
-/// matter through macro routes, which scale a route's amount into its target
-/// control's range.
-#[derive(Clone, Default)]
-pub(crate) struct MacroControls {
-    pub(crate) values: [f32; MACRO_COUNT],
-}
-
 #[derive(Clone, Default)]
 pub(crate) struct FluidControls {
     pub(crate) master: MasterControls,
@@ -305,7 +295,6 @@ pub(crate) struct FluidControls {
     pub(crate) clap: ClapControls,
     pub(crate) bass: BassControls,
     pub(crate) arp: ArpControls,
-    pub(crate) macros: MacroControls,
     /// Per-layer module chain. Every slot defaults to empty, so this adds no
     /// audible state and prunes entirely out of a song code.
     pub(crate) modules: LayerModules,

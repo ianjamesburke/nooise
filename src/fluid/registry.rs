@@ -13,14 +13,13 @@ pub(crate) enum Tab {
     Tonal = 4,
     Clap = 5,
     Arp = 6,
-    Macros = 7,
-    Master = 8,
+    Master = 7,
 }
 
 /// One row per tab: (variant, display name, mute-target level id, control
 /// table) in discriminant order. `Tab::all`/`name`/`level_id`/`tab_specs`
 /// all derive from indexing this single table by `self as usize`.
-const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); 9] = [
+const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); 8] = [
     (Tab::Chords, "Pads", Some("pad.level"), CHORDS_CONTROLS),
     (Tab::Perc, "Perc", Some("perc.level"), PERC_CONTROLS),
     (Tab::Bass, "Bass", Some("bass.level"), BASS_CONTROLS),
@@ -28,12 +27,11 @@ const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); 9] = [
     (Tab::Tonal, "Tonal", Some("tonal.level"), TONAL_CONTROLS),
     (Tab::Clap, "Clap", Some("clap.level"), CLAP_CONTROLS),
     (Tab::Arp, "Arp", Some("arp.gain"), ARP_CONTROLS),
-    (Tab::Macros, "Macros", None, MACRO_CONTROLS),
     (Tab::Master, "Master", Some("master.level"), MASTER_CONTROLS),
 ];
 
 impl Tab {
-    pub(crate) fn all() -> [Tab; 9] {
+    pub(crate) fn all() -> [Tab; 8] {
         TAB_META.map(|(tab, _, _, _)| tab)
     }
 
@@ -48,8 +46,8 @@ impl Tab {
     }
 
     /// Stable id of this tab's primary level/gain control, or `None` for a
-    /// tab with no single level to mute (`Macros`). The one place that maps
-    /// a tab to its mute target, so `m`/`M` never need a per-voice match arm.
+    /// The one place that maps a tab to its mute target, so `m`/`M` never
+    /// need a per-voice match arm.
     pub(crate) fn level_id(self) -> Option<&'static str> {
         TAB_META[self as usize].2
     }
@@ -1545,19 +1543,6 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
         ),
     ]
 );
-
-pub(crate) const MACRO_CONTROLS: &[ControlSpec] = &[
-    gain_pct!("macro.1", "Macro 1", macros.values[0]),
-    gain_pct!("macro.2", "Macro 2", macros.values[1]),
-    gain_pct!("macro.3", "Macro 3", macros.values[2]),
-    gain_pct!("macro.4", "Macro 4", macros.values[3]),
-];
-
-/// Whether a control id names one of the macro sliders. Macro sliders take
-/// LFOs and envelopes but cannot themselves be macro targets.
-pub(crate) fn is_macro_id(id: &str) -> bool {
-    MACRO_CONTROLS.iter().any(|spec| spec.id == id)
-}
 
 /// The tab a control lives on natively (its deepest editing surface), so
 /// Enter on a cross-tab row like the Master voice levels expands into that

@@ -124,14 +124,10 @@ fn env_time_key(field: EnvField) -> Option<&'static str> {
     }
 }
 
-/// One selectable row inside an open LFO editor: either one of the LFO's own
-/// fields, or one of the two rows (amount, target) of a macro currently
-/// stacked onto that field. The macro rows only exist while that field's `v`
-/// gesture has expanded them — never by default.
+/// One selectable row inside an open LFO editor.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum LfoSubRow {
     Field(LfoField),
-    FieldMacro(LfoField, MacroField),
     /// A row of the Steps shape's inline step editor: sequence length, edge
     /// glide, or one step value. Present only while the shape is `Steps`,
     /// listed right after the Shape field (which is last in `LfoField::ALL`).
@@ -142,20 +138,9 @@ pub(crate) fn lfo_submenu_rows(
     automation: &AutomationState,
     address: ControlAddress,
 ) -> Vec<LfoSubRow> {
-    let mut rows = Vec::with_capacity(LfoField::ALL.len() * (1 + MacroField::ALL.len()));
+    let mut rows = Vec::with_capacity(LfoField::ALL.len());
     for field in LfoField::ALL {
         rows.push(LfoSubRow::Field(field));
-        if is_macro_id(address.id()) {
-            continue;
-        }
-        if let Some(key_str) = field.macro_key() {
-            let key = unit_key(address.id(), Some(key_str));
-            if automation.open_field() == Some(key.as_str()) {
-                for slot in MacroField::ALL {
-                    rows.push(LfoSubRow::FieldMacro(field, slot));
-                }
-            }
-        }
     }
     if let Some(route) = automation.route(address)
         && route.shape == LfoShape::Steps
@@ -169,48 +154,18 @@ pub(crate) fn lfo_submenu_rows(
     rows
 }
 
-/// The submenu row index (1-based, matching `lfo_selected`) of an LFO
-/// field's own row, or 0 if it isn't present. Used to land the cursor back
-/// on a field's row after its nested rows appear or disappear, since the
-/// field's own position never shifts (nested rows only ever insert or
-/// remove immediately after it).
-fn field_row_index(
-    automation: &AutomationState,
-    address: ControlAddress,
-    field: LfoField,
-) -> usize {
-    lfo_submenu_rows(automation, address)
-        .iter()
-        .position(|row| *row == LfoSubRow::Field(field))
-        .map_or(0, |pos| pos + 1)
-}
-
-/// Close exactly one level of nesting on the open editor: a field-macro's
-/// own editor if one is expanded, else the whole modulator editor. This is
-/// the single place that governs "close the innermost open thing" — Esc and
-/// re-pressing `v` on a nested field-macro row both route through it, so
-/// drilling out one step never destroys more than what's actually open.
+/// Close the open modulator editor.
 pub(crate) fn close_one_level_effect(
     effects: &mut EffectExecutor,
     automation: &AutomationState,
 ) -> Option<usize> {
-    let address = automation.active_address()?;
-    if let Some(field) = automation.field_macro_owner(address) {
-        effects.edit_navigation_automation(AutomationState::close_open_field);
-        let current = effects.session().load();
-        Some(field_row_index(&current.automation, address, field))
-    } else {
-        effects.edit_navigation_automation(AutomationState::close_editor);
-        None
-    }
+    automation.active_address()?;
+    effects.edit_navigation_automation(AutomationState::close_editor);
+    None
 }
 
 pub(crate) fn env_field_at(index: usize) -> Option<EnvField> {
     EnvField::ALL.get(index.checked_sub(1)?).copied()
-}
-
-pub(crate) fn macro_field_at(index: usize) -> Option<MacroField> {
-    MacroField::ALL.get(index.checked_sub(1)?).copied()
 }
 
 /// LFO editors are explicitly collapsed with `f` or Escape. Arrow navigation
@@ -229,9 +184,6 @@ pub(crate) fn open_modulator_effect_for_id(
     kind: ModKind,
     sub_selected: &mut usize,
 ) {
-    if id.starts_with("macro.") && kind != ModKind::Lfo {
-        return;
-    }
     let address = ControlAddress::new(id);
     effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
         let state = &mut snapshot.automation;
@@ -245,9 +197,6 @@ pub(crate) fn open_modulator_effect_for_id(
                 ModKind::Envelope => {
                     state.open_or_create_envelope(address);
                 }
-                ModKind::Macro => {
-                    state.open_or_create_macro(address);
-                }
             }
         }
     });
@@ -260,13 +209,9 @@ pub(crate) fn open_modulator_effect_for_id(
 #[derive(Clone, Copy)]
 enum ActiveField {
     Lfo(ControlAddress, LfoField),
-    /// A macro's amount/target row nested under an LFO field, only present
-    /// while that field's stacked macro is expanded for editing.
-    LfoMacro(ControlAddress, LfoField, MacroField),
     /// A step-editor row of a Steps-shaped LFO (count, glide, or one value).
     LfoStep(ControlAddress, StepTarget),
     Envelope(ControlAddress, EnvField),
-    Macro(ControlAddress, MacroField),
     Control,
 }
 
@@ -280,7 +225,6 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
     match automation.active_kind() {
         Some(ModKind::Lfo) => match lfo_submenu_rows(automation, address).get(lfo_selected - 1) {
             Some(LfoSubRow::Field(field)) => ActiveField::Lfo(address, *field),
-            Some(LfoSubRow::FieldMacro(field, mf)) => ActiveField::LfoMacro(address, *field, *mf),
             Some(LfoSubRow::Step(target)) => ActiveField::LfoStep(address, *target),
             None => ActiveField::Control,
         },
@@ -288,36 +232,22 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
             Some(field) => ActiveField::Envelope(address, field),
             None => ActiveField::Control,
         },
-        Some(ModKind::Macro) => match macro_field_at(lfo_selected) {
-            Some(field) => ActiveField::Macro(address, field),
-            None => ActiveField::Control,
-        },
         None => ActiveField::Control,
     }
 }
 
-pub(crate) fn macro_toggle_is_supported(
-    automation: &AutomationState,
-    lfo_selected: usize,
-    selected_control: Option<&str>,
-) -> bool {
-    match active_field(automation, lfo_selected) {
-        ActiveField::Lfo(_, field) => field.macro_key().is_some(),
-        ActiveField::LfoStep(..) => false,
-        ActiveField::LfoMacro(..) | ActiveField::Envelope(..) | ActiveField::Macro(..) => true,
-        ActiveField::Control => selected_control.is_none_or(|id| !is_macro_id(id)),
-    }
-}
-
 pub(crate) fn automation_kind_is_supported(
-    selected_control: Option<&str>,
+    _selected_control: Option<&str>,
     kind: interaction::AutomationKind,
 ) -> bool {
-    kind == interaction::AutomationKind::Lfo || selected_control.is_none_or(|id| !is_macro_id(id))
+    matches!(
+        kind,
+        interaction::AutomationKind::Lfo | interaction::AutomationKind::Envelope
+    )
 }
 
 /// The one verb an active-field edit applies. Every field kind — LFO,
-/// envelope, macro, step, plain control — accepts all three, so the routing
+/// envelope, step, plain control — accepts all three, so the routing
 /// from cursor position to target lives in one place and only the verb
 /// differs between an arrow press, a reset, and a typed value.
 #[derive(Clone, Copy)]
@@ -433,31 +363,12 @@ fn apply_field_op(
                 FieldOp::Set { value, .. } => route.set_field(field, value),
             }
         }
-        ActiveField::LfoMacro(address, field, macro_field) => {
-            let key = unit_key(address.id(), field.macro_key());
-            if let Some(route) = snapshot.automation.field_macro_mut(&key) {
-                match op {
-                    FieldOp::Adjust { dir, .. } => route.adjust_field(macro_field, dir),
-                    FieldOp::Reset => route.reset_field(macro_field),
-                    FieldOp::Set { value, .. } => route.set_field(macro_field, value),
-                }
-            }
-        }
         ActiveField::LfoStep(address, target) => {
             if let Some(route) = snapshot.automation.route_mut(address) {
                 match op {
                     FieldOp::Adjust { dir, .. } => route.adjust_step(target, dir),
                     FieldOp::Reset => route.reset_step(target),
                     FieldOp::Set { value, .. } => route.set_step(target, value),
-                }
-            }
-        }
-        ActiveField::Macro(address, field) => {
-            if let Some(route) = snapshot.automation.macro_route_mut(address) {
-                match op {
-                    FieldOp::Adjust { dir, .. } => route.adjust_field(field, dir),
-                    FieldOp::Reset => route.reset_field(field),
-                    FieldOp::Set { value, .. } => route.set_field(field, value),
                 }
             }
         }
@@ -685,7 +596,7 @@ pub(crate) fn toggle_units_effect(
         ActiveField::Envelope(address, field) => {
             env_time_key(field).map(|key| unit_key(address.id(), Some(key)))
         }
-        ActiveField::LfoMacro(..) | ActiveField::Macro(..) | ActiveField::LfoStep(..) => None,
+        ActiveField::LfoStep(..) => None,
         ActiveField::Control => tab_specs(tab)
             .get(selected)
             .filter(|spec| spec.time_base != TimeBase::None)
@@ -707,53 +618,6 @@ pub(crate) fn toggle_units_effect(
     );
 }
 
-pub(crate) fn toggle_macro_effect(
-    effects: &mut EffectExecutor,
-    automation: &AutomationState,
-    selected_control: Option<&'static str>,
-    lfo_selected: usize,
-) -> Option<(interaction::LfoDepth, usize)> {
-    match active_field(automation, lfo_selected) {
-        ActiveField::Lfo(address, field)
-            if !is_macro_id(address.id()) && field.macro_key().is_some() =>
-        {
-            let key = unit_key(address.id(), field.macro_key());
-            effects.edit_session(AutoOwnership::TakeOver, Some(address.id()), |snapshot| {
-                let state = &mut snapshot.automation;
-                state.toggle_open_field(key.clone());
-            });
-            let current = effects.session().load();
-            let depth = if current.automation.field_macro_owner(address).is_some() {
-                interaction::LfoDepth::NestedField
-            } else {
-                interaction::LfoDepth::Editor
-            };
-            Some((depth, field_row_index(&current.automation, address, field)))
-        }
-        ActiveField::LfoMacro(address, field, _) => {
-            effects.edit_session(AutoOwnership::TakeOver, Some(address.id()), |snapshot| {
-                snapshot.automation.close_open_field();
-            });
-            let current = effects.session().load();
-            Some((
-                interaction::LfoDepth::Editor,
-                field_row_index(&current.automation, address, field),
-            ))
-        }
-        ActiveField::Lfo(_, _)
-        | ActiveField::LfoStep(..)
-        | ActiveField::Envelope(..)
-        | ActiveField::Macro(..)
-        | ActiveField::Control => {
-            if let Some(id) = selected_control {
-                let mut selected = 1;
-                open_modulator_effect_for_id(effects, id, ModKind::Macro, &mut selected);
-            }
-            None
-        }
-    }
-}
-
 pub(crate) fn remove_automation_effect(
     effects: &mut EffectExecutor,
     automation: &AutomationState,
@@ -761,13 +625,6 @@ pub(crate) fn remove_automation_effect(
     lfo_selected: usize,
 ) {
     match active_field(automation, lfo_selected) {
-        ActiveField::LfoMacro(address, field, _) => {
-            let key = unit_key(address.id(), field.macro_key());
-            effects.edit_session(AutoOwnership::TakeOver, Some(address.id()), |snapshot| {
-                let state = &mut snapshot.automation;
-                state.remove_field_macro(&key);
-            });
-        }
         _ if automation.is_editor_open() => {
             let id = automation
                 .active_address()

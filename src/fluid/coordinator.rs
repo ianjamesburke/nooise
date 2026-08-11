@@ -125,15 +125,6 @@ pub(crate) fn coordinate_production_event(
     let mut quit = false;
     for _ in 0..*repeat_count {
         let automation_selected = model.automation_selected();
-        if action.intent == interaction::Intent::ToggleMacro
-            && !macro_toggle_is_supported(
-                &frame_session.automation,
-                automation_selected,
-                selected_control,
-            )
-        {
-            break;
-        }
         if let interaction::Intent::OpenAutomation(kind) = action.intent
             && !automation_kind_is_supported(selected_control, kind)
         {
@@ -147,7 +138,6 @@ pub(crate) fn coordinate_production_event(
                     lfo_submenu_rows(&frame_session.automation, address).len()
                 }),
             Some(ModKind::Envelope) => EnvField::ALL.len(),
-            Some(ModKind::Macro) => MacroField::ALL.len(),
             None => 0,
         };
         let before = model.clone();
