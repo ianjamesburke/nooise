@@ -21,14 +21,11 @@ pub(crate) const BASS_LINES: [[i32; 8]; 8] = [
     [43, 50, 52, 48, 43, 50, 52, 48], // H: bright G-D-Em-C axis-loop bass
 ];
 
-/// Bass follows the same chord source as Pad/Arp: for a custom progression
-/// it reads the pad's chord-slot root directly (`pad_chord_root_note`); for
-/// a built-in progression it keeps its own authored `BASS_LINES`, which
-/// deliberately diverge from the pad's chord roots (see above).
+/// Bass follows the same active progression step as Pad/Arp. For Custom it
+/// reads that slot's root directly; built-ins keep their authored bass lines.
 pub(crate) fn bass_root_note(progression: usize, step: usize, pad: &PadControls) -> i32 {
     if is_custom_progression(progression) {
-        let count = pad_chord_count(pad);
-        pad_chord_root_note(&pad.chord_slots[step % count])
+        pad_chord_root_note(&pad.chord_slots[step])
     } else {
         BASS_LINES[progression % BASS_LINES.len()][step % 8]
     }
@@ -113,6 +110,8 @@ pub(crate) struct BassEngine {
     pub(crate) sample_rate: f32,
     pub(crate) chord_trigger: GridTrigger,
     pub(crate) step_index: usize,
+    pub(crate) active_chord_count: Option<usize>,
+    pub(crate) active_progression: Option<usize>,
     pub(crate) step_trigger: GridTrigger,
     pub(crate) rhythm_step: usize,
     pub(crate) voice: Option<BassVoice>,
@@ -132,6 +131,8 @@ impl BassEngine {
             sample_rate,
             chord_trigger: GridTrigger::after_start(),
             step_index: 0,
+            active_chord_count: None,
+            active_progression: None,
             step_trigger: GridTrigger::new(),
             rhythm_step: BASS_RHYTHMS[0].len() - 1,
             voice: None,
@@ -152,13 +153,16 @@ impl BassEngine {
         timing: TimingContext,
     ) -> (f32, f32) {
         let progression = progression_index(pad.progression);
-        let chord_count = pad_chord_count(pad);
-        if self.step_index >= chord_count {
-            self.step_index = 0;
-        }
-        if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
-            self.step_index = (self.step_index + 1) % chord_count;
-        }
+        let active_chord_count = self.active_chord_count.get_or_insert(pad_chord_count(pad));
+        let active_progression = self.active_progression.get_or_insert(progression);
+        advance_pad_progression(
+            &mut self.step_index,
+            active_chord_count,
+            active_progression,
+            pad_chord_count(pad),
+            progression,
+            self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0),
+        );
 
         let loop_len = (c.interval_beats / BASS_STEP_BEATS)
             .round()
@@ -172,7 +176,7 @@ impl BassEngine {
             let hit = self.rhythm_step < BASS_RHYTHMS[rhythm].len()
                 && BASS_RHYTHMS[rhythm][self.rhythm_step];
             if hit {
-                let note = bass_root_note(progression, self.step_index, pad)
+                let note = bass_root_note(*active_progression, self.step_index, pad)
                     + (c.octave.round() as i32) * 12;
                 let hz = midi_to_hz(note) * tune_ratio(tune);
                 // Hard-cut: whatever was sounding hands off to the fade-out

@@ -3115,7 +3115,7 @@ fn pad_engine_step_index_wraps_at_eight() {
 }
 
 #[test]
-fn pad_engine_progression_switch_retriggers_immediately() {
+fn pad_engine_progression_switch_waits_for_the_next_loop_boundary() {
     let mut controls = PadControls {
         chord_bars: 64.0, // long chord length so no chord-advance trigger fires
         // Short attack so the original layer's envelope is already audible
@@ -3140,10 +3140,7 @@ fn pad_engine_progression_switch_retriggers_immediately() {
     controls.progression = 1.0;
     let _ = pad.next(&controls, 0.0, timing(10, 120.0));
 
-    assert!(
-        pad.layers.len() > layers_before,
-        "switching progression must push a new layer immediately, without waiting for chord_trigger"
-    );
+    assert_eq!(pad.layers.len(), layers_before);
 }
 
 #[test]
@@ -3237,7 +3234,7 @@ fn custom_progression_pad_bass_and_arp_read_the_same_chord_source() {
     pad.chord_slots[2].accidental = -1.0;
     pad.chord_slots[2].extension = 1.0;
 
-    let tones = pad_chord_tones(&pad, 2);
+    let tones = pad_chord_tones(&pad, CUSTOM_PROGRESSION_INDEX, 2);
     let root = bass_root_note(CUSTOM_PROGRESSION_INDEX, 2, &pad);
 
     // Bass's root matches the pad chord's own root voice, and both derive
@@ -3327,6 +3324,65 @@ fn pad_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
         let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
         assert!(pad.step_index < 2);
     }
+}
+
+#[test]
+fn pad_engine_chord_count_change_finishes_the_current_chord_before_relooping() {
+    let mut controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 3.0,
+        attack_time: 1.0,
+        ..PadControls::default()
+    };
+    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+    for chord in 1..=3 {
+        let sample = chord * SAMPLE_RATE as u64 * 2;
+        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+    }
+    assert_eq!(pad.step_index, 2);
+
+    let layers_before = pad.layers.len();
+    controls.chord_count = 2.0;
+    let _ = pad.next(&controls, 0.0, timing(SAMPLE_RATE as u64 * 6, 120.0));
+
+    assert_eq!(pad.step_index, 2);
+    assert_eq!(pad.layers.len(), layers_before);
+
+    let _ = pad.next(&controls, 0.0, timing(SAMPLE_RATE as u64 * 8, 120.0));
+
+    assert_eq!(pad.step_index, 0);
+    assert_eq!(pad.active_chord_count, 2);
+}
+
+#[test]
+fn pad_engine_progression_change_finishes_the_current_loop_before_switching() {
+    let mut controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 3.0,
+        attack_time: 1.0,
+        ..PadControls::default()
+    };
+    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+    for chord in 1..=3 {
+        let sample = chord * SAMPLE_RATE as u64 * 2;
+        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+    }
+    assert_eq!(pad.step_index, 2);
+
+    let layers_before = pad.layers.len();
+    controls.progression = 1.0;
+    let _ = pad.next(&controls, 0.0, timing(SAMPLE_RATE as u64 * 6, 120.0));
+
+    assert_eq!(pad.step_index, 2);
+    assert_eq!(pad.layers.len(), layers_before);
+    assert_eq!(pad.active_progression, 0);
+
+    let _ = pad.next(&controls, 0.0, timing(SAMPLE_RATE as u64 * 8, 120.0));
+
+    assert_eq!(pad.step_index, 0);
+    assert_eq!(pad.active_progression, 1);
 }
 
 #[test]

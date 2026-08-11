@@ -96,6 +96,8 @@ pub(crate) struct ArpEngine {
     pub(crate) sample_rate: f32,
     pub(crate) chord_trigger: GridTrigger,
     pub(crate) step_index: usize,
+    pub(crate) active_chord_count: Option<usize>,
+    pub(crate) active_progression: Option<usize>,
     pub(crate) note_trigger: GridTrigger,
     pub(crate) cycle_pos: usize,
     pub(crate) ping_pong_dir: i32,
@@ -109,6 +111,8 @@ impl ArpEngine {
             sample_rate,
             chord_trigger: GridTrigger::after_start(),
             step_index: 0,
+            active_chord_count: None,
+            active_progression: None,
             note_trigger: GridTrigger::new(),
             cycle_pos: 0,
             ping_pong_dir: 1,
@@ -130,20 +134,24 @@ impl ArpEngine {
         // into the pad engine directly. `pad_chord_tones` is the same
         // chord-source path Pad and Bass resolve through, so a custom
         // progression drives all three identically.
-        let chord_count = pad_chord_count(pad);
-        if self.step_index >= chord_count {
-            self.step_index = 0;
-        }
-        if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
-            self.step_index = (self.step_index + 1) % chord_count;
-        }
+        let active_chord_count = self.active_chord_count.get_or_insert(pad_chord_count(pad));
+        let progression = progression_index(pad.progression);
+        let active_progression = self.active_progression.get_or_insert(progression);
+        advance_pad_progression(
+            &mut self.step_index,
+            active_chord_count,
+            active_progression,
+            pad_chord_count(pad),
+            progression,
+            self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0),
+        );
 
         let rate_beats = c.rate_beats.clamp(ARP_RATE_BEATS_MIN, ARP_RATE_BEATS_MAX);
         if self
             .note_trigger
             .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
         {
-            let chord = pad_chord_tones(pad, self.step_index);
+            let chord = pad_chord_tones(pad, *active_progression, self.step_index);
             let octaves = arp_octave_span(c.octaves);
             let notes = arp_cycle_notes(chord, octaves);
             let len = notes.len().max(1);

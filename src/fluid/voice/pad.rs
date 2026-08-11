@@ -10,8 +10,8 @@ pub(crate) struct PadEngine {
     pub(crate) layers: Vec<PadLayer>,
     pub(crate) chord_trigger: GridTrigger,
     pub(crate) step_index: usize,
-    pub(crate) last_progression: usize,
-    pub(crate) last_chord_count: usize,
+    pub(crate) active_progression: usize,
+    pub(crate) active_chord_count: usize,
     pub(crate) last_chord_notes: [i32; 4],
     pub(crate) width_lfo: DriftingLfo,
     pub(crate) air: WhiteNoise,
@@ -34,8 +34,8 @@ impl PadEngine {
             )],
             chord_trigger: GridTrigger::after_start(),
             step_index: 0,
-            last_progression: 0,
-            last_chord_count: 8,
+            active_progression: progression_index(c.progression),
+            active_chord_count: pad_chord_count(c),
             last_chord_notes: initial_notes,
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
             air: WhiteNoise::new(),
@@ -47,23 +47,21 @@ impl PadEngine {
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
         let progression = progression_index(c.progression);
         let chord_count = pad_chord_count(c);
-        let progression_changed = progression != self.last_progression;
-        let chord_count_changed = chord_count != self.last_chord_count;
-        self.last_progression = progression;
-        self.last_chord_count = chord_count;
-        if self.step_index >= chord_count {
-            self.step_index = 0;
-        }
 
         let advance = self.chord_trigger.pop(timing, c.chord_bars * 4.0, 0.0);
-        if advance {
-            self.step_index = (self.step_index + 1) % chord_count;
-        }
-        let chord_notes = pad_chord_tones(c, self.step_index);
+        advance_pad_progression(
+            &mut self.step_index,
+            &mut self.active_chord_count,
+            &mut self.active_progression,
+            chord_count,
+            progression,
+            advance,
+        );
+        let chord_notes = pad_chord_tones(c, self.active_progression, self.step_index);
         let chord_edited = chord_notes != self.last_chord_notes;
         self.last_chord_notes = chord_notes;
 
-        if advance || progression_changed || chord_count_changed || chord_edited {
+        if advance || chord_edited {
             for layer in &mut self.layers {
                 layer.release();
             }
@@ -472,15 +470,35 @@ pub(crate) fn pad_chord_count(c: &PadControls) -> usize {
     c.chord_count.round().clamp(1.0, CHORD_SLOT_COUNT as f32) as usize
 }
 
-/// The shared chord-source entry point: the 4 chord tones (raw MIDI) at
-/// `step` for whichever progression `c.progression` currently selects —
-/// a built-in table lookup, or the custom chord slots. Pad, Bass, and Arp
-/// all resolve their current chord through this one function.
-pub(crate) fn pad_chord_tones(c: &PadControls, step: usize) -> [i32; 4] {
-    let progression = progression_index(c.progression);
+/// Advances one shared progression cursor. Count and progression changes are
+/// staged until the current loop reaches its final chord, so they never cut
+/// off the chord presently sounding.
+pub(crate) fn advance_pad_progression(
+    step_index: &mut usize,
+    active_chord_count: &mut usize,
+    active_progression: &mut usize,
+    requested_chord_count: usize,
+    requested_progression: usize,
+    advance: bool,
+) {
+    if !advance {
+        return;
+    }
+
+    *step_index += 1;
+    if *step_index == *active_chord_count {
+        *step_index = 0;
+        *active_chord_count = requested_chord_count;
+        *active_progression = requested_progression;
+    }
+}
+
+/// The shared chord-source entry point for an engine step already bounded by
+/// that engine's active progression length. It deliberately ignores a newly
+/// requested count while the previous loop finishes.
+pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, step: usize) -> [i32; 4] {
     if is_custom_progression(progression) {
-        let count = pad_chord_count(c);
-        pad_chord_notes_with_slot(&c.chord_slots[step % count])
+        pad_chord_notes_with_slot(&c.chord_slots[step])
     } else {
         pad_chord_midi(progression, step)
     }
