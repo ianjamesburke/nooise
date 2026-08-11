@@ -154,16 +154,6 @@ pub(crate) fn lfo_submenu_rows(
     rows
 }
 
-/// Close the open modulator editor.
-pub(crate) fn close_one_level_effect(
-    effects: &mut EffectExecutor,
-    automation: &AutomationState,
-) -> Option<usize> {
-    automation.active_address()?;
-    effects.edit_navigation_automation(AutomationState::close_editor);
-    None
-}
-
 pub(crate) fn env_field_at(index: usize) -> Option<EnvField> {
     EnvField::ALL.get(index.checked_sub(1)?).copied()
 }

@@ -10,7 +10,7 @@ use std::fmt;
 
 #[cfg(test)]
 use super::interaction::PaletteStagedEdit;
-use super::interaction::{InteractionEffect, LfoDepth, Page};
+use super::interaction::{InteractionEffect, Page};
 use super::song::SongCodeError;
 use super::*;
 
@@ -102,10 +102,6 @@ pub(crate) enum EffectAcknowledgement {
         index: usize,
         id: &'static str,
         generation: u64,
-    },
-    AutomationPosition {
-        depth: LfoDepth,
-        selected: usize,
     },
     PageSelected(Page),
     QuitRequested,
@@ -577,7 +573,6 @@ impl EffectExecutor {
             | InteractionEffect::ToggleMute { .. }
             | InteractionEffect::RemoveAutomation
             | InteractionEffect::ReseedAutomation
-            | InteractionEffect::CloseAutomationDepth
             | InteractionEffect::CloseAutomationAll
             | InteractionEffect::TouchSelected
             | InteractionEffect::PaletteCommitAtBar(_)
@@ -715,16 +710,6 @@ impl EffectExecutor {
                 );
             }),
             InteractionEffect::ReseedAutomation => self.with_automation(reseed_automation_effect),
-            InteractionEffect::CloseAutomationDepth => {
-                let automation = self.session.load().automation.clone();
-                Ok(close_one_level_effect(self, &automation).map_or(
-                    EffectAcknowledgement::NoChange,
-                    |selected| EffectAcknowledgement::AutomationPosition {
-                        depth: LfoDepth::Editor,
-                        selected,
-                    },
-                ))
-            }
             InteractionEffect::CloseAutomationAll => {
                 self.edit_navigation_automation(AutomationState::close_editor);
                 Ok(EffectAcknowledgement::NoChange)

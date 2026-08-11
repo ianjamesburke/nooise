@@ -2061,7 +2061,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 notice: None,
             },
             "automation navigation" => ExpectedBinding {
-                owner: "LFO",
+                owner: "BROWSE",
                 generation: 5,
                 automation: None,
                 intents: vec![
@@ -2077,7 +2077,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                     "AdjustSelected(1)=>OK:Published { generation: 2 }",
                     "ToggleUnits=>OK:Published { generation: 3 }",
                     "ReseedAutomation=>OK:Published { generation: 4 }",
-                    "CloseAutomationDepth=>OK:NoChange",
+                    "CloseAutomationAll=>OK:NoChange",
                 ],
                 notice: None,
             },
@@ -2334,6 +2334,19 @@ fn production_coordinator_keeps_nested_lfo_model_and_session_in_lockstep() {
             closed.effects
         );
     }
+}
+
+#[test]
+fn escape_closes_a_neutral_lfo_without_trapping_the_keyboard_owner() {
+    let plain = |code| key(0, code, InputPhase::Press);
+
+    let closed = replay(
+        &[plain(FixtureKey::Character('f')), plain(FixtureKey::Escape)],
+        full_capabilities(),
+    );
+
+    assert_eq!(closed.model.mode, InteractionMode::Browsing);
+    assert_eq!(closed.automation_kind, None);
 }
 
 #[test]

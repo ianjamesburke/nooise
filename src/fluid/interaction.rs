@@ -706,7 +706,6 @@ pub(crate) enum InteractionEffect {
     },
     RemoveAutomation,
     ReseedAutomation,
-    CloseAutomationDepth,
     CloseAutomationAll,
     TouchSelected,
     PaletteCommitAtBar(Vec<PaletteStagedEdit>),
@@ -813,10 +812,6 @@ impl InteractionModel {
             }) => mode.selected(),
             _ => 0,
         }
-    }
-
-    pub(crate) fn apply_lfo_position(&mut self, depth: LfoDepth, selected: usize) {
-        self.mode = InteractionMode::Automation(AutomationMode::Lfo { depth, selected });
     }
 
     pub(crate) fn select_control(&mut self, tab: Tab, index: usize, controls: &FluidControls) {
@@ -1131,23 +1126,8 @@ fn update_automation(
         return;
     }
     match intent {
-        Intent::Cancel
-            if matches!(
-                automation,
-                AutomationMode::Lfo {
-                    depth: LfoDepth::Editor,
-                    ..
-                }
-            ) =>
-        {
-            effects.push(InteractionEffect::CloseAutomationDepth);
-            *automation = AutomationMode::Lfo {
-                depth: LfoDepth::Editor,
-                selected: 0,
-            };
-        }
         Intent::Cancel => {
-            effects.push(InteractionEffect::CloseAutomationDepth);
+            effects.push(InteractionEffect::CloseAutomationAll);
             *next_mode = Some(InteractionMode::Browsing);
         }
         Intent::OpenAutomationField => {
@@ -1496,10 +1476,7 @@ mod tests {
                     depth: LfoDepth::Editor,
                     selected: 2,
                 }),
-                InteractionMode::Automation(AutomationMode::Lfo {
-                    depth: LfoDepth::Editor,
-                    selected: 0,
-                }),
+                InteractionMode::Browsing,
             ),
             (
                 InteractionMode::Performance(PerformanceMode::Deck {

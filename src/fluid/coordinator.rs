@@ -236,9 +236,6 @@ pub(crate) fn coordinate_production_event(
                     let current_session = context.effects.session().load();
                     model.select_control(*tab, *index, &current_session.controls);
                 }
-                Ok(EffectAcknowledgement::AutomationPosition { depth, selected }) => {
-                    model.apply_lfo_position(*depth, *selected);
-                }
                 Ok(EffectAcknowledgement::QuitRequested) => quit = true,
                 Err(error) => {
                     let prefix = if effect == interaction::InteractionEffect::Save {
