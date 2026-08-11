@@ -811,6 +811,8 @@ pub(crate) const ENV_PALETTE: FieldPalette = FieldPalette {
     idle: Color::Rgb(95, 195, 140),
 };
 
+const ENV_LANE_HUE: f32 = 150.0;
+
 /// Shared numeric-entry cursor: renders the in-progress typed value with a
 /// blinking cursor when this row is the active numeric-entry target.
 fn numeric_cursor(numeric: &NumericDisplay<'_>, active: bool) -> Option<String> {
@@ -954,6 +956,16 @@ fn lfo_lane_line_with_label(
 
 /// Envelope lane: the one-shot AD ramp across one trigger period, with a bright
 /// head at the live phase. Uses the same `level_at` math as the engine.
+#[cfg(test)]
+pub(crate) fn env_lane_line(
+    route: &EnvelopeRoute,
+    ctx: ModContext,
+    width: usize,
+    active: bool,
+) -> Line<'static> {
+    env_lane_line_with_label(route, ctx, width, active, "ENV")
+}
+
 fn env_lane_line_with_label(
     route: &EnvelopeRoute,
     ctx: ModContext,
@@ -964,12 +976,11 @@ fn env_lane_line_with_label(
     let width = width.clamp(6, 80);
     let window = f64::from(route.window_beats());
     let head = ((route.lane_head_phase(ctx) * width as f32) as usize).min(width - 1);
-    let hue = if route.amount >= 0.0 { 150.0 } else { 15.0 };
     lane_line(label, width, active, 0.55, |i| {
         let col_since = (i as f64 / width as f64 * window) as f32;
         (
             route.level_for_lane(col_since) * route.amount.abs(),
-            hue,
+            ENV_LANE_HUE,
             // The ramp does not wrap: it runs once from trigger to release.
             1.0 - (i.abs_diff(head) as f32 / width as f32) * 2.0,
         )

@@ -1202,6 +1202,27 @@ fn lfo_lane_is_phase_locked() {
 }
 
 #[test]
+fn envelope_lane_keeps_its_green_palette_for_negative_amounts() {
+    let positive = EnvelopeRoute {
+        amount: 0.5,
+        ..EnvelopeRoute::default()
+    };
+    let negative = EnvelopeRoute {
+        amount: -0.5,
+        ..EnvelopeRoute::default()
+    };
+    let styles = |route: &EnvelopeRoute| {
+        env_lane_line(route, env_ctx(1.0), 24, true)
+            .spans
+            .into_iter()
+            .map(|span| span.style)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(styles(&negative), styles(&positive));
+}
+
+#[test]
 fn automation_applies_bounded_lfo_offset_and_clamps_to_spec_range() {
     let mut controls = FluidControls::default();
     controls.master.level = 0.9;
