@@ -171,12 +171,16 @@ pub(crate) enum AutomationSurface<'a> {
     Lfo {
         selected: usize,
         address: ControlAddress,
+        lane_index: usize,
+        lane_count: usize,
         route: &'a LfoRoute,
         state: &'a AutomationState,
     },
     Envelope {
         selected: usize,
         address: ControlAddress,
+        lane_index: usize,
+        lane_count: usize,
         route: &'a EnvelopeRoute,
     },
     Unavailable {
@@ -459,6 +463,8 @@ fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> Aut
             |route| AutomationSurface::Lfo {
                 selected,
                 address,
+                lane_index: automation.active_lane_index().unwrap_or(0),
+                lane_count: automation.active_lane_count().unwrap_or(1),
                 route,
                 state: automation,
             },
@@ -472,6 +478,8 @@ fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> Aut
             |route| AutomationSurface::Envelope {
                 selected,
                 address,
+                lane_index: automation.active_lane_index().unwrap_or(0),
+                lane_count: automation.active_lane_count().unwrap_or(1),
                 route,
             },
         ),
@@ -680,14 +688,22 @@ fn performance_targets_text(targets: PerformanceTargets) -> String {
 
 fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
     match surface {
-        AutomationSurface::Lfo { address, route, .. } => {
+        AutomationSurface::Lfo {
+            address,
+            lane_index,
+            lane_count,
+            route,
+            ..
+        } => {
             let reseed = if route.shape.is_random() {
                 "   r reseed"
             } else {
                 ""
             };
             let text = format!(
-                "LFO · {}   {}   {:.2} beats   depth {:.0}%{reseed}   x remove   Esc close",
+                "LFO {}/{} · {}   {}   {:.2} beats   depth {:.0}%{reseed}   f next   Shift+F add   x remove   Esc close",
+                lane_index + 1,
+                lane_count,
                 address.id(),
                 route.shape.label(),
                 route.cycle_beats,
@@ -695,8 +711,16 @@ fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
             );
             text
         }
-        AutomationSurface::Envelope { address, route, .. } => format!(
-            "ENV · {}   {}   amount {:+.0}%   x remove   Esc close",
+        AutomationSurface::Envelope {
+            address,
+            lane_index,
+            lane_count,
+            route,
+            ..
+        } => format!(
+            "ENV {}/{} · {}   {}   amount {:+.0}%   e next   Shift+E add   x remove   Esc close",
+            lane_index + 1,
+            lane_count,
             address.id(),
             route.field_display(EnvField::Trigger),
             route.amount * 100.0

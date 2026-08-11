@@ -4079,6 +4079,152 @@ fn lfo_and_envelope_coexist_on_one_control() {
 }
 
 #[test]
+fn automation_stack_sums_multiple_lfo_lanes_on_one_control() {
+    let address = ControlAddress::new("master.level");
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        address,
+        LfoRoute {
+            cycle_beats: 2.0,
+            depth_ratio: 0.1,
+            ..LfoRoute::default()
+        },
+    );
+    assert!(automation.add_route(
+        address,
+        LfoRoute {
+            cycle_beats: 2.0,
+            depth_ratio: 0.2,
+            ..LfoRoute::default()
+        },
+    ));
+    let mut controls = FluidControls::default();
+    controls.master.level = 0.5;
+
+    apply_automation(
+        &mut controls,
+        &automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+    );
+
+    assert_near(controls.master.level, 0.8);
+}
+
+#[test]
+fn automation_stack_caps_each_lane_family() {
+    let address = ControlAddress::new("master.level");
+    let mut automation = AutomationState::default();
+    automation.set_route(address, LfoRoute::default());
+    for _ in 1..MAX_AUTOMATION_LANES_PER_KIND {
+        assert!(automation.add_route(address, LfoRoute::default()));
+    }
+
+    assert!(!automation.add_route(address, LfoRoute::default()));
+}
+
+#[test]
+fn automation_stack_adds_opens_and_cycles_lanes() {
+    let address = ControlAddress::new("master.level");
+    let mut automation = AutomationState::default();
+    automation.open_or_create(address).depth_ratio = 0.2;
+    assert!(automation.add_and_open(address, ModKind::Lfo));
+    let added = (
+        automation.active_lane_index(),
+        automation.active_lane_count(),
+    );
+
+    automation.cycle_open(address, ModKind::Lfo);
+
+    assert_eq!(added, (Some(1), Some(2)));
+    assert_eq!(automation.active_lane_index(), Some(0));
+}
+
+#[test]
+fn remove_open_route_keeps_other_stacked_lanes() {
+    let address = ControlAddress::new("master.level");
+    let mut automation = AutomationState::default();
+    automation.open_or_create(address).depth_ratio = 0.2;
+    assert!(automation.add_and_open(address, ModKind::Lfo));
+
+    automation.remove_open_route();
+
+    assert_eq!(automation.routes_for(address).count(), 1);
+}
+
+#[test]
+fn automation_plan_declicks_an_envelope_retrigger() {
+    let address = ControlAddress::new("master.level");
+    let mut automation = AutomationState::default();
+    automation.set_envelope(
+        address,
+        EnvelopeRoute {
+            amount: 0.5,
+            attack_beats: 0.0,
+            decay_beats: 1.0,
+            trigger: EnvTrigger::EveryBeats(1.0),
+        },
+    );
+    let mut plan = AutomationPlan::default();
+    plan.rebuild(&automation);
+    let mut before = FluidControls::default();
+    before.master.level = 0.5;
+    plan.apply(
+        &mut before,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.999),
+    );
+    let mut after = FluidControls::default();
+    after.master.level = 0.5;
+
+    plan.apply(
+        &mut after,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.0),
+    );
+
+    assert!(
+        (after.master.level - before.master.level).abs() < 0.01,
+        "retrigger jumped from {} to {}",
+        before.master.level,
+        after.master.level
+    );
+}
+
+#[test]
+fn song_code_round_trips_stacked_lfo_lanes() {
+    let address = ControlAddress::new("master.level");
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        address,
+        LfoRoute {
+            depth_ratio: 0.2,
+            ..LfoRoute::default()
+        },
+    );
+    assert!(automation.add_route(
+        address,
+        LfoRoute {
+            depth_ratio: 0.4,
+            shape: LfoShape::Triangle,
+            ..LfoRoute::default()
+        },
+    ));
+    let song = SongState {
+        controls: FluidControls::default(),
+        automation,
+        tonal_sequence: None,
+    };
+
+    let code = song::encode_song_code(&song).unwrap();
+    let decoded = song::decode_song_code(&code).unwrap();
+    let depths: Vec<_> = decoded
+        .automation
+        .routes_for(address)
+        .map(|route| route.depth_ratio)
+        .collect();
+
+    assert_eq!(depths, vec![0.2, 0.4]);
+}
+
+#[test]
 fn combined_lfo_and_envelope_sum_and_clamp() {
     let mut controls = FluidControls::default();
     controls.master.level = 0.5;

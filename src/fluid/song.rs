@@ -456,14 +456,11 @@ fn reject_retired_control(index: u16) -> Result<(), SongCodeError> {
 }
 
 /// Automation record. Control ids are interned `u16` indexes and the bounded
-/// ratios (`depth_ratio`, `step_glide`, macro amounts, step values, envelope
-/// amount) are u16-quantized. Beat-valued fields and
+/// ratios (`depth_ratio`, `step_glide`, step values, and envelope amount) are
+/// u16-quantized. Repeated control indexes represent stacked lanes.
+/// Beat-valued fields and
 /// `LfoRoute::seed` stay bit-exact — a quantized rate or seed would move
 /// where a modulator sits on the transport grid.
-///
-/// Field-macro keys stay length-prefixed strings: they are composite
-/// `control.id#lfo.field` keys owned by `automation.rs`, not registry control
-/// ids, so `SONG_ID_TABLE` does not cover them.
 fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     write_u16(automation.routes().count(), out)?;
     for (address, route) in automation.routes() {
@@ -543,7 +540,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
             route.step_glide = step_glide;
             route.steps = values;
         }
-        automation.set_route(ControlAddress::new(spec.id), route);
+        automation.add_route(ControlAddress::new(spec.id), route);
     }
 
     let macro_count = reader.u16()?;
@@ -570,7 +567,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         ) else {
             continue;
         };
-        automation.set_envelope(
+        automation.add_envelope(
             ControlAddress::new(spec.id),
             EnvelopeRoute {
                 amount,

@@ -188,8 +188,10 @@ pub(crate) fn open_modulator_effect_for_id(
     effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
         let state = &mut snapshot.automation;
         let already = state.active_address() == Some(address) && state.active_kind() == Some(kind);
-        state.close_editor();
-        if !already {
+        if already {
+            state.cycle_open(address, kind);
+        } else {
+            state.close_editor();
             match kind {
                 ModKind::Lfo => {
                     state.open_or_create(address);
@@ -201,6 +203,23 @@ pub(crate) fn open_modulator_effect_for_id(
         }
     });
     *sub_selected = 1;
+}
+
+pub(crate) fn add_modulator_effect_for_id(
+    effects: &mut EffectExecutor,
+    id: &'static str,
+    kind: ModKind,
+) -> bool {
+    let address = ControlAddress::new(id);
+    let mut added = false;
+    effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
+        let state = &mut snapshot.automation;
+        if state.active_address() != Some(address) || state.active_kind() != Some(kind) {
+            state.close_editor();
+        }
+        added = state.add_and_open(address, kind);
+    });
+    added
 }
 
 /// Which modulator field (if any) the submenu cursor sits on for the open

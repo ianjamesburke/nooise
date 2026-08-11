@@ -533,6 +533,7 @@ pub(crate) enum Intent {
     Confirm,
     OpenPalette,
     OpenAutomation(AutomationKind),
+    AddAutomation(AutomationKind),
     #[cfg_attr(
         not(test),
         expect(
@@ -594,6 +595,7 @@ impl Intent {
             | Self::BeginNumeric(_)
             | Self::OpenPalette
             | Self::OpenAutomation(_)
+            | Self::AddAutomation(_)
             | Self::AdjustSelected(_)
             | Self::ResetSelected
             | Self::ToggleAuto
@@ -636,6 +638,7 @@ impl Intent {
             | Self::Confirm
             | Self::OpenPalette
             | Self::OpenAutomation(_)
+            | Self::AddAutomation(_)
             | Self::OpenAutomationField
             | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
@@ -694,6 +697,7 @@ pub(crate) enum InteractionEffect {
         catalog_index: usize,
     },
     AutomationConfirm(AutomationKind),
+    AddAutomation(AutomationKind),
     ResetSelected,
     ToggleAuto,
     ToggleUnits,
@@ -961,6 +965,10 @@ fn update_browsing(
             *next_mode = Some(InteractionMode::Automation(AutomationMode::new(kind)));
             effects.push(InteractionEffect::AutomationConfirm(kind));
         }
+        Intent::AddAutomation(kind) => {
+            *next_mode = Some(InteractionMode::Automation(AutomationMode::new(kind)));
+            effects.push(InteractionEffect::AddAutomation(kind));
+        }
         Intent::ActivatePerformance(kind) => {
             *next_mode = Some(InteractionMode::Performance(PerformanceMode::new(kind)));
         }
@@ -1167,13 +1175,12 @@ fn update_automation(
             effects.push(InteractionEffect::CloseAutomationAll);
         }
         Intent::OpenAutomation(kind) => {
-            let same = automation.kind() == kind;
             effects.push(InteractionEffect::AutomationConfirm(kind));
-            *next_mode = Some(if same {
-                InteractionMode::Browsing
-            } else {
-                InteractionMode::Automation(AutomationMode::new(kind))
-            });
+            *next_mode = Some(InteractionMode::Automation(AutomationMode::new(kind)));
+        }
+        Intent::AddAutomation(kind) => {
+            effects.push(InteractionEffect::AddAutomation(kind));
+            *next_mode = Some(InteractionMode::Automation(AutomationMode::new(kind)));
         }
         Intent::AdjustSelected(delta) => {
             effects.push(InteractionEffect::AdjustSelected(delta));
@@ -2118,5 +2125,27 @@ mod tests {
         let model = InteractionModel::default();
         let action = SemanticAction::press(Intent::OpenAutomation(AutomationKind::Lfo));
         assert_eq!(model.clone().update(action), model.update(action),);
+    }
+
+    #[test]
+    fn automation_key_cycles_without_closing_and_shift_adds_a_lane() {
+        let opened = update(
+            InteractionModel::default(),
+            Intent::OpenAutomation(AutomationKind::Lfo),
+        );
+        let cycled = update(opened.model, Intent::OpenAutomation(AutomationKind::Lfo));
+        let added = update(
+            cycled.model.clone(),
+            Intent::AddAutomation(AutomationKind::Lfo),
+        );
+
+        assert!(matches!(
+            cycled.model.mode,
+            InteractionMode::Automation(AutomationMode::Lfo { .. })
+        ));
+        assert_eq!(
+            added.effects,
+            vec![InteractionEffect::AddAutomation(AutomationKind::Lfo)]
+        );
     }
 }

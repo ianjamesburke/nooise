@@ -22,6 +22,11 @@
 - **Effect module:** an addable, slot-addressed musical processor on a voice
   layer or Master. Its stored catalog kind selects shared pre-trigger or
   post-synthesis behavior; this is distinct from an interaction **Effect**.
+- **Automation lane:** one LFO or triggered envelope applied to a slider. A
+  lane owns its curve, timing, amount, and editor state.
+- **Automation stack:** every automation lane on one slider. The engine sums
+  the stack in dial-position space, clamps and snaps once, then de-clicks the
+  combined audio-rate movement.
 - **Live-session snapshot:** one immutable aggregate containing controls,
   automation, and user-audible runtime session state that must change
   coherently. Writers publish the aggregate with one atomic `ArcSwap`
