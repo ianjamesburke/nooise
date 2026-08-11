@@ -28,6 +28,8 @@ pub(crate) enum EffectFailure {
     Clipboard(ClipboardError),
     /// The effect needs a piece of live context the frame did not carry.
     MissingContext(&'static str),
+    /// The selected control already carries the maximum lanes of this family.
+    AutomationLaneLimit,
     /// The kernel emitted an effect this executor does not implement. New
     /// effects are rejected explicitly rather than silently dropped.
     UnsupportedInteraction(InteractionEffect),
@@ -40,6 +42,9 @@ impl fmt::Display for EffectFailure {
             Self::SongEncode(error) => write!(f, "{error}"),
             Self::Clipboard(error) => write!(f, "{error}"),
             Self::MissingContext(what) => write!(f, "no {what} in this frame"),
+            Self::AutomationLaneLimit => {
+                write!(f, "this slider already has four lanes of that kind")
+            }
             Self::UnsupportedInteraction(effect) => {
                 write!(f, "unsupported interaction effect {effect:?}")
             }
@@ -565,6 +570,7 @@ impl EffectExecutor {
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
             InteractionEffect::Quit => Ok(EffectAcknowledgement::QuitRequested),
             unsupported @ (InteractionEffect::AutomationConfirm(_)
+            | InteractionEffect::AddAutomation(_)
             | InteractionEffect::ResetSelected
             | InteractionEffect::ToggleAuto
             | InteractionEffect::ToggleUnits
@@ -656,6 +662,19 @@ impl EffectExecutor {
                 };
                 let mut selected = context.automation_selected;
                 open_modulator_effect_for_id(self, id, kind, &mut selected);
+                Ok(self.published())
+            }
+            InteractionEffect::AddAutomation(kind) => {
+                let id = context
+                    .selected_control
+                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let kind = match kind {
+                    super::interaction::AutomationKind::Lfo => ModKind::Lfo,
+                    super::interaction::AutomationKind::Envelope => ModKind::Envelope,
+                };
+                if !add_modulator_effect_for_id(self, id, kind) {
+                    return Err(EffectFailure::AutomationLaneLimit);
+                }
                 Ok(self.published())
             }
             InteractionEffect::ResetSelected => self.with_automation(|executor, automation| {

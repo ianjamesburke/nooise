@@ -552,6 +552,8 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Left | PhysicalKey::Character('H' | 'h') => Intent::ResetSelected,
         PhysicalKey::Character('M' | 'm') => Intent::ToggleMute { master: true },
         PhysicalKey::Character('T' | 't') => Intent::ToggleUnits,
+        PhysicalKey::Character('F' | 'f') => Intent::AddAutomation(AutomationKind::Lfo),
+        PhysicalKey::Character('E' | 'e') => Intent::AddAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
         PhysicalKey::Character('R' | 'r') => Intent::ReseedAutomation,
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
@@ -1731,6 +1733,21 @@ mod tests {
                     ..
                 }) if actual == expected
             ));
+        }
+
+        for (code, expected) in [
+            ('F', Intent::AddAutomation(super::AutomationKind::Lfo)),
+            ('E', Intent::AddAutomation(super::AutomationKind::Envelope)),
+        ] {
+            assert_eq!(
+                map_input(
+                    &automation,
+                    Navigation::default(),
+                    &event(PhysicalKey::Character(code), Modifiers::SHIFT),
+                    TerminalCapabilities::default(),
+                ),
+                InputMapping::Action(SemanticAction::press(expected))
+            );
         }
     }
 

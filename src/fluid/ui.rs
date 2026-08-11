@@ -256,8 +256,6 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
     for (i, item) in items.iter().enumerate() {
         let active = i == selected;
         let address = ControlAddress::new(item.id);
-        let route = automation.route(address);
-        let envelope = automation.envelope(address);
         let editor_here =
             frame.automation.and_then(AutomationSurface::active_address) == Some(address);
         let open_here = |kind: ModKind| match (frame.automation, kind) {
@@ -311,8 +309,10 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         }
         rows.push(Line::from(spans));
 
-        if let Some(route) = route {
-            if lfo_open_here {
+        let lfo_count = automation.routes_for(address).count();
+        for (lane_index, route) in automation.routes_for(address).enumerate() {
+            let lane_open = lfo_open_here && automation.active_lane_index() == Some(lane_index);
+            if lane_open {
                 let AutomationSurface::Lfo {
                     state: lfo_state, ..
                 } = frame
@@ -323,11 +323,20 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 };
                 push_lfo_editor_rows(&mut rows, lfo_state, route, address, frame);
             }
-            rows.push(lfo_lane_line(route, beat, frame.bar_w, lfo_open_here));
+            let label = format!("LFO {}/{}", lane_index + 1, lfo_count);
+            rows.push(lfo_lane_line_with_label(
+                route,
+                beat,
+                frame.bar_w,
+                lane_open,
+                &label,
+            ));
         }
-        if let Some(route) = envelope {
-            let env_open_here = open_here(ModKind::Envelope);
-            if env_open_here {
+        let env_open_here = open_here(ModKind::Envelope);
+        let envelope_count = automation.envelopes_for(address).count();
+        for (lane_index, route) in automation.envelopes_for(address).enumerate() {
+            let lane_open = env_open_here && automation.active_lane_index() == Some(lane_index);
+            if lane_open {
                 for (fi, field) in EnvField::ALL.iter().enumerate() {
                     let value_display = match field {
                         EnvField::Attack
@@ -354,11 +363,13 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                     ));
                 }
             }
-            rows.push(env_lane_line(
+            let label = format!("ENV {}/{}", lane_index + 1, envelope_count);
+            rows.push(env_lane_line_with_label(
                 route,
                 frame.mod_ctx,
                 frame.bar_w,
-                env_open_here,
+                lane_open,
+                &label,
             ));
         }
         if i + 1 < items.len() {
@@ -438,15 +449,13 @@ fn slider_markers(
     let spec = address.spec().contextual(controls);
     let base = item.value;
     let ratio_of = |value: f32| spec.ratio(value, controls);
-    let effective_lfo = automation.route(address).copied();
-    // Ghosts only for sources that actually contribute.
-    let lfo = effective_lfo
-        .as_ref()
-        .filter(|r| r.depth_ratio > f32::EPSILON);
-    let envelope = automation
-        .envelope(address)
-        .filter(|r| r.amount.abs() > f32::EPSILON);
-    let single = |l: Option<&LfoRoute>, e: Option<&EnvelopeRoute>| {
+    let lfos = automation.lfo_lanes(address);
+    let envelopes = automation.envelope_lanes(address);
+    let has_lfo = lfos.iter().any(|route| route.depth_ratio > f32::EPSILON);
+    let has_envelope = envelopes
+        .iter()
+        .any(|route| route.amount.abs() > f32::EPSILON);
+    let marker = |l: &[LfoRoute], e: &[EnvelopeRoute]| {
         ratio_of(modulated_control_value_full(&spec, l, e, base, mod_ctx))
     };
     // While an editor is open on this control, faintly shade the full reach of
@@ -457,25 +466,34 @@ fn slider_markers(
     let shadow = editor_here.then(|| {
         let mut lo = base;
         let mut hi = base;
-        if let Some(r) = effective_lfo.as_ref() {
-            let swing = mod_range * r.depth_ratio.clamp(0.0, 1.0);
+        let lfo_depth: f32 = lfos
+            .iter()
+            .map(|route| route.depth_ratio.clamp(0.0, 1.0))
+            .sum();
+        if lfo_depth > f32::EPSILON {
+            let swing = mod_range * lfo_depth;
             lo = lo.min(base - swing);
             hi = hi.max(base + swing);
         }
-        if let Some(r) = automation.envelope(address) {
-            let swing = mod_range * r.amount.clamp(-1.0, 1.0);
-            lo = lo.min(base + swing.min(0.0));
-            hi = hi.max(base + swing.max(0.0));
-        }
+        let envelope_min: f32 = envelopes
+            .iter()
+            .map(|route| route.amount.clamp(-1.0, 0.0))
+            .sum();
+        let envelope_max: f32 = envelopes
+            .iter()
+            .map(|route| route.amount.clamp(0.0, 1.0))
+            .sum();
+        lo = lo.min(base + mod_range * envelope_min);
+        hi = hi.max(base + mod_range * envelope_max);
         (
             ratio_of(lo.clamp(spec.min, spec.max)),
             ratio_of(hi.clamp(spec.min, spec.max)),
         )
     });
     SliderMarkers {
-        effective: (lfo.is_some() || envelope.is_some()).then(|| single(lfo, envelope)),
-        lfo: lfo.map(|r| single(Some(r), None)),
-        envelope: envelope.map(|r| single(None, Some(r))),
+        effective: (has_lfo || has_envelope).then(|| marker(lfos, envelopes)),
+        lfo: has_lfo.then(|| marker(lfos, &[])),
+        envelope: has_envelope.then(|| marker(&[], envelopes)),
         shadow,
     }
 }
@@ -850,11 +868,11 @@ fn lane_glyph(level: f32) -> &'static str {
     LANE_WAVE[((level * (LANE_WAVE.len() - 1) as f32).round() as usize).min(LANE_WAVE.len() - 1)]
 }
 
-/// Blank label-width prefix shared by every modulator lane line, so lane
-/// glyphs line up under the field label column.
-fn lane_prefix() -> Span<'static> {
+/// Label-width prefix shared by every modulator lane line, so stacked lanes
+/// identify themselves without moving their glyphs off the slider grid.
+fn lane_prefix(label: &str) -> Span<'static> {
     Span::styled(
-        format!("  {:<15} ", ""),
+        format!("  {label:<15} "),
         Style::default().fg(Color::Rgb(130, 136, 160)),
     )
 }
@@ -864,6 +882,7 @@ fn lane_prefix() -> Span<'static> {
 /// — 1 at the live head, falling toward 0 away from it — so each lane only
 /// describes its own trajectory and never its own brightness ramp or layout.
 fn lane_line(
+    label: &str,
     width: usize,
     active: bool,
     saturation: f32,
@@ -871,7 +890,7 @@ fn lane_line(
 ) -> Line<'static> {
     let floor = if active { 0.35 } else { 0.25 };
     let mut spans = Vec::with_capacity(width + 1);
-    spans.push(lane_prefix());
+    spans.push(lane_prefix(label));
     for i in 0..width {
         let (level, hue, focus) = column(i);
         let brightness = (floor + focus.max(0.0) * 0.6).clamp(0.0, 1.0);
@@ -887,16 +906,27 @@ fn lane_line(
 /// width with a bright head at the current phase. Random shapes scroll the real
 /// generated trajectory right-to-left, head at "now" on the right edge, so what
 /// the lane shows is exactly what the engine plays.
+#[cfg(test)]
 pub(crate) fn lfo_lane_line(
     route: &LfoRoute,
     beat: f64,
     width: usize,
     active: bool,
 ) -> Line<'static> {
+    lfo_lane_line_with_label(route, beat, width, active, "LFO")
+}
+
+fn lfo_lane_line_with_label(
+    route: &LfoRoute,
+    beat: f64,
+    width: usize,
+    active: bool,
+    label: &str,
+) -> Line<'static> {
     let width = width.clamp(6, 80);
     if route.shape.is_random() {
         let window = f64::from(route.cycle_beats.max(MIN_LFO_CYCLE_BEATS) * RANDOM_LANE_CYCLES);
-        return lane_line(width, active, 0.6, |i| {
+        return lane_line(label, width, active, 0.6, |i| {
             let age = (width - 1 - i) as f64 / width as f64;
             let wave = route.wave_at(beat - age * window) * route.depth_ratio;
             (
@@ -908,7 +938,7 @@ pub(crate) fn lfo_lane_line(
     }
 
     let head = (route.pattern_phase_at(beat) * width as f64) as usize % width;
-    lane_line(width, active, 0.6, |i| {
+    lane_line(label, width, active, 0.6, |i| {
         let phase = i as f32 / width as f32;
         let wave = route.shape_value_at_phase(phase) * route.depth_ratio;
         // One cycle wraps, so the head's falloff wraps with it.
@@ -924,17 +954,18 @@ pub(crate) fn lfo_lane_line(
 
 /// Envelope lane: the one-shot AD ramp across one trigger period, with a bright
 /// head at the live phase. Uses the same `level_at` math as the engine.
-pub(crate) fn env_lane_line(
+fn env_lane_line_with_label(
     route: &EnvelopeRoute,
     ctx: ModContext,
     width: usize,
     active: bool,
+    label: &str,
 ) -> Line<'static> {
     let width = width.clamp(6, 80);
     let window = f64::from(route.window_beats());
     let head = ((route.lane_head_phase(ctx) * width as f32) as usize).min(width - 1);
     let hue = if route.amount >= 0.0 { 150.0 } else { 15.0 };
-    lane_line(width, active, 0.55, |i| {
+    lane_line(label, width, active, 0.55, |i| {
         let col_since = (i as f64 / width as f64 * window) as f32;
         (
             route.level_for_lane(col_since) * route.amount.abs(),

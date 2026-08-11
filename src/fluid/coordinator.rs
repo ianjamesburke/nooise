@@ -125,7 +125,8 @@ pub(crate) fn coordinate_production_event(
     let mut quit = false;
     for _ in 0..*repeat_count {
         let automation_selected = model.automation_selected();
-        if let interaction::Intent::OpenAutomation(kind) = action.intent
+        if let interaction::Intent::OpenAutomation(kind) | interaction::Intent::AddAutomation(kind) =
+            action.intent
             && !automation_kind_is_supported(selected_control, kind)
         {
             break;

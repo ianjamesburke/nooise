@@ -1,7 +1,6 @@
-//! Modulation routes keyed by stable control ID. Each route family owns its
-//! own submodule; this root owns the address vocabulary they share, the
-//! `AutomationState` that stores both, and the summing that turns them
-//! into the value the engine plays.
+//! Bounded automation stacks keyed by stable control ID. Each route family
+//! owns its submodule; this root owns shared addresses, lane storage,
+//! position-space summing, and the audio-side de-clicker.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -254,120 +253,130 @@ fn morph_scalar_route<T: Copy>(
 struct OpenEditor {
     address: ControlAddress,
     kind: ModKind,
+    index: usize,
+}
+
+pub(crate) const MAX_AUTOMATION_LANES_PER_KIND: usize = 4;
+
+#[derive(Clone, Default, PartialEq)]
+struct AutomationStack {
+    lfos: Vec<LfoRoute>,
+    envelopes: Vec<EnvelopeRoute>,
 }
 
 #[derive(Clone, Default, PartialEq)]
 pub(crate) struct AutomationState {
-    routes: BTreeMap<ControlAddress, LfoRoute>,
-    envelopes: BTreeMap<ControlAddress, EnvelopeRoute>,
+    stacks: BTreeMap<ControlAddress, AutomationStack>,
     open: Option<OpenEditor>,
 }
 
-/// One family of modulation route stored on `AutomationState`. The two
-/// families differ only in which map they live in, how a fresh route is
-/// seeded, and what counts as neutral, so every accessor and the close-time
-/// prune below is written once against this instead of three times.
-pub(super) trait Route: Copy + Sized + 'static {
-    const KIND: ModKind;
-
-    fn map(state: &AutomationState) -> &BTreeMap<ControlAddress, Self>;
-    fn map_mut(state: &mut AutomationState) -> &mut BTreeMap<ControlAddress, Self>;
-    /// The route the editor creates when opened on a control with none.
-    fn fresh(address: ControlAddress) -> Self;
-    /// A neutral route contributes nothing; closing its editor prunes it.
-    fn is_neutral(&self) -> bool;
-}
-
-impl Route for LfoRoute {
-    const KIND: ModKind = ModKind::Lfo;
-
-    fn map(state: &AutomationState) -> &BTreeMap<ControlAddress, Self> {
-        &state.routes
-    }
-
-    fn map_mut(state: &mut AutomationState) -> &mut BTreeMap<ControlAddress, Self> {
-        &mut state.routes
-    }
-
-    fn fresh(address: ControlAddress) -> Self {
-        Self::with_seed(seed_for_id(address.id()))
-    }
-
-    fn is_neutral(&self) -> bool {
-        self.depth_ratio <= f32::EPSILON
-    }
-}
-
-impl Route for EnvelopeRoute {
-    const KIND: ModKind = ModKind::Envelope;
-
-    fn map(state: &AutomationState) -> &BTreeMap<ControlAddress, Self> {
-        &state.envelopes
-    }
-
-    fn map_mut(state: &mut AutomationState) -> &mut BTreeMap<ControlAddress, Self> {
-        &mut state.envelopes
-    }
-
-    fn fresh(_address: ControlAddress) -> Self {
-        Self::default()
-    }
-
-    fn is_neutral(&self) -> bool {
-        self.amount.abs() <= f32::EPSILON
-    }
-}
-
 impl AutomationState {
-    fn open_or_create_route<R: Route>(&mut self, address: ControlAddress) -> &mut R {
-        self.open = Some(OpenEditor {
-            address,
-            kind: R::KIND,
-        });
-        R::map_mut(self)
-            .entry(address)
-            .or_insert_with(|| R::fresh(address))
-    }
-
-    fn route_of<R: Route>(&self, address: ControlAddress) -> Option<&R> {
-        R::map(self).get(&address)
-    }
-
-    fn route_of_mut<R: Route>(&mut self, address: ControlAddress) -> Option<&mut R> {
-        R::map_mut(self).get_mut(&address)
-    }
-
-    fn set_route_of<R: Route>(&mut self, address: ControlAddress, route: R) {
-        R::map_mut(self).insert(address, route);
-    }
-
-    fn routes_of<R: Route>(&self) -> impl Iterator<Item = (ControlAddress, &R)> {
-        R::map(self)
-            .iter()
-            .map(|(address, route)| (*address, route))
-    }
-
-    fn remove_route_of<R: Route>(&mut self, address: ControlAddress) {
-        R::map_mut(self).remove(&address);
-    }
-
-    /// Drop the route if it is neutral; a route left contributing nothing is
-    /// dead weight that would still colour the UI and the song code.
-    fn prune_neutral_route<R: Route>(&mut self, address: ControlAddress) {
-        if R::map(self).get(&address).is_some_and(R::is_neutral) {
-            R::map_mut(self).remove(&address);
+    fn remove_stack_if_empty(&mut self, address: ControlAddress) {
+        if self
+            .stacks
+            .get(&address)
+            .is_some_and(|stack| stack.lfos.is_empty() && stack.envelopes.is_empty())
+        {
+            self.stacks.remove(&address);
         }
     }
 
     pub(crate) fn open_or_create(&mut self, address: ControlAddress) -> &mut LfoRoute {
-        self.open_or_create_route(address)
+        self.open = Some(OpenEditor {
+            address,
+            kind: ModKind::Lfo,
+            index: 0,
+        });
+        let stack = self.stacks.entry(address).or_default();
+        if stack.lfos.is_empty() {
+            stack
+                .lfos
+                .push(LfoRoute::with_seed(seed_for_id(address.id())));
+        }
+        &mut stack.lfos[0]
     }
 
     pub(crate) fn open_or_create_envelope(
         &mut self,
         address: ControlAddress,
     ) -> &mut EnvelopeRoute {
-        self.open_or_create_route(address)
+        self.open = Some(OpenEditor {
+            address,
+            kind: ModKind::Envelope,
+            index: 0,
+        });
+        let stack = self.stacks.entry(address).or_default();
+        if stack.envelopes.is_empty() {
+            stack.envelopes.push(EnvelopeRoute::default());
+        }
+        &mut stack.envelopes[0]
+    }
+
+    pub(crate) fn add_route(&mut self, address: ControlAddress, route: LfoRoute) -> bool {
+        let stack = self.stacks.entry(address).or_default();
+        if stack.lfos.len() >= MAX_AUTOMATION_LANES_PER_KIND {
+            return false;
+        }
+        stack.lfos.push(route);
+        true
+    }
+
+    pub(crate) fn add_envelope(&mut self, address: ControlAddress, route: EnvelopeRoute) -> bool {
+        let stack = self.stacks.entry(address).or_default();
+        if stack.envelopes.len() >= MAX_AUTOMATION_LANES_PER_KIND {
+            return false;
+        }
+        stack.envelopes.push(route);
+        true
+    }
+
+    pub(crate) fn add_and_open(&mut self, address: ControlAddress, kind: ModKind) -> bool {
+        let index = match kind {
+            ModKind::Lfo => self.routes_for(address).count(),
+            ModKind::Envelope => self.envelopes_for(address).count(),
+        };
+        let added = match kind {
+            ModKind::Lfo => self.add_route(
+                address,
+                LfoRoute::with_seed(seed_for_id(address.id()).wrapping_add(index as u32)),
+            ),
+            ModKind::Envelope => self.add_envelope(address, EnvelopeRoute::default()),
+        };
+        if added {
+            self.open = Some(OpenEditor {
+                address,
+                kind,
+                index,
+            });
+        }
+        added
+    }
+
+    pub(crate) fn cycle_open(&mut self, address: ControlAddress, kind: ModKind) {
+        let len = match kind {
+            ModKind::Lfo => self.routes_for(address).count(),
+            ModKind::Envelope => self.envelopes_for(address).count(),
+        };
+        if len == 0 {
+            match kind {
+                ModKind::Lfo => {
+                    self.open_or_create(address);
+                }
+                ModKind::Envelope => {
+                    self.open_or_create_envelope(address);
+                }
+            }
+            return;
+        }
+        let next = self
+            .open
+            .filter(|open| open.address == address && open.kind == kind)
+            .map_or(0, |open| (open.index + 1) % len);
+        self.open = Some(OpenEditor {
+            address,
+            kind,
+            index: next,
+        });
     }
 
     /// Remove the route backing the open editor and close it. The x gesture:
@@ -376,16 +385,23 @@ impl AutomationState {
         let Some(open) = self.open.take() else {
             return;
         };
-        match open.kind {
-            ModKind::Lfo => self.remove_route_of::<LfoRoute>(open.address),
-            ModKind::Envelope => self.remove_route_of::<EnvelopeRoute>(open.address),
+        if let Some(stack) = self.stacks.get_mut(&open.address) {
+            match open.kind {
+                ModKind::Lfo if open.index < stack.lfos.len() => {
+                    stack.lfos.remove(open.index);
+                }
+                ModKind::Envelope if open.index < stack.envelopes.len() => {
+                    stack.envelopes.remove(open.index);
+                }
+                ModKind::Lfo | ModKind::Envelope => {}
+            }
         }
+        self.remove_stack_if_empty(open.address);
     }
 
     /// Strip every modulator from a control, closing the editor if it was open.
     pub(crate) fn clear_control(&mut self, address: ControlAddress) {
-        self.routes.remove(&address);
-        self.envelopes.remove(&address);
+        self.stacks.remove(&address);
         if self.open.is_some_and(|open| open.address == address) {
             self.open = None;
         }
@@ -397,10 +413,28 @@ impl AutomationState {
         let Some(open) = self.open.take() else {
             return;
         };
-        match open.kind {
-            ModKind::Lfo => self.prune_neutral_route::<LfoRoute>(open.address),
-            ModKind::Envelope => self.prune_neutral_route::<EnvelopeRoute>(open.address),
+        if let Some(stack) = self.stacks.get_mut(&open.address) {
+            match open.kind {
+                ModKind::Lfo
+                    if stack
+                        .lfos
+                        .get(open.index)
+                        .is_some_and(|route| route.depth_ratio <= f32::EPSILON) =>
+                {
+                    stack.lfos.remove(open.index);
+                }
+                ModKind::Envelope
+                    if stack
+                        .envelopes
+                        .get(open.index)
+                        .is_some_and(|route| route.amount.abs() <= f32::EPSILON) =>
+                {
+                    stack.envelopes.remove(open.index);
+                }
+                ModKind::Lfo | ModKind::Envelope => {}
+            }
         }
+        self.remove_stack_if_empty(open.address);
     }
 
     pub(crate) fn is_editor_open(&self) -> bool {
@@ -415,44 +449,113 @@ impl AutomationState {
         self.open.map(|open| open.kind)
     }
 
+    pub(crate) fn active_lane_index(&self) -> Option<usize> {
+        self.open.map(|open| open.index)
+    }
+
+    pub(crate) fn active_lane_count(&self) -> Option<usize> {
+        let open = self.open?;
+        Some(match open.kind {
+            ModKind::Lfo => self.routes_for(open.address).count(),
+            ModKind::Envelope => self.envelopes_for(open.address).count(),
+        })
+    }
+
     pub(crate) fn route(&self, address: ControlAddress) -> Option<&LfoRoute> {
-        self.route_of(address)
+        let index = self
+            .open
+            .filter(|open| open.address == address && open.kind == ModKind::Lfo)
+            .map_or(0, |open| open.index);
+        self.stacks.get(&address)?.lfos.get(index)
     }
 
     pub(crate) fn route_mut(&mut self, address: ControlAddress) -> Option<&mut LfoRoute> {
-        self.route_of_mut(address)
+        let index = self
+            .open
+            .filter(|open| open.address == address && open.kind == ModKind::Lfo)
+            .map_or(0, |open| open.index);
+        self.stacks.get_mut(&address)?.lfos.get_mut(index)
     }
 
+    #[cfg(test)]
     pub(crate) fn set_route(&mut self, address: ControlAddress, route: LfoRoute) {
-        self.set_route_of(address, route);
+        let routes = &mut self.stacks.entry(address).or_default().lfos;
+        if let Some(first) = routes.first_mut() {
+            *first = route;
+        } else {
+            routes.push(route);
+        }
     }
 
     pub(crate) fn routes(&self) -> impl Iterator<Item = (ControlAddress, &LfoRoute)> {
-        self.routes_of()
+        self.stacks
+            .iter()
+            .flat_map(|(address, stack)| stack.lfos.iter().map(move |route| (*address, route)))
+    }
+
+    pub(crate) fn routes_for(&self, address: ControlAddress) -> impl Iterator<Item = &LfoRoute> {
+        self.stacks
+            .get(&address)
+            .into_iter()
+            .flat_map(|stack| stack.lfos.iter())
+    }
+
+    pub(crate) fn lfo_lanes(&self, address: ControlAddress) -> &[LfoRoute] {
+        self.stacks
+            .get(&address)
+            .map_or(&[], |stack| stack.lfos.as_slice())
     }
 
     pub(crate) fn envelope(&self, address: ControlAddress) -> Option<&EnvelopeRoute> {
-        self.route_of(address)
+        let index = self
+            .open
+            .filter(|open| open.address == address && open.kind == ModKind::Envelope)
+            .map_or(0, |open| open.index);
+        self.stacks.get(&address)?.envelopes.get(index)
     }
 
     pub(crate) fn envelope_mut(&mut self, address: ControlAddress) -> Option<&mut EnvelopeRoute> {
-        self.route_of_mut(address)
+        let index = self
+            .open
+            .filter(|open| open.address == address && open.kind == ModKind::Envelope)
+            .map_or(0, |open| open.index);
+        self.stacks.get_mut(&address)?.envelopes.get_mut(index)
     }
 
+    #[cfg(test)]
     pub(crate) fn set_envelope(&mut self, address: ControlAddress, route: EnvelopeRoute) {
-        self.set_route_of(address, route);
+        let routes = &mut self.stacks.entry(address).or_default().envelopes;
+        if let Some(first) = routes.first_mut() {
+            *first = route;
+        } else {
+            routes.push(route);
+        }
     }
 
     pub(crate) fn envelopes(&self) -> impl Iterator<Item = (ControlAddress, &EnvelopeRoute)> {
-        self.routes_of()
+        self.stacks
+            .iter()
+            .flat_map(|(address, stack)| stack.envelopes.iter().map(move |route| (*address, route)))
+    }
+
+    pub(crate) fn envelopes_for(
+        &self,
+        address: ControlAddress,
+    ) -> impl Iterator<Item = &EnvelopeRoute> {
+        self.stacks
+            .get(&address)
+            .into_iter()
+            .flat_map(|stack| stack.envelopes.iter())
+    }
+
+    pub(crate) fn envelope_lanes(&self, address: ControlAddress) -> &[EnvelopeRoute] {
+        self.stacks
+            .get(&address)
+            .map_or(&[], |stack| stack.envelopes.as_slice())
     }
 
     fn modulated_addresses(&self) -> BTreeSet<ControlAddress> {
-        self.routes
-            .keys()
-            .chain(self.envelopes.keys())
-            .copied()
-            .collect()
+        self.stacks.keys().copied().collect()
     }
 
     /// Morphed automation state for a leg transition between `from` and `to`,
@@ -475,35 +578,47 @@ impl AutomationState {
         use_to: bool,
     ) -> AutomationState {
         let mut result = AutomationState::default();
-        morph_map(&from.routes, &to.routes, &mut result.routes, |f, t| {
-            LfoRoute::morph(f, t, tt, use_to)
-        });
-        morph_map(
-            &from.envelopes,
-            &to.envelopes,
-            &mut result.envelopes,
-            |f, t| EnvelopeRoute::morph(f, t, tt, use_to),
-        );
+        let addresses: BTreeSet<_> = from
+            .stacks
+            .keys()
+            .chain(to.stacks.keys())
+            .copied()
+            .collect();
+        for address in addresses {
+            let from_stack = from.stacks.get(&address);
+            let to_stack = to.stacks.get(&address);
+            let mut stack = AutomationStack::default();
+            morph_lane_family(
+                from_stack.map_or(&[], |stack| stack.lfos.as_slice()),
+                to_stack.map_or(&[], |stack| stack.lfos.as_slice()),
+                &mut stack.lfos,
+                |f, t| LfoRoute::morph(f, t, tt, use_to),
+            );
+            morph_lane_family(
+                from_stack.map_or(&[], |stack| stack.envelopes.as_slice()),
+                to_stack.map_or(&[], |stack| stack.envelopes.as_slice()),
+                &mut stack.envelopes,
+                |f, t| EnvelopeRoute::morph(f, t, tt, use_to),
+            );
+            if !stack.lfos.is_empty() || !stack.envelopes.is_empty() {
+                result.stacks.insert(address, stack);
+            }
+        }
         result
     }
 }
 
-/// Merge two route maps across a leg transition: build the union of both
-/// sides' keys (kept in sorted order via `BTreeSet`, matching the previous
-/// per-map key-collection loops), then insert `morph(from, to)` for each key
-/// that yields a route. A key absent from the result (both morph inputs
-/// `None`, or `morph` returning `None`) is simply left out — this is how a
-/// route naturally disappears once both legs' endpoints lack it.
-fn morph_map<K: Ord + Clone, V>(
-    from: &BTreeMap<K, V>,
-    to: &BTreeMap<K, V>,
-    out: &mut BTreeMap<K, V>,
-    morph: impl Fn(Option<&V>, Option<&V>) -> Option<V>,
-) {
-    let keys: BTreeSet<&K> = from.keys().chain(to.keys()).collect();
-    for key in keys {
-        if let Some(route) = morph(from.get(key), to.get(key)) {
-            out.insert(key.clone(), route);
+fn morph_lane_family<T>(
+    from: &[T],
+    to: &[T],
+    out: &mut Vec<T>,
+    morph: impl Fn(Option<&T>, Option<&T>) -> Option<T>,
+) where
+    T: Copy,
+{
+    for index in 0..from.len().max(to.len()) {
+        if let Some(route) = morph(from.get(index), to.get(index)) {
+            out.push(route);
         }
     }
 }
@@ -514,8 +629,8 @@ fn morph_map<K: Ord + Clone, V>(
 /// what is heard.
 pub(crate) fn modulated_control_value_full(
     spec: &ControlSpec,
-    lfo: Option<&LfoRoute>,
-    envelope: Option<&EnvelopeRoute>,
+    lfos: &[LfoRoute],
+    envelopes: &[EnvelopeRoute],
     base: f32,
     ctx: ModContext,
 ) -> f32 {
@@ -524,13 +639,25 @@ pub(crate) fn modulated_control_value_full(
     // fixed musical amount: a flat offset in raw value space made "50%" swing
     // four octaves up from a low cutoff and nothing at all from a high one,
     // because the control's own taper was ignored.
-    let mut delta = 0.0;
-    if let Some(route) = lfo {
-        delta += route.wave_at(ctx.beat) * route.depth_ratio.clamp(0.0, 1.0);
-    }
-    if let Some(route) = envelope {
-        delta += route.level_at(ctx) * route.amount.clamp(-1.0, 1.0);
-    }
+    let delta = automation_delta(lfos, envelopes, ctx);
+    modulated_control_value_from_delta(spec, base, delta)
+}
+
+fn automation_delta(lfos: &[LfoRoute], envelopes: &[EnvelopeRoute], ctx: ModContext) -> f32 {
+    let lfo_delta: f32 = lfos
+        .iter()
+        .filter(|route| route.depth_ratio > f32::EPSILON)
+        .map(|route| route.wave_at(ctx.beat) * route.depth_ratio.clamp(0.0, 1.0))
+        .sum();
+    let envelope_delta: f32 = envelopes
+        .iter()
+        .filter(|route| route.amount.abs() > f32::EPSILON)
+        .map(|route| route.level_at(ctx) * route.amount.clamp(-1.0, 1.0))
+        .sum();
+    lfo_delta + envelope_delta
+}
+
+fn modulated_control_value_from_delta(spec: &ControlSpec, base: f32, delta: f32) -> f32 {
     let scale = DialScale::from_step(spec.min, spec.max, spec.step, spec.taper);
     // Grid and rung scales have no inverse, so they keep the value-space
     // offset. Their taper is Linear anyway, so nothing else changes.
@@ -553,15 +680,47 @@ pub(crate) fn modulated_control_value(
     base: f32,
     beat: f64,
 ) -> f32 {
-    modulated_control_value_full(spec, Some(route), None, base, ModContext::lfo_only(beat))
+    modulated_control_value_full(
+        spec,
+        std::slice::from_ref(route),
+        &[],
+        base,
+        ModContext::lfo_only(beat),
+    )
 }
 
 /// One modulated control's routes, resolved to plain copies so applying
 /// them per sample needs no map lookups, string keys, or heap.
 struct PlannedRoute {
+    address: ControlAddress,
     spec: &'static ControlSpec,
-    lfo: Option<LfoRoute>,
-    envelope: Option<EnvelopeRoute>,
+    lfos: Vec<LfoRoute>,
+    envelopes: Vec<EnvelopeRoute>,
+    smoothed_delta: Option<f32>,
+}
+
+pub(crate) const AUTOMATION_DECLICK_MS: f64 = 3.0;
+
+impl PlannedRoute {
+    fn next_delta(&mut self, target: f32, sample_rate: f64) -> f32 {
+        let Some(current) = self.smoothed_delta else {
+            self.smoothed_delta = Some(target);
+            return target;
+        };
+        let smoothing_samples = (AUTOMATION_DECLICK_MS * 0.001 * sample_rate).max(1.0);
+        let coefficient = 1.0 - (-1.0 / smoothing_samples).exp();
+        let next = current + (target - current) * coefficient as f32;
+        self.smoothed_delta = Some(next);
+        next
+    }
+
+    fn is_finished_fading(&self) -> bool {
+        self.lfos.is_empty()
+            && self.envelopes.is_empty()
+            && self
+                .smoothed_delta
+                .is_none_or(|delta| delta.abs() <= f32::EPSILON)
+    }
 }
 
 /// Allocation-free application plan for an `AutomationState`. The engine
@@ -574,41 +733,43 @@ pub(crate) struct AutomationPlan {
 
 impl AutomationPlan {
     pub(crate) fn rebuild(&mut self, automation: &AutomationState) {
-        self.routes.clear();
+        let mut previous = std::mem::take(&mut self.routes);
         let addresses = automation.modulated_addresses();
         for address in addresses {
-            let lfo = automation.route(address).copied();
+            let smoothed_delta = previous
+                .iter()
+                .position(|route| route.address == address)
+                .and_then(|index| previous.swap_remove(index).smoothed_delta);
             self.routes.push(PlannedRoute {
+                address,
                 spec: address.spec(),
-                lfo,
-                envelope: automation.envelope(address).copied(),
+                lfos: automation.routes_for(address).copied().collect(),
+                envelopes: automation.envelopes_for(address).copied().collect(),
+                smoothed_delta,
             });
+        }
+        for mut removed in previous {
+            removed.lfos.clear();
+            removed.envelopes.clear();
+            self.routes.push(removed);
         }
     }
 
-    pub(crate) fn apply(&self, controls: &mut FluidControls, timing: TimingContext) {
+    pub(crate) fn apply(&mut self, controls: &mut FluidControls, timing: TimingContext) {
         let ctx = ModContext {
             beat: timing.beat,
             kick_interval_beats: controls.kick.interval_beats,
             kick_offset_beats: controls.kick.offset_beats,
         };
-        for planned in &self.routes {
-            let lfo = planned
-                .lfo
-                .as_ref()
-                .filter(|route| route.depth_ratio > f32::EPSILON);
-            let envelope = planned
-                .envelope
-                .as_ref()
-                .filter(|route| route.amount.abs() > f32::EPSILON);
-            if lfo.is_none() && envelope.is_none() {
-                continue;
-            }
+        for planned in &mut self.routes {
+            let target_delta = automation_delta(&planned.lfos, &planned.envelopes, ctx);
+            let delta = planned.next_delta(target_delta, timing.sample_rate);
             let spec = planned.spec.contextual(controls);
             let base = (spec.get)(controls);
-            let value = modulated_control_value_full(&spec, lfo, envelope, base, ctx);
+            let value = modulated_control_value_from_delta(&spec, base, delta);
             (spec.set)(controls, value);
         }
+        self.routes.retain(|route| !route.is_finished_fading());
     }
 }
 
