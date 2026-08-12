@@ -166,21 +166,20 @@ impl KickVoice {
 }
 
 /// Shared FM body behind every `kick.type` voice: an exponential pitch glide
-/// from `start_freq` toward a per-type drop ratio, plus a sine modulator at a
-/// per-type carrier ratio whose depth decays ~3x faster than the pitch, which
-/// is what makes the onset read as a tight thud. Each variant supplies its own
-/// constants and shapes the returned carrier phase into a waveform itself, so
-/// carrier shape and any post-body filter stay per-type.
+/// from `start_freq` toward a per-type drop ratio, feeding a single
+/// modulator→carrier `FmStack` pair whose modulation index decays ~3x faster
+/// than the pitch, which is what makes the onset read as a tight thud. Each
+/// variant supplies its own constants and carrier waveform, so carrier shape
+/// and any post-body filter stay per-type.
+///
+/// The glide stays here rather than in `synth::fm` because it is a kick
+/// gesture, not an FM one: the stack takes a base frequency per sample and
+/// has no opinion about how the caller arrived at it.
 pub(crate) struct KickFmBody {
-    pub(crate) phase: f32,
-    pub(crate) mod_phase: f32,
     pub(crate) freq: f32,
     pub(crate) target_freq: f32,
     pub(crate) freq_glide: f32,
-    pub(crate) mod_ratio: f32,
-    pub(crate) fm_depth: f32,
-    pub(crate) fm_depth_decay: f32,
-    pub(crate) sample_rate: f32,
+    pub(crate) stack: FmStack,
 }
 
 impl KickFmBody {
@@ -190,44 +189,35 @@ impl KickFmBody {
         pitch_drop_ratio: f32,
         mod_ratio: f32,
         fm_depth: f32,
+        carrier_wave: FmWave,
     ) -> Self {
         let tau = (c.pitch_decay_ms * 0.001 * sample_rate / 3.0).max(1.0);
         let fm_tau = (c.pitch_decay_ms * 0.001 * sample_rate / 9.0).max(1.0);
         Self {
-            phase: 0.0,
-            mod_phase: 0.0,
             freq: c.start_freq,
             target_freq: c.start_freq * pitch_drop_ratio,
             freq_glide: 1.0 / tau,
-            mod_ratio,
-            fm_depth,
-            fm_depth_decay: (-1.0 / fm_tau).exp(),
-            sample_rate,
+            stack: FmStack::new(sample_rate).with_pair(
+                FmPair::new(mod_ratio, KICK_CARRIER_RATIO, fm_depth)
+                    .with_wave(carrier_wave)
+                    .with_index_decay(fm_tau),
+            ),
         }
     }
 
-    /// Advances the glide, the modulator, and the carrier by one sample and
-    /// returns the carrier phase. FM can push that phase outside `[0, TAU)`, so
-    /// a caller's waveform shaper must be well-defined for any value.
+    /// Advances the glide and the FM pair by one sample and returns the
+    /// shaped body sample.
     #[inline]
-    pub(crate) fn next_phase(&mut self) -> f32 {
+    pub(crate) fn next(&mut self) -> f32 {
         self.freq += (self.target_freq - self.freq) * self.freq_glide;
-
-        let mod_freq = self.freq * self.mod_ratio;
-        self.mod_phase += TAU * mod_freq / self.sample_rate;
-        if self.mod_phase >= TAU {
-            self.mod_phase -= TAU;
-        }
-        let fm = self.mod_phase.sin() * self.fm_depth * self.freq;
-        self.fm_depth *= self.fm_depth_decay;
-
-        self.phase += TAU * (self.freq + fm) / self.sample_rate;
-        if self.phase >= TAU {
-            self.phase -= TAU;
-        }
-        self.phase
+        self.stack.next(self.freq)
     }
 }
+
+/// Every kick carrier sounds at the glided pitch itself; the glide, not a
+/// carrier ratio, is what moves this voice. Formant-style timbres are what
+/// the carrier ratio exists for.
+const KICK_CARRIER_RATIO: f32 = 1.0;
 
 /// One-pole lowpass mapped exponentially from `kick.filter`, shared by every
 /// type that ends in a lowpass (Sub, Warm, Felt). `bias` shifts the same
@@ -285,6 +275,7 @@ impl SubKickVoice {
                 KICK_SUB_PITCH_DROP_RATIO,
                 KICK_SUB_FM_MOD_RATIO,
                 KICK_SUB_FM_DEPTH,
+                FmWave::Sine,
             ),
             lowpass: KickLowPass::new(c.filter, KICK_SUB_FILTER_BIAS),
         }
@@ -295,7 +286,7 @@ impl SubKickVoice {
             return (0.0, 0.0);
         }
 
-        let body = self.body.next_phase().sin();
+        let body = self.body.next();
         let s = self.lowpass.process(self.core.shape(body, rng));
 
         (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
@@ -327,8 +318,10 @@ const KICK_WARM_ATTACK_MS: f32 = 6.0;
 /// The broadband onset noise burst is the single most aggressive-sounding
 /// element of a kick; scaled well down from the user's `kick.click`.
 const KICK_WARM_CLICK_SCALE: f32 = 0.45;
-/// Output trim: matches Sub's perceived loudness at the same `kick.level`.
-const KICK_WARM_OUTPUT_GAIN: f32 = 0.9;
+/// Output trim: brings this voice to Sub's rendered level at the same
+/// `kick.level`. Measured, not chosen by ear —
+/// `kick_types_render_at_a_matched_level` pins it.
+const KICK_WARM_OUTPUT_GAIN: f32 = 1.11;
 
 /// Type 1: a warm, round FM body. Same FM-thud/pitch-glide approach as Sub,
 /// but with a shallow FM depth at a hollow, woody modulator ratio, a slightly
@@ -356,6 +349,7 @@ impl WarmKickVoice {
                 KICK_WARM_PITCH_DROP_RATIO,
                 KICK_WARM_FM_MOD_RATIO,
                 KICK_WARM_FM_DEPTH,
+                FmWave::Sine,
             ),
             lowpass: KickLowPass::new(c.filter, KICK_WARM_FILTER_BIAS),
         }
@@ -366,7 +360,7 @@ impl WarmKickVoice {
             return (0.0, 0.0);
         }
 
-        let body = self.body.next_phase().sin();
+        let body = self.body.next();
         let s = self
             .lowpass
             .process(self.core.shape(body, rng) * KICK_WARM_OUTPUT_GAIN);
@@ -401,11 +395,30 @@ const KICK_WOOD_ATTACK_MS: f32 = 5.0;
 /// Scales the user's `kick.click` down; the broadband burst fights the soft
 /// wooden body.
 const KICK_WOOD_CLICK_SCALE: f32 = 0.35;
-/// Output trim: the heavily-damped bandpass has no resonant peak to make up
-/// for and sheds most of the carrier's energy, so even blended against the
-/// dry signal this needs a substantial boost to sit at Sub's perceived
-/// loudness.
-const KICK_WOOD_OUTPUT_GAIN: f32 = 1.7;
+/// Output trim, and the only one of the four that cannot be a constant.
+///
+/// How much energy the bandpass passes depends on how far its center sits
+/// from where the body's energy actually is, and the body is low: it starts
+/// at `start_freq` and glides down to a third of that. A low center therefore
+/// sits right on the fundamental and passes nearly all of it, while a high
+/// center passes a fraction — so Wood ran more than twice as loud dark as it
+/// did bright, and *inverted* against the other three types, which all get
+/// louder as `kick.filter` opens up. Sweeping the control changed the balance
+/// of the mix rather than only its color.
+///
+/// The curve below is an empirical fit against measured output at four
+/// filter positions, not a derived law — there is no closed form for the
+/// overlap between the bandpass and the glide's moving spectrum.
+/// `kick_types_render_at_a_matched_level` pins it at each of those positions,
+/// so retuning the timbre cannot silently drift the balance back.
+const KICK_WOOD_OUTPUT_GAIN_AT_DARKEST: f32 = 0.78;
+const KICK_WOOD_OUTPUT_GAIN_SPAN: f32 = 1.91;
+const KICK_WOOD_OUTPUT_GAIN_CURVE: f32 = 0.7;
+
+fn kick_wood_output_gain(filter: f32) -> f32 {
+    KICK_WOOD_OUTPUT_GAIN_AT_DARKEST
+        * (1.0 + KICK_WOOD_OUTPUT_GAIN_SPAN * filter.powf(KICK_WOOD_OUTPUT_GAIN_CURVE))
+}
 
 /// Type 2: a soft wooden body. Runs the dry voice signal through a
 /// hand-rolled, heavily-damped 2-pole bandpass (Chamberlin state-variable
@@ -419,6 +432,7 @@ pub(crate) struct WoodKickVoice {
     pub(crate) svf_low: f32,
     pub(crate) svf_band: f32,
     pub(crate) svf_f: f32,
+    pub(crate) output_gain: f32,
 }
 
 impl WoodKickVoice {
@@ -444,10 +458,12 @@ impl WoodKickVoice {
                 KICK_WOOD_PITCH_DROP_RATIO,
                 KICK_SUB_FM_MOD_RATIO,
                 KICK_SUB_FM_DEPTH,
+                FmWave::Sine,
             ),
             svf_low: 0.0,
             svf_band: 0.0,
             svf_f,
+            output_gain: kick_wood_output_gain(filter),
         }
     }
 
@@ -456,7 +472,7 @@ impl WoodKickVoice {
             return (0.0, 0.0);
         }
 
-        let body = self.body.next_phase().sin();
+        let body = self.body.next();
         let dry = self.core.shape(body, rng);
 
         // Chamberlin state-variable filter, bandpass output: two running
@@ -466,7 +482,7 @@ impl WoodKickVoice {
         self.svf_band += self.svf_f * high;
         self.svf_low += self.svf_f * self.svf_band;
         let s = (self.svf_band * KICK_WOOD_BANDPASS_MIX + dry * (1.0 - KICK_WOOD_BANDPASS_MIX))
-            * KICK_WOOD_OUTPUT_GAIN;
+            * self.output_gain;
 
         (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
     }
@@ -491,8 +507,10 @@ const KICK_FELT_ATTACK_MS: f32 = 8.0;
 /// Scales the user's `kick.click` furthest down; a felt beater has almost no
 /// broadband contact noise.
 const KICK_FELT_CLICK_SCALE: f32 = 0.25;
-/// Output trim: matches Sub's perceived loudness at the same `kick.level`.
-const KICK_FELT_OUTPUT_GAIN: f32 = 0.95;
+/// Output trim: brings this voice to Sub's rendered level at the same
+/// `kick.level`. Measured, not chosen by ear —
+/// `kick_types_render_at_a_matched_level` pins it.
+const KICK_FELT_OUTPUT_GAIN: f32 = 1.36;
 
 /// Type 3: a soft mallet/felt character. Swaps Sub's sine carrier for a naive
 /// (non-band-limited, consistent with this codebase's additive-approximation
@@ -523,6 +541,7 @@ impl FeltKickVoice {
                 KICK_FELT_PITCH_DROP_RATIO,
                 KICK_SUB_FM_MOD_RATIO,
                 KICK_FELT_FM_DEPTH,
+                FmWave::Triangle,
             ),
             lowpass: KickLowPass::new(c.filter, KICK_FELT_FILTER_BIAS),
         }
@@ -533,11 +552,7 @@ impl FeltKickVoice {
             return (0.0, 0.0);
         }
 
-        // Naive bipolar triangle from the (FM-modulated) phase. Written to be
-        // well-defined for any phase value, since FM can push the carrier phase
-        // outside the wrapped [0, TAU) range.
-        let t = self.body.next_phase() / TAU;
-        let body = 4.0 * (t - (t + 0.5).floor()).abs() - 1.0;
+        let body = self.body.next();
         let s = self
             .lowpass
             .process(self.core.shape(body, rng) * KICK_FELT_OUTPUT_GAIN);
@@ -574,4 +589,89 @@ mod tests {
         kick.next(&controls, TimingContext::new(48_000.0, 120.0, 0.75));
         assert_eq!(telemetry.kick_pulse.load(Ordering::Relaxed), 2);
     }
+
+    /// Renders one hit of a single kick type and returns its per-sample
+    /// stereo magnitude. The RNG is reseeded identically per type so the pan
+    /// position and click noise are the same draw for all four, leaving the
+    /// voice's own character as the only difference between them.
+    fn render_one_hit(voice_type: usize, filter: f32) -> Vec<f32> {
+        const SAMPLE_RATE: f32 = 48_000.0;
+        let controls = KickControls {
+            level: 1.0,
+            filter,
+            ..KickControls::default()
+        };
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut voice = KickVoice::new(voice_type, &controls, SAMPLE_RATE, &mut rng);
+
+        let mut rendered = Vec::new();
+        while !voice.is_done() && rendered.len() < SAMPLE_RATE as usize {
+            let (left, right) = voice.next(&mut rng);
+            rendered.push((left * left + right * right).sqrt());
+        }
+        rendered
+    }
+
+    /// Switching `kick.type` is a change of character, not of level: all four
+    /// must land at the same rendered loudness for the same `kick.level`, or
+    /// the selector doubles as a hidden volume control and every song needs
+    /// its Level re-balanced after an audition.
+    ///
+    /// Matched on RMS rather than peak: peak is set by a single transient
+    /// sample and these four types deliberately differ in transient hardness,
+    /// while RMS is what a listener balances against the rest of the mix.
+    ///
+    /// This test is what makes the per-type output trims maintainable. They
+    /// were previously constants chosen by ear with nothing verifying them,
+    /// which is how Wood came to run at more than twice Sub's level at a dark
+    /// `kick.filter` without anyone noticing.
+    #[test]
+    fn kick_types_render_at_a_matched_level() {
+        // Loudness is checked across the filter sweep, not just at the
+        // default: Wood's bandpass center moves with `kick.filter`, so a
+        // single-position check would pass while the sweep stayed unbalanced.
+        for filter in [0.0, 0.35, 0.7, 1.0] {
+            let reference = crate::synth::fm::rms(&render_one_hit(0, filter));
+
+            for (voice_type, label) in KICK_TYPES.iter().enumerate().skip(1) {
+                let level = crate::synth::fm::rms(&render_one_hit(voice_type, filter));
+                let ratio = level / reference;
+                assert!(
+                    (ratio - 1.0).abs() <= MATCHED_LEVEL_TOLERANCE,
+                    "kick type {voice_type} ({label}) renders at {ratio:.2}x Sub at \
+                     filter {filter}; retune its output trim",
+                );
+            }
+        }
+    }
+
+    /// Matching on RMS lets a peakier type sit higher in absolute terms —
+    /// Wood especially, since its bandpass concentrates energy into a
+    /// narrower band. That is intended, but it must stay bounded: an
+    /// unchecked peak eats the headroom the shared Drive and Master bus
+    /// expect to have.
+    #[test]
+    fn no_kick_type_exceeds_the_headroom_budget() {
+        for filter in [0.0, 0.35, 0.7, 1.0] {
+            for (voice_type, label) in KICK_TYPES.iter().enumerate() {
+                let peak = render_one_hit(voice_type, filter)
+                    .into_iter()
+                    .fold(0.0f32, f32::max);
+                assert!(
+                    peak <= MAX_KICK_PEAK,
+                    "kick type {voice_type} ({label}) peaks at {peak:.2} at filter {filter}",
+                );
+            }
+        }
+    }
+
+    /// Deliberately wider than the ~5% the four types actually sit within, so
+    /// the test pins the balance without failing on the last digit of a trim.
+    /// Felt is the widest at 14% under Sub mid-sweep; its filter response has
+    /// a different shape from Sub's and closing that would need a second
+    /// empirical curve for a difference at the edge of audibility.
+    const MATCHED_LEVEL_TOLERANCE: f32 = 0.15;
+    /// Headroom ceiling at `kick.level` 1.0, above the loudest type's
+    /// measured peak with room for the trims to move.
+    const MAX_KICK_PEAK: f32 = 1.8;
 }

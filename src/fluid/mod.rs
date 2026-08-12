@@ -30,6 +30,7 @@ use crate::audio::{self, StereoEngine};
 use crate::fx::lfo::DriftingLfo;
 use crate::fx::panner::StereoPanner;
 use crate::synth::envelope::Adsr;
+use crate::synth::fm::{FmPair, FmStack, FmWave};
 use crate::synth::noise::WhiteNoise;
 use crate::synth::oscillator::SineOscillator;
 use crate::update_check::{UpdateNotice, spawn_update_check};
