@@ -1240,7 +1240,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
 /// order. A control's `max` is `last_index_of` its own table, so a table and
 /// its slider range can never disagree.
 pub(crate) const BASS_TYPES: &[&str] = &["Sub", "Saw", "Pluck"];
-pub(crate) const PAD_TYPES: &[&str] = &["Warm", "Dark", "Glass"];
+pub(crate) const PAD_TYPES: &[&str] = &["Warm", "Dark", "Glass", "Choir", "Hollow", "Tape"];
 pub(crate) const KICK_TYPES: &[&str] = &["Sub", "Warm", "Wood", "Felt"];
 pub(crate) const TONAL_SYNTH_TYPES: &[&str] = &[
     "Sine",

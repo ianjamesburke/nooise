@@ -88,7 +88,7 @@ pub(crate) const CHORD_SLOT_COUNT: usize = 8;
 #[derive(Clone)]
 pub(crate) struct PadControls {
     pub(crate) level: f32,
-    pub(crate) voice_type: f32, // 0=Warm (legacy), 1=Dark, 2=Glass character selector
+    pub(crate) voice_type: f32, // Character selector; labels and range live in PAD_TYPES.
     pub(crate) chord_bars: f32, // 1,2,4,8,16,32,64
     pub(crate) chord_count: f32,
     pub(crate) progression: f32,

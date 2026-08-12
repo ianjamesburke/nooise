@@ -21,7 +21,8 @@ pub(crate) struct PadEngine {
 
 impl PadEngine {
     pub(crate) fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<FluidTelemetry>) -> Self {
-        let initial_notes = pad_chord_midi(0, 0);
+        let active_progression = progression_index(c.progression);
+        let initial_notes = pad_chord_tones(c, active_progression, 0);
         Self {
             sample_rate,
             layers: vec![PadLayer::new(
@@ -34,7 +35,7 @@ impl PadEngine {
             )],
             chord_trigger: GridTrigger::after_start(),
             step_index: 0,
-            active_progression: progression_index(c.progression),
+            active_progression,
             active_chord_count: pad_chord_count(c),
             last_chord_notes: initial_notes,
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
@@ -212,6 +213,18 @@ const PAD_GLASS_SHIMMER_MIX: f32 = 0.09;
 /// Output trim compensating for the shimmer layer's added energy so Glass
 /// sits at a comparable perceived level to Warm/Dark.
 const PAD_GLASS_OUTPUT_GAIN: f32 = 0.93;
+/// Fixed upper-partial range for Choir's gently moving breath layer.
+const PAD_CHOIR_PARTIAL_MIX_MIN: f32 = 0.04;
+const PAD_CHOIR_PARTIAL_MIX_RANGE: f32 = 0.07;
+const PAD_CHOIR_OUTPUT_GAIN: f32 = 0.94;
+/// Hollow pulls the shared stack back and replaces some energy with a
+/// sub-octave sine, leaving a quieter center beneath the chord.
+const PAD_HOLLOW_STACK_MIX: f32 = 0.82;
+const PAD_HOLLOW_SUB_MIX: f32 = 0.18;
+const PAD_HOLLOW_OUTPUT_GAIN: f32 = 1.1;
+/// Tape rounds the stack and adds a slow, shallow level drift.
+const PAD_TAPE_LOWPASS_COEFF: f32 = 0.32;
+const PAD_TAPE_OUTPUT_GAIN: f32 = 1.16;
 
 /// The one thing a `pad.type` character adds between the shared oscillator
 /// stack and the soft-clipper. Warm — the legacy tone — adds nothing, so its
@@ -225,6 +238,18 @@ pub(crate) enum PadStage {
     /// Glass: a quiet fixed oscillator two octaves above the fundamental,
     /// added for upper harmonic content.
     Shimmer { oscillator: SineOscillator },
+    /// Choir: a quiet third harmonic swells independently behind each tone.
+    Choir {
+        partial: SineOscillator,
+        movement: SineOscillator,
+    },
+    /// Hollow: a sub-octave sine replaces part of the shared stack.
+    Hollow { sub: SineOscillator },
+    /// Tape: a fixed lowpass and slow level drift soften the shared stack.
+    Tape {
+        state: f32,
+        movement: SineOscillator,
+    },
 }
 
 impl PadStage {
@@ -237,17 +262,26 @@ impl PadStage {
                 *state
             }
             Self::Shimmer { oscillator } => s + oscillator.next() * PAD_GLASS_SHIMMER_MIX,
+            Self::Choir { partial, movement } => {
+                let partial_mix = PAD_CHOIR_PARTIAL_MIX_MIN
+                    + normalized_lfo(movement.next()) * PAD_CHOIR_PARTIAL_MIX_RANGE;
+                s + partial.next() * partial_mix
+            }
+            Self::Hollow { sub } => s * PAD_HOLLOW_STACK_MIX + sub.next() * PAD_HOLLOW_SUB_MIX,
+            Self::Tape { state, movement } => {
+                *state += PAD_TAPE_LOWPASS_COEFF * (s - *state);
+                *state * (0.94 + normalized_lfo(movement.next()) * 0.06)
+            }
         }
     }
 }
 
 /// `pad.type` selects the tone character used for every layer's tones: index 0
 /// (`Warm`, the default) is three sines summed, soft-clipped, and shaped by the
-/// shared ADSR; index 1 (`Dark`) filters the sum first; index 2 (`Glass`) adds
-/// a shimmer layer to it. The characters differ only in that stage and in the
-/// output trim that keeps them at a comparable perceived level, so switching
-/// type never touches the shared chord/progression (`pad_chord`), trigger
-/// timing, attack/release, or pan authoring above.
+/// shared ADSR. Every other index selects one character stage before the
+/// soft-clipper. The characters differ only in that stage and in the output
+/// trim that keeps them at a comparable perceived level, so switching type
+/// never touches chord selection, trigger timing, attack/release, or pan.
 pub(crate) struct PadTone {
     pub(crate) stack: PadOscStack,
     pub(crate) stage: PadStage,
@@ -267,12 +301,33 @@ impl PadTone {
         let (stage, output_gain) = match character {
             0 => (PadStage::None, 1.0),
             1 => (PadStage::Lowpass { state: 0.0 }, PAD_DARK_OUTPUT_GAIN),
-            _ => (
+            2 => (
                 PadStage::Shimmer {
                     oscillator: SineOscillator::new(hz * 4.0, sample_rate),
                 },
                 PAD_GLASS_OUTPUT_GAIN,
             ),
+            3 => (
+                PadStage::Choir {
+                    partial: SineOscillator::new(hz * 3.0, sample_rate),
+                    movement: SineOscillator::new(0.17, sample_rate),
+                },
+                PAD_CHOIR_OUTPUT_GAIN,
+            ),
+            4 => (
+                PadStage::Hollow {
+                    sub: SineOscillator::new(hz * 0.5, sample_rate),
+                },
+                PAD_HOLLOW_OUTPUT_GAIN,
+            ),
+            5 => (
+                PadStage::Tape {
+                    state: 0.0,
+                    movement: SineOscillator::new(0.11, sample_rate),
+                },
+                PAD_TAPE_OUTPUT_GAIN,
+            ),
+            _ => (PadStage::None, 1.0),
         };
         Self {
             stack: PadOscStack::new(hz, pan, gain, attack_time, release_time, sample_rate),

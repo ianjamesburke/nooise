@@ -634,6 +634,25 @@ fn pad_defaults_use_progression_a_and_sixteen_beat_chords() {
 }
 
 #[test]
+fn fresh_start_chooses_only_a_builtin_progression() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let choices = (0..64)
+        .map(|_| randomized_start_song(&mut rng).controls.pad.progression as usize)
+        .collect::<Vec<_>>();
+
+    assert!(choices.iter().all(|&choice| choice < PROGRESSIONS.len()));
+}
+
+#[test]
+fn fresh_start_varies_the_progression_between_launches() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let first = randomized_start_song(&mut rng).controls.pad.progression;
+    let varied = (0..16).any(|_| randomized_start_song(&mut rng).controls.pad.progression != first);
+
+    assert!(varied);
+}
+
+#[test]
 fn chords_tab_shows_type_row_with_letter_display() {
     let mut controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
@@ -648,6 +667,18 @@ fn chords_tab_shows_type_row_with_letter_display() {
     controls.pad.voice_type = 2.0;
     let rows = tab_controls(Tab::Chords, &controls);
     assert_eq!(rows[3].display, "Glass");
+
+    controls.pad.voice_type = 3.0;
+    let rows = tab_controls(Tab::Chords, &controls);
+    assert_eq!(rows[3].display, "Choir");
+
+    controls.pad.voice_type = 4.0;
+    let rows = tab_controls(Tab::Chords, &controls);
+    assert_eq!(rows[3].display, "Hollow");
+
+    controls.pad.voice_type = 5.0;
+    let rows = tab_controls(Tab::Chords, &controls);
+    assert_eq!(rows[3].display, "Tape");
 }
 
 #[test]
@@ -2021,8 +2052,8 @@ fn song_code_round_trips_control_values() {
     let decoded = round_trip(|c| c.bass.voice_type = 2.0);
     assert_close_named(decoded.bass.voice_type, 2.0, "bass.type");
 
-    let decoded = round_trip(|c| c.pad.voice_type = 2.0);
-    assert_close_named(decoded.pad.voice_type, 2.0, "pad.type");
+    let decoded = round_trip(|c| c.pad.voice_type = 5.0);
+    assert_close_named(decoded.pad.voice_type, 5.0, "pad.type");
 
     // Tapered continuous dials carry no value grid, so they land within one
     // u16 taper step instead of exactly on the original.
@@ -2730,17 +2761,24 @@ fn pad_types_produce_differing_but_comparably_balanced_audio() {
     let sample_rate = 48_000.0;
     let samples = (sample_rate * 0.4) as usize;
 
-    let types: Vec<SoundVariant> = [(0usize, "warm"), (1, "dark"), (2, "glass")]
-        .into_iter()
-        .map(|(character, name)| {
-            let mut tone = PadTone::new(character, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
-            let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
-                let (l, r) = tone.next_stereo(0.8, 0.5, 0.5);
-                ((l * l + r * r) / 2.0, l)
-            });
-            (name, step)
-        })
-        .collect();
+    let types: Vec<SoundVariant> = [
+        (0usize, "warm"),
+        (1, "dark"),
+        (2, "glass"),
+        (3, "choir"),
+        (4, "hollow"),
+        (5, "tape"),
+    ]
+    .into_iter()
+    .map(|(character, name)| {
+        let mut tone = PadTone::new(character, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
+        let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
+            let (l, r) = tone.next_stereo(0.8, 0.5, 0.5);
+            ((l * l + r * r) / 2.0, l)
+        });
+        (name, step)
+    })
+    .collect();
 
     assert_types_differ_but_balanced("pad", samples, types);
 }

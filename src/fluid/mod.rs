@@ -112,7 +112,14 @@ impl FluidTelemetry {
 const APP_ID: &str = "nooise";
 
 pub(crate) fn run() -> Result<(), Box<dyn Error>> {
-    run_with_song_state(SongState::from_controls(FluidControls::default()))
+    let mut rng = rand::thread_rng();
+    run_with_song_state(randomized_start_song(&mut rng))
+}
+
+fn randomized_start_song(rng: &mut impl Rng) -> SongState {
+    let mut controls = FluidControls::default();
+    controls.pad.progression = rng.gen_range(0..PROGRESSIONS.len()) as f32;
+    SongState::from_controls(controls)
 }
 
 pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn Error>> {
