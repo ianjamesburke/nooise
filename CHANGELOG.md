@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [1.9.2] — 2026-08-12
+
+### Fixed
+- fix: make Tonal/Arp level live and tune the pad's opening chord
 ## [1.9.1] — 2026-08-12
 
 ### Added
