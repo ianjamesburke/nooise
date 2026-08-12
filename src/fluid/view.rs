@@ -97,7 +97,6 @@ pub(crate) struct TelemetryView {
 pub(crate) struct ViewPresentation<'a> {
     pub(crate) fluid: &'a RippleField,
     pub(crate) flipped: &'a FlippedUnits,
-    pub(crate) mute: &'a MuteState,
     pub(crate) cursor_visible: bool,
     pub(crate) notices: ViewNotices,
 }
@@ -279,7 +278,7 @@ impl<'a> UiViewModel<'a> {
             telemetry,
             fluid: presentation.fluid,
             flipped: presentation.flipped,
-            mute: presentation.mute,
+            mute: &session.muted,
             cursor_visible: presentation.cursor_visible,
             help,
         }
@@ -778,7 +777,6 @@ mod tests {
     ) -> String {
         let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
-        let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
             interaction,
             session,
@@ -786,7 +784,6 @@ mod tests {
             presentation: ViewPresentation {
                 fluid: &fluid,
                 flipped: &flipped,
-                mute: &mute,
                 cursor_visible: true,
                 notices: ViewNotices::default(),
             },
@@ -911,7 +908,6 @@ mod tests {
         };
         let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
-        let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
             interaction: &interaction,
             session: &session,
@@ -919,7 +915,6 @@ mod tests {
             presentation: ViewPresentation {
                 fluid: &fluid,
                 flipped: &flipped,
-                mute: &mute,
                 cursor_visible: false,
                 notices: ViewNotices::default(),
             },
@@ -953,7 +948,6 @@ mod tests {
         let session = session();
         let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
-        let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
             interaction: &transition.model,
             session: &session,
@@ -961,7 +955,6 @@ mod tests {
             presentation: ViewPresentation {
                 fluid: &fluid,
                 flipped: &flipped,
-                mute: &mute,
                 cursor_visible: false,
                 notices: ViewNotices::default(),
             },
@@ -1032,7 +1025,6 @@ mod tests {
         };
         let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
-        let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
             interaction: &interaction,
             session: &session,
@@ -1040,7 +1032,6 @@ mod tests {
             presentation: ViewPresentation {
                 fluid: &fluid,
                 flipped: &flipped,
-                mute: &mute,
                 cursor_visible: false,
                 notices: ViewNotices {
                     effect: Some("saved".to_string()),
@@ -1451,7 +1442,6 @@ mod tests {
         let session = session();
         let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
-        let mute = [None; 9];
         let view = UiViewModel::project(ViewProjection {
             interaction: &interaction,
             session: &session,
@@ -1459,7 +1449,6 @@ mod tests {
             presentation: ViewPresentation {
                 fluid: &fluid,
                 flipped: &flipped,
-                mute: &mute,
                 cursor_visible: true,
                 notices: ViewNotices::default(),
             },

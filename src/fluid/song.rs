@@ -18,8 +18,8 @@ use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
     EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
-    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, Step, all_specs,
-    spec_by_id,
+    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MuteState, Step,
+    TAB_COUNT, all_specs, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -35,6 +35,7 @@ const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const TONAL_SEQUENCE_RECORD: u8 = 2;
+const MUTE_RECORD: u8 = 3;
 const LFO_SHAPE_SINE: u8 = 0;
 const LFO_SHAPE_TRIANGLE: u8 = 1;
 const LFO_SHAPE_RAMP_UP: u8 = 2;
@@ -58,6 +59,7 @@ pub(crate) struct SongState {
     pub(crate) controls: FluidControls,
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: Option<TonalSequenceState>,
+    pub(crate) muted: MuteState,
 }
 
 impl SongState {
@@ -66,6 +68,7 @@ impl SongState {
             controls,
             automation: AutomationState::default(),
             tonal_sequence: None,
+            muted: [false; TAB_COUNT],
         }
     }
 }
@@ -137,6 +140,9 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
         write_tonal_sequence(sequence, &mut tonal_sequence)?;
         write_record(TONAL_SEQUENCE_RECORD, &tonal_sequence, &mut bytes)?;
     }
+    if song.muted.iter().any(|muted| *muted) {
+        write_record(MUTE_RECORD, &[mute_bits(&song.muted)], &mut bytes)?;
+    }
     Ok(format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
@@ -169,6 +175,7 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
             AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
+            MUTE_RECORD => read_mute(payload, &mut song.muted)?,
             // Records are length-prefixed, so an unknown one is skipped
             // without losing alignment. This stays permissive on purpose: it
             // is how a code from a newer nooise carrying a record this build
@@ -180,6 +187,25 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
     }
 
     Ok(song)
+}
+
+fn mute_bits(muted: &MuteState) -> u8 {
+    muted
+        .iter()
+        .enumerate()
+        .fold(0, |bits, (index, muted)| bits | (u8::from(*muted) << index))
+}
+
+fn read_mute(bytes: &[u8], muted: &mut MuteState) -> Result<(), SongCodeError> {
+    let mut reader = Reader::new(bytes);
+    let bits = reader.u8()?;
+    if !reader.is_empty() {
+        return Err(SongCodeError::Truncated);
+    }
+    for (index, state) in muted.iter_mut().enumerate() {
+        *state = bits & (1 << index) != 0;
+    }
+    Ok(())
 }
 
 fn write_tonal_sequence(

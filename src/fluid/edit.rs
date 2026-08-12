@@ -57,54 +57,50 @@ pub(crate) fn snap_after_unit_flip(
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    effects.edit_session(
-        AutoOwnership::TakeOver,
-        recent_id,
-        |snapshot| match active {
-            // LFO rate accepts exact typed beat values, so an exact ms-authored
-            // value stays exact when returning to beats. Offset retains its grid.
-            ActiveField::Lfo(address, field) if !now_flipped => {
-                // Interval is deliberately untouched: an exact ms-authored
-                // rate must stay exact when the unit flips back to beats.
-                if let Some(route) = snapshot.automation.route_mut(address)
-                    && field == LfoField::Offset
-                {
-                    route.set_field_at(field, route.phase_offset_beats, beat);
+    effects.edit_session(recent_id, |snapshot| match active {
+        // LFO rate accepts exact typed beat values, so an exact ms-authored
+        // value stays exact when returning to beats. Offset retains its grid.
+        ActiveField::Lfo(address, field) if !now_flipped => {
+            // Interval is deliberately untouched: an exact ms-authored
+            // rate must stay exact when the unit flips back to beats.
+            if let Some(route) = snapshot.automation.route_mut(address)
+                && field == LfoField::Offset
+            {
+                route.set_field_at(field, route.phase_offset_beats, beat);
+            }
+        }
+        ActiveField::Envelope(address, field) if !now_flipped => {
+            if let Some(route) = snapshot.automation.envelope_mut(address) {
+                match field {
+                    EnvField::Attack => route.set_field(field, route.attack_beats),
+                    EnvField::Decay => route.set_field(field, route.decay_beats),
+                    EnvField::Amount | EnvField::Trigger => {}
                 }
             }
-            ActiveField::Envelope(address, field) if !now_flipped => {
-                if let Some(route) = snapshot.automation.envelope_mut(address) {
-                    match field {
-                        EnvField::Attack => route.set_field(field, route.attack_beats),
-                        EnvField::Decay => route.set_field(field, route.decay_beats),
-                        EnvField::Amount | EnvField::Trigger => {}
-                    }
+        }
+        ActiveField::Control => {
+            let Some(spec) = tab_specs(tab).get(selected) else {
+                return;
+            };
+            let bpm = snapshot.controls.master.bpm;
+            let current = (spec.get)(&snapshot.controls);
+            match (spec.time_base, now_flipped) {
+                // Back to native beats: land on the control's own grid.
+                (TimeBase::Beats, false) => {
+                    spec.apply_quantized_value(current, &mut snapshot.controls)
                 }
-            }
-            ActiveField::Control => {
-                let Some(spec) = tab_specs(tab).get(selected) else {
-                    return;
-                };
-                let bpm = snapshot.controls.master.bpm;
-                let current = (spec.get)(&snapshot.controls);
-                match (spec.time_base, now_flipped) {
-                    // Back to native beats: land on the control's own grid.
-                    (TimeBase::Beats, false) => {
-                        spec.apply_quantized_value(current, &mut snapshot.controls)
-                    }
-                    // An ms control now displayed in beats: round to the nearest
-                    // divided beat.
-                    (TimeBase::Ms, true) => {
-                        let beats = snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP)
-                            .max(FLIP_BEAT_STEP);
-                        spec.apply_raw(beats_to_ms(beats, bpm), &mut snapshot.controls);
-                    }
-                    _ => {}
+                // An ms control now displayed in beats: round to the nearest
+                // divided beat.
+                (TimeBase::Ms, true) => {
+                    let beats =
+                        snap_step(ms_to_beats(current, bpm), FLIP_BEAT_STEP).max(FLIP_BEAT_STEP);
+                    spec.apply_raw(beats_to_ms(beats, bpm), &mut snapshot.controls);
                 }
+                _ => {}
             }
-            _ => {}
-        },
-    );
+        }
+        _ => {}
+    });
 }
 
 /// The flip key qualifier for a modulator time field, None for unit-less ones.
@@ -175,7 +171,7 @@ pub(crate) fn open_modulator_effect_for_id(
     sub_selected: &mut usize,
 ) {
     let address = ControlAddress::new(id);
-    effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
+    effects.edit_session(Some(id), |snapshot| {
         let state = &mut snapshot.automation;
         let already = state.active_address() == Some(address) && state.active_kind() == Some(kind);
         if already {
@@ -202,7 +198,7 @@ pub(crate) fn add_modulator_effect_for_id(
 ) -> bool {
     let address = ControlAddress::new(id);
     let mut added = false;
-    effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
+    effects.edit_session(Some(id), |snapshot| {
         let state = &mut snapshot.automation;
         if state.active_address() != Some(address) || state.active_kind() != Some(kind) {
             state.close_editor();
@@ -303,7 +299,7 @@ fn with_active_field(
         .active_address()
         .map(ControlAddress::id)
         .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
-    effects.edit_session(AutoOwnership::TakeOver, recent_id, |snapshot| {
+    effects.edit_session(recent_id, |snapshot| {
         apply_field_op(snapshot, active, tab, selected, beat, op);
     });
 }
@@ -588,7 +584,7 @@ pub(crate) fn toggle_units_effect(
             .kind()
             .is_some_and(|kind| kind.family == Family::Delay)
     {
-        effects.edit_session(AutoOwnership::TakeOver, Some(spec.id), |snapshot| {
+        effects.edit_session(Some(spec.id), |snapshot| {
             let bpm = snapshot.controls.master.bpm;
             if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
                 && let Some(module) = slots.get_mut(slot)
@@ -639,14 +635,14 @@ pub(crate) fn remove_automation_effect(
                 .active_address()
                 .expect("open editor has an address")
                 .id();
-            effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
+            effects.edit_session(Some(id), |snapshot| {
                 snapshot.automation.remove_open_route();
             });
         }
         _ => {
             if let Some(id) = selected_control {
                 let address = ControlAddress::new(id);
-                effects.edit_session(AutoOwnership::TakeOver, Some(id), |snapshot| {
+                effects.edit_session(Some(id), |snapshot| {
                     snapshot.automation.clear_control(address);
                 });
             }
@@ -658,7 +654,7 @@ pub(crate) fn reseed_automation_effect(effects: &mut EffectExecutor, automation:
     if let Some(address) = automation.active_address()
         && automation.active_kind() == Some(ModKind::Lfo)
     {
-        effects.edit_session(AutoOwnership::TakeOver, Some(address.id()), |snapshot| {
+        effects.edit_session(Some(address.id()), |snapshot| {
             let state = &mut snapshot.automation;
             if let Some(route) = state.route_mut(address)
                 && route.shape.is_random()

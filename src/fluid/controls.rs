@@ -295,7 +295,7 @@ pub(crate) struct FluidControls {
     pub(crate) clap: ClapControls,
     pub(crate) bass: BassControls,
     pub(crate) arp: ArpControls,
-    /// Per-layer module chain. Every slot defaults to empty, so this adds no
-    /// audible state and prunes entirely out of a song code.
+    /// Per-layer module chains, including the factory presets defined by
+    /// `LayerModules::default`.
     pub(crate) modules: LayerModules,
 }

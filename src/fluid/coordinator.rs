@@ -42,7 +42,6 @@ pub(crate) struct ProductionCoordinatorContext<'a> {
     pub(crate) effects: &'a mut EffectExecutor,
     pub(crate) fluid: &'a RippleField,
     pub(crate) flipped: &'a mut FlippedUnits,
-    pub(crate) mute: &'a mut MuteState,
     pub(crate) clipboard: &'a mut dyn Clipboard,
     pub(crate) capabilities: runtime::TerminalCapabilities,
     pub(crate) beat: f64,
@@ -72,7 +71,6 @@ pub(crate) fn coordinate_production_event(
         presentation: ViewPresentation {
             fluid: context.fluid,
             flipped: context.flipped,
-            mute: context.mute,
             cursor_visible: true,
             notices: ViewNotices::default(),
         },
@@ -155,7 +153,6 @@ pub(crate) fn coordinate_production_event(
             automation_selected,
             beat: context.beat,
             flipped: context.flipped,
-            mute: context.mute,
         };
         let results = context
             .effects
@@ -312,7 +309,6 @@ pub(crate) fn production_ui_loop(
     );
     let mut fluid = RippleField::new();
     let mut flipped = FlippedUnits::new();
-    let mut mute: MuteState = [None; 9];
     let mut clipboard = SystemClipboard;
     let started = Instant::now();
     let mut last_tick = runtime::Clock::now(&clock);
@@ -338,7 +334,6 @@ pub(crate) fn production_ui_loop(
                 effects: &mut effects,
                 fluid: &fluid,
                 flipped: &mut flipped,
-                mute: &mut mute,
                 clipboard: &mut clipboard,
                 capabilities: terminal.capabilities(),
                 beat: telemetry.beat(),
@@ -382,7 +377,6 @@ pub(crate) fn production_ui_loop(
                 presentation: ViewPresentation {
                     fluid: &fluid,
                     flipped: &flipped,
-                    mute: &mute,
                     cursor_visible: (started.elapsed().as_millis() / 400).is_multiple_of(2),
                     notices: ViewNotices {
                         effect: effects.message().map(str::to_string),

@@ -16,10 +16,12 @@ pub(crate) enum Tab {
     Master = 7,
 }
 
+pub(crate) const TAB_COUNT: usize = 8;
+
 /// One row per tab: (variant, display name, mute-target level id, control
 /// table) in discriminant order. `Tab::all`/`name`/`level_id`/`tab_specs`
 /// all derive from indexing this single table by `self as usize`.
-const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); 8] = [
+const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); TAB_COUNT] = [
     (Tab::Chords, "Pads", Some("pad.level"), CHORDS_CONTROLS),
     (Tab::Perc, "Perc", Some("perc.level"), PERC_CONTROLS),
     (Tab::Bass, "Bass", Some("bass.level"), BASS_CONTROLS),
@@ -31,7 +33,7 @@ const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); 8] = [
 ];
 
 impl Tab {
-    pub(crate) fn all() -> [Tab; 8] {
+    pub(crate) fn all() -> [Tab; TAB_COUNT] {
         TAB_META.map(|(tab, _, _, _)| tab)
     }
 

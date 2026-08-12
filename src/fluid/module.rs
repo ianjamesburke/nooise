@@ -400,9 +400,7 @@ pub(crate) struct LayerModules {
 }
 
 impl Default for LayerModules {
-    /// Slot 1 of each layer carries whatever that voice shipped as a bespoke
-    /// effect slider, at its old default, so folding those controls into the
-    /// chain changed no sound. Every other slot is empty.
+    /// Factory module chains. Every unlisted slot is empty.
     fn default() -> Self {
         let empty = [ModuleSlot::default(); MODULE_SLOTS];
         let with_preset = |id: &str, amount: f32| {
@@ -415,8 +413,8 @@ impl Default for LayerModules {
             perc: empty,
             bass: with_preset("drive", 0.3),
             kick: with_preset("drive", 0.4),
-            tonal: with_preset("room", 0.6),
-            clap: with_preset("room", 0.0),
+            tonal: with_preset("room", 0.1),
+            clap: empty,
             arp: with_preset("room", 0.0),
             master: {
                 let mut slots = empty;

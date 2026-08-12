@@ -675,7 +675,6 @@ struct ReplayHarness {
     fluid: RippleField,
     telemetry: FluidTelemetry,
     flipped: FlippedUnits,
-    mute: MuteState,
     width: u16,
     height: u16,
     effects: Vec<String>,
@@ -714,7 +713,6 @@ impl ReplayHarness {
             fluid: RippleField::new(),
             telemetry: FluidTelemetry::default(),
             flipped: FlippedUnits::new(),
-            mute: [None; 9],
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
             effects: Vec::new(),
@@ -740,8 +738,7 @@ impl ReplayHarness {
     }
 
     fn with_session_edit(mut self, edit: impl FnMut(&mut LiveSessionSnapshot)) -> Self {
-        self.executor
-            .edit_session(AutoOwnership::TakeOver, None, edit);
+        self.executor.edit_session(None, edit);
         self
     }
 
@@ -814,7 +811,6 @@ impl ReplayHarness {
                     effects: &mut self.executor,
                     fluid: &self.fluid,
                     flipped: &mut self.flipped,
-                    mute: &mut self.mute,
                     clipboard: &mut self.clipboard,
                     capabilities: self.capabilities,
                     beat: self.clock.now().as_secs_f64(),
@@ -994,7 +990,6 @@ impl ReplayHarness {
             automation_selected,
             beat: self.clock.now().as_secs_f64(),
             flipped: &mut self.flipped,
-            mute: &mut self.mute,
         };
         let results = self
             .executor
@@ -1060,7 +1055,6 @@ impl ReplayHarness {
             presentation: ViewPresentation {
                 fluid: &self.fluid,
                 flipped: &self.flipped,
-                mute: &self.mute,
                 cursor_visible: true,
                 notices: ViewNotices::default(),
             },
@@ -2477,7 +2471,6 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
             effects: &mut harness.executor,
             fluid: &harness.fluid,
             flipped: &mut harness.flipped,
-            mute: &mut harness.mute,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 0.0,
@@ -2513,7 +2506,6 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
             effects: &mut harness.executor,
             fluid: &harness.fluid,
             flipped: &mut harness.flipped,
-            mute: &mut harness.mute,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 4.0,

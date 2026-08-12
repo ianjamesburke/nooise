@@ -313,6 +313,7 @@ pub(crate) struct FluidEngine {
     pub(crate) sample_rate: f32,
     pub(crate) tempo: TempoClock,
     pub(crate) gain_smoothers: GainSmoothers,
+    mute_gates: OutputGates,
     pub(crate) pad: PadEngine,
     pub(crate) perc: PercEngine,
     pub(crate) kick: KickEngine,
@@ -362,6 +363,7 @@ impl FluidEngine {
             sample_rate,
             tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
             gain_smoothers: GainSmoothers::new(&snapshot),
+            mute_gates: OutputGates::new(&live.muted),
             pad: PadEngine::new(sample_rate, &snapshot.pad, Arc::clone(&telemetry)),
             perc: PercEngine::new(sample_rate),
             kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
@@ -419,6 +421,8 @@ impl StereoEngine for FluidEngine {
             self.snapshot = session.controls.clone();
             self.gain_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);
+            self.mute_gates
+                .set_targets(&session.muted, self.sample_rate);
             self.master_bus
                 .set_controls(&self.snapshot.master, self.sample_rate);
             if session.automation != *self.plan_source {
@@ -435,53 +439,75 @@ impl StereoEngine for FluidEngine {
         }
         self.plan.apply(&mut effective, timing);
         resolve_module_chain(&mut effective);
+        let mute_gains = self.mute_gates.next();
 
         let tune = effective.master.tune;
-        let (pad_l, pad_r) = self.module_fx.process(
-            Tab::Chords,
-            &effective.modules.pad,
-            self.pad.next(&effective.pad, tune, timing),
-            timing,
+        let (pad_l, pad_r) = gate_stereo(
+            self.module_fx.process(
+                Tab::Chords,
+                &effective.modules.pad,
+                self.pad.next(&effective.pad, tune, timing),
+                timing,
+            ),
+            mute_gains[Tab::Chords as usize],
         );
-        let (perc_l, perc_r) = self.module_fx.process(
-            Tab::Perc,
-            &effective.modules.perc,
-            {
-                let perc = self.perc.next(&effective.perc, timing);
-                (perc, perc)
-            },
-            timing,
+        let (perc_l, perc_r) = gate_stereo(
+            self.module_fx.process(
+                Tab::Perc,
+                &effective.modules.perc,
+                {
+                    let perc = self.perc.next(&effective.perc, timing);
+                    (perc, perc)
+                },
+                timing,
+            ),
+            mute_gains[Tab::Perc as usize],
         );
-        let (kick_l, kick_r) = self.module_fx.process(
-            Tab::Kick,
-            &effective.modules.kick,
-            self.kick.next(&effective.kick, timing),
-            timing,
+        let (kick_l, kick_r) = gate_stereo(
+            self.module_fx.process(
+                Tab::Kick,
+                &effective.modules.kick,
+                self.kick.next(&effective.kick, timing),
+                timing,
+            ),
+            mute_gains[Tab::Kick as usize],
         );
-        let (ton_l, ton_r) = self.module_fx.process(
-            Tab::Tonal,
-            &effective.modules.tonal,
-            self.tonal.next(&effective.tonal, tune, timing),
-            timing,
+        let (ton_l, ton_r) = gate_stereo(
+            self.module_fx.process(
+                Tab::Tonal,
+                &effective.modules.tonal,
+                self.tonal.next(&effective.tonal, tune, timing),
+                timing,
+            ),
+            mute_gains[Tab::Tonal as usize],
         );
-        let (clap_l, clap_r) = self.module_fx.process(
-            Tab::Clap,
-            &effective.modules.clap,
-            self.clap.next(&effective.clap, timing),
-            timing,
+        let (clap_l, clap_r) = gate_stereo(
+            self.module_fx.process(
+                Tab::Clap,
+                &effective.modules.clap,
+                self.clap.next(&effective.clap, timing),
+                timing,
+            ),
+            mute_gains[Tab::Clap as usize],
         );
-        let (bass_l, bass_r) = self.module_fx.process(
-            Tab::Bass,
-            &effective.modules.bass,
-            self.bass
-                .next(&effective.bass, &effective.pad, tune, timing),
-            timing,
+        let (bass_l, bass_r) = gate_stereo(
+            self.module_fx.process(
+                Tab::Bass,
+                &effective.modules.bass,
+                self.bass
+                    .next(&effective.bass, &effective.pad, tune, timing),
+                timing,
+            ),
+            mute_gains[Tab::Bass as usize],
         );
-        let (arp_l, arp_r) = self.module_fx.process(
-            Tab::Arp,
-            &effective.modules.arp,
-            self.arp.next(&effective.arp, &effective.pad, tune, timing),
-            timing,
+        let (arp_l, arp_r) = gate_stereo(
+            self.module_fx.process(
+                Tab::Arp,
+                &effective.modules.arp,
+                self.arp.next(&effective.arp, &effective.pad, tune, timing),
+                timing,
+            ),
+            mute_gains[Tab::Arp as usize],
         );
         self.current_sample += 1;
 
@@ -493,9 +519,17 @@ impl StereoEngine for FluidEngine {
             (raw_l, raw_r),
             timing,
         );
-        self.master_bus
-            .process(master.0, master.1, &effective.master)
+        gate_stereo(
+            self.master_bus
+                .process(master.0, master.1, &effective.master),
+            mute_gains[Tab::Master as usize],
+        )
     }
+}
+
+#[inline]
+fn gate_stereo(sample: (f32, f32), gain: f32) -> (f32, f32) {
+    (sample.0 * gain, sample.1 * gain)
 }
 
 pub(crate) fn startup_fade(current_sample: u64, sample_rate: f32) -> f32 {
@@ -516,6 +550,77 @@ fn mix_voices(
     fade: f32,
 ) -> f32 {
     (pad + perc * 0.6 + kick * 0.7 + ton + clap * 0.65 + bass * 0.75 + arp) * fade
+}
+
+#[derive(Clone, Copy)]
+struct OutputGate {
+    start: f32,
+    current: f32,
+    target: f32,
+    samples_total: u32,
+    samples_remaining: u32,
+}
+
+impl OutputGate {
+    fn new(muted: bool) -> Self {
+        let gain = if muted { 0.0 } else { 1.0 };
+        Self {
+            start: gain,
+            current: gain,
+            target: gain,
+            samples_total: 0,
+            samples_remaining: 0,
+        }
+    }
+
+    fn set_muted(&mut self, muted: bool, ramp_samples: u32) {
+        let target = if muted { 0.0 } else { 1.0 };
+        if target == self.target {
+            return;
+        }
+        self.start = self.current;
+        self.target = target;
+        self.samples_total = ramp_samples.max(1);
+        self.samples_remaining = self.samples_total;
+    }
+
+    fn next(&mut self) -> f32 {
+        if self.samples_remaining == 0 {
+            return self.target;
+        }
+        let elapsed = self.samples_total - self.samples_remaining + 1;
+        let t = elapsed as f32 / self.samples_total as f32;
+        let eased = t * t * (3.0 - 2.0 * t);
+        self.current = self.start + (self.target - self.start) * eased;
+        self.samples_remaining -= 1;
+        if self.samples_remaining == 0 {
+            self.current = self.target;
+        }
+        self.current
+    }
+}
+
+struct OutputGates {
+    gates: [OutputGate; TAB_COUNT],
+}
+
+impl OutputGates {
+    fn new(muted: &MuteState) -> Self {
+        Self {
+            gates: std::array::from_fn(|index| OutputGate::new(muted[index])),
+        }
+    }
+
+    fn set_targets(&mut self, muted: &MuteState, sample_rate: f32) {
+        let ramp_samples = (LEVEL_RAMP_MS * 0.001 * sample_rate).round() as u32;
+        for (gate, muted) in self.gates.iter_mut().zip(muted) {
+            gate.set_muted(*muted, ramp_samples);
+        }
+    }
+
+    fn next(&mut self) -> [f32; TAB_COUNT] {
+        std::array::from_fn(|index| self.gates[index].next())
+    }
 }
 
 pub(crate) struct GainSmoother {

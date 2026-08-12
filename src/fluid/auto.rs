@@ -12,7 +12,9 @@ use arc_swap::ArcSwap;
 
 #[cfg(test)]
 use super::automation::{ControlAddress, LfoRoute, LfoShape};
-use super::{AutomationState, ControlKind, FluidControls, SongState, all_specs, decode_song_code};
+use super::{
+    AutomationState, ControlKind, FluidControls, MuteState, SongState, all_specs, decode_song_code,
+};
 
 /// Bars per morph leg, matching the throttled-writer granularity of one leg
 /// spanning `bars * 4` beats (4/4).
@@ -221,6 +223,7 @@ impl MorphState {
             controls: current,
             automation: current_automation,
             tonal_sequence: None,
+            muted: MuteState::default(),
         });
         endpoints.extend(states[nearest..].iter().cloned());
         endpoints.extend(states[..nearest].iter().cloned());
@@ -452,6 +455,7 @@ mod tests {
             controls,
             automation: AutomationState::default(),
             tonal_sequence: None,
+            muted: MuteState::default(),
         }
     }
 
@@ -751,11 +755,13 @@ mod tests {
                     controls: from_state,
                     automation: from_auto,
                     tonal_sequence: None,
+                    muted: MuteState::default(),
                 },
                 SongState {
                     controls: to_state,
                     automation: to_auto,
                     tonal_sequence: None,
+                    muted: MuteState::default(),
                 },
             ],
             6,
@@ -791,11 +797,13 @@ mod tests {
                     controls: FluidControls::default(),
                     automation: from_auto,
                     tonal_sequence: None,
+                    muted: MuteState::default(),
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: to_auto,
                     tonal_sequence: None,
+                    muted: MuteState::default(),
                 },
             ],
             6,
@@ -824,16 +832,19 @@ mod tests {
                     controls: FluidControls::default(),
                     automation: routed,
                     tonal_sequence: None,
+                    muted: MuteState::default(),
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: unrouted.clone(),
                     tonal_sequence: None,
+                    muted: MuteState::default(),
                 },
                 SongState {
                     controls: FluidControls::default(),
                     automation: unrouted,
                     tonal_sequence: None,
+                    muted: MuteState::default(),
                 },
             ],
             6,

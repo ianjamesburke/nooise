@@ -1,10 +1,12 @@
 //! The one publication boundary for user-audible live state.
 //!
 //! `LiveSessionSnapshot` is an immutable generation of controls, automation,
-//! and tonal state; every writer goes through `LiveSession::transact` so the
+//! tonal state, and mute state; every writer goes through `LiveSession::transact` so the
 //! audio thread only ever reads one coherent generation.
 
 use super::*;
+
+pub(crate) type MuteState = [bool; TAB_COUNT];
 
 /// One coherent, immutable generation of every user-audible live-session
 /// value shared by the UI and audio threads.
@@ -14,6 +16,7 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) controls: FluidControls,
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: TonalSequenceState,
+    pub(crate) muted: MuteState,
 }
 
 impl LiveSessionSnapshot {
@@ -22,6 +25,7 @@ impl LiveSessionSnapshot {
             generation: 0,
             controls: song.controls.clone(),
             automation: song.automation.clone(),
+            muted: song.muted,
             tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
                 TonalSequenceState::from_phrase(tonal_phrase_index(song.controls.tonal.phrase))
             }),
@@ -37,6 +41,7 @@ impl LiveSessionSnapshot {
             )),
             controls,
             automation: AutomationState::default(),
+            muted: [false; TAB_COUNT],
         }
     }
 }
@@ -108,6 +113,7 @@ mod tests {
                 .automation
                 .open_or_create(ControlAddress::new("master.bpm"));
             snapshot.tonal_sequence.evolution_count = 7;
+            snapshot.muted[Tab::Master as usize] = true;
         });
 
         assert_eq!(published.generation, before.generation + 1);
@@ -119,6 +125,7 @@ mod tests {
                 .is_some()
         );
         assert_eq!(published.tonal_sequence.evolution_count, 7);
+        assert!(published.muted[Tab::Master as usize]);
         assert!(Arc::ptr_eq(&published, &session.load()));
     }
 

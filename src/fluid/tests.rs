@@ -130,6 +130,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
     } = test;
     let mut song = SongState::from_controls(controls.clone());
     song.automation = automation.clone();
+    song.muted = *mute;
     let session = LiveSessionSnapshot::from_song(&song);
     let navigation = match tab {
         Tab::Chords => interaction::Navigation::Chords {
@@ -173,7 +174,6 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
         presentation: ViewPresentation {
             fluid,
             flipped: &flipped,
-            mute,
             cursor_visible: false,
             notices: ViewNotices {
                 effect: footer.map(str::to_string),
@@ -675,7 +675,7 @@ fn render_fluid_draws_without_terminal_backend() {
         footer: None,
         drill: ChordDrill::None,
         active_chord: 0,
-        mute: &[None; 9],
+        mute: &[false; TAB_COUNT],
     });
 }
 
@@ -1054,6 +1054,44 @@ fn engine_publishes_beat_telemetry() {
     );
 }
 
+#[test]
+fn master_mute_gates_the_final_output_with_level_automation_active() {
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        ControlAddress::new("master.level"),
+        LfoRoute {
+            depth_ratio: 1.0,
+            ..LfoRoute::default()
+        },
+    );
+    let session = live_session(FluidControls::default(), automation);
+    let mut effects = EffectExecutor::new(
+        session.clone(),
+        AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+    );
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session.clone(),
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    );
+    engine.reseed(42);
+
+    let warmup = (SAMPLE_RATE * 2.1) as usize;
+    let audible = (0..warmup)
+        .map(|_| engine.next_stereo())
+        .any(|sample| sample != (0.0, 0.0));
+    assert!(audible, "the unmuted fixture must produce audio");
+
+    effects.toggle_mute(Tab::Master);
+    let settle = (SAMPLE_RATE * LEVEL_RAMP_MS * 0.001) as usize + 256;
+    for _ in 0..settle {
+        engine.next_stereo();
+    }
+
+    assert!((0..512).all(|_| engine.next_stereo() == (0.0, 0.0)));
+}
+
 // ============================================================
 // Golden render — reproducibility guardrail
 //
@@ -1072,7 +1110,8 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // maximum) and output gain is compensated down as drive increases instead of
 // boosted up — an intentional, audible loudness/intensity change, not a
 // rounding artifact.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0xae2d_0d02_344b_5462;
+// Re-blessed after Tonal's factory Reverb amount moved from 60% to 10%.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0xd6c4_f47f_807d_ee50;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -1203,7 +1242,7 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
             footer: None,
             drill: ChordDrill::None,
             active_chord: 0,
-            mute: &[None; 9],
+            mute: &[false; TAB_COUNT],
         })
     };
 
@@ -1348,9 +1387,8 @@ fn defaults_match_current_mix() {
     assert_eq!(controls.modules.pad[0].kind().unwrap().id, "room");
     assert_close(controls.modules.pad[0].amount, 0.8);
     assert_eq!(controls.modules.tonal[0].kind().unwrap().id, "room");
-    assert_close(controls.modules.tonal[0].amount, 0.6);
-    assert_eq!(controls.modules.clap[0].kind().unwrap().id, "room");
-    assert_close(controls.modules.clap[0].amount, 0.0);
+    assert_close(controls.modules.tonal[0].amount, 0.1);
+    assert!(controls.modules.clap[0].is_empty());
 }
 
 #[test]
@@ -1416,7 +1454,8 @@ fn default_template_preloads_shared_effect_modules() {
     assert_close(controls.modules.kick[0].amount, 0.4);
     assert_close(controls.modules.bass[0].amount, 0.3);
     assert_close(controls.modules.pad[0].amount, 0.8);
-    assert_close(controls.modules.tonal[0].amount, 0.6);
+    assert_close(controls.modules.tonal[0].amount, 0.1);
+    assert!(controls.modules.clap[0].is_empty());
     assert_close(controls.perc.swing, 0.0);
     assert_close(controls.tonal.swing, 0.0);
     assert_close(controls.arp.swing, 0.0);
@@ -1719,9 +1758,7 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (
             Tab::Clap,
-            vec![
-                Gain, Gain, Timing, Timing, Timing, Discrete, Timing, Gain, Gain,
-            ],
+            vec![Gain, Gain, Timing, Timing, Timing, Discrete, Timing, Gain],
         ),
         (
             Tab::Arp,
@@ -1805,6 +1842,18 @@ fn song_code_round_trips_quantized_snapshot_values() {
     assert_close(decoded.controls.clap.slap_count, 7.0);
 }
 
+#[test]
+fn song_code_round_trips_muted_layers() {
+    let mut song = SongState::from_controls(FluidControls::default());
+    song.muted[Tab::Tonal as usize] = true;
+    song.muted[Tab::Master as usize] = true;
+
+    let code = encode_song_code(&song).unwrap();
+    let decoded = decode_song_code(&code).unwrap();
+
+    assert_eq!(decoded.muted, song.muted);
+}
+
 /// Song codes carry control state only. A code once embedded every module
 /// delay line and reverb buffer sample-for-sample, so a single Delay slot
 /// pushed it past a million characters and made it unshareable; tails are
@@ -1837,6 +1886,7 @@ fn song_code_round_trips_tonal_sequence_state() {
         controls: FluidControls::default(),
         automation: AutomationState::default(),
         tonal_sequence: Some(sequence.clone()),
+        muted: MuteState::default(),
     };
 
     let decoded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
@@ -2059,6 +2109,7 @@ fn song_code_round_trips_lfo_automation_record() {
         controls,
         automation,
         tonal_sequence: None,
+        muted: MuteState::default(),
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -2343,7 +2394,7 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
         footer: None,
         drill: slot_drill(1),
         active_chord: 0,
-        mute: &[None; 9],
+        mute: &[false; TAB_COUNT],
     });
 
     let text = buffer_text(&buffer);
@@ -2366,7 +2417,7 @@ fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
         footer: None,
         drill: progression_drill(),
         active_chord,
-        mute: &[None; 9],
+        mute: &[false; TAB_COUNT],
     }))
 }
 
@@ -2407,7 +2458,7 @@ fn render_slot_breadcrumb_marks_live_chord() {
             footer: None,
             drill: slot_drill(2),
             active_chord,
-            mute: &[None; 9],
+            mute: &[false; TAB_COUNT],
         }))
     };
     // Slot 2 is live when the step index maps to it; otherwise no note.
@@ -3751,7 +3802,7 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
         footer: None,
         drill: ChordDrill::None,
         active_chord: 0,
-        mute: &[None; 9],
+        mute: &[false; TAB_COUNT],
     });
 
     let text = buffer_text(&buffer);
@@ -3848,7 +3899,7 @@ fn render_fluid_draws_step_submenu() {
         footer: None,
         drill: ChordDrill::None,
         active_chord: 0,
-        mute: &[None; 9],
+        mute: &[false; TAB_COUNT],
     });
 
     let text = buffer_text(&buffer);
@@ -3956,6 +4007,7 @@ fn song_code_round_trips_steps_shape() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        muted: MuteState::default(),
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4265,6 +4317,7 @@ fn song_code_round_trips_stacked_lfo_lanes() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        muted: MuteState::default(),
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4330,6 +4383,7 @@ fn song_code_round_trips_non_sine_lfo_shape() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        muted: MuteState::default(),
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4358,6 +4412,7 @@ fn song_code_round_trips_envelope_routes() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        muted: MuteState::default(),
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4432,6 +4487,7 @@ fn song_code_round_trips_seeded_lfo_and_envelope() {
         controls: FluidControls::default(),
         automation,
         tonal_sequence: None,
+        muted: MuteState::default(),
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -5068,6 +5124,7 @@ const POSITION_STEP: f32 = 1.0 / 65_535.0;
 /// compares `open`, `open_field`, and `LfoRoute::pickup` — live editor and
 /// transport state that is not persisted and must not be.
 fn assert_song_states_agree(a: &SongState, b: &SongState, label: &str) {
+    assert_eq!(a.muted, b.muted, "{label}: mute state");
     let mut seen = std::collections::BTreeSet::new();
     for spec in all_specs() {
         if !seen.insert(spec.id) {

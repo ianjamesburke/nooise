@@ -213,7 +213,7 @@ fn draw_tabs(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             } else {
                 t.name().to_string()
             };
-            let name = if view.mute[*t as usize].is_some() {
+            let name = if view.mute[*t as usize] {
                 format!("{name} (M)")
             } else {
                 name
