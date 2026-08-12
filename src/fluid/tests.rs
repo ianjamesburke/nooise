@@ -503,9 +503,42 @@ fn tonal_cycle_crops_phrase_without_stretching_rate() {
     assert_eq!(tonal_loop_len(4.0, 0.5), 8);
     assert_eq!(tonal_loop_len(16.0, 0.5), 32);
     assert_eq!(tonal_loop_len(4.0, 1.0), 4);
-    assert_eq!(tonal_cycle_step(3.75, 4.0, 0.0, 0.5), 7);
-    assert_eq!(tonal_cycle_step(3.75, 4.0, 0.0, 1.0), 3);
-    assert_eq!(tonal_cycle_step(4.0, 4.0, 0.0, 0.5), 0);
+    assert_eq!(tonal_cycle_step(3.75, 4.0, 0.5), 7);
+    assert_eq!(tonal_cycle_step(3.75, 4.0, 1.0), 3);
+    assert_eq!(tonal_cycle_step(4.0, 4.0, 0.5), 0);
+}
+
+#[test]
+fn tonal_offset_moves_the_phrase_window_without_delaying_triggers() {
+    let controls = TonalControls {
+        rate_beats: 1.0,
+        step_interval_beats: 2.0,
+        offset_beats: 1.0,
+        randomness: 0.0,
+        ..TonalControls::default()
+    };
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+
+    let _ = tonal.next(
+        &controls,
+        0.0,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
+    );
+    assert_eq!(tonal.step_index, 1);
+
+    let _ = tonal.next(
+        &controls,
+        0.0,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.0),
+    );
+    assert_eq!(tonal.step_index, 2);
+
+    let _ = tonal.next(
+        &controls,
+        0.0,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 2.0),
+    );
+    assert_eq!(tonal.step_index, 1);
 }
 
 #[test]

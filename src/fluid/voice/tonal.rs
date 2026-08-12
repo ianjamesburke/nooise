@@ -382,21 +382,18 @@ impl TonalEngine {
 
         if self
             .step_trigger
-            .pop_swung(timing, c.rate_beats, c.offset_beats, c.swing)
+            .pop_swung(timing, c.rate_beats, 0.0, c.swing)
         {
-            let cycle = tonal_cycle_index(timing.beat, c.step_interval_beats, c.offset_beats);
+            let cycle = tonal_cycle_index(timing.beat, c.step_interval_beats);
             if self.last_cycle.is_some_and(|last| last != cycle) {
                 self.evolve_phrase(c.evolve_rate);
             }
             self.last_cycle = Some(cycle);
 
             let loop_len = tonal_loop_len(c.step_interval_beats, c.rate_beats);
-            self.step_index = tonal_cycle_step(
-                timing.beat,
-                c.step_interval_beats,
-                c.offset_beats,
-                c.rate_beats,
-            ) % loop_len;
+            self.step_index = tonal_cycle_step(timing.beat, c.step_interval_beats, c.rate_beats)
+                % loop_len
+                + tonal_offset_step(c.offset_beats, c.rate_beats);
             let note = if self.rng.gen_range(0.0f32..1.0) < c.randomness {
                 TONAL_SCALE_MIDI[self.rng.gen_range(0..TONAL_SCALE_MIDI.len())]
             } else {
@@ -514,22 +511,19 @@ pub(crate) fn tonal_loop_len(cycle_beats: f32, rate_beats: f32) -> usize {
         .clamp(1.0, TONAL_MAX_LOOP_STEPS as f32) as usize
 }
 
-pub(crate) fn tonal_cycle_index(beat: f64, cycle_beats: f32, offset_beats: f32) -> u64 {
+pub(crate) fn tonal_cycle_index(beat: f64, cycle_beats: f32) -> u64 {
     let cycle = f64::from(tonal_cycle_beats(cycle_beats));
-    let offset = f64::from(offset_beats).rem_euclid(cycle);
-    ((beat - offset).max(0.0) / cycle).floor() as u64
+    (beat.max(0.0) / cycle).floor() as u64
 }
 
-pub(crate) fn tonal_cycle_step(
-    beat: f64,
-    cycle_beats: f32,
-    offset_beats: f32,
-    rate_beats: f32,
-) -> usize {
+pub(crate) fn tonal_cycle_step(beat: f64, cycle_beats: f32, rate_beats: f32) -> usize {
     let cycle = f64::from(tonal_cycle_beats(cycle_beats));
-    let offset = f64::from(offset_beats).rem_euclid(cycle);
-    let local = (beat - offset).rem_euclid(cycle);
+    let local = beat.rem_euclid(cycle);
     (local / f64::from(tonal_rate_beats(rate_beats))).floor() as usize
+}
+
+pub(crate) fn tonal_offset_step(offset_beats: f32, rate_beats: f32) -> usize {
+    (offset_beats.max(0.0) / tonal_rate_beats(rate_beats)).floor() as usize
 }
 
 pub(crate) fn tonal_rate_beats(rate_beats: f32) -> f32 {
