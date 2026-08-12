@@ -142,8 +142,8 @@ impl Default for KickControls {
             voice_type: 0.0,
             start_freq: 160.0,
             pitch_decay_ms: 55.0,
-            amp_decay_ms: 250.0,
-            click: 0.0,
+            amp_decay_ms: 150.0,
+            click: 0.02,
             filter: 0.7,
             interval_beats: 1.0,
             offset_beats: 0.0,
@@ -215,7 +215,7 @@ impl Default for ClapControls {
             slap_count: 3.0,
             slap_spread_ms: 8.0,
             decay_ms: 40.0,
-            filter: 0.75,
+            filter: 0.7,
             body: 0.2,
         }
     }

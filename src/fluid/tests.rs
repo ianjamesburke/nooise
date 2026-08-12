@@ -1142,7 +1142,10 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // boosted up — an intentional, audible loudness/intensity change, not a
 // rounding artifact.
 // Re-blessed after Tonal's factory Reverb amount moved from 60% to 10%.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0xd6c4_f47f_807d_ee50;
+// Re-blessed for the deliberate default-mix retune: Pad Reverb 80%→40%, Bass
+// Drive 30%→15%, Master Drive 10%→5%, Master Compression 20%→10%, kick amp
+// decay 250→150 ms, kick click 0→10%, clap filter 0.75→0.70.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x3858_2d09_619f_b4c1;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -1394,7 +1397,7 @@ fn defaults_match_current_mix() {
 
     assert_close(controls.master.bpm, 82.0);
     assert_eq!(controls.modules.master[0].kind().unwrap().id, "drive");
-    assert_close(controls.modules.master[0].amount, 0.1);
+    assert_close(controls.modules.master[0].amount, 0.05);
     assert_eq!(controls.modules.master[1].kind().unwrap().id, "compression");
     assert_close(controls.modules.master[1].time, -8.0);
 
@@ -1405,7 +1408,7 @@ fn defaults_match_current_mix() {
 
     assert_close(controls.kick.start_freq, 160.0);
     assert_close(controls.kick.pitch_decay_ms, 55.0);
-    assert_close(controls.kick.amp_decay_ms, 250.0);
+    assert_close(controls.kick.amp_decay_ms, 150.0);
 
     assert_close(controls.tonal.phrase, 0.0);
     assert_close(controls.tonal.synth_type, 0.0);
@@ -1416,7 +1419,7 @@ fn defaults_match_current_mix() {
     assert_close(controls.tonal.evolve_rate, 0.0);
 
     assert_eq!(controls.modules.pad[0].kind().unwrap().id, "room");
-    assert_close(controls.modules.pad[0].amount, 0.8);
+    assert_close(controls.modules.pad[0].amount, 0.4);
     assert_eq!(controls.modules.tonal[0].kind().unwrap().id, "room");
     assert_close(controls.modules.tonal[0].amount, 0.1);
     assert!(controls.modules.clap[0].is_empty());
@@ -1482,9 +1485,9 @@ fn default_template_preloads_shared_effect_modules() {
     let mut controls = FluidControls::default();
     resolve_module_chain(&mut controls);
 
-    assert_close(controls.modules.kick[0].amount, 0.4);
-    assert_close(controls.modules.bass[0].amount, 0.3);
-    assert_close(controls.modules.pad[0].amount, 0.8);
+    assert_close(controls.modules.kick[0].amount, 0.2);
+    assert_close(controls.modules.bass[0].amount, 0.15);
+    assert_close(controls.modules.pad[0].amount, 0.4);
     assert_close(controls.modules.tonal[0].amount, 0.1);
     assert!(controls.modules.clap[0].is_empty());
     assert_close(controls.perc.swing, 0.0);
