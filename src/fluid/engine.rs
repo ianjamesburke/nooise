@@ -582,7 +582,12 @@ impl FluidEngine {
             tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
             gain_smoothers: GainSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
-            pad: PadEngine::new(sample_rate, &snapshot.pad, Arc::clone(&telemetry)),
+            pad: PadEngine::new(
+                sample_rate,
+                &snapshot.pad,
+                snapshot.master.tune,
+                Arc::clone(&telemetry),
+            ),
             perc: PercEngine::new(sample_rate),
             kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
             tonal: TonalEngine::new_with_session_state(

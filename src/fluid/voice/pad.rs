@@ -31,7 +31,18 @@ pub(crate) struct PadEngine {
 }
 
 impl PadEngine {
-    pub(crate) fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<FluidTelemetry>) -> Self {
+    /// `tune` is `master.tune` at construction. It must be passed in rather
+    /// than assumed neutral: the opening chord is voiced here and holds for a
+    /// whole `chord_bars` (~12 s at defaults, its release bleeding into the
+    /// next chord), so a session started from a song code with a non-zero
+    /// tune would play its first chord at concert pitch while Bass, Tonal and
+    /// Arp — which read tune per note — are all transposed.
+    pub(crate) fn new(
+        sample_rate: f32,
+        c: &PadControls,
+        tune: f32,
+        telemetry: Arc<FluidTelemetry>,
+    ) -> Self {
         let active_progression = progression_index(c.progression);
         let active_character = pad_type_index(c.voice_type);
         let initial_notes = pad_chord_tones(c, active_progression, 0);
@@ -40,7 +51,7 @@ impl PadEngine {
             layers: vec![PadLayer::new(
                 active_character,
                 initial_notes,
-                0.0,
+                tune,
                 sample_rate,
                 c.attack_time,
                 c.release_time,

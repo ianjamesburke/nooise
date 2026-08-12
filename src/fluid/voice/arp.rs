@@ -178,10 +178,10 @@ impl ArpEngine {
             // instead of being cut at the step. `rate_beats` only sets the
             // trigger spacing below.
             let pan = self.rng.gen_range(-0.4f32..0.4);
-            // A voice captures its gain at trigger time, so a gain of exactly
-            // 0 (the default) would stay silent for its whole life — skip
-            // creating it. Every RNG draw above still happens, keeping seeded
-            // renders byte-identical.
+            // A silent layer still triggers nothing: skipping keeps a Vol of
+            // exactly 0 (the default) from accumulating inaudible voices.
+            // Every RNG draw above still happens, keeping seeded renders
+            // byte-identical.
             if c.gain != 0.0 {
                 self.voices.push(TonalVoice::new(
                     tonal_synth_type_index(c.voice_type),
@@ -189,7 +189,6 @@ impl ArpEngine {
                         midi: note,
                         hz,
                         pan,
-                        level: c.gain,
                         sample_rate: self.sample_rate,
                         attack_time: c.attack,
                         decay_time: c.decay,
@@ -198,6 +197,11 @@ impl ArpEngine {
             }
         }
 
-        mix_and_retain(&mut self.voices, TonalVoice::next, TonalVoice::is_done)
+        // Applied to the summed voices, not captured per note, so the fader
+        // reaches notes that are already sounding. Pre-smoothed by
+        // `GainSmoothers`.
+        let (dry_l, dry_r) =
+            mix_and_retain(&mut self.voices, TonalVoice::next, TonalVoice::is_done);
+        (dry_l * c.gain, dry_r * c.gain)
     }
 }

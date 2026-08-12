@@ -341,7 +341,6 @@ fn piano_test_note(attack_time: f32, decay_time: f32) -> TonalNote {
         midi: 60,
         hz: 440.0,
         pan: 0.0,
-        level: 1.0,
         sample_rate: SAMPLE_RATE,
         attack_time,
         decay_time,
@@ -539,6 +538,57 @@ fn tonal_offset_moves_the_phrase_window_without_delaying_triggers() {
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 2.0),
     );
     assert_eq!(tonal.step_index, 1);
+}
+
+/// Level used to be captured into each note when it was triggered, so pulling
+/// the fader down left up to `attack + decay` (6 s+) of notes ringing at the
+/// old level while Mute — which gates post-mix — cut instantly. A fader that
+/// only reaches notes not yet played reads as a broken control.
+#[test]
+fn tonal_level_ducks_notes_that_are_already_sounding() {
+    let mut controls = TonalControls {
+        level: 0.8,
+        rate_beats: 0.25,
+        decay: 4.0,
+        randomness: 0.0,
+        ..TonalControls::default()
+    };
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+
+    let mut beat = 0.0;
+    let mut sounding = 0.0f32;
+    for step in 0..4_000 {
+        beat += 4.0 / f64::from(SAMPLE_RATE);
+        let (l, r) = tonal.next(
+            &controls,
+            0.0,
+            TimingContext::new(f64::from(SAMPLE_RATE), 120.0, beat),
+        );
+        if step > 2_000 {
+            sounding = sounding.max((l * l + r * r).sqrt());
+        }
+    }
+    assert!(
+        sounding > 0.001,
+        "no tonal notes sounding to duck: {sounding}"
+    );
+
+    // Same notes, still mid-decay — only the fader moved.
+    controls.level = 0.0;
+    let mut after = 0.0f32;
+    for _ in 0..2_000 {
+        beat += 4.0 / f64::from(SAMPLE_RATE);
+        let (l, r) = tonal.next(
+            &controls,
+            0.0,
+            TimingContext::new(f64::from(SAMPLE_RATE), 120.0, beat),
+        );
+        after = after.max((l * l + r * r).sqrt());
+    }
+    assert!(
+        after <= sounding * 0.01,
+        "notes kept ringing at {after} after Level reached 0 (was {sounding})"
+    );
 }
 
 #[test]
@@ -1142,10 +1192,15 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // boosted up — an intentional, audible loudness/intensity change, not a
 // rounding artifact.
 // Re-blessed after Tonal's factory Reverb amount moved from 60% to 10%.
+// Re-blessed when Tonal/Arp Level moved from being captured into each note at
+// trigger time to scaling the summed voices, so the fader reaches notes that
+// are already sounding. At the fixed level this render uses, scaling the sum
+// is the same arithmetic as scaling each voice and only rounds differently;
+// the audible change is confined to a level that moves mid-note.
 // Re-blessed for the deliberate default-mix retune: Pad Reverb 80%→40%, Bass
 // Drive 30%→15%, Master Drive 10%→5%, Master Compression 20%→10%, kick amp
 // decay 250→150 ms, kick click 0→10%, clap filter 0.75→0.70.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x3858_2d09_619f_b4c1;
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x2615_bcf4_552e_c37c;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -3056,7 +3111,12 @@ fn pad_engine_caps_released_layers() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+    let mut pad = PadEngine::new(
+        SAMPLE_RATE,
+        &controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    );
 
     for chord in 1..12 {
         let sample = chord * SAMPLE_RATE as u64 * 2;
@@ -3072,7 +3132,12 @@ fn pad_engine_step_index_wraps_at_eight() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+    let mut pad = PadEngine::new(
+        SAMPLE_RATE,
+        &controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    );
 
     // chord_bars=1.0 means chord_trigger fires every 4.0 beats; at 120 BPM
     // that's 2 seconds of samples per chord. Render 9 chord-advances worth
@@ -3099,7 +3164,12 @@ fn pad_engine_progression_switch_waits_for_the_next_loop_boundary() {
         attack_time: 0.001,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+    let mut pad = PadEngine::new(
+        SAMPLE_RATE,
+        &controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    );
 
     // Warm up the original layer's envelope (still progression 0, so no push
     // happens here) so its level is non-negligible before it gets released;
@@ -3117,6 +3187,46 @@ fn pad_engine_progression_switch_waits_for_the_next_loop_boundary() {
     assert_eq!(pad.layers.len(), layers_before);
 }
 
+/// `PadEngine::new` voiced its opening chord with a hardcoded neutral tune,
+/// so a session started from a song code carrying a non-zero `master.tune`
+/// played its first chord at concert pitch — for a whole `chord_bars`, its
+/// release bleeding into the second — while Bass, Tonal and Arp read tune per
+/// note and were all transposed.
+#[test]
+fn pad_voices_its_opening_chord_at_the_master_tune() {
+    let controls = PadControls {
+        chord_bars: 64.0,
+        level: 1.0,
+        ..PadControls::default()
+    };
+    let render = |tune: f32| {
+        let mut pad = PadEngine::new(
+            SAMPLE_RATE,
+            &controls,
+            tune,
+            Arc::new(FluidTelemetry::default()),
+        );
+        (0..4_000)
+            .map(|sample| {
+                let (l, _) = pad.next(&controls, tune, timing(sample, 120.0));
+                l
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let concert = render(0.0);
+    let transposed = render(12.0);
+    let difference = concert
+        .iter()
+        .zip(&transposed)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        difference > 1e-4,
+        "the opening chord ignored master.tune (max difference {difference})"
+    );
+}
+
 #[test]
 fn pad_engine_type_change_revoices_the_current_chord_immediately() {
     let mut controls = PadControls {
@@ -3124,7 +3234,12 @@ fn pad_engine_type_change_revoices_the_current_chord_immediately() {
         attack_time: 0.001,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+    let mut pad = PadEngine::new(
+        SAMPLE_RATE,
+        &controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    );
 
     for sample in 0..10 {
         let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
@@ -3286,7 +3401,12 @@ fn pad_engine_step_index_wraps_at_pad_chord_count_on_a_built_in_progression() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+    let mut pad = PadEngine::new(
+        SAMPLE_RATE,
+        &controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    );
 
     for chord in 1..=5 {
         let sample = chord * SAMPLE_RATE as u64 * 2;
@@ -3324,7 +3444,12 @@ fn pad_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+    let mut pad = PadEngine::new(
+        SAMPLE_RATE,
+        &controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    );
 
     for chord in 1..=5 {
         let sample = chord * SAMPLE_RATE as u64 * 2;
@@ -3341,7 +3466,12 @@ fn pad_engine_chord_count_change_finishes_the_current_chord_before_relooping() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+    let mut pad = PadEngine::new(
+        SAMPLE_RATE,
+        &controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    );
 
     for chord in 1..=3 {
         let sample = chord * SAMPLE_RATE as u64 * 2;
@@ -3370,7 +3500,12 @@ fn pad_engine_progression_change_finishes_the_current_loop_before_switching() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+    let mut pad = PadEngine::new(
+        SAMPLE_RATE,
+        &controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    );
 
     for chord in 1..=3 {
         let sample = chord * SAMPLE_RATE as u64 * 2;
@@ -3400,7 +3535,12 @@ fn pad_engine_chord_slot_edit_retriggers_immediately() {
         attack_time: 0.001,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+    let mut pad = PadEngine::new(
+        SAMPLE_RATE,
+        &controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    );
 
     for sample in 0..10 {
         let _ = pad.next(&controls, 0.0, timing(sample, 120.0));

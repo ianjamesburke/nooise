@@ -401,10 +401,9 @@ impl TonalEngine {
             } + (c.octave.round() as i32) * 12;
             let hz = tonal_note_hz(note, tune);
             let pan = self.rng.gen_range(-0.5f32..0.5);
-            // A voice captures its level at trigger time, so a level of
-            // exactly 0 would stay silent for its whole life — skip creating
-            // it. Every RNG draw above still happens, keeping seeded renders
-            // byte-identical.
+            // A silent layer still triggers nothing: skipping keeps a Level
+            // of exactly 0 from accumulating inaudible voices. Every RNG draw
+            // above still happens, keeping seeded renders byte-identical.
             if c.level != 0.0 {
                 self.voices.push(TonalVoice::new(
                     tonal_synth_type_index(c.synth_type),
@@ -412,7 +411,6 @@ impl TonalEngine {
                         midi: note,
                         hz,
                         pan,
-                        level: c.level,
                         sample_rate: self.sample_rate,
                         attack_time: c.attack,
                         decay_time: c.decay,
@@ -424,7 +422,19 @@ impl TonalEngine {
         let (dry_l, dry_r) =
             mix_and_retain(&mut self.voices, TonalVoice::next, TonalVoice::is_done);
 
-        (self.low_cut_l.process(dry_l), self.low_cut_r.process(dry_r))
+        // Level is applied here, to the summed voices, rather than captured
+        // into each note at trigger time: a note that has already started
+        // must still answer the fader. `c.level` arrives pre-smoothed from
+        // `GainSmoothers`, so this stays click-free.
+        //
+        // It scales the low cut's *output*, never its input. The cut is a
+        // high pass, so feeding it an abruptly silenced signal discharges its
+        // state as a decaying thump — the filter must keep seeing the voices
+        // at full level and never learn that the fader moved.
+        (
+            self.low_cut_l.process(dry_l) * c.level,
+            self.low_cut_r.process(dry_r) * c.level,
+        )
     }
 
     pub(crate) fn sync_phrase(&mut self, phrase: usize) {
@@ -586,7 +596,6 @@ pub(crate) struct TonalNote {
     pub(crate) midi: i32,
     pub(crate) hz: f32,
     pub(crate) pan: f32,
-    pub(crate) level: f32,
     pub(crate) sample_rate: f32,
     pub(crate) attack_time: f32,
     pub(crate) decay_time: f32,
@@ -671,7 +680,6 @@ pub(crate) struct SineTonalVoice {
     pub(crate) attack_time: f32,
     pub(crate) decay_time: f32,
     pub(crate) pan_gains: (f32, f32),
-    pub(crate) level: f32,
 }
 
 impl SineTonalVoice {
@@ -689,7 +697,6 @@ impl SineTonalVoice {
             attack_time: note.attack_time,
             decay_time: note.decay_time,
             pan_gains: StereoPanner::gains(note.pan),
-            level: note.level,
         }
     }
     pub(crate) fn next(&mut self) -> (f32, f32) {
@@ -705,8 +712,7 @@ impl SineTonalVoice {
             self.decay_time,
             TONAL_SINE_DECAY_POWER,
         );
-        let s =
-            soft_clip((self.primary.next() + self.detuned.next() * 0.3) * 0.4) * gain * self.level;
+        let s = soft_clip((self.primary.next() + self.detuned.next() * 0.3) * 0.4) * gain;
         (s * self.pan_gains.0, s * self.pan_gains.1)
     }
     pub(crate) fn is_done(&self) -> bool {
@@ -746,7 +752,6 @@ pub(crate) struct PianoTonalVoice {
     pub(crate) attack_time: f32,
     pub(crate) decay_time: f32,
     pub(crate) pan_gains: (f32, f32),
-    pub(crate) level: f32,
 }
 
 impl PianoTonalVoice {
@@ -775,7 +780,6 @@ impl PianoTonalVoice {
             attack_time: note.attack_time,
             decay_time: note.decay_time,
             pan_gains: StereoPanner::gains(note.pan),
-            level: note.level,
         }
     }
 
@@ -802,7 +806,7 @@ impl PianoTonalVoice {
             self.decay_time,
             self.profile.body_power,
         );
-        let s = soft_clip(sample * self.profile.amplitude) * envelope * self.level;
+        let s = soft_clip(sample * self.profile.amplitude) * envelope;
         (s * self.pan_gains.0, s * self.pan_gains.1)
     }
 
