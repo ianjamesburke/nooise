@@ -1,6 +1,48 @@
 # Changelog
 
 Newest releases appear first.
+## [1.9.0] — 2026-08-12
+
+### Added
+- feat: randomize fresh progression and expand pads
+- feat: add stackable automation lanes
+- feat: remove macro controls
+- feat: recalibrate Drive's knob range and add volume compensation
+- feat: add compression, delay, and drive as new module slot types
+- feat: add modules from the palette without breaking kernel purity
+- feat: fold per-voice effect sliders into module slots
+- feat: add per-layer module slots with value-addressed identity (#32)
+- feat: unify sliders on a Dial, taper modulation, stop mute ending auto (#31)
+- feat: pin a layer's level control when the palette query is its name (#30)
+- feat: container-v2 song codes with interned control ids (#29)
+- feat: visualize and chord performance layers (#27)
+- feat: collect local morph states and Pads naming (#26)
+- feat: rebuild performance interaction on kernel (#25)
+
+### Changed
+- merge: stackable automation lanes
+- merge: crate-wide conventions sweep
+- merge: ui four-way split
+- merge: automation submodule split
+- merge: interaction kernel split
+- merge: fx params convention
+- merge: runtime key tables
+- merge: voice dedup
+- merge: registry table dedup
+
+### Fixed
+- fix: apply pad type changes immediately
+- fix: gate mute after automation
+- fix: make tonal offset ride the phrase
+- fix: keep envelope animations green
+- fix: close neutral lfo editor cleanly
+- fix: stage pad progression changes
+- fix: draw modulation markers on the contextual mapping
+- fix: keep FX tails out of song codes
+- fix: apply Chord Count to built-in progressions, not just Custom
+- fix: stop module-slot rows on Chords from landing inside the chord drill
+- fix: keep the open editor drawn during numeric entry (#28)
+- fix: make add-morph transactional (#17)
 ## [1.8.5] — 2026-07-27
 
 ### Added
