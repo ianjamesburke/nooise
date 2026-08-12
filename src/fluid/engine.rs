@@ -23,19 +23,183 @@ enum SlotFx {
     Compression(StereoCompressor),
 }
 
+impl SlotFx {
+    fn family(&self) -> Family {
+        match self {
+            Self::Delay(_) => Family::Delay,
+            Self::Reverb(_) => Family::Reverb,
+            Self::Compression(_) => Family::Compression,
+        }
+    }
+}
+
+/// A processor whose slot no longer wants it — the module was removed, or
+/// replaced by one of another family.
+///
+/// Dropping it outright cuts whatever it was producing to zero in a single
+/// sample, which on a Reverb or Delay holding a live tail is a loud click.
+/// Instead it keeps running on the live input while its contribution
+/// crossfades back to the dry signal, and only then is it dropped. `slot` is
+/// the slot's field values captured at the moment it was retired, since the
+/// live slot has already moved on to whatever replaced it.
+struct RetiringFx {
+    fx: SlotFx,
+    slot: ModuleSlot,
+    /// Weight of the retiring processor's output, walking 1.0 down to 0.0.
+    weight: f32,
+    step: f32,
+}
+
 struct ModuleFxBank {
     slots: [Option<SlotFx>; MODULE_LAYERS * MODULE_SLOTS],
+    retiring: [Option<RetiringFx>; MODULE_LAYERS * MODULE_SLOTS],
+    /// Each slot's field values from the last frame it was loaded. A retiring
+    /// processor keeps running on these, not on the live slot: by the time a
+    /// removal is noticed the live slot has already been cleared, and its
+    /// zeroed Amount would silence the very tail being faded out.
+    last_loaded: [ModuleSlot; MODULE_LAYERS * MODULE_SLOTS],
     max_delay_samples: usize,
     sample_rate: f32,
+    retire_step: f32,
 }
 
 impl ModuleFxBank {
     fn new(sample_rate: f32) -> Self {
         Self {
             slots: std::array::from_fn(|_| None),
+            retiring: std::array::from_fn(|_| None),
+            last_loaded: [ModuleSlot::default(); MODULE_LAYERS * MODULE_SLOTS],
             max_delay_samples: (sample_rate * (DELAY_FREE_MAX_MS / 1_000.0)).ceil() as usize,
             sample_rate,
+            // The same window every other click-free level change in the
+            // engine uses, so a module leaving sounds like any other gain
+            // change rather than its own event.
+            retire_step: 1.0 / (LEVEL_RAMP_MS * 0.001 * sample_rate).max(1.0),
         }
+    }
+
+    /// One sample through one loaded processor, dispatched on the processor
+    /// itself rather than on the slot's requested kind — a retiring processor
+    /// outlives the slot's claim on it.
+    fn process_slot_fx(
+        fx: &mut SlotFx,
+        slot: &ModuleSlot,
+        sample: (f32, f32),
+        timing: TimingContext,
+        max_delay_samples: usize,
+        sample_rate: f32,
+    ) -> (f32, f32) {
+        match fx {
+            SlotFx::Delay(line) => {
+                let left = delay_time_ms(
+                    slot.time,
+                    DelayClock::from_value(slot.clock),
+                    timing.bpm as f32,
+                );
+                let right = delay_time_ms(
+                    slot.right_time,
+                    DelayClock::from_value(slot.right_clock),
+                    timing.bpm as f32,
+                );
+                let samples = |ms: f32| {
+                    ((ms * timing.sample_rate as f32 / 1_000.0).round() as usize)
+                        .clamp(1, max_delay_samples)
+                };
+                line.process(
+                    sample,
+                    DelayParams {
+                        left_delay_samples: samples(left),
+                        right_delay_samples: samples(right),
+                        feedback: slot.feedback,
+                        amount: slot.amount,
+                        vintage: slot.vintage,
+                        sample_rate: timing.sample_rate as f32,
+                    },
+                )
+            }
+            SlotFx::Reverb(reverb) => {
+                // A silenced reverb is fed silence rather than skipped, so
+                // its tail rings out instead of stopping dead.
+                let input = if slot.amount > 0.0 {
+                    sample
+                } else {
+                    (0.0, 0.0)
+                };
+                let wet = reverb.process(
+                    input.0,
+                    input.1,
+                    ReverbParams {
+                        room_size: slot.time,
+                        damp: slot.feedback,
+                    },
+                );
+                (
+                    sample.0 + wet.0 * slot.amount,
+                    sample.1 + wet.1 * slot.amount,
+                )
+            }
+            SlotFx::Compression(compressor) => compressor.process(
+                sample,
+                CompressorParams {
+                    sample_rate,
+                    threshold_db: slot.time,
+                    ratio: slot.right_time,
+                    release_ms: slot.feedback,
+                    makeup_db: slot.vintage,
+                    amount: slot.amount,
+                },
+            ),
+        }
+    }
+
+    /// Moves a loaded processor into retirement when its slot no longer asks
+    /// for that family — emptied, or swapped for a different module.
+    fn retire_if_replaced(&mut self, index: usize, slot: &ModuleSlot) {
+        let wanted = slot.kind().map(|kind| kind.family);
+        let loaded = self.slots[index].as_ref().map(SlotFx::family);
+        if loaded.is_none() || loaded == wanted {
+            return;
+        }
+        let Some(fx) = self.slots[index].take() else {
+            return;
+        };
+        self.retiring[index] = Some(RetiringFx {
+            fx,
+            slot: self.last_loaded[index],
+            weight: 1.0,
+            step: self.retire_step,
+        });
+    }
+
+    /// Crossfades a retiring processor's contribution back to dry, then drops
+    /// it once it contributes nothing.
+    fn run_retiring(
+        &mut self,
+        index: usize,
+        sample: (f32, f32),
+        timing: TimingContext,
+    ) -> (f32, f32) {
+        let (max_delay_samples, sample_rate) = (self.max_delay_samples, self.sample_rate);
+        let Some(retiring) = &mut self.retiring[index] else {
+            return sample;
+        };
+        let wet = Self::process_slot_fx(
+            &mut retiring.fx,
+            &retiring.slot,
+            sample,
+            timing,
+            max_delay_samples,
+            sample_rate,
+        );
+        let weight = retiring.weight;
+        retiring.weight -= retiring.step;
+        if retiring.weight <= 0.0 {
+            self.retiring[index] = None;
+        }
+        (
+            sample.0 + (wet.0 - sample.0) * weight,
+            sample.1 + (wet.1 - sample.1) * weight,
+        )
     }
 
     fn process(
@@ -49,96 +213,52 @@ impl ModuleFxBank {
             return sample;
         };
         for (slot_index, slot) in slots.iter().enumerate() {
+            let index = layer * MODULE_SLOTS + slot_index;
+            // A module the slot has stopped asking for hands its tail over to
+            // the retiring path first, so it fades instead of being cut.
+            self.retire_if_replaced(index, slot);
+            sample = self.run_retiring(index, sample, timing);
+
             let Some(kind) = slot.kind() else {
                 continue;
             };
-            let processor = &mut self.slots[layer * MODULE_SLOTS + slot_index];
+            // Recorded before the amount bypass below, so a slot idling at
+            // zero still retires with the settings it was last loaded with.
+            self.last_loaded[index] = *slot;
+            let (max_delay_samples, sample_rate) = (self.max_delay_samples, self.sample_rate);
+            let processor = &mut self.slots[index];
             if slot.amount <= 0.0 && processor.is_none() {
                 continue;
             }
             match kind.family {
-                Family::Delay => {
-                    if !matches!(processor, Some(SlotFx::Delay(_))) {
-                        *processor = Some(SlotFx::Delay(StereoDelay::new(self.max_delay_samples)));
+                Family::Delay | Family::Reverb | Family::Compression => {
+                    if processor.is_none() {
+                        *processor = Some(match kind.family {
+                            Family::Delay => SlotFx::Delay(StereoDelay::new(max_delay_samples)),
+                            Family::Reverb => SlotFx::Reverb(Freeverb::new(sample_rate)),
+                            _ => SlotFx::Compression(StereoCompressor::new(0.0)),
+                        });
                     }
-                    let Some(SlotFx::Delay(line)) = processor else {
+                    let Some(fx) = processor else {
                         continue;
                     };
-                    let left = delay_time_ms(
-                        slot.time,
-                        DelayClock::from_value(slot.clock),
-                        timing.bpm as f32,
-                    );
-                    let right = delay_time_ms(
-                        slot.right_time,
-                        DelayClock::from_value(slot.right_clock),
-                        timing.bpm as f32,
-                    );
-                    let samples = |ms: f32| {
-                        ((ms * timing.sample_rate as f32 / 1_000.0).round() as usize)
-                            .clamp(1, self.max_delay_samples)
-                    };
-                    sample = line.process(
+                    sample = Self::process_slot_fx(
+                        fx,
+                        slot,
                         sample,
-                        DelayParams {
-                            left_delay_samples: samples(left),
-                            right_delay_samples: samples(right),
-                            feedback: slot.feedback,
-                            amount: slot.amount,
-                            vintage: slot.vintage,
-                            sample_rate: timing.sample_rate as f32,
-                        },
+                        timing,
+                        max_delay_samples,
+                        sample_rate,
                     );
                 }
-                Family::Reverb => {
-                    if !matches!(processor, Some(SlotFx::Reverb(_))) {
-                        *processor = Some(SlotFx::Reverb(Freeverb::new(self.sample_rate)));
-                    }
-                    let Some(SlotFx::Reverb(reverb)) = processor else {
-                        continue;
-                    };
-                    let input = if slot.amount > 0.0 {
-                        sample
-                    } else {
-                        (0.0, 0.0)
-                    };
-                    let wet = reverb.process(
-                        input.0,
-                        input.1,
-                        ReverbParams {
-                            room_size: slot.time,
-                            damp: slot.feedback,
-                        },
-                    );
-                    sample.0 += wet.0 * slot.amount;
-                    sample.1 += wet.1 * slot.amount;
-                }
-                Family::Compression => {
-                    if !matches!(processor, Some(SlotFx::Compression(_))) {
-                        *processor = Some(SlotFx::Compression(StereoCompressor::new(0.0)));
-                    }
-                    let Some(SlotFx::Compression(compressor)) = processor else {
-                        continue;
-                    };
-                    sample = compressor.process(
-                        sample,
-                        CompressorParams {
-                            sample_rate: self.sample_rate,
-                            threshold_db: slot.time,
-                            ratio: slot.right_time,
-                            release_ms: slot.feedback,
-                            makeup_db: slot.vintage,
-                            amount: slot.amount,
-                        },
-                    );
-                }
+                // Stateless shaping families hold no tail, so they have
+                // nothing to retire and are simply absent when unloaded.
                 Family::SingleAmount => {
-                    *processor = None;
                     if kind.id == "drive" {
                         sample = drive::process(sample, slot.amount);
                     }
                 }
-                Family::TwoKnob => *processor = None,
+                Family::TwoKnob => {}
             }
         }
         sample
@@ -148,6 +268,104 @@ impl ModuleFxBank {
 #[cfg(test)]
 mod module_fx_tests {
     use super::*;
+
+    const TEST_SAMPLE_RATE: f32 = 48_000.0;
+
+    fn timing() -> TimingContext {
+        TimingContext::new(TEST_SAMPLE_RATE as f64, 120.0, 0.0)
+    }
+
+    /// Runs one slot chain for `samples` frames and returns the magnitude of
+    /// every output frame. `input` is fed every frame.
+    fn run(
+        bank: &mut ModuleFxBank,
+        slots: &[ModuleSlot; MODULE_SLOTS],
+        input: (f32, f32),
+        samples: usize,
+    ) -> Vec<f32> {
+        (0..samples)
+            .map(|_| {
+                let (l, r) = bank.process(Tab::Chords, slots, input, timing());
+                (l * l + r * r).sqrt()
+            })
+            .collect()
+    }
+
+    /// Builds a reverb tail in a slot, then hands back the bank and the tail
+    /// level it is currently producing on silence.
+    fn bank_with_a_live_tail() -> (ModuleFxBank, [ModuleSlot; MODULE_SLOTS], f32) {
+        let mut bank = ModuleFxBank::new(TEST_SAMPLE_RATE);
+        let mut slots: [ModuleSlot; MODULE_SLOTS] = std::array::from_fn(|_| ModuleSlot::default());
+        slots[0] = preset_slot("room", 1.0);
+
+        run(&mut bank, &slots, (0.6, 0.6), 12_000);
+        let tail = run(&mut bank, &slots, (0.0, 0.0), 64);
+        let level = tail.iter().sum::<f32>() / tail.len() as f32;
+        assert!(level > 0.001, "no reverb tail to test against: {level}");
+        (bank, slots, level)
+    }
+
+    /// Removing a module used to skip its processor outright, dropping a live
+    /// reverb or delay tail to zero in one sample — a loud click on a single
+    /// keystroke. The tail has to fade instead.
+    #[test]
+    fn removing_a_module_fades_its_tail_instead_of_cutting_it() {
+        let (mut bank, mut slots, level) = bank_with_a_live_tail();
+
+        slots[0] = ModuleSlot::default();
+        assert!(slots[0].is_empty(), "the slot under test must be empty");
+
+        // The sample right after removal must still carry essentially the
+        // whole tail: that is the difference between a fade and a cliff.
+        let first = run(&mut bank, &slots, (0.0, 0.0), 1)[0];
+        assert!(
+            first > level * 0.5,
+            "tail was cut to {first} from a {level} tail"
+        );
+
+        // ...and it must be gone by the end of the ramp, not lingering.
+        let ramp = (LEVEL_RAMP_MS * 0.001 * TEST_SAMPLE_RATE) as usize;
+        run(&mut bank, &slots, (0.0, 0.0), ramp);
+        let settled = run(&mut bank, &slots, (0.0, 0.0), 64);
+        assert!(
+            settled.iter().all(|s| *s <= level * 0.02),
+            "removed module still audible after its fade"
+        );
+    }
+
+    /// A removed processor used to be skipped rather than dropped, so its
+    /// buffers froze mid-tail. Re-adding the same module to that slot then
+    /// replayed the previous take's reverb out of nowhere.
+    #[test]
+    fn re_adding_a_module_does_not_resurrect_the_previous_tail() {
+        let (mut bank, mut slots, level) = bank_with_a_live_tail();
+
+        slots[0] = ModuleSlot::default();
+        let ramp = (LEVEL_RAMP_MS * 0.001 * TEST_SAMPLE_RATE) as usize;
+        run(&mut bank, &slots, (0.0, 0.0), ramp + 64);
+
+        slots[0] = preset_slot("room", 1.0);
+        let revived = run(&mut bank, &slots, (0.0, 0.0), 256);
+        let loudest = revived.iter().fold(0.0f32, |acc, s| acc.max(*s));
+        assert!(
+            loudest <= level * 0.02,
+            "re-adding the module replayed a stale tail at {loudest}"
+        );
+    }
+
+    /// Swapping one module for another is the same cliff as removing it, so
+    /// the outgoing processor retires the same way.
+    #[test]
+    fn replacing_a_module_fades_the_outgoing_one() {
+        let (mut bank, mut slots, level) = bank_with_a_live_tail();
+
+        slots[0] = preset_slot("drive", 0.0);
+        let first = run(&mut bank, &slots, (0.0, 0.0), 1)[0];
+        assert!(
+            first > level * 0.5,
+            "outgoing module was cut to {first} from a {level} tail"
+        );
+    }
 
     /// The engine hands Compression slot fields straight to the DSP, which
     /// was written against these ranges. `ControlSpec::apply_value` and the
