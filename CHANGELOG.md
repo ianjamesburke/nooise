@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [1.9.1] — 2026-08-12
+
+### Added
+- feat: add multi-operator FM primitive and level-match kick types
+
+### Fixed
+- fix: fade module processors out instead of dropping them
+- fix: swap pad character in place instead of retriggering the chord
+- fix: retune default mix values
 ## [1.9.0] — 2026-08-12
 
 ### Added
