@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use crate::fx::compression::{CompressorParams, StereoCompressor};
 use crate::fx::delay::{DelayParams, StereoDelay};
 use crate::fx::drive;
+use crate::fx::filter::{FilterParams, FilterType, StereoFilter};
 use crate::fx::reverb::{Freeverb, ReverbParams};
 
 use super::*;
@@ -21,6 +22,7 @@ enum SlotFx {
     Delay(StereoDelay),
     Reverb(Freeverb),
     Compression(StereoCompressor),
+    Filter(StereoFilter),
 }
 
 struct ModuleFxBank {
@@ -128,6 +130,24 @@ impl ModuleFxBank {
                             ratio: slot.right_time,
                             release_ms: slot.feedback,
                             makeup_db: slot.vintage,
+                            amount: slot.amount,
+                        },
+                    );
+                }
+                Family::Filter => {
+                    if !matches!(processor, Some(SlotFx::Filter(_))) {
+                        *processor = Some(SlotFx::Filter(StereoFilter::default()));
+                    }
+                    let Some(SlotFx::Filter(filter)) = processor else {
+                        continue;
+                    };
+                    sample = filter.process(
+                        sample,
+                        FilterParams {
+                            sample_rate: self.sample_rate,
+                            cutoff_hz: slot.time,
+                            resonance: slot.right_time,
+                            filter_type: FilterType::from_value(slot.feedback),
                             amount: slot.amount,
                         },
                     );

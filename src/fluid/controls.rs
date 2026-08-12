@@ -6,11 +6,6 @@ use super::module::LayerModules;
 
 pub(crate) const MASTER_BPM_MIN: f32 = 30.0;
 pub(crate) const MASTER_BPM_MAX: f32 = 200.0;
-// bass.cutoff range for BassEngine's one-pole lowpass. The max is treated as
-// a literal bypass in BassEngine::next (not just a high filter coefficient)
-// so the default render stays byte-identical — see BassLowPass in bass.rs.
-pub(crate) const BASS_CUTOFF_MIN_HZ: f32 = 80.0;
-pub(crate) const BASS_CUTOFF_MAX_HZ: f32 = 8000.0;
 // Short enough to feel instant under a moving slider, long enough to stay
 // click-free on gain changes.
 pub(crate) const LEVEL_RAMP_MS: f32 = 30.0;
@@ -38,7 +33,6 @@ impl Default for MasterControls {
 pub(crate) struct PercControls {
     pub(crate) level: f32,
     pub(crate) decay_ms: f32,
-    pub(crate) filter: f32,
     pub(crate) interval_beats: f32,
     pub(crate) offset_beats: f32,
     pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
@@ -49,7 +43,6 @@ impl Default for PercControls {
         Self {
             level: 0.0,
             decay_ms: 200.0,
-            filter: 0.7,
             interval_beats: 0.25,
             offset_beats: 0.0,
             swing: 0.0,
@@ -231,8 +224,7 @@ pub(crate) struct BassControls {
     pub(crate) octave: f32, // octaves relative to the chord root, e.g. -1.0 = one octave down
     pub(crate) attack_time: f32,
     pub(crate) decay_time: f32, // also used as the cutoff curve when a hit retriggers mid-decay
-    pub(crate) cutoff: f32, // one-pole lowpass cutoff, Hz; BASS_CUTOFF_MAX_HZ = fully open (bypass)
-    pub(crate) swing: f32,  // derived from the optional Swing module
+    pub(crate) swing: f32,      // derived from the optional Swing module
 }
 
 impl Default for BassControls {
@@ -246,7 +238,6 @@ impl Default for BassControls {
             octave: -1.0,
             decay_time: 0.3,
             attack_time: 0.01,
-            cutoff: BASS_CUTOFF_MAX_HZ,
             swing: 0.0,
         }
     }

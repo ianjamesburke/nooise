@@ -1,5 +1,5 @@
 //! The Bass voice: a monophonic line following the Pad's progression, in
-//! three characters over one shared trigger, pitch, and filter path.
+//! three characters over one shared trigger and pitch path.
 
 use super::*;
 
@@ -76,36 +76,6 @@ pub(crate) const BASS_STEP_BEATS: f32 = 0.25;
 /// consecutive bass hits never audibly overlap.
 const BASS_MONO_FADE_SECONDS: f32 = 0.003;
 
-/// One-pole RC lowpass for `bass.cutoff`, applied to `BassEngine`'s summed
-/// stereo output (voice + mono fade tail) above the `BassVoice` character
-/// dispatch, so it affects all three bass types identically. Unlike
-/// `TonalLowCut` (a fixed-coefficient highpass cached at construction), this
-/// recomputes its coefficient every sample from the live modulated
-/// `bass.cutoff` value, since the control can carry an LFO/envelope route.
-/// `BassEngine::next` skips calling `process` entirely at `BASS_CUTOFF_MAX_HZ`
-/// (a true bypass) rather than relying on the filter math to be transparent
-/// at a finite max coefficient — it isn't, so bypass is required to keep the
-/// default render byte-identical.
-pub(crate) struct BassLowPass {
-    pub(crate) state: f32,
-}
-
-impl BassLowPass {
-    pub(crate) fn new() -> Self {
-        Self { state: 0.0 }
-    }
-
-    pub(crate) fn process(&mut self, input: f32, cutoff_hz: f32, sample_rate: f32) -> f32 {
-        let sample_rate = sample_rate.max(1.0);
-        let cutoff_hz = cutoff_hz.max(1.0);
-        let dt = 1.0 / sample_rate;
-        let rc = 1.0 / (TAU * cutoff_hz);
-        let alpha = dt / (rc + dt);
-        self.state += alpha * (input - self.state);
-        self.state
-    }
-}
-
 pub(crate) struct BassEngine {
     pub(crate) sample_rate: f32,
     pub(crate) chord_trigger: GridTrigger,
@@ -118,8 +88,6 @@ pub(crate) struct BassEngine {
     pub(crate) fading_voice: Option<BassVoice>,
     pub(crate) fade_samples_remaining: u32,
     pub(crate) fade_total_samples: u32,
-    pub(crate) lowpass_l: BassLowPass,
-    pub(crate) lowpass_r: BassLowPass,
     /// Bass voices are mono and always centered; the constant-power center
     /// gain pair is computed once here instead of per voice-sample.
     pub(crate) center_gains: (f32, f32),
@@ -139,8 +107,6 @@ impl BassEngine {
             fading_voice: None,
             fade_samples_remaining: 0,
             fade_total_samples: (sample_rate * BASS_MONO_FADE_SECONDS).max(1.0) as u32,
-            lowpass_l: BassLowPass::new(),
-            lowpass_r: BassLowPass::new(),
             center_gains: StereoPanner::gains(0.0),
         }
     }
@@ -214,15 +180,6 @@ impl BassEngine {
             if self.fade_samples_remaining == 0 {
                 self.fading_voice = None;
             }
-        }
-
-        // bass.cutoff at BASS_CUTOFF_MAX_HZ is a true bypass (no filter call
-        // at all), not just a wide-open coefficient, so the default render
-        // stays byte-identical. Filters the fade tail too, since it's
-        // already summed into l/r above.
-        if c.cutoff < BASS_CUTOFF_MAX_HZ {
-            l = self.lowpass_l.process(l, c.cutoff, self.sample_rate);
-            r = self.lowpass_r.process(r, c.cutoff, self.sample_rate);
         }
 
         (l * c.level, r * c.level)

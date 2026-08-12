@@ -844,7 +844,7 @@ mod tests {
             "│␠␠┌──────────────────────────────────────┐␠␠│",
             "│␠␠│/bass▌␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│␠␠│",
             "│[P│␠␠bass.level␠·␠Bass␠·␠Level␠␠0%␠␠␠␠␠␠␠│␠␠│",
-            "│␠␠│▸␠bass.cutoff␠·␠Bass␠·␠Cutoff␠␠8000␠Hz│␠␠│",
+            "│␠␠│▸␠bass.slot1.time␠·␠Bass␠·␠Cutoff␠␠8000␠Hz│␠␠│",
             "│▶␠│␠␠bass.attack_time␠·␠Bass␠·␠Attack␠␠10│␠␠│",
             "│␠␠│␠␠bass.decay_time␠·␠Bass␠·␠Decay␠␠300␠│␠␠│",
             "│␠␠│⇥␠complete␠␠␠type␠value␠␠␠↵␠stage/jump│␠␠│",

@@ -441,6 +441,31 @@ impl ControlSpec {
                 spec.entry = Entry::Free;
                 spec.reset = 2.0;
             }
+            (Family::Filter, ModuleSlotField::Time) => {
+                spec.kind = ControlKind::Continuous;
+                spec.min = 80.0;
+                spec.max = 8_000.0;
+                spec.step = Step::Linear(1.0);
+                spec.entry = Entry::Round;
+                spec.taper = Taper::Log2;
+                spec.reset = 8_000.0;
+            }
+            (Family::Filter, ModuleSlotField::RightTime) => {
+                spec.kind = ControlKind::Continuous;
+                spec.min = 0.0;
+                spec.max = 1.0;
+                spec.step = Step::Linear(0.01);
+                spec.entry = Entry::Percent;
+                spec.reset = 0.0;
+            }
+            (Family::Filter, ModuleSlotField::Feedback) => {
+                spec.kind = ControlKind::Discrete;
+                spec.min = 0.0;
+                spec.max = 2.0;
+                spec.step = Step::Linear(1.0);
+                spec.entry = Entry::Round;
+                spec.reset = 0.0;
+            }
             _ => {}
         }
         spec
@@ -1043,7 +1068,6 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     "perc",
     [
         gain_pct!("perc.level", "Level", perc.level),
-        gain_pct!("perc.filter", "Filter", 0.5, 1.0, perc.filter),
         time_ms!("perc.decay_ms", "Decay", 20.0, 2000.0, 1.0, perc.decay_ms),
         ControlSpec::new(
             "perc.interval_beats",
@@ -1157,22 +1181,6 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
     "bass",
     [
         gain_pct!("bass.level", "Level", bass.level),
-        ControlSpec::new(
-            "bass.cutoff",
-            "Cutoff",
-            ControlKind::Continuous,
-            BASS_CUTOFF_MIN_HZ,
-            BASS_CUTOFF_MAX_HZ,
-            Step::Linear(100.0),
-            Entry::Free,
-            |c| c.bass.cutoff,
-            |c, v| c.bass.cutoff = v,
-            |c| format!("{:.0} Hz", c.bass.cutoff),
-        )
-        // Frequency is perceptually logarithmic: a Log2 taper spaces octaves
-        // evenly across the dial so the sweep is smooth from 80 Hz to fully open.
-        .taper(Taper::Log2)
-        .reset_at(BASS_CUTOFF_MAX_HZ),
         time_secs!(
             "bass.attack_time",
             "Attack",
@@ -1749,6 +1757,18 @@ pub(crate) fn module_detail_controls(
             };
         }
     }
+    if kind.family == Family::Filter {
+        for item in &mut items {
+            item.display = match item.id.rsplit('.').next() {
+                Some("amount" | "right_time") => pct(item.value),
+                Some("time") => format!("{:.0} Hz", item.value),
+                Some("feedback") => ["Low-pass", "High-pass", "Band-pass"]
+                    [item.value.round().clamp(0.0, 2.0) as usize]
+                    .to_string(),
+                _ => item.display.clone(),
+            };
+        }
+    }
     items
 }
 
@@ -1771,8 +1791,8 @@ pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {
         // so `kind` needs no row of its own.
         ModuleSlotField::Kind => false,
         ModuleSlotField::Amount => true,
-        // The established two-knob family remains inline. Delay is the first
-        // family that enters the reusable detail scope.
+        // The established two-knob family remains inline. Detailed effects
+        // own their controls in the reusable drill scope.
         ModuleSlotField::Time => slot
             .kind()
             .is_some_and(|kind| kind.family == Family::TwoKnob),

@@ -400,8 +400,8 @@ fn control_at(index: u16) -> Option<&'static ControlSpec> {
 /// The prune compares the *encoded* value against the encoded default rather
 /// than the two raw floats. A plain absolute `f32::EPSILON` comparison is
 /// only safe while `quantize` is a no-op for tapered dials: a position round
-/// trip carries relative error, so on a large-magnitude control (`bass.cutoff`
-/// at 8 kHz, `perc.decay_ms` at 2 s) a value that decoded to its own default
+/// trip carries relative error, so on a large-magnitude control (a Filter
+/// cutoff at 8 kHz, `perc.decay_ms` at 2 s) a value that decoded to its own default
 /// would re-encode as a spurious entry, growing the code on every save/load
 /// cycle. Equal encodings are provably redundant — the reader would
 /// reconstruct the default from either — so this both fixes that and prunes
@@ -801,6 +801,14 @@ mod retired_control_tests {
         assert_eq!(
             decode_song_code(&code_setting("pad.reverb_mix")).err(),
             Some(SongCodeError::RetiredControl("pad.reverb_mix"))
+        );
+    }
+
+    #[test]
+    fn a_code_setting_a_retired_filter_control_is_refused() {
+        assert_eq!(
+            decode_song_code(&code_setting("bass.cutoff")).err(),
+            Some(SongCodeError::RetiredControl("bass.cutoff"))
         );
     }
 
