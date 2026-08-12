@@ -4,6 +4,7 @@
 use super::*;
 
 pub(crate) const MAX_PAD_LAYERS: usize = 4;
+const PAD_TYPE_CROSSFADE_SECONDS: f32 = 0.03;
 
 pub(crate) struct PadEngine {
     pub(crate) sample_rate: f32,
@@ -12,6 +13,7 @@ pub(crate) struct PadEngine {
     pub(crate) step_index: usize,
     pub(crate) active_progression: usize,
     pub(crate) active_chord_count: usize,
+    pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
     pub(crate) width_lfo: DriftingLfo,
     pub(crate) air: WhiteNoise,
@@ -22,11 +24,12 @@ pub(crate) struct PadEngine {
 impl PadEngine {
     pub(crate) fn new(sample_rate: f32, c: &PadControls, telemetry: Arc<FluidTelemetry>) -> Self {
         let active_progression = progression_index(c.progression);
+        let active_character = pad_type_index(c.voice_type);
         let initial_notes = pad_chord_tones(c, active_progression, 0);
         Self {
             sample_rate,
             layers: vec![PadLayer::new(
-                pad_type_index(c.voice_type),
+                active_character,
                 initial_notes,
                 0.0,
                 sample_rate,
@@ -37,6 +40,7 @@ impl PadEngine {
             step_index: 0,
             active_progression,
             active_chord_count: pad_chord_count(c),
+            active_character,
             last_chord_notes: initial_notes,
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
             air: WhiteNoise::new(),
@@ -60,11 +64,18 @@ impl PadEngine {
         );
         let chord_notes = pad_chord_tones(c, self.active_progression, self.step_index);
         let chord_edited = chord_notes != self.last_chord_notes;
+        let character = pad_type_index(c.voice_type);
+        let character_changed = character != self.active_character;
         self.last_chord_notes = chord_notes;
+        self.active_character = character;
 
-        if advance || chord_edited {
+        if advance || chord_edited || character_changed {
             for layer in &mut self.layers {
-                layer.release();
+                if character_changed {
+                    layer.fade_character_out(self.sample_rate);
+                } else {
+                    layer.release();
+                }
             }
             self.telemetry
                 .chord_index
@@ -74,11 +85,15 @@ impl PadEngine {
                 self.layers.drain(0..remove_count);
             }
             self.layers.push(PadLayer::new(
-                pad_type_index(c.voice_type),
+                character,
                 chord_notes,
                 tune,
                 self.sample_rate,
-                c.attack_time,
+                if character_changed {
+                    PAD_TYPE_CROSSFADE_SECONDS
+                } else {
+                    c.attack_time
+                },
                 c.release_time,
             ));
         }
@@ -111,6 +126,8 @@ impl PadEngine {
 
 pub(crate) struct PadLayer {
     pub(crate) tones: Vec<PadTone>,
+    pub(crate) character_fade_gain: f32,
+    pub(crate) character_fade_step: f32,
 }
 
 impl PadLayer {
@@ -131,6 +148,8 @@ impl PadLayer {
                 attack_time,
                 release_time,
             ),
+            character_fade_gain: 1.0,
+            character_fade_step: 0.0,
         }
     }
     pub(crate) fn next_stereo(
@@ -145,15 +164,20 @@ impl PadLayer {
             l += tl;
             r += tr;
         }
-        (l, r)
+        let gain = self.character_fade_gain;
+        self.character_fade_gain = (self.character_fade_gain - self.character_fade_step).max(0.0);
+        (l * gain, r * gain)
     }
     pub(crate) fn release(&mut self) {
         for t in &mut self.tones {
             t.release();
         }
     }
+    pub(crate) fn fade_character_out(&mut self, sample_rate: f32) {
+        self.character_fade_step = 1.0 / (PAD_TYPE_CROSSFADE_SECONDS * sample_rate).max(1.0);
+    }
     pub(crate) fn is_done(&self) -> bool {
-        self.tones.iter().all(PadTone::is_done)
+        self.character_fade_gain <= 0.0 || self.tones.iter().all(PadTone::is_done)
     }
 }
 

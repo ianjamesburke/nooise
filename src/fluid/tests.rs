@@ -3115,6 +3115,45 @@ fn pad_engine_progression_switch_waits_for_the_next_loop_boundary() {
 }
 
 #[test]
+fn pad_engine_type_change_revoices_the_current_chord_immediately() {
+    let mut controls = PadControls {
+        chord_bars: 64.0,
+        attack_time: 0.001,
+        ..PadControls::default()
+    };
+    let mut pad = PadEngine::new(SAMPLE_RATE, &controls, Arc::new(FluidTelemetry::default()));
+
+    for sample in 0..10 {
+        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+    }
+    let layers_before = pad.layers.len();
+
+    controls.voice_type = 3.0;
+    let _ = pad.next(&controls, 0.0, timing(10, 120.0));
+
+    let revoiced_immediately = pad.layers.len() > layers_before
+        && pad.layers.last().is_some_and(|layer| {
+            layer
+                .tones
+                .iter()
+                .all(|tone| matches!(tone.stage, PadStage::Choir { .. }))
+        });
+    for sample in 11..(SAMPLE_RATE as u64 / 20) {
+        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+    }
+
+    assert!(
+        revoiced_immediately
+            && pad.layers.len() == 1
+            && pad.layers[0]
+                .tones
+                .iter()
+                .all(|tone| matches!(tone.stage, PadStage::Choir { .. })),
+        "changing Pad Type must revoice the sounding chord without waiting for its trigger"
+    );
+}
+
+#[test]
 fn pad_chord_notes_with_slot_builds_notes_from_root_extension_and_inversion() {
     let slot = ChordSlotControls {
         degree: 1.0,
