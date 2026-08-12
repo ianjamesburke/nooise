@@ -3134,24 +3134,18 @@ fn pad_engine_type_change_revoices_the_current_chord_immediately() {
     controls.voice_type = 3.0;
     let _ = pad.next(&controls, 0.0, timing(10, 120.0));
 
-    let revoiced_immediately = pad.layers.len() > layers_before
-        && pad.layers.last().is_some_and(|layer| {
-            layer
-                .tones
-                .iter()
-                .all(|tone| matches!(tone.stage, PadStage::Choir { .. }))
-        });
-    for sample in 11..(SAMPLE_RATE as u64 / 20) {
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-    }
-
+    // The character must change on the tones already sounding, in place: a
+    // new layer here would mean the chord re-attacked from silence.
+    assert_eq!(
+        pad.layers.len(),
+        layers_before,
+        "a Pad Type change must not voice a new layer"
+    );
     assert!(
-        revoiced_immediately
-            && pad.layers.len() == 1
-            && pad.layers[0]
-                .tones
-                .iter()
-                .all(|tone| matches!(tone.stage, PadStage::Choir { .. })),
+        pad.layers
+            .iter()
+            .flat_map(|layer| &layer.tones)
+            .all(|tone| matches!(tone.stage, PadStage::Choir { .. })),
         "changing Pad Type must revoice the sounding chord without waiting for its trigger"
     );
 }

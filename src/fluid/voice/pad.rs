@@ -4,6 +4,15 @@
 use super::*;
 
 pub(crate) const MAX_PAD_LAYERS: usize = 4;
+/// How long a `pad.type` change takes to crossfade from the outgoing
+/// character stage to the incoming one, inside each already-sounding tone.
+///
+/// This is short because it does not have to hide an onset: the oscillators
+/// and the amplitude envelope keep running untouched across a type change, so
+/// the only discontinuity to smooth is the step between two stages' outputs
+/// (a filter starting from zero state, a different output trim). Both sides
+/// are the same oscillators through different post-stages, so they are
+/// strongly correlated and a linear crossfade holds the level steady.
 const PAD_TYPE_CROSSFADE_SECONDS: f32 = 0.03;
 
 pub(crate) struct PadEngine {
@@ -69,13 +78,22 @@ impl PadEngine {
         self.last_chord_notes = chord_notes;
         self.active_character = character;
 
-        if advance || chord_edited || character_changed {
+        // A type change is a change of character, not a new note. Every
+        // character runs the same oscillator stack and differs only in the
+        // stage after it, so the sounding tones swap that stage in place —
+        // no new layer, no restarted envelope, no oscillator phase reset.
+        // Voicing a fresh layer instead meant a full chord re-attacking from
+        // silence with all its oscillators phase-aligned, which is an onset
+        // transient, and it cut off every sustaining tail to do it.
+        if character_changed {
             for layer in &mut self.layers {
-                if character_changed {
-                    layer.fade_character_out(self.sample_rate);
-                } else {
-                    layer.release();
-                }
+                layer.set_character(character, self.sample_rate);
+            }
+        }
+
+        if advance || chord_edited {
+            for layer in &mut self.layers {
+                layer.release();
             }
             self.telemetry
                 .chord_index
@@ -89,11 +107,7 @@ impl PadEngine {
                 chord_notes,
                 tune,
                 self.sample_rate,
-                if character_changed {
-                    PAD_TYPE_CROSSFADE_SECONDS
-                } else {
-                    c.attack_time
-                },
+                c.attack_time,
                 c.release_time,
             ));
         }
@@ -126,8 +140,6 @@ impl PadEngine {
 
 pub(crate) struct PadLayer {
     pub(crate) tones: Vec<PadTone>,
-    pub(crate) character_fade_gain: f32,
-    pub(crate) character_fade_step: f32,
 }
 
 impl PadLayer {
@@ -148,8 +160,6 @@ impl PadLayer {
                 attack_time,
                 release_time,
             ),
-            character_fade_gain: 1.0,
-            character_fade_step: 0.0,
         }
     }
     pub(crate) fn next_stereo(
@@ -164,20 +174,22 @@ impl PadLayer {
             l += tl;
             r += tr;
         }
-        let gain = self.character_fade_gain;
-        self.character_fade_gain = (self.character_fade_gain - self.character_fade_step).max(0.0);
-        (l * gain, r * gain)
+        (l, r)
     }
     pub(crate) fn release(&mut self) {
         for t in &mut self.tones {
             t.release();
         }
     }
-    pub(crate) fn fade_character_out(&mut self, sample_rate: f32) {
-        self.character_fade_step = 1.0 / (PAD_TYPE_CROSSFADE_SECONDS * sample_rate).max(1.0);
+    /// Swaps every tone onto a new `pad.type` character in place, leaving
+    /// their oscillators and envelopes running.
+    pub(crate) fn set_character(&mut self, character: usize, sample_rate: f32) {
+        for t in &mut self.tones {
+            t.set_character(character, sample_rate);
+        }
     }
     pub(crate) fn is_done(&self) -> bool {
-        self.character_fade_gain <= 0.0 || self.tones.iter().all(PadTone::is_done)
+        self.tones.iter().all(PadTone::is_done)
     }
 }
 
@@ -306,10 +318,60 @@ impl PadStage {
 /// soft-clipper. The characters differ only in that stage and in the output
 /// trim that keeps them at a comparable perceived level, so switching type
 /// never touches chord selection, trigger timing, attack/release, or pan.
+/// The character stage a tone is fading out of after a `pad.type` change,
+/// held only for the length of the crossfade.
+struct OutgoingStage {
+    stage: PadStage,
+    output_gain: f32,
+    /// Weight of the outgoing stage, walking 1.0 down to 0.0.
+    weight: f32,
+    step: f32,
+}
+
 pub(crate) struct PadTone {
     pub(crate) stack: PadOscStack,
     pub(crate) stage: PadStage,
     pub(crate) output_gain: f32,
+    /// Kept so a later character swap can rebuild stages whose oscillators
+    /// are pitched relative to this tone's own note.
+    hz: f32,
+    outgoing: Option<OutgoingStage>,
+}
+
+/// Builds the one stage a `pad.type` character adds after the shared stack,
+/// plus the output trim that keeps it level with the others.
+fn pad_stage(character: usize, hz: f32, sample_rate: f32) -> (PadStage, f32) {
+    match character {
+        0 => (PadStage::None, 1.0),
+        1 => (PadStage::Lowpass { state: 0.0 }, PAD_DARK_OUTPUT_GAIN),
+        2 => (
+            PadStage::Shimmer {
+                oscillator: SineOscillator::new(hz * 4.0, sample_rate),
+            },
+            PAD_GLASS_OUTPUT_GAIN,
+        ),
+        3 => (
+            PadStage::Choir {
+                partial: SineOscillator::new(hz * 3.0, sample_rate),
+                movement: SineOscillator::new(0.17, sample_rate),
+            },
+            PAD_CHOIR_OUTPUT_GAIN,
+        ),
+        4 => (
+            PadStage::Hollow {
+                sub: SineOscillator::new(hz * 0.5, sample_rate),
+            },
+            PAD_HOLLOW_OUTPUT_GAIN,
+        ),
+        5 => (
+            PadStage::Tape {
+                state: 0.0,
+                movement: SineOscillator::new(0.11, sample_rate),
+            },
+            PAD_TAPE_OUTPUT_GAIN,
+        ),
+        _ => (PadStage::None, 1.0),
+    }
 }
 
 impl PadTone {
@@ -322,42 +384,27 @@ impl PadTone {
         release_time: f32,
         sample_rate: f32,
     ) -> Self {
-        let (stage, output_gain) = match character {
-            0 => (PadStage::None, 1.0),
-            1 => (PadStage::Lowpass { state: 0.0 }, PAD_DARK_OUTPUT_GAIN),
-            2 => (
-                PadStage::Shimmer {
-                    oscillator: SineOscillator::new(hz * 4.0, sample_rate),
-                },
-                PAD_GLASS_OUTPUT_GAIN,
-            ),
-            3 => (
-                PadStage::Choir {
-                    partial: SineOscillator::new(hz * 3.0, sample_rate),
-                    movement: SineOscillator::new(0.17, sample_rate),
-                },
-                PAD_CHOIR_OUTPUT_GAIN,
-            ),
-            4 => (
-                PadStage::Hollow {
-                    sub: SineOscillator::new(hz * 0.5, sample_rate),
-                },
-                PAD_HOLLOW_OUTPUT_GAIN,
-            ),
-            5 => (
-                PadStage::Tape {
-                    state: 0.0,
-                    movement: SineOscillator::new(0.11, sample_rate),
-                },
-                PAD_TAPE_OUTPUT_GAIN,
-            ),
-            _ => (PadStage::None, 1.0),
-        };
+        let (stage, output_gain) = pad_stage(character, hz, sample_rate);
         Self {
             stack: PadOscStack::new(hz, pan, gain, attack_time, release_time, sample_rate),
             stage,
             output_gain,
+            hz,
+            outgoing: None,
         }
+    }
+
+    /// Swaps in a new character stage, crossfading from the old one. The
+    /// oscillator stack and the amplitude envelope are untouched, so the note
+    /// keeps sounding exactly where it was in its own life.
+    pub(crate) fn set_character(&mut self, character: usize, sample_rate: f32) {
+        let (stage, output_gain) = pad_stage(character, self.hz, sample_rate);
+        self.outgoing = Some(OutgoingStage {
+            stage: std::mem::replace(&mut self.stage, stage),
+            output_gain: std::mem::replace(&mut self.output_gain, output_gain),
+            weight: 1.0,
+            step: 1.0 / (PAD_TYPE_CROSSFADE_SECONDS * sample_rate).max(1.0),
+        });
     }
 
     pub(crate) fn next_stereo(
@@ -366,11 +413,26 @@ impl PadTone {
         detune_mix: f32,
         octave_mix: f32,
     ) -> (f32, f32) {
-        let s = self
-            .stage
-            .apply(self.stack.stack_sum(detune_mix, octave_mix));
-        let shaped =
-            soft_clip(s * 0.55) * self.stack.envelope.next() * self.stack.gain * self.output_gain;
+        let raw = self.stack.stack_sum(detune_mix, octave_mix);
+        // Read once and shared by both stages: the envelope is the note's
+        // own life and must not advance twice, or run differently, just
+        // because a character change happens to be in flight.
+        let envelope = self.stack.envelope.next();
+        let mut shaped =
+            soft_clip(self.stage.apply(raw) * 0.55) * envelope * self.stack.gain * self.output_gain;
+
+        if let Some(outgoing) = &mut self.outgoing {
+            let previous = soft_clip(outgoing.stage.apply(raw) * 0.55)
+                * envelope
+                * self.stack.gain
+                * outgoing.output_gain;
+            shaped += (previous - shaped) * outgoing.weight;
+            outgoing.weight -= outgoing.step;
+            if outgoing.weight <= 0.0 {
+                self.outgoing = None;
+            }
+        }
+
         StereoPanner::equal_power(shaped, self.stack.pan * width)
     }
 
