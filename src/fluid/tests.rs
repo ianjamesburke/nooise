@@ -1741,7 +1741,7 @@ fn tab_controls_classify_each_slider_kind() {
                 Gain,
             ],
         ),
-        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Gain]),
+        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
         (Tab::Chords, {
             // 10 base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
@@ -1755,7 +1755,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Bass,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Continuous,
+                Gain,
             ],
         ),
         (
@@ -5064,7 +5065,7 @@ fn chords_drill_for_index_keeps_module_slot_rows_out_of_the_chord_drill() {
     // (module.rs's default), and Drive gets placed in the next free slot.
     controls.modules.pad[1] = preset_slot("drive", 0.0);
 
-    let id = module_slot_amount_id(Tab::Chords, 1).expect("pads has a slot 2");
+    let id = module_slot_collapsed_id(Tab::Chords, 1, &controls).expect("pads has a slot 2");
     let flat = tab_specs(Tab::Chords)
         .iter()
         .position(|spec| spec.id == id)

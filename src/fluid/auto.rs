@@ -20,6 +20,12 @@ use super::{
 /// spanning `bars * 4` beats (4/4).
 pub(crate) const DEFAULT_AUTO_BARS: u32 = 64;
 
+/// Bars for a live toggle's first leg. Short on purpose: pressing `a` mid-vibe
+/// should start audibly moving toward the destination almost immediately
+/// instead of waiting out a full slow-evolution leg. Every leg after this one
+/// reverts to the loop's normal `bars` length.
+const LIVE_FIRST_LEG_BARS: u32 = 16;
+
 /// Ordered share codes for the built-in auto-morph states. The morph loops
 /// through them in order, one per leg, so the list length is the number of legs
 /// in a cycle.
@@ -174,6 +180,10 @@ pub(crate) struct MorphState {
     /// loop (which starts at beat 0); set to the toggle beat for a live start
     /// so the first leg begins from the current state, not mid-loop.
     origin_beat: f64,
+    /// Override leg length for leg 0 only. `None` for the baked-in loop,
+    /// where every leg (including 0) uses `bars`; `Some(LIVE_FIRST_LEG_BARS)`
+    /// for a live toggle, so only the just-triggered leg is short.
+    first_leg_bars: Option<u32>,
 }
 
 impl MorphState {
@@ -192,6 +202,7 @@ impl MorphState {
             bars: bars.max(1),
             stepped,
             origin_beat: 0.0,
+            first_leg_bars: None,
         }
     }
 
@@ -233,30 +244,59 @@ impl MorphState {
             .chain((1..=nearest).map(Some))
             .collect();
         morph.origin_beat = start_beat.max(0.0);
+        morph.first_leg_bars = Some(LIVE_FIRST_LEG_BARS);
         morph
     }
 
-    fn beats_per_leg(&self) -> f64 {
-        f64::from(self.bars) * 4.0
+    /// Bars for `leg_index`: `first_leg_bars` for leg 0 when set, `bars`
+    /// otherwise. Legs after 0 always use `bars`, even for a live toggle.
+    fn leg_bars(&self, leg_index: i64) -> u32 {
+        if leg_index == 0 {
+            self.first_leg_bars.unwrap_or(self.bars)
+        } else {
+            self.bars
+        }
     }
 
-    /// Beat within a leg at which the hold ends and the transition begins,
-    /// snapped down to a bar downbeat so structural changes land on "one".
-    fn transition_start_beat(&self) -> f64 {
-        (f64::from(self.bars) * HOLD_FRACTION).floor() * 4.0
+    fn leg_beats(&self, leg_index: i64) -> f64 {
+        f64::from(self.leg_bars(leg_index)) * 4.0
     }
 
-    /// (from index, to index, t in [0,1)) for the leg containing `beat`.
-    /// Looping A→B→…→A forever falls out of the modulo, correct for any N.
-    fn leg_at(&self, beat: f64) -> (usize, usize, f64) {
-        let beats_per_leg = self.beats_per_leg();
+    /// Beat within `leg_index` at which the hold ends and the transition
+    /// begins, snapped down to a bar downbeat so structural changes land on
+    /// "one".
+    fn leg_transition_start_beat(&self, leg_index: i64) -> f64 {
+        (f64::from(self.leg_bars(leg_index)) * HOLD_FRACTION).floor() * 4.0
+    }
+
+    /// (from index, to index, t in [0,1), leg index) for the leg containing
+    /// `beat`. Leg 0 may run a different length than the rest (a live
+    /// toggle's short first leg); every leg after it is uniform, so once
+    /// past leg 0 this steps at a fixed cadence. Looping A→B→…→A forever
+    /// falls out of the modulo, correct for any N.
+    fn leg_at_indexed(&self, beat: f64) -> (usize, usize, f64, i64) {
         let beat = (beat - self.origin_beat).max(0.0);
-        let leg_index = (beat / beats_per_leg).floor() as i64;
-        let t = (beat - leg_index as f64 * beats_per_leg) / beats_per_leg;
+        let first_leg_beats = self.leg_beats(0);
+        let (leg_index, within_leg) = if beat < first_leg_beats {
+            (0, beat)
+        } else {
+            let steady_beats_per_leg = self.leg_beats(1);
+            let rest = beat - first_leg_beats;
+            let steps = (rest / steady_beats_per_leg).floor() as i64;
+            (steps + 1, rest - steps as f64 * steady_beats_per_leg)
+        };
+        let beats_per_leg = self.leg_beats(leg_index);
+        let t = (within_leg / beats_per_leg).clamp(0.0, 1.0);
         let n = self.endpoints.len() as i64;
         let from = leg_index.rem_euclid(n) as usize;
         let to = (leg_index + 1).rem_euclid(n) as usize;
-        (from, to, t.clamp(0.0, 1.0))
+        (from, to, t, leg_index)
+    }
+
+    /// (from index, to index, t in [0,1)) for the leg containing `beat`.
+    fn leg_at(&self, beat: f64) -> (usize, usize, f64) {
+        let (from, to, t, _) = self.leg_at_indexed(beat);
+        (from, to, t)
     }
 
     pub(crate) fn morph_ids_at(&self, beat: f64) -> (Option<usize>, Option<usize>) {
@@ -269,13 +309,13 @@ impl MorphState {
     /// comment). At the leg boundary `leg_at` wraps to the next leg's `from`,
     /// which equals this leg's `to`, so the real target lands exactly on "one".
     pub(crate) fn controls_at(&self, beat: f64) -> FluidControls {
-        let (from_idx, to_idx, t) = self.leg_at(beat);
+        let (from_idx, to_idx, t, leg_index) = self.leg_at_indexed(beat);
         let from = &self.endpoints[from_idx].controls;
         let to = &self.endpoints[to_idx].controls;
         let offsets = &self.stepped[from_idx];
-        let beats_per_leg = self.beats_per_leg();
+        let beats_per_leg = self.leg_beats(leg_index);
         let t_beat = t * beats_per_leg;
-        let transition_start = self.transition_start_beat();
+        let transition_start = self.leg_transition_start_beat(leg_index);
         let transition_beats = (beats_per_leg - transition_start).max(1e-6);
 
         let mut next = from.clone();
@@ -323,12 +363,12 @@ impl MorphState {
     /// level field glides continuously — see `AutomationState::morph` for the
     /// full rationale.
     pub(crate) fn automation_at(&self, beat: f64) -> AutomationState {
-        let (from_idx, to_idx, t) = self.leg_at(beat);
+        let (from_idx, to_idx, t, leg_index) = self.leg_at_indexed(beat);
         let from = &self.endpoints[from_idx].automation;
         let to = &self.endpoints[to_idx].automation;
-        let beats_per_leg = self.beats_per_leg();
+        let beats_per_leg = self.leg_beats(leg_index);
         let t_beat = t * beats_per_leg;
-        let transition_start = self.transition_start_beat();
+        let transition_start = self.leg_transition_start_beat(leg_index);
         let transition_beats = (beats_per_leg - transition_start).max(1e-6);
         let tt = ((t_beat - transition_start) / transition_beats).clamp(0.0, 1.0) as f32;
         AutomationState::morph(from, to, tt, t_beat >= transition_start)
@@ -694,6 +734,32 @@ mod tests {
         );
         // At the toggle beat, output is exactly `current` (leg 0, t=0).
         assert!((morph.controls_at(1000.0).pad.level - 0.2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn from_live_first_leg_finishes_transitioning_within_sixteen_bars() {
+        let mut current = FluidControls::default();
+        current.pad.level = 0.2;
+        let mut target = FluidControls::default();
+        target.pad.level = 0.9;
+        // The loop's normal leg length (64 bars) would otherwise push the
+        // transition out past bar 40; a live toggle's first leg must not
+        // wait that long.
+        let morph = MorphState::from_live(
+            current,
+            AutomationState::default(),
+            vec![song(target)],
+            DEFAULT_AUTO_BARS,
+            0.0,
+        );
+        let sixteen_bars_beat = 16.0 * 4.0;
+        assert!(
+            (morph.controls_at(sixteen_bars_beat).pad.level - 0.9).abs() < 1e-3,
+            "expected the transition to have completed by bar 16"
+        );
+        // Confirm it actually is the loop's normal 64-bar cadence past leg 0,
+        // not a global shrink of every leg's length.
+        assert_eq!(morph.leg_beats(1), DEFAULT_AUTO_BARS as f64 * 4.0);
     }
 
     #[test]

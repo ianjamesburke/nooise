@@ -166,6 +166,17 @@ impl ModuleKind {
             Family::Filter => FILTER_PARAMETERS,
         }
     }
+
+    /// The field a loaded slot collapses to when not drilled into. Every
+    /// family collapses to its wet/dry `Amount` except Filter, whose most
+    /// useful single knob is `Cutoff` (`Time`) — its `Amount` mix is a
+    /// detail-only control, defaulted fully wet in [`preset_slot`].
+    pub(crate) fn collapsed_field(self) -> ModuleSlotField {
+        match self.family {
+            Family::Filter => ModuleSlotField::Time,
+            _ => ModuleSlotField::Amount,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -403,6 +414,13 @@ pub(crate) fn preset_slot(id: &str, amount: f32) -> ModuleSlot {
             slot.vintage = 2.0;
         }
         "filter" => {
+            // Amount (wet/dry mix) is detail-only, so it can't carry the
+            // "added modules start inert" contract other families use — it
+            // always sets fully wet, overriding the caller's `amount`.
+            // Cutoff is the collapsed row instead, and starts maxed out
+            // (audibly transparent low-pass); turning it down is the first
+            // audible move, same as another module's amount starting at 0%.
+            slot.amount = 1.0;
             slot.time = 8_000.0;
             slot.right_time = 0.0;
             slot.feedback = 0.0;

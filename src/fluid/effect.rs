@@ -430,7 +430,7 @@ impl EffectExecutor {
                 slot
             }
         };
-        let id = module_slot_amount_id(tab, slot)
+        let id = module_slot_collapsed_id(tab, slot, &self.session.load().controls)
             .ok_or(EffectFailure::MissingContext("module slot control"))?;
         let index = tab_specs(tab)
             .iter()

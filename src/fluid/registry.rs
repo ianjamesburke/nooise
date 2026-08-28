@@ -723,6 +723,24 @@ macro_rules! beat_offset {
     };
 }
 
+/// Label for a slot's `time` row. When `time` is the module's collapsed
+/// field (its one on-screen knob, e.g. Filter's Cutoff) it wears the module's
+/// name, same as the `amount` row does when amount is collapsed. Otherwise
+/// (the two-knob families, where `amount` already carries the module name)
+/// it falls back to the family's own parameter label for `time`.
+fn time_row_label(kind_value: f32) -> String {
+    let Some(kind) = module_kind_at(kind_value) else {
+        return "Time".to_string();
+    };
+    if kind.collapsed_field() == ModuleSlotField::Time {
+        return module_kind_label(kind_value);
+    }
+    kind.parameters()
+        .iter()
+        .find(|p| p.field == ModuleSlotField::Time)
+        .map_or_else(|| "Time".to_string(), |p| p.label.to_string())
+}
+
 /// One module slot's rows: which module is loaded (a value, never part of
 /// the id) plus the family-shaped params. Generalises `chord_slot_rows!`.
 /// Slot numbers are 1-based in ids and labels, 0-based into the array.
@@ -769,6 +787,7 @@ macro_rules! module_slot_rows {
                 |c, v| c.modules.$layer[$slot - 1].time = v,
                 |c| format!("{:.0}", c.modules.$layer[$slot - 1].time),
             )
+            .labeled_by(|c| time_row_label(c.modules.$layer[$slot - 1].kind))
             .reset_at(0.0)
             .exact_in_song(),
             ControlSpec::new(
@@ -1635,26 +1654,34 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
         .collect()
 }
 
-/// The `amount` control id for a tab's slot, which is the row a loaded slot
-/// actually renders. Compile-time strings, so this is a lookup rather than a
-/// format, and returns `None` for a tab with no chain.
-pub(crate) fn module_slot_amount_id(tab: Tab, slot: usize) -> Option<&'static str> {
-    let suffix = format!(".slot{}.amount", slot + 1);
+/// The control id for a tab's slot's collapsed row — whichever field the
+/// loaded module's family collapses to (`ModuleKind::collapsed_field`),
+/// amount for most families, cutoff for Filter. Compile-time strings, so
+/// this is a lookup rather than a format. `None` for a tab with no chain,
+/// an empty slot, or a slot index out of range.
+pub(crate) fn module_slot_collapsed_id(
+    tab: Tab,
+    slot: usize,
+    controls: &FluidControls,
+) -> Option<&'static str> {
+    let kind = controls.modules.for_tab(tab)?.get(slot)?.kind()?;
+    let suffix = format!(".slot{}.{}", slot + 1, kind.collapsed_field().id());
     tab_specs(tab)
         .iter()
         .map(|spec| spec.id)
         .find(|id| id.ends_with(&suffix))
 }
 
-/// Loaded module slot addressed by its collapsed amount row.
-pub(crate) fn module_slot_at_amount_id<'a>(
+/// Loaded module slot addressed by its collapsed row.
+pub(crate) fn module_slot_at_collapsed_id<'a>(
     tab: Tab,
     id: &str,
     controls: &'a FluidControls,
 ) -> Option<(usize, &'a ModuleSlot)> {
     let slots = controls.modules.for_tab(tab)?;
     slots.iter().enumerate().find(|(slot, _)| {
-        module_slot_amount_id(tab, *slot).is_some_and(|amount_id| amount_id == id)
+        module_slot_collapsed_id(tab, *slot, controls)
+            .is_some_and(|collapsed_id| collapsed_id == id)
     })
 }
 
@@ -1680,12 +1707,14 @@ pub(crate) fn module_detail_controls(
     controls: &FluidControls,
 ) -> Vec<ControlItem> {
     let prefix = format!(".slot{}.", slot + 1);
-    let Some(kind) = controls
+    let Some(module_slot) = controls
         .modules
         .for_tab(tab)
         .and_then(|slots| slots.get(slot))
-        .and_then(ModuleSlot::kind)
     else {
+        return Vec::new();
+    };
+    let Some(kind) = module_slot.kind() else {
         return Vec::new();
     };
     let mut items = kind
@@ -1703,21 +1732,16 @@ pub(crate) fn module_detail_controls(
                 })
         })
         .collect::<Vec<_>>();
-    if let Some((_, slot)) = module_slot_at_amount_id(
-        tab,
-        module_slot_amount_id(tab, slot).unwrap_or_default(),
-        controls,
-    ) && slot.kind().is_some_and(|kind| kind.family == Family::Delay)
-    {
+    if kind.family == Family::Delay {
         for item in &mut items {
             if item.id.ends_with(".feedback") {
                 item.max = 0.95;
             }
             if matches!(item.id.rsplit('.').next(), Some("time" | "right_time")) {
                 let clock = if item.id.ends_with(".right_time") {
-                    DelayClock::from_value(slot.right_clock)
+                    DelayClock::from_value(module_slot.right_clock)
                 } else {
-                    DelayClock::from_value(slot.clock)
+                    DelayClock::from_value(module_slot.clock)
                 };
                 match clock {
                     DelayClock::Sync => {
@@ -1785,17 +1809,24 @@ pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {
     if slot.is_empty() {
         return false;
     }
+    // A loaded slot collapses to one row: whichever field its family names
+    // via `collapsed_field` (amount for most families, cutoff for Filter),
+    // labelled with the module's name. Which module is loaded is chosen
+    // through the palette, so `kind` needs no row of its own.
+    let collapsed = slot
+        .kind()
+        .expect("non-empty slot has a kind")
+        .collapsed_field();
     match field {
-        // A loaded slot collapses to one row: its amount, labelled with the
-        // module's name. Which module is loaded is chosen through the palette,
-        // so `kind` needs no row of its own.
         ModuleSlotField::Kind => false,
-        ModuleSlotField::Amount => true,
+        ModuleSlotField::Amount => collapsed == ModuleSlotField::Amount,
         // The established two-knob family remains inline. Detailed effects
         // own their controls in the reusable drill scope.
-        ModuleSlotField::Time => slot
-            .kind()
-            .is_some_and(|kind| kind.family == Family::TwoKnob),
+        ModuleSlotField::Time => {
+            slot.kind()
+                .is_some_and(|kind| kind.family == Family::TwoKnob)
+                || collapsed == ModuleSlotField::Time
+        }
         ModuleSlotField::RightTime
         | ModuleSlotField::Clock
         | ModuleSlotField::RightClock
