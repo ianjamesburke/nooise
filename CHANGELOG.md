@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [1.10.0] — 2026-08-28
+
+### Added
+- feat: add filter module
+
+### Fixed
+- fix: filter's collapsed knob labels itself Filter, not Slot N Time
 ## [1.9.2] — 2026-08-12
 
 ### Fixed
