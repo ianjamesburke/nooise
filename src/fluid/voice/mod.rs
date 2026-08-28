@@ -41,8 +41,8 @@ pub(crate) fn soft_clip(sample: f32) -> f32 {
 }
 
 /// Shared `filter` control -> noise lowpass smoothing coefficient mapping
-/// used by Perc and Clap's noise-based hits (Kick's filter curve is
-/// different and stays local to `kick.rs`).
+/// used by Clap's noise-based hits. Kick's filter curve stays local to
+/// `kick.rs`.
 #[inline]
 pub(crate) fn noise_filter_smoothing(filter: f32) -> f32 {
     10_f32.powf(filter * 4.0 - 4.0)

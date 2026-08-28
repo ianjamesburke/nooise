@@ -11,6 +11,7 @@ Shared DSP effects consumed by voice engines in `fluid.rs`.
 - `compression.rs` — shared stateful stereo compressor used by every layer and Master slot chain.
 - `delay.rs` — stereo feedback delay whose read taps never glide: a delay-time change crossfades to a new fixed tap position over a fixed window instead of sliding the old one (so tempo-synced retargeting never pitch-bends), plus wet-only level-compensated Vintage colour and end-weighted pitch motion, and true dry bypass.
 - `drive.rs` — shared stateless stereo saturation with exact zero-amount bypass.
+- `filter.rs` — shared stateful stereo biquad filter for Filter module slots; cutoff, resonance, and response type arrive per frame while each slot owns its filter history.
 - `reverb.rs` — shared Freeverb-style slot reverb with live Size/Damping updates.
 - `mod.rs` — module re-exports only.
 

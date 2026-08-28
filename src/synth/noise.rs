@@ -12,8 +12,12 @@ impl WhiteNoise {
         Self { last: 0.0 }
     }
 
+    pub(crate) fn next<R: Rng>(&mut self, rng: &mut R) -> f32 {
+        rng.gen_range(-1.0..1.0)
+    }
+
     pub(crate) fn next_filtered<R: Rng>(&mut self, rng: &mut R, smoothing: f32) -> f32 {
-        let white = rng.gen_range(-1.0..1.0);
+        let white = self.next(rng);
         self.last += (white - self.last) * smoothing.clamp(0.0, 1.0);
         self.last
     }

@@ -1542,7 +1542,8 @@ mod tests {
     fn select_control_on_a_module_slot_row_stays_out_of_the_chord_drill() {
         let mut controls = super::super::FluidControls::default();
         controls.modules.pad[1] = super::super::preset_slot("drive", 0.0);
-        let id = super::super::module_slot_amount_id(Tab::Chords, 1).expect("pads has a slot 2");
+        let id = super::super::module_slot_collapsed_id(Tab::Chords, 1, &controls)
+            .expect("pads has a slot 2");
         let flat = super::super::tab_specs(Tab::Chords)
             .iter()
             .position(|spec| spec.id == id)

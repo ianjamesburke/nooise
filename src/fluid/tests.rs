@@ -434,35 +434,6 @@ fn tonal_type_labels_cover_exploration_variants() {
 }
 
 #[test]
-fn bass_low_pass_reduces_high_energy_without_thinning_low_notes() {
-    fn filtered_sine_rms(hz: f32, cutoff_hz: f32) -> f32 {
-        let mut low_pass = BassLowPass::new();
-        let total = SAMPLE_RATE as u64 * 2;
-        let warmup = SAMPLE_RATE as u64 / 2;
-        let mut sum = 0.0f32;
-        let mut count = 0u64;
-
-        for sample in 0..total {
-            let phase = TAU * hz * sample as f32 / SAMPLE_RATE;
-            let filtered = low_pass.process(phase.sin(), cutoff_hz, SAMPLE_RATE);
-            if sample >= warmup {
-                sum += filtered * filtered;
-                count += 1;
-            }
-        }
-
-        (sum / count as f32).sqrt()
-    }
-
-    let cutoff = 300.0;
-    let low = filtered_sine_rms(80.0, cutoff);
-    let high = filtered_sine_rms(cutoff * 8.0, cutoff);
-
-    assert!(low > 0.4, "low note rms should stay strong, got {low}");
-    assert!(high < 0.3, "high content should be reduced, got {high}");
-}
-
-#[test]
 fn tonal_low_cut_reduces_sub_energy_without_thinning_low_notes() {
     fn filtered_sine_rms(hz: f32) -> f32 {
         let mut low_cut = TonalLowCut::new(SAMPLE_RATE, TONAL_LOW_CUT_HZ);
@@ -865,7 +836,8 @@ fn envelope_times_sweep_their_full_range_in_one_taper_sweep() {
 
 #[test]
 fn lfo_depth_means_the_same_musical_amount_wherever_the_base_sits() {
-    let spec = spec_by_id("bass.cutoff").unwrap();
+    let controls = FluidControls::default();
+    let spec = spec_by_id("bass.slot1.time").unwrap().contextual(&controls);
     let route = LfoRoute {
         depth_ratio: 0.25,
         ..LfoRoute::default()
@@ -895,7 +867,7 @@ fn lfo_depth_means_the_same_musical_amount_wherever_the_base_sits() {
 
     // And the engine has to agree with that mapping, not add a flat Hz offset.
     let engine_peak = (0..64)
-        .map(|i| modulated_control_value(spec, &route, 800.0, i as f64 / 8.0))
+        .map(|i| modulated_control_value(&spec, &route, 800.0, i as f64 / 8.0))
         .fold(f32::MIN, f32::max);
     assert!(
         (engine_peak / 800.0).log2() > 1.0,
@@ -1457,7 +1429,8 @@ fn defaults_match_current_mix() {
     assert_close(controls.modules.master[1].time, -8.0);
 
     assert_close(controls.perc.decay_ms, 200.0);
-    assert_close(controls.perc.filter, 0.7);
+    assert_eq!(controls.modules.perc[0].kind().unwrap().id, "filter");
+    assert_close(controls.modules.perc[0].time, 8_000.0);
     assert_close(controls.perc.interval_beats, 0.25);
     assert_close(controls.perc.offset_beats, 0.0);
 
@@ -1474,6 +1447,8 @@ fn defaults_match_current_mix() {
     assert_close(controls.tonal.evolve_rate, 0.0);
 
     assert_eq!(controls.modules.pad[0].kind().unwrap().id, "room");
+    assert_eq!(controls.modules.bass[0].kind().unwrap().id, "filter");
+    assert_eq!(controls.modules.bass[1].kind().unwrap().id, "drive");
     assert_close(controls.modules.pad[0].amount, 0.4);
     assert_eq!(controls.modules.tonal[0].kind().unwrap().id, "room");
     assert_close(controls.modules.tonal[0].amount, 0.1);
@@ -1541,7 +1516,9 @@ fn default_template_preloads_shared_effect_modules() {
     resolve_module_chain(&mut controls);
 
     assert_close(controls.modules.kick[0].amount, 0.2);
-    assert_close(controls.modules.bass[0].amount, 0.15);
+    assert_eq!(controls.modules.bass[0].kind().unwrap().id, "filter");
+    assert_close(controls.modules.bass[0].amount, 1.0);
+    assert_close(controls.modules.bass[1].amount, 0.15);
     assert_close(controls.modules.pad[0].amount, 0.4);
     assert_close(controls.modules.tonal[0].amount, 0.1);
     assert!(controls.modules.clap[0].is_empty());
@@ -1613,6 +1590,8 @@ fn the_folded_slider_ids_are_gone_from_the_registry() {
         "master.comp_threshold",
         "master.comp_ratio",
         "master.comp_makeup",
+        "perc.filter",
+        "bass.cutoff",
     ] {
         assert!(spec_by_id(id).is_none(), "{id} should be retired");
     }
@@ -1623,8 +1602,8 @@ fn empty_module_slots_never_render() {
     let controls = FluidControls::default();
     for tab in Tab::all() {
         for item in tab_controls(tab, &controls) {
-            let is_template_slot =
-                item.id.contains(".slot1.") || (tab == Tab::Master && item.id.contains(".slot2."));
+            let is_template_slot = item.id.contains(".slot1.")
+                || (matches!(tab, Tab::Bass | Tab::Master) && item.id.contains(".slot2."));
             assert!(
                 !item.id.contains(".slot") || is_template_slot,
                 "{tab:?} shows empty slot row {}",
@@ -1648,6 +1627,7 @@ fn an_occupied_slot_shows_only_the_params_its_family_uses() {
         + 1.0;
 
     let mut controls = FluidControls::default();
+    controls.modules.bass[1] = ModuleSlot::default();
     controls.modules.bass[0].kind = alcohol;
     let ids: Vec<&str> = tab_controls(Tab::Bass, &controls)
         .iter()
@@ -1673,6 +1653,7 @@ fn effect_families_project_complete_coherent_detail_rows() {
     controls.modules.clap[1] = preset_slot("delay", 0.5);
     controls.modules.clap[2] = preset_slot("room", 0.5);
     controls.modules.clap[3] = preset_slot("compression", 0.5);
+    controls.modules.clap[4] = preset_slot("filter", 0.5);
 
     let labels = |slot| {
         module_detail_controls(Tab::Clap, slot, &controls)
@@ -1689,6 +1670,7 @@ fn effect_families_project_complete_coherent_detail_rows() {
         labels(3),
         ["Amount", "Threshold", "Ratio", "Release", "Makeup"]
     );
+    assert_eq!(labels(4), ["Amount", "Cutoff", "Resonance", "Type"]);
 }
 
 #[test]
@@ -1814,7 +1796,7 @@ fn tab_controls_classify_each_slider_kind() {
                 Gain,
             ],
         ),
-        (Tab::Perc, vec![Gain, Gain, Timing, Timing, Timing]),
+        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
         (Tab::Chords, {
             // 10 base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
@@ -1828,7 +1810,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Bass,
             vec![
-                Gain, Continuous, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Continuous,
                 Gain,
             ],
         ),
@@ -2115,8 +2097,8 @@ fn song_code_round_trips_control_values() {
 
     // Tapered continuous dials carry no value grid, so they land within one
     // u16 taper step instead of exactly on the original.
-    let decoded = round_trip(|c| c.bass.cutoff = 500.0);
-    assert_quantized_named(decoded.bass.cutoff, 500.0, "bass.cutoff");
+    let decoded = round_trip(|c| c.modules.bass[0].time = 500.0);
+    assert_quantized_named(decoded.modules.bass[0].time, 500.0, "bass filter cutoff");
 
     let decoded = round_trip(|c| c.tonal.octave = -1.0);
     assert_close_named(decoded.tonal.octave, -1.0, "tonal.octave");
@@ -2151,7 +2133,11 @@ fn song_code_decodes_missing_controls_as_defaults() {
         "bass.type",
     );
     assert_close_named(decoded.pad.voice_type, default.pad.voice_type, "pad.type");
-    assert_close_named(decoded.bass.cutoff, default.bass.cutoff, "bass.cutoff");
+    assert_close_named(
+        decoded.modules.bass[0].time,
+        default.modules.bass[0].time,
+        "bass filter cutoff",
+    );
     assert_close_named(decoded.tonal.octave, default.tonal.octave, "tonal.octave");
     assert_close_named(
         decoded.modules.arp[0].amount,
@@ -2292,7 +2278,6 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     let mut controls = FluidControls::default();
     controls.pad.level = 0.0;
     controls.modules.pad[0].amount = 0.0;
-    controls.perc.filter = 0.5;
     controls.kick.click = 0.0;
     controls.kick.filter = 0.0;
     controls.tonal.randomness = 0.0;
@@ -2300,12 +2285,11 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.clap.body = 0.0;
     controls.master.level = 0.0;
     controls.modules.master[0].amount = 0.0;
-    controls.modules.bass[0].amount = 0.0;
+    controls.modules.bass[1].amount = 0.0;
 
     let mut smoothers = GainSmoothers::new(&controls);
     controls.pad.level = 1.0;
     controls.modules.pad[0].amount = 1.0;
-    controls.perc.filter = 1.0;
     controls.kick.click = 0.2;
     controls.kick.filter = 1.0;
     controls.tonal.randomness = 1.0;
@@ -2314,7 +2298,7 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.master.level = 0.5;
     controls.modules.master[0].amount = 1.0;
     controls.master.bpm = 123.0;
-    controls.modules.bass[0].amount = 1.0;
+    controls.modules.bass[1].amount = 1.0;
     controls.modules.kick[0].amount = 1.0;
     smoothers.set_targets(&controls, 100.0);
 
@@ -2322,7 +2306,6 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     assert_close(next.master.bpm, 123.0);
     assert!(next.pad.level > 0.0 && next.pad.level < 1.0);
     assert!(next.modules.pad[0].amount > 0.0 && next.modules.pad[0].amount < 1.0);
-    assert!(next.perc.filter > 0.5 && next.perc.filter < 1.0);
     assert!(next.kick.click > 0.0 && next.kick.click < 0.2);
     assert!(next.kick.filter > 0.0 && next.kick.filter < 1.0);
     assert!(next.tonal.randomness > 0.0 && next.tonal.randomness < 1.0);
@@ -2330,9 +2313,7 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     assert!(next.clap.body > 0.0 && next.clap.body < 1.0);
     assert!(next.master.level > 0.0 && next.master.level < 0.5);
     assert!(next.modules.master[0].amount > 0.0 && next.modules.master[0].amount < 1.0);
-    // Drive now lives in the module chain, so it is the slot amount that has
-    // to ramp; the voice field is derived from it downstream.
-    assert!(next.modules.bass[0].amount > 0.0 && next.modules.bass[0].amount < 1.0);
+    assert!(next.modules.bass[1].amount > 0.0 && next.modules.bass[1].amount < 1.0);
     assert!(next.modules.kick[0].amount > 0.0 && next.modules.kick[0].amount < 1.0);
 }
 
@@ -2598,49 +2579,49 @@ fn bass_defaults_are_silent_quarter_note_a() {
 fn bass_tab_shows_type_and_rhythm_rows_with_letter_display() {
     let mut controls = FluidControls::default();
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[4].id, "bass.type");
-    assert_eq!(rows[4].label, "Type");
-    assert_eq!(rows[4].display, "Sub");
-    assert_eq!(rows[7].label, "Rhythm");
-    assert_eq!(rows[7].display, "A");
+    assert_eq!(rows[3].id, "bass.type");
+    assert_eq!(rows[3].label, "Type");
+    assert_eq!(rows[3].display, "Sub");
+    assert_eq!(rows[6].label, "Rhythm");
+    assert_eq!(rows[6].display, "A");
 
     controls.bass.voice_type = 1.0;
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[4].display, "Saw");
+    assert_eq!(rows[3].display, "Saw");
 
     controls.bass.voice_type = 2.0;
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[4].display, "Pluck");
+    assert_eq!(rows[3].display, "Pluck");
 
     controls.bass.rhythm = 3.0;
     let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[7].display, "D");
+    assert_eq!(rows[6].display, "D");
 }
 
 #[test]
 fn bass_controls_adjust_and_clamp() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Bass, 7, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 6, 1.0, &mut controls);
     assert_close(controls.bass.rhythm, 1.0);
 
     controls.bass.rhythm = 3.0;
-    apply_delta(Tab::Bass, 7, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 6, 1.0, &mut controls);
     assert_close(controls.bass.rhythm, 3.0);
 
     controls.bass.octave = -1.0;
-    apply_delta(Tab::Bass, 8, -1.0, &mut controls);
-    apply_delta(Tab::Bass, 8, -1.0, &mut controls);
+    apply_delta(Tab::Bass, 7, -1.0, &mut controls);
+    apply_delta(Tab::Bass, 7, -1.0, &mut controls);
     assert_close(controls.bass.octave, -3.0);
 
     apply_reset(Tab::Bass, 0, &mut controls);
     assert_close(controls.bass.level, 0.0);
 
     controls.bass.decay_time = 0.4;
-    apply_delta(Tab::Bass, 3, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 2, 1.0, &mut controls);
     assert!(controls.bass.decay_time > 0.4);
 
-    apply_reset(Tab::Bass, 3, &mut controls);
+    apply_reset(Tab::Bass, 2, &mut controls);
     assert_close(controls.bass.decay_time, 0.005);
 }
 
@@ -3035,12 +3016,12 @@ fn perc_tab_controls_include_interval_and_offset() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Perc, &controls);
     assert_eq!(rows.len(), 5);
-    assert_eq!(rows[3].label, "Interval");
-    assert_close(rows[3].min, 0.125);
-    assert_close(rows[3].max, 4.25);
-    assert_eq!(rows[4].label, "Offset");
-    assert_close(rows[4].min, 0.0);
-    assert_close(rows[4].max, 4.0);
+    assert_eq!(rows[2].label, "Interval");
+    assert_close(rows[2].min, 0.125);
+    assert_close(rows[2].max, 4.25);
+    assert_eq!(rows[3].label, "Offset");
+    assert_close(rows[3].min, 0.0);
+    assert_close(rows[3].max, 4.0);
 }
 
 #[test]
@@ -3048,37 +3029,37 @@ fn perc_interval_displays_continuous_at_top() {
     let mut controls = FluidControls::default();
     controls.perc.interval_beats = 4.25;
     let rows = tab_controls(Tab::Perc, &controls);
-    assert_eq!(rows[3].display, "Continuous");
+    assert_eq!(rows[2].display, "Continuous");
 }
 
 #[test]
 fn perc_interval_and_offset_adjust_and_clamp() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 2, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 0.5);
 
     controls.perc.interval_beats = 0.25;
-    apply_delta(Tab::Perc, 3, -1.0, &mut controls);
+    apply_delta(Tab::Perc, 2, -1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 0.125);
-    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 2, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 0.25);
 
     controls.perc.interval_beats = 4.25;
-    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 2, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 4.25);
 
-    apply_delta(Tab::Perc, 4, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 0.125);
 
     controls.perc.offset_beats = 4.0;
-    apply_delta(Tab::Perc, 4, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 4.0);
 
-    apply_reset(Tab::Perc, 3, &mut controls);
+    apply_reset(Tab::Perc, 2, &mut controls);
     assert_close(controls.perc.interval_beats, 0.125);
 
-    apply_reset(Tab::Perc, 4, &mut controls);
+    apply_reset(Tab::Perc, 3, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 }
 
@@ -3088,19 +3069,19 @@ fn offset_grid_keeps_true_zero_reachable_below_the_floor() {
     // minimum is the 0.125 floor itself): 0 must survive as an extra rung
     // below the floor, with sixteenths taking over above it.
     let mut controls = FluidControls::default();
-    apply_value(Tab::Perc, 4, 0.03, &mut controls);
+    apply_value(Tab::Perc, 3, 0.03, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 
-    apply_value(Tab::Perc, 4, 0.09, &mut controls);
+    apply_value(Tab::Perc, 3, 0.09, &mut controls);
     assert_close(controls.perc.offset_beats, 0.125);
 
-    apply_value(Tab::Perc, 4, 0.3, &mut controls);
+    apply_value(Tab::Perc, 3, 0.3, &mut controls);
     assert_close(controls.perc.offset_beats, 0.25);
 
     controls.perc.offset_beats = 0.125;
-    apply_delta(Tab::Perc, 4, -1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, -1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
-    apply_delta(Tab::Perc, 4, -1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, -1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 }
 
@@ -5111,7 +5092,7 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
     for id in [
         "pad.attack_time",
         "perc.level",
-        "bass.cutoff",
+        "bass.slot1.time",
         "kick.click",
         "tonal.decay",
         "clap.filter",
@@ -5141,8 +5122,8 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
             "clap.filter",
             "tonal.decay",
             "kick.click",
-            "bass.cutoff",
             "perc.level",
+            "bass.level",
         ]
     );
 }
@@ -5160,7 +5141,7 @@ fn palette_top_hit(current_tab: Tab, recent: &[&'static str], query: &str) -> &'
 fn palette_layer_name_lands_on_that_layers_level_over_the_mru() {
     // The MRU is stacked against us: every recent control is a bass control
     // other than the one a bare "bass" should reach.
-    let recent = ["bass.decay_time", "bass.attack_time", "bass.cutoff"];
+    let recent = ["bass.decay_time", "bass.attack_time", "bass.slot1.time"];
     assert_eq!(palette_top_hit(Tab::Master, &recent, "bass"), "bass.level");
     // Partial namespaces count too, so the boost applies while typing.
     assert_eq!(palette_top_hit(Tab::Master, &recent, "bas"), "bass.level");
@@ -5218,7 +5199,7 @@ fn chords_drill_for_index_keeps_module_slot_rows_out_of_the_chord_drill() {
     // (module.rs's default), and Drive gets placed in the next free slot.
     controls.modules.pad[1] = preset_slot("drive", 0.0);
 
-    let id = module_slot_amount_id(Tab::Chords, 1).expect("pads has a slot 2");
+    let id = module_slot_collapsed_id(Tab::Chords, 1, &controls).expect("pads has a slot 2");
     let flat = tab_specs(Tab::Chords)
         .iter()
         .position(|spec| spec.id == id)

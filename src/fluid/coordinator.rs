@@ -104,7 +104,7 @@ pub(crate) fn coordinate_production_event(
     }
     if action.intent == interaction::Intent::TouchSelected
         && let Some(id) = selected_control
-        && let Some((slot, module)) = module_slot_at_amount_id(tab, id, &frame_session.controls)
+        && let Some((slot, module)) = module_slot_at_collapsed_id(tab, id, &frame_session.controls)
         && let Some(kind) = module.kind()
         && kind.parameters().len() > 1
     {
@@ -170,7 +170,7 @@ pub(crate) fn coordinate_production_event(
                     let mut opened_module = false;
                     if let Some(spec) = selected_spec
                         && let Some((slot, module)) =
-                            module_slot_at_amount_id(*tab, spec.id, &current_session.controls)
+                            module_slot_at_collapsed_id(*tab, spec.id, &current_session.controls)
                         && let Some(kind) = module.kind()
                         && kind.parameters().len() > 1
                     {

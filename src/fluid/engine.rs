@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use crate::fx::compression::{CompressorParams, StereoCompressor};
 use crate::fx::delay::{DelayParams, StereoDelay};
 use crate::fx::drive;
+use crate::fx::filter::{FilterParams, FilterType, StereoFilter};
 use crate::fx::reverb::{Freeverb, ReverbParams};
 
 use super::*;
@@ -21,6 +22,7 @@ enum SlotFx {
     Delay(StereoDelay),
     Reverb(Freeverb),
     Compression(StereoCompressor),
+    Filter(StereoFilter),
 }
 
 impl SlotFx {
@@ -29,6 +31,7 @@ impl SlotFx {
             Self::Delay(_) => Family::Delay,
             Self::Reverb(_) => Family::Reverb,
             Self::Compression(_) => Family::Compression,
+            Self::Filter(_) => Family::Filter,
         }
     }
 }
@@ -149,6 +152,16 @@ impl ModuleFxBank {
                     amount: slot.amount,
                 },
             ),
+            SlotFx::Filter(filter) => filter.process(
+                sample,
+                FilterParams {
+                    sample_rate,
+                    cutoff_hz: slot.time,
+                    resonance: slot.right_time,
+                    filter_type: FilterType::from_value(slot.feedback),
+                    amount: slot.amount,
+                },
+            ),
         }
     }
 
@@ -231,11 +244,12 @@ impl ModuleFxBank {
                 continue;
             }
             match kind.family {
-                Family::Delay | Family::Reverb | Family::Compression => {
+                Family::Delay | Family::Reverb | Family::Compression | Family::Filter => {
                     if processor.is_none() {
                         *processor = Some(match kind.family {
                             Family::Delay => SlotFx::Delay(StereoDelay::new(max_delay_samples)),
                             Family::Reverb => SlotFx::Reverb(Freeverb::new(sample_rate)),
+                            Family::Filter => SlotFx::Filter(StereoFilter::default()),
                             _ => SlotFx::Compression(StereoCompressor::new(0.0)),
                         });
                     }

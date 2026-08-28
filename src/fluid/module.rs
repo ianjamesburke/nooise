@@ -37,6 +37,8 @@ pub(crate) enum Family {
     Reverb,
     /// Compressor with threshold, ratio, release, and makeup controls.
     Compression,
+    /// Stereo filter with cutoff, resonance, and response type controls.
+    Filter,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +120,25 @@ const COMPRESSION_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
+const FILTER_PARAMETERS: &[EffectParameter] = &[
+    EffectParameter {
+        field: ModuleSlotField::Amount,
+        label: "Amount",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Time,
+        label: "Cutoff",
+    },
+    EffectParameter {
+        field: ModuleSlotField::RightTime,
+        label: "Resonance",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Feedback,
+        label: "Type",
+    },
+];
+
 const SINGLE_AMOUNT_PARAMETERS: &[EffectParameter] = &[EffectParameter {
     field: ModuleSlotField::Amount,
     label: "Amount",
@@ -142,6 +163,18 @@ impl ModuleKind {
             Family::Delay => DELAY_PARAMETERS,
             Family::Reverb => REVERB_PARAMETERS,
             Family::Compression => COMPRESSION_PARAMETERS,
+            Family::Filter => FILTER_PARAMETERS,
+        }
+    }
+
+    /// The field a loaded slot collapses to when not drilled into. Every
+    /// family collapses to its wet/dry `Amount` except Filter, whose most
+    /// useful single knob is `Cutoff` (`Time`) — its `Amount` mix is a
+    /// detail-only control, defaulted fully wet in [`preset_slot`].
+    pub(crate) fn collapsed_field(self) -> ModuleSlotField {
+        match self.family {
+            Family::Filter => ModuleSlotField::Time,
+            _ => ModuleSlotField::Amount,
         }
     }
 }
@@ -203,6 +236,12 @@ pub(crate) const MODULE_CATALOG: &[ModuleKind] = &[
         display_name: "Compression",
         domain: Domain::Post,
         family: Family::Compression,
+    },
+    ModuleKind {
+        id: "filter",
+        display_name: "Filter",
+        domain: Domain::Post,
+        family: Family::Filter,
     },
 ];
 
@@ -374,6 +413,18 @@ pub(crate) fn preset_slot(id: &str, amount: f32) -> ModuleSlot {
             slot.feedback = 100.0;
             slot.vintage = 2.0;
         }
+        "filter" => {
+            // Amount (wet/dry mix) is detail-only, so it can't carry the
+            // "added modules start inert" contract other families use — it
+            // always sets fully wet, overriding the caller's `amount`.
+            // Cutoff is the collapsed row instead, and starts maxed out
+            // (audibly transparent low-pass); turning it down is the first
+            // audible move, same as another module's amount starting at 0%.
+            slot.amount = 1.0;
+            slot.time = 8_000.0;
+            slot.right_time = 0.0;
+            slot.feedback = 0.0;
+        }
         _ => {}
     }
     slot
@@ -410,8 +461,12 @@ impl Default for LayerModules {
         };
         Self {
             pad: with_preset("room", 0.4),
-            perc: empty,
-            bass: with_preset("drive", 0.15),
+            perc: with_preset("filter", 1.0),
+            bass: {
+                let mut slots = with_preset("filter", 1.0);
+                slots[1] = preset_slot("drive", 0.15);
+                slots
+            },
             kick: with_preset("drive", 0.2),
             tonal: with_preset("room", 0.1),
             clap: empty,
@@ -470,7 +525,7 @@ pub(crate) fn tab_has_module_chain(_tab: super::Tab) -> bool {
 pub(crate) fn module_available_on(kind: ModuleKind, tab: super::Tab) -> bool {
     match kind.id {
         "swing" => !matches!(tab, super::Tab::Chords | super::Tab::Master),
-        "drive" | "room" | "delay" | "compression" => tab_has_module_chain(tab),
+        "drive" | "room" | "delay" | "compression" | "filter" => tab_has_module_chain(tab),
         _ => false,
     }
 }
@@ -557,7 +612,9 @@ mod tests {
         for tab in super::super::Tab::all() {
             for kind in MODULE_CATALOG {
                 let expected = match kind.id {
-                    "drive" | "room" | "delay" | "compression" => tab_has_module_chain(tab),
+                    "drive" | "room" | "delay" | "compression" | "filter" => {
+                        tab_has_module_chain(tab)
+                    }
                     "swing" => matches!(
                         tab,
                         super::super::Tab::Perc
