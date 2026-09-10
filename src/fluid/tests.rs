@@ -48,6 +48,37 @@ fn timing(sample: u64, bpm: f32) -> TimingContext {
     TimingContext::new(sample_rate, bpm, beat)
 }
 
+/// A `FluidEngine` at `SAMPLE_RATE` over a fresh session for `controls` and
+/// `automation`, with no morph and its own telemetry.
+fn engine_for(controls: FluidControls, automation: AutomationState) -> FluidEngine {
+    FluidEngine::new(
+        SAMPLE_RATE,
+        live_session(controls, automation),
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    )
+}
+
+/// A `PadEngine` at `SAMPLE_RATE` with no tune offset and its own telemetry.
+fn pad_engine(controls: &PadControls) -> PadEngine {
+    PadEngine::new(
+        SAMPLE_RATE,
+        controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    )
+}
+
+/// Steps `pad` through `chords` chord boundaries at 120 BPM with
+/// `chord_bars: 1.0`: the chord trigger fires every 4 beats, so each chord is
+/// two seconds of samples.
+fn advance_chords(pad: &mut PadEngine, controls: &PadControls, chords: u64) {
+    for chord in 1..=chords {
+        let sample = chord * SAMPLE_RATE as u64 * 2;
+        let _ = pad.next(controls, 0.0, timing(sample, 120.0));
+    }
+}
+
 /// Container v2 stores bounded ratios and tapered continuous values as a u16
 /// position, so a round-trip lands within one u16 step rather than exactly on
 /// the original. Relative, because one position step costs a fixed *fraction*
@@ -658,31 +689,24 @@ fn fresh_start_varies_the_progression_between_launches() {
 
 #[test]
 fn chords_tab_shows_type_row_with_letter_display() {
-    let mut controls = FluidControls::default();
+    let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
     assert_eq!(rows[3].id, "pad.type");
     assert_eq!(rows[3].label, "Type");
-    assert_eq!(rows[3].display, "Warm");
 
-    controls.pad.voice_type = 1.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Dark");
-
-    controls.pad.voice_type = 2.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Glass");
-
-    controls.pad.voice_type = 3.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Choir");
-
-    controls.pad.voice_type = 4.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Hollow");
-
-    controls.pad.voice_type = 5.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Tape");
+    for (voice_type, display) in [
+        (0.0, "Warm"),
+        (1.0, "Dark"),
+        (2.0, "Glass"),
+        (3.0, "Choir"),
+        (4.0, "Hollow"),
+        (5.0, "Tape"),
+    ] {
+        let mut controls = FluidControls::default();
+        controls.pad.voice_type = voice_type;
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[3].display, display, "pad.type {voice_type}");
+    }
 }
 
 #[test]
@@ -1067,22 +1091,16 @@ fn x_removes_the_open_route_or_clears_the_whole_control() {
 
 #[test]
 fn engine_publishes_beat_telemetry() {
-    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
-    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let telemetry = Arc::new(FluidTelemetry::default());
-    let bpm = f64::from(controls.load().master.bpm);
-    let session = live_session(
-        controls.load_full().as_ref().clone(),
-        automation.load_full().as_ref().clone(),
-    );
-    let mut engine = FluidEngine::new(44_100.0, session, no_morph(), Arc::clone(&telemetry));
+    let controls = FluidControls::default();
+    let bpm = f64::from(controls.master.bpm);
+    let mut engine = engine_for(controls, AutomationState::default());
 
     for _ in 0..512 {
         engine.next_stereo();
     }
 
-    let expected = 256.0 * bpm / (60.0 * 44_100.0);
-    let beat = telemetry.beat();
+    let expected = 256.0 * bpm / (60.0 * f64::from(SAMPLE_RATE));
+    let beat = engine.telemetry.beat();
     assert!(beat > 0.0);
     assert!(
         (beat - expected).abs() / expected < 0.01,
@@ -1168,7 +1186,7 @@ fn fold_sample_bits(hash: u64, bits: u32) -> u64 {
 fn golden_render_is_byte_identical_for_a_seed() {
     // Non-default tonal/arp levels and synth types so the render actually
     // exercises the piano voice's per-harmonic decay path, not just silence.
-    let controls = Arc::new(ArcSwap::from_pointee(FluidControls {
+    let controls = FluidControls {
         master: MasterControls {
             bpm: 140.0,
             ..MasterControls::default()
@@ -1184,14 +1202,8 @@ fn golden_render_is_byte_identical_for_a_seed() {
             ..ArpControls::default()
         },
         ..FluidControls::default()
-    }));
-    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let telemetry = Arc::new(FluidTelemetry::default());
-    let session = live_session(
-        controls.load_full().as_ref().clone(),
-        automation.load_full().as_ref().clone(),
-    );
-    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), telemetry);
+    };
+    let mut engine = engine_for(controls, AutomationState::default());
     engine.reseed(42);
 
     let mut hash = 0xcbf2_9ce4_8422_2325u64; // FNV offset basis
@@ -2032,14 +2044,7 @@ fn full_engine_renders_a_custom_progression_from_song_code_without_panicking() {
         CUSTOM_PROGRESSION_INDEX as f32,
     );
 
-    let controls_swap = Arc::new(ArcSwap::from_pointee(decoded.controls));
-    let automation = Arc::new(ArcSwap::from_pointee(decoded.automation));
-    let telemetry = Arc::new(FluidTelemetry::default());
-    let session = live_session(
-        controls_swap.load_full().as_ref().clone(),
-        automation.load_full().as_ref().clone(),
-    );
-    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), telemetry);
+    let mut engine = engine_for(decoded.controls, decoded.automation);
 
     for _ in 0..(SAMPLE_RATE as usize * 4) {
         let (l, r) = engine.next_stereo();
@@ -2330,15 +2335,16 @@ fn chords_tab_shows_progression_row_with_letter_display() {
     assert_eq!(rows[5].label, "Chord Count");
     assert_eq!(rows[5].display, "8");
     assert_eq!(rows[6].label, "Progression");
-    assert_eq!(rows[6].display, "A");
 
-    controls.pad.progression = 2.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[6].display, "C");
-
-    controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[6].display, "Custom");
+    for (progression, display) in [
+        (0.0, "A"),
+        (2.0, "C"),
+        (CUSTOM_PROGRESSION_INDEX as f32, "Custom"),
+    ] {
+        controls.pad.progression = progression;
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[6].display, display, "pad.progression {progression}");
+    }
 }
 
 #[test]
@@ -2570,21 +2576,19 @@ fn bass_tab_shows_type_and_rhythm_rows_with_letter_display() {
     let rows = tab_controls(Tab::Bass, &controls);
     assert_eq!(rows[3].id, "bass.type");
     assert_eq!(rows[3].label, "Type");
-    assert_eq!(rows[3].display, "Sub");
     assert_eq!(rows[6].label, "Rhythm");
-    assert_eq!(rows[6].display, "A");
 
-    controls.bass.voice_type = 1.0;
-    let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[3].display, "Saw");
+    for (voice_type, display) in [(0.0, "Sub"), (1.0, "Saw"), (2.0, "Pluck")] {
+        controls.bass.voice_type = voice_type;
+        let rows = tab_controls(Tab::Bass, &controls);
+        assert_eq!(rows[3].display, display, "bass.type {voice_type}");
+    }
 
-    controls.bass.voice_type = 2.0;
-    let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[3].display, "Pluck");
-
-    controls.bass.rhythm = 3.0;
-    let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[6].display, "D");
+    for (rhythm, display) in [(0.0, "A"), (3.0, "D")] {
+        controls.bass.rhythm = rhythm;
+        let rows = tab_controls(Tab::Bass, &controls);
+        assert_eq!(rows[6].display, display, "bass.rhythm {rhythm}");
+    }
 }
 
 #[test]
@@ -3057,12 +3061,7 @@ fn pad_engine_caps_released_layers() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
     for chord in 1..12 {
         let sample = chord * SAMPLE_RATE as u64 * 2;
@@ -3078,20 +3077,10 @@ fn pad_engine_step_index_wraps_at_eight() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
-    // chord_bars=1.0 means chord_trigger fires every 4.0 beats; at 120 BPM
-    // that's 2 seconds of samples per chord. Render 9 chord-advances worth
-    // of samples (18 seconds) and confirm the telemetry index wrapped past 8.
-    for chord in 1..=9 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-    }
+    // Render 9 chord-advances and confirm the telemetry index wrapped past 8.
+    advance_chords(&mut pad, &controls, 9);
     let final_index = pad.telemetry.chord_index.load(Ordering::Relaxed);
     assert!(
         final_index < 8,
@@ -3110,12 +3099,7 @@ fn pad_engine_progression_switch_waits_for_the_next_loop_boundary() {
         attack_time: 0.001,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
     // Warm up the original layer's envelope (still progression 0, so no push
     // happens here) so its level is non-negligible before it gets released;
@@ -3180,12 +3164,7 @@ fn pad_engine_type_change_revoices_the_current_chord_immediately() {
         attack_time: 0.001,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
     for sample in 0..10 {
         let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
@@ -3339,25 +3318,25 @@ fn pad_chord_count_gates_step_wrap_in_every_progression_mode() {
 /// The bug this guards: Chord Count read 2 while a built-in progression
 /// looped all 8 of its chords, because the count only applied to Custom.
 #[test]
-fn pad_engine_step_index_wraps_at_pad_chord_count_on_a_built_in_progression() {
-    let controls = PadControls {
-        chord_bars: 1.0,
-        progression: 0.0,
-        chord_count: 2.0,
-        attack_time: 1.0,
-        ..PadControls::default()
-    };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+fn pad_engine_step_index_wraps_at_pad_chord_count_on_built_in_and_custom_progressions() {
+    for progression in [0.0, CUSTOM_PROGRESSION_INDEX as f32] {
+        let controls = PadControls {
+            chord_bars: 1.0,
+            progression,
+            chord_count: 2.0,
+            attack_time: 1.0,
+            ..PadControls::default()
+        };
+        let mut pad = pad_engine(&controls);
 
-    for chord in 1..=5 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-        assert!(pad.step_index < 2);
+        for chord in 1..=5 {
+            let sample = chord * SAMPLE_RATE as u64 * 2;
+            let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+            assert!(
+                pad.step_index < 2,
+                "progression {progression} ran past its chord count"
+            );
+        }
     }
 }
 
@@ -3382,29 +3361,6 @@ fn bass_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
 }
 
 #[test]
-fn pad_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
-    let controls = PadControls {
-        chord_bars: 1.0,
-        progression: CUSTOM_PROGRESSION_INDEX as f32,
-        chord_count: 2.0,
-        attack_time: 1.0,
-        ..PadControls::default()
-    };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
-
-    for chord in 1..=5 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-        assert!(pad.step_index < 2);
-    }
-}
-
-#[test]
 fn pad_engine_chord_count_change_finishes_the_current_chord_before_relooping() {
     let mut controls = PadControls {
         chord_bars: 1.0,
@@ -3412,17 +3368,9 @@ fn pad_engine_chord_count_change_finishes_the_current_chord_before_relooping() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
-    for chord in 1..=3 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-    }
+    advance_chords(&mut pad, &controls, 3);
     assert_eq!(pad.step_index, 2);
 
     let layers_before = pad.layers.len();
@@ -3446,17 +3394,9 @@ fn pad_engine_progression_change_finishes_the_current_loop_before_switching() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
-    for chord in 1..=3 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-    }
+    advance_chords(&mut pad, &controls, 3);
     assert_eq!(pad.step_index, 2);
 
     let layers_before = pad.layers.len();
@@ -3481,12 +3421,7 @@ fn pad_engine_chord_slot_edit_retriggers_immediately() {
         attack_time: 0.001,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
     for sample in 0..10 {
         let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
@@ -4682,14 +4617,7 @@ fn engine_hot_path_timing() {
     );
     automation.set_route(ControlAddress::new("tonal.level"), LfoRoute::default());
 
-    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
-    let automation = Arc::new(ArcSwap::from_pointee(automation));
-    let telemetry = Arc::new(FluidTelemetry::default());
-    let session = live_session(
-        controls.load_full().as_ref().clone(),
-        automation.load_full().as_ref().clone(),
-    );
-    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), telemetry);
+    let mut engine = engine_for(FluidControls::default(), automation);
 
     let frames = SAMPLE_RATE as u64 * 10;
     let start = Instant::now();
