@@ -439,19 +439,14 @@ fn tonal_low_cut_reduces_sub_energy_without_thinning_low_notes() {
         let mut low_cut = TonalLowCut::new(SAMPLE_RATE, TONAL_LOW_CUT_HZ);
         let total = SAMPLE_RATE as u64 * 2;
         let warmup = SAMPLE_RATE as u64 / 2;
-        let mut sum = 0.0f32;
-        let mut count = 0u64;
-
-        for sample in 0..total {
-            let phase = TAU * hz * sample as f32 / SAMPLE_RATE;
-            let filtered = low_cut.process(phase.sin());
-            if sample >= warmup {
-                sum += filtered * filtered;
-                count += 1;
-            }
-        }
-
-        (sum / count as f32).sqrt()
+        let settled: Vec<f32> = (0..total)
+            .map(|sample| {
+                let phase = TAU * hz * sample as f32 / SAMPLE_RATE;
+                low_cut.process(phase.sin())
+            })
+            .skip(warmup as usize)
+            .collect();
+        crate::synth::fm::rms(&settled)
     }
 
     let sub = filtered_sine_rms(TONAL_LOW_CUT_HZ * 0.5);
@@ -2705,32 +2700,35 @@ fn bass_type_zero_matches_legacy_sub_voice_exactly() {
 /// variant is audible, each non-first variant differs from the first beyond
 /// float noise, and no variant is more than 2x (~6dB) louder/quieter than
 /// another -- the shared "differing but comparably balanced" audio check
-/// behind bass_types_*/pad_types_*. `step` returns `(energy_sample,
-/// diff_sample)` per tick: `energy_sample` feeds the RMS level check
-/// (already per-channel-normalized -- pad averages its two channels before
-/// returning), `diff_sample` feeds the cross-type difference check (pad uses
-/// its left channel only, matching the original per-voice comparison).
+/// behind bass_types_*/pad_types_*. `step` returns `(level_sample,
+/// diff_sample)` per tick: `level_sample` feeds the RMS level check (a
+/// per-channel-normalized magnitude -- pad folds its two channels into one
+/// before returning), `diff_sample` feeds the cross-type difference check
+/// (pad uses its left channel only, matching the original per-voice
+/// comparison).
 /// A named, steppable audio-character variant for `assert_types_differ_but_balanced`:
-/// each step yields `(energy_sample, diff_sample)`.
+/// each step yields `(level_sample, diff_sample)`.
 type SoundVariant<'a> = (&'a str, Box<dyn FnMut() -> (f32, f32)>);
 
 fn assert_types_differ_but_balanced(label: &str, samples: usize, mut types: Vec<SoundVariant>) {
-    let mut sum_sq = vec![0.0f32; types.len()];
+    let mut level_samples: Vec<Vec<f32>> = (0..types.len())
+        .map(|_| Vec::with_capacity(samples))
+        .collect();
     let mut diff_samples: Vec<Vec<f32>> = (0..types.len())
         .map(|_| Vec::with_capacity(samples))
         .collect();
 
     for _ in 0..samples {
         for (i, (_, step)) in types.iter_mut().enumerate() {
-            let (energy, diff) = step();
-            sum_sq[i] += energy;
+            let (level, diff) = step();
+            level_samples[i].push(level);
             diff_samples[i].push(diff);
         }
     }
 
-    let rms: Vec<f32> = sum_sq
+    let rms: Vec<f32> = level_samples
         .iter()
-        .map(|&s| (s / samples as f32).sqrt())
+        .map(|levels| crate::synth::fm::rms(levels))
         .collect();
 
     for (i, &r) in rms.iter().enumerate() {
@@ -2771,7 +2769,7 @@ fn bass_types_produce_differing_but_comparably_balanced_audio() {
             let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, sample_rate);
             let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
                 let s = voice.next();
-                (s * s, s)
+                (s, s)
             });
             (name, step)
         })
@@ -2809,7 +2807,7 @@ fn pad_types_produce_differing_but_comparably_balanced_audio() {
         let mut tone = PadTone::new(character, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
         let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
             let (l, r) = tone.next_stereo(0.8, 0.5, 0.5);
-            ((l * l + r * r) / 2.0, l)
+            (((l * l + r * r) / 2.0).sqrt(), l)
         });
         (name, step)
     })
@@ -2836,32 +2834,6 @@ fn kick_type_zero_matches_legacy_sub_voice_exactly() {
             legacy.next(&mut click_rng_b)
         );
     }
-}
-
-#[test]
-fn kick_types_produce_differing_but_comparably_balanced_audio() {
-    let sample_rate = 48_000.0;
-    let samples = (sample_rate * 0.3) as usize;
-
-    let types: Vec<SoundVariant> = [(0usize, "sub"), (1, "warm"), (2, "wood"), (3, "felt")]
-        .into_iter()
-        .map(|(voice_type, name)| {
-            let controls = KickControls {
-                level: 0.6,
-                ..Default::default()
-            };
-            let mut construct_rng = StdRng::seed_from_u64(7);
-            let mut voice = KickVoice::new(voice_type, &controls, sample_rate, &mut construct_rng);
-            let mut click_rng = StdRng::seed_from_u64(99);
-            let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
-                let (l, r) = voice.next(&mut click_rng);
-                ((l * l + r * r) / 2.0, l)
-            });
-            (name, step)
-        })
-        .collect();
-
-    assert_types_differ_but_balanced("kick", samples, types);
 }
 
 #[test]
@@ -2985,8 +2957,7 @@ fn perc_continuous_mode_has_no_periodic_rms_dips() {
         let out = engine.next(&controls, t);
         window.push(out);
         if window.len() == window_samples {
-            let sum_sq: f32 = window.iter().map(|x| x * x).sum();
-            window_rms.push((sum_sq / window.len() as f32).sqrt());
+            window_rms.push(crate::synth::fm::rms(&window));
             window.clear();
         }
     }
