@@ -11,9 +11,11 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 #[cfg(test)]
+use super::MuteState;
+#[cfg(test)]
 use super::automation::{ControlAddress, LfoRoute, LfoShape};
 use super::{
-    AutomationState, ControlKind, ControlSpec, FluidControls, MuteState, SongState, Tab, all_specs,
+    AutomationState, ControlKind, ControlSpec, FluidControls, SongState, Tab, all_specs,
     decode_song_code, spec_by_id,
 };
 
@@ -239,10 +241,8 @@ impl MorphState {
             .unwrap_or(0);
         let mut endpoints = Vec::with_capacity(states.len() + 1);
         endpoints.push(SongState {
-            controls: current,
             automation: current_automation,
-            tonal_sequence: None,
-            muted: MuteState::default(),
+            ..SongState::from_controls(current)
         });
         endpoints.extend(states[nearest..].iter().cloned());
         endpoints.extend(states[..nearest].iter().cloned());
@@ -496,17 +496,6 @@ mod tests {
         c
     }
 
-    /// Wrap bare controls into a `SongState` with no automation, for tests
-    /// that only care about the controls side of a morph.
-    fn song(controls: FluidControls) -> SongState {
-        SongState {
-            controls,
-            automation: AutomationState::default(),
-            tonal_sequence: None,
-            muted: MuteState::default(),
-        }
-    }
-
     /// Sum of every performing element's level/gain: the audible-energy proxy
     /// the never-silent invariant is checked against.
     fn total_level(c: &FluidControls) -> f32 {
@@ -521,7 +510,13 @@ mod tests {
 
     #[test]
     fn leg_math_two_states_wraps_forever() {
-        let morph = MorphState::new(vec![song(state(80.0)), song(state(120.0))], 2);
+        let morph = MorphState::new(
+            vec![
+                SongState::from_controls(state(80.0)),
+                SongState::from_controls(state(120.0)),
+            ],
+            2,
+        );
         // 2 bars/leg * 4 beats = 8 beats per leg.
         assert_eq!(morph.leg_at(0.0), (0, 1, 0.0));
         assert_eq!(morph.leg_at(4.0), (0, 1, 0.5));
@@ -532,7 +527,9 @@ mod tests {
 
     #[test]
     fn leg_math_eight_states_wraps_forever() {
-        let endpoints: Vec<SongState> = (0..8).map(|i| song(state(80.0 + i as f32))).collect();
+        let endpoints: Vec<SongState> = (0..8)
+            .map(|i| SongState::from_controls(state(80.0 + i as f32)))
+            .collect();
         let morph = MorphState::new(endpoints, 1);
         // 1 bar/leg * 4 beats = 4 beats per leg.
         assert_eq!(morph.leg_at(0.0), (0, 1, 0.0));
@@ -543,7 +540,9 @@ mod tests {
 
     #[test]
     fn morph_ids_match_the_one_based_auto_state_list() {
-        let endpoints: Vec<SongState> = (0..3).map(|i| song(state(80.0 + i as f32))).collect();
+        let endpoints: Vec<SongState> = (0..3)
+            .map(|i| SongState::from_controls(state(80.0 + i as f32)))
+            .collect();
         let morph = MorphState::new(endpoints, 1);
 
         assert_eq!(morph.morph_ids_at(4.0), (Some(2), Some(3)));
@@ -551,7 +550,13 @@ mod tests {
 
     #[test]
     fn leg_math_boundaries_at_t_zero_and_towards_one() {
-        let morph = MorphState::new(vec![song(state(80.0)), song(state(120.0))], 1);
+        let morph = MorphState::new(
+            vec![
+                SongState::from_controls(state(80.0)),
+                SongState::from_controls(state(120.0)),
+            ],
+            1,
+        );
         let (_, _, t_start) = morph.leg_at(0.0);
         assert_eq!(t_start, 0.0);
         let (from, to, t_end) = morph.leg_at(3.999_999);
@@ -566,7 +571,10 @@ mod tests {
         from.pad.level = 0.0;
         let mut to = FluidControls::default();
         to.pad.level = 1.0;
-        let morph = MorphState::new(vec![song(from), song(to)], 1);
+        let morph = MorphState::new(
+            vec![SongState::from_controls(from), SongState::from_controls(to)],
+            1,
+        );
         let controls = morph.controls_at(4.0 * 0.25);
         assert!((controls.pad.level - 0.25).abs() < 1e-4);
     }
@@ -579,7 +587,13 @@ mod tests {
         from.clap.level = 0.6;
         let to = FluidControls::default();
         // 6 bars/leg -> transition downbeat at beat 16.
-        let morph = MorphState::new(vec![song(from.clone()), song(to)], 6);
+        let morph = MorphState::new(
+            vec![
+                SongState::from_controls(from.clone()),
+                SongState::from_controls(to),
+            ],
+            6,
+        );
 
         let before = morph.controls_at(15.9);
         assert_eq!(before.perc.level, from.perc.level);
@@ -600,7 +614,10 @@ mod tests {
         to.kick.level = 0.8;
         to.clap.level = 0.6;
         // 6 bars/leg -> transition runs from beat 16 through beat 24.
-        let morph = MorphState::new(vec![song(from), song(to)], 6);
+        let morph = MorphState::new(
+            vec![SongState::from_controls(from), SongState::from_controls(to)],
+            6,
+        );
 
         let mid = morph.controls_at(20.0);
         assert!((mid.perc.level - 0.2).abs() < 1e-4);
@@ -615,7 +632,10 @@ mod tests {
         let mut to = FluidControls::default();
         to.modules.master[0].amount = 1.0;
         // 6 bars/leg: hold 4 bars (transition_start=16 beats), transition 8 beats.
-        let morph = MorphState::new(vec![song(from), song(to)], 6);
+        let morph = MorphState::new(
+            vec![SongState::from_controls(from), SongState::from_controls(to)],
+            6,
+        );
         // Deep in the hold window: still `from`.
         assert!((morph.controls_at(8.0).modules.master[0].amount - 0.0).abs() < 1e-4);
         // Halfway through the transition (beat 20 of 24): ~0.5.
@@ -632,7 +652,13 @@ mod tests {
         to.pad.chord_count = 2.0;
         to.arp.pattern = 2.0;
         // 6 bars/leg -> transition downbeat at beat 16.
-        let morph = MorphState::new(vec![song(from.clone()), song(to.clone())], 6);
+        let morph = MorphState::new(
+            vec![
+                SongState::from_controls(from.clone()),
+                SongState::from_controls(to.clone()),
+            ],
+            6,
+        );
 
         // Just before the downbeat: all three still hold `from`.
         let before = morph.controls_at(15.9);
@@ -653,7 +679,13 @@ mod tests {
         let mut to = FluidControls::default();
         to.tonal.synth_type = 1.0; // one changed non-structural grid param -> 8-bar offset
         // 30 bars/leg: hold 20 bars (transition_start=80), its jump at 80+8*4=112.
-        let morph = MorphState::new(vec![song(from.clone()), song(to.clone())], 30);
+        let morph = MorphState::new(
+            vec![
+                SongState::from_controls(from.clone()),
+                SongState::from_controls(to.clone()),
+            ],
+            30,
+        );
 
         // Still holds through the structural downbeat and up to its own offset.
         assert_eq!(
@@ -683,7 +715,13 @@ mod tests {
         quiet.bass.level = 0.1;
         quiet.arp.gain = 0.0;
         let floor = total_level(&loud).min(total_level(&quiet));
-        let morph = MorphState::new(vec![song(loud), song(quiet)], 8);
+        let morph = MorphState::new(
+            vec![
+                SongState::from_controls(loud),
+                SongState::from_controls(quiet),
+            ],
+            8,
+        );
         let beats_per_leg = 32.0;
 
         for i in 0..=64 {
@@ -709,7 +747,10 @@ mod tests {
         let morph = MorphState::from_live(
             current.clone(),
             AutomationState::default(),
-            vec![song(far), song(near.clone())],
+            vec![
+                SongState::from_controls(far),
+                SongState::from_controls(near.clone()),
+            ],
             4,
             0.0,
         );
@@ -730,7 +771,7 @@ mod tests {
         let morph = MorphState::from_live(
             current.clone(),
             AutomationState::default(),
-            vec![song(target)],
+            vec![SongState::from_controls(target)],
             4,
             1000.0,
         );
@@ -750,7 +791,7 @@ mod tests {
         let morph = MorphState::from_live(
             current,
             AutomationState::default(),
-            vec![song(target)],
+            vec![SongState::from_controls(target)],
             DEFAULT_AUTO_BARS,
             0.0,
         );
@@ -766,7 +807,13 @@ mod tests {
 
     #[test]
     fn writer_throttles_to_one_tick_per_eighth_note() {
-        let morph = MorphState::new(vec![song(state(80.0)), song(state(120.0))], 64);
+        let morph = MorphState::new(
+            vec![
+                SongState::from_controls(state(80.0)),
+                SongState::from_controls(state(120.0)),
+            ],
+            64,
+        );
         let mut writer = MorphWriter::default();
 
         assert!(
@@ -938,7 +985,7 @@ mod tests {
         let morph = MorphState::from_live(
             FluidControls::default(),
             current_auto.clone(),
-            vec![song(FluidControls::default())],
+            vec![SongState::from_controls(FluidControls::default())],
             4,
             0.0,
         );
