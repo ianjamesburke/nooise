@@ -214,6 +214,10 @@ impl Navigation {
         }
     }
 
+    pub(crate) fn tab(self) -> Tab {
+        tab_for_page(self.page())
+    }
+
     pub(crate) fn selected(self) -> usize {
         match self {
             Self::Chords { selected, .. }

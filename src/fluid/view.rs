@@ -461,43 +461,16 @@ fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> Aut
 }
 
 fn navigation_view(navigation: Navigation) -> NavigationView {
-    match navigation {
-        Navigation::Chords { selected, drill } => NavigationView {
-            tab: Tab::Chords,
-            chord_drill: drill,
-            module_slot: None,
-            selected,
-        },
-        Navigation::Standard { page, selected } => NavigationView {
-            tab: match page {
-                crate::fluid::interaction::StandardPage::Perc => Tab::Perc,
-                crate::fluid::interaction::StandardPage::Bass => Tab::Bass,
-                crate::fluid::interaction::StandardPage::Kick => Tab::Kick,
-                crate::fluid::interaction::StandardPage::Tonal => Tab::Tonal,
-                crate::fluid::interaction::StandardPage::Clap => Tab::Clap,
-                crate::fluid::interaction::StandardPage::Arp => Tab::Arp,
-            },
-            chord_drill: ChordDrill::None,
-            module_slot: None,
-            selected,
-        },
-        Navigation::Master { selected } => NavigationView {
-            tab: Tab::Master,
-            chord_drill: ChordDrill::None,
-            module_slot: None,
-            selected,
-        },
-        Navigation::Module {
-            tab,
-            slot,
-            selected,
-            ..
-        } => NavigationView {
-            tab,
-            chord_drill: ChordDrill::None,
-            module_slot: Some(slot),
-            selected,
-        },
+    let (chord_drill, module_slot) = match navigation {
+        Navigation::Chords { drill, .. } => (drill, None),
+        Navigation::Standard { .. } | Navigation::Master { .. } => (ChordDrill::None, None),
+        Navigation::Module { slot, .. } => (ChordDrill::None, Some(slot)),
+    };
+    NavigationView {
+        tab: navigation.tab(),
+        chord_drill,
+        module_slot,
+        selected: navigation.selected(),
     }
 }
 
