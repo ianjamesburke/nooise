@@ -4,7 +4,7 @@
 use std::f32::consts::TAU;
 
 use crate::fluid::widget::DialScale;
-use crate::fluid::{Entry, splitmix64_mix};
+use crate::fluid::{Entry, smoothstep, splitmix64_mix};
 
 use super::{FieldSpec, Stepping, clamped_index, morph_scalar_route, stepped_index};
 
@@ -121,11 +121,6 @@ fn seeded_unit(seed: u32, index: i64) -> f32 {
     );
     let unit = (z >> 40) as f32 / f32::from(1u16 << 8) / f32::from(1u16 << 8) / 256.0;
     unit * 2.0 - 1.0
-}
-
-fn smoothstep(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 /// Blends a ramp's raw value toward `next_cycle_start` over the last

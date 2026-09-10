@@ -784,45 +784,44 @@ fn mix_voices(
     (pad + perc * 0.6 + kick * 0.7 + ton + clap * 0.65 + bass * 0.75 + arp) * fade
 }
 
+/// A smoothstep-eased ramp from one value to the next over a fixed sample
+/// count: the shape behind every click-free level change in the engine. A
+/// caller decides *whether* a new target is worth a ramp; `retarget` always
+/// starts one from wherever the ramp currently sits.
 #[derive(Clone, Copy)]
-struct OutputGate {
-    start: f32,
-    current: f32,
-    target: f32,
-    samples_total: u32,
-    samples_remaining: u32,
+pub(crate) struct EasedRamp {
+    pub(crate) start: f32,
+    pub(crate) current: f32,
+    pub(crate) target: f32,
+    pub(crate) samples_total: u32,
+    pub(crate) samples_remaining: u32,
 }
 
-impl OutputGate {
-    fn new(muted: bool) -> Self {
-        let gain = if muted { 0.0 } else { 1.0 };
+impl EasedRamp {
+    pub(crate) fn settled(value: f32) -> Self {
         Self {
-            start: gain,
-            current: gain,
-            target: gain,
+            start: value,
+            current: value,
+            target: value,
             samples_total: 0,
             samples_remaining: 0,
         }
     }
 
-    fn set_muted(&mut self, muted: bool, ramp_samples: u32) {
-        let target = if muted { 0.0 } else { 1.0 };
-        if target == self.target {
-            return;
-        }
+    pub(crate) fn retarget(&mut self, target: f32, ramp_samples: u32) {
         self.start = self.current;
         self.target = target;
         self.samples_total = ramp_samples.max(1);
         self.samples_remaining = self.samples_total;
     }
 
-    fn next(&mut self) -> f32 {
+    pub(crate) fn next(&mut self) -> f32 {
         if self.samples_remaining == 0 {
-            return self.target;
+            self.current = self.target;
+            return self.current;
         }
         let elapsed = self.samples_total - self.samples_remaining + 1;
-        let t = elapsed as f32 / self.samples_total as f32;
-        let eased = t * t * (3.0 - 2.0 * t);
+        let eased = smoothstep(elapsed as f32 / self.samples_total as f32);
         self.current = self.start + (self.target - self.start) * eased;
         self.samples_remaining -= 1;
         if self.samples_remaining == 0 {
@@ -832,21 +831,29 @@ impl OutputGate {
     }
 }
 
+/// One click-free mute gate per layer, ramping between silence and unity.
 struct OutputGates {
-    gates: [OutputGate; TAB_COUNT],
+    gates: [EasedRamp; TAB_COUNT],
 }
 
 impl OutputGates {
+    fn gain(muted: bool) -> f32 {
+        if muted { 0.0 } else { 1.0 }
+    }
+
     fn new(muted: &MuteState) -> Self {
         Self {
-            gates: std::array::from_fn(|index| OutputGate::new(muted[index])),
+            gates: std::array::from_fn(|index| EasedRamp::settled(Self::gain(muted[index]))),
         }
     }
 
     fn set_targets(&mut self, muted: &MuteState, sample_rate: f32) {
         let ramp_samples = (LEVEL_RAMP_MS * 0.001 * sample_rate).round() as u32;
         for (gate, muted) in self.gates.iter_mut().zip(muted) {
-            gate.set_muted(*muted, ramp_samples);
+            let target = Self::gain(*muted);
+            if target != gate.target {
+                gate.retarget(target, ramp_samples);
+            }
         }
     }
 
@@ -857,11 +864,7 @@ impl OutputGates {
 
 pub(crate) struct GainSmoother {
     pub(crate) spec: &'static ControlSpec,
-    pub(crate) start: f32,
-    pub(crate) current: f32,
-    pub(crate) target: f32,
-    pub(crate) samples_total: u32,
-    pub(crate) samples_remaining: u32,
+    pub(crate) ramp: EasedRamp,
     /// True while the smoother is settled AND its target equals the snapshot
     /// value bit-for-bit, so `next_controls` can skip the per-sample write
     /// (which would be a no-op). Recomputed every `set_targets` call; stays
@@ -884,39 +887,20 @@ impl GainSmoother {
     pub(crate) fn for_spec(spec: &'static ControlSpec, value: f32) -> Self {
         Self {
             spec,
-            start: value,
-            current: value,
-            target: value,
-            samples_total: 0,
-            samples_remaining: 0,
+            ramp: EasedRamp::settled(value),
             idle: false,
         }
     }
 
     pub(crate) fn set_target(&mut self, target: f32, ramp_samples: u32) {
-        if (target - self.target).abs() <= f32::EPSILON {
+        if (target - self.ramp.target).abs() <= f32::EPSILON {
             return;
         }
-        self.start = self.current;
-        self.target = target;
-        self.samples_total = ramp_samples.max(1);
-        self.samples_remaining = self.samples_total;
+        self.ramp.retarget(target, ramp_samples);
     }
 
     pub(crate) fn next(&mut self) -> f32 {
-        if self.samples_remaining == 0 {
-            self.current = self.target;
-            return self.current;
-        }
-        let elapsed = self.samples_total - self.samples_remaining + 1;
-        let t = elapsed as f32 / self.samples_total as f32;
-        let eased = t * t * (3.0 - 2.0 * t);
-        self.current = self.start + (self.target - self.start) * eased;
-        self.samples_remaining -= 1;
-        if self.samples_remaining == 0 {
-            self.current = self.target;
-        }
-        self.current
+        self.ramp.next()
     }
 }
 
@@ -940,7 +924,8 @@ impl GainSmoothers {
         for smoother in &mut self.smoothers {
             let snapshot_value = (smoother.spec.get)(c);
             smoother.set_target(snapshot_value, ramp_samples);
-            smoother.idle = smoother.samples_remaining == 0 && smoother.target == snapshot_value;
+            smoother.idle =
+                smoother.ramp.samples_remaining == 0 && smoother.ramp.target == snapshot_value;
         }
     }
 

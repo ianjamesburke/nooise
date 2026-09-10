@@ -2265,7 +2265,7 @@ fn gain_smoother_reaches_target_over_ramp() {
     for _ in 0..4 {
         smoother.next();
     }
-    assert_near(smoother.current, 0.5);
+    assert_near(smoother.ramp.current, 0.5);
     for _ in 0..4 {
         smoother.next();
     }
