@@ -13,9 +13,8 @@
 
 use super::registry::{Step, Taper, beat_grid_ratio, ordered_step_ratio};
 
-/// How a dial's value maps onto bar position. Mirrors [`Step::ratio`]'s three
-/// cases plus an explicit rung ladder, and is the only place a ratio is
-/// derived.
+/// How a dial's value maps onto bar position. Covers [`Step`]'s three cases
+/// plus an explicit rung ladder, and is the only place a ratio is derived.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum DialScale {
     /// Continuous span under a taper. `Taper::Linear` covers plain ranges,

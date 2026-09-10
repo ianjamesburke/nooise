@@ -2,6 +2,7 @@
 //! source of truth for every control row, its range and stepping, its stable
 //! song-snapshot id, and how a value reads on screen.
 
+use super::widget::DialScale;
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,16 +108,6 @@ pub(crate) enum Step {
     PowerOfTwo,
     /// 0.125 as the floor value, sixteenths (0.25 grid) above it.
     BeatGrid,
-}
-
-impl Step {
-    pub(crate) fn ratio(self, value: f32, min: f32, max: f32, taper: Taper) -> f32 {
-        match self {
-            Self::Linear(_) => taper.ratio(value, min, max),
-            Self::PowerOfTwo => Taper::Log2.ratio(value, min, max),
-            Self::BeatGrid => beat_grid_ratio(value, min, max),
-        }
-    }
 }
 
 /// How direct numeric entry is interpreted.
@@ -496,10 +487,9 @@ impl ControlSpec {
             // moves an equal fraction of the throw — fine near the floor,
             // coarse near the ceiling (log-even octaves for Log2, low-biased
             // for Exp) — instead of a fixed value delta.
-            let ratio = spec.taper.ratio(value, spec.min, spec.max);
-            let stepped = (ratio + dir / TAPER_STEPS_PER_SWEEP).clamp(0.0, 1.0);
-            spec.taper
-                .value_at(stepped, spec.min, spec.max)
+            spec.scale()
+                .step_in_position(value, dir, TAPER_STEPS_PER_SWEEP)
+                .expect("a Linear step maps to a Tapered scale, which has an inverse")
                 .clamp(spec.min, spec.max)
         } else {
             match spec.step {
@@ -517,15 +507,24 @@ impl ControlSpec {
         (spec.set)(c, next);
     }
 
+    /// Bar position of `value` under this control's live scale.
     pub(crate) fn ratio(&self, value: f32, c: &FluidControls) -> f32 {
-        let spec = self.contextual(c);
-        spec.step.ratio(value, spec.min, spec.max, spec.taper)
+        self.contextual(c).scale().ratio(value)
+    }
+
+    /// The dial scale this row's range, step, and taper declare. Every bar
+    /// ratio and position-space step for a registry control derives from
+    /// here, never from the fields directly. Call on a `contextual` spec.
+    pub(crate) fn scale(&self) -> DialScale {
+        DialScale::from_step(self.min, self.max, self.step, self.taper)
     }
 
     /// A continuous dial with a non-linear taper and a plain `Linear` step:
     /// stepped in position space and stored at full precision. Discrete grids
     /// (`PowerOfTwo`/`BeatGrid`) keep their own musical stepping even under a
     /// `Log2` bar (e.g. chord bars doubling on octaves).
+    /// `continuous_tapered_specs_step_in_position` pins that such a spec's
+    /// scale is `Tapered`, so `apply_delta` can rely on the inverse.
     fn is_continuous_tapered(&self) -> bool {
         !matches!(self.taper, Taper::Linear) && matches!(self.step, Step::Linear(_))
     }
@@ -2230,6 +2229,37 @@ mod performance_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    /// `apply_delta` steps a continuous tapered row through its scale's
+    /// inverse; this pins that every such row (base or contextual) gets a
+    /// `Tapered` scale, the only variant with one.
+    #[test]
+    fn continuous_tapered_specs_step_in_position() {
+        let controls = FluidControls::default();
+        let mut checked = 0;
+        for spec in all_specs().map(|spec| spec.contextual(&controls)) {
+            if !spec.is_continuous_tapered() {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                matches!(spec.scale(), DialScale::Tapered { .. }),
+                "{}: continuous tapered row without a tapered scale",
+                spec.id
+            );
+            assert!(
+                spec.scale()
+                    .step_in_position(spec.min, 1.0, TAPER_STEPS_PER_SWEEP)
+                    .is_some()
+            );
+        }
+        assert!(checked > 0, "no continuous tapered rows in the registry");
     }
 }
 

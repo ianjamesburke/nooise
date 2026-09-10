@@ -277,7 +277,7 @@ enum EncodedValue {
 impl EncodedValue {
     /// Continuous rows ride the taper in position space. Discrete rows and
     /// musical step ladders (`Step::PowerOfTwo`, `Step::BeatGrid`) do not:
-    /// `ControlSpec::ratio` overrides the taper for both ladders and neither
+    /// `DialScale::from_step` overrides the taper for both ladders and neither
     /// `beat_grid_ratio` nor the `Log2` override has an inverse in the crate,
     /// so they store their value exactly instead. Discrete rows are already
     /// whole numbers and would gain nothing but error from a round trip
