@@ -830,8 +830,7 @@ const LANE_WAVE: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "
 const RANDOM_LANE_CYCLES: f32 = 4.0;
 
 fn lane_glyph(level: f32) -> &'static str {
-    let level = level.clamp(0.0, 1.0);
-    LANE_WAVE[((level * (LANE_WAVE.len() - 1) as f32).round() as usize).min(LANE_WAVE.len() - 1)]
+    LANE_WAVE[ladder_index(level, LANE_WAVE.len())]
 }
 
 /// Label-width prefix shared by every modulator lane line, so stacked lanes
