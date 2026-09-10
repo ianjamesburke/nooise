@@ -15,6 +15,14 @@ impl FilterType {
             _ => Self::Low,
         }
     }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low-pass",
+            Self::High => "High-pass",
+            Self::Band => "Band-pass",
+        }
+    }
 }
 
 #[derive(Default)]

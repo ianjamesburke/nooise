@@ -4,6 +4,7 @@
 
 use super::widget::DialScale;
 use super::*;
+use crate::fx::filter::FilterType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tab {
@@ -595,6 +596,11 @@ pub(crate) fn pct(v: f32) -> String {
     format!("{:.0}%", v * 100.0)
 }
 
+/// A bipolar `-1..=1` ratio as a signed whole percent (`+25%`, `-40%`).
+pub(crate) fn signed_pct(v: f32) -> String {
+    format!("{:+.0}%", v * 100.0)
+}
+
 pub(crate) fn beats2(v: f32) -> String {
     format!("{v:.2} beats")
 }
@@ -772,7 +778,7 @@ macro_rules! module_slot_rows {
                 Entry::Percent,
                 |c| c.modules.$layer[$slot - 1].amount,
                 |c, v| c.modules.$layer[$slot - 1].amount = v,
-                |c| format!("{:.0}%", c.modules.$layer[$slot - 1].amount * 100.0),
+                |c| pct(c.modules.$layer[$slot - 1].amount),
             )
             .labeled_by(|c| module_kind_label(c.modules.$layer[$slot - 1].kind))
             .reset_at(0.0),
@@ -815,9 +821,10 @@ macro_rules! module_slot_rows {
                 Entry::Round,
                 |c| c.modules.$layer[$slot - 1].clock,
                 |c, v| c.modules.$layer[$slot - 1].clock = v,
-                |c| match DelayClock::from_value(c.modules.$layer[$slot - 1].clock) {
-                    DelayClock::Sync => "Sync".to_string(),
-                    DelayClock::Free => "Free".to_string(),
+                |c| {
+                    DelayClock::from_value(c.modules.$layer[$slot - 1].clock)
+                        .label()
+                        .to_string()
                 },
             )
             .reset_at(DelayClock::Sync.value()),
@@ -845,7 +852,7 @@ macro_rules! module_slot_rows {
                         v
                     };
                 },
-                |c| format!("{:.0}%", c.modules.$layer[$slot - 1].feedback * 100.0),
+                |c| pct(c.modules.$layer[$slot - 1].feedback),
             )
             .reset_at(0.0)
             .exact_in_song(),
@@ -859,7 +866,7 @@ macro_rules! module_slot_rows {
                 Entry::Percent,
                 |c| c.modules.$layer[$slot - 1].vintage,
                 |c, v| c.modules.$layer[$slot - 1].vintage = v,
-                |c| format!("{:.0}%", c.modules.$layer[$slot - 1].vintage * 100.0),
+                |c| pct(c.modules.$layer[$slot - 1].vintage),
             )
             .reset_at(0.0)
             .exact_in_song(),
@@ -873,9 +880,10 @@ macro_rules! module_slot_rows {
                 Entry::Round,
                 |c| c.modules.$layer[$slot - 1].right_clock,
                 |c, v| c.modules.$layer[$slot - 1].right_clock = v,
-                |c| match DelayClock::from_value(c.modules.$layer[$slot - 1].right_clock) {
-                    DelayClock::Sync => "Sync".to_string(),
-                    DelayClock::Free => "Free".to_string(),
+                |c| {
+                    DelayClock::from_value(c.modules.$layer[$slot - 1].right_clock)
+                        .label()
+                        .to_string()
                 },
             )
             .reset_at(DelayClock::Sync.value()),
@@ -1733,9 +1741,9 @@ pub(crate) fn module_detail_controls(
             item.display = match field_of(item.id) {
                 Some(ModuleSlotField::Amount | ModuleSlotField::RightTime) => pct(item.value),
                 Some(ModuleSlotField::Time) => format!("{:.0} Hz", item.value),
-                Some(ModuleSlotField::Feedback) => ["Low-pass", "High-pass", "Band-pass"]
-                    [item.value.round().clamp(0.0, 2.0) as usize]
-                    .to_string(),
+                Some(ModuleSlotField::Feedback) => {
+                    FilterType::from_value(item.value).label().to_string()
+                }
                 _ => item.display.clone(),
             };
         }

@@ -325,6 +325,13 @@ impl DelayClock {
             Self::Sync
         }
     }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Sync => "Sync",
+            Self::Free => "Free",
+        }
+    }
 }
 
 /// `kind` value meaning "no module here". Catalog entry `n` is stored as
