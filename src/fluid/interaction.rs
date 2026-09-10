@@ -285,6 +285,32 @@ pub(crate) struct PaletteMode {
     pub(crate) module_scope: Option<ModuleScope>,
 }
 
+impl PaletteMode {
+    /// The registry-backed palette view of this mode's query, selection, locked
+    /// entry, and staged edits. Kernel confirm and the renderer both resolve
+    /// rows by index through this one projection, so they cannot desync.
+    pub(crate) fn project(&self, tab: Tab) -> PaletteState {
+        let mut state = PaletteState::new(tab, &self.recent, self.module_scope);
+        for character in self.query.chars() {
+            state.push_char(character);
+        }
+        state.selected = self.selected.min(state.matches.len().saturating_sub(1));
+        state.locked = self.locked.filter(|&index| state.contains_entry(index));
+        if state.locked.is_some() {
+            state.value_buf.clone_from(&self.value_buffer);
+        }
+        state.staged = self
+            .staged
+            .iter()
+            .map(|edit| StagedEdit {
+                id: edit.id,
+                value: f32::from_bits(edit.value_bits),
+            })
+            .collect();
+        state
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PaletteStagedEdit {
     pub(crate) id: &'static str,
@@ -1049,7 +1075,7 @@ fn update_palette(
             }
         }
         Intent::MoveSelection(delta) => {
-            let state = project_palette(palette, page);
+            let state = palette.project(tab_for_page(page));
             if palette.locked.is_none() && !state.matches.is_empty() {
                 palette.selected = (state.selected as isize + delta)
                     .rem_euclid(state.matches.len() as isize)
@@ -1057,7 +1083,7 @@ fn update_palette(
             }
         }
         Intent::PaletteAutocomplete => {
-            let state = project_palette(palette, page);
+            let state = palette.project(tab_for_page(page));
             if palette.locked.is_none()
                 && let Some(found) = state.matches.get(state.selected)
             {
@@ -1065,7 +1091,7 @@ fn update_palette(
             }
         }
         Intent::Confirm => {
-            let state = project_palette(palette, page);
+            let state = palette.project(tab_for_page(page));
             if let Some(entry_index) = palette.locked {
                 let entry = state.entry(entry_index);
                 if let (Some(id), Ok(value)) = (entry.id(), palette.value_buffer.parse::<f32>()) {
@@ -1092,7 +1118,7 @@ fn update_palette(
             }
         }
         Intent::CommitPaletteAtBar => {
-            let state = project_palette(palette, page);
+            let state = palette.project(tab_for_page(page));
             if let Some(entry_index) = palette.locked
                 && let Ok(value) = palette.value_buffer.parse::<f32>()
             {
@@ -1359,27 +1385,6 @@ fn push_numeric(buffer: &mut String, character: char) {
     if valid {
         buffer.push(character);
     }
-}
-
-fn project_palette(palette: &PaletteMode, page: Page) -> PaletteState {
-    let mut state = PaletteState::new(tab_for_page(page), &palette.recent, palette.module_scope);
-    for character in palette.query.chars() {
-        state.push_char(character);
-    }
-    state.selected = palette.selected.min(state.matches.len().saturating_sub(1));
-    state.locked = palette.locked.filter(|&index| state.contains_entry(index));
-    if state.locked.is_some() {
-        state.value_buf.clone_from(&palette.value_buffer);
-    }
-    state.staged = palette
-        .staged
-        .iter()
-        .map(|edit| StagedEdit {
-            id: edit.id,
-            value: f32::from_bits(edit.value_bits),
-        })
-        .collect();
-    state
 }
 
 /// What confirming a palette row does. A module row resolves to add-or-jump
@@ -1893,7 +1898,7 @@ mod tests {
             query: "bass".to_string(),
             ..PaletteMode::default()
         };
-        let projected = project_palette(&palette, Page::Bass);
+        let projected = palette.project(Tab::Bass);
         assert!(projected.matches.len() > 1);
 
         let wrapped = update(palette_model(palette), Intent::MoveSelection(-1)).model;
@@ -1950,7 +1955,7 @@ mod tests {
             selected: 1,
             ..PaletteMode::default()
         };
-        let projected = project_palette(&base, Page::Bass);
+        let projected = base.project(Tab::Bass);
         let expected = palette_confirm(projected.entry(projected.matches[1].entry_index));
 
         let ordinary = update(palette_model(base.clone()), Intent::Confirm);

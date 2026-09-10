@@ -299,26 +299,9 @@ fn mode_surface<'a>(
                 .resume
                 .map(|mode| automation_surface(mode, automation)),
         },
-        InteractionMode::Palette(palette) => {
-            let mut state = PaletteState::new(tab, &palette.recent, palette.module_scope);
-            for character in palette.query.chars() {
-                state.push_char(character);
-            }
-            state.selected = palette.selected.min(state.matches.len().saturating_sub(1));
-            state.locked = palette.locked.filter(|&index| state.contains_entry(index));
-            if state.locked.is_some() {
-                state.value_buf.clone_from(&palette.value_buffer);
-            }
-            state.staged = palette
-                .staged
-                .iter()
-                .map(|edit| StagedEdit {
-                    id: edit.id,
-                    value: f32::from_bits(edit.value_bits),
-                })
-                .collect();
-            ModeSurface::Palette(PaletteSurface { state })
-        }
+        InteractionMode::Palette(palette) => ModeSurface::Palette(PaletteSurface {
+            state: palette.project(tab),
+        }),
         InteractionMode::Automation(mode) => {
             ModeSurface::Automation(automation_surface(*mode, automation))
         }
