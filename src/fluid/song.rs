@@ -28,7 +28,7 @@ const MAGIC: &[u8; 4] = b"NOOI";
 /// record payloads carry no version byte of their own. Version 1 (length-
 /// prefixed ids, f32 values, its own nested automation payload versions) is
 /// gone; a v1 code is rejected with a message telling the user why.
-const CONTAINER_VERSION: u8 = 2;
+pub(crate) const CONTAINER_VERSION: u8 = 2;
 /// Unchanged across container versions: the CLI, `just add-morph`, and both
 /// Python helpers all match song codes on this prefix.
 const CODE_PREFIX: &str = "n1_";
@@ -256,10 +256,10 @@ fn read_tonal_sequence(bytes: &[u8]) -> Result<TonalSequenceState, SongCodeError
 /// control's kind or step ladder may change in a later build without
 /// invalidating codes written today — and so an entry naming an unknown
 /// control can still be skipped without losing byte alignment.
-const VALUE_TAG_POSITION: u8 = 0;
-const VALUE_TAG_INT: u8 = 1;
-const VALUE_TAG_FLOAT: u8 = 2;
-const VALUE_TAG_SMALL_INT: u8 = 3;
+pub(crate) const VALUE_TAG_POSITION: u8 = 0;
+pub(crate) const VALUE_TAG_INT: u8 = 1;
+pub(crate) const VALUE_TAG_FLOAT: u8 = 2;
+pub(crate) const VALUE_TAG_SMALL_INT: u8 = 3;
 
 /// Even span for bipolar `-1..=1` amounts, so exactly 0 — the neutral value
 /// every automation amount rests at — round-trips to exactly 0.
@@ -693,16 +693,34 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
 
-pub(crate) fn write_record(
-    record_type: u8,
-    payload: &[u8],
-    out: &mut Vec<u8>,
-) -> Result<(), SongCodeError> {
+fn write_record(record_type: u8, payload: &[u8], out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     let len = u32::try_from(payload.len()).map_err(|_| SongCodeError::TooLarge)?;
     out.push(record_type);
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(payload);
     Ok(())
+}
+
+/// A song code whose container carries `version` and exactly `records`, so a
+/// test can hand the decoder any byte sequence without re-spelling the
+/// magic, prefix, or base64 layer.
+#[cfg(test)]
+pub(crate) fn code_from_records(version: u8, records: &[(u8, &[u8])]) -> String {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(MAGIC);
+    bytes.push(version);
+    for (record_type, payload) in records {
+        write_record(*record_type, payload, &mut bytes).unwrap();
+    }
+    format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// The snapshot record payload `encode_song_code` writes for `controls`.
+#[cfg(test)]
+pub(crate) fn snapshot_payload(controls: &FluidControls) -> Vec<u8> {
+    let mut snapshot = Vec::new();
+    write_snapshot(controls, &mut snapshot).unwrap();
+    snapshot
 }
 
 fn write_u16(value: usize, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
@@ -777,19 +795,22 @@ impl<'a> Reader<'a> {
 mod retired_control_tests {
     use super::*;
 
-    /// One snapshot entry naming `id`, wrapped in a valid container.
-    fn code_setting(id: &str) -> String {
-        let index = song_id_index(id).expect("id is in the table");
+    /// A one-entry snapshot payload setting id-table slot `index`.
+    fn snapshot_entry(index: u16) -> Vec<u8> {
         let mut snapshot = Vec::new();
         write_u16(1usize, &mut snapshot).unwrap();
         snapshot.extend_from_slice(&index.to_le_bytes());
         EncodedValue::Position(unit_to_u16(0.35)).write(&mut snapshot);
+        snapshot
+    }
 
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(MAGIC);
-        bytes.push(CONTAINER_VERSION);
-        write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes).unwrap();
-        format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
+    /// One snapshot entry naming `id`, wrapped in a valid container.
+    fn code_setting(id: &str) -> String {
+        let index = song_id_index(id).expect("id is in the table");
+        code_from_records(
+            CONTAINER_VERSION,
+            &[(SNAPSHOT_RECORD, &snapshot_entry(index))],
+        )
     }
 
     /// A code from before the per-voice effect sliders folded into module
@@ -816,16 +837,10 @@ mod retired_control_tests {
     /// a newer build: that index is past the table's end, not inside it.
     #[test]
     fn a_code_setting_an_id_this_build_has_never_heard_of_still_loads() {
-        let mut snapshot = Vec::new();
-        write_u16(1usize, &mut snapshot).unwrap();
-        snapshot.extend_from_slice(&u16::MAX.to_le_bytes());
-        EncodedValue::Position(unit_to_u16(0.35)).write(&mut snapshot);
-
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(MAGIC);
-        bytes.push(CONTAINER_VERSION);
-        write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes).unwrap();
-        let code = format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes));
+        let code = code_from_records(
+            CONTAINER_VERSION,
+            &[(SNAPSHOT_RECORD, &snapshot_entry(u16::MAX))],
+        );
 
         assert!(decode_song_code(&code).is_ok());
     }

@@ -48,13 +48,6 @@ fn timing(sample: u64, bpm: f32) -> TimingContext {
     TimingContext::new(sample_rate, bpm, beat)
 }
 
-fn append_record_to_code(code: &str, record_type: u8, payload: &[u8]) -> String {
-    let encoded = code.strip_prefix("n1_").unwrap();
-    let mut bytes = URL_SAFE_NO_PAD.decode(encoded).unwrap();
-    song::write_record(record_type, payload, &mut bytes).unwrap();
-    format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
-}
-
 /// Container v2 stores bounded ratios and tapered continuous values as a u16
 /// position, so a round-trip lands within one u16 step rather than exactly on
 /// the original. Relative, because one position step costs a fixed *fraction*
@@ -74,11 +67,6 @@ fn assert_quantized_named(actual: f32, expected: f32, name: &str) {
         (actual - expected).abs() <= tolerance,
         "{name}: expected {expected} within {tolerance}, got {actual}"
     );
-}
-
-fn write_test_str(value: &str, out: &mut Vec<u8>) {
-    out.push(value.len() as u8);
-    out.extend_from_slice(value.as_bytes());
 }
 
 fn buffer_text(buffer: &Buffer) -> String {
@@ -2196,8 +2184,13 @@ fn song_code_round_trips_lfo_automation_record() {
 fn song_code_skips_unknown_records() {
     let mut controls = FluidControls::default();
     controls.master.tune = 5.0;
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let code = append_record_to_code(&code, 99, &[1, 2, 3, 4]);
+    let code = song::code_from_records(
+        song::CONTAINER_VERSION,
+        &[
+            (song::SNAPSHOT_RECORD, &song::snapshot_payload(&controls)),
+            (99, &[1, 2, 3, 4]),
+        ],
+    );
 
     let decoded = song::decode_song_code(&code).unwrap();
 
@@ -2211,17 +2204,22 @@ fn song_code_skips_unknown_records() {
 fn song_code_v2_skips_unknown_song_id_indexes_without_losing_alignment() {
     let mut controls = FluidControls::default();
     controls.master.tune = 5.0;
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
 
     let mut payload = Vec::new();
     payload.extend_from_slice(&2u16.to_le_bytes());
     payload.extend_from_slice(&u16::MAX.to_le_bytes()); // no such id table slot
-    payload.push(2); // VALUE_TAG_FLOAT
+    payload.push(song::VALUE_TAG_FLOAT);
     payload.extend_from_slice(&0.75f32.to_le_bytes());
     payload.extend_from_slice(&song_id_index("master.tune").unwrap().to_le_bytes());
-    payload.push(1); // VALUE_TAG_INT
+    payload.push(song::VALUE_TAG_INT);
     payload.extend_from_slice(&7i16.to_le_bytes());
-    let code = append_record_to_code(&code, song::SNAPSHOT_RECORD, &payload);
+    let code = song::code_from_records(
+        song::CONTAINER_VERSION,
+        &[
+            (song::SNAPSHOT_RECORD, &song::snapshot_payload(&controls)),
+            (song::SNAPSHOT_RECORD, &payload),
+        ],
+    );
 
     let decoded = song::decode_song_code(&code).unwrap();
 
@@ -5414,8 +5412,6 @@ fn baked_in_auto_state_codes_are_container_v2_on_disk() {
 /// control for drops that route rather than failing the whole decode.
 #[test]
 fn song_code_skips_unknown_automation_target_indexes() {
-    let code = song::encode_song_code(&SongState::default()).unwrap();
-
     let mut payload = Vec::new();
     payload.extend_from_slice(&1u16.to_le_bytes()); // one LFO route
     payload.extend_from_slice(&u16::MAX.to_le_bytes()); // no such id table slot
@@ -5427,7 +5423,16 @@ fn song_code_skips_unknown_automation_target_indexes() {
     payload.extend_from_slice(&0u16.to_le_bytes()); // no macros
     payload.extend_from_slice(&0u16.to_le_bytes()); // no envelopes
     payload.extend_from_slice(&0u16.to_le_bytes()); // no field macros
-    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
+    let code = song::code_from_records(
+        song::CONTAINER_VERSION,
+        &[
+            (
+                song::SNAPSHOT_RECORD,
+                &song::snapshot_payload(&FluidControls::default()),
+            ),
+            (song::AUTOMATION_RECORD, &payload),
+        ],
+    );
 
     let decoded = song::decode_song_code(&code).unwrap();
 
@@ -5438,11 +5443,7 @@ fn song_code_skips_unknown_automation_target_indexes() {
 /// rather than silently decoding to an empty session.
 #[test]
 fn container_v1_song_codes_are_rejected_with_an_explanation() {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"NOOI");
-    bytes.push(1);
-    write_test_str("1.8.5", &mut bytes);
-    let code = format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes));
+    let code = song::code_from_records(1, &[]);
 
     let Err(err) = song::decode_song_code(&code) else {
         panic!("a container-v1 code must not decode");
