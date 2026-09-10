@@ -619,13 +619,9 @@ impl ReplayHarness {
             self.idle_turn_ids
                 .extend(std::iter::repeat_n(turns as u64, idle_boundaries));
             for _ in 0..explicit_ticks {
-                self.telemetry.publish_beat(self.clock.now().as_secs_f64());
+                self.tick();
                 coordinate_production_tick(&mut self.executor, self.clock.now().as_secs_f64())
                     .expect("pending commit has no fallible effects");
-                self.fluid.tick(
-                    SchedulerConfig::default().tick_interval.as_secs_f32(),
-                    &self.telemetry,
-                );
                 self.explicit_ticks += 1;
                 self.explicit_tick_turn_ids.push(turns as u64);
             }
@@ -661,11 +657,7 @@ impl ReplayHarness {
                 }
             }
             if turn.tick_due {
-                self.telemetry.publish_beat(self.clock.now().as_secs_f64());
-                self.fluid.tick(
-                    SchedulerConfig::default().tick_interval.as_secs_f32(),
-                    &self.telemetry,
-                );
+                self.tick();
                 self.scheduler.complete_tick(self.clock.now());
             }
             if self.violation.is_some() {
@@ -722,6 +714,17 @@ impl ReplayHarness {
             violation = post_replay_violation(&result);
         }
         ReplayOutcome { result, violation }
+    }
+
+    /// The beat-and-ripple half of a tick, shared by explicit fixture ticks
+    /// and scheduler-due ticks. Who commits pending edits differs: an explicit
+    /// tick commits here, a due tick already committed inside its turn.
+    fn tick(&mut self) {
+        self.telemetry.publish_beat(self.clock.now().as_secs_f64());
+        self.fluid.tick(
+            SchedulerConfig::default().tick_interval.as_secs_f32(),
+            &self.telemetry,
+        );
     }
 
     fn consume_production_step(&mut self, step: ProductionStep) {
