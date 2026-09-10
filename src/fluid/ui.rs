@@ -166,14 +166,21 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
 /// Frosted-glass scrim: darken the live fluid underneath instead of covering
 /// it, so the visualizer still shows through the panel.
 fn draw_scrim(f: &mut Frame, panel: Rect) {
-    let buf = f.buffer_mut();
-    for y in panel.top()..panel.bottom() {
-        for x in panel.left()..panel.right() {
+    fill_scrim(f.buffer_mut(), panel, |cell| {
+        let tint = darken(cell.fg, 0.30);
+        cell.set_bg(tint);
+        cell.set_fg(Color::Rgb(30, 34, 44));
+    });
+}
+
+/// Blank every cell in `area` and let `paint` set its colours; the panel
+/// scrim and the palette's opaque backdrop both fill this way.
+fn fill_scrim(buf: &mut Buffer, area: Rect, paint: impl Fn(&mut ratatui::buffer::Cell)) {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
             let cell = &mut buf[(x, y)];
-            let tint = darken(cell.fg, 0.30);
             cell.set_char(' ');
-            cell.set_bg(tint);
-            cell.set_fg(Color::Rgb(30, 34, 44));
+            paint(cell);
         }
     }
 }
@@ -641,16 +648,9 @@ fn draw_palette(
     let area = Rect::new(x, y, width, height);
 
     // Opaque scrim so the palette reads over the control rows behind it.
-    {
-        let buf = f.buffer_mut();
-        for row in area.top()..area.bottom() {
-            for col in area.left()..area.right() {
-                let cell = &mut buf[(col, row)];
-                cell.set_char(' ');
-                cell.set_bg(Color::Rgb(18, 22, 32));
-            }
-        }
-    }
+    fill_scrim(f.buffer_mut(), area, |cell| {
+        cell.set_bg(Color::Rgb(18, 22, 32));
+    });
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(BORDER));
