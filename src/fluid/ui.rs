@@ -517,29 +517,16 @@ fn draw_footer(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
 }
 
 fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
-    let selector = |value: Option<usize>| {
-        value
-            .and_then(|index| index.checked_add(1))
-            .map_or_else(|| "none".to_string(), |index| index.to_string())
-    };
     match surface {
         PerformanceSurface::Deck {
             selected,
             held_selectors,
             instruments,
         } => {
-            let held = if held_selectors.is_empty() {
-                "none".to_string()
-            } else {
-                held_selectors
-                    .iter()
-                    .map(|instrument| instrument.key().to_string())
-                    .collect::<Vec<_>>()
-                    .join("+")
-            };
             let mut lines = vec![Line::from(format!(
-                "DECK · selected {} · held {held}",
-                selector(*selected)
+                "DECK · selected {} · held {}",
+                selector_text(*selected),
+                performance_targets_text(*held_selectors)
             ))];
             if instruments.is_empty() {
                 lines.push(Line::from("hold a/s/d/f, then tap h/l j/k u/i"));
@@ -551,7 +538,7 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
         PerformanceSurface::SequenceChoose { held_selector } => vec![
             Line::from("SEQUENCE · CHOOSE INSTRUMENT"),
             Line::from("instrument · waiting"),
-            Line::from(format!("held · {}", selector(*held_selector))),
+            Line::from(format!("held · {}", selector_text(*held_selector))),
         ],
         PerformanceSurface::SequencePerform {
             instrument,
@@ -560,14 +547,14 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
         } => {
             let mut lines = vec![Line::from(format!(
                 "SEQUENCE · PERFORM · held {}",
-                selector(*held_selector)
+                selector_text(*held_selector)
             ))];
             if let Some(values) = values {
                 lines.push(performance_instrument_line(values));
             } else {
                 lines.push(Line::from(format!(
                     "instrument · {}",
-                    selector(*instrument)
+                    selector_text(*instrument)
                 )));
             }
             lines
@@ -583,7 +570,7 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
             } else {
                 lines.push(Line::from(format!(
                     "instrument · {}",
-                    selector(*instrument)
+                    selector_text(*instrument)
                 )));
             }
             lines.push(Line::from(if *release_pending {

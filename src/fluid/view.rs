@@ -645,13 +645,15 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
     }
 }
 
-fn selector_text(selector: Option<usize>) -> String {
+/// One-based selector index, or `none`; shared with the deck body in ui.rs.
+pub(crate) fn selector_text(selector: Option<usize>) -> String {
     selector
         .and_then(|index| index.checked_add(1))
         .map_or_else(|| "none".to_string(), |index| index.to_string())
 }
 
-fn performance_targets_text(targets: PerformanceTargets) -> String {
+/// Held selector keys joined as `a+s`, or `none`; shared with the deck body in ui.rs.
+pub(crate) fn performance_targets_text(targets: PerformanceTargets) -> String {
     let held = targets
         .iter()
         .map(|instrument| instrument.key().to_string())
