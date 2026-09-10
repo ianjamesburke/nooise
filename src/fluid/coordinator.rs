@@ -261,8 +261,9 @@ pub(crate) fn coordinate_production_action(
                     && *scoped_tab == *tab
                     && let Some(spec) = tab_specs(*tab).get(*index)
                 {
-                    let suffix = format!(".slot{}.", *slot + 1);
-                    if spec.id.contains(&suffix) {
+                    if let Some((_, spec_slot, field)) = parse_module_slot_id(spec.id)
+                        && spec_slot == *slot
+                    {
                         if let Some(kind) = frame_session
                             .controls
                             .modules
@@ -273,9 +274,7 @@ pub(crate) fn coordinate_production_action(
                             *selected = kind
                                 .parameters()
                                 .iter()
-                                .position(|parameter| {
-                                    spec.id.rsplit('.').next() == Some(parameter.field.id())
-                                })
+                                .position(|parameter| parameter.field == field)
                                 .unwrap_or(*selected);
                         }
                     } else {

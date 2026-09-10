@@ -46,7 +46,7 @@ impl PadEngine {
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
         let active_progression = progression_index(c.progression);
-        let active_character = pad_type_index(c.voice_type);
+        let active_character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let initial_notes = pad_chord_tones(c, active_progression, 0);
         Self {
             sample_rate,
@@ -86,7 +86,7 @@ impl PadEngine {
         );
         let chord_notes = pad_chord_tones(c, self.active_progression, self.step_index);
         let chord_edited = chord_notes != self.last_chord_notes;
-        let character = pad_type_index(c.voice_type);
+        let character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let character_changed = character != self.active_character;
         self.last_chord_notes = chord_notes;
         self.active_character = character;
@@ -605,7 +605,7 @@ pub(crate) const CUSTOM_PROGRESSION_INDEX: usize = PROGRESSIONS.len();
 /// Resolve `pad.progression`'s raw control value to a progression index,
 /// wrapping across the built-ins plus the one Custom slot.
 pub(crate) fn progression_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid((PROGRESSIONS.len() + 1) as i64) as usize
+    wrapped_index(value, CUSTOM_PROGRESSION_INDEX + 1)
 }
 
 pub(crate) fn is_custom_progression(progression: usize) -> bool {

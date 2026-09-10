@@ -28,7 +28,7 @@ impl KickEngine {
             .pop_swung(timing, c.interval_beats, c.offset_beats, c.swing)
         {
             self.voices.push(KickVoice::new(
-                kick_type_index(c.voice_type),
+                wrapped_index(c.voice_type, KICK_TYPES.len()),
                 c,
                 self.sample_rate,
                 &mut self.rng,

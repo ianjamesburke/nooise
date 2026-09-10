@@ -4,7 +4,7 @@
 use std::f32::consts::TAU;
 
 use crate::fluid::widget::DialScale;
-use crate::fluid::{Entry, smoothstep, splitmix64_mix};
+use crate::fluid::{Entry, beats2, pct, signed_pct, smoothstep, splitmix64_mix};
 
 use super::{FieldSpec, Stepping, clamped_index, morph_scalar_route, stepped_index};
 
@@ -517,10 +517,8 @@ impl LfoRoute {
     pub(crate) fn step_display(&self, target: StepTarget) -> String {
         match target {
             StepTarget::Count => format!("{}", self.active_step_count()),
-            StepTarget::Glide => format!("{:.0}%", self.step_glide * 100.0),
-            StepTarget::Value(i) => {
-                format!("{:+.0}%", self.steps.get(i).copied().unwrap_or(0.0) * 100.0)
-            }
+            StepTarget::Glide => pct(self.step_glide),
+            StepTarget::Value(i) => signed_pct(self.steps.get(i).copied().unwrap_or(0.0)),
         }
     }
 
@@ -611,9 +609,9 @@ impl LfoRoute {
     pub(crate) fn field_display(&self, field: LfoField) -> String {
         match field {
             LfoField::Shape => self.shape.label().to_string(),
-            LfoField::Amount => format!("{:.0}%", self.depth_ratio * 100.0),
-            LfoField::Interval => format!("{:.2} beats", self.cycle_beats),
-            LfoField::Offset => format!("{:.2} beats", self.phase_offset_beats),
+            LfoField::Amount => pct(self.depth_ratio),
+            LfoField::Interval => beats2(self.cycle_beats),
+            LfoField::Offset => beats2(self.phase_offset_beats),
         }
     }
 

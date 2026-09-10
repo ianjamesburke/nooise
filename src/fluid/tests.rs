@@ -445,16 +445,16 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
 
 #[test]
 fn tonal_type_labels_cover_exploration_variants() {
-    assert_eq!(tonal_synth_type_label(0.0), "Sine");
-    assert_eq!(tonal_synth_type_label(1.0), "Rhodes");
-    assert_eq!(tonal_synth_type_label(2.0), "Wurli");
-    assert_eq!(tonal_synth_type_label(3.0), "Felt");
-    assert_eq!(tonal_synth_type_label(4.0), "Marimba");
-    assert_eq!(tonal_synth_type_label(5.0), "Kalimba");
-    assert_eq!(tonal_synth_type_label(6.0), "Pluck");
-    assert_eq!(tonal_synth_type_label(7.0), "Dulcet");
-    assert_eq!(tonal_synth_type_label(8.0), "Cloud Keys");
-    assert_eq!(tonal_synth_type_label(9.0), "Haze");
+    assert_eq!(type_label(0.0, TONAL_SYNTH_TYPES), "Sine");
+    assert_eq!(type_label(1.0, TONAL_SYNTH_TYPES), "Rhodes");
+    assert_eq!(type_label(2.0, TONAL_SYNTH_TYPES), "Wurli");
+    assert_eq!(type_label(3.0, TONAL_SYNTH_TYPES), "Felt");
+    assert_eq!(type_label(4.0, TONAL_SYNTH_TYPES), "Marimba");
+    assert_eq!(type_label(5.0, TONAL_SYNTH_TYPES), "Kalimba");
+    assert_eq!(type_label(6.0, TONAL_SYNTH_TYPES), "Pluck");
+    assert_eq!(type_label(7.0, TONAL_SYNTH_TYPES), "Dulcet");
+    assert_eq!(type_label(8.0, TONAL_SYNTH_TYPES), "Cloud Keys");
+    assert_eq!(type_label(9.0, TONAL_SYNTH_TYPES), "Haze");
 }
 
 #[test]
@@ -1615,16 +1615,8 @@ fn empty_module_slots_never_render() {
 
 #[test]
 fn an_occupied_slot_shows_only_the_params_its_family_uses() {
-    let alcohol = MODULE_CATALOG
-        .iter()
-        .position(|kind| kind.id == "alcohol")
-        .expect("alcohol is in the v1 catalog") as f32
-        + 1.0;
-    let sidechain = MODULE_CATALOG
-        .iter()
-        .position(|kind| kind.id == "sidechain")
-        .expect("sidechain is in the v1 catalog") as f32
-        + 1.0;
+    let alcohol = module_kind_value("alcohol");
+    let sidechain = module_kind_value("sidechain");
 
     let mut controls = FluidControls::default();
     controls.modules.bass[1] = ModuleSlot::default();
@@ -4647,7 +4639,10 @@ fn arp_default_voice_type_matches_former_fixed_pluck_profile() {
     // songs and a fresh startup render identically to before the control
     // existed.
     let expected = TONAL_PIANO_PROFILES[5];
-    let actual = piano_profile(tonal_synth_type_index(ArpControls::default().voice_type));
+    let actual = piano_profile(wrapped_index(
+        ArpControls::default().voice_type,
+        TONAL_SYNTH_TYPES.len(),
+    ));
     assert_eq!(actual.keyframes.len(), expected.keyframes.len());
     for (a, e) in actual.keyframes.iter().zip(expected.keyframes.iter()) {
         assert_eq!(a.midi, e.midi);

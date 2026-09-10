@@ -18,8 +18,8 @@ use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
     EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
-    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MuteState, Step,
-    TAB_COUNT, all_specs, spec_by_id,
+    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, ModuleSlotField,
+    MuteState, Step, TAB_COUNT, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -36,14 +36,19 @@ pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const TONAL_SEQUENCE_RECORD: u8 = 2;
 const MUTE_RECORD: u8 = 3;
-const LFO_SHAPE_SINE: u8 = 0;
-const LFO_SHAPE_TRIANGLE: u8 = 1;
-const LFO_SHAPE_RAMP_UP: u8 = 2;
-const LFO_SHAPE_RAMP_DOWN: u8 = 3;
-const LFO_SHAPE_SQUARE: u8 = 4;
-const LFO_SHAPE_RANDOM_DRIFT: u8 = 5;
-const LFO_SHAPE_SAMPLE_HOLD: u8 = 6;
-const LFO_SHAPE_STEPS: u8 = 7;
+/// Wire tag for each LFO shape. Append-only: a tag is part of every saved
+/// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
+/// directions of this one table.
+const LFO_SHAPE_TAGS: [(LfoShape, u8); 8] = [
+    (LfoShape::Sine, 0),
+    (LfoShape::Triangle, 1),
+    (LfoShape::RampUp, 2),
+    (LfoShape::RampDown, 3),
+    (LfoShape::Square, 4),
+    (LfoShape::RandomDrift, 5),
+    (LfoShape::SampleHold, 6),
+    (LfoShape::Steps, 7),
+];
 const ENV_TRIGGER_EVERY_BEATS: u8 = 0;
 const ENV_TRIGGER_ON_KICK: u8 = 1;
 const ENV_TRIGGER_ONCE: u8 = 2;
@@ -277,7 +282,7 @@ enum EncodedValue {
 impl EncodedValue {
     /// Continuous rows ride the taper in position space. Discrete rows and
     /// musical step ladders (`Step::PowerOfTwo`, `Step::BeatGrid`) do not:
-    /// `ControlSpec::ratio` overrides the taper for both ladders and neither
+    /// `DialScale::from_step` overrides the taper for both ladders and neither
     /// `beat_grid_ratio` nor the `Log2` override has an inverse in the crate,
     /// so they store their value exactly instead. Discrete rows are already
     /// whole numbers and would gain nothing but error from a round trip
@@ -454,7 +459,12 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
     for structural in [true, false] {
         for &(index, value) in &entries {
             let id = song_id_at(index).unwrap_or_default();
-            let is_structural = id.ends_with(".kind") || id.ends_with("clock");
+            let is_structural = parse_module_slot_id(id).is_some_and(|(_, _, field)| {
+                matches!(
+                    field,
+                    ModuleSlotField::Kind | ModuleSlotField::Clock | ModuleSlotField::RightClock
+                )
+            });
             if is_structural != structural {
                 continue;
             }
@@ -543,7 +553,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
 
         // Read the staircase before resolving the id and shape, so a route
         // this build cannot place is still skipped in byte-aligned whole.
-        let steps = if shape_byte == LFO_SHAPE_STEPS {
+        let steps = if shape_from_tag(shape_byte) == Some(LfoShape::Steps) {
             let step_count = reader.u8()?;
             let step_glide = u16_to_unit(reader.u16()?);
             let live = (step_count as usize).clamp(1, MAX_LFO_STEPS);
@@ -662,31 +672,21 @@ fn env_trigger_from_tag(tag: u8, param: f32) -> Option<EnvTrigger> {
     }
 }
 
+/// Every shape has a row (`lfo_shape_tags_cover_every_shape`), so the
+/// `expect` can only fire on a table edit.
 fn shape_tag(shape: LfoShape) -> u8 {
-    match shape {
-        LfoShape::Sine => LFO_SHAPE_SINE,
-        LfoShape::Triangle => LFO_SHAPE_TRIANGLE,
-        LfoShape::RampUp => LFO_SHAPE_RAMP_UP,
-        LfoShape::RampDown => LFO_SHAPE_RAMP_DOWN,
-        LfoShape::Square => LFO_SHAPE_SQUARE,
-        LfoShape::RandomDrift => LFO_SHAPE_RANDOM_DRIFT,
-        LfoShape::SampleHold => LFO_SHAPE_SAMPLE_HOLD,
-        LfoShape::Steps => LFO_SHAPE_STEPS,
-    }
+    LFO_SHAPE_TAGS
+        .iter()
+        .find(|(candidate, _)| *candidate == shape)
+        .map(|(_, tag)| *tag)
+        .expect("LFO_SHAPE_TAGS has a row for every shape")
 }
 
 fn shape_from_tag(tag: u8) -> Option<LfoShape> {
-    match tag {
-        LFO_SHAPE_SINE => Some(LfoShape::Sine),
-        LFO_SHAPE_TRIANGLE => Some(LfoShape::Triangle),
-        LFO_SHAPE_RAMP_UP => Some(LfoShape::RampUp),
-        LFO_SHAPE_RAMP_DOWN => Some(LfoShape::RampDown),
-        LFO_SHAPE_SQUARE => Some(LfoShape::Square),
-        LFO_SHAPE_RANDOM_DRIFT => Some(LfoShape::RandomDrift),
-        LFO_SHAPE_SAMPLE_HOLD => Some(LfoShape::SampleHold),
-        LFO_SHAPE_STEPS => Some(LfoShape::Steps),
-        _ => None,
-    }
+    LFO_SHAPE_TAGS
+        .iter()
+        .find(|(_, candidate)| *candidate == tag)
+        .map(|(shape, _)| *shape)
 }
 
 fn finite_or(value: f32, fallback: f32) -> f32 {
@@ -843,5 +843,21 @@ mod retired_control_tests {
         );
 
         assert!(decode_song_code(&code).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn lfo_shape_tags_cover_every_shape() {
+        let mut tags = BTreeSet::new();
+        for shape in LfoShape::ALL {
+            let tag = shape_tag(shape);
+            assert_eq!(shape_from_tag(tag), Some(shape));
+            assert!(tags.insert(tag), "{shape:?}: tag {tag} reused");
+        }
+        assert_eq!(tags.len(), LFO_SHAPE_TAGS.len());
     }
 }
