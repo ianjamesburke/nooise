@@ -1615,16 +1615,8 @@ fn empty_module_slots_never_render() {
 
 #[test]
 fn an_occupied_slot_shows_only_the_params_its_family_uses() {
-    let alcohol = MODULE_CATALOG
-        .iter()
-        .position(|kind| kind.id == "alcohol")
-        .expect("alcohol is in the v1 catalog") as f32
-        + 1.0;
-    let sidechain = MODULE_CATALOG
-        .iter()
-        .position(|kind| kind.id == "sidechain")
-        .expect("sidechain is in the v1 catalog") as f32
-        + 1.0;
+    let alcohol = module_kind_value("alcohol");
+    let sidechain = module_kind_value("sidechain");
 
     let mut controls = FluidControls::default();
     controls.modules.bass[1] = ModuleSlot::default();

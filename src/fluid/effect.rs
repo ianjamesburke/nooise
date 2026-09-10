@@ -907,10 +907,7 @@ mod tests {
     #[test]
     fn confirming_a_module_row_adds_it_inert_and_selects_it() {
         let mut executor = executor_with(FluidControls::default());
-        let delay = MODULE_CATALOG
-            .iter()
-            .position(|kind| kind.id == "delay")
-            .expect("delay is in the catalog");
+        let delay = module_catalog_index("delay");
 
         let ack = executor
             .execute_interaction(
@@ -938,10 +935,7 @@ mod tests {
     #[test]
     fn confirming_a_module_already_on_the_layer_jumps_instead_of_duplicating() {
         let mut executor = executor_with(FluidControls::default());
-        let drive = MODULE_CATALOG
-            .iter()
-            .position(|kind| kind.id == "drive")
-            .expect("drive is in the v1 catalog");
+        let drive = module_catalog_index("drive");
 
         // Kick ships with Drive pre-loaded at 0.2.
         let before = executor.session().load().controls.modules.kick;
@@ -970,10 +964,7 @@ mod tests {
             *slot = preset_slot("room", 0.0);
         }
         let mut executor = executor_with(controls);
-        let delay = MODULE_CATALOG
-            .iter()
-            .position(|kind| kind.id == "delay")
-            .expect("delay is in the catalog");
+        let delay = module_catalog_index("delay");
 
         let ack = executor
             .execute_interaction(

@@ -383,14 +383,19 @@ impl ModuleSlot {
     }
 }
 
-/// Index a catalog id occupies as a stored `kind` value. Panics on an unknown
-/// id, which can only be a typo in a compile-time constant.
-pub(crate) fn module_kind_value(id: &str) -> f32 {
+/// Position of a catalog id in `MODULE_CATALOG`. Panics on an unknown id,
+/// which can only be a typo in a compile-time constant.
+pub(crate) fn module_catalog_index(id: &str) -> usize {
     MODULE_CATALOG
         .iter()
         .position(|kind| kind.id == id)
-        .map(|index| index as f32 + 1.0)
         .expect("catalog id must exist")
+}
+
+/// Index a catalog id occupies as a stored `kind` value (`MODULE_EMPTY` is
+/// 0, so entry `n` is stored as `n + 1`).
+pub(crate) fn module_kind_value(id: &str) -> f32 {
+    module_catalog_index(id) as f32 + 1.0
 }
 
 /// One slot pre-loaded with a module at a factory amount. Used for the
