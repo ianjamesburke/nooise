@@ -32,6 +32,12 @@ pub(crate) fn tune_ratio(semitones: f32) -> f32 {
     2f32.powf(semitones / 12.0)
 }
 
+/// A MIDI note's frequency under the master tune: the one pitch path every
+/// pitched voice (Pad, Bass, Tonal, Arp) builds a note through.
+pub(crate) fn note_hz(note: i32, tune: f32) -> f32 {
+    midi_to_hz(note) * tune_ratio(tune)
+}
+
 pub(crate) fn normalized_lfo(sample: f32) -> f32 {
     (sample * 0.5 + 0.5).clamp(0.0, 1.0)
 }
@@ -67,4 +73,19 @@ pub(crate) fn mix_and_retain<V>(
     }
     voices.retain(|v| !done(v));
     (dry_l, dry_r)
+}
+
+/// `mix_and_retain` for a mono voice pool.
+#[inline]
+pub(crate) fn mix_and_retain_mono<V>(
+    voices: &mut Vec<V>,
+    mut next: impl FnMut(&mut V) -> f32,
+    done: impl Fn(&V) -> bool,
+) -> f32 {
+    let mut dry = 0.0f32;
+    for v in voices.iter_mut() {
+        dry += next(v);
+    }
+    voices.retain(|v| !done(v));
+    dry
 }

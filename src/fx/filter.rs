@@ -1,5 +1,7 @@
 //! Stateful stereo filter used by Filter module slots.
 
+use super::crossfade::mix_stereo;
+
 #[derive(Clone, Copy)]
 pub(crate) enum FilterType {
     Low,
@@ -59,10 +61,7 @@ impl StereoFilter {
             self.left.process(sample.0, params),
             self.right.process(sample.1, params),
         );
-        (
-            sample.0 + (wet.0 - sample.0) * amount,
-            sample.1 + (wet.1 - sample.1) * amount,
-        )
+        mix_stereo(sample, wet, amount)
     }
 }
 

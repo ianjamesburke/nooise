@@ -81,6 +81,26 @@ use visualizer::*;
 use voice::*;
 
 // ============================================================
+// Shared numeric helpers
+// ============================================================
+
+/// Hermite ease: 0 at 0, 1 at 1, flat at both ends. The one curve every
+/// click-free ramp in the engine and every LFO glide is shaped by.
+pub(crate) fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// The splitmix64 finaliser: a stateless bit mixer every seeded, RNG-free
+/// value in the engine derives from, so the UI and the audio thread agree and
+/// offline renders stay identical. Callers fold their own inputs into `z`.
+pub(crate) fn splitmix64_mix(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+// ============================================================
 // Telemetry — audio thread publishes, UI thread reads
 // ============================================================
 

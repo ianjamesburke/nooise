@@ -287,9 +287,9 @@ fn tonal_phrase_a_keeps_existing_zero_randomness_melody() {
 
 #[test]
 fn tonal_note_applies_master_tune_offset() {
-    let flat = tonal_note_hz(45, 0.0);
-    assert_close(tonal_note_hz(45, 12.0), flat * 2.0);
-    assert_close(tonal_note_hz(45, -12.0), flat * 0.5);
+    let flat = note_hz(45, 0.0);
+    assert_close(note_hz(45, 12.0), flat * 2.0);
+    assert_close(note_hz(45, -12.0), flat * 0.5);
 }
 
 #[test]
@@ -308,8 +308,8 @@ fn piano_harmonics_interpolate_with_note_pitch() {
 #[test]
 fn piano_harmonic_decay_gets_faster_with_pitch() {
     let profile = piano_profile(1);
-    let low = piano_harmonic_decay_rates(profile, 36, tonal_note_hz(36, 0.0));
-    let high = piano_harmonic_decay_rates(profile, 60, tonal_note_hz(60, 0.0));
+    let low = piano_harmonic_decay_rates(profile, 36, note_hz(36, 0.0));
+    let high = piano_harmonic_decay_rates(profile, 60, note_hz(60, 0.0));
 
     assert!(high[15] > low[15]);
 }
@@ -2257,7 +2257,7 @@ fn gain_smoother_reaches_target_over_ramp() {
     for _ in 0..4 {
         smoother.next();
     }
-    assert_near(smoother.current, 0.5);
+    assert_near(smoother.ramp.current, 0.5);
     for _ in 0..4 {
         smoother.next();
     }
@@ -2638,7 +2638,7 @@ fn bass_engine_follows_pad_chord_root_across_advances() {
         bass.next(&bass_controls, &pad, 0.0, timing);
     }
 
-    assert_ne!(bass.step_index, 0);
+    assert_ne!(bass.progression.step_index, 0);
     assert!(bass.rhythm_step < BASS_RHYTHMS[0].len());
 }
 
@@ -2824,7 +2824,12 @@ fn kick_type_zero_matches_legacy_sub_voice_exactly() {
         ..Default::default()
     };
     let mut dispatched = KickVoice::new(0, &controls, sample_rate, &mut StdRng::seed_from_u64(7));
-    let mut legacy = SubKickVoice::new(&controls, sample_rate, &mut StdRng::seed_from_u64(7));
+    let mut legacy = LowpassKickVoice::new(
+        &KICK_SUB,
+        &controls,
+        sample_rate,
+        &mut StdRng::seed_from_u64(7),
+    );
     let mut click_rng_a = StdRng::seed_from_u64(99);
     let mut click_rng_b = StdRng::seed_from_u64(99);
 
@@ -3354,7 +3359,7 @@ fn bass_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
         let sample = chord * sample_rate as u64 * 2;
         let timing = timing(sample, 120.0);
         bass.next(&bass_controls, &pad, 0.0, timing);
-        assert!(bass.step_index < 2);
+        assert!(bass.progression.step_index < 2);
     }
 }
 

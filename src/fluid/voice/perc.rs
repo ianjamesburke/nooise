@@ -43,12 +43,8 @@ impl PercEngine {
                 .push(NoiseHit::new(c.level, c.decay_ms, self.sample_rate));
         }
 
-        let mut out = 0.0f32;
-        for h in &mut self.hits {
-            out += h.next(&mut self.rng);
-        }
-        self.hits.retain(|h| !h.is_done());
-        out
+        let rng = &mut self.rng;
+        mix_and_retain_mono(&mut self.hits, |h| h.next(rng), NoiseHit::is_done)
     }
 }
 
