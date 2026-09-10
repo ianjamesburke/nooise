@@ -456,9 +456,9 @@ impl LfoRoute {
     pub(crate) fn pattern_phase_at(&self, beat: f64) -> f64 {
         match self.shape {
             LfoShape::Steps => {
-                let cycle = f64::from(self.active_cycle_at(beat).max(MIN_LFO_CYCLE_BEATS));
-                let t = (beat + f64::from(self.phase_offset_beats)) / cycle;
-                (t / self.active_step_count() as f64).rem_euclid(1.0)
+                let cycles =
+                    global_lfo_cycles(beat, self.active_cycle_at(beat), self.phase_offset_beats);
+                (cycles / self.active_step_count() as f64).rem_euclid(1.0)
             }
             _ => self.phase_at(beat),
         }
@@ -658,10 +658,16 @@ impl LfoRoute {
 /// therefore puts every route with the same rate on the same song-wide grid,
 /// regardless of which control owns it or when its editor was opened.
 fn global_lfo_position(beat: f64, cycle_beats: f32, offset_beats: f32) -> (i64, f64) {
-    let cycle = f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS));
-    let position = (beat + f64::from(offset_beats)) / cycle;
+    let position = global_lfo_cycles(beat, cycle_beats, offset_beats);
     let index = position.floor();
     (index as i64, position - index)
+}
+
+/// The unsplit form: whole cycles elapsed since beat zero, fractional part
+/// included.
+fn global_lfo_cycles(beat: f64, cycle_beats: f32, offset_beats: f32) -> f64 {
+    let cycle = f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS));
+    (beat + f64::from(offset_beats)) / cycle
 }
 fn next_wave_crossing(
     route: &LfoRoute,
