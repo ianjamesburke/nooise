@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    AutomationMode, ChordDrill, InteractionMode, InteractionModel, Navigation, PerformanceAction,
-    PerformanceInstrument, PerformanceMode, PerformanceTargets, SequenceStage,
+    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, Navigation,
+    PerformanceAction, PerformanceInstrument, PerformanceMode, PerformanceTargets, SequenceStage,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -33,8 +33,8 @@ impl KeyboardOwner {
             Self::Browsing => "BROWSE",
             Self::Numeric => "NUMERIC",
             Self::Palette => "PALETTE",
-            Self::Lfo => "LFO",
-            Self::Envelope => "ENV",
+            Self::Lfo => AutomationKind::Lfo.label(),
+            Self::Envelope => AutomationKind::Envelope.label(),
             Self::PerformanceDeck => "DECK",
             Self::PerformanceSequence => "SEQUENCE",
         }
@@ -183,7 +183,7 @@ pub(crate) enum AutomationSurface<'a> {
         route: &'a EnvelopeRoute,
     },
     Unavailable {
-        requested: crate::fluid::interaction::AutomationKind,
+        requested: AutomationKind,
         selected: usize,
         reason: AutomationUnavailable,
     },
@@ -401,13 +401,8 @@ fn performance_instrument_surface(
 
 fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> AutomationSurface<'_> {
     let (requested, selected) = match mode {
-        AutomationMode::Lfo { selected, .. } => {
-            (crate::fluid::interaction::AutomationKind::Lfo, selected)
-        }
-        AutomationMode::Envelope { selected } => (
-            crate::fluid::interaction::AutomationKind::Envelope,
-            selected,
-        ),
+        AutomationMode::Lfo { selected, .. } => (AutomationKind::Lfo, selected),
+        AutomationMode::Envelope { selected } => (AutomationKind::Envelope, selected),
     };
     let Some(address) = automation.active_address() else {
         return AutomationSurface::Unavailable {
@@ -423,10 +418,7 @@ fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> Aut
             reason: AutomationUnavailable::NoOpenEditor,
         };
     };
-    let expected = match requested {
-        crate::fluid::interaction::AutomationKind::Lfo => ModKind::Lfo,
-        crate::fluid::interaction::AutomationKind::Envelope => ModKind::Envelope,
-    };
+    let expected = ModKind::from(requested);
     if active != expected {
         return AutomationSurface::Unavailable {
             requested,
@@ -707,10 +699,7 @@ fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
         AutomationSurface::Unavailable {
             requested, reason, ..
         } => {
-            let label = match requested {
-                crate::fluid::interaction::AutomationKind::Lfo => "LFO",
-                crate::fluid::interaction::AutomationKind::Envelope => "ENV",
-            };
+            let label = requested.label();
             let reason = match reason {
                 AutomationUnavailable::NoOpenEditor => "editor unavailable",
                 AutomationUnavailable::KindMismatch { .. } => "editor kind mismatch",
@@ -1081,7 +1070,7 @@ mod tests {
                 automation,
             ) {
                 AutomationSurface::Unavailable {
-                    requested: crate::fluid::interaction::AutomationKind::Lfo,
+                    requested: AutomationKind::Lfo,
                     selected: 2,
                     reason,
                 } => reason,

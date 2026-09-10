@@ -601,10 +601,7 @@ impl EffectExecutor {
                 let id = context
                     .selected_control
                     .ok_or(EffectFailure::MissingContext("selected control"))?;
-                let kind = match kind {
-                    super::interaction::AutomationKind::Lfo => ModKind::Lfo,
-                    super::interaction::AutomationKind::Envelope => ModKind::Envelope,
-                };
+                let kind = ModKind::from(kind);
                 let mut selected = context.automation_selected;
                 open_modulator_effect_for_id(self, id, kind, &mut selected);
                 Ok(self.published())
@@ -613,10 +610,7 @@ impl EffectExecutor {
                 let id = context
                     .selected_control
                     .ok_or(EffectFailure::MissingContext("selected control"))?;
-                let kind = match kind {
-                    super::interaction::AutomationKind::Lfo => ModKind::Lfo,
-                    super::interaction::AutomationKind::Envelope => ModKind::Envelope,
-                };
+                let kind = ModKind::from(kind);
                 if !add_modulator_effect_for_id(self, id, kind) {
                     return Err(EffectFailure::AutomationLaneLimit);
                 }

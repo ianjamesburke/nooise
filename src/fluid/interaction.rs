@@ -4,6 +4,7 @@
 //! events, rendering, clocks, shared publication, or effect execution.
 
 use super::FluidControls;
+use super::ModKind;
 use super::Tab;
 use super::palette::{ModuleScope, PaletteEntry, PaletteState, StagedEdit};
 
@@ -321,6 +322,26 @@ pub(crate) struct PaletteStagedEdit {
 pub(crate) enum AutomationKind {
     Lfo,
     Envelope,
+}
+
+impl AutomationKind {
+    /// Title-bar label for the editor family; `KeyboardOwner::label` and the
+    /// unavailable-editor footer both read it.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Lfo => "LFO",
+            Self::Envelope => "ENV",
+        }
+    }
+}
+
+impl From<AutomationKind> for ModKind {
+    fn from(kind: AutomationKind) -> Self {
+        match kind {
+            AutomationKind::Lfo => Self::Lfo,
+            AutomationKind::Envelope => Self::Envelope,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
