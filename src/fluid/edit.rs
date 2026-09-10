@@ -53,10 +53,7 @@ pub(crate) fn snap_after_unit_flip(
     beat: f64,
 ) {
     let active = active_field(automation, lfo_selected);
-    let recent_id = automation
-        .active_address()
-        .map(ControlAddress::id)
-        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    let recent_id = recent_id(automation, tab, selected);
     effects.edit_session(recent_id, |snapshot| match active {
         // LFO rate accepts exact typed beat values, so an exact ms-authored
         // value stays exact when returning to beats. Offset retains its grid.
@@ -104,6 +101,15 @@ pub(crate) fn snap_after_unit_flip(
 }
 
 /// The flip key qualifier for a modulator time field, None for unit-less ones.
+/// The control an edit counts as touching for the palette's MRU: the open
+/// modulator's parent control when an editor is open, else the cursor row.
+fn recent_id(automation: &AutomationState, tab: Tab, selected: usize) -> Option<&'static str> {
+    automation
+        .active_address()
+        .map(ControlAddress::id)
+        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id))
+}
+
 /// One selectable row inside an open LFO editor.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum LfoSubRow {
@@ -279,10 +285,7 @@ fn with_active_field(
     op: FieldOp<'_>,
 ) {
     let active = active_field(automation, lfo_selected);
-    let recent_id = automation
-        .active_address()
-        .map(ControlAddress::id)
-        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    let recent_id = recent_id(automation, tab, selected);
     effects.edit_session(recent_id, |snapshot| {
         apply_field_op(snapshot, active, tab, selected, beat, op);
     });
