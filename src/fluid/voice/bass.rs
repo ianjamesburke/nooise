@@ -151,7 +151,7 @@ impl BassEngine {
                 self.fading_voice = self.voice.take();
                 self.fade_samples_remaining = self.fade_total_samples;
                 self.voice = Some(BassVoice::new(
-                    bass_type_index(c.voice_type),
+                    wrapped_index(c.voice_type, BASS_TYPES.len()),
                     hz,
                     c.attack_time,
                     c.decay_time,

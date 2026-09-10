@@ -16,17 +16,16 @@ pub(crate) enum ArpPattern {
     Random,
 }
 
-pub(crate) fn arp_pattern_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid(4) as usize
-}
+/// Patterns in stored-value order; `arp.pattern` wraps into this table.
+const ARP_PATTERNS: [ArpPattern; 4] = [
+    ArpPattern::Up,
+    ArpPattern::Down,
+    ArpPattern::UpDown,
+    ArpPattern::Random,
+];
 
 pub(crate) fn arp_pattern_from_control(value: f32) -> ArpPattern {
-    match arp_pattern_index(value) {
-        0 => ArpPattern::Up,
-        1 => ArpPattern::Down,
-        2 => ArpPattern::UpDown,
-        _ => ArpPattern::Random,
-    }
+    ARP_PATTERNS[wrapped_index(value, ARP_PATTERNS.len())]
 }
 
 pub(crate) fn arp_pattern_label(value: f32) -> &'static str {
@@ -184,7 +183,7 @@ impl ArpEngine {
             // byte-identical.
             if c.gain != 0.0 {
                 self.voices.push(TonalVoice::new(
-                    tonal_synth_type_index(c.voice_type),
+                    wrapped_index(c.voice_type, TONAL_SYNTH_TYPES.len()),
                     TonalNote {
                         midi: note,
                         hz,

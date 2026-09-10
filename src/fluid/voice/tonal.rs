@@ -377,7 +377,7 @@ impl TonalEngine {
         tune: f32,
         timing: TimingContext,
     ) -> (f32, f32) {
-        let phrase = tonal_phrase_index(c.phrase);
+        let phrase = wrapped_index(c.phrase, TONAL_PHRASES.len());
         self.sync_phrase(phrase);
 
         if self
@@ -406,7 +406,7 @@ impl TonalEngine {
             // above still happens, keeping seeded renders byte-identical.
             if c.level != 0.0 {
                 self.voices.push(TonalVoice::new(
-                    tonal_synth_type_index(c.synth_type),
+                    wrapped_index(c.synth_type, TONAL_SYNTH_TYPES.len()),
                     TonalNote {
                         midi: note,
                         hz,
@@ -505,10 +505,6 @@ fn evolve_random(seed: u64, evolution_count: u64, draw: u64) -> u64 {
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
     value ^ (value >> 31)
-}
-
-pub(crate) fn tonal_phrase_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid(TONAL_PHRASES.len() as i64) as usize
 }
 
 pub(crate) fn tonal_phrase(phrase: usize) -> &'static [i32] {

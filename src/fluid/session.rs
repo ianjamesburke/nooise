@@ -27,7 +27,10 @@ impl LiveSessionSnapshot {
             automation: song.automation.clone(),
             muted: song.muted,
             tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
-                TonalSequenceState::from_phrase(tonal_phrase_index(song.controls.tonal.phrase))
+                TonalSequenceState::from_phrase(wrapped_index(
+                    song.controls.tonal.phrase,
+                    TONAL_PHRASES.len(),
+                ))
             }),
         }
     }
@@ -36,8 +39,9 @@ impl LiveSessionSnapshot {
     pub(crate) fn from_controls(controls: FluidControls) -> Self {
         Self {
             generation: 0,
-            tonal_sequence: TonalSequenceState::from_phrase(tonal_phrase_index(
+            tonal_sequence: TonalSequenceState::from_phrase(wrapped_index(
                 controls.tonal.phrase,
+                TONAL_PHRASES.len(),
             )),
             controls,
             automation: AutomationState::default(),
