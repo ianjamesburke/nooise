@@ -75,6 +75,16 @@ pub(crate) enum EnvField {
 impl EnvField {
     pub(crate) const ALL: [EnvField; 4] = [Self::Amount, Self::Attack, Self::Decay, Self::Trigger];
 
+    /// The `FlippedUnits` sub-key for a field that carries a time base;
+    /// `None` for amount and trigger, which cannot be unit-flipped.
+    pub(crate) const fn time_key(self) -> Option<&'static str> {
+        match self {
+            Self::Attack => Some("env.attack"),
+            Self::Decay => Some("env.decay"),
+            Self::Amount | Self::Trigger => None,
+        }
+    }
+
     /// How this field maps onto bar position. Trigger is a discrete enum and
     /// carries no numeric spec, so it spans the bar by variant index.
     pub(crate) fn scale(self) -> DialScale {

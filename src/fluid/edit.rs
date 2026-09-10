@@ -53,10 +53,7 @@ pub(crate) fn snap_after_unit_flip(
     beat: f64,
 ) {
     let active = active_field(automation, lfo_selected);
-    let recent_id = automation
-        .active_address()
-        .map(ControlAddress::id)
-        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    let recent_id = recent_id(automation, tab, selected);
     effects.edit_session(recent_id, |snapshot| match active {
         // LFO rate accepts exact typed beat values, so an exact ms-authored
         // value stays exact when returning to beats. Offset retains its grid.
@@ -104,20 +101,13 @@ pub(crate) fn snap_after_unit_flip(
 }
 
 /// The flip key qualifier for a modulator time field, None for unit-less ones.
-fn lfo_time_key(field: LfoField) -> Option<&'static str> {
-    match field {
-        LfoField::Interval => Some("lfo.interval"),
-        LfoField::Offset => Some("lfo.offset"),
-        _ => None,
-    }
-}
-
-fn env_time_key(field: EnvField) -> Option<&'static str> {
-    match field {
-        EnvField::Attack => Some("env.attack"),
-        EnvField::Decay => Some("env.decay"),
-        EnvField::Amount | EnvField::Trigger => None,
-    }
+/// The control an edit counts as touching for the palette's MRU: the open
+/// modulator's parent control when an editor is open, else the cursor row.
+fn recent_id(automation: &AutomationState, tab: Tab, selected: usize) -> Option<&'static str> {
+    automation
+        .active_address()
+        .map(ControlAddress::id)
+        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id))
 }
 
 /// One selectable row inside an open LFO editor.
@@ -295,10 +285,7 @@ fn with_active_field(
     op: FieldOp<'_>,
 ) {
     let active = active_field(automation, lfo_selected);
-    let recent_id = automation
-        .active_address()
-        .map(ControlAddress::id)
-        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id));
+    let recent_id = recent_id(automation, tab, selected);
     effects.edit_session(recent_id, |snapshot| {
         apply_field_op(snapshot, active, tab, selected, beat, op);
     });
@@ -318,7 +305,8 @@ fn apply_field_op(
             // Only interval and offset carry a time base, so a flipped LFO
             // field is always one of those two.
             let is_flipped = op.flipped().is_some_and(|flipped| {
-                lfo_time_key(field)
+                field
+                    .time_key()
                     .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))))
             });
             let Some(route) = snapshot.automation.route_mut(address) else {
@@ -326,11 +314,7 @@ fn apply_field_op(
             };
             match op {
                 FieldOp::Adjust { dir, .. } if is_flipped => {
-                    let current = match field {
-                        LfoField::Offset => route.phase_offset_beats,
-                        _ => route.cycle_beats,
-                    };
-                    let next = flipped_step(TimeBase::Beats, current, dir, bpm);
+                    let next = flipped_step(TimeBase::Beats, route.field_value(field), dir, bpm);
                     route.set_field_raw_at(field, next, beat);
                 }
                 FieldOp::Adjust { dir, .. } => route.adjust_field_at(field, dir, beat),
@@ -345,7 +329,8 @@ fn apply_field_op(
         }
         ActiveField::Envelope(address, field) => {
             let is_flipped = op.flipped().is_some_and(|flipped| {
-                env_time_key(field)
+                field
+                    .time_key()
                     .is_some_and(|key| flipped.contains(&unit_key(address.id(), Some(key))))
             });
             let Some(route) = snapshot.automation.envelope_mut(address) else {
@@ -353,11 +338,7 @@ fn apply_field_op(
             };
             match op {
                 FieldOp::Adjust { dir, .. } if is_flipped => {
-                    let current = match field {
-                        EnvField::Decay => route.decay_beats,
-                        _ => route.attack_beats,
-                    };
-                    let next = flipped_step(TimeBase::Beats, current, dir, bpm);
+                    let next = flipped_step(TimeBase::Beats, route.field_value(field), dir, bpm);
                     route.set_field_raw(field, next);
                 }
                 FieldOp::Adjust { dir, .. } => route.adjust_field(field, dir),
@@ -595,12 +576,12 @@ pub(crate) fn toggle_units_effect(
         return;
     }
     let key = match active_field(automation, lfo_selected) {
-        ActiveField::Lfo(address, field) => {
-            lfo_time_key(field).map(|key| unit_key(address.id(), Some(key)))
-        }
-        ActiveField::Envelope(address, field) => {
-            env_time_key(field).map(|key| unit_key(address.id(), Some(key)))
-        }
+        ActiveField::Lfo(address, field) => field
+            .time_key()
+            .map(|key| unit_key(address.id(), Some(key))),
+        ActiveField::Envelope(address, field) => field
+            .time_key()
+            .map(|key| unit_key(address.id(), Some(key))),
         ActiveField::LfoStep(..) => None,
         ActiveField::Control => tab_specs(tab)
             .get(selected)

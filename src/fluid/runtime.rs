@@ -608,7 +608,9 @@ fn performance_binding(
         }
         _ => {}
     }
-    if let Some(instrument) = performance_instrument(code) {
+    if let PhysicalKey::Character(key) = code
+        && let Some(instrument) = PerformanceInstrument::from_key(*key)
+    {
         return match phase {
             InputPhase::Release => Some(Intent::ReleaseHeldSelector(instrument)),
             InputPhase::Press
@@ -649,16 +651,6 @@ fn performance_binding(
             action,
             release_available: capabilities.supports_holds(),
         }),
-        _ => None,
-    }
-}
-
-fn performance_instrument(key: &PhysicalKey) -> Option<PerformanceInstrument> {
-    match key {
-        PhysicalKey::Character('a') => Some(PerformanceInstrument::Pads),
-        PhysicalKey::Character('s') => Some(PerformanceInstrument::Bass),
-        PhysicalKey::Character('d') => Some(PerformanceInstrument::Kick),
-        PhysicalKey::Character('f') => Some(PerformanceInstrument::Perc),
         _ => None,
     }
 }

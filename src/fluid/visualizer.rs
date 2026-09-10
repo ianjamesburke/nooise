@@ -83,8 +83,15 @@ impl RippleField {
     }
 }
 
+/// The rung of a `len`-step glyph ladder a 0..1 level lands on, rounded to
+/// nearest; the fluid gradient and the modulator lane glyphs share it.
+pub(crate) fn ladder_index(level: f32, len: usize) -> usize {
+    let last = len.saturating_sub(1);
+    ((level.clamp(0.0, 1.0) * last as f32).round() as usize).min(last)
+}
+
 pub(crate) fn fluid_hsv(h: f32, s: f32, v: f32) -> Color {
-    let h = ((h % 360.0) + 360.0) % 360.0;
+    let h = h.rem_euclid(360.0);
     let c = v * s;
     let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
     let m = v - c;
@@ -128,10 +135,8 @@ impl Widget for FluidWidget<'_> {
                 let sat = (0.5 + v * 0.3).clamp(0.0, 1.0);
                 let val = ((0.12 + v * 0.8) * vig).clamp(0.0, 1.0);
 
-                let gi = ((v * (FLUID_GRADIENT.len() - 1) as f32).round() as usize)
-                    .min(FLUID_GRADIENT.len() - 1);
                 buf[(area.x + x, area.y + y)]
-                    .set_char(FLUID_GRADIENT[gi])
+                    .set_char(FLUID_GRADIENT[ladder_index(v, FLUID_GRADIENT.len())])
                     .set_style(Style::default().fg(fluid_hsv(hue, sat, val)));
             }
         }

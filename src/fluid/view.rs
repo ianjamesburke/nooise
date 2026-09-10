@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    AutomationMode, ChordDrill, InteractionMode, InteractionModel, Navigation, PerformanceAction,
-    PerformanceInstrument, PerformanceMode, PerformanceTargets, SequenceStage,
+    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, Navigation,
+    PerformanceAction, PerformanceInstrument, PerformanceMode, PerformanceTargets, SequenceStage,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -33,8 +33,8 @@ impl KeyboardOwner {
             Self::Browsing => "BROWSE",
             Self::Numeric => "NUMERIC",
             Self::Palette => "PALETTE",
-            Self::Lfo => "LFO",
-            Self::Envelope => "ENV",
+            Self::Lfo => AutomationKind::Lfo.label(),
+            Self::Envelope => AutomationKind::Envelope.label(),
             Self::PerformanceDeck => "DECK",
             Self::PerformanceSequence => "SEQUENCE",
         }
@@ -183,7 +183,7 @@ pub(crate) enum AutomationSurface<'a> {
         route: &'a EnvelopeRoute,
     },
     Unavailable {
-        requested: crate::fluid::interaction::AutomationKind,
+        requested: AutomationKind,
         selected: usize,
         reason: AutomationUnavailable,
     },
@@ -299,26 +299,9 @@ fn mode_surface<'a>(
                 .resume
                 .map(|mode| automation_surface(mode, automation)),
         },
-        InteractionMode::Palette(palette) => {
-            let mut state = PaletteState::new(tab, &palette.recent, palette.module_scope);
-            for character in palette.query.chars() {
-                state.push_char(character);
-            }
-            state.selected = palette.selected.min(state.matches.len().saturating_sub(1));
-            state.locked = palette.locked.filter(|&index| state.contains_entry(index));
-            if state.locked.is_some() {
-                state.value_buf.clone_from(&palette.value_buffer);
-            }
-            state.staged = palette
-                .staged
-                .iter()
-                .map(|edit| StagedEdit {
-                    id: edit.id,
-                    value: f32::from_bits(edit.value_bits),
-                })
-                .collect();
-            ModeSurface::Palette(PaletteSurface { state })
-        }
+        InteractionMode::Palette(palette) => ModeSurface::Palette(PaletteSurface {
+            state: palette.project(tab),
+        }),
         InteractionMode::Automation(mode) => {
             ModeSurface::Automation(automation_surface(*mode, automation))
         }
@@ -418,13 +401,8 @@ fn performance_instrument_surface(
 
 fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> AutomationSurface<'_> {
     let (requested, selected) = match mode {
-        AutomationMode::Lfo { selected, .. } => {
-            (crate::fluid::interaction::AutomationKind::Lfo, selected)
-        }
-        AutomationMode::Envelope { selected } => (
-            crate::fluid::interaction::AutomationKind::Envelope,
-            selected,
-        ),
+        AutomationMode::Lfo { selected, .. } => (AutomationKind::Lfo, selected),
+        AutomationMode::Envelope { selected } => (AutomationKind::Envelope, selected),
     };
     let Some(address) = automation.active_address() else {
         return AutomationSurface::Unavailable {
@@ -440,10 +418,7 @@ fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> Aut
             reason: AutomationUnavailable::NoOpenEditor,
         };
     };
-    let expected = match requested {
-        crate::fluid::interaction::AutomationKind::Lfo => ModKind::Lfo,
-        crate::fluid::interaction::AutomationKind::Envelope => ModKind::Envelope,
-    };
+    let expected = ModKind::from(requested);
     if active != expected {
         return AutomationSurface::Unavailable {
             requested,
@@ -486,43 +461,16 @@ fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> Aut
 }
 
 fn navigation_view(navigation: Navigation) -> NavigationView {
-    match navigation {
-        Navigation::Chords { selected, drill } => NavigationView {
-            tab: Tab::Chords,
-            chord_drill: drill,
-            module_slot: None,
-            selected,
-        },
-        Navigation::Standard { page, selected } => NavigationView {
-            tab: match page {
-                crate::fluid::interaction::StandardPage::Perc => Tab::Perc,
-                crate::fluid::interaction::StandardPage::Bass => Tab::Bass,
-                crate::fluid::interaction::StandardPage::Kick => Tab::Kick,
-                crate::fluid::interaction::StandardPage::Tonal => Tab::Tonal,
-                crate::fluid::interaction::StandardPage::Clap => Tab::Clap,
-                crate::fluid::interaction::StandardPage::Arp => Tab::Arp,
-            },
-            chord_drill: ChordDrill::None,
-            module_slot: None,
-            selected,
-        },
-        Navigation::Master { selected } => NavigationView {
-            tab: Tab::Master,
-            chord_drill: ChordDrill::None,
-            module_slot: None,
-            selected,
-        },
-        Navigation::Module {
-            tab,
-            slot,
-            selected,
-            ..
-        } => NavigationView {
-            tab,
-            chord_drill: ChordDrill::None,
-            module_slot: Some(slot),
-            selected,
-        },
+    let (chord_drill, module_slot) = match navigation {
+        Navigation::Chords { drill, .. } => (drill, None),
+        Navigation::Standard { .. } | Navigation::Master { .. } => (ChordDrill::None, None),
+        Navigation::Module { slot, .. } => (ChordDrill::None, Some(slot)),
+    };
+    NavigationView {
+        tab: navigation.tab(),
+        chord_drill,
+        module_slot,
+        selected: navigation.selected(),
     }
 }
 
@@ -662,21 +610,18 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
     }
 }
 
-fn selector_text(selector: Option<usize>) -> String {
+/// One-based selector index, or `none`; shared with the deck body in ui.rs.
+pub(crate) fn selector_text(selector: Option<usize>) -> String {
     selector
         .and_then(|index| index.checked_add(1))
         .map_or_else(|| "none".to_string(), |index| index.to_string())
 }
 
-fn performance_targets_text(targets: PerformanceTargets) -> String {
+/// Held selector keys joined as `a+s`, or `none`; shared with the deck body in ui.rs.
+pub(crate) fn performance_targets_text(targets: PerformanceTargets) -> String {
     let held = targets
         .iter()
-        .map(|instrument| match instrument {
-            PerformanceInstrument::Pads => "a",
-            PerformanceInstrument::Bass => "s",
-            PerformanceInstrument::Kick => "d",
-            PerformanceInstrument::Perc => "f",
-        })
+        .map(|instrument| instrument.key().to_string())
         .collect::<Vec<_>>();
     if held.is_empty() {
         "none".to_string()
@@ -727,10 +672,7 @@ fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
         AutomationSurface::Unavailable {
             requested, reason, ..
         } => {
-            let label = match requested {
-                crate::fluid::interaction::AutomationKind::Lfo => "LFO",
-                crate::fluid::interaction::AutomationKind::Envelope => "ENV",
-            };
+            let label = requested.label();
             let reason = match reason {
                 AutomationUnavailable::NoOpenEditor => "editor unavailable",
                 AutomationUnavailable::KindMismatch { .. } => "editor kind mismatch",
@@ -814,85 +756,6 @@ mod tests {
             navigation: Navigation::default(),
             mode,
         })
-    }
-
-    #[cfg(any())]
-    fn minimum_snapshot(header: &str, value_row: &str, footer: &str) -> String {
-        [
-            header,
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-            "│[Pads]␠␠Perc␠␠Bass␠␠Kick␠␠Tonal␠␠Clap␠␠Arp␠␠│",
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-            value_row,
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-            "│␠␠Attack␠␠␠␠␠␠␠␠␠␠█████░░░░░␠6.00␠s␠␠␠␠␠␠␠␠␠│",
-            footer,
-            "└────────────────────────────────────────────┘",
-        ]
-        .join("\n")
-    }
-
-    #[cfg(any())]
-    fn palette_snapshot() -> String {
-        let header = format!(
-            "┌␠nooise␠v{}␠·␠PALETTE␠───────────────────┐",
-            env!("CARGO_PKG_VERSION")
-        );
-        [
-            header.as_str(),
-            "│␠␠┌──────────────────────────────────────┐␠␠│",
-            "│␠␠│/bass▌␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│␠␠│",
-            "│[P│␠␠bass.level␠·␠Bass␠·␠Level␠␠0%␠␠␠␠␠␠␠│␠␠│",
-            "│␠␠│▸␠bass.slot1.time␠·␠Bass␠·␠Cutoff␠␠8000␠Hz│␠␠│",
-            "│▶␠│␠␠bass.attack_time␠·␠Bass␠·␠Attack␠␠10│␠␠│",
-            "│␠␠│␠␠bass.decay_time␠·␠Bass␠·␠Decay␠␠300␠│␠␠│",
-            "│␠␠│⇥␠complete␠␠␠type␠value␠␠␠↵␠stage/jump│␠␠│",
-            "│PA└──────────────────────────────────────┘nt│",
-            "└────────────────────────────────────────────┘",
-        ]
-        .join("\n")
-    }
-
-    #[cfg(any())]
-    fn owner_surface_snapshot(header: &str, body: [&str; 3], footer: &str) -> String {
-        [
-            header,
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-            "│[Pads]␠␠Perc␠␠Bass␠␠Kick␠␠Tonal␠␠Clap␠␠Arp␠␠│",
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-            body[0],
-            body[1],
-            body[2],
-            footer,
-            "└────────────────────────────────────────────┘",
-        ]
-        .join("\n")
-    }
-
-    #[cfg(any())]
-    fn performance_snapshot(header: &str, body: [&str; 3], footer: &str) -> String {
-        let row = |text: &str| {
-            let encoded = text.replace(' ', "␠");
-            format!(
-                "│{encoded}{}│",
-                "␠".repeat(44usize.saturating_sub(text.chars().count()))
-            )
-        };
-        [
-            header.to_string(),
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│".to_string(),
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│".to_string(),
-            "│[Pads]␠␠Perc␠␠Bass␠␠Kick␠␠Tonal␠␠Clap␠␠Arp␠␠│".to_string(),
-            "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│".to_string(),
-            row(body[0]),
-            row(body[1]),
-            row(body[2]),
-            footer.to_string(),
-            "└────────────────────────────────────────────┘".to_string(),
-        ]
-        .join("\n")
     }
 
     #[test]
@@ -1087,316 +950,6 @@ mod tests {
             entry_row.contains("rate"),
             "buffer rendered off its field:\n{frame}"
         );
-    }
-
-    #[test]
-    #[cfg(any())]
-    fn lfo_mode_never_borrows_a_different_automation_editor() {
-        fn unavailable_reason(automation: &AutomationState) -> AutomationUnavailable {
-            match automation_surface(
-                AutomationMode::Lfo {
-                    depth: LfoDepth::Editor,
-                    selected: 2,
-                },
-                automation,
-            ) {
-                AutomationSurface::Unavailable {
-                    requested: crate::fluid::interaction::AutomationKind::Lfo,
-                    selected: 2,
-                    reason,
-                } => reason,
-                _ => panic!("mismatched LFO mode must project unavailable"),
-            }
-        }
-
-        assert_eq!(
-            unavailable_reason(&AutomationState::default()),
-            AutomationUnavailable::NoOpenEditor
-        );
-
-        let address = ControlAddress::new("pad.level");
-        let mut envelope = AutomationState::default();
-        envelope.open_or_create_envelope(address);
-        assert_eq!(
-            unavailable_reason(&envelope),
-            AutomationUnavailable::KindMismatch {
-                active: ModKind::Envelope
-            }
-        );
-        let lfo_model = InteractionModel {
-            navigation: Navigation::default(),
-            mode: InteractionMode::Automation(AutomationMode::Lfo {
-                depth: LfoDepth::Editor,
-                selected: 1,
-            }),
-        };
-        let mut envelope_session = session();
-        envelope_session.automation = envelope;
-        let envelope_frame = render_model_with_session(&lfo_model, &envelope_session);
-        assert!(envelope_frame.contains("editor␠kind␠mismatch"));
-        assert!(!envelope_frame.contains("␠␠␠attack"));
-
-        let mut macro_state = AutomationState::default();
-        macro_state.open_or_create_macro(address);
-        assert_eq!(
-            unavailable_reason(&macro_state),
-            AutomationUnavailable::KindMismatch {
-                active: ModKind::Macro
-            }
-        );
-        let mut macro_session = session();
-        macro_session.automation = macro_state;
-        let macro_frame = render_model_with_session(&lfo_model, &macro_session);
-        assert!(macro_frame.contains("editor␠kind␠mismatch"));
-        assert!(!macro_frame.contains("␠␠␠macro␠1"));
-
-        let mut foreign_field = AutomationState::default();
-        foreign_field.open_or_create(address);
-        foreign_field.toggle_open_field(unit_key("bass.level", Some("lfo.amount")));
-        let mut ineligible_field = AutomationState::default();
-        ineligible_field.open_or_create(address);
-        ineligible_field.toggle_open_field(unit_key("pad.level", Some("lfo.shape")));
-        let macro_address = ControlAddress::new("macro.1");
-        let mut macro_slider_field = AutomationState::default();
-        macro_slider_field.open_or_create(macro_address);
-        macro_slider_field.toggle_open_field(unit_key("macro.1", Some("lfo.amount")));
-        for automation in [foreign_field, ineligible_field, macro_slider_field] {
-            let surface = automation_surface(
-                AutomationMode::Lfo {
-                    depth: LfoDepth::NestedField,
-                    selected: 0,
-                },
-                &automation,
-            );
-            assert!(matches!(
-                surface,
-                AutomationSurface::Unavailable {
-                    reason: AutomationUnavailable::DepthMismatch,
-                    ..
-                }
-            ));
-
-            let mut mismatched_session = session();
-            mismatched_session.automation = automation;
-            let nested_model = InteractionModel {
-                navigation: Navigation::default(),
-                mode: InteractionMode::Automation(AutomationMode::Lfo {
-                    depth: LfoDepth::NestedField,
-                    selected: 0,
-                }),
-            };
-            let frame = render_model_with_session(&nested_model, &mismatched_session);
-            assert!(frame.contains("editor␠depth␠mismatch"));
-            assert!(!frame.contains("LFO␠FIELD"));
-        }
-
-        let mut lfo = AutomationState::default();
-        lfo.open_or_create(address);
-        let surface = automation_surface(
-            AutomationMode::Lfo {
-                depth: LfoDepth::NestedField,
-                selected: 0,
-            },
-            &lfo,
-        );
-        assert!(matches!(
-            surface,
-            AutomationSurface::Unavailable {
-                reason: AutomationUnavailable::DepthMismatch,
-                ..
-            }
-        ));
-        assert_eq!(
-            automation_owner_help(&surface),
-            "LFO · editor depth mismatch   Esc: close"
-        );
-    }
-
-    #[test]
-    #[cfg(any())]
-    fn every_top_level_owner_has_a_full_minimum_size_snapshot() {
-        const VALUE: &str = "│▶␠Level␠␠␠␠␠␠␠␠␠␠␠███████░░░␠70%␠␠␠␠␠␠␠␠␠␠␠␠│";
-        const NUMERIC_VALUE: &str = "│▶␠Level␠␠␠␠␠␠␠␠␠␠␠███████░░░␠>␠12_␠␠␠␠␠␠␠␠␠␠│";
-        let cases = [
-            (
-                "browsing",
-                InteractionMode::Browsing,
-                minimum_snapshot(
-                    &format!(
-                        "┌␠nooise␠v{}␠·␠BROWSE␠────────────────────┐",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    VALUE,
-                    "│BROWSE␠·␠jk␠select␠␠␠h/l␠adjust␠␠␠/␠find␠␠␠f│",
-                ),
-            ),
-            (
-                "numeric",
-                InteractionMode::Numeric(NumericEntry {
-                    buffer: "12".to_string(),
-                    resume: None,
-                }),
-                minimum_snapshot(
-                    &format!(
-                        "┌␠nooise␠v{}␠·␠NUMERIC␠───────────────────┐",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    NUMERIC_VALUE,
-                    "│NUMERIC␠·␠type␠value␠␠␠Enter:␠apply␠␠␠Esc:␠c│",
-                ),
-            ),
-            (
-                "palette",
-                InteractionMode::Palette(PaletteMode {
-                    query: "bass".to_string(),
-                    selected: 1,
-                    ..PaletteMode::default()
-                }),
-                palette_snapshot(),
-            ),
-            (
-                "automation_lfo",
-                InteractionMode::Automation(AutomationMode::Lfo {
-                    depth: LfoDepth::Editor,
-                    selected: 1,
-                }),
-                owner_surface_snapshot(
-                    &format!(
-                        "┌␠nooise␠v{}␠·␠LFO␠───────────────────────┐",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    [
-                        "│␠␠Level␠␠␠␠␠␠␠␠␠␠␠███████░░░␠70%␠␠␠␠␠␠␠␠␠␠␠␠│",
-                        "│▶␠␠␠amount␠␠␠␠␠␠␠␠░░░░░░░░░░␠0%␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-                        "│␠␠␠␠rate␠␠␠␠␠␠␠␠␠␠████░░░░░░␠2.00␠beats␠␠␠␠␠│",
-                    ],
-                    "│LFO␠·␠pad.level␠␠␠sine␠␠␠2.00␠beats␠␠␠depth␠│",
-                ),
-            ),
-            (
-                "automation_lfo_nested",
-                InteractionMode::Automation(AutomationMode::Lfo {
-                    depth: LfoDepth::NestedField,
-                    selected: 1,
-                }),
-                owner_surface_snapshot(
-                    &format!(
-                        "┌␠nooise␠v{}␠·␠LFO␠───────────────────────┐",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    [
-                        "│␠␠Level␠␠␠␠␠␠␠␠␠␠␠███████░░░␠70%␠␠␠␠␠␠␠␠␠␠␠␠│",
-                        "│▶␠␠␠amount␠␠␠␠␠␠␠␠░░░░░░░░░░␠0%␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-                        "│␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠⇒␠m1␠+25%␠␠␠␠␠␠␠␠␠␠␠␠␠␠␠│",
-                    ],
-                    "│LFO␠FIELD␠·␠pad.level␠␠␠sine␠␠␠2.00␠beats␠␠␠│",
-                ),
-            ),
-            (
-                "automation_envelope",
-                InteractionMode::Automation(AutomationMode::Envelope { selected: 1 }),
-                owner_surface_snapshot(
-                    &format!(
-                        "┌␠nooise␠v{}␠·␠ENV␠───────────────────────┐",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    [
-                        "│␠␠Level␠␠␠␠␠␠␠␠␠␠␠███████░░░␠70%␠␠␠␠␠␠␠␠␠␠␠␠│",
-                        "│▶␠␠␠amount␠␠␠␠␠␠␠␠█████░░░░░␠+0%␠␠␠␠␠␠␠␠␠␠␠␠│",
-                        "│␠␠␠␠attack␠␠␠␠␠␠␠␠█░░░░░░░░░␠1.00␠beats␠␠␠␠␠│",
-                    ],
-                    "│ENV␠·␠pad.level␠␠␠every␠4␠beats␠␠␠amount␠+0%│",
-                ),
-            ),
-            (
-                "automation_macro",
-                InteractionMode::Automation(AutomationMode::Macro { selected: 1 }),
-                owner_surface_snapshot(
-                    &format!(
-                        "┌␠nooise␠v{}␠·␠MACRO␠─────────────────────┐",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    [
-                        "│␠␠Level␠␠␠␠␠␠␠␠␠␠␠███████░░░␠70%␠␠␠␠␠␠␠␠␠␠␠␠│",
-                        "│▶␠␠␠macro␠1␠␠␠␠␠␠␠█████░░░░░␠+0%␠␠␠␠␠␠␠␠␠␠␠␠│",
-                        "│␠␠␠␠macro␠2␠␠␠␠␠␠␠█████░░░░░␠+0%␠␠␠␠␠␠␠␠␠␠␠␠│",
-                    ],
-                    "│MACRO␠·␠pad.level␠␠␠none␠␠␠x␠remove␠␠␠Esc␠cl│",
-                ),
-            ),
-            (
-                "performance_deck",
-                InteractionMode::Performance(PerformanceMode::Deck {
-                    selected: Some(PerformanceInstrument::Kick),
-                    held_selectors: PerformanceTargets::single(PerformanceInstrument::Perc),
-                }),
-                performance_snapshot(
-                    &format!(
-                        "┌␠nooise␠v{}␠·␠DECK␠──────────────────────┐",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    [
-                        "DECK · selected 3 · held f",
-                        "● f Perc L░░░0% T█░░200ms D░░░0.25b",
-                        "",
-                    ],
-                    "│DECK␠·␠selected␠3␠␠␠held␠f␠␠␠a/s/d/f␠choose␠│",
-                ),
-            ),
-            (
-                "performance_sequence_choose",
-                InteractionMode::Performance(PerformanceMode::Sequence {
-                    stage: SequenceStage::ChooseInstrument,
-                    held_selector: Some(PerformanceInstrument::Bass),
-                }),
-                performance_snapshot(
-                    &format!(
-                        "┌␠nooise␠v{}␠·␠SEQUENCE␠──────────────────┐",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    [
-                        "SEQUENCE · CHOOSE INSTRUMENT",
-                        "instrument · waiting",
-                        "held · 2",
-                    ],
-                    "│␠␠SEQUENCE␠·␠a/s/d/f␠choose␠␠␠held␠2␠␠␠Esc␠␠│",
-                ),
-            ),
-            (
-                "performance_sequence_perform",
-                InteractionMode::Performance(PerformanceMode::Sequence {
-                    stage: SequenceStage::Perform {
-                        instrument: PerformanceInstrument::Kick,
-                    },
-                    held_selector: Some(PerformanceInstrument::Perc),
-                }),
-                performance_snapshot(
-                    &format!(
-                        "┌␠nooise␠v{}␠·␠SEQUENCE␠──────────────────┐",
-                        env!("CARGO_PKG_VERSION")
-                    ),
-                    [
-                        "SEQUENCE · PERFORM · held 4",
-                        "▶ d Kick L░░░0% T█░░250ms D█░░1.00b",
-                        "",
-                    ],
-                    "│SEQUENCE␠·␠instrument␠3␠␠␠h/l␠j/k␠u/i␠act␠on│",
-                ),
-            ),
-        ];
-
-        for (name, mode, expected) in cases {
-            let actual = render_mode(mode);
-            if actual != expected {
-                let mismatch = actual
-                    .chars()
-                    .zip(expected.chars())
-                    .position(|(actual, expected)| actual != expected);
-                panic!(
-                    "snapshot changed for {name} at {mismatch:?}\nactual: {actual:?}\nexpected: {expected:?}"
-                );
-            }
-        }
     }
 
     #[test]

@@ -102,7 +102,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             view.owner.label()
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
+        .border_style(Style::default().fg(BORDER));
     let inner = block.inner(panel);
     f.render_widget(block, panel);
 
@@ -166,14 +166,21 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
 /// Frosted-glass scrim: darken the live fluid underneath instead of covering
 /// it, so the visualizer still shows through the panel.
 fn draw_scrim(f: &mut Frame, panel: Rect) {
-    let buf = f.buffer_mut();
-    for y in panel.top()..panel.bottom() {
-        for x in panel.left()..panel.right() {
+    fill_scrim(f.buffer_mut(), panel, |cell| {
+        let tint = darken(cell.fg, 0.30);
+        cell.set_bg(tint);
+        cell.set_fg(Color::Rgb(30, 34, 44));
+    });
+}
+
+/// Blank every cell in `area` and let `paint` set its colours; the panel
+/// scrim and the palette's opaque backdrop both fill this way.
+fn fill_scrim(buf: &mut Buffer, area: Rect, paint: impl Fn(&mut ratatui::buffer::Cell)) {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
             let cell = &mut buf[(x, y)];
-            let tint = darken(cell.fg, 0.30);
             cell.set_char(' ');
-            cell.set_bg(tint);
-            cell.set_fg(Color::Rgb(30, 34, 44));
+            paint(cell);
         }
     }
 }
@@ -277,15 +284,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         } else {
             flip_display(address.spec().time_base, item.value, bpm).unwrap_or(display)
         };
-        let fg = if parent_active {
-            Color::Rgb(120, 230, 255)
-        } else {
-            Color::Rgb(170, 178, 195)
-        };
-        let mut style = Style::default().fg(fg);
-        if parent_active {
-            style = style.add_modifier(Modifier::BOLD);
-        }
+        let style = BROWSE_PALETTE.style(parent_active);
         let markers = slider_markers(item, address, editor_here, frame);
         let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
         spans.extend(slider_spans(item_ratio(item), markers, frame.bar_w, style));
@@ -302,9 +301,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         if chord_playing {
             spans.push(Span::styled(
                 " ♪",
-                Style::default()
-                    .fg(Color::Rgb(255, 200, 90))
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
             ));
         }
         rows.push(Line::from(spans));
@@ -338,21 +335,14 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             let lane_open = env_open_here && automation.active_lane_index() == Some(lane_index);
             if lane_open {
                 for (fi, field) in EnvField::ALL.iter().enumerate() {
-                    let value_display = match field {
-                        EnvField::Attack
-                            if flipped.contains(&unit_key(item.id, Some("env.attack"))) =>
-                        {
-                            flip_display(TimeBase::Beats, route.attack_beats, bpm)
-                        }
-                        EnvField::Decay
-                            if route.decay_beats > 0.0
-                                && flipped.contains(&unit_key(item.id, Some("env.decay"))) =>
-                        {
-                            flip_display(TimeBase::Beats, route.decay_beats, bpm)
-                        }
-                        _ => None,
-                    }
-                    .unwrap_or_else(|| route.field_display(*field));
+                    // A zero decay keeps its native display rather than a
+                    // flipped 0 ms.
+                    let value_display = field
+                        .time_key()
+                        .filter(|key| flipped.contains(&unit_key(item.id, Some(key))))
+                        .filter(|_| *field != EnvField::Decay || route.decay_beats > 0.0)
+                        .and_then(|_| flip_display(TimeBase::Beats, route.field_value(*field), bpm))
+                        .unwrap_or_else(|| route.field_display(*field));
                     rows.push(field_line(
                         field.label(),
                         &Dial::new(route.field_value(*field), field.scale(), value_display),
@@ -394,16 +384,11 @@ fn push_lfo_editor_rows(
         let active = frame.lfo_selected == fi + 1;
         match *sub_row {
             LfoSubRow::Field(field) => {
-                let value_display = match field {
-                    LfoField::Interval if flipped.contains(&unit_key(id, Some("lfo.interval"))) => {
-                        flip_display(TimeBase::Beats, route.cycle_beats, bpm)
-                    }
-                    LfoField::Offset if flipped.contains(&unit_key(id, Some("lfo.offset"))) => {
-                        flip_display(TimeBase::Beats, route.phase_offset_beats, bpm)
-                    }
-                    _ => None,
-                }
-                .unwrap_or_else(|| route.field_display(field));
+                let value_display = field
+                    .time_key()
+                    .filter(|key| flipped.contains(&unit_key(id, Some(key))))
+                    .and_then(|_| flip_display(TimeBase::Beats, route.field_value(field), bpm))
+                    .unwrap_or_else(|| route.field_display(field));
                 rows.push(field_line(
                     field.label(),
                     &Dial::new(route.field_value(field), field.scale(), value_display),
@@ -503,10 +488,10 @@ fn slider_markers(
 fn draw_footer(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
     let footer_style = if view.help.emphasized() {
         Style::default()
-            .fg(Color::Rgb(255, 220, 120))
+            .fg(EMPHASIS_YELLOW)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Rgb(120, 128, 145))
+        Style::default().fg(DIM_TEXT)
     };
     f.render_widget(
         Paragraph::new(view.help.text())
@@ -517,29 +502,16 @@ fn draw_footer(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
 }
 
 fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
-    let selector = |value: Option<usize>| {
-        value
-            .and_then(|index| index.checked_add(1))
-            .map_or_else(|| "none".to_string(), |index| index.to_string())
-    };
     match surface {
         PerformanceSurface::Deck {
             selected,
             held_selectors,
             instruments,
         } => {
-            let held = if held_selectors.is_empty() {
-                "none".to_string()
-            } else {
-                held_selectors
-                    .iter()
-                    .map(performance_key)
-                    .collect::<Vec<_>>()
-                    .join("+")
-            };
             let mut lines = vec![Line::from(format!(
-                "DECK · selected {} · held {held}",
-                selector(*selected)
+                "DECK · selected {} · held {}",
+                selector_text(*selected),
+                performance_targets_text(*held_selectors)
             ))];
             if instruments.is_empty() {
                 lines.push(Line::from("hold a/s/d/f, then tap h/l j/k u/i"));
@@ -551,7 +523,7 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
         PerformanceSurface::SequenceChoose { held_selector } => vec![
             Line::from("SEQUENCE · CHOOSE INSTRUMENT"),
             Line::from("instrument · waiting"),
-            Line::from(format!("held · {}", selector(*held_selector))),
+            Line::from(format!("held · {}", selector_text(*held_selector))),
         ],
         PerformanceSurface::SequencePerform {
             instrument,
@@ -560,14 +532,14 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
         } => {
             let mut lines = vec![Line::from(format!(
                 "SEQUENCE · PERFORM · held {}",
-                selector(*held_selector)
+                selector_text(*held_selector)
             ))];
             if let Some(values) = values {
                 lines.push(performance_instrument_line(values));
             } else {
                 lines.push(Line::from(format!(
                     "instrument · {}",
-                    selector(*instrument)
+                    selector_text(*instrument)
                 )));
             }
             lines
@@ -583,7 +555,7 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
             } else {
                 lines.push(Line::from(format!(
                     "instrument · {}",
-                    selector(*instrument)
+                    selector_text(*instrument)
                 )));
             }
             lines.push(Line::from(if *release_pending {
@@ -596,17 +568,6 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
     }
 }
 
-/// Deck rows carry the same colour language as a browse row: idle grey,
-/// focused cyan, and amber for an instrument the player is physically
-/// holding. Without a style they rendered in the terminal default and read
-/// as a different application.
-const PERFORMANCE_PALETTE: FieldPalette = FieldPalette {
-    active: Color::Rgb(120, 230, 255),
-    idle: Color::Rgb(170, 178, 195),
-};
-
-const PERFORMANCE_HELD: Color = Color::Rgb(255, 200, 90);
-
 fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'static> {
     let marker = if values.held {
         "●"
@@ -615,21 +576,19 @@ fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'s
     } else {
         " "
     };
-    let mut style = Style::default().fg(if values.held {
-        PERFORMANCE_HELD
-    } else if values.focused {
-        PERFORMANCE_PALETTE.active
+    // Deck rows carry the browse colour language plus amber for an
+    // instrument the player is physically holding. Without a style they
+    // rendered in the terminal default and read as a different application.
+    let style = if values.held {
+        Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD)
     } else {
-        PERFORMANCE_PALETTE.idle
-    });
-    if values.held || values.focused {
-        style = style.add_modifier(Modifier::BOLD);
-    }
+        BROWSE_PALETTE.style(values.focused)
+    };
     let mut spans = vec![Span::styled(
         format!(
             "{marker} {} {:<4}",
-            performance_key(values.instrument),
-            performance_name(values.instrument),
+            values.instrument.key(),
+            values.instrument.name(),
         ),
         style,
     )];
@@ -664,24 +623,6 @@ fn compact_performance_value(value: &str) -> String {
         .replace(' ', "")
 }
 
-fn performance_key(instrument: interaction::PerformanceInstrument) -> &'static str {
-    match instrument {
-        interaction::PerformanceInstrument::Pads => "a",
-        interaction::PerformanceInstrument::Bass => "s",
-        interaction::PerformanceInstrument::Kick => "d",
-        interaction::PerformanceInstrument::Perc => "f",
-    }
-}
-
-fn performance_name(instrument: interaction::PerformanceInstrument) -> &'static str {
-    match instrument {
-        interaction::PerformanceInstrument::Pads => "Pads",
-        interaction::PerformanceInstrument::Bass => "Bass",
-        interaction::PerformanceInstrument::Kick => "Kick",
-        interaction::PerformanceInstrument::Perc => "Perc",
-    }
-}
-
 /// Bottom-anchored palette overlay inside the main panel: prompt line,
 /// best-first matches (fuzzy hits highlighted), staged edits, key help.
 fn draw_palette(
@@ -707,40 +648,33 @@ fn draw_palette(
     let area = Rect::new(x, y, width, height);
 
     // Opaque scrim so the palette reads over the control rows behind it.
-    {
-        let buf = f.buffer_mut();
-        for row in area.top()..area.bottom() {
-            for col in area.left()..area.right() {
-                let cell = &mut buf[(col, row)];
-                cell.set_char(' ');
-                cell.set_bg(Color::Rgb(18, 22, 32));
-            }
-        }
-    }
+    fill_scrim(f.buffer_mut(), area, |cell| {
+        cell.set_bg(Color::Rgb(18, 22, 32));
+    });
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
+        .border_style(Style::default().fg(BORDER));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let cursor = if cursor_visible { "\u{258c}" } else { " " };
     let prompt = match pal.locked {
         Some(entry) => Line::from(vec![
-            Span::styled("/", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled("/", Style::default().fg(DIM_TEXT)),
             Span::styled(
                 pal.entry(entry).id().unwrap_or("module"),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" = ", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled(" = ", Style::default().fg(DIM_TEXT)),
             Span::styled(
                 format!("{}{cursor}", pal.value_buf),
                 Style::default().fg(Color::White),
             ),
         ]),
         None => Line::from(vec![
-            Span::styled("/", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled("/", Style::default().fg(DIM_TEXT)),
             Span::styled(
                 format!("{}{cursor}", pal.query),
                 Style::default().fg(Color::White),
@@ -784,22 +718,51 @@ fn draw_palette(
             .join("  ");
         lines.push(Line::from(Span::styled(
             format!("staged: {staged}"),
-            Style::default().fg(Color::Rgb(255, 220, 120)),
+            Style::default().fg(EMPHASIS_YELLOW),
         )));
     }
     lines.push(Line::from(Span::styled(
         "\u{21e5} complete   type value   \u{21b5} stage/jump   \u{21b5}\u{21b5} commit   ^B on bar   Esc cancel",
-        Style::default().fg(Color::Rgb(120, 128, 145)),
+        Style::default().fg(DIM_TEXT),
     )));
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Colour pair for a modulator submenu: (active row, idle row).
+/// Colour pair for a row family: (active row, idle row).
 #[derive(Clone, Copy)]
 pub(crate) struct FieldPalette {
     active: Color,
     idle: Color,
 }
+
+impl FieldPalette {
+    /// The row style: active colour in bold when the cursor is here, idle
+    /// colour otherwise.
+    fn style(self, active: bool) -> Style {
+        let style = Style::default().fg(if active { self.active } else { self.idle });
+        if active {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    }
+}
+
+/// Browse rows and the deck share one colour language: idle grey, focused
+/// cyan.
+const BROWSE_PALETTE: FieldPalette = FieldPalette {
+    active: Color::Rgb(120, 230, 255),
+    idle: Color::Rgb(170, 178, 195),
+};
+
+/// Amber for something sounding or physically held right now: the playing
+/// chord badge and a held deck instrument.
+const LIVE_AMBER: Color = Color::Rgb(255, 200, 90);
+/// Help/notice text the user must act on, and staged palette edits.
+const EMPHASIS_YELLOW: Color = Color::Rgb(255, 220, 120);
+/// Quiet help text and prompt punctuation.
+const DIM_TEXT: Color = Color::Rgb(120, 128, 145);
+const BORDER: Color = Color::Rgb(150, 160, 185);
 
 pub(crate) const LFO_PALETTE: FieldPalette = FieldPalette {
     active: Color::Rgb(255, 130, 210),
@@ -832,17 +795,18 @@ fn field_line(
     bar_w: usize,
     palette: FieldPalette,
 ) -> Line<'static> {
-    let mut style = Style::default().fg(if active { palette.active } else { palette.idle });
-    if active {
-        style = style.add_modifier(Modifier::BOLD);
-    }
+    let style = palette.style(active);
     let prefix = if active { "▶ " } else { "  " };
     let display = numeric_cursor(numeric, active).unwrap_or_else(|| dial.display.clone());
-    let bar = ratio_bar(dial.ratio(), bar_w, '█', '░');
-    Line::from(Span::styled(
-        format!("{prefix}  {label:<13} {bar} {display}"),
+    let mut spans = vec![Span::styled(format!("{prefix}  {label:<13} "), style)];
+    spans.extend(slider_spans(
+        dial.ratio(),
+        SliderMarkers::default(),
+        bar_w,
         style,
-    ))
+    ));
+    spans.push(Span::styled(format!(" {display}"), style));
+    Line::from(spans)
 }
 
 /// A registry control's dial: its declared step and taper decide the mapping,
@@ -866,8 +830,7 @@ const LANE_WAVE: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "
 const RANDOM_LANE_CYCLES: f32 = 4.0;
 
 fn lane_glyph(level: f32) -> &'static str {
-    let level = level.clamp(0.0, 1.0);
-    LANE_WAVE[((level * (LANE_WAVE.len() - 1) as f32).round() as usize).min(LANE_WAVE.len() - 1)]
+    LANE_WAVE[ladder_index(level, LANE_WAVE.len())]
 }
 
 /// Label-width prefix shared by every modulator lane line, so stacked lanes
@@ -1053,15 +1016,4 @@ fn slider_spans(
 
 pub(crate) fn item_ratio(item: &ControlItem) -> f32 {
     control_dial(item).ratio()
-}
-
-pub(crate) fn ratio_bar(ratio: f32, width: usize, filled: char, empty: char) -> String {
-    let filled_count = (ratio.clamp(0.0, 1.0) * width as f32).round() as usize;
-    let filled_count = filled_count.min(width);
-    let empty_count = width.saturating_sub(filled_count);
-    format!(
-        "{}{}",
-        filled.to_string().repeat(filled_count),
-        empty.to_string().repeat(empty_count)
-    )
 }
