@@ -31,7 +31,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
   - `module.rs` — per-layer module slots: the `ModuleKind` catalog, `Domain`/`Family`, and `ModuleSlot`/`LayerModules` state. A slot stores *which* module is loaded as a value; the catalog never appears in a control id. Filter is a post-synthesis module with amount, cutoff, resonance, and type; Perc and Bass ship with factory Filter slots instead of bespoke filter controls.
   - `widget.rs` — `Dial`/`DialScale`, the shared slider vocabulary every bar renders through. Owns all value-to-bar-position mapping and tapered position stepping; no other module derives a ratio.
   - `engine.rs` — `FluidEngine` (voice mixer), gain smoothers, tempo clock, grid triggers, shared per-layer/master effect bank, master bus.
-  - `voice/` — one module per voice (pad, bass, perc, kick, tonal, clap, arp) plus shared helpers (`midi_to_hz`, `tune_ratio`, `soft_clip`, `normalized_lfo`, `mix_and_retain`, `noise_filter_smoothing`) in `voice/mod.rs`.
+  - `voice/` — one module per voice (pad, bass, perc, kick, tonal, clap, arp) plus shared helpers (`midi_to_hz`, `tune_ratio`, `soft_clip`, `normalized_lfo`, `mix_and_retain`/`mix_and_retain_mono`, `noise_filter_smoothing`) in `voice/mod.rs`.
 - `fx/` — shared DSP building blocks (LFO, panner, reverb) consumed by voices. See `fx/AGENTS.md`.
 - `synth/` — shared synthesis primitives (envelope, oscillator, noise, multi-operator FM) consumed by voices. See `synth/AGENTS.md`.
 

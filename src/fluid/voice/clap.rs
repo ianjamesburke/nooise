@@ -34,12 +34,8 @@ impl ClapEngine {
                 .push(ClapVoice::new(c, self.sample_rate, &mut self.rng));
         }
 
-        let mut dry = 0.0f32;
-        for v in &mut self.voices {
-            dry += v.next(&mut self.rng);
-        }
-        self.voices.retain(|v| !v.is_done());
-
+        let rng = &mut self.rng;
+        let dry = mix_and_retain_mono(&mut self.voices, |v| v.next(rng), ClapVoice::is_done);
         (dry, dry)
     }
 }

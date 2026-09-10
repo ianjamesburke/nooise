@@ -68,3 +68,18 @@ pub(crate) fn mix_and_retain<V>(
     voices.retain(|v| !done(v));
     (dry_l, dry_r)
 }
+
+/// `mix_and_retain` for a mono voice pool.
+#[inline]
+pub(crate) fn mix_and_retain_mono<V>(
+    voices: &mut Vec<V>,
+    mut next: impl FnMut(&mut V) -> f32,
+    done: impl Fn(&V) -> bool,
+) -> f32 {
+    let mut dry = 0.0f32;
+    for v in voices.iter_mut() {
+        dry += next(v);
+    }
+    voices.retain(|v| !done(v));
+    dry
+}
