@@ -901,12 +901,16 @@ fn replay_with(
     capabilities: TerminalCapabilities,
     configure: impl Fn(ReplayHarness) -> ReplayHarness,
 ) -> ReplayResult {
-    let run = |candidate: &[TraceEvent]| {
-        configure(ReplayHarness::new(capabilities)).replay(&ReplayTrace {
+    checked_replay(trace, |candidate| {
+        let outcome = configure(ReplayHarness::new(capabilities)).replay(&ReplayTrace {
             events: candidate.to_vec(),
-        })
-    };
-    checked_replay(run(trace), trace, run)
+        });
+        Observation {
+            violation: outcome.violation,
+            result: outcome.result,
+            mirror: None,
+        }
+    })
 }
 
 fn replay(trace: &[TraceEvent], capabilities: TerminalCapabilities) -> ReplayResult {
@@ -923,32 +927,41 @@ fn replay_from_model(
     })
 }
 
+/// What one check of a trace saw: the replay result, a second result when
+/// the check compared two runs, and the violation it classified.
+struct Observation {
+    result: ReplayResult,
+    mirror: Option<ReplayResult>,
+    violation: Option<PropertyViolation>,
+}
+
+/// Observes `trace`; on a violation, delta-reduces the trace to the smallest
+/// one reproducing that exact violation and panics with the diagnostic.
 fn checked_replay(
-    outcome: ReplayOutcome,
     trace: &[TraceEvent],
-    mut rerun: impl FnMut(&[TraceEvent]) -> ReplayOutcome,
+    mut observe: impl FnMut(&[TraceEvent]) -> Observation,
 ) -> ReplayResult {
-    if let Some(violation) = &outcome.violation {
-        let minimal = minimize_trace(trace.to_vec(), |candidate| {
-            rerun(candidate).violation.as_ref() == Some(violation)
-        });
-        let minimized = rerun(&minimal);
-        let minimized_violation = minimized
-            .violation
-            .as_ref()
-            .filter(|candidate| *candidate == violation)
-            .unwrap_or(violation);
-        panic!(
-            "{}",
-            format_property_diagnostic(
-                minimized_violation,
-                &minimal,
-                &minimized.result,
-                &minimized.result
-            )
-        );
-    }
-    outcome.result
+    let observed = observe(trace);
+    let Some(violation) = observed.violation else {
+        return observed.result;
+    };
+    let minimal = minimize_trace(trace.to_vec(), |candidate| {
+        observe(candidate).violation.as_ref() == Some(&violation)
+    });
+    let minimized = observe(&minimal);
+    let minimized_violation = minimized
+        .violation
+        .filter(|candidate| *candidate == violation)
+        .unwrap_or(violation);
+    panic!(
+        "{}",
+        format_property_diagnostic(
+            &minimized_violation,
+            &minimal,
+            &minimized.result,
+            minimized.mirror.as_ref().unwrap_or(&minimized.result),
+        )
+    );
 }
 
 #[test]
@@ -2964,38 +2977,22 @@ fn arbitrary_event_streams_preserve_runtime_and_model_invariants() {
             TerminalCapabilities::full(),
             TerminalCapabilities::default(),
         ] {
-            let first = replay_outcome(&trace, capabilities);
-            let second = replay_outcome(&trace, capabilities);
-            observed_edge_actions += first
-                .result
+            let result = checked_replay(&trace, |candidate| {
+                let first = replay_outcome(candidate, capabilities);
+                let second = replay_outcome(candidate, capabilities);
+                let violation =
+                    nondeterministic_violation(&first.result, &second.result).or(first.violation);
+                Observation {
+                    result: first.result,
+                    mirror: Some(second.result),
+                    violation,
+                }
+            });
+            observed_edge_actions += result
                 .state_history
                 .iter()
                 .filter(|record| record.action.intent.phase_policy() == PhasePolicy::Edge)
                 .count();
-            if let Some(class) = nondeterministic_violation(&first.result, &second.result) {
-                let minimal = minimize_trace(trace.clone(), |candidate| {
-                    let left = replay_outcome(candidate, capabilities);
-                    let right = replay_outcome(candidate, capabilities);
-                    nondeterministic_violation(&left.result, &right.result).as_ref() == Some(&class)
-                });
-                let left = replay_outcome(&minimal, capabilities);
-                let right = replay_outcome(&minimal, capabilities);
-                panic!(
-                    "{}",
-                    format_property_diagnostic(&class, &minimal, &left.result, &right.result)
-                );
-            }
-            if let Some(violation) = first.violation.clone() {
-                let minimal = minimize_trace(trace.clone(), |candidate| {
-                    replay_outcome(candidate, capabilities).violation.as_ref() == Some(&violation)
-                });
-                let left = replay_outcome(&minimal, capabilities);
-                let right = replay_outcome(&minimal, capabilities);
-                panic!(
-                    "{}",
-                    format_property_diagnostic(&violation, &minimal, &left.result, &right.result)
-                );
-            }
         }
     }
     assert!(
@@ -3062,24 +3059,32 @@ fn divergence_signature(left: &ReplayResult, right: &ReplayResult) -> Option<Div
     None
 }
 
+/// First position where the sequences disagree, or where the shorter one
+/// ends; `None` when they are equal.
+fn first_divergence_index<T: PartialEq>(left: &[T], right: &[T]) -> Option<usize> {
+    left.iter()
+        .zip(right)
+        .position(|(left_item, right_item)| left_item != right_item)
+        .or_else(|| (left.len() != right.len()).then(|| left.len().min(right.len())))
+}
+
 fn first_sequence_divergence<T: std::fmt::Debug + PartialEq>(
     field: &str,
     left: &[T],
     right: &[T],
 ) -> Option<DivergenceSignature> {
-    for (index, (left_item, right_item)) in left.iter().zip(right).enumerate() {
-        if left_item != right_item {
-            return Some(DivergenceSignature {
-                field: format!("{field}[{index}]"),
-                left: format!("{left_item:?}"),
-                right: format!("{right_item:?}"),
-            });
-        }
-    }
-    (left.len() != right.len()).then(|| DivergenceSignature {
-        field: format!("{field}.len"),
-        left: left.len().to_string(),
-        right: right.len().to_string(),
+    let index = first_divergence_index(left, right)?;
+    Some(match (left.get(index), right.get(index)) {
+        (Some(left_item), Some(right_item)) => DivergenceSignature {
+            field: format!("{field}[{index}]"),
+            left: format!("{left_item:?}"),
+            right: format!("{right_item:?}"),
+        },
+        _ => DivergenceSignature {
+            field: format!("{field}.len"),
+            left: left.len().to_string(),
+            right: right.len().to_string(),
+        },
     })
 }
 
@@ -3111,13 +3116,13 @@ fn format_property_diagnostic(
     left: &ReplayResult,
     right: &ReplayResult,
 ) -> String {
-    let divergent = left
-        .state_history
-        .iter()
-        .zip(&right.state_history)
-        .find(|(left, right)| left != right)
-        .map(|(left, right)| (Some(left), Some(right)))
-        .unwrap_or_else(|| (left.state_history.last(), right.state_history.last()));
+    let divergent = match first_divergence_index(&left.state_history, &right.state_history) {
+        Some(index) => (
+            left.state_history.get(index),
+            right.state_history.get(index),
+        ),
+        None => (left.state_history.last(), right.state_history.last()),
+    };
     format!(
         "{violation:?}\nminimal fixture:\n{}\nleft replay result:\n{left:#?}\nright replay result:\n{right:#?}\nactual divergent ActionRecord:\nleft {}\nright {}",
         ReplayTrace {
