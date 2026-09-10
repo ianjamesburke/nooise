@@ -424,6 +424,29 @@ struct ReplayResult {
     telemetry_beat_bits: u64,
 }
 
+impl ReplayResult {
+    /// How many executed effects carry `prefix` (an `InteractionEffect`
+    /// debug name, optionally with its acknowledgement).
+    fn effect_count(&self, prefix: &str) -> usize {
+        self.effects
+            .iter()
+            .filter(|effect| effect.starts_with(prefix))
+            .count()
+    }
+
+    /// The control's final value, or `None` if no spec has that id.
+    fn control(&self, id: &str) -> Option<f32> {
+        self.control_bits
+            .iter()
+            .find_map(|(known, bits)| (*known == id).then(|| f32::from_bits(*bits)))
+    }
+
+    /// Keyboard owner label of the last rendered frame.
+    fn final_owner(&self) -> Option<&str> {
+        self.frames.last().map(|frame| frame.owner.as_str())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ActionRecord {
     action: SemanticAction,
@@ -1455,11 +1478,7 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
         let first = replay(&trace, TerminalCapabilities::full());
         let second = replay(&trace, TerminalCapabilities::full());
         assert_eq!(first, second, "{name} was not deterministic");
-        assert_eq!(
-            first.frames.last().map(|frame| frame.owner.as_str()),
-            Some(expected_owner),
-            "{name}"
-        );
+        assert_eq!(first.final_owner(), Some(expected_owner), "{name}");
         if let Some(violation) = post_replay_violation(&first) {
             panic!(
                 "{}",
@@ -1853,15 +1872,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
             outcome.result.effects
         );
         assert!(!outcome.result.frames.is_empty(), "{name}");
-        assert_eq!(
-            outcome
-                .result
-                .frames
-                .last()
-                .map(|frame| frame.owner.as_str()),
-            Some(expected.owner),
-            "{name}"
-        );
+        assert_eq!(outcome.result.final_owner(), Some(expected.owner), "{name}");
         assert_eq!(
             outcome.result.session_generation, expected.generation,
             "{name}"
@@ -2126,13 +2137,7 @@ fn production_tick_commits_pending_palette_edits_at_the_bar() {
         TerminalCapabilities::full(),
     );
     assert_eq!(result.pending_edits, 0, "{result:#?}");
-    assert_eq!(
-        result
-            .control_bits
-            .iter()
-            .find_map(|(id, bits)| (*id == "master.bpm").then_some(*bits)),
-        Some(91.0f32.to_bits())
-    );
+    assert_eq!(result.control("master.bpm"), Some(91.0));
     assert_eq!(result.model.mode, InteractionMode::Browsing);
 }
 
@@ -2271,16 +2276,10 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
     assert_eq!(custom.session_generation, 1);
     assert_eq!(custom.automation_kind, None);
     assert_eq!(custom.effect_notice, None);
+    assert_eq!(custom.final_owner(), Some("BROWSE"));
     assert_eq!(
-        custom.frames.last().map(|frame| frame.owner.as_str()),
-        Some("BROWSE")
-    );
-    assert_eq!(
-        custom
-            .control_bits
-            .iter()
-            .find_map(|(id, bits)| (*id == "pad.progression").then_some(*bits)),
-        Some((super::voice::CUSTOM_PROGRESSION_INDEX as f32).to_bits())
+        custom.control("pad.progression"),
+        Some(super::voice::CUSTOM_PROGRESSION_INDEX as f32)
     );
 }
 
@@ -2311,13 +2310,7 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
         ],
         TerminalCapabilities::full(),
     );
-    assert_eq!(
-        quit.effects
-            .iter()
-            .filter(|effect| effect.starts_with("Quit"))
-            .count(),
-        1
-    );
+    assert_eq!(quit.effect_count("Quit"), 1);
 
     let save = replay(
         &[
@@ -2326,13 +2319,7 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
         ],
         TerminalCapabilities::full(),
     );
-    assert_eq!(
-        save.effects
-            .iter()
-            .filter(|effect| effect.starts_with("Save"))
-            .count(),
-        1
-    );
+    assert_eq!(save.effect_count("Save"), 1);
     assert_eq!(save.clipboard_writes, 1);
 
     let full = replay(
@@ -2344,20 +2331,8 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
         ],
         TerminalCapabilities::full(),
     );
-    assert_eq!(
-        full.effects
-            .iter()
-            .filter(|effect| effect.starts_with("HoldPerformanceSelector"))
-            .count(),
-        1
-    );
-    assert_eq!(
-        full.effects
-            .iter()
-            .filter(|effect| effect.starts_with("ReleaseHeldSelector"))
-            .count(),
-        1
-    );
+    assert_eq!(full.effect_count("HoldPerformanceSelector"), 1);
+    assert_eq!(full.effect_count("ReleaseHeldSelector"), 1);
     assert_eq!(full.unsupported_holds, 0);
 
     let fallback = replay(
@@ -2380,14 +2355,7 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
             ..
         })
     ));
-    assert_eq!(
-        fallback
-            .effects
-            .iter()
-            .filter(|effect| effect.starts_with("PerformanceEdit"))
-            .count(),
-        1
-    );
+    assert_eq!(fallback.effect_count("PerformanceEdit"), 1);
     assert!(
         fallback
             .effects
@@ -2429,18 +2397,12 @@ fn performance_grammars_cover_actions_bursts_delayed_releases_escape_and_rearm()
         "held selector burst still renders the resized minimum frame"
     );
     assert_eq!(
-        deck.effects
-            .iter()
-            .filter(|effect| effect.starts_with("PerformanceEdit"))
-            .count(),
+        deck.effect_count("PerformanceEdit"),
         2,
         "Deck applies Press and Repeat, never Release"
     );
     assert_eq!(
-        deck.effects
-            .iter()
-            .filter(|effect| effect.starts_with("ReleaseHeldSelector"))
-            .count(),
+        deck.effect_count("ReleaseHeldSelector"),
         2,
         "selector replacement releases Pads; delayed Pads release cannot clear Bass"
     );
@@ -2465,11 +2427,7 @@ fn performance_grammars_cover_actions_bursts_delayed_releases_escape_and_rearm()
     assert_eq!(sequence.model.mode, InteractionMode::Browsing);
     assert_eq!(sequence.session_generation, 1);
     assert_eq!(
-        sequence
-            .effects
-            .iter()
-            .filter(|effect| effect.starts_with("PerformanceEdit"))
-            .count(),
+        sequence.effect_count("PerformanceEdit"),
         1,
         "Sequence applies once and owns Repeat until Release"
     );
@@ -2521,14 +2479,7 @@ fn sequence_exits_only_on_the_armed_action_release() {
     completed.push(key(0, FixtureKey::Character('k'), InputPhase::Release));
     let completed = replay(&completed, TerminalCapabilities::full());
     assert_eq!(completed.model.mode, InteractionMode::Browsing);
-    assert_eq!(
-        completed
-            .effects
-            .iter()
-            .filter(|effect| effect.starts_with("PerformanceEdit"))
-            .count(),
-        1
-    );
+    assert_eq!(completed.effect_count("PerformanceEdit"), 1);
 }
 
 #[test]
@@ -2543,14 +2494,7 @@ fn performance_action_repeat_phase_is_mode_specific() {
         TerminalCapabilities::full(),
     );
     assert_eq!(sequence.session_generation, 0);
-    assert_eq!(
-        sequence
-            .effects
-            .iter()
-            .filter(|effect| effect.starts_with("PerformanceEdit"))
-            .count(),
-        0
-    );
+    assert_eq!(sequence.effect_count("PerformanceEdit"), 0);
     assert!(matches!(
         sequence.model.mode,
         InteractionMode::Performance(PerformanceMode::Sequence {
@@ -2579,10 +2523,7 @@ fn performance_action_repeat_phase_is_mode_specific() {
     );
     assert_eq!(deck.session_generation, 1);
     assert_eq!(
-        deck.effects
-            .iter()
-            .filter(|effect| effect.starts_with("PerformanceEdit"))
-            .count(),
+        deck.effect_count("PerformanceEdit"),
         1,
         "Deck intentionally applies raw Repeat"
     );
@@ -2607,17 +2548,10 @@ fn deck_chorded_selectors_apply_one_action_to_every_held_instrument() {
         TerminalCapabilities::full(),
     );
 
-    let control = |id| {
-        result
-            .control_bits
-            .iter()
-            .find(|(known, _)| *known == id)
-            .map(|(_, bits)| f32::from_bits(*bits))
-    };
     assert_eq!(
         (
-            control("kick.interval_beats"),
-            control("perc.interval_beats")
+            result.control("kick.interval_beats"),
+            result.control("perc.interval_beats")
         ),
         (Some(1.25), Some(0.5))
     );
@@ -2645,14 +2579,7 @@ fn raw_performance_edit_acknowledges_real_cursor_target_exits_auto_and_updates_m
             selected: 0,
         }
     ));
-    assert_eq!(
-        result
-            .control_bits
-            .iter()
-            .find(|(id, _)| *id == "bass.level")
-            .map(|(_, bits)| *bits),
-        Some(0.02_f32.to_bits())
-    );
+    assert_eq!(result.control("bass.level"), Some(0.02));
     assert!(result.effects.iter().any(|effect| {
         effect.contains("focus: Bass, action: Louder")
             && effect.contains("OK:PerformanceEdited { tab: Bass, index: 0, id: \"bass.level\"")
@@ -2671,10 +2598,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
         &repeated(FixtureKey::Character('/')),
         TerminalCapabilities::full(),
     );
-    assert_eq!(
-        palette.frames.last().map(|frame| frame.owner.as_str()),
-        Some("PALETTE")
-    );
+    assert_eq!(palette.final_owner(), Some("PALETTE"));
     let deck = replay(
         &repeated(FixtureKey::Character('p')),
         TerminalCapabilities::full(),
@@ -2706,14 +2630,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
         &repeated(FixtureKey::Enter),
         TerminalCapabilities::full(),
     );
-    assert_eq!(
-        numeric
-            .effects
-            .iter()
-            .filter(|effect| effect.starts_with("CommitNumeric"))
-            .count(),
-        1
-    );
+    assert_eq!(numeric.effect_count("CommitNumeric"), 1);
 
     let palette = replay_from_model(
         InteractionModel {
@@ -2742,14 +2659,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
         &repeated(FixtureKey::Character('a')),
         TerminalCapabilities::full(),
     );
-    assert_eq!(
-        performance
-            .effects
-            .iter()
-            .filter(|effect| effect.starts_with("PerformanceInstrument"))
-            .count(),
-        1
-    );
+    assert_eq!(performance.effect_count("PerformanceInstrument"), 1);
 
     let drill = replay_from_model(
         InteractionModel {
