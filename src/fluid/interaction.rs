@@ -227,19 +227,18 @@ impl Navigation {
         }
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        let selected = self.selected();
-        let next = if delta.is_negative() {
-            selected.saturating_sub(delta.unsigned_abs())
-        } else {
-            selected.saturating_add(delta as usize)
-        };
+    fn selected_mut(&mut self) -> &mut usize {
         match self {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
             | Self::Master { selected, .. }
-            | Self::Module { selected, .. } => *selected = next,
+            | Self::Module { selected, .. } => selected,
         }
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let selected = self.selected_mut();
+        *selected = selected.saturating_add_signed(delta);
     }
 
     fn cancel_one_depth(&mut self) {
@@ -872,7 +871,9 @@ impl InteractionModel {
         };
         match automation {
             AutomationMode::Lfo { selected, .. } => {
-                *selected = move_unbounded(*selected, delta).clamp(1, automation_row_count.max(1));
+                *selected = selected
+                    .saturating_add_signed(delta)
+                    .clamp(1, automation_row_count.max(1));
                 Transition {
                     model: self,
                     effects: Vec::new(),
@@ -894,7 +895,7 @@ impl InteractionModel {
                         effects: vec![InteractionEffect::CloseAutomationAll],
                     }
                 } else {
-                    *selected = move_unbounded(*selected, delta);
+                    *selected = selected.saturating_add_signed(delta);
                     Transition {
                         model: self,
                         effects: Vec::new(),
@@ -905,13 +906,8 @@ impl InteractionModel {
     }
 
     pub(crate) fn clamp_navigation_selection(&mut self, item_count: usize) {
-        let last = item_count.saturating_sub(1);
-        match &mut self.navigation {
-            Navigation::Chords { selected, .. }
-            | Navigation::Standard { selected, .. }
-            | Navigation::Master { selected, .. }
-            | Navigation::Module { selected, .. } => *selected = (*selected).min(last),
-        }
+        let selected = self.navigation.selected_mut();
+        *selected = (*selected).min(item_count.saturating_sub(1));
     }
 
     pub(crate) fn seed_palette_recent(&mut self, recent: &[&'static str]) {
@@ -1261,7 +1257,7 @@ fn update_automation(
         }
         Intent::MoveSelection(delta) => {
             let selected = automation.selected_mut();
-            *selected = move_unbounded(*selected, delta);
+            *selected = selected.saturating_add_signed(delta);
         }
         Intent::Confirm => {
             effects.push(InteractionEffect::AutomationConfirm(automation.kind()));
@@ -1462,14 +1458,6 @@ fn update_performance(
             }
         }
         _ => {}
-    }
-}
-
-fn move_unbounded(selected: usize, delta: isize) -> usize {
-    if delta.is_negative() {
-        selected.saturating_sub(delta.unsigned_abs())
-    } else {
-        selected.saturating_add(delta as usize)
     }
 }
 
