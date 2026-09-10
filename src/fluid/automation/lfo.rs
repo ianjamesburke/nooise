@@ -186,6 +186,16 @@ pub(crate) enum LfoField {
 impl LfoField {
     pub(crate) const ALL: [LfoField; 4] = [Self::Amount, Self::Interval, Self::Offset, Self::Shape];
 
+    /// The `FlippedUnits` sub-key for a field that carries a time base;
+    /// `None` for amount and shape, which cannot be unit-flipped.
+    pub(crate) const fn time_key(self) -> Option<&'static str> {
+        match self {
+            Self::Interval => Some("lfo.interval"),
+            Self::Offset => Some("lfo.offset"),
+            Self::Amount | Self::Shape => None,
+        }
+    }
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Shape => "shape",

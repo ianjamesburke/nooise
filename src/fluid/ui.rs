@@ -338,21 +338,14 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             let lane_open = env_open_here && automation.active_lane_index() == Some(lane_index);
             if lane_open {
                 for (fi, field) in EnvField::ALL.iter().enumerate() {
-                    let value_display = match field {
-                        EnvField::Attack
-                            if flipped.contains(&unit_key(item.id, Some("env.attack"))) =>
-                        {
-                            flip_display(TimeBase::Beats, route.attack_beats, bpm)
-                        }
-                        EnvField::Decay
-                            if route.decay_beats > 0.0
-                                && flipped.contains(&unit_key(item.id, Some("env.decay"))) =>
-                        {
-                            flip_display(TimeBase::Beats, route.decay_beats, bpm)
-                        }
-                        _ => None,
-                    }
-                    .unwrap_or_else(|| route.field_display(*field));
+                    // A zero decay keeps its native display rather than a
+                    // flipped 0 ms.
+                    let value_display = field
+                        .time_key()
+                        .filter(|key| flipped.contains(&unit_key(item.id, Some(key))))
+                        .filter(|_| *field != EnvField::Decay || route.decay_beats > 0.0)
+                        .and_then(|_| flip_display(TimeBase::Beats, route.field_value(*field), bpm))
+                        .unwrap_or_else(|| route.field_display(*field));
                     rows.push(field_line(
                         field.label(),
                         &Dial::new(route.field_value(*field), field.scale(), value_display),
@@ -394,16 +387,11 @@ fn push_lfo_editor_rows(
         let active = frame.lfo_selected == fi + 1;
         match *sub_row {
             LfoSubRow::Field(field) => {
-                let value_display = match field {
-                    LfoField::Interval if flipped.contains(&unit_key(id, Some("lfo.interval"))) => {
-                        flip_display(TimeBase::Beats, route.cycle_beats, bpm)
-                    }
-                    LfoField::Offset if flipped.contains(&unit_key(id, Some("lfo.offset"))) => {
-                        flip_display(TimeBase::Beats, route.phase_offset_beats, bpm)
-                    }
-                    _ => None,
-                }
-                .unwrap_or_else(|| route.field_display(field));
+                let value_display = field
+                    .time_key()
+                    .filter(|key| flipped.contains(&unit_key(id, Some(key))))
+                    .and_then(|_| flip_display(TimeBase::Beats, route.field_value(field), bpm))
+                    .unwrap_or_else(|| route.field_display(field));
                 rows.push(field_line(
                     field.label(),
                     &Dial::new(route.field_value(field), field.scale(), value_display),
