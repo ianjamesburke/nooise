@@ -289,6 +289,20 @@ mod module_fx_tests {
         TimingContext::new(TEST_SAMPLE_RATE as f64, 120.0, 0.0)
     }
 
+    /// Feeds silence for up to `frames` frames and returns the first non-zero
+    /// output, or `None` when the chain stays silent for the whole span.
+    fn first_nonzero_after_silence(
+        bank: &mut ModuleFxBank,
+        slots: &[ModuleSlot; MODULE_SLOTS],
+        tab: Tab,
+        timing: TimingContext,
+        frames: usize,
+    ) -> Option<(f32, f32)> {
+        (0..frames)
+            .map(|_| bank.process(tab, slots, (0.0, 0.0), timing))
+            .find(|output| *output != (0.0, 0.0))
+    }
+
     /// Runs one slot chain for `samples` frames and returns the magnitude of
     /// every output frame. `input` is fed every frame.
     fn run(
@@ -410,38 +424,6 @@ mod module_fx_tests {
     }
 
     #[test]
-    fn reverb_and_compression_execute_through_the_same_slot_chain() {
-        let timing = TimingContext::new(44_100.0, 120.0, 0.0);
-        let mut reverb_bank = ModuleFxBank::new(44_100.0);
-        let mut reverb_slots = [ModuleSlot::default(); MODULE_SLOTS];
-        reverb_slots[0] = preset_slot("room", 1.0);
-        reverb_slots[0].time = 0.72;
-        reverb_slots[0].feedback = 0.45;
-        reverb_bank.process(Tab::Kick, &reverb_slots, (1.0, 1.0), timing);
-        let mut tail = (0.0, 0.0);
-        for _ in 0..2_000 {
-            tail = reverb_bank.process(Tab::Kick, &reverb_slots, (0.0, 0.0), timing);
-            if tail != (0.0, 0.0) {
-                break;
-            }
-        }
-        assert_ne!(tail, (0.0, 0.0));
-
-        let mut compression_bank = ModuleFxBank::new(44_100.0);
-        let mut compression_slots = [ModuleSlot::default(); MODULE_SLOTS];
-        compression_slots[0] = preset_slot("compression", 1.0);
-        compression_slots[0].time = -20.0;
-        compression_slots[0].right_time = 4.0;
-        compression_slots[0].vintage = 0.0;
-        let mut compressed = (1.0, 1.0);
-        for _ in 0..256 {
-            compressed =
-                compression_bank.process(Tab::Kick, &compression_slots, (1.0, 1.0), timing);
-        }
-        assert!(compressed.0 < 1.0);
-    }
-
-    #[test]
     fn zero_delay_amount_preserves_the_dry_track() {
         let timing = TimingContext::new(44_100.0, 120.0, 0.0);
         let mut bank = ModuleFxBank::new(44_100.0);
@@ -456,18 +438,7 @@ mod module_fx_tests {
     #[test]
     fn every_post_effect_executes_on_every_layer_chain() {
         let timing = TimingContext::new(44_100.0, 120.0, 0.0);
-        let tabs = [
-            Tab::Chords,
-            Tab::Perc,
-            Tab::Bass,
-            Tab::Kick,
-            Tab::Tonal,
-            Tab::Clap,
-            Tab::Arp,
-            Tab::Master,
-        ];
-
-        for tab in tabs {
+        for tab in Tab::all() {
             let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
             slots[0] = preset_slot("drive", 0.7);
             let mut bank = ModuleFxBank::new(44_100.0);
@@ -492,14 +463,11 @@ mod module_fx_tests {
             slots[0] = preset_slot("room", 1.0);
             let mut bank = ModuleFxBank::new(44_100.0);
             bank.process(tab, &slots, (1.0, 1.0), timing);
-            let mut reverb_tail = (0.0, 0.0);
-            for _ in 0..2_000 {
-                reverb_tail = bank.process(tab, &slots, (0.0, 0.0), timing);
-                if reverb_tail != (0.0, 0.0) {
-                    break;
-                }
-            }
-            assert_ne!(reverb_tail, (0.0, 0.0), "Reverb is inert on {}", tab.name());
+            assert!(
+                first_nonzero_after_silence(&mut bank, &slots, tab, timing, 2_000).is_some(),
+                "Reverb is inert on {}",
+                tab.name()
+            );
 
             slots[0] = preset_slot("delay", 1.0);
             slots[0].clock = DelayClock::Free.value();
@@ -509,14 +477,11 @@ mod module_fx_tests {
             slots[0].feedback = 0.0;
             let mut bank = ModuleFxBank::new(44_100.0);
             bank.process(tab, &slots, (1.0, -1.0), timing);
-            let mut echo = (0.0, 0.0);
-            for _ in 0..500 {
-                echo = bank.process(tab, &slots, (0.0, 0.0), timing);
-                if echo != (0.0, 0.0) {
-                    break;
-                }
-            }
-            assert_ne!(echo, (0.0, 0.0), "Delay is inert on {}", tab.name());
+            assert!(
+                first_nonzero_after_silence(&mut bank, &slots, tab, timing, 500).is_some(),
+                "Delay is inert on {}",
+                tab.name()
+            );
         }
     }
 
