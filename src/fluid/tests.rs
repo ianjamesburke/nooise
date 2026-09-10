@@ -19,11 +19,26 @@ fn live_session(controls: FluidControls, automation: AutomationState) -> LiveSes
     LiveSession::new(LiveSessionSnapshot::from_song(&song))
 }
 
-fn assert_close(actual: f32, expected: f32) {
+/// The one tolerance assertion behind `assert_close`, `assert_near`, and
+/// `assert_quantized`: `name` says which value missed when several are
+/// checked in one test.
+fn assert_within(actual: f32, expected: f32, tolerance: f32, name: &str) {
     assert!(
-        (actual - expected).abs() < f32::EPSILON,
-        "expected {expected}, got {actual}"
+        (actual - expected).abs() <= tolerance,
+        "{name}: expected {expected} within {tolerance}, got {actual}"
     );
+}
+
+fn assert_close(actual: f32, expected: f32) {
+    assert_close_named(actual, expected, "value");
+}
+
+fn assert_close_named(actual: f32, expected: f32, name: &str) {
+    assert_within(actual, expected, f32::EPSILON, name);
+}
+
+fn assert_near(actual: f32, expected: f32) {
+    assert_within(actual, expected, 1e-5, "value");
 }
 
 /// Test-only reconstruction of the pad's built-in chord frequencies, from
@@ -32,13 +47,6 @@ fn assert_close(actual: f32, expected: f32) {
 /// chord-slot path replaced the direct frequency helper in production.
 fn pad_chord(progression: usize, step: usize, tune: f32) -> [f32; 4] {
     pad_chord_midi(progression, step).map(|note| midi_to_hz(note) * tune_ratio(tune))
-}
-
-fn assert_near(actual: f32, expected: f32) {
-    assert!(
-        (actual - expected).abs() < 1e-5,
-        "expected {expected}, got {actual}"
-    );
 }
 
 fn timing(sample: u64, bpm: f32) -> TimingContext {
@@ -94,10 +102,7 @@ fn assert_quantized(actual: f32, expected: f32) {
 
 fn assert_quantized_named(actual: f32, expected: f32, name: &str) {
     let tolerance = QUANTIZED_TOLERANCE * expected.abs().max(1.0);
-    assert!(
-        (actual - expected).abs() <= tolerance,
-        "{name}: expected {expected} within {tolerance}, got {actual}"
-    );
+    assert_within(actual, expected, tolerance, name);
 }
 
 fn buffer_text(buffer: &Buffer) -> String {
@@ -2064,13 +2069,6 @@ fn round_trip(set: impl Fn(&mut FluidControls)) -> FluidControls {
     set(&mut controls);
     let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     song::decode_song_code(&code).unwrap().controls
-}
-
-fn assert_close_named(actual: f32, expected: f32, name: &str) {
-    assert!(
-        (actual - expected).abs() < f32::EPSILON,
-        "{name}: expected {expected}, got {actual}"
-    );
 }
 
 #[test]
