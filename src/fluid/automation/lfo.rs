@@ -3,8 +3,8 @@
 
 use std::f32::consts::TAU;
 
-use crate::fluid::Entry;
 use crate::fluid::widget::DialScale;
+use crate::fluid::{Entry, splitmix64_mix};
 
 use super::{FieldSpec, Stepping, clamped_index, morph_scalar_route, stepped_index};
 
@@ -113,13 +113,12 @@ impl LfoShape {
 /// Deterministic per-index value in -1..1, keyed by the route seed. Pure hash,
 /// no RNG state, so the UI and engine agree and offline renders stay identical.
 fn seeded_unit(seed: u32, index: i64) -> f32 {
-    let mut z = (index as u64)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(u64::from(seed))
-        .wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^= z >> 31;
+    let z = splitmix64_mix(
+        (index as u64)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(u64::from(seed))
+            .wrapping_add(0x9E37_79B9_7F4A_7C15),
+    );
     let unit = (z >> 40) as f32 / f32::from(1u16 << 8) / f32::from(1u16 << 8) / 256.0;
     unit * 2.0 - 1.0
 }

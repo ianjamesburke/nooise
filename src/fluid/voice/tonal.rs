@@ -499,12 +499,10 @@ impl TonalEngine {
 }
 
 fn evolve_random(seed: u64, evolution_count: u64, draw: u64) -> u64 {
-    let mut value = seed
-        ^ evolution_count.wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        ^ draw.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
+    splitmix64_mix(
+        seed ^ evolution_count.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ draw.wrapping_mul(0xBF58_476D_1CE4_E5B9),
+    )
 }
 
 pub(crate) fn tonal_phrase_index(value: f32) -> usize {

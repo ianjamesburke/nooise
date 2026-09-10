@@ -81,6 +81,19 @@ use visualizer::*;
 use voice::*;
 
 // ============================================================
+// Deterministic hashing
+// ============================================================
+
+/// The splitmix64 finaliser: a stateless bit mixer every seeded, RNG-free
+/// value in the engine derives from, so the UI and the audio thread agree and
+/// offline renders stay identical. Callers fold their own inputs into `z`.
+pub(crate) fn splitmix64_mix(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+// ============================================================
 // Telemetry — audio thread publishes, UI thread reads
 // ============================================================
 
