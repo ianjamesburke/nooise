@@ -2647,7 +2647,7 @@ fn bass_engine_follows_pad_chord_root_across_advances() {
         bass.next(&bass_controls, &pad, 0.0, timing);
     }
 
-    assert_ne!(bass.step_index, 0);
+    assert_ne!(bass.progression.step_index, 0);
     assert!(bass.rhythm_step < BASS_RHYTHMS[0].len());
 }
 
@@ -3412,7 +3412,7 @@ fn bass_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
         let sample = chord * sample_rate as u64 * 2;
         let timing = timing(sample, 120.0);
         bass.next(&bass_controls, &pad, 0.0, timing);
-        assert!(bass.step_index < 2);
+        assert!(bass.progression.step_index < 2);
     }
 }
 

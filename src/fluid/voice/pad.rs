@@ -624,6 +624,46 @@ pub(crate) fn pad_chord_count(c: &PadControls) -> usize {
 /// Advances one shared progression cursor. Count and progression changes are
 /// staged until the current loop reaches its final chord, so they never cut
 /// off the chord presently sounding.
+/// How Bass and Arp follow the Pad's chord loop without reaching into
+/// `PadEngine`: an independent trigger on the same `pad.chord_bars` grid and
+/// the same step/loop bookkeeping, so the follower's step always matches the
+/// pad's. The active loop is adopted from the first frame's controls and then
+/// only re-read at a loop boundary, exactly as the pad itself does.
+pub(crate) struct ProgressionFollower {
+    chord_trigger: GridTrigger,
+    pub(crate) step_index: usize,
+    active_chord_count: Option<usize>,
+    active_progression: Option<usize>,
+}
+
+impl ProgressionFollower {
+    pub(crate) fn new() -> Self {
+        Self {
+            chord_trigger: GridTrigger::after_start(),
+            step_index: 0,
+            active_chord_count: None,
+            active_progression: None,
+        }
+    }
+
+    /// Advances on the pad's chord grid and returns the `(progression, step)`
+    /// to voice this frame.
+    pub(crate) fn follow(&mut self, pad: &PadControls, timing: TimingContext) -> (usize, usize) {
+        let progression = progression_index(pad.progression);
+        let active_chord_count = self.active_chord_count.get_or_insert(pad_chord_count(pad));
+        let active_progression = self.active_progression.get_or_insert(progression);
+        advance_pad_progression(
+            &mut self.step_index,
+            active_chord_count,
+            active_progression,
+            pad_chord_count(pad),
+            progression,
+            self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0),
+        );
+        (*active_progression, self.step_index)
+    }
+}
+
 pub(crate) fn advance_pad_progression(
     step_index: &mut usize,
     active_chord_count: &mut usize,

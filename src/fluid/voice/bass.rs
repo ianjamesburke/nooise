@@ -78,10 +78,7 @@ const BASS_MONO_FADE_SECONDS: f32 = 0.003;
 
 pub(crate) struct BassEngine {
     pub(crate) sample_rate: f32,
-    pub(crate) chord_trigger: GridTrigger,
-    pub(crate) step_index: usize,
-    pub(crate) active_chord_count: Option<usize>,
-    pub(crate) active_progression: Option<usize>,
+    pub(crate) progression: ProgressionFollower,
     pub(crate) step_trigger: GridTrigger,
     pub(crate) rhythm_step: usize,
     pub(crate) voice: Option<BassVoice>,
@@ -97,10 +94,7 @@ impl BassEngine {
     pub(crate) fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
-            chord_trigger: GridTrigger::after_start(),
-            step_index: 0,
-            active_chord_count: None,
-            active_progression: None,
+            progression: ProgressionFollower::new(),
             step_trigger: GridTrigger::new(),
             rhythm_step: BASS_RHYTHMS[0].len() - 1,
             voice: None,
@@ -118,17 +112,7 @@ impl BassEngine {
         tune: f32,
         timing: TimingContext,
     ) -> (f32, f32) {
-        let progression = progression_index(pad.progression);
-        let active_chord_count = self.active_chord_count.get_or_insert(pad_chord_count(pad));
-        let active_progression = self.active_progression.get_or_insert(progression);
-        advance_pad_progression(
-            &mut self.step_index,
-            active_chord_count,
-            active_progression,
-            pad_chord_count(pad),
-            progression,
-            self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0),
-        );
+        let (progression, step) = self.progression.follow(pad, timing);
 
         let loop_len = (c.interval_beats / BASS_STEP_BEATS)
             .round()
@@ -142,8 +126,7 @@ impl BassEngine {
             let hit = self.rhythm_step < BASS_RHYTHMS[rhythm].len()
                 && BASS_RHYTHMS[rhythm][self.rhythm_step];
             if hit {
-                let note = bass_root_note(*active_progression, self.step_index, pad)
-                    + (c.octave.round() as i32) * 12;
+                let note = bass_root_note(progression, step, pad) + (c.octave.round() as i32) * 12;
                 let hz = midi_to_hz(note) * tune_ratio(tune);
                 // Hard-cut: whatever was sounding hands off to the fade-out
                 // slot (replacing any prior fade in progress) and the new
