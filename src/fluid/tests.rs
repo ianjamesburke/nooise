@@ -2830,7 +2830,12 @@ fn kick_type_zero_matches_legacy_sub_voice_exactly() {
         ..Default::default()
     };
     let mut dispatched = KickVoice::new(0, &controls, sample_rate, &mut StdRng::seed_from_u64(7));
-    let mut legacy = SubKickVoice::new(&controls, sample_rate, &mut StdRng::seed_from_u64(7));
+    let mut legacy = LowpassKickVoice::new(
+        &KICK_SUB,
+        &controls,
+        sample_rate,
+        &mut StdRng::seed_from_u64(7),
+    );
     let mut click_rng_a = StdRng::seed_from_u64(99);
     let mut click_rng_b = StdRng::seed_from_u64(99);
 

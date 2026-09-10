@@ -125,10 +125,8 @@ impl KickVoiceCore {
 /// ambient use: each takes a short onset fade-in and a scaled-down click via
 /// `KickVoiceCore` so none of them reads as a drum-machine transient.
 pub(crate) enum KickVoice {
-    A(SubKickVoice),
-    B(WarmKickVoice),
-    C(WoodKickVoice),
-    D(FeltKickVoice),
+    Lowpass(LowpassKickVoice),
+    Wood(WoodKickVoice),
 }
 
 impl KickVoice {
@@ -139,28 +137,24 @@ impl KickVoice {
         rng: &mut StdRng,
     ) -> Self {
         match voice_type {
-            0 => Self::A(SubKickVoice::new(c, sample_rate, rng)),
-            1 => Self::B(WarmKickVoice::new(c, sample_rate, rng)),
-            2 => Self::C(WoodKickVoice::new(c, sample_rate, rng)),
-            _ => Self::D(FeltKickVoice::new(c, sample_rate, rng)),
+            0 => Self::Lowpass(LowpassKickVoice::new(&KICK_SUB, c, sample_rate, rng)),
+            1 => Self::Lowpass(LowpassKickVoice::new(&KICK_WARM, c, sample_rate, rng)),
+            2 => Self::Wood(WoodKickVoice::new(c, sample_rate, rng)),
+            _ => Self::Lowpass(LowpassKickVoice::new(&KICK_FELT, c, sample_rate, rng)),
         }
     }
 
     pub(crate) fn next<R: Rng>(&mut self, rng: &mut R) -> (f32, f32) {
         match self {
-            Self::A(voice) => voice.next(rng),
-            Self::B(voice) => voice.next(rng),
-            Self::C(voice) => voice.next(rng),
-            Self::D(voice) => voice.next(rng),
+            Self::Lowpass(voice) => voice.next(rng),
+            Self::Wood(voice) => voice.next(rng),
         }
     }
 
     pub(crate) fn is_done(&self) -> bool {
         match self {
-            Self::A(voice) => voice.is_done(),
-            Self::B(voice) => voice.is_done(),
-            Self::C(voice) => voice.is_done(),
-            Self::D(voice) => voice.is_done(),
+            Self::Lowpass(voice) => voice.is_done(),
+            Self::Wood(voice) => voice.is_done(),
         }
     }
 }
@@ -242,116 +236,131 @@ impl KickLowPass {
     }
 }
 
-/// Pitch drop: the body settles at 0.28x its starting frequency.
-const KICK_SUB_PITCH_DROP_RATIO: f32 = 0.28;
-/// Modulator-to-carrier ratio: 2x puts sidebands on the harmonic series, which
-/// is what keeps this voice reading as one fused low body.
-const KICK_SUB_FM_MOD_RATIO: f32 = 2.0;
-/// FM depth, the deepest of the four types: this is the hard transient edge the
-/// three ambient types deliberately back away from.
-const KICK_SUB_FM_DEPTH: f32 = 3.5;
-/// Lowpass mapping bias; the reference every other type's bias is stated
-/// relative to.
-const KICK_SUB_FILTER_BIAS: f32 = -2.5;
+/// Everything that distinguishes one lowpass-filtered kick character from
+/// another. Sub, Warm, and Felt are the same signal path — `KickVoiceCore`
+/// shaping a `KickFmBody`, trimmed, through a `KickLowPass` — so a type is a
+/// recipe, never its own voice. Wood is the one type with a different path.
+pub(crate) struct LowpassKickRecipe {
+    /// Linear onset fade-in; 0.0 leaves `KickVoiceCore`'s fade branch untaken.
+    attack_ms: f32,
+    /// Scale on the user's `kick.click`; 1.0 is an exact f32 identity.
+    click_scale: f32,
+    /// The body settles at this ratio of its starting frequency.
+    pitch_drop_ratio: f32,
+    fm_mod_ratio: f32,
+    fm_depth: f32,
+    wave: FmWave,
+    /// `KickLowPass` mapping bias; Sub's is the reference the others are
+    /// stated relative to.
+    filter_bias: f32,
+    /// Output trim: brings the voice to Sub's rendered level at the same
+    /// `kick.level`. Measured, not chosen by ear —
+    /// `kick_types_render_at_a_matched_level` pins it. Sub's is exactly 1.0,
+    /// an f32 identity, so its render stays byte-for-byte the legacy voice.
+    output_gain: f32,
+}
 
 /// Type 0 (default): the original kick voice, byte-for-byte unchanged. A
 /// sine carrier phase-modulated by a 2x-ratio sine modulator with decaying
 /// depth (a tight FM thud), an exponential pitch glide from `start_freq` down
 /// to `start_freq * 0.28`, an onset noise click, and a one-pole lowpass mapped
 /// from `kick.filter`. Drive runs later in the shared layer module chain.
-pub(crate) struct SubKickVoice {
-    pub(crate) core: KickVoiceCore,
-    pub(crate) body: KickFmBody,
-    pub(crate) lowpass: KickLowPass,
-}
-
-impl SubKickVoice {
-    pub(crate) fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
-        Self {
-            core: KickVoiceCore::new(c, sample_rate, rng, 0.0, 1.0),
-            body: KickFmBody::new(
-                c,
-                sample_rate,
-                KICK_SUB_PITCH_DROP_RATIO,
-                KICK_SUB_FM_MOD_RATIO,
-                KICK_SUB_FM_DEPTH,
-                FmWave::Sine,
-            ),
-            lowpass: KickLowPass::new(c.filter, KICK_SUB_FILTER_BIAS),
-        }
-    }
-
-    pub(crate) fn next<R: Rng>(&mut self, rng: &mut R) -> (f32, f32) {
-        if self.core.is_done() {
-            return (0.0, 0.0);
-        }
-
-        let body = self.body.next();
-        let s = self.lowpass.process(self.core.shape(body, rng));
-
-        (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
-    }
-
-    pub(crate) fn is_done(&self) -> bool {
-        self.core.is_done()
-    }
-}
-
-/// Shallower pitch-drop ratio than Sub's fixed 0.28x, so the Warm voice's
-/// body settles a little above Sub without reading as a second sub layer.
-const KICK_WARM_PITCH_DROP_RATIO: f32 = 0.42;
-/// Modulator-to-carrier ratio. Below Sub's fixed 2x: a 1.5 ratio places
-/// sidebands at non-harmonic-series intervals that read hollow and woody
-/// rather than bright. Ratios at or above 3x produce the metallic clang this
-/// voice deliberately avoids.
-const KICK_WARM_FM_MOD_RATIO: f32 = 1.5;
-/// FM depth, well below Sub's fixed 3.5, so the modulator rounds the body out
-/// instead of adding a hard transient edge.
-const KICK_WARM_FM_DEPTH: f32 = 1.2;
-/// Lowpass mapping bias: nudged up from Sub's `-2.5` so this voice's slightly
-/// higher body isn't over-attenuated, but kept most of the way back toward
-/// Sub's so it stays dark rather than bright.
-const KICK_WARM_FILTER_BIAS: f32 = -2.35;
-/// Linear onset fade-in. Rounds off the transient snap so the hit reads as a
-/// swell into a body rather than a drum-machine attack.
-const KICK_WARM_ATTACK_MS: f32 = 6.0;
-/// The broadband onset noise burst is the single most aggressive-sounding
-/// element of a kick; scaled well down from the user's `kick.click`.
-const KICK_WARM_CLICK_SCALE: f32 = 0.45;
-/// Output trim: brings this voice to Sub's rendered level at the same
-/// `kick.level`. Measured, not chosen by ear —
-/// `kick_types_render_at_a_matched_level` pins it.
-const KICK_WARM_OUTPUT_GAIN: f32 = 1.11;
+pub(crate) const KICK_SUB: LowpassKickRecipe = LowpassKickRecipe {
+    attack_ms: 0.0,
+    click_scale: 1.0,
+    pitch_drop_ratio: 0.28,
+    // 2x puts sidebands on the harmonic series, which is what keeps this
+    // voice reading as one fused low body.
+    fm_mod_ratio: 2.0,
+    // The deepest of the four types: this is the hard transient edge the
+    // three ambient types deliberately back away from.
+    fm_depth: 3.5,
+    wave: FmWave::Sine,
+    filter_bias: -2.5,
+    output_gain: 1.0,
+};
 
 /// Type 1: a warm, round FM body. Same FM-thud/pitch-glide approach as Sub,
 /// but with a shallow FM depth at a hollow, woody modulator ratio, a slightly
-/// shallower pitch drop, a soft attack ramp, and a scaled-down click. Shares
-/// Sub's click/one-pole-lowpass/pan machinery via `KickVoiceCore`.
-pub(crate) struct WarmKickVoice {
+/// shallower pitch drop, a soft attack ramp, and a scaled-down click.
+pub(crate) const KICK_WARM: LowpassKickRecipe = LowpassKickRecipe {
+    // Rounds off the transient snap so the hit reads as a swell into a body
+    // rather than a drum-machine attack.
+    attack_ms: 6.0,
+    // The broadband onset noise burst is the single most aggressive-sounding
+    // element of a kick; scaled well down.
+    click_scale: 0.45,
+    // Shallower than Sub's 0.28x, so the body settles a little above Sub
+    // without reading as a second sub layer.
+    pitch_drop_ratio: 0.42,
+    // Below Sub's 2x: a 1.5 ratio places sidebands at non-harmonic-series
+    // intervals that read hollow and woody rather than bright. Ratios at or
+    // above 3x produce the metallic clang this voice deliberately avoids.
+    fm_mod_ratio: 1.5,
+    // Well below Sub's 3.5, so the modulator rounds the body out instead of
+    // adding a hard transient edge.
+    fm_depth: 1.2,
+    wave: FmWave::Sine,
+    // Nudged up from Sub's -2.5 so this voice's slightly higher body isn't
+    // over-attenuated, but kept most of the way back so it stays dark.
+    filter_bias: -2.35,
+    output_gain: 1.11,
+};
+
+/// Type 3: a soft mallet/felt character. Swaps Sub's sine carrier for a naive
+/// (non-band-limited, consistent with this codebase's additive-approximation
+/// approach elsewhere — see `bass.rs`'s Saw voice) triangle: odd harmonics
+/// only, falling off as 1/n², so it thickens the body without adding edge,
+/// under a darker lowpass mapping than Sub.
+pub(crate) const KICK_FELT: LowpassKickRecipe = LowpassKickRecipe {
+    // The longest of the three soft types: a felt mallet compresses on
+    // contact rather than striking instantly.
+    attack_ms: 8.0,
+    // Furthest down; a felt beater has almost no broadband contact noise.
+    click_scale: 0.25,
+    // Matches Sub, so only the carrier waveform and filter darkness change.
+    pitch_drop_ratio: 0.28,
+    fm_mod_ratio: KICK_SUB.fm_mod_ratio,
+    // Well below Sub's 3.5: the triangle carrier already brings its own odd
+    // harmonics, so Sub's depth would push this into buzz.
+    fm_depth: 1.8,
+    wave: FmWave::Triangle,
+    // Below Sub's -2.5, so the same `kick.filter` range lands darker and
+    // duller — the felt-beater muffling.
+    filter_bias: -2.9,
+    output_gain: 1.36,
+};
+
+/// The lowpass-filtered kick signal path Sub, Warm, and Felt all run:
+/// `KickVoiceCore` shaping the `KickFmBody` carrier, the recipe's output
+/// trim, then the one-pole `KickLowPass`. Optional Drive follows every kick
+/// type through the shared layer chain.
+pub(crate) struct LowpassKickVoice {
     pub(crate) core: KickVoiceCore,
     pub(crate) body: KickFmBody,
     pub(crate) lowpass: KickLowPass,
+    pub(crate) output_gain: f32,
 }
 
-impl WarmKickVoice {
-    pub(crate) fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
+impl LowpassKickVoice {
+    pub(crate) fn new(
+        recipe: &LowpassKickRecipe,
+        c: &KickControls,
+        sample_rate: f32,
+        rng: &mut StdRng,
+    ) -> Self {
         Self {
-            core: KickVoiceCore::new(
-                c,
-                sample_rate,
-                rng,
-                KICK_WARM_ATTACK_MS,
-                KICK_WARM_CLICK_SCALE,
-            ),
+            core: KickVoiceCore::new(c, sample_rate, rng, recipe.attack_ms, recipe.click_scale),
             body: KickFmBody::new(
                 c,
                 sample_rate,
-                KICK_WARM_PITCH_DROP_RATIO,
-                KICK_WARM_FM_MOD_RATIO,
-                KICK_WARM_FM_DEPTH,
-                FmWave::Sine,
+                recipe.pitch_drop_ratio,
+                recipe.fm_mod_ratio,
+                recipe.fm_depth,
+                recipe.wave,
             ),
-            lowpass: KickLowPass::new(c.filter, KICK_WARM_FILTER_BIAS),
+            lowpass: KickLowPass::new(c.filter, recipe.filter_bias),
+            output_gain: recipe.output_gain,
         }
     }
 
@@ -363,7 +372,7 @@ impl WarmKickVoice {
         let body = self.body.next();
         let s = self
             .lowpass
-            .process(self.core.shape(body, rng) * KICK_WARM_OUTPUT_GAIN);
+            .process(self.core.shape(body, rng) * self.output_gain);
 
         (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
     }
@@ -456,8 +465,8 @@ impl WoodKickVoice {
                 c,
                 sample_rate,
                 KICK_WOOD_PITCH_DROP_RATIO,
-                KICK_SUB_FM_MOD_RATIO,
-                KICK_SUB_FM_DEPTH,
+                KICK_SUB.fm_mod_ratio,
+                KICK_SUB.fm_depth,
                 FmWave::Sine,
             ),
             svf_low: 0.0,
@@ -483,79 +492,6 @@ impl WoodKickVoice {
         self.svf_low += self.svf_f * self.svf_band;
         let s = (self.svf_band * KICK_WOOD_BANDPASS_MIX + dry * (1.0 - KICK_WOOD_BANDPASS_MIX))
             * self.output_gain;
-
-        (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
-    }
-
-    pub(crate) fn is_done(&self) -> bool {
-        self.core.is_done()
-    }
-}
-
-/// Pitch-drop ratio, matching Sub's default so only the carrier waveform and
-/// filter darkness change for this type.
-const KICK_FELT_PITCH_DROP_RATIO: f32 = 0.28;
-/// FM depth, well below Sub's fixed 3.5: the triangle carrier already brings
-/// its own odd harmonics, so Sub's depth would push this into buzz.
-const KICK_FELT_FM_DEPTH: f32 = 1.8;
-/// Lowpass mapping bias: below Sub's `-2.5`, so the same `kick.filter` range
-/// lands darker and duller — the felt-beater muffling.
-const KICK_FELT_FILTER_BIAS: f32 = -2.9;
-/// Linear onset fade-in, the longest of the three soft types: a felt mallet
-/// compresses on contact rather than striking instantly.
-const KICK_FELT_ATTACK_MS: f32 = 8.0;
-/// Scales the user's `kick.click` furthest down; a felt beater has almost no
-/// broadband contact noise.
-const KICK_FELT_CLICK_SCALE: f32 = 0.25;
-/// Output trim: brings this voice to Sub's rendered level at the same
-/// `kick.level`. Measured, not chosen by ear —
-/// `kick_types_render_at_a_matched_level` pins it.
-const KICK_FELT_OUTPUT_GAIN: f32 = 1.36;
-
-/// Type 3: a soft mallet/felt character. Swaps Sub's sine carrier for a naive
-/// (non-band-limited, consistent with this codebase's additive-approximation
-/// approach elsewhere — see `bass.rs`'s Saw voice) triangle: odd harmonics
-/// only, falling off as 1/n², so it thickens the body without adding edge.
-/// Uses a darker lowpass mapping than Sub and keeps the same
-/// pitch-envelope/click/pan structure. Optional Drive follows all kick types
-/// through the shared layer chain.
-pub(crate) struct FeltKickVoice {
-    pub(crate) core: KickVoiceCore,
-    pub(crate) body: KickFmBody,
-    pub(crate) lowpass: KickLowPass,
-}
-
-impl FeltKickVoice {
-    pub(crate) fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
-        Self {
-            core: KickVoiceCore::new(
-                c,
-                sample_rate,
-                rng,
-                KICK_FELT_ATTACK_MS,
-                KICK_FELT_CLICK_SCALE,
-            ),
-            body: KickFmBody::new(
-                c,
-                sample_rate,
-                KICK_FELT_PITCH_DROP_RATIO,
-                KICK_SUB_FM_MOD_RATIO,
-                KICK_FELT_FM_DEPTH,
-                FmWave::Triangle,
-            ),
-            lowpass: KickLowPass::new(c.filter, KICK_FELT_FILTER_BIAS),
-        }
-    }
-
-    pub(crate) fn next<R: Rng>(&mut self, rng: &mut R) -> (f32, f32) {
-        if self.core.is_done() {
-            return (0.0, 0.0);
-        }
-
-        let body = self.body.next();
-        let s = self
-            .lowpass
-            .process(self.core.shape(body, rng) * KICK_FELT_OUTPUT_GAIN);
 
         (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
     }
