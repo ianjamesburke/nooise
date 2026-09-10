@@ -19,7 +19,8 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use super::coordinator::{
-    ProductionCoordinatorContext, ProductionStep, coordinate_production_tick,
+    ProductionCoordinatorContext, ProductionStep, coordinate_production_action,
+    coordinate_production_tick, production_frame,
 };
 use super::effect::{Clipboard, ClipboardError, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
@@ -933,114 +934,6 @@ impl ReplayHarness {
                 self.scheduler.request_frame();
                 self.requested_at.get_or_insert(self.clock.now());
             }
-        }
-    }
-
-    fn apply(&mut self, action: SemanticAction) {
-        let before = self.model.clone();
-        let effect_start = self.effects.len();
-        let session = self.executor.session().load();
-        let view = self.project(&session);
-        let item_count = view.items.len();
-        let tab = view.navigation.tab;
-        let selected_control = view.items.get(view.navigation.selected).map(|item| item.id);
-        let selected = selected_control
-            .and_then(|id| tab_specs(tab).iter().position(|spec| spec.id == id))
-            .unwrap_or(view.navigation.selected);
-        let automation_selected = self.model.automation_selected();
-        let automation_row_count = match session.automation.active_kind() {
-            Some(ModKind::Lfo) => session
-                .automation
-                .active_address()
-                .map_or(LfoField::ALL.len(), |address| {
-                    lfo_submenu_rows(&session.automation, address).len()
-                }),
-            Some(ModKind::Envelope) => EnvField::ALL.len(),
-            None => 0,
-        };
-        let automation_supported = match action.intent {
-            Intent::OpenAutomation(kind) => {
-                super::edit::automation_kind_is_supported(selected_control, kind)
-            }
-            _ => true,
-        };
-        drop(view);
-        drop(session);
-        let transition = if automation_supported {
-            self.model
-                .clone()
-                .update_bounded(action, automation_row_count, item_count)
-        } else {
-            super::interaction::Transition {
-                model: self.model.clone(),
-                effects: Vec::new(),
-            }
-        };
-        let changed = transition.model != self.model || !transition.effects.is_empty();
-        self.model = transition.model;
-        self.model.seed_palette_recent(self.executor.recent().ids());
-        let emitted = transition.effects;
-        let edge_changed = action.phase != InputPhase::Press
-            && action.intent.phase_policy() == PhasePolicy::Edge
-            && (self.model != before || !emitted.is_empty());
-        let mut context = ProductionInteractionContext {
-            selected_control,
-            tab,
-            selected,
-            automation_selected,
-            beat: self.clock.now().as_secs_f64(),
-            flipped: &mut self.flipped,
-        };
-        let results = self
-            .executor
-            .execute_production_interactions_with_clipboard(
-                emitted.clone(),
-                &mut context,
-                &mut self.clipboard,
-            );
-        for (effect, result) in emitted.into_iter().zip(results) {
-            let effect_label = format!("{effect:?}");
-            if matches!(
-                result,
-                Err(EffectFailure::UnsupportedInteraction(
-                    InteractionEffect::HoldPerformanceSelector(_)
-                        | InteractionEffect::ReleaseHeldSelector(_)
-                ))
-            ) {
-                self.unsupported_holds += 1;
-            }
-            let result_label = match result {
-                Ok(acknowledgement) => {
-                    if let EffectAcknowledgement::ControlSelected { tab, index, .. } =
-                        acknowledgement
-                    {
-                        let current_session = self.executor.session().load();
-                        self.model
-                            .select_control(tab, index, &current_session.controls);
-                        self.model.mode = InteractionMode::Browsing;
-                    }
-                    acknowledgement_label(&acknowledgement)
-                }
-                Err(failure) => format!("ERR:{failure:?}"),
-            };
-            self.effects.push(format!("{effect_label}=>{result_label}"));
-        }
-        let record = ActionRecord {
-            action,
-            before: before.clone(),
-            after: self.model.clone(),
-            effects: self.effects[effect_start..].to_vec(),
-        };
-        self.state_history.push(record.clone());
-        if edge_changed {
-            self.violate(PropertyViolation::EdgeChangedOnNonPress {
-                record: Box::new(record),
-            });
-        }
-        self.check_legal();
-        if changed {
-            self.scheduler.request_frame();
-            self.requested_at.get_or_insert(self.clock.now());
         }
     }
 
@@ -3119,7 +3012,26 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
     for intent in edge_intents {
         for phase in [InputPhase::Repeat, InputPhase::Release] {
             let mut harness = ReplayHarness::new(full_capabilities());
-            harness.apply(SemanticAction { phase, intent });
+            let mut context = ProductionCoordinatorContext {
+                effects: &mut harness.executor,
+                fluid: &harness.fluid,
+                flipped: &mut harness.flipped,
+                clipboard: &mut harness.clipboard,
+                capabilities: harness.capabilities,
+                beat: 0.0,
+                active_chord: 0,
+            };
+            let action = SemanticAction { phase, intent };
+            let frame = production_frame(&mut harness.model, &context);
+            let record =
+                coordinate_production_action(&mut harness.model, action, &frame, &mut context)
+                    .expect("edge intents are never refused before the kernel");
+            let quit = record.requested_quit();
+            harness.consume_production_step(ProductionStep {
+                mapping: InputMapping::Action(action),
+                actions: vec![record],
+                quit,
+            });
             assert!(harness.violation.is_none(), "{intent:?}/{phase:?}");
             let record = harness
                 .state_history
