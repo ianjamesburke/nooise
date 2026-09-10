@@ -1,6 +1,8 @@
 //! The Pad voice: sustained chord drones, the chord source Bass and Arp
 //! both follow.
 
+use crate::fx::crossfade::{Outgoing, mix};
+
 use super::*;
 
 pub(crate) const MAX_PAD_LAYERS: usize = 4;
@@ -334,9 +336,6 @@ impl PadStage {
 struct OutgoingStage {
     stage: PadStage,
     output_gain: f32,
-    /// Weight of the outgoing stage, walking 1.0 down to 0.0.
-    weight: f32,
-    step: f32,
 }
 
 pub(crate) struct PadTone {
@@ -346,7 +345,7 @@ pub(crate) struct PadTone {
     /// Kept so a later character swap can rebuild stages whose oscillators
     /// are pitched relative to this tone's own note.
     hz: f32,
-    outgoing: Option<OutgoingStage>,
+    outgoing: Option<Outgoing<OutgoingStage>>,
 }
 
 /// Builds the one stage a `pad.type` character adds after the shared stack,
@@ -410,12 +409,13 @@ impl PadTone {
     /// keeps sounding exactly where it was in its own life.
     pub(crate) fn set_character(&mut self, character: usize, sample_rate: f32) {
         let (stage, output_gain) = pad_stage(character, self.hz, sample_rate);
-        self.outgoing = Some(OutgoingStage {
-            stage: std::mem::replace(&mut self.stage, stage),
-            output_gain: std::mem::replace(&mut self.output_gain, output_gain),
-            weight: 1.0,
-            step: 1.0 / (PAD_TYPE_CROSSFADE_SECONDS * sample_rate).max(1.0),
-        });
+        self.outgoing = Some(Outgoing::start(
+            OutgoingStage {
+                stage: std::mem::replace(&mut self.stage, stage),
+                output_gain: std::mem::replace(&mut self.output_gain, output_gain),
+            },
+            PAD_TYPE_CROSSFADE_SECONDS * sample_rate,
+        ));
     }
 
     pub(crate) fn next_stereo(
@@ -433,13 +433,12 @@ impl PadTone {
             soft_clip(self.stage.apply(raw) * 0.55) * envelope * self.stack.gain * self.output_gain;
 
         if let Some(outgoing) = &mut self.outgoing {
-            let previous = soft_clip(outgoing.stage.apply(raw) * 0.55)
+            let previous = soft_clip(outgoing.inner.stage.apply(raw) * 0.55)
                 * envelope
                 * self.stack.gain
-                * outgoing.output_gain;
-            shaped += (previous - shaped) * outgoing.weight;
-            outgoing.weight -= outgoing.step;
-            if outgoing.weight <= 0.0 {
+                * outgoing.inner.output_gain;
+            shaped = mix(shaped, previous, outgoing.advance());
+            if outgoing.is_done() {
                 self.outgoing = None;
             }
         }

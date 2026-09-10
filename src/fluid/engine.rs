@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 
 use crate::fx::compression::{CompressorParams, StereoCompressor};
+use crate::fx::crossfade::{Outgoing, mix_stereo};
 use crate::fx::delay::{DelayParams, StereoDelay};
 use crate::fx::drive;
 use crate::fx::filter::{FilterParams, FilterType, StereoFilter};
@@ -45,17 +46,14 @@ impl SlotFx {
 /// crossfades back to the dry signal, and only then is it dropped. `slot` is
 /// the slot's field values captured at the moment it was retired, since the
 /// live slot has already moved on to whatever replaced it.
-struct RetiringFx {
+struct RetiredFx {
     fx: SlotFx,
     slot: ModuleSlot,
-    /// Weight of the retiring processor's output, walking 1.0 down to 0.0.
-    weight: f32,
-    step: f32,
 }
 
 struct ModuleFxBank {
     slots: [Option<SlotFx>; MODULE_LAYERS * MODULE_SLOTS],
-    retiring: [Option<RetiringFx>; MODULE_LAYERS * MODULE_SLOTS],
+    retiring: [Option<Outgoing<RetiredFx>>; MODULE_LAYERS * MODULE_SLOTS],
     /// Each slot's field values from the last frame it was loaded. A retiring
     /// processor keeps running on these, not on the live slot: by the time a
     /// removal is noticed the live slot has already been cleared, and its
@@ -63,7 +61,7 @@ struct ModuleFxBank {
     last_loaded: [ModuleSlot; MODULE_LAYERS * MODULE_SLOTS],
     max_delay_samples: usize,
     sample_rate: f32,
-    retire_step: f32,
+    retire_fade_samples: f32,
 }
 
 impl ModuleFxBank {
@@ -77,7 +75,7 @@ impl ModuleFxBank {
             // The same window every other click-free level change in the
             // engine uses, so a module leaving sounds like any other gain
             // change rather than its own event.
-            retire_step: 1.0 / (LEVEL_RAMP_MS * 0.001 * sample_rate).max(1.0),
+            retire_fade_samples: LEVEL_RAMP_MS * 0.001 * sample_rate,
         }
     }
 
@@ -176,12 +174,13 @@ impl ModuleFxBank {
         let Some(fx) = self.slots[index].take() else {
             return;
         };
-        self.retiring[index] = Some(RetiringFx {
-            fx,
-            slot: self.last_loaded[index],
-            weight: 1.0,
-            step: self.retire_step,
-        });
+        self.retiring[index] = Some(Outgoing::start(
+            RetiredFx {
+                fx,
+                slot: self.last_loaded[index],
+            },
+            self.retire_fade_samples,
+        ));
     }
 
     /// Crossfades a retiring processor's contribution back to dry, then drops
@@ -197,22 +196,18 @@ impl ModuleFxBank {
             return sample;
         };
         let wet = Self::process_slot_fx(
-            &mut retiring.fx,
-            &retiring.slot,
+            &mut retiring.inner.fx,
+            &retiring.inner.slot,
             sample,
             timing,
             max_delay_samples,
             sample_rate,
         );
-        let weight = retiring.weight;
-        retiring.weight -= retiring.step;
-        if retiring.weight <= 0.0 {
+        let weight = retiring.advance();
+        if retiring.is_done() {
             self.retiring[index] = None;
         }
-        (
-            sample.0 + (wet.0 - sample.0) * weight,
-            sample.1 + (wet.1 - sample.1) * weight,
-        )
+        mix_stereo(sample, wet, weight)
     }
 
     fn process(
