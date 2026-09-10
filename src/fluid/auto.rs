@@ -818,16 +818,12 @@ mod tests {
         let morph = MorphState::new(
             vec![
                 SongState {
-                    controls: from_state,
                     automation: from_auto,
-                    tonal_sequence: None,
-                    muted: MuteState::default(),
+                    ..SongState::from_controls(from_state)
                 },
                 SongState {
-                    controls: to_state,
                     automation: to_auto,
-                    tonal_sequence: None,
-                    muted: MuteState::default(),
+                    ..SongState::from_controls(to_state)
                 },
             ],
             6,
@@ -860,16 +856,12 @@ mod tests {
         let morph = MorphState::new(
             vec![
                 SongState {
-                    controls: FluidControls::default(),
                     automation: from_auto,
-                    tonal_sequence: None,
-                    muted: MuteState::default(),
+                    ..SongState::from_controls(FluidControls::default())
                 },
                 SongState {
-                    controls: FluidControls::default(),
                     automation: to_auto,
-                    tonal_sequence: None,
-                    muted: MuteState::default(),
+                    ..SongState::from_controls(FluidControls::default())
                 },
             ],
             6,
@@ -895,22 +887,16 @@ mod tests {
         let morph = MorphState::new(
             vec![
                 SongState {
-                    controls: FluidControls::default(),
                     automation: routed,
-                    tonal_sequence: None,
-                    muted: MuteState::default(),
+                    ..SongState::from_controls(FluidControls::default())
                 },
                 SongState {
-                    controls: FluidControls::default(),
                     automation: unrouted.clone(),
-                    tonal_sequence: None,
-                    muted: MuteState::default(),
+                    ..SongState::from_controls(FluidControls::default())
                 },
                 SongState {
-                    controls: FluidControls::default(),
                     automation: unrouted,
-                    tonal_sequence: None,
-                    muted: MuteState::default(),
+                    ..SongState::from_controls(FluidControls::default())
                 },
             ],
             6,

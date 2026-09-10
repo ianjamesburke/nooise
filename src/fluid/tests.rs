@@ -1954,10 +1954,8 @@ fn song_code_round_trips_tonal_sequence_state() {
         evolution_count: 9,
     };
     let song = SongState {
-        controls: FluidControls::default(),
-        automation: AutomationState::default(),
         tonal_sequence: Some(sequence.clone()),
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let decoded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
@@ -2181,10 +2179,8 @@ fn song_code_round_trips_lfo_automation_record() {
         },
     );
     let song = SongState {
-        controls,
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(controls)
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4199,10 +4195,8 @@ fn song_code_round_trips_steps_shape() {
     route.steps[4] = 0.8;
     automation.set_route(ControlAddress::new("master.level"), route);
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4509,10 +4503,8 @@ fn song_code_round_trips_stacked_lfo_lanes() {
         },
     ));
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4575,10 +4567,8 @@ fn song_code_round_trips_non_sine_lfo_shape() {
         },
     );
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4604,10 +4594,8 @@ fn song_code_round_trips_envelope_routes() {
         },
     );
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4679,10 +4667,8 @@ fn song_code_round_trips_seeded_lfo_and_envelope() {
         },
     );
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
