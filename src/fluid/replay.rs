@@ -485,7 +485,7 @@ struct ActionRecord {
     effects: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct DivergenceSignature {
     field: String,
     left: String,
@@ -505,9 +505,6 @@ enum PropertyViolation {
         expected: String,
         observed: String,
     },
-    InvalidPerformanceState {
-        detail: String,
-    },
     AcceptedFrameDeadlineExceeded {
         elapsed: Duration,
     },
@@ -524,118 +521,9 @@ enum PropertyViolation {
     EdgeChangedOnNonPress {
         record: Box<ActionRecord>,
     },
-    UnsupportedHoldCount {
-        expected: usize,
-        observed: usize,
-    },
-    DeferredHoldMissing {
-        expected: usize,
-        observed: usize,
-    },
     RenderError {
         message: String,
     },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum ViolationKey {
-    SourceError {
-        kind: io::ErrorKind,
-        message: String,
-    },
-    SchedulerDidNotConverge {
-        turn_limit: usize,
-    },
-    KeyboardOwnerMismatch {
-        expected: String,
-        observed: String,
-    },
-    InvalidPerformanceState(String),
-    AcceptedFrameDeadlineExceeded {
-        elapsed: Duration,
-    },
-    QueueCapacityExceeded {
-        observed: usize,
-        capacity: usize,
-    },
-    FrameGapExceeded {
-        gap: Duration,
-    },
-    NondeterministicReplay {
-        signature: DivergenceSignature,
-    },
-    EdgeChangedOnNonPress {
-        action: String,
-        before: String,
-        after: String,
-        effects: String,
-    },
-    UnsupportedHoldCount {
-        expected: usize,
-        observed: usize,
-    },
-    DeferredHoldMissing {
-        expected: usize,
-        observed: usize,
-    },
-    RenderError {
-        message: String,
-    },
-}
-
-impl PropertyViolation {
-    fn key(&self) -> ViolationKey {
-        match self {
-            Self::SourceError { kind, message } => ViolationKey::SourceError {
-                kind: *kind,
-                message: message.clone(),
-            },
-            Self::SchedulerDidNotConverge { turn_limit } => ViolationKey::SchedulerDidNotConverge {
-                turn_limit: *turn_limit,
-            },
-            Self::KeyboardOwnerMismatch { expected, observed } => {
-                ViolationKey::KeyboardOwnerMismatch {
-                    expected: expected.clone(),
-                    observed: observed.clone(),
-                }
-            }
-            Self::InvalidPerformanceState { detail } => {
-                ViolationKey::InvalidPerformanceState(detail.clone())
-            }
-            Self::AcceptedFrameDeadlineExceeded { elapsed } => {
-                ViolationKey::AcceptedFrameDeadlineExceeded { elapsed: *elapsed }
-            }
-            Self::QueueCapacityExceeded { observed, capacity } => {
-                ViolationKey::QueueCapacityExceeded {
-                    observed: *observed,
-                    capacity: *capacity,
-                }
-            }
-            Self::FrameGapExceeded { gap } => ViolationKey::FrameGapExceeded { gap: *gap },
-            Self::NondeterministicReplay { signature } => ViolationKey::NondeterministicReplay {
-                signature: signature.clone(),
-            },
-            Self::EdgeChangedOnNonPress { record } => ViolationKey::EdgeChangedOnNonPress {
-                action: format!("{:?}", record.action),
-                before: format!("{:?}", record.before),
-                after: format!("{:?}", record.after),
-                effects: format!("{:?}", record.effects),
-            },
-            Self::UnsupportedHoldCount { expected, observed } => {
-                ViolationKey::UnsupportedHoldCount {
-                    expected: *expected,
-                    observed: *observed,
-                }
-            }
-            Self::DeferredHoldMissing { expected, observed } => ViolationKey::DeferredHoldMissing {
-                expected: *expected,
-                observed: *observed,
-            },
-            Self::RenderError { message } => ViolationKey::RenderError {
-                message: message.clone(),
-            },
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1135,18 +1023,14 @@ fn checked_replay(
     mut rerun: impl FnMut(&[TraceEvent]) -> ReplayOutcome,
 ) -> ReplayResult {
     if let Some(violation) = &outcome.violation {
-        let key = violation.key();
         let minimal = minimize_trace(trace.to_vec(), |candidate| {
-            rerun(candidate)
-                .violation
-                .as_ref()
-                .is_some_and(|candidate| candidate.key() == key)
+            rerun(candidate).violation.as_ref() == Some(violation)
         });
         let minimized = rerun(&minimal);
         let minimized_violation = minimized
             .violation
             .as_ref()
-            .filter(|candidate| candidate.key() == key)
+            .filter(|candidate| *candidate == violation)
             .unwrap_or(violation);
         panic!(
             "{}",
@@ -3181,12 +3065,10 @@ fn arbitrary_event_streams_preserve_runtime_and_model_invariants() {
                 .filter(|record| record.action.intent.phase_policy() == PhasePolicy::Edge)
                 .count();
             if let Some(class) = nondeterministic_violation(&first.result, &second.result) {
-                let key = class.key();
                 let minimal = minimize_trace(trace.clone(), |candidate| {
                     let left = replay_outcome(candidate, capabilities);
                     let right = replay_outcome(candidate, capabilities);
-                    nondeterministic_violation(&left.result, &right.result)
-                        .is_some_and(|candidate| candidate.key() == key)
+                    nondeterministic_violation(&left.result, &right.result).as_ref() == Some(&class)
                 });
                 let left = replay_outcome(&minimal, capabilities);
                 let right = replay_outcome(&minimal, capabilities);
@@ -3196,12 +3078,8 @@ fn arbitrary_event_streams_preserve_runtime_and_model_invariants() {
                 );
             }
             if let Some(violation) = first.violation.clone() {
-                let violation_key = violation.key();
                 let minimal = minimize_trace(trace.clone(), |candidate| {
-                    replay_outcome(candidate, capabilities)
-                        .violation
-                        .as_ref()
-                        .is_some_and(|candidate| candidate.key() == violation_key)
+                    replay_outcome(candidate, capabilities).violation.as_ref() == Some(&violation)
                 });
                 let left = replay_outcome(&minimal, capabilities);
                 let right = replay_outcome(&minimal, capabilities);
@@ -3402,211 +3280,6 @@ fn failure_minimizer_returns_a_replayable_delta_reduced_trace() {
 }
 
 #[test]
-fn violation_keys_retain_causal_action_identity() {
-    let violation = |intent| PropertyViolation::EdgeChangedOnNonPress {
-        record: Box::new(ActionRecord {
-            action: SemanticAction {
-                phase: InputPhase::Repeat,
-                intent,
-            },
-            before: InteractionModel::default(),
-            after: InteractionModel::default(),
-            effects: vec!["unexpected".into()],
-        }),
-    };
-    assert_ne!(violation(Intent::Save).key(), violation(Intent::Quit).key());
-
-    let record_violation =
-        |before: InteractionModel, after: InteractionModel, effects: Vec<String>| {
-            PropertyViolation::EdgeChangedOnNonPress {
-                record: Box::new(ActionRecord {
-                    action: SemanticAction {
-                        phase: InputPhase::Repeat,
-                        intent: Intent::Save,
-                    },
-                    before,
-                    after,
-                    effects,
-                }),
-            }
-        };
-    let base = record_violation(
-        InteractionModel::default(),
-        InteractionModel::default(),
-        vec![],
-    );
-    let different_before = record_violation(
-        InteractionModel {
-            mode: InteractionMode::Numeric(NumericEntry {
-                buffer: "1".into(),
-                resume: None,
-            }),
-            ..InteractionModel::default()
-        },
-        InteractionModel::default(),
-        vec![],
-    );
-    let different_after = record_violation(
-        InteractionModel::default(),
-        InteractionModel {
-            mode: InteractionMode::Palette(PaletteMode::default()),
-            ..InteractionModel::default()
-        },
-        vec![],
-    );
-    let different_effects = record_violation(
-        InteractionModel::default(),
-        InteractionModel::default(),
-        vec!["Save=>unexpected".into()],
-    );
-    for different in [different_before, different_after, different_effects] {
-        assert_ne!(base.key(), different.key());
-    }
-
-    let pairs = [
-        (
-            PropertyViolation::SourceError {
-                kind: io::ErrorKind::Other,
-                message: "left".into(),
-            },
-            PropertyViolation::SourceError {
-                kind: io::ErrorKind::Other,
-                message: "right".into(),
-            },
-        ),
-        (
-            PropertyViolation::SourceError {
-                kind: io::ErrorKind::Other,
-                message: "same".into(),
-            },
-            PropertyViolation::SourceError {
-                kind: io::ErrorKind::WouldBlock,
-                message: "same".into(),
-            },
-        ),
-        (
-            PropertyViolation::SchedulerDidNotConverge { turn_limit: 10 },
-            PropertyViolation::SchedulerDidNotConverge { turn_limit: 11 },
-        ),
-        (
-            PropertyViolation::KeyboardOwnerMismatch {
-                expected: "BROWSE".into(),
-                observed: "DECK".into(),
-            },
-            PropertyViolation::KeyboardOwnerMismatch {
-                expected: "BROWSE".into(),
-                observed: "SEQUENCE".into(),
-            },
-        ),
-        (
-            PropertyViolation::KeyboardOwnerMismatch {
-                expected: "BROWSE".into(),
-                observed: "DECK".into(),
-            },
-            PropertyViolation::KeyboardOwnerMismatch {
-                expected: "PALETTE".into(),
-                observed: "DECK".into(),
-            },
-        ),
-        (
-            PropertyViolation::InvalidPerformanceState {
-                detail: "selector=4".into(),
-            },
-            PropertyViolation::InvalidPerformanceState {
-                detail: "selector=5".into(),
-            },
-        ),
-        (
-            PropertyViolation::AcceptedFrameDeadlineExceeded {
-                elapsed: Duration::from_millis(51),
-            },
-            PropertyViolation::AcceptedFrameDeadlineExceeded {
-                elapsed: Duration::from_millis(52),
-            },
-        ),
-        (
-            PropertyViolation::QueueCapacityExceeded {
-                observed: 65,
-                capacity: 64,
-            },
-            PropertyViolation::QueueCapacityExceeded {
-                observed: 66,
-                capacity: 64,
-            },
-        ),
-        (
-            PropertyViolation::QueueCapacityExceeded {
-                observed: 65,
-                capacity: 64,
-            },
-            PropertyViolation::QueueCapacityExceeded {
-                observed: 65,
-                capacity: 63,
-            },
-        ),
-        (
-            PropertyViolation::FrameGapExceeded {
-                gap: Duration::from_millis(51),
-            },
-            PropertyViolation::FrameGapExceeded {
-                gap: Duration::from_millis(52),
-            },
-        ),
-        (
-            PropertyViolation::UnsupportedHoldCount {
-                expected: 1,
-                observed: 0,
-            },
-            PropertyViolation::UnsupportedHoldCount {
-                expected: 2,
-                observed: 0,
-            },
-        ),
-        (
-            PropertyViolation::UnsupportedHoldCount {
-                expected: 1,
-                observed: 0,
-            },
-            PropertyViolation::UnsupportedHoldCount {
-                expected: 1,
-                observed: 2,
-            },
-        ),
-        (
-            PropertyViolation::DeferredHoldMissing {
-                expected: 1,
-                observed: 0,
-            },
-            PropertyViolation::DeferredHoldMissing {
-                expected: 1,
-                observed: 2,
-            },
-        ),
-        (
-            PropertyViolation::DeferredHoldMissing {
-                expected: 1,
-                observed: 0,
-            },
-            PropertyViolation::DeferredHoldMissing {
-                expected: 2,
-                observed: 0,
-            },
-        ),
-        (
-            PropertyViolation::RenderError {
-                message: "left".into(),
-            },
-            PropertyViolation::RenderError {
-                message: "right".into(),
-            },
-        ),
-    ];
-    for (left, right) in pairs {
-        assert_ne!(left.key(), right.key(), "{left:?} and {right:?}");
-    }
-}
-
-#[test]
 fn nondeterministic_keys_and_minimizer_predicates_retain_the_exact_divergence() {
     let baseline = replay(&[], full_capabilities());
     let mut queue_divergence = baseline.clone();
@@ -3618,10 +3291,9 @@ fn nondeterministic_keys_and_minimizer_predicates_retain_the_exact_divergence() 
         .expect("queue difference must produce a signature");
     let clipboard_violation = nondeterministic_violation(&baseline, &clipboard_divergence)
         .expect("clipboard difference must produce a signature");
-    assert_ne!(queue_violation.key(), clipboard_violation.key());
+    assert_ne!(queue_violation, clipboard_violation);
 
-    let target = queue_violation.key();
-    let matches_minimizer_target = |candidate: &PropertyViolation| candidate.key() == target;
+    let matches_minimizer_target = |candidate: &PropertyViolation| *candidate == queue_violation;
     assert!(matches_minimizer_target(&queue_violation));
     assert!(!matches_minimizer_target(&clipboard_violation));
 }
@@ -3663,22 +3335,19 @@ fn ddmin_retains_the_exact_nondeterministic_divergence_signature() {
         key(0, FixtureKey::Down, InputPhase::Press),
         target_event.clone(),
     ];
-    let target_key = synthetic_violation(std::slice::from_ref(&target_event))
-        .expect("target event must diverge")
-        .key();
-    let competitor_key =
-        synthetic_violation(&[key(0, FixtureKey::Character('q'), InputPhase::Press)])
-            .expect("competitor event must diverge")
-            .key();
-    assert_ne!(target_key, competitor_key);
+    let target = synthetic_violation(std::slice::from_ref(&target_event))
+        .expect("target event must diverge");
+    let competitor = synthetic_violation(&[key(0, FixtureKey::Character('q'), InputPhase::Press)])
+        .expect("competitor event must diverge");
+    assert_ne!(target, competitor);
 
     let minimal = minimize_trace(original, |candidate| {
-        synthetic_violation(candidate).is_some_and(|violation| violation.key() == target_key)
+        synthetic_violation(candidate).as_ref() == Some(&target)
     });
     let minimized_violation =
         synthetic_violation(&minimal).expect("minimized trace must still diverge");
-    assert_eq!(minimized_violation.key(), target_key);
-    assert_ne!(minimized_violation.key(), competitor_key);
+    assert_eq!(minimized_violation, target);
+    assert_ne!(minimized_violation, competitor);
     assert_eq!(minimal, vec![target_event]);
     assert!(ReplayTrace::parse(&ReplayTrace { events: minimal }.fixture()).is_ok());
 }
@@ -3747,21 +3416,19 @@ fn ddmin_retains_the_exact_edge_transition_record() {
         key(0, FixtureKey::Right, InputPhase::Press),
         target_event.clone(),
     ];
-    let target_key = edge_violation(std::slice::from_ref(&target_event))
-        .expect("target event must violate")
-        .key();
-    let competitor_key = edge_violation(&[key(0, FixtureKey::Character('q'), InputPhase::Repeat)])
-        .expect("competitor event must violate")
-        .key();
-    assert_ne!(target_key, competitor_key);
+    let target =
+        edge_violation(std::slice::from_ref(&target_event)).expect("target event must violate");
+    let competitor = edge_violation(&[key(0, FixtureKey::Character('q'), InputPhase::Repeat)])
+        .expect("competitor event must violate");
+    assert_ne!(target, competitor);
 
     let minimal = minimize_trace(original, |candidate| {
-        edge_violation(candidate).is_some_and(|violation| violation.key() == target_key)
+        edge_violation(candidate).as_ref() == Some(&target)
     });
     let minimized_violation =
         edge_violation(&minimal).expect("minimized trace must retain an edge violation");
-    assert_eq!(minimized_violation.key(), target_key);
-    assert_ne!(minimized_violation.key(), competitor_key);
+    assert_eq!(minimized_violation, target);
+    assert_ne!(minimized_violation, competitor);
     assert_eq!(minimal, vec![target_event]);
     assert!(ReplayTrace::parse(&ReplayTrace { events: minimal }.fixture()).is_ok());
 }
