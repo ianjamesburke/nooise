@@ -1040,10 +1040,53 @@ impl Scheduler {
 /// the transport types it encodes; `replay` is its only consumer.
 #[cfg(test)]
 mod recording {
+    use std::cell::Cell;
     use std::fmt::Write as _;
+    use std::rc::Rc;
     use std::time::Duration;
 
     use super::*;
+
+    /// A clock tests advance by hand; shared handles see the same time.
+    #[derive(Clone)]
+    pub(crate) struct FakeClock(Rc<Cell<Duration>>);
+
+    impl FakeClock {
+        pub(crate) fn new() -> Self {
+            Self(Rc::new(Cell::new(Duration::ZERO)))
+        }
+
+        pub(crate) fn advance(&self, duration: Duration) {
+            self.0.set(self.0.get().saturating_add(duration));
+        }
+    }
+
+    impl Clock for FakeClock {
+        fn now(&self) -> Duration {
+            self.0.get()
+        }
+    }
+
+    impl TerminalCapabilities {
+        /// Every phase-bearing capability granted, so holds are trustworthy.
+        pub(crate) fn full() -> Self {
+            Self {
+                key_event_types: true,
+                plain_key_releases: true,
+            }
+        }
+    }
+
+    impl TransportEvent {
+        /// A single (non-coalesced) key event.
+        pub(crate) fn key(code: PhysicalKey, modifiers: Modifiers, phase: InputPhase) -> Self {
+            Self::Key {
+                key: TransportKey { code, modifiers },
+                phase,
+                repeat_count: 1,
+            }
+        }
+    }
 
     /// In-memory sanitized recorder for capturing a live normalized input stream.
     /// Call `record` at the scheduler seam and persist `finish()` only when the
@@ -1210,12 +1253,12 @@ mod recording {
 }
 
 #[cfg(test)]
-pub(crate) use recording::{SanitizedTraceRecorder, decode_physical_key, parse_phase};
+pub(crate) use recording::{FakeClock, SanitizedTraceRecorder, decode_physical_key, parse_phase};
 
 #[cfg(test)]
 mod tests {
 
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::rc::Rc;
@@ -1425,21 +1468,12 @@ mod tests {
             KeyEventKind::Release,
         );
         assert_eq!(
-            normalize_key_event(
-                event,
-                TerminalCapabilities {
-                    key_event_types: true,
-                    plain_key_releases: true,
-                },
-            ),
-            TransportEvent::Key {
-                key: TransportKey {
-                    code: PhysicalKey::Character('p'),
-                    modifiers: Modifiers(Modifiers::CONTROL.0 | Modifiers::SHIFT.0),
-                },
-                phase: InputPhase::Release,
-                repeat_count: 1,
-            }
+            normalize_key_event(event, TerminalCapabilities::full(),),
+            TransportEvent::key(
+                PhysicalKey::Character('p'),
+                Modifiers(Modifiers::CONTROL.0 | Modifiers::SHIFT.0),
+                InputPhase::Release
+            )
         );
     }
 
@@ -1459,23 +1493,17 @@ mod tests {
 
     #[test]
     fn canonical_mapper_preserves_performance_entry_phase_for_kernel_policy() {
-        let event = TransportEvent::Key {
-            key: TransportKey {
-                code: PhysicalKey::Character('p'),
-                modifiers: Modifiers::default(),
-            },
-            phase: InputPhase::Repeat,
-            repeat_count: 1,
-        };
+        let event = TransportEvent::key(
+            PhysicalKey::Character('p'),
+            Modifiers::default(),
+            InputPhase::Repeat,
+        );
         assert_eq!(
             map_input(
                 &InteractionMode::Browsing,
                 Navigation::default(),
                 &event,
-                TerminalCapabilities {
-                    key_event_types: true,
-                    plain_key_releases: true,
-                }
+                TerminalCapabilities::full()
             ),
             InputMapping::Action(SemanticAction {
                 phase: InputPhase::Repeat,
@@ -1510,23 +1538,14 @@ mod tests {
             .into_iter()
             .zip(expected)
         {
-            let event = TransportEvent::Key {
-                key: TransportKey {
-                    code: PhysicalKey::Character('a'),
-                    modifiers: Modifiers::default(),
-                },
-                phase,
-                repeat_count: 1,
-            };
+            let event =
+                TransportEvent::key(PhysicalKey::Character('a'), Modifiers::default(), phase);
             assert_eq!(
                 map_input(
                     &model,
                     Navigation::default(),
                     &event,
-                    TerminalCapabilities {
-                        key_event_types: true,
-                        plain_key_releases: true,
-                    }
+                    TerminalCapabilities::full()
                 ),
                 expected
             );
@@ -1535,14 +1554,11 @@ mod tests {
 
     #[test]
     fn mapper_preserves_modal_ownership_and_names_context_gaps() {
-        let ctrl_s = TransportEvent::Key {
-            key: TransportKey {
-                code: PhysicalKey::Character('s'),
-                modifiers: Modifiers::CONTROL,
-            },
-            phase: InputPhase::Press,
-            repeat_count: 1,
-        };
+        let ctrl_s = TransportEvent::key(
+            PhysicalKey::Character('s'),
+            Modifiers::CONTROL,
+            InputPhase::Press,
+        );
         assert!(matches!(
             map_input(
                 &InteractionMode::Browsing,
@@ -1565,14 +1581,11 @@ mod tests {
             InputMapping::Ignored
         ));
 
-        let opener = TransportEvent::Key {
-            key: TransportKey {
-                code: PhysicalKey::Character('f'),
-                modifiers: Modifiers::default(),
-            },
-            phase: InputPhase::Press,
-            repeat_count: 1,
-        };
+        let opener = TransportEvent::key(
+            PhysicalKey::Character('f'),
+            Modifiers::default(),
+            InputPhase::Press,
+        );
         assert!(matches!(
             map_input(
                 &InteractionMode::Browsing,
@@ -1586,14 +1599,8 @@ mod tests {
             })
         ));
 
-        let back_tab = TransportEvent::Key {
-            key: TransportKey {
-                code: PhysicalKey::BackTab,
-                modifiers: Modifiers::SHIFT,
-            },
-            phase: InputPhase::Press,
-            repeat_count: 1,
-        };
+        let back_tab =
+            TransportEvent::key(PhysicalKey::BackTab, Modifiers::SHIFT, InputPhase::Press);
         assert!(matches!(
             map_input(
                 &InteractionMode::Browsing,
@@ -1610,11 +1617,7 @@ mod tests {
 
     #[test]
     fn mapper_covers_decided_bindings_and_classifies_staged_ones() {
-        let event = |code, modifiers| TransportEvent::Key {
-            key: TransportKey { code, modifiers },
-            phase: InputPhase::Press,
-            repeat_count: 1,
-        };
+        let event = |code, modifiers| TransportEvent::key(code, modifiers, InputPhase::Press);
         let browsing = InteractionMode::Browsing;
         for (input, intent) in [
             (
@@ -1754,25 +1757,6 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
-    struct FakeClock(Rc<Cell<Duration>>);
-
-    impl FakeClock {
-        fn new() -> Self {
-            Self(Rc::new(Cell::new(Duration::ZERO)))
-        }
-
-        fn advance(&self, duration: Duration) {
-            self.0.set(self.0.get().saturating_add(duration));
-        }
-    }
-
-    impl Clock for FakeClock {
-        fn now(&self) -> Duration {
-            self.0.get()
-        }
-    }
-
     struct FakeSource {
         clock: FakeClock,
         events: VecDeque<TransportEvent>,
@@ -1820,14 +1804,11 @@ mod tests {
     }
 
     fn key(character: char, phase: InputPhase) -> TransportEvent {
-        TransportEvent::Key {
-            key: TransportKey {
-                code: PhysicalKey::Character(character),
-                modifiers: Modifiers::default(),
-            },
+        TransportEvent::key(
+            PhysicalKey::Character(character),
+            Modifiers::default(),
             phase,
-            repeat_count: 1,
-        }
+        )
     }
 
     fn config() -> SchedulerConfig {

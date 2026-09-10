@@ -4,11 +4,9 @@
 //! dimensions, lifecycle markers, and explicit tick/idle records. Paste and
 //! mouse payloads are always redacted.
 
-use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io;
-use std::rc::Rc;
 use std::time::Duration;
 
 use crossterm::event::{
@@ -29,7 +27,7 @@ use super::interaction::{
     SequenceStage,
 };
 use super::runtime::{
-    Clock, EventSource, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
+    Clock, EventSource, FakeClock, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
     SanitizedTraceRecorder, Scheduler, SchedulerConfig, TerminalCapabilities, TransportEvent,
     TransportKey, decode_physical_key, normalize_key_event, parse_phase,
 };
@@ -290,25 +288,6 @@ impl fmt::Display for FixtureError {
 }
 
 impl std::error::Error for FixtureError {}
-
-#[derive(Clone)]
-struct FakeClock(Rc<Cell<Duration>>);
-
-impl FakeClock {
-    fn new() -> Self {
-        Self(Rc::new(Cell::new(Duration::ZERO)))
-    }
-
-    fn advance(&self, duration: Duration) {
-        self.0.set(self.0.get().saturating_add(duration));
-    }
-}
-
-impl Clock for FakeClock {
-    fn now(&self) -> Duration {
-        self.0.get()
-    }
-}
 
 /// One step of a scripted session: a clock advance, a transport event, or an
 /// explicit tick/idle boundary. Boundaries are part of the fixture because
@@ -1013,13 +992,6 @@ fn checked_replay(
     outcome.result
 }
 
-fn full_capabilities() -> TerminalCapabilities {
-    TerminalCapabilities {
-        key_event_types: true,
-        plain_key_releases: true,
-    }
-}
-
 #[test]
 fn sanitized_trace_fixture_round_trips_without_user_payloads() {
     let mut recorder = SanitizedTraceRecorder::new(Duration::ZERO);
@@ -1030,7 +1002,7 @@ fn sanitized_trace_fixture_round_trips_without_user_payloads() {
             kind: KeyEventKind::Repeat,
             state: KeyEventState::NONE,
         },
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     if let TransportEvent::Key { repeat_count, .. } = &mut repeated {
         *repeat_count = 4;
@@ -1040,7 +1012,7 @@ fn sanitized_trace_fixture_round_trips_without_user_payloads() {
             1,
             normalize_key_event(
                 KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
-                full_capabilities(),
+                TerminalCapabilities::full(),
             ),
         ),
         (2, repeated),
@@ -1053,7 +1025,7 @@ fn sanitized_trace_fixture_round_trips_without_user_payloads() {
                     kind: KeyEventKind::Release,
                     state: KeyEventState::NONE,
                 },
-                full_capabilities(),
+                TerminalCapabilities::full(),
             ),
         ),
         (
@@ -1071,7 +1043,7 @@ fn sanitized_trace_fixture_round_trips_without_user_payloads() {
             9,
             normalize_key_event(
                 KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE),
-                full_capabilities(),
+                TerminalCapabilities::full(),
             ),
         ),
         (10, TransportEvent::Shutdown),
@@ -1237,7 +1209,7 @@ fn every_normalized_physical_key_identity_round_trips_through_replay() {
                             kind,
                             state: KeyEventState::NONE,
                         },
-                        full_capabilities(),
+                        TerminalCapabilities::full(),
                     );
                     let TransportEvent::Key {
                         repeat_count: normalized_count,
@@ -1282,7 +1254,7 @@ fn every_normalized_physical_key_identity_round_trips_through_replay() {
                         InputPhase::Press,
                         1 << 1,
                     ));
-                    let outcome = replay_outcome(&trace.events, full_capabilities());
+                    let outcome = replay_outcome(&trace.events, TerminalCapabilities::full());
                     assert!(
                         outcome.violation.is_none(),
                         "{code:?}/{phase:?}/{modifiers:?}/{repeat_count}: {:?}",
@@ -1308,7 +1280,7 @@ fn replay_modifier_bits_cover_the_complete_six_bit_transport_domain() {
         let parsed = ReplayTrace::parse(&trace.fixture()).expect("fixture must parse");
         assert_eq!(parsed, trace);
         let clock = FakeClock::new();
-        let mut source = ScriptedSource::new(&parsed, full_capabilities(), clock);
+        let mut source = ScriptedSource::new(&parsed, TerminalCapabilities::full(), clock);
         assert!(source.poll(Duration::ZERO).expect("poll"));
         let TransportEvent::Key { key, .. } = source.read().expect("read") else {
             panic!("expected key");
@@ -1326,7 +1298,7 @@ fn scripted_poll_matches_real_timeout_boundaries() {
         let trace = ReplayTrace {
             events: vec![key(delay, FixtureKey::Character('q'), InputPhase::Press)],
         };
-        let mut source = ScriptedSource::new(&trace, full_capabilities(), clock.clone());
+        let mut source = ScriptedSource::new(&trace, TerminalCapabilities::full(), clock.clone());
         assert_eq!(
             source.poll(Duration::from_millis(timeout)).unwrap(),
             expected_ready
@@ -1347,7 +1319,7 @@ fn explicit_tick_processes_and_idle_delimits_scheduler_turns() {
             TraceEvent::Idle { after_ms: 0 },
             key(0, PhysicalKey::Character('p'), InputPhase::Press),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(result.explicit_ticks, 1);
     assert_eq!(result.idle_boundaries, 1);
@@ -1381,7 +1353,7 @@ fn recorded_backtab_round_trips_through_the_full_pipeline() {
                 kind: KeyEventKind::Press,
                 state: KeyEventState::NONE,
             },
-            full_capabilities(),
+            TerminalCapabilities::full(),
         ),
     );
     let fixture = recorder.finish();
@@ -1396,7 +1368,7 @@ fn recorded_backtab_round_trips_through_the_full_pipeline() {
             repeat_count: 1,
         }]
     );
-    let result = replay(&trace.events, full_capabilities());
+    let result = replay(&trace.events, TerminalCapabilities::full());
     assert!(matches!(result.model.navigation, Navigation::Master { .. }));
     assert!(result.state_history.iter().any(|record| {
         record.action.intent == Intent::ChangePage(super::interaction::PageDirection::Previous)
@@ -1412,7 +1384,7 @@ fn scheduler_batches_ready_events_but_wakes_at_frame_deadline() {
             key(0, FixtureKey::Up, InputPhase::Press),
         ],
     };
-    let mut source = ScriptedSource::new(&trace, full_capabilities(), clock.clone());
+    let mut source = ScriptedSource::new(&trace, TerminalCapabilities::full(), clock.clone());
     let mut scheduler = Scheduler::new(SchedulerConfig::default(), Duration::ZERO);
     let initial = scheduler.collect_turn(&mut source, &clock).unwrap();
     assert!(initial.render_due);
@@ -1424,7 +1396,7 @@ fn scheduler_batches_ready_events_but_wakes_at_frame_deadline() {
     let trace = ReplayTrace {
         events: vec![key(50, FixtureKey::Character('q'), InputPhase::Press)],
     };
-    let mut source = ScriptedSource::new(&trace, full_capabilities(), clock.clone());
+    let mut source = ScriptedSource::new(&trace, TerminalCapabilities::full(), clock.clone());
     let mut scheduler = Scheduler::new(SchedulerConfig::default(), Duration::ZERO);
     assert!(
         scheduler
@@ -1505,8 +1477,8 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
     ];
 
     for (name, trace, expected_owner) in cases {
-        let first = replay(&trace, full_capabilities());
-        let second = replay(&trace, full_capabilities());
+        let first = replay(&trace, TerminalCapabilities::full());
+        let second = replay(&trace, TerminalCapabilities::full());
         assert_eq!(first, second, "{name} was not deterministic");
         assert_eq!(
             first.frames.last().map(|frame| frame.owner.as_str()),
@@ -1625,7 +1597,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
     }
 
     for (name, trace) in cases {
-        let outcome = replay_outcome(&trace, full_capabilities());
+        let outcome = replay_outcome(&trace, TerminalCapabilities::full());
         let expected = match name {
             "up" | "k" => ExpectedBinding {
                 owner: "BROWSE",
@@ -1962,7 +1934,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
             PerformanceKind::Sequence,
         ),
     ] {
-        let result = replay(&[plain(code)], full_capabilities());
+        let result = replay(&[plain(code)], TerminalCapabilities::full());
         assert!(
             matches!(result.model.mode, InteractionMode::Performance(_)),
             "{name}"
@@ -1995,7 +1967,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
     let immediate = replay_from_model(
         staged.clone(),
         &[plain(FixtureKey::Enter)],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert!(
         immediate
@@ -2006,7 +1978,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
     let next_bar = replay_from_model(
         staged,
         &[ctrl(FixtureKey::Character('b'))],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert!(
         next_bar.effects.iter().any(|effect| {
@@ -2024,7 +1996,7 @@ fn production_coordinator_keeps_nested_lfo_model_and_session_in_lockstep() {
             plain(FixtureKey::Character('f')),
             plain(FixtureKey::Character('v')),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(
         opened.model.mode,
@@ -2051,7 +2023,7 @@ fn production_coordinator_keeps_nested_lfo_model_and_session_in_lockstep() {
                 plain(FixtureKey::Down),
                 plain(close_key),
             ],
-            full_capabilities(),
+            TerminalCapabilities::full(),
         );
         assert_eq!(
             closed.model.mode,
@@ -2081,7 +2053,7 @@ fn escape_closes_a_neutral_lfo_without_trapping_the_keyboard_owner() {
 
     let closed = replay(
         &[plain(FixtureKey::Character('f')), plain(FixtureKey::Escape)],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
 
     assert_eq!(closed.model.mode, InteractionMode::Browsing);
@@ -2097,7 +2069,7 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
             InputPhase::Press,
             0b000011,
         )],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(ctrl_shift_save.clipboard_writes, 1);
     assert!(
@@ -2114,7 +2086,7 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
             InputPhase::Press,
             0b000011,
         )],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert!(
         ctrl_shift_quit
@@ -2128,7 +2100,7 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
             key(0, FixtureKey::Character('/'), InputPhase::Press),
             modified_key(0, FixtureKey::Character('B'), InputPhase::Press, 0b000001),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert!(matches!(
         shifted_palette.model.mode,
@@ -2142,7 +2114,7 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
             InputPhase::Press,
             0b000010,
         )],
-        full_capabilities(),
+        TerminalCapabilities::full(),
         &ClipboardError::Unavailable("no display server".into()),
     );
     assert_eq!(failed.clipboard_writes, 0);
@@ -2174,7 +2146,7 @@ fn production_tick_commits_pending_palette_edits_at_the_bar() {
             modified_key(0, FixtureKey::Character('b'), InputPhase::Press, 0b000010),
             TraceEvent::Tick { after_ms: 4_000 },
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(result.pending_edits, 0, "{result:#?}");
     assert_eq!(
@@ -2199,15 +2171,12 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
         }),
         ..InteractionModel::default()
     };
-    let mut harness = ReplayHarness::new(full_capabilities()).with_model(staged);
-    let stage_event = TransportEvent::Key {
-        key: TransportKey {
-            code: PhysicalKey::Character('b'),
-            modifiers: Modifiers::CONTROL,
-        },
-        phase: InputPhase::Press,
-        repeat_count: 1,
-    };
+    let mut harness = ReplayHarness::new(TerminalCapabilities::full()).with_model(staged);
+    let stage_event = TransportEvent::key(
+        PhysicalKey::Character('b'),
+        Modifiers::CONTROL,
+        InputPhase::Press,
+    );
     let staged_turn = super::coordinator::coordinate_production_turn(
         &mut harness.model,
         &[stage_event],
@@ -2235,14 +2204,8 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
         Some(4.0)
     );
 
-    let adjust_event = TransportEvent::Key {
-        key: TransportKey {
-            code: PhysicalKey::Right,
-            modifiers: Modifiers::default(),
-        },
-        phase: InputPhase::Press,
-        repeat_count: 1,
-    };
+    let adjust_event =
+        TransportEvent::key(PhysicalKey::Right, Modifiers::default(), InputPhase::Press);
     let due_turn = super::coordinator::coordinate_production_turn(
         &mut harness.model,
         &[adjust_event],
@@ -2300,7 +2263,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
             key(0, FixtureKey::Enter, InputPhase::Press),
             key(0, FixtureKey::Enter, InputPhase::Press),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
         select_custom_progression,
     );
     assert_eq!(
@@ -2350,7 +2313,7 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
         key(0, FixtureKey::Character(' '), InputPhase::Press),
         key(0, FixtureKey::Character(' '), InputPhase::Repeat),
     ];
-    let result = replay(&leaders, full_capabilities());
+    let result = replay(&leaders, TerminalCapabilities::full());
     assert!(matches!(
         result.model.mode,
         InteractionMode::Performance(PerformanceMode::Sequence {
@@ -2366,7 +2329,7 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
             key(0, FixtureKey::Character('q'), InputPhase::Press),
             key(0, FixtureKey::Character('q'), InputPhase::Repeat),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(
         quit.effects
@@ -2381,7 +2344,7 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
             modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1),
             modified_key(0, FixtureKey::Character('s'), InputPhase::Repeat, 1 << 1),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(
         save.effects
@@ -2399,7 +2362,7 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
             key(0, FixtureKey::Character('s'), InputPhase::Repeat),
             key(0, FixtureKey::Character('s'), InputPhase::Release),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(
         full.effects
@@ -2475,7 +2438,7 @@ fn performance_grammars_cover_actions_bursts_delayed_releases_escape_and_rearm()
             key(0, FixtureKey::Character('z'), InputPhase::Press),
             key(0, FixtureKey::Escape, InputPhase::Press),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(deck.model.mode, InteractionMode::Browsing);
     assert_eq!(deck.session_generation, 2);
@@ -2517,7 +2480,7 @@ fn performance_grammars_cover_actions_bursts_delayed_releases_escape_and_rearm()
             key(0, FixtureKey::Character('i'), InputPhase::Repeat),
             key(0, FixtureKey::Character('i'), InputPhase::Release),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(sequence.model.mode, InteractionMode::Browsing);
     assert_eq!(sequence.session_generation, 1);
@@ -2561,7 +2524,7 @@ fn sequence_exits_only_on_the_armed_action_release() {
         key(0, FixtureKey::Character('j'), InputPhase::Release),
         key(0, FixtureKey::Character('k'), InputPhase::Repeat),
     ];
-    let contained = replay(&prefix, full_capabilities());
+    let contained = replay(&prefix, TerminalCapabilities::full());
     assert!(matches!(
         contained.model.mode,
         InteractionMode::Performance(PerformanceMode::Sequence {
@@ -2576,7 +2539,7 @@ fn sequence_exits_only_on_the_armed_action_release() {
 
     let mut completed = prefix.to_vec();
     completed.push(key(0, FixtureKey::Character('k'), InputPhase::Release));
-    let completed = replay(&completed, full_capabilities());
+    let completed = replay(&completed, TerminalCapabilities::full());
     assert_eq!(completed.model.mode, InteractionMode::Browsing);
     assert_eq!(
         completed
@@ -2597,7 +2560,7 @@ fn performance_action_repeat_phase_is_mode_specific() {
             key(0, FixtureKey::Character('d'), InputPhase::Release),
             key(0, FixtureKey::Character('k'), InputPhase::Repeat),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(sequence.session_generation, 0);
     assert_eq!(
@@ -2632,7 +2595,7 @@ fn performance_action_repeat_phase_is_mode_specific() {
             key(0, FixtureKey::Character('d'), InputPhase::Release),
             key(0, FixtureKey::Character('k'), InputPhase::Repeat),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(deck.session_generation, 1);
     assert_eq!(
@@ -2661,7 +2624,7 @@ fn deck_chorded_selectors_apply_one_action_to_every_held_instrument() {
             key(0, FixtureKey::Character('f'), InputPhase::Press),
             key(0, FixtureKey::Character('u'), InputPhase::Press),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
 
     let control = |id| {
@@ -2690,7 +2653,7 @@ fn raw_performance_edit_acknowledges_real_cursor_target_exits_auto_and_updates_m
             key(0, FixtureKey::Character('s'), InputPhase::Release),
             key(0, FixtureKey::Character('k'), InputPhase::Press),
         ],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert!(!result.auto_running);
     assert_eq!(result.recent_ids, ["bass.level"]);
@@ -2723,17 +2686,26 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
             key(0, code, InputPhase::Repeat),
         ]
     };
-    let palette = replay(&repeated(FixtureKey::Character('/')), full_capabilities());
+    let palette = replay(
+        &repeated(FixtureKey::Character('/')),
+        TerminalCapabilities::full(),
+    );
     assert_eq!(
         palette.frames.last().map(|frame| frame.owner.as_str()),
         Some("PALETTE")
     );
-    let deck = replay(&repeated(FixtureKey::Character('p')), full_capabilities());
+    let deck = replay(
+        &repeated(FixtureKey::Character('p')),
+        TerminalCapabilities::full(),
+    );
     assert!(matches!(
         deck.model.mode,
         InteractionMode::Performance(PerformanceMode::Deck { .. })
     ));
-    let sequence = replay(&repeated(FixtureKey::Character(' ')), full_capabilities());
+    let sequence = replay(
+        &repeated(FixtureKey::Character(' ')),
+        TerminalCapabilities::full(),
+    );
     assert!(matches!(
         sequence.model.mode,
         InteractionMode::Performance(PerformanceMode::Sequence {
@@ -2751,7 +2723,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
             ..InteractionModel::default()
         },
         &repeated(FixtureKey::Enter),
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(
         numeric
@@ -2768,7 +2740,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
             ..InteractionModel::default()
         },
         &repeated(FixtureKey::Tab),
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert!(matches!(
         palette.model.mode,
@@ -2787,7 +2759,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
             ..InteractionModel::default()
         },
         &repeated(FixtureKey::Character('a')),
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert_eq!(
         performance
@@ -2807,7 +2779,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
             mode: InteractionMode::Browsing,
         },
         &repeated(FixtureKey::Enter),
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     assert!(matches!(
         drill.model.navigation,
@@ -2863,7 +2835,7 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
 
     for intent in edge_intents {
         for phase in [InputPhase::Repeat, InputPhase::Release] {
-            let mut harness = ReplayHarness::new(full_capabilities());
+            let mut harness = ReplayHarness::new(TerminalCapabilities::full());
             let mut context = ProductionCoordinatorContext {
                 effects: &mut harness.executor,
                 fluid: &harness.fluid,
@@ -2971,7 +2943,7 @@ fn escape_converges_from_every_owner_and_nested_depth() {
         let result = replay_from_model(
             model,
             &[escape.clone(), escape.clone(), escape.clone()],
-            full_capabilities(),
+            TerminalCapabilities::full(),
         );
         assert!(
             matches!(result.model.mode, InteractionMode::Browsing),
@@ -3008,7 +2980,7 @@ fn rapid_ready_source_has_a_bounded_nontrivial_admission_high_water() {
             )
         })
         .collect::<Vec<_>>();
-    let result = replay(&trace, full_capabilities());
+    let result = replay(&trace, TerminalCapabilities::full());
     assert!(result.max_queue > 1);
     if let Some(violation) = post_replay_violation(&result) {
         panic!(
@@ -3023,7 +2995,10 @@ fn arbitrary_event_streams_preserve_runtime_and_model_invariants() {
     let mut observed_edge_actions = 0;
     for seed in 1..=64_u64 {
         let trace = generated_trace(seed, 96);
-        for capabilities in [full_capabilities(), TerminalCapabilities::default()] {
+        for capabilities in [
+            TerminalCapabilities::full(),
+            TerminalCapabilities::default(),
+        ] {
             let first = replay_outcome(&trace, capabilities);
             let second = replay_outcome(&trace, capabilities);
             observed_edge_actions += first
@@ -3249,7 +3224,7 @@ fn failure_minimizer_returns_a_replayable_delta_reduced_trace() {
 
 #[test]
 fn nondeterministic_keys_and_minimizer_predicates_retain_the_exact_divergence() {
-    let baseline = replay(&[], full_capabilities());
+    let baseline = replay(&[], TerminalCapabilities::full());
     let mut queue_divergence = baseline.clone();
     queue_divergence.max_queue += 1;
     let mut clipboard_divergence = baseline.clone();
@@ -3404,10 +3379,10 @@ fn ddmin_retains_the_exact_edge_transition_record() {
 #[test]
 fn property_diagnostic_contains_minimal_trace_and_transition_details() {
     let minimal = vec![key(0, FixtureKey::Character('f'), InputPhase::Press)];
-    let left = replay(&minimal, full_capabilities());
+    let left = replay(&minimal, TerminalCapabilities::full());
     let right = replay(
         &[key(0, FixtureKey::Character('/'), InputPhase::Press)],
-        full_capabilities(),
+        TerminalCapabilities::full(),
     );
     let left_record = &left.state_history[0];
     assert_eq!(
