@@ -538,7 +538,9 @@ impl ControlSpec {
     pub(crate) fn apply_value(&self, value: f32, c: &mut FluidControls) {
         let spec = self.contextual(c);
         let next = match spec.entry {
-            Entry::Percent if spec.id.contains(".slot") => normalize_unit_input(value),
+            Entry::Percent if parse_module_slot_id(spec.id).is_some() => {
+                normalize_unit_input(value)
+            }
             Entry::Percent => normalize_unit_input(value) * spec.max,
             Entry::BeatsAsBars => nearest_power_of_two(value / 4.0, spec.min, spec.max),
             Entry::Round => value.round(),
@@ -1665,11 +1667,7 @@ pub(crate) fn module_slot_collapsed_id(
     controls: &FluidControls,
 ) -> Option<&'static str> {
     let kind = controls.modules.for_tab(tab)?.get(slot)?.kind()?;
-    let suffix = format!(".slot{}.{}", slot + 1, kind.collapsed_field().id());
-    tab_specs(tab)
-        .iter()
-        .map(|spec| spec.id)
-        .find(|id| id.ends_with(&suffix))
+    module_slot_spec(tab, slot, kind.collapsed_field()).map(|spec| spec.id)
 }
 
 /// Loaded module slot addressed by its collapsed row.
@@ -1691,11 +1689,9 @@ pub(crate) fn module_slot_at_id<'a>(
     id: &str,
     controls: &'a FluidControls,
 ) -> Option<(usize, &'a ModuleSlot)> {
-    let slots = controls.modules.for_tab(tab)?;
-    slots.iter().enumerate().find(|(slot, _)| {
-        let prefix = format!(".slot{}.", slot + 1);
-        id.contains(&prefix)
-    })
+    let (_, slot, _) = parse_module_slot_id(id)?;
+    let module = controls.modules.for_tab(tab)?.get(slot)?;
+    Some((slot, module))
 }
 
 /// The rows projected inside a loaded module's detail scope. The backing
@@ -1706,7 +1702,6 @@ pub(crate) fn module_detail_controls(
     slot: usize,
     controls: &FluidControls,
 ) -> Vec<ControlItem> {
-    let prefix = format!(".slot{}.", slot + 1);
     let Some(module_slot) = controls
         .modules
         .for_tab(tab)
@@ -1721,24 +1716,25 @@ pub(crate) fn module_detail_controls(
         .parameters()
         .iter()
         .filter_map(|parameter| {
-            let field = parameter.field.id();
-            tab_specs(tab)
-                .iter()
-                .find(|spec| spec.id.ends_with(&format!("{prefix}{field}")))
-                .map(|spec| {
-                    let mut item = spec.item(controls);
-                    item.label = parameter.label.to_string();
-                    item
-                })
+            module_slot_spec(tab, slot, parameter.field).map(|spec| {
+                let mut item = spec.item(controls);
+                item.label = parameter.label.to_string();
+                item
+            })
         })
         .collect::<Vec<_>>();
+    let field_of = |id: &str| parse_module_slot_id(id).map(|(_, _, field)| field);
     if kind.family == Family::Delay {
         for item in &mut items {
-            if item.id.ends_with(".feedback") {
+            let field = field_of(item.id);
+            if field == Some(ModuleSlotField::Feedback) {
                 item.max = 0.95;
             }
-            if matches!(item.id.rsplit('.').next(), Some("time" | "right_time")) {
-                let clock = if item.id.ends_with(".right_time") {
+            if matches!(
+                field,
+                Some(ModuleSlotField::Time | ModuleSlotField::RightTime)
+            ) {
+                let clock = if field == Some(ModuleSlotField::RightTime) {
                     DelayClock::from_value(module_slot.right_clock)
                 } else {
                     DelayClock::from_value(module_slot.clock)
@@ -1764,29 +1760,32 @@ pub(crate) fn module_detail_controls(
     }
     if kind.family == Family::Reverb {
         for item in &mut items {
-            if matches!(item.id.rsplit('.').next(), Some("time" | "feedback")) {
+            if matches!(
+                field_of(item.id),
+                Some(ModuleSlotField::Time | ModuleSlotField::Feedback)
+            ) {
                 item.display = pct(item.value);
             }
         }
     }
     if kind.family == Family::Compression {
         for item in &mut items {
-            item.display = match item.id.rsplit('.').next() {
-                Some("amount") => pct(item.value),
-                Some("time") => format!("{:.0} dB", item.value),
-                Some("right_time") => format!("{:.1}:1", item.value),
-                Some("feedback") => format!("{:.0} ms", item.value),
-                Some("vintage") => format!("{:.1} dB", item.value),
+            item.display = match field_of(item.id) {
+                Some(ModuleSlotField::Amount) => pct(item.value),
+                Some(ModuleSlotField::Time) => format!("{:.0} dB", item.value),
+                Some(ModuleSlotField::RightTime) => format!("{:.1}:1", item.value),
+                Some(ModuleSlotField::Feedback) => format!("{:.0} ms", item.value),
+                Some(ModuleSlotField::Vintage) => format!("{:.1} dB", item.value),
                 _ => item.display.clone(),
             };
         }
     }
     if kind.family == Family::Filter {
         for item in &mut items {
-            item.display = match item.id.rsplit('.').next() {
-                Some("amount" | "right_time") => pct(item.value),
-                Some("time") => format!("{:.0} Hz", item.value),
-                Some("feedback") => ["Low-pass", "High-pass", "Band-pass"]
+            item.display = match field_of(item.id) {
+                Some(ModuleSlotField::Amount | ModuleSlotField::RightTime) => pct(item.value),
+                Some(ModuleSlotField::Time) => format!("{:.0} Hz", item.value),
+                Some(ModuleSlotField::Feedback) => ["Low-pass", "High-pass", "Band-pass"]
                     [item.value.round().clamp(0.0, 2.0) as usize]
                     .to_string(),
                 _ => item.display.clone(),
@@ -1835,18 +1834,28 @@ pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {
     }
 }
 
+/// Every slot field and the id segment it is spelled with, in discriminant
+/// order (`module_slot_field_ids_follow_discriminant_order` enforces it).
+/// `module_slot_rows!` spells the ids; `ModuleSlotField::from_id` reads
+/// them back through this table.
+const MODULE_SLOT_FIELD_IDS: [(ModuleSlotField, &str); 8] = [
+    (ModuleSlotField::Kind, "kind"),
+    (ModuleSlotField::Amount, "amount"),
+    (ModuleSlotField::Time, "time"),
+    (ModuleSlotField::RightTime, "right_time"),
+    (ModuleSlotField::Clock, "clock"),
+    (ModuleSlotField::RightClock, "right_clock"),
+    (ModuleSlotField::Feedback, "feedback"),
+    (ModuleSlotField::Vintage, "vintage"),
+];
+
 impl ModuleSlotField {
-    pub(crate) const fn id(self) -> &'static str {
-        match self {
-            Self::Kind => "kind",
-            Self::Amount => "amount",
-            Self::Time => "time",
-            Self::RightTime => "right_time",
-            Self::Clock => "clock",
-            Self::RightClock => "right_clock",
-            Self::Feedback => "feedback",
-            Self::Vintage => "vintage",
-        }
+    /// The field an id's last segment names.
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        MODULE_SLOT_FIELD_IDS
+            .iter()
+            .find(|(_, field_id)| *field_id == id)
+            .map(|(field, _)| *field)
     }
 }
 
@@ -1855,22 +1864,25 @@ impl ModuleSlotField {
 /// The single place that recognizes a module-slot id from its shape alone —
 /// every other module-slot-aware lookup (including the Chords-tab drill
 /// addressing below) goes through this rather than re-deriving the pattern.
-fn parse_module_slot_id(id: &str) -> Option<(&str, usize, ModuleSlotField)> {
+pub(crate) fn parse_module_slot_id(id: &str) -> Option<(&str, usize, ModuleSlotField)> {
     let (layer, rest) = id.split_once(".slot")?;
     let (index, field) = rest.split_once('.')?;
-    let field = match field {
-        "kind" => ModuleSlotField::Kind,
-        "amount" => ModuleSlotField::Amount,
-        "time" => ModuleSlotField::Time,
-        "right_time" => ModuleSlotField::RightTime,
-        "clock" => ModuleSlotField::Clock,
-        "right_clock" => ModuleSlotField::RightClock,
-        "feedback" => ModuleSlotField::Feedback,
-        "vintage" => ModuleSlotField::Vintage,
-        _ => return None,
-    };
+    let field = ModuleSlotField::from_id(field)?;
     let index = index.parse::<usize>().ok()?.checked_sub(1)?;
     Some((layer, index, field))
+}
+
+/// The registry row for one field of a tab's module slot. `None` for a slot
+/// index the tab has no rows for.
+pub(crate) fn module_slot_spec(
+    tab: Tab,
+    slot: usize,
+    field: ModuleSlotField,
+) -> Option<&'static ControlSpec> {
+    tab_specs(tab).iter().find(|spec| {
+        parse_module_slot_id(spec.id)
+            .is_some_and(|(_, spec_slot, spec_field)| spec_slot == slot && spec_field == field)
+    })
 }
 
 /// Parse `pad.chord<N>_<field>` into its 0-based chord slot and field index
@@ -2229,5 +2241,40 @@ mod performance_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod module_slot_id_tests {
+    use super::*;
+
+    #[test]
+    fn module_slot_field_ids_follow_discriminant_order() {
+        for (i, (field, id)) in MODULE_SLOT_FIELD_IDS.iter().enumerate() {
+            assert_eq!(
+                *field as usize, i,
+                "row {i} ({id}) out of discriminant order"
+            );
+            assert_eq!(ModuleSlotField::from_id(id), Some(*field));
+        }
+        assert_eq!(ModuleSlotField::from_id("slot"), None);
+    }
+
+    #[test]
+    fn module_slot_spec_finds_every_slot_row_of_every_tab() {
+        for tab in Tab::all() {
+            for spec in tab_specs(tab) {
+                let Some((_, slot, field)) = parse_module_slot_id(spec.id) else {
+                    continue;
+                };
+                assert!(
+                    std::ptr::eq(module_slot_spec(tab, slot, field).expect(spec.id), spec),
+                    "{}: {} resolves to a different row",
+                    tab.name(),
+                    spec.id
+                );
+            }
+        }
+        assert!(module_slot_spec(Tab::Bass, MODULE_SLOTS, ModuleSlotField::Kind).is_none());
     }
 }

@@ -18,8 +18,8 @@ use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
     EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
-    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MuteState, Step,
-    TAB_COUNT, all_specs, spec_by_id,
+    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, ModuleSlotField,
+    MuteState, Step, TAB_COUNT, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -454,7 +454,12 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
     for structural in [true, false] {
         for &(index, value) in &entries {
             let id = song_id_at(index).unwrap_or_default();
-            let is_structural = id.ends_with(".kind") || id.ends_with("clock");
+            let is_structural = parse_module_slot_id(id).is_some_and(|(_, _, field)| {
+                matches!(
+                    field,
+                    ModuleSlotField::Kind | ModuleSlotField::Clock | ModuleSlotField::RightClock
+                )
+            });
             if is_structural != structural {
                 continue;
             }

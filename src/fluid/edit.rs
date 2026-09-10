@@ -452,10 +452,10 @@ fn apply_delay_row(
     {
         return false;
     }
-    let field = spec.id.rsplit('.').next();
+    let field = parse_module_slot_id(spec.id).map(|(_, _, field)| field);
     // The clock row itself flips Sync/Free on an arrow press; a typed value
     // goes through the ordinary discrete-control path instead.
-    if field == Some("clock") {
+    if field == Some(ModuleSlotField::Clock) {
         if !matches!(op, FieldOp::Adjust { .. }) {
             return false;
         }
@@ -467,8 +467,8 @@ fn apply_delay_row(
         return true;
     }
     let right = match field {
-        Some("time") => false,
-        Some("right_time") => true,
+        Some(ModuleSlotField::Time) => false,
+        Some(ModuleSlotField::RightTime) => true,
         _ => return false,
     };
     if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
@@ -577,7 +577,8 @@ pub(crate) fn toggle_units_effect(
 ) {
     if matches!(active_field(automation, lfo_selected), ActiveField::Control)
         && let Some(spec) = tab_specs(tab).get(selected)
-        && matches!(spec.id.rsplit('.').next(), Some("time" | "right_time"))
+        && let Some((_, _, field @ (ModuleSlotField::Time | ModuleSlotField::RightTime))) =
+            parse_module_slot_id(spec.id)
         && let snapshot = effects.session().load()
         && let Some((slot, module)) = module_slot_at_id(tab, spec.id, &snapshot.controls)
         && module
@@ -589,7 +590,7 @@ pub(crate) fn toggle_units_effect(
             if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
                 && let Some(module) = slots.get_mut(slot)
             {
-                switch_delay_clock(module, spec.id.ends_with(".right_time"), bpm);
+                switch_delay_clock(module, field == ModuleSlotField::RightTime, bpm);
             }
         });
         return;
