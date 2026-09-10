@@ -798,11 +798,15 @@ fn field_line(
     let style = palette.style(active);
     let prefix = if active { "▶ " } else { "  " };
     let display = numeric_cursor(numeric, active).unwrap_or_else(|| dial.display.clone());
-    let bar = ratio_bar(dial.ratio(), bar_w, '█', '░');
-    Line::from(Span::styled(
-        format!("{prefix}  {label:<13} {bar} {display}"),
+    let mut spans = vec![Span::styled(format!("{prefix}  {label:<13} "), style)];
+    spans.extend(slider_spans(
+        dial.ratio(),
+        SliderMarkers::default(),
+        bar_w,
         style,
-    ))
+    ));
+    spans.push(Span::styled(format!(" {display}"), style));
+    Line::from(spans)
 }
 
 /// A registry control's dial: its declared step and taper decide the mapping,
@@ -1013,15 +1017,4 @@ fn slider_spans(
 
 pub(crate) fn item_ratio(item: &ControlItem) -> f32 {
     control_dial(item).ratio()
-}
-
-pub(crate) fn ratio_bar(ratio: f32, width: usize, filled: char, empty: char) -> String {
-    let filled_count = (ratio.clamp(0.0, 1.0) * width as f32).round() as usize;
-    let filled_count = filled_count.min(width);
-    let empty_count = width.saturating_sub(filled_count);
-    format!(
-        "{}{}",
-        filled.to_string().repeat(filled_count),
-        empty.to_string().repeat(empty_count)
-    )
 }
