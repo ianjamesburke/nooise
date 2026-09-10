@@ -95,11 +95,7 @@ pub(crate) fn production_frame(
     let item_count = view.items.len();
     let selected_control = view.items.get(view.navigation.selected).map(|item| item.id);
     let selected = selected_control
-        .and_then(|id| {
-            tab_specs(view.navigation.tab)
-                .iter()
-                .position(|spec| spec.id == id)
-        })
+        .and_then(|id| spec_index(view.navigation.tab, id))
         .unwrap_or(view.navigation.selected);
     let tab = view.navigation.tab;
     drop(view);

@@ -1593,6 +1593,11 @@ pub(crate) fn tab_specs(tab: Tab) -> &'static [ControlSpec] {
     TAB_META[tab as usize].3
 }
 
+/// Flat position of control `id` in `tab`'s spec table.
+pub(crate) fn spec_index(tab: Tab, id: &str) -> Option<usize> {
+    tab_specs(tab).iter().position(|spec| spec.id == id)
+}
+
 pub(crate) fn all_specs() -> impl Iterator<Item = &'static ControlSpec> {
     Tab::all().into_iter().flat_map(tab_specs)
 }
@@ -1642,7 +1647,7 @@ pub(crate) fn performance_target(
         interaction::PerformanceAction::Sparser => (density, 1.0),
         interaction::PerformanceAction::Denser => (density, -1.0),
     };
-    let index = tab_specs(tab).iter().position(|spec| spec.id == id)?;
+    let index = spec_index(tab, id)?;
     Some((tab, index, &tab_specs(tab)[index], direction))
 }
 
