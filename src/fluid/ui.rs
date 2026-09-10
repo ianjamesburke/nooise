@@ -102,7 +102,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             view.owner.label()
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
+        .border_style(Style::default().fg(BORDER));
     let inner = block.inner(panel);
     f.render_widget(block, panel);
 
@@ -277,15 +277,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         } else {
             flip_display(address.spec().time_base, item.value, bpm).unwrap_or(display)
         };
-        let fg = if parent_active {
-            Color::Rgb(120, 230, 255)
-        } else {
-            Color::Rgb(170, 178, 195)
-        };
-        let mut style = Style::default().fg(fg);
-        if parent_active {
-            style = style.add_modifier(Modifier::BOLD);
-        }
+        let style = BROWSE_PALETTE.style(parent_active);
         let markers = slider_markers(item, address, editor_here, frame);
         let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
         spans.extend(slider_spans(item_ratio(item), markers, frame.bar_w, style));
@@ -302,9 +294,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         if chord_playing {
             spans.push(Span::styled(
                 " ♪",
-                Style::default()
-                    .fg(Color::Rgb(255, 200, 90))
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
             ));
         }
         rows.push(Line::from(spans));
@@ -491,10 +481,10 @@ fn slider_markers(
 fn draw_footer(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
     let footer_style = if view.help.emphasized() {
         Style::default()
-            .fg(Color::Rgb(255, 220, 120))
+            .fg(EMPHASIS_YELLOW)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Rgb(120, 128, 145))
+        Style::default().fg(DIM_TEXT)
     };
     f.render_widget(
         Paragraph::new(view.help.text())
@@ -571,17 +561,6 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
     }
 }
 
-/// Deck rows carry the same colour language as a browse row: idle grey,
-/// focused cyan, and amber for an instrument the player is physically
-/// holding. Without a style they rendered in the terminal default and read
-/// as a different application.
-const PERFORMANCE_PALETTE: FieldPalette = FieldPalette {
-    active: Color::Rgb(120, 230, 255),
-    idle: Color::Rgb(170, 178, 195),
-};
-
-const PERFORMANCE_HELD: Color = Color::Rgb(255, 200, 90);
-
 fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'static> {
     let marker = if values.held {
         "●"
@@ -590,16 +569,14 @@ fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'s
     } else {
         " "
     };
-    let mut style = Style::default().fg(if values.held {
-        PERFORMANCE_HELD
-    } else if values.focused {
-        PERFORMANCE_PALETTE.active
+    // Deck rows carry the browse colour language plus amber for an
+    // instrument the player is physically holding. Without a style they
+    // rendered in the terminal default and read as a different application.
+    let style = if values.held {
+        Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD)
     } else {
-        PERFORMANCE_PALETTE.idle
-    });
-    if values.held || values.focused {
-        style = style.add_modifier(Modifier::BOLD);
-    }
+        BROWSE_PALETTE.style(values.focused)
+    };
     let mut spans = vec![Span::styled(
         format!(
             "{marker} {} {:<4}",
@@ -676,28 +653,28 @@ fn draw_palette(
     }
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(150, 160, 185)));
+        .border_style(Style::default().fg(BORDER));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let cursor = if cursor_visible { "\u{258c}" } else { " " };
     let prompt = match pal.locked {
         Some(entry) => Line::from(vec![
-            Span::styled("/", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled("/", Style::default().fg(DIM_TEXT)),
             Span::styled(
                 pal.entry(entry).id().unwrap_or("module"),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" = ", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled(" = ", Style::default().fg(DIM_TEXT)),
             Span::styled(
                 format!("{}{cursor}", pal.value_buf),
                 Style::default().fg(Color::White),
             ),
         ]),
         None => Line::from(vec![
-            Span::styled("/", Style::default().fg(Color::Rgb(120, 128, 145))),
+            Span::styled("/", Style::default().fg(DIM_TEXT)),
             Span::styled(
                 format!("{}{cursor}", pal.query),
                 Style::default().fg(Color::White),
@@ -741,22 +718,51 @@ fn draw_palette(
             .join("  ");
         lines.push(Line::from(Span::styled(
             format!("staged: {staged}"),
-            Style::default().fg(Color::Rgb(255, 220, 120)),
+            Style::default().fg(EMPHASIS_YELLOW),
         )));
     }
     lines.push(Line::from(Span::styled(
         "\u{21e5} complete   type value   \u{21b5} stage/jump   \u{21b5}\u{21b5} commit   ^B on bar   Esc cancel",
-        Style::default().fg(Color::Rgb(120, 128, 145)),
+        Style::default().fg(DIM_TEXT),
     )));
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Colour pair for a modulator submenu: (active row, idle row).
+/// Colour pair for a row family: (active row, idle row).
 #[derive(Clone, Copy)]
 pub(crate) struct FieldPalette {
     active: Color,
     idle: Color,
 }
+
+impl FieldPalette {
+    /// The row style: active colour in bold when the cursor is here, idle
+    /// colour otherwise.
+    fn style(self, active: bool) -> Style {
+        let style = Style::default().fg(if active { self.active } else { self.idle });
+        if active {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style
+        }
+    }
+}
+
+/// Browse rows and the deck share one colour language: idle grey, focused
+/// cyan.
+const BROWSE_PALETTE: FieldPalette = FieldPalette {
+    active: Color::Rgb(120, 230, 255),
+    idle: Color::Rgb(170, 178, 195),
+};
+
+/// Amber for something sounding or physically held right now: the playing
+/// chord badge and a held deck instrument.
+const LIVE_AMBER: Color = Color::Rgb(255, 200, 90);
+/// Help/notice text the user must act on, and staged palette edits.
+const EMPHASIS_YELLOW: Color = Color::Rgb(255, 220, 120);
+/// Quiet help text and prompt punctuation.
+const DIM_TEXT: Color = Color::Rgb(120, 128, 145);
+const BORDER: Color = Color::Rgb(150, 160, 185);
 
 pub(crate) const LFO_PALETTE: FieldPalette = FieldPalette {
     active: Color::Rgb(255, 130, 210),
@@ -789,10 +795,7 @@ fn field_line(
     bar_w: usize,
     palette: FieldPalette,
 ) -> Line<'static> {
-    let mut style = Style::default().fg(if active { palette.active } else { palette.idle });
-    if active {
-        style = style.add_modifier(Modifier::BOLD);
-    }
+    let style = palette.style(active);
     let prefix = if active { "▶ " } else { "  " };
     let display = numeric_cursor(numeric, active).unwrap_or_else(|| dial.display.clone());
     let bar = ratio_bar(dial.ratio(), bar_w, '█', '░');
