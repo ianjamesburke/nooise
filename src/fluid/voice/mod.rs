@@ -32,6 +32,12 @@ pub(crate) fn tune_ratio(semitones: f32) -> f32 {
     2f32.powf(semitones / 12.0)
 }
 
+/// A MIDI note's frequency under the master tune: the one pitch path every
+/// pitched voice (Pad, Bass, Tonal, Arp) builds a note through.
+pub(crate) fn note_hz(note: i32, tune: f32) -> f32 {
+    midi_to_hz(note) * tune_ratio(tune)
+}
+
 pub(crate) fn normalized_lfo(sample: f32) -> f32 {
     (sample * 0.5 + 0.5).clamp(0.0, 1.0)
 }

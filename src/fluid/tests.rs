@@ -263,9 +263,9 @@ fn tonal_phrase_a_keeps_existing_zero_randomness_melody() {
 
 #[test]
 fn tonal_note_applies_master_tune_offset() {
-    let flat = tonal_note_hz(45, 0.0);
-    assert_close(tonal_note_hz(45, 12.0), flat * 2.0);
-    assert_close(tonal_note_hz(45, -12.0), flat * 0.5);
+    let flat = note_hz(45, 0.0);
+    assert_close(note_hz(45, 12.0), flat * 2.0);
+    assert_close(note_hz(45, -12.0), flat * 0.5);
 }
 
 #[test]
@@ -284,8 +284,8 @@ fn piano_harmonics_interpolate_with_note_pitch() {
 #[test]
 fn piano_harmonic_decay_gets_faster_with_pitch() {
     let profile = piano_profile(1);
-    let low = piano_harmonic_decay_rates(profile, 36, tonal_note_hz(36, 0.0));
-    let high = piano_harmonic_decay_rates(profile, 60, tonal_note_hz(60, 0.0));
+    let low = piano_harmonic_decay_rates(profile, 36, note_hz(36, 0.0));
+    let high = piano_harmonic_decay_rates(profile, 60, note_hz(60, 0.0));
 
     assert!(high[15] > low[15]);
 }

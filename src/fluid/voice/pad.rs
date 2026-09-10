@@ -463,7 +463,7 @@ pub(crate) fn pad_tones(
     attack_time: f32,
     release_time: f32,
 ) -> Vec<PadTone> {
-    let freqs = notes.map(|note| midi_to_hz(note) * tune_ratio(tune));
+    let freqs = notes.map(|note| note_hz(note, tune));
     let pans = [-0.52_f32, -0.18, 0.16, 0.46];
     let gains = [0.17_f32, 0.132, 0.126, 0.098];
     freqs

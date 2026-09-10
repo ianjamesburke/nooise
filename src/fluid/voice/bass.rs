@@ -127,7 +127,7 @@ impl BassEngine {
                 && BASS_RHYTHMS[rhythm][self.rhythm_step];
             if hit {
                 let note = bass_root_note(progression, step, pad) + (c.octave.round() as i32) * 12;
-                let hz = midi_to_hz(note) * tune_ratio(tune);
+                let hz = note_hz(note, tune);
                 // Hard-cut: whatever was sounding hands off to the fade-out
                 // slot (replacing any prior fade in progress) and the new
                 // note starts clean and immediately, not layered on top.

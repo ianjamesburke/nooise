@@ -153,7 +153,7 @@ impl ArpEngine {
             self.cycle_pos = next_pos;
             self.ping_pong_dir = next_dir;
 
-            let hz = midi_to_hz(note) * tune_ratio(tune);
+            let hz = note_hz(note, tune);
             // A note sounds for `attack + decay`, decoupled from the step grid,
             // so a longer decay lets consecutive notes overlap and ring out
             // instead of being cut at the step. `rate_beats` only sets the

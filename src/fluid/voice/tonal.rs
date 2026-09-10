@@ -399,7 +399,7 @@ impl TonalEngine {
             } else {
                 self.evolved_phrase[self.step_index % self.evolved_phrase.len()]
             } + (c.octave.round() as i32) * 12;
-            let hz = tonal_note_hz(note, tune);
+            let hz = note_hz(note, tune);
             let pan = self.rng.gen_range(-0.5f32..0.5);
             // A silent layer still triggers nothing: skipping keeps a Level
             // of exactly 0 from accumulating inaudible voices. Every RNG draw
@@ -549,10 +549,6 @@ pub(crate) fn tonal_evolve_note_count(rate: f32, phrase_len: usize) -> usize {
     (rate.clamp(0.0, 1.0) * TONAL_MAX_EVOLVE_NOTES as f32)
         .ceil()
         .min(phrase_len as f32) as usize
-}
-
-pub(crate) fn tonal_note_hz(note: i32, tune: f32) -> f32 {
-    midi_to_hz(note) * tune_ratio(tune)
 }
 
 pub(crate) struct TonalLowCut {
