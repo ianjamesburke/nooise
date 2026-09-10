@@ -701,16 +701,11 @@ pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, step: usize) 
 /// by `extension`, finally reshuffled by `inversion` and de-duplicated
 /// upward so inversions/accidentals never collide two voices onto one note.
 pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
-    const TONIC: i32 = 45; // A2, matching PROGRESSIONS' shared tonal center
-    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
+    let root = slot_root(slot);
     let accidental = slot.accidental.round().clamp(-1.0, 1.0) as i32;
     let extension = slot.extension.round().clamp(0.0, 3.0) as i32;
     let inversion = slot.inversion.round().clamp(0.0, 3.0) as i32;
-    let third = match slot.quality.round().clamp(-1.0, 1.0) as i32 {
-        -1 => root + 3,
-        1 => root + 4,
-        _ => shift_diatonic(root, 2),
-    };
+    let third = slot_third(slot, root);
     let top = match extension {
         1 => shift_diatonic(root, 6),
         2 => shift_diatonic(root, 8),
@@ -730,9 +725,7 @@ pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
 /// extension/inversion reshuffle) — what Bass follows instead of the pad's
 /// full voicing.
 pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
-    const TONIC: i32 = 45;
-    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
-    root + slot.accidental.round().clamp(-1.0, 1.0) as i32
+    slot_root(slot) + slot.accidental.round().clamp(-1.0, 1.0) as i32
 }
 
 /// Whether a slot's resolved third is minor — honors a forced `quality`,
@@ -740,14 +733,27 @@ pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
 /// Quality row's "scale (min)"-style display so the inherit position still
 /// tells the user what they're hearing.
 pub(crate) fn pad_chord_slot_is_minor(slot: &ChordSlotControls) -> bool {
+    let root = slot_root(slot);
+    slot_third(slot, root) - root == 3
+}
+
+/// A2, matching `PROGRESSIONS`' shared tonal center: the note a custom
+/// slot's `degree` counts from.
+const CUSTOM_TONIC: i32 = 45;
+
+/// A custom slot's root before its accidental: the tonic shifted by the
+/// slot's diatonic degree.
+fn slot_root(slot: &ChordSlotControls) -> i32 {
+    shift_diatonic(CUSTOM_TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32)
+}
+
+/// A custom slot's third: forced minor/major by `quality`, otherwise the
+/// diatonic third above `root`.
+fn slot_third(slot: &ChordSlotControls, root: i32) -> i32 {
     match slot.quality.round().clamp(-1.0, 1.0) as i32 {
-        -1 => true,
-        1 => false,
-        _ => {
-            const TONIC: i32 = 45;
-            let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
-            shift_diatonic(root, 2) - root == 3
-        }
+        -1 => root + 3,
+        1 => root + 4,
+        _ => shift_diatonic(root, 2),
     }
 }
 
