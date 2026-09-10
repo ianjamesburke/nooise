@@ -13,7 +13,8 @@ use arc_swap::ArcSwap;
 #[cfg(test)]
 use super::automation::{ControlAddress, LfoRoute, LfoShape};
 use super::{
-    AutomationState, ControlKind, FluidControls, MuteState, SongState, all_specs, decode_song_code,
+    AutomationState, ControlKind, ControlSpec, FluidControls, MuteState, SongState, Tab, all_specs,
+    decode_song_code, spec_by_id,
 };
 
 /// Bars per morph leg, matching the throttled-writer granularity of one leg
@@ -125,31 +126,38 @@ const STRUCTURAL_SNAP_IDS: &[&str] = &[
     "arp.pattern",
 ];
 
-const DRUM_LEVEL_IDS: &[&str] = &["perc.level", "kick.level", "clap.level"];
+/// The drum voices, whose level ids (`Tab::level_id`) snap instead of glide.
+const DRUM_TABS: [Tab; 3] = [Tab::Perc, Tab::Kick, Tab::Clap];
 
 fn is_structural(spec_id: &str) -> bool {
     STRUCTURAL_SNAP_IDS.contains(&spec_id)
 }
 
 fn is_drum_level(spec_id: &str) -> bool {
-    DRUM_LEVEL_IDS.contains(&spec_id)
+    DRUM_TABS.iter().any(|tab| tab.level_id() == Some(spec_id))
 }
 
 fn snaps_drum_level(spec_id: &str, from: f32, to: f32) -> bool {
-    spec_id == "kick.level" || (is_drum_level(spec_id) && from > 0.0 && to == 0.0)
+    Tab::Kick.level_id() == Some(spec_id) || (is_drum_level(spec_id) && from > 0.0 && to == 0.0)
+}
+
+/// Every performing voice's level/gain row: each non-Master tab's
+/// `Tab::level_id`, so a new voice joins the energy metrics by being a tab.
+fn voice_level_specs() -> impl Iterator<Item = &'static ControlSpec> {
+    Tab::all()
+        .into_iter()
+        .filter(|tab| *tab != Tab::Master)
+        .filter_map(Tab::level_id)
+        .filter_map(spec_by_id)
 }
 
 /// Crude "how different do two states sound" metric: the summed absolute
 /// difference of every performing element's level/gain. Deliberately simple —
 /// used only to pick which built-in state a live auto-toggle heads toward first.
 fn level_distance(a: &FluidControls, b: &FluidControls) -> f32 {
-    (a.pad.level - b.pad.level).abs()
-        + (a.perc.level - b.perc.level).abs()
-        + (a.kick.level - b.kick.level).abs()
-        + (a.tonal.level - b.tonal.level).abs()
-        + (a.clap.level - b.clap.level).abs()
-        + (a.bass.level - b.bass.level).abs()
-        + (a.arp.gain - b.arp.gain).abs()
+    voice_level_specs()
+        .map(|spec| ((spec.get)(a) - (spec.get)(b)).abs())
+        .sum()
 }
 
 /// (spec index into `all_specs()` order, jump offset in bars from the
@@ -502,13 +510,7 @@ mod tests {
     /// Sum of every performing element's level/gain: the audible-energy proxy
     /// the never-silent invariant is checked against.
     fn total_level(c: &FluidControls) -> f32 {
-        c.pad.level
-            + c.perc.level
-            + c.kick.level
-            + c.tonal.level
-            + c.clap.level
-            + c.bass.level
-            + c.arp.gain
+        voice_level_specs().map(|spec| (spec.get)(c)).sum()
     }
 
     #[test]
