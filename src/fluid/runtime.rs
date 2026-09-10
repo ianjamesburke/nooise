@@ -1048,13 +1048,11 @@ mod recording {
     /// In-memory sanitized recorder for capturing a live normalized input stream.
     /// Call `record` at the scheduler seam and persist `finish()` only when the
     /// developer explicitly chooses to retain a regression fixture.
-    #[cfg(test)]
     pub(crate) struct SanitizedTraceRecorder {
         previous_at: Duration,
         fixture: String,
     }
 
-    #[cfg(test)]
     impl SanitizedTraceRecorder {
         pub(crate) fn new(started_at: Duration) -> Self {
             Self {
@@ -1075,7 +1073,7 @@ mod recording {
                     writeln!(
                         self.fixture,
                         "+{after_ms} key {token} {} mods:{} repeats:{repeat_count}",
-                        recorder_phase_token(*phase),
+                        phase_token(*phase),
                         key.modifiers.0
                     )
                     .expect("writing to String cannot fail");
@@ -1131,8 +1129,7 @@ mod recording {
         }
     }
 
-    #[cfg(test)]
-    fn recorder_phase_token(phase: InputPhase) -> &'static str {
+    pub(crate) fn phase_token(phase: InputPhase) -> &'static str {
         match phase {
             InputPhase::Press => "press",
             InputPhase::Repeat => "repeat",
@@ -1140,9 +1137,17 @@ mod recording {
         }
     }
 
+    pub(crate) fn parse_phase(token: &str) -> Option<InputPhase> {
+        match token {
+            "press" => Some(InputPhase::Press),
+            "repeat" => Some(InputPhase::Repeat),
+            "release" => Some(InputPhase::Release),
+            _ => None,
+        }
+    }
+
     /// Fixture tokens for the payload-free `PhysicalKey` identities. Parameterized
     /// variants prefix their payload instead and are handled directly below.
-    #[cfg(test)]
     const PHYSICAL_KEY_TOKENS: &[(PhysicalKey, &str)] = &[
         (PhysicalKey::Escape, "escape"),
         (PhysicalKey::Home, "home"),
@@ -1169,7 +1174,6 @@ mod recording {
         (PhysicalKey::KeypadBegin, "keypad-begin"),
     ];
 
-    #[cfg(test)]
     pub(crate) fn encode_physical_key(code: &PhysicalKey) -> String {
         match code {
             PhysicalKey::Character(character) => format!("char:{:06x}", u32::from(*character)),
@@ -1184,7 +1188,6 @@ mod recording {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn decode_physical_key(token: &str) -> Option<PhysicalKey> {
         if let Some(scalar) = token.strip_prefix("char:") {
             return char::from_u32(u32::from_str_radix(scalar, 16).ok()?)
@@ -1207,7 +1210,7 @@ mod recording {
 }
 
 #[cfg(test)]
-pub(crate) use recording::{SanitizedTraceRecorder, decode_physical_key, encode_physical_key};
+pub(crate) use recording::{SanitizedTraceRecorder, decode_physical_key, parse_phase};
 
 #[cfg(test)]
 mod tests {

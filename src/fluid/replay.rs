@@ -7,7 +7,6 @@
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fmt;
-use std::fmt::Write as _;
 use std::io;
 use std::rc::Rc;
 use std::time::Duration;
@@ -32,7 +31,7 @@ use super::interaction::{
 use super::runtime::{
     Clock, EventSource, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
     SanitizedTraceRecorder, Scheduler, SchedulerConfig, TerminalCapabilities, TransportEvent,
-    TransportKey, decode_physical_key, encode_physical_key, normalize_key_event,
+    TransportKey, decode_physical_key, normalize_key_event, parse_phase,
 };
 use super::view::{
     MIN_TERMINAL_HEIGHT, MIN_TERMINAL_WIDTH, TelemetryView, UiViewModel, ViewNotices,
@@ -84,57 +83,77 @@ struct ReplayTrace {
     events: Vec<TraceEvent>,
 }
 
+/// The record a fixture line stands for once played back: a transport event
+/// the scheduler admits, or a turn boundary the scripted source marks.
+enum TraceRecord {
+    Transport(TransportEvent),
+    Tick,
+    Idle,
+}
+
+impl TraceEvent {
+    fn after_ms(&self) -> u64 {
+        match self {
+            Self::Key { after_ms, .. }
+            | Self::Resize { after_ms, .. }
+            | Self::Tick { after_ms }
+            | Self::Idle { after_ms }
+            | Self::Redacted { after_ms, .. }
+            | Self::Focus { after_ms, .. }
+            | Self::Shutdown { after_ms } => *after_ms,
+        }
+    }
+
+    /// Redacted records become empty paste/mouse payloads: the recorder
+    /// prints those as `redacted`, which is what the fixture stores.
+    fn record(&self) -> TraceRecord {
+        match self {
+            Self::Key {
+                code,
+                phase,
+                modifiers,
+                repeat_count,
+                ..
+            } => TraceRecord::Transport(TransportEvent::Key {
+                key: TransportKey {
+                    code: code.clone(),
+                    modifiers: Modifiers::from_bits(*modifiers),
+                },
+                phase: *phase,
+                repeat_count: *repeat_count,
+            }),
+            Self::Resize { width, height, .. } => TraceRecord::Transport(TransportEvent::Resize {
+                width: *width,
+                height: *height,
+            }),
+            Self::Focus { gained: true, .. } => TraceRecord::Transport(TransportEvent::FocusGained),
+            Self::Focus { gained: false, .. } => TraceRecord::Transport(TransportEvent::FocusLost),
+            Self::Shutdown { .. } => TraceRecord::Transport(TransportEvent::Shutdown),
+            Self::Redacted { kind: "mouse", .. } => {
+                TraceRecord::Transport(TransportEvent::Mouse(String::new()))
+            }
+            Self::Redacted { .. } => TraceRecord::Transport(TransportEvent::Paste(String::new())),
+            Self::Tick { .. } => TraceRecord::Tick,
+            Self::Idle { .. } => TraceRecord::Idle,
+        }
+    }
+}
+
 impl ReplayTrace {
+    /// Writes the trace through the production recorder so the fixture
+    /// grammar has exactly one writer.
     fn fixture(&self) -> String {
-        let mut fixture = "nooise-replay-v1\n".to_string();
+        let mut recorder = SanitizedTraceRecorder::new(Duration::ZERO);
+        let mut now = Duration::ZERO;
         for event in &self.events {
-            match event {
-                TraceEvent::Key {
-                    after_ms,
-                    code,
-                    phase,
-                    modifiers,
-                    repeat_count,
-                } => {
-                    writeln!(
-                        fixture,
-                        "+{after_ms} key {} {} mods:{modifiers} repeats:{repeat_count}",
-                        encode_physical_key(code),
-                        phase_token(*phase)
-                    )
-                    .expect("writing to String cannot fail");
-                }
-                TraceEvent::Resize {
-                    after_ms,
-                    width,
-                    height,
-                } => {
-                    writeln!(fixture, "+{after_ms} resize {width}x{height}")
-                        .expect("writing to String cannot fail");
-                }
-                TraceEvent::Tick { after_ms } => {
-                    writeln!(fixture, "+{after_ms} tick").expect("writing to String cannot fail");
-                }
-                TraceEvent::Idle { after_ms } => {
-                    writeln!(fixture, "+{after_ms} idle").expect("writing to String cannot fail");
-                }
-                TraceEvent::Redacted { after_ms, kind } => {
-                    writeln!(fixture, "+{after_ms} redacted {kind}")
-                        .expect("writing to String cannot fail");
-                }
-                TraceEvent::Focus { after_ms, gained } => writeln!(
-                    fixture,
-                    "+{after_ms} focus-{}",
-                    if *gained { "gained" } else { "lost" }
-                )
-                .expect("writing to String cannot fail"),
-                TraceEvent::Shutdown { after_ms } => {
-                    writeln!(fixture, "+{after_ms} shutdown")
-                        .expect("writing to String cannot fail");
-                }
+            now = now.saturating_add(Duration::from_millis(event.after_ms()));
+            match event.record() {
+                TraceRecord::Transport(transport) => recorder.record(now, &transport),
+                TraceRecord::Tick => recorder.record_tick(now),
+                TraceRecord::Idle => recorder.record_idle(now),
             }
         }
-        fixture
+        recorder.finish()
     }
 
     fn parse(fixture: &str) -> Result<Self, FixtureError> {
@@ -272,23 +291,6 @@ impl fmt::Display for FixtureError {
 
 impl std::error::Error for FixtureError {}
 
-fn phase_token(phase: InputPhase) -> &'static str {
-    match phase {
-        InputPhase::Press => "press",
-        InputPhase::Repeat => "repeat",
-        InputPhase::Release => "release",
-    }
-}
-
-fn parse_phase(token: &str) -> Option<InputPhase> {
-    match token {
-        "press" => Some(InputPhase::Press),
-        "repeat" => Some(InputPhase::Repeat),
-        "release" => Some(InputPhase::Release),
-        _ => None,
-    }
-}
-
 #[derive(Clone)]
 struct FakeClock(Rc<Cell<Duration>>);
 
@@ -331,52 +333,18 @@ impl ScriptedSource {
     fn new(trace: &ReplayTrace, _capabilities: TerminalCapabilities, clock: FakeClock) -> Self {
         let mut events = VecDeque::new();
         for event in &trace.events {
-            let after_ms = match event {
-                TraceEvent::Key { after_ms, .. }
-                | TraceEvent::Resize { after_ms, .. }
-                | TraceEvent::Tick { after_ms }
-                | TraceEvent::Idle { after_ms }
-                | TraceEvent::Redacted { after_ms, .. }
-                | TraceEvent::Focus { after_ms, .. }
-                | TraceEvent::Shutdown { after_ms } => *after_ms,
-            };
-            events.push_back(PlaybackEvent::Advance(Duration::from_millis(after_ms)));
-            match event {
-                TraceEvent::Key {
-                    code,
-                    phase,
-                    modifiers,
-                    repeat_count,
-                    ..
-                } => {
-                    events.push_back(PlaybackEvent::Transport(TransportEvent::Key {
-                        key: TransportKey {
-                            code: code.clone(),
-                            modifiers: Modifiers::from_bits(*modifiers),
-                        },
-                        phase: *phase,
-                        repeat_count: *repeat_count,
-                    }));
+            events.push_back(PlaybackEvent::Advance(Duration::from_millis(
+                event.after_ms(),
+            )));
+            match event.record() {
+                // A redacted payload was never captured, so there is nothing
+                // to play back; only its clock advance survives.
+                TraceRecord::Transport(TransportEvent::Paste(_) | TransportEvent::Mouse(_)) => {}
+                TraceRecord::Transport(transport) => {
+                    events.push_back(PlaybackEvent::Transport(transport));
                 }
-                TraceEvent::Resize { width, height, .. } => {
-                    events.push_back(PlaybackEvent::Transport(TransportEvent::Resize {
-                        width: *width,
-                        height: *height,
-                    }));
-                }
-                TraceEvent::Focus { gained, .. } => {
-                    events.push_back(PlaybackEvent::Transport(if *gained {
-                        TransportEvent::FocusGained
-                    } else {
-                        TransportEvent::FocusLost
-                    }));
-                }
-                TraceEvent::Shutdown { .. } => {
-                    events.push_back(PlaybackEvent::Transport(TransportEvent::Shutdown));
-                }
-                TraceEvent::Tick { .. } => events.push_back(PlaybackEvent::TickBoundary),
-                TraceEvent::Idle { .. } => events.push_back(PlaybackEvent::IdleBoundary),
-                TraceEvent::Redacted { .. } => {}
+                TraceRecord::Tick => events.push_back(PlaybackEvent::TickBoundary),
+                TraceRecord::Idle => events.push_back(PlaybackEvent::IdleBoundary),
             }
         }
         Self {
