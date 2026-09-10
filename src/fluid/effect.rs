@@ -432,10 +432,7 @@ impl EffectExecutor {
         };
         let id = module_slot_collapsed_id(tab, slot, &self.session.load().controls)
             .ok_or(EffectFailure::MissingContext("module slot control"))?;
-        let index = tab_specs(tab)
-            .iter()
-            .position(|spec| spec.id == id)
-            .ok_or(EffectFailure::UnknownControl(id))?;
+        let index = spec_index(tab, id).ok_or(EffectFailure::UnknownControl(id))?;
         self.recent.touch(id);
         self.execute(LiveEffect::SelectControl { tab, index, id })
     }
@@ -669,10 +666,7 @@ impl EffectExecutor {
                     .selected_control
                     .ok_or(EffectFailure::MissingContext("selected control"))?;
                 let tab = tab_owning_control(id).unwrap_or(context.tab);
-                let index = tab_specs(tab)
-                    .iter()
-                    .position(|spec| spec.id == id)
-                    .unwrap_or(context.selected);
+                let index = spec_index(tab, id).unwrap_or(context.selected);
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
             InteractionEffect::PaletteCommitAtBar(edits) => {

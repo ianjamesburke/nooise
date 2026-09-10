@@ -1544,10 +1544,8 @@ mod tests {
         controls.modules.pad[1] = super::super::preset_slot("drive", 0.0);
         let id = super::super::module_slot_collapsed_id(Tab::Chords, 1, &controls)
             .expect("pads has a slot 2");
-        let flat = super::super::tab_specs(Tab::Chords)
-            .iter()
-            .position(|spec| spec.id == id)
-            .expect("slot 2 amount is a real control");
+        let flat =
+            super::super::spec_index(Tab::Chords, id).expect("slot 2 amount is a real control");
 
         let mut model = InteractionModel {
             navigation: Navigation::Chords {
