@@ -1608,32 +1608,13 @@ pub(crate) fn performance_target(
     instrument: interaction::PerformanceInstrument,
     action: interaction::PerformanceAction,
 ) -> Option<(Tab, usize, &'static ControlSpec, f32)> {
-    let (tab, level, shape, density) = match instrument {
-        interaction::PerformanceInstrument::Pads => (
-            Tab::Chords,
-            "pad.level",
-            "pad.release_time",
-            "pad.chord_bars",
-        ),
-        interaction::PerformanceInstrument::Bass => (
-            Tab::Bass,
-            "bass.level",
-            "bass.decay_time",
-            "bass.interval_beats",
-        ),
-        interaction::PerformanceInstrument::Kick => (
-            Tab::Kick,
-            "kick.level",
-            "kick.amp_decay_ms",
-            "kick.interval_beats",
-        ),
-        interaction::PerformanceInstrument::Perc => (
-            Tab::Perc,
-            "perc.level",
-            "perc.decay_ms",
-            "perc.interval_beats",
-        ),
-    };
+    let tab = instrument.tab();
+    let interaction::InstrumentRow {
+        level,
+        shape,
+        density,
+        ..
+    } = *instrument.row();
     let (id, direction) = match action {
         interaction::PerformanceAction::Shorter => (shape, -1.0),
         interaction::PerformanceAction::Longer => (shape, 1.0),

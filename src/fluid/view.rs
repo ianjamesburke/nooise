@@ -654,12 +654,7 @@ fn selector_text(selector: Option<usize>) -> String {
 fn performance_targets_text(targets: PerformanceTargets) -> String {
     let held = targets
         .iter()
-        .map(|instrument| match instrument {
-            PerformanceInstrument::Pads => "a",
-            PerformanceInstrument::Bass => "s",
-            PerformanceInstrument::Kick => "d",
-            PerformanceInstrument::Perc => "f",
-        })
+        .map(|instrument| instrument.key().to_string())
         .collect::<Vec<_>>();
     if held.is_empty() {
         "none".to_string()

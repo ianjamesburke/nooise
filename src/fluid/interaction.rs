@@ -380,6 +380,56 @@ pub(crate) enum PerformanceInstrument {
     Perc,
 }
 
+/// Everything one performance instrument is: the page it lives on, the
+/// selector key that holds it, and the registry ids its Deck/Sequence
+/// actions edit (level, shape, density).
+pub(crate) struct InstrumentRow {
+    pub(crate) instrument: PerformanceInstrument,
+    pub(crate) page: Page,
+    pub(crate) key: char,
+    pub(crate) level: &'static str,
+    pub(crate) shape: &'static str,
+    pub(crate) density: &'static str,
+}
+
+/// One row per instrument in `PerformanceInstrument` discriminant order
+/// (test-enforced), so the key map, page, display name, and registry
+/// targets all index this single table.
+pub(crate) const INSTRUMENTS: [InstrumentRow; 4] = [
+    InstrumentRow {
+        instrument: PerformanceInstrument::Pads,
+        page: Page::Chords,
+        key: 'a',
+        level: "pad.level",
+        shape: "pad.release_time",
+        density: "pad.chord_bars",
+    },
+    InstrumentRow {
+        instrument: PerformanceInstrument::Bass,
+        page: Page::Bass,
+        key: 's',
+        level: "bass.level",
+        shape: "bass.decay_time",
+        density: "bass.interval_beats",
+    },
+    InstrumentRow {
+        instrument: PerformanceInstrument::Kick,
+        page: Page::Kick,
+        key: 'd',
+        level: "kick.level",
+        shape: "kick.amp_decay_ms",
+        density: "kick.interval_beats",
+    },
+    InstrumentRow {
+        instrument: PerformanceInstrument::Perc,
+        page: Page::Perc,
+        key: 'f',
+        level: "perc.level",
+        shape: "perc.decay_ms",
+        density: "perc.interval_beats",
+    },
+];
+
 impl PerformanceInstrument {
     pub(crate) const ALL: [Self; 4] = [Self::Pads, Self::Bass, Self::Kick, Self::Perc];
 
@@ -387,13 +437,33 @@ impl PerformanceInstrument {
         self as usize
     }
 
+    pub(crate) const fn row(self) -> &'static InstrumentRow {
+        &INSTRUMENTS[self.index()]
+    }
+
     pub(crate) const fn page(self) -> Page {
-        match self {
-            Self::Pads => Page::Chords,
-            Self::Bass => Page::Bass,
-            Self::Kick => Page::Kick,
-            Self::Perc => Page::Perc,
-        }
+        self.row().page
+    }
+
+    pub(crate) fn tab(self) -> Tab {
+        tab_for_page(self.page())
+    }
+
+    /// The selector key that holds this instrument on the deck.
+    pub(crate) const fn key(self) -> char {
+        self.row().key
+    }
+
+    pub(crate) fn from_key(key: char) -> Option<Self> {
+        INSTRUMENTS
+            .iter()
+            .find(|row| row.key == key)
+            .map(|row| row.instrument)
+    }
+
+    /// Display name, which is the owning tab's name.
+    pub(crate) fn name(self) -> &'static str {
+        self.tab().name()
     }
 }
 
@@ -1442,6 +1512,18 @@ mod tests {
             assert_eq!(layer.tab as usize, index);
             assert_eq!(tab_for_page(layer.page), layer.tab);
             assert_eq!(page_for_tab(layer.tab), layer.page);
+        }
+    }
+
+    #[test]
+    fn every_instrument_row_sits_at_its_discriminant() {
+        for (index, row) in INSTRUMENTS.iter().enumerate() {
+            assert_eq!(row.instrument.index(), index);
+            assert_eq!(
+                PerformanceInstrument::from_key(row.key),
+                Some(row.instrument)
+            );
+            assert_eq!(row.instrument.page(), row.page);
         }
     }
 

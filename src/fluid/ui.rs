@@ -533,7 +533,7 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
             } else {
                 held_selectors
                     .iter()
-                    .map(performance_key)
+                    .map(|instrument| instrument.key().to_string())
                     .collect::<Vec<_>>()
                     .join("+")
             };
@@ -628,8 +628,8 @@ fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'s
     let mut spans = vec![Span::styled(
         format!(
             "{marker} {} {:<4}",
-            performance_key(values.instrument),
-            performance_name(values.instrument),
+            values.instrument.key(),
+            values.instrument.name(),
         ),
         style,
     )];
@@ -662,24 +662,6 @@ fn compact_performance_value(value: &str) -> String {
         .replace(" beats", "b")
         .replace(" beat", "b")
         .replace(' ', "")
-}
-
-fn performance_key(instrument: interaction::PerformanceInstrument) -> &'static str {
-    match instrument {
-        interaction::PerformanceInstrument::Pads => "a",
-        interaction::PerformanceInstrument::Bass => "s",
-        interaction::PerformanceInstrument::Kick => "d",
-        interaction::PerformanceInstrument::Perc => "f",
-    }
-}
-
-fn performance_name(instrument: interaction::PerformanceInstrument) -> &'static str {
-    match instrument {
-        interaction::PerformanceInstrument::Pads => "Pads",
-        interaction::PerformanceInstrument::Bass => "Bass",
-        interaction::PerformanceInstrument::Kick => "Kick",
-        interaction::PerformanceInstrument::Perc => "Perc",
-    }
 }
 
 /// Bottom-anchored palette overlay inside the main panel: prompt line,
