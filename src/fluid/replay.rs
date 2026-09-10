@@ -1974,66 +1974,6 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
 }
 
 #[test]
-#[cfg(any())]
-fn production_coordinator_keeps_nested_lfo_model_and_session_in_lockstep() {
-    let plain = |code| key(0, code, InputPhase::Press);
-    let opened = replay(
-        &[
-            plain(FixtureKey::Character('f')),
-            plain(FixtureKey::Character('v')),
-        ],
-        TerminalCapabilities::full(),
-    );
-    assert_eq!(
-        opened.model.mode,
-        InteractionMode::Automation(AutomationMode::Lfo {
-            depth: LfoDepth::NestedField,
-            selected: 1,
-        })
-    );
-    assert_eq!(opened.automation_kind.as_deref(), Some("Lfo"));
-    assert_eq!(opened.automation_address, Some("pad.level"));
-    assert_eq!(
-        opened.automation_open_field.as_deref(),
-        Some("pad.level#lfo.amount")
-    );
-
-    for (name, close_key) in [
-        ("escape", FixtureKey::Escape),
-        ("v", FixtureKey::Character('v')),
-    ] {
-        let closed = replay(
-            &[
-                plain(FixtureKey::Character('f')),
-                plain(FixtureKey::Character('v')),
-                plain(FixtureKey::Down),
-                plain(close_key),
-            ],
-            TerminalCapabilities::full(),
-        );
-        assert_eq!(
-            closed.model.mode,
-            InteractionMode::Automation(AutomationMode::Lfo {
-                depth: LfoDepth::Editor,
-                selected: 1,
-            }),
-            "{name}"
-        );
-        assert_eq!(closed.automation_kind.as_deref(), Some("Lfo"), "{name}");
-        assert_eq!(closed.automation_address, Some("pad.level"), "{name}");
-        assert_eq!(closed.automation_open_field, None, "{name}");
-        assert!(
-            closed
-                .effects
-                .iter()
-                .any(|effect| effect.contains("AutomationPosition")),
-            "{name}: {:?}",
-            closed.effects
-        );
-    }
-}
-
-#[test]
 fn escape_closes_a_neutral_lfo_without_trapping_the_keyboard_owner() {
     let plain = |code| key(0, code, InputPhase::Press);
 
