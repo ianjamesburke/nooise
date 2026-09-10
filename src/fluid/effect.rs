@@ -8,9 +8,7 @@
 use std::error::Error;
 use std::fmt;
 
-#[cfg(test)]
-use super::interaction::PaletteStagedEdit;
-use super::interaction::{InteractionEffect, Page};
+use super::interaction::{InteractionEffect, Page, PaletteStagedEdit};
 use super::song::SongCodeError;
 use super::*;
 
@@ -140,6 +138,24 @@ pub(crate) enum LiveEffect {
 pub(crate) struct InteractionExecutionContext {
     pub(crate) selected_control: Option<&'static str>,
     pub(crate) beat: f64,
+}
+
+/// The control an effect targets, or the failure every selection-scoped
+/// effect reports when nothing is selected.
+fn selected_control(selected_control: Option<&'static str>) -> Result<&'static str, EffectFailure> {
+    selected_control.ok_or(EffectFailure::MissingContext("selected control"))
+}
+
+/// Palette edits cross the kernel boundary as value bits; this is where they
+/// become session edits.
+fn staged_edits(edits: Vec<PaletteStagedEdit>) -> Vec<StagedEdit> {
+    edits
+        .into_iter()
+        .map(|edit| StagedEdit {
+            id: edit.id,
+            value: f32::from_bits(edit.value_bits),
+        })
+        .collect()
 }
 
 pub(crate) struct ProductionInteractionContext<'a> {
@@ -470,18 +486,14 @@ impl EffectExecutor {
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         match effect {
             InteractionEffect::AdjustSelected(delta) => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let id = selected_control(context.selected_control)?;
                 self.execute(LiveEffect::EditControl {
                     id,
                     edit: ControlEdit::Delta(f32::from(delta)),
                 })
             }
             InteractionEffect::CommitNumeric(value) => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let id = selected_control(context.selected_control)?;
                 self.execute(LiveEffect::EditControl {
                     id,
                     edit: ControlEdit::Value(value),
@@ -496,13 +508,7 @@ impl EffectExecutor {
                 self.place_module(tab, catalog_index)
             }
             InteractionEffect::PaletteCommit(edits) => {
-                let edits = edits
-                    .into_iter()
-                    .map(|edit| StagedEdit {
-                        id: edit.id,
-                        value: f32::from_bits(edit.value_bits),
-                    })
-                    .collect::<Vec<_>>();
+                let edits = staged_edits(edits);
                 if edits.is_empty() {
                     return Ok(EffectAcknowledgement::NoChange);
                 }
@@ -598,9 +604,7 @@ impl EffectExecutor {
                 })
             }
             InteractionEffect::AutomationConfirm(kind) => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let id = selected_control(context.selected_control)?;
                 let kind = match kind {
                     super::interaction::AutomationKind::Lfo => ModKind::Lfo,
                     super::interaction::AutomationKind::Envelope => ModKind::Envelope,
@@ -610,9 +614,7 @@ impl EffectExecutor {
                 Ok(self.published())
             }
             InteractionEffect::AddAutomation(kind) => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let id = selected_control(context.selected_control)?;
                 let kind = match kind {
                     super::interaction::AutomationKind::Lfo => ModKind::Lfo,
                     super::interaction::AutomationKind::Envelope => ModKind::Envelope,
@@ -665,9 +667,7 @@ impl EffectExecutor {
                 Ok(EffectAcknowledgement::NoChange)
             }
             InteractionEffect::TouchSelected => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let id = selected_control(context.selected_control)?;
                 let tab = tab_owning_control(id).unwrap_or(context.tab);
                 let index = tab_specs(tab)
                     .iter()
@@ -676,13 +676,7 @@ impl EffectExecutor {
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
             InteractionEffect::PaletteCommitAtBar(edits) => {
-                let edits = edits
-                    .into_iter()
-                    .map(|edit| StagedEdit {
-                        id: edit.id,
-                        value: f32::from_bits(edit.value_bits),
-                    })
-                    .collect::<Vec<_>>();
+                let edits = staged_edits(edits);
                 self.execute(LiveEffect::StageForBar {
                     target_beat: next_bar_beat(context.beat),
                     edits,
