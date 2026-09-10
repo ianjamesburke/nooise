@@ -1048,6 +1048,59 @@ mod tests {
         assert_eq!(executor.message(), None);
     }
 
+    /// A Delay time row steps through the registry: `contextual` hands the
+    /// loaded clock's grid to `apply_delta`, so Sync moves on the beat grid
+    /// and Free by 10 ms with no Delay-specific edit path in between.
+    #[test]
+    fn delay_time_rows_step_on_the_loaded_clocks_grid() {
+        let mut controls = FluidControls::default();
+        controls.modules.kick[2] = preset_slot("delay", 0.5);
+        controls.modules.kick[2].time = 0.5;
+        let mut executor = executor_with(controls);
+        let selected = tab_specs(Tab::Kick)
+            .iter()
+            .position(|spec| spec.id == "kick.slot3.time")
+            .expect("kick slot 3 has a time row");
+        let mut flipped = FlippedUnits::default();
+        let mut context = ProductionInteractionContext {
+            selected_control: Some("kick.slot3.time"),
+            tab: Tab::Kick,
+            selected,
+            automation_selected: 0,
+            beat: 0.0,
+            flipped: &mut flipped,
+        };
+        let mut clipboard = FakeClipboard::default();
+
+        executor.execute_production_interactions_with_clipboard(
+            [InteractionEffect::AdjustSelected(1)],
+            &mut context,
+            &mut clipboard,
+        );
+        assert_eq!(
+            executor.session().load().controls.modules.kick[2].time,
+            0.75
+        );
+
+        executor.edit_session(None, |snapshot| {
+            switch_delay_clock(&mut snapshot.controls.modules.kick[2], false, 120.0);
+        });
+        // Sync -> Free keeps the audible length, snapped to the 10 ms grid.
+        assert_eq!(
+            executor.session().load().controls.modules.kick[2].time,
+            380.0
+        );
+        executor.execute_production_interactions_with_clipboard(
+            [InteractionEffect::AdjustSelected(1)],
+            &mut context,
+            &mut clipboard,
+        );
+        assert_eq!(
+            executor.session().load().controls.modules.kick[2].time,
+            390.0
+        );
+    }
+
     #[test]
     fn interaction_effects_require_context_and_never_silently_drop() {
         let mut executor = executor();

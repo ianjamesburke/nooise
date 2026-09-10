@@ -386,9 +386,9 @@ fn apply_field_op(
     }
 }
 
-/// The selected control taking a user-entered value: a Delay time row first,
-/// which owns its own clock-derived range, then a field displayed in a
-/// flipped unit, then the ordinary registry path.
+/// The selected control taking a user-entered value: a Delay clock row
+/// first, which flips rather than steps, then a field displayed in a flipped
+/// unit, then the ordinary registry path.
 fn apply_control_value_op(
     snapshot: &mut LiveSessionSnapshot,
     tab: Tab,
@@ -432,10 +432,26 @@ fn apply_control_value_op(
     }
 }
 
-/// A Delay slot's time rows are not registry-stepped: each side carries its
-/// own Sync/Free clock, so the row's range and step come from that clock
-/// rather than the spec. Returns true when the row belongs to a Delay slot
-/// and the edit has been applied there.
+/// Which field of a loaded Delay slot the row is, or `None` for any other
+/// row. The one decision behind every Delay-specific gesture: the clock
+/// row's arrow flip and the unit toggle on a time row.
+fn delay_slot_field(
+    tab: Tab,
+    spec: &ControlSpec,
+    controls: &FluidControls,
+) -> Option<(usize, ModuleSlotField)> {
+    let (_, slot, field) = parse_module_slot_id(spec.id)?;
+    let module = controls.modules.for_tab(tab)?.get(slot)?;
+    module
+        .kind()
+        .is_some_and(|kind| kind.family == Family::Delay)
+        .then_some((slot, field))
+}
+
+/// A Delay slot's clock row flips Sync/Free on an arrow press instead of
+/// stepping a value; the time rows are registry-stepped, since `contextual`
+/// gives them the loaded clock's range and grid. Returns true when the edit
+/// was a clock flip and has been applied.
 fn apply_delay_row(
     snapshot: &mut LiveSessionSnapshot,
     tab: Tab,
@@ -443,62 +459,18 @@ fn apply_delay_row(
     op: FieldOp<'_>,
     bpm: f32,
 ) -> bool {
-    let Some((slot, module)) = module_slot_at_id(tab, spec.id, &snapshot.controls) else {
+    let Some((slot, ModuleSlotField::Clock)) = delay_slot_field(tab, spec, &snapshot.controls)
+    else {
         return false;
     };
-    if !module
-        .kind()
-        .is_some_and(|kind| kind.family == Family::Delay)
-    {
+    // A typed value goes through the ordinary discrete-control path instead.
+    if !matches!(op, FieldOp::Adjust { .. }) {
         return false;
     }
-    let field = parse_module_slot_id(spec.id).map(|(_, _, field)| field);
-    // The clock row itself flips Sync/Free on an arrow press; a typed value
-    // goes through the ordinary discrete-control path instead.
-    if field == Some(ModuleSlotField::Clock) {
-        if !matches!(op, FieldOp::Adjust { .. }) {
-            return false;
-        }
-        if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
-            && let Some(module) = slots.get_mut(slot)
-        {
-            switch_delay_clock(module, false, bpm);
-        }
-        return true;
-    }
-    let right = match field {
-        Some(ModuleSlotField::Time) => false,
-        Some(ModuleSlotField::RightTime) => true,
-        _ => return false,
-    };
     if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
         && let Some(module) = slots.get_mut(slot)
     {
-        let clock = DelayClock::from_value(if right {
-            module.right_clock
-        } else {
-            module.clock
-        });
-        let current = if right {
-            &mut module.right_time
-        } else {
-            &mut module.time
-        };
-        *current = match (clock, op) {
-            (DelayClock::Sync, FieldOp::Adjust { dir, .. }) => {
-                beat_grid_adjust(*current, dir, DELAY_SYNC_MIN_BEATS, DELAY_SYNC_MAX_BEATS)
-            }
-            (DelayClock::Free, FieldOp::Adjust { dir, .. }) => {
-                (*current + dir * 10.0).clamp(DELAY_FREE_MIN_MS, DELAY_FREE_MAX_MS)
-            }
-            (DelayClock::Sync, FieldOp::Set { value, .. }) => {
-                value.clamp(DELAY_SYNC_MIN_BEATS, DELAY_SYNC_MAX_BEATS)
-            }
-            (DelayClock::Free, FieldOp::Set { value, .. }) => {
-                value.clamp(DELAY_FREE_MIN_MS, DELAY_FREE_MAX_MS)
-            }
-            (_, FieldOp::Reset) => unreachable!("a reset never reaches the delay rows"),
-        };
+        switch_delay_clock(module, false, bpm);
     }
     true
 }
@@ -577,13 +549,8 @@ pub(crate) fn toggle_units_effect(
 ) {
     if matches!(active_field(automation, lfo_selected), ActiveField::Control)
         && let Some(spec) = tab_specs(tab).get(selected)
-        && let Some((_, _, field @ (ModuleSlotField::Time | ModuleSlotField::RightTime))) =
-            parse_module_slot_id(spec.id)
-        && let snapshot = effects.session().load()
-        && let Some((slot, module)) = module_slot_at_id(tab, spec.id, &snapshot.controls)
-        && module
-            .kind()
-            .is_some_and(|kind| kind.family == Family::Delay)
+        && let Some((slot, field @ (ModuleSlotField::Time | ModuleSlotField::RightTime))) =
+            delay_slot_field(tab, spec, &effects.session().load().controls)
     {
         effects.edit_session(Some(spec.id), |snapshot| {
             let bpm = snapshot.controls.master.bpm;

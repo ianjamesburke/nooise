@@ -1683,17 +1683,6 @@ pub(crate) fn module_slot_at_collapsed_id<'a>(
     })
 }
 
-/// Loaded module slot addressed by any one of its static parameter ids.
-pub(crate) fn module_slot_at_id<'a>(
-    tab: Tab,
-    id: &str,
-    controls: &'a FluidControls,
-) -> Option<(usize, &'a ModuleSlot)> {
-    let (_, slot, _) = parse_module_slot_id(id)?;
-    let module = controls.modules.for_tab(tab)?.get(slot)?;
-    Some((slot, module))
-}
-
 /// The rows projected inside a loaded module's detail scope. The backing
 /// registry ids stay slot-addressed and therefore persist independently of
 /// whichever catalog module currently occupies the slot.
