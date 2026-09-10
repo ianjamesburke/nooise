@@ -11,7 +11,6 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 #[cfg(test)]
-use super::MuteState;
 #[cfg(test)]
 use super::automation::{ControlAddress, LfoRoute, LfoShape};
 use super::{
