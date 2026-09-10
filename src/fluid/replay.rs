@@ -894,13 +894,23 @@ fn modified_key(after_ms: u64, code: FixtureKey, phase: InputPhase, modifiers: u
     event
 }
 
-fn replay(trace: &[TraceEvent], capabilities: TerminalCapabilities) -> ReplayResult {
+/// Replays `trace` on a harness shaped by `configure`, delta-reducing and
+/// panicking on any property violation.
+fn replay_with(
+    trace: &[TraceEvent],
+    capabilities: TerminalCapabilities,
+    configure: impl Fn(ReplayHarness) -> ReplayHarness,
+) -> ReplayResult {
     let run = |candidate: &[TraceEvent]| {
-        ReplayHarness::new(capabilities).replay(&ReplayTrace {
+        configure(ReplayHarness::new(capabilities)).replay(&ReplayTrace {
             events: candidate.to_vec(),
         })
     };
     checked_replay(run(trace), trace, run)
+}
+
+fn replay(trace: &[TraceEvent], capabilities: TerminalCapabilities) -> ReplayResult {
+    replay_with(trace, capabilities, |harness| harness)
 }
 
 fn replay_from_model(
@@ -908,60 +918,9 @@ fn replay_from_model(
     trace: &[TraceEvent],
     capabilities: TerminalCapabilities,
 ) -> ReplayResult {
-    let run = |candidate: &[TraceEvent]| {
-        ReplayHarness::new(capabilities)
-            .with_model(model.clone())
-            .replay(&ReplayTrace {
-                events: candidate.to_vec(),
-            })
-    };
-    checked_replay(run(trace), trace, run)
-}
-
-fn replay_with_clipboard_failure(
-    trace: &[TraceEvent],
-    capabilities: TerminalCapabilities,
-    error: &ClipboardError,
-) -> ReplayResult {
-    let run = |candidate: &[TraceEvent]| {
-        ReplayHarness::new(capabilities)
-            .with_clipboard_failure(error.clone())
-            .replay(&ReplayTrace {
-                events: candidate.to_vec(),
-            })
-    };
-    checked_replay(run(trace), trace, run)
-}
-
-fn replay_with_auto_running(
-    trace: &[TraceEvent],
-    capabilities: TerminalCapabilities,
-) -> ReplayResult {
-    let run = |candidate: &[TraceEvent]| {
-        ReplayHarness::new(capabilities)
-            .with_auto_running()
-            .replay(&ReplayTrace {
-                events: candidate.to_vec(),
-            })
-    };
-    checked_replay(run(trace), trace, run)
-}
-
-fn replay_from_model_with_session_edit(
-    model: InteractionModel,
-    trace: &[TraceEvent],
-    capabilities: TerminalCapabilities,
-    edit: fn(&mut LiveSessionSnapshot),
-) -> ReplayResult {
-    let run = |candidate: &[TraceEvent]| {
-        ReplayHarness::new(capabilities)
-            .with_model(model.clone())
-            .with_session_edit(edit)
-            .replay(&ReplayTrace {
-                events: candidate.to_vec(),
-            })
-    };
-    checked_replay(run(trace), trace, run)
+    replay_with(trace, capabilities, |harness| {
+        harness.with_model(model.clone())
+    })
 }
 
 fn checked_replay(
@@ -2107,7 +2066,7 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
         InteractionMode::Palette(PaletteMode { ref query, .. }) if query == "B"
     ));
 
-    let failed = replay_with_clipboard_failure(
+    let failed = replay_with(
         &[modified_key(
             0,
             FixtureKey::Character('s'),
@@ -2115,7 +2074,9 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
             0b000010,
         )],
         TerminalCapabilities::full(),
-        &ClipboardError::Unavailable("no display server".into()),
+        |harness| {
+            harness.with_clipboard_failure(ClipboardError::Unavailable("no display server".into()))
+        },
     );
     assert_eq!(failed.clipboard_writes, 0);
     assert_eq!(
@@ -2251,20 +2212,23 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
         snapshot.controls.pad.progression = super::voice::CUSTOM_PROGRESSION_INDEX as f32;
     }
 
-    let custom = replay_from_model_with_session_edit(
-        InteractionModel {
-            navigation: Navigation::Chords {
-                selected: 6,
-                drill: ChordDrill::None,
-            },
-            ..InteractionModel::default()
-        },
+    let custom = replay_with(
         &[
             key(0, FixtureKey::Enter, InputPhase::Press),
             key(0, FixtureKey::Enter, InputPhase::Press),
         ],
         TerminalCapabilities::full(),
-        select_custom_progression,
+        |harness| {
+            harness
+                .with_model(InteractionModel {
+                    navigation: Navigation::Chords {
+                        selected: 6,
+                        drill: ChordDrill::None,
+                    },
+                    ..InteractionModel::default()
+                })
+                .with_session_edit(select_custom_progression)
+        },
     );
     assert_eq!(
         custom.model,
@@ -2646,7 +2610,7 @@ fn deck_chorded_selectors_apply_one_action_to_every_held_instrument() {
 
 #[test]
 fn raw_performance_edit_acknowledges_real_cursor_target_exits_auto_and_updates_mru() {
-    let result = replay_with_auto_running(
+    let result = replay_with(
         &[
             key(0, FixtureKey::Character('p'), InputPhase::Press),
             key(0, FixtureKey::Character('s'), InputPhase::Press),
@@ -2654,6 +2618,7 @@ fn raw_performance_edit_acknowledges_real_cursor_target_exits_auto_and_updates_m
             key(0, FixtureKey::Character('k'), InputPhase::Press),
         ],
         TerminalCapabilities::full(),
+        ReplayHarness::with_auto_running,
     );
     assert!(!result.auto_running);
     assert_eq!(result.recent_ids, ["bass.level"]);
