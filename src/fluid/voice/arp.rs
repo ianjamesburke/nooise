@@ -16,17 +16,16 @@ pub(crate) enum ArpPattern {
     Random,
 }
 
-pub(crate) fn arp_pattern_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid(4) as usize
-}
+/// Patterns in stored-value order; `arp.pattern` wraps into this table.
+const ARP_PATTERNS: [ArpPattern; 4] = [
+    ArpPattern::Up,
+    ArpPattern::Down,
+    ArpPattern::UpDown,
+    ArpPattern::Random,
+];
 
 pub(crate) fn arp_pattern_from_control(value: f32) -> ArpPattern {
-    match arp_pattern_index(value) {
-        0 => ArpPattern::Up,
-        1 => ArpPattern::Down,
-        2 => ArpPattern::UpDown,
-        _ => ArpPattern::Random,
-    }
+    ARP_PATTERNS[wrapped_index(value, ARP_PATTERNS.len())]
 }
 
 pub(crate) fn arp_pattern_label(value: f32) -> &'static str {
@@ -94,10 +93,7 @@ pub(crate) fn arp_advance(
 
 pub(crate) struct ArpEngine {
     pub(crate) sample_rate: f32,
-    pub(crate) chord_trigger: GridTrigger,
-    pub(crate) step_index: usize,
-    pub(crate) active_chord_count: Option<usize>,
-    pub(crate) active_progression: Option<usize>,
+    pub(crate) progression: ProgressionFollower,
     pub(crate) note_trigger: GridTrigger,
     pub(crate) cycle_pos: usize,
     pub(crate) ping_pong_dir: i32,
@@ -109,10 +105,7 @@ impl ArpEngine {
     pub(crate) fn new(sample_rate: f32) -> Self {
         Self {
             sample_rate,
-            chord_trigger: GridTrigger::after_start(),
-            step_index: 0,
-            active_chord_count: None,
-            active_progression: None,
+            progression: ProgressionFollower::new(),
             note_trigger: GridTrigger::new(),
             cycle_pos: 0,
             ping_pong_dir: 1,
@@ -128,30 +121,17 @@ impl ArpEngine {
         tune: f32,
         timing: TimingContext,
     ) -> (f32, f32) {
-        // Follow the pad's current chord: an independent trigger synced to
-        // the same chord-length grid as the pad/bass engines, so this
-        // engine's step_index always matches the pad's, without reaching
-        // into the pad engine directly. `pad_chord_tones` is the same
-        // chord-source path Pad and Bass resolve through, so a custom
-        // progression drives all three identically.
-        let active_chord_count = self.active_chord_count.get_or_insert(pad_chord_count(pad));
-        let progression = progression_index(pad.progression);
-        let active_progression = self.active_progression.get_or_insert(progression);
-        advance_pad_progression(
-            &mut self.step_index,
-            active_chord_count,
-            active_progression,
-            pad_chord_count(pad),
-            progression,
-            self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0),
-        );
+        // `pad_chord_tones` is the same chord-source path Pad and Bass
+        // resolve through, so a custom progression drives all three
+        // identically.
+        let (progression, step) = self.progression.follow(pad, timing);
 
         let rate_beats = c.rate_beats.clamp(ARP_RATE_BEATS_MIN, ARP_RATE_BEATS_MAX);
         if self
             .note_trigger
             .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
         {
-            let chord = pad_chord_tones(pad, *active_progression, self.step_index);
+            let chord = pad_chord_tones(pad, progression, step);
             let octaves = arp_octave_span(c.octaves);
             let notes = arp_cycle_notes(chord, octaves);
             let len = notes.len().max(1);
@@ -172,7 +152,7 @@ impl ArpEngine {
             self.cycle_pos = next_pos;
             self.ping_pong_dir = next_dir;
 
-            let hz = midi_to_hz(note) * tune_ratio(tune);
+            let hz = note_hz(note, tune);
             // A note sounds for `attack + decay`, decoupled from the step grid,
             // so a longer decay lets consecutive notes overlap and ring out
             // instead of being cut at the step. `rate_beats` only sets the
@@ -184,7 +164,7 @@ impl ArpEngine {
             // byte-identical.
             if c.gain != 0.0 {
                 self.voices.push(TonalVoice::new(
-                    tonal_synth_type_index(c.voice_type),
+                    wrapped_index(c.voice_type, TONAL_SYNTH_TYPES.len()),
                     TonalNote {
                         midi: note,
                         hz,

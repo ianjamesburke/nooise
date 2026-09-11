@@ -4,6 +4,7 @@
 //! events, rendering, clocks, shared publication, or effect execution.
 
 use super::FluidControls;
+use super::ModKind;
 use super::Tab;
 use super::palette::{ModuleScope, PaletteEntry, PaletteState, StagedEdit};
 
@@ -213,6 +214,10 @@ impl Navigation {
         }
     }
 
+    pub(crate) fn tab(self) -> Tab {
+        tab_for_page(self.page())
+    }
+
     pub(crate) fn selected(self) -> usize {
         match self {
             Self::Chords { selected, .. }
@@ -222,19 +227,18 @@ impl Navigation {
         }
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        let selected = self.selected();
-        let next = if delta.is_negative() {
-            selected.saturating_sub(delta.unsigned_abs())
-        } else {
-            selected.saturating_add(delta as usize)
-        };
+    fn selected_mut(&mut self) -> &mut usize {
         match self {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
             | Self::Master { selected, .. }
-            | Self::Module { selected, .. } => *selected = next,
+            | Self::Module { selected, .. } => selected,
         }
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let selected = self.selected_mut();
+        *selected = selected.saturating_add_signed(delta);
     }
 
     fn cancel_one_depth(&mut self) {
@@ -285,6 +289,32 @@ pub(crate) struct PaletteMode {
     pub(crate) module_scope: Option<ModuleScope>,
 }
 
+impl PaletteMode {
+    /// The registry-backed palette view of this mode's query, selection, locked
+    /// entry, and staged edits. Kernel confirm and the renderer both resolve
+    /// rows by index through this one projection, so they cannot desync.
+    pub(crate) fn project(&self, tab: Tab) -> PaletteState {
+        let mut state = PaletteState::new(tab, &self.recent, self.module_scope);
+        for character in self.query.chars() {
+            state.push_char(character);
+        }
+        state.selected = self.selected.min(state.matches.len().saturating_sub(1));
+        state.locked = self.locked.filter(|&index| state.contains_entry(index));
+        if state.locked.is_some() {
+            state.value_buf.clone_from(&self.value_buffer);
+        }
+        state.staged = self
+            .staged
+            .iter()
+            .map(|edit| StagedEdit {
+                id: edit.id,
+                value: f32::from_bits(edit.value_bits),
+            })
+            .collect();
+        state
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PaletteStagedEdit {
     pub(crate) id: &'static str,
@@ -295,6 +325,26 @@ pub(crate) struct PaletteStagedEdit {
 pub(crate) enum AutomationKind {
     Lfo,
     Envelope,
+}
+
+impl AutomationKind {
+    /// Title-bar label for the editor family; `KeyboardOwner::label` and the
+    /// unavailable-editor footer both read it.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Lfo => "LFO",
+            Self::Envelope => "ENV",
+        }
+    }
+}
+
+impl From<AutomationKind> for ModKind {
+    fn from(kind: AutomationKind) -> Self {
+        match kind {
+            AutomationKind::Lfo => Self::Lfo,
+            AutomationKind::Envelope => Self::Envelope,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -354,6 +404,51 @@ pub(crate) enum PerformanceInstrument {
     Perc,
 }
 
+/// Everything one performance instrument is: the page it lives on, the
+/// selector key that holds it, and the registry ids its Deck/Sequence
+/// actions edit (level, shape, density).
+pub(crate) struct InstrumentRow {
+    pub(crate) instrument: PerformanceInstrument,
+    pub(crate) page: Page,
+    pub(crate) key: char,
+    pub(crate) shape: &'static str,
+    pub(crate) density: &'static str,
+}
+
+/// One row per instrument in `PerformanceInstrument` discriminant order
+/// (test-enforced), so the key map, page, display name, and registry
+/// targets all index this single table.
+pub(crate) const INSTRUMENTS: [InstrumentRow; 4] = [
+    InstrumentRow {
+        instrument: PerformanceInstrument::Pads,
+        page: Page::Chords,
+        key: 'a',
+        shape: "pad.release_time",
+        density: "pad.chord_bars",
+    },
+    InstrumentRow {
+        instrument: PerformanceInstrument::Bass,
+        page: Page::Bass,
+        key: 's',
+        shape: "bass.decay_time",
+        density: "bass.interval_beats",
+    },
+    InstrumentRow {
+        instrument: PerformanceInstrument::Kick,
+        page: Page::Kick,
+        key: 'd',
+        shape: "kick.amp_decay_ms",
+        density: "kick.interval_beats",
+    },
+    InstrumentRow {
+        instrument: PerformanceInstrument::Perc,
+        page: Page::Perc,
+        key: 'f',
+        shape: "perc.decay_ms",
+        density: "perc.interval_beats",
+    },
+];
+
 impl PerformanceInstrument {
     pub(crate) const ALL: [Self; 4] = [Self::Pads, Self::Bass, Self::Kick, Self::Perc];
 
@@ -361,13 +456,33 @@ impl PerformanceInstrument {
         self as usize
     }
 
+    pub(crate) const fn row(self) -> &'static InstrumentRow {
+        &INSTRUMENTS[self.index()]
+    }
+
     pub(crate) const fn page(self) -> Page {
-        match self {
-            Self::Pads => Page::Chords,
-            Self::Bass => Page::Bass,
-            Self::Kick => Page::Kick,
-            Self::Perc => Page::Perc,
-        }
+        self.row().page
+    }
+
+    pub(crate) fn tab(self) -> Tab {
+        tab_for_page(self.page())
+    }
+
+    /// The selector key that holds this instrument on the deck.
+    pub(crate) const fn key(self) -> char {
+        self.row().key
+    }
+
+    pub(crate) fn from_key(key: char) -> Option<Self> {
+        INSTRUMENTS
+            .iter()
+            .find(|row| row.key == key)
+            .map(|row| row.instrument)
+    }
+
+    /// Display name, which is the owning tab's name.
+    pub(crate) fn name(self) -> &'static str {
+        self.tab().name()
     }
 }
 
@@ -751,7 +866,9 @@ impl InteractionModel {
         };
         match automation {
             AutomationMode::Lfo { selected, .. } => {
-                *selected = move_unbounded(*selected, delta).clamp(1, automation_row_count.max(1));
+                *selected = selected
+                    .saturating_add_signed(delta)
+                    .clamp(1, automation_row_count.max(1));
                 Transition {
                     model: self,
                     effects: Vec::new(),
@@ -773,7 +890,7 @@ impl InteractionModel {
                         effects: vec![InteractionEffect::CloseAutomationAll],
                     }
                 } else {
-                    *selected = move_unbounded(*selected, delta);
+                    *selected = selected.saturating_add_signed(delta);
                     Transition {
                         model: self,
                         effects: Vec::new(),
@@ -784,13 +901,8 @@ impl InteractionModel {
     }
 
     pub(crate) fn clamp_navigation_selection(&mut self, item_count: usize) {
-        let last = item_count.saturating_sub(1);
-        match &mut self.navigation {
-            Navigation::Chords { selected, .. }
-            | Navigation::Standard { selected, .. }
-            | Navigation::Master { selected, .. }
-            | Navigation::Module { selected, .. } => *selected = (*selected).min(last),
-        }
+        let selected = self.navigation.selected_mut();
+        *selected = (*selected).min(item_count.saturating_sub(1));
     }
 
     pub(crate) fn seed_palette_recent(&mut self, recent: &[&'static str]) {
@@ -1049,7 +1161,7 @@ fn update_palette(
             }
         }
         Intent::MoveSelection(delta) => {
-            let state = project_palette(palette, page);
+            let state = palette.project(tab_for_page(page));
             if palette.locked.is_none() && !state.matches.is_empty() {
                 palette.selected = (state.selected as isize + delta)
                     .rem_euclid(state.matches.len() as isize)
@@ -1057,7 +1169,7 @@ fn update_palette(
             }
         }
         Intent::PaletteAutocomplete => {
-            let state = project_palette(palette, page);
+            let state = palette.project(tab_for_page(page));
             if palette.locked.is_none()
                 && let Some(found) = state.matches.get(state.selected)
             {
@@ -1065,7 +1177,7 @@ fn update_palette(
             }
         }
         Intent::Confirm => {
-            let state = project_palette(palette, page);
+            let state = palette.project(tab_for_page(page));
             if let Some(entry_index) = palette.locked {
                 let entry = state.entry(entry_index);
                 if let (Some(id), Ok(value)) = (entry.id(), palette.value_buffer.parse::<f32>()) {
@@ -1092,7 +1204,7 @@ fn update_palette(
             }
         }
         Intent::CommitPaletteAtBar => {
-            let state = project_palette(palette, page);
+            let state = palette.project(tab_for_page(page));
             if let Some(entry_index) = palette.locked
                 && let Ok(value) = palette.value_buffer.parse::<f32>()
             {
@@ -1140,7 +1252,7 @@ fn update_automation(
         }
         Intent::MoveSelection(delta) => {
             let selected = automation.selected_mut();
-            *selected = move_unbounded(*selected, delta);
+            *selected = selected.saturating_add_signed(delta);
         }
         Intent::Confirm => {
             effects.push(InteractionEffect::AutomationConfirm(automation.kind()));
@@ -1344,14 +1456,6 @@ fn update_performance(
     }
 }
 
-fn move_unbounded(selected: usize, delta: isize) -> usize {
-    if delta.is_negative() {
-        selected.saturating_sub(delta.unsigned_abs())
-    } else {
-        selected.saturating_add(delta as usize)
-    }
-}
-
 fn push_numeric(buffer: &mut String, character: char) {
     let valid = character.is_ascii_digit()
         || (character == '.' && !buffer.contains('.'))
@@ -1359,27 +1463,6 @@ fn push_numeric(buffer: &mut String, character: char) {
     if valid {
         buffer.push(character);
     }
-}
-
-fn project_palette(palette: &PaletteMode, page: Page) -> PaletteState {
-    let mut state = PaletteState::new(tab_for_page(page), &palette.recent, palette.module_scope);
-    for character in palette.query.chars() {
-        state.push_char(character);
-    }
-    state.selected = palette.selected.min(state.matches.len().saturating_sub(1));
-    state.locked = palette.locked.filter(|&index| state.contains_entry(index));
-    if state.locked.is_some() {
-        state.value_buf.clone_from(&palette.value_buffer);
-    }
-    state.staged = palette
-        .staged
-        .iter()
-        .map(|edit| StagedEdit {
-            id: edit.id,
-            value: f32::from_bits(edit.value_bits),
-        })
-        .collect();
-    state
 }
 
 /// What confirming a palette row does. A module row resolves to add-or-jump
@@ -1437,6 +1520,18 @@ mod tests {
             assert_eq!(layer.tab as usize, index);
             assert_eq!(tab_for_page(layer.page), layer.tab);
             assert_eq!(page_for_tab(layer.tab), layer.page);
+        }
+    }
+
+    #[test]
+    fn every_instrument_row_sits_at_its_discriminant() {
+        for (index, row) in INSTRUMENTS.iter().enumerate() {
+            assert_eq!(row.instrument.index(), index);
+            assert_eq!(
+                PerformanceInstrument::from_key(row.key),
+                Some(row.instrument)
+            );
+            assert_eq!(row.instrument.page(), row.page);
         }
     }
 
@@ -1544,10 +1639,8 @@ mod tests {
         controls.modules.pad[1] = super::super::preset_slot("drive", 0.0);
         let id = super::super::module_slot_collapsed_id(Tab::Chords, 1, &controls)
             .expect("pads has a slot 2");
-        let flat = super::super::tab_specs(Tab::Chords)
-            .iter()
-            .position(|spec| spec.id == id)
-            .expect("slot 2 amount is a real control");
+        let flat =
+            super::super::spec_index(Tab::Chords, id).expect("slot 2 amount is a real control");
 
         let mut model = InteractionModel {
             navigation: Navigation::Chords {
@@ -1893,7 +1986,7 @@ mod tests {
             query: "bass".to_string(),
             ..PaletteMode::default()
         };
-        let projected = project_palette(&palette, Page::Bass);
+        let projected = palette.project(Tab::Bass);
         assert!(projected.matches.len() > 1);
 
         let wrapped = update(palette_model(palette), Intent::MoveSelection(-1)).model;
@@ -1950,7 +2043,7 @@ mod tests {
             selected: 1,
             ..PaletteMode::default()
         };
-        let projected = project_palette(&base, Page::Bass);
+        let projected = base.project(Tab::Bass);
         let expected = palette_confirm(projected.entry(projected.matches[1].entry_index));
 
         let ordinary = update(palette_model(base.clone()), Intent::Confirm);

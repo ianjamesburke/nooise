@@ -119,7 +119,7 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
     for tab in Tab::all() {
         for (index_in_tab, spec) in tab_specs(tab).iter().enumerate() {
             if tab_owning_control(spec.id) == Some(tab)
-                && !spec.id.contains(".slot")
+                && parse_module_slot_id(spec.id).is_none()
                 && !entries.iter().any(|e| e.id() == Some(spec.id))
             {
                 entries.push(PaletteEntry::Control {
@@ -295,17 +295,12 @@ fn module_palette_entries(tab: Tab, slot: usize, catalog_index: usize) -> Vec<Pa
         .parameters()
         .iter()
         .filter_map(|parameter| {
-            let field = parameter.field.id();
-            let suffix = format!(".slot{}.{}", slot + 1, field);
-            tab_specs(tab)
-                .iter()
-                .find(|spec| spec.id.ends_with(&suffix))
-                .map(|spec| PaletteEntry::ModuleControl {
-                    tab,
-                    spec,
-                    module_name: MODULE_CATALOG[catalog_index].display_name,
-                    parameter: parameter.label,
-                })
+            module_slot_spec(tab, slot, parameter.field).map(|spec| PaletteEntry::ModuleControl {
+                tab,
+                spec,
+                module_name: MODULE_CATALOG[catalog_index].display_name,
+                parameter: parameter.label,
+            })
         })
         .collect()
 }

@@ -2,7 +2,9 @@
 //! source of truth for every control row, its range and stepping, its stable
 //! song-snapshot id, and how a value reads on screen.
 
+use super::widget::DialScale;
 use super::*;
+use crate::fx::filter::FilterType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tab {
@@ -107,16 +109,6 @@ pub(crate) enum Step {
     PowerOfTwo,
     /// 0.125 as the floor value, sixteenths (0.25 grid) above it.
     BeatGrid,
-}
-
-impl Step {
-    pub(crate) fn ratio(self, value: f32, min: f32, max: f32, taper: Taper) -> f32 {
-        match self {
-            Self::Linear(_) => taper.ratio(value, min, max),
-            Self::PowerOfTwo => Taper::Log2.ratio(value, min, max),
-            Self::BeatGrid => beat_grid_ratio(value, min, max),
-        }
-    }
 }
 
 /// How direct numeric entry is interpreted.
@@ -496,10 +488,9 @@ impl ControlSpec {
             // moves an equal fraction of the throw — fine near the floor,
             // coarse near the ceiling (log-even octaves for Log2, low-biased
             // for Exp) — instead of a fixed value delta.
-            let ratio = spec.taper.ratio(value, spec.min, spec.max);
-            let stepped = (ratio + dir / TAPER_STEPS_PER_SWEEP).clamp(0.0, 1.0);
-            spec.taper
-                .value_at(stepped, spec.min, spec.max)
+            spec.scale()
+                .step_in_position(value, dir, TAPER_STEPS_PER_SWEEP)
+                .expect("a Linear step maps to a Tapered scale, which has an inverse")
                 .clamp(spec.min, spec.max)
         } else {
             match spec.step {
@@ -517,15 +508,24 @@ impl ControlSpec {
         (spec.set)(c, next);
     }
 
+    /// Bar position of `value` under this control's live scale.
     pub(crate) fn ratio(&self, value: f32, c: &FluidControls) -> f32 {
-        let spec = self.contextual(c);
-        spec.step.ratio(value, spec.min, spec.max, spec.taper)
+        self.contextual(c).scale().ratio(value)
+    }
+
+    /// The dial scale this row's range, step, and taper declare. Every bar
+    /// ratio and position-space step for a registry control derives from
+    /// here, never from the fields directly. Call on a `contextual` spec.
+    pub(crate) fn scale(&self) -> DialScale {
+        DialScale::from_step(self.min, self.max, self.step, self.taper)
     }
 
     /// A continuous dial with a non-linear taper and a plain `Linear` step:
     /// stepped in position space and stored at full precision. Discrete grids
     /// (`PowerOfTwo`/`BeatGrid`) keep their own musical stepping even under a
     /// `Log2` bar (e.g. chord bars doubling on octaves).
+    /// `continuous_tapered_specs_step_in_position` pins that such a spec's
+    /// scale is `Tapered`, so `apply_delta` can rely on the inverse.
     fn is_continuous_tapered(&self) -> bool {
         !matches!(self.taper, Taper::Linear) && matches!(self.step, Step::Linear(_))
     }
@@ -538,7 +538,9 @@ impl ControlSpec {
     pub(crate) fn apply_value(&self, value: f32, c: &mut FluidControls) {
         let spec = self.contextual(c);
         let next = match spec.entry {
-            Entry::Percent if spec.id.contains(".slot") => normalize_unit_input(value),
+            Entry::Percent if parse_module_slot_id(spec.id).is_some() => {
+                normalize_unit_input(value)
+            }
             Entry::Percent => normalize_unit_input(value) * spec.max,
             Entry::BeatsAsBars => nearest_power_of_two(value / 4.0, spec.min, spec.max),
             Entry::Round => value.round(),
@@ -592,6 +594,11 @@ impl ControlSpec {
 
 pub(crate) fn pct(v: f32) -> String {
     format!("{:.0}%", v * 100.0)
+}
+
+/// A bipolar `-1..=1` ratio as a signed whole percent (`+25%`, `-40%`).
+pub(crate) fn signed_pct(v: f32) -> String {
+    format!("{:+.0}%", v * 100.0)
 }
 
 pub(crate) fn beats2(v: f32) -> String {
@@ -771,7 +778,7 @@ macro_rules! module_slot_rows {
                 Entry::Percent,
                 |c| c.modules.$layer[$slot - 1].amount,
                 |c, v| c.modules.$layer[$slot - 1].amount = v,
-                |c| format!("{:.0}%", c.modules.$layer[$slot - 1].amount * 100.0),
+                |c| pct(c.modules.$layer[$slot - 1].amount),
             )
             .labeled_by(|c| module_kind_label(c.modules.$layer[$slot - 1].kind))
             .reset_at(0.0),
@@ -814,9 +821,10 @@ macro_rules! module_slot_rows {
                 Entry::Round,
                 |c| c.modules.$layer[$slot - 1].clock,
                 |c, v| c.modules.$layer[$slot - 1].clock = v,
-                |c| match DelayClock::from_value(c.modules.$layer[$slot - 1].clock) {
-                    DelayClock::Sync => "Sync".to_string(),
-                    DelayClock::Free => "Free".to_string(),
+                |c| {
+                    DelayClock::from_value(c.modules.$layer[$slot - 1].clock)
+                        .label()
+                        .to_string()
                 },
             )
             .reset_at(DelayClock::Sync.value()),
@@ -844,7 +852,7 @@ macro_rules! module_slot_rows {
                         v
                     };
                 },
-                |c| format!("{:.0}%", c.modules.$layer[$slot - 1].feedback * 100.0),
+                |c| pct(c.modules.$layer[$slot - 1].feedback),
             )
             .reset_at(0.0)
             .exact_in_song(),
@@ -858,7 +866,7 @@ macro_rules! module_slot_rows {
                 Entry::Percent,
                 |c| c.modules.$layer[$slot - 1].vintage,
                 |c, v| c.modules.$layer[$slot - 1].vintage = v,
-                |c| format!("{:.0}%", c.modules.$layer[$slot - 1].vintage * 100.0),
+                |c| pct(c.modules.$layer[$slot - 1].vintage),
             )
             .reset_at(0.0)
             .exact_in_song(),
@@ -872,9 +880,10 @@ macro_rules! module_slot_rows {
                 Entry::Round,
                 |c| c.modules.$layer[$slot - 1].right_clock,
                 |c, v| c.modules.$layer[$slot - 1].right_clock = v,
-                |c| match DelayClock::from_value(c.modules.$layer[$slot - 1].right_clock) {
-                    DelayClock::Sync => "Sync".to_string(),
-                    DelayClock::Free => "Free".to_string(),
+                |c| {
+                    DelayClock::from_value(c.modules.$layer[$slot - 1].right_clock)
+                        .label()
+                        .to_string()
                 },
             )
             .reset_at(DelayClock::Sync.value()),
@@ -1142,7 +1151,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         Entry::Round,
         |c| c.pad.voice_type,
         |c, v| c.pad.voice_type = v,
-        |c| pad_type_label(c.pad.voice_type).to_string(),
+        |c| type_label(c.pad.voice_type, PAD_TYPES).to_string(),
     ),
     ControlSpec::new(
         "pad.chord_bars",
@@ -1186,7 +1195,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
             if is_custom_progression(index) {
                 "Custom".to_string()
             } else {
-                ["A", "B", "C", "D", "E", "F", "G", "H"][index].to_string()
+                letter_label(index)
             }
         },
     ),
@@ -1226,7 +1235,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
             Entry::Round,
             |c| c.bass.voice_type,
             |c, v| c.bass.voice_type = v,
-            |c| bass_type_label(c.bass.voice_type).to_string(),
+            |c| type_label(c.bass.voice_type, BASS_TYPES).to_string(),
         ),
         beat_interval!(
             "bass.interval_beats",
@@ -1241,12 +1250,12 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
             "Rhythm",
             ControlKind::Discrete,
             0.0,
-            3.0,
+            last_index_of(&BASS_RHYTHMS),
             Step::Linear(1.0),
             Entry::Round,
             |c| c.bass.rhythm,
             |c, v| c.bass.rhythm = v,
-            |c| ["A", "B", "C", "D"][c.bass.rhythm.round() as usize % 4].to_string(),
+            |c| letter_label(wrapped_index(c.bass.rhythm, BASS_RHYTHMS.len())),
         ),
         ControlSpec::new(
             "bass.octave",
@@ -1282,43 +1291,25 @@ pub(crate) const TONAL_SYNTH_TYPES: &[&str] = &[
     "Haze",
 ];
 
-/// A voice-type value wraps into its table, so the dial cycles rather than
-/// dying at either end.
-fn type_index(value: f32, types: &[&str]) -> usize {
-    (value.round() as i64).rem_euclid(types.len() as i64) as usize
+/// A table-indexed control value wraps into its table of `len` entries, so
+/// the dial cycles rather than dying at either end. The one place a float
+/// control becomes a table index; `clamped_index` is its saturating sibling.
+pub(crate) fn wrapped_index(value: f32, len: usize) -> usize {
+    (value.round() as i64).rem_euclid(len as i64) as usize
 }
 
-fn type_label(value: f32, types: &'static [&'static str]) -> &'static str {
-    types[type_index(value, types)]
+pub(crate) fn type_label(value: f32, types: &'static [&'static str]) -> &'static str {
+    types[wrapped_index(value, types.len())]
 }
 
-/// Highest value a voice-type control accepts, for its `ControlSpec` max.
-const fn last_index_of(types: &[&str]) -> f32 {
-    (types.len() - 1) as f32
+/// Highest value a table-indexed control accepts, for its `ControlSpec` max.
+const fn last_index_of<T>(table: &[T]) -> f32 {
+    (table.len() - 1) as f32
 }
 
-pub(crate) fn bass_type_label(value: f32) -> &'static str {
-    type_label(value, BASS_TYPES)
-}
-
-pub(crate) fn bass_type_index(value: f32) -> usize {
-    type_index(value, BASS_TYPES)
-}
-
-pub(crate) fn pad_type_label(value: f32) -> &'static str {
-    type_label(value, PAD_TYPES)
-}
-
-pub(crate) fn pad_type_index(value: f32) -> usize {
-    type_index(value, PAD_TYPES)
-}
-
-pub(crate) fn kick_type_label(value: f32) -> &'static str {
-    type_label(value, KICK_TYPES)
-}
-
-pub(crate) fn kick_type_index(value: f32) -> usize {
-    type_index(value, KICK_TYPES)
+/// `A`, `B`, `C`… for a pattern table's index.
+fn letter_label(index: usize) -> String {
+    char::from(b'A' + index as u8).to_string()
 }
 
 pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
@@ -1353,7 +1344,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
             Entry::Round,
             |c| c.kick.voice_type,
             |c, v| c.kick.voice_type = v,
-            |c| kick_type_label(c.kick.voice_type).to_string(),
+            |c| type_label(c.kick.voice_type, KICK_TYPES).to_string(),
         ),
         beat_interval!(
             "kick.interval_beats",
@@ -1412,7 +1403,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             Entry::Round,
             |c| c.tonal.synth_type,
             |c, v| c.tonal.synth_type = v,
-            |c| tonal_synth_type_label(c.tonal.synth_type).to_string(),
+            |c| type_label(c.tonal.synth_type, TONAL_SYNTH_TYPES).to_string(),
         ),
         ControlSpec::new(
             "tonal.octave",
@@ -1431,15 +1422,12 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             "Phrase",
             ControlKind::Discrete,
             0.0,
-            7.0,
+            last_index_of(&TONAL_PHRASES),
             Step::Linear(1.0),
             Entry::Round,
             |c| c.tonal.phrase,
             |c, v| c.tonal.phrase = v,
-            |c| {
-                ["A", "B", "C", "D", "E", "F", "G", "H"][c.tonal.phrase.round() as usize % 8]
-                    .to_string()
-            },
+            |c| letter_label(wrapped_index(c.tonal.phrase, TONAL_PHRASES.len())),
         ),
         beat_interval!(
             "tonal.rate_beats",
@@ -1471,14 +1459,6 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
         ),
     ]
 );
-
-pub(crate) fn tonal_synth_type_label(value: f32) -> &'static str {
-    type_label(value, TONAL_SYNTH_TYPES)
-}
-
-pub(crate) fn tonal_synth_type_index(value: f32) -> usize {
-    type_index(value, TONAL_SYNTH_TYPES)
-}
 
 pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
     clap,
@@ -1536,7 +1516,7 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
             Entry::Round,
             |c| c.arp.voice_type,
             |c, v| c.arp.voice_type = v,
-            |c| tonal_synth_type_label(c.arp.voice_type).to_string(),
+            |c| type_label(c.arp.voice_type, TONAL_SYNTH_TYPES).to_string(),
         ),
         beat_interval!(
             "arp.rate_beats",
@@ -1593,6 +1573,11 @@ pub(crate) fn tab_specs(tab: Tab) -> &'static [ControlSpec] {
     TAB_META[tab as usize].3
 }
 
+/// Flat position of control `id` in `tab`'s spec table.
+pub(crate) fn spec_index(tab: Tab, id: &str) -> Option<usize> {
+    tab_specs(tab).iter().position(|spec| spec.id == id)
+}
+
 pub(crate) fn all_specs() -> impl Iterator<Item = &'static ControlSpec> {
     Tab::all().into_iter().flat_map(tab_specs)
 }
@@ -1608,32 +1593,9 @@ pub(crate) fn performance_target(
     instrument: interaction::PerformanceInstrument,
     action: interaction::PerformanceAction,
 ) -> Option<(Tab, usize, &'static ControlSpec, f32)> {
-    let (tab, level, shape, density) = match instrument {
-        interaction::PerformanceInstrument::Pads => (
-            Tab::Chords,
-            "pad.level",
-            "pad.release_time",
-            "pad.chord_bars",
-        ),
-        interaction::PerformanceInstrument::Bass => (
-            Tab::Bass,
-            "bass.level",
-            "bass.decay_time",
-            "bass.interval_beats",
-        ),
-        interaction::PerformanceInstrument::Kick => (
-            Tab::Kick,
-            "kick.level",
-            "kick.amp_decay_ms",
-            "kick.interval_beats",
-        ),
-        interaction::PerformanceInstrument::Perc => (
-            Tab::Perc,
-            "perc.level",
-            "perc.decay_ms",
-            "perc.interval_beats",
-        ),
-    };
+    let tab = instrument.tab();
+    let interaction::InstrumentRow { shape, density, .. } = *instrument.row();
+    let level = tab.level_id()?;
     let (id, direction) = match action {
         interaction::PerformanceAction::Shorter => (shape, -1.0),
         interaction::PerformanceAction::Longer => (shape, 1.0),
@@ -1642,7 +1604,7 @@ pub(crate) fn performance_target(
         interaction::PerformanceAction::Sparser => (density, 1.0),
         interaction::PerformanceAction::Denser => (density, -1.0),
     };
-    let index = tab_specs(tab).iter().position(|spec| spec.id == id)?;
+    let index = spec_index(tab, id)?;
     Some((tab, index, &tab_specs(tab)[index], direction))
 }
 
@@ -1665,11 +1627,7 @@ pub(crate) fn module_slot_collapsed_id(
     controls: &FluidControls,
 ) -> Option<&'static str> {
     let kind = controls.modules.for_tab(tab)?.get(slot)?.kind()?;
-    let suffix = format!(".slot{}.{}", slot + 1, kind.collapsed_field().id());
-    tab_specs(tab)
-        .iter()
-        .map(|spec| spec.id)
-        .find(|id| id.ends_with(&suffix))
+    module_slot_spec(tab, slot, kind.collapsed_field()).map(|spec| spec.id)
 }
 
 /// Loaded module slot addressed by its collapsed row.
@@ -1685,19 +1643,6 @@ pub(crate) fn module_slot_at_collapsed_id<'a>(
     })
 }
 
-/// Loaded module slot addressed by any one of its static parameter ids.
-pub(crate) fn module_slot_at_id<'a>(
-    tab: Tab,
-    id: &str,
-    controls: &'a FluidControls,
-) -> Option<(usize, &'a ModuleSlot)> {
-    let slots = controls.modules.for_tab(tab)?;
-    slots.iter().enumerate().find(|(slot, _)| {
-        let prefix = format!(".slot{}.", slot + 1);
-        id.contains(&prefix)
-    })
-}
-
 /// The rows projected inside a loaded module's detail scope. The backing
 /// registry ids stay slot-addressed and therefore persist independently of
 /// whichever catalog module currently occupies the slot.
@@ -1706,7 +1651,6 @@ pub(crate) fn module_detail_controls(
     slot: usize,
     controls: &FluidControls,
 ) -> Vec<ControlItem> {
-    let prefix = format!(".slot{}.", slot + 1);
     let Some(module_slot) = controls
         .modules
         .for_tab(tab)
@@ -1721,24 +1665,25 @@ pub(crate) fn module_detail_controls(
         .parameters()
         .iter()
         .filter_map(|parameter| {
-            let field = parameter.field.id();
-            tab_specs(tab)
-                .iter()
-                .find(|spec| spec.id.ends_with(&format!("{prefix}{field}")))
-                .map(|spec| {
-                    let mut item = spec.item(controls);
-                    item.label = parameter.label.to_string();
-                    item
-                })
+            module_slot_spec(tab, slot, parameter.field).map(|spec| {
+                let mut item = spec.item(controls);
+                item.label = parameter.label.to_string();
+                item
+            })
         })
         .collect::<Vec<_>>();
+    let field_of = |id: &str| parse_module_slot_id(id).map(|(_, _, field)| field);
     if kind.family == Family::Delay {
         for item in &mut items {
-            if item.id.ends_with(".feedback") {
+            let field = field_of(item.id);
+            if field == Some(ModuleSlotField::Feedback) {
                 item.max = 0.95;
             }
-            if matches!(item.id.rsplit('.').next(), Some("time" | "right_time")) {
-                let clock = if item.id.ends_with(".right_time") {
+            if matches!(
+                field,
+                Some(ModuleSlotField::Time | ModuleSlotField::RightTime)
+            ) {
+                let clock = if field == Some(ModuleSlotField::RightTime) {
                     DelayClock::from_value(module_slot.right_clock)
                 } else {
                     DelayClock::from_value(module_slot.clock)
@@ -1764,31 +1709,34 @@ pub(crate) fn module_detail_controls(
     }
     if kind.family == Family::Reverb {
         for item in &mut items {
-            if matches!(item.id.rsplit('.').next(), Some("time" | "feedback")) {
+            if matches!(
+                field_of(item.id),
+                Some(ModuleSlotField::Time | ModuleSlotField::Feedback)
+            ) {
                 item.display = pct(item.value);
             }
         }
     }
     if kind.family == Family::Compression {
         for item in &mut items {
-            item.display = match item.id.rsplit('.').next() {
-                Some("amount") => pct(item.value),
-                Some("time") => format!("{:.0} dB", item.value),
-                Some("right_time") => format!("{:.1}:1", item.value),
-                Some("feedback") => format!("{:.0} ms", item.value),
-                Some("vintage") => format!("{:.1} dB", item.value),
+            item.display = match field_of(item.id) {
+                Some(ModuleSlotField::Amount) => pct(item.value),
+                Some(ModuleSlotField::Time) => format!("{:.0} dB", item.value),
+                Some(ModuleSlotField::RightTime) => format!("{:.1}:1", item.value),
+                Some(ModuleSlotField::Feedback) => format!("{:.0} ms", item.value),
+                Some(ModuleSlotField::Vintage) => format!("{:.1} dB", item.value),
                 _ => item.display.clone(),
             };
         }
     }
     if kind.family == Family::Filter {
         for item in &mut items {
-            item.display = match item.id.rsplit('.').next() {
-                Some("amount" | "right_time") => pct(item.value),
-                Some("time") => format!("{:.0} Hz", item.value),
-                Some("feedback") => ["Low-pass", "High-pass", "Band-pass"]
-                    [item.value.round().clamp(0.0, 2.0) as usize]
-                    .to_string(),
+            item.display = match field_of(item.id) {
+                Some(ModuleSlotField::Amount | ModuleSlotField::RightTime) => pct(item.value),
+                Some(ModuleSlotField::Time) => format!("{:.0} Hz", item.value),
+                Some(ModuleSlotField::Feedback) => {
+                    FilterType::from_value(item.value).label().to_string()
+                }
                 _ => item.display.clone(),
             };
         }
@@ -1835,18 +1783,28 @@ pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {
     }
 }
 
+/// Every slot field and the id segment it is spelled with, in discriminant
+/// order (`module_slot_field_ids_follow_discriminant_order` enforces it).
+/// `module_slot_rows!` spells the ids; `ModuleSlotField::from_id` reads
+/// them back through this table.
+const MODULE_SLOT_FIELD_IDS: [(ModuleSlotField, &str); 8] = [
+    (ModuleSlotField::Kind, "kind"),
+    (ModuleSlotField::Amount, "amount"),
+    (ModuleSlotField::Time, "time"),
+    (ModuleSlotField::RightTime, "right_time"),
+    (ModuleSlotField::Clock, "clock"),
+    (ModuleSlotField::RightClock, "right_clock"),
+    (ModuleSlotField::Feedback, "feedback"),
+    (ModuleSlotField::Vintage, "vintage"),
+];
+
 impl ModuleSlotField {
-    pub(crate) const fn id(self) -> &'static str {
-        match self {
-            Self::Kind => "kind",
-            Self::Amount => "amount",
-            Self::Time => "time",
-            Self::RightTime => "right_time",
-            Self::Clock => "clock",
-            Self::RightClock => "right_clock",
-            Self::Feedback => "feedback",
-            Self::Vintage => "vintage",
-        }
+    /// The field an id's last segment names.
+    pub(crate) fn from_id(id: &str) -> Option<Self> {
+        MODULE_SLOT_FIELD_IDS
+            .iter()
+            .find(|(_, field_id)| *field_id == id)
+            .map(|(field, _)| *field)
     }
 }
 
@@ -1855,22 +1813,25 @@ impl ModuleSlotField {
 /// The single place that recognizes a module-slot id from its shape alone —
 /// every other module-slot-aware lookup (including the Chords-tab drill
 /// addressing below) goes through this rather than re-deriving the pattern.
-fn parse_module_slot_id(id: &str) -> Option<(&str, usize, ModuleSlotField)> {
+pub(crate) fn parse_module_slot_id(id: &str) -> Option<(&str, usize, ModuleSlotField)> {
     let (layer, rest) = id.split_once(".slot")?;
     let (index, field) = rest.split_once('.')?;
-    let field = match field {
-        "kind" => ModuleSlotField::Kind,
-        "amount" => ModuleSlotField::Amount,
-        "time" => ModuleSlotField::Time,
-        "right_time" => ModuleSlotField::RightTime,
-        "clock" => ModuleSlotField::Clock,
-        "right_clock" => ModuleSlotField::RightClock,
-        "feedback" => ModuleSlotField::Feedback,
-        "vintage" => ModuleSlotField::Vintage,
-        _ => return None,
-    };
+    let field = ModuleSlotField::from_id(field)?;
     let index = index.parse::<usize>().ok()?.checked_sub(1)?;
     Some((layer, index, field))
+}
+
+/// The registry row for one field of a tab's module slot. `None` for a slot
+/// index the tab has no rows for.
+pub(crate) fn module_slot_spec(
+    tab: Tab,
+    slot: usize,
+    field: ModuleSlotField,
+) -> Option<&'static ControlSpec> {
+    tab_specs(tab).iter().find(|spec| {
+        parse_module_slot_id(spec.id)
+            .is_some_and(|(_, spec_slot, spec_field)| spec_slot == slot && spec_field == field)
+    })
 }
 
 /// Parse `pad.chord<N>_<field>` into its 0-based chord slot and field index
@@ -2229,5 +2190,71 @@ mod performance_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    /// `apply_delta` steps a continuous tapered row through its scale's
+    /// inverse; this pins that every such row (base or contextual) gets a
+    /// `Tapered` scale, the only variant with one.
+    #[test]
+    fn continuous_tapered_specs_step_in_position() {
+        let controls = FluidControls::default();
+        let mut checked = 0;
+        for spec in all_specs().map(|spec| spec.contextual(&controls)) {
+            if !spec.is_continuous_tapered() {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                matches!(spec.scale(), DialScale::Tapered { .. }),
+                "{}: continuous tapered row without a tapered scale",
+                spec.id
+            );
+            assert!(
+                spec.scale()
+                    .step_in_position(spec.min, 1.0, TAPER_STEPS_PER_SWEEP)
+                    .is_some()
+            );
+        }
+        assert!(checked > 0, "no continuous tapered rows in the registry");
+    }
+}
+
+#[cfg(test)]
+mod module_slot_id_tests {
+    use super::*;
+
+    #[test]
+    fn module_slot_field_ids_follow_discriminant_order() {
+        for (i, (field, id)) in MODULE_SLOT_FIELD_IDS.iter().enumerate() {
+            assert_eq!(
+                *field as usize, i,
+                "row {i} ({id}) out of discriminant order"
+            );
+            assert_eq!(ModuleSlotField::from_id(id), Some(*field));
+        }
+        assert_eq!(ModuleSlotField::from_id("slot"), None);
+    }
+
+    #[test]
+    fn module_slot_spec_finds_every_slot_row_of_every_tab() {
+        for tab in Tab::all() {
+            for spec in tab_specs(tab) {
+                let Some((_, slot, field)) = parse_module_slot_id(spec.id) else {
+                    continue;
+                };
+                assert!(
+                    std::ptr::eq(module_slot_spec(tab, slot, field).expect(spec.id), spec),
+                    "{}: {} resolves to a different row",
+                    tab.name(),
+                    spec.id
+                );
+            }
+        }
+        assert!(module_slot_spec(Tab::Bass, MODULE_SLOTS, ModuleSlotField::Kind).is_none());
     }
 }

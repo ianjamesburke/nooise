@@ -19,11 +19,26 @@ fn live_session(controls: FluidControls, automation: AutomationState) -> LiveSes
     LiveSession::new(LiveSessionSnapshot::from_song(&song))
 }
 
-fn assert_close(actual: f32, expected: f32) {
+/// The one tolerance assertion behind `assert_close`, `assert_near`, and
+/// `assert_quantized`: `name` says which value missed when several are
+/// checked in one test.
+fn assert_within(actual: f32, expected: f32, tolerance: f32, name: &str) {
     assert!(
-        (actual - expected).abs() < f32::EPSILON,
-        "expected {expected}, got {actual}"
+        (actual - expected).abs() <= tolerance,
+        "{name}: expected {expected} within {tolerance}, got {actual}"
     );
+}
+
+fn assert_close(actual: f32, expected: f32) {
+    assert_close_named(actual, expected, "value");
+}
+
+fn assert_close_named(actual: f32, expected: f32, name: &str) {
+    assert_within(actual, expected, f32::EPSILON, name);
+}
+
+fn assert_near(actual: f32, expected: f32) {
+    assert_within(actual, expected, 1e-5, "value");
 }
 
 /// Test-only reconstruction of the pad's built-in chord frequencies, from
@@ -34,13 +49,6 @@ fn pad_chord(progression: usize, step: usize, tune: f32) -> [f32; 4] {
     pad_chord_midi(progression, step).map(|note| midi_to_hz(note) * tune_ratio(tune))
 }
 
-fn assert_near(actual: f32, expected: f32) {
-    assert!(
-        (actual - expected).abs() < 1e-5,
-        "expected {expected}, got {actual}"
-    );
-}
-
 fn timing(sample: u64, bpm: f32) -> TimingContext {
     let sample_rate = f64::from(SAMPLE_RATE);
     let bpm = f64::from(bpm);
@@ -48,11 +56,35 @@ fn timing(sample: u64, bpm: f32) -> TimingContext {
     TimingContext::new(sample_rate, bpm, beat)
 }
 
-fn append_record_to_code(code: &str, record_type: u8, payload: &[u8]) -> String {
-    let encoded = code.strip_prefix("n1_").unwrap();
-    let mut bytes = URL_SAFE_NO_PAD.decode(encoded).unwrap();
-    song::write_record(record_type, payload, &mut bytes).unwrap();
-    format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes))
+/// A `FluidEngine` at `SAMPLE_RATE` over a fresh session for `controls` and
+/// `automation`, with no morph and its own telemetry.
+fn engine_for(controls: FluidControls, automation: AutomationState) -> FluidEngine {
+    FluidEngine::new(
+        SAMPLE_RATE,
+        live_session(controls, automation),
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    )
+}
+
+/// A `PadEngine` at `SAMPLE_RATE` with no tune offset and its own telemetry.
+fn pad_engine(controls: &PadControls) -> PadEngine {
+    PadEngine::new(
+        SAMPLE_RATE,
+        controls,
+        0.0,
+        Arc::new(FluidTelemetry::default()),
+    )
+}
+
+/// Steps `pad` through `chords` chord boundaries at 120 BPM with
+/// `chord_bars: 1.0`: the chord trigger fires every 4 beats, so each chord is
+/// two seconds of samples.
+fn advance_chords(pad: &mut PadEngine, controls: &PadControls, chords: u64) {
+    for chord in 1..=chords {
+        let sample = chord * SAMPLE_RATE as u64 * 2;
+        let _ = pad.next(controls, 0.0, timing(sample, 120.0));
+    }
 }
 
 /// Container v2 stores bounded ratios and tapered continuous values as a u16
@@ -70,15 +102,7 @@ fn assert_quantized(actual: f32, expected: f32) {
 
 fn assert_quantized_named(actual: f32, expected: f32, name: &str) {
     let tolerance = QUANTIZED_TOLERANCE * expected.abs().max(1.0);
-    assert!(
-        (actual - expected).abs() <= tolerance,
-        "{name}: expected {expected} within {tolerance}, got {actual}"
-    );
-}
-
-fn write_test_str(value: &str, out: &mut Vec<u8>) {
-    out.push(value.len() as u8);
-    out.extend_from_slice(value.as_bytes());
+    assert_within(actual, expected, tolerance, name);
 }
 
 fn buffer_text(buffer: &Buffer) -> String {
@@ -263,9 +287,9 @@ fn tonal_phrase_a_keeps_existing_zero_randomness_melody() {
 
 #[test]
 fn tonal_note_applies_master_tune_offset() {
-    let flat = tonal_note_hz(45, 0.0);
-    assert_close(tonal_note_hz(45, 12.0), flat * 2.0);
-    assert_close(tonal_note_hz(45, -12.0), flat * 0.5);
+    let flat = note_hz(45, 0.0);
+    assert_close(note_hz(45, 12.0), flat * 2.0);
+    assert_close(note_hz(45, -12.0), flat * 0.5);
 }
 
 #[test]
@@ -284,8 +308,8 @@ fn piano_harmonics_interpolate_with_note_pitch() {
 #[test]
 fn piano_harmonic_decay_gets_faster_with_pitch() {
     let profile = piano_profile(1);
-    let low = piano_harmonic_decay_rates(profile, 36, tonal_note_hz(36, 0.0));
-    let high = piano_harmonic_decay_rates(profile, 60, tonal_note_hz(60, 0.0));
+    let low = piano_harmonic_decay_rates(profile, 36, note_hz(36, 0.0));
+    let high = piano_harmonic_decay_rates(profile, 60, note_hz(60, 0.0));
 
     assert!(high[15] > low[15]);
 }
@@ -421,16 +445,16 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
 
 #[test]
 fn tonal_type_labels_cover_exploration_variants() {
-    assert_eq!(tonal_synth_type_label(0.0), "Sine");
-    assert_eq!(tonal_synth_type_label(1.0), "Rhodes");
-    assert_eq!(tonal_synth_type_label(2.0), "Wurli");
-    assert_eq!(tonal_synth_type_label(3.0), "Felt");
-    assert_eq!(tonal_synth_type_label(4.0), "Marimba");
-    assert_eq!(tonal_synth_type_label(5.0), "Kalimba");
-    assert_eq!(tonal_synth_type_label(6.0), "Pluck");
-    assert_eq!(tonal_synth_type_label(7.0), "Dulcet");
-    assert_eq!(tonal_synth_type_label(8.0), "Cloud Keys");
-    assert_eq!(tonal_synth_type_label(9.0), "Haze");
+    assert_eq!(type_label(0.0, TONAL_SYNTH_TYPES), "Sine");
+    assert_eq!(type_label(1.0, TONAL_SYNTH_TYPES), "Rhodes");
+    assert_eq!(type_label(2.0, TONAL_SYNTH_TYPES), "Wurli");
+    assert_eq!(type_label(3.0, TONAL_SYNTH_TYPES), "Felt");
+    assert_eq!(type_label(4.0, TONAL_SYNTH_TYPES), "Marimba");
+    assert_eq!(type_label(5.0, TONAL_SYNTH_TYPES), "Kalimba");
+    assert_eq!(type_label(6.0, TONAL_SYNTH_TYPES), "Pluck");
+    assert_eq!(type_label(7.0, TONAL_SYNTH_TYPES), "Dulcet");
+    assert_eq!(type_label(8.0, TONAL_SYNTH_TYPES), "Cloud Keys");
+    assert_eq!(type_label(9.0, TONAL_SYNTH_TYPES), "Haze");
 }
 
 #[test]
@@ -439,19 +463,14 @@ fn tonal_low_cut_reduces_sub_energy_without_thinning_low_notes() {
         let mut low_cut = TonalLowCut::new(SAMPLE_RATE, TONAL_LOW_CUT_HZ);
         let total = SAMPLE_RATE as u64 * 2;
         let warmup = SAMPLE_RATE as u64 / 2;
-        let mut sum = 0.0f32;
-        let mut count = 0u64;
-
-        for sample in 0..total {
-            let phase = TAU * hz * sample as f32 / SAMPLE_RATE;
-            let filtered = low_cut.process(phase.sin());
-            if sample >= warmup {
-                sum += filtered * filtered;
-                count += 1;
-            }
-        }
-
-        (sum / count as f32).sqrt()
+        let settled: Vec<f32> = (0..total)
+            .map(|sample| {
+                let phase = TAU * hz * sample as f32 / SAMPLE_RATE;
+                low_cut.process(phase.sin())
+            })
+            .skip(warmup as usize)
+            .collect();
+        crate::synth::fm::rms(&settled)
     }
 
     let sub = filtered_sine_rms(TONAL_LOW_CUT_HZ * 0.5);
@@ -675,31 +694,24 @@ fn fresh_start_varies_the_progression_between_launches() {
 
 #[test]
 fn chords_tab_shows_type_row_with_letter_display() {
-    let mut controls = FluidControls::default();
+    let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
     assert_eq!(rows[3].id, "pad.type");
     assert_eq!(rows[3].label, "Type");
-    assert_eq!(rows[3].display, "Warm");
 
-    controls.pad.voice_type = 1.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Dark");
-
-    controls.pad.voice_type = 2.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Glass");
-
-    controls.pad.voice_type = 3.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Choir");
-
-    controls.pad.voice_type = 4.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Hollow");
-
-    controls.pad.voice_type = 5.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[3].display, "Tape");
+    for (voice_type, display) in [
+        (0.0, "Warm"),
+        (1.0, "Dark"),
+        (2.0, "Glass"),
+        (3.0, "Choir"),
+        (4.0, "Hollow"),
+        (5.0, "Tape"),
+    ] {
+        let mut controls = FluidControls::default();
+        controls.pad.voice_type = voice_type;
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[3].display, display, "pad.type {voice_type}");
+    }
 }
 
 #[test]
@@ -1084,22 +1096,16 @@ fn x_removes_the_open_route_or_clears_the_whole_control() {
 
 #[test]
 fn engine_publishes_beat_telemetry() {
-    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
-    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let telemetry = Arc::new(FluidTelemetry::default());
-    let bpm = f64::from(controls.load().master.bpm);
-    let session = live_session(
-        controls.load_full().as_ref().clone(),
-        automation.load_full().as_ref().clone(),
-    );
-    let mut engine = FluidEngine::new(44_100.0, session, no_morph(), Arc::clone(&telemetry));
+    let controls = FluidControls::default();
+    let bpm = f64::from(controls.master.bpm);
+    let mut engine = engine_for(controls, AutomationState::default());
 
     for _ in 0..512 {
         engine.next_stereo();
     }
 
-    let expected = 256.0 * bpm / (60.0 * 44_100.0);
-    let beat = telemetry.beat();
+    let expected = 256.0 * bpm / (60.0 * f64::from(SAMPLE_RATE));
+    let beat = engine.telemetry.beat();
     assert!(beat > 0.0);
     assert!(
         (beat - expected).abs() / expected < 0.01,
@@ -1185,7 +1191,7 @@ fn fold_sample_bits(hash: u64, bits: u32) -> u64 {
 fn golden_render_is_byte_identical_for_a_seed() {
     // Non-default tonal/arp levels and synth types so the render actually
     // exercises the piano voice's per-harmonic decay path, not just silence.
-    let controls = Arc::new(ArcSwap::from_pointee(FluidControls {
+    let controls = FluidControls {
         master: MasterControls {
             bpm: 140.0,
             ..MasterControls::default()
@@ -1201,14 +1207,8 @@ fn golden_render_is_byte_identical_for_a_seed() {
             ..ArpControls::default()
         },
         ..FluidControls::default()
-    }));
-    let automation = Arc::new(ArcSwap::from_pointee(AutomationState::default()));
-    let telemetry = Arc::new(FluidTelemetry::default());
-    let session = live_session(
-        controls.load_full().as_ref().clone(),
-        automation.load_full().as_ref().clone(),
-    );
-    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), telemetry);
+    };
+    let mut engine = engine_for(controls, AutomationState::default());
     engine.reseed(42);
 
     let mut hash = 0xcbf2_9ce4_8422_2325u64; // FNV offset basis
@@ -1615,16 +1615,8 @@ fn empty_module_slots_never_render() {
 
 #[test]
 fn an_occupied_slot_shows_only_the_params_its_family_uses() {
-    let alcohol = MODULE_CATALOG
-        .iter()
-        .position(|kind| kind.id == "alcohol")
-        .expect("alcohol is in the v1 catalog") as f32
-        + 1.0;
-    let sidechain = MODULE_CATALOG
-        .iter()
-        .position(|kind| kind.id == "sidechain")
-        .expect("sidechain is in the v1 catalog") as f32
-        + 1.0;
+    let alcohol = module_kind_value("alcohol");
+    let sidechain = module_kind_value("sidechain");
 
     let mut controls = FluidControls::default();
     controls.modules.bass[1] = ModuleSlot::default();
@@ -1954,10 +1946,8 @@ fn song_code_round_trips_tonal_sequence_state() {
         evolution_count: 9,
     };
     let song = SongState {
-        controls: FluidControls::default(),
-        automation: AutomationState::default(),
         tonal_sequence: Some(sequence.clone()),
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let decoded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
@@ -2051,14 +2041,7 @@ fn full_engine_renders_a_custom_progression_from_song_code_without_panicking() {
         CUSTOM_PROGRESSION_INDEX as f32,
     );
 
-    let controls_swap = Arc::new(ArcSwap::from_pointee(decoded.controls));
-    let automation = Arc::new(ArcSwap::from_pointee(decoded.automation));
-    let telemetry = Arc::new(FluidTelemetry::default());
-    let session = live_session(
-        controls_swap.load_full().as_ref().clone(),
-        automation.load_full().as_ref().clone(),
-    );
-    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), telemetry);
+    let mut engine = engine_for(decoded.controls, decoded.automation);
 
     for _ in 0..(SAMPLE_RATE as usize * 4) {
         let (l, r) = engine.next_stereo();
@@ -2078,13 +2061,6 @@ fn round_trip(set: impl Fn(&mut FluidControls)) -> FluidControls {
     set(&mut controls);
     let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     song::decode_song_code(&code).unwrap().controls
-}
-
-fn assert_close_named(actual: f32, expected: f32, name: &str) {
-    assert!(
-        (actual - expected).abs() < f32::EPSILON,
-        "{name}: expected {expected}, got {actual}"
-    );
 }
 
 #[test]
@@ -2181,10 +2157,8 @@ fn song_code_round_trips_lfo_automation_record() {
         },
     );
     let song = SongState {
-        controls,
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(controls)
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -2205,8 +2179,13 @@ fn song_code_round_trips_lfo_automation_record() {
 fn song_code_skips_unknown_records() {
     let mut controls = FluidControls::default();
     controls.master.tune = 5.0;
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
-    let code = append_record_to_code(&code, 99, &[1, 2, 3, 4]);
+    let code = song::code_from_records(
+        song::CONTAINER_VERSION,
+        &[
+            (song::SNAPSHOT_RECORD, &song::snapshot_payload(&controls)),
+            (99, &[1, 2, 3, 4]),
+        ],
+    );
 
     let decoded = song::decode_song_code(&code).unwrap();
 
@@ -2220,17 +2199,22 @@ fn song_code_skips_unknown_records() {
 fn song_code_v2_skips_unknown_song_id_indexes_without_losing_alignment() {
     let mut controls = FluidControls::default();
     controls.master.tune = 5.0;
-    let code = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
 
     let mut payload = Vec::new();
     payload.extend_from_slice(&2u16.to_le_bytes());
     payload.extend_from_slice(&u16::MAX.to_le_bytes()); // no such id table slot
-    payload.push(2); // VALUE_TAG_FLOAT
+    payload.push(song::VALUE_TAG_FLOAT);
     payload.extend_from_slice(&0.75f32.to_le_bytes());
     payload.extend_from_slice(&song_id_index("master.tune").unwrap().to_le_bytes());
-    payload.push(1); // VALUE_TAG_INT
+    payload.push(song::VALUE_TAG_INT);
     payload.extend_from_slice(&7i16.to_le_bytes());
-    let code = append_record_to_code(&code, song::SNAPSHOT_RECORD, &payload);
+    let code = song::code_from_records(
+        song::CONTAINER_VERSION,
+        &[
+            (song::SNAPSHOT_RECORD, &song::snapshot_payload(&controls)),
+            (song::SNAPSHOT_RECORD, &payload),
+        ],
+    );
 
     let decoded = song::decode_song_code(&code).unwrap();
 
@@ -2265,7 +2249,7 @@ fn gain_smoother_reaches_target_over_ramp() {
     for _ in 0..4 {
         smoother.next();
     }
-    assert_near(smoother.current, 0.5);
+    assert_near(smoother.ramp.current, 0.5);
     for _ in 0..4 {
         smoother.next();
     }
@@ -2341,15 +2325,16 @@ fn chords_tab_shows_progression_row_with_letter_display() {
     assert_eq!(rows[5].label, "Chord Count");
     assert_eq!(rows[5].display, "8");
     assert_eq!(rows[6].label, "Progression");
-    assert_eq!(rows[6].display, "A");
 
-    controls.pad.progression = 2.0;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[6].display, "C");
-
-    controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
-    let rows = tab_controls(Tab::Chords, &controls);
-    assert_eq!(rows[6].display, "Custom");
+    for (progression, display) in [
+        (0.0, "A"),
+        (2.0, "C"),
+        (CUSTOM_PROGRESSION_INDEX as f32, "Custom"),
+    ] {
+        controls.pad.progression = progression;
+        let rows = tab_controls(Tab::Chords, &controls);
+        assert_eq!(rows[6].display, display, "pad.progression {progression}");
+    }
 }
 
 #[test]
@@ -2581,21 +2566,19 @@ fn bass_tab_shows_type_and_rhythm_rows_with_letter_display() {
     let rows = tab_controls(Tab::Bass, &controls);
     assert_eq!(rows[3].id, "bass.type");
     assert_eq!(rows[3].label, "Type");
-    assert_eq!(rows[3].display, "Sub");
     assert_eq!(rows[6].label, "Rhythm");
-    assert_eq!(rows[6].display, "A");
 
-    controls.bass.voice_type = 1.0;
-    let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[3].display, "Saw");
+    for (voice_type, display) in [(0.0, "Sub"), (1.0, "Saw"), (2.0, "Pluck")] {
+        controls.bass.voice_type = voice_type;
+        let rows = tab_controls(Tab::Bass, &controls);
+        assert_eq!(rows[3].display, display, "bass.type {voice_type}");
+    }
 
-    controls.bass.voice_type = 2.0;
-    let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[3].display, "Pluck");
-
-    controls.bass.rhythm = 3.0;
-    let rows = tab_controls(Tab::Bass, &controls);
-    assert_eq!(rows[6].display, "D");
+    for (rhythm, display) in [(0.0, "A"), (3.0, "D")] {
+        controls.bass.rhythm = rhythm;
+        let rows = tab_controls(Tab::Bass, &controls);
+        assert_eq!(rows[6].display, display, "bass.rhythm {rhythm}");
+    }
 }
 
 #[test]
@@ -2647,7 +2630,7 @@ fn bass_engine_follows_pad_chord_root_across_advances() {
         bass.next(&bass_controls, &pad, 0.0, timing);
     }
 
-    assert_ne!(bass.step_index, 0);
+    assert_ne!(bass.progression.step_index, 0);
     assert!(bass.rhythm_step < BASS_RHYTHMS[0].len());
 }
 
@@ -2709,32 +2692,35 @@ fn bass_type_zero_matches_legacy_sub_voice_exactly() {
 /// variant is audible, each non-first variant differs from the first beyond
 /// float noise, and no variant is more than 2x (~6dB) louder/quieter than
 /// another -- the shared "differing but comparably balanced" audio check
-/// behind bass_types_*/pad_types_*. `step` returns `(energy_sample,
-/// diff_sample)` per tick: `energy_sample` feeds the RMS level check
-/// (already per-channel-normalized -- pad averages its two channels before
-/// returning), `diff_sample` feeds the cross-type difference check (pad uses
-/// its left channel only, matching the original per-voice comparison).
+/// behind bass_types_*/pad_types_*. `step` returns `(level_sample,
+/// diff_sample)` per tick: `level_sample` feeds the RMS level check (a
+/// per-channel-normalized magnitude -- pad folds its two channels into one
+/// before returning), `diff_sample` feeds the cross-type difference check
+/// (pad uses its left channel only, matching the original per-voice
+/// comparison).
 /// A named, steppable audio-character variant for `assert_types_differ_but_balanced`:
-/// each step yields `(energy_sample, diff_sample)`.
+/// each step yields `(level_sample, diff_sample)`.
 type SoundVariant<'a> = (&'a str, Box<dyn FnMut() -> (f32, f32)>);
 
 fn assert_types_differ_but_balanced(label: &str, samples: usize, mut types: Vec<SoundVariant>) {
-    let mut sum_sq = vec![0.0f32; types.len()];
+    let mut level_samples: Vec<Vec<f32>> = (0..types.len())
+        .map(|_| Vec::with_capacity(samples))
+        .collect();
     let mut diff_samples: Vec<Vec<f32>> = (0..types.len())
         .map(|_| Vec::with_capacity(samples))
         .collect();
 
     for _ in 0..samples {
         for (i, (_, step)) in types.iter_mut().enumerate() {
-            let (energy, diff) = step();
-            sum_sq[i] += energy;
+            let (level, diff) = step();
+            level_samples[i].push(level);
             diff_samples[i].push(diff);
         }
     }
 
-    let rms: Vec<f32> = sum_sq
+    let rms: Vec<f32> = level_samples
         .iter()
-        .map(|&s| (s / samples as f32).sqrt())
+        .map(|levels| crate::synth::fm::rms(levels))
         .collect();
 
     for (i, &r) in rms.iter().enumerate() {
@@ -2775,7 +2761,7 @@ fn bass_types_produce_differing_but_comparably_balanced_audio() {
             let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, sample_rate);
             let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
                 let s = voice.next();
-                (s * s, s)
+                (s, s)
             });
             (name, step)
         })
@@ -2813,7 +2799,7 @@ fn pad_types_produce_differing_but_comparably_balanced_audio() {
         let mut tone = PadTone::new(character, 220.0, 0.0, 0.15, 0.05, 1.0, sample_rate);
         let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
             let (l, r) = tone.next_stereo(0.8, 0.5, 0.5);
-            ((l * l + r * r) / 2.0, l)
+            (((l * l + r * r) / 2.0).sqrt(), l)
         });
         (name, step)
     })
@@ -2830,7 +2816,12 @@ fn kick_type_zero_matches_legacy_sub_voice_exactly() {
         ..Default::default()
     };
     let mut dispatched = KickVoice::new(0, &controls, sample_rate, &mut StdRng::seed_from_u64(7));
-    let mut legacy = SubKickVoice::new(&controls, sample_rate, &mut StdRng::seed_from_u64(7));
+    let mut legacy = LowpassKickVoice::new(
+        &KICK_SUB,
+        &controls,
+        sample_rate,
+        &mut StdRng::seed_from_u64(7),
+    );
     let mut click_rng_a = StdRng::seed_from_u64(99);
     let mut click_rng_b = StdRng::seed_from_u64(99);
 
@@ -2840,32 +2831,6 @@ fn kick_type_zero_matches_legacy_sub_voice_exactly() {
             legacy.next(&mut click_rng_b)
         );
     }
-}
-
-#[test]
-fn kick_types_produce_differing_but_comparably_balanced_audio() {
-    let sample_rate = 48_000.0;
-    let samples = (sample_rate * 0.3) as usize;
-
-    let types: Vec<SoundVariant> = [(0usize, "sub"), (1, "warm"), (2, "wood"), (3, "felt")]
-        .into_iter()
-        .map(|(voice_type, name)| {
-            let controls = KickControls {
-                level: 0.6,
-                ..Default::default()
-            };
-            let mut construct_rng = StdRng::seed_from_u64(7);
-            let mut voice = KickVoice::new(voice_type, &controls, sample_rate, &mut construct_rng);
-            let mut click_rng = StdRng::seed_from_u64(99);
-            let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
-                let (l, r) = voice.next(&mut click_rng);
-                ((l * l + r * r) / 2.0, l)
-            });
-            (name, step)
-        })
-        .collect();
-
-    assert_types_differ_but_balanced("kick", samples, types);
 }
 
 #[test]
@@ -2989,8 +2954,7 @@ fn perc_continuous_mode_has_no_periodic_rms_dips() {
         let out = engine.next(&controls, t);
         window.push(out);
         if window.len() == window_samples {
-            let sum_sq: f32 = window.iter().map(|x| x * x).sum();
-            window_rms.push((sum_sq / window.len() as f32).sqrt());
+            window_rms.push(crate::synth::fm::rms(&window));
             window.clear();
         }
     }
@@ -3092,12 +3056,7 @@ fn pad_engine_caps_released_layers() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
     for chord in 1..12 {
         let sample = chord * SAMPLE_RATE as u64 * 2;
@@ -3113,20 +3072,10 @@ fn pad_engine_step_index_wraps_at_eight() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
-    // chord_bars=1.0 means chord_trigger fires every 4.0 beats; at 120 BPM
-    // that's 2 seconds of samples per chord. Render 9 chord-advances worth
-    // of samples (18 seconds) and confirm the telemetry index wrapped past 8.
-    for chord in 1..=9 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-    }
+    // Render 9 chord-advances and confirm the telemetry index wrapped past 8.
+    advance_chords(&mut pad, &controls, 9);
     let final_index = pad.telemetry.chord_index.load(Ordering::Relaxed);
     assert!(
         final_index < 8,
@@ -3145,12 +3094,7 @@ fn pad_engine_progression_switch_waits_for_the_next_loop_boundary() {
         attack_time: 0.001,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
     // Warm up the original layer's envelope (still progression 0, so no push
     // happens here) so its level is non-negligible before it gets released;
@@ -3215,12 +3159,7 @@ fn pad_engine_type_change_revoices_the_current_chord_immediately() {
         attack_time: 0.001,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
     for sample in 0..10 {
         let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
@@ -3374,25 +3313,25 @@ fn pad_chord_count_gates_step_wrap_in_every_progression_mode() {
 /// The bug this guards: Chord Count read 2 while a built-in progression
 /// looped all 8 of its chords, because the count only applied to Custom.
 #[test]
-fn pad_engine_step_index_wraps_at_pad_chord_count_on_a_built_in_progression() {
-    let controls = PadControls {
-        chord_bars: 1.0,
-        progression: 0.0,
-        chord_count: 2.0,
-        attack_time: 1.0,
-        ..PadControls::default()
-    };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+fn pad_engine_step_index_wraps_at_pad_chord_count_on_built_in_and_custom_progressions() {
+    for progression in [0.0, CUSTOM_PROGRESSION_INDEX as f32] {
+        let controls = PadControls {
+            chord_bars: 1.0,
+            progression,
+            chord_count: 2.0,
+            attack_time: 1.0,
+            ..PadControls::default()
+        };
+        let mut pad = pad_engine(&controls);
 
-    for chord in 1..=5 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-        assert!(pad.step_index < 2);
+        for chord in 1..=5 {
+            let sample = chord * SAMPLE_RATE as u64 * 2;
+            let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
+            assert!(
+                pad.step_index < 2,
+                "progression {progression} ran past its chord count"
+            );
+        }
     }
 }
 
@@ -3412,30 +3351,7 @@ fn bass_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
         let sample = chord * sample_rate as u64 * 2;
         let timing = timing(sample, 120.0);
         bass.next(&bass_controls, &pad, 0.0, timing);
-        assert!(bass.step_index < 2);
-    }
-}
-
-#[test]
-fn pad_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
-    let controls = PadControls {
-        chord_bars: 1.0,
-        progression: CUSTOM_PROGRESSION_INDEX as f32,
-        chord_count: 2.0,
-        attack_time: 1.0,
-        ..PadControls::default()
-    };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
-
-    for chord in 1..=5 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-        assert!(pad.step_index < 2);
+        assert!(bass.progression.step_index < 2);
     }
 }
 
@@ -3447,17 +3363,9 @@ fn pad_engine_chord_count_change_finishes_the_current_chord_before_relooping() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
-    for chord in 1..=3 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-    }
+    advance_chords(&mut pad, &controls, 3);
     assert_eq!(pad.step_index, 2);
 
     let layers_before = pad.layers.len();
@@ -3481,17 +3389,9 @@ fn pad_engine_progression_change_finishes_the_current_loop_before_switching() {
         attack_time: 1.0,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
-    for chord in 1..=3 {
-        let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
-    }
+    advance_chords(&mut pad, &controls, 3);
     assert_eq!(pad.step_index, 2);
 
     let layers_before = pad.layers.len();
@@ -3516,12 +3416,7 @@ fn pad_engine_chord_slot_edit_retriggers_immediately() {
         attack_time: 0.001,
         ..PadControls::default()
     };
-    let mut pad = PadEngine::new(
-        SAMPLE_RATE,
-        &controls,
-        0.0,
-        Arc::new(FluidTelemetry::default()),
-    );
+    let mut pad = pad_engine(&controls);
 
     for sample in 0..10 {
         let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
@@ -4199,10 +4094,8 @@ fn song_code_round_trips_steps_shape() {
     route.steps[4] = 0.8;
     automation.set_route(ControlAddress::new("master.level"), route);
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4509,10 +4402,8 @@ fn song_code_round_trips_stacked_lfo_lanes() {
         },
     ));
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4575,10 +4466,8 @@ fn song_code_round_trips_non_sine_lfo_shape() {
         },
     );
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4604,10 +4493,8 @@ fn song_code_round_trips_envelope_routes() {
         },
     );
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4679,10 +4566,8 @@ fn song_code_round_trips_seeded_lfo_and_envelope() {
         },
     );
     let song = SongState {
-        controls: FluidControls::default(),
         automation,
-        tonal_sequence: None,
-        muted: MuteState::default(),
+        ..SongState::from_controls(FluidControls::default())
     };
 
     let code = song::encode_song_code(&song).unwrap();
@@ -4727,14 +4612,7 @@ fn engine_hot_path_timing() {
     );
     automation.set_route(ControlAddress::new("tonal.level"), LfoRoute::default());
 
-    let controls = Arc::new(ArcSwap::from_pointee(FluidControls::default()));
-    let automation = Arc::new(ArcSwap::from_pointee(automation));
-    let telemetry = Arc::new(FluidTelemetry::default());
-    let session = live_session(
-        controls.load_full().as_ref().clone(),
-        automation.load_full().as_ref().clone(),
-    );
-    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), telemetry);
+    let mut engine = engine_for(FluidControls::default(), automation);
 
     let frames = SAMPLE_RATE as u64 * 10;
     let start = Instant::now();
@@ -4761,7 +4639,10 @@ fn arp_default_voice_type_matches_former_fixed_pluck_profile() {
     // songs and a fresh startup render identically to before the control
     // existed.
     let expected = TONAL_PIANO_PROFILES[5];
-    let actual = piano_profile(tonal_synth_type_index(ArpControls::default().voice_type));
+    let actual = piano_profile(wrapped_index(
+        ArpControls::default().voice_type,
+        TONAL_SYNTH_TYPES.len(),
+    ));
     assert_eq!(actual.keyframes.len(), expected.keyframes.len());
     for (a, e) in actual.keyframes.iter().zip(expected.keyframes.iter()) {
         assert_eq!(a.midi, e.midi);
@@ -5457,8 +5338,6 @@ fn baked_in_auto_state_codes_are_container_v2_on_disk() {
 /// control for drops that route rather than failing the whole decode.
 #[test]
 fn song_code_skips_unknown_automation_target_indexes() {
-    let code = song::encode_song_code(&SongState::default()).unwrap();
-
     let mut payload = Vec::new();
     payload.extend_from_slice(&1u16.to_le_bytes()); // one LFO route
     payload.extend_from_slice(&u16::MAX.to_le_bytes()); // no such id table slot
@@ -5470,7 +5349,16 @@ fn song_code_skips_unknown_automation_target_indexes() {
     payload.extend_from_slice(&0u16.to_le_bytes()); // no macros
     payload.extend_from_slice(&0u16.to_le_bytes()); // no envelopes
     payload.extend_from_slice(&0u16.to_le_bytes()); // no field macros
-    let code = append_record_to_code(&code, song::AUTOMATION_RECORD, &payload);
+    let code = song::code_from_records(
+        song::CONTAINER_VERSION,
+        &[
+            (
+                song::SNAPSHOT_RECORD,
+                &song::snapshot_payload(&FluidControls::default()),
+            ),
+            (song::AUTOMATION_RECORD, &payload),
+        ],
+    );
 
     let decoded = song::decode_song_code(&code).unwrap();
 
@@ -5481,11 +5369,7 @@ fn song_code_skips_unknown_automation_target_indexes() {
 /// rather than silently decoding to an empty session.
 #[test]
 fn container_v1_song_codes_are_rejected_with_an_explanation() {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"NOOI");
-    bytes.push(1);
-    write_test_str("1.8.5", &mut bytes);
-    let code = format!("n1_{}", URL_SAFE_NO_PAD.encode(bytes));
+    let code = song::code_from_records(1, &[]);
 
     let Err(err) = song::decode_song_code(&code) else {
         panic!("a container-v1 code must not decode");

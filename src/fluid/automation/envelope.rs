@@ -2,7 +2,7 @@
 //! attack/decay curve both the engine and the animated lane read.
 
 use crate::fluid::widget::DialScale;
-use crate::fluid::{Entry, TIME_TAPER, Taper};
+use crate::fluid::{Entry, TIME_TAPER, Taper, beats2, signed_pct};
 
 use super::{FieldSpec, ModContext, Stepping, clamped_index, morph_scalar_route, stepped_index};
 
@@ -74,6 +74,16 @@ pub(crate) enum EnvField {
 
 impl EnvField {
     pub(crate) const ALL: [EnvField; 4] = [Self::Amount, Self::Attack, Self::Decay, Self::Trigger];
+
+    /// The `FlippedUnits` sub-key for a field that carries a time base;
+    /// `None` for amount and trigger, which cannot be unit-flipped.
+    pub(crate) const fn time_key(self) -> Option<&'static str> {
+        match self {
+            Self::Attack => Some("env.attack"),
+            Self::Decay => Some("env.decay"),
+            Self::Amount | Self::Trigger => None,
+        }
+    }
 
     /// How this field maps onto bar position. Trigger is a discrete enum and
     /// carries no numeric spec, so it spans the bar by variant index.
@@ -298,13 +308,13 @@ impl EnvelopeRoute {
 
     pub(crate) fn field_display(&self, field: EnvField) -> String {
         match field {
-            EnvField::Amount => format!("{:+.0}%", self.amount * 100.0),
-            EnvField::Attack => format!("{:.2} beats", self.attack_beats),
+            EnvField::Amount => signed_pct(self.amount),
+            EnvField::Attack => beats2(self.attack_beats),
             EnvField::Decay => {
                 if self.decay_beats <= 0.0 {
                     "hold".to_string()
                 } else {
-                    format!("{:.2} beats", self.decay_beats)
+                    beats2(self.decay_beats)
                 }
             }
             EnvField::Trigger => self.trigger.label(),

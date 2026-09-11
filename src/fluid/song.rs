@@ -18,8 +18,8 @@ use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
     EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
-    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MuteState, Step,
-    TAB_COUNT, all_specs, spec_by_id,
+    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, ModuleSlotField,
+    MuteState, Step, TAB_COUNT, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -28,7 +28,7 @@ const MAGIC: &[u8; 4] = b"NOOI";
 /// record payloads carry no version byte of their own. Version 1 (length-
 /// prefixed ids, f32 values, its own nested automation payload versions) is
 /// gone; a v1 code is rejected with a message telling the user why.
-const CONTAINER_VERSION: u8 = 2;
+pub(crate) const CONTAINER_VERSION: u8 = 2;
 /// Unchanged across container versions: the CLI, `just add-morph`, and both
 /// Python helpers all match song codes on this prefix.
 const CODE_PREFIX: &str = "n1_";
@@ -36,14 +36,19 @@ pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const TONAL_SEQUENCE_RECORD: u8 = 2;
 const MUTE_RECORD: u8 = 3;
-const LFO_SHAPE_SINE: u8 = 0;
-const LFO_SHAPE_TRIANGLE: u8 = 1;
-const LFO_SHAPE_RAMP_UP: u8 = 2;
-const LFO_SHAPE_RAMP_DOWN: u8 = 3;
-const LFO_SHAPE_SQUARE: u8 = 4;
-const LFO_SHAPE_RANDOM_DRIFT: u8 = 5;
-const LFO_SHAPE_SAMPLE_HOLD: u8 = 6;
-const LFO_SHAPE_STEPS: u8 = 7;
+/// Wire tag for each LFO shape. Append-only: a tag is part of every saved
+/// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
+/// directions of this one table.
+const LFO_SHAPE_TAGS: [(LfoShape, u8); 8] = [
+    (LfoShape::Sine, 0),
+    (LfoShape::Triangle, 1),
+    (LfoShape::RampUp, 2),
+    (LfoShape::RampDown, 3),
+    (LfoShape::Square, 4),
+    (LfoShape::RandomDrift, 5),
+    (LfoShape::SampleHold, 6),
+    (LfoShape::Steps, 7),
+];
 const ENV_TRIGGER_EVERY_BEATS: u8 = 0;
 const ENV_TRIGGER_ON_KICK: u8 = 1;
 const ENV_TRIGGER_ONCE: u8 = 2;
@@ -256,10 +261,10 @@ fn read_tonal_sequence(bytes: &[u8]) -> Result<TonalSequenceState, SongCodeError
 /// control's kind or step ladder may change in a later build without
 /// invalidating codes written today — and so an entry naming an unknown
 /// control can still be skipped without losing byte alignment.
-const VALUE_TAG_POSITION: u8 = 0;
-const VALUE_TAG_INT: u8 = 1;
-const VALUE_TAG_FLOAT: u8 = 2;
-const VALUE_TAG_SMALL_INT: u8 = 3;
+pub(crate) const VALUE_TAG_POSITION: u8 = 0;
+pub(crate) const VALUE_TAG_INT: u8 = 1;
+pub(crate) const VALUE_TAG_FLOAT: u8 = 2;
+pub(crate) const VALUE_TAG_SMALL_INT: u8 = 3;
 
 /// Even span for bipolar `-1..=1` amounts, so exactly 0 — the neutral value
 /// every automation amount rests at — round-trips to exactly 0.
@@ -277,7 +282,7 @@ enum EncodedValue {
 impl EncodedValue {
     /// Continuous rows ride the taper in position space. Discrete rows and
     /// musical step ladders (`Step::PowerOfTwo`, `Step::BeatGrid`) do not:
-    /// `ControlSpec::ratio` overrides the taper for both ladders and neither
+    /// `DialScale::from_step` overrides the taper for both ladders and neither
     /// `beat_grid_ratio` nor the `Log2` override has an inverse in the crate,
     /// so they store their value exactly instead. Discrete rows are already
     /// whole numbers and would gain nothing but error from a round trip
@@ -454,7 +459,12 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
     for structural in [true, false] {
         for &(index, value) in &entries {
             let id = song_id_at(index).unwrap_or_default();
-            let is_structural = id.ends_with(".kind") || id.ends_with("clock");
+            let is_structural = parse_module_slot_id(id).is_some_and(|(_, _, field)| {
+                matches!(
+                    field,
+                    ModuleSlotField::Kind | ModuleSlotField::Clock | ModuleSlotField::RightClock
+                )
+            });
             if is_structural != structural {
                 continue;
             }
@@ -543,7 +553,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
 
         // Read the staircase before resolving the id and shape, so a route
         // this build cannot place is still skipped in byte-aligned whole.
-        let steps = if shape_byte == LFO_SHAPE_STEPS {
+        let steps = if shape_from_tag(shape_byte) == Some(LfoShape::Steps) {
             let step_count = reader.u8()?;
             let step_glide = u16_to_unit(reader.u16()?);
             let live = (step_count as usize).clamp(1, MAX_LFO_STEPS);
@@ -662,47 +672,55 @@ fn env_trigger_from_tag(tag: u8, param: f32) -> Option<EnvTrigger> {
     }
 }
 
+/// Every shape has a row (`lfo_shape_tags_cover_every_shape`), so the
+/// `expect` can only fire on a table edit.
 fn shape_tag(shape: LfoShape) -> u8 {
-    match shape {
-        LfoShape::Sine => LFO_SHAPE_SINE,
-        LfoShape::Triangle => LFO_SHAPE_TRIANGLE,
-        LfoShape::RampUp => LFO_SHAPE_RAMP_UP,
-        LfoShape::RampDown => LFO_SHAPE_RAMP_DOWN,
-        LfoShape::Square => LFO_SHAPE_SQUARE,
-        LfoShape::RandomDrift => LFO_SHAPE_RANDOM_DRIFT,
-        LfoShape::SampleHold => LFO_SHAPE_SAMPLE_HOLD,
-        LfoShape::Steps => LFO_SHAPE_STEPS,
-    }
+    LFO_SHAPE_TAGS
+        .iter()
+        .find(|(candidate, _)| *candidate == shape)
+        .map(|(_, tag)| *tag)
+        .expect("LFO_SHAPE_TAGS has a row for every shape")
 }
 
 fn shape_from_tag(tag: u8) -> Option<LfoShape> {
-    match tag {
-        LFO_SHAPE_SINE => Some(LfoShape::Sine),
-        LFO_SHAPE_TRIANGLE => Some(LfoShape::Triangle),
-        LFO_SHAPE_RAMP_UP => Some(LfoShape::RampUp),
-        LFO_SHAPE_RAMP_DOWN => Some(LfoShape::RampDown),
-        LFO_SHAPE_SQUARE => Some(LfoShape::Square),
-        LFO_SHAPE_RANDOM_DRIFT => Some(LfoShape::RandomDrift),
-        LFO_SHAPE_SAMPLE_HOLD => Some(LfoShape::SampleHold),
-        LFO_SHAPE_STEPS => Some(LfoShape::Steps),
-        _ => None,
-    }
+    LFO_SHAPE_TAGS
+        .iter()
+        .find(|(_, candidate)| *candidate == tag)
+        .map(|(shape, _)| *shape)
 }
 
 fn finite_or(value: f32, fallback: f32) -> f32 {
     if value.is_finite() { value } else { fallback }
 }
 
-pub(crate) fn write_record(
-    record_type: u8,
-    payload: &[u8],
-    out: &mut Vec<u8>,
-) -> Result<(), SongCodeError> {
+fn write_record(record_type: u8, payload: &[u8], out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     let len = u32::try_from(payload.len()).map_err(|_| SongCodeError::TooLarge)?;
     out.push(record_type);
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(payload);
     Ok(())
+}
+
+/// A song code whose container carries `version` and exactly `records`, so a
+/// test can hand the decoder any byte sequence without re-spelling the
+/// magic, prefix, or base64 layer.
+#[cfg(test)]
+pub(crate) fn code_from_records(version: u8, records: &[(u8, &[u8])]) -> String {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(MAGIC);
+    bytes.push(version);
+    for (record_type, payload) in records {
+        write_record(*record_type, payload, &mut bytes).unwrap();
+    }
+    format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// The snapshot record payload `encode_song_code` writes for `controls`.
+#[cfg(test)]
+pub(crate) fn snapshot_payload(controls: &FluidControls) -> Vec<u8> {
+    let mut snapshot = Vec::new();
+    write_snapshot(controls, &mut snapshot).unwrap();
+    snapshot
 }
 
 fn write_u16(value: usize, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
@@ -777,19 +795,22 @@ impl<'a> Reader<'a> {
 mod retired_control_tests {
     use super::*;
 
-    /// One snapshot entry naming `id`, wrapped in a valid container.
-    fn code_setting(id: &str) -> String {
-        let index = song_id_index(id).expect("id is in the table");
+    /// A one-entry snapshot payload setting id-table slot `index`.
+    fn snapshot_entry(index: u16) -> Vec<u8> {
         let mut snapshot = Vec::new();
         write_u16(1usize, &mut snapshot).unwrap();
         snapshot.extend_from_slice(&index.to_le_bytes());
         EncodedValue::Position(unit_to_u16(0.35)).write(&mut snapshot);
+        snapshot
+    }
 
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(MAGIC);
-        bytes.push(CONTAINER_VERSION);
-        write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes).unwrap();
-        format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
+    /// One snapshot entry naming `id`, wrapped in a valid container.
+    fn code_setting(id: &str) -> String {
+        let index = song_id_index(id).expect("id is in the table");
+        code_from_records(
+            CONTAINER_VERSION,
+            &[(SNAPSHOT_RECORD, &snapshot_entry(index))],
+        )
     }
 
     /// A code from before the per-voice effect sliders folded into module
@@ -816,17 +837,27 @@ mod retired_control_tests {
     /// a newer build: that index is past the table's end, not inside it.
     #[test]
     fn a_code_setting_an_id_this_build_has_never_heard_of_still_loads() {
-        let mut snapshot = Vec::new();
-        write_u16(1usize, &mut snapshot).unwrap();
-        snapshot.extend_from_slice(&u16::MAX.to_le_bytes());
-        EncodedValue::Position(unit_to_u16(0.35)).write(&mut snapshot);
-
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(MAGIC);
-        bytes.push(CONTAINER_VERSION);
-        write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes).unwrap();
-        let code = format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes));
+        let code = code_from_records(
+            CONTAINER_VERSION,
+            &[(SNAPSHOT_RECORD, &snapshot_entry(u16::MAX))],
+        );
 
         assert!(decode_song_code(&code).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::*;
+
+    #[test]
+    fn lfo_shape_tags_cover_every_shape() {
+        let mut tags = BTreeSet::new();
+        for shape in LfoShape::ALL {
+            let tag = shape_tag(shape);
+            assert_eq!(shape_from_tag(tag), Some(shape));
+            assert!(tags.insert(tag), "{shape:?}: tag {tag} reused");
+        }
+        assert_eq!(tags.len(), LFO_SHAPE_TAGS.len());
     }
 }

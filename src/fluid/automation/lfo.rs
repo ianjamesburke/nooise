@@ -3,8 +3,8 @@
 
 use std::f32::consts::TAU;
 
-use crate::fluid::Entry;
 use crate::fluid::widget::DialScale;
+use crate::fluid::{Entry, beats2, pct, signed_pct, smoothstep, splitmix64_mix};
 
 use super::{FieldSpec, Stepping, clamped_index, morph_scalar_route, stepped_index};
 
@@ -113,20 +113,14 @@ impl LfoShape {
 /// Deterministic per-index value in -1..1, keyed by the route seed. Pure hash,
 /// no RNG state, so the UI and engine agree and offline renders stay identical.
 fn seeded_unit(seed: u32, index: i64) -> f32 {
-    let mut z = (index as u64)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(u64::from(seed))
-        .wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^= z >> 31;
+    let z = splitmix64_mix(
+        (index as u64)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(u64::from(seed))
+            .wrapping_add(0x9E37_79B9_7F4A_7C15),
+    );
     let unit = (z >> 40) as f32 / f32::from(1u16 << 8) / f32::from(1u16 << 8) / 256.0;
     unit * 2.0 - 1.0
-}
-
-fn smoothstep(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
 }
 
 /// Blends a ramp's raw value toward `next_cycle_start` over the last
@@ -185,6 +179,16 @@ pub(crate) enum LfoField {
 
 impl LfoField {
     pub(crate) const ALL: [LfoField; 4] = [Self::Amount, Self::Interval, Self::Offset, Self::Shape];
+
+    /// The `FlippedUnits` sub-key for a field that carries a time base;
+    /// `None` for amount and shape, which cannot be unit-flipped.
+    pub(crate) const fn time_key(self) -> Option<&'static str> {
+        match self {
+            Self::Interval => Some("lfo.interval"),
+            Self::Offset => Some("lfo.offset"),
+            Self::Amount | Self::Shape => None,
+        }
+    }
 
     pub(crate) fn label(self) -> &'static str {
         match self {
@@ -457,9 +461,9 @@ impl LfoRoute {
     pub(crate) fn pattern_phase_at(&self, beat: f64) -> f64 {
         match self.shape {
             LfoShape::Steps => {
-                let cycle = f64::from(self.active_cycle_at(beat).max(MIN_LFO_CYCLE_BEATS));
-                let t = (beat + f64::from(self.phase_offset_beats)) / cycle;
-                (t / self.active_step_count() as f64).rem_euclid(1.0)
+                let cycles =
+                    global_lfo_cycles(beat, self.active_cycle_at(beat), self.phase_offset_beats);
+                (cycles / self.active_step_count() as f64).rem_euclid(1.0)
             }
             _ => self.phase_at(beat),
         }
@@ -513,10 +517,8 @@ impl LfoRoute {
     pub(crate) fn step_display(&self, target: StepTarget) -> String {
         match target {
             StepTarget::Count => format!("{}", self.active_step_count()),
-            StepTarget::Glide => format!("{:.0}%", self.step_glide * 100.0),
-            StepTarget::Value(i) => {
-                format!("{:+.0}%", self.steps.get(i).copied().unwrap_or(0.0) * 100.0)
-            }
+            StepTarget::Glide => pct(self.step_glide),
+            StepTarget::Value(i) => signed_pct(self.steps.get(i).copied().unwrap_or(0.0)),
         }
     }
 
@@ -607,9 +609,9 @@ impl LfoRoute {
     pub(crate) fn field_display(&self, field: LfoField) -> String {
         match field {
             LfoField::Shape => self.shape.label().to_string(),
-            LfoField::Amount => format!("{:.0}%", self.depth_ratio * 100.0),
-            LfoField::Interval => format!("{:.2} beats", self.cycle_beats),
-            LfoField::Offset => format!("{:.2} beats", self.phase_offset_beats),
+            LfoField::Amount => pct(self.depth_ratio),
+            LfoField::Interval => beats2(self.cycle_beats),
+            LfoField::Offset => beats2(self.phase_offset_beats),
         }
     }
 
@@ -659,10 +661,16 @@ impl LfoRoute {
 /// therefore puts every route with the same rate on the same song-wide grid,
 /// regardless of which control owns it or when its editor was opened.
 fn global_lfo_position(beat: f64, cycle_beats: f32, offset_beats: f32) -> (i64, f64) {
-    let cycle = f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS));
-    let position = (beat + f64::from(offset_beats)) / cycle;
+    let position = global_lfo_cycles(beat, cycle_beats, offset_beats);
     let index = position.floor();
     (index as i64, position - index)
+}
+
+/// The unsplit form: whole cycles elapsed since beat zero, fractional part
+/// included.
+fn global_lfo_cycles(beat: f64, cycle_beats: f32, offset_beats: f32) -> f64 {
+    let cycle = f64::from(cycle_beats.max(MIN_LFO_CYCLE_BEATS));
+    (beat + f64::from(offset_beats)) / cycle
 }
 fn next_wave_crossing(
     route: &LfoRoute,

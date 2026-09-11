@@ -8,9 +8,7 @@
 use std::error::Error;
 use std::fmt;
 
-#[cfg(test)]
-use super::interaction::PaletteStagedEdit;
-use super::interaction::{InteractionEffect, Page};
+use super::interaction::{InteractionEffect, Page, PaletteStagedEdit};
 use super::song::SongCodeError;
 use super::*;
 
@@ -140,6 +138,24 @@ pub(crate) enum LiveEffect {
 pub(crate) struct InteractionExecutionContext {
     pub(crate) selected_control: Option<&'static str>,
     pub(crate) beat: f64,
+}
+
+/// The control an effect targets, or the failure every selection-scoped
+/// effect reports when nothing is selected.
+fn selected_control(selected_control: Option<&'static str>) -> Result<&'static str, EffectFailure> {
+    selected_control.ok_or(EffectFailure::MissingContext("selected control"))
+}
+
+/// Palette edits cross the kernel boundary as value bits; this is where they
+/// become session edits.
+fn staged_edits(edits: Vec<PaletteStagedEdit>) -> Vec<StagedEdit> {
+    edits
+        .into_iter()
+        .map(|edit| StagedEdit {
+            id: edit.id,
+            value: f32::from_bits(edit.value_bits),
+        })
+        .collect()
 }
 
 pub(crate) struct ProductionInteractionContext<'a> {
@@ -432,10 +448,7 @@ impl EffectExecutor {
         };
         let id = module_slot_collapsed_id(tab, slot, &self.session.load().controls)
             .ok_or(EffectFailure::MissingContext("module slot control"))?;
-        let index = tab_specs(tab)
-            .iter()
-            .position(|spec| spec.id == id)
-            .ok_or(EffectFailure::UnknownControl(id))?;
+        let index = spec_index(tab, id).ok_or(EffectFailure::UnknownControl(id))?;
         self.recent.touch(id);
         self.execute(LiveEffect::SelectControl { tab, index, id })
     }
@@ -470,18 +483,14 @@ impl EffectExecutor {
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         match effect {
             InteractionEffect::AdjustSelected(delta) => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let id = selected_control(context.selected_control)?;
                 self.execute(LiveEffect::EditControl {
                     id,
                     edit: ControlEdit::Delta(f32::from(delta)),
                 })
             }
             InteractionEffect::CommitNumeric(value) => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let id = selected_control(context.selected_control)?;
                 self.execute(LiveEffect::EditControl {
                     id,
                     edit: ControlEdit::Value(value),
@@ -496,13 +505,7 @@ impl EffectExecutor {
                 self.place_module(tab, catalog_index)
             }
             InteractionEffect::PaletteCommit(edits) => {
-                let edits = edits
-                    .into_iter()
-                    .map(|edit| StagedEdit {
-                        id: edit.id,
-                        value: f32::from_bits(edit.value_bits),
-                    })
-                    .collect::<Vec<_>>();
+                let edits = staged_edits(edits);
                 if edits.is_empty() {
                     return Ok(EffectAcknowledgement::NoChange);
                 }
@@ -598,25 +601,15 @@ impl EffectExecutor {
                 })
             }
             InteractionEffect::AutomationConfirm(kind) => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
-                let kind = match kind {
-                    super::interaction::AutomationKind::Lfo => ModKind::Lfo,
-                    super::interaction::AutomationKind::Envelope => ModKind::Envelope,
-                };
+                let id = selected_control(context.selected_control)?;
+                let kind = ModKind::from(kind);
                 let mut selected = context.automation_selected;
                 open_modulator_effect_for_id(self, id, kind, &mut selected);
                 Ok(self.published())
             }
             InteractionEffect::AddAutomation(kind) => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
-                let kind = match kind {
-                    super::interaction::AutomationKind::Lfo => ModKind::Lfo,
-                    super::interaction::AutomationKind::Envelope => ModKind::Envelope,
-                };
+                let id = selected_control(context.selected_control)?;
+                let kind = ModKind::from(kind);
                 if !add_modulator_effect_for_id(self, id, kind) {
                     return Err(EffectFailure::AutomationLaneLimit);
                 }
@@ -665,24 +658,13 @@ impl EffectExecutor {
                 Ok(EffectAcknowledgement::NoChange)
             }
             InteractionEffect::TouchSelected => {
-                let id = context
-                    .selected_control
-                    .ok_or(EffectFailure::MissingContext("selected control"))?;
+                let id = selected_control(context.selected_control)?;
                 let tab = tab_owning_control(id).unwrap_or(context.tab);
-                let index = tab_specs(tab)
-                    .iter()
-                    .position(|spec| spec.id == id)
-                    .unwrap_or(context.selected);
+                let index = spec_index(tab, id).unwrap_or(context.selected);
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
             InteractionEffect::PaletteCommitAtBar(edits) => {
-                let edits = edits
-                    .into_iter()
-                    .map(|edit| StagedEdit {
-                        id: edit.id,
-                        value: f32::from_bits(edit.value_bits),
-                    })
-                    .collect::<Vec<_>>();
+                let edits = staged_edits(edits);
                 self.execute(LiveEffect::StageForBar {
                     target_beat: next_bar_beat(context.beat),
                     edits,
@@ -907,10 +889,7 @@ mod tests {
     #[test]
     fn confirming_a_module_row_adds_it_inert_and_selects_it() {
         let mut executor = executor_with(FluidControls::default());
-        let delay = MODULE_CATALOG
-            .iter()
-            .position(|kind| kind.id == "delay")
-            .expect("delay is in the catalog");
+        let delay = module_catalog_index("delay");
 
         let ack = executor
             .execute_interaction(
@@ -938,10 +917,7 @@ mod tests {
     #[test]
     fn confirming_a_module_already_on_the_layer_jumps_instead_of_duplicating() {
         let mut executor = executor_with(FluidControls::default());
-        let drive = MODULE_CATALOG
-            .iter()
-            .position(|kind| kind.id == "drive")
-            .expect("drive is in the v1 catalog");
+        let drive = module_catalog_index("drive");
 
         // Kick ships with Drive pre-loaded at 0.2.
         let before = executor.session().load().controls.modules.kick;
@@ -970,10 +946,7 @@ mod tests {
             *slot = preset_slot("room", 0.0);
         }
         let mut executor = executor_with(controls);
-        let delay = MODULE_CATALOG
-            .iter()
-            .position(|kind| kind.id == "delay")
-            .expect("delay is in the catalog");
+        let delay = module_catalog_index("delay");
 
         let ack = executor
             .execute_interaction(
@@ -1046,6 +1019,59 @@ mod tests {
             )))
         );
         assert_eq!(executor.message(), None);
+    }
+
+    /// A Delay time row steps through the registry: `contextual` hands the
+    /// loaded clock's grid to `apply_delta`, so Sync moves on the beat grid
+    /// and Free by 10 ms with no Delay-specific edit path in between.
+    #[test]
+    fn delay_time_rows_step_on_the_loaded_clocks_grid() {
+        let mut controls = FluidControls::default();
+        controls.modules.kick[2] = preset_slot("delay", 0.5);
+        controls.modules.kick[2].time = 0.5;
+        let mut executor = executor_with(controls);
+        let selected = tab_specs(Tab::Kick)
+            .iter()
+            .position(|spec| spec.id == "kick.slot3.time")
+            .expect("kick slot 3 has a time row");
+        let mut flipped = FlippedUnits::default();
+        let mut context = ProductionInteractionContext {
+            selected_control: Some("kick.slot3.time"),
+            tab: Tab::Kick,
+            selected,
+            automation_selected: 0,
+            beat: 0.0,
+            flipped: &mut flipped,
+        };
+        let mut clipboard = FakeClipboard::default();
+
+        executor.execute_production_interactions_with_clipboard(
+            [InteractionEffect::AdjustSelected(1)],
+            &mut context,
+            &mut clipboard,
+        );
+        assert_eq!(
+            executor.session().load().controls.modules.kick[2].time,
+            0.75
+        );
+
+        executor.edit_session(None, |snapshot| {
+            switch_delay_clock(&mut snapshot.controls.modules.kick[2], false, 120.0);
+        });
+        // Sync -> Free keeps the audible length, snapped to the 10 ms grid.
+        assert_eq!(
+            executor.session().load().controls.modules.kick[2].time,
+            380.0
+        );
+        executor.execute_production_interactions_with_clipboard(
+            [InteractionEffect::AdjustSelected(1)],
+            &mut context,
+            &mut clipboard,
+        );
+        assert_eq!(
+            executor.session().load().controls.modules.kick[2].time,
+            390.0
+        );
     }
 
     #[test]

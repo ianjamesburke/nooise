@@ -377,7 +377,7 @@ impl TonalEngine {
         tune: f32,
         timing: TimingContext,
     ) -> (f32, f32) {
-        let phrase = tonal_phrase_index(c.phrase);
+        let phrase = wrapped_index(c.phrase, TONAL_PHRASES.len());
         self.sync_phrase(phrase);
 
         if self
@@ -399,14 +399,14 @@ impl TonalEngine {
             } else {
                 self.evolved_phrase[self.step_index % self.evolved_phrase.len()]
             } + (c.octave.round() as i32) * 12;
-            let hz = tonal_note_hz(note, tune);
+            let hz = note_hz(note, tune);
             let pan = self.rng.gen_range(-0.5f32..0.5);
             // A silent layer still triggers nothing: skipping keeps a Level
             // of exactly 0 from accumulating inaudible voices. Every RNG draw
             // above still happens, keeping seeded renders byte-identical.
             if c.level != 0.0 {
                 self.voices.push(TonalVoice::new(
-                    tonal_synth_type_index(c.synth_type),
+                    wrapped_index(c.synth_type, TONAL_SYNTH_TYPES.len()),
                     TonalNote {
                         midi: note,
                         hz,
@@ -499,16 +499,10 @@ impl TonalEngine {
 }
 
 fn evolve_random(seed: u64, evolution_count: u64, draw: u64) -> u64 {
-    let mut value = seed
-        ^ evolution_count.wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        ^ draw.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
-}
-
-pub(crate) fn tonal_phrase_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid(TONAL_PHRASES.len() as i64) as usize
+    splitmix64_mix(
+        seed ^ evolution_count.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ draw.wrapping_mul(0xBF58_476D_1CE4_E5B9),
+    )
 }
 
 pub(crate) fn tonal_phrase(phrase: usize) -> &'static [i32] {
@@ -551,10 +545,6 @@ pub(crate) fn tonal_evolve_note_count(rate: f32, phrase_len: usize) -> usize {
     (rate.clamp(0.0, 1.0) * TONAL_MAX_EVOLVE_NOTES as f32)
         .ceil()
         .min(phrase_len as f32) as usize
-}
-
-pub(crate) fn tonal_note_hz(note: i32, tune: f32) -> f32 {
-    midi_to_hz(note) * tune_ratio(tune)
 }
 
 pub(crate) struct TonalLowCut {
@@ -671,52 +661,86 @@ pub(crate) fn attack_decay_gain(elapsed: f32, attack: f32, decay: f32, power: f3
     attack_gain * decay_gain
 }
 
-pub(crate) struct SineTonalVoice {
-    pub(crate) primary: SineOscillator,
-    pub(crate) detuned: SineOscillator,
-    pub(crate) samples_remaining: u64,
-    pub(crate) total_samples: u64,
-    pub(crate) total_duration: f32,
-    pub(crate) attack_time: f32,
-    pub(crate) decay_time: f32,
-    pub(crate) pan_gains: (f32, f32),
+/// The part of a tonal/arp note that is the same whatever synthesizes it:
+/// its attack + decay lifetime clock, the shared `attack_decay_gain` envelope
+/// at the voice's own decay `power`, and its pan. A voice keeps only its
+/// oscillators next to one of these.
+pub(crate) struct TonalNoteLife {
+    samples_elapsed: u64,
+    total_samples: u64,
+    total_duration: f32,
+    attack_time: f32,
+    decay_time: f32,
+    power: f32,
+    pan_gains: (f32, f32),
 }
 
-impl SineTonalVoice {
-    pub(crate) fn new(note: TonalNote) -> Self {
+impl TonalNoteLife {
+    pub(crate) fn new(note: &TonalNote, power: f32) -> Self {
         let sample_rate = note.sample_rate.max(1.0);
         // The note's whole life is attack + decay; the envelope reaches zero
         // exactly at that point, so this length ends the voice in silence.
         let total = (((note.attack_time + note.decay_time) * sample_rate).round() as u64).max(1);
         Self {
-            primary: SineOscillator::new(note.hz, sample_rate),
-            detuned: SineOscillator::new(note.hz * 1.004, sample_rate),
-            samples_remaining: total,
+            samples_elapsed: 0,
             total_samples: total,
             total_duration: total as f32 / sample_rate,
             attack_time: note.attack_time,
             decay_time: note.decay_time,
+            power,
             pan_gains: StereoPanner::gains(note.pan),
         }
     }
-    pub(crate) fn next(&mut self) -> (f32, f32) {
-        if self.samples_remaining == 0 {
-            return (0.0, 0.0);
+
+    /// This sample's envelope gain, advancing the clock; `None` once the note
+    /// has lived out its attack + decay.
+    pub(crate) fn next_gain(&mut self) -> Option<f32> {
+        if self.is_done() {
+            return None;
         }
-        let elapsed_samples = self.total_samples - self.samples_remaining;
-        let elapsed = elapsed_samples as f32 / self.total_samples as f32 * self.total_duration;
-        self.samples_remaining -= 1;
-        let gain = attack_decay_gain(
+        let elapsed = self.samples_elapsed as f32 / self.total_samples as f32 * self.total_duration;
+        self.samples_elapsed += 1;
+        Some(attack_decay_gain(
             elapsed,
             self.attack_time,
             self.decay_time,
-            TONAL_SINE_DECAY_POWER,
-        );
-        let s = soft_clip((self.primary.next() + self.detuned.next() * 0.3) * 0.4) * gain;
+            self.power,
+        ))
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.samples_elapsed >= self.total_samples
+    }
+
+    pub(crate) fn pan(&self, s: f32) -> (f32, f32) {
         (s * self.pan_gains.0, s * self.pan_gains.1)
     }
+}
+
+pub(crate) struct SineTonalVoice {
+    pub(crate) primary: SineOscillator,
+    pub(crate) detuned: SineOscillator,
+    pub(crate) life: TonalNoteLife,
+}
+
+impl SineTonalVoice {
+    pub(crate) fn new(note: TonalNote) -> Self {
+        let sample_rate = note.sample_rate.max(1.0);
+        Self {
+            primary: SineOscillator::new(note.hz, sample_rate),
+            detuned: SineOscillator::new(note.hz * 1.004, sample_rate),
+            life: TonalNoteLife::new(&note, TONAL_SINE_DECAY_POWER),
+        }
+    }
+    pub(crate) fn next(&mut self) -> (f32, f32) {
+        let Some(gain) = self.life.next_gain() else {
+            return (0.0, 0.0);
+        };
+        let s = soft_clip((self.primary.next() + self.detuned.next() * 0.3) * 0.4) * gain;
+        self.life.pan(s)
+    }
     pub(crate) fn is_done(&self) -> bool {
-        self.samples_remaining == 0
+        self.life.is_done()
     }
 }
 
@@ -746,20 +770,12 @@ pub(crate) struct PianoTonalVoice {
     /// reproduces `exp(-t * rate)` without an `exp()` call per sample.
     pub(crate) harmonic_decay_steps: [f32; TONAL_PIANO_HARMONIC_COUNT],
     pub(crate) harmonic_decay_state: [f32; TONAL_PIANO_HARMONIC_COUNT],
-    pub(crate) samples_elapsed: u64,
-    pub(crate) total_samples: u64,
-    pub(crate) total_duration: f32,
-    pub(crate) attack_time: f32,
-    pub(crate) decay_time: f32,
-    pub(crate) pan_gains: (f32, f32),
+    pub(crate) life: TonalNoteLife,
 }
 
 impl PianoTonalVoice {
     pub(crate) fn new(profile: PianoProfile, note: TonalNote) -> Self {
         let sample_rate = note.sample_rate.max(1.0);
-        // The note's whole life is attack + decay; the amp envelope reaches
-        // zero exactly there, so this length ends the voice in silence.
-        let total = ((((note.attack_time + note.decay_time) * sample_rate).round()) as u64).max(1);
         // The piano's natural per-harmonic rolloff normalizes to the decay
         // time alone, so `decay` sets how long the note rings and `attack`
         // never stretches (and slows) the timbre.
@@ -774,23 +790,14 @@ impl PianoTonalVoice {
             harmonic_decay_steps: harmonic_decay_rates
                 .map(|rate| (-rate / decay_samples as f32).exp()),
             harmonic_decay_state: [1.0; TONAL_PIANO_HARMONIC_COUNT],
-            samples_elapsed: 0,
-            total_samples: total,
-            total_duration: total as f32 / sample_rate,
-            attack_time: note.attack_time,
-            decay_time: note.decay_time,
-            pan_gains: StereoPanner::gains(note.pan),
+            life: TonalNoteLife::new(&note, profile.body_power),
         }
     }
 
     pub(crate) fn next(&mut self) -> (f32, f32) {
-        if self.samples_elapsed >= self.total_samples {
+        let Some(envelope) = self.life.next_gain() else {
             return (0.0, 0.0);
-        }
-
-        let t = self.samples_elapsed as f32 / self.total_samples as f32;
-        let elapsed = t * self.total_duration;
-        self.samples_elapsed += 1;
+        };
 
         let mut sample = 0.0f32;
         for index in 0..TONAL_PIANO_HARMONIC_COUNT {
@@ -800,18 +807,12 @@ impl PianoTonalVoice {
             sample += harmonic * self.harmonic_amplitudes[index] * decay;
         }
 
-        let envelope = attack_decay_gain(
-            elapsed,
-            self.attack_time,
-            self.decay_time,
-            self.profile.body_power,
-        );
         let s = soft_clip(sample * self.profile.amplitude) * envelope;
-        (s * self.pan_gains.0, s * self.pan_gains.1)
+        self.life.pan(s)
     }
 
     pub(crate) fn is_done(&self) -> bool {
-        self.samples_elapsed >= self.total_samples
+        self.life.is_done()
     }
 }
 

@@ -1,5 +1,7 @@
 //! Shared stereo compressor primitive for track and master effect chains.
 
+use super::crossfade::mix_stereo;
+
 pub(crate) struct StereoCompressor {
     envelope: f32,
 }
@@ -33,10 +35,7 @@ impl StereoCompressor {
             sample.0 * gain_reduction * makeup,
             sample.1 * gain_reduction * makeup,
         );
-        (
-            sample.0 + (wet.0 - sample.0) * amount,
-            sample.1 + (wet.1 - sample.1) * amount,
-        )
+        mix_stereo(sample, wet, amount)
     }
 }
 

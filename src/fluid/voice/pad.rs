@@ -1,6 +1,8 @@
 //! The Pad voice: sustained chord drones, the chord source Bass and Arp
 //! both follow.
 
+use crate::fx::crossfade::{Outgoing, mix};
+
 use super::*;
 
 pub(crate) const MAX_PAD_LAYERS: usize = 4;
@@ -44,7 +46,7 @@ impl PadEngine {
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
         let active_progression = progression_index(c.progression);
-        let active_character = pad_type_index(c.voice_type);
+        let active_character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let initial_notes = pad_chord_tones(c, active_progression, 0);
         Self {
             sample_rate,
@@ -84,7 +86,7 @@ impl PadEngine {
         );
         let chord_notes = pad_chord_tones(c, self.active_progression, self.step_index);
         let chord_edited = chord_notes != self.last_chord_notes;
-        let character = pad_type_index(c.voice_type);
+        let character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let character_changed = character != self.active_character;
         self.last_chord_notes = chord_notes;
         self.active_character = character;
@@ -334,9 +336,6 @@ impl PadStage {
 struct OutgoingStage {
     stage: PadStage,
     output_gain: f32,
-    /// Weight of the outgoing stage, walking 1.0 down to 0.0.
-    weight: f32,
-    step: f32,
 }
 
 pub(crate) struct PadTone {
@@ -346,7 +345,7 @@ pub(crate) struct PadTone {
     /// Kept so a later character swap can rebuild stages whose oscillators
     /// are pitched relative to this tone's own note.
     hz: f32,
-    outgoing: Option<OutgoingStage>,
+    outgoing: Option<Outgoing<OutgoingStage>>,
 }
 
 /// Builds the one stage a `pad.type` character adds after the shared stack,
@@ -410,12 +409,13 @@ impl PadTone {
     /// keeps sounding exactly where it was in its own life.
     pub(crate) fn set_character(&mut self, character: usize, sample_rate: f32) {
         let (stage, output_gain) = pad_stage(character, self.hz, sample_rate);
-        self.outgoing = Some(OutgoingStage {
-            stage: std::mem::replace(&mut self.stage, stage),
-            output_gain: std::mem::replace(&mut self.output_gain, output_gain),
-            weight: 1.0,
-            step: 1.0 / (PAD_TYPE_CROSSFADE_SECONDS * sample_rate).max(1.0),
-        });
+        self.outgoing = Some(Outgoing::start(
+            OutgoingStage {
+                stage: std::mem::replace(&mut self.stage, stage),
+                output_gain: std::mem::replace(&mut self.output_gain, output_gain),
+            },
+            PAD_TYPE_CROSSFADE_SECONDS * sample_rate,
+        ));
     }
 
     pub(crate) fn next_stereo(
@@ -433,13 +433,12 @@ impl PadTone {
             soft_clip(self.stage.apply(raw) * 0.55) * envelope * self.stack.gain * self.output_gain;
 
         if let Some(outgoing) = &mut self.outgoing {
-            let previous = soft_clip(outgoing.stage.apply(raw) * 0.55)
+            let previous = soft_clip(outgoing.inner.stage.apply(raw) * 0.55)
                 * envelope
                 * self.stack.gain
-                * outgoing.output_gain;
-            shaped += (previous - shaped) * outgoing.weight;
-            outgoing.weight -= outgoing.step;
-            if outgoing.weight <= 0.0 {
+                * outgoing.inner.output_gain;
+            shaped = mix(shaped, previous, outgoing.advance());
+            if outgoing.is_done() {
                 self.outgoing = None;
             }
         }
@@ -464,7 +463,7 @@ pub(crate) fn pad_tones(
     attack_time: f32,
     release_time: f32,
 ) -> Vec<PadTone> {
-    let freqs = notes.map(|note| midi_to_hz(note) * tune_ratio(tune));
+    let freqs = notes.map(|note| note_hz(note, tune));
     let pans = [-0.52_f32, -0.18, 0.16, 0.46];
     let gains = [0.17_f32, 0.132, 0.126, 0.098];
     freqs
@@ -606,7 +605,7 @@ pub(crate) const CUSTOM_PROGRESSION_INDEX: usize = PROGRESSIONS.len();
 /// Resolve `pad.progression`'s raw control value to a progression index,
 /// wrapping across the built-ins plus the one Custom slot.
 pub(crate) fn progression_index(value: f32) -> usize {
-    (value.round() as i64).rem_euclid((PROGRESSIONS.len() + 1) as i64) as usize
+    wrapped_index(value, CUSTOM_PROGRESSION_INDEX + 1)
 }
 
 pub(crate) fn is_custom_progression(progression: usize) -> bool {
@@ -625,6 +624,46 @@ pub(crate) fn pad_chord_count(c: &PadControls) -> usize {
 /// Advances one shared progression cursor. Count and progression changes are
 /// staged until the current loop reaches its final chord, so they never cut
 /// off the chord presently sounding.
+/// How Bass and Arp follow the Pad's chord loop without reaching into
+/// `PadEngine`: an independent trigger on the same `pad.chord_bars` grid and
+/// the same step/loop bookkeeping, so the follower's step always matches the
+/// pad's. The active loop is adopted from the first frame's controls and then
+/// only re-read at a loop boundary, exactly as the pad itself does.
+pub(crate) struct ProgressionFollower {
+    chord_trigger: GridTrigger,
+    pub(crate) step_index: usize,
+    active_chord_count: Option<usize>,
+    active_progression: Option<usize>,
+}
+
+impl ProgressionFollower {
+    pub(crate) fn new() -> Self {
+        Self {
+            chord_trigger: GridTrigger::after_start(),
+            step_index: 0,
+            active_chord_count: None,
+            active_progression: None,
+        }
+    }
+
+    /// Advances on the pad's chord grid and returns the `(progression, step)`
+    /// to voice this frame.
+    pub(crate) fn follow(&mut self, pad: &PadControls, timing: TimingContext) -> (usize, usize) {
+        let progression = progression_index(pad.progression);
+        let active_chord_count = self.active_chord_count.get_or_insert(pad_chord_count(pad));
+        let active_progression = self.active_progression.get_or_insert(progression);
+        advance_pad_progression(
+            &mut self.step_index,
+            active_chord_count,
+            active_progression,
+            pad_chord_count(pad),
+            progression,
+            self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0),
+        );
+        (*active_progression, self.step_index)
+    }
+}
+
 pub(crate) fn advance_pad_progression(
     step_index: &mut usize,
     active_chord_count: &mut usize,
@@ -662,16 +701,11 @@ pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, step: usize) 
 /// by `extension`, finally reshuffled by `inversion` and de-duplicated
 /// upward so inversions/accidentals never collide two voices onto one note.
 pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
-    const TONIC: i32 = 45; // A2, matching PROGRESSIONS' shared tonal center
-    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
+    let root = slot_root(slot);
     let accidental = slot.accidental.round().clamp(-1.0, 1.0) as i32;
     let extension = slot.extension.round().clamp(0.0, 3.0) as i32;
     let inversion = slot.inversion.round().clamp(0.0, 3.0) as i32;
-    let third = match slot.quality.round().clamp(-1.0, 1.0) as i32 {
-        -1 => root + 3,
-        1 => root + 4,
-        _ => shift_diatonic(root, 2),
-    };
+    let third = slot_third(slot, root);
     let top = match extension {
         1 => shift_diatonic(root, 6),
         2 => shift_diatonic(root, 8),
@@ -691,9 +725,7 @@ pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
 /// extension/inversion reshuffle) — what Bass follows instead of the pad's
 /// full voicing.
 pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
-    const TONIC: i32 = 45;
-    let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
-    root + slot.accidental.round().clamp(-1.0, 1.0) as i32
+    slot_root(slot) + slot.accidental.round().clamp(-1.0, 1.0) as i32
 }
 
 /// Whether a slot's resolved third is minor — honors a forced `quality`,
@@ -701,14 +733,27 @@ pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
 /// Quality row's "scale (min)"-style display so the inherit position still
 /// tells the user what they're hearing.
 pub(crate) fn pad_chord_slot_is_minor(slot: &ChordSlotControls) -> bool {
+    let root = slot_root(slot);
+    slot_third(slot, root) - root == 3
+}
+
+/// A2, matching `PROGRESSIONS`' shared tonal center: the note a custom
+/// slot's `degree` counts from.
+const CUSTOM_TONIC: i32 = 45;
+
+/// A custom slot's root before its accidental: the tonic shifted by the
+/// slot's diatonic degree.
+fn slot_root(slot: &ChordSlotControls) -> i32 {
+    shift_diatonic(CUSTOM_TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32)
+}
+
+/// A custom slot's third: forced minor/major by `quality`, otherwise the
+/// diatonic third above `root`.
+fn slot_third(slot: &ChordSlotControls, root: i32) -> i32 {
     match slot.quality.round().clamp(-1.0, 1.0) as i32 {
-        -1 => true,
-        1 => false,
-        _ => {
-            const TONIC: i32 = 45;
-            let root = shift_diatonic(TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32);
-            shift_diatonic(root, 2) - root == 3
-        }
+        -1 => root + 3,
+        1 => root + 4,
+        _ => shift_diatonic(root, 2),
     }
 }
 

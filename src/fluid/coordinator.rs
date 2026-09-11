@@ -25,6 +25,14 @@ pub(crate) struct ProductionActionRecord {
     pub(crate) effects: Vec<ProductionEffectRecord>,
 }
 
+impl ProductionActionRecord {
+    pub(crate) fn requested_quit(&self) -> bool {
+        self.effects
+            .iter()
+            .any(|record| record.result == Ok(EffectAcknowledgement::QuitRequested))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ProductionStep {
     pub(crate) mapping: runtime::InputMapping,
@@ -55,15 +63,24 @@ pub(crate) fn coordinate_production_tick(
     effects.execute(LiveEffect::CommitPending { beat })
 }
 
-pub(crate) fn coordinate_production_event(
+/// What the pre-event view projection settled before any action ran: the
+/// session snapshot the frame was drawn from and the selection it resolved.
+pub(crate) struct ProductionFrame {
+    pub(crate) session: Arc<LiveSessionSnapshot>,
+    pub(crate) item_count: usize,
+    pub(crate) selected_control: Option<&'static str>,
+    pub(crate) tab: Tab,
+    pub(crate) selected: usize,
+}
+
+pub(crate) fn production_frame(
     model: &mut interaction::InteractionModel,
-    event: &runtime::TransportEvent,
-    context: &mut ProductionCoordinatorContext<'_>,
-) -> ProductionStep {
-    let frame_session = context.effects.session().load();
+    context: &ProductionCoordinatorContext<'_>,
+) -> ProductionFrame {
+    let session = context.effects.session().load();
     let view = UiViewModel::project(ViewProjection {
         interaction: model,
-        session: &frame_session,
+        session: &session,
         telemetry: TelemetryView {
             beat: context.beat,
             active_chord: context.active_chord,
@@ -78,16 +95,26 @@ pub(crate) fn coordinate_production_event(
     let item_count = view.items.len();
     let selected_control = view.items.get(view.navigation.selected).map(|item| item.id);
     let selected = selected_control
-        .and_then(|id| {
-            tab_specs(view.navigation.tab)
-                .iter()
-                .position(|spec| spec.id == id)
-        })
+        .and_then(|id| spec_index(view.navigation.tab, id))
         .unwrap_or(view.navigation.selected);
     let tab = view.navigation.tab;
     drop(view);
     model.clamp_navigation_selection(item_count);
+    ProductionFrame {
+        session,
+        item_count,
+        selected_control,
+        tab,
+        selected,
+    }
+}
 
+pub(crate) fn coordinate_production_event(
+    model: &mut interaction::InteractionModel,
+    event: &runtime::TransportEvent,
+    context: &mut ProductionCoordinatorContext<'_>,
+) -> ProductionStep {
+    let frame = production_frame(model, context);
     let mapping = runtime::map_input(&model.mode, model.navigation, event, context.capabilities);
     let runtime::InputMapping::Action(mut action) = mapping else {
         return ProductionStep {
@@ -97,19 +124,20 @@ pub(crate) fn coordinate_production_event(
         };
     };
     if action.intent == interaction::Intent::TouchSelected
-        && selected_control == Some("pad.progression")
-        && is_custom_progression(progression_index(frame_session.controls.pad.progression))
+        && frame.selected_control == Some("pad.progression")
+        && is_custom_progression(progression_index(frame.session.controls.pad.progression))
     {
         action.intent = interaction::Intent::EnterChordProgression;
     }
     if action.intent == interaction::Intent::TouchSelected
-        && let Some(id) = selected_control
-        && let Some((slot, module)) = module_slot_at_collapsed_id(tab, id, &frame_session.controls)
+        && let Some(id) = frame.selected_control
+        && let Some((slot, module)) =
+            module_slot_at_collapsed_id(frame.tab, id, &frame.session.controls)
         && let Some(kind) = module.kind()
         && kind.parameters().len() > 1
     {
         action.intent = interaction::Intent::EnterModuleDetail {
-            tab,
+            tab: frame.tab,
             slot,
             catalog_index: module.kind.round() as usize - 1,
         };
@@ -122,139 +150,11 @@ pub(crate) fn coordinate_production_event(
     let mut actions = Vec::new();
     let mut quit = false;
     for _ in 0..*repeat_count {
-        let automation_selected = model.automation_selected();
-        if let interaction::Intent::OpenAutomation(kind) | interaction::Intent::AddAutomation(kind) =
-            action.intent
-            && !automation_kind_is_supported(selected_control, kind)
-        {
+        let Some(record) = coordinate_production_action(model, action, &frame, context) else {
             break;
-        }
-        let automation_row_count = match frame_session.automation.active_kind() {
-            Some(ModKind::Lfo) => frame_session
-                .automation
-                .active_address()
-                .map_or(LfoField::ALL.len(), |address| {
-                    lfo_submenu_rows(&frame_session.automation, address).len()
-                }),
-            Some(ModKind::Envelope) => EnvField::ALL.len(),
-            None => 0,
         };
-        let before = model.clone();
-        let transition = model
-            .clone()
-            .update_bounded(action, automation_row_count, item_count);
-        *model = transition.model;
-        model.seed_palette_recent(context.effects.recent().ids());
-        let emitted = transition.effects;
-        let mut execution = ProductionInteractionContext {
-            selected_control,
-            tab,
-            selected,
-            automation_selected,
-            beat: context.beat,
-            flipped: context.flipped,
-        };
-        let results = context
-            .effects
-            .execute_production_interactions_with_clipboard(
-                emitted.clone(),
-                &mut execution,
-                context.clipboard,
-            );
-        let mut effect_records = Vec::new();
-        for (effect, result) in emitted.into_iter().zip(results) {
-            match &result {
-                Ok(EffectAcknowledgement::ControlSelected { tab, index, .. }) => {
-                    let selected_spec = tab_specs(*tab).get(*index);
-                    let current_session = context.effects.session().load();
-                    let mut opened_module = false;
-                    if let Some(spec) = selected_spec
-                        && let Some((slot, module)) =
-                            module_slot_at_collapsed_id(*tab, spec.id, &current_session.controls)
-                        && let Some(kind) = module.kind()
-                        && kind.parameters().len() > 1
-                    {
-                        let return_to = match *tab {
-                            Tab::Chords => chords_tab_controls(
-                                &current_session.controls,
-                                interaction::ChordDrill::None,
-                            ),
-                            _ => tab_controls(*tab, &current_session.controls),
-                        }
-                        .iter()
-                        .position(|item| item.id == spec.id)
-                        .unwrap_or(0);
-                        model.navigation = interaction::Navigation::Module {
-                            tab: *tab,
-                            slot,
-                            catalog_index: module.kind.round() as usize - 1,
-                            selected: 0,
-                            return_to,
-                        };
-                        model.mode = interaction::InteractionMode::Browsing;
-                        opened_module = true;
-                    }
-                    if !opened_module
-                        && let interaction::Navigation::Module {
-                            tab: scoped_tab,
-                            slot,
-                            selected,
-                            ..
-                        } = &mut model.navigation
-                        && *scoped_tab == *tab
-                        && let Some(spec) = tab_specs(*tab).get(*index)
-                    {
-                        let suffix = format!(".slot{}.", *slot + 1);
-                        if spec.id.contains(&suffix) {
-                            if let Some(kind) = frame_session
-                                .controls
-                                .modules
-                                .for_tab(*tab)
-                                .and_then(|slots| slots.get(*slot))
-                                .and_then(ModuleSlot::kind)
-                            {
-                                *selected = kind
-                                    .parameters()
-                                    .iter()
-                                    .position(|parameter| {
-                                        spec.id.rsplit('.').next() == Some(parameter.field.id())
-                                    })
-                                    .unwrap_or(*selected);
-                            }
-                        } else {
-                            model.select_control(*tab, *index, &current_session.controls);
-                        }
-                    } else if !opened_module {
-                        model.select_control(*tab, *index, &current_session.controls);
-                    }
-                    model.mode = interaction::InteractionMode::Browsing;
-                }
-                Ok(EffectAcknowledgement::PerformanceEdited { tab, index, .. }) => {
-                    let current_session = context.effects.session().load();
-                    model.select_control(*tab, *index, &current_session.controls);
-                }
-                Ok(EffectAcknowledgement::QuitRequested) => quit = true,
-                Err(error) => {
-                    let prefix = if effect == interaction::InteractionEffect::Save {
-                        "Save failed"
-                    } else {
-                        "Action failed"
-                    };
-                    context
-                        .effects
-                        .execute(LiveEffect::ShowMessage(format!("{prefix}: {error}")))
-                        .expect("message is infallible");
-                }
-                Ok(_) => {}
-            }
-            effect_records.push(ProductionEffectRecord { effect, result });
-        }
-        actions.push(ProductionActionRecord {
-            action,
-            before,
-            after: model.clone(),
-            effects: effect_records,
-        });
+        quit = record.requested_quit();
+        actions.push(record);
         if quit {
             break;
         }
@@ -264,6 +164,152 @@ pub(crate) fn coordinate_production_event(
         actions,
         quit,
     }
+}
+
+/// Runs one semantic action through the kernel and the effect executor
+/// against the frame it was issued in. `None` means the action was refused
+/// before reaching the kernel (an automation kind the selected control does
+/// not support).
+pub(crate) fn coordinate_production_action(
+    model: &mut interaction::InteractionModel,
+    action: interaction::SemanticAction,
+    frame: &ProductionFrame,
+    context: &mut ProductionCoordinatorContext<'_>,
+) -> Option<ProductionActionRecord> {
+    let frame_session = &frame.session;
+    let selected_control = frame.selected_control;
+    let tab = frame.tab;
+    let automation_selected = model.automation_selected();
+    if let interaction::Intent::OpenAutomation(kind) | interaction::Intent::AddAutomation(kind) =
+        action.intent
+        && !automation_kind_is_supported(selected_control, kind)
+    {
+        return None;
+    }
+    let automation_row_count = match frame_session.automation.active_kind() {
+        Some(ModKind::Lfo) => frame_session
+            .automation
+            .active_address()
+            .map_or(LfoField::ALL.len(), |address| {
+                lfo_submenu_rows(&frame_session.automation, address).len()
+            }),
+        Some(ModKind::Envelope) => EnvField::ALL.len(),
+        None => 0,
+    };
+    let before = model.clone();
+    let transition = model
+        .clone()
+        .update_bounded(action, automation_row_count, frame.item_count);
+    *model = transition.model;
+    model.seed_palette_recent(context.effects.recent().ids());
+    let emitted = transition.effects;
+    let mut execution = ProductionInteractionContext {
+        selected_control,
+        tab,
+        selected: frame.selected,
+        automation_selected,
+        beat: context.beat,
+        flipped: context.flipped,
+    };
+    let results = context
+        .effects
+        .execute_production_interactions_with_clipboard(
+            emitted.clone(),
+            &mut execution,
+            context.clipboard,
+        );
+    let mut effect_records = Vec::new();
+    for (effect, result) in emitted.into_iter().zip(results) {
+        match &result {
+            Ok(EffectAcknowledgement::ControlSelected { tab, index, .. }) => {
+                let selected_spec = tab_specs(*tab).get(*index);
+                let current_session = context.effects.session().load();
+                let mut opened_module = false;
+                if let Some(spec) = selected_spec
+                    && let Some((slot, module)) =
+                        module_slot_at_collapsed_id(*tab, spec.id, &current_session.controls)
+                    && let Some(kind) = module.kind()
+                    && kind.parameters().len() > 1
+                {
+                    let return_to = match *tab {
+                        Tab::Chords => chords_tab_controls(
+                            &current_session.controls,
+                            interaction::ChordDrill::None,
+                        ),
+                        _ => tab_controls(*tab, &current_session.controls),
+                    }
+                    .iter()
+                    .position(|item| item.id == spec.id)
+                    .unwrap_or(0);
+                    model.navigation = interaction::Navigation::Module {
+                        tab: *tab,
+                        slot,
+                        catalog_index: module.kind.round() as usize - 1,
+                        selected: 0,
+                        return_to,
+                    };
+                    model.mode = interaction::InteractionMode::Browsing;
+                    opened_module = true;
+                }
+                if !opened_module
+                    && let interaction::Navigation::Module {
+                        tab: scoped_tab,
+                        slot,
+                        selected,
+                        ..
+                    } = &mut model.navigation
+                    && *scoped_tab == *tab
+                    && let Some(spec) = tab_specs(*tab).get(*index)
+                {
+                    if let Some((_, spec_slot, field)) = parse_module_slot_id(spec.id)
+                        && spec_slot == *slot
+                    {
+                        if let Some(kind) = frame_session
+                            .controls
+                            .modules
+                            .for_tab(*tab)
+                            .and_then(|slots| slots.get(*slot))
+                            .and_then(ModuleSlot::kind)
+                        {
+                            *selected = kind
+                                .parameters()
+                                .iter()
+                                .position(|parameter| parameter.field == field)
+                                .unwrap_or(*selected);
+                        }
+                    } else {
+                        model.select_control(*tab, *index, &current_session.controls);
+                    }
+                } else if !opened_module {
+                    model.select_control(*tab, *index, &current_session.controls);
+                }
+                model.mode = interaction::InteractionMode::Browsing;
+            }
+            Ok(EffectAcknowledgement::PerformanceEdited { tab, index, .. }) => {
+                let current_session = context.effects.session().load();
+                model.select_control(*tab, *index, &current_session.controls);
+            }
+            Err(error) => {
+                let prefix = if effect == interaction::InteractionEffect::Save {
+                    "Save failed"
+                } else {
+                    "Action failed"
+                };
+                context
+                    .effects
+                    .execute(LiveEffect::ShowMessage(format!("{prefix}: {error}")))
+                    .expect("message is infallible");
+            }
+            Ok(_) => {}
+        }
+        effect_records.push(ProductionEffectRecord { effect, result });
+    }
+    Some(ProductionActionRecord {
+        action,
+        before,
+        after: model.clone(),
+        effects: effect_records,
+    })
 }
 
 pub(crate) fn coordinate_production_turn(
