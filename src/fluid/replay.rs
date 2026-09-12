@@ -1518,7 +1518,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("numeric", vec![plain(FixtureKey::Character('1'))]),
         ("touch", vec![plain(FixtureKey::Enter)]),
         ("save", vec![ctrl(FixtureKey::Character('s'))]),
-        ("quit", vec![plain(FixtureKey::Character('q'))]),
+        ("ctrl-q", vec![ctrl(FixtureKey::Character('q'))]),
         ("ctrl-c", vec![ctrl(FixtureKey::Character('c'))]),
         ("cancel", vec![plain(FixtureKey::Escape)]),
         (
@@ -1749,7 +1749,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 effects: vec!["Save=>OK:Message(\"song code copied to clipboard\")"],
                 notice: Some("song code copied to clipboard"),
             },
-            "quit" | "ctrl-c" => ExpectedBinding {
+            "ctrl-q" | "ctrl-c" => ExpectedBinding {
                 owner: "BROWSE",
                 generation: 0,
                 automation: None,
@@ -2245,8 +2245,8 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
 
     let quit = replay(
         &[
-            key(0, FixtureKey::Character('q'), InputPhase::Press),
-            key(0, FixtureKey::Character('q'), InputPhase::Repeat),
+            modified_key(0, FixtureKey::Character('q'), InputPhase::Press, 1 << 1),
+            modified_key(0, FixtureKey::Character('q'), InputPhase::Repeat, 1 << 1),
         ],
         TerminalCapabilities::full(),
     );

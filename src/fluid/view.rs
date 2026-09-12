@@ -544,7 +544,7 @@ fn help_surface(
     }
     HelpSurface::Browsing {
         text:
-            "BROWSE · jk select   h/l adjust   / find   f LFO   e ENV   a auto   T units   q quit"
+            "BROWSE · jk select   h/l adjust   / find   f LFO   e ENV   a auto   T units   ^Q quit"
                 .to_string(),
     }
 }

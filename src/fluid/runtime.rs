@@ -441,7 +441,9 @@ pub(crate) fn map_input(
     {
         match key.code {
             PhysicalKey::Character('s' | 'S') => return semantic(*phase, Intent::Save),
-            PhysicalKey::Character('c' | 'C') => return semantic(*phase, Intent::Quit),
+            PhysicalKey::Character('c' | 'C' | 'q' | 'Q') => {
+                return semantic(*phase, Intent::Quit);
+            }
             _ => {}
         }
     }
@@ -510,7 +512,6 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('/') => Intent::OpenPalette,
         PhysicalKey::Character('f') => Intent::OpenAutomation(AutomationKind::Lfo),
         PhysicalKey::Character('e') => Intent::OpenAutomation(AutomationKind::Envelope),
-        PhysicalKey::Character('q') => Intent::Quit,
         PhysicalKey::Character('a') => Intent::ToggleAuto,
         PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
         PhysicalKey::Character('t') => Intent::ToggleUnits,
@@ -1645,7 +1646,7 @@ mod tests {
                 Intent::BeginNumeric('1'),
             ),
             (
-                event(PhysicalKey::Character('q'), Modifiers::default()),
+                event(PhysicalKey::Character('q'), Modifiers::CONTROL),
                 Intent::Quit,
             ),
             (
@@ -1670,6 +1671,15 @@ mod tests {
                 }) if actual == intent
             ));
         }
+        assert_eq!(
+            map_input(
+                &browsing,
+                Navigation::default(),
+                &event(PhysicalKey::Character('q'), Modifiers::default()),
+                TerminalCapabilities::default(),
+            ),
+            InputMapping::Ignored,
+        );
         for (code, kind) in [
             (PhysicalKey::Character('p'), PerformanceKind::Deck),
             (PhysicalKey::Character(' '), PerformanceKind::Sequence),

@@ -213,9 +213,14 @@ impl KickFmBody {
 /// the carrier ratio exists for.
 const KICK_CARRIER_RATIO: f32 = 1.0;
 
-/// One-pole lowpass mapped exponentially from `kick.filter`, shared by every
-/// type that ends in a lowpass (Sub, Warm, Felt). `bias` shifts the same
-/// mapping darker or brighter per type.
+/// Where every voice-local filter sits, now that the interactive sweep is a
+/// Filter module in the kick's chain. Each type is voiced around this one
+/// position and colors the body from there; `bias` shifts it per type.
+pub(crate) const KICK_CHARACTER_FILTER_POSITION: f32 = 0.7;
+
+/// One-pole lowpass at the fixed character position, shared by every type
+/// that ends in a lowpass (Sub, Warm, Felt). `bias` shifts the same mapping
+/// darker or brighter per type.
 pub(crate) struct KickLowPass {
     pub(crate) state: f32,
     pub(crate) coeff: f32,
@@ -263,8 +268,9 @@ pub(crate) struct LowpassKickRecipe {
 /// Type 0 (default): the original kick voice, byte-for-byte unchanged. A
 /// sine carrier phase-modulated by a 2x-ratio sine modulator with decaying
 /// depth (a tight FM thud), an exponential pitch glide from `start_freq` down
-/// to `start_freq * 0.28`, an onset noise click, and a one-pole lowpass mapped
-/// from `kick.filter`. Drive runs later in the shared layer module chain.
+/// to `start_freq * 0.28`, an onset noise click, and a fixed character
+/// lowpass. The interactive Filter and Drive both run later in the shared
+/// layer module chain.
 pub(crate) const KICK_SUB: LowpassKickRecipe = LowpassKickRecipe {
     attack_ms: 0.0,
     click_scale: 1.0,
@@ -325,7 +331,7 @@ pub(crate) const KICK_FELT: LowpassKickRecipe = LowpassKickRecipe {
     // harmonics, so Sub's depth would push this into buzz.
     fm_depth: 1.8,
     wave: FmWave::Triangle,
-    // Below Sub's -2.5, so the same `kick.filter` range lands darker and
+    // Below Sub's -2.5, so the same character position lands darker and
     // duller — the felt-beater muffling.
     filter_bias: -2.9,
     output_gain: 1.36,
@@ -359,7 +365,7 @@ impl LowpassKickVoice {
                 recipe.fm_depth,
                 recipe.wave,
             ),
-            lowpass: KickLowPass::new(c.filter, recipe.filter_bias),
+            lowpass: KickLowPass::new(KICK_CHARACTER_FILTER_POSITION, recipe.filter_bias),
             output_gain: recipe.output_gain,
         }
     }
@@ -382,10 +388,9 @@ impl LowpassKickVoice {
     }
 }
 
-/// `kick.filter` maps to the Wood bandpass's center frequency across this
-/// range instead of a lowpass cutoff — an exponential (perceptually even)
-/// sweep across the low-mid range where a struck wooden body resonates.
-/// Deliberately narrow and low: higher centers read as a thin, hollow tom.
+/// Bounds the Wood bandpass's center is placed within. The character
+/// position picks one point on this exponential low-mid range, where a struck
+/// wooden body resonates; higher centers read as a thin, hollow tom.
 const KICK_WOOD_CENTER_MIN_HZ: f32 = 110.0;
 const KICK_WOOD_CENTER_MAX_HZ: f32 = 400.0;
 /// SVF damping factor (Chamberlin topology): lower = more resonant. Set high
@@ -404,22 +409,18 @@ const KICK_WOOD_ATTACK_MS: f32 = 5.0;
 /// Scales the user's `kick.click` down; the broadband burst fights the soft
 /// wooden body.
 const KICK_WOOD_CLICK_SCALE: f32 = 0.35;
-/// Output trim, and the only one of the four that cannot be a constant.
+/// Output trim.
 ///
 /// How much energy the bandpass passes depends on how far its center sits
 /// from where the body's energy actually is, and the body is low: it starts
-/// at `start_freq` and glides down to a third of that. A low center therefore
-/// sits right on the fundamental and passes nearly all of it, while a high
-/// center passes a fraction — so Wood ran more than twice as loud dark as it
-/// did bright, and *inverted* against the other three types, which all get
-/// louder as `kick.filter` opens up. Sweeping the control changed the balance
-/// of the mix rather than only its color.
-///
-/// The curve below is an empirical fit against measured output at four
-/// filter positions, not a derived law — there is no closed form for the
-/// overlap between the bandpass and the glide's moving spectrum.
-/// `kick_types_render_at_a_matched_level` pins it at each of those positions,
-/// so retuning the timbre cannot silently drift the balance back.
+/// at `start_freq` and glides down to a third of that. A low center sits on
+/// the fundamental and passes nearly all of it while a high center passes a
+/// fraction, so the trim has to follow the center to keep Wood level with the
+/// other three types. The curve is an empirical fit against measured output,
+/// not a derived law — there is no closed form for the overlap between the
+/// bandpass and the glide's moving spectrum.
+/// `kick_types_render_at_a_matched_level` pins it, so retuning the timbre
+/// cannot silently drift the balance back.
 const KICK_WOOD_OUTPUT_GAIN_AT_DARKEST: f32 = 0.78;
 const KICK_WOOD_OUTPUT_GAIN_SPAN: f32 = 1.91;
 const KICK_WOOD_OUTPUT_GAIN_CURVE: f32 = 0.7;
@@ -431,9 +432,9 @@ fn kick_wood_output_gain(filter: f32) -> f32 {
 
 /// Type 2: a soft wooden body. Runs the dry voice signal through a
 /// hand-rolled, heavily-damped 2-pole bandpass (Chamberlin state-variable
-/// filter) centered in the 110-400Hz range via `kick.filter`, then blends
-/// that band back against the dry signal so the struck-wood coloration sits
-/// on top of the kick's own low end rather than replacing it. Keeps the same
+/// filter) at a fixed center in the 110-400Hz range, then blends that band
+/// back against the dry signal so the struck-wood coloration sits on top of
+/// the kick's own low end rather than replacing it. Keeps the same
 /// trigger/pitch-envelope/click/pan structure as Sub.
 pub(crate) struct WoodKickVoice {
     pub(crate) core: KickVoiceCore,
@@ -446,7 +447,7 @@ pub(crate) struct WoodKickVoice {
 
 impl WoodKickVoice {
     pub(crate) fn new(c: &KickControls, sample_rate: f32, rng: &mut StdRng) -> Self {
-        let filter = c.filter.clamp(0.0, 1.0);
+        let filter = KICK_CHARACTER_FILTER_POSITION;
         let center_hz = KICK_WOOD_CENTER_MIN_HZ
             * (KICK_WOOD_CENTER_MAX_HZ / KICK_WOOD_CENTER_MIN_HZ).powf(filter);
         // Chamberlin SVF frequency coefficient; clamped well below the
@@ -530,11 +531,10 @@ mod tests {
     /// stereo magnitude. The RNG is reseeded identically per type so the pan
     /// position and click noise are the same draw for all four, leaving the
     /// voice's own character as the only difference between them.
-    fn render_one_hit(voice_type: usize, filter: f32) -> Vec<f32> {
+    fn render_one_hit(voice_type: usize) -> Vec<f32> {
         const SAMPLE_RATE: f32 = 48_000.0;
         let controls = KickControls {
             level: 1.0,
-            filter,
             ..KickControls::default()
         };
         let mut rng = StdRng::seed_from_u64(42);
@@ -559,25 +559,20 @@ mod tests {
     ///
     /// This test is what makes the per-type output trims maintainable. They
     /// were previously constants chosen by ear with nothing verifying them,
-    /// which is how Wood came to run at more than twice Sub's level at a dark
-    /// `kick.filter` without anyone noticing.
+    /// which is how Wood came to run at more than twice Sub's level without
+    /// anyone noticing.
     #[test]
     fn kick_types_render_at_a_matched_level() {
-        // Loudness is checked across the filter sweep, not just at the
-        // default: Wood's bandpass center moves with `kick.filter`, so a
-        // single-position check would pass while the sweep stayed unbalanced.
-        for filter in [0.0, 0.35, 0.7, 1.0] {
-            let reference = crate::synth::fm::rms(&render_one_hit(0, filter));
+        let reference = crate::synth::fm::rms(&render_one_hit(0));
 
-            for (voice_type, label) in KICK_TYPES.iter().enumerate().skip(1) {
-                let level = crate::synth::fm::rms(&render_one_hit(voice_type, filter));
-                let ratio = level / reference;
-                assert!(
-                    (ratio - 1.0).abs() <= MATCHED_LEVEL_TOLERANCE,
-                    "kick type {voice_type} ({label}) renders at {ratio:.2}x Sub at \
-                     filter {filter}; retune its output trim",
-                );
-            }
+        for (voice_type, label) in KICK_TYPES.iter().enumerate().skip(1) {
+            let level = crate::synth::fm::rms(&render_one_hit(voice_type));
+            let ratio = level / reference;
+            assert!(
+                (ratio - 1.0).abs() <= MATCHED_LEVEL_TOLERANCE,
+                "kick type {voice_type} ({label}) renders at {ratio:.2}x Sub; \
+                 retune its output trim",
+            );
         }
     }
 
@@ -588,16 +583,14 @@ mod tests {
     /// expect to have.
     #[test]
     fn no_kick_type_exceeds_the_headroom_budget() {
-        for filter in [0.0, 0.35, 0.7, 1.0] {
-            for (voice_type, label) in KICK_TYPES.iter().enumerate() {
-                let peak = render_one_hit(voice_type, filter)
-                    .into_iter()
-                    .fold(0.0f32, f32::max);
-                assert!(
-                    peak <= MAX_KICK_PEAK,
-                    "kick type {voice_type} ({label}) peaks at {peak:.2} at filter {filter}",
-                );
-            }
+        for (voice_type, label) in KICK_TYPES.iter().enumerate() {
+            let peak = render_one_hit(voice_type)
+                .into_iter()
+                .fold(0.0f32, f32::max);
+            assert!(
+                peak <= MAX_KICK_PEAK,
+                "kick type {voice_type} ({label}) peaks at {peak:.2}",
+            );
         }
     }
 
