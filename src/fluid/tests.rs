@@ -1437,6 +1437,9 @@ fn defaults_match_current_mix() {
     assert_close(controls.kick.start_freq, 160.0);
     assert_close(controls.kick.pitch_decay_ms, 55.0);
     assert_close(controls.kick.amp_decay_ms, 150.0);
+    assert_eq!(controls.modules.kick[0].kind().unwrap().id, "filter");
+    assert_close(controls.modules.kick[0].time, 8_000.0);
+    assert_eq!(controls.modules.kick[1].kind().unwrap().id, "drive");
 
     assert_close(controls.tonal.phrase, 0.0);
     assert_close(controls.tonal.synth_type, 0.0);
@@ -1497,10 +1500,10 @@ fn apply_value_accepts_percent_style_unit_controls() {
 fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     let mut controls = FluidControls::default();
 
-    apply_value(Tab::Kick, 5, 1.13, &mut controls);
+    apply_value(Tab::Kick, 4, 1.13, &mut controls);
     assert_close(controls.kick.interval_beats, 1.25);
 
-    apply_value(Tab::Kick, 5, 0.16, &mut controls);
+    apply_value(Tab::Kick, 4, 0.16, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
     apply_value(Tab::Chords, 4, 12.0, &mut controls);
@@ -1515,7 +1518,10 @@ fn default_template_preloads_shared_effect_modules() {
     let mut controls = FluidControls::default();
     resolve_module_chain(&mut controls);
 
-    assert_close(controls.modules.kick[0].amount, 0.2);
+    assert_eq!(controls.modules.kick[0].kind().unwrap().id, "filter");
+    assert_close(controls.modules.kick[0].amount, 1.0);
+    assert_eq!(controls.modules.kick[1].kind().unwrap().id, "drive");
+    assert_close(controls.modules.kick[1].amount, 0.2);
     assert_eq!(controls.modules.bass[0].kind().unwrap().id, "filter");
     assert_close(controls.modules.bass[0].amount, 1.0);
     assert_close(controls.modules.bass[1].amount, 0.15);
@@ -1558,8 +1564,14 @@ fn a_loaded_slot_row_is_labelled_with_its_module() {
     let mut controls = FluidControls::default();
     let row = tab_controls(Tab::Kick, &controls)
         .into_iter()
-        .find(|item| item.id == "kick.slot1.amount")
-        .expect("kick slot 1 ships pre-loaded with Drive");
+        .find(|item| item.id == "kick.slot1.time")
+        .expect("kick slot 1 ships pre-loaded with Filter");
+    assert_eq!(row.label, "Filter");
+
+    let row = tab_controls(Tab::Kick, &controls)
+        .into_iter()
+        .find(|item| item.id == "kick.slot2.amount")
+        .expect("kick slot 2 ships pre-loaded with Drive");
     assert_eq!(row.label, "Drive");
 
     controls.modules.tonal[0] = preset_slot("swing", 0.0);
@@ -1592,6 +1604,7 @@ fn the_folded_slider_ids_are_gone_from_the_registry() {
         "master.comp_makeup",
         "perc.filter",
         "bass.cutoff",
+        "kick.filter",
     ] {
         assert!(spec_by_id(id).is_none(), "{id} should be retired");
     }
@@ -1603,7 +1616,8 @@ fn empty_module_slots_never_render() {
     for tab in Tab::all() {
         for item in tab_controls(tab, &controls) {
             let is_template_slot = item.id.contains(".slot1.")
-                || (matches!(tab, Tab::Bass | Tab::Master) && item.id.contains(".slot2."));
+                || (matches!(tab, Tab::Bass | Tab::Kick | Tab::Master)
+                    && item.id.contains(".slot2."));
             assert!(
                 !item.id.contains(".slot") || is_template_slot,
                 "{tab:?} shows empty slot row {}",
@@ -1809,7 +1823,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Kick,
             vec![
-                Gain, Gain, Timing, Timing, Discrete, Timing, Timing, Continuous, Gain, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Continuous, Gain, Continuous, Gain,
             ],
         ),
         (
@@ -2263,7 +2277,7 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.pad.level = 0.0;
     controls.modules.pad[0].amount = 0.0;
     controls.kick.click = 0.0;
-    controls.kick.filter = 0.0;
+    controls.modules.kick[0].amount = 0.0;
     controls.tonal.randomness = 0.0;
     controls.clap.filter = 0.5;
     controls.clap.body = 0.0;
@@ -2275,7 +2289,6 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.pad.level = 1.0;
     controls.modules.pad[0].amount = 1.0;
     controls.kick.click = 0.2;
-    controls.kick.filter = 1.0;
     controls.tonal.randomness = 1.0;
     controls.clap.filter = 1.0;
     controls.clap.body = 1.0;
@@ -2291,7 +2304,6 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     assert!(next.pad.level > 0.0 && next.pad.level < 1.0);
     assert!(next.modules.pad[0].amount > 0.0 && next.modules.pad[0].amount < 1.0);
     assert!(next.kick.click > 0.0 && next.kick.click < 0.2);
-    assert!(next.kick.filter > 0.0 && next.kick.filter < 1.0);
     assert!(next.tonal.randomness > 0.0 && next.tonal.randomness < 1.0);
     assert!(next.clap.filter > 0.5 && next.clap.filter < 1.0);
     assert!(next.clap.body > 0.0 && next.clap.body < 1.0);
@@ -2907,11 +2919,11 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
 fn kick_interval_floor_is_eighth_beat() {
     let mut controls = FluidControls::default();
     controls.kick.interval_beats = 1.0;
-    apply_reset(Tab::Kick, 5, &mut controls);
+    apply_reset(Tab::Kick, 4, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
     controls.kick.interval_beats = 0.125;
-    apply_delta(Tab::Kick, 5, -1.0, &mut controls);
+    apply_delta(Tab::Kick, 4, -1.0, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 }
 
@@ -4890,6 +4902,15 @@ fn arp_reverb_is_a_shared_module_not_a_bespoke_mix_control() {
 }
 
 #[test]
+fn kick_filter_is_a_shared_module_not_a_bespoke_control() {
+    let controls = FluidControls::default();
+
+    assert_eq!(controls.modules.kick[0].kind().unwrap().id, "filter");
+    assert_eq!(controls.modules.kick[1].kind().unwrap().id, "drive");
+    assert!(spec_by_id("kick.filter").is_none());
+}
+
+#[test]
 fn palette_entries_cover_every_unique_control_id_exactly_once() {
     let entries = palette_entries();
     let mut ids: Vec<&str> = entries.iter().filter_map(PaletteEntry::id).collect();
@@ -4980,7 +5001,6 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
         "arp.rate_beats",
         "master.bpm",
         "pad.stereo_width",
-        "kick.filter",
         "tonal.randomness",
     ] {
         recent.touch(id);
@@ -4996,7 +5016,6 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
         ids,
         [
             "tonal.randomness",
-            "kick.filter",
             "pad.stereo_width",
             "master.bpm",
             "arp.rate_beats",
@@ -5004,6 +5023,7 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
             "tonal.decay",
             "kick.click",
             "perc.level",
+            "pad.attack_time",
             "bass.level",
         ]
     );

@@ -1317,7 +1317,6 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
     "kick",
     [
         gain_pct!("kick.level", "Level", kick.level),
-        gain_pct!("kick.filter", "Filter", kick.filter),
         time_ms!(
             "kick.pitch_decay_ms",
             "Pitch Decay",

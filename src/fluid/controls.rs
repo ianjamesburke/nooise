@@ -122,7 +122,6 @@ pub(crate) struct KickControls {
     pub(crate) pitch_decay_ms: f32,
     pub(crate) amp_decay_ms: f32,
     pub(crate) click: f32, // 0–0.2 UI range
-    pub(crate) filter: f32,
     pub(crate) interval_beats: f32,
     pub(crate) offset_beats: f32,
     pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
@@ -137,7 +136,6 @@ impl Default for KickControls {
             pitch_decay_ms: 55.0,
             amp_decay_ms: 150.0,
             click: 0.02,
-            filter: 0.7,
             interval_beats: 1.0,
             offset_beats: 0.0,
             swing: 0.0,

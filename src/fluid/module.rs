@@ -479,7 +479,11 @@ impl Default for LayerModules {
                 slots[1] = preset_slot("drive", 0.15);
                 slots
             },
-            kick: with_preset("drive", 0.2),
+            kick: {
+                let mut slots = with_preset("filter", 1.0);
+                slots[1] = preset_slot("drive", 0.2);
+                slots
+            },
             tonal: with_preset("room", 0.1),
             clap: empty,
             arp: with_preset("room", 0.0),
