@@ -1154,13 +1154,26 @@ fn master_mute_gates_the_final_output_with_level_automation_active() {
 // ============================================================
 // Golden render — reproducibility guardrail
 //
-// `render --seed` is relied on to be byte-identical across releases (the
-// release profile comment in Cargo.toml calls this out explicitly). Nothing
-// enforced that before this test: it's the tripwire for any change to the
-// per-sample DSP math (oscillators, decay curves, filter coefficients) that
-// alters float rounding, even when the change is otherwise behavior-neutral.
+// Two separate promises live here, and they need separate tests because only
+// one of them can be pinned by a constant.
+//
+// `render --seed` is relied on to be byte-identical (the release profile
+// comment in Cargo.toml calls this out). That promise is about one binary
+// rendering the same seed twice, and `a_seeded_render_repeats_itself_exactly`
+// checks it directly, in whichever profile the suite runs in.
+//
+// The checksum below is the tripwire for unintended changes to the per-sample
+// DSP math (oscillators, decay curves, filter coefficients) that alter float
+// rounding even when the change is otherwise behavior-neutral. It can only
+// ever pin one profile: the optimizer evaluates the same float expressions
+// differently, so debug and release diverge by a single ULP around sample 190
+// of this render and drift from there. That is a property of the toolchain,
+// not a defect, and no single constant can hold for both — so the tripwire is
+// blessed in debug and runs there, where `cargo test` puts it in front of
+// every change.
+//
 // A deliberate DSP change (e.g. replacing a per-sample `exp()` with an
-// equivalent closed-form recurrence) is expected to trip this — re-bless
+// equivalent closed-form recurrence) is expected to trip it — re-bless
 // GOLDEN_RENDER_CHECKSUM only after confirming the new output is inaudibly
 // close to the old one.
 const GOLDEN_RENDER_SAMPLES: usize = 48_000;
@@ -1178,20 +1191,43 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // Re-blessed for the deliberate default-mix retune: Pad Reverb 80%→40%, Bass
 // Drive 30%→15%, Master Drive 10%→5%, Master Compression 20%→10%, kick amp
 // decay 250→150 ms, kick click 0→10%, clap filter 0.75→0.70.
+#[cfg(debug_assertions)]
 const GOLDEN_RENDER_CHECKSUM: u64 = 0x2615_bcf4_552e_c37c;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
 /// rounding differences, changes the checksum.
+#[cfg(debug_assertions)]
 fn fold_sample_bits(hash: u64, bits: u32) -> u64 {
     (hash ^ u64::from(bits)).wrapping_mul(0x100000001b3)
 }
 
+/// The promise `render --seed` actually makes: one binary, one seed, the same
+/// samples every time. Holds in every profile, so it needs no blessed
+/// constant and never has to be re-blessed for a deliberate DSP change.
 #[test]
-fn golden_render_is_byte_identical_for_a_seed() {
-    // Non-default tonal/arp levels and synth types so the render actually
-    // exercises the piano voice's per-harmonic decay path, not just silence.
-    let controls = FluidControls {
+fn a_seeded_render_repeats_itself_exactly() {
+    let render = || {
+        let mut engine = engine_for(golden_render_controls(), AutomationState::default());
+        engine.reseed(42);
+        (0..GOLDEN_RENDER_SAMPLES)
+            .map(|_| {
+                let (l, r) = engine.next_stereo();
+                (l.to_bits(), r.to_bits())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        render(),
+        render(),
+        "the same seed rendered differently twice"
+    );
+}
+
+/// Non-default tonal/arp levels and synth types so the render exercises the
+/// piano voice's per-harmonic decay path, not just silence.
+fn golden_render_controls() -> FluidControls {
+    FluidControls {
         master: MasterControls {
             bpm: 140.0,
             ..MasterControls::default()
@@ -1207,8 +1243,15 @@ fn golden_render_is_byte_identical_for_a_seed() {
             ..ArpControls::default()
         },
         ..FluidControls::default()
-    };
-    let mut engine = engine_for(controls, AutomationState::default());
+    }
+}
+
+// Blessed from a debug render; see the note above GOLDEN_RENDER_SAMPLES for
+// why it cannot also hold in release.
+#[cfg(debug_assertions)]
+#[test]
+fn golden_render_is_byte_identical_for_a_seed() {
+    let mut engine = engine_for(golden_render_controls(), AutomationState::default());
     engine.reseed(42);
 
     let mut hash = 0xcbf2_9ce4_8422_2325u64; // FNV offset basis
