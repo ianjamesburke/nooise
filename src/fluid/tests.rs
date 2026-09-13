@@ -5172,7 +5172,7 @@ fn next_bar_beat_targets_the_following_downbeat() {
 #[test]
 fn built_in_auto_states_are_container_v2() {
     let states = decode_auto_states();
-    assert_eq!(states.len(), 19);
+    assert_eq!(states.len(), 20);
 
     for state in &states {
         let code = song::encode_song_code(state).unwrap();
@@ -5387,7 +5387,7 @@ fn baked_in_auto_state_codes_are_container_v2_on_disk() {
         .filter_map(|line| line.trim().strip_prefix('"')?.strip_suffix("\","))
         .filter(|code| code.starts_with("n1_"))
         .collect();
-    assert_eq!(codes.len(), 19);
+    assert_eq!(codes.len(), 20);
 
     for code in codes {
         let bytes = URL_SAFE_NO_PAD
