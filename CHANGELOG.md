@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [2.0.1] — 2026-09-13
+
+### Fixed
+- fix: lift song 12's kick to match song 11
+- fix: lift song 11's kick out of the mix
+- fix: split the golden render's two promises so both profiles pass
 ## [2.0.0] — 2026-09-13
 
 ### Added
