@@ -1695,7 +1695,7 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
         ),
         beat_offset!("lead.offset_beats", "Offset", 4.0, lead.offset_beats),
         ControlSpec::new(
-            "lead.steps",
+            LEAD_STEPS_ID,
             "Steps",
             ControlKind::Discrete,
             1.0,
@@ -1781,12 +1781,57 @@ pub(crate) fn performance_target(
     Some((tab, index, &tab_specs(tab)[index], direction))
 }
 
+/// A tab's root rows: every spec except the ones a page-local drill owns
+/// (Lead step rows) and the module-slot rows nothing is loaded into.
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
     tab_specs(tab)
         .iter()
-        .filter(|spec| module_slot_row_visible(spec.id, c) && lead_step_row_visible(spec.id, c))
+        .filter(|spec| module_slot_row_visible(spec.id, c) && lead_step_index(spec.id).is_none())
         .map(|spec| spec.item(c))
         .collect()
+}
+
+/// Lead-tab visible rows for the given drill level: the root page, or the
+/// live steps of the lane. `lead_drill_for_index` is this projection's
+/// inverse and must stay consistent with it.
+pub(crate) fn lead_tab_controls(
+    c: &FluidControls,
+    drill: interaction::LeadDrill,
+) -> Vec<ControlItem> {
+    match drill {
+        interaction::LeadDrill::None => tab_controls(Tab::Lead, c),
+        interaction::LeadDrill::Pattern { .. } => LEAD_CONTROLS
+            .iter()
+            .filter(|spec| {
+                lead_step_index(spec.id)
+                    .is_some_and(|step| step < lead_live_step_count(c.lead.step_count))
+            })
+            .map(|spec| spec.item(c))
+            .collect(),
+    }
+}
+
+/// Inverse of `lead_tab_controls`: the drill level + visible row that shows
+/// a real `LEAD_CONTROLS` index, so a palette jump lands on the right row. A
+/// step row opens the pattern drill with its Esc return set to the Steps row.
+pub(crate) fn lead_drill_for_index(
+    flat: usize,
+    c: &FluidControls,
+) -> (interaction::LeadDrill, usize) {
+    let Some(spec) = LEAD_CONTROLS.get(flat) else {
+        return (interaction::LeadDrill::None, 0);
+    };
+    let root = lead_tab_controls(c, interaction::LeadDrill::None);
+    let root_row = |id: &str| root.iter().position(|item| item.id == id).unwrap_or(0);
+    match lead_step_index(spec.id) {
+        Some(step) => (
+            interaction::LeadDrill::Pattern {
+                return_to: root_row(LEAD_STEPS_ID),
+            },
+            step,
+        ),
+        None => (interaction::LeadDrill::None, root_row(spec.id)),
+    }
 }
 
 /// The control id for a tab's slot's collapsed row — whichever field the
@@ -1923,14 +1968,8 @@ pub(crate) fn module_detail_controls(
 /// page under blank rows and break the 15-second floor. Non-slot ids always
 /// show. An occupied slot shows its kind row plus whichever params its
 /// family actually uses.
-/// A Lead step row shows only while its step is inside the lane's live
-/// length (`lead.steps`), so the tab reads as the pattern that plays.
-pub(crate) fn lead_step_row_visible(id: &str, c: &FluidControls) -> bool {
-    let Some(step) = lead_step_index(id) else {
-        return true;
-    };
-    step < lead_live_step_count(c.lead.step_count)
-}
+/// The Lead's lane-length row; Enter on it opens the pattern drill.
+pub(crate) const LEAD_STEPS_ID: &str = "lead.steps";
 
 /// Parse `lead.step<N>` back to its 0-based step, `None` for any other id.
 pub(crate) fn lead_step_index(id: &str) -> Option<usize> {

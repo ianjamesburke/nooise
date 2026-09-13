@@ -142,10 +142,15 @@ pub(crate) fn coordinate_production_event(
             catalog_index: module.kind.round() as usize - 1,
         };
     }
-    // Enter anywhere on the Lead page that is not a module drill opens play
-    // mode: the page is the instrument, so there is nothing else to touch.
+    // On the Lead page Enter on the Steps row opens the lane; anywhere else
+    // that is not a module drill it opens play mode, since the page is the
+    // instrument and there is nothing else to touch.
     if action.intent == interaction::Intent::TouchSelected && frame.tab == Tab::Lead {
-        action.intent = interaction::Intent::EnterLeadPlay;
+        action.intent = if frame.selected_control == Some(LEAD_STEPS_ID) {
+            interaction::Intent::EnterLeadPattern
+        } else {
+            interaction::Intent::EnterLeadPlay
+        };
     }
 
     let repeat_count = match event {
@@ -236,6 +241,8 @@ pub(crate) fn coordinate_production_action(
                     && let Some(kind) = module.kind()
                     && kind.parameters().len() > 1
                 {
+                    // Module rows live on every page's root, so the root
+                    // projection is the one to search.
                     let return_to = match *tab {
                         Tab::Chords => chords_tab_controls(
                             &current_session.controls,

@@ -186,11 +186,14 @@ impl LeadVoice {
         }
     }
 
-    /// Retarget the pitch and restart the envelope without touching the
-    /// oscillator phase, so the slide is continuous and click-free.
+    /// Retarget the pitch and restart the envelope from its current level,
+    /// without touching the oscillator phase: pitch, amplitude, and waveform
+    /// are all continuous across the retrigger, so fast playing cannot click.
     pub(crate) fn retrigger(&mut self, hz: f32, attack: f32, decay: f32) {
         self.target_hz = hz;
-        self.envelope = Adsr::new(attack, decay, 0.0, decay, self.sample_rate);
+        let mut envelope = Adsr::new(attack, decay, 0.0, decay, self.sample_rate);
+        envelope.start_at(self.envelope.level());
+        self.envelope = envelope;
     }
 
     pub(crate) fn next(&mut self, glide: f32, recipe: &LeadRecipe) -> f32 {

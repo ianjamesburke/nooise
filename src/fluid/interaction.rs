@@ -64,12 +64,13 @@ impl Page {
     }
 }
 
-/// The navigation a layer opens on. Chords and Master own page-local drills
-/// no other layer can construct; the rest share one standard list.
+/// The navigation a layer opens on. Chords, Lead, and Master own page-local
+/// navigation no other layer can construct; the rest share one standard list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerNavigation {
     Chords,
     Standard(StandardPage),
+    Lead,
     Master,
 }
 
@@ -125,7 +126,7 @@ const LAYERS: [Layer; 9] = [
     Layer {
         page: Page::Lead,
         tab: Tab::Lead,
-        navigation: LayerNavigation::Standard(StandardPage::Lead),
+        navigation: LayerNavigation::Lead,
     },
     Layer {
         page: Page::Master,
@@ -147,6 +148,17 @@ pub(crate) enum ChordDrill {
     },
 }
 
+/// The Lead page's one drill: its step lane, opened from the Steps row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum LeadDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StandardPage {
     Perc,
@@ -155,7 +167,6 @@ pub(crate) enum StandardPage {
     Tonal,
     Clap,
     Arp,
-    Lead,
 }
 
 impl StandardPage {
@@ -168,8 +179,8 @@ impl StandardPage {
     }
 }
 
-/// Page-local navigation makes a Chords drill on Master, or a Master drill on
-/// any other page, impossible to construct.
+/// Page-local navigation makes a Chords drill on Master, a Lead drill on
+/// Chords, or a Master drill on any other page, impossible to construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Navigation {
     Chords {
@@ -179,6 +190,10 @@ pub(crate) enum Navigation {
     Standard {
         page: StandardPage,
         selected: usize,
+    },
+    Lead {
+        selected: usize,
+        drill: LeadDrill,
     },
     Master {
         selected: usize,
@@ -208,6 +223,10 @@ impl Navigation {
                 drill: ChordDrill::None,
             },
             LayerNavigation::Standard(page) => Self::Standard { page, selected: 0 },
+            LayerNavigation::Lead => Self::Lead {
+                selected: 0,
+                drill: LeadDrill::None,
+            },
             LayerNavigation::Master => Self::Master { selected: 0 },
         }
     }
@@ -216,6 +235,7 @@ impl Navigation {
         match self {
             Self::Chords { .. } => Page::Chords,
             Self::Standard { page, .. } => page.page(),
+            Self::Lead { .. } => Page::Lead,
             Self::Master { .. } => Page::Master,
             Self::Module { tab, .. } => page_for_tab(tab),
         }
@@ -229,6 +249,7 @@ impl Navigation {
         match self {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
+            | Self::Lead { selected, .. }
             | Self::Master { selected, .. }
             | Self::Module { selected, .. } => selected,
         }
@@ -238,6 +259,7 @@ impl Navigation {
         match self {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
+            | Self::Lead { selected, .. }
             | Self::Master { selected, .. }
             | Self::Module { selected, .. } => selected,
         }
@@ -261,11 +283,18 @@ impl Navigation {
                 }
                 ChordDrill::None => {}
             },
+            Self::Lead { selected, drill } => {
+                if let LeadDrill::Pattern { return_to } = *drill {
+                    *selected = return_to;
+                    *drill = LeadDrill::None;
+                }
+            }
             Self::Module { tab, return_to, .. } => {
                 let mut parent = Self::for_page(page_for_tab(*tab));
                 match &mut parent {
                     Self::Chords { selected, .. }
                     | Self::Standard { selected, .. }
+                    | Self::Lead { selected, .. }
                     | Self::Master { selected, .. } => *selected = *return_to,
                     Self::Module { .. } => {
                         unreachable!("page navigation cannot create a module drill")
@@ -659,6 +688,8 @@ pub(crate) enum Intent {
     Cancel,
     EnterChordProgression,
     EnterChordSlot(usize),
+    /// Open the Lead's step lane from its Steps row.
+    EnterLeadPattern,
     EnterModuleDetail {
         tab: Tab,
         slot: usize,
@@ -735,6 +766,7 @@ impl Intent {
             Self::OpenAutomationField => &[ModeKind::Automation],
             Self::EnterChordProgression
             | Self::EnterChordSlot(_)
+            | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
             | Self::EnterLeadPlay
             | Self::RandomizeSelected => &[ModeKind::Browsing],
@@ -780,6 +812,7 @@ impl Intent {
             Self::Cancel
             | Self::EnterChordProgression
             | Self::EnterChordSlot(_)
+            | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
             | Self::BeginNumeric(_)
             | Self::PaletteAutocomplete
@@ -974,6 +1007,10 @@ impl InteractionModel {
                 let (drill, selected) = super::chords_drill_for_index(index, controls);
                 Navigation::Chords { selected, drill }
             }
+            Tab::Lead => {
+                let (drill, selected) = super::lead_drill_for_index(index, controls);
+                Navigation::Lead { selected, drill }
+            }
             Tab::Master => Navigation::Master { selected: index },
             _ => {
                 let mut navigation = Navigation::for_page(page_for_tab(tab));
@@ -1072,6 +1109,13 @@ fn update_browsing(
             {
                 *selected = 0;
                 *drill = ChordDrill::Slot { slot, return_to };
+            }
+        }
+        Intent::EnterLeadPattern => {
+            if let Navigation::Lead { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = LeadDrill::Pattern { return_to };
             }
         }
         Intent::EnterModuleDetail {
@@ -1609,7 +1653,6 @@ mod tests {
             StandardPage::Tonal,
             StandardPage::Clap,
             StandardPage::Arp,
-            StandardPage::Lead,
         ] {
             assert_eq!(
                 Navigation::for_page(page.page()),
@@ -1694,6 +1737,56 @@ mod tests {
             Navigation::Chords {
                 selected: 4,
                 drill: ChordDrill::None,
+            }
+        );
+    }
+
+    #[test]
+    fn lead_pattern_drill_opens_from_the_steps_row_and_cancels_back_to_it() {
+        let model = InteractionModel {
+            navigation: Navigation::Lead {
+                selected: 8,
+                drill: LeadDrill::None,
+            },
+            ..InteractionModel::default()
+        };
+        let opened = update(model, Intent::EnterLeadPattern).model;
+        assert_eq!(
+            opened.navigation,
+            Navigation::Lead {
+                selected: 0,
+                drill: LeadDrill::Pattern { return_to: 8 },
+            }
+        );
+        assert_eq!(
+            update(opened, Intent::Cancel).model.navigation,
+            Navigation::Lead {
+                selected: 8,
+                drill: LeadDrill::None,
+            }
+        );
+    }
+
+    #[test]
+    fn select_control_lands_a_lead_step_inside_the_pattern_drill() {
+        let controls = super::super::FluidControls::default();
+        let step = super::super::spec_index(Tab::Lead, "lead.step3").expect("step 3 is a row");
+        let steps = super::super::spec_index(Tab::Lead, "lead.steps").expect("steps is a row");
+        let mut model = InteractionModel::default();
+        model.select_control(Tab::Lead, step, &controls);
+        assert_eq!(
+            model.navigation,
+            Navigation::Lead {
+                selected: 2,
+                drill: LeadDrill::Pattern { return_to: steps },
+            }
+        );
+        model.select_control(Tab::Lead, steps, &controls);
+        assert_eq!(
+            model.navigation,
+            Navigation::Lead {
+                selected: steps,
+                drill: LeadDrill::None,
             }
         );
     }

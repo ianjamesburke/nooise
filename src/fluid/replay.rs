@@ -22,7 +22,7 @@ use super::coordinator::{
 use super::effect::{Clipboard, ClipboardError, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
-    InteractionMode, InteractionModel, LeadPlay, Navigation, NumericEntry, PaletteMode,
+    InteractionMode, InteractionModel, LeadDrill, LeadPlay, Navigation, NumericEntry, PaletteMode,
     PaletteStagedEdit, PerformanceInstrument, PerformanceKind, PerformanceMode, PhasePolicy,
     SemanticAction, SequenceStage,
 };
@@ -2035,6 +2035,52 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
     assert_eq!(played.model.mode, InteractionMode::Browsing);
     assert!(played.deferred_inputs.is_empty());
     assert_eq!(played.effect_notice, None);
+}
+
+/// Enter on the Lead's Steps row opens the lane instead of play mode; the
+/// lane's own Enter plays, and Esc walks back to the Steps row.
+#[test]
+fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let mut trace: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    trace.extend(std::iter::repeat_n(plain(FixtureKey::Down), 8));
+    trace.push(plain(FixtureKey::Enter));
+    let opened = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(
+        opened.model.navigation,
+        Navigation::Lead {
+            selected: 0,
+            drill: LeadDrill::Pattern { return_to: 8 },
+        }
+    );
+    assert_eq!(opened.model.mode, InteractionMode::Browsing);
+
+    trace.extend([plain(FixtureKey::Down), plain(FixtureKey::Character('r'))]);
+    let rolled = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(rolled.effect_count("RandomizeSelected"), 1);
+    assert_eq!(rolled.session_generation, 1, "the roll edits step 2");
+
+    trace.extend([plain(FixtureKey::Enter), plain(FixtureKey::Escape)]);
+    let played = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(played.final_owner(), Some("BROWSE"));
+    assert_eq!(
+        played.model.navigation,
+        Navigation::Lead {
+            selected: 1,
+            drill: LeadDrill::Pattern { return_to: 8 },
+        },
+        "Esc leaves play mode but stays in the lane"
+    );
+
+    trace.push(plain(FixtureKey::Escape));
+    let back = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(
+        back.model.navigation,
+        Navigation::Lead {
+            selected: 8,
+            drill: LeadDrill::None,
+        }
+    );
 }
 
 /// `r` while browsing rolls the selected control; the same key inside an

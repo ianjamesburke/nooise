@@ -162,6 +162,10 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
             drill,
         },
         Tab::Master => interaction::Navigation::Master { selected: cursor },
+        Tab::Lead => interaction::Navigation::Lead {
+            selected: cursor,
+            drill: interaction::LeadDrill::None,
+        },
         page => interaction::Navigation::Standard {
             page: match page {
                 Tab::Perc => interaction::StandardPage::Perc,
@@ -170,8 +174,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
                 Tab::Tonal => interaction::StandardPage::Tonal,
                 Tab::Clap => interaction::StandardPage::Clap,
                 Tab::Arp => interaction::StandardPage::Arp,
-                Tab::Lead => interaction::StandardPage::Lead,
-                Tab::Chords | Tab::Master => unreachable!("handled above"),
+                Tab::Chords | Tab::Lead | Tab::Master => unreachable!("handled above"),
             },
             selected: cursor,
         },
@@ -1889,11 +1892,10 @@ fn tab_controls_classify_each_slider_kind() {
             ],
         ),
         (
+            // Root rows only: the step lane lives in the pattern drill.
             Tab::Lead,
             vec![
-                Gain, Timing, Timing, Timing, Discrete, Discrete, Timing, Timing, Discrete,
-                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
-                Gain,
+                Gain, Timing, Timing, Timing, Discrete, Discrete, Timing, Timing, Discrete, Gain,
             ],
         ),
     ];
@@ -5496,18 +5498,61 @@ fn lead_step_is_derived_from_the_transport_and_wraps_at_the_live_count() {
 }
 
 #[test]
-fn lead_step_rows_show_only_the_live_steps() {
+fn lead_step_rows_live_only_inside_the_pattern_drill() {
     let mut controls = FluidControls::default();
     controls.lead.step_count = 3.0;
-    let ids: Vec<_> = tab_controls(Tab::Lead, &controls)
+    let root: Vec<_> = lead_tab_controls(&controls, interaction::LeadDrill::None)
         .into_iter()
         .map(|item| item.id)
-        .filter(|id| lead_step_index(id).is_some())
         .collect();
-    assert_eq!(ids, ["lead.step1", "lead.step2", "lead.step3"]);
+    assert!(
+        root.iter().all(|id| lead_step_index(id).is_none()),
+        "root page carries no step rows: {root:?}"
+    );
+    assert!(
+        root.contains(&LEAD_STEPS_ID),
+        "the Steps row opens the lane"
+    );
+    let lane: Vec<_> =
+        lead_tab_controls(&controls, interaction::LeadDrill::Pattern { return_to: 0 })
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+    assert_eq!(lane, ["lead.step1", "lead.step2", "lead.step3"]);
     assert_eq!(lead_step_index("lead.step16"), Some(15));
     assert_eq!(lead_step_index("lead.step17"), None);
-    assert_eq!(lead_step_index("lead.steps"), None);
+    assert_eq!(lead_step_index(LEAD_STEPS_ID), None);
+}
+
+#[test]
+fn lead_steps_past_the_default_length_rest() {
+    let controls = LeadControls::default();
+    let live = lead_live_step_count(controls.step_count);
+    assert!(
+        controls.steps[live..].iter().all(|step| *step == 0.0),
+        "lengthening the lane must add rests, not notes"
+    );
+    assert!(controls.steps[..live].iter().any(|step| *step != 0.0));
+}
+
+#[test]
+fn lead_retrigger_keeps_the_envelope_continuous() {
+    // A voice mid-attack retriggered onto a new pitch: the amplitude picks
+    // up where it was rather than dropping to silence and re-attacking.
+    let attack = 0.02;
+    let mut voice = LeadVoice::new(220.0, attack, 1.0, SAMPLE_RATE);
+    let recipe = &LEAD_TYPES[3]; // Pure: one harmonic, so amplitude is readable
+    let mut last = 0.0;
+    for _ in 0..(SAMPLE_RATE * attack * 0.5) as usize {
+        last = voice.next(0.0, recipe);
+    }
+    voice.retrigger(220.0, attack, 1.0);
+    let next = voice.next(0.0, recipe);
+    let slope_bound = 220.0 * std::f32::consts::TAU / SAMPLE_RATE * 2.0;
+    assert!(
+        (next - last).abs() < slope_bound,
+        "retrigger stepped the output: {last} -> {next}"
+    );
 }
 
 #[test]

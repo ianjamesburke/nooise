@@ -41,6 +41,19 @@ impl Adsr {
         }
     }
 
+    /// Begin the attack from `level` instead of silence: the ramp resumes at
+    /// the point that already reaches `level`, so retriggering a sounding
+    /// voice steps nowhere and cannot click.
+    pub(crate) fn start_at(&mut self, level: f32) {
+        let level = level.clamp(0.0, 1.0);
+        self.level = level;
+        self.stage_sample = level * self.attack_samples;
+    }
+
+    pub(crate) fn level(&self) -> f32 {
+        self.level
+    }
+
     pub(crate) fn next(&mut self) -> f32 {
         match self.stage {
             Stage::Attack => {
