@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [2.2.0] — 2026-09-13
+
+### Added
+- feat: hold a Lead key to sustain it where the terminal reports releases
+- feat: lead Follow (Chord/Scale), Ctrl+Q from play and deck, lighter factory drive
+- feat: lead feel: click-free retrigger, tighter glide, 256-frame audio buffer, steps behind a pattern drill
 ## [2.1.0] — 2026-09-13
 
 ### Added
