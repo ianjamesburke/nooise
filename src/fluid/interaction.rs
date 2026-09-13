@@ -643,7 +643,7 @@ pub(crate) enum InteractionMode {
     Lead(LeadPlay),
 }
 
-/// The letter row is the Lead keyboard: `a`–`l` play `LEAD_STEP_TONES` 1–9
+/// The letter row is the Lead keyboard: `a`–`l` play tones 1–9
 /// (the four chord tones, the same four an octave up, the root two up). The
 /// runtime maps keys through it and the view labels keys from it, so neither
 /// restates the row.
@@ -722,7 +722,7 @@ pub(crate) enum Intent {
     },
     FinishPerformanceSequence(PerformanceAction),
     EnterLeadPlay,
-    /// Index into `LEAD_STEP_TONES`, from the letter row.
+    /// A 1-based Lead tone, from the letter row.
     PlayLeadTone(usize),
     ShiftLeadOctave(i8),
     AdjustSelected(i8),
@@ -783,9 +783,15 @@ impl Intent {
             | Self::ToggleMute { .. }
             | Self::RemoveAutomation
             | Self::ReseedAutomation
-            | Self::TouchSelected
-            | Self::Save
-            | Self::Quit => &[ModeKind::Browsing, ModeKind::Automation],
+            | Self::TouchSelected => &[ModeKind::Browsing, ModeKind::Automation],
+            // Ctrl+S / Ctrl+Q reach every owner but the palette (its own
+            // control chords) and numeric entry (swallows every chord).
+            Self::Save | Self::Quit => &[
+                ModeKind::Browsing,
+                ModeKind::Automation,
+                ModeKind::Performance,
+                ModeKind::Lead,
+            ],
             Self::ActivatePerformance(_) => &[ModeKind::Browsing, ModeKind::Performance],
             Self::SelectPerformanceInstrument { .. }
             | Self::ApplyPerformanceAction { .. }
@@ -904,7 +910,7 @@ pub(crate) enum InteractionEffect {
         focus: PerformanceInstrument,
         action: PerformanceAction,
     },
-    /// Sound one Lead tone (index into `LEAD_STEP_TONES`) now.
+    /// Sound one Lead tone (1-based) now.
     LeadTone(usize),
     /// Step `lead.octave` by whole octaves.
     LeadOctave(i8),
@@ -1413,6 +1419,8 @@ fn update_lead(
             effects.push(InteractionEffect::LeadTone(tone));
         }
         Intent::ShiftLeadOctave(delta) => effects.push(InteractionEffect::LeadOctave(delta)),
+        Intent::Save => effects.push(InteractionEffect::Save),
+        Intent::Quit => effects.push(InteractionEffect::Quit),
         _ => {}
     }
 }
@@ -1457,6 +1465,8 @@ fn update_performance(
             }
         }
         Intent::ActivatePerformance(_) => {}
+        Intent::Save => effects.push(InteractionEffect::Save),
+        Intent::Quit => effects.push(InteractionEffect::Quit),
         Intent::SelectPerformanceInstrument { instrument, hold } => {
             match performance {
                 PerformanceMode::Deck {

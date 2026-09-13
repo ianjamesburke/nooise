@@ -432,11 +432,12 @@ pub(crate) fn map_input(
     let unmodified = key.modifiers == Modifiers::default();
     let shifted = key.modifiers == Modifiers::SHIFT;
 
-    // Global bindings resolve before any mode claims the key.
+    // Global bindings resolve before any mode claims the key. The palette
+    // keeps its own control chords and numeric entry swallows every chord.
     if has_control
-        && matches!(
+        && !matches!(
             mode,
-            InteractionMode::Browsing | InteractionMode::Automation(_)
+            InteractionMode::Palette(_) | InteractionMode::Numeric(_)
         )
     {
         match key.code {

@@ -1,5 +1,5 @@
 //! The Lead voice: a mono, gliding solo synth that plays the Pad's current
-//! chord tones from a step lane on its own grid.
+//! chord tones, or the progression's scale, from a step lane on its own grid.
 
 use super::*;
 
@@ -7,90 +7,142 @@ pub(crate) const LEAD_RATE_BEATS_MIN: f32 = 0.125;
 pub(crate) const LEAD_RATE_BEATS_MAX: f32 = 4.0;
 pub(crate) const LEAD_OCTAVE_MIN: f32 = -2.0;
 pub(crate) const LEAD_OCTAVE_MAX: f32 = 2.0;
-/// Chord tones a step or a played key can reach: `pad_chord_tones` voices
-/// four, so the reach is those four, the same four an octave up, and the
-/// root two octaves up.
-pub(crate) const LEAD_CHORD_TONES: usize = 4;
+/// Tones a step or a played key can name, past the rest: nine, one per
+/// letter of the play row.
+pub(crate) const LEAD_TONE_COUNT: usize = 9;
 
-/// What one step value (or one performance key) plays. Index 0 is a rest;
-/// the rest name a chord tone (0-based into the pad's four voiced tones) and
-/// an octave lift above it.
+/// The most notes a reach can hold: a full chromatic scale.
+const LEAD_REACH_MAX: usize = 12;
+
+/// What the Lead's nine tones index into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LeadTone {
-    pub(crate) label: &'static str,
-    pub(crate) chord_tone: usize,
-    pub(crate) octave: i32,
+pub(crate) enum LeadFollow {
+    /// The four tones of the chord sounding now; tones move as chords move.
+    Chord,
+    /// The progression's own scale from its tonic; tones hold still across
+    /// chord changes, so a line can pass through non-chord notes.
+    Scale,
 }
 
-/// Step values in stored order; `lead.stepN` and the performance keys both
-/// index it. Position 0 is the rest, so a fresh lane silences by stepping
-/// left.
-pub(crate) const LEAD_STEP_TONES: [Option<LeadTone>; 10] = [
-    None,
-    Some(LeadTone {
-        label: "1",
-        chord_tone: 0,
-        octave: 0,
-    }),
-    Some(LeadTone {
-        label: "2",
-        chord_tone: 1,
-        octave: 0,
-    }),
-    Some(LeadTone {
-        label: "3",
-        chord_tone: 2,
-        octave: 0,
-    }),
-    Some(LeadTone {
-        label: "4",
-        chord_tone: 3,
-        octave: 0,
-    }),
-    Some(LeadTone {
-        label: "1'",
-        chord_tone: 0,
-        octave: 1,
-    }),
-    Some(LeadTone {
-        label: "2'",
-        chord_tone: 1,
-        octave: 1,
-    }),
-    Some(LeadTone {
-        label: "3'",
-        chord_tone: 2,
-        octave: 1,
-    }),
-    Some(LeadTone {
-        label: "4'",
-        chord_tone: 3,
-        octave: 1,
-    }),
-    Some(LeadTone {
-        label: "1''",
-        chord_tone: 0,
-        octave: 2,
-    }),
-];
+pub(crate) const LEAD_FOLLOWS: [LeadFollow; 2] = [LeadFollow::Chord, LeadFollow::Scale];
 
-pub(crate) fn lead_step_tone(value: f32) -> Option<LeadTone> {
-    LEAD_STEP_TONES[(value.round() as i64).clamp(0, LEAD_STEP_TONES.len() as i64 - 1) as usize]
+impl LeadFollow {
+    pub(crate) fn from_value(value: f32) -> Self {
+        LEAD_FOLLOWS[(value.round() as i64).clamp(0, LEAD_FOLLOWS.len() as i64 - 1) as usize]
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Chord => "Chord",
+            Self::Scale => "Scale",
+        }
+    }
 }
 
-pub(crate) fn lead_step_label(value: f32) -> &'static str {
-    lead_step_tone(value).map_or("Rest", |tone| tone.label)
+/// The ascending notes tone 1 upward walks through; tones past `len` wrap
+/// an octave up, so a four-note reach reads 1 2 3 4 1' 2' 3' 4' 1''.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LeadReach {
+    notes: [i32; LEAD_REACH_MAX],
+    len: usize,
+}
+
+impl LeadReach {
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    /// The MIDI note of 1-based `tone`, lifted by the layer's `lead.octave`.
+    pub(crate) fn note(&self, tone: usize, octave: f32) -> i32 {
+        let index = tone.saturating_sub(1);
+        self.notes[index % self.len] + 12 * ((index / self.len) as i32 + octave.round() as i32)
+    }
+
+    pub(crate) fn label(&self, tone: usize) -> String {
+        lead_tone_label(tone, self.len)
+    }
+}
+
+/// How 1-based `tone` reads against a reach of `reach_len` notes: its
+/// degree, with one prime per octave wrapped.
+pub(crate) fn lead_tone_label(tone: usize, reach_len: usize) -> String {
+    let index = tone.saturating_sub(1);
+    let len = reach_len.max(1);
+    format!("{}{}", index % len + 1, "'".repeat(index / len))
+}
+
+/// The reach the Lead resolves through right now, for both the lane and
+/// the play row.
+pub(crate) fn lead_reach(
+    follow: LeadFollow,
+    pad: &PadControls,
+    progression: usize,
+    step: usize,
+) -> LeadReach {
+    match follow {
+        LeadFollow::Chord => {
+            let chord = pad_chord_tones(pad, progression, step);
+            let mut notes = [0; LEAD_REACH_MAX];
+            notes[..chord.len()].copy_from_slice(&chord);
+            LeadReach {
+                notes,
+                len: chord.len(),
+            }
+        }
+        LeadFollow::Scale => progression_scale(pad, progression),
+    }
+}
+
+/// A progression's scale: every pitch class its chords touch, laid out
+/// ascending from the tonic (its first chord's lowest note). Derived rather
+/// than declared, so a custom progression and each built-in table each
+/// yield their own scale, and a chord change never moves a key.
+pub(crate) fn progression_scale(pad: &PadControls, progression: usize) -> LeadReach {
+    let tonic = pad_chord_tones(pad, progression, 0)[0];
+    let mut present = [false; 12];
+    for step in 0..pad_chord_count(pad) {
+        for note in pad_chord_tones(pad, progression, step) {
+            present[(note - tonic).rem_euclid(12) as usize] = true;
+        }
+    }
+    let mut notes = [0; LEAD_REACH_MAX];
+    let mut len = 0;
+    for (interval, _) in present.iter().enumerate().filter(|(_, hit)| **hit) {
+        notes[len] = tonic + interval as i32;
+        len += 1;
+    }
+    LeadReach { notes, len }
+}
+
+/// A step value (or a play-row key) as a 1-based tone; `None` is the rest
+/// at position 0. Out-of-table values clamp to the last tone.
+pub(crate) fn lead_step_tone(value: f32) -> Option<usize> {
+    match (value.round() as i64).clamp(0, LEAD_TONE_COUNT as i64) as usize {
+        0 => None,
+        tone => Some(tone),
+    }
+}
+
+/// How a step value reads on the page, against the reach the song is in.
+pub(crate) fn lead_step_label(value: f32, reach: &LeadReach) -> String {
+    lead_step_tone(value).map_or_else(|| "Rest".to_string(), |tone| reach.label(tone))
+}
+
+/// The reach a page reads its labels against: the lane's tones are named
+/// by degree, which depends only on the reach's size, so the chord step
+/// need not be known to label the page.
+pub(crate) fn lead_page_reach(lead: &LeadControls, pad: &PadControls) -> LeadReach {
+    lead_reach(
+        LeadFollow::from_value(lead.follow),
+        pad,
+        progression_index(pad.progression),
+        0,
+    )
 }
 
 /// How many of the lane's steps play: `lead.steps` rounded and clamped.
 pub(crate) fn lead_live_step_count(step_count: f32) -> usize {
     (step_count.round() as i64).clamp(1, LEAD_STEP_COUNT as i64) as usize
-}
-
-/// The MIDI note a tone resolves to against the chord sounding now, lifted
-/// by the tone's own octave and the layer's `lead.octave`.
-pub(crate) fn lead_note(tone: LeadTone, chord: [i32; LEAD_CHORD_TONES], octave: f32) -> i32 {
-    chord[tone.chord_tone] + 12 * (tone.octave + octave.round() as i32)
 }
 
 /// The lane step a trigger on `beat` plays. Derived from the transport rather
@@ -244,7 +296,7 @@ pub(crate) fn glide_coefficient(glide: f32, sample_rate: f32) -> f32 {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LeadPlayState {
     pub(crate) presses: u64,
-    /// Index into `LEAD_STEP_TONES` of the last press.
+    /// The 1-based tone of the last press.
     pub(crate) tone: usize,
 }
 
@@ -321,8 +373,8 @@ impl LeadEngine {
             if c.level != 0.0
                 && let Some(tone) = lead_step_tone(c.steps[lane_step])
             {
-                let chord = pad_chord_tones(pad, progression, step);
-                self.play(lead_note(tone, chord, c.octave), tune, c);
+                let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, step);
+                self.play(reach.note(tone, c.octave), tune, c);
             }
         }
         // A played key sounds the moment the engine sees it, on top of (and
@@ -331,8 +383,8 @@ impl LeadEngine {
             && c.level != 0.0
             && let Some(tone) = lead_step_tone(pressed as f32)
         {
-            let chord = pad_chord_tones(pad, progression, step);
-            self.play(lead_note(tone, chord, c.octave), tune, c);
+            let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, step);
+            self.play(reach.note(tone, c.octave), tune, c);
         }
 
         let Some(voice) = &mut self.voice else {

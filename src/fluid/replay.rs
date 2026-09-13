@@ -2037,20 +2037,39 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
     assert_eq!(played.effect_notice, None);
 }
 
+/// Ctrl+Q and Ctrl+C quit from inside play mode and the performance deck,
+/// not only from browsing: no keyboard owner traps the user.
+#[test]
+fn control_quit_reaches_the_lead_and_performance_owners() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    // Bit 1 is Control in the fixture encoding (`Modifiers::CONTROL`).
+    let quit = modified_key(0, FixtureKey::Character('c'), InputPhase::Press, 1 << 1);
+    let mut lead: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    lead.extend([plain(FixtureKey::Enter), quit.clone()]);
+    let lead = replay(&lead, TerminalCapabilities::full());
+    assert_eq!(lead.final_owner(), Some("LEAD"));
+    assert_eq!(lead.effect_count("Quit"), 1);
+    let deck = replay(
+        &[plain(FixtureKey::Character('p')), quit],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(deck.effect_count("Quit"), 1);
+}
+
 /// Enter on the Lead's Steps row opens the lane instead of play mode; the
 /// lane's own Enter plays, and Esc walks back to the Steps row.
 #[test]
 fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     let plain = |code| key(0, code, InputPhase::Press);
     let mut trace: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
-    trace.extend(std::iter::repeat_n(plain(FixtureKey::Down), 8));
+    trace.extend(std::iter::repeat_n(plain(FixtureKey::Down), 9));
     trace.push(plain(FixtureKey::Enter));
     let opened = replay(&trace, TerminalCapabilities::full());
     assert_eq!(
         opened.model.navigation,
         Navigation::Lead {
             selected: 0,
-            drill: LeadDrill::Pattern { return_to: 8 },
+            drill: LeadDrill::Pattern { return_to: 9 },
         }
     );
     assert_eq!(opened.model.mode, InteractionMode::Browsing);
@@ -2067,7 +2086,7 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
         played.model.navigation,
         Navigation::Lead {
             selected: 1,
-            drill: LeadDrill::Pattern { return_to: 8 },
+            drill: LeadDrill::Pattern { return_to: 9 },
         },
         "Esc leaves play mode but stays in the lane"
     );
@@ -2077,7 +2096,7 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     assert_eq!(
         back.model.navigation,
         Navigation::Lead {
-            selected: 8,
+            selected: 9,
             drill: LeadDrill::None,
         }
     );

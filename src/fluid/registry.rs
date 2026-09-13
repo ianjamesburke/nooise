@@ -1622,8 +1622,8 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-/// One Lead pattern step: a discrete pick from `LEAD_STEP_TONES` (rest, a
-/// chord tone, or one an octave or two up). Step numbers are 1-based in ids
+/// One Lead pattern step: a rest or one of the `LEAD_TONE_COUNT` tones,
+/// read against the song's reach. Step numbers are 1-based in ids
 /// and labels, 0-based into `LeadControls::steps`. Reached only through
 /// `LEAD_CONTROLS`, which lists every step.
 macro_rules! lead_step_row {
@@ -1633,12 +1633,12 @@ macro_rules! lead_step_row {
             concat!("Step ", $step),
             ControlKind::Discrete,
             0.0,
-            last_index_of(&LEAD_STEP_TONES),
+            LEAD_TONE_COUNT as f32,
             Step::Linear(1.0),
             Entry::Round,
             |c| c.lead.steps[$step - 1],
             |c, v| c.lead.steps[$step - 1] = v,
-            |c| lead_step_label(c.lead.steps[$step - 1]).to_string(),
+            |c| lead_step_label(c.lead.steps[$step - 1], &lead_page_reach(&c.lead, &c.pad)),
         )
     };
 }
@@ -1686,6 +1686,18 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| format!("{:+.0}", c.lead.octave),
         )
         .reset_at(0.0),
+        ControlSpec::new(
+            "lead.follow",
+            "Follow",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_FOLLOWS),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.follow,
+            |c, v| c.lead.follow = v,
+            |c| LeadFollow::from_value(c.lead.follow).label().to_string(),
+        ),
         beat_interval!(
             "lead.rate_beats",
             "Rate",

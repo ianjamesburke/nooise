@@ -1895,7 +1895,8 @@ fn tab_controls_classify_each_slider_kind() {
             // Root rows only: the step lane lives in the pattern drill.
             Tab::Lead,
             vec![
-                Gain, Timing, Timing, Timing, Discrete, Discrete, Timing, Timing, Discrete, Gain,
+                Gain, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing, Timing,
+                Discrete, Gain,
             ],
         ),
     ];
@@ -5557,19 +5558,65 @@ fn lead_retrigger_keeps_the_envelope_continuous() {
 
 #[test]
 fn lead_tones_reach_the_chord_an_octave_up_and_the_root_two_up() {
-    let chord = [60, 64, 67, 71];
+    let pad = PadControls::default();
+    let reach = lead_reach(LeadFollow::Chord, &pad, 0, 6); // C: 48 55 60 64
     assert_eq!(lead_step_tone(0.0), None, "value 0 is a rest");
-    assert_eq!(lead_step_label(0.0), "Rest");
-    assert_eq!(lead_note(lead_step_tone(1.0).unwrap(), chord, 0.0), 60);
-    assert_eq!(lead_note(lead_step_tone(4.0).unwrap(), chord, 0.0), 71);
-    assert_eq!(lead_note(lead_step_tone(5.0).unwrap(), chord, 0.0), 72);
-    assert_eq!(lead_note(lead_step_tone(9.0).unwrap(), chord, 0.0), 84);
-    assert_eq!(lead_note(lead_step_tone(1.0).unwrap(), chord, -1.0), 48);
+    assert_eq!(lead_step_label(0.0, &reach), "Rest");
+    assert_eq!(reach.note(lead_step_tone(1.0).unwrap(), 0.0), 48);
+    assert_eq!(reach.note(lead_step_tone(4.0).unwrap(), 0.0), 64);
+    assert_eq!(reach.note(lead_step_tone(5.0).unwrap(), 0.0), 60);
+    assert_eq!(reach.note(lead_step_tone(9.0).unwrap(), 0.0), 72);
+    assert_eq!(reach.note(lead_step_tone(1.0).unwrap(), -1.0), 36);
     assert_eq!(
         lead_step_tone(99.0),
         lead_step_tone(9.0),
         "an out-of-table value clamps to the last tone"
     );
+    let labels: Vec<_> = (1..=LEAD_TONE_COUNT)
+        .map(|tone| reach.label(tone))
+        .collect();
+    assert_eq!(labels, ["1", "2", "3", "4", "1'", "2'", "3'", "4'", "1''"]);
+}
+
+#[test]
+fn lead_scale_follow_walks_the_progression_scale_from_its_tonic() {
+    let pad = PadControls::default();
+    // Progression A touches A B C D E G: A minor without the F.
+    let scale = progression_scale(&pad, 0);
+    let notes: Vec<_> = (1..=scale.len())
+        .map(|tone| scale.note(tone, 0.0))
+        .collect();
+    assert_eq!(notes, [45, 47, 48, 50, 52, 55]);
+    assert_eq!(
+        scale.note(7, 0.0),
+        57,
+        "the seventh tone wraps to A an octave up"
+    );
+    assert_eq!(scale.label(7), "1'");
+    // The scale ignores which chord is sounding: only the follow moves it.
+    assert_eq!(
+        lead_reach(LeadFollow::Scale, &pad, 0, 3),
+        lead_reach(LeadFollow::Scale, &pad, 0, 6)
+    );
+    assert_ne!(
+        lead_reach(LeadFollow::Chord, &pad, 0, 3),
+        lead_reach(LeadFollow::Chord, &pad, 0, 6)
+    );
+    // Progression E: A phrygian (A Bb C D E F G) plus the G6's B natural.
+    assert_eq!(progression_scale(&pad, 4).len(), 8);
+    // A custom progression derives its scale from its own slots: one
+    // default slot is a triad, three pitch classes.
+    let custom = PadControls {
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        chord_count: 1.0,
+        ..PadControls::default()
+    };
+    assert_eq!(
+        progression_scale(&custom, CUSTOM_PROGRESSION_INDEX).len(),
+        3
+    );
+    assert_eq!(LeadFollow::from_value(1.0), LeadFollow::Scale);
+    assert_eq!(LeadFollow::from_value(0.4), LeadFollow::Chord);
 }
 
 #[test]

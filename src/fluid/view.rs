@@ -157,6 +157,8 @@ pub(crate) struct LeadSurface {
     pub(crate) last_tone: Option<usize>,
     pub(crate) octave: i32,
     pub(crate) level_pct: u8,
+    /// Notes in the reach the keys index, so the row labels its degrees.
+    pub(crate) reach_len: usize,
 }
 
 /// Everything the palette overlay draws: the projected match list plus the
@@ -324,6 +326,7 @@ fn mode_surface<'a>(
             last_tone: play.last_tone,
             octave: controls.lead.octave.round() as i32,
             level_pct: (controls.lead.level * 100.0).round() as u8,
+            reach_len: lead_page_reach(&controls.lead, &controls.pad).len(),
         }),
         InteractionMode::Performance(PerformanceMode::Deck {
             selected,
