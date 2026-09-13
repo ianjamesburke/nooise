@@ -5612,3 +5612,65 @@ fn mute_bits_are_stable_when_a_tab_is_added_mid_strip() {
     let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
     assert_eq!(decoded.muted, song.muted);
 }
+
+#[test]
+fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
+    let pad = PadControls::default();
+    let controls = LeadControls {
+        level: 0.5,
+        step_count: 1.0,
+        steps: [0.0; LEAD_STEP_COUNT],
+        ..LeadControls::default()
+    };
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    let quiet_for = |lead: &mut LeadEngine, from: u64, samples: u64| -> f32 {
+        (from..from + samples)
+            .map(|sample| {
+                lead.next(&controls, &pad, 0.0, timing(sample, 120.0))
+                    .0
+                    .abs()
+            })
+            .fold(0.0, f32::max)
+    };
+    assert_eq!(
+        quiet_for(&mut lead, 0, 4_000),
+        0.0,
+        "an all-rest lane is silent"
+    );
+
+    lead.observe(LeadPlayState {
+        presses: 1,
+        tone: 5,
+    });
+    assert!(quiet_for(&mut lead, 4_000, 4_000) > 0.05, "a press sounds");
+    // The same state seen again is not a new press.
+    let mut lead_again = LeadEngine::with_play_state(
+        SAMPLE_RATE,
+        LeadPlayState {
+            presses: 1,
+            tone: 5,
+        },
+    );
+    lead_again.observe(LeadPlayState {
+        presses: 1,
+        tone: 5,
+    });
+    assert_eq!(
+        quiet_for(&mut lead_again, 0, 4_000),
+        0.0,
+        "a caught-up engine replays nothing"
+    );
+
+    // A silent layer swallows the press rather than holding it for later.
+    let mut silent = LeadEngine::new(SAMPLE_RATE);
+    silent.observe(LeadPlayState {
+        presses: 1,
+        tone: 5,
+    });
+    let muted = LeadControls::default();
+    for sample in 0..64 {
+        silent.next(&muted, &pad, 0.0, timing(sample, 120.0));
+    }
+    assert!(silent.voice.is_none());
+    assert_eq!(quiet_for(&mut silent, 64, 4_000), 0.0);
+}

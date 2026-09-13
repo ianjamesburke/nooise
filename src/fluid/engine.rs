@@ -572,7 +572,7 @@ impl FluidEngine {
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
             arp: ArpEngine::new(sample_rate),
-            lead: LeadEngine::new(sample_rate),
+            lead: LeadEngine::with_play_state(sample_rate, live.lead_play),
             module_fx: ModuleFxBank::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
             session,
@@ -622,6 +622,7 @@ impl StereoEngine for FluidEngine {
                 .set_targets(&self.snapshot, self.sample_rate);
             self.mute_gates
                 .set_targets(&session.muted, self.sample_rate);
+            self.lead.observe(session.lead_play);
             self.master_bus
                 .set_controls(&self.snapshot.master, self.sample_rate);
             if session.automation != *self.plan_source {

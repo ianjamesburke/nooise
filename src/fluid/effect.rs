@@ -532,7 +532,9 @@ impl EffectExecutor {
             | InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_)
-            | InteractionEffect::PerformanceEdit { .. }) => {
+            | InteractionEffect::PerformanceEdit { .. }
+            | InteractionEffect::LeadTone(_)
+            | InteractionEffect::LeadOctave(_)) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
         }
@@ -677,6 +679,28 @@ impl EffectExecutor {
             InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_) => Ok(EffectAcknowledgement::NoChange),
+            // A played note is a gesture over the song, not an edit of it:
+            // it publishes through the session so the audio thread sees it,
+            // but never exits auto — soloing over a morph is the point.
+            InteractionEffect::LeadTone(tone) => {
+                let snapshot = self.session.update(|snapshot| {
+                    snapshot.lead_play.presses = snapshot.lead_play.presses.wrapping_add(1);
+                    snapshot.lead_play.tone = tone;
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::LeadOctave(delta) => {
+                let spec = spec_by_id("lead.octave")
+                    .ok_or(EffectFailure::MissingContext("lead.octave"))?;
+                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                    spec.apply_delta(f32::from(delta), &mut snapshot.controls);
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::PaletteModule { tab, catalog_index } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
                 self.place_module(tab, catalog_index)

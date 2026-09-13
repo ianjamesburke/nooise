@@ -180,20 +180,54 @@ pub(crate) fn glide_coefficient(glide: f32, sample_rate: f32) -> f32 {
     1.0 - (-3.0 / (glide * sample_rate)).exp()
 }
 
+/// The one hands-on note path from the UI to the audio thread: every press in
+/// Lead play mode bumps `presses` and names its tone, and the engine plays a
+/// tone each time it sees the count move. A count rather than a flag, so two
+/// presses between engine polls still read as a press. Not song state: a
+/// played note is a gesture, not a setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LeadPlayState {
+    pub(crate) presses: u64,
+    /// Index into `LEAD_STEP_TONES` of the last press.
+    pub(crate) tone: usize,
+}
+
 pub(crate) struct LeadEngine {
     pub(crate) sample_rate: f32,
     pub(crate) progression: ProgressionFollower,
     pub(crate) step_trigger: GridTrigger,
     pub(crate) voice: Option<LeadVoice>,
+    /// The last `LeadPlayState::presses` acted on; a snapshot with a higher
+    /// count queues one played tone for the next sample.
+    presses_seen: u64,
+    pending_press: Option<usize>,
 }
 
 impl LeadEngine {
+    #[cfg(test)]
     pub(crate) fn new(sample_rate: f32) -> Self {
+        Self::with_play_state(sample_rate, LeadPlayState::default())
+    }
+
+    /// Start already caught up with `play`, so a session that was loaded
+    /// mid-gesture does not replay its last press on the first sample.
+    pub(crate) fn with_play_state(sample_rate: f32, play: LeadPlayState) -> Self {
         Self {
             sample_rate,
             progression: ProgressionFollower::new(),
             step_trigger: GridTrigger::new(),
             voice: None,
+            presses_seen: play.presses,
+            pending_press: None,
+        }
+    }
+
+    /// Adopt the latest published play state: a moved press count queues its
+    /// tone for the next sample.
+    pub(crate) fn observe(&mut self, play: LeadPlayState) {
+        if play.presses != self.presses_seen {
+            self.presses_seen = play.presses;
+            self.pending_press = Some(play.tone);
         }
     }
 
@@ -234,6 +268,15 @@ impl LeadEngine {
                 let chord = pad_chord_tones(pad, progression, step);
                 self.play(lead_note(tone, chord, c.octave), tune, c);
             }
+        }
+        // A played key sounds the moment the engine sees it, on top of (and
+        // sliding from) whatever the lane is doing.
+        if let Some(pressed) = self.pending_press.take()
+            && c.level != 0.0
+            && let Some(tone) = lead_step_tone(pressed as f32)
+        {
+            let chord = pad_chord_tones(pad, progression, step);
+            self.play(lead_note(tone, chord, c.octave), tune, c);
         }
 
         let Some(voice) = &mut self.voice else {

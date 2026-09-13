@@ -17,6 +17,8 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: TonalSequenceState,
     pub(crate) muted: MuteState,
+    /// Lead play-mode presses. Live-only: never written to a song code.
+    pub(crate) lead_play: LeadPlayState,
 }
 
 impl LiveSessionSnapshot {
@@ -26,6 +28,7 @@ impl LiveSessionSnapshot {
             controls: song.controls.clone(),
             automation: song.automation.clone(),
             muted: song.muted,
+            lead_play: LeadPlayState::default(),
             tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
                 TonalSequenceState::from_phrase(wrapped_index(
                     song.controls.tonal.phrase,
@@ -46,6 +49,7 @@ impl LiveSessionSnapshot {
             controls,
             automation: AutomationState::default(),
             muted: [false; TAB_COUNT],
+            lead_play: LeadPlayState::default(),
         }
     }
 }

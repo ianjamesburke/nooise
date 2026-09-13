@@ -21,9 +21,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
-    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, Navigation, PageDirection,
-    PerformanceAction, PerformanceInstrument, PerformanceKind, PerformanceMode, SemanticAction,
-    SequenceStage,
+    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, Navigation,
+    PageDirection, PerformanceAction, PerformanceInstrument, PerformanceKind, PerformanceMode,
+    SemanticAction, SequenceStage,
 };
 
 /// Target spacing between drawn frames.
@@ -487,6 +487,13 @@ pub(crate) fn map_input(
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
         }
+        InteractionMode::Lead(_) => {
+            if unmodified {
+                lead_binding(&key.code)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
+            }
+        }
     };
     intent.map_or(InputMapping::Ignored, |intent| semantic(*phase, intent))
 }
@@ -653,6 +660,22 @@ fn performance_binding(
             release_available: capabilities.supports_holds(),
         }),
         _ => None,
+    }
+}
+
+/// `z`/`x` drop/raise the octave; the letter row plays `LEAD_PLAY_KEYS`.
+/// Every press is an edge; autorepeat plays nothing.
+fn lead_binding(code: &PhysicalKey) -> Option<Intent> {
+    let PhysicalKey::Character(character) = code else {
+        return None;
+    };
+    match character {
+        'z' => Some(Intent::ShiftLeadOctave(-1)),
+        'x' => Some(Intent::ShiftLeadOctave(1)),
+        _ => LEAD_PLAY_KEYS
+            .iter()
+            .position(|key| key == character)
+            .map(|index| Intent::PlayLeadTone(index + 1)),
     }
 }
 

@@ -142,6 +142,11 @@ pub(crate) fn coordinate_production_event(
             catalog_index: module.kind.round() as usize - 1,
         };
     }
+    // Enter anywhere on the Lead page that is not a module drill opens play
+    // mode: the page is the instrument, so there is nothing else to touch.
+    if action.intent == interaction::Intent::TouchSelected && frame.tab == Tab::Lead {
+        action.intent = interaction::Intent::EnterLeadPlay;
+    }
 
     let repeat_count = match event {
         runtime::TransportEvent::Key { repeat_count, .. } => repeat_count.max(&1),

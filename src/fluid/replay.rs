@@ -22,9 +22,9 @@ use super::coordinator::{
 use super::effect::{Clipboard, ClipboardError, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
-    InteractionMode, InteractionModel, Navigation, NumericEntry, PaletteMode, PaletteStagedEdit,
-    PerformanceInstrument, PerformanceKind, PerformanceMode, PhasePolicy, SemanticAction,
-    SequenceStage,
+    InteractionMode, InteractionModel, LeadPlay, Navigation, NumericEntry, PaletteMode,
+    PaletteStagedEdit, PerformanceInstrument, PerformanceKind, PerformanceMode, PhasePolicy,
+    SemanticAction, SequenceStage,
 };
 use super::runtime::{
     Clock, EventSource, FakeClock, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
@@ -1984,6 +1984,53 @@ fn escape_closes_a_neutral_lfo_without_trapping_the_keyboard_owner() {
 
     assert_eq!(closed.model.mode, InteractionMode::Browsing);
     assert_eq!(closed.automation_kind, None);
+}
+
+/// Enter on the Lead page opens play mode; the letter row sounds tones
+/// without exiting anything, `x` edits the octave control, autorepeat plays
+/// nothing, and Esc returns to browsing.
+#[test]
+fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let to_lead: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+
+    let mut opened = to_lead.clone();
+    opened.push(plain(FixtureKey::Enter));
+    let opened = replay(&opened, TerminalCapabilities::full());
+    assert_eq!(
+        opened.model.mode,
+        InteractionMode::Lead(LeadPlay::default())
+    );
+    assert_eq!(opened.final_owner(), Some("LEAD"));
+    assert_eq!(
+        opened.session_generation, 0,
+        "opening play mode edits nothing"
+    );
+
+    let mut played = to_lead.clone();
+    played.extend([
+        plain(FixtureKey::Enter),
+        plain(FixtureKey::Character('a')),
+        key(0, FixtureKey::Character('a'), InputPhase::Repeat),
+        plain(FixtureKey::Character('l')),
+        plain(FixtureKey::Character('x')),
+        plain(FixtureKey::Escape),
+    ]);
+    let played = replay(&played, TerminalCapabilities::full());
+    assert_eq!(
+        played.effect_count("LeadTone"),
+        2,
+        "one tone per press, none per repeat"
+    );
+    assert_eq!(played.effect_count("LeadOctave"), 1);
+    assert_eq!(played.control("lead.octave"), Some(1.0));
+    assert_eq!(
+        played.session_generation, 3,
+        "two presses and one octave edit"
+    );
+    assert_eq!(played.model.mode, InteractionMode::Browsing);
+    assert!(played.deferred_inputs.is_empty());
+    assert_eq!(played.effect_notice, None);
 }
 
 #[test]

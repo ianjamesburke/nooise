@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 
+use super::interaction::LEAD_PLAY_KEYS;
 use super::widget::{Dial, DialScale};
 use super::*;
 
@@ -259,7 +260,11 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
     let bpm = frame.bpm();
     let beat = view.telemetry.beat;
 
-    let mut rows: Vec<Line<'static>> = Vec::with_capacity(items.len() * 3);
+    let mut rows: Vec<Line<'static>> = Vec::with_capacity(items.len() * 3 + 2);
+    if let ModeSurface::Lead(lead) = &view.mode {
+        rows.push(lead_keyboard_line(*lead));
+        rows.push(Line::from(""));
+    }
     for (i, item) in items.iter().enumerate() {
         let active = i == selected;
         let address = ControlAddress::new(item.id);
@@ -499,6 +504,22 @@ fn draw_footer(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
             .style(footer_style),
         area,
     );
+}
+
+/// The play-mode keyboard: each letter over the tone it plays, the last one
+/// pressed lit. Sits above the Lead's rows so the lane stays in view.
+fn lead_keyboard_line(lead: LeadSurface) -> Line<'static> {
+    let mut spans = vec![Span::styled("  ", BROWSE_PALETTE.style(false))];
+    for (index, key) in LEAD_PLAY_KEYS.iter().enumerate() {
+        let tone = index + 1;
+        let label = lead_step_label(tone as f32);
+        let lit = lead.last_tone == Some(tone);
+        spans.push(Span::styled(
+            format!("{key}{label} "),
+            BROWSE_PALETTE.style(lit),
+        ));
+    }
+    Line::from(spans)
 }
 
 fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
