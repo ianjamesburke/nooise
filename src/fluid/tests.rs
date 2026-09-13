@@ -162,6 +162,10 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
             drill,
         },
         Tab::Master => interaction::Navigation::Master { selected: cursor },
+        Tab::Lead => interaction::Navigation::Lead {
+            selected: cursor,
+            drill: interaction::LeadDrill::None,
+        },
         page => interaction::Navigation::Standard {
             page: match page {
                 Tab::Perc => interaction::StandardPage::Perc,
@@ -170,8 +174,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
                 Tab::Tonal => interaction::StandardPage::Tonal,
                 Tab::Clap => interaction::StandardPage::Clap,
                 Tab::Arp => interaction::StandardPage::Arp,
-                Tab::Lead => interaction::StandardPage::Lead,
-                Tab::Chords | Tab::Master => unreachable!("handled above"),
+                Tab::Chords | Tab::Lead | Tab::Master => unreachable!("handled above"),
             },
             selected: cursor,
         },
@@ -1889,11 +1892,11 @@ fn tab_controls_classify_each_slider_kind() {
             ],
         ),
         (
+            // Root rows only: the step lane lives in the pattern drill.
             Tab::Lead,
             vec![
-                Gain, Timing, Timing, Timing, Discrete, Discrete, Timing, Timing, Discrete,
-                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
-                Gain,
+                Gain, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing, Timing,
+                Discrete, Gain,
             ],
         ),
     ];
@@ -5496,41 +5499,212 @@ fn lead_step_is_derived_from_the_transport_and_wraps_at_the_live_count() {
 }
 
 #[test]
-fn lead_step_rows_show_only_the_live_steps() {
+fn lead_step_rows_live_only_inside_the_pattern_drill() {
     let mut controls = FluidControls::default();
     controls.lead.step_count = 3.0;
-    let ids: Vec<_> = tab_controls(Tab::Lead, &controls)
+    let root: Vec<_> = lead_tab_controls(&controls, interaction::LeadDrill::None)
         .into_iter()
         .map(|item| item.id)
-        .filter(|id| lead_step_index(id).is_some())
         .collect();
-    assert_eq!(ids, ["lead.step1", "lead.step2", "lead.step3"]);
+    assert!(
+        root.iter().all(|id| lead_step_index(id).is_none()),
+        "root page carries no step rows: {root:?}"
+    );
+    assert!(
+        root.contains(&LEAD_STEPS_ID),
+        "the Steps row opens the lane"
+    );
+    let lane: Vec<_> =
+        lead_tab_controls(&controls, interaction::LeadDrill::Pattern { return_to: 0 })
+            .into_iter()
+            .map(|item| item.id)
+            .collect();
+    assert_eq!(lane, ["lead.step1", "lead.step2", "lead.step3"]);
     assert_eq!(lead_step_index("lead.step16"), Some(15));
     assert_eq!(lead_step_index("lead.step17"), None);
-    assert_eq!(lead_step_index("lead.steps"), None);
+    assert_eq!(lead_step_index(LEAD_STEPS_ID), None);
+}
+
+#[test]
+fn lead_steps_past_the_default_length_rest() {
+    let controls = LeadControls::default();
+    let live = lead_live_step_count(controls.step_count);
+    assert!(
+        controls.steps[live..].iter().all(|step| *step == 0.0),
+        "lengthening the lane must add rests, not notes"
+    );
+    assert!(controls.steps[..live].iter().any(|step| *step != 0.0));
+}
+
+#[test]
+fn lead_retrigger_keeps_the_envelope_continuous() {
+    // A voice mid-attack retriggered onto a new pitch: the amplitude picks
+    // up where it was rather than dropping to silence and re-attacking.
+    let attack = 0.02;
+    let mut voice = LeadVoice::new(220.0, lead_shape(attack, 1.0), SAMPLE_RATE);
+    let recipe = &LEAD_TYPES[3]; // Pure: one harmonic, so amplitude is readable
+    let mut last = 0.0;
+    for _ in 0..(SAMPLE_RATE * attack * 0.5) as usize {
+        last = voice.next(0.0, recipe);
+    }
+    voice.retrigger(220.0, lead_shape(attack, 1.0));
+    let next = voice.next(0.0, recipe);
+    let slope_bound = 220.0 * std::f32::consts::TAU / SAMPLE_RATE * 2.0;
+    assert!(
+        (next - last).abs() < slope_bound,
+        "retrigger stepped the output: {last} -> {next}"
+    );
+}
+
+/// A lane-style note shape: attack, decay, no hold.
+fn lead_shape(attack: f32, decay: f32) -> LeadShape {
+    LeadShape {
+        attack,
+        decay,
+        hold: false,
+    }
+}
+
+#[test]
+fn lead_held_key_sustains_until_its_release_and_silences_the_lane() {
+    let pad = PadControls::default();
+    let rests = LeadControls {
+        level: 0.5,
+        attack: 0.005,
+        decay: 0.05,
+        step_count: 1.0,
+        steps: [0.0; LEAD_STEP_COUNT],
+        ..LeadControls::default()
+    };
+    let peak = |lead: &mut LeadEngine, c: &LeadControls, from: u64, samples: u64| -> f32 {
+        (from..from + samples)
+            .map(|sample| lead.next(c, &pad, 0.0, timing(sample, 120.0)).0.abs())
+            .fold(0.0, f32::max)
+    };
+    let held = LeadPlayState {
+        presses: 1,
+        tone: 3,
+        held: true,
+    };
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    lead.observe(held);
+    let half_second = (SAMPLE_RATE * 0.5) as u64; // ten decays long
+    assert!(
+        peak(&mut lead, &rests, 0, half_second) > 0.05,
+        "the held key sounds"
+    );
+    assert!(
+        peak(&mut lead, &rests, half_second, 2_000) > 0.05,
+        "still sounding half a second in: held, not decaying"
+    );
+    lead.observe(LeadPlayState {
+        held: false,
+        ..held
+    });
+    let released_at = half_second + 2_000;
+    let four_decays = (SAMPLE_RATE * 0.2) as u64;
+    peak(&mut lead, &rests, released_at, four_decays);
+    assert_eq!(
+        peak(&mut lead, &rests, released_at + four_decays, 2_000),
+        0.0,
+        "released, the note decayed out"
+    );
+
+    // With a lane of notes under it, the held key owns the voice: two
+    // seconds of eighth-note hits never move the pitch. Once the key is up
+    // the lane plays again.
+    let lane = LeadControls {
+        steps: [1.0; LEAD_STEP_COUNT],
+        ..rests.clone()
+    };
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    lead.observe(held);
+    peak(&mut lead, &lane, 0, 2_000);
+    let held_hz = lead.voice.as_ref().unwrap().hz();
+    let two_seconds = (SAMPLE_RATE * 2.0) as u64;
+    peak(&mut lead, &lane, 2_000, two_seconds);
+    assert_close_named(
+        lead.voice.as_ref().unwrap().hz(),
+        held_hz,
+        "pitch under a held key",
+    );
+    lead.observe(LeadPlayState {
+        held: false,
+        ..held
+    });
+    assert!(
+        peak(&mut lead, &lane, 2_000 + two_seconds, half_second) > 0.05,
+        "the lane plays again once the key is up"
+    );
 }
 
 #[test]
 fn lead_tones_reach_the_chord_an_octave_up_and_the_root_two_up() {
-    let chord = [60, 64, 67, 71];
+    let pad = PadControls::default();
+    let reach = lead_reach(LeadFollow::Chord, &pad, 0, 6); // C: 48 55 60 64
     assert_eq!(lead_step_tone(0.0), None, "value 0 is a rest");
-    assert_eq!(lead_step_label(0.0), "Rest");
-    assert_eq!(lead_note(lead_step_tone(1.0).unwrap(), chord, 0.0), 60);
-    assert_eq!(lead_note(lead_step_tone(4.0).unwrap(), chord, 0.0), 71);
-    assert_eq!(lead_note(lead_step_tone(5.0).unwrap(), chord, 0.0), 72);
-    assert_eq!(lead_note(lead_step_tone(9.0).unwrap(), chord, 0.0), 84);
-    assert_eq!(lead_note(lead_step_tone(1.0).unwrap(), chord, -1.0), 48);
+    assert_eq!(lead_step_label(0.0, &reach), "Rest");
+    assert_eq!(reach.note(lead_step_tone(1.0).unwrap(), 0.0), 48);
+    assert_eq!(reach.note(lead_step_tone(4.0).unwrap(), 0.0), 64);
+    assert_eq!(reach.note(lead_step_tone(5.0).unwrap(), 0.0), 60);
+    assert_eq!(reach.note(lead_step_tone(9.0).unwrap(), 0.0), 72);
+    assert_eq!(reach.note(lead_step_tone(1.0).unwrap(), -1.0), 36);
     assert_eq!(
         lead_step_tone(99.0),
         lead_step_tone(9.0),
         "an out-of-table value clamps to the last tone"
     );
+    let labels: Vec<_> = (1..=LEAD_TONE_COUNT)
+        .map(|tone| reach.label(tone))
+        .collect();
+    assert_eq!(labels, ["1", "2", "3", "4", "1'", "2'", "3'", "4'", "1''"]);
+}
+
+#[test]
+fn lead_scale_follow_walks_the_progression_scale_from_its_tonic() {
+    let pad = PadControls::default();
+    // Progression A touches A B C D E G: A minor without the F.
+    let scale = progression_scale(&pad, 0);
+    let notes: Vec<_> = (1..=scale.len())
+        .map(|tone| scale.note(tone, 0.0))
+        .collect();
+    assert_eq!(notes, [45, 47, 48, 50, 52, 55]);
+    assert_eq!(
+        scale.note(7, 0.0),
+        57,
+        "the seventh tone wraps to A an octave up"
+    );
+    assert_eq!(scale.label(7), "1'");
+    // The scale ignores which chord is sounding: only the follow moves it.
+    assert_eq!(
+        lead_reach(LeadFollow::Scale, &pad, 0, 3),
+        lead_reach(LeadFollow::Scale, &pad, 0, 6)
+    );
+    assert_ne!(
+        lead_reach(LeadFollow::Chord, &pad, 0, 3),
+        lead_reach(LeadFollow::Chord, &pad, 0, 6)
+    );
+    // Progression E: A phrygian (A Bb C D E F G) plus the G6's B natural.
+    assert_eq!(progression_scale(&pad, 4).len(), 8);
+    // A custom progression derives its scale from its own slots: one
+    // default slot is a triad, three pitch classes.
+    let custom = PadControls {
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        chord_count: 1.0,
+        ..PadControls::default()
+    };
+    assert_eq!(
+        progression_scale(&custom, CUSTOM_PROGRESSION_INDEX).len(),
+        3
+    );
+    assert_eq!(LeadFollow::from_value(1.0), LeadFollow::Scale);
+    assert_eq!(LeadFollow::from_value(0.4), LeadFollow::Chord);
 }
 
 #[test]
 fn lead_glide_slides_the_pitch_toward_the_new_note_without_a_jump() {
-    let mut voice = LeadVoice::new(220.0, 0.001, 1.0, SAMPLE_RATE);
-    voice.retrigger(440.0, 0.001, 1.0);
+    let mut voice = LeadVoice::new(220.0, lead_shape(0.001, 1.0), SAMPLE_RATE);
+    voice.retrigger(440.0, lead_shape(0.001, 1.0));
     let glide = 0.1;
     // One sample in, the pitch has barely moved; by `glide` seconds it has
     // settled to within 5% of the target.
@@ -5541,8 +5715,8 @@ fn lead_glide_slides_the_pitch_toward_the_new_note_without_a_jump() {
     }
     assert!(voice.hz() > 440.0 * 0.95, "pitch stalled: {}", voice.hz());
     // Zero glide jumps in one sample.
-    let mut instant = LeadVoice::new(220.0, 0.001, 1.0, SAMPLE_RATE);
-    instant.retrigger(440.0, 0.001, 1.0);
+    let mut instant = LeadVoice::new(220.0, lead_shape(0.001, 1.0), SAMPLE_RATE);
+    instant.retrigger(440.0, lead_shape(0.001, 1.0));
     instant.next(0.0, &LEAD_TYPES[0]);
     assert_close(instant.hz(), 440.0);
 }
@@ -5642,6 +5816,7 @@ fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
     lead.observe(LeadPlayState {
         presses: 1,
         tone: 5,
+        held: false,
     });
     assert!(quiet_for(&mut lead, 4_000, 4_000) > 0.05, "a press sounds");
     // The same state seen again is not a new press.
@@ -5650,11 +5825,13 @@ fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
         LeadPlayState {
             presses: 1,
             tone: 5,
+            held: false,
         },
     );
     lead_again.observe(LeadPlayState {
         presses: 1,
         tone: 5,
+        held: false,
     });
     assert_eq!(
         quiet_for(&mut lead_again, 0, 4_000),
@@ -5667,6 +5844,7 @@ fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
     silent.observe(LeadPlayState {
         presses: 1,
         tone: 5,
+        held: false,
     });
     let muted = LeadControls::default();
     for sample in 0..64 {
@@ -5683,7 +5861,7 @@ fn lead_types_render_at_a_matched_level() {
     let types: Vec<SoundVariant> = LEAD_TYPES
         .iter()
         .map(|recipe| {
-            let mut voice = LeadVoice::new(220.0, 0.005, 10.0, SAMPLE_RATE);
+            let mut voice = LeadVoice::new(220.0, lead_shape(0.005, 10.0), SAMPLE_RATE);
             let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
                 let sample = voice.next(0.0, recipe);
                 (sample, sample)
@@ -5696,7 +5874,7 @@ fn lead_types_render_at_a_matched_level() {
     let rms: Vec<f32> = LEAD_TYPES
         .iter()
         .map(|recipe| {
-            let mut voice = LeadVoice::new(220.0, 0.005, 10.0, SAMPLE_RATE);
+            let mut voice = LeadVoice::new(220.0, lead_shape(0.005, 10.0), SAMPLE_RATE);
             let out: Vec<f32> = (0..samples).map(|_| voice.next(0.0, recipe)).collect();
             crate::synth::fm::rms(&out)
         })

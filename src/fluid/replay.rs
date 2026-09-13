@@ -22,7 +22,7 @@ use super::coordinator::{
 use super::effect::{Clipboard, ClipboardError, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
-    InteractionMode, InteractionModel, LeadPlay, Navigation, NumericEntry, PaletteMode,
+    InteractionMode, InteractionModel, LeadDrill, LeadPlay, Navigation, NumericEntry, PaletteMode,
     PaletteStagedEdit, PerformanceInstrument, PerformanceKind, PerformanceMode, PhasePolicy,
     SemanticAction, SequenceStage,
 };
@@ -2029,12 +2029,77 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
     assert_eq!(played.effect_count("LeadOctave"), 1);
     assert_eq!(played.control("lead.octave"), Some(1.0));
     assert_eq!(
-        played.session_generation, 3,
-        "two presses and one octave edit"
+        played.session_generation, 4,
+        "two presses, one octave edit, and Esc releasing the held key"
     );
     assert_eq!(played.model.mode, InteractionMode::Browsing);
     assert!(played.deferred_inputs.is_empty());
     assert_eq!(played.effect_notice, None);
+}
+
+/// Ctrl+Q and Ctrl+C quit from inside play mode and the performance deck,
+/// not only from browsing: no keyboard owner traps the user.
+#[test]
+fn control_quit_reaches_the_lead_and_performance_owners() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    // Bit 1 is Control in the fixture encoding (`Modifiers::CONTROL`).
+    let quit = modified_key(0, FixtureKey::Character('c'), InputPhase::Press, 1 << 1);
+    let mut lead: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    lead.extend([plain(FixtureKey::Enter), quit.clone()]);
+    let lead = replay(&lead, TerminalCapabilities::full());
+    assert_eq!(lead.final_owner(), Some("LEAD"));
+    assert_eq!(lead.effect_count("Quit"), 1);
+    let deck = replay(
+        &[plain(FixtureKey::Character('p')), quit],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(deck.effect_count("Quit"), 1);
+}
+
+/// Enter on the Lead's Steps row opens the lane instead of play mode; the
+/// lane's own Enter plays, and Esc walks back to the Steps row.
+#[test]
+fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let mut trace: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    trace.extend(std::iter::repeat_n(plain(FixtureKey::Down), 9));
+    trace.push(plain(FixtureKey::Enter));
+    let opened = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(
+        opened.model.navigation,
+        Navigation::Lead {
+            selected: 0,
+            drill: LeadDrill::Pattern { return_to: 9 },
+        }
+    );
+    assert_eq!(opened.model.mode, InteractionMode::Browsing);
+
+    trace.extend([plain(FixtureKey::Down), plain(FixtureKey::Character('r'))]);
+    let rolled = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(rolled.effect_count("RandomizeSelected"), 1);
+    assert_eq!(rolled.session_generation, 1, "the roll edits step 2");
+
+    trace.extend([plain(FixtureKey::Enter), plain(FixtureKey::Escape)]);
+    let played = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(played.final_owner(), Some("BROWSE"));
+    assert_eq!(
+        played.model.navigation,
+        Navigation::Lead {
+            selected: 1,
+            drill: LeadDrill::Pattern { return_to: 9 },
+        },
+        "Esc leaves play mode but stays in the lane"
+    );
+
+    trace.push(plain(FixtureKey::Escape));
+    let back = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(
+        back.model.navigation,
+        Navigation::Lead {
+            selected: 9,
+            drill: LeadDrill::None,
+        }
+    );
 }
 
 /// `r` while browsing rolls the selected control; the same key inside an

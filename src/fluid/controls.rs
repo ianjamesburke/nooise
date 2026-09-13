@@ -279,10 +279,13 @@ pub(crate) const LEAD_STEP_COUNT: usize = 16;
 
 /// Default Lead pattern: a stepwise line over the chord tones so a fresh
 /// Lead is immediately musical once its level comes up. Step values index
-/// `LEAD_STEP_TONES` (0 = rest, 1..=4 chord tones, 5..=8 an octave up, 9 the
-/// root two octaves up).
+/// the Lead's reach (0 = rest, 1..=4 chord tones, 5..=8 an octave up, 9 the
+/// root two octaves up; in Scale follow the same nine walk the progression's
+/// scale). Only the default live length is authored; every step past it
+/// rests, so lengthening the lane adds silence to fill in, not notes to
+/// remove.
 pub(crate) const DEFAULT_LEAD_STEPS: [f32; LEAD_STEP_COUNT] = [
-    1.0, 2.0, 3.0, 5.0, 4.0, 3.0, 2.0, 0.0, 1.0, 3.0, 5.0, 6.0, 5.0, 3.0, 2.0, 0.0,
+    1.0, 2.0, 3.0, 5.0, 4.0, 3.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
 ];
 
 #[derive(Clone)]
@@ -293,6 +296,7 @@ pub(crate) struct LeadControls {
     pub(crate) glide: f32,      // seconds for a pitch change to settle
     pub(crate) voice_type: f32, // character selector; labels and range live in LEAD_TYPES
     pub(crate) octave: f32,     // whole octaves shifting every played tone
+    pub(crate) follow: f32,     // what the tones index: labels and range live in LEAD_FOLLOWS
     pub(crate) rate_beats: f32,
     pub(crate) offset_beats: f32,
     pub(crate) step_count: f32, // 1..=LEAD_STEP_COUNT live steps in the lane
@@ -308,9 +312,12 @@ impl Default for LeadControls {
             level: 0.0,
             attack: 0.02,
             decay: 0.5,
-            glide: 0.08,
+            // Settled within a 32nd at 82 BPM: audible as a slide between
+            // held notes, invisible as lag under a played line.
+            glide: 0.03,
             voice_type: 0.0,
             octave: 0.0,
+            follow: 0.0,
             rate_beats: 0.5,
             offset_beats: 0.0,
             step_count: 8.0,

@@ -10,7 +10,13 @@ use std::thread;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, Stream, StreamConfig};
+use cpal::{BufferSize, SampleFormat, Stream, StreamConfig, SupportedBufferSize};
+
+/// Frames per output callback. Left to the OS, CoreAudio hands over whatever
+/// buffer the device was last set to (512 on a stock Mac, more if another app
+/// raised it), and every played note waits that long. 256 frames is under 6 ms
+/// at 44.1 kHz and well inside the engine's per-sample budget.
+const LIVE_BUFFER_FRAMES: u32 = 256;
 
 pub(crate) trait StereoEngine: Send + 'static {
     fn next_stereo(&mut self) -> (f32, f32);
@@ -182,13 +188,16 @@ where
         .default_output_config()
         .map_err(AudioStartError::backend)?;
     let sample_format = supported_config.sample_format();
-    let stream_config: StreamConfig = supported_config.into();
+    let buffer_size = live_buffer_size(supported_config.buffer_size());
+    let mut stream_config: StreamConfig = supported_config.into();
+    stream_config.buffer_size = buffer_size;
     let sample_rate = stream_config.sample_rate.0 as f32;
 
     println!(
-        "running {app_id} at {} Hz on {}",
+        "running {app_id} at {} Hz on {} ({})",
         sample_rate as u32,
-        device.name().map_err(AudioStartError::backend)?
+        device.name().map_err(AudioStartError::backend)?,
+        describe_buffer(buffer_size)
     );
 
     let engine = engine_factory(sample_rate);
@@ -201,6 +210,25 @@ where
 
     stream.play().map_err(AudioStartError::backend)?;
     Ok(stream)
+}
+
+/// `LIVE_BUFFER_FRAMES` held inside the device's advertised range, so the
+/// request can never be refused. A device that advertises no range is left
+/// on its own default and says so in the startup line.
+fn live_buffer_size(supported: &SupportedBufferSize) -> BufferSize {
+    match *supported {
+        SupportedBufferSize::Range { min, max } => {
+            BufferSize::Fixed(LIVE_BUFFER_FRAMES.clamp(min, max))
+        }
+        SupportedBufferSize::Unknown => BufferSize::Default,
+    }
+}
+
+fn describe_buffer(size: BufferSize) -> String {
+    match size {
+        BufferSize::Fixed(frames) => format!("{frames}-frame buffer"),
+        BufferSize::Default => "device default buffer".to_string(),
+    }
 }
 
 fn build_stream<E, T, C>(

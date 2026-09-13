@@ -533,7 +533,7 @@ fn lead_keyboard_line(lead: LeadSurface) -> Line<'static> {
     let mut spans = vec![Span::styled("  ", BROWSE_PALETTE.style(false))];
     for (index, key) in LEAD_PLAY_KEYS.iter().enumerate() {
         let tone = index + 1;
-        let label = lead_step_label(tone as f32);
+        let label = lead_tone_label(tone, lead.reach_len);
         let lit = lead.last_tone == Some(tone);
         spans.push(Span::styled(
             format!("{key}{label} "),

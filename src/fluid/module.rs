@@ -491,7 +491,7 @@ impl Default for LayerModules {
             // The lead's "slightly distorted" character is the shared Drive
             // module, not a bespoke control, so a player can push it further
             // or take it off like any other effect.
-            lead: with_preset("drive", 0.3),
+            lead: with_preset("drive", 0.1),
             master: {
                 let mut slots = empty;
                 slots[0] = preset_slot("drive", 0.05);

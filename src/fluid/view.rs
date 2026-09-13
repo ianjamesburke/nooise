@@ -5,8 +5,9 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, Navigation,
-    PerformanceAction, PerformanceInstrument, PerformanceMode, PerformanceTargets, SequenceStage,
+    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, LeadDrill,
+    Navigation, PerformanceAction, PerformanceInstrument, PerformanceMode, PerformanceTargets,
+    SequenceStage,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -84,6 +85,7 @@ impl HelpSurface {
 pub(crate) struct NavigationView {
     pub(crate) tab: Tab,
     pub(crate) chord_drill: ChordDrill,
+    pub(crate) lead_drill: LeadDrill,
     pub(crate) module_slot: Option<usize>,
     pub(crate) selected: usize,
 }
@@ -155,6 +157,10 @@ pub(crate) struct LeadSurface {
     pub(crate) last_tone: Option<usize>,
     pub(crate) octave: i32,
     pub(crate) level_pct: u8,
+    /// `Some(false)` once a press showed the terminal reports no releases.
+    pub(crate) holds: Option<bool>,
+    /// Notes in the reach the keys index, so the row labels its degrees.
+    pub(crate) reach_len: usize,
 }
 
 /// Everything the palette overlay draws: the projected match list plus the
@@ -267,6 +273,7 @@ impl<'a> UiViewModel<'a> {
             Some(slot) => module_detail_controls(navigation.tab, slot, &session.controls),
             None => match navigation.tab {
                 Tab::Chords => chords_tab_controls(&session.controls, navigation.chord_drill),
+                Tab::Lead => lead_tab_controls(&session.controls, navigation.lead_drill),
                 tab => tab_controls(tab, &session.controls),
             },
         };
@@ -319,8 +326,10 @@ fn mode_surface<'a>(
         }
         InteractionMode::Lead(play) => ModeSurface::Lead(LeadSurface {
             last_tone: play.last_tone,
+            holds: play.holds,
             octave: controls.lead.octave.round() as i32,
             level_pct: (controls.lead.level * 100.0).round() as u8,
+            reach_len: lead_page_reach(&controls.lead, &controls.pad).len(),
         }),
         InteractionMode::Performance(PerformanceMode::Deck {
             selected,
@@ -478,17 +487,20 @@ fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> Aut
 }
 
 fn navigation_view(navigation: Navigation) -> NavigationView {
-    let (chord_drill, module_slot) = match navigation {
-        Navigation::Chords { drill, .. } => (drill, None),
-        Navigation::Standard { .. } | Navigation::Master { .. } => (ChordDrill::None, None),
-        Navigation::Module { slot, .. } => (ChordDrill::None, Some(slot)),
-    };
-    NavigationView {
+    let mut view = NavigationView {
         tab: navigation.tab(),
-        chord_drill,
-        module_slot,
+        chord_drill: ChordDrill::None,
+        lead_drill: LeadDrill::None,
+        module_slot: None,
         selected: navigation.selected(),
+    };
+    match navigation {
+        Navigation::Chords { drill, .. } => view.chord_drill = drill,
+        Navigation::Lead { drill, .. } => view.lead_drill = drill,
+        Navigation::Module { slot, .. } => view.module_slot = Some(slot),
+        Navigation::Standard { .. } | Navigation::Master { .. } => {}
     }
+    view
 }
 
 /// The single keyboard owner for a mode. Exhaustive over `InteractionMode` on
@@ -549,6 +561,9 @@ fn help_surface(
         (Tab::Chords, ChordDrill::Slot { slot, .. }, None) => {
             Some(format!("BROWSE · Chord {}   Esc: back", slot + 1))
         }
+        (Tab::Lead, _, None) if navigation.lead_drill != LeadDrill::None => {
+            Some("BROWSE · Pattern   r random   Enter: play   Esc: back".to_string())
+        }
         _ => None,
     };
     if let Some(text) = local_help {
@@ -572,6 +587,9 @@ fn help_surface(
 pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
     if lead.level_pct == 0 {
         return "LEAD · level is 0 · Esc, raise Level, Enter".to_string();
+    }
+    if lead.holds == Some(false) {
+        return format!("LEAD · no key-up here: taps only   oct {:+}", lead.octave);
     }
     format!("LEAD · asdfghjkl play   z/x oct {:+}   Esc", lead.octave)
 }
@@ -1087,7 +1105,10 @@ mod tests {
         session.controls.lead.octave = -1.0;
         let model = InteractionModel {
             navigation: Navigation::for_page(Page::Lead),
-            mode: InteractionMode::Lead(LeadPlay { last_tone: Some(3) }),
+            mode: InteractionMode::Lead(LeadPlay {
+                last_tone: Some(3),
+                ..LeadPlay::default()
+            }),
         };
         let frame = render_model_with_session(&model, &session);
         assert!(frame.contains("LEAD"), "{frame}");

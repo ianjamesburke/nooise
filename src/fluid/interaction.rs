@@ -64,12 +64,13 @@ impl Page {
     }
 }
 
-/// The navigation a layer opens on. Chords and Master own page-local drills
-/// no other layer can construct; the rest share one standard list.
+/// The navigation a layer opens on. Chords, Lead, and Master own page-local
+/// navigation no other layer can construct; the rest share one standard list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerNavigation {
     Chords,
     Standard(StandardPage),
+    Lead,
     Master,
 }
 
@@ -125,7 +126,7 @@ const LAYERS: [Layer; 9] = [
     Layer {
         page: Page::Lead,
         tab: Tab::Lead,
-        navigation: LayerNavigation::Standard(StandardPage::Lead),
+        navigation: LayerNavigation::Lead,
     },
     Layer {
         page: Page::Master,
@@ -147,6 +148,17 @@ pub(crate) enum ChordDrill {
     },
 }
 
+/// The Lead page's one drill: its step lane, opened from the Steps row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum LeadDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StandardPage {
     Perc,
@@ -155,7 +167,6 @@ pub(crate) enum StandardPage {
     Tonal,
     Clap,
     Arp,
-    Lead,
 }
 
 impl StandardPage {
@@ -168,8 +179,8 @@ impl StandardPage {
     }
 }
 
-/// Page-local navigation makes a Chords drill on Master, or a Master drill on
-/// any other page, impossible to construct.
+/// Page-local navigation makes a Chords drill on Master, a Lead drill on
+/// Chords, or a Master drill on any other page, impossible to construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Navigation {
     Chords {
@@ -179,6 +190,10 @@ pub(crate) enum Navigation {
     Standard {
         page: StandardPage,
         selected: usize,
+    },
+    Lead {
+        selected: usize,
+        drill: LeadDrill,
     },
     Master {
         selected: usize,
@@ -208,6 +223,10 @@ impl Navigation {
                 drill: ChordDrill::None,
             },
             LayerNavigation::Standard(page) => Self::Standard { page, selected: 0 },
+            LayerNavigation::Lead => Self::Lead {
+                selected: 0,
+                drill: LeadDrill::None,
+            },
             LayerNavigation::Master => Self::Master { selected: 0 },
         }
     }
@@ -216,6 +235,7 @@ impl Navigation {
         match self {
             Self::Chords { .. } => Page::Chords,
             Self::Standard { page, .. } => page.page(),
+            Self::Lead { .. } => Page::Lead,
             Self::Master { .. } => Page::Master,
             Self::Module { tab, .. } => page_for_tab(tab),
         }
@@ -229,6 +249,7 @@ impl Navigation {
         match self {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
+            | Self::Lead { selected, .. }
             | Self::Master { selected, .. }
             | Self::Module { selected, .. } => selected,
         }
@@ -238,6 +259,7 @@ impl Navigation {
         match self {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
+            | Self::Lead { selected, .. }
             | Self::Master { selected, .. }
             | Self::Module { selected, .. } => selected,
         }
@@ -261,11 +283,18 @@ impl Navigation {
                 }
                 ChordDrill::None => {}
             },
+            Self::Lead { selected, drill } => {
+                if let LeadDrill::Pattern { return_to } = *drill {
+                    *selected = return_to;
+                    *drill = LeadDrill::None;
+                }
+            }
             Self::Module { tab, return_to, .. } => {
                 let mut parent = Self::for_page(page_for_tab(*tab));
                 match &mut parent {
                     Self::Chords { selected, .. }
                     | Self::Standard { selected, .. }
+                    | Self::Lead { selected, .. }
                     | Self::Master { selected, .. } => *selected = *return_to,
                     Self::Module { .. } => {
                         unreachable!("page navigation cannot create a module drill")
@@ -614,7 +643,7 @@ pub(crate) enum InteractionMode {
     Lead(LeadPlay),
 }
 
-/// The letter row is the Lead keyboard: `a`–`l` play `LEAD_STEP_TONES` 1–9
+/// The letter row is the Lead keyboard: `a`–`l` play tones 1–9
 /// (the four chord tones, the same four an octave up, the root two up). The
 /// runtime maps keys through it and the view labels keys from it, so neither
 /// restates the row.
@@ -622,10 +651,14 @@ pub(crate) const LEAD_PLAY_KEYS: [char; 9] = ['a', 's', 'd', 'f', 'g', 'h', 'j',
 
 /// Lead play mode: the letter row plays chord tones on the Lead voice and
 /// `z`/`x` move its octave. Opened by Enter on the Lead page, closed by Esc.
-/// Only the last tone is remembered, for the surface to show.
+/// `held` is the tone whose key is down, when the terminal reports
+/// releases; `holds` remembers whether the last press could be held at
+/// all, so the surface can say when a terminal cannot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LeadPlay {
     pub(crate) last_tone: Option<usize>,
+    pub(crate) held: Option<usize>,
+    pub(crate) holds: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -659,6 +692,8 @@ pub(crate) enum Intent {
     Cancel,
     EnterChordProgression,
     EnterChordSlot(usize),
+    /// Open the Lead's step lane from its Steps row.
+    EnterLeadPattern,
     EnterModuleDetail {
         tab: Tab,
         slot: usize,
@@ -691,8 +726,14 @@ pub(crate) enum Intent {
     },
     FinishPerformanceSequence(PerformanceAction),
     EnterLeadPlay,
-    /// Index into `LEAD_STEP_TONES`, from the letter row.
-    PlayLeadTone(usize),
+    /// A 1-based Lead tone, from the letter row. `hold` is whether the
+    /// terminal will report the key's release, so the note can sustain.
+    PlayLeadTone {
+        tone: usize,
+        hold: bool,
+    },
+    /// The letter row key for a 1-based tone came up.
+    ReleaseLeadTone(usize),
     ShiftLeadOctave(i8),
     AdjustSelected(i8),
     ResetSelected,
@@ -735,10 +776,13 @@ impl Intent {
             Self::OpenAutomationField => &[ModeKind::Automation],
             Self::EnterChordProgression
             | Self::EnterChordSlot(_)
+            | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
             | Self::EnterLeadPlay
             | Self::RandomizeSelected => &[ModeKind::Browsing],
-            Self::PlayLeadTone(_) | Self::ShiftLeadOctave(_) => &[ModeKind::Lead],
+            Self::PlayLeadTone { .. } | Self::ReleaseLeadTone(_) | Self::ShiftLeadOctave(_) => {
+                &[ModeKind::Lead]
+            }
             Self::ChangePage(_)
             | Self::BeginNumeric(_)
             | Self::OpenPalette
@@ -751,9 +795,15 @@ impl Intent {
             | Self::ToggleMute { .. }
             | Self::RemoveAutomation
             | Self::ReseedAutomation
-            | Self::TouchSelected
-            | Self::Save
-            | Self::Quit => &[ModeKind::Browsing, ModeKind::Automation],
+            | Self::TouchSelected => &[ModeKind::Browsing, ModeKind::Automation],
+            // Ctrl+S / Ctrl+Q reach every owner but the palette (its own
+            // control chords) and numeric entry (swallows every chord).
+            Self::Save | Self::Quit => &[
+                ModeKind::Browsing,
+                ModeKind::Automation,
+                ModeKind::Performance,
+                ModeKind::Lead,
+            ],
             Self::ActivatePerformance(_) => &[ModeKind::Browsing, ModeKind::Performance],
             Self::SelectPerformanceInstrument { .. }
             | Self::ApplyPerformanceAction { .. }
@@ -774,12 +824,13 @@ impl Intent {
             | Self::Backspace
             | Self::AdjustSelected(_)
             | Self::ApplyPerformanceAction { .. } => PhasePolicy::Repeatable,
-            Self::ReleaseHeldSelector(_) | Self::FinishPerformanceSequence(_) => {
-                PhasePolicy::ReleaseOnly
-            }
+            Self::ReleaseHeldSelector(_)
+            | Self::FinishPerformanceSequence(_)
+            | Self::ReleaseLeadTone(_) => PhasePolicy::ReleaseOnly,
             Self::Cancel
             | Self::EnterChordProgression
             | Self::EnterChordSlot(_)
+            | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
             | Self::BeginNumeric(_)
             | Self::PaletteAutocomplete
@@ -791,7 +842,7 @@ impl Intent {
             | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
             | Self::EnterLeadPlay
-            | Self::PlayLeadTone(_)
+            | Self::PlayLeadTone { .. }
             | Self::ShiftLeadOctave(_)
             | Self::ResetSelected
             | Self::ToggleAuto
@@ -871,8 +922,14 @@ pub(crate) enum InteractionEffect {
         focus: PerformanceInstrument,
         action: PerformanceAction,
     },
-    /// Sound one Lead tone (index into `LEAD_STEP_TONES`) now.
-    LeadTone(usize),
+    /// Sound one Lead tone (1-based) now; a held tone sustains until
+    /// `LeadRelease`.
+    LeadTone {
+        tone: usize,
+        hold: bool,
+    },
+    /// Let the held Lead tone go.
+    LeadRelease,
     /// Step `lead.octave` by whole octaves.
     LeadOctave(i8),
     Save,
@@ -974,6 +1031,10 @@ impl InteractionModel {
                 let (drill, selected) = super::chords_drill_for_index(index, controls);
                 Navigation::Chords { selected, drill }
             }
+            Tab::Lead => {
+                let (drill, selected) = super::lead_drill_for_index(index, controls);
+                Navigation::Lead { selected, drill }
+            }
             Tab::Master => Navigation::Master { selected: index },
             _ => {
                 let mut navigation = Navigation::for_page(page_for_tab(tab));
@@ -1072,6 +1133,13 @@ fn update_browsing(
             {
                 *selected = 0;
                 *drill = ChordDrill::Slot { slot, return_to };
+            }
+        }
+        Intent::EnterLeadPattern => {
+            if let Navigation::Lead { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = LeadDrill::Pattern { return_to };
             }
         }
         Intent::EnterModuleDetail {
@@ -1363,12 +1431,29 @@ fn update_lead(
         return;
     }
     match intent {
-        Intent::Cancel => *next_mode = Some(InteractionMode::Browsing),
-        Intent::PlayLeadTone(tone) => {
+        Intent::Cancel => {
+            if play.held.take().is_some() {
+                effects.push(InteractionEffect::LeadRelease);
+            }
+            *next_mode = Some(InteractionMode::Browsing);
+        }
+        Intent::PlayLeadTone { tone, hold } => {
             play.last_tone = Some(tone);
-            effects.push(InteractionEffect::LeadTone(tone));
+            play.held = hold.then_some(tone);
+            play.holds = Some(hold);
+            effects.push(InteractionEffect::LeadTone { tone, hold });
+        }
+        // Only the key that owns the sounding note releases it: lifting an
+        // earlier key of a legato run leaves the newer note ringing.
+        Intent::ReleaseLeadTone(tone) => {
+            if play.held == Some(tone) {
+                play.held = None;
+                effects.push(InteractionEffect::LeadRelease);
+            }
         }
         Intent::ShiftLeadOctave(delta) => effects.push(InteractionEffect::LeadOctave(delta)),
+        Intent::Save => effects.push(InteractionEffect::Save),
+        Intent::Quit => effects.push(InteractionEffect::Quit),
         _ => {}
     }
 }
@@ -1413,6 +1498,8 @@ fn update_performance(
             }
         }
         Intent::ActivatePerformance(_) => {}
+        Intent::Save => effects.push(InteractionEffect::Save),
+        Intent::Quit => effects.push(InteractionEffect::Quit),
         Intent::SelectPerformanceInstrument { instrument, hold } => {
             match performance {
                 PerformanceMode::Deck {
@@ -1609,7 +1696,6 @@ mod tests {
             StandardPage::Tonal,
             StandardPage::Clap,
             StandardPage::Arp,
-            StandardPage::Lead,
         ] {
             assert_eq!(
                 Navigation::for_page(page.page()),
@@ -1654,7 +1740,10 @@ mod tests {
                 InteractionMode::Browsing,
             ),
             (
-                InteractionMode::Lead(LeadPlay { last_tone: Some(3) }),
+                InteractionMode::Lead(LeadPlay {
+                    last_tone: Some(3),
+                    ..LeadPlay::default()
+                }),
                 InteractionMode::Browsing,
             ),
         ];
@@ -1694,6 +1783,56 @@ mod tests {
             Navigation::Chords {
                 selected: 4,
                 drill: ChordDrill::None,
+            }
+        );
+    }
+
+    #[test]
+    fn lead_pattern_drill_opens_from_the_steps_row_and_cancels_back_to_it() {
+        let model = InteractionModel {
+            navigation: Navigation::Lead {
+                selected: 8,
+                drill: LeadDrill::None,
+            },
+            ..InteractionModel::default()
+        };
+        let opened = update(model, Intent::EnterLeadPattern).model;
+        assert_eq!(
+            opened.navigation,
+            Navigation::Lead {
+                selected: 0,
+                drill: LeadDrill::Pattern { return_to: 8 },
+            }
+        );
+        assert_eq!(
+            update(opened, Intent::Cancel).model.navigation,
+            Navigation::Lead {
+                selected: 8,
+                drill: LeadDrill::None,
+            }
+        );
+    }
+
+    #[test]
+    fn select_control_lands_a_lead_step_inside_the_pattern_drill() {
+        let controls = super::super::FluidControls::default();
+        let step = super::super::spec_index(Tab::Lead, "lead.step3").expect("step 3 is a row");
+        let steps = super::super::spec_index(Tab::Lead, "lead.steps").expect("steps is a row");
+        let mut model = InteractionModel::default();
+        model.select_control(Tab::Lead, step, &controls);
+        assert_eq!(
+            model.navigation,
+            Navigation::Lead {
+                selected: 2,
+                drill: LeadDrill::Pattern { return_to: steps },
+            }
+        );
+        model.select_control(Tab::Lead, steps, &controls);
+        assert_eq!(
+            model.navigation,
+            Navigation::Lead {
+                selected: steps,
+                drill: LeadDrill::None,
             }
         );
     }
