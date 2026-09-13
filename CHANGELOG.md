@@ -1,6 +1,14 @@
 # Changelog
 
 Newest releases appear first.
+## [2.1.0] — 2026-09-13
+
+### Added
+- feat: lead types, calibrated level, r to randomize a slider, row scrolling
+- feat: play the Lead from the letter row with Enter on its page
+- feat: add the Lead voice with a chord-tone step lane
+- feat: add the driven 75 BPM song as number 17, after its sibling 16
+- feat: restore the sparse 145 BPM song as number 14
 ## [2.0.1] — 2026-09-13
 
 ### Fixed
