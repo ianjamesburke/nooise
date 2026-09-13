@@ -552,15 +552,19 @@ struct ReplayHarness {
     violation: Option<PropertyViolation>,
 }
 
+/// Every replay rolls the same dice, so two runs of one trace agree.
+const REPLAY_RNG_SEED: u64 = 0x6E6F_6F69_7365;
+
 impl ReplayHarness {
     fn new(capabilities: TerminalCapabilities) -> Self {
         let session =
             LiveSession::new(LiveSessionSnapshot::from_controls(FluidControls::default()));
         // Replay has no audio callback, so acknowledge capture requests with
         // a deterministic empty bank newer than every request in the test.
-        let executor = EffectExecutor::new(
+        let executor = EffectExecutor::seeded(
             session,
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+            REPLAY_RNG_SEED,
         );
         let clock = FakeClock::new();
         Self {
@@ -1514,7 +1518,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("unit flip", vec![plain(FixtureKey::Character('t'))]),
         ("track mute", vec![plain(FixtureKey::Character('m'))]),
         ("master mute", vec![shift(FixtureKey::Character('M'))]),
-        ("reseed", vec![plain(FixtureKey::Character('r'))]),
+        ("randomize", vec![plain(FixtureKey::Character('r'))]),
         ("numeric", vec![plain(FixtureKey::Character('1'))]),
         ("touch", vec![plain(FixtureKey::Enter)]),
         ("save", vec![ctrl(FixtureKey::Character('s'))]),
@@ -1715,12 +1719,12 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 effects: vec!["ToggleMute { master: true }=>OK:Published { generation: 1 }"],
                 notice: None,
             },
-            "reseed" => ExpectedBinding {
+            "randomize" => ExpectedBinding {
                 owner: "BROWSE",
-                generation: 0,
+                generation: 1,
                 automation: None,
-                intents: vec![Intent::ReseedAutomation],
-                effects: vec!["ReseedAutomation=>OK:Published { generation: 0 }"],
+                intents: vec![Intent::RandomizeSelected],
+                effects: vec!["RandomizeSelected=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "numeric" => ExpectedBinding {
@@ -2031,6 +2035,41 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
     assert_eq!(played.model.mode, InteractionMode::Browsing);
     assert!(played.deferred_inputs.is_empty());
     assert_eq!(played.effect_notice, None);
+}
+
+/// `r` while browsing rolls the selected control; the same key inside an
+/// LFO editor reseeds the lane instead, so the two never collide.
+#[test]
+fn r_randomizes_the_selected_control_while_browsing_and_reseeds_inside_an_editor() {
+    let plain = |code| key(0, code, InputPhase::Press);
+
+    let rolled = replay(
+        &[plain(FixtureKey::Character('r'))],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(rolled.effect_count("RandomizeSelected"), 1);
+    assert_eq!(rolled.session_generation, 1);
+    let level = rolled.control("pad.level").unwrap();
+    assert!((0.0..=1.0).contains(&level));
+    let again = replay(
+        &[plain(FixtureKey::Character('r'))],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(
+        again.control("pad.level"),
+        Some(level),
+        "replay rolls the same dice"
+    );
+
+    let reseeded = replay(
+        &[
+            plain(FixtureKey::Character('f')),
+            plain(FixtureKey::Character('r')),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(reseeded.effect_count("ReseedAutomation"), 1);
+    assert_eq!(reseeded.effect_count("RandomizeSelected"), 0);
 }
 
 #[test]

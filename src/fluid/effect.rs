@@ -11,6 +11,7 @@ use std::fmt;
 use super::interaction::{InteractionEffect, Page, PaletteStagedEdit};
 use super::song::SongCodeError;
 use super::*;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 /// Why one effect in a transition's ordered list did not run.
 ///
@@ -194,16 +195,25 @@ pub(crate) struct EffectExecutor {
     recent: RecentControls,
     pending: Option<(f64, Vec<StagedEdit>)>,
     message: Option<(String, Instant)>,
+    /// The one source of randomness an effect may draw on (`r` rolls a
+    /// control). Seeded from entropy in production and from a fixed seed in
+    /// replay, so a replayed trace rolls the same values twice.
+    rng: StdRng,
 }
 
 impl EffectExecutor {
     pub(crate) fn new(session: LiveSession, auto: AutoControls) -> Self {
+        Self::seeded(session, auto, rand::random())
+    }
+
+    pub(crate) fn seeded(session: LiveSession, auto: AutoControls, seed: u64) -> Self {
         Self {
             session,
             auto,
             recent: RecentControls::default(),
             pending: None,
             message: None,
+            rng: StdRng::seed_from_u64(seed),
         }
     }
 
@@ -526,6 +536,7 @@ impl EffectExecutor {
             | InteractionEffect::ToggleMute { .. }
             | InteractionEffect::RemoveAutomation
             | InteractionEffect::ReseedAutomation
+            | InteractionEffect::RandomizeSelected
             | InteractionEffect::CloseAutomationAll
             | InteractionEffect::TouchSelected
             | InteractionEffect::PaletteCommitAtBar(_)
@@ -655,6 +666,17 @@ impl EffectExecutor {
                 );
             }),
             InteractionEffect::ReseedAutomation => self.with_automation(reseed_automation_effect),
+            InteractionEffect::RandomizeSelected => {
+                let id = selected_control(context.selected_control)?;
+                let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext("control"))?;
+                let ratio = self.rng.r#gen::<f32>();
+                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                    spec.apply_ratio(ratio, &mut snapshot.controls);
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::CloseAutomationAll => {
                 self.edit_navigation_automation(AutomationState::close_editor);
                 Ok(EffectAcknowledgement::NoChange)

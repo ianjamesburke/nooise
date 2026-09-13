@@ -103,19 +103,70 @@ pub(crate) fn lead_step_at(beat: f64, rate_beats: f32, offset_beats: f32, count:
     (position.floor() as i64).rem_euclid(count.max(1) as i64) as usize
 }
 
-/// Number of harmonics in the lead's additive saw. Steeper than a true saw's
-/// `1/n` would be bright enough already; the Drive module in the layer's
-/// factory chain adds the edge.
-const LEAD_HARMONIC_COUNT: usize = 8;
-/// Output trim balancing the summed stack against the other pitched voices.
-const LEAD_OUTPUT_GAIN: f32 = 0.45;
+/// Harmonics in a lead recipe's additive stack.
+pub(crate) const LEAD_HARMONIC_COUNT: usize = 8;
 /// Harmonics above this fraction of Nyquist are left out so high notes do not
 /// alias.
 const LEAD_NYQUIST_FRACTION: f32 = 0.45;
 
-/// The one sounding note: a variable-pitch additive saw with an attack/decay
-/// life. Pitch glides toward `target_hz` at a one-pole rate so a new note
-/// legato-slides from the last instead of jumping.
+/// One lead character: an additive stack of the first eight harmonics at
+/// these gains (signed, so a triangle's alternating partials are expressible),
+/// plus an output trim. Every recipe glides and envelopes identically; a
+/// type is only a spectrum.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LeadRecipe {
+    pub(crate) label: &'static str,
+    pub(crate) harmonics: [f32; LEAD_HARMONIC_COUNT],
+    /// Balances this stack's summed energy against the other types so
+    /// `lead_types_render_at_a_matched_level` holds; retune here, never in
+    /// the harmonics.
+    pub(crate) trim: f32,
+}
+
+/// Lead characters in stored order; `lead.type` wraps into this table.
+/// Trims are set so every type lands at the same RMS as `LEAD_LEVEL_TARGET`
+/// relative to Bass — a bright lead sounds louder than it measures, so the
+/// target sits below the other pitched voices rather than beside them.
+pub(crate) const LEAD_TYPES: [LeadRecipe; 5] = [
+    LeadRecipe {
+        label: "Saw",
+        harmonics: [1.0, 0.5, 0.333, 0.25, 0.2, 0.167, 0.143, 0.125],
+        trim: 0.165,
+    },
+    LeadRecipe {
+        label: "Square",
+        harmonics: [1.0, 0.0, 0.333, 0.0, 0.2, 0.0, 0.143, 0.0],
+        trim: 0.188,
+    },
+    LeadRecipe {
+        label: "Soft",
+        harmonics: [1.0, 0.0, -0.111, 0.0, 0.04, 0.0, -0.02, 0.0],
+        trim: 0.2025,
+    },
+    LeadRecipe {
+        label: "Pure",
+        harmonics: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        trim: 0.204,
+    },
+    LeadRecipe {
+        label: "Reed",
+        harmonics: [1.0, 0.7, 0.9, 0.4, 0.6, 0.2, 0.3, 0.1],
+        trim: 0.1185,
+    },
+];
+
+pub(crate) fn lead_recipe(value: f32) -> LeadRecipe {
+    LEAD_TYPES[wrapped_index(value, LEAD_TYPES.len())]
+}
+
+pub(crate) fn lead_type_label(value: f32) -> &'static str {
+    lead_recipe(value).label
+}
+
+/// The one sounding note: a variable-pitch additive stack with an
+/// attack/decay life. Pitch glides toward `target_hz` at a one-pole rate so a
+/// new note legato-slides from the last instead of jumping. The recipe is
+/// read per sample, so a Type edit reshapes the note already sounding.
 pub(crate) struct LeadVoice {
     phase: f32,
     hz: f32,
@@ -142,22 +193,24 @@ impl LeadVoice {
         self.envelope = Adsr::new(attack, decay, 0.0, decay, self.sample_rate);
     }
 
-    pub(crate) fn next(&mut self, glide: f32) -> f32 {
+    pub(crate) fn next(&mut self, glide: f32, recipe: &LeadRecipe) -> f32 {
         self.hz += (self.target_hz - self.hz) * glide_coefficient(glide, self.sample_rate);
         let mut raw = 0.0f32;
         let ceiling = self.sample_rate * LEAD_NYQUIST_FRACTION;
-        for harmonic in 1..=LEAD_HARMONIC_COUNT {
-            let n = harmonic as f32;
+        for (index, gain) in recipe.harmonics.iter().enumerate() {
+            let n = (index + 1) as f32;
             if self.hz * n > ceiling {
                 break;
             }
-            raw += (self.phase * n).sin() / n;
+            if *gain != 0.0 {
+                raw += (self.phase * n).sin() * gain;
+            }
         }
         self.phase += std::f32::consts::TAU * self.hz / self.sample_rate;
         if self.phase >= std::f32::consts::TAU {
             self.phase -= std::f32::consts::TAU;
         }
-        raw * LEAD_OUTPUT_GAIN * self.envelope.next()
+        raw * recipe.trim * self.envelope.next()
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -282,7 +335,7 @@ impl LeadEngine {
         let Some(voice) = &mut self.voice else {
             return (0.0, 0.0);
         };
-        let sample = voice.next(c.glide);
+        let sample = voice.next(c.glide, &lead_recipe(c.voice_type));
         if voice.is_done() {
             self.voice = None;
         }

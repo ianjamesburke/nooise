@@ -290,8 +290,9 @@ pub(crate) struct LeadControls {
     pub(crate) level: f32,
     pub(crate) attack: f32,
     pub(crate) decay: f32,
-    pub(crate) glide: f32,  // seconds for a pitch change to settle
-    pub(crate) octave: f32, // whole octaves shifting every played tone
+    pub(crate) glide: f32,      // seconds for a pitch change to settle
+    pub(crate) voice_type: f32, // character selector; labels and range live in LEAD_TYPES
+    pub(crate) octave: f32,     // whole octaves shifting every played tone
     pub(crate) rate_beats: f32,
     pub(crate) offset_beats: f32,
     pub(crate) step_count: f32, // 1..=LEAD_STEP_COUNT live steps in the lane
@@ -308,6 +309,7 @@ impl Default for LeadControls {
             attack: 0.02,
             decay: 0.5,
             glide: 0.08,
+            voice_type: 0.0,
             octave: 0.0,
             rate_beats: 0.5,
             offset_beats: 0.0,

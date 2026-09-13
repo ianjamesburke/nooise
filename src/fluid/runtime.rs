@@ -523,7 +523,6 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
         PhysicalKey::Character('t') => Intent::ToggleUnits,
         PhysicalKey::Character('x') => Intent::RemoveAutomation,
-        PhysicalKey::Character('r') => Intent::ReseedAutomation,
         PhysicalKey::Character(character) if starts_numeric_entry(character) => {
             Intent::BeginNumeric(character)
         }
@@ -533,6 +532,9 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
 
 fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent> {
     Some(match *code {
+        // `r` rolls the selected control's own dial; inside an automation
+        // editor the same key reseeds the open random lane instead.
+        PhysicalKey::Character('r') => Intent::RandomizeSelected,
         PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Sequence),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
@@ -551,6 +553,7 @@ fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
     match *code {
         // Enter stays inert while an automation editor owns the keyboard.
         PhysicalKey::Enter => None,
+        PhysicalKey::Character('r') => Some(Intent::ReseedAutomation),
         _ => slider_binding(code),
     }
 }
@@ -1750,7 +1753,7 @@ mod tests {
             ('m', Intent::ToggleMute { master: false }),
             ('t', Intent::ToggleUnits),
             ('x', Intent::RemoveAutomation),
-            ('r', Intent::ReseedAutomation),
+            ('r', Intent::RandomizeSelected),
         ] {
             assert!(matches!(
                 map_input(

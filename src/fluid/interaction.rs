@@ -703,6 +703,8 @@ pub(crate) enum Intent {
     },
     RemoveAutomation,
     ReseedAutomation,
+    /// Set the selected control to a random point on its own dial.
+    RandomizeSelected,
     TouchSelected,
     CommitPaletteAtBar,
     Save,
@@ -734,7 +736,8 @@ impl Intent {
             Self::EnterChordProgression
             | Self::EnterChordSlot(_)
             | Self::EnterModuleDetail { .. }
-            | Self::EnterLeadPlay => &[ModeKind::Browsing],
+            | Self::EnterLeadPlay
+            | Self::RandomizeSelected => &[ModeKind::Browsing],
             Self::PlayLeadTone(_) | Self::ShiftLeadOctave(_) => &[ModeKind::Lead],
             Self::ChangePage(_)
             | Self::BeginNumeric(_)
@@ -796,6 +799,7 @@ impl Intent {
             | Self::ToggleMute { .. }
             | Self::RemoveAutomation
             | Self::ReseedAutomation
+            | Self::RandomizeSelected
             | Self::TouchSelected
             | Self::CommitPaletteAtBar
             | Self::Save
@@ -854,6 +858,7 @@ pub(crate) enum InteractionEffect {
     },
     RemoveAutomation,
     ReseedAutomation,
+    RandomizeSelected,
     CloseAutomationAll,
     TouchSelected,
     PaletteCommitAtBar(Vec<PaletteStagedEdit>),
@@ -1127,6 +1132,7 @@ fn update_browsing(
         }
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
         Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
+        Intent::RandomizeSelected => effects.push(InteractionEffect::RandomizeSelected),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),

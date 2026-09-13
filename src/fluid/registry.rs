@@ -583,6 +583,42 @@ impl ControlSpec {
         (spec.set)(c, next.clamp(spec.min, spec.max));
     }
 
+    /// Set the control to the point `ratio` (0..=1) of the way along its own
+    /// dial, so a random draw lands evenly across what the bar shows rather
+    /// than across raw magnitude: a tapered time dial gets as much chance of
+    /// a short value as a long one, and a ladder gets each rung equally. The
+    /// ladders (`BeatGrid`, `PowerOfTwo`) have no inverse, so they are walked
+    /// with the control's own stepping and the rung at `ratio` is chosen.
+    pub(crate) fn apply_ratio(&self, ratio: f32, c: &mut FluidControls) {
+        let spec = self.contextual(c);
+        let ratio = ratio.clamp(0.0, 1.0);
+        let value = match spec.scale().value_at(ratio) {
+            Some(value) => spec.quantize(value),
+            None => {
+                let rungs = spec.rungs(c);
+                let index = ((ratio * rungs.len() as f32) as usize).min(rungs.len() - 1);
+                rungs[index]
+            }
+        };
+        (spec.set)(c, value);
+    }
+
+    /// Every value one arrow press can reach from the floor, ascending. Only
+    /// meaningful for the ladder steps; a linear row would be its whole grid.
+    fn rungs(&self, c: &FluidControls) -> Vec<f32> {
+        let mut scratch = c.clone();
+        (self.set)(&mut scratch, self.min);
+        let mut rungs = vec![self.quantize(self.min)];
+        loop {
+            self.apply_delta(1.0, &mut scratch);
+            let next = (self.get)(&scratch);
+            if rungs.last().is_some_and(|last| next <= *last) {
+                return rungs;
+            }
+            rungs.push(next);
+        }
+    }
+
     pub(crate) fn quantized_value(&self, c: &FluidControls) -> f32 {
         let spec = self.contextual(c);
         spec.quantize((spec.get)(c))
@@ -1625,6 +1661,18 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             lead.decay
         ),
         time_secs!("lead.glide", "Glide", 0.0, 1.0, 0.001, lead.glide),
+        ControlSpec::new(
+            "lead.type",
+            "Type",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_TYPES),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.voice_type,
+            |c, v| c.lead.voice_type = v,
+            |c| lead_type_label(c.lead.voice_type).to_string(),
+        ),
         ControlSpec::new(
             "lead.octave",
             "Octave",

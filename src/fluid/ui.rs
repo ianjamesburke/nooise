@@ -265,8 +265,12 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         rows.push(lead_keyboard_line(*lead));
         rows.push(Line::from(""));
     }
+    let mut selected_line = 0;
     for (i, item) in items.iter().enumerate() {
         let active = i == selected;
+        if active {
+            selected_line = rows.len();
+        }
         let address = ControlAddress::new(item.id);
         let editor_here =
             frame.automation.and_then(AutomationSurface::active_address) == Some(address);
@@ -371,7 +375,24 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             rows.push(Line::from(""));
         }
     }
-    f.render_widget(Paragraph::new(rows), area);
+    let scroll = row_scroll(selected_line, rows.len(), area.height);
+    f.render_widget(Paragraph::new(rows).scroll((scroll, 0)), area);
+}
+
+/// Lines to drop from the top so the selected row stays on screen. A row on
+/// the first screen never scrolls (the top of the page, including the Lead
+/// keyboard, stays put); past that, the selected row is shown with two lines
+/// under it so its own lanes stay in view. The list never scrolls past its
+/// own end.
+fn row_scroll(selected_line: usize, line_count: usize, height: u16) -> u16 {
+    let height = height.max(1) as usize;
+    if selected_line < height {
+        return 0;
+    }
+    let keep_below = 2;
+    let wanted = selected_line + 1 + keep_below - height;
+    let max_scroll = line_count.saturating_sub(height);
+    wanted.min(max_scroll) as u16
 }
 
 /// The rows of an open LFO editor and its inline step editor.
@@ -1037,4 +1058,24 @@ fn slider_spans(
 
 pub(crate) fn item_ratio(item: &ControlItem) -> f32 {
     control_dial(item).ratio()
+}
+
+#[cfg(test)]
+mod row_scroll_tests {
+    use super::row_scroll;
+
+    #[test]
+    fn selected_row_stays_on_screen_and_a_short_page_never_scrolls() {
+        // Everything fits, or the row is on the first screen: no scroll.
+        assert_eq!(row_scroll(0, 8, 10), 0);
+        assert_eq!(row_scroll(7, 8, 10), 0);
+        assert_eq!(row_scroll(9, 40, 10), 0);
+        // Selecting past the fold scrolls just enough to show the row and
+        // two lines under it.
+        assert_eq!(row_scroll(10, 40, 10), 3);
+        assert_eq!(row_scroll(20, 40, 10), 13);
+        // Never past the end of the list.
+        assert_eq!(row_scroll(39, 40, 10), 30);
+        assert_eq!(row_scroll(39, 40, 0), 39);
+    }
 }
