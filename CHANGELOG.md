@@ -1,6 +1,19 @@
 # Changelog
 
 Newest releases appear first.
+## [2.0.0] — 2026-09-13
+
+### Added
+- feat: one CLI grammar — a song is a number or a code
+- feat: make morph state 10 a variant of 9 instead of a tempo jump
+- feat: replace morph state 9 with the captured live track
+- feat: move kick's filter into the shared module chain
+
+### Fixed
+- fix: give morph state 8 its own kick back
+- fix: the AUTO footer names the song playing, not a morph that has not started
+- fix: give the morph states back their bass drive, perc filter LFOs, and a similar-sounding tail order
+- fix: restore the filters the morph states lost
 ## [1.10.0] — 2026-08-28
 
 ### Added
