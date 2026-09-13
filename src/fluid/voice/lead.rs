@@ -227,13 +227,30 @@ pub(crate) struct LeadVoice {
     sample_rate: f32,
 }
 
+/// A note's amplitude life: ramp in over `attack`, then either fall to
+/// silence over `decay` (a lane step, or a key the terminal cannot hold) or
+/// sustain at the peak while `hold` and fall over `decay` once released.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LeadShape {
+    pub(crate) attack: f32,
+    pub(crate) decay: f32,
+    pub(crate) hold: bool,
+}
+
+impl LeadShape {
+    fn envelope(self, sample_rate: f32) -> Adsr {
+        let sustain = if self.hold { 1.0 } else { 0.0 };
+        Adsr::new(self.attack, self.decay, sustain, self.decay, sample_rate)
+    }
+}
+
 impl LeadVoice {
-    pub(crate) fn new(hz: f32, attack: f32, decay: f32, sample_rate: f32) -> Self {
+    pub(crate) fn new(hz: f32, shape: LeadShape, sample_rate: f32) -> Self {
         Self {
             phase: 0.0,
             hz,
             target_hz: hz,
-            envelope: Adsr::new(attack, decay, 0.0, decay, sample_rate),
+            envelope: shape.envelope(sample_rate),
             sample_rate,
         }
     }
@@ -241,11 +258,16 @@ impl LeadVoice {
     /// Retarget the pitch and restart the envelope from its current level,
     /// without touching the oscillator phase: pitch, amplitude, and waveform
     /// are all continuous across the retrigger, so fast playing cannot click.
-    pub(crate) fn retrigger(&mut self, hz: f32, attack: f32, decay: f32) {
+    pub(crate) fn retrigger(&mut self, hz: f32, shape: LeadShape) {
         self.target_hz = hz;
-        let mut envelope = Adsr::new(attack, decay, 0.0, decay, self.sample_rate);
+        let mut envelope = shape.envelope(self.sample_rate);
         envelope.start_at(self.envelope.level());
         self.envelope = envelope;
+    }
+
+    /// End a held note's sustain; a decaying note is unaffected.
+    pub(crate) fn release(&mut self) {
+        self.envelope.note_off();
     }
 
     pub(crate) fn next(&mut self, glide: f32, recipe: &LeadRecipe) -> f32 {
@@ -298,6 +320,9 @@ pub(crate) struct LeadPlayState {
     pub(crate) presses: u64,
     /// The 1-based tone of the last press.
     pub(crate) tone: usize,
+    /// Whether that press's key is still down: a held note sustains, and
+    /// the flag dropping is its release.
+    pub(crate) held: bool,
 }
 
 pub(crate) struct LeadEngine {
@@ -308,7 +333,11 @@ pub(crate) struct LeadEngine {
     /// The last `LeadPlayState::presses` acted on; a snapshot with a higher
     /// count queues one played tone for the next sample.
     presses_seen: u64,
-    pending_press: Option<usize>,
+    /// Whether the last press seen is still held; the flag dropping without
+    /// a new press queues a release.
+    held_seen: bool,
+    pending_press: Option<(usize, bool)>,
+    pending_release: bool,
 }
 
 impl LeadEngine {
@@ -326,27 +355,44 @@ impl LeadEngine {
             step_trigger: GridTrigger::new(),
             voice: None,
             presses_seen: play.presses,
+            held_seen: play.held,
             pending_press: None,
+            pending_release: false,
         }
     }
 
     /// Adopt the latest published play state: a moved press count queues its
-    /// tone for the next sample.
+    /// tone for the next sample; a held flag that dropped queues a release.
     pub(crate) fn observe(&mut self, play: LeadPlayState) {
         if play.presses != self.presses_seen {
             self.presses_seen = play.presses;
-            self.pending_press = Some(play.tone);
+            self.pending_press = Some((play.tone, play.held));
+        } else if self.held_seen && !play.held {
+            self.pending_release = true;
         }
+        self.held_seen = play.held;
     }
 
     /// Start or slide to `note` now. A note that is still sounding is
     /// retriggered in place so the pitch glides; a finished one starts fresh
-    /// at pitch.
-    pub(crate) fn play(&mut self, note: i32, tune: f32, c: &LeadControls) {
+    /// at pitch. A held note sustains until `release`.
+    pub(crate) fn play(&mut self, note: i32, tune: f32, c: &LeadControls, hold: bool) {
         let hz = note_hz(note, tune);
+        let shape = LeadShape {
+            attack: c.attack,
+            decay: c.decay,
+            hold,
+        };
         match &mut self.voice {
-            Some(voice) if !voice.is_done() => voice.retrigger(hz, c.attack, c.decay),
-            _ => self.voice = Some(LeadVoice::new(hz, c.attack, c.decay, self.sample_rate)),
+            Some(voice) if !voice.is_done() => voice.retrigger(hz, shape),
+            _ => self.voice = Some(LeadVoice::new(hz, shape, self.sample_rate)),
+        }
+    }
+
+    /// Let a held note go: it decays from here.
+    pub(crate) fn release(&mut self) {
+        if let Some(voice) = &mut self.voice {
+            voice.release();
         }
     }
 
@@ -370,21 +416,27 @@ impl LeadEngine {
             // A silent layer plays nothing, so a Level of exactly 0 (the
             // default) never keeps a voice alive. A rest lets the current
             // note finish its decay untouched.
+            // The lane yields to a held key: the player owns the voice
+            // until the key comes up.
             if c.level != 0.0
+                && !self.held_seen
                 && let Some(tone) = lead_step_tone(c.steps[lane_step])
             {
                 let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, step);
-                self.play(reach.note(tone, c.octave), tune, c);
+                self.play(reach.note(tone, c.octave), tune, c, false);
             }
         }
         // A played key sounds the moment the engine sees it, on top of (and
         // sliding from) whatever the lane is doing.
-        if let Some(pressed) = self.pending_press.take()
+        if let Some((pressed, hold)) = self.pending_press.take()
             && c.level != 0.0
             && let Some(tone) = lead_step_tone(pressed as f32)
         {
             let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, step);
-            self.play(reach.note(tone, c.octave), tune, c);
+            self.play(reach.note(tone, c.octave), tune, c, hold);
+        }
+        if std::mem::take(&mut self.pending_release) {
+            self.release();
         }
 
         let Some(voice) = &mut self.voice else {

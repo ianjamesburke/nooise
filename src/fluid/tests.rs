@@ -5541,18 +5541,100 @@ fn lead_retrigger_keeps_the_envelope_continuous() {
     // A voice mid-attack retriggered onto a new pitch: the amplitude picks
     // up where it was rather than dropping to silence and re-attacking.
     let attack = 0.02;
-    let mut voice = LeadVoice::new(220.0, attack, 1.0, SAMPLE_RATE);
+    let mut voice = LeadVoice::new(220.0, lead_shape(attack, 1.0), SAMPLE_RATE);
     let recipe = &LEAD_TYPES[3]; // Pure: one harmonic, so amplitude is readable
     let mut last = 0.0;
     for _ in 0..(SAMPLE_RATE * attack * 0.5) as usize {
         last = voice.next(0.0, recipe);
     }
-    voice.retrigger(220.0, attack, 1.0);
+    voice.retrigger(220.0, lead_shape(attack, 1.0));
     let next = voice.next(0.0, recipe);
     let slope_bound = 220.0 * std::f32::consts::TAU / SAMPLE_RATE * 2.0;
     assert!(
         (next - last).abs() < slope_bound,
         "retrigger stepped the output: {last} -> {next}"
+    );
+}
+
+/// A lane-style note shape: attack, decay, no hold.
+fn lead_shape(attack: f32, decay: f32) -> LeadShape {
+    LeadShape {
+        attack,
+        decay,
+        hold: false,
+    }
+}
+
+#[test]
+fn lead_held_key_sustains_until_its_release_and_silences_the_lane() {
+    let pad = PadControls::default();
+    let rests = LeadControls {
+        level: 0.5,
+        attack: 0.005,
+        decay: 0.05,
+        step_count: 1.0,
+        steps: [0.0; LEAD_STEP_COUNT],
+        ..LeadControls::default()
+    };
+    let peak = |lead: &mut LeadEngine, c: &LeadControls, from: u64, samples: u64| -> f32 {
+        (from..from + samples)
+            .map(|sample| lead.next(c, &pad, 0.0, timing(sample, 120.0)).0.abs())
+            .fold(0.0, f32::max)
+    };
+    let held = LeadPlayState {
+        presses: 1,
+        tone: 3,
+        held: true,
+    };
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    lead.observe(held);
+    let half_second = (SAMPLE_RATE * 0.5) as u64; // ten decays long
+    assert!(
+        peak(&mut lead, &rests, 0, half_second) > 0.05,
+        "the held key sounds"
+    );
+    assert!(
+        peak(&mut lead, &rests, half_second, 2_000) > 0.05,
+        "still sounding half a second in: held, not decaying"
+    );
+    lead.observe(LeadPlayState {
+        held: false,
+        ..held
+    });
+    let released_at = half_second + 2_000;
+    let four_decays = (SAMPLE_RATE * 0.2) as u64;
+    peak(&mut lead, &rests, released_at, four_decays);
+    assert_eq!(
+        peak(&mut lead, &rests, released_at + four_decays, 2_000),
+        0.0,
+        "released, the note decayed out"
+    );
+
+    // With a lane of notes under it, the held key owns the voice: two
+    // seconds of eighth-note hits never move the pitch. Once the key is up
+    // the lane plays again.
+    let lane = LeadControls {
+        steps: [1.0; LEAD_STEP_COUNT],
+        ..rests.clone()
+    };
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    lead.observe(held);
+    peak(&mut lead, &lane, 0, 2_000);
+    let held_hz = lead.voice.as_ref().unwrap().hz();
+    let two_seconds = (SAMPLE_RATE * 2.0) as u64;
+    peak(&mut lead, &lane, 2_000, two_seconds);
+    assert_close_named(
+        lead.voice.as_ref().unwrap().hz(),
+        held_hz,
+        "pitch under a held key",
+    );
+    lead.observe(LeadPlayState {
+        held: false,
+        ..held
+    });
+    assert!(
+        peak(&mut lead, &lane, 2_000 + two_seconds, half_second) > 0.05,
+        "the lane plays again once the key is up"
     );
 }
 
@@ -5621,8 +5703,8 @@ fn lead_scale_follow_walks_the_progression_scale_from_its_tonic() {
 
 #[test]
 fn lead_glide_slides_the_pitch_toward_the_new_note_without_a_jump() {
-    let mut voice = LeadVoice::new(220.0, 0.001, 1.0, SAMPLE_RATE);
-    voice.retrigger(440.0, 0.001, 1.0);
+    let mut voice = LeadVoice::new(220.0, lead_shape(0.001, 1.0), SAMPLE_RATE);
+    voice.retrigger(440.0, lead_shape(0.001, 1.0));
     let glide = 0.1;
     // One sample in, the pitch has barely moved; by `glide` seconds it has
     // settled to within 5% of the target.
@@ -5633,8 +5715,8 @@ fn lead_glide_slides_the_pitch_toward_the_new_note_without_a_jump() {
     }
     assert!(voice.hz() > 440.0 * 0.95, "pitch stalled: {}", voice.hz());
     // Zero glide jumps in one sample.
-    let mut instant = LeadVoice::new(220.0, 0.001, 1.0, SAMPLE_RATE);
-    instant.retrigger(440.0, 0.001, 1.0);
+    let mut instant = LeadVoice::new(220.0, lead_shape(0.001, 1.0), SAMPLE_RATE);
+    instant.retrigger(440.0, lead_shape(0.001, 1.0));
     instant.next(0.0, &LEAD_TYPES[0]);
     assert_close(instant.hz(), 440.0);
 }
@@ -5734,6 +5816,7 @@ fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
     lead.observe(LeadPlayState {
         presses: 1,
         tone: 5,
+        held: false,
     });
     assert!(quiet_for(&mut lead, 4_000, 4_000) > 0.05, "a press sounds");
     // The same state seen again is not a new press.
@@ -5742,11 +5825,13 @@ fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
         LeadPlayState {
             presses: 1,
             tone: 5,
+            held: false,
         },
     );
     lead_again.observe(LeadPlayState {
         presses: 1,
         tone: 5,
+        held: false,
     });
     assert_eq!(
         quiet_for(&mut lead_again, 0, 4_000),
@@ -5759,6 +5844,7 @@ fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
     silent.observe(LeadPlayState {
         presses: 1,
         tone: 5,
+        held: false,
     });
     let muted = LeadControls::default();
     for sample in 0..64 {
@@ -5775,7 +5861,7 @@ fn lead_types_render_at_a_matched_level() {
     let types: Vec<SoundVariant> = LEAD_TYPES
         .iter()
         .map(|recipe| {
-            let mut voice = LeadVoice::new(220.0, 0.005, 10.0, SAMPLE_RATE);
+            let mut voice = LeadVoice::new(220.0, lead_shape(0.005, 10.0), SAMPLE_RATE);
             let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
                 let sample = voice.next(0.0, recipe);
                 (sample, sample)
@@ -5788,7 +5874,7 @@ fn lead_types_render_at_a_matched_level() {
     let rms: Vec<f32> = LEAD_TYPES
         .iter()
         .map(|recipe| {
-            let mut voice = LeadVoice::new(220.0, 0.005, 10.0, SAMPLE_RATE);
+            let mut voice = LeadVoice::new(220.0, lead_shape(0.005, 10.0), SAMPLE_RATE);
             let out: Vec<f32> = (0..samples).map(|_| voice.next(0.0, recipe)).collect();
             crate::synth::fm::rms(&out)
         })

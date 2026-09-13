@@ -490,7 +490,7 @@ pub(crate) fn map_input(
         }
         InteractionMode::Lead(_) => {
             if unmodified {
-                lead_binding(&key.code)
+                lead_binding(&key.code, *phase, capabilities)
             } else {
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
@@ -668,18 +668,33 @@ fn performance_binding(
 }
 
 /// `z`/`x` drop/raise the octave; the letter row plays `LEAD_PLAY_KEYS`.
-/// Every press is an edge; autorepeat plays nothing.
-fn lead_binding(code: &PhysicalKey) -> Option<Intent> {
+/// Every press is an edge; autorepeat plays nothing. Where the terminal
+/// reports releases a press holds its note and the release lets it go;
+/// elsewhere a press can only sound an attack/decay note.
+fn lead_binding(
+    code: &PhysicalKey,
+    phase: InputPhase,
+    capabilities: TerminalCapabilities,
+) -> Option<Intent> {
     let PhysicalKey::Character(character) = code else {
         return None;
     };
     match character {
         'z' => Some(Intent::ShiftLeadOctave(-1)),
         'x' => Some(Intent::ShiftLeadOctave(1)),
-        _ => LEAD_PLAY_KEYS
-            .iter()
-            .position(|key| key == character)
-            .map(|index| Intent::PlayLeadTone(index + 1)),
+        _ => {
+            let tone = LEAD_PLAY_KEYS
+                .iter()
+                .position(|key| key == character)
+                .map(|index| index + 1)?;
+            Some(match phase {
+                InputPhase::Release => Intent::ReleaseLeadTone(tone),
+                InputPhase::Press | InputPhase::Repeat => Intent::PlayLeadTone {
+                    tone,
+                    hold: capabilities.supports_holds(),
+                },
+            })
+        }
     }
 }
 

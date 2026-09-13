@@ -157,6 +157,8 @@ pub(crate) struct LeadSurface {
     pub(crate) last_tone: Option<usize>,
     pub(crate) octave: i32,
     pub(crate) level_pct: u8,
+    /// `Some(false)` once a press showed the terminal reports no releases.
+    pub(crate) holds: Option<bool>,
     /// Notes in the reach the keys index, so the row labels its degrees.
     pub(crate) reach_len: usize,
 }
@@ -324,6 +326,7 @@ fn mode_surface<'a>(
         }
         InteractionMode::Lead(play) => ModeSurface::Lead(LeadSurface {
             last_tone: play.last_tone,
+            holds: play.holds,
             octave: controls.lead.octave.round() as i32,
             level_pct: (controls.lead.level * 100.0).round() as u8,
             reach_len: lead_page_reach(&controls.lead, &controls.pad).len(),
@@ -584,6 +587,9 @@ fn help_surface(
 pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
     if lead.level_pct == 0 {
         return "LEAD · level is 0 · Esc, raise Level, Enter".to_string();
+    }
+    if lead.holds == Some(false) {
+        return format!("LEAD · no key-up here: taps only   oct {:+}", lead.octave);
     }
     format!("LEAD · asdfghjkl play   z/x oct {:+}   Esc", lead.octave)
 }
@@ -1099,7 +1105,10 @@ mod tests {
         session.controls.lead.octave = -1.0;
         let model = InteractionModel {
             navigation: Navigation::for_page(Page::Lead),
-            mode: InteractionMode::Lead(LeadPlay { last_tone: Some(3) }),
+            mode: InteractionMode::Lead(LeadPlay {
+                last_tone: Some(3),
+                ..LeadPlay::default()
+            }),
         };
         let frame = render_model_with_session(&model, &session);
         assert!(frame.contains("LEAD"), "{frame}");

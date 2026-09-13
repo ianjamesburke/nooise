@@ -651,10 +651,14 @@ pub(crate) const LEAD_PLAY_KEYS: [char; 9] = ['a', 's', 'd', 'f', 'g', 'h', 'j',
 
 /// Lead play mode: the letter row plays chord tones on the Lead voice and
 /// `z`/`x` move its octave. Opened by Enter on the Lead page, closed by Esc.
-/// Only the last tone is remembered, for the surface to show.
+/// `held` is the tone whose key is down, when the terminal reports
+/// releases; `holds` remembers whether the last press could be held at
+/// all, so the surface can say when a terminal cannot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LeadPlay {
     pub(crate) last_tone: Option<usize>,
+    pub(crate) held: Option<usize>,
+    pub(crate) holds: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -722,8 +726,14 @@ pub(crate) enum Intent {
     },
     FinishPerformanceSequence(PerformanceAction),
     EnterLeadPlay,
-    /// A 1-based Lead tone, from the letter row.
-    PlayLeadTone(usize),
+    /// A 1-based Lead tone, from the letter row. `hold` is whether the
+    /// terminal will report the key's release, so the note can sustain.
+    PlayLeadTone {
+        tone: usize,
+        hold: bool,
+    },
+    /// The letter row key for a 1-based tone came up.
+    ReleaseLeadTone(usize),
     ShiftLeadOctave(i8),
     AdjustSelected(i8),
     ResetSelected,
@@ -770,7 +780,9 @@ impl Intent {
             | Self::EnterModuleDetail { .. }
             | Self::EnterLeadPlay
             | Self::RandomizeSelected => &[ModeKind::Browsing],
-            Self::PlayLeadTone(_) | Self::ShiftLeadOctave(_) => &[ModeKind::Lead],
+            Self::PlayLeadTone { .. } | Self::ReleaseLeadTone(_) | Self::ShiftLeadOctave(_) => {
+                &[ModeKind::Lead]
+            }
             Self::ChangePage(_)
             | Self::BeginNumeric(_)
             | Self::OpenPalette
@@ -812,9 +824,9 @@ impl Intent {
             | Self::Backspace
             | Self::AdjustSelected(_)
             | Self::ApplyPerformanceAction { .. } => PhasePolicy::Repeatable,
-            Self::ReleaseHeldSelector(_) | Self::FinishPerformanceSequence(_) => {
-                PhasePolicy::ReleaseOnly
-            }
+            Self::ReleaseHeldSelector(_)
+            | Self::FinishPerformanceSequence(_)
+            | Self::ReleaseLeadTone(_) => PhasePolicy::ReleaseOnly,
             Self::Cancel
             | Self::EnterChordProgression
             | Self::EnterChordSlot(_)
@@ -830,7 +842,7 @@ impl Intent {
             | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
             | Self::EnterLeadPlay
-            | Self::PlayLeadTone(_)
+            | Self::PlayLeadTone { .. }
             | Self::ShiftLeadOctave(_)
             | Self::ResetSelected
             | Self::ToggleAuto
@@ -910,8 +922,14 @@ pub(crate) enum InteractionEffect {
         focus: PerformanceInstrument,
         action: PerformanceAction,
     },
-    /// Sound one Lead tone (1-based) now.
-    LeadTone(usize),
+    /// Sound one Lead tone (1-based) now; a held tone sustains until
+    /// `LeadRelease`.
+    LeadTone {
+        tone: usize,
+        hold: bool,
+    },
+    /// Let the held Lead tone go.
+    LeadRelease,
     /// Step `lead.octave` by whole octaves.
     LeadOctave(i8),
     Save,
@@ -1413,10 +1431,25 @@ fn update_lead(
         return;
     }
     match intent {
-        Intent::Cancel => *next_mode = Some(InteractionMode::Browsing),
-        Intent::PlayLeadTone(tone) => {
+        Intent::Cancel => {
+            if play.held.take().is_some() {
+                effects.push(InteractionEffect::LeadRelease);
+            }
+            *next_mode = Some(InteractionMode::Browsing);
+        }
+        Intent::PlayLeadTone { tone, hold } => {
             play.last_tone = Some(tone);
-            effects.push(InteractionEffect::LeadTone(tone));
+            play.held = hold.then_some(tone);
+            play.holds = Some(hold);
+            effects.push(InteractionEffect::LeadTone { tone, hold });
+        }
+        // Only the key that owns the sounding note releases it: lifting an
+        // earlier key of a legato run leaves the newer note ringing.
+        Intent::ReleaseLeadTone(tone) => {
+            if play.held == Some(tone) {
+                play.held = None;
+                effects.push(InteractionEffect::LeadRelease);
+            }
         }
         Intent::ShiftLeadOctave(delta) => effects.push(InteractionEffect::LeadOctave(delta)),
         Intent::Save => effects.push(InteractionEffect::Save),
@@ -1707,7 +1740,10 @@ mod tests {
                 InteractionMode::Browsing,
             ),
             (
-                InteractionMode::Lead(LeadPlay { last_tone: Some(3) }),
+                InteractionMode::Lead(LeadPlay {
+                    last_tone: Some(3),
+                    ..LeadPlay::default()
+                }),
                 InteractionMode::Browsing,
             ),
         ];

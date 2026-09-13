@@ -544,7 +544,8 @@ impl EffectExecutor {
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_)
             | InteractionEffect::PerformanceEdit { .. }
-            | InteractionEffect::LeadTone(_)
+            | InteractionEffect::LeadTone { .. }
+            | InteractionEffect::LeadRelease
             | InteractionEffect::LeadOctave(_)) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
@@ -704,11 +705,20 @@ impl EffectExecutor {
             // A played note is a gesture over the song, not an edit of it:
             // it publishes through the session so the audio thread sees it,
             // but never exits auto — soloing over a morph is the point.
-            InteractionEffect::LeadTone(tone) => {
+            InteractionEffect::LeadTone { tone, hold } => {
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.lead_play.presses = snapshot.lead_play.presses.wrapping_add(1);
                     snapshot.lead_play.tone = tone;
+                    snapshot.lead_play.held = hold;
                 });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::LeadRelease => {
+                let snapshot = self
+                    .session
+                    .update(|snapshot| snapshot.lead_play.held = false);
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })

@@ -2029,8 +2029,8 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
     assert_eq!(played.effect_count("LeadOctave"), 1);
     assert_eq!(played.control("lead.octave"), Some(1.0));
     assert_eq!(
-        played.session_generation, 3,
-        "two presses and one octave edit"
+        played.session_generation, 4,
+        "two presses, one octave edit, and Esc releasing the held key"
     );
     assert_eq!(played.model.mode, InteractionMode::Browsing);
     assert!(played.deferred_inputs.is_empty());
