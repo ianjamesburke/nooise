@@ -700,7 +700,7 @@ impl ReplayHarness {
         let session = self.executor.session().load();
         let auto_running = self
             .executor
-            .auto_morph_ids(self.clock.now().as_secs_f64())
+            .auto_position(self.clock.now().as_secs_f64())
             .is_some();
         let recent_ids = self.executor.recent().ids().to_vec();
         let result = ReplayResult {

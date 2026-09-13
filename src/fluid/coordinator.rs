@@ -408,10 +408,22 @@ pub(crate) fn production_ui_loop(
                 let plural = if edits.len() == 1 { "" } else { "s" };
                 format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
             });
-            let auto_message = effects.auto_morph_ids(beat).map(|(from, to)| {
-                let from = from.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
-                let to = to.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
-                format!("\u{25cf} AUTO morph {from} \u{2192} {to}   a or touch any param to exit")
+            let auto_message = effects.auto_position(beat).map(|position| {
+                let name =
+                    |id: Option<usize>| id.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
+                // Naming the pair through the hold would announce a morph that
+                // has not started; say what is sounding, and only show the
+                // crossing once it is actually under way.
+                let stage = match position.blend {
+                    None => format!("song {}", name(position.playing)),
+                    Some(blend) => format!(
+                        "song {} \u{2192} {}  {:.0}%",
+                        name(position.playing),
+                        name(position.next),
+                        blend * 100.0
+                    ),
+                };
+                format!("\u{25cf} AUTO {stage}   a or touch any param to exit")
             });
             let view = UiViewModel::project(ViewProjection {
                 interaction: &model,

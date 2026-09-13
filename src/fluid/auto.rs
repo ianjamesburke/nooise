@@ -97,9 +97,9 @@ const AUTO_STATES: &[&str] = &[
     "n1_Tk9PSQIAewAAABoAAAAA69EBAABUUwIAAEhhBAADAgUAAwQGAAMICAAAhWsJAADrUQoAAGZmEAADABUAAwUaAAMEfAAAM7OVAAHmA8UAAkow-0RNAAB7FE8AABRyUAADA1MAAwFUAAMEVwAAAADcAAAehd4AAwLfAAA9CnEAAEhIdwADBQEqAAAAAgBPAAAAgEFcDwAAAAAA_60XCE0AAACAQCkcAgAAwD83UFCgAAAAAAAA",
     "n1_Tk9PSQIA0QAAACoAAAAA69EBAABUUwIAAEhhBAADAgUAAwQGAAMICAAAhWsJAADrUQoAAGZmEAADABUAAwUaAAMEfAAAM7MzAABcDzUAANIbNgACAAAAPpUAAdUBQwAAHwVIAAIAAAA_xQAC-e3QRE0AAD0KTwAAFHJQAAMDUwADAVQAAwRXAAAAANwAAB6F3gADAt8AAD0KWgAAuB5bAAB7FFwAAAtdYAAA-ZhiAABSOPQAAHsUYwAAUjhkAABxJmUAAP89ZwACAACAPgwBAFyPcQAASEh3AAMFAW4AAAAGAGUAAAAAQR8FAAAAAACWKStpQwAAAABAzQwCAAAAAPMyO4c1AAAAQEGPAgAAAAAAwhjLfpUAAABAQdQUAAAAAAAAAAAATwAAAIBBXA8AAAAAAP-tFwhNAAAAgEApHAIAAMA_N1BQoAAAAAAAAA",
     "n1_Tk9PSQIA0AAAACwAAAAAR-EBAAAJOwIAAOtEAwADAgQAAwIGAAMICAAAAIAOAAMBEAADARQAAwEYAAMBGgADAh0AAwEeAAMBHwADBSIAAwEkAAMCJwADASkAAwQsAAMBLgADBjEAAwIyAAMBfAAAAIAzAABcDzUAAH0WNgACAAAAP5UAAYAISAACAACAPsUAAvnt0ERaAAAzM1sAAKNwXAAACz1eAAMAYwAArkdlAACqSGsAAwIMAQAJ13EAAFRUcgAAM7N2AABmhjwCALgeRgICAAAgQEgCA30BTAAAAAQAZQAAAIBAPQoAAAAAQJYpK2lnAAAAAEDXIwYAAAAAGL6w-0MAAADAPwoXBAAAAADzMjuHNQAAAIBBjwIAAACAQMIYy34AAAAAAAA",
-    "n1_Tk9PSQIArgAAACUAAAAAHoUBAAAAAAIAAAAABAADAQYAAwgLAAP-EAADABUAA_4aAAMAHwADAyIAAwEkAAMEJwADASkAAwAtAAMCLgADADEAAwEyAAMCMwAAexQ1AAB9FjYAAwE3AAIAAAA_lQABgAhDAABwPUUAAKBnRgAABCpHAAMCSwAAAADFAAJBi5BExwAAcD1OAAAAAE8AAKoqUgADAVMAAgAAgD5UAAMDVwAAAABxAACEhAE7AAAAAgBIAAAAAD-kMAcAAAAAINAEzgcAAP9__3__f_9__3-ZGWYGTwAAAIBBjwIAAAAAAP-tFwgAAAAAAAA",
+    "n1_Tk9PSQIArgAAACUAAAAAHoUBAAAAAAIAAAAABAADAQYAAwgLAAP-EAADABUAA_4aAAMAHwADAyIAAwEkAAMEJwADASkAAwAtAAMCLgADADEAAwEyAAMCMwAAexQ1AAB9FjYAAwE3AAIAAAA_lQABgAhDAACZGUUAAPVMRgAABBpHAAMCSwAAzQzFAALIkCVFxwAAj0JOAAAAAE8AAKoqUgADAVMAAgAAgD5UAAMDVwAAAABxAACEhAE7AAAAAgBIAAAAAD-kMAcAAAAAINAEzgcAAP9__3__f_9__3-ZGWYGTwAAAIBBjwIAAAAAAP-tFwgAAAAAAAA",
     "n1_Tk9PSQIACQEAADcAAAAAPYoBAAAAAAIAAAAABAADAQYAAwgLAAP-EAADABUAA_4aAAMAHwADAyIAAwEkAAMEJwADASkAAwAtAAMCLgADADIAAwIzAAAfBTUAACcRNgADATcAAgAAAD-VAAHmAzkAAFG4OwAADwM8AADYnz0AAwFAAAMCrwAAj0JDAABwPUUAAKBnRgAABCpHAAMCSwAAAADFAAJBi5BExwAAcD1NAABwPU4AAAAgTwAAqipSAAMBUwACAACAPlQAAwNXAAAAANwAAD0KWgAAuB5bAADrUVwAALZnYAAAqlpiAAAAAGQAAMcLZQAA_m1mAAMCZwACAADAP3EAAISERQID80YCAgAAMEABbgAAAAUAQAAAAIBA4ToEAAAAACzI6VlcAAAAgEGZGQAAAAAA3JDYIkgAAAAAP6QwBwAAAAAg0ATOBwAA_3__f_9__3__f5kZZgZPAAAAgEGPAgAAAAAA_60XCE0AAACAQesRAAAAgEA3UFCgAAAAAAAAAkIAAAABDC0AAAA0AAAAOQAAADwAAAA5AAAANAAAADIAAAAwAAAAMgAAADcAAAA0AAAALQAAAK5ywNW3kSM8AAAAAAAAAAA",
-    "n1_Tk9PSQIAUQAAABAAAAAAUbgBAAAAAAIAAAAABgADBpUAAeYDQwAAmRlHAAMCxQACyJAlRccAAK5HTQAAzExOAAAAAE8AAGlXUgADAlcAAAAA3AAAhWtxAAAtrQFwAAAABQBIAAAAAD8AgAcAAAAAINAEzggAAJlZ_38zU_9f_3__f5lZMnPFAAAAAEB7FAAAAABAbfxfLgAAAAAAP-tRAAAAAACy2to0TwAAAABCzQwAAACAQP-tFwhNAAAAgD7CNQAAAAAAN1BQoAAAAAAAAAIyAAAAAgg5AAAAPAAAAEAAAAA-AAAAPAAAADkAAAA0AAAANwAAAJdzG9POIH0TAAAAAAAAAAA",
+    "n1_Tk9PSQIAFAEAADkAAAAAPYoBAAAAAAIAAAAABAADAQYAAwgLAAP-EAADABUAA_4aAAMAHwADAyIAAwEkAAMEJwADASkAAwAtAAMCLgADADIAAwIzAACPQjUAACcRNgADATcAAgAAAD-VAAKeG7dEOQAAAIA7AAAPAzwAAC2lPQADAUAAAwKvAACPQkMAAHA9RQAAoGdGAAAEKkcAAwJLAAAAAMUAAkGLkETHAABwPU0AAK5HTgAAACBPAACqKlIAAwFTAAIAAIA-VAADA1cAAAAA3AAAPQpaAADXI1sAAOtRXAAAtmdgAACqWmIAAAAAZAAAxwtlAABTY2YAAwJnAAIAAMA_awADAgwBAPYocQAAhIRFAgPzRgICAAAwQAGQAAAABwBAAAAAgEDhOgQAAAAALMjpWVwAAACAQZkZAAAAAADckNgiSAAAAAA_pDAHAAAAACDQBM4HAAD_f_9__3__f_9_mRlmBsUAAAAAQAAAAAAAAEBt_F8uAAAAAAA_AAAAAAAAALLa2jRPAAAAgEGPAgAAAAAA_60XCE0AAACAQesRAAAAgEA3UFCgAAAAAAAAAkIAAAABDC0AAAA0AAAAOQAAADwAAAA5AAAANAAAADIAAAAwAAAAMgAAADcAAAA0AAAALQAAAD5v5qhwOHCOAAAAAAAAAAA",
     "n1_Tk9PSQIAPAEAAEEAAAAArkcBAADBJwIAAGkuAwADAgUAAwQGAAMICAAAAAAJAAAAAAoAAAAADwADARAAAwUTAAMBFQADBBgAAwEaAAMHHQADAXwAAAAAMwAAexQ1AAB9FjYAAgAAAD-TAAMClAAAPQqVAAMAlgADCJcAAP__mAABhQE8AACDej0AAwFAAAMDrQABIAOvAADrUUMAAFwPRQAAoEdGAACuNEcAAwJIAAMCSgAA_9dLAABmJsUAAvRmNkTHAAAKV00AANcjTgAAAABPAAAUQlIAAwFTAAIAAMA_VAADA1cAAAAA3AAAMzNbAAC4HlwAAGFSZAAAHBFlAAD_TWYAAwdnAAIAAIA-agADAWsAAwIMAQBSOHEAACSkdgAAmZk8AgC4HkQCAMxMRQID9UYCAgAAIEBIAgGQAEkCAgAAYEABRgAAAAMAAAAAAIA_KRwCAAAAALLa2jQ1AAAAAEKPAgAAAAAAwhjLfjYAAACAPwCABwAAAAC-IxtZBGYm_5__f_-f_58AAAAAAAACQgAAAAEMMgAAADkAAABDAAAAMgAAADIAAAAwAAAAMgAAAD4AAAAyAAAAOQAAADIAAAA0AAAAeIwdDPPogs4GAAAAAAAAAA",
     "n1_Tk9PSQIAQgEAAEIAAAAArkcBAADBJwIAAGkuAwADAgUAAwQGAAMICAAAAAAJAAAAAAoAAAAADwADARAAAwUTAAMBFQADBBgAAwEaAAMHHQADAXwAAAAAMwAAexQ1AAB9FjYAAgAAAD-TAAMClAAAPQqVAAMAlgADCJcAAP__mAABhQE8AACDej0AAwFAAAMDrQABIAOvAADrUUMAAFwPRQAAoEdGAACuNEcAAwJIAAMCSgAA_9dLAABmJsUAAvRmNkTHAAAKV00AANcjTgAAAABPAAAUQlIAAwFTAAIAAMA_VAADA1cAAAAA3AAAMzNaAACZGVsAALgeXAAAYHJjAADXI2QAABwRZQAAqjhnAAIAAEA_agADAWsAAwIMAQBcj3EAACSkdgAAmZk8AgC4HkQCAMxMRQID9UYCAgAAIEBIAgGQAEkCAgAAYEABjAAAAAYAZQAAAABCHwUAAAAAAJYpK2lnAAAAAEAAgAcAAAAAGL6w-wgzM2ZG_3__f_9_zGz_f_-f_59cAAAAAEKZGQAAAAAA3JDYIgAAAACAPykcAgAAAACy2to0NQAAAABCjwIAAAAAAMIYy342AAAAgD8AgAcAAAAAviMbWQRmJv-f_3__n_-fAAAAAAAAAkIAAAABDDIAAAA5AAAAQwAAADIAAAAyAAAAMAAAADIAAAA-AAAAMgAAADkAAAAyAAAANAAAAHiMHQzz6ILOBgAAAAAAAAA",
     "n1_Tk9PSQIAEAEAADcAAAAAAAABAAAAAAIAAAAABgADBwgAAAAACQAAAAAKAAAAAHwAAAAAMwAAXA81AAB9FpMAAwKUAAA9CpUAAwCWAAMIlwAA__-YAAE1AjkAAHA9PAAAg3o9AAMBQAADA60AASADrwAA61FDAAB7FEUAAPVMRgAABEpHAAMCSgAA_8dLAABmJsUAAmDTg0THAAAKV04AAAAATwAAaTdSAAMCVAADA1cAAAAA3AAAMzNaAAC4HlsAAPYoXAAAYVJjAAB7FGQAABwRZQAAqlhmAAMHZwACAACAPmoAAwFrAAMCDAEAUjhxAAAtrXYAAJmZPAIAuB5EAgDMTEUCA_VGAgIAACBASAIBkABJAgIAAGBAAT0AAAACAAAAAAAAP-G6BwAAAACy2to0CI8C_3_-__9__v__f_9__7_-_zUAAAAAQo8CAAAAAADCGMt-AAAAAAAAAjIAAAACCDkAAAA8AAAAQAAAAD4AAAA8AAAAOQAAADQAAAA3AAAAl3Mb084gfRMAAAAAAAAAAA",
@@ -216,6 +216,15 @@ fn stepped_offsets(from: &FluidControls, to: &FluidControls) -> Vec<(usize, f64)
         .collect()
 }
 
+/// Where the morph is right now: the state actually sounding, the one it will
+/// become, and how far across it is — `None` while the leg is still holding.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MorphPosition {
+    pub(crate) playing: Option<usize>,
+    pub(crate) next: Option<usize>,
+    pub(crate) blend: Option<f32>,
+}
+
 /// Config for the slow-evolution morph between song states, published to the
 /// audio thread via `ArcSwap<Option<MorphState>>` alongside controls and
 /// automation. Live progress is derived from the beat clock, not stored, so
@@ -254,6 +263,21 @@ impl MorphState {
             origin_beat: 0.0,
             first_leg_bars: None,
         }
+    }
+
+    /// A morph over a hand-picked set of songs, each carrying the number it
+    /// should report rather than its position in this cycle — so `nooise 9,12`
+    /// still reads `song 9 → 12` instead of `1 → 2`. One song is a legal
+    /// cycle: it morphs to itself, which holds it.
+    pub(crate) fn labelled(endpoints: Vec<SongState>, labels: Vec<usize>, bars: u32) -> Self {
+        assert_eq!(
+            endpoints.len(),
+            labels.len(),
+            "every morph endpoint needs its label"
+        );
+        let mut morph = Self::new(endpoints, bars);
+        morph.morph_ids = labels.into_iter().map(Some).collect();
+        morph
     }
 
     /// Build a morph for a live toggle at `start_beat`: endpoint 0 is the
@@ -342,14 +366,30 @@ impl MorphState {
     }
 
     /// (from index, to index, t in [0,1)) for the leg containing `beat`.
+    #[cfg(test)]
     fn leg_at(&self, beat: f64) -> (usize, usize, f64) {
         let (from, to, t, _) = self.leg_at_indexed(beat);
         (from, to, t)
     }
 
-    pub(crate) fn morph_ids_at(&self, beat: f64) -> (Option<usize>, Option<usize>) {
-        let (from, to, _) = self.leg_at(beat);
-        (self.morph_ids[from], self.morph_ids[to])
+    /// What is sounding at `beat`. A leg holds its `from` state for the first
+    /// `HOLD_FRACTION` and only then crosses, so for most of a leg the honest
+    /// answer is one state playing, not a morph in progress — reporting the
+    /// pair the whole time names a transition that has not started.
+    pub(crate) fn position_at(&self, beat: f64) -> MorphPosition {
+        let (from, to, t, leg_index) = self.leg_at_indexed(beat);
+        let beats_per_leg = self.leg_beats(leg_index);
+        let transition_start = self.leg_transition_start_beat(leg_index);
+        let t_beat = t * beats_per_leg;
+        let blend = (t_beat >= transition_start).then(|| {
+            let span = (beats_per_leg - transition_start).max(1e-6);
+            (((t_beat - transition_start) / span) as f32).clamp(0.0, 1.0)
+        });
+        MorphPosition {
+            playing: self.morph_ids[from],
+            next: self.morph_ids[to],
+            blend,
+        }
     }
 
     /// The morphed `FluidControls` at `beat`: hold `from`, then glide or
@@ -457,12 +497,12 @@ impl AutoControls {
         self.morph.load().is_some()
     }
 
-    pub(crate) fn morph_ids_at(&self, beat: f64) -> Option<(Option<usize>, Option<usize>)> {
+    pub(crate) fn position_at(&self, beat: f64) -> Option<MorphPosition> {
         self.morph
             .load_full()
             .as_ref()
             .as_ref()
-            .map(|morph| morph.morph_ids_at(beat))
+            .map(|morph| morph.position_at(beat))
     }
 
     /// Leave auto mode. The engine stops rewriting controls and automation,
@@ -529,6 +569,12 @@ impl MorphWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (playing, next) for a beat, the pair the tests care about.
+    fn ids(morph: &MorphState, beat: f64) -> (Option<usize>, Option<usize>) {
+        let at = morph.position_at(beat);
+        (at.playing, at.next)
+    }
 
     fn state(bpm: f32) -> FluidControls {
         let mut c = FluidControls::default();
@@ -619,6 +665,49 @@ mod tests {
         assert_eq!(morph.leg_at(32.0), (0, 1, 0.0));
     }
 
+    /// The footer reads this. Through the hold there is one song sounding and
+    /// no transition to report; once the leg crosses, both ends and the
+    /// progress between them are real.
+    /// A hand-picked set reports the numbers that were asked for, not the
+    /// positions they landed in, and one song is a cycle that simply holds.
+    #[test]
+    fn a_chosen_set_keeps_the_song_numbers_it_was_given() {
+        let endpoints: Vec<SongState> = [90.0, 120.0]
+            .into_iter()
+            .map(|bpm| SongState::from_controls(state(bpm)))
+            .collect();
+        let morph = MorphState::labelled(endpoints, vec![9, 12], 1);
+        assert_eq!(ids(&morph, 0.0), (Some(9), Some(12)));
+        assert_eq!(ids(&morph, 4.0), (Some(12), Some(9)));
+
+        let held = MorphState::labelled(vec![SongState::from_controls(state(99.0))], vec![9], 1);
+        assert_eq!(ids(&held, 0.0), (Some(9), Some(9)));
+        assert_eq!(held.controls_at(0.0).master.bpm, 99.0);
+        assert_eq!(held.controls_at(400.0).master.bpm, 99.0);
+    }
+
+    #[test]
+    fn a_leg_reports_one_song_until_it_actually_crosses() {
+        let endpoints: Vec<SongState> = (0..2)
+            .map(|i| SongState::from_controls(state(80.0 + i as f32)))
+            .collect();
+        // 6 bars/leg -> holds through beat 15.9, crosses from 16 to 24.
+        let morph = MorphState::new(endpoints, 6);
+
+        let held = morph.position_at(8.0);
+        assert_eq!((held.playing, held.next), (Some(1), Some(2)));
+        assert_eq!(held.blend, None, "the hold is not a morph in progress");
+
+        let crossing = morph.position_at(20.0);
+        assert_eq!((crossing.playing, crossing.next), (Some(1), Some(2)));
+        assert!((crossing.blend.expect("crossing") - 0.5).abs() < 1e-3);
+
+        // The next leg's hold reports the state it landed on.
+        let landed = morph.position_at(24.0);
+        assert_eq!(landed.playing, Some(2));
+        assert_eq!(landed.blend, None);
+    }
+
     #[test]
     fn morph_ids_match_the_one_based_auto_state_list() {
         let endpoints: Vec<SongState> = (0..3)
@@ -626,7 +715,7 @@ mod tests {
             .collect();
         let morph = MorphState::new(endpoints, 1);
 
-        assert_eq!(morph.morph_ids_at(4.0), (Some(2), Some(3)));
+        assert_eq!(ids(&morph, 4.0), (Some(2), Some(3)));
     }
 
     #[test]
