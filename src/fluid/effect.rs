@@ -211,8 +211,8 @@ impl EffectExecutor {
         &self.session
     }
 
-    pub(crate) fn auto_morph_ids(&self, beat: f64) -> Option<(Option<usize>, Option<usize>)> {
-        self.auto.morph_ids_at(beat)
+    pub(crate) fn auto_position(&self, beat: f64) -> Option<MorphPosition> {
+        self.auto.position_at(beat)
     }
 
     pub(crate) fn toggle_auto(&mut self, beat: f64) {
@@ -848,18 +848,18 @@ mod tests {
         let mut executor = executor_with(FluidControls::default());
         executor.toggle_auto(0.0);
         assert!(
-            executor.auto_morph_ids(0.0).is_some(),
+            executor.auto_position(0.0).is_some(),
             "auto should be running"
         );
 
         executor.toggle_mute(Tab::Master);
         assert!(
-            executor.auto_morph_ids(0.0).is_some(),
+            executor.auto_position(0.0).is_some(),
             "mute must not end the morph"
         );
         executor.toggle_mute(Tab::Master);
         assert!(
-            executor.auto_morph_ids(0.0).is_some(),
+            executor.auto_position(0.0).is_some(),
             "unmute must not end the morph either"
         );
     }
@@ -870,7 +870,7 @@ mod tests {
     fn editing_a_control_stands_auto_mode_down() {
         let mut executor = executor_with(FluidControls::default());
         executor.toggle_auto(0.0);
-        assert!(executor.auto_morph_ids(0.0).is_some());
+        assert!(executor.auto_position(0.0).is_some());
 
         executor
             .execute(LiveEffect::EditControl {
@@ -879,7 +879,7 @@ mod tests {
             })
             .expect("editing a real control succeeds");
         assert!(
-            executor.auto_morph_ids(0.0).is_none(),
+            executor.auto_position(0.0).is_none(),
             "a deliberate edit takes the controls over"
         );
     }

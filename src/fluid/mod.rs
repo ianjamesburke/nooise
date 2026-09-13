@@ -62,7 +62,8 @@ mod widget;
 mod tests;
 
 pub(crate) use auto::{
-    AutoControls, DEFAULT_AUTO_BARS, MorphState, MorphWriter, decode_auto_states, no_morph,
+    AutoControls, DEFAULT_AUTO_BARS, MorphPosition, MorphState, MorphWriter, decode_auto_states,
+    no_morph,
 };
 use automation::*;
 use controls::*;

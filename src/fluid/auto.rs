@@ -216,6 +216,15 @@ fn stepped_offsets(from: &FluidControls, to: &FluidControls) -> Vec<(usize, f64)
         .collect()
 }
 
+/// Where the morph is right now: the state actually sounding, the one it will
+/// become, and how far across it is — `None` while the leg is still holding.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MorphPosition {
+    pub(crate) playing: Option<usize>,
+    pub(crate) next: Option<usize>,
+    pub(crate) blend: Option<f32>,
+}
+
 /// Config for the slow-evolution morph between song states, published to the
 /// audio thread via `ArcSwap<Option<MorphState>>` alongside controls and
 /// automation. Live progress is derived from the beat clock, not stored, so
@@ -342,14 +351,30 @@ impl MorphState {
     }
 
     /// (from index, to index, t in [0,1)) for the leg containing `beat`.
+    #[cfg(test)]
     fn leg_at(&self, beat: f64) -> (usize, usize, f64) {
         let (from, to, t, _) = self.leg_at_indexed(beat);
         (from, to, t)
     }
 
-    pub(crate) fn morph_ids_at(&self, beat: f64) -> (Option<usize>, Option<usize>) {
-        let (from, to, _) = self.leg_at(beat);
-        (self.morph_ids[from], self.morph_ids[to])
+    /// What is sounding at `beat`. A leg holds its `from` state for the first
+    /// `HOLD_FRACTION` and only then crosses, so for most of a leg the honest
+    /// answer is one state playing, not a morph in progress — reporting the
+    /// pair the whole time names a transition that has not started.
+    pub(crate) fn position_at(&self, beat: f64) -> MorphPosition {
+        let (from, to, t, leg_index) = self.leg_at_indexed(beat);
+        let beats_per_leg = self.leg_beats(leg_index);
+        let transition_start = self.leg_transition_start_beat(leg_index);
+        let t_beat = t * beats_per_leg;
+        let blend = (t_beat >= transition_start).then(|| {
+            let span = (beats_per_leg - transition_start).max(1e-6);
+            (((t_beat - transition_start) / span) as f32).clamp(0.0, 1.0)
+        });
+        MorphPosition {
+            playing: self.morph_ids[from],
+            next: self.morph_ids[to],
+            blend,
+        }
     }
 
     /// The morphed `FluidControls` at `beat`: hold `from`, then glide or
@@ -457,12 +482,12 @@ impl AutoControls {
         self.morph.load().is_some()
     }
 
-    pub(crate) fn morph_ids_at(&self, beat: f64) -> Option<(Option<usize>, Option<usize>)> {
+    pub(crate) fn position_at(&self, beat: f64) -> Option<MorphPosition> {
         self.morph
             .load_full()
             .as_ref()
             .as_ref()
-            .map(|morph| morph.morph_ids_at(beat))
+            .map(|morph| morph.position_at(beat))
     }
 
     /// Leave auto mode. The engine stops rewriting controls and automation,
@@ -529,6 +554,12 @@ impl MorphWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// (playing, next) for a beat, the pair the tests care about.
+    fn ids(morph: &MorphState, beat: f64) -> (Option<usize>, Option<usize>) {
+        let at = morph.position_at(beat);
+        (at.playing, at.next)
+    }
 
     fn state(bpm: f32) -> FluidControls {
         let mut c = FluidControls::default();
@@ -619,6 +650,31 @@ mod tests {
         assert_eq!(morph.leg_at(32.0), (0, 1, 0.0));
     }
 
+    /// The footer reads this. Through the hold there is one song sounding and
+    /// no transition to report; once the leg crosses, both ends and the
+    /// progress between them are real.
+    #[test]
+    fn a_leg_reports_one_song_until_it_actually_crosses() {
+        let endpoints: Vec<SongState> = (0..2)
+            .map(|i| SongState::from_controls(state(80.0 + i as f32)))
+            .collect();
+        // 6 bars/leg -> holds through beat 15.9, crosses from 16 to 24.
+        let morph = MorphState::new(endpoints, 6);
+
+        let held = morph.position_at(8.0);
+        assert_eq!((held.playing, held.next), (Some(1), Some(2)));
+        assert_eq!(held.blend, None, "the hold is not a morph in progress");
+
+        let crossing = morph.position_at(20.0);
+        assert_eq!((crossing.playing, crossing.next), (Some(1), Some(2)));
+        assert!((crossing.blend.expect("crossing") - 0.5).abs() < 1e-3);
+
+        // The next leg's hold reports the state it landed on.
+        let landed = morph.position_at(24.0);
+        assert_eq!(landed.playing, Some(2));
+        assert_eq!(landed.blend, None);
+    }
+
     #[test]
     fn morph_ids_match_the_one_based_auto_state_list() {
         let endpoints: Vec<SongState> = (0..3)
@@ -626,7 +682,7 @@ mod tests {
             .collect();
         let morph = MorphState::new(endpoints, 1);
 
-        assert_eq!(morph.morph_ids_at(4.0), (Some(2), Some(3)));
+        assert_eq!(ids(&morph, 4.0), (Some(2), Some(3)));
     }
 
     #[test]
