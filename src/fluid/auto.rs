@@ -265,6 +265,21 @@ impl MorphState {
         }
     }
 
+    /// A morph over a hand-picked set of songs, each carrying the number it
+    /// should report rather than its position in this cycle — so `nooise 9,12`
+    /// still reads `song 9 → 12` instead of `1 → 2`. One song is a legal
+    /// cycle: it morphs to itself, which holds it.
+    pub(crate) fn labelled(endpoints: Vec<SongState>, labels: Vec<usize>, bars: u32) -> Self {
+        assert_eq!(
+            endpoints.len(),
+            labels.len(),
+            "every morph endpoint needs its label"
+        );
+        let mut morph = Self::new(endpoints, bars);
+        morph.morph_ids = labels.into_iter().map(Some).collect();
+        morph
+    }
+
     /// Build a morph for a live toggle at `start_beat`: endpoint 0 is the
     /// caller's current controls and automation (LFO/envelope routes),
     /// so nothing changes instantly — the morph just starts moving from where
@@ -653,6 +668,24 @@ mod tests {
     /// The footer reads this. Through the hold there is one song sounding and
     /// no transition to report; once the leg crosses, both ends and the
     /// progress between them are real.
+    /// A hand-picked set reports the numbers that were asked for, not the
+    /// positions they landed in, and one song is a cycle that simply holds.
+    #[test]
+    fn a_chosen_set_keeps_the_song_numbers_it_was_given() {
+        let endpoints: Vec<SongState> = [90.0, 120.0]
+            .into_iter()
+            .map(|bpm| SongState::from_controls(state(bpm)))
+            .collect();
+        let morph = MorphState::labelled(endpoints, vec![9, 12], 1);
+        assert_eq!(ids(&morph, 0.0), (Some(9), Some(12)));
+        assert_eq!(ids(&morph, 4.0), (Some(12), Some(9)));
+
+        let held = MorphState::labelled(vec![SongState::from_controls(state(99.0))], vec![9], 1);
+        assert_eq!(ids(&held, 0.0), (Some(9), Some(9)));
+        assert_eq!(held.controls_at(0.0).master.bpm, 99.0);
+        assert_eq!(held.controls_at(400.0).master.bpm, 99.0);
+    }
+
     #[test]
     fn a_leg_reports_one_song_until_it_actually_crosses() {
         let endpoints: Vec<SongState> = (0..2)

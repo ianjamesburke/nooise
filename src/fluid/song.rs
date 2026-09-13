@@ -31,7 +31,7 @@ const MAGIC: &[u8; 4] = b"NOOI";
 pub(crate) const CONTAINER_VERSION: u8 = 2;
 /// Unchanged across container versions: the CLI, `just add-morph`, and both
 /// Python helpers all match song codes on this prefix.
-const CODE_PREFIX: &str = "n1_";
+pub(crate) const CODE_PREFIX: &str = "n1_";
 pub(crate) const SNAPSHOT_RECORD: u8 = 0;
 pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const TONAL_SEQUENCE_RECORD: u8 = 2;

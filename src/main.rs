@@ -14,22 +14,36 @@ mod synth;
 mod update_check;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    match Cli::parse().command {
-        None => fluid::run(),
-        Some(CliCommand::Song(args)) => run_song_code(args),
+    let cli = Cli::parse();
+    let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
+    match cli.command {
+        None => match cli.song {
+            None => fluid::run(),
+            Some(song) => play_song(&song, bars),
+        },
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::Render(args)) => render(args),
-        Some(CliCommand::Auto(args)) => {
-            fluid::run_auto(args.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS))
-        }
+        Some(CliCommand::Auto) => fluid::run_auto(bars),
     }
 }
 
 #[derive(Debug, Parser)]
-#[command(version, about, after_help = "Run a snapshot: nooise <CODE>")]
+#[command(
+    version,
+    about,
+    after_help = "Play a song: nooise <SONG>, where a song is a built-in number \
+                  (nooise 9), several of them (nooise 9,10,11), or a shared code \
+                  (nooise n1_...)."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<CliCommand>,
+    /// A song to play: a built-in number (9), several of them (9,10,11), or a
+    /// shared `n1_` code.
+    song: Option<String>,
+    /// Bars each song holds before morphing into the next. Defaults to 64.
+    #[arg(long, global = true)]
+    bars: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
@@ -38,10 +52,8 @@ enum CliCommand {
     Update,
     #[command(about = "Render the default mix to a wav file")]
     Render(RenderArgs),
-    #[command(about = "Slowly morph between built-in song states forever")]
-    Auto(AutoArgs),
-    #[command(external_subcommand)]
-    Song(Vec<String>),
+    #[command(about = "Morph through every built-in song, forever")]
+    Auto,
 }
 
 #[derive(Debug, Clone, PartialEq, Args)]
@@ -54,12 +66,6 @@ struct RenderArgs {
     seed: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Args)]
-struct AutoArgs {
-    /// Bars per morph leg (one state-to-state transition). Defaults to 64.
-    bars: Option<u32>,
-}
-
 fn render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     if args.seconds <= 0.0 {
         return Err("--seconds must be positive".into());
@@ -67,12 +73,23 @@ fn render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     fluid::render_wav(args.seconds, &args.out, args.seed)
 }
 
-fn run_song_code(args: Vec<String>) -> Result<(), Box<dyn Error>> {
-    let [code] = args.as_slice() else {
-        return Err("expected exactly one song code".into());
-    };
-    let song = fluid::decode_song_code(code)?;
-    fluid::run_with_song_state(song)
+/// A song is named either by a shared `n1_` code or by its number in the
+/// built-in set — the same thing reached two ways, so they share one argument
+/// rather than one being a flag and the other a positional. Several numbers
+/// morph through in the order given and loop.
+fn play_song(song: &str, bars: u32) -> Result<(), Box<dyn Error>> {
+    if song.starts_with(fluid::CODE_PREFIX) {
+        return fluid::run_with_song_state(fluid::decode_song_code(song)?);
+    }
+    let numbers = song
+        .split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<usize>()
+                .map_err(|_| format!("{part:?} is neither a song number nor an n1_ code").into())
+        })
+        .collect::<Result<Vec<usize>, Box<dyn Error>>>()?;
+    fluid::run_songs(&numbers, bars)
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {
@@ -109,7 +126,7 @@ fn cargo_install_args(version: &str) -> [&str; 6] {
 
 #[cfg(test)]
 mod tests {
-    use super::{AutoArgs, Cli, CliCommand, RenderArgs, cargo_install_args, render};
+    use super::{Cli, CliCommand, RenderArgs, cargo_install_args, render};
     use clap::{CommandFactory, Parser, error::ErrorKind};
     use std::path::PathBuf;
 
@@ -123,14 +140,33 @@ mod tests {
         assert_eq!(parse(&[]).unwrap().command, None);
     }
 
+    /// A song is one argument whether it is named by code or by number, and
+    /// it is a plain positional, so flags read the same on either side of it.
     #[test]
-    fn song_code_arg_launches_app_with_snapshot() {
-        let cli = parse(&["n1_abc"]).unwrap();
+    fn a_song_is_one_positional_named_by_code_or_by_number() {
+        for (args, song, bars) in [
+            (vec!["n1_abc"], "n1_abc", None),
+            (vec!["9"], "9", None),
+            (vec!["9,10,11"], "9,10,11", None),
+            (vec!["9", "--bars", "4"], "9", Some(4)),
+            (vec!["--bars", "4", "9"], "9", Some(4)),
+        ] {
+            let cli = parse(&args).unwrap();
+            assert_eq!(cli.song.as_deref(), Some(song), "{args:?}");
+            assert_eq!(cli.bars, bars, "{args:?}");
+            assert_eq!(cli.command, None, "{args:?}");
+        }
+    }
 
-        assert_eq!(
-            cli.command,
-            Some(CliCommand::Song(vec!["n1_abc".to_string()]))
-        );
+    /// A subcommand name still wins over the song positional.
+    #[test]
+    fn subcommands_are_not_mistaken_for_songs() {
+        assert!(matches!(
+            parse(&["render"]).unwrap().command,
+            Some(CliCommand::Render(_))
+        ));
+        assert_eq!(parse(&["auto"]).unwrap().command, Some(CliCommand::Auto));
+        assert_eq!(parse(&["render"]).unwrap().song, None);
     }
 
     #[test]
@@ -207,23 +243,13 @@ mod tests {
         );
     }
 
+    /// `auto` used to take bars positionally. It takes none now, so an old
+    /// `nooise auto 4` fails loudly instead of quietly meaning song four.
     #[test]
-    fn auto_parses_with_and_without_bars() {
-        assert_eq!(
-            parse(&["auto"]).unwrap().command,
-            Some(CliCommand::Auto(AutoArgs { bars: None }))
-        );
-        assert_eq!(
-            parse(&["auto", "32"]).unwrap().command,
-            Some(CliCommand::Auto(AutoArgs { bars: Some(32) }))
-        );
-        assert_eq!(
-            parse(&["auto"]).unwrap().command.map(|cmd| match cmd {
-                CliCommand::Auto(args) => args.bars.unwrap_or(crate::fluid::DEFAULT_AUTO_BARS),
-                _ => unreachable!(),
-            }),
-            Some(64)
-        );
+    fn auto_takes_bars_only_as_a_flag() {
+        assert_eq!(parse(&["auto"]).unwrap().bars, None);
+        assert_eq!(parse(&["auto", "--bars", "32"]).unwrap().bars, Some(32));
+        assert!(parse(&["auto", "4"]).is_err());
     }
 
     #[test]
@@ -253,6 +279,10 @@ mod tests {
         assert!(help.contains("update"));
         assert!(help.contains("upgrade"));
         assert!(help.contains("render"));
-        assert!(help.contains("Run a snapshot: nooise <CODE>"));
+        // The footer teaches the one grammar the CLI has: a song is a number,
+        // a list of them, or a code.
+        assert!(help.contains("nooise 9"));
+        assert!(help.contains("nooise 9,10,11"));
+        assert!(help.contains("nooise n1_..."));
     }
 }

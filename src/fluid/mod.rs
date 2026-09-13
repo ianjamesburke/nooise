@@ -75,7 +75,7 @@ use module::*;
 use palette::*;
 use registry::*;
 use session::*;
-pub(crate) use song::{SongState, decode_song_code, encode_song_code};
+pub(crate) use song::{CODE_PREFIX, SongState, decode_song_code, encode_song_code};
 use ui::*;
 use view::*;
 use visualizer::*;
@@ -162,6 +162,38 @@ pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
         bars,
     ))));
     run_interactive(initial_song, morph, states, bars)
+}
+
+/// Play built-in songs by number (`nooise 9`, `nooise 9,10,11`). One song
+/// holds; several morph through in the order given and loop. Numbers are
+/// one-based to match the AUTO footer, and an unknown one is an error rather
+/// than a silent skip — a mistyped song should say so, not quietly play
+/// something else.
+pub(crate) fn run_songs(numbers: &[usize], bars: u32) -> Result<(), Box<dyn Error>> {
+    let all = decode_auto_states();
+    if numbers.is_empty() {
+        return Err("expected at least one song".into());
+    }
+    let mut chosen = Vec::with_capacity(numbers.len());
+    for &number in numbers {
+        match all.get(number.wrapping_sub(1)) {
+            Some(song) if number >= 1 => chosen.push(song.clone()),
+            _ => {
+                return Err(format!(
+                    "there is no song {number}; the built-ins are 1..={}",
+                    all.len()
+                )
+                .into());
+            }
+        }
+    }
+    let initial_song = chosen[0].clone();
+    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
+        chosen.clone(),
+        numbers.to_vec(),
+        bars,
+    ))));
+    run_interactive(initial_song, morph, chosen, bars)
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
