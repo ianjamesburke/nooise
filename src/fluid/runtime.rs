@@ -21,9 +21,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
-    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, Navigation, PageDirection,
-    PerformanceAction, PerformanceInstrument, PerformanceKind, PerformanceMode, SemanticAction,
-    SequenceStage,
+    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, Navigation,
+    PageDirection, PerformanceAction, PerformanceInstrument, PerformanceKind, PerformanceMode,
+    SemanticAction, SequenceStage,
 };
 
 /// Target spacing between drawn frames.
@@ -487,6 +487,13 @@ pub(crate) fn map_input(
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
         }
+        InteractionMode::Lead(_) => {
+            if unmodified {
+                lead_binding(&key.code)
+            } else {
+                return deferred_runtime(MODIFIED_BINDING_UNOWNED);
+            }
+        }
     };
     intent.map_or(InputMapping::Ignored, |intent| semantic(*phase, intent))
 }
@@ -516,7 +523,6 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
         PhysicalKey::Character('t') => Intent::ToggleUnits,
         PhysicalKey::Character('x') => Intent::RemoveAutomation,
-        PhysicalKey::Character('r') => Intent::ReseedAutomation,
         PhysicalKey::Character(character) if starts_numeric_entry(character) => {
             Intent::BeginNumeric(character)
         }
@@ -526,6 +532,9 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
 
 fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent> {
     Some(match *code {
+        // `r` rolls the selected control's own dial; inside an automation
+        // editor the same key reseeds the open random lane instead.
+        PhysicalKey::Character('r') => Intent::RandomizeSelected,
         PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Sequence),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
@@ -544,6 +553,7 @@ fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
     match *code {
         // Enter stays inert while an automation editor owns the keyboard.
         PhysicalKey::Enter => None,
+        PhysicalKey::Character('r') => Some(Intent::ReseedAutomation),
         _ => slider_binding(code),
     }
 }
@@ -653,6 +663,22 @@ fn performance_binding(
             release_available: capabilities.supports_holds(),
         }),
         _ => None,
+    }
+}
+
+/// `z`/`x` drop/raise the octave; the letter row plays `LEAD_PLAY_KEYS`.
+/// Every press is an edge; autorepeat plays nothing.
+fn lead_binding(code: &PhysicalKey) -> Option<Intent> {
+    let PhysicalKey::Character(character) = code else {
+        return None;
+    };
+    match character {
+        'z' => Some(Intent::ShiftLeadOctave(-1)),
+        'x' => Some(Intent::ShiftLeadOctave(1)),
+        _ => LEAD_PLAY_KEYS
+            .iter()
+            .position(|key| key == character)
+            .map(|index| Intent::PlayLeadTone(index + 1)),
     }
 }
 
@@ -1727,7 +1753,7 @@ mod tests {
             ('m', Intent::ToggleMute { master: false }),
             ('t', Intent::ToggleUnits),
             ('x', Intent::RemoveAutomation),
-            ('r', Intent::ReseedAutomation),
+            ('r', Intent::RandomizeSelected),
         ] {
             assert!(matches!(
                 map_input(

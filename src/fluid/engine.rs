@@ -513,6 +513,7 @@ pub(crate) struct FluidEngine {
     pub(crate) clap: ClapEngine,
     pub(crate) bass: BassEngine,
     pub(crate) arp: ArpEngine,
+    pub(crate) lead: LeadEngine,
     module_fx: ModuleFxBank,
     pub(crate) master_bus: MasterBus,
     pub(crate) session: LiveSession,
@@ -571,6 +572,7 @@ impl FluidEngine {
             clap: ClapEngine::new(sample_rate),
             bass: BassEngine::new(sample_rate),
             arp: ArpEngine::new(sample_rate),
+            lead: LeadEngine::with_play_state(sample_rate, live.lead_play),
             module_fx: ModuleFxBank::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
             session,
@@ -620,6 +622,7 @@ impl StereoEngine for FluidEngine {
                 .set_targets(&self.snapshot, self.sample_rate);
             self.mute_gates
                 .set_targets(&session.muted, self.sample_rate);
+            self.lead.observe(session.lead_play);
             self.master_bus
                 .set_controls(&self.snapshot.master, self.sample_rate);
             if session.automation != *self.plan_source {
@@ -706,10 +709,40 @@ impl StereoEngine for FluidEngine {
             ),
             mute_gains[Tab::Arp as usize],
         );
+        let (lead_l, lead_r) = gate_stereo(
+            self.module_fx.process(
+                Tab::Lead,
+                &effective.modules.lead,
+                self.lead
+                    .next(&effective.lead, &effective.pad, tune, timing),
+                timing,
+            ),
+            mute_gains[Tab::Lead as usize],
+        );
         self.current_sample += 1;
 
-        let raw_l = mix_voices(pad_l, perc_l, kick_l, ton_l, clap_l, bass_l, arp_l, fade);
-        let raw_r = mix_voices(pad_r, perc_r, kick_r, ton_r, clap_r, bass_r, arp_r, fade);
+        let voices_l = VoiceMix {
+            pad: pad_l,
+            perc: perc_l,
+            kick: kick_l,
+            tonal: ton_l,
+            clap: clap_l,
+            bass: bass_l,
+            arp: arp_l,
+            lead: lead_l,
+        };
+        let voices_r = VoiceMix {
+            pad: pad_r,
+            perc: perc_r,
+            kick: kick_r,
+            tonal: ton_r,
+            clap: clap_r,
+            bass: bass_r,
+            arp: arp_r,
+            lead: lead_r,
+        };
+        let raw_l = voices_l.sum(fade);
+        let raw_r = voices_r.sum(fade);
         let master = self.module_fx.process(
             Tab::Master,
             &effective.modules.master,
@@ -733,20 +766,31 @@ pub(crate) fn startup_fade(current_sample: u64, sample_rate: f32) -> f32 {
     (current_sample as f32 / (sample_rate * STARTUP_FADE_SECONDS)).min(1.0)
 }
 
-#[inline]
-// One arg per voice channel plus fade; splitting further would obscure the mix expression.
-#[allow(clippy::too_many_arguments)]
-fn mix_voices(
+/// One channel of every voice's output, summed at the fixed mix weights.
+struct VoiceMix {
     pad: f32,
     perc: f32,
     kick: f32,
-    ton: f32,
+    tonal: f32,
     clap: f32,
     bass: f32,
     arp: f32,
-    fade: f32,
-) -> f32 {
-    (pad + perc * 0.6 + kick * 0.7 + ton + clap * 0.65 + bass * 0.75 + arp) * fade
+    lead: f32,
+}
+
+impl VoiceMix {
+    #[inline]
+    fn sum(&self, fade: f32) -> f32 {
+        (self.pad
+            + self.perc * 0.6
+            + self.kick * 0.7
+            + self.tonal
+            + self.clap * 0.65
+            + self.bass * 0.75
+            + self.arp
+            + self.lead)
+            * fade
+    }
 }
 
 /// A smoothstep-eased ramp from one value to the next over a fixed sample

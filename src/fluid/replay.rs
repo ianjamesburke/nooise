@@ -22,9 +22,9 @@ use super::coordinator::{
 use super::effect::{Clipboard, ClipboardError, EffectAcknowledgement, EffectFailure};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
-    InteractionMode, InteractionModel, Navigation, NumericEntry, PaletteMode, PaletteStagedEdit,
-    PerformanceInstrument, PerformanceKind, PerformanceMode, PhasePolicy, SemanticAction,
-    SequenceStage,
+    InteractionMode, InteractionModel, LeadPlay, Navigation, NumericEntry, PaletteMode,
+    PaletteStagedEdit, PerformanceInstrument, PerformanceKind, PerformanceMode, PhasePolicy,
+    SemanticAction, SequenceStage,
 };
 use super::runtime::{
     Clock, EventSource, FakeClock, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
@@ -552,15 +552,19 @@ struct ReplayHarness {
     violation: Option<PropertyViolation>,
 }
 
+/// Every replay rolls the same dice, so two runs of one trace agree.
+const REPLAY_RNG_SEED: u64 = 0x6E6F_6F69_7365;
+
 impl ReplayHarness {
     fn new(capabilities: TerminalCapabilities) -> Self {
         let session =
             LiveSession::new(LiveSessionSnapshot::from_controls(FluidControls::default()));
         // Replay has no audio callback, so acknowledge capture requests with
         // a deterministic empty bank newer than every request in the test.
-        let executor = EffectExecutor::new(
+        let executor = EffectExecutor::seeded(
             session,
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+            REPLAY_RNG_SEED,
         );
         let clock = FakeClock::new();
         Self {
@@ -1514,7 +1518,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("unit flip", vec![plain(FixtureKey::Character('t'))]),
         ("track mute", vec![plain(FixtureKey::Character('m'))]),
         ("master mute", vec![shift(FixtureKey::Character('M'))]),
-        ("reseed", vec![plain(FixtureKey::Character('r'))]),
+        ("randomize", vec![plain(FixtureKey::Character('r'))]),
         ("numeric", vec![plain(FixtureKey::Character('1'))]),
         ("touch", vec![plain(FixtureKey::Enter)]),
         ("save", vec![ctrl(FixtureKey::Character('s'))]),
@@ -1715,12 +1719,12 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 effects: vec!["ToggleMute { master: true }=>OK:Published { generation: 1 }"],
                 notice: None,
             },
-            "reseed" => ExpectedBinding {
+            "randomize" => ExpectedBinding {
                 owner: "BROWSE",
-                generation: 0,
+                generation: 1,
                 automation: None,
-                intents: vec![Intent::ReseedAutomation],
-                effects: vec!["ReseedAutomation=>OK:Published { generation: 0 }"],
+                intents: vec![Intent::RandomizeSelected],
+                effects: vec!["RandomizeSelected=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "numeric" => ExpectedBinding {
@@ -1984,6 +1988,88 @@ fn escape_closes_a_neutral_lfo_without_trapping_the_keyboard_owner() {
 
     assert_eq!(closed.model.mode, InteractionMode::Browsing);
     assert_eq!(closed.automation_kind, None);
+}
+
+/// Enter on the Lead page opens play mode; the letter row sounds tones
+/// without exiting anything, `x` edits the octave control, autorepeat plays
+/// nothing, and Esc returns to browsing.
+#[test]
+fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let to_lead: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+
+    let mut opened = to_lead.clone();
+    opened.push(plain(FixtureKey::Enter));
+    let opened = replay(&opened, TerminalCapabilities::full());
+    assert_eq!(
+        opened.model.mode,
+        InteractionMode::Lead(LeadPlay::default())
+    );
+    assert_eq!(opened.final_owner(), Some("LEAD"));
+    assert_eq!(
+        opened.session_generation, 0,
+        "opening play mode edits nothing"
+    );
+
+    let mut played = to_lead.clone();
+    played.extend([
+        plain(FixtureKey::Enter),
+        plain(FixtureKey::Character('a')),
+        key(0, FixtureKey::Character('a'), InputPhase::Repeat),
+        plain(FixtureKey::Character('l')),
+        plain(FixtureKey::Character('x')),
+        plain(FixtureKey::Escape),
+    ]);
+    let played = replay(&played, TerminalCapabilities::full());
+    assert_eq!(
+        played.effect_count("LeadTone"),
+        2,
+        "one tone per press, none per repeat"
+    );
+    assert_eq!(played.effect_count("LeadOctave"), 1);
+    assert_eq!(played.control("lead.octave"), Some(1.0));
+    assert_eq!(
+        played.session_generation, 3,
+        "two presses and one octave edit"
+    );
+    assert_eq!(played.model.mode, InteractionMode::Browsing);
+    assert!(played.deferred_inputs.is_empty());
+    assert_eq!(played.effect_notice, None);
+}
+
+/// `r` while browsing rolls the selected control; the same key inside an
+/// LFO editor reseeds the lane instead, so the two never collide.
+#[test]
+fn r_randomizes_the_selected_control_while_browsing_and_reseeds_inside_an_editor() {
+    let plain = |code| key(0, code, InputPhase::Press);
+
+    let rolled = replay(
+        &[plain(FixtureKey::Character('r'))],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(rolled.effect_count("RandomizeSelected"), 1);
+    assert_eq!(rolled.session_generation, 1);
+    let level = rolled.control("pad.level").unwrap();
+    assert!((0.0..=1.0).contains(&level));
+    let again = replay(
+        &[plain(FixtureKey::Character('r'))],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(
+        again.control("pad.level"),
+        Some(level),
+        "replay rolls the same dice"
+    );
+
+    let reseeded = replay(
+        &[
+            plain(FixtureKey::Character('f')),
+            plain(FixtureKey::Character('r')),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(reseeded.effect_count("ReseedAutomation"), 1);
+    assert_eq!(reseeded.effect_count("RandomizeSelected"), 0);
 }
 
 #[test]

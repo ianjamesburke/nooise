@@ -15,10 +15,11 @@ pub(crate) enum Tab {
     Tonal = 4,
     Clap = 5,
     Arp = 6,
-    Master = 7,
+    Lead = 7,
+    Master = 8,
 }
 
-pub(crate) const TAB_COUNT: usize = 8;
+pub(crate) const TAB_COUNT: usize = 9;
 
 /// One row per tab: (variant, display name, mute-target level id, control
 /// table) in discriminant order. `Tab::all`/`name`/`level_id`/`tab_specs`
@@ -31,6 +32,7 @@ const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); TAB_COUNT] = [
     (Tab::Tonal, "Tonal", Some("tonal.level"), TONAL_CONTROLS),
     (Tab::Clap, "Clap", Some("clap.level"), CLAP_CONTROLS),
     (Tab::Arp, "Arp", Some("arp.gain"), ARP_CONTROLS),
+    (Tab::Lead, "Lead", Some("lead.level"), LEAD_CONTROLS),
     (Tab::Master, "Master", Some("master.level"), MASTER_CONTROLS),
 ];
 
@@ -55,7 +57,38 @@ impl Tab {
     pub(crate) fn level_id(self) -> Option<&'static str> {
         TAB_META[self as usize].2
     }
+
+    /// This tab's bit in the song-code mute record. Assigned once, in the
+    /// order tabs were added, and never reused: the strip may reorder or
+    /// grow in the middle without a saved mute landing on another tab.
+    pub(crate) const fn mute_bit(self) -> usize {
+        match self {
+            Tab::Chords => 0,
+            Tab::Perc => 1,
+            Tab::Bass => 2,
+            Tab::Kick => 3,
+            Tab::Tonal => 4,
+            Tab::Clap => 5,
+            Tab::Arp => 6,
+            Tab::Master => 7,
+            Tab::Lead => 8,
+        }
+    }
 }
+
+/// Bytes the mute record needs for every tab's `mute_bit`.
+pub(crate) const MUTE_BYTES: usize = {
+    let mut highest = 0;
+    let mut index = 0;
+    while index < TAB_COUNT {
+        let bit = TAB_META[index].0.mute_bit();
+        if bit > highest {
+            highest = bit;
+        }
+        index += 1;
+    }
+    highest / 8 + 1
+};
 
 pub(crate) struct ControlItem {
     pub(crate) id: &'static str,
@@ -550,6 +583,42 @@ impl ControlSpec {
         (spec.set)(c, next.clamp(spec.min, spec.max));
     }
 
+    /// Set the control to the point `ratio` (0..=1) of the way along its own
+    /// dial, so a random draw lands evenly across what the bar shows rather
+    /// than across raw magnitude: a tapered time dial gets as much chance of
+    /// a short value as a long one, and a ladder gets each rung equally. The
+    /// ladders (`BeatGrid`, `PowerOfTwo`) have no inverse, so they are walked
+    /// with the control's own stepping and the rung at `ratio` is chosen.
+    pub(crate) fn apply_ratio(&self, ratio: f32, c: &mut FluidControls) {
+        let spec = self.contextual(c);
+        let ratio = ratio.clamp(0.0, 1.0);
+        let value = match spec.scale().value_at(ratio) {
+            Some(value) => spec.quantize(value),
+            None => {
+                let rungs = spec.rungs(c);
+                let index = ((ratio * rungs.len() as f32) as usize).min(rungs.len() - 1);
+                rungs[index]
+            }
+        };
+        (spec.set)(c, value);
+    }
+
+    /// Every value one arrow press can reach from the floor, ascending. Only
+    /// meaningful for the ladder steps; a linear row would be its whole grid.
+    fn rungs(&self, c: &FluidControls) -> Vec<f32> {
+        let mut scratch = c.clone();
+        (self.set)(&mut scratch, self.min);
+        let mut rungs = vec![self.quantize(self.min)];
+        loop {
+            self.apply_delta(1.0, &mut scratch);
+            let next = (self.get)(&scratch);
+            if rungs.last().is_some_and(|last| next <= *last) {
+                return rungs;
+            }
+            rungs.push(next);
+        }
+    }
+
     pub(crate) fn quantized_value(&self, c: &FluidControls) -> f32 {
         let spec = self.contextual(c);
         spec.quantize((spec.get)(c))
@@ -1036,6 +1105,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
         gain_pct!("clap.level", "Clap Vol", clap.level),
         gain_pct!("bass.level", "Bass Vol", bass.level),
         gain_pct!("arp.gain", "Arp Vol", arp.gain),
+        gain_pct!("lead.level", "Lead Vol", lead.level),
         ControlSpec::new(
             "master.bpm",
             "BPM",
@@ -1552,6 +1622,110 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
+/// One Lead pattern step: a discrete pick from `LEAD_STEP_TONES` (rest, a
+/// chord tone, or one an octave or two up). Step numbers are 1-based in ids
+/// and labels, 0-based into `LeadControls::steps`. Reached only through
+/// `LEAD_CONTROLS`, which lists every step.
+macro_rules! lead_step_row {
+    ($step:literal) => {
+        ControlSpec::new(
+            concat!("lead.step", $step),
+            concat!("Step ", $step),
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_STEP_TONES),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.steps[$step - 1],
+            |c, v| c.lead.steps[$step - 1] = v,
+            |c| lead_step_label(c.lead.steps[$step - 1]).to_string(),
+        )
+    };
+}
+
+/// `LEAD_CONTROLS` enumerates its steps literally.
+const _: () = assert!(LEAD_STEP_COUNT == 16);
+
+pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
+    lead,
+    "lead",
+    [
+        gain_pct!("lead.level", "Level", lead.level),
+        time_secs!("lead.attack", "Attack", 0.001, 1.0, 0.001, lead.attack),
+        time_secs!(
+            "lead.decay",
+            "Decay",
+            TONAL_DECAY_MIN,
+            6.0,
+            0.001,
+            lead.decay
+        ),
+        time_secs!("lead.glide", "Glide", 0.0, 1.0, 0.001, lead.glide),
+        ControlSpec::new(
+            "lead.type",
+            "Type",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_TYPES),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.voice_type,
+            |c, v| c.lead.voice_type = v,
+            |c| lead_type_label(c.lead.voice_type).to_string(),
+        ),
+        ControlSpec::new(
+            "lead.octave",
+            "Octave",
+            ControlKind::Discrete,
+            LEAD_OCTAVE_MIN,
+            LEAD_OCTAVE_MAX,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.octave,
+            |c, v| c.lead.octave = v,
+            |c| format!("{:+.0}", c.lead.octave),
+        )
+        .reset_at(0.0),
+        beat_interval!(
+            "lead.rate_beats",
+            "Rate",
+            LEAD_RATE_BEATS_MIN,
+            LEAD_RATE_BEATS_MAX,
+            lead.rate_beats
+        ),
+        beat_offset!("lead.offset_beats", "Offset", 4.0, lead.offset_beats),
+        ControlSpec::new(
+            "lead.steps",
+            "Steps",
+            ControlKind::Discrete,
+            1.0,
+            LEAD_STEP_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.step_count,
+            |c, v| c.lead.step_count = v,
+            |c| format!("{:.0}", c.lead.step_count),
+        )
+        .reset_at(8.0),
+        lead_step_row!(1),
+        lead_step_row!(2),
+        lead_step_row!(3),
+        lead_step_row!(4),
+        lead_step_row!(5),
+        lead_step_row!(6),
+        lead_step_row!(7),
+        lead_step_row!(8),
+        lead_step_row!(9),
+        lead_step_row!(10),
+        lead_step_row!(11),
+        lead_step_row!(12),
+        lead_step_row!(13),
+        lead_step_row!(14),
+        lead_step_row!(15),
+        lead_step_row!(16),
+    ]
+);
+
 /// The tab a control lives on natively (its deepest editing surface), so
 /// Enter on a cross-tab row like the Master voice levels expands into that
 /// voice's own tab. Master picks up its own rows via the fallback scan.
@@ -1610,7 +1784,7 @@ pub(crate) fn performance_target(
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
     tab_specs(tab)
         .iter()
-        .filter(|spec| module_slot_row_visible(spec.id, c))
+        .filter(|spec| module_slot_row_visible(spec.id, c) && lead_step_row_visible(spec.id, c))
         .map(|spec| spec.item(c))
         .collect()
 }
@@ -1749,6 +1923,22 @@ pub(crate) fn module_detail_controls(
 /// page under blank rows and break the 15-second floor. Non-slot ids always
 /// show. An occupied slot shows its kind row plus whichever params its
 /// family actually uses.
+/// A Lead step row shows only while its step is inside the lane's live
+/// length (`lead.steps`), so the tab reads as the pattern that plays.
+pub(crate) fn lead_step_row_visible(id: &str, c: &FluidControls) -> bool {
+    let Some(step) = lead_step_index(id) else {
+        return true;
+    };
+    step < lead_live_step_count(c.lead.step_count)
+}
+
+/// Parse `lead.step<N>` back to its 0-based step, `None` for any other id.
+pub(crate) fn lead_step_index(id: &str) -> Option<usize> {
+    let number = id.strip_prefix("lead.step")?;
+    let step: usize = number.parse().ok()?;
+    (1..=LEAD_STEP_COUNT).contains(&step).then(|| step - 1)
+}
+
 pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {
     let Some((slot, field)) = module_slot_row(id, c) else {
         return true;
@@ -1867,6 +2057,7 @@ fn module_slot_row<'a>(
         "tonal" => &c.modules.tonal,
         "clap" => &c.modules.clap,
         "arp" => &c.modules.arp,
+        "lead" => &c.modules.lead,
         "master" => &c.modules.master,
         _ => return None,
     };

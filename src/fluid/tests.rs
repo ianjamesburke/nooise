@@ -170,6 +170,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
                 Tab::Tonal => interaction::StandardPage::Tonal,
                 Tab::Clap => interaction::StandardPage::Clap,
                 Tab::Arp => interaction::StandardPage::Arp,
+                Tab::Lead => interaction::StandardPage::Lead,
                 Tab::Chords | Tab::Master => unreachable!("handled above"),
             },
             selected: cursor,
@@ -716,7 +717,8 @@ fn chords_tab_shows_type_row_with_letter_display() {
 
 #[test]
 fn tab_previous_wraps_back_one_tab() {
-    assert_eq!(Tab::Master.previous(), Tab::Arp);
+    assert_eq!(Tab::Master.previous(), Tab::Lead);
+    assert_eq!(Tab::Lead.previous(), Tab::Arp);
     assert_eq!(Tab::Kick.previous(), Tab::Bass);
     assert_eq!(Tab::Bass.previous(), Tab::Perc);
 }
@@ -1512,7 +1514,7 @@ fn apply_reset_moves_selected_control_to_floor() {
     assert_close(controls.modules.master[0].amount, 0.0);
 
     controls.master.bpm = 120.0;
-    apply_reset(Tab::Master, 7, &mut controls);
+    apply_reset(Tab::Master, 8, &mut controls);
     assert_close(controls.master.bpm, 30.0);
 
     controls.master.tone = 0.5;
@@ -1530,12 +1532,12 @@ fn apply_reset_moves_selected_control_to_floor() {
 fn apply_value_accepts_percent_style_unit_controls() {
     let mut controls = FluidControls::default();
 
-    apply_value(Tab::Master, 8, 42.0, &mut controls);
+    apply_value(Tab::Master, 9, 42.0, &mut controls);
     assert_close(controls.master.level, 0.42);
 
     // Typed entry is always a plain percent integer, never a pre-divided
     // ratio: 1 means 1%, not 100%.
-    apply_value(Tab::Master, 8, 1.0, &mut controls);
+    apply_value(Tab::Master, 9, 1.0, &mut controls);
     assert_close(controls.master.level, 0.01);
 }
 
@@ -1841,8 +1843,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Master,
             vec![
-                Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Continuous, Discrete, Gain,
-                Gain,
+                Gain, Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Continuous, Discrete,
+                Gain, Gain,
             ],
         ),
         (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
@@ -1884,6 +1886,14 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Arp,
             vec![
                 Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain,
+            ],
+        ),
+        (
+            Tab::Lead,
+            vec![
+                Gain, Timing, Timing, Timing, Discrete, Discrete, Timing, Timing, Discrete,
+                Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete, Discrete,
+                Gain,
             ],
         ),
     ];
@@ -5444,4 +5454,325 @@ fn container_v1_song_codes_are_rejected_with_an_explanation() {
         message.contains("older nooise") && message.contains("version 2"),
         "unhelpful message: {message}"
     );
+}
+
+// ============================================================
+// Lead
+// ============================================================
+
+#[test]
+fn lead_defaults_are_silent_and_carry_a_drive_module() {
+    let controls = FluidControls::default();
+    assert_close(controls.lead.level, 0.0);
+    assert_eq!(controls.modules.lead[0].kind().unwrap().id, "drive");
+    assert!(
+        spec_by_id("lead.drive").is_none(),
+        "drive is the shared module"
+    );
+}
+
+#[test]
+fn lead_step_is_derived_from_the_transport_and_wraps_at_the_live_count() {
+    // Straight eighths from beat 0: step n at beat n/2.
+    for step in 0..8 {
+        assert_eq!(lead_step_at(step as f64 * 0.5, 0.5, 0.0, 8), step);
+    }
+    assert_eq!(
+        lead_step_at(4.0, 0.5, 0.0, 8),
+        0,
+        "wraps after the live count"
+    );
+    assert_eq!(
+        lead_step_at(4.0, 0.5, 0.0, 3),
+        2,
+        "wraps at a shorter live count"
+    );
+    // A swung hit lands late by less than half a step and still reads as its
+    // own step; the grid epsilon just before the beat does too.
+    assert_eq!(lead_step_at(1.5 + 0.15, 0.5, 0.0, 8), 3);
+    assert_eq!(lead_step_at(1.5 - 1e-6, 0.5, 0.0, 8), 3);
+    // Offset shifts the lane along the beat with it.
+    assert_eq!(lead_step_at(1.0, 0.5, 1.0, 8), 0);
+}
+
+#[test]
+fn lead_step_rows_show_only_the_live_steps() {
+    let mut controls = FluidControls::default();
+    controls.lead.step_count = 3.0;
+    let ids: Vec<_> = tab_controls(Tab::Lead, &controls)
+        .into_iter()
+        .map(|item| item.id)
+        .filter(|id| lead_step_index(id).is_some())
+        .collect();
+    assert_eq!(ids, ["lead.step1", "lead.step2", "lead.step3"]);
+    assert_eq!(lead_step_index("lead.step16"), Some(15));
+    assert_eq!(lead_step_index("lead.step17"), None);
+    assert_eq!(lead_step_index("lead.steps"), None);
+}
+
+#[test]
+fn lead_tones_reach_the_chord_an_octave_up_and_the_root_two_up() {
+    let chord = [60, 64, 67, 71];
+    assert_eq!(lead_step_tone(0.0), None, "value 0 is a rest");
+    assert_eq!(lead_step_label(0.0), "Rest");
+    assert_eq!(lead_note(lead_step_tone(1.0).unwrap(), chord, 0.0), 60);
+    assert_eq!(lead_note(lead_step_tone(4.0).unwrap(), chord, 0.0), 71);
+    assert_eq!(lead_note(lead_step_tone(5.0).unwrap(), chord, 0.0), 72);
+    assert_eq!(lead_note(lead_step_tone(9.0).unwrap(), chord, 0.0), 84);
+    assert_eq!(lead_note(lead_step_tone(1.0).unwrap(), chord, -1.0), 48);
+    assert_eq!(
+        lead_step_tone(99.0),
+        lead_step_tone(9.0),
+        "an out-of-table value clamps to the last tone"
+    );
+}
+
+#[test]
+fn lead_glide_slides_the_pitch_toward_the_new_note_without_a_jump() {
+    let mut voice = LeadVoice::new(220.0, 0.001, 1.0, SAMPLE_RATE);
+    voice.retrigger(440.0, 0.001, 1.0);
+    let glide = 0.1;
+    // One sample in, the pitch has barely moved; by `glide` seconds it has
+    // settled to within 5% of the target.
+    voice.next(glide, &LEAD_TYPES[0]);
+    assert!(voice.hz() < 230.0, "pitch jumped: {}", voice.hz());
+    for _ in 0..(SAMPLE_RATE * glide) as usize {
+        voice.next(glide, &LEAD_TYPES[0]);
+    }
+    assert!(voice.hz() > 440.0 * 0.95, "pitch stalled: {}", voice.hz());
+    // Zero glide jumps in one sample.
+    let mut instant = LeadVoice::new(220.0, 0.001, 1.0, SAMPLE_RATE);
+    instant.retrigger(440.0, 0.001, 1.0);
+    instant.next(0.0, &LEAD_TYPES[0]);
+    assert_close(instant.hz(), 440.0);
+}
+
+#[test]
+fn lead_engine_is_mono_and_plays_the_lane_against_the_pad_chord() {
+    let pad = PadControls::default();
+    let controls = LeadControls {
+        level: 0.5,
+        ..LeadControls::default()
+    };
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    let mut peak = 0.0f32;
+    let mut silent = LeadEngine::new(SAMPLE_RATE);
+    for sample in 0..SAMPLE_RATE as u64 * 4 {
+        let (l, r) = lead.next(&controls, &pad, 0.0, timing(sample, 120.0));
+        assert_eq!(l, r, "the lead is centred");
+        assert!(l.is_finite());
+        peak = peak.max(l.abs());
+        let (sl, _) = silent.next(&LeadControls::default(), &pad, 0.0, timing(sample, 120.0));
+        assert_eq!(sl, 0.0, "a Level of 0 plays nothing");
+    }
+    assert!(peak > 0.05, "the lane never sounded: peak {peak}");
+    assert!(peak < 1.0, "the lead clips on its own: peak {peak}");
+    assert!(silent.voice.is_none(), "a silent lead keeps no voice alive");
+}
+
+#[test]
+fn song_code_round_trips_the_lead_lane() {
+    let decoded = round_trip(|c| {
+        c.lead.level = 0.4;
+        c.lead.glide = 0.25;
+        c.lead.octave = 1.0;
+        c.lead.step_count = 5.0;
+        c.lead.steps[0] = 9.0;
+        c.lead.steps[4] = 0.0;
+        c.lead.steps[15] = 3.0;
+    });
+    assert_near(decoded.lead.level, 0.4);
+    assert_near(decoded.lead.glide, 0.25);
+    assert_close(decoded.lead.octave, 1.0);
+    assert_close(decoded.lead.step_count, 5.0);
+    assert_close(decoded.lead.steps[0], 9.0);
+    assert_close(decoded.lead.steps[4], 0.0);
+    assert_close(decoded.lead.steps[15], 3.0);
+}
+
+/// Mute bits are assigned per tab and never move: Lead sits between Arp and
+/// Master in the strip but took the next free bit, so a code saved with
+/// Master muted before Lead existed still mutes Master, never Lead.
+#[test]
+fn mute_bits_are_stable_when_a_tab_is_added_mid_strip() {
+    assert_eq!(Tab::Master.mute_bit(), 7);
+    assert_eq!(Tab::Lead.mute_bit(), 8);
+    assert_eq!(MUTE_BYTES, 2);
+    let mut seen = std::collections::BTreeSet::new();
+    for tab in Tab::all() {
+        assert!(
+            seen.insert(tab.mute_bit()),
+            "{} shares a mute bit",
+            tab.name()
+        );
+    }
+
+    let mut song = SongState::from_controls(FluidControls::default());
+    song.muted[Tab::Lead as usize] = true;
+    song.muted[Tab::Master as usize] = true;
+    let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+    assert_eq!(decoded.muted, song.muted);
+}
+
+#[test]
+fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
+    let pad = PadControls::default();
+    let controls = LeadControls {
+        level: 0.5,
+        step_count: 1.0,
+        steps: [0.0; LEAD_STEP_COUNT],
+        ..LeadControls::default()
+    };
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    let quiet_for = |lead: &mut LeadEngine, from: u64, samples: u64| -> f32 {
+        (from..from + samples)
+            .map(|sample| {
+                lead.next(&controls, &pad, 0.0, timing(sample, 120.0))
+                    .0
+                    .abs()
+            })
+            .fold(0.0, f32::max)
+    };
+    assert_eq!(
+        quiet_for(&mut lead, 0, 4_000),
+        0.0,
+        "an all-rest lane is silent"
+    );
+
+    lead.observe(LeadPlayState {
+        presses: 1,
+        tone: 5,
+    });
+    assert!(quiet_for(&mut lead, 4_000, 4_000) > 0.05, "a press sounds");
+    // The same state seen again is not a new press.
+    let mut lead_again = LeadEngine::with_play_state(
+        SAMPLE_RATE,
+        LeadPlayState {
+            presses: 1,
+            tone: 5,
+        },
+    );
+    lead_again.observe(LeadPlayState {
+        presses: 1,
+        tone: 5,
+    });
+    assert_eq!(
+        quiet_for(&mut lead_again, 0, 4_000),
+        0.0,
+        "a caught-up engine replays nothing"
+    );
+
+    // A silent layer swallows the press rather than holding it for later.
+    let mut silent = LeadEngine::new(SAMPLE_RATE);
+    silent.observe(LeadPlayState {
+        presses: 1,
+        tone: 5,
+    });
+    let muted = LeadControls::default();
+    for sample in 0..64 {
+        silent.next(&muted, &pad, 0.0, timing(sample, 120.0));
+    }
+    assert!(silent.voice.is_none());
+    assert_eq!(quiet_for(&mut silent, 64, 4_000), 0.0);
+}
+/// Every lead type lands at one RMS at 220 Hz, so switching Type never
+/// jumps the level; the Drive slot adds edge on top, equally for all.
+#[test]
+fn lead_types_render_at_a_matched_level() {
+    let samples = SAMPLE_RATE as usize * 2;
+    let types: Vec<SoundVariant> = LEAD_TYPES
+        .iter()
+        .map(|recipe| {
+            let mut voice = LeadVoice::new(220.0, 0.005, 10.0, SAMPLE_RATE);
+            let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
+                let sample = voice.next(0.0, recipe);
+                (sample, sample)
+            });
+            (recipe.label, step)
+        })
+        .collect();
+    assert_types_differ_but_balanced("lead", samples, types);
+
+    let rms: Vec<f32> = LEAD_TYPES
+        .iter()
+        .map(|recipe| {
+            let mut voice = LeadVoice::new(220.0, 0.005, 10.0, SAMPLE_RATE);
+            let out: Vec<f32> = (0..samples).map(|_| voice.next(0.0, recipe)).collect();
+            crate::synth::fm::rms(&out)
+        })
+        .collect();
+    let max = rms.iter().cloned().fold(f32::MIN, f32::max);
+    let min = rms.iter().cloned().fold(f32::MAX, f32::min);
+    assert!(max / min < 1.1, "lead types drift apart in level: {rms:?}");
+}
+
+/// A bright lead reads louder than it measures, so at full Level it sits
+/// below the Bass rather than beside it: the fader's useful range is the
+/// whole bar, not its first few percent.
+#[test]
+fn lead_at_full_level_sits_under_the_bass() {
+    let pad = PadControls::default();
+    let n = SAMPLE_RATE as u64 * 8;
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    let lc = LeadControls {
+        level: 1.0,
+        ..LeadControls::default()
+    };
+    let l: Vec<f32> = (0..n)
+        .map(|s| lead.next(&lc, &pad, 0.0, timing(s, 120.0)).0)
+        .collect();
+    let mut bass = BassEngine::new(SAMPLE_RATE);
+    let bc = BassControls {
+        level: 1.0,
+        voice_type: 1.0,
+        ..BassControls::default()
+    };
+    let b: Vec<f32> = (0..n)
+        .map(|s| bass.next(&bc, &pad, 0.0, timing(s, 120.0)).0)
+        .collect();
+    let ratio = crate::synth::fm::rms(&l) / crate::synth::fm::rms(&b);
+    assert!((0.45..0.9).contains(&ratio), "lead/bass rms ratio {ratio}");
+}
+
+#[test]
+fn apply_ratio_lands_on_the_dial_evenly_for_every_scale() {
+    let mut c = FluidControls::default();
+    let level = spec_by_id("pad.level").unwrap();
+    level.apply_ratio(0.0, &mut c);
+    assert_close(c.pad.level, 0.0);
+    level.apply_ratio(1.0, &mut c);
+    assert_close(c.pad.level, 1.0);
+    level.apply_ratio(0.5, &mut c);
+    assert_close(c.pad.level, 0.5);
+
+    // A beat-grid ladder: the ends are its floor and ceiling rungs and the
+    // middle is a real rung, never a value between rungs.
+    let interval = spec_by_id("perc.interval_beats").unwrap();
+    interval.apply_ratio(0.0, &mut c);
+    assert_close(c.perc.interval_beats, interval.min);
+    interval.apply_ratio(1.0, &mut c);
+    assert_close(c.perc.interval_beats, interval.max);
+    interval.apply_ratio(0.37, &mut c);
+    let landed = c.perc.interval_beats;
+    interval.apply_delta(1.0, &mut c);
+    interval.apply_delta(-1.0, &mut c);
+    assert_close(c.perc.interval_beats, landed);
+
+    // A power-of-two ladder only ever lands on a power of two.
+    let bars = spec_by_id("pad.chord_bars").unwrap();
+    for ratio in [0.0, 0.2, 0.5, 0.8, 1.0] {
+        bars.apply_ratio(ratio, &mut c);
+        let bars_value = c.pad.chord_bars;
+        assert!(
+            bars_value.log2().fract() == 0.0,
+            "{bars_value} is not a power of two"
+        );
+    }
+
+    // A discrete row rounds onto its table.
+    let step = spec_by_id("lead.step3").unwrap();
+    step.apply_ratio(0.49, &mut c);
+    assert_close(c.lead.steps[2], c.lead.steps[2].round());
+    step.apply_ratio(1.0, &mut c);
+    assert_close(c.lead.steps[2], 9.0);
 }

@@ -11,6 +11,7 @@ use std::fmt;
 use super::interaction::{InteractionEffect, Page, PaletteStagedEdit};
 use super::song::SongCodeError;
 use super::*;
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 /// Why one effect in a transition's ordered list did not run.
 ///
@@ -194,16 +195,25 @@ pub(crate) struct EffectExecutor {
     recent: RecentControls,
     pending: Option<(f64, Vec<StagedEdit>)>,
     message: Option<(String, Instant)>,
+    /// The one source of randomness an effect may draw on (`r` rolls a
+    /// control). Seeded from entropy in production and from a fixed seed in
+    /// replay, so a replayed trace rolls the same values twice.
+    rng: StdRng,
 }
 
 impl EffectExecutor {
     pub(crate) fn new(session: LiveSession, auto: AutoControls) -> Self {
+        Self::seeded(session, auto, rand::random())
+    }
+
+    pub(crate) fn seeded(session: LiveSession, auto: AutoControls, seed: u64) -> Self {
         Self {
             session,
             auto,
             recent: RecentControls::default(),
             pending: None,
             message: None,
+            rng: StdRng::seed_from_u64(seed),
         }
     }
 
@@ -526,13 +536,16 @@ impl EffectExecutor {
             | InteractionEffect::ToggleMute { .. }
             | InteractionEffect::RemoveAutomation
             | InteractionEffect::ReseedAutomation
+            | InteractionEffect::RandomizeSelected
             | InteractionEffect::CloseAutomationAll
             | InteractionEffect::TouchSelected
             | InteractionEffect::PaletteCommitAtBar(_)
             | InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_)
-            | InteractionEffect::PerformanceEdit { .. }) => {
+            | InteractionEffect::PerformanceEdit { .. }
+            | InteractionEffect::LeadTone(_)
+            | InteractionEffect::LeadOctave(_)) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
         }
@@ -653,6 +666,17 @@ impl EffectExecutor {
                 );
             }),
             InteractionEffect::ReseedAutomation => self.with_automation(reseed_automation_effect),
+            InteractionEffect::RandomizeSelected => {
+                let id = selected_control(context.selected_control)?;
+                let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext("control"))?;
+                let ratio = self.rng.r#gen::<f32>();
+                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                    spec.apply_ratio(ratio, &mut snapshot.controls);
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::CloseAutomationAll => {
                 self.edit_navigation_automation(AutomationState::close_editor);
                 Ok(EffectAcknowledgement::NoChange)
@@ -677,6 +701,28 @@ impl EffectExecutor {
             InteractionEffect::PerformanceInstrument(_)
             | InteractionEffect::HoldPerformanceSelector(_)
             | InteractionEffect::ReleaseHeldSelector(_) => Ok(EffectAcknowledgement::NoChange),
+            // A played note is a gesture over the song, not an edit of it:
+            // it publishes through the session so the audio thread sees it,
+            // but never exits auto — soloing over a morph is the point.
+            InteractionEffect::LeadTone(tone) => {
+                let snapshot = self.session.update(|snapshot| {
+                    snapshot.lead_play.presses = snapshot.lead_play.presses.wrapping_add(1);
+                    snapshot.lead_play.tone = tone;
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::LeadOctave(delta) => {
+                let spec = spec_by_id("lead.octave")
+                    .ok_or(EffectFailure::MissingContext("lead.octave"))?;
+                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                    spec.apply_delta(f32::from(delta), &mut snapshot.controls);
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::PaletteModule { tab, catalog_index } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
                 self.place_module(tab, catalog_index)

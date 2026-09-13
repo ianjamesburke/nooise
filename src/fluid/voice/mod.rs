@@ -7,6 +7,7 @@ mod arp;
 mod bass;
 mod clap;
 mod kick;
+mod lead;
 mod pad;
 mod perc;
 mod tonal;
@@ -15,6 +16,7 @@ pub(crate) use arp::*;
 pub(crate) use bass::*;
 pub(crate) use clap::*;
 pub(crate) use kick::*;
+pub(crate) use lead::*;
 pub(crate) use pad::*;
 pub(crate) use perc::*;
 pub(crate) use tonal::*;
@@ -33,7 +35,7 @@ pub(crate) fn tune_ratio(semitones: f32) -> f32 {
 }
 
 /// A MIDI note's frequency under the master tune: the one pitch path every
-/// pitched voice (Pad, Bass, Tonal, Arp) builds a note through.
+/// pitched voice (Pad, Bass, Tonal, Arp, Lead) builds a note through.
 pub(crate) fn note_hz(note: i32, tune: f32) -> f32 {
     midi_to_hz(note) * tune_ratio(tune)
 }

@@ -25,6 +25,7 @@ pub(crate) enum KeyboardOwner {
     Envelope,
     PerformanceDeck,
     PerformanceSequence,
+    Lead,
 }
 
 impl KeyboardOwner {
@@ -37,6 +38,7 @@ impl KeyboardOwner {
             Self::Envelope => AutomationKind::Envelope.label(),
             Self::PerformanceDeck => "DECK",
             Self::PerformanceSequence => "SEQUENCE",
+            Self::Lead => "LEAD",
         }
     }
 }
@@ -143,6 +145,16 @@ pub(crate) enum ModeSurface<'a> {
     Palette(PaletteSurface),
     Automation(AutomationSurface<'a>),
     Performance(PerformanceSurface),
+    Lead(LeadSurface),
+}
+
+/// Lead play-mode render state: the tone last played, the live octave, and
+/// whether the layer can be heard at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LeadSurface {
+    pub(crate) last_tone: Option<usize>,
+    pub(crate) octave: i32,
+    pub(crate) level_pct: u8,
 }
 
 /// Everything the palette overlay draws: the projected match list plus the
@@ -305,6 +317,11 @@ fn mode_surface<'a>(
         InteractionMode::Automation(mode) => {
             ModeSurface::Automation(automation_surface(*mode, automation))
         }
+        InteractionMode::Lead(play) => ModeSurface::Lead(LeadSurface {
+            last_tone: play.last_tone,
+            octave: controls.lead.octave.round() as i32,
+            level_pct: (controls.lead.level * 100.0).round() as u8,
+        }),
         InteractionMode::Performance(PerformanceMode::Deck {
             selected,
             held_selectors,
@@ -490,6 +507,7 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
         InteractionMode::Performance(PerformanceMode::Sequence { .. }) => {
             KeyboardOwner::PerformanceSequence
         }
+        InteractionMode::Lead(_) => KeyboardOwner::Lead,
     }
 }
 
@@ -549,6 +567,15 @@ fn help_surface(
     }
 }
 
+/// The play-mode footer. Names the level when it is 0 so a silent Lead is
+/// not mistaken for a dead keyboard.
+pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
+    if lead.level_pct == 0 {
+        return "LEAD · level is 0 · Esc, raise Level, Enter".to_string();
+    }
+    format!("LEAD · asdfghjkl play   z/x oct {:+}   Esc", lead.octave)
+}
+
 fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
     match owner {
         KeyboardOwner::Browsing => unreachable!("browsing help is resolved separately"),
@@ -559,6 +586,10 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         KeyboardOwner::Lfo | KeyboardOwner::Envelope => match mode {
             ModeSurface::Automation(surface) => automation_owner_help(surface),
             _ => unreachable!("automation owner requires automation surface"),
+        },
+        KeyboardOwner::Lead => match mode {
+            ModeSurface::Lead(lead) => lead_owner_help(*lead),
+            _ => unreachable!("lead owner requires lead surface"),
         },
         KeyboardOwner::PerformanceDeck => match mode {
             ModeSurface::Performance(PerformanceSurface::Deck {
@@ -687,7 +718,7 @@ fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
 mod tests {
     use super::*;
     use crate::fluid::interaction::{
-        AutomationMode, InputPhase, Intent, LfoDepth, NumericEntry, PaletteMode,
+        AutomationMode, InputPhase, Intent, LeadPlay, LfoDepth, NumericEntry, Page, PaletteMode,
         PerformanceInstrument, PerformanceMode, SemanticAction,
     };
     use ratatui::Terminal;
@@ -1047,5 +1078,24 @@ mod tests {
         assert!(frame.contains("/▌"));
         assert!(frame.contains("complete"));
         assert_ne!(frame, browsing);
+    }
+
+    #[test]
+    fn lead_owner_renders_its_keyboard_at_the_minimum_frame() {
+        let mut session = session();
+        session.controls.lead.level = 0.5;
+        session.controls.lead.octave = -1.0;
+        let model = InteractionModel {
+            navigation: Navigation::for_page(Page::Lead),
+            mode: InteractionMode::Lead(LeadPlay { last_tone: Some(3) }),
+        };
+        let frame = render_model_with_session(&model, &session);
+        assert!(frame.contains("LEAD"), "{frame}");
+        assert!(frame.contains("a1␠"), "{frame}");
+        assert!(frame.contains("oct␠-1"), "{frame}");
+
+        session.controls.lead.level = 0.0;
+        let silent = render_model_with_session(&model, &session);
+        assert!(silent.contains("level␠is␠0"), "{silent}");
     }
 }

@@ -50,6 +50,7 @@ pub(crate) enum Page {
     Tonal,
     Clap,
     Arp,
+    Lead,
     Master,
 }
 
@@ -85,7 +86,7 @@ struct Layer {
 /// One row per layer in `Page`/`Tab` discriminant order (test-enforced), so
 /// page order, page↔tab translation, and the navigation each page opens all
 /// index this single table instead of restating the layer list.
-const LAYERS: [Layer; 8] = [
+const LAYERS: [Layer; 9] = [
     Layer {
         page: Page::Chords,
         tab: Tab::Chords,
@@ -122,6 +123,11 @@ const LAYERS: [Layer; 8] = [
         navigation: LayerNavigation::Standard(StandardPage::Arp),
     },
     Layer {
+        page: Page::Lead,
+        tab: Tab::Lead,
+        navigation: LayerNavigation::Standard(StandardPage::Lead),
+    },
+    Layer {
         page: Page::Master,
         tab: Tab::Master,
         navigation: LayerNavigation::Master,
@@ -149,6 +155,7 @@ pub(crate) enum StandardPage {
     Tonal,
     Clap,
     Arp,
+    Lead,
 }
 
 impl StandardPage {
@@ -591,6 +598,7 @@ pub(crate) enum ModeKind {
     Palette,
     Automation,
     Performance,
+    Lead,
 }
 
 /// Exactly one variant owns the keyboard. Mode-local data cannot coexist with
@@ -603,6 +611,21 @@ pub(crate) enum InteractionMode {
     Palette(PaletteMode),
     Automation(AutomationMode),
     Performance(PerformanceMode),
+    Lead(LeadPlay),
+}
+
+/// The letter row is the Lead keyboard: `a`–`l` play `LEAD_STEP_TONES` 1–9
+/// (the four chord tones, the same four an octave up, the root two up). The
+/// runtime maps keys through it and the view labels keys from it, so neither
+/// restates the row.
+pub(crate) const LEAD_PLAY_KEYS: [char; 9] = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
+
+/// Lead play mode: the letter row plays chord tones on the Lead voice and
+/// `z`/`x` move its octave. Opened by Enter on the Lead page, closed by Esc.
+/// Only the last tone is remembered, for the surface to show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LeadPlay {
+    pub(crate) last_tone: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -667,6 +690,10 @@ pub(crate) enum Intent {
         release_available: bool,
     },
     FinishPerformanceSequence(PerformanceAction),
+    EnterLeadPlay,
+    /// Index into `LEAD_STEP_TONES`, from the letter row.
+    PlayLeadTone(usize),
+    ShiftLeadOctave(i8),
     AdjustSelected(i8),
     ResetSelected,
     ToggleAuto,
@@ -676,6 +703,8 @@ pub(crate) enum Intent {
     },
     RemoveAutomation,
     ReseedAutomation,
+    /// Set the selected control to a random point on its own dial.
+    RandomizeSelected,
     TouchSelected,
     CommitPaletteAtBar,
     Save,
@@ -695,6 +724,7 @@ impl Intent {
                 ModeKind::Palette,
                 ModeKind::Automation,
                 ModeKind::Performance,
+                ModeKind::Lead,
             ],
             Self::MoveSelection(_) => {
                 &[ModeKind::Browsing, ModeKind::Palette, ModeKind::Automation]
@@ -705,7 +735,10 @@ impl Intent {
             Self::OpenAutomationField => &[ModeKind::Automation],
             Self::EnterChordProgression
             | Self::EnterChordSlot(_)
-            | Self::EnterModuleDetail { .. } => &[ModeKind::Browsing],
+            | Self::EnterModuleDetail { .. }
+            | Self::EnterLeadPlay
+            | Self::RandomizeSelected => &[ModeKind::Browsing],
+            Self::PlayLeadTone(_) | Self::ShiftLeadOctave(_) => &[ModeKind::Lead],
             Self::ChangePage(_)
             | Self::BeginNumeric(_)
             | Self::OpenPalette
@@ -757,12 +790,16 @@ impl Intent {
             | Self::OpenAutomationField
             | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
+            | Self::EnterLeadPlay
+            | Self::PlayLeadTone(_)
+            | Self::ShiftLeadOctave(_)
             | Self::ResetSelected
             | Self::ToggleAuto
             | Self::ToggleUnits
             | Self::ToggleMute { .. }
             | Self::RemoveAutomation
             | Self::ReseedAutomation
+            | Self::RandomizeSelected
             | Self::TouchSelected
             | Self::CommitPaletteAtBar
             | Self::Save
@@ -821,6 +858,7 @@ pub(crate) enum InteractionEffect {
     },
     RemoveAutomation,
     ReseedAutomation,
+    RandomizeSelected,
     CloseAutomationAll,
     TouchSelected,
     PaletteCommitAtBar(Vec<PaletteStagedEdit>),
@@ -833,6 +871,10 @@ pub(crate) enum InteractionEffect {
         focus: PerformanceInstrument,
         action: PerformanceAction,
     },
+    /// Sound one Lead tone (index into `LEAD_STEP_TONES`) now.
+    LeadTone(usize),
+    /// Step `lead.octave` by whole octaves.
+    LeadOctave(i8),
     Save,
     Quit,
 }
@@ -979,6 +1021,7 @@ impl InteractionModel {
                 &mut next_mode,
                 &mut effects,
             ),
+            InteractionMode::Lead(play) => update_lead(play, intent, &mut next_mode, &mut effects),
         }
         if let Some(mode) = next_mode {
             self.mode = mode;
@@ -1079,6 +1122,7 @@ fn update_browsing(
         Intent::ActivatePerformance(kind) => {
             *next_mode = Some(InteractionMode::Performance(PerformanceMode::new(kind)));
         }
+        Intent::EnterLeadPlay => *next_mode = Some(InteractionMode::Lead(LeadPlay::default())),
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
         Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
         Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
@@ -1088,6 +1132,7 @@ fn update_browsing(
         }
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
         Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
+        Intent::RandomizeSelected => effects.push(InteractionEffect::RandomizeSelected),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
@@ -1304,6 +1349,26 @@ fn update_automation(
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
+        _ => {}
+    }
+}
+
+fn update_lead(
+    play: &mut LeadPlay,
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    if !intent.is_handled_by(ModeKind::Lead) {
+        return;
+    }
+    match intent {
+        Intent::Cancel => *next_mode = Some(InteractionMode::Browsing),
+        Intent::PlayLeadTone(tone) => {
+            play.last_tone = Some(tone);
+            effects.push(InteractionEffect::LeadTone(tone));
+        }
+        Intent::ShiftLeadOctave(delta) => effects.push(InteractionEffect::LeadOctave(delta)),
         _ => {}
     }
 }
@@ -1544,6 +1609,7 @@ mod tests {
             StandardPage::Tonal,
             StandardPage::Clap,
             StandardPage::Arp,
+            StandardPage::Lead,
         ] {
             assert_eq!(
                 Navigation::for_page(page.page()),
@@ -1585,6 +1651,10 @@ mod tests {
                     stage: SequenceStage::ChooseInstrument,
                     held_selector: None,
                 }),
+                InteractionMode::Browsing,
+            ),
+            (
+                InteractionMode::Lead(LeadPlay { last_tone: Some(3) }),
                 InteractionMode::Browsing,
             ),
         ];
