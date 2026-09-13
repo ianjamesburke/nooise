@@ -274,6 +274,50 @@ impl Default for ArpControls {
     }
 }
 
+/// Number of steps in the Lead's pattern lane, and the max of `lead.steps`.
+pub(crate) const LEAD_STEP_COUNT: usize = 16;
+
+/// Default Lead pattern: a stepwise line over the chord tones so a fresh
+/// Lead is immediately musical once its level comes up. Step values index
+/// `LEAD_STEP_TONES` (0 = rest, 1..=4 chord tones, 5..=8 an octave up, 9 the
+/// root two octaves up).
+pub(crate) const DEFAULT_LEAD_STEPS: [f32; LEAD_STEP_COUNT] = [
+    1.0, 2.0, 3.0, 5.0, 4.0, 3.0, 2.0, 0.0, 1.0, 3.0, 5.0, 6.0, 5.0, 3.0, 2.0, 0.0,
+];
+
+#[derive(Clone)]
+pub(crate) struct LeadControls {
+    pub(crate) level: f32,
+    pub(crate) attack: f32,
+    pub(crate) decay: f32,
+    pub(crate) glide: f32,  // seconds for a pitch change to settle
+    pub(crate) octave: f32, // whole octaves shifting every played tone
+    pub(crate) rate_beats: f32,
+    pub(crate) offset_beats: f32,
+    pub(crate) step_count: f32, // 1..=LEAD_STEP_COUNT live steps in the lane
+    pub(crate) steps: [f32; LEAD_STEP_COUNT],
+    pub(crate) swing: f32, // derived from the optional Swing module
+}
+
+impl Default for LeadControls {
+    fn default() -> Self {
+        Self {
+            // Silent by default: a new voice must never change the sound of
+            // existing songs or a fresh startup.
+            level: 0.0,
+            attack: 0.02,
+            decay: 0.5,
+            glide: 0.08,
+            octave: 0.0,
+            rate_beats: 0.5,
+            offset_beats: 0.0,
+            step_count: 8.0,
+            steps: DEFAULT_LEAD_STEPS,
+            swing: 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct FluidControls {
     pub(crate) master: MasterControls,
@@ -284,6 +328,7 @@ pub(crate) struct FluidControls {
     pub(crate) clap: ClapControls,
     pub(crate) bass: BassControls,
     pub(crate) arp: ArpControls,
+    pub(crate) lead: LeadControls,
     /// Per-layer module chains, including the factory presets defined by
     /// `LayerModules::default`.
     pub(crate) modules: LayerModules,

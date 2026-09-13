@@ -12,7 +12,7 @@
 /// Slots per layer. Appending more later is a pure append to the song-id
 /// table; removing any is impossible, so this starts deliberately small.
 pub(crate) const MODULE_SLOTS: usize = 8;
-pub(crate) const MODULE_LAYERS: usize = 8;
+pub(crate) const MODULE_LAYERS: usize = 9;
 
 /// Where a module runs. Taken from the loaded module, never from the slot
 /// index, so all slots stay interchangeable and the UI shows one flat chain.
@@ -459,6 +459,7 @@ pub(crate) struct LayerModules {
     pub(crate) tonal: [ModuleSlot; MODULE_SLOTS],
     pub(crate) clap: [ModuleSlot; MODULE_SLOTS],
     pub(crate) arp: [ModuleSlot; MODULE_SLOTS],
+    pub(crate) lead: [ModuleSlot; MODULE_SLOTS],
     pub(crate) master: [ModuleSlot; MODULE_SLOTS],
 }
 
@@ -487,6 +488,10 @@ impl Default for LayerModules {
             tonal: with_preset("room", 0.1),
             clap: empty,
             arp: with_preset("room", 0.0),
+            // The lead's "slightly distorted" character is the shared Drive
+            // module, not a bespoke control, so a player can push it further
+            // or take it off like any other effect.
+            lead: with_preset("drive", 0.3),
             master: {
                 let mut slots = empty;
                 slots[0] = preset_slot("drive", 0.05);
@@ -508,6 +513,7 @@ impl LayerModules {
             super::Tab::Tonal => Some(&self.tonal),
             super::Tab::Clap => Some(&self.clap),
             super::Tab::Arp => Some(&self.arp),
+            super::Tab::Lead => Some(&self.lead),
             super::Tab::Master => Some(&self.master),
         }
     }
@@ -524,6 +530,7 @@ impl LayerModules {
             super::Tab::Tonal => Some(&mut self.tonal),
             super::Tab::Clap => Some(&mut self.clap),
             super::Tab::Arp => Some(&mut self.arp),
+            super::Tab::Lead => Some(&mut self.lead),
             super::Tab::Master => Some(&mut self.master),
         }
     }
@@ -555,7 +562,8 @@ pub(crate) fn module_layer_index(tab: super::Tab) -> Option<usize> {
         super::Tab::Tonal => Some(4),
         super::Tab::Clap => Some(5),
         super::Tab::Arp => Some(6),
-        super::Tab::Master => Some(7),
+        super::Tab::Lead => Some(7),
+        super::Tab::Master => Some(8),
     }
 }
 
@@ -574,6 +582,7 @@ pub(crate) fn resolve_module_chain(c: &mut super::FluidControls) {
     c.kick.swing = chain_amount(&c.modules.kick, "swing");
     c.tonal.swing = chain_amount(&c.modules.tonal, "swing");
     c.arp.swing = chain_amount(&c.modules.arp, "swing");
+    c.lead.swing = chain_amount(&c.modules.lead, "swing");
     c.clap.swing = chain_amount(&c.modules.clap, "swing");
     c.bass.swing = chain_amount(&c.modules.bass, "swing");
 }
@@ -639,6 +648,7 @@ mod tests {
                             | super::super::Tab::Tonal
                             | super::super::Tab::Clap
                             | super::super::Tab::Arp
+                            | super::super::Tab::Lead
                     ),
                     "alcohol" | "sidechain" => false,
                     other => panic!("catalog entry {other} needs an availability contract"),

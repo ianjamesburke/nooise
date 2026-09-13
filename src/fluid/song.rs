@@ -18,8 +18,8 @@ use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
     EnvelopeRoute, FluidControls, LfoRoute, LfoShape, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
-    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, ModuleSlotField,
-    MuteState, Step, TAB_COUNT, all_specs, parse_module_slot_id, spec_by_id,
+    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES,
+    ModuleSlotField, MuteState, Step, TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -146,7 +146,7 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
         write_record(TONAL_SEQUENCE_RECORD, &tonal_sequence, &mut bytes)?;
     }
     if song.muted.iter().any(|muted| *muted) {
-        write_record(MUTE_RECORD, &[mute_bits(&song.muted)], &mut bytes)?;
+        write_record(MUTE_RECORD, &mute_bytes(&song.muted), &mut bytes)?;
     }
     Ok(format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
@@ -194,21 +194,31 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
     Ok(song)
 }
 
-fn mute_bits(muted: &MuteState) -> u8 {
-    muted
-        .iter()
-        .enumerate()
-        .fold(0, |bits, (index, muted)| bits | (u8::from(*muted) << index))
+/// The mute record is a little-endian bit set indexed by `Tab::mute_bit`,
+/// not by tab discriminant: a tab's bit is assigned once and never moves, so
+/// a new tab in the middle of the strip cannot silently steal a saved mute
+/// from the tab after it. One byte per eight bits; a code written before a
+/// tab existed simply carries no bit for it, which reads as unmuted.
+fn mute_bytes(muted: &MuteState) -> Vec<u8> {
+    let mut bytes = vec![0u8; MUTE_BYTES];
+    for tab in Tab::all() {
+        if muted[tab as usize] {
+            let bit = tab.mute_bit();
+            bytes[bit / 8] |= 1 << (bit % 8);
+        }
+    }
+    bytes
 }
 
 fn read_mute(bytes: &[u8], muted: &mut MuteState) -> Result<(), SongCodeError> {
-    let mut reader = Reader::new(bytes);
-    let bits = reader.u8()?;
-    if !reader.is_empty() {
+    if bytes.is_empty() || bytes.len() > MUTE_BYTES {
         return Err(SongCodeError::Truncated);
     }
-    for (index, state) in muted.iter_mut().enumerate() {
-        *state = bits & (1 << index) != 0;
+    for tab in Tab::all() {
+        let bit = tab.mute_bit();
+        muted[tab as usize] = bytes
+            .get(bit / 8)
+            .is_some_and(|byte| byte & (1 << (bit % 8)) != 0);
     }
     Ok(())
 }
@@ -863,5 +873,27 @@ mod tag_tests {
             assert!(tags.insert(tag), "{shape:?}: tag {tag} reused");
         }
         assert_eq!(tags.len(), LFO_SHAPE_TAGS.len());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A code written when the strip ended at Master carried one mute byte
+    /// with Master on bit 7. Lead's bit is 8, in the second byte, so that
+    /// old payload still lands on Master and Lead reads as unmuted.
+    #[test]
+    fn a_one_byte_mute_payload_from_before_lead_still_names_master() {
+        let mut muted = [false; TAB_COUNT];
+        read_mute(&[1 << 7 | 1 << 4], &mut muted).unwrap();
+        assert!(muted[Tab::Master as usize]);
+        assert!(muted[Tab::Tonal as usize]);
+        assert!(!muted[Tab::Lead as usize]);
+        assert_eq!(read_mute(&[], &mut muted), Err(SongCodeError::Truncated));
+        assert_eq!(
+            read_mute(&[0, 0, 0], &mut muted),
+            Err(SongCodeError::Truncated)
+        );
     }
 }

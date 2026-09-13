@@ -50,6 +50,7 @@ pub(crate) enum Page {
     Tonal,
     Clap,
     Arp,
+    Lead,
     Master,
 }
 
@@ -85,7 +86,7 @@ struct Layer {
 /// One row per layer in `Page`/`Tab` discriminant order (test-enforced), so
 /// page order, page↔tab translation, and the navigation each page opens all
 /// index this single table instead of restating the layer list.
-const LAYERS: [Layer; 8] = [
+const LAYERS: [Layer; 9] = [
     Layer {
         page: Page::Chords,
         tab: Tab::Chords,
@@ -122,6 +123,11 @@ const LAYERS: [Layer; 8] = [
         navigation: LayerNavigation::Standard(StandardPage::Arp),
     },
     Layer {
+        page: Page::Lead,
+        tab: Tab::Lead,
+        navigation: LayerNavigation::Standard(StandardPage::Lead),
+    },
+    Layer {
         page: Page::Master,
         tab: Tab::Master,
         navigation: LayerNavigation::Master,
@@ -149,6 +155,7 @@ pub(crate) enum StandardPage {
     Tonal,
     Clap,
     Arp,
+    Lead,
 }
 
 impl StandardPage {
@@ -1544,6 +1551,7 @@ mod tests {
             StandardPage::Tonal,
             StandardPage::Clap,
             StandardPage::Arp,
+            StandardPage::Lead,
         ] {
             assert_eq!(
                 Navigation::for_page(page.page()),
