@@ -3,6 +3,7 @@
 //! range, and presentation all live in the registry, never here.
 
 use super::module::LayerModules;
+use super::voice::LeadPattern;
 
 pub(crate) const MASTER_BPM_MIN: f32 = 30.0;
 pub(crate) const MASTER_BPM_MAX: f32 = 200.0;
@@ -300,6 +301,7 @@ pub(crate) struct LeadControls {
     pub(crate) rate_beats: f32,
     pub(crate) offset_beats: f32,
     pub(crate) step_count: f32, // 1..=LEAD_STEP_COUNT live steps in the lane
+    pub(crate) pattern: f32,    // lane transport: labels and range live in LEAD_PATTERNS
     pub(crate) steps: [f32; LEAD_STEP_COUNT],
     pub(crate) swing: f32, // derived from the optional Swing module
 }
@@ -321,6 +323,9 @@ impl Default for LeadControls {
             rate_beats: 0.5,
             offset_beats: 0.0,
             step_count: 8.0,
+            // Play, so a code from before the transport existed still runs
+            // its lane.
+            pattern: LeadPattern::Play.value(),
             steps: DEFAULT_LEAD_STEPS,
             swing: 0.0,
         }

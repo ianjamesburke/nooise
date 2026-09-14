@@ -26,6 +26,135 @@ pub(crate) enum LeadFollow {
 
 pub(crate) const LEAD_FOLLOWS: [LeadFollow; 2] = [LeadFollow::Chord, LeadFollow::Scale];
 
+/// The lane's transport. One control, two states, so a Steps LFO can gate
+/// the pattern in bars and play mode drops the lane out without leaving the
+/// keys. There is no armed record state: a phrase enters the lane by capture
+/// (`lead_capture`), after it was played.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeadPattern {
+    /// The lane is silent; only played keys sound. The solo position.
+    Off,
+    /// The lane plays its steps.
+    Play,
+}
+
+pub(crate) const LEAD_PATTERNS: [LeadPattern; 2] = [LeadPattern::Off, LeadPattern::Play];
+
+impl LeadPattern {
+    pub(crate) fn from_value(value: f32) -> Self {
+        LEAD_PATTERNS[(value.round() as i64).clamp(0, LEAD_PATTERNS.len() as i64 - 1) as usize]
+    }
+
+    /// The control value naming this state: its `LEAD_PATTERNS` index.
+    pub(crate) const fn value(self) -> f32 {
+        match self {
+            Self::Off => 0.0,
+            Self::Play => 1.0,
+        }
+    }
+
+    pub(crate) fn toggled(self) -> Self {
+        match self {
+            Self::Off => Self::Play,
+            Self::Play => Self::Off,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Play => "Play",
+        }
+    }
+}
+
+/// One play-mode press as the phrase buffer remembers it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LeadPress {
+    pub(crate) beat: f64,
+    pub(crate) tone: usize,
+}
+
+/// The rolling memory of what was played, so a phrase can be kept after the
+/// fact rather than armed before it. Live-only: it regenerates from playing
+/// and never enters a song code. Bounded, so it costs nothing to leave on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct LeadPhraseBuffer {
+    presses: Vec<LeadPress>,
+}
+
+/// Presses the buffer keeps: enough for a 16-step lane of chords' worth of
+/// legato at the fastest rate.
+const LEAD_PHRASE_PRESSES: usize = 128;
+
+impl LeadPhraseBuffer {
+    pub(crate) fn push(&mut self, press: LeadPress) {
+        if self.presses.len() == LEAD_PHRASE_PRESSES {
+            self.presses.remove(0);
+        }
+        self.presses.push(press);
+    }
+
+    pub(crate) fn presses(&self) -> &[LeadPress] {
+        &self.presses
+    }
+}
+
+/// A phrase lifted off the buffer, ready to become the lane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct LeadCapture {
+    pub(crate) count: usize,
+    pub(crate) steps: [f32; LEAD_STEP_COUNT],
+}
+
+/// Lane lengths a capture may pick, shortest that fits the phrase.
+const LEAD_CAPTURE_LENGTHS: [usize; 3] = [4, 8, 16];
+/// A silence this long (in beats: one bar) ends a phrase; anything played
+/// before it is not part of what "keep that" means.
+const LEAD_PHRASE_GAP_BEATS: f64 = 4.0;
+
+/// The phrase just played, as a lane: the presses since the last bar of
+/// silence, each snapped to its nearest step, laid onto the shortest of
+/// 4/8/16 steps that holds them. Steps keep their place against the bar
+/// (`lane step = absolute step mod length`), so the loop plays back where it
+/// was played rather than shifted to start on step 1. Presses older than the
+/// lane's longest possible loop fall off; `None` when nothing was played.
+pub(crate) fn lead_capture(
+    presses: &[LeadPress],
+    now: f64,
+    rate_beats: f32,
+    offset_beats: f32,
+) -> Option<LeadCapture> {
+    let rate = f64::from(rate_beats.clamp(LEAD_RATE_BEATS_MIN, LEAD_RATE_BEATS_MAX));
+    let horizon = now - rate * LEAD_STEP_COUNT as f64;
+    let recent: Vec<LeadPress> = presses
+        .iter()
+        .copied()
+        .filter(|press| press.beat >= horizon && press.beat <= now)
+        .collect();
+    // Walk back from the newest press to the last bar of silence.
+    let start = (1..recent.len())
+        .rev()
+        .find(|&i| recent[i].beat - recent[i - 1].beat >= LEAD_PHRASE_GAP_BEATS)
+        .unwrap_or(0);
+    let phrase = &recent[start..];
+    let step_of =
+        |press: &LeadPress| ((press.beat - f64::from(offset_beats)) / rate).round() as i64;
+    let first = step_of(phrase.first()?);
+    let last = step_of(phrase.last()?);
+    let span = (last - first + 1).max(1) as usize;
+    let count = LEAD_CAPTURE_LENGTHS
+        .into_iter()
+        .find(|&length| length >= span)
+        .unwrap_or(LEAD_STEP_COUNT);
+    let mut steps = [0.0; LEAD_STEP_COUNT];
+    for press in phrase {
+        let step = step_of(press).rem_euclid(count as i64) as usize;
+        steps[step] = press.tone as f32;
+    }
+    Some(LeadCapture { count, steps })
+}
+
 impl LeadFollow {
     pub(crate) fn from_value(value: f32) -> Self {
         LEAD_FOLLOWS[(value.round() as i64).clamp(0, LEAD_FOLLOWS.len() as i64 - 1) as usize]
@@ -417,8 +546,10 @@ impl LeadEngine {
             // default) never keeps a voice alive. A rest lets the current
             // note finish its decay untouched.
             // The lane yields to a held key: the player owns the voice
-            // until the key comes up.
+            // until the key comes up. An Off pattern is the solo position:
+            // the trigger still ticks so Play resumes on the clock's step.
             if c.level != 0.0
+                && LeadPattern::from_value(c.pattern) != LeadPattern::Off
                 && !self.held_seen
                 && let Some(tone) = lead_step_tone(c.steps[lane_step])
             {

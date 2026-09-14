@@ -2026,7 +2026,7 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
         2,
         "one tone per press, none per repeat"
     );
-    assert_eq!(played.effect_count("LeadOctave"), 1);
+    assert_eq!(played.effect_count("LeadNudge"), 1);
     assert_eq!(played.control("lead.octave"), Some(1.0));
     assert_eq!(
         played.session_generation, 4,
@@ -2035,6 +2035,84 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
     assert_eq!(played.model.mode, InteractionMode::Browsing);
     assert!(played.deferred_inputs.is_empty());
     assert_eq!(played.effect_notice, None);
+}
+
+/// `i` from any page opens play mode and lands on the Lead page; the top
+/// row nudges Lead rows down (left key) and up (right key) without leaving
+/// the keys, one dial step per press.
+#[test]
+fn i_enters_play_mode_from_any_page_and_the_top_row_nudges_rows() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let base = replay(&[], TerminalCapabilities::full());
+    let level = base.control("lead.level").unwrap();
+    let decay = base.control("lead.decay").unwrap();
+    let glide = base.control("lead.glide").unwrap();
+
+    let opened = replay(
+        &[plain(FixtureKey::Character('i'))],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(
+        opened.model.mode,
+        InteractionMode::Lead(LeadPlay::default())
+    );
+    assert!(matches!(opened.model.navigation, Navigation::Lead { .. }));
+    assert_eq!(opened.session_generation, 0, "entering edits nothing");
+
+    let nudged = replay(
+        &[
+            plain(FixtureKey::Character('i')),
+            plain(FixtureKey::Character('w')),
+            plain(FixtureKey::Character('r')),
+            plain(FixtureKey::Character('y')),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(nudged.effect_count("LeadNudge"), 3);
+    assert!(
+        nudged.control("lead.level").unwrap() > level,
+        "w raises Level"
+    );
+    assert!(
+        nudged.control("lead.decay").unwrap() > decay,
+        "r lengthens Decay"
+    );
+    assert!(
+        nudged.control("lead.glide").unwrap() > glide,
+        "y raises Glide"
+    );
+    assert_eq!(nudged.final_owner(), Some("LEAD"));
+    assert!(nudged.deferred_inputs.is_empty());
+}
+
+/// Space inside play mode drops the lane out and back without leaving the
+/// keys; `c` keeps what was just played as the lane and sets it playing.
+#[test]
+fn space_toggles_the_lead_lane_and_c_keeps_the_phrase() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let mut trace: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    trace.push(plain(FixtureKey::Enter));
+    trace.push(plain(FixtureKey::Character(' ')));
+    let off = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(off.control("lead.pattern"), Some(0.0));
+    assert_eq!(off.final_owner(), Some("LEAD"));
+    trace.push(plain(FixtureKey::Character('c')));
+    let empty = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(
+        empty.control("lead.pattern"),
+        Some(0.0),
+        "nothing played: nothing kept, lane stays off"
+    );
+    trace.extend([
+        plain(FixtureKey::Character('a')),
+        plain(FixtureKey::Character('d')),
+        plain(FixtureKey::Character('c')),
+    ]);
+    let kept = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(kept.effect_count("LeadCapture"), 2);
+    assert_eq!(kept.control("lead.pattern"), Some(1.0));
+    assert_eq!(kept.control("lead.steps"), Some(4.0));
+    assert!(kept.deferred_inputs.is_empty());
 }
 
 /// Ctrl+Q and Ctrl+C quit from inside play mode and the performance deck,
@@ -2062,14 +2140,14 @@ fn control_quit_reaches_the_lead_and_performance_owners() {
 fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     let plain = |code| key(0, code, InputPhase::Press);
     let mut trace: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
-    trace.extend(std::iter::repeat_n(plain(FixtureKey::Down), 9));
+    trace.extend(std::iter::repeat_n(plain(FixtureKey::Down), 10));
     trace.push(plain(FixtureKey::Enter));
     let opened = replay(&trace, TerminalCapabilities::full());
     assert_eq!(
         opened.model.navigation,
         Navigation::Lead {
             selected: 0,
-            drill: LeadDrill::Pattern { return_to: 9 },
+            drill: LeadDrill::Pattern { return_to: 10 },
         }
     );
     assert_eq!(opened.model.mode, InteractionMode::Browsing);
@@ -2086,7 +2164,7 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
         played.model.navigation,
         Navigation::Lead {
             selected: 1,
-            drill: LeadDrill::Pattern { return_to: 9 },
+            drill: LeadDrill::Pattern { return_to: 10 },
         },
         "Esc leaves play mode but stays in the lane"
     );
@@ -2096,7 +2174,7 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     assert_eq!(
         back.model.navigation,
         Navigation::Lead {
-            selected: 9,
+            selected: 10,
             drill: LeadDrill::None,
         }
     );

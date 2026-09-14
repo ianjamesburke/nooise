@@ -1895,8 +1895,8 @@ fn tab_controls_classify_each_slider_kind() {
             // Root rows only: the step lane lives in the pattern drill.
             Tab::Lead,
             vec![
-                Gain, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing, Timing,
-                Discrete, Gain,
+                Gain, Discrete, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing,
+                Timing, Discrete, Gain,
             ],
         ),
     ];
@@ -5534,6 +5534,94 @@ fn lead_steps_past_the_default_length_rest() {
         "lengthening the lane must add rests, not notes"
     );
     assert!(controls.steps[..live].iter().any(|step| *step != 0.0));
+}
+
+#[test]
+fn lead_pattern_off_silences_the_lane_but_not_the_keys() {
+    let pad = PadControls::default();
+    let mut controls = LeadControls {
+        level: 0.5,
+        attack: 0.005,
+        decay: 0.05,
+        pattern: LeadPattern::Off.value(),
+        ..LeadControls::default()
+    };
+    let peak = |lead: &mut LeadEngine, c: &LeadControls, samples: u64| -> f32 {
+        (0..samples)
+            .map(|sample| lead.next(c, &pad, 0.0, timing(sample, 120.0)).0.abs())
+            .fold(0.0, f32::max)
+    };
+    let two_beats = SAMPLE_RATE as u64; // four lane steps at 120 BPM
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    assert_eq!(
+        peak(&mut lead, &controls, two_beats),
+        0.0,
+        "Off: the lane is silent"
+    );
+
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    lead.observe(LeadPlayState {
+        presses: 1,
+        tone: 1,
+        held: false,
+    });
+    assert!(
+        peak(&mut lead, &controls, 2_000) > 0.05,
+        "Off: a played key still sounds"
+    );
+
+    controls.pattern = LeadPattern::Play.value();
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    assert!(
+        peak(&mut lead, &controls, two_beats) > 0.05,
+        "Play: the lane sounds"
+    );
+}
+
+#[test]
+fn lead_capture_keeps_the_last_phrase_on_the_shortest_lane_that_fits() {
+    let press = |beat, tone| LeadPress { beat, tone };
+    // Rate 0.5: two steps per beat. A four-note line over beats 8..10,
+    // played a hair early and late, snaps to steps 16..19 -> lane 0..3.
+    let presses = [press(7.95, 1), press(8.55, 2), press(9.0, 3), press(9.6, 5)];
+    let capture = lead_capture(&presses, 10.0, 0.5, 0.0).unwrap();
+    assert_eq!(capture.count, 4);
+    assert_eq!(&capture.steps[..4], &[1.0, 2.0, 3.0, 5.0]);
+    assert!(capture.steps[4..].iter().all(|s| *s == 0.0));
+
+    // Five steps of span need the 8-step lane; placement keeps its bar
+    // position (absolute step mod length), so a line starting on beat 9
+    // (step 18) lands on lane step 2, not 0.
+    let capture = lead_capture(&[press(9.0, 4), press(11.0, 7)], 11.5, 0.5, 0.0).unwrap();
+    assert_eq!(capture.count, 8);
+    assert_eq!(capture.steps[2], 4.0);
+    assert_eq!(capture.steps[6], 7.0);
+
+    // A bar of silence ends the phrase: the earlier line is not kept.
+    let capture = lead_capture(
+        &[press(0.0, 9), press(1.0, 9), press(6.0, 2)],
+        6.5,
+        0.5,
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(capture.count, 4);
+    assert_eq!(capture.steps, {
+        let mut steps = [0.0; LEAD_STEP_COUNT];
+        steps[0] = 2.0; // step 12 mod 4
+        steps
+    });
+
+    // Presses older than a full 16-step lane fall off; nothing left, nothing kept.
+    assert_eq!(lead_capture(&[press(0.0, 1)], 20.0, 0.5, 0.0), None);
+    assert_eq!(lead_capture(&[], 0.0, 0.5, 0.0), None);
+
+    let mut buffer = LeadPhraseBuffer::default();
+    for beat in 0..200 {
+        buffer.push(press(beat as f64, 1));
+    }
+    assert_eq!(buffer.presses().len(), 128, "the buffer is bounded");
+    assert_eq!(buffer.presses()[0].beat, 72.0, "and forgets the oldest");
 }
 
 #[test]

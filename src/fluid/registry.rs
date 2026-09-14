@@ -1651,6 +1651,19 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
     "lead",
     [
         gain_pct!("lead.level", "Level", lead.level),
+        ControlSpec::new(
+            LEAD_PATTERN_ID,
+            "Pattern",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_PATTERNS),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.pattern,
+            |c, v| c.lead.pattern = v,
+            |c| LeadPattern::from_value(c.lead.pattern).label().to_string(),
+        )
+        .reset_at(LeadPattern::Play.value()),
         time_secs!("lead.attack", "Attack", 0.001, 1.0, 0.001, lead.attack),
         time_secs!(
             "lead.decay",
@@ -1982,6 +1995,8 @@ pub(crate) fn module_detail_controls(
 /// family actually uses.
 /// The Lead's lane-length row; Enter on it opens the pattern drill.
 pub(crate) const LEAD_STEPS_ID: &str = "lead.steps";
+/// The Lead lane's transport row (Off/Play).
+pub(crate) const LEAD_PATTERN_ID: &str = "lead.pattern";
 
 /// Parse `lead.step<N>` back to its 0-based step, `None` for any other id.
 pub(crate) fn lead_step_index(id: &str) -> Option<usize> {

@@ -739,6 +739,7 @@ const SONG_ID_TABLE: &[&str] = &[
     "lead.slot8.right_clock",
     "lead.type",
     "lead.follow",
+    "lead.pattern",
 ];
 
 /// Index of `id` in the song-code id table, or `None` if the control has

@@ -5,9 +5,9 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, LeadDrill,
-    Navigation, PerformanceAction, PerformanceInstrument, PerformanceMode, PerformanceTargets,
-    SequenceStage,
+    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, LEAD_NUDGES,
+    LeadDrill, Navigation, PerformanceAction, PerformanceInstrument, PerformanceMode,
+    PerformanceTargets, SequenceStage,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -161,6 +161,8 @@ pub(crate) struct LeadSurface {
     pub(crate) holds: Option<bool>,
     /// Notes in the reach the keys index, so the row labels its degrees.
     pub(crate) reach_len: usize,
+    /// The lane transport, so the footer says whether keys are being kept.
+    pub(crate) pattern: LeadPattern,
 }
 
 /// Everything the palette overlay draws: the projected match list plus the
@@ -330,6 +332,7 @@ fn mode_surface<'a>(
             octave: controls.lead.octave.round() as i32,
             level_pct: (controls.lead.level * 100.0).round() as u8,
             reach_len: lead_page_reach(&controls.lead, &controls.pad).len(),
+            pattern: LeadPattern::from_value(controls.lead.pattern),
         }),
         InteractionMode::Performance(PerformanceMode::Deck {
             selected,
@@ -588,10 +591,26 @@ pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
     if lead.level_pct == 0 {
         return "LEAD · level is 0 · Esc, raise Level, Enter".to_string();
     }
+    let lane = match lead.pattern {
+        LeadPattern::Off => "lane off",
+        LeadPattern::Play => "lane on",
+    };
+    let nudges = LEAD_NUDGES
+        .iter()
+        .map(|nudge| {
+            let value = if nudge.id == "lead.octave" {
+                format!(" {:+}", lead.octave)
+            } else {
+                String::new()
+            };
+            format!("{}{} {}{value}", nudge.down, nudge.up, nudge.label)
+        })
+        .collect::<Vec<_>>()
+        .join("  ");
     if lead.holds == Some(false) {
-        return format!("LEAD · no key-up here: taps only   oct {:+}", lead.octave);
+        return format!("LEAD · taps only (no key-up)  {nudges}  Space {lane}  c keep");
     }
-    format!("LEAD · asdfghjkl play   z/x oct {:+}   Esc", lead.octave)
+    format!("LEAD · {nudges}  Space {lane}  c keep  Esc")
 }
 
 fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
