@@ -1651,6 +1651,19 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
     "lead",
     [
         gain_pct!("lead.level", "Level", lead.level),
+        ControlSpec::new(
+            LEAD_PATTERN_ID,
+            "Pattern",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_PATTERNS),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.pattern,
+            |c, v| c.lead.pattern = v,
+            |c| LeadPattern::from_value(c.lead.pattern).label().to_string(),
+        )
+        .reset_at(LeadPattern::Play.value()),
         time_secs!("lead.attack", "Attack", 0.001, 1.0, 0.001, lead.attack),
         time_secs!(
             "lead.decay",
@@ -1719,19 +1732,6 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| format!("{:.0}", c.lead.step_count),
         )
         .reset_at(8.0),
-        ControlSpec::new(
-            LEAD_PATTERN_ID,
-            "Pattern",
-            ControlKind::Discrete,
-            0.0,
-            last_index_of(&LEAD_PATTERNS),
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.lead.pattern,
-            |c, v| c.lead.pattern = v,
-            |c| LeadPattern::from_value(c.lead.pattern).label().to_string(),
-        )
-        .reset_at(LeadPattern::Play.value()),
         lead_step_row!(1),
         lead_step_row!(2),
         lead_step_row!(3),

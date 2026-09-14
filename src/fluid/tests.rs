@@ -1895,8 +1895,8 @@ fn tab_controls_classify_each_slider_kind() {
             // Root rows only: the step lane lives in the pattern drill.
             Tab::Lead,
             vec![
-                Gain, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing, Timing,
-                Discrete, Discrete, Gain,
+                Gain, Discrete, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing,
+                Timing, Discrete, Gain,
             ],
         ),
     ];
