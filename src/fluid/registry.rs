@@ -1995,7 +1995,7 @@ pub(crate) fn module_detail_controls(
 /// family actually uses.
 /// The Lead's lane-length row; Enter on it opens the pattern drill.
 pub(crate) const LEAD_STEPS_ID: &str = "lead.steps";
-/// The Lead lane's transport row (Off/Play/Record).
+/// The Lead lane's transport row (Off/Play).
 pub(crate) const LEAD_PATTERN_ID: &str = "lead.pattern";
 
 /// Parse `lead.step<N>` back to its 0-based step, `None` for any other id.
@@ -2003,13 +2003,6 @@ pub(crate) fn lead_step_index(id: &str) -> Option<usize> {
     let number = id.strip_prefix("lead.step")?;
     let step: usize = number.parse().ok()?;
     (1..=LEAD_STEP_COUNT).contains(&step).then(|| step - 1)
-}
-
-/// The spec of 0-based lane step `step`, the inverse of `lead_step_index`.
-pub(crate) fn lead_step_spec(step: usize) -> Option<&'static ControlSpec> {
-    LEAD_CONTROLS
-        .iter()
-        .find(|spec| lead_step_index(spec.id) == Some(step))
 }
 
 pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {

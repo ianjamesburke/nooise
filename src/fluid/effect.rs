@@ -199,6 +199,8 @@ pub(crate) struct EffectExecutor {
     /// control). Seeded from entropy in production and from a fixed seed in
     /// replay, so a replayed trace rolls the same values twice.
     rng: StdRng,
+    /// What play mode has played lately, for `LeadCapture`. Live-only.
+    phrase: LeadPhraseBuffer,
 }
 
 impl EffectExecutor {
@@ -214,6 +216,7 @@ impl EffectExecutor {
             pending: None,
             message: None,
             rng: StdRng::seed_from_u64(seed),
+            phrase: LeadPhraseBuffer::default(),
         }
     }
 
@@ -547,7 +550,8 @@ impl EffectExecutor {
             | InteractionEffect::LeadTone { .. }
             | InteractionEffect::LeadRelease
             | InteractionEffect::LeadOctave(_)
-            | InteractionEffect::LeadPattern) => {
+            | InteractionEffect::LeadPattern
+            | InteractionEffect::LeadCapture) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
         }
@@ -706,33 +710,20 @@ impl EffectExecutor {
             // A played note is a gesture over the song, not an edit of it:
             // it publishes through the session so the audio thread sees it,
             // but never exits auto — soloing over a morph is the point.
-            // In Record the same press is also authored into the lane, at
-            // the step nearest the moment it landed; that part is an edit
-            // and exits auto like any other.
+            // A played note is a gesture over the song, not an edit of it:
+            // it publishes through the session so the audio thread sees it,
+            // but never exits auto — soloing over a morph is the point. The
+            // phrase buffer remembers it so `r` can keep it afterwards.
             InteractionEffect::LeadTone { tone, hold } => {
-                let play = |snapshot: &mut LiveSessionSnapshot| {
+                self.phrase.push(LeadPress {
+                    beat: context.beat,
+                    tone,
+                });
+                let snapshot = self.session.update(|snapshot| {
                     snapshot.lead_play.presses = snapshot.lead_play.presses.wrapping_add(1);
                     snapshot.lead_play.tone = tone;
                     snapshot.lead_play.held = hold;
-                };
-                let lead = &self.session.load().controls.lead;
-                let recording = LeadPattern::from_value(lead.pattern) == LeadPattern::Record;
-                let snapshot = if recording {
-                    let step = lead_record_step(
-                        context.beat,
-                        lead.rate_beats,
-                        lead.offset_beats,
-                        lead_live_step_count(lead.step_count),
-                    );
-                    let spec =
-                        lead_step_spec(step).ok_or(EffectFailure::MissingContext("lead step"))?;
-                    self.edit_session(Some(spec.id), |snapshot| {
-                        play(snapshot);
-                        spec.apply_value(tone as f32, &mut snapshot.controls);
-                    })
-                } else {
-                    self.session.update(play)
-                };
+                });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
@@ -759,9 +750,34 @@ impl EffectExecutor {
                 let spec = spec_by_id(LEAD_PATTERN_ID)
                     .ok_or(EffectFailure::MissingContext(LEAD_PATTERN_ID))?;
                 let snapshot = self.edit_session(Some(spec.id), |snapshot| {
-                    let next = LeadPattern::from_value(snapshot.controls.lead.pattern).next();
+                    let next = LeadPattern::from_value(snapshot.controls.lead.pattern).toggled();
                     spec.apply_value(next.value(), &mut snapshot.controls);
                 });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::LeadCapture => {
+                let lead = &self.session.load().controls.lead;
+                let Some(capture) = lead_capture(
+                    self.phrase.presses(),
+                    context.beat,
+                    lead.rate_beats,
+                    lead.offset_beats,
+                ) else {
+                    self.message = Some(("nothing played yet".to_string(), Instant::now()));
+                    return Ok(EffectAcknowledgement::NoChange);
+                };
+                let steps = spec_by_id(LEAD_STEPS_ID)
+                    .ok_or(EffectFailure::MissingContext(LEAD_STEPS_ID))?;
+                let pattern = spec_by_id(LEAD_PATTERN_ID)
+                    .ok_or(EffectFailure::MissingContext(LEAD_PATTERN_ID))?;
+                let snapshot = self.edit_session(Some(steps.id), |snapshot| {
+                    snapshot.controls.lead.steps = capture.steps;
+                    steps.apply_value(capture.count as f32, &mut snapshot.controls);
+                    pattern.apply_value(LeadPattern::Play.value(), &mut snapshot.controls);
+                });
+                self.message = Some((format!("kept {} steps", capture.count), Instant::now()));
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
@@ -1269,11 +1285,12 @@ mod tests {
         assert_eq!(executor.recent.ids(), &["master.bpm", "pad.level"]);
     }
 
-    /// A play-mode press only publishes play state until the lane is in
-    /// Record; then the same press is also written into the step nearest
-    /// the beat it landed on, as an ordinary (auto-exiting) edit.
+    /// Play mode never arms anything: presses only publish play state and
+    /// feed the phrase buffer. `r` then lifts the phrase into the lane as
+    /// one auto-exiting edit and sets the lane playing; with nothing played
+    /// it is an explicit no-change with a notice.
     #[test]
-    fn lead_tone_records_into_the_nearest_step_only_while_recording() {
+    fn lead_capture_keeps_the_played_phrase_as_the_lane() {
         let mut executor = executor();
         let mut flipped = FlippedUnits::default();
         let mut clipboard = FakeClipboard::default();
@@ -1294,36 +1311,43 @@ mod tests {
                 )
                 .pop()
                 .unwrap()
-                .unwrap();
+                .unwrap()
         };
         let press = |tone| InteractionEffect::LeadTone { tone, hold: false };
 
-        run(&mut executor, press(7), 1.1);
-        let session = executor.session.load();
         assert_eq!(
-            session.controls.lead.steps, DEFAULT_LEAD_STEPS,
-            "Play keeps the lane as authored"
+            run(&mut executor, InteractionEffect::LeadCapture, 0.0),
+            EffectAcknowledgement::NoChange
         );
-        assert_eq!(session.lead_play.presses, 1);
-        drop(session);
+        assert_eq!(executor.message(), Some("nothing played yet"));
 
-        run(&mut executor, InteractionEffect::LeadPattern, 1.1);
+        run(&mut executor, InteractionEffect::LeadPattern, 0.0);
         assert_eq!(
             LeadPattern::from_value(executor.session.load().controls.lead.pattern),
-            LeadPattern::Record,
-            "one press from the default Play reaches Record"
+            LeadPattern::Off
+        );
+        // Rate 0.5: beats 8, 8.5, 9 are steps 16, 17, 18 -> lane 0, 1, 2.
+        run(&mut executor, press(1), 8.0);
+        run(&mut executor, press(3), 8.5);
+        run(&mut executor, press(5), 9.0);
+        assert_eq!(
+            executor.session.load().controls.lead.steps,
+            DEFAULT_LEAD_STEPS,
+            "playing edits nothing"
+        );
+
+        run(&mut executor, InteractionEffect::LeadCapture, 9.4);
+        let session = executor.session.load();
+        assert_eq!(session.controls.lead.step_count, 4.0);
+        assert_eq!(&session.controls.lead.steps[..4], &[1.0, 3.0, 5.0, 0.0]);
+        assert_eq!(
+            LeadPattern::from_value(session.controls.lead.pattern),
+            LeadPattern::Play,
+            "keeping a phrase sets the lane playing"
         );
         assert!(!executor.auto.is_running());
-
-        // Rate 0.5 beats: beat 1.1 is nearest step index 2.
-        run(&mut executor, press(7), 1.1);
-        let session = executor.session.load();
-        assert_eq!(session.controls.lead.steps[2], 7.0);
-        assert_eq!(
-            session.lead_play.presses, 2,
-            "the recorded press also sounds"
-        );
-        assert_eq!(executor.recent.ids()[0], "lead.step3");
+        assert_eq!(executor.message(), Some("kept 4 steps"));
+        assert_eq!(executor.recent.ids()[0], LEAD_STEPS_ID);
     }
 
     #[test]

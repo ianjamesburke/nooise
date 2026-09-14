@@ -5579,23 +5579,49 @@ fn lead_pattern_off_silences_the_lane_but_not_the_keys() {
 }
 
 #[test]
-fn lead_record_step_lands_on_the_nearest_step() {
-    // Rate 0.5 beats, eight steps: a tap 0.1 beat early lands on the step
-    // ahead, one 0.1 beat late stays on the step just passed.
-    assert_eq!(lead_record_step(0.9, 0.5, 0.0, 8), 2);
-    assert_eq!(lead_record_step(1.1, 0.5, 0.0, 8), 2);
-    assert_eq!(
-        lead_record_step(4.0, 0.5, 0.0, 8),
-        0,
-        "wraps at the lane length"
-    );
-    assert_eq!(
-        lead_record_step(0.5, 0.5, 0.5, 8),
-        0,
-        "offset shifts the grid"
-    );
-    assert_eq!(LeadPattern::Record.next(), LeadPattern::Off);
-    assert_eq!(LeadPattern::Off.next(), LeadPattern::Play);
+fn lead_capture_keeps_the_last_phrase_on_the_shortest_lane_that_fits() {
+    let press = |beat, tone| LeadPress { beat, tone };
+    // Rate 0.5: two steps per beat. A four-note line over beats 8..10,
+    // played a hair early and late, snaps to steps 16..19 -> lane 0..3.
+    let presses = [press(7.95, 1), press(8.55, 2), press(9.0, 3), press(9.6, 5)];
+    let capture = lead_capture(&presses, 10.0, 0.5, 0.0).unwrap();
+    assert_eq!(capture.count, 4);
+    assert_eq!(&capture.steps[..4], &[1.0, 2.0, 3.0, 5.0]);
+    assert!(capture.steps[4..].iter().all(|s| *s == 0.0));
+
+    // Five steps of span need the 8-step lane; placement keeps its bar
+    // position (absolute step mod length), so a line starting on beat 9
+    // (step 18) lands on lane step 2, not 0.
+    let capture = lead_capture(&[press(9.0, 4), press(11.0, 7)], 11.5, 0.5, 0.0).unwrap();
+    assert_eq!(capture.count, 8);
+    assert_eq!(capture.steps[2], 4.0);
+    assert_eq!(capture.steps[6], 7.0);
+
+    // A bar of silence ends the phrase: the earlier line is not kept.
+    let capture = lead_capture(
+        &[press(0.0, 9), press(1.0, 9), press(6.0, 2)],
+        6.5,
+        0.5,
+        0.0,
+    )
+    .unwrap();
+    assert_eq!(capture.count, 4);
+    assert_eq!(capture.steps, {
+        let mut steps = [0.0; LEAD_STEP_COUNT];
+        steps[0] = 2.0; // step 12 mod 4
+        steps
+    });
+
+    // Presses older than a full 16-step lane fall off; nothing left, nothing kept.
+    assert_eq!(lead_capture(&[press(0.0, 1)], 20.0, 0.5, 0.0), None);
+    assert_eq!(lead_capture(&[], 0.0, 0.5, 0.0), None);
+
+    let mut buffer = LeadPhraseBuffer::default();
+    for beat in 0..200 {
+        buffer.push(press(beat as f64, 1));
+    }
+    assert_eq!(buffer.presses().len(), 128, "the buffer is bounded");
+    assert_eq!(buffer.presses()[0].beat, 72.0, "and forgets the oldest");
 }
 
 #[test]

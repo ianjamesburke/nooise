@@ -735,9 +735,11 @@ pub(crate) enum Intent {
     /// The letter row key for a 1-based tone came up.
     ReleaseLeadTone(usize),
     ShiftLeadOctave(i8),
-    /// Step the lane's transport Off → Play → Record → Off without leaving
-    /// the keys.
-    CycleLeadPattern,
+    /// Drop the lane out or bring it back (`lead.pattern` Off/Play) without
+    /// leaving the keys.
+    ToggleLeadPattern,
+    /// Keep the phrase just played: it becomes the lane, and the lane plays.
+    CaptureLeadPhrase,
     AdjustSelected(i8),
     ResetSelected,
     ToggleAuto,
@@ -786,7 +788,8 @@ impl Intent {
             Self::PlayLeadTone { .. }
             | Self::ReleaseLeadTone(_)
             | Self::ShiftLeadOctave(_)
-            | Self::CycleLeadPattern => &[ModeKind::Lead],
+            | Self::ToggleLeadPattern
+            | Self::CaptureLeadPhrase => &[ModeKind::Lead],
             Self::ChangePage(_)
             | Self::BeginNumeric(_)
             | Self::OpenPalette
@@ -848,7 +851,8 @@ impl Intent {
             | Self::EnterLeadPlay
             | Self::PlayLeadTone { .. }
             | Self::ShiftLeadOctave(_)
-            | Self::CycleLeadPattern
+            | Self::ToggleLeadPattern
+            | Self::CaptureLeadPhrase
             | Self::ResetSelected
             | Self::ToggleAuto
             | Self::ToggleUnits
@@ -937,8 +941,10 @@ pub(crate) enum InteractionEffect {
     LeadRelease,
     /// Step `lead.octave` by whole octaves.
     LeadOctave(i8),
-    /// Step `lead.pattern` to its next transport state, wrapping.
+    /// Flip `lead.pattern` between Off and Play.
     LeadPattern,
+    /// Write the phrase just played into the lane and set it playing.
+    LeadCapture,
     Save,
     Quit,
 }
@@ -1459,7 +1465,8 @@ fn update_lead(
             }
         }
         Intent::ShiftLeadOctave(delta) => effects.push(InteractionEffect::LeadOctave(delta)),
-        Intent::CycleLeadPattern => effects.push(InteractionEffect::LeadPattern),
+        Intent::ToggleLeadPattern => effects.push(InteractionEffect::LeadPattern),
+        Intent::CaptureLeadPhrase => effects.push(InteractionEffect::LeadCapture),
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
         _ => {}

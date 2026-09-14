@@ -591,15 +591,18 @@ pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
     if lead.level_pct == 0 {
         return "LEAD · level is 0 · Esc, raise Level, Enter".to_string();
     }
-    let pattern = lead.pattern.label();
+    let lane = match lead.pattern {
+        LeadPattern::Off => "lane off",
+        LeadPattern::Play => "lane on",
+    };
     if lead.holds == Some(false) {
         return format!(
-            "LEAD · taps only (no key-up)   oct {:+}   r {pattern}",
+            "LEAD · taps only (no key-up)   oct {:+}   r keep   Space {lane}",
             lead.octave
         );
     }
     format!(
-        "LEAD · asdfghjkl   z/x oct {:+}   r {pattern}   Esc",
+        "LEAD · asdfghjkl   z/x oct {:+}   r keep   Space {lane}   Esc",
         lead.octave
     )
 }

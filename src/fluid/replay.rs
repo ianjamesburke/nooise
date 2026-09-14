@@ -2037,24 +2037,34 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
     assert_eq!(played.effect_notice, None);
 }
 
-/// `r` inside play mode steps the lane's transport without leaving the
-/// keys: Play → Record → Off, then around.
+/// Space inside play mode drops the lane out and back without leaving the
+/// keys; `r` keeps what was just played as the lane and sets it playing.
 #[test]
-fn r_in_play_mode_cycles_the_lead_pattern() {
+fn space_toggles_the_lead_lane_and_r_keeps_the_phrase() {
     let plain = |code| key(0, code, InputPhase::Press);
     let mut trace: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
     trace.push(plain(FixtureKey::Enter));
-    trace.push(plain(FixtureKey::Character('r')));
-    let record = replay(&trace, TerminalCapabilities::full());
-    assert_eq!(record.control("lead.pattern"), Some(2.0));
-    assert_eq!(record.final_owner(), Some("LEAD"));
-    trace.push(plain(FixtureKey::Character('r')));
+    trace.push(plain(FixtureKey::Character(' ')));
     let off = replay(&trace, TerminalCapabilities::full());
     assert_eq!(off.control("lead.pattern"), Some(0.0));
+    assert_eq!(off.final_owner(), Some("LEAD"));
     trace.push(plain(FixtureKey::Character('r')));
-    let play = replay(&trace, TerminalCapabilities::full());
-    assert_eq!(play.control("lead.pattern"), Some(1.0));
-    assert!(play.deferred_inputs.is_empty());
+    let empty = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(
+        empty.control("lead.pattern"),
+        Some(0.0),
+        "nothing played: nothing kept, lane stays off"
+    );
+    trace.extend([
+        plain(FixtureKey::Character('a')),
+        plain(FixtureKey::Character('d')),
+        plain(FixtureKey::Character('r')),
+    ]);
+    let kept = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(kept.effect_count("LeadCapture"), 2);
+    assert_eq!(kept.control("lead.pattern"), Some(1.0));
+    assert_eq!(kept.control("lead.steps"), Some(4.0));
+    assert!(kept.deferred_inputs.is_empty());
 }
 
 /// Ctrl+Q and Ctrl+C quit from inside play mode and the performance deck,
