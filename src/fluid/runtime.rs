@@ -21,9 +21,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
-    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, Navigation,
-    PageDirection, PerformanceAction, PerformanceInstrument, PerformanceKind, PerformanceMode,
-    SemanticAction, SequenceStage,
+    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge,
+    Navigation, PageDirection, PerformanceAction, PerformanceInstrument, PerformanceKind,
+    PerformanceMode, SemanticAction, SequenceStage,
 };
 
 /// Target spacing between drawn frames.
@@ -537,6 +537,7 @@ fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent
         // editor the same key reseeds the open random lane instead.
         PhysicalKey::Character('r') => Intent::RandomizeSelected,
         PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
+        PhysicalKey::Character('i') => Intent::EnterLeadPlay,
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Sequence),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         PhysicalKey::Enter => match navigation {
@@ -667,7 +668,8 @@ fn performance_binding(
     }
 }
 
-/// `z`/`x` drop/raise the octave; the letter row plays `LEAD_PLAY_KEYS`.
+/// `LEAD_NUDGES` step rows, `c` keeps the phrase, Space toggles the lane; the
+/// letter row plays `LEAD_PLAY_KEYS`.
 /// Every press is an edge; autorepeat plays nothing. Where the terminal
 /// reports releases a press holds its note and the release lets it go;
 /// elsewhere a press can only sound an attack/decay note.
@@ -680,11 +682,15 @@ fn lead_binding(
         return None;
     };
     match character {
-        'z' => Some(Intent::ShiftLeadOctave(-1)),
-        'x' => Some(Intent::ShiftLeadOctave(1)),
-        'r' => Some(Intent::CaptureLeadPhrase),
+        'c' => Some(Intent::CaptureLeadPhrase),
         ' ' => Some(Intent::ToggleLeadPattern),
         _ => {
+            if let Some((nudge, delta)) = LeadNudge::from_key(*character) {
+                return Some(Intent::NudgeLead {
+                    id: nudge.id,
+                    delta,
+                });
+            }
             let tone = LEAD_PLAY_KEYS
                 .iter()
                 .position(|key| key == character)
@@ -1738,6 +1744,15 @@ mod tests {
                 InputMapping::Action(SemanticAction::press(Intent::ActivatePerformance(kind)))
             );
         }
+        assert_eq!(
+            map_input(
+                &browsing,
+                Navigation::default(),
+                &event(PhysicalKey::Character('i'), Modifiers::default()),
+                TerminalCapabilities::default()
+            ),
+            InputMapping::Action(SemanticAction::press(Intent::EnterLeadPlay))
+        );
 
         let automation =
             InteractionMode::Automation(super::super::interaction::AutomationMode::Lfo {

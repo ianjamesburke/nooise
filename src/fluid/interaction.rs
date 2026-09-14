@@ -649,8 +649,66 @@ pub(crate) enum InteractionMode {
 /// restates the row.
 pub(crate) const LEAD_PLAY_KEYS: [char; 9] = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'];
 
+/// A Lead nudge pair: two neighbouring keys that step one Lead row down and
+/// up without leaving play mode. The runtime maps keys through the table,
+/// the footer labels it, and the executor edits `id` through the registry,
+/// so no one restates the pairs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LeadNudge {
+    pub(crate) down: char,
+    pub(crate) up: char,
+    pub(crate) id: &'static str,
+    pub(crate) label: &'static str,
+}
+
+impl LeadNudge {
+    /// The row a key nudges and its direction, `-1` down or `1` up.
+    pub(crate) fn from_key(key: char) -> Option<(Self, i8)> {
+        LEAD_NUDGES.iter().find_map(|nudge| {
+            if nudge.down == key {
+                Some((*nudge, -1))
+            } else if nudge.up == key {
+                Some((*nudge, 1))
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// Left key down, right key up: `z`/`x` for the octave and the top row for
+/// the rows you reach for mid-phrase. Footer order, octave first so it
+/// survives the narrowest frame.
+pub(crate) const LEAD_NUDGES: [LeadNudge; 4] = [
+    LeadNudge {
+        down: 'z',
+        up: 'x',
+        id: "lead.octave",
+        label: "oct",
+    },
+    LeadNudge {
+        down: 'q',
+        up: 'w',
+        id: "lead.level",
+        label: "lvl",
+    },
+    LeadNudge {
+        down: 'e',
+        up: 'r',
+        id: "lead.decay",
+        label: "dec",
+    },
+    LeadNudge {
+        down: 't',
+        up: 'y',
+        id: "lead.glide",
+        label: "gld",
+    },
+];
+
 /// Lead play mode: the letter row plays chord tones on the Lead voice and
-/// `z`/`x` move its octave. Opened by Enter on the Lead page, closed by Esc.
+/// `LEAD_NUDGES` step its rows. Opened by Enter on the Lead page or `i`
+/// from any page, closed by Esc.
 /// `held` is the tone whose key is down, when the terminal reports
 /// releases; `holds` remembers whether the last press could be held at
 /// all, so the surface can say when a terminal cannot.
@@ -734,7 +792,11 @@ pub(crate) enum Intent {
     },
     /// The letter row key for a 1-based tone came up.
     ReleaseLeadTone(usize),
-    ShiftLeadOctave(i8),
+    /// Step one Lead row (`LEAD_NUDGES`) by `delta` dial steps.
+    NudgeLead {
+        id: &'static str,
+        delta: i8,
+    },
     /// Drop the lane out or bring it back (`lead.pattern` Off/Play) without
     /// leaving the keys.
     ToggleLeadPattern,
@@ -787,7 +849,7 @@ impl Intent {
             | Self::RandomizeSelected => &[ModeKind::Browsing],
             Self::PlayLeadTone { .. }
             | Self::ReleaseLeadTone(_)
-            | Self::ShiftLeadOctave(_)
+            | Self::NudgeLead { .. }
             | Self::ToggleLeadPattern
             | Self::CaptureLeadPhrase => &[ModeKind::Lead],
             Self::ChangePage(_)
@@ -850,7 +912,7 @@ impl Intent {
             | Self::SelectPerformanceInstrument { .. }
             | Self::EnterLeadPlay
             | Self::PlayLeadTone { .. }
-            | Self::ShiftLeadOctave(_)
+            | Self::NudgeLead { .. }
             | Self::ToggleLeadPattern
             | Self::CaptureLeadPhrase
             | Self::ResetSelected
@@ -939,8 +1001,11 @@ pub(crate) enum InteractionEffect {
     },
     /// Let the held Lead tone go.
     LeadRelease,
-    /// Step `lead.octave` by whole octaves.
-    LeadOctave(i8),
+    /// Step one Lead row by `delta` dial steps.
+    LeadNudge {
+        id: &'static str,
+        delta: i8,
+    },
     /// Flip `lead.pattern` between Off and Play.
     LeadPattern,
     /// Write the phrase just played into the lane and set it playing.
@@ -1203,7 +1268,14 @@ fn update_browsing(
         Intent::ActivatePerformance(kind) => {
             *next_mode = Some(InteractionMode::Performance(PerformanceMode::new(kind)));
         }
-        Intent::EnterLeadPlay => *next_mode = Some(InteractionMode::Lead(LeadPlay::default())),
+        Intent::EnterLeadPlay => {
+            // The Lead page is the instrument: entering from elsewhere lands
+            // on it so the rows the nudges edit are in view.
+            if navigation.page() != Page::Lead {
+                *navigation = Navigation::for_page(Page::Lead);
+            }
+            *next_mode = Some(InteractionMode::Lead(LeadPlay::default()));
+        }
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
         Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
         Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
@@ -1464,7 +1536,9 @@ fn update_lead(
                 effects.push(InteractionEffect::LeadRelease);
             }
         }
-        Intent::ShiftLeadOctave(delta) => effects.push(InteractionEffect::LeadOctave(delta)),
+        Intent::NudgeLead { id, delta } => {
+            effects.push(InteractionEffect::LeadNudge { id, delta });
+        }
         Intent::ToggleLeadPattern => effects.push(InteractionEffect::LeadPattern),
         Intent::CaptureLeadPhrase => effects.push(InteractionEffect::LeadCapture),
         Intent::Save => effects.push(InteractionEffect::Save),

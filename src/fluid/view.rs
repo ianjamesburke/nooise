@@ -5,9 +5,9 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, LeadDrill,
-    Navigation, PerformanceAction, PerformanceInstrument, PerformanceMode, PerformanceTargets,
-    SequenceStage,
+    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, LEAD_NUDGES,
+    LeadDrill, Navigation, PerformanceAction, PerformanceInstrument, PerformanceMode,
+    PerformanceTargets, SequenceStage,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -595,16 +595,22 @@ pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
         LeadPattern::Off => "lane off",
         LeadPattern::Play => "lane on",
     };
+    let nudges = LEAD_NUDGES
+        .iter()
+        .map(|nudge| {
+            let value = if nudge.id == "lead.octave" {
+                format!(" {:+}", lead.octave)
+            } else {
+                String::new()
+            };
+            format!("{}{} {}{value}", nudge.down, nudge.up, nudge.label)
+        })
+        .collect::<Vec<_>>()
+        .join("  ");
     if lead.holds == Some(false) {
-        return format!(
-            "LEAD · taps only (no key-up)   oct {:+}   r keep   Space {lane}",
-            lead.octave
-        );
+        return format!("LEAD · taps only (no key-up)  {nudges}  Space {lane}  c keep");
     }
-    format!(
-        "LEAD · asdfghjkl   z/x oct {:+}   r keep   Space {lane}   Esc",
-        lead.octave
-    )
+    format!("LEAD · {nudges}  Space {lane}  c keep  Esc")
 }
 
 fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {

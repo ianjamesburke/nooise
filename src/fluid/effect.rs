@@ -549,7 +549,7 @@ impl EffectExecutor {
             | InteractionEffect::PerformanceEdit { .. }
             | InteractionEffect::LeadTone { .. }
             | InteractionEffect::LeadRelease
-            | InteractionEffect::LeadOctave(_)
+            | InteractionEffect::LeadNudge { .. }
             | InteractionEffect::LeadPattern
             | InteractionEffect::LeadCapture) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
@@ -709,9 +709,6 @@ impl EffectExecutor {
             | InteractionEffect::ReleaseHeldSelector(_) => Ok(EffectAcknowledgement::NoChange),
             // A played note is a gesture over the song, not an edit of it:
             // it publishes through the session so the audio thread sees it,
-            // but never exits auto — soloing over a morph is the point.
-            // A played note is a gesture over the song, not an edit of it:
-            // it publishes through the session so the audio thread sees it,
             // but never exits auto — soloing over a morph is the point. The
             // phrase buffer remembers it so `r` can keep it afterwards.
             InteractionEffect::LeadTone { tone, hold } => {
@@ -736,9 +733,8 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
-            InteractionEffect::LeadOctave(delta) => {
-                let spec = spec_by_id("lead.octave")
-                    .ok_or(EffectFailure::MissingContext("lead.octave"))?;
+            InteractionEffect::LeadNudge { id, delta } => {
+                let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext(id))?;
                 let snapshot = self.edit_session(Some(spec.id), |snapshot| {
                     spec.apply_delta(f32::from(delta), &mut snapshot.controls);
                 });
