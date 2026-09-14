@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [2.3.0] — 2026-09-14
+
+### Added
+- feat: i enters Lead play mode from any page, top row nudges level/decay/glide
+- feat: lead Pattern row sits under Level
+- feat: keep a played Lead phrase with r instead of arming a Record state
+- feat: lead Pattern transport (Off/Play/Record) with step recording from play mode
 ## [2.2.0] — 2026-09-13
 
 ### Added
