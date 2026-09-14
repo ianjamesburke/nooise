@@ -1896,7 +1896,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Lead,
             vec![
                 Gain, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing, Timing,
-                Discrete, Gain,
+                Discrete, Discrete, Gain,
             ],
         ),
     ];
@@ -5534,6 +5534,68 @@ fn lead_steps_past_the_default_length_rest() {
         "lengthening the lane must add rests, not notes"
     );
     assert!(controls.steps[..live].iter().any(|step| *step != 0.0));
+}
+
+#[test]
+fn lead_pattern_off_silences_the_lane_but_not_the_keys() {
+    let pad = PadControls::default();
+    let mut controls = LeadControls {
+        level: 0.5,
+        attack: 0.005,
+        decay: 0.05,
+        pattern: LeadPattern::Off.value(),
+        ..LeadControls::default()
+    };
+    let peak = |lead: &mut LeadEngine, c: &LeadControls, samples: u64| -> f32 {
+        (0..samples)
+            .map(|sample| lead.next(c, &pad, 0.0, timing(sample, 120.0)).0.abs())
+            .fold(0.0, f32::max)
+    };
+    let two_beats = SAMPLE_RATE as u64; // four lane steps at 120 BPM
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    assert_eq!(
+        peak(&mut lead, &controls, two_beats),
+        0.0,
+        "Off: the lane is silent"
+    );
+
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    lead.observe(LeadPlayState {
+        presses: 1,
+        tone: 1,
+        held: false,
+    });
+    assert!(
+        peak(&mut lead, &controls, 2_000) > 0.05,
+        "Off: a played key still sounds"
+    );
+
+    controls.pattern = LeadPattern::Play.value();
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    assert!(
+        peak(&mut lead, &controls, two_beats) > 0.05,
+        "Play: the lane sounds"
+    );
+}
+
+#[test]
+fn lead_record_step_lands_on_the_nearest_step() {
+    // Rate 0.5 beats, eight steps: a tap 0.1 beat early lands on the step
+    // ahead, one 0.1 beat late stays on the step just passed.
+    assert_eq!(lead_record_step(0.9, 0.5, 0.0, 8), 2);
+    assert_eq!(lead_record_step(1.1, 0.5, 0.0, 8), 2);
+    assert_eq!(
+        lead_record_step(4.0, 0.5, 0.0, 8),
+        0,
+        "wraps at the lane length"
+    );
+    assert_eq!(
+        lead_record_step(0.5, 0.5, 0.5, 8),
+        0,
+        "offset shifts the grid"
+    );
+    assert_eq!(LeadPattern::Record.next(), LeadPattern::Off);
+    assert_eq!(LeadPattern::Off.next(), LeadPattern::Play);
 }
 
 #[test]

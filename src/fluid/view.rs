@@ -161,6 +161,8 @@ pub(crate) struct LeadSurface {
     pub(crate) holds: Option<bool>,
     /// Notes in the reach the keys index, so the row labels its degrees.
     pub(crate) reach_len: usize,
+    /// The lane transport, so the footer says whether keys are being kept.
+    pub(crate) pattern: LeadPattern,
 }
 
 /// Everything the palette overlay draws: the projected match list plus the
@@ -330,6 +332,7 @@ fn mode_surface<'a>(
             octave: controls.lead.octave.round() as i32,
             level_pct: (controls.lead.level * 100.0).round() as u8,
             reach_len: lead_page_reach(&controls.lead, &controls.pad).len(),
+            pattern: LeadPattern::from_value(controls.lead.pattern),
         }),
         InteractionMode::Performance(PerformanceMode::Deck {
             selected,
@@ -588,10 +591,17 @@ pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
     if lead.level_pct == 0 {
         return "LEAD · level is 0 · Esc, raise Level, Enter".to_string();
     }
+    let pattern = lead.pattern.label();
     if lead.holds == Some(false) {
-        return format!("LEAD · no key-up here: taps only   oct {:+}", lead.octave);
+        return format!(
+            "LEAD · taps only (no key-up)   oct {:+}   r {pattern}",
+            lead.octave
+        );
     }
-    format!("LEAD · asdfghjkl play   z/x oct {:+}   Esc", lead.octave)
+    format!(
+        "LEAD · asdfghjkl   z/x oct {:+}   r {pattern}   Esc",
+        lead.octave
+    )
 }
 
 fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {

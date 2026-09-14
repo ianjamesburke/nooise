@@ -2037,6 +2037,26 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
     assert_eq!(played.effect_notice, None);
 }
 
+/// `r` inside play mode steps the lane's transport without leaving the
+/// keys: Play → Record → Off, then around.
+#[test]
+fn r_in_play_mode_cycles_the_lead_pattern() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let mut trace: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    trace.push(plain(FixtureKey::Enter));
+    trace.push(plain(FixtureKey::Character('r')));
+    let record = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(record.control("lead.pattern"), Some(2.0));
+    assert_eq!(record.final_owner(), Some("LEAD"));
+    trace.push(plain(FixtureKey::Character('r')));
+    let off = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(off.control("lead.pattern"), Some(0.0));
+    trace.push(plain(FixtureKey::Character('r')));
+    let play = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(play.control("lead.pattern"), Some(1.0));
+    assert!(play.deferred_inputs.is_empty());
+}
+
 /// Ctrl+Q and Ctrl+C quit from inside play mode and the performance deck,
 /// not only from browsing: no keyboard owner traps the user.
 #[test]

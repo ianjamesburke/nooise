@@ -26,6 +26,51 @@ pub(crate) enum LeadFollow {
 
 pub(crate) const LEAD_FOLLOWS: [LeadFollow; 2] = [LeadFollow::Chord, LeadFollow::Scale];
 
+/// The lane's transport. One control, three states, so a Steps LFO can gate
+/// the pattern in bars and play mode reaches Record without leaving the keys.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LeadPattern {
+    /// The lane is silent; only played keys sound. The solo position.
+    Off,
+    /// The lane plays its steps.
+    Play,
+    /// The lane plays, and each played key is written into the step nearest
+    /// the moment it was pressed, so a line builds up pass by pass.
+    Record,
+}
+
+pub(crate) const LEAD_PATTERNS: [LeadPattern; 3] =
+    [LeadPattern::Off, LeadPattern::Play, LeadPattern::Record];
+
+impl LeadPattern {
+    pub(crate) fn from_value(value: f32) -> Self {
+        LEAD_PATTERNS[(value.round() as i64).clamp(0, LEAD_PATTERNS.len() as i64 - 1) as usize]
+    }
+
+    /// The control value naming this state: its `LEAD_PATTERNS` index.
+    pub(crate) const fn value(self) -> f32 {
+        match self {
+            Self::Off => 0.0,
+            Self::Play => 1.0,
+            Self::Record => 2.0,
+        }
+    }
+
+    /// The state one press of the play-mode key reaches: Off, Play, Record,
+    /// and around.
+    pub(crate) fn next(self) -> Self {
+        LEAD_PATTERNS[(self.value() as usize + 1) % LEAD_PATTERNS.len()]
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Play => "Play",
+            Self::Record => "Record",
+        }
+    }
+}
+
 impl LeadFollow {
     pub(crate) fn from_value(value: f32) -> Self {
         LEAD_FOLLOWS[(value.round() as i64).clamp(0, LEAD_FOLLOWS.len() as i64 - 1) as usize]
@@ -153,6 +198,18 @@ pub(crate) fn lead_live_step_count(step_count: f32) -> usize {
 pub(crate) fn lead_step_at(beat: f64, rate_beats: f32, offset_beats: f32, count: usize) -> usize {
     let position = (beat - offset_beats as f64) / rate_beats as f64 + 0.25;
     (position.floor() as i64).rem_euclid(count.max(1) as i64) as usize
+}
+
+/// The lane step a key pressed on `beat` records into: the nearest one, so a
+/// tap slightly ahead of a step lands on it rather than the step before.
+pub(crate) fn lead_record_step(
+    beat: f64,
+    rate_beats: f32,
+    offset_beats: f32,
+    count: usize,
+) -> usize {
+    let position = (beat - offset_beats as f64) / rate_beats as f64;
+    (position.round() as i64).rem_euclid(count.max(1) as i64) as usize
 }
 
 /// Harmonics in a lead recipe's additive stack.
@@ -417,8 +474,10 @@ impl LeadEngine {
             // default) never keeps a voice alive. A rest lets the current
             // note finish its decay untouched.
             // The lane yields to a held key: the player owns the voice
-            // until the key comes up.
+            // until the key comes up. An Off pattern is the solo position:
+            // the trigger still ticks so Play resumes on the clock's step.
             if c.level != 0.0
+                && LeadPattern::from_value(c.pattern) != LeadPattern::Off
                 && !self.held_seen
                 && let Some(tone) = lead_step_tone(c.steps[lane_step])
             {

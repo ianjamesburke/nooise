@@ -735,6 +735,9 @@ pub(crate) enum Intent {
     /// The letter row key for a 1-based tone came up.
     ReleaseLeadTone(usize),
     ShiftLeadOctave(i8),
+    /// Step the lane's transport Off → Play → Record → Off without leaving
+    /// the keys.
+    CycleLeadPattern,
     AdjustSelected(i8),
     ResetSelected,
     ToggleAuto,
@@ -780,9 +783,10 @@ impl Intent {
             | Self::EnterModuleDetail { .. }
             | Self::EnterLeadPlay
             | Self::RandomizeSelected => &[ModeKind::Browsing],
-            Self::PlayLeadTone { .. } | Self::ReleaseLeadTone(_) | Self::ShiftLeadOctave(_) => {
-                &[ModeKind::Lead]
-            }
+            Self::PlayLeadTone { .. }
+            | Self::ReleaseLeadTone(_)
+            | Self::ShiftLeadOctave(_)
+            | Self::CycleLeadPattern => &[ModeKind::Lead],
             Self::ChangePage(_)
             | Self::BeginNumeric(_)
             | Self::OpenPalette
@@ -844,6 +848,7 @@ impl Intent {
             | Self::EnterLeadPlay
             | Self::PlayLeadTone { .. }
             | Self::ShiftLeadOctave(_)
+            | Self::CycleLeadPattern
             | Self::ResetSelected
             | Self::ToggleAuto
             | Self::ToggleUnits
@@ -932,6 +937,8 @@ pub(crate) enum InteractionEffect {
     LeadRelease,
     /// Step `lead.octave` by whole octaves.
     LeadOctave(i8),
+    /// Step `lead.pattern` to its next transport state, wrapping.
+    LeadPattern,
     Save,
     Quit,
 }
@@ -1452,6 +1459,7 @@ fn update_lead(
             }
         }
         Intent::ShiftLeadOctave(delta) => effects.push(InteractionEffect::LeadOctave(delta)),
+        Intent::CycleLeadPattern => effects.push(InteractionEffect::LeadPattern),
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
         _ => {}

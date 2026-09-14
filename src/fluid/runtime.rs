@@ -682,6 +682,7 @@ fn lead_binding(
     match character {
         'z' => Some(Intent::ShiftLeadOctave(-1)),
         'x' => Some(Intent::ShiftLeadOctave(1)),
+        'r' => Some(Intent::CycleLeadPattern),
         _ => {
             let tone = LEAD_PLAY_KEYS
                 .iter()
