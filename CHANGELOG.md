@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [2.3.1] — 2026-09-16
+
+### Added
+- feat: randomize visible control sets
 ## [2.3.0] — 2026-09-14
 
 ### Added
