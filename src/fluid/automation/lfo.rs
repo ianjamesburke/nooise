@@ -421,6 +421,17 @@ impl LfoRoute {
         (self.step_count as usize).clamp(1, MAX_LFO_STEPS)
     }
 
+    /// The live `Steps` row at `beat`, or none when this route is another
+    /// shape. Uses the same absolute interval index as `wave_at`, including
+    /// a temporary rate-edit pickup, so the UI badge follows the value the
+    /// engine is actually applying.
+    pub(crate) fn active_step_at(&self, beat: f64) -> Option<usize> {
+        (self.shape == LfoShape::Steps).then(|| {
+            let (index, _) = self.cycle_index_and_phase_for(beat, self.active_cycle_at(beat));
+            index.rem_euclid(self.active_step_count() as i64) as usize
+        })
+    }
+
     /// Staircase value in -1..1 for step `step_index` at fraction `frac` (0..1)
     /// through that step. Each step spans one LFO interval and holds its
     /// value, easing in from the previous step's value over the first

@@ -792,12 +792,36 @@ mod tests {
         interaction: &InteractionModel,
         session: &LiveSessionSnapshot,
     ) -> String {
+        render_model_with_session_at(interaction, session, TelemetryView::default())
+    }
+
+    fn render_model_with_session_at(
+        interaction: &InteractionModel,
+        session: &LiveSessionSnapshot,
+        telemetry: TelemetryView,
+    ) -> String {
+        render_model_with_session_at_size(
+            interaction,
+            session,
+            telemetry,
+            MIN_TERMINAL_WIDTH,
+            MIN_TERMINAL_HEIGHT,
+        )
+    }
+
+    fn render_model_with_session_at_size(
+        interaction: &InteractionModel,
+        session: &LiveSessionSnapshot,
+        telemetry: TelemetryView,
+        width: u16,
+        height: u16,
+    ) -> String {
         let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
         let view = UiViewModel::project(ViewProjection {
             interaction,
             session,
-            telemetry: TelemetryView::default(),
+            telemetry,
             presentation: ViewPresentation {
                 fluid: &fluid,
                 flipped: &flipped,
@@ -805,8 +829,7 @@ mod tests {
                 notices: ViewNotices::default(),
             },
         });
-        let mut terminal =
-            Terminal::new(TestBackend::new(MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| render(frame, &view)).unwrap();
         snapshot_symbols(terminal.backend().buffer())
     }
@@ -1146,5 +1169,69 @@ mod tests {
         let silent = render_model_with_session(&model, &session);
         assert!(silent.contains("level␠is␠0"), "{silent}");
         assert!(silent.contains("arrows␠knobs"), "{silent}");
+    }
+
+    #[test]
+    fn step_patterns_mark_the_transport_row_playing_now() {
+        let mut session = session();
+        session.controls.lead.rate_beats = 0.5;
+        session.controls.lead.step_count = 4.0;
+        let lead = InteractionModel {
+            navigation: Navigation::Lead {
+                selected: 2,
+                drill: LeadDrill::Pattern { return_to: 0 },
+            },
+            mode: InteractionMode::Browsing,
+        };
+        let lead_frame = render_model_with_session_at_size(
+            &lead,
+            &session,
+            TelemetryView {
+                beat: 1.0,
+                active_chord: 0,
+            },
+            120,
+            24,
+        );
+        assert!(lead_frame.contains("Lead␠›␠Pattern␠♪"), "{lead_frame}");
+        let lead_step = lead_frame
+            .lines()
+            .find(|line| line.contains("Step␠3"))
+            .unwrap_or_else(|| panic!("Lead step 3 missing:\n{lead_frame}"));
+        assert!(
+            lead_step.contains('♪'),
+            "active Lead step missing badge: {lead_step}"
+        );
+
+        let address = ControlAddress::new("pad.level");
+        let route = session.automation.open_or_create(address);
+        route.shape = LfoShape::Steps;
+        route.cycle_beats = 0.5;
+        route.step_count = 4;
+        let lfo = InteractionModel {
+            navigation: Navigation::Master { selected: 0 },
+            mode: InteractionMode::Automation(AutomationMode::Lfo {
+                depth: LfoDepth::Editor,
+                selected: 9,
+            }),
+        };
+        let lfo_frame = render_model_with_session_at_size(
+            &lfo,
+            &session,
+            TelemetryView {
+                beat: 1.0,
+                active_chord: 0,
+            },
+            120,
+            24,
+        );
+        let lfo_step = lfo_frame
+            .lines()
+            .find(|line| line.contains("step␠3"))
+            .unwrap_or_else(|| panic!("LFO step 3 missing:\n{lfo_frame}"));
+        assert!(
+            lfo_step.contains('♪'),
+            "active LFO step missing badge: {lfo_step}"
+        );
     }
 }

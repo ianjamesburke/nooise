@@ -218,6 +218,13 @@ fn draw_tabs(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                     }
                     interaction::ChordDrill::None => t.name().to_string(),
                 }
+            } else if *t == Tab::Lead
+                && matches!(
+                    view.navigation.lead_drill,
+                    interaction::LeadDrill::Pattern { .. }
+                )
+            {
+                format!("{} › Pattern ♪", t.name())
             } else {
                 t.name().to_string()
             };
@@ -308,6 +315,26 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             )
             && i == frame.active_slot;
         if chord_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
+        // The Lead lane has the same transport-derived playhead treatment as
+        // Chords: the badge marks what is playing, independently of the ▶
+        // selection cursor.
+        let lead_step_playing = view.navigation.tab == Tab::Lead
+            && matches!(
+                view.navigation.lead_drill,
+                interaction::LeadDrill::Pattern { .. }
+            )
+            && i == lead_step_at(
+                beat,
+                frame.controls().lead.rate_beats,
+                frame.controls().lead.offset_beats,
+                lead_live_step_count(frame.controls().lead.step_count),
+            );
+        if lead_step_playing {
             spans.push(Span::styled(
                 " ♪",
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
@@ -425,7 +452,7 @@ fn push_lfo_editor_rows(
                 ));
             }
             LfoSubRow::Step(target) => {
-                rows.push(field_line(
+                let mut line = field_line(
                     &route.step_label(target),
                     &Dial::new(
                         route.step_value(target),
@@ -436,7 +463,15 @@ fn push_lfo_editor_rows(
                     &frame.numeric,
                     frame.bar_w,
                     LFO_PALETTE,
-                ));
+                );
+                if matches!(target, StepTarget::Value(step) if route.active_step_at(frame.view.telemetry.beat) == Some(step))
+                {
+                    line.spans.push(Span::styled(
+                        " ♪",
+                        Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+                    ));
+                }
+                rows.push(line);
             }
         }
     }

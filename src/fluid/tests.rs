@@ -4080,6 +4080,21 @@ fn steps_shape_defaults_to_three_neutral_then_a_full_up_step() {
 }
 
 #[test]
+fn steps_playhead_uses_the_same_interval_index_as_the_lfo_wave() {
+    let mut route = lfo_shape(LfoShape::Steps);
+    route.cycle_beats = 0.5;
+    route.step_count = 3;
+
+    assert_eq!(route.active_step_at(0.0), Some(0));
+    assert_eq!(route.active_step_at(0.5), Some(1));
+    assert_eq!(route.active_step_at(1.0), Some(2));
+    assert_eq!(route.active_step_at(1.5), Some(0));
+
+    route.shape = LfoShape::Sine;
+    assert_eq!(route.active_step_at(1.0), None);
+}
+
+#[test]
 fn raising_step_count_extends_the_pattern() {
     // The pattern lasts count × interval: at 4 steps the up-step (index 3)
     // recurs every 4 beats, so beat 7.5 lands on it again; at 8 steps beat
