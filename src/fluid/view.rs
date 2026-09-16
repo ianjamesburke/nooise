@@ -594,7 +594,7 @@ fn help_surface(
 /// not mistaken for a dead keyboard.
 pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
     if lead.level_pct == 0 {
-        return "LEAD · level is 0 · Esc, raise Level, Enter".to_string();
+        return "LEAD · level is 0 · arrows knobs · Esc, raise Level, Enter".to_string();
     }
     let lane = match lead.pattern {
         LeadPattern::Off => "lane off",
@@ -613,9 +613,11 @@ pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
         .collect::<Vec<_>>()
         .join("  ");
     if lead.holds == Some(false) {
-        return format!("LEAD · taps only (no key-up)  {nudges}  Space {lane}  c keep");
+        return format!(
+            "LEAD · arrows knobs  taps only (no key-up)  {nudges}  Space {lane}  c keep"
+        );
     }
-    format!("LEAD · {nudges}  Space {lane}  c keep  Esc")
+    format!("LEAD · arrows knobs  {nudges}  Space {lane}  c keep  Esc")
 }
 
 fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
@@ -1136,11 +1138,13 @@ mod tests {
         };
         let frame = render_model_with_session(&model, &session);
         assert!(frame.contains("LEAD"), "{frame}");
+        assert!(frame.contains("arrows␠knobs"), "{frame}");
         assert!(frame.contains("a1␠"), "{frame}");
         assert!(frame.contains("oct␠-1"), "{frame}");
 
         session.controls.lead.level = 0.0;
         let silent = render_model_with_session(&model, &session);
         assert!(silent.contains("level␠is␠0"), "{silent}");
+        assert!(silent.contains("arrows␠knobs"), "{silent}");
     }
 }

@@ -1999,11 +1999,11 @@ fn escape_closes_a_neutral_lfo_without_trapping_the_keyboard_owner() {
     assert_eq!(closed.automation_kind, None);
 }
 
-/// Enter on the Lead page opens play mode; the letter row sounds tones
-/// without exiting anything, `x` edits the octave control, autorepeat plays
-/// nothing, and Esc returns to browsing.
+/// Enter on the Lead page opens play mode; arrows edit the selected control
+/// while the letter row still sounds tones, autorepeat plays nothing, and Esc
+/// returns to browsing.
 #[test]
-fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
+fn lead_play_mode_keeps_letters_for_tones_while_arrows_edit_controls() {
     let plain = |code| key(0, code, InputPhase::Press);
     let to_lead: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
 
@@ -2023,10 +2023,12 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
     let mut played = to_lead.clone();
     played.extend([
         plain(FixtureKey::Enter),
+        plain(FixtureKey::Right),
         plain(FixtureKey::Character('a')),
         key(0, FixtureKey::Character('a'), InputPhase::Repeat),
+        plain(FixtureKey::Down),
+        plain(FixtureKey::Right),
         plain(FixtureKey::Character('l')),
-        plain(FixtureKey::Character('x')),
         plain(FixtureKey::Escape),
     ]);
     let played = replay(&played, TerminalCapabilities::full());
@@ -2035,11 +2037,10 @@ fn lead_play_mode_plays_on_press_only_and_steps_the_octave() {
         2,
         "one tone per press, none per repeat"
     );
-    assert_eq!(played.effect_count("LeadNudge"), 1);
-    assert_eq!(played.control("lead.octave"), Some(1.0));
+    assert_eq!(played.effect_count("AdjustSelected"), 2);
     assert_eq!(
-        played.session_generation, 4,
-        "two presses, one octave edit, and Esc releasing the held key"
+        played.session_generation, 5,
+        "two presses, two control edits, and Esc releasing the held key"
     );
     assert_eq!(played.model.mode, InteractionMode::Browsing);
     assert!(played.deferred_inputs.is_empty());

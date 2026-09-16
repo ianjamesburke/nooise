@@ -836,9 +836,12 @@ impl Intent {
                 ModeKind::Performance,
                 ModeKind::Lead,
             ],
-            Self::MoveSelection(_) => {
-                &[ModeKind::Browsing, ModeKind::Palette, ModeKind::Automation]
-            }
+            Self::MoveSelection(_) => &[
+                ModeKind::Browsing,
+                ModeKind::Palette,
+                ModeKind::Automation,
+                ModeKind::Lead,
+            ],
             Self::Confirm => &[ModeKind::Numeric, ModeKind::Palette, ModeKind::Automation],
             Self::TypeCharacter(_) | Self::Backspace => &[ModeKind::Numeric, ModeKind::Palette],
             Self::PaletteAutocomplete | Self::CommitPaletteAtBar => &[ModeKind::Palette],
@@ -850,6 +853,7 @@ impl Intent {
             | Self::EnterLeadPlay
             | Self::RandomizeSelected => &[ModeKind::Browsing],
             Self::RandomizeScope => &[ModeKind::Browsing, ModeKind::Automation],
+            Self::AdjustSelected(_) => &[ModeKind::Browsing, ModeKind::Automation, ModeKind::Lead],
             Self::PlayLeadTone { .. }
             | Self::ReleaseLeadTone(_)
             | Self::NudgeLead { .. }
@@ -860,7 +864,6 @@ impl Intent {
             | Self::OpenPalette
             | Self::OpenAutomation(_)
             | Self::AddAutomation(_)
-            | Self::AdjustSelected(_)
             | Self::ResetSelected
             | Self::ToggleAuto
             | Self::ToggleUnits
@@ -1165,7 +1168,13 @@ impl InteractionModel {
                 &mut next_mode,
                 &mut effects,
             ),
-            InteractionMode::Lead(play) => update_lead(play, intent, &mut next_mode, &mut effects),
+            InteractionMode::Lead(play) => update_lead(
+                play,
+                &mut self.navigation,
+                intent,
+                &mut next_mode,
+                &mut effects,
+            ),
         }
         if let Some(mode) = next_mode {
             self.mode = mode;
@@ -1515,6 +1524,7 @@ fn update_automation(
 
 fn update_lead(
     play: &mut LeadPlay,
+    navigation: &mut Navigation,
     intent: Intent,
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
@@ -1523,6 +1533,7 @@ fn update_lead(
         return;
     }
     match intent {
+        Intent::MoveSelection(delta) => navigation.move_selection(delta),
         Intent::Cancel => {
             if play.held.take().is_some() {
                 effects.push(InteractionEffect::LeadRelease);
@@ -1546,6 +1557,7 @@ fn update_lead(
         Intent::NudgeLead { id, delta } => {
             effects.push(InteractionEffect::LeadNudge { id, delta });
         }
+        Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
         Intent::ToggleLeadPattern => effects.push(InteractionEffect::LeadPattern),
         Intent::CaptureLeadPhrase => effects.push(InteractionEffect::LeadCapture),
         Intent::Save => effects.push(InteractionEffect::Save),

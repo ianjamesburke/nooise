@@ -668,8 +668,9 @@ fn performance_binding(
     }
 }
 
-/// `LEAD_NUDGES` step rows, `c` keeps the phrase, Space toggles the lane; the
-/// letter row plays `LEAD_PLAY_KEYS`.
+/// Arrows select and adjust the visible control, `LEAD_NUDGES` step Lead rows,
+/// `c` keeps the phrase, Space toggles the lane; the letter row plays
+/// `LEAD_PLAY_KEYS`.
 /// Every press is an edge; autorepeat plays nothing. Where the terminal
 /// reports releases a press holds its note and the release lets it go;
 /// elsewhere a press can only sound an attack/decay note.
@@ -678,6 +679,13 @@ fn lead_binding(
     phase: InputPhase,
     capabilities: TerminalCapabilities,
 ) -> Option<Intent> {
+    match *code {
+        PhysicalKey::Up => return Some(Intent::MoveSelection(-1)),
+        PhysicalKey::Down => return Some(Intent::MoveSelection(1)),
+        PhysicalKey::Left => return Some(Intent::AdjustSelected(-1)),
+        PhysicalKey::Right => return Some(Intent::AdjustSelected(1)),
+        _ => {}
+    }
     let PhysicalKey::Character(character) = code else {
         return None;
     };
@@ -1753,6 +1761,24 @@ mod tests {
             ),
             InputMapping::Action(SemanticAction::press(Intent::EnterLeadPlay))
         );
+
+        let lead = InteractionMode::Lead(super::super::interaction::LeadPlay::default());
+        for (code, intent) in [
+            (PhysicalKey::Up, Intent::MoveSelection(-1)),
+            (PhysicalKey::Down, Intent::MoveSelection(1)),
+            (PhysicalKey::Left, Intent::AdjustSelected(-1)),
+            (PhysicalKey::Right, Intent::AdjustSelected(1)),
+        ] {
+            assert_eq!(
+                map_input(
+                    &lead,
+                    Navigation::default(),
+                    &event(code, Modifiers::default()),
+                    TerminalCapabilities::default(),
+                ),
+                InputMapping::Action(SemanticAction::press(intent))
+            );
+        }
 
         let automation =
             InteractionMode::Automation(super::super::interaction::AutomationMode::Lfo {
