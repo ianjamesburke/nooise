@@ -568,7 +568,7 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('F' | 'f') => Intent::AddAutomation(AutomationKind::Lfo),
         PhysicalKey::Character('E' | 'e') => Intent::AddAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
-        PhysicalKey::Character('R' | 'r') => Intent::ReseedAutomation,
+        PhysicalKey::Character('R' | 'r') => Intent::RandomizeScope,
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         _ => return None,
     })
@@ -1805,6 +1805,7 @@ mod tests {
         for (code, expected) in [
             ('F', Intent::AddAutomation(super::AutomationKind::Lfo)),
             ('E', Intent::AddAutomation(super::AutomationKind::Envelope)),
+            ('R', Intent::RandomizeScope),
         ] {
             assert_eq!(
                 map_input(

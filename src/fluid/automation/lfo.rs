@@ -539,6 +539,29 @@ impl LfoRoute {
             ^ 0x5DEE_CE66;
     }
 
+    /// Randomize every field the LFO editor owns. The Steps configuration is
+    /// included because it is part of the same route, even when another shape
+    /// currently hides it.
+    pub(crate) fn randomize(&mut self, rng: &mut impl rand::Rng, beat: f64) {
+        for field in LfoField::ALL {
+            let value = match field {
+                LfoField::Shape => rng.r#gen::<f32>() * (LfoShape::ALL.len() - 1) as f32,
+                _ => random_field_value(field.spec(), rng),
+            };
+            self.set_field_at(field, value, beat);
+        }
+        self.seed = rng.r#gen();
+        let count = random_step_value(StepTarget::Count, rng);
+        self.set_step(StepTarget::Count, count);
+        self.set_step(StepTarget::Glide, random_step_value(StepTarget::Glide, rng));
+        for step in 0..self.active_step_count() {
+            self.set_step(
+                StepTarget::Value(step),
+                random_step_value(StepTarget::Value(step), rng),
+            );
+        }
+    }
+
     pub(crate) fn adjust_field_at(&mut self, field: LfoField, dir: f32, beat: f64) {
         match field {
             LfoField::Shape => self.write_shape(self.shape.cycled(dir)),
@@ -655,6 +678,21 @@ impl LfoRoute {
             |r, v| r.depth_ratio = v,
         )
     }
+}
+
+fn random_field_value<F: Copy + PartialEq>(
+    spec: &super::FieldSpec<F>,
+    rng: &mut impl rand::Rng,
+) -> f32 {
+    let ratio = rng.r#gen::<f32>();
+    spec.scale.value_at(ratio).map_or_else(
+        || spec.min + ratio * (spec.max - spec.min),
+        |value| spec.quantize(value),
+    )
+}
+
+fn random_step_value(target: StepTarget, rng: &mut impl rand::Rng) -> f32 {
+    random_field_value(target.spec(), rng)
 }
 
 /// Every LFO derives position from the shared transport beat. A zero offset

@@ -161,6 +161,8 @@ fn staged_edits(edits: Vec<PaletteStagedEdit>) -> Vec<StagedEdit> {
 
 pub(crate) struct ProductionInteractionContext<'a> {
     pub(crate) selected_control: Option<&'static str>,
+    pub(crate) visible_control_ids: &'a [&'static str],
+    pub(crate) randomizes_automation: bool,
     pub(crate) tab: Tab,
     pub(crate) selected: usize,
     pub(crate) automation_selected: usize,
@@ -540,6 +542,7 @@ impl EffectExecutor {
             | InteractionEffect::RemoveAutomation
             | InteractionEffect::ReseedAutomation
             | InteractionEffect::RandomizeSelected
+            | InteractionEffect::RandomizeScope
             | InteractionEffect::CloseAutomationAll
             | InteractionEffect::TouchSelected
             | InteractionEffect::PaletteCommitAtBar(_)
@@ -679,6 +682,40 @@ impl EffectExecutor {
                 let snapshot = self.edit_session(Some(spec.id), |snapshot| {
                     spec.apply_ratio(ratio, &mut snapshot.controls);
                 });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::RandomizeScope => {
+                let mut rng = self.rng.clone();
+                let snapshot = self.edit_session(None, |snapshot| {
+                    if context.randomizes_automation {
+                        match snapshot.automation.active_kind() {
+                            Some(ModKind::Lfo) => {
+                                if let Some(address) = snapshot.automation.active_address()
+                                    && let Some(route) = snapshot.automation.route_mut(address)
+                                {
+                                    route.randomize(&mut rng, context.beat);
+                                }
+                            }
+                            Some(ModKind::Envelope) => {
+                                if let Some(address) = snapshot.automation.active_address()
+                                    && let Some(route) = snapshot.automation.envelope_mut(address)
+                                {
+                                    route.randomize(&mut rng);
+                                }
+                            }
+                            None => {}
+                        }
+                    } else {
+                        for id in context.visible_control_ids {
+                            if let Some(spec) = spec_by_id(id) {
+                                spec.apply_ratio(rng.r#gen(), &mut snapshot.controls);
+                            }
+                        }
+                    }
+                });
+                self.rng = rng;
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
@@ -1138,6 +1175,8 @@ mod tests {
         let mut flipped = FlippedUnits::default();
         let mut context = ProductionInteractionContext {
             selected_control: Some("kick.slot3.time"),
+            visible_control_ids: &[],
+            randomizes_automation: false,
             tab: Tab::Kick,
             selected,
             automation_selected: 0,
@@ -1293,6 +1332,8 @@ mod tests {
         let mut run = |executor: &mut EffectExecutor, effect, beat| {
             let mut context = ProductionInteractionContext {
                 selected_control: None,
+                visible_control_ids: &[],
+                randomizes_automation: false,
                 tab: Tab::Lead,
                 selected: 0,
                 automation_selected: 0,

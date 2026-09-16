@@ -2522,7 +2522,7 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
 
     let text = buffer_text(&buffer);
     assert!(text.contains("Pads › Chord 2"));
-    assert!(text.contains("BROWSE · Chord 2   Esc: back"));
+    assert!(text.contains("BROWSE · Chord 2   Shift+R randomize set   Esc: back"));
 }
 
 fn render_progression(controls: &FluidControls, active_chord: u64) -> String {

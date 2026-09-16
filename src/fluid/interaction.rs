@@ -813,6 +813,8 @@ pub(crate) enum Intent {
     ReseedAutomation,
     /// Set the selected control to a random point on its own dial.
     RandomizeSelected,
+    /// Set every control in the open surface to a random point on its own dial.
+    RandomizeScope,
     TouchSelected,
     CommitPaletteAtBar,
     Save,
@@ -847,6 +849,7 @@ impl Intent {
             | Self::EnterModuleDetail { .. }
             | Self::EnterLeadPlay
             | Self::RandomizeSelected => &[ModeKind::Browsing],
+            Self::RandomizeScope => &[ModeKind::Browsing, ModeKind::Automation],
             Self::PlayLeadTone { .. }
             | Self::ReleaseLeadTone(_)
             | Self::NudgeLead { .. }
@@ -922,6 +925,7 @@ impl Intent {
             | Self::RemoveAutomation
             | Self::ReseedAutomation
             | Self::RandomizeSelected
+            | Self::RandomizeScope
             | Self::TouchSelected
             | Self::CommitPaletteAtBar
             | Self::Save
@@ -981,6 +985,7 @@ pub(crate) enum InteractionEffect {
     RemoveAutomation,
     ReseedAutomation,
     RandomizeSelected,
+    RandomizeScope,
     CloseAutomationAll,
     TouchSelected,
     PaletteCommitAtBar(Vec<PaletteStagedEdit>),
@@ -1286,6 +1291,7 @@ fn update_browsing(
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
         Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
         Intent::RandomizeSelected => effects.push(InteractionEffect::RandomizeSelected),
+        Intent::RandomizeScope => effects.push(InteractionEffect::RandomizeScope),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
@@ -1486,6 +1492,7 @@ fn update_automation(
             effects.push(InteractionEffect::RemoveAutomation);
         }
         Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
+        Intent::RandomizeScope => effects.push(InteractionEffect::RandomizeScope),
         Intent::BeginNumeric(character) => {
             let mut entry = NumericEntry::default();
             push_numeric(&mut entry.buffer, character);

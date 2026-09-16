@@ -172,6 +172,28 @@ impl Default for EnvelopeRoute {
 }
 
 impl EnvelopeRoute {
+    /// Randomize every field the envelope editor owns.
+    pub(crate) fn randomize(&mut self, rng: &mut impl rand::Rng) {
+        for field in EnvField::ALL {
+            let spec = match field {
+                EnvField::Trigger => {
+                    self.set_field(
+                        field,
+                        rng.r#gen::<f32>() * (EnvTrigger::CYCLE.len() - 1) as f32,
+                    );
+                    continue;
+                }
+                _ => field.spec(),
+            };
+            let ratio = rng.r#gen::<f32>();
+            let value = spec.scale.value_at(ratio).map_or_else(
+                || spec.min + ratio * (spec.max - spec.min),
+                |value| spec.quantize(value),
+            );
+            self.set_field(field, value);
+        }
+    }
+
     /// Beats elapsed since the most recent trigger, or None before the first
     /// trigger has fired. Pure function of the context so UI and engine agree.
     fn beats_since_trigger(&self, ctx: ModContext) -> Option<f32> {

@@ -557,16 +557,21 @@ fn help_surface(
         navigation.chord_drill,
         navigation.module_slot,
     ) {
-        (_, _, Some(_)) => Some("BROWSE · Module detail   Esc: back".to_string()),
-        (Tab::Chords, ChordDrill::Progression { .. }, None) => {
-            Some("BROWSE · Progression   Enter: open chord   Esc: back".to_string())
+        (_, _, Some(_)) => {
+            Some("BROWSE · Module detail   Shift+R randomize set   Esc: back".to_string())
         }
-        (Tab::Chords, ChordDrill::Slot { slot, .. }, None) => {
-            Some(format!("BROWSE · Chord {}   Esc: back", slot + 1))
-        }
-        (Tab::Lead, _, None) if navigation.lead_drill != LeadDrill::None => {
-            Some("BROWSE · Pattern   r random   Enter: play   Esc: back".to_string())
-        }
+        (Tab::Chords, ChordDrill::Progression { .. }, None) => Some(
+            "BROWSE · Progression   Shift+R randomize set   Enter: open chord   Esc: back"
+                .to_string(),
+        ),
+        (Tab::Chords, ChordDrill::Slot { slot, .. }, None) => Some(format!(
+            "BROWSE · Chord {}   Shift+R randomize set   Esc: back",
+            slot + 1
+        )),
+        (Tab::Lead, _, None) if navigation.lead_drill != LeadDrill::None => Some(
+            "BROWSE · Pattern   r random   Shift+R randomize set   Enter: play   Esc: back"
+                .to_string(),
+        ),
         _ => None,
     };
     if let Some(text) = local_help {
@@ -580,7 +585,7 @@ fn help_surface(
     }
     HelpSurface::Browsing {
         text:
-            "BROWSE · jk select   h/l adjust   / find   f LFO   e ENV   a auto   T units   ^Q quit"
+            "BROWSE · jk select   h/l adjust   r random   Shift+R randomize set   / find   f LFO   e ENV   a auto   T units   ^Q quit"
                 .to_string(),
     }
 }
@@ -713,7 +718,7 @@ fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
                 ""
             };
             let text = format!(
-                "LFO {}/{} · {}   {}   {:.2} beats   depth {:.0}%{reseed}   f next   Shift+F add   x remove   Esc close",
+                "LFO {}/{} · {}   {}   {:.2} beats   depth {:.0}%{reseed}   Shift+R randomize   f next   Shift+F add   x remove   Esc close",
                 lane_index + 1,
                 lane_count,
                 address.id(),
@@ -730,7 +735,7 @@ fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
             route,
             ..
         } => format!(
-            "ENV {}/{} · {}   {}   amount {:+.0}%   e next   Shift+E add   x remove   Esc close",
+            "ENV {}/{} · {}   {}   amount {:+.0}%   Shift+R randomize   e next   Shift+E add   x remove   Esc close",
             lane_index + 1,
             lane_count,
             address.id(),

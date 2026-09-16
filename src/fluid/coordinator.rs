@@ -69,6 +69,8 @@ pub(crate) struct ProductionFrame {
     pub(crate) session: Arc<LiveSessionSnapshot>,
     pub(crate) item_count: usize,
     pub(crate) selected_control: Option<&'static str>,
+    pub(crate) visible_control_ids: Vec<&'static str>,
+    pub(crate) randomizes_automation: bool,
     pub(crate) tab: Tab,
     pub(crate) selected: usize,
 }
@@ -94,6 +96,8 @@ pub(crate) fn production_frame(
     });
     let item_count = view.items.len();
     let selected_control = view.items.get(view.navigation.selected).map(|item| item.id);
+    let visible_control_ids = view.items.iter().map(|item| item.id).collect();
+    let randomizes_automation = matches!(model.mode, interaction::InteractionMode::Automation(_));
     let selected = selected_control
         .and_then(|id| spec_index(view.navigation.tab, id))
         .unwrap_or(view.navigation.selected);
@@ -104,6 +108,8 @@ pub(crate) fn production_frame(
         session,
         item_count,
         selected_control,
+        visible_control_ids,
+        randomizes_automation,
         tab,
         selected,
     }
@@ -215,6 +221,8 @@ pub(crate) fn coordinate_production_action(
     let emitted = transition.effects;
     let mut execution = ProductionInteractionContext {
         selected_control,
+        visible_control_ids: &frame.visible_control_ids,
+        randomizes_automation: frame.randomizes_automation,
         tab,
         selected: frame.selected,
         automation_selected,

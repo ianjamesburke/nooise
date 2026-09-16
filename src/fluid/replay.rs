@@ -1519,6 +1519,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("track mute", vec![plain(FixtureKey::Character('m'))]),
         ("master mute", vec![shift(FixtureKey::Character('M'))]),
         ("randomize", vec![plain(FixtureKey::Character('r'))]),
+        ("randomize set", vec![shift(FixtureKey::Character('R'))]),
         ("numeric", vec![plain(FixtureKey::Character('1'))]),
         ("touch", vec![plain(FixtureKey::Enter)]),
         ("save", vec![ctrl(FixtureKey::Character('s'))]),
@@ -1725,6 +1726,14 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 automation: None,
                 intents: vec![Intent::RandomizeSelected],
                 effects: vec!["RandomizeSelected=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "randomize set" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::RandomizeScope],
+                effects: vec!["RandomizeScope=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "numeric" => ExpectedBinding {
@@ -2185,6 +2194,7 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
 #[test]
 fn r_randomizes_the_selected_control_while_browsing_and_reseeds_inside_an_editor() {
     let plain = |code| key(0, code, InputPhase::Press);
+    let shift = |code| modified_key(0, code, InputPhase::Press, 1);
 
     let rolled = replay(
         &[plain(FixtureKey::Character('r'))],
@@ -2213,6 +2223,33 @@ fn r_randomizes_the_selected_control_while_browsing_and_reseeds_inside_an_editor
     );
     assert_eq!(reseeded.effect_count("ReseedAutomation"), 1);
     assert_eq!(reseeded.effect_count("RandomizeSelected"), 0);
+
+    let set = replay(
+        &[shift(FixtureKey::Character('R'))],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(set.effect_count("RandomizeScope"), 1);
+    assert_eq!(set.session_generation, 1);
+    assert_ne!(
+        set.control("pad.level"),
+        Some(FluidControls::default().pad.level)
+    );
+    assert_eq!(
+        set.control("bass.level"),
+        Some(FluidControls::default().bass.level)
+    );
+
+    let lfo_set = replay(
+        &[
+            plain(FixtureKey::Character('f')),
+            shift(FixtureKey::Character('R')),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(lfo_set.effect_count("RandomizeScope"), 1);
+    assert_eq!(lfo_set.session_generation, 2);
+    assert_eq!(lfo_set.automation_kind.as_deref(), Some("Lfo"));
+    assert_eq!(lfo_set.automation_address, Some("pad.level"));
 }
 
 #[test]
