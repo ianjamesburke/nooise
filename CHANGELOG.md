@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [2.4.0] — 2026-09-16
+
+### Added
+- feat: show step pattern followers
+- feat: adjust controls while playing lead
 ## [2.3.1] — 2026-09-16
 
 ### Added

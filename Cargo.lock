@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "nooise"
-version = "2.3.1"
+version = "2.4.0"
 dependencies = [
  "arboard",
  "arc-swap",
