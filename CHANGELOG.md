@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [2.5.0] — 2026-09-17
+
+### Added
+- feat: add Lift gesture and fast releases
+- feat: add normal-mode live effect gestures
 ## [2.4.0] — 2026-09-16
 
 ### Added
