@@ -3,7 +3,7 @@
 
 use super::*;
 
-pub(crate) const GESTURE_COUNT: usize = 4;
+pub(crate) const GESTURE_COUNT: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -12,11 +12,17 @@ pub(crate) enum GestureKind {
     Submerge,
     Echo,
     Thin,
+    Lift,
 }
 
 impl GestureKind {
-    pub(crate) const ALL: [Self; GESTURE_COUNT] =
-        [Self::Bloom, Self::Submerge, Self::Echo, Self::Thin];
+    pub(crate) const ALL: [Self; GESTURE_COUNT] = [
+        Self::Bloom,
+        Self::Submerge,
+        Self::Echo,
+        Self::Thin,
+        Self::Lift,
+    ];
 
     pub(crate) fn from_key(key: char) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.key() == key)
@@ -28,6 +34,7 @@ impl GestureKind {
             Self::Submerge => 'c',
             Self::Echo => 'v',
             Self::Thin => 'b',
+            Self::Lift => 'x',
         }
     }
 
@@ -37,6 +44,7 @@ impl GestureKind {
             Self::Submerge => "Submerge",
             Self::Echo => "Echo",
             Self::Thin => "Thin",
+            Self::Lift => "Lift",
         }
     }
 
@@ -46,16 +54,12 @@ impl GestureKind {
             Self::Submerge => 1.2,
             Self::Echo => 0.7,
             Self::Thin => 1.0,
+            Self::Lift => 0.55,
         }
     }
 
     fn return_seconds(self) -> f64 {
-        match self {
-            Self::Bloom => 0.8,
-            Self::Submerge => 0.45,
-            Self::Echo => 0.15,
-            Self::Thin => 0.4,
-        }
+        0.05
     }
 }
 
@@ -195,6 +199,21 @@ mod tests {
     }
 
     #[test]
+    fn every_gesture_returns_to_rest_within_fifty_milliseconds() {
+        for kind in GestureKind::ALL {
+            let mut state = GestureState::default();
+            state.press(kind, Tab::Chords, 0.0);
+            state.release(kind, kind.rise_seconds());
+            assert!(
+                state.amounts(Tab::Chords, kind.rise_seconds() + 0.05)[kind as usize]
+                    <= f32::EPSILON,
+                "{} did not return within 50 ms",
+                kind.name()
+            );
+        }
+    }
+
+    #[test]
     fn duplicate_press_keeps_original_target_and_trajectory() {
         let mut state = GestureState::default();
         state.press(GestureKind::Bloom, Tab::Chords, 2.0);
@@ -209,9 +228,9 @@ mod tests {
         let mut state = GestureState::default();
         state.press(GestureKind::Bloom, Tab::Chords, 0.0);
         state.release(GestureKind::Bloom, 1.5);
-        state.press(GestureKind::Bloom, Tab::Perc, 1.6);
-        assert!(state.amounts(Tab::Chords, 1.7)[0] > 0.0);
-        assert!(state.amounts(Tab::Perc, 1.7)[0] > 0.0);
+        state.press(GestureKind::Bloom, Tab::Perc, 1.52);
+        assert!(state.amounts(Tab::Chords, 1.54)[0] > 0.0);
+        assert!(state.amounts(Tab::Perc, 1.54)[0] > 0.0);
         assert_eq!(state.held_target(GestureKind::Bloom), Some(Tab::Perc));
     }
 

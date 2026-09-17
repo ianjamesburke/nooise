@@ -2,10 +2,12 @@
 
 ## Normal browsing gestures
 
-Hold `z` for Bloom, `c` for Submerge, `v` for Echo, or `b` for Thin.
+Hold `z` for Bloom, `c` for Submerge, `v` for Echo, `b` for Thin, or `x` for
+Lift.
 The amount rises while held and returns smoothly on release. Bloom adds a
 reverb cloud, Submerge darkens the sound, Echo throws the phrase into repeats,
-and Thin lowers its contribution. Reverb and echo tails finish after release.
+Thin lowers its contribution, and Lift sweeps its low end away. The gesture
+input returns in 50 ms; reverb and echo tails finish after release.
 
 The current page supplies the target. Master affects the whole mix. The target
 stays fixed while the key is down, so arrows and Tab remain available and
@@ -61,8 +63,9 @@ and existing bindings.
 2. Hold `z`, move with arrows and Tab, and release. The effect must stay on
    Pads while navigation continues. On another audible layer, overlap a
    different gesture and confirm each target is named.
-3. On Master, try short and long `v` presses and then `b`. Echoes should
-   finish after release; Thin should smoothly lower and restore the mix.
+3. On Master, try short and long `v` presses, then `b` and `x`. Echoes should
+   finish after release; Thin should smoothly lower and restore the mix; Lift
+   should clear its low end while held and restore it quickly on release.
 4. Open the palette during a held gesture, return to Browse, and keep the
    physical key down. It must stay released until a fresh press after key-up.
    Escape must also release held or loaded gestures.

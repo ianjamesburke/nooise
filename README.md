@@ -39,7 +39,8 @@ Use arrows to browse and adjust controls, and Tab to move between layers.
 Press `Ctrl+Q` to quit.
 
 While browsing, hold `z` for a reverb Bloom, `c` to Submerge the sound,
-`v` for Echo, or `b` to Thin the layer. Release to return smoothly. The
+`v` for Echo, `b` to Thin the layer, or `x` to Lift its low end out. Release
+to return in 50 ms. The
 current layer is the target; on Master, the gesture affects the whole mix.
 Arrows and Tab keep working while you hold a gesture. These holds require
 a terminal that reports key releases; the footer shows when support is missing.

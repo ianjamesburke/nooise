@@ -256,7 +256,7 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
 /// Gesture record: `u8 entry_count`, then fixed-width entries of stable
 /// `u8 target_mute_bit`, `u8 kind`, `u8 flags`, and a `u16` amount in 0..=1.
 /// One quantization step is 1/65,535 of the gesture throw, well below an
-/// audible envelope difference, and keeps all 36 possible lanes shareable.
+/// audible envelope difference, and keeps all 45 possible lanes shareable.
 fn write_gestures(gestures: &GestureState, out: &mut Vec<u8>) -> Result<bool, SongCodeError> {
     let mut entries = Vec::new();
     let mut held_kinds = BTreeSet::new();
@@ -1001,7 +1001,7 @@ mod gesture_record_tests {
 
     #[test]
     fn gesture_kind_wire_tags_are_stable() {
-        assert_eq!(GestureKind::ALL.map(|kind| kind as u8), [0, 1, 2, 3]);
+        assert_eq!(GestureKind::ALL.map(|kind| kind as u8), [0, 1, 2, 3, 4]);
     }
 
     #[test]
@@ -1148,10 +1148,12 @@ mod gesture_record_tests {
 
     #[test]
     fn gesture_record_rejects_more_entries_than_fixed_storage() {
-        let payload = [37];
+        let payload = [(TAB_COUNT * GestureKind::ALL.len() + 1) as u8];
         assert_eq!(
             decode_song_code(&code_with_gesture_payload(&payload)).err(),
-            Some(SongCodeError::InvalidGestureCount(37))
+            Some(SongCodeError::InvalidGestureCount(
+                (TAB_COUNT * GestureKind::ALL.len() + 1) as u8
+            ))
         );
     }
 
@@ -1256,7 +1258,7 @@ mod gesture_record_tests {
     }
 
     #[test]
-    fn maximum_gesture_record_stays_below_280_characters() {
+    fn maximum_gesture_record_stays_below_350_characters() {
         let mut song = SongState::default();
         for tab in Tab::all() {
             for kind in GestureKind::ALL {
@@ -1266,7 +1268,7 @@ mod gesture_record_tests {
 
         let code = encode_song_code(&song).unwrap();
 
-        assert!(code.len() < 280, "max gesture code is {} chars", code.len());
+        assert!(code.len() < 350, "max gesture code is {} chars", code.len());
     }
 }
 

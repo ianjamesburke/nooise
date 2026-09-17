@@ -1619,7 +1619,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("palette", vec![plain(FixtureKey::Character('/'))]),
         ("lfo", vec![plain(FixtureKey::Character('f'))]),
         ("envelope", vec![plain(FixtureKey::Character('e'))]),
-        ("remove automation", vec![plain(FixtureKey::Character('x'))]),
+        ("lift gesture", vec![plain(FixtureKey::Character('x'))]),
         ("unit flip", vec![plain(FixtureKey::Character('t'))]),
         ("track mute", vec![plain(FixtureKey::Character('m'))]),
         ("master mute", vec![shift(FixtureKey::Character('M'))]),
@@ -1793,12 +1793,14 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 effects: vec!["AutomationConfirm(Envelope)=>OK:Published { generation: 1 }"],
                 notice: None,
             },
-            "remove automation" => ExpectedBinding {
+            "lift gesture" => ExpectedBinding {
                 owner: "BROWSE",
                 generation: 1,
                 automation: None,
-                intents: vec![Intent::RemoveAutomation],
-                effects: vec!["RemoveAutomation=>OK:Published { generation: 1 }"],
+                intents: vec![Intent::StartGesture(GestureKind::Lift)],
+                effects: vec![
+                    "GesturePress { kind: Lift, tab: Chords }=>OK:Published { generation: 1 }",
+                ],
                 notice: None,
             },
             "unit flip" => ExpectedBinding {

@@ -4,6 +4,8 @@ use super::*;
 
 const SUBMERGE_MIN_CUTOFF_HZ: f32 = 420.0;
 const SUBMERGE_OPEN_CUTOFF_HZ: f32 = 8_000.0;
+const LIFT_MIN_CUTOFF_HZ: f32 = 110.0;
+const LIFT_MAX_CUTOFF_HZ: f32 = 1_800.0;
 const BLOOM_SEND_GAIN: f32 = 0.72;
 const BLOOM_TAIL_SECONDS: f32 = 8.0;
 const ECHO_SEND_GAIN: f32 = 0.68;
@@ -14,9 +16,11 @@ const ECHO_FEEDBACK_SECONDS: f32 = 0.03;
 
 struct GestureLayerFx {
     submerge: SlotFx,
+    lift: SlotFx,
     bloom: SlotFx,
     echo: SlotFx,
     submerge_active: bool,
+    lift_active: bool,
     bloom_has_history: bool,
     echo_has_history: bool,
     bloom_tail_samples: u32,
@@ -33,9 +37,11 @@ impl GestureLayerFx {
     fn new(sample_rate: f32, max_delay_samples: usize) -> Self {
         Self {
             submerge: SlotFx::Filter(StereoFilter::default()),
+            lift: SlotFx::Filter(StereoFilter::default()),
             bloom: SlotFx::Reverb(Freeverb::new(sample_rate)),
             echo: SlotFx::Delay(StereoDelay::new(max_delay_samples)),
             submerge_active: false,
+            lift_active: false,
             bloom_has_history: false,
             echo_has_history: false,
             bloom_tail_samples: 0,
@@ -59,6 +65,7 @@ impl GestureLayerFx {
     ) -> (f32, f32) {
         if amounts == [0.0; GESTURE_COUNT]
             && !self.submerge_active
+            && !self.lift_active
             && !self.bloom_has_history
             && !self.echo_has_history
         {
@@ -101,6 +108,32 @@ impl GestureLayerFx {
         } else if self.submerge_active {
             self.submerge = SlotFx::Filter(StereoFilter::default());
             self.submerge_active = false;
+        }
+
+        let lift_amount = amounts[GestureKind::Lift as usize];
+        if lift_amount > f32::EPSILON {
+            self.lift_active = true;
+            let cutoff_hz =
+                LIFT_MIN_CUTOFF_HZ + (LIFT_MAX_CUTOFF_HZ - LIFT_MIN_CUTOFF_HZ) * lift_amount;
+            let slot = ModuleSlot {
+                amount: 1.0,
+                time: cutoff_hz,
+                right_time: 0.05,
+                feedback: 1.0,
+                ..ModuleSlot::default()
+            };
+            let filtered = ModuleFxBank::process_slot_fx(
+                &mut self.lift,
+                &slot,
+                source,
+                timing,
+                max_delay_samples,
+                sample_rate,
+            );
+            source = mix_stereo(source, filtered, lift_amount);
+        } else if self.lift_active {
+            self.lift = SlotFx::Filter(StereoFilter::default());
+            self.lift_active = false;
         }
 
         let bloom_amount = amounts[GestureKind::Bloom as usize];
@@ -355,6 +388,27 @@ mod tests {
     }
 
     #[test]
+    fn full_lift_audibly_removes_low_frequency_content() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let mut low_energy = 0.0;
+        for index in 0..SAMPLE_RATE as usize {
+            let phase = index as f32 * std::f32::consts::TAU * 80.0 / SAMPLE_RATE;
+            let output = bank.process(
+                Tab::Chords,
+                (phase.sin(), phase.sin()),
+                active(GestureKind::Lift),
+                timing(),
+            );
+            low_energy += output.0.abs() + output.1.abs();
+        }
+
+        assert!(
+            low_energy < 400.0,
+            "lift left low-frequency energy at {low_energy}"
+        );
+    }
+
+    #[test]
     fn submerge_onset_is_continuous_from_exact_dry() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
         let input = (0.8, -0.6);
@@ -489,7 +543,12 @@ mod tests {
     #[test]
     fn drained_tails_clear_incrementally_then_restore_exact_dry_bypass() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        bank.process(Tab::Master, (0.5, -0.5), [1.0, 0.0, 1.0, 0.0], timing());
+        bank.process(
+            Tab::Master,
+            (0.5, -0.5),
+            [1.0, 0.0, 1.0, 0.0, 0.0],
+            timing(),
+        );
         bank.layers[Tab::Master as usize].bloom_tail_samples = 0;
         bank.layers[Tab::Master as usize].echo_tail_samples = 0;
         for _ in 0..1_000 {

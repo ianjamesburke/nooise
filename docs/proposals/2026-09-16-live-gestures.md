@@ -20,11 +20,11 @@ already sound balanced without corrective mixing.
 
 ## First playable version
 
-Four gesture keys work directly in Browsing, including its ordinary detail
+Five gesture keys work directly in Browsing, including its ordinary detail
 drills. Press starts a smooth rise; holding continues it to an authored peak;
 release begins the return. Different gestures can overlap.
 
-Unmodified bindings are `z`, `c`, `v`, and `b`. Their left-hand placement
+Unmodified bindings are `z`, `x`, `c`, `v`, and `b`. Their left-hand placement
 leaves the right hand free for arrows.
 
 | Key | Gesture | Increasing amount | Release character |
@@ -33,6 +33,7 @@ leaves the right hand free for arrows.
 | `c` | Submerge | Sweep a low-pass down until the layer feels distant | Open back toward the current sound |
 | `v` | Echo | Send the phrase into repeats, with bounded feedback rising at deeper amounts | Stop new input to the repeats; let existing echoes decay |
 | `b` | Thin | Reduce the target's contribution to make room around other layers | Bring the target back smoothly |
+| `x` | Lift | Sweep a high-pass up to clear the target's low end | Restore the low end immediately |
 
 On Master, Thin withdraws the whole mix. On a voice page, it withdraws that
 voice. It does not choose a hidden subset of instruments.
@@ -40,7 +41,7 @@ voice. It does not choose a hidden subset of instruments.
 The first version uses live timing in seconds. Beat quantization, scheduled
 starts, gesture recording, brake/depth/speed modifiers, and transfers between
 named states are later experiments. Fray and Flutter remain possible future
-gestures. Their addition should follow listening to the first four.
+gestures. Their addition should follow listening to these first five.
 
 ## Feel and timing
 
@@ -52,10 +53,11 @@ Initial audition values:
 
 | Gesture | Rise from zero to peak | Return from peak | Peak intention |
 | --- | --- | --- | --- |
-| Bloom | 1.5 s | 0.8 s send return, then natural tail | Spacious, with audible dry detail |
-| Submerge | 1.2 s | 0.45 s | Clearly muffled, without a resonant whistle |
-| Echo | 0.7 s | 0.15 s send return, then natural tail | A distinct phrase throw with decaying repeats |
-| Thin | 1.0 s | 0.4 s | Roughly 12 dB less target contribution |
+| Bloom | 1.5 s | 0.05 s input return, then natural tail | Spacious, with audible dry detail |
+| Submerge | 1.2 s | 0.05 s | Clearly muffled, without a resonant whistle |
+| Echo | 0.7 s | 0.05 s input return, then natural tail | A distinct phrase throw with decaying repeats |
+| Thin | 1.0 s | 0.05 s | Roughly 12 dB less target contribution |
+| Lift | 0.55 s | 0.05 s | A quick low-end clearing throw |
 
 These values are listening hypotheses. Short touches must produce useful
 accents. Begin responding immediately and use a gentle, continuous rise;
@@ -145,7 +147,7 @@ first version leaves gesture keys inactive and explains that hold gestures
 require key-release support. Ordinary browsing remains available. Never
 infer release from a timeout or convert ambiguous repeats into toggles.
 
-The idle footer can show `z bloom  c submerge  v echo  b thin`. Active feedback
+The idle footer can show `z bloom  x lift  c submerge  v echo  b thin`. Active feedback
 shows the target, amount, and direction, for example
 `Pads Bloom 42% rising`. A released return can read `Pads Bloom tail`.
 The existing view model renders this feedback without opening a dashboard
