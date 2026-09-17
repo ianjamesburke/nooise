@@ -19,6 +19,7 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) muted: MuteState,
     /// Lead play-mode presses. Live-only: never written to a song code.
     pub(crate) lead_play: LeadPlayState,
+    pub(crate) gestures: GestureState,
 }
 
 impl LiveSessionSnapshot {
@@ -29,6 +30,7 @@ impl LiveSessionSnapshot {
             automation: song.automation.clone(),
             muted: song.muted,
             lead_play: LeadPlayState::default(),
+            gestures: song.gestures.restored(),
             tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
                 TonalSequenceState::from_phrase(wrapped_index(
                     song.controls.tonal.phrase,
@@ -50,6 +52,7 @@ impl LiveSessionSnapshot {
             automation: AutomationState::default(),
             muted: [false; TAB_COUNT],
             lead_play: LeadPlayState::default(),
+            gestures: GestureState::default(),
         }
     }
 }
@@ -57,17 +60,30 @@ impl LiveSessionSnapshot {
 #[derive(Clone)]
 pub(crate) struct LiveSession {
     published: Arc<ArcSwap<LiveSessionSnapshot>>,
+    /// Audio-owned monotonic clock; gestures store their anchors in the
+    /// aggregate snapshot, while readers sample this clock without a lock.
+    audio_seconds_bits: Arc<AtomicU64>,
 }
 
 impl LiveSession {
     pub(crate) fn new(snapshot: LiveSessionSnapshot) -> Self {
         Self {
             published: Arc::new(ArcSwap::from_pointee(snapshot)),
+            audio_seconds_bits: Arc::new(AtomicU64::new(0)),
         }
     }
 
     pub(crate) fn load(&self) -> Arc<LiveSessionSnapshot> {
         self.published.load_full()
+    }
+
+    pub(crate) fn audio_seconds(&self) -> f64 {
+        f64::from_bits(self.audio_seconds_bits.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn publish_audio_seconds(&self, seconds: f64) {
+        self.audio_seconds_bits
+            .store(seconds.to_bits(), Ordering::Relaxed);
     }
 
     /// Apply a pure aggregate edit with optimistic retry. A conflicting writer

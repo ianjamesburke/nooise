@@ -1784,7 +1784,7 @@ pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
     all_specs().find(|spec| spec.id == id)
 }
 
-/// Registry-backed target for the shared Deck/Sequence performance grammar.
+/// Registry-backed target for the Sequence performance grammar.
 /// Musical words stay stable while every actual edit still uses the owning
 /// control's range, taper, and step semantics.
 pub(crate) fn performance_target(

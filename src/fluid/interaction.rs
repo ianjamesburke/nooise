@@ -3,10 +3,10 @@
 //! This module names semantic UI behavior without depending on terminal
 //! events, rendering, clocks, shared publication, or effect execution.
 
-use super::FluidControls;
 use super::ModKind;
 use super::Tab;
 use super::palette::{ModuleScope, PaletteEntry, PaletteState, StagedEdit};
+use super::{FluidControls, GESTURE_COUNT, GestureKind};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 /// Which edge of a physical key produced this event. A legacy terminal can
@@ -428,7 +428,6 @@ impl AutomationMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PerformanceKind {
-    Deck,
     Sequence,
 }
 
@@ -441,7 +440,7 @@ pub(crate) enum PerformanceInstrument {
 }
 
 /// Everything one performance instrument is: the page it lives on, the
-/// selector key that holds it, and the registry ids its Deck/Sequence
+/// selector key that holds it, and the registry ids its Sequence
 /// actions edit (level, shape, density).
 pub(crate) struct InstrumentRow {
     pub(crate) instrument: PerformanceInstrument,
@@ -504,7 +503,7 @@ impl PerformanceInstrument {
         tab_for_page(self.page())
     }
 
-    /// The selector key that holds this instrument on the deck.
+    /// The selector key that chooses this instrument in Sequence.
     pub(crate) const fn key(self) -> char {
         self.row().key
     }
@@ -527,28 +526,11 @@ pub(crate) struct PerformanceTargets(u8);
 
 impl PerformanceTargets {
     pub(crate) fn single(instrument: PerformanceInstrument) -> Self {
-        let mut targets = Self::default();
-        targets.insert(instrument);
-        targets
-    }
-
-    pub(crate) fn insert(&mut self, instrument: PerformanceInstrument) {
-        self.0 |= 1 << instrument.index();
-    }
-
-    pub(crate) fn remove(&mut self, instrument: PerformanceInstrument) -> bool {
-        let mask = 1 << instrument.index();
-        let contained = self.0 & mask != 0;
-        self.0 &= !mask;
-        contained
+        Self(1 << instrument.index())
     }
 
     pub(crate) fn contains(self, instrument: PerformanceInstrument) -> bool {
         self.0 & (1 << instrument.index()) != 0
-    }
-
-    pub(crate) fn is_empty(self) -> bool {
-        self.0 == 0
     }
 
     pub(crate) fn iter(self) -> impl Iterator<Item = PerformanceInstrument> {
@@ -586,10 +568,6 @@ pub(crate) enum PerformanceAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PerformanceMode {
-    Deck {
-        selected: Option<PerformanceInstrument>,
-        held_selectors: PerformanceTargets,
-    },
     Sequence {
         stage: SequenceStage,
         held_selector: Option<PerformanceInstrument>,
@@ -599,10 +577,6 @@ pub(crate) enum PerformanceMode {
 impl PerformanceMode {
     fn new(kind: PerformanceKind) -> Self {
         match kind {
-            PerformanceKind::Deck => Self::Deck {
-                selected: None,
-                held_selectors: PerformanceTargets::default(),
-            },
             PerformanceKind::Sequence => Self::Sequence {
                 stage: SequenceStage::ChooseInstrument,
                 held_selector: None,
@@ -612,7 +586,6 @@ impl PerformanceMode {
 
     fn kind(self) -> PerformanceKind {
         match self {
-            Self::Deck { .. } => PerformanceKind::Deck,
             Self::Sequence { .. } => PerformanceKind::Sequence,
         }
     }
@@ -641,6 +614,56 @@ pub(crate) enum InteractionMode {
     Automation(AutomationMode),
     Performance(PerformanceMode),
     Lead(LeadPlay),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum GestureKeyState {
+    #[default]
+    Up,
+    Active,
+    Quarantined,
+}
+
+/// Physical gesture-key ownership is additive to the current keyboard mode.
+/// A key released by Escape or a mode transition stays quarantined until its
+/// real key-up arrives, so returning to Browse cannot retrigger it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GestureInputState {
+    keys: [GestureKeyState; GESTURE_COUNT],
+}
+
+impl GestureInputState {
+    fn press(&mut self, kind: GestureKind) -> bool {
+        let state = &mut self.keys[kind as usize];
+        if *state != GestureKeyState::Up {
+            return false;
+        }
+        *state = GestureKeyState::Active;
+        true
+    }
+
+    fn release(&mut self, kind: GestureKind) -> bool {
+        let state = &mut self.keys[kind as usize];
+        let was_active = *state == GestureKeyState::Active;
+        *state = GestureKeyState::Up;
+        was_active
+    }
+
+    fn has_active(&self) -> bool {
+        self.keys.contains(&GestureKeyState::Active)
+    }
+
+    fn quarantine_all(&mut self) {
+        for state in &mut self.keys {
+            if *state == GestureKeyState::Active {
+                *state = GestureKeyState::Quarantined;
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        self.keys.fill(GestureKeyState::Up);
+    }
 }
 
 /// The letter row is the Lead keyboard: `a`–`l` play tones 1–9
@@ -720,8 +743,9 @@ pub(crate) struct LeadPlay {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-/// The entire interaction state: where the cursor is, and who owns the
-/// keyboard. Nothing else — no terminal facts, no clock, no session data.
+/// The entire interaction state: where the cursor is, who owns the keyboard,
+/// and which gesture keys have semantic physical ownership. It carries no
+/// terminal capabilities, clock, or session data.
 ///
 /// `update` is a deterministic pure function of this plus one action, and
 /// emits ordered data-only effects for an adapter to execute. Two runs of the
@@ -730,6 +754,7 @@ pub(crate) struct LeadPlay {
 pub(crate) struct InteractionModel {
     pub(crate) navigation: Navigation,
     pub(crate) mode: InteractionMode,
+    pub(crate) gesture_input: GestureInputState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -802,6 +827,10 @@ pub(crate) enum Intent {
     ToggleLeadPattern,
     /// Keep the phrase just played: it becomes the lane, and the lane plays.
     CaptureLeadPhrase,
+    StartGesture(GestureKind),
+    ReleaseGesture(GestureKind),
+    ReleaseAllGestures,
+    AbandonGestures,
     AdjustSelected(i8),
     ResetSelected,
     ToggleAuto,
@@ -859,6 +888,15 @@ impl Intent {
             | Self::NudgeLead { .. }
             | Self::ToggleLeadPattern
             | Self::CaptureLeadPhrase => &[ModeKind::Lead],
+            Self::StartGesture(_) => &[ModeKind::Browsing],
+            Self::ReleaseGesture(_) | Self::ReleaseAllGestures | Self::AbandonGestures => &[
+                ModeKind::Browsing,
+                ModeKind::Numeric,
+                ModeKind::Palette,
+                ModeKind::Automation,
+                ModeKind::Performance,
+                ModeKind::Lead,
+            ],
             Self::ChangePage(_)
             | Self::BeginNumeric(_)
             | Self::OpenPalette
@@ -901,7 +939,8 @@ impl Intent {
             | Self::ApplyPerformanceAction { .. } => PhasePolicy::Repeatable,
             Self::ReleaseHeldSelector(_)
             | Self::FinishPerformanceSequence(_)
-            | Self::ReleaseLeadTone(_) => PhasePolicy::ReleaseOnly,
+            | Self::ReleaseLeadTone(_)
+            | Self::ReleaseGesture(_) => PhasePolicy::ReleaseOnly,
             Self::Cancel
             | Self::EnterChordProgression
             | Self::EnterChordSlot(_)
@@ -921,6 +960,9 @@ impl Intent {
             | Self::NudgeLead { .. }
             | Self::ToggleLeadPattern
             | Self::CaptureLeadPhrase
+            | Self::StartGesture(_)
+            | Self::ReleaseAllGestures
+            | Self::AbandonGestures
             | Self::ResetSelected
             | Self::ToggleAuto
             | Self::ToggleUnits
@@ -1018,6 +1060,12 @@ pub(crate) enum InteractionEffect {
     LeadPattern,
     /// Write the phrase just played into the lane and set it playing.
     LeadCapture,
+    GesturePress {
+        kind: GestureKind,
+        tab: Tab,
+    },
+    GestureRelease(GestureKind),
+    GestureReleaseAll,
     Save,
     Quit,
 }
@@ -1141,12 +1189,51 @@ impl InteractionModel {
         }
 
         let intent = action.intent;
+        if let Intent::ReleaseGesture(kind) = intent {
+            let effects = self
+                .gesture_input
+                .release(kind)
+                .then_some(InteractionEffect::GestureRelease(kind))
+                .into_iter()
+                .collect();
+            return Transition {
+                model: self,
+                effects,
+            };
+        }
+        if matches!(intent, Intent::ReleaseAllGestures | Intent::AbandonGestures) {
+            if intent == Intent::AbandonGestures {
+                self.gesture_input.clear();
+            } else {
+                self.gesture_input.quarantine_all();
+            }
+            return Transition {
+                model: self,
+                effects: vec![InteractionEffect::GestureReleaseAll],
+            };
+        }
+        if intent == Intent::Cancel
+            && matches!(self.mode, InteractionMode::Browsing)
+            && self.gesture_input.has_active()
+        {
+            self.gesture_input.quarantine_all();
+            return Transition {
+                model: self,
+                effects: vec![InteractionEffect::GestureReleaseAll],
+            };
+        }
         let page = self.navigation.page();
         let mut effects = Vec::new();
         let mut next_mode = None;
         match &mut self.mode {
             InteractionMode::Browsing => {
-                update_browsing(&mut self.navigation, intent, &mut next_mode, &mut effects);
+                update_browsing(
+                    &mut self.navigation,
+                    &mut self.gesture_input,
+                    intent,
+                    &mut next_mode,
+                    &mut effects,
+                );
             }
             InteractionMode::Numeric(entry) => {
                 update_numeric(entry, intent, &mut next_mode, &mut effects);
@@ -1176,6 +1263,15 @@ impl InteractionModel {
                 &mut effects,
             ),
         }
+        if self.gesture_input.has_active()
+            && next_mode
+                .as_ref()
+                .is_some_and(|mode| !matches!(mode, InteractionMode::Browsing))
+            && matches!(self.mode, InteractionMode::Browsing)
+        {
+            self.gesture_input.quarantine_all();
+            effects.insert(0, InteractionEffect::GestureReleaseAll);
+        }
         if let Some(mode) = next_mode {
             self.mode = mode;
         }
@@ -1195,6 +1291,7 @@ fn resume_mode(resume: Option<AutomationMode>) -> InteractionMode {
 
 fn update_browsing(
     navigation: &mut Navigation,
+    gesture_input: &mut GestureInputState,
     intent: Intent,
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
@@ -1289,6 +1386,14 @@ fn update_browsing(
                 *navigation = Navigation::for_page(Page::Lead);
             }
             *next_mode = Some(InteractionMode::Lead(LeadPlay::default()));
+        }
+        Intent::StartGesture(kind) => {
+            if gesture_input.press(kind) {
+                effects.push(InteractionEffect::GesturePress {
+                    kind,
+                    tab: tab_for_page(navigation.page()),
+                });
+            }
         }
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
         Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
@@ -1578,19 +1683,9 @@ fn update_performance(
     }
     match intent {
         Intent::Cancel => {
-            match performance {
-                PerformanceMode::Deck { held_selectors, .. } => {
-                    effects.extend(
-                        held_selectors
-                            .iter()
-                            .map(InteractionEffect::ReleaseHeldSelector),
-                    );
-                }
-                PerformanceMode::Sequence { held_selector, .. } => {
-                    if let Some(selector) = held_selector.take() {
-                        effects.push(InteractionEffect::ReleaseHeldSelector(selector));
-                    }
-                }
+            let PerformanceMode::Sequence { held_selector, .. } = performance;
+            if let Some(selector) = held_selector.take() {
+                effects.push(InteractionEffect::ReleaseHeldSelector(selector));
             }
             *next_mode = Some(InteractionMode::Browsing);
         }
@@ -1609,29 +1704,17 @@ fn update_performance(
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
         Intent::SelectPerformanceInstrument { instrument, hold } => {
-            match performance {
-                PerformanceMode::Deck {
-                    selected,
-                    held_selectors,
-                } => {
-                    *selected = Some(instrument);
-                    if hold {
-                        held_selectors.insert(instrument);
-                    }
-                }
-                PerformanceMode::Sequence {
-                    stage,
-                    held_selector,
-                } => {
-                    if hold
-                        && let Some(previous) = held_selector.replace(instrument)
-                        && previous != instrument
-                    {
-                        effects.push(InteractionEffect::ReleaseHeldSelector(previous));
-                    }
-                    *stage = SequenceStage::Perform { instrument };
-                }
+            let PerformanceMode::Sequence {
+                stage,
+                held_selector,
+            } = performance;
+            if hold
+                && let Some(previous) = held_selector.replace(instrument)
+                && previous != instrument
+            {
+                effects.push(InteractionEffect::ReleaseHeldSelector(previous));
             }
+            *stage = SequenceStage::Perform { instrument };
             let page = instrument.page();
             *navigation = Navigation::for_page(page);
             effects.extend([
@@ -1642,40 +1725,23 @@ fn update_performance(
                 effects.push(InteractionEffect::HoldPerformanceSelector(instrument));
             }
         }
-        Intent::ReleaseHeldSelector(released) => match performance {
-            PerformanceMode::Deck { held_selectors, .. } => {
-                if held_selectors.remove(released) {
-                    effects.push(InteractionEffect::ReleaseHeldSelector(released));
-                }
+        Intent::ReleaseHeldSelector(released) => {
+            let PerformanceMode::Sequence { held_selector, .. } = performance;
+            if *held_selector == Some(released) {
+                held_selector.take();
+                effects.push(InteractionEffect::ReleaseHeldSelector(released));
             }
-            PerformanceMode::Sequence { held_selector, .. } => {
-                if *held_selector == Some(released) {
-                    held_selector.take();
-                    effects.push(InteractionEffect::ReleaseHeldSelector(released));
-                }
-            }
-        },
+        }
         Intent::ApplyPerformanceAction {
             action,
             release_available,
         } => {
             let edit = match *performance {
-                PerformanceMode::Deck {
-                    selected: Some(instrument),
-                    held_selectors,
-                } => Some((
-                    if held_selectors.is_empty() {
-                        PerformanceTargets::single(instrument)
-                    } else {
-                        held_selectors
-                    },
-                    instrument,
-                )),
                 PerformanceMode::Sequence {
                     stage: SequenceStage::Perform { instrument },
                     ..
                 } => Some((PerformanceTargets::single(instrument), instrument)),
-                _ => None,
+                PerformanceMode::Sequence { .. } => None,
             };
             if let Some((targets, focus)) = edit {
                 effects.push(InteractionEffect::PerformanceEdit {
@@ -1683,16 +1749,15 @@ fn update_performance(
                     focus,
                     action,
                 });
-                if let PerformanceMode::Sequence { stage, .. } = performance {
-                    *stage = if release_available {
-                        SequenceStage::AwaitActionRelease {
-                            instrument: focus,
-                            action,
-                        }
-                    } else {
-                        SequenceStage::CompletedFallback { instrument: focus }
-                    };
-                }
+                let PerformanceMode::Sequence { stage, .. } = performance;
+                *stage = if release_available {
+                    SequenceStage::AwaitActionRelease {
+                        instrument: focus,
+                        action,
+                    }
+                } else {
+                    SequenceStage::CompletedFallback { instrument: focus }
+                };
             }
         }
         Intent::FinishPerformanceSequence(released) => {
@@ -1703,9 +1768,7 @@ fn update_performance(
                     ..
                 } if *action == released
             ) {
-                let PerformanceMode::Sequence { held_selector, .. } = performance else {
-                    unreachable!("completion is sequence-only");
-                };
+                let PerformanceMode::Sequence { held_selector, .. } = performance;
                 if let Some(selector) = held_selector.take() {
                     effects.push(InteractionEffect::ReleaseHeldSelector(selector));
                 }
@@ -1830,13 +1893,6 @@ mod tests {
                 InteractionMode::Automation(AutomationMode::Lfo {
                     depth: LfoDepth::Editor,
                     selected: 2,
-                }),
-                InteractionMode::Browsing,
-            ),
-            (
-                InteractionMode::Performance(PerformanceMode::Deck {
-                    selected: Some(PerformanceInstrument::Kick),
-                    held_selectors: PerformanceTargets::default(),
                 }),
                 InteractionMode::Browsing,
             ),
@@ -2072,7 +2128,7 @@ mod tests {
             Intent::OpenPalette,
             Intent::OpenAutomation(AutomationKind::Lfo),
             Intent::OpenAutomationField,
-            Intent::ActivatePerformance(PerformanceKind::Deck),
+            Intent::ActivatePerformance(PerformanceKind::Sequence),
             Intent::SelectPerformanceInstrument {
                 instrument: PerformanceInstrument::Pads,
                 hold: false,
@@ -2095,7 +2151,7 @@ mod tests {
         for phase in [InputPhase::Repeat, InputPhase::Release] {
             let action = SemanticAction {
                 phase,
-                intent: Intent::ActivatePerformance(PerformanceKind::Deck),
+                intent: Intent::ActivatePerformance(PerformanceKind::Sequence),
             };
             assert_eq!(
                 InteractionModel::default().update(action).model.mode,
@@ -2122,7 +2178,7 @@ mod tests {
     fn release_only_action_requires_and_ends_an_explicit_hold() {
         let model = update(
             InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Deck),
+            Intent::ActivatePerformance(PerformanceKind::Sequence),
         )
         .model;
         let pressed_release =
@@ -2210,15 +2266,14 @@ mod tests {
 
     #[test]
     fn duplicate_performance_activation_is_idempotent() {
-        for kind in [PerformanceKind::Deck, PerformanceKind::Sequence] {
-            let first = update(
-                InteractionModel::default(),
-                Intent::ActivatePerformance(kind),
-            );
-            let second = update(first.model.clone(), Intent::ActivatePerformance(kind));
-            assert_eq!(second.model, first.model);
-            assert!(second.effects.is_empty());
-        }
+        let kind = PerformanceKind::Sequence;
+        let first = update(
+            InteractionModel::default(),
+            Intent::ActivatePerformance(kind),
+        );
+        let second = update(first.model.clone(), Intent::ActivatePerformance(kind));
+        assert_eq!(second.model, first.model);
+        assert!(second.effects.is_empty());
     }
 
     #[test]
@@ -2230,7 +2285,7 @@ mod tests {
             ),
             (
                 InteractionMode::Numeric(NumericEntry::default()),
-                Intent::ActivatePerformance(PerformanceKind::Deck),
+                Intent::ActivatePerformance(PerformanceKind::Sequence),
             ),
             (
                 InteractionMode::Palette(PaletteMode::default()),
@@ -2246,13 +2301,6 @@ mod tests {
                     held_selector: None,
                 }),
                 Intent::OpenAutomation(AutomationKind::Lfo),
-            ),
-            (
-                InteractionMode::Performance(PerformanceMode::Deck {
-                    selected: None,
-                    held_selectors: PerformanceTargets::default(),
-                }),
-                Intent::ActivatePerformance(PerformanceKind::Sequence),
             ),
         ];
 
@@ -2294,6 +2342,7 @@ mod tests {
                 selected: 0,
             },
             mode: InteractionMode::Palette(palette),
+            ..InteractionModel::default()
         }
     }
 
@@ -2445,50 +2494,10 @@ mod tests {
     }
 
     #[test]
-    fn deck_accumulates_held_selectors_without_releasing_the_previous_one() {
-        let deck = update(
-            InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Deck),
-        )
-        .model;
-        let pads = update(
-            deck,
-            Intent::SelectPerformanceInstrument {
-                instrument: PerformanceInstrument::Pads,
-                hold: true,
-            },
-        )
-        .model;
-        let bass = update(
-            pads,
-            Intent::SelectPerformanceInstrument {
-                instrument: PerformanceInstrument::Bass,
-                hold: true,
-            },
-        );
-        assert_eq!(
-            bass.effects,
-            vec![
-                InteractionEffect::SelectPage(Page::Bass),
-                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Bass),
-                InteractionEffect::HoldPerformanceSelector(PerformanceInstrument::Bass),
-            ]
-        );
-        assert!(matches!(
-            bass.model.mode,
-            InteractionMode::Performance(PerformanceMode::Deck {
-                held_selectors,
-                ..
-            }) if held_selectors.contains(PerformanceInstrument::Pads)
-                && held_selectors.contains(PerformanceInstrument::Bass)
-        ));
-    }
-
-    #[test]
     fn performance_instruments_are_a_closed_four_choice_grammar() {
-        let deck = update(
+        let sequence = update(
             InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Deck),
+            Intent::ActivatePerformance(PerformanceKind::Sequence),
         )
         .model;
         for instrument in [
@@ -2498,7 +2507,7 @@ mod tests {
             PerformanceInstrument::Perc,
         ] {
             let transition = update(
-                deck.clone(),
+                sequence.clone(),
                 Intent::SelectPerformanceInstrument {
                     instrument,
                     hold: false,

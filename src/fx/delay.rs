@@ -137,6 +137,30 @@ impl StereoDelay {
             input.1 + color(delayed_right) * params.amount.clamp(0.0, 1.0),
         )
     }
+
+    /// Clear at most `samples` stored samples without allocating. Callers can
+    /// spread retirement over multiple audio frames instead of zeroing a
+    /// complete maximum-length delay line in one callback.
+    pub(crate) fn clear_chunk(&mut self, cursor: &mut usize, samples: usize) -> bool {
+        let total = self.left.len() + self.right.len();
+        let end = cursor.saturating_add(samples).min(total);
+        let left_start = (*cursor).min(self.left.len());
+        let left_end = end.min(self.left.len());
+        self.left[left_start..left_end].fill(0.0);
+        if end > self.left.len() {
+            let right_start = cursor.saturating_sub(self.left.len());
+            let right_end = end - self.left.len();
+            self.right[right_start..right_end].fill(0.0);
+        }
+        *cursor = end;
+        if end < total {
+            return false;
+        }
+        self.write = 0;
+        self.left_tap = Tap::default();
+        self.right_tap = Tap::default();
+        true
+    }
 }
 
 /// Grouped to keep `process` under clippy's argument-count lint.
@@ -192,6 +216,20 @@ mod tests {
             }
         }
         assert_ne!(clean_wet, vintage_wet);
+    }
+
+    #[test]
+    fn incremental_clear_drains_storage_without_reallocation() {
+        let mut delay = StereoDelay::new(1_024);
+        let capacities = (delay.left.capacity(), delay.right.capacity());
+        delay.process((1.0, -1.0), params(1, 2, 0.8, 0.0));
+        let mut cursor = 0;
+        while !delay.clear_chunk(&mut cursor, 31) {}
+
+        let output = delay.process((0.0, 0.0), params(1, 2, 0.8, 0.0));
+
+        assert_eq!(output, (0.0, 0.0));
+        assert_eq!((delay.left.capacity(), delay.right.capacity()), capacities);
     }
 
     #[test]

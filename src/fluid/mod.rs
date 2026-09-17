@@ -42,6 +42,7 @@ mod coordinator;
 mod edit;
 mod effect;
 mod engine;
+mod gesture;
 mod interaction;
 mod module;
 mod palette;
@@ -61,6 +62,9 @@ mod widget;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod gesture_audio_tests;
+
 pub(crate) use auto::{
     AutoControls, DEFAULT_AUTO_BARS, MorphPosition, MorphState, MorphWriter, decode_auto_states,
     no_morph,
@@ -71,6 +75,7 @@ use coordinator::*;
 use edit::*;
 use effect::*;
 use engine::*;
+use gesture::*;
 use module::*;
 use palette::*;
 use registry::*;

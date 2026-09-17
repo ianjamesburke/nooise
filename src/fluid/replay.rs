@@ -392,6 +392,7 @@ impl EventSource for ScriptedSource {
 struct FrameRecord {
     completed_at: Duration,
     owner: String,
+    help: String,
     width: u16,
     height: u16,
     symbols: String,
@@ -640,6 +641,12 @@ impl ReplayHarness {
                     break;
                 }
             };
+            // Production advances this clock from the audio callback. Replay
+            // has no callback, so publish the deterministic fixture clock at
+            // the same seam before effects sample gesture envelopes.
+            self.executor
+                .session()
+                .publish_audio_seconds(self.clock.now().as_secs_f64());
             let shutdown_seen = turn.shutdown_seen;
             let (explicit_ticks, idle_boundaries) = source.take_boundaries();
             self.idle_boundaries += idle_boundaries;
@@ -815,6 +822,8 @@ impl ReplayHarness {
                 flipped: &self.flipped,
                 cursor_visible: true,
                 notices: ViewNotices::default(),
+                gesture_now_seconds: self.clock.now().as_secs_f64(),
+                gesture_holds_available: self.capabilities.supports_holds(),
             },
         })
     }
@@ -853,6 +862,7 @@ impl ReplayHarness {
         let session = self.executor.session().load();
         let view = self.project(&session);
         let owner = view.owner.label().to_string();
+        let help = view.help.text().to_string();
         let mut terminal = match Terminal::new(TestBackend::new(self.width, self.height)) {
             Ok(terminal) => terminal,
             Err(error) => {
@@ -883,6 +893,7 @@ impl ReplayHarness {
         self.frames.push(FrameRecord {
             completed_at: now,
             owner,
+            help,
             width: self.width,
             height: self.height,
             symbols,
@@ -1336,10 +1347,7 @@ fn explicit_tick_processes_and_idle_delimits_scheduler_turns() {
             .chain(&result.idle_turn_ids)
             .all(|turn| result.scheduler_turn_ids.contains(turn))
     );
-    assert!(matches!(
-        result.model.mode,
-        InteractionMode::Performance(PerformanceMode::Deck { .. })
-    ));
+    assert_eq!(result.model.mode, InteractionMode::Browsing);
     assert!(result.deferred_inputs.is_empty());
 }
 
@@ -1422,7 +1430,7 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
                 key(0, FixtureKey::Character('p'), InputPhase::Press),
                 key(0, FixtureKey::Character('p'), InputPhase::Press),
             ],
-            "DECK",
+            "BROWSE",
         ),
         (
             "double Space",
@@ -1490,6 +1498,103 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
             );
         }
     }
+}
+
+#[test]
+fn gesture_press_repeat_navigation_and_modified_release_follow_the_production_path() {
+    let result = replay(
+        &[
+            key(0, FixtureKey::Character('z'), InputPhase::Press),
+            key(200, FixtureKey::Character('z'), InputPhase::Repeat),
+            key(200, FixtureKey::Tab, InputPhase::Press),
+            modified_key(200, FixtureKey::Character('z'), InputPhase::Release, 1 << 1),
+        ],
+        TerminalCapabilities::full(),
+    );
+
+    assert!(matches!(
+        result.model.navigation,
+        Navigation::Standard {
+            page: super::interaction::StandardPage::Perc,
+            ..
+        }
+    ));
+    assert_eq!(result.effect_count("GesturePress"), 1);
+    assert_eq!(result.effect_count("GestureRelease(Bloom)"), 1);
+    assert!(
+        result
+            .effects
+            .iter()
+            .any(|effect| { effect.starts_with("GesturePress { kind: Bloom, tab: Chords }") })
+    );
+    assert_eq!(
+        result
+            .state_history
+            .iter()
+            .filter(|record| matches!(record.action.intent, Intent::StartGesture(_)))
+            .count(),
+        1,
+        "Repeat must not restart the envelope"
+    );
+}
+
+#[test]
+fn gesture_mode_transition_and_focus_loss_release_without_rearming_quarantined_keys() {
+    let result = replay(
+        &[
+            key(0, FixtureKey::Character('z'), InputPhase::Press),
+            key(100, FixtureKey::Character('/'), InputPhase::Press),
+            key(0, FixtureKey::Escape, InputPhase::Press),
+            // The editor closed while the physical key is still down. A
+            // repeated Press must remain quarantined until its real key-up.
+            key(0, FixtureKey::Character('z'), InputPhase::Press),
+            key(100, FixtureKey::Character('z'), InputPhase::Release),
+            key(0, FixtureKey::Character('z'), InputPhase::Press),
+            TraceEvent::Focus {
+                after_ms: 100,
+                gained: false,
+            },
+            key(0, FixtureKey::Character('z'), InputPhase::Repeat),
+            key(0, FixtureKey::Character('z'), InputPhase::Release),
+        ],
+        TerminalCapabilities::full(),
+    );
+
+    assert_eq!(result.final_owner(), Some("BROWSE"));
+    assert_eq!(result.effect_count("GesturePress"), 2);
+    assert_eq!(result.effect_count("GestureReleaseAll"), 2);
+    assert_eq!(result.effect_count("GestureRelease("), 0);
+    let starts = result
+        .state_history
+        .iter()
+        .filter(|record| matches!(record.action.intent, Intent::StartGesture(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(starts.len(), 3);
+    assert_eq!(
+        starts
+            .iter()
+            .filter(|record| record.effects.is_empty())
+            .count(),
+        1,
+        "the quarantined Press maps normally but cannot restart its gesture"
+    );
+}
+
+#[test]
+fn unsupported_gesture_press_is_inert_and_the_footer_explains_why() {
+    let result = replay(
+        &[key(0, FixtureKey::Character('z'), InputPhase::Press)],
+        TerminalCapabilities::default(),
+    );
+
+    assert!(result.effects.is_empty());
+    assert!(result.state_history.is_empty());
+    assert!(
+        result
+            .frames
+            .iter()
+            .any(|frame| { frame.help == "BROWSE · hold gestures require key-up support" })
+    );
 }
 
 #[test]
@@ -1921,37 +2026,27 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
             "{name}"
         );
     }
-    for (name, code, kind) in [
-        (
-            "deck entry",
-            FixtureKey::Character('p'),
-            PerformanceKind::Deck,
-        ),
-        (
-            "sequence entry",
-            FixtureKey::Character(' '),
-            PerformanceKind::Sequence,
-        ),
-    ] {
-        let result = replay(&[plain(code)], TerminalCapabilities::full());
-        assert!(
-            matches!(result.model.mode, InteractionMode::Performance(_)),
-            "{name}"
-        );
-        assert_eq!(
-            result
-                .state_history
-                .last()
-                .map(|record| record.action.intent),
-            Some(Intent::ActivatePerformance(kind)),
-            "{name}"
-        );
-        assert_eq!(result.session_generation, 0, "{name}");
-        assert_eq!(result.automation_kind, None, "{name}");
-        assert_eq!(result.effect_notice, None, "{name}");
-        assert!(result.deferred_inputs.is_empty(), "{name}");
-        assert!(result.effects.is_empty(), "{name}");
-    }
+    let name = "sequence entry";
+    let code = FixtureKey::Character(' ');
+    let kind = PerformanceKind::Sequence;
+    let result = replay(&[plain(code)], TerminalCapabilities::full());
+    assert!(
+        matches!(result.model.mode, InteractionMode::Performance(_)),
+        "{name}"
+    );
+    assert_eq!(
+        result
+            .state_history
+            .last()
+            .map(|record| record.action.intent),
+        Some(Intent::ActivatePerformance(kind)),
+        "{name}"
+    );
+    assert_eq!(result.session_generation, 0, "{name}");
+    assert_eq!(result.automation_kind, None, "{name}");
+    assert_eq!(result.effect_notice, None, "{name}");
+    assert!(result.deferred_inputs.is_empty(), "{name}");
+    assert!(result.effects.is_empty(), "{name}");
 
     let staged = InteractionModel {
         mode: InteractionMode::Palette(PaletteMode {
@@ -2125,7 +2220,7 @@ fn space_toggles_the_lead_lane_and_c_keeps_the_phrase() {
     assert!(kept.deferred_inputs.is_empty());
 }
 
-/// Ctrl+Q and Ctrl+C quit from inside play mode and the performance deck,
+/// Ctrl+Q and Ctrl+C quit from inside play mode and Sequence,
 /// not only from browsing: no keyboard owner traps the user.
 #[test]
 fn control_quit_reaches_the_lead_and_performance_owners() {
@@ -2137,11 +2232,11 @@ fn control_quit_reaches_the_lead_and_performance_owners() {
     let lead = replay(&lead, TerminalCapabilities::full());
     assert_eq!(lead.final_owner(), Some("LEAD"));
     assert_eq!(lead.effect_count("Quit"), 1);
-    let deck = replay(
-        &[plain(FixtureKey::Character('p')), quit],
+    let sequence = replay(
+        &[plain(FixtureKey::Character(' ')), quit],
         TerminalCapabilities::full(),
     );
-    assert_eq!(deck.effect_count("Quit"), 1);
+    assert_eq!(sequence.effect_count("Quit"), 1);
 }
 
 /// Enter on the Lead's Steps row opens the lane instead of play mode; the
@@ -2574,52 +2669,6 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
 
 #[test]
 fn performance_grammars_cover_actions_bursts_delayed_releases_escape_and_rearm() {
-    let deck = replay(
-        &[
-            key(0, FixtureKey::Character('p'), InputPhase::Press),
-            key(0, FixtureKey::Character('a'), InputPhase::Press),
-            key(0, FixtureKey::Character('s'), InputPhase::Press),
-            key(0, FixtureKey::Character('s'), InputPhase::Repeat),
-            TraceEvent::Resize {
-                after_ms: 0,
-                width: 46,
-                height: 10,
-            },
-            key(0, FixtureKey::Character('a'), InputPhase::Release),
-            key(0, FixtureKey::Character('s'), InputPhase::Release),
-            key(0, FixtureKey::Character('k'), InputPhase::Press),
-            key(0, FixtureKey::Character('k'), InputPhase::Repeat),
-            key(0, FixtureKey::Character('k'), InputPhase::Release),
-            key(0, FixtureKey::Character('z'), InputPhase::Press),
-            key(0, FixtureKey::Escape, InputPhase::Press),
-        ],
-        TerminalCapabilities::full(),
-    );
-    assert_eq!(deck.model.mode, InteractionMode::Browsing);
-    assert_eq!(deck.session_generation, 2);
-    assert!(
-        deck.frames
-            .iter()
-            .any(|frame| frame.width == 46 && frame.height == 10),
-        "held selector burst still renders the resized minimum frame"
-    );
-    assert_eq!(
-        deck.effect_count("PerformanceEdit"),
-        2,
-        "Deck applies Press and Repeat, never Release"
-    );
-    assert_eq!(
-        deck.effect_count("ReleaseHeldSelector"),
-        2,
-        "selector replacement releases Pads; delayed Pads release cannot clear Bass"
-    );
-    assert!(
-        deck.state_history
-            .iter()
-            .all(|record| !matches!(record.action.intent, Intent::TypeCharacter('z'))),
-        "unsupported performance actions stay inert"
-    );
-
     let sequence = replay(
         &[
             key(0, FixtureKey::Character(' '), InputPhase::Press),
@@ -2718,58 +2767,13 @@ fn performance_action_repeat_phase_is_mode_specific() {
             .all(|record| !matches!(record.action.intent, Intent::ApplyPerformanceAction { .. })),
         "a raw Sequence Repeat before Press stays inert"
     );
-
-    let deck = replay(
-        &[
-            key(0, FixtureKey::Character('p'), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Release),
-            key(0, FixtureKey::Character('k'), InputPhase::Repeat),
-        ],
-        TerminalCapabilities::full(),
-    );
-    assert_eq!(deck.session_generation, 1);
-    assert_eq!(
-        deck.effect_count("PerformanceEdit"),
-        1,
-        "Deck intentionally applies raw Repeat"
-    );
-    assert!(matches!(
-        deck.model.mode,
-        InteractionMode::Performance(PerformanceMode::Deck {
-            selected: Some(PerformanceInstrument::Kick),
-            held_selectors,
-        }) if held_selectors.is_empty()
-    ));
-}
-
-#[test]
-fn deck_chorded_selectors_apply_one_action_to_every_held_instrument() {
-    let result = replay(
-        &[
-            key(0, FixtureKey::Character('p'), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Press),
-            key(0, FixtureKey::Character('f'), InputPhase::Press),
-            key(0, FixtureKey::Character('u'), InputPhase::Press),
-        ],
-        TerminalCapabilities::full(),
-    );
-
-    assert_eq!(
-        (
-            result.control("kick.interval_beats"),
-            result.control("perc.interval_beats")
-        ),
-        (Some(1.25), Some(0.5))
-    );
-    assert_eq!(result.session_generation, 1);
 }
 
 #[test]
 fn raw_performance_edit_acknowledges_real_cursor_target_exits_auto_and_updates_mru() {
     let result = replay_with(
         &[
-            key(0, FixtureKey::Character('p'), InputPhase::Press),
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
             key(0, FixtureKey::Character('s'), InputPhase::Press),
             key(0, FixtureKey::Character('s'), InputPhase::Release),
             key(0, FixtureKey::Character('k'), InputPhase::Press),
@@ -2806,14 +2810,6 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
         TerminalCapabilities::full(),
     );
     assert_eq!(palette.final_owner(), Some("PALETTE"));
-    let deck = replay(
-        &repeated(FixtureKey::Character('p')),
-        TerminalCapabilities::full(),
-    );
-    assert!(matches!(
-        deck.model.mode,
-        InteractionMode::Performance(PerformanceMode::Deck { .. })
-    ));
     let sequence = replay(
         &repeated(FixtureKey::Character(' ')),
         TerminalCapabilities::full(),
@@ -2857,9 +2853,9 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
 
     let performance = replay_from_model(
         InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Deck {
-                selected: None,
-                held_selectors: Default::default(),
+            mode: InteractionMode::Performance(PerformanceMode::Sequence {
+                stage: SequenceStage::ChooseInstrument,
+                held_selector: None,
             }),
             ..InteractionModel::default()
         },
@@ -2875,6 +2871,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
                 drill: ChordDrill::Progression { return_to: 0 },
             },
             mode: InteractionMode::Browsing,
+            ..InteractionModel::default()
         },
         &repeated(FixtureKey::Enter),
         TerminalCapabilities::full(),
@@ -2904,7 +2901,7 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         Intent::OpenPalette,
         Intent::OpenAutomation(AutomationKind::Lfo),
         Intent::OpenAutomationField,
-        Intent::ActivatePerformance(PerformanceKind::Deck),
+        Intent::ActivatePerformance(PerformanceKind::Sequence),
         Intent::SelectPerformanceInstrument {
             instrument: PerformanceInstrument::Pads,
             hold: false,
@@ -2985,13 +2982,6 @@ fn escape_converges_from_every_owner_and_nested_depth() {
             ..InteractionModel::default()
         },
         InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Deck {
-                selected: Some(PerformanceInstrument::Bass),
-                held_selectors: Default::default(),
-            }),
-            ..InteractionModel::default()
-        },
-        InteractionModel {
             mode: InteractionMode::Performance(PerformanceMode::Sequence {
                 stage: SequenceStage::ChooseInstrument,
                 held_selector: None,
@@ -3035,6 +3025,7 @@ fn escape_converges_from_every_owner_and_nested_depth() {
                 },
             },
             mode: InteractionMode::Browsing,
+            ..InteractionModel::default()
         },
     ];
     for model in models {

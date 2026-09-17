@@ -80,6 +80,7 @@ pub(crate) fn production_frame(
     context: &ProductionCoordinatorContext<'_>,
 ) -> ProductionFrame {
     let session = context.effects.session().load();
+    let gesture_now_seconds = context.effects.session().audio_seconds();
     let view = UiViewModel::project(ViewProjection {
         interaction: model,
         session: &session,
@@ -92,6 +93,8 @@ pub(crate) fn production_frame(
             flipped: context.flipped,
             cursor_visible: true,
             notices: ViewNotices::default(),
+            gesture_now_seconds,
+            gesture_holds_available: context.capabilities.supports_holds(),
         },
     });
     let item_count = view.items.len();
@@ -129,6 +132,12 @@ pub(crate) fn coordinate_production_event(
             quit: false,
         };
     };
+    if action.intent == interaction::Intent::Cancel
+        && matches!(model.mode, interaction::InteractionMode::Browsing)
+        && frame.session.gestures.has_held()
+    {
+        action.intent = interaction::Intent::ReleaseAllGestures;
+    }
     if action.intent == interaction::Intent::TouchSelected
         && frame.selected_control == Some("pad.progression")
         && is_custom_progression(progression_index(frame.session.controls.pad.progression))
@@ -218,7 +227,18 @@ pub(crate) fn coordinate_production_action(
         .update_bounded(action, automation_row_count, frame.item_count);
     *model = transition.model;
     model.seed_palette_recent(context.effects.recent().ids());
-    let emitted = transition.effects;
+    let entered_modal_owner = matches!(before.mode, interaction::InteractionMode::Browsing)
+        && !matches!(model.mode, interaction::InteractionMode::Browsing);
+    let mut emitted = transition.effects;
+    // Restored holds have no physical input latch in the interaction model,
+    // but entering a modal owner must still return them before that owner
+    // takes over the keyboard.
+    if entered_modal_owner
+        && frame_session.gestures.has_held()
+        && !emitted.contains(&interaction::InteractionEffect::GestureReleaseAll)
+    {
+        emitted.insert(0, interaction::InteractionEffect::GestureReleaseAll);
+    }
     let mut execution = ProductionInteractionContext {
         selected_control,
         visible_control_ids: &frame.visible_control_ids,
@@ -345,6 +365,22 @@ pub(crate) fn coordinate_production_turn(
     let mut quit = false;
     for event in events {
         if matches!(event, runtime::TransportEvent::Shutdown) {
+            let frame = production_frame(model, context);
+            if let Some(record) = coordinate_production_action(
+                model,
+                interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent: interaction::Intent::AbandonGestures,
+                },
+                &frame,
+                context,
+            ) {
+                steps.push(ProductionStep {
+                    mapping: runtime::InputMapping::Action(record.action),
+                    actions: vec![record],
+                    quit: false,
+                });
+            }
             quit = true;
             break;
         }
@@ -423,6 +459,7 @@ pub(crate) fn production_ui_loop(
 
         if (render_due || scheduler.render_due(now)) && !quit {
             let frame_session = effects.session().load();
+            let gesture_now_seconds = effects.session().audio_seconds();
             let beat = telemetry.beat();
             let pending_message = effects.pending().map(|(_, edits)| {
                 let plural = if edits.len() == 1 { "" } else { "s" };
@@ -462,6 +499,8 @@ pub(crate) fn production_ui_loop(
                         auto: auto_message,
                         update: updates.message(),
                     },
+                    gesture_now_seconds,
+                    gesture_holds_available: terminal.capabilities().supports_holds(),
                 },
             });
             let item_count = view.items.len();

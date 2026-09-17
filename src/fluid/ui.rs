@@ -580,29 +580,12 @@ fn lead_keyboard_line(lead: LeadSurface) -> Line<'static> {
 
 fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
     match surface {
-        PerformanceSurface::Deck {
-            selected,
-            held_selectors,
-            instruments,
-        } => {
-            let mut lines = vec![Line::from(format!(
-                "DECK · selected {} · held {}",
-                selector_text(*selected),
-                performance_targets_text(*held_selectors)
-            ))];
-            if instruments.is_empty() {
-                lines.push(Line::from("hold a/s/d/f, then tap h/l j/k u/i"));
-            } else {
-                lines.extend(instruments.iter().map(performance_instrument_line));
-            }
-            lines
-        }
-        PerformanceSurface::SequenceChoose { held_selector } => vec![
+        PerformanceSurface::Choose { held_selector } => vec![
             Line::from("SEQUENCE · CHOOSE INSTRUMENT"),
             Line::from("instrument · waiting"),
             Line::from(format!("held · {}", selector_text(*held_selector))),
         ],
-        PerformanceSurface::SequencePerform {
+        PerformanceSurface::Perform {
             instrument,
             held_selector,
             values,
@@ -621,7 +604,7 @@ fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
             }
             lines
         }
-        PerformanceSurface::SequenceComplete {
+        PerformanceSurface::Complete {
             instrument,
             release_pending,
             values,
@@ -653,7 +636,7 @@ fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'s
     } else {
         " "
     };
-    // Deck rows carry the browse colour language plus amber for an
+    // Sequence rows carry the browse colour language plus amber for an
     // instrument the player is physically holding. Without a style they
     // rendered in the terminal default and read as a different application.
     let style = if values.held {
@@ -669,9 +652,9 @@ fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'s
         ),
         style,
     )];
-    // Three compact dials per instrument. The deck is deliberately denser
+    // Three compact dials per instrument. Sequence is deliberately denser
     // than a browse row, but each bar is the same primitive, so modulation
-    // markers land here the moment the deck learns about routes.
+    // markers can use the same rendering path when routes are added here.
     for (tag, item) in [
         ("L", &values.level),
         ("T", &values.length),
@@ -825,7 +808,7 @@ impl FieldPalette {
     }
 }
 
-/// Browse rows and the deck share one colour language: idle grey, focused
+/// Browse rows and Sequence share one colour language: idle grey, focused
 /// cyan.
 const BROWSE_PALETTE: FieldPalette = FieldPalette {
     active: Color::Rgb(120, 230, 255),
@@ -833,7 +816,7 @@ const BROWSE_PALETTE: FieldPalette = FieldPalette {
 };
 
 /// Amber for something sounding or physically held right now: the playing
-/// chord badge and a held deck instrument.
+/// chord badge and a held Sequence instrument.
 const LIVE_AMBER: Color = Color::Rgb(255, 200, 90);
 /// Help/notice text the user must act on, and staged palette edits.
 const EMPHASIS_YELLOW: Color = Color::Rgb(255, 220, 120);

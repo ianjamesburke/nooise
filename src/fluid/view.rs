@@ -7,7 +7,7 @@ use super::*;
 use crate::fluid::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, LEAD_NUDGES,
     LeadDrill, Navigation, PerformanceAction, PerformanceInstrument, PerformanceMode,
-    PerformanceTargets, SequenceStage,
+    SequenceStage,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -24,7 +24,6 @@ pub(crate) enum KeyboardOwner {
     Palette,
     Lfo,
     Envelope,
-    PerformanceDeck,
     PerformanceSequence,
     Lead,
 }
@@ -37,7 +36,6 @@ impl KeyboardOwner {
             Self::Palette => "PALETTE",
             Self::Lfo => AutomationKind::Lfo.label(),
             Self::Envelope => AutomationKind::Envelope.label(),
-            Self::PerformanceDeck => "DECK",
             Self::PerformanceSequence => "SEQUENCE",
             Self::Lead => "LEAD",
         }
@@ -103,6 +101,8 @@ pub(crate) struct ViewPresentation<'a> {
     pub(crate) flipped: &'a FlippedUnits,
     pub(crate) cursor_visible: bool,
     pub(crate) notices: ViewNotices,
+    pub(crate) gesture_now_seconds: f64,
+    pub(crate) gesture_holds_available: bool,
 }
 
 /// Everything a projection consumes. The session is *one* generation: fields
@@ -129,6 +129,22 @@ pub(crate) struct UiViewModel<'a> {
     pub(crate) mute: &'a MuteState,
     pub(crate) cursor_visible: bool,
     pub(crate) help: HelpSurface,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GestureDirection {
+    Rising,
+    Held,
+    Returning,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GestureActivity {
+    pub(crate) tab: Tab,
+    pub(crate) kind: GestureKind,
+    pub(crate) amount_pct: u8,
+    pub(crate) direction: GestureDirection,
+    pub(crate) restored: bool,
 }
 
 /// The active mode's own render state, and only that mode's.
@@ -226,7 +242,7 @@ impl AutomationSurface<'_> {
     }
 }
 
-/// One instrument's live row on the performance deck. Level, length, and
+/// One instrument's live row in the performance sequence. Level, length, and
 /// density come from the registry, so they read exactly what the control rows
 /// would.
 pub(crate) struct PerformanceInstrumentSurface {
@@ -242,20 +258,15 @@ pub(crate) struct PerformanceInstrumentSurface {
 /// are held, and how the current gesture completes under full versus reduced
 /// terminal capability.
 pub(crate) enum PerformanceSurface {
-    Deck {
-        selected: Option<usize>,
-        held_selectors: PerformanceTargets,
-        instruments: Vec<PerformanceInstrumentSurface>,
-    },
-    SequenceChoose {
+    Choose {
         held_selector: Option<usize>,
     },
-    SequencePerform {
+    Perform {
         instrument: Option<usize>,
         held_selector: Option<usize>,
         values: Option<PerformanceInstrumentSurface>,
     },
-    SequenceComplete {
+    Complete {
         instrument: Option<usize>,
         release_pending: bool,
         values: Option<PerformanceInstrumentSurface>,
@@ -288,7 +299,15 @@ impl<'a> UiViewModel<'a> {
             &session.controls,
             &session.automation,
         );
-        let help = help_surface(owner, &mode, navigation, presentation.notices);
+        let gestures = gesture_activities(session, presentation.gesture_now_seconds);
+        let help = help_surface(
+            owner,
+            &mode,
+            navigation,
+            presentation.notices,
+            &gestures,
+            presentation.gesture_holds_available,
+        );
 
         Self {
             owner,
@@ -304,6 +323,34 @@ impl<'a> UiViewModel<'a> {
             help,
         }
     }
+}
+
+fn gesture_activities(session: &LiveSessionSnapshot, now_seconds: f64) -> Vec<GestureActivity> {
+    let mut activities = Vec::new();
+    for tab in Tab::all() {
+        for kind in GestureKind::ALL {
+            let envelope = session.gestures.envelope(tab, kind);
+            let amount = envelope.amount_at(kind, now_seconds);
+            if !envelope.held && amount <= f32::EPSILON {
+                continue;
+            }
+            let direction = if !envelope.held {
+                GestureDirection::Returning
+            } else if amount >= 1.0 - f32::EPSILON {
+                GestureDirection::Held
+            } else {
+                GestureDirection::Rising
+            };
+            activities.push(GestureActivity {
+                tab,
+                kind,
+                amount_pct: (amount * 100.0).round() as u8,
+                direction,
+                restored: envelope.restored,
+            });
+        }
+    }
+    activities
 }
 
 fn mode_surface<'a>(
@@ -334,40 +381,17 @@ fn mode_surface<'a>(
             reach_len: lead_page_reach(&controls.lead, &controls.pad).len(),
             pattern: LeadPattern::from_value(controls.lead.pattern),
         }),
-        InteractionMode::Performance(PerformanceMode::Deck {
-            selected,
-            held_selectors,
-        }) => ModeSurface::Performance(PerformanceSurface::Deck {
-            selected: selected.map(crate::fluid::interaction::PerformanceInstrument::index),
-            held_selectors: *held_selectors,
-            instruments: if held_selectors.is_empty() {
-                selected
-                    .iter()
-                    .copied()
-                    .map(|instrument| {
-                        performance_instrument_surface(controls, instrument, *selected, false)
-                    })
-                    .collect()
-            } else {
-                held_selectors
-                    .iter()
-                    .map(|instrument| {
-                        performance_instrument_surface(controls, instrument, *selected, true)
-                    })
-                    .collect()
-            },
-        }),
         InteractionMode::Performance(PerformanceMode::Sequence {
             stage: SequenceStage::ChooseInstrument,
             held_selector,
-        }) => ModeSurface::Performance(PerformanceSurface::SequenceChoose {
+        }) => ModeSurface::Performance(PerformanceSurface::Choose {
             held_selector: held_selector
                 .map(crate::fluid::interaction::PerformanceInstrument::index),
         }),
         InteractionMode::Performance(PerformanceMode::Sequence {
             stage: SequenceStage::Perform { instrument },
             held_selector,
-        }) => ModeSurface::Performance(PerformanceSurface::SequencePerform {
+        }) => ModeSurface::Performance(PerformanceSurface::Perform {
             instrument: Some(instrument.index()),
             held_selector: held_selector
                 .map(crate::fluid::interaction::PerformanceInstrument::index),
@@ -381,7 +405,7 @@ fn mode_surface<'a>(
         InteractionMode::Performance(PerformanceMode::Sequence {
             stage: SequenceStage::AwaitActionRelease { instrument, .. },
             ..
-        }) => ModeSurface::Performance(PerformanceSurface::SequenceComplete {
+        }) => ModeSurface::Performance(PerformanceSurface::Complete {
             instrument: Some(instrument.index()),
             release_pending: true,
             values: Some(performance_instrument_surface(
@@ -394,7 +418,7 @@ fn mode_surface<'a>(
         InteractionMode::Performance(PerformanceMode::Sequence {
             stage: SequenceStage::CompletedFallback { instrument },
             ..
-        }) => ModeSurface::Performance(PerformanceSurface::SequenceComplete {
+        }) => ModeSurface::Performance(PerformanceSurface::Complete {
             instrument: Some(instrument.index()),
             release_pending: false,
             values: Some(performance_instrument_surface(
@@ -516,9 +540,6 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
         InteractionMode::Palette(_) => KeyboardOwner::Palette,
         InteractionMode::Automation(AutomationMode::Lfo { .. }) => KeyboardOwner::Lfo,
         InteractionMode::Automation(AutomationMode::Envelope { .. }) => KeyboardOwner::Envelope,
-        InteractionMode::Performance(PerformanceMode::Deck { .. }) => {
-            KeyboardOwner::PerformanceDeck
-        }
         InteractionMode::Performance(PerformanceMode::Sequence { .. }) => {
             KeyboardOwner::PerformanceSequence
         }
@@ -531,6 +552,8 @@ fn help_surface(
     mode: &ModeSurface<'_>,
     navigation: NavigationView,
     notices: ViewNotices,
+    gestures: &[GestureActivity],
+    gesture_holds_available: bool,
 ) -> HelpSurface {
     if owner != KeyboardOwner::Browsing {
         return HelpSurface::Owner {
@@ -550,6 +573,34 @@ fn help_surface(
         .or_else(|| pending_commit.map(|text| (NoticeKind::PendingCommit, text)))
     {
         return HelpSurface::Notice { kind, text };
+    }
+
+    if !gestures.is_empty() {
+        let activities = gestures
+            .iter()
+            .map(|gesture| {
+                let direction = match gesture.direction {
+                    GestureDirection::Rising => "↑",
+                    GestureDirection::Held => "●",
+                    GestureDirection::Returning => "↓",
+                };
+                let restored = if gesture.restored { "R" } else { "" };
+                format!(
+                    "{} {} {}%{direction}{restored}",
+                    gesture.tab.name(),
+                    gesture.kind.name(),
+                    gesture.amount_pct
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ");
+        // Keep both exits ahead of the expandable activity list so they stay
+        // visible at the 46-column minimum even when gestures overlap.
+        let text = format!("Esc release · ^Q quit · {activities}");
+        return HelpSurface::Owner {
+            owner: KeyboardOwner::Browsing,
+            text,
+        };
     }
 
     let local_help = match (
@@ -584,9 +635,15 @@ fn help_surface(
         return HelpSurface::Notice { kind, text };
     }
     HelpSurface::Browsing {
-        text:
-            "BROWSE · jk select   h/l adjust   r random   Shift+R randomize set   / find   f LFO   e ENV   a auto   T units   ^Q quit"
-                .to_string(),
+        text: if gesture_holds_available {
+            GestureKind::ALL
+                .iter()
+                .map(|kind| format!("{} {}", kind.key(), kind.name().to_ascii_lowercase()))
+                .collect::<Vec<_>>()
+                .join("  ")
+        } else {
+            "BROWSE · hold gestures require key-up support".to_string()
+        },
     }
 }
 
@@ -635,26 +692,14 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             ModeSurface::Lead(lead) => lead_owner_help(*lead),
             _ => unreachable!("lead owner requires lead surface"),
         },
-        KeyboardOwner::PerformanceDeck => match mode {
-            ModeSurface::Performance(PerformanceSurface::Deck {
-                selected,
-                held_selectors,
-                ..
-            }) => format!(
-                "DECK · selected {}   held {}   a/s/d/f choose   h/l j/k u/i act   Esc",
-                selector_text(*selected),
-                performance_targets_text(*held_selectors)
-            ),
-            _ => unreachable!("deck owner requires deck mode"),
-        },
         KeyboardOwner::PerformanceSequence => match mode {
-            ModeSurface::Performance(PerformanceSurface::SequenceChoose { held_selector }) => {
+            ModeSurface::Performance(PerformanceSurface::Choose { held_selector }) => {
                 format!(
                     "SEQUENCE · a/s/d/f choose   held {}   Esc",
                     selector_text(*held_selector)
                 )
             }
-            ModeSurface::Performance(PerformanceSurface::SequencePerform {
+            ModeSurface::Performance(PerformanceSurface::Perform {
                 instrument,
                 held_selector,
                 ..
@@ -663,7 +708,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
                 selector_text(*instrument),
                 selector_text(*held_selector)
             ),
-            ModeSurface::Performance(PerformanceSurface::SequenceComplete {
+            ModeSurface::Performance(PerformanceSurface::Complete {
                 instrument,
                 release_pending,
                 ..
@@ -685,24 +730,11 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
     }
 }
 
-/// One-based selector index, or `none`; shared with the deck body in ui.rs.
+/// One-based selector index, or `none`; shared with the Sequence body in ui.rs.
 pub(crate) fn selector_text(selector: Option<usize>) -> String {
     selector
         .and_then(|index| index.checked_add(1))
         .map_or_else(|| "none".to_string(), |index| index.to_string())
-}
-
-/// Held selector keys joined as `a+s`, or `none`; shared with the deck body in ui.rs.
-pub(crate) fn performance_targets_text(targets: PerformanceTargets) -> String {
-    let held = targets
-        .iter()
-        .map(|instrument| instrument.key().to_string())
-        .collect::<Vec<_>>();
-    if held.is_empty() {
-        "none".to_string()
-    } else {
-        held.join("+")
-    }
 }
 
 fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
@@ -827,6 +859,8 @@ mod tests {
                 flipped: &flipped,
                 cursor_visible: true,
                 notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
             },
         });
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -853,6 +887,7 @@ mod tests {
         render_model(&InteractionModel {
             navigation: Navigation::default(),
             mode,
+            ..InteractionModel::default()
         })
     }
 
@@ -866,6 +901,7 @@ mod tests {
                 selected: usize::MAX,
             },
             mode: InteractionMode::Browsing,
+            ..InteractionModel::default()
         };
         let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
@@ -878,6 +914,8 @@ mod tests {
                 flipped: &flipped,
                 cursor_visible: false,
                 notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
             },
         });
 
@@ -904,6 +942,7 @@ mod tests {
                 resume: None,
                 module_scope: None,
             }),
+            ..InteractionModel::default()
         };
         let transition = model.update(SemanticAction::press(Intent::TypeCharacter('5')));
         let session = session();
@@ -918,6 +957,8 @@ mod tests {
                 flipped: &flipped,
                 cursor_visible: false,
                 notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
             },
         });
 
@@ -983,6 +1024,7 @@ mod tests {
                 buffer: "12".to_string(),
                 resume: None,
             }),
+            ..InteractionModel::default()
         };
         let fluid = RippleField::new();
         let flipped = FlippedUnits::new();
@@ -1000,6 +1042,8 @@ mod tests {
                     auto: Some("auto".to_string()),
                     update: Some("update".to_string()),
                 },
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
             },
         });
 
@@ -1033,6 +1077,7 @@ mod tests {
                     selected: 2,
                 }),
             }),
+            ..InteractionModel::default()
         };
         let frame = render_model_with_session(&model, &session);
 
@@ -1051,19 +1096,18 @@ mod tests {
     }
 
     #[test]
-    fn performance_deck_shows_live_values_for_every_held_instrument() {
-        let mut held_selectors = PerformanceTargets::single(PerformanceInstrument::Kick);
-        held_selectors.insert(PerformanceInstrument::Perc);
+    fn performance_sequence_shows_live_values_for_its_held_instrument() {
         let interaction = InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Deck {
-                selected: Some(PerformanceInstrument::Perc),
-                held_selectors,
+            mode: InteractionMode::Performance(PerformanceMode::Sequence {
+                stage: SequenceStage::Perform {
+                    instrument: PerformanceInstrument::Kick,
+                },
+                held_selector: Some(PerformanceInstrument::Kick),
             }),
             ..InteractionModel::default()
         };
         let mut session = session();
         session.controls.kick.interval_beats = 1.25;
-        session.controls.perc.interval_beats = 0.5;
 
         let rendered = render_model_with_session(&interaction, &session);
 
@@ -1071,22 +1115,19 @@ mod tests {
             rendered.contains("●␠d␠Kick") && rendered.contains("D█░░1.25b"),
             "Kick's live density is visible: {rendered:?}"
         );
-        assert!(
-            rendered.contains("●␠f␠Perc") && rendered.contains("D░░░0.50b"),
-            "Perc's live density is visible: {rendered:?}"
-        );
     }
 
-    /// Deck rows shipped with no `Style` at all, so they rendered in the
+    /// Sequence rows use the app's colour language rather than the terminal
     /// terminal default and read as a different application. Snapshots only
     /// capture symbols, so only a colour assertion catches a regression.
     #[test]
-    fn performance_deck_rows_carry_the_apps_colour_language() {
-        let held_selectors = PerformanceTargets::single(PerformanceInstrument::Kick);
+    fn performance_sequence_rows_carry_the_apps_colour_language() {
         let interaction = InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Deck {
-                selected: Some(PerformanceInstrument::Kick),
-                held_selectors,
+            mode: InteractionMode::Performance(PerformanceMode::Sequence {
+                stage: SequenceStage::Perform {
+                    instrument: PerformanceInstrument::Kick,
+                },
+                held_selector: Some(PerformanceInstrument::Kick),
             }),
             ..InteractionModel::default()
         };
@@ -1102,6 +1143,8 @@ mod tests {
                 flipped: &flipped,
                 cursor_visible: true,
                 notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
             },
         });
         let mut terminal =
@@ -1127,7 +1170,7 @@ mod tests {
             .any(|fg| fg == Color::Rgb(255, 200, 90));
         assert!(
             held,
-            "held deck row must be amber, not the terminal default"
+            "held Sequence row must be amber, not the terminal default"
         );
     }
 
@@ -1148,6 +1191,16 @@ mod tests {
     }
 
     #[test]
+    fn active_gesture_keeps_release_and_quit_visible_at_minimum_width() {
+        let mut session = session();
+        session.gestures.press(GestureKind::Bloom, Tab::Chords, 0.0);
+
+        let frame = render_model_with_session(&InteractionModel::default(), &session);
+        assert!(frame.contains("Esc␠release␠·␠^Q␠quit"));
+        assert!(frame.contains("Pads␠Bloom␠0%↑"));
+    }
+
+    #[test]
     fn lead_owner_renders_its_keyboard_at_the_minimum_frame() {
         let mut session = session();
         session.controls.lead.level = 0.5;
@@ -1158,6 +1211,7 @@ mod tests {
                 last_tone: Some(3),
                 ..LeadPlay::default()
             }),
+            ..InteractionModel::default()
         };
         let frame = render_model_with_session(&model, &session);
         assert!(frame.contains("LEAD"), "{frame}");
@@ -1182,6 +1236,7 @@ mod tests {
                 drill: LeadDrill::Pattern { return_to: 0 },
             },
             mode: InteractionMode::Browsing,
+            ..InteractionModel::default()
         };
         let lead_frame = render_model_with_session_at_size(
             &lead,
@@ -1214,6 +1269,7 @@ mod tests {
                 depth: LfoDepth::Editor,
                 selected: 9,
             }),
+            ..InteractionModel::default()
         };
         let lfo_frame = render_model_with_session_at_size(
             &lfo,

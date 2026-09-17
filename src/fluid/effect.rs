@@ -333,11 +333,13 @@ impl EffectExecutor {
             }
             LiveEffect::CopySong => {
                 let snapshot = self.session.load();
+                let now_seconds = self.session.audio_seconds();
                 let code = encode_song_code(&SongState {
                     controls: snapshot.controls.clone(),
                     automation: snapshot.automation.clone(),
                     tonal_sequence: Some(snapshot.tonal_sequence.clone()),
                     muted: snapshot.muted,
+                    gestures: snapshot.gestures.snapshot_at(now_seconds),
                 })
                 .map_err(EffectFailure::SongEncode)?;
                 clipboard.set_text(code).map_err(EffectFailure::Clipboard)?;
@@ -554,7 +556,10 @@ impl EffectExecutor {
             | InteractionEffect::LeadRelease
             | InteractionEffect::LeadNudge { .. }
             | InteractionEffect::LeadPattern
-            | InteractionEffect::LeadCapture) => {
+            | InteractionEffect::LeadCapture
+            | InteractionEffect::GesturePress { .. }
+            | InteractionEffect::GestureRelease(_)
+            | InteractionEffect::GestureReleaseAll) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
         }
@@ -811,6 +816,36 @@ impl EffectExecutor {
                     pattern.apply_value(LeadPattern::Play.value(), &mut snapshot.controls);
                 });
                 self.message = Some((format!("kept {} steps", capture.count), Instant::now()));
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::GesturePress { kind, tab } => {
+                let now_seconds = self.session.audio_seconds();
+                let snapshot = self
+                    .session
+                    .update(|snapshot| snapshot.gestures.press(kind, tab, now_seconds));
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::GestureRelease(kind) => {
+                let now_seconds = self.session.audio_seconds();
+                let snapshot = self
+                    .session
+                    .update(|snapshot| snapshot.gestures.release(kind, now_seconds));
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::GestureReleaseAll => {
+                if !self.session.load().gestures.has_held() {
+                    return Ok(EffectAcknowledgement::NoChange);
+                }
+                let now_seconds = self.session.audio_seconds();
+                let snapshot = self
+                    .session
+                    .update(|snapshot| snapshot.gestures.release_all(now_seconds));
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })

@@ -9,8 +9,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    MediaKeyCode, ModifierKeyCode, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MediaKeyCode, ModifierKeyCode,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -20,6 +21,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use super::GestureKind;
 use super::interaction::{
     AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge,
     Navigation, PageDirection, PerformanceAction, PerformanceInstrument, PerformanceKind,
@@ -40,8 +42,8 @@ pub(crate) const TICK_INTERVAL: Duration = Duration::from_millis(33);
 ///
 /// Everything phase-dependent branches on these rather than assuming: without
 /// `key_event_types` there is no trustworthy repeat/release distinction, and
-/// hold gestures fall back to a visibly kernel-owned completion instead of
-/// silently misreading autorepeat as a hold.
+/// live gestures stay unavailable instead of silently misreading autorepeat
+/// as a hold. Sequence uses its own visible tap-completion fallback.
 pub(crate) struct TerminalCapabilities {
     pub(crate) key_event_types: bool,
     pub(crate) plain_key_releases: bool,
@@ -58,9 +60,11 @@ impl TerminalCapabilities {
 trait TerminalControl {
     fn enable_raw(&mut self) -> io::Result<()>;
     fn enter_alternate_screen(&mut self) -> io::Result<()>;
+    fn enable_focus_change(&mut self) -> io::Result<()>;
     fn keyboard_enhancement_supported(&mut self) -> io::Result<bool>;
     fn push_keyboard_enhancement(&mut self) -> io::Result<()>;
     fn pop_keyboard_enhancement(&mut self) -> io::Result<()>;
+    fn disable_focus_change(&mut self) -> io::Result<()>;
     fn leave_alternate_screen(&mut self) -> io::Result<()>;
     fn disable_raw(&mut self) -> io::Result<()>;
 }
@@ -75,6 +79,10 @@ impl TerminalControl for CrosstermControl {
 
     fn enter_alternate_screen(&mut self) -> io::Result<()> {
         execute!(io::stdout(), EnterAlternateScreen)
+    }
+
+    fn enable_focus_change(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), EnableFocusChange)
     }
 
     fn keyboard_enhancement_supported(&mut self) -> io::Result<bool> {
@@ -95,6 +103,10 @@ impl TerminalControl for CrosstermControl {
         execute!(io::stdout(), PopKeyboardEnhancementFlags)
     }
 
+    fn disable_focus_change(&mut self) -> io::Result<()> {
+        execute!(io::stdout(), DisableFocusChange)
+    }
+
     fn leave_alternate_screen(&mut self) -> io::Result<()> {
         execute!(io::stdout(), LeaveAlternateScreen)
     }
@@ -110,6 +122,7 @@ struct TerminalLifecycle<C: TerminalControl> {
     control: C,
     raw_enabled: bool,
     alternate_screen: bool,
+    focus_change_enabled: bool,
     keyboard_flags_pushed: bool,
     capabilities: TerminalCapabilities,
 }
@@ -120,6 +133,7 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
             control,
             raw_enabled: false,
             alternate_screen: false,
+            focus_change_enabled: false,
             keyboard_flags_pushed: false,
             capabilities: TerminalCapabilities::default(),
         };
@@ -130,6 +144,10 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
         // best-effort leave during error cleanup.
         lifecycle.alternate_screen = true;
         lifecycle.control.enter_alternate_screen()?;
+        // Focus reports are required to release any held gesture when the app
+        // loses focus before the terminal can deliver that key's Release.
+        lifecycle.focus_change_enabled = true;
+        lifecycle.control.enable_focus_change()?;
 
         if lifecycle
             .control
@@ -159,6 +177,13 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
             let result = self.control.pop_keyboard_enhancement();
             if result.is_ok() {
                 self.keyboard_flags_pushed = false;
+            }
+            record_first_error(&mut first_error, result);
+        }
+        if self.focus_change_enabled {
+            let result = self.control.disable_focus_change();
+            if result.is_ok() {
+                self.focus_change_enabled = false;
             }
             record_first_error(&mut first_error, result);
         }
@@ -420,6 +445,9 @@ pub(crate) fn map_input(
     event: &TransportEvent,
     capabilities: TerminalCapabilities,
 ) -> InputMapping {
+    if matches!(event, TransportEvent::FocusLost) {
+        return semantic(InputPhase::Press, Intent::AbandonGestures);
+    }
     let TransportEvent::Key {
         key,
         phase,
@@ -431,6 +459,25 @@ pub(crate) fn map_input(
     let has_control = key.modifiers.contains(Modifiers::CONTROL);
     let unmodified = key.modifiers == Modifiers::default();
     let shifted = key.modifiers == Modifiers::SHIFT;
+
+    // A key-up belongs to the gesture that began on this physical letter even
+    // if modifiers or keyboard owner changed while it was held.
+    if *phase == InputPhase::Release
+        && let PhysicalKey::Character(character) = key.code
+        && let Some(kind) = GestureKind::from_key(character.to_ascii_lowercase())
+    {
+        return semantic(*phase, Intent::ReleaseGesture(kind));
+    }
+
+    if matches!(mode, InteractionMode::Browsing)
+        && unmodified
+        && *phase == InputPhase::Press
+        && capabilities.supports_holds()
+        && let PhysicalKey::Character(character) = key.code
+        && let Some(kind) = GestureKind::from_key(character)
+    {
+        return semantic(*phase, Intent::StartGesture(kind));
+    }
 
     // Global bindings resolve before any mode claims the key. The palette
     // keeps its own control chords and numeric entry swallows every chord.
@@ -536,7 +583,6 @@ fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent
         // `r` rolls the selected control's own dial; inside an automation
         // editor the same key reseeds the open random lane instead.
         PhysicalKey::Character('r') => Intent::RandomizeSelected,
-        PhysicalKey::Character('p') => Intent::ActivatePerformance(PerformanceKind::Deck),
         PhysicalKey::Character('i') => Intent::EnterLeadPlay,
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Sequence),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
@@ -612,14 +658,8 @@ fn performance_binding(
     phase: InputPhase,
     capabilities: TerminalCapabilities,
 ) -> Option<Intent> {
-    match *code {
-        PhysicalKey::Character('p') => {
-            return Some(Intent::ActivatePerformance(PerformanceKind::Deck));
-        }
-        PhysicalKey::Character(' ') => {
-            return Some(Intent::ActivatePerformance(PerformanceKind::Sequence));
-        }
-        _ => {}
+    if let PhysicalKey::Character(' ') = *code {
+        return Some(Intent::ActivatePerformance(PerformanceKind::Sequence));
     }
     if let PhysicalKey::Character(key) = code
         && let Some(instrument) = PerformanceInstrument::from_key(*key)
@@ -629,11 +669,10 @@ fn performance_binding(
             InputPhase::Press
                 if matches!(
                     performance,
-                    PerformanceMode::Deck { .. }
-                        | PerformanceMode::Sequence {
-                            stage: SequenceStage::ChooseInstrument | SequenceStage::Perform { .. },
-                            ..
-                        }
+                    PerformanceMode::Sequence {
+                        stage: SequenceStage::ChooseInstrument | SequenceStage::Perform { .. },
+                        ..
+                    }
                 ) =>
             {
                 Some(Intent::SelectPerformanceInstrument {
@@ -653,8 +692,7 @@ fn performance_binding(
             },
             InputPhase::Release,
         ) if action == *armed => Some(Intent::FinishPerformanceSequence(action)),
-        (PerformanceMode::Deck { .. }, InputPhase::Press | InputPhase::Repeat)
-        | (
+        (
             PerformanceMode::Sequence {
                 stage: SequenceStage::Perform { .. },
                 ..
@@ -1320,9 +1358,11 @@ mod tests {
     enum ControlCall {
         EnableRaw,
         EnterAlternate,
+        EnableFocus,
         QueryCapabilities,
         PushKeyboard,
         PopKeyboard,
+        DisableFocus,
         LeaveAlternate,
         DisableRaw,
     }
@@ -1353,6 +1393,10 @@ mod tests {
             self.call(ControlCall::EnterAlternate)
         }
 
+        fn enable_focus_change(&mut self) -> io::Result<()> {
+            self.call(ControlCall::EnableFocus)
+        }
+
         fn keyboard_enhancement_supported(&mut self) -> io::Result<bool> {
             self.calls.borrow_mut().push(ControlCall::QueryCapabilities);
             self.keyboard_supported
@@ -1367,6 +1411,10 @@ mod tests {
 
         fn pop_keyboard_enhancement(&mut self) -> io::Result<()> {
             self.call(ControlCall::PopKeyboard)
+        }
+
+        fn disable_focus_change(&mut self) -> io::Result<()> {
+            self.call(ControlCall::DisableFocus)
         }
 
         fn leave_alternate_screen(&mut self) -> io::Result<()> {
@@ -1403,9 +1451,11 @@ mod tests {
             [
                 ControlCall::EnableRaw,
                 ControlCall::EnterAlternate,
+                ControlCall::EnableFocus,
                 ControlCall::QueryCapabilities,
                 ControlCall::PushKeyboard,
                 ControlCall::PopKeyboard,
+                ControlCall::DisableFocus,
                 ControlCall::LeaveAlternate,
                 ControlCall::DisableRaw,
             ]
@@ -1502,9 +1552,32 @@ mod tests {
         }));
         assert!(result.is_err());
         assert_eq!(
-            &calls.borrow()[4..],
+            &calls.borrow()[5..],
             [
                 ControlCall::PopKeyboard,
+                ControlCall::DisableFocus,
+                ControlCall::LeaveAlternate,
+                ControlCall::DisableRaw,
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_lifecycle_restores_focus_reporting_after_partial_setup() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let result = TerminalLifecycle::enter(fake_control(
+            Rc::clone(&calls),
+            Ok(true),
+            Some(ControlCall::EnableFocus),
+        ));
+        assert!(result.is_err());
+        assert_eq!(
+            *calls.borrow(),
+            [
+                ControlCall::EnableRaw,
+                ControlCall::EnterAlternate,
+                ControlCall::EnableFocus,
+                ControlCall::DisableFocus,
                 ControlCall::LeaveAlternate,
                 ControlCall::DisableRaw,
             ]
@@ -1543,7 +1616,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_mapper_preserves_performance_entry_phase_for_kernel_policy() {
+    fn retired_deck_key_is_unassigned_in_browsing() {
         let event = TransportEvent::key(
             PhysicalKey::Character('p'),
             Modifiers::default(),
@@ -1556,10 +1629,7 @@ mod tests {
                 &event,
                 TerminalCapabilities::full()
             ),
-            InputMapping::Action(SemanticAction {
-                phase: InputPhase::Repeat,
-                intent: Intent::ActivatePerformance(PerformanceKind::Deck),
-            })
+            InputMapping::Ignored
         );
     }
 
@@ -1738,20 +1808,17 @@ mod tests {
             ),
             InputMapping::Ignored,
         );
-        for (code, kind) in [
-            (PhysicalKey::Character('p'), PerformanceKind::Deck),
-            (PhysicalKey::Character(' '), PerformanceKind::Sequence),
-        ] {
-            assert_eq!(
-                map_input(
-                    &browsing,
-                    Navigation::default(),
-                    &event(code, Modifiers::default()),
-                    TerminalCapabilities::default()
-                ),
-                InputMapping::Action(SemanticAction::press(Intent::ActivatePerformance(kind)))
-            );
-        }
+        let code = PhysicalKey::Character(' ');
+        let kind = PerformanceKind::Sequence;
+        assert_eq!(
+            map_input(
+                &browsing,
+                Navigation::default(),
+                &event(code, Modifiers::default()),
+                TerminalCapabilities::default()
+            ),
+            InputMapping::Action(SemanticAction::press(Intent::ActivatePerformance(kind)))
+        );
         assert_eq!(
             map_input(
                 &browsing,

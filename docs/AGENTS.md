@@ -7,9 +7,10 @@ Durable product direction and architecture decisions.
 ## Ownership
 
 - `NORTH_STAR.md` owns product vision and feature-evaluation commandments.
-- `PERFORMANCE.md` owns the shipped Deck/Sequence grammar, phase/fallback
-  contracts, rejected experiment choices, and manual audio smoke.
+- `PERFORMANCE.md` owns normal-mode gestures and Sequence, phase/fallback
+  contracts, and manual audio smoke.
 - `adr/` owns accepted architecture decisions. See `adr/AGENTS.md`.
+- `proposals/` owns feature designs and their decision status. See `proposals/AGENTS.md`.
 - `superpowers/` contains ignored local planning artifacts; it is not shipped.
 
 ## Local Contracts
@@ -26,3 +27,4 @@ Durable product direction and architecture decisions.
 ## Child DOX Index
 
 - `adr/AGENTS.md` — accepted architecture decisions
+- `proposals/AGENTS.md` — feature designs, draft boundaries, and design verification

@@ -15,6 +15,10 @@ use crate::fx::reverb::{Freeverb, ReverbParams};
 
 use super::*;
 
+mod gesture_audio;
+
+use gesture_audio::GestureAudioBank;
+
 const STARTUP_FADE_SECONDS: f32 = 2.0;
 
 /// Stateful post-synthesis Delay instances, addressed by the stable
@@ -515,6 +519,7 @@ pub(crate) struct FluidEngine {
     pub(crate) arp: ArpEngine,
     pub(crate) lead: LeadEngine,
     module_fx: ModuleFxBank,
+    gesture_audio: GestureAudioBank,
     pub(crate) master_bus: MasterBus,
     pub(crate) session: LiveSession,
     /// `Some` only while running `nooise auto`; rewrites `controls` on a
@@ -523,6 +528,7 @@ pub(crate) struct FluidEngine {
     morph_writer: MorphWriter,
     pub(crate) telemetry: Arc<FluidTelemetry>,
     pub(crate) snapshot: FluidControls,
+    gesture_snapshot: GestureState,
     /// Allocation-free per-sample plan, rebuilt only when aggregate
     /// automation differs from the last planned state.
     plan: AutomationPlan,
@@ -574,12 +580,14 @@ impl FluidEngine {
             arp: ArpEngine::new(sample_rate),
             lead: LeadEngine::with_play_state(sample_rate, live.lead_play),
             module_fx: ModuleFxBank::new(sample_rate),
+            gesture_audio: GestureAudioBank::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
             session,
             morph,
             morph_writer: MorphWriter::default(),
             telemetry,
             snapshot,
+            gesture_snapshot: live.gestures.clone(),
             plan,
             plan_source,
         }
@@ -602,6 +610,8 @@ impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         if self.current_sample.is_multiple_of(128) {
+            self.session
+                .publish_audio_seconds(self.current_sample as f64 / self.sample_rate as f64);
             let morph_source = self.morph.load_full();
             if let Some(morph) = morph_source.as_ref()
                 && let Some((next_controls, next_automation)) =
@@ -618,6 +628,7 @@ impl StereoEngine for FluidEngine {
             }
             let session = self.session.load();
             self.snapshot = session.controls.clone();
+            self.gesture_snapshot = session.gestures.clone();
             self.gain_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);
             self.mute_gates
@@ -640,81 +651,130 @@ impl StereoEngine for FluidEngine {
         self.plan.apply(&mut effective, timing);
         resolve_module_chain(&mut effective);
         let mute_gains = self.mute_gates.next();
+        let now_seconds = self.current_sample as f64 / self.sample_rate as f64;
 
         let tune = effective.master.tune;
+        let pad = self.module_fx.process(
+            Tab::Chords,
+            &effective.modules.pad,
+            self.pad.next(&effective.pad, tune, timing),
+            timing,
+        );
         let (pad_l, pad_r) = gate_stereo(
-            self.module_fx.process(
+            self.gesture_audio.process(
                 Tab::Chords,
-                &effective.modules.pad,
-                self.pad.next(&effective.pad, tune, timing),
+                pad,
+                self.gesture_snapshot.amounts(Tab::Chords, now_seconds),
                 timing,
             ),
             mute_gains[Tab::Chords as usize],
         );
+        let perc = self.module_fx.process(
+            Tab::Perc,
+            &effective.modules.perc,
+            {
+                let perc = self.perc.next(&effective.perc, timing);
+                (perc, perc)
+            },
+            timing,
+        );
         let (perc_l, perc_r) = gate_stereo(
-            self.module_fx.process(
+            self.gesture_audio.process(
                 Tab::Perc,
-                &effective.modules.perc,
-                {
-                    let perc = self.perc.next(&effective.perc, timing);
-                    (perc, perc)
-                },
+                perc,
+                self.gesture_snapshot.amounts(Tab::Perc, now_seconds),
                 timing,
             ),
             mute_gains[Tab::Perc as usize],
         );
+        let kick = self.module_fx.process(
+            Tab::Kick,
+            &effective.modules.kick,
+            self.kick.next(&effective.kick, timing),
+            timing,
+        );
         let (kick_l, kick_r) = gate_stereo(
-            self.module_fx.process(
+            self.gesture_audio.process(
                 Tab::Kick,
-                &effective.modules.kick,
-                self.kick.next(&effective.kick, timing),
+                kick,
+                self.gesture_snapshot.amounts(Tab::Kick, now_seconds),
                 timing,
             ),
             mute_gains[Tab::Kick as usize],
         );
+        let tonal = self.module_fx.process(
+            Tab::Tonal,
+            &effective.modules.tonal,
+            self.tonal.next(&effective.tonal, tune, timing),
+            timing,
+        );
         let (ton_l, ton_r) = gate_stereo(
-            self.module_fx.process(
+            self.gesture_audio.process(
                 Tab::Tonal,
-                &effective.modules.tonal,
-                self.tonal.next(&effective.tonal, tune, timing),
+                tonal,
+                self.gesture_snapshot.amounts(Tab::Tonal, now_seconds),
                 timing,
             ),
             mute_gains[Tab::Tonal as usize],
         );
+        let clap = self.module_fx.process(
+            Tab::Clap,
+            &effective.modules.clap,
+            self.clap.next(&effective.clap, timing),
+            timing,
+        );
         let (clap_l, clap_r) = gate_stereo(
-            self.module_fx.process(
+            self.gesture_audio.process(
                 Tab::Clap,
-                &effective.modules.clap,
-                self.clap.next(&effective.clap, timing),
+                clap,
+                self.gesture_snapshot.amounts(Tab::Clap, now_seconds),
                 timing,
             ),
             mute_gains[Tab::Clap as usize],
         );
+        let bass = self.module_fx.process(
+            Tab::Bass,
+            &effective.modules.bass,
+            self.bass
+                .next(&effective.bass, &effective.pad, tune, timing),
+            timing,
+        );
         let (bass_l, bass_r) = gate_stereo(
-            self.module_fx.process(
+            self.gesture_audio.process(
                 Tab::Bass,
-                &effective.modules.bass,
-                self.bass
-                    .next(&effective.bass, &effective.pad, tune, timing),
+                bass,
+                self.gesture_snapshot.amounts(Tab::Bass, now_seconds),
                 timing,
             ),
             mute_gains[Tab::Bass as usize],
         );
+        let arp = self.module_fx.process(
+            Tab::Arp,
+            &effective.modules.arp,
+            self.arp.next(&effective.arp, &effective.pad, tune, timing),
+            timing,
+        );
         let (arp_l, arp_r) = gate_stereo(
-            self.module_fx.process(
+            self.gesture_audio.process(
                 Tab::Arp,
-                &effective.modules.arp,
-                self.arp.next(&effective.arp, &effective.pad, tune, timing),
+                arp,
+                self.gesture_snapshot.amounts(Tab::Arp, now_seconds),
                 timing,
             ),
             mute_gains[Tab::Arp as usize],
         );
+        let lead = self.module_fx.process(
+            Tab::Lead,
+            &effective.modules.lead,
+            self.lead
+                .next(&effective.lead, &effective.pad, tune, timing),
+            timing,
+        );
         let (lead_l, lead_r) = gate_stereo(
-            self.module_fx.process(
+            self.gesture_audio.process(
                 Tab::Lead,
-                &effective.modules.lead,
-                self.lead
-                    .next(&effective.lead, &effective.pad, tune, timing),
+                lead,
+                self.gesture_snapshot.amounts(Tab::Lead, now_seconds),
                 timing,
             ),
             mute_gains[Tab::Lead as usize],
@@ -747,6 +807,12 @@ impl StereoEngine for FluidEngine {
             Tab::Master,
             &effective.modules.master,
             (raw_l, raw_r),
+            timing,
+        );
+        let master = self.gesture_audio.process(
+            Tab::Master,
+            master,
+            self.gesture_snapshot.amounts(Tab::Master, now_seconds),
             timing,
         );
         gate_stereo(

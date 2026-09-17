@@ -1,16 +1,16 @@
 # ADR 0001: Unidirectional interaction architecture
 
-- Status: Accepted; migration pending
+- Status: Accepted; implemented, amended 2026-09-16 for normal-browsing gestures
 - Date: 2026-07-29
 - Scope: terminal input, UI state transitions, live-session effects, and
   rendering
 
 ## Context
 
-The current `src/fluid/ui.rs` loop owns terminal I/O, frame pacing, interaction
-state, live-session mutation, and rendering. It represents mutually exclusive
-interactions with independent variables and drains every queued event before
-drawing again.
+Before this architecture, the `src/fluid/ui.rs` loop owned terminal I/O,
+frame pacing, interaction state, live-session mutation, and rendering. It
+represented mutually exclusive interactions with independent variables and
+drained every queued event before drawing again.
 
 The Performance Deck and Performance Sequence prototypes each had a locally
 correct state machine. They still appeared to freeze because duplicate
@@ -27,7 +27,7 @@ architecture contracts instead of conventions in match-arm ordering.
 
 ## Decision
 
-nooise will use a small, application-specific model/update/view architecture:
+nooise uses a small, application-specific model/update/view architecture:
 
 ```text
 terminal event
@@ -69,8 +69,10 @@ automation editing, palette use, and future performance grammar directly.
 ### Keyboard ownership and legal states
 
 1. Exactly one `InteractionMode` variant owns keyboard input at a time.
-   Browsing, numeric entry, palette, automation editing, and future performance
-   interactions cannot be simultaneously active.
+   Browsing, numeric entry, palette, automation editing, Sequence, and Lead
+   play cannot be simultaneously active. Temporary effect gestures belong to
+   Browsing and do not take over navigation. Their audio returns can continue
+   after another mode takes keyboard ownership.
 2. Mode-specific data is stored inside its owning enum variant. Illegal
    combinations cannot be constructed; there are no parallel
    `Option<NumericEntry>`, `Option<PaletteState>`, and performance-active flags.
@@ -96,7 +98,9 @@ automation editing, palette use, and future performance grammar directly.
 8. `Escape` means “return one interaction depth toward ordinary browsing.”
    It cancels uncommitted text or sequences, closes the current editor or
    drill, and eventually becomes a no-op in base browsing. It never commits an
-   edit, quits the application, or depends on timing.
+   edit, quits the application, or depends on timing. In Browsing, held or
+   restored gestures are released first without changing navigation; with
+   only returns/tails remaining, ordinary drill/back behavior applies.
 9. The arrow-key + Tab floor remains available in ordinary browsing on every
    terminal. Advanced modes may own those keys only after explicit entry and
    must provide the Escape path above.
@@ -155,38 +159,35 @@ automation editing, palette use, and future performance grammar directly.
     performance gestures are unavailable or mapped to documented one-shot
     alternatives.
 21. Capability fallback cannot alter persisted music state, silently change a
-    command's direction, or degrade arrow-key + Tab navigation.
+    command's direction, or degrade arrow-key + Tab navigation. Browsing
+    gestures are inactive without trustworthy releases and the footer names
+    that requirement.
+22. Gesture Press pins a target; Repeat cannot retrigger or retarget it.
+    Matching key Release works after modifier changes. Modal entry releases
+    gestures and quarantines still-down keys until their physical release.
+    Reported focus loss and shutdown also release held gestures.
+23. Gesture envelopes live in the aggregate session and advance against an
+    audio-owned monotonic seconds clock. Normal edits and auto-morph continue
+    independently. Compact song records preserve active envelope amounts and
+    direction; processor buffers remain excluded audio state.
 
 ## Target module responsibilities
 
-The current monolithic `src/fluid/ui.rs` becomes a `src/fluid/ui/` module with
-these ownership boundaries. Exact file grouping may change when cohesion
-demands it; the dependency direction may not.
+The production modules under `src/fluid/` follow these boundaries:
 
-- `model.rs` owns the cohesive `UiModel`, exclusive `InteractionMode`, and
-  mode-local state. It contains no terminal, renderer, shared-session, or clock
-  types.
-- `intent.rs` owns semantic intents and their phase policy
-  (edge-triggered/repeatable/hold-aware).
-- `update.rs` owns the pure exhaustive transition function and ordered effect
-  emission.
-- `input.rs` is the only Crossterm-facing input adapter. It negotiates terminal
-  capabilities and normalizes raw input into intents for the current owner.
-- `effect.rs` owns the closed `Effect` set and the executor boundary.
-  Session-specific transactions, clipboard, messages, and lifecycle requests
-  are centralized here.
-- `session.rs` owns the immutable aggregate `LiveSessionSnapshot`, its single
-  `ArcSwap` publication boundary, and the transaction API used by every
-  writer. The audio callback receives one coherent `Arc` through this module
-  and remains lock-free.
-- `runtime.rs` owns the clock, bounded event admission, effect scheduling,
-  render requests, frame deadline, terminal lifecycle, and error propagation.
-- `view.rs` derives one immutable `UiViewModel` from a coherent model/session
-  snapshot.
-- `render.rs` is a pure Ratatui projection of `UiViewModel`.
-- `replay.rs` (test-only or behind a test support boundary) owns scripted raw
-  input, fake time, deterministic effect adapters, frame capture, and trace
-  replay.
+- `interaction.rs` owns the pure model, typed intents, phase policies, mode
+  transitions, and ordered effect requests.
+- `runtime.rs` owns terminal capability negotiation, normalized input,
+  lifecycle restoration, and bounded scheduling.
+- `coordinator.rs` is the production ordering seam shared with replay.
+- `effect.rs` executes effects and acknowledges results; `edit.rs` owns
+  control and automation mutations.
+- `session.rs` owns aggregate publication and the shared audio clock.
+- `view.rs` projects immutable render data; `ui.rs` draws it.
+- `gesture.rs` owns scalar performance envelopes; `engine.rs` and
+  `engine/gesture_audio.rs` apply them through shared audio processors.
+- `replay.rs` exercises the production input/coordinator/render path with
+  recorded phases, fake time, and bounded scheduler checks.
 
 Dependencies flow inward toward domain types and the pure kernel:
 
@@ -201,7 +202,7 @@ render <-------------------------------- view model
 Neither `update` nor `model` depends on an adapter. `render` does not depend on
 the runtime or effect executor.
 
-## Migration stages
+## Original migration sequence
 
 1. **Freeze the contract.** Land this ADR, glossary, invariants, and acceptance
    scenarios before changing production behavior.
@@ -222,9 +223,8 @@ the runtime or effect executor.
 6. **Migrate production and delete legacy paths.** Prove behavioral parity,
    switch the live terminal loop, and remove raw-key mutation, independent
    modal flags, the unbounded drain, and the many-argument render interface.
-7. **Rebuild performance interaction.** Evaluate Deck, Sequence, holds, and
-   authored gestures on the new contracts; do not merge either prototype
-   unchanged.
+7. **Rebuild performance interaction.** Sequence retains one-shot edits.
+   Normal-browsing gestures replace the persistent Deck workflow.
 
 Audio DSP, audio routing, registry value semantics, automation math, and song
 serialization are outside this refactor. For unchanged seeds and session
@@ -237,17 +237,21 @@ explicitly reviewed checksum update and is not architecture-migration parity.
 The replay test system must make these scenarios deterministic and retain the
 intent, transition, effect, and frame trace on failure.
 
-### Duplicate Performance Deck activation (`pp`)
+### Normal browsing gesture lifecycle
 
-Given ordinary browsing and two activation bytes delivered in one raw-input
-burst, normalization emits at most one edge-triggered activation for a
-physical press/repeat sequence. If both bytes are represented as distinct
-presses, performance activation is idempotent. The resulting model owns the
-keyboard in the Deck interaction, no exit effect occurs, and a frame showing
-Deck state is completed within 50 ms.
+Given Browsing, a gesture Press starts its envelope on the current page's
+layer. Repeat leaves it untouched; navigation remains available. A matching
+Release, including one with changed modifiers, starts the return on the
+original layer. Opening another mode releases it, and a held key cannot
+reactivate it on return to Browsing until a physical release occurs.
 
-This scenario does not preserve the prototype's `p`-to-exit toggle. Escape is
-the required cancellation gesture.
+Escape releases held or restored gestures before leaving a drill. Focus loss
+and shutdown release them through the same ordered effect path. A frame
+reflecting each accepted change completes within the 50 ms bound.
+
+With press-only capabilities, gesture keys are inert and the help states why.
+Rendered audio must prove a swell, a continuous partial release, and surviving
+Bloom/Echo tails; input and footer checks alone do not establish this behavior.
 
 ### Duplicate Performance Sequence leader (double Space)
 

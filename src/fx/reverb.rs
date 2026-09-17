@@ -142,6 +142,53 @@ impl Freeverb {
         (left * 0.18, right * 0.18)
     }
 
+    /// Clear at most `samples` stored samples without allocating. Gesture
+    /// retirement uses this to amortize cleanup across audio frames after its
+    /// return has faded fully silent.
+    pub(crate) fn clear_chunk(&mut self, cursor: &mut usize, samples: usize) -> bool {
+        let total = self
+            .combs_left
+            .iter()
+            .chain(&self.combs_right)
+            .map(|comb| comb.buffer.len())
+            .sum::<usize>()
+            + self
+                .allpasses_left
+                .iter()
+                .chain(&self.allpasses_right)
+                .map(|allpass| allpass.buffer.len())
+                .sum::<usize>();
+        let mut skip = *cursor;
+        let mut remaining = samples;
+        for comb in self.combs_left.iter_mut().chain(&mut self.combs_right) {
+            clear_buffer_chunk(&mut comb.buffer, &mut skip, &mut remaining);
+        }
+        for allpass in self
+            .allpasses_left
+            .iter_mut()
+            .chain(&mut self.allpasses_right)
+        {
+            clear_buffer_chunk(&mut allpass.buffer, &mut skip, &mut remaining);
+        }
+        *cursor = cursor.saturating_add(samples - remaining).min(total);
+        if *cursor < total {
+            return false;
+        }
+        for comb in self.combs_left.iter_mut().chain(&mut self.combs_right) {
+            comb.index = 0;
+            comb.filter_store = 0.0;
+        }
+        for allpass in self
+            .allpasses_left
+            .iter_mut()
+            .chain(&mut self.allpasses_right)
+        {
+            allpass.index = 0;
+        }
+        self.active = false;
+        true
+    }
+
     fn set_character(&mut self, params: ReverbParams) {
         let feedback = 0.28 + params.room_size.clamp(0.0, 1.0) * 0.68;
         let damp1 = params.damp.clamp(0.0, 1.0) * 0.4;
@@ -153,6 +200,21 @@ impl Freeverb {
     }
 }
 
+fn clear_buffer_chunk(buffer: &mut [f32], skip: &mut usize, remaining: &mut usize) {
+    if *remaining == 0 {
+        return;
+    }
+    if *skip >= buffer.len() {
+        *skip -= buffer.len();
+        return;
+    }
+    let start = *skip;
+    let count = (*remaining).min(buffer.len() - start);
+    buffer[start..start + count].fill(0.0);
+    *remaining -= count;
+    *skip = 0;
+}
+
 /// Per-call character, matching the `DelayParams` convention. Comb/allpass
 /// buffer lengths stay construction-time because they depend only on the
 /// sample rate; Size and Damping are plain coefficients the caller is free to
@@ -161,4 +223,25 @@ impl Freeverb {
 pub(crate) struct ReverbParams {
     pub(crate) room_size: f32,
     pub(crate) damp: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incremental_clear_returns_used_reverb_to_exact_silence() {
+        let mut reverb = Freeverb::new(44_100.0);
+        let params = ReverbParams {
+            room_size: 0.9,
+            damp: 0.5,
+        };
+        for _ in 0..4_000 {
+            reverb.process(0.5, 0.5, params);
+        }
+        let mut cursor = 0;
+        while !reverb.clear_chunk(&mut cursor, 47) {}
+
+        assert_eq!(reverb.process(0.0, 0.0, params), (0.0, 0.0));
+    }
 }

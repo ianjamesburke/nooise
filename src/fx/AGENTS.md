@@ -10,10 +10,10 @@ Shared DSP effects consumed by voice engines in `fluid.rs`.
 - `panner.rs` — stereo pan helper.
 - `compression.rs` — shared stateful stereo compressor used by every layer and Master slot chain.
 - `crossfade.rs` — insert-style dry/wet `mix`/`mix_stereo` (`dry + (wet - dry) * amount`, so amount 0 is an exact dry pass) and `Outgoing<T>`, the fade-out holder a replaced processor or pad character stage keeps running in until its weight reaches zero.
-- `delay.rs` — stereo feedback delay whose read taps never glide: a delay-time change crossfades to a new fixed tap position over a fixed window instead of sliding the old one (so tempo-synced retargeting never pitch-bends), plus wet-only level-compensated Vintage colour and end-weighted pitch motion, and true dry bypass.
+- `delay.rs` — stereo feedback delay whose read taps never glide: a delay-time change crossfades to a new fixed tap position over a fixed window instead of sliding the old one (so tempo-synced retargeting never pitch-bends), plus wet-only level-compensated Vintage colour, end-weighted pitch motion, true dry bypass, and allocation-free incremental buffer clearing for retired temporary processors.
 - `drive.rs` — shared stateless stereo saturation with exact zero-amount bypass.
 - `filter.rs` — shared stateful stereo biquad filter for Filter module slots; cutoff, resonance, and response type arrive per frame while each slot owns its filter history.
-- `reverb.rs` — shared Freeverb-style slot reverb with live Size/Damping updates.
+- `reverb.rs` — shared Freeverb-style slot reverb with live Size/Damping updates and allocation-free incremental buffer clearing for retired temporary processors.
 - `mod.rs` — module re-exports only.
 
 ## Local Contracts
