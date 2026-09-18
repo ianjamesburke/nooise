@@ -527,6 +527,8 @@ pub(crate) struct FluidEngine {
     pub(crate) morph: Arc<ArcSwap<Option<MorphState>>>,
     morph_writer: MorphWriter,
     pub(crate) telemetry: Arc<FluidTelemetry>,
+    /// Sum of squared master output samples since the last `LEVEL_BLOCK`.
+    level_acc: f32,
     pub(crate) snapshot: FluidControls,
     gesture_snapshot: GestureState,
     transport: Transport,
@@ -587,6 +589,7 @@ impl FluidEngine {
             morph,
             morph_writer: MorphWriter::default(),
             telemetry,
+            level_acc: 0.0,
             snapshot,
             gesture_snapshot: live.gestures.clone(),
             transport: live.transport,
@@ -751,11 +754,18 @@ impl StereoEngine for FluidEngine {
         let master =
             self.gesture_audio
                 .process(master, self.gesture_snapshot.amounts(now_seconds), timing);
-        gate_stereo(
+        let out = gate_stereo(
             self.master_bus
                 .process(master.0, master.1, &effective.master),
             mute_gains[Tab::Master as usize],
-        )
+        );
+        self.level_acc += out.0 * out.0 + out.1 * out.1;
+        if self.current_sample.is_multiple_of(LEVEL_BLOCK) {
+            self.telemetry
+                .publish_level((self.level_acc / (2 * LEVEL_BLOCK) as f32).sqrt());
+            self.level_acc = 0.0;
+        }
+        out
     }
 }
 

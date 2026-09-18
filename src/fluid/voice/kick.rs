@@ -33,7 +33,7 @@ impl KickEngine {
                 self.sample_rate,
                 &mut self.rng,
             ));
-            self.telemetry.kick_pulse.fetch_add(1, Ordering::Relaxed);
+            self.telemetry.publish_kick(c.level);
         }
 
         let rng = &mut self.rng;

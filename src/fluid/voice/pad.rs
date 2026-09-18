@@ -112,8 +112,7 @@ impl PadEngine {
                 layer.release();
             }
             self.telemetry
-                .chord_slot
-                .store(self.cursor.slot() as u64, Ordering::Relaxed);
+                .publish_chord(self.cursor.slot() as u64, c.attack_time, c.release_time);
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                 self.layers.drain(0..remove_count);

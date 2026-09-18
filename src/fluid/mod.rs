@@ -9,7 +9,7 @@ use std::error::Error;
 use std::f32::consts::TAU;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -126,7 +126,20 @@ pub(crate) struct FluidTelemetry {
     pub(crate) kick_pulse: AtomicU64,
     /// Engine beat position as `f64::to_bits`, for beat-synced UI animation.
     pub(crate) beat_bits: AtomicU64,
+    /// `kick.level` at the latest hit (`f32::to_bits`), stored before
+    /// `kick_pulse` advances so a reader that sees the hit sees its level.
+    pub(crate) kick_level_bits: AtomicU32,
+    /// Pad attack and release seconds (`f32::to_bits`) of the layer voiced by
+    /// the latest chord change, stored before `chord_slot` is written.
+    pub(crate) chord_attack_bits: AtomicU32,
+    pub(crate) chord_release_bits: AtomicU32,
+    /// Master output RMS over the latest `LEVEL_BLOCK` frames (`f32::to_bits`):
+    /// what is actually audible, so consumers can tell silence from tempo.
+    pub(crate) level_bits: AtomicU32,
 }
+
+/// Frames per master-level measurement (~5.8 ms at 44.1 kHz).
+pub(crate) const LEVEL_BLOCK: u64 = 256;
 
 impl FluidTelemetry {
     pub(crate) fn publish_beat(&self, beat: f64) {
@@ -135,6 +148,24 @@ impl FluidTelemetry {
 
     pub(crate) fn beat(&self) -> f64 {
         f64::from_bits(self.beat_bits.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn publish_kick(&self, level: f32) {
+        self.kick_level_bits
+            .store(level.to_bits(), Ordering::Relaxed);
+        self.kick_pulse.fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn publish_chord(&self, slot: u64, attack_secs: f32, release_secs: f32) {
+        self.chord_attack_bits
+            .store(attack_secs.to_bits(), Ordering::Relaxed);
+        self.chord_release_bits
+            .store(release_secs.to_bits(), Ordering::Relaxed);
+        self.chord_slot.store(slot, Ordering::Release);
+    }
+
+    pub(crate) fn publish_level(&self, rms: f32) {
+        self.level_bits.store(rms.to_bits(), Ordering::Relaxed);
     }
 }
 

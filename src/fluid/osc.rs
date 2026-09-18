@@ -8,8 +8,12 @@
 //!
 //! Address vocabulary (the contract consumers like foorm build on):
 //! - `/nooise/beat` `f32` — engine beat position, sent whenever it advances
-//! - `/nooise/chord` `i32` — pad chord index, sent on change
-//! - `/nooise/voice/kick` — one message per kick hit, no arguments
+//! - `/nooise/level` `f32` — master output RMS, sent whenever it changes;
+//!   zero means silence no matter what the tempo is doing
+//! - `/nooise/chord` `i32 f32 f32` — pad chord index plus the attack and
+//!   release seconds of the layer it voiced, sent on change
+//! - `/nooise/voice/kick` `f32` — one message per kick hit carrying
+//!   `kick.level` (0 = inaudible)
 
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
@@ -23,6 +27,7 @@ use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, encoder};
 use super::FluidTelemetry;
 
 pub(crate) const ADDR_BEAT: &str = "/nooise/beat";
+pub(crate) const ADDR_LEVEL: &str = "/nooise/level";
 pub(crate) const ADDR_CHORD: &str = "/nooise/chord";
 pub(crate) const ADDR_KICK: &str = "/nooise/voice/kick";
 
@@ -73,16 +78,28 @@ impl Drop for OscEmitter {
 /// Telemetry as last mirrored, so each poll sends only what changed.
 struct Mirrored {
     kick: u64,
+    kick_level: f32,
     chord: u64,
+    chord_attack: f32,
+    chord_release: f32,
     beat_bits: u64,
+    level_bits: u32,
 }
 
 impl Mirrored {
     fn from(telemetry: &FluidTelemetry) -> Self {
+        // Acquire pairs with the Release in `publish_kick`/`publish_chord`:
+        // once the counter is seen, the values stored before it are too.
+        let kick = telemetry.kick_pulse.load(Ordering::Acquire);
+        let chord = telemetry.chord_slot.load(Ordering::Acquire);
         Self {
-            kick: telemetry.kick_pulse.load(Ordering::Relaxed),
-            chord: telemetry.chord_slot.load(Ordering::Relaxed),
+            kick,
+            kick_level: f32::from_bits(telemetry.kick_level_bits.load(Ordering::Relaxed)),
+            chord,
+            chord_attack: f32::from_bits(telemetry.chord_attack_bits.load(Ordering::Relaxed)),
+            chord_release: f32::from_bits(telemetry.chord_release_bits.load(Ordering::Relaxed)),
             beat_bits: telemetry.beat_bits.load(Ordering::Relaxed),
+            level_bits: telemetry.level_bits.load(Ordering::Relaxed),
         }
     }
 
@@ -97,11 +114,24 @@ impl Mirrored {
                 vec![OscType::Float(f64::from_bits(now.beat_bits) as f32)],
             ));
         }
+        if now.level_bits != self.level_bits {
+            out.push(message(
+                ADDR_LEVEL,
+                vec![OscType::Float(f32::from_bits(now.level_bits))],
+            ));
+        }
         if now.chord != self.chord {
-            out.push(message(ADDR_CHORD, vec![OscType::Int(now.chord as i32)]));
+            out.push(message(
+                ADDR_CHORD,
+                vec![
+                    OscType::Int(now.chord as i32),
+                    OscType::Float(now.chord_attack),
+                    OscType::Float(now.chord_release),
+                ],
+            ));
         }
         for _ in self.kick..now.kick {
-            out.push(message(ADDR_KICK, Vec::new()));
+            out.push(message(ADDR_KICK, vec![OscType::Float(now.kick_level)]));
         }
         *self = now;
         out
@@ -156,17 +186,28 @@ mod tests {
         let mut mirrored = Mirrored::from(&telemetry);
         assert!(mirrored.diff(&telemetry).is_empty());
 
-        telemetry.kick_pulse.fetch_add(3, Ordering::Relaxed);
-        telemetry.chord_slot.store(2, Ordering::Relaxed);
+        telemetry.publish_kick(0.25);
+        telemetry.publish_kick(0.5);
+        telemetry.publish_kick(0.75);
+        telemetry.publish_chord(2, 6.0, 8.0);
         telemetry.publish_beat(4.5);
+        telemetry.publish_level(0.1);
         let out = mirrored.diff(&telemetry);
         let addrs: Vec<&str> = out.iter().map(|m| m.addr.as_str()).collect();
         assert_eq!(
             addrs,
-            [ADDR_BEAT, ADDR_CHORD, ADDR_KICK, ADDR_KICK, ADDR_KICK]
+            [
+                ADDR_BEAT, ADDR_LEVEL, ADDR_CHORD, ADDR_KICK, ADDR_KICK, ADDR_KICK
+            ]
         );
         assert_eq!(out[0].args, vec![OscType::Float(4.5)]);
-        assert_eq!(out[1].args, vec![OscType::Int(2)]);
+        assert_eq!(out[1].args, vec![OscType::Float(0.1)]);
+        assert_eq!(
+            out[2].args,
+            vec![OscType::Int(2), OscType::Float(6.0), OscType::Float(8.0)]
+        );
+        // Hits inside one poll share the latest level.
+        assert_eq!(out[3].args, vec![OscType::Float(0.75)]);
         assert!(mirrored.diff(&telemetry).is_empty());
     }
 
@@ -180,7 +221,7 @@ mod tests {
         let emitter =
             OscEmitter::spawn(receiver.local_addr().unwrap(), Arc::clone(&telemetry)).unwrap();
 
-        telemetry.kick_pulse.fetch_add(1, Ordering::Relaxed);
+        telemetry.publish_kick(0.4);
         let mut buf = [0u8; 1024];
         let (len, _) = receiver.recv_from(&mut buf).unwrap();
         let (_, packet) = decoder::decode_udp(&buf[..len]).unwrap();
@@ -190,7 +231,7 @@ mod tests {
     }
 
     /// The whole path a visualizer depends on: engine renders, telemetry
-    /// moves, the emitter mirrors it, and beat plus kick messages land on UDP.
+    /// moves, the emitter mirrors it, and beat, level, and kick messages land on UDP.
     #[test]
     fn headless_engine_reaches_a_udp_listener() {
         use crate::audio::StereoEngine;
@@ -227,18 +268,19 @@ mod tests {
                     .set_read_timeout(Some(Duration::from_millis(1)))
                     .unwrap();
             }
-            if seen.contains_key(ADDR_BEAT) && seen.contains_key(ADDR_KICK) {
+            if [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK]
+                .iter()
+                .all(|a| seen.contains_key(*a))
+            {
                 break;
             }
         }
         drop(emitter);
-        assert!(
-            seen.get(ADDR_BEAT).copied().unwrap_or(0) > 0,
-            "no beat: {seen:?}"
-        );
-        assert!(
-            seen.get(ADDR_KICK).copied().unwrap_or(0) > 0,
-            "no kick: {seen:?}"
-        );
+        for addr in [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK] {
+            assert!(
+                seen.get(addr).copied().unwrap_or(0) > 0,
+                "no {addr}: {seen:?}"
+            );
+        }
     }
 }
