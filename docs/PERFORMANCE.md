@@ -20,9 +20,13 @@ below it. Idle, the activity row lists each hold's key and name (`z bloom
 c submerge  v echo  b thin  x lift`); held or returning, it switches to a
 bold readout of target and amount — `↑` means rising, `↓` returning, and `R`
 marks a restored hold loaded from a song code. The row below stays a terse
-`BROWSE · ? shortcuts   ^Q quit`; `Shift+?` opens the full keyboard-shortcut
+`BROWSE · ? shortcuts   ^Q quit`; pressing `?` opens the full keyboard-shortcut
 map (`InteractionMode::Help`), a static overlay covering the tab/control area
-that leaves both footer rows visible beneath it. Esc closes it.
+that leaves both footer rows visible beneath it. Esc closes it. `?` is matched
+on the character itself rather than a Shift modifier: most terminals report
+Shift for a shifted letter but not for shifted punctuation, so a
+modifier-gated binding would be unreachable outside the keyboard-enhancement
+protocol.
 
 These are temporary effects over the playing song. User module slots remain
 intact, automation and auto-morph continue, and edits made during a gesture
@@ -36,8 +40,8 @@ also release held gestures.
 
 Hold gestures require negotiated key-release support. Without it, the
 activity row stays blank and gesture keys remain inactive — the shortcut map
-(`Shift+?`) still lists them, since they are a capability gap, not a hidden
-feature. The runtime never guesses release from a timeout or keyboard repeat.
+(`?`) still lists them, since they are a capability gap, not a hidden feature.
+The runtime never guesses release from a timeout or keyboard repeat.
 
 A saved song carries active gesture amounts and envelope direction, with no
 audio buffers. Loaded holds resume on their saved targets. Press the matching
@@ -81,8 +85,8 @@ and existing bindings.
    matching gesture key or Escape must let it return.
 6. Verify Space, `d`, `k` still makes one louder Kick edit and completes
    Sequence according to the terminal's release capability.
-7. Press `Shift+?` from Browsing: the shortcut map should open over the tab
-   and control rows, leaving both footer rows visible beneath it. Esc returns
+7. Press `?` from Browsing: the shortcut map should open over the tab and
+   control rows, leaving both footer rows visible beneath it. Esc returns
    to Browsing.
 
 Acceptance requires rendered-audio checks as well as input replay and footer

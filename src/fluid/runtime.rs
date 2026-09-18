@@ -479,6 +479,18 @@ pub(crate) fn map_input(
         return semantic(*phase, Intent::StartGesture(kind));
     }
 
+    // `?` is matched on its own character rather than gated behind a SHIFT
+    // modifier: most terminals report shifted punctuation (unlike shifted
+    // letters) with no modifier bit at all, so requiring SHIFT here would
+    // make the binding silently unreachable outside the keyboard-enhancement
+    // protocol.
+    if matches!(mode, InteractionMode::Browsing)
+        && *phase == InputPhase::Press
+        && matches!(key.code, PhysicalKey::Character('?'))
+    {
+        return semantic(*phase, Intent::OpenHelp);
+    }
+
     // Global bindings resolve before any mode claims the key. The palette
     // keeps its own control chords and numeric entry swallows every chord.
     if has_control
@@ -618,7 +630,6 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('E' | 'e') => Intent::AddAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
         PhysicalKey::Character('R' | 'r') => Intent::RandomizeScope,
-        PhysicalKey::Character('?') => Intent::OpenHelp,
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         _ => return None,
     })
@@ -1634,6 +1645,31 @@ mod tests {
                 TerminalCapabilities::full()
             ),
             InputMapping::Ignored
+        );
+    }
+
+    #[test]
+    fn question_mark_opens_help_with_no_modifier_reported() {
+        // Most terminals report SHIFT for a shifted letter (crossterm
+        // synthesizes it from `char::is_uppercase`) but not for shifted
+        // punctuation, so a basic terminal delivers '?' with no modifier at
+        // all. The binding must not depend on SHIFT being present.
+        let event = TransportEvent::key(
+            PhysicalKey::Character('?'),
+            Modifiers::default(),
+            InputPhase::Press,
+        );
+        assert_eq!(
+            map_input(
+                &InteractionMode::Browsing,
+                Navigation::default(),
+                &event,
+                TerminalCapabilities::full()
+            ),
+            InputMapping::Action(SemanticAction {
+                phase: InputPhase::Press,
+                intent: Intent::OpenHelp,
+            })
         );
     }
 
