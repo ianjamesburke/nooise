@@ -542,6 +542,9 @@ pub(crate) fn map_input(
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
         }
+        // Esc (global, above) and Ctrl+S/Ctrl+Q (global, above) are the only
+        // bindings the overlay answers to; every other key is inert.
+        InteractionMode::Help => None,
     };
     intent.map_or(InputMapping::Ignored, |intent| semantic(*phase, intent))
 }
@@ -615,6 +618,7 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('E' | 'e') => Intent::AddAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
         PhysicalKey::Character('R' | 'r') => Intent::RandomizeScope,
+        PhysicalKey::Character('?') => Intent::OpenHelp,
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         _ => return None,
     })

@@ -15,11 +15,14 @@ different gestures can overlap on different layers. Pressing during a return
 on the same layer catches it at its current amount.
 
 The footer is two rows: a gesture-activity row above a stable exits/mode-help
-row, so a held gesture never crowds out `Esc release · ^Q quit` or the general
-browsing shortcuts on the row below it. Idle, the activity row lists each
-hold's key and name (`z bloom  c submerge  v echo  b thin  x lift`); held or
-returning, it switches to a bold readout of target and amount — `↑` means
-rising, `↓` returning, and `R` marks a restored hold loaded from a song code.
+row, so a held gesture never crowds out `Esc release · ^Q quit` or the row
+below it. Idle, the activity row lists each hold's key and name (`z bloom
+c submerge  v echo  b thin  x lift`); held or returning, it switches to a
+bold readout of target and amount — `↑` means rising, `↓` returning, and `R`
+marks a restored hold loaded from a song code. The row below stays a terse
+`BROWSE · ? shortcuts   ^Q quit`; `Shift+?` opens the full keyboard-shortcut
+map (`InteractionMode::Help`), a static overlay covering the tab/control area
+that leaves both footer rows visible beneath it. Esc closes it.
 
 These are temporary effects over the playing song. User module slots remain
 intact, automation and auto-morph continue, and edits made during a gesture
@@ -31,9 +34,10 @@ can finish in the background. A key held through that transition must be
 released before it can start another gesture. Reported focus loss and shutdown
 also release held gestures.
 
-Hold gestures require negotiated key-release support. Without it, the footer
-explains the requirement and gesture keys remain inactive. The runtime never
-guesses release from a timeout or keyboard repeat.
+Hold gestures require negotiated key-release support. Without it, the
+activity row stays blank and gesture keys remain inactive — the shortcut map
+(`Shift+?`) still lists them, since they are a capability gap, not a hidden
+feature. The runtime never guesses release from a timeout or keyboard repeat.
 
 A saved song carries active gesture amounts and envelope direction, with no
 audio buffers. Loaded holds resume on their saved targets. Press the matching
@@ -77,6 +81,9 @@ and existing bindings.
    matching gesture key or Escape must let it return.
 6. Verify Space, `d`, `k` still makes one louder Kick edit and completes
    Sequence according to the terminal's release capability.
+7. Press `Shift+?` from Browsing: the shortcut map should open over the tab
+   and control rows, leaving both footer rows visible beneath it. Esc returns
+   to Browsing.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the

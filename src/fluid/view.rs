@@ -26,6 +26,7 @@ pub(crate) enum KeyboardOwner {
     Envelope,
     PerformanceSequence,
     Lead,
+    Help,
 }
 
 impl KeyboardOwner {
@@ -38,6 +39,7 @@ impl KeyboardOwner {
             Self::Envelope => AutomationKind::Envelope.label(),
             Self::PerformanceSequence => "SEQUENCE",
             Self::Lead => "LEAD",
+            Self::Help => "SHORTCUTS",
         }
     }
 }
@@ -171,6 +173,8 @@ pub(crate) enum ModeSurface<'a> {
     Automation(AutomationSurface<'a>),
     Performance(PerformanceSurface),
     Lead(LeadSurface),
+    /// The shortcut map overlay. Static content, so nothing to project.
+    Help,
 }
 
 /// Lead play-mode render state: the tone last played, the live octave, and
@@ -322,7 +326,6 @@ impl<'a> UiViewModel<'a> {
             navigation,
             presentation.notices,
             holding_gesture,
-            presentation.gesture_holds_available,
         );
 
         Self {
@@ -426,6 +429,7 @@ fn mode_surface<'a>(
         InteractionMode::Automation(mode) => {
             ModeSurface::Automation(automation_surface(*mode, automation))
         }
+        InteractionMode::Help => ModeSurface::Help,
         InteractionMode::Lead(play) => ModeSurface::Lead(LeadSurface {
             last_tone: play.last_tone,
             holds: play.holds,
@@ -597,6 +601,7 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
             KeyboardOwner::PerformanceSequence
         }
         InteractionMode::Lead(_) => KeyboardOwner::Lead,
+        InteractionMode::Help => KeyboardOwner::Help,
     }
 }
 
@@ -606,7 +611,6 @@ fn help_surface(
     navigation: NavigationView,
     notices: ViewNotices,
     holding_gesture: bool,
-    gesture_holds_available: bool,
 ) -> HelpSurface {
     if owner != KeyboardOwner::Browsing {
         return HelpSurface::Owner {
@@ -669,12 +673,7 @@ fn help_surface(
         return HelpSurface::Notice { kind, text };
     }
     HelpSurface::Browsing {
-        text: if gesture_holds_available {
-            "BROWSE · jk select   h/l adjust   r random   Shift+R randomize set   / find   f LFO   e ENV   a auto   T units   ^Q quit"
-                .to_string()
-        } else {
-            "BROWSE · hold gestures require key-up support".to_string()
-        },
+        text: "BROWSE · ? shortcuts   ^Q quit".to_string(),
     }
 }
 
@@ -758,6 +757,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             }
             _ => unreachable!("sequence owner requires sequence mode"),
         },
+        KeyboardOwner::Help => "SHORTCUTS · Esc: close".to_string(),
     }
 }
 
@@ -1232,21 +1232,15 @@ mod tests {
     }
 
     #[test]
-    fn idle_browsing_shows_general_shortcuts_and_gesture_hints_on_separate_rows() {
-        let frame = render_model_with_session_at_size(
-            &InteractionModel::default(),
-            &session(),
-            TelemetryView::default(),
-            260,
-            MIN_TERMINAL_HEIGHT,
-        );
+    fn idle_browsing_shows_a_terse_footer_and_gesture_hints_on_the_activity_row() {
+        let frame = render_model(&InteractionModel::default());
         assert!(
-            frame.contains("jk␠select"),
-            "general shortcuts must stay on the footer row: {frame}"
+            frame.contains("?␠shortcuts"),
+            "the footer row must point at the shortcut overlay: {frame}"
         );
         assert!(
             frame.contains("^Q␠quit"),
-            "general shortcuts must stay on the footer row: {frame}"
+            "the footer row must keep the quit exit visible: {frame}"
         );
         assert!(
             frame.contains("z␠bloom"),
@@ -1256,6 +1250,27 @@ mod tests {
             frame.contains("x␠lift"),
             "gesture key hints must show on the activity row when idle: {frame}"
         );
+    }
+
+    #[test]
+    fn open_help_owns_the_keyboard_and_esc_returns_to_browsing() {
+        let opened = InteractionModel::default().update(SemanticAction::press(Intent::OpenHelp));
+        assert!(opened.effects.is_empty());
+        assert!(matches!(opened.model.mode, InteractionMode::Help));
+
+        let frame = render_model_with_session_at_size(
+            &opened.model,
+            &session(),
+            TelemetryView::default(),
+            260,
+            40,
+        );
+        assert!(frame.contains("SHORTCUTS"), "{frame}");
+        assert!(frame.contains("Gestures"), "{frame}");
+        assert!(frame.contains("Esc:␠close"), "{frame}");
+
+        let closed = opened.model.update(SemanticAction::press(Intent::Cancel));
+        assert_eq!(closed.model.mode, InteractionMode::Browsing);
     }
 
     #[test]

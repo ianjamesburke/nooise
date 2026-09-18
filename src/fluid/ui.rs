@@ -164,6 +164,10 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             frame.numeric.cursor_visible,
         );
     }
+
+    if matches!(view.mode, ModeSurface::Help) {
+        draw_help(f, inner);
+    }
 }
 
 /// Frosted-glass scrim: darken the live fluid underneath instead of covering
@@ -806,6 +810,75 @@ fn draw_palette(
     lines.push(Line::from(Span::styled(
         "\u{21e5} complete   type value   \u{21b5} stage/jump   \u{21b5}\u{21b5} commit   ^B on bar   Esc cancel",
         Style::default().fg(DIM_TEXT),
+    )));
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The full keyboard-shortcut map, opened with `?` from Browsing. Covers the
+/// tab/control area but leaves the activity and footer rows showing beneath
+/// it, same as the palette leaving its own exits visible.
+fn draw_help(f: &mut Frame, inner: Rect) {
+    let above_footer = inner.height.saturating_sub(2);
+    let area = Rect::new(
+        inner.x + 1,
+        inner.y,
+        inner.width.saturating_sub(2),
+        above_footer,
+    );
+    fill_scrim(f.buffer_mut(), area, |cell| {
+        cell.set_bg(Color::Rgb(18, 22, 32));
+    });
+    let block = Block::default()
+        .title(" Shortcuts ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let heading = Style::default()
+        .fg(EMPHASIS_YELLOW)
+        .add_modifier(Modifier::BOLD);
+    let body = Style::default().fg(Color::White);
+    let section = |title: &'static str, rows: &'static [&'static str]| {
+        let mut lines = vec![Line::from(Span::styled(title, heading))];
+        lines.extend(rows.iter().map(|row| Line::from(Span::styled(*row, body))));
+        lines.push(Line::from(""));
+        lines
+    };
+    let mut lines = section(
+        "General",
+        &[
+            "jk / \u{2191}\u{2193}  select      hl / \u{2190}\u{2192}  adjust      Tab / \u{21e7}Tab  page",
+            "r  random     \u{21e7}R  randomize set     \u{21b5}  open/confirm     x  remove",
+            "m  mute       \u{21e7}M  master mute        T  units",
+        ],
+    );
+    lines.extend(section(
+        "Gestures (hold)",
+        &["z bloom   c submerge   v echo   b thin   x lift"],
+    ));
+    lines.extend(section(
+        "Editors",
+        &[
+            "/  palette          f  LFO       \u{21e7}F  add LFO",
+            "a  toggle auto      e  ENV       \u{21e7}E  add ENV",
+        ],
+    ));
+    lines.extend(section(
+        "Lead (i to enter)",
+        &[
+            "a s d f g h j k l  tones     c  capture     Space  pattern on/off",
+            "z/x oct   q/w level   e/r decay   t/y glide",
+        ],
+    ));
+    lines.extend(section(
+        "Sequence (Space to enter)",
+        &["a s d f  instrument     hl length   jk level   ui density"],
+    ));
+    lines.push(Line::from(Span::styled("System", heading)));
+    lines.push(Line::from(Span::styled(
+        "^S save   ^Q quit   Esc back/cancel   ?  this screen",
+        body,
     )));
     f.render_widget(Paragraph::new(lines), inner);
 }
