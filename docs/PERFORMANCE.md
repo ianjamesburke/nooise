@@ -15,10 +15,11 @@ different gestures can overlap on different layers. Pressing during a return
 on the same layer catches it at its current amount.
 
 The footer is two rows: a gesture-activity row above a stable exits/mode-help
-row, so a held gesture never crowds out `Esc release · ^Q quit` or any other
-footer text. The activity row names the target and amount — `↑` means rising,
-`↓` returning, and `R` marks a restored hold loaded from a song code — and is
-blank when no gesture is active.
+row, so a held gesture never crowds out `Esc release · ^Q quit` or the general
+browsing shortcuts on the row below it. Idle, the activity row lists each
+hold's key and name (`z bloom  c submerge  v echo  b thin  x lift`); held or
+returning, it switches to a bold readout of target and amount — `↑` means
+rising, `↓` returning, and `R` marks a restored hold loaded from a song code.
 
 These are temporary effects over the playing song. User module slots remain
 intact, automation and auto-morph continue, and edits made during a gesture

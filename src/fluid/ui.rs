@@ -546,13 +546,22 @@ fn slider_markers(
     }
 }
 
-/// The gesture-activity row, above the footer proper. Blank when no gesture
-/// is held or returning, so its presence never shifts the layout above it.
+/// The gesture-activity row, above the footer proper. Shows the idle key
+/// hints when nothing is held, and switches to a bold live readout while a
+/// gesture is held or returning, so its presence never shifts the layout
+/// above it either way.
 fn draw_activity(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
+    let style = if view.activity_live {
+        Style::default()
+            .fg(EMPHASIS_YELLOW)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(DIM_TEXT)
+    };
     f.render_widget(
         Paragraph::new(view.activity.as_str())
             .alignment(Alignment::Center)
-            .style(Style::default().fg(EMPHASIS_YELLOW)),
+            .style(style),
         area,
     );
 }

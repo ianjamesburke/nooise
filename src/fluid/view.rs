@@ -129,10 +129,13 @@ pub(crate) struct UiViewModel<'a> {
     pub(crate) mute: &'a MuteState,
     pub(crate) cursor_visible: bool,
     pub(crate) help: HelpSurface,
-    /// Held/returning gesture readout for the footer's own row. Empty when no
-    /// gesture is active, so the row it renders into stays blank rather than
-    /// disappearing — that keeps the panel height stable during play.
+    /// The gesture-activity row's text: a held/returning readout, or an idle
+    /// key hint (`z bloom  c submerge  ...`) when nothing is held. Empty only
+    /// when the terminal cannot support holds at all.
     pub(crate) activity: String,
+    /// True while `activity` is a live held/returning readout rather than the
+    /// idle key-hint list, so the row can render with different emphasis.
+    pub(crate) activity_live: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,13 +307,21 @@ impl<'a> UiViewModel<'a> {
             &session.automation,
         );
         let gestures = gesture_activities(session, presentation.gesture_now_seconds);
-        let activity = gesture_activity_line(&gestures);
+        let holding_gesture = !gestures.is_empty();
+        let activity_live = holding_gesture;
+        let activity = if holding_gesture {
+            gesture_activity_line(&gestures)
+        } else if presentation.gesture_holds_available {
+            gesture_idle_hint()
+        } else {
+            String::new()
+        };
         let help = help_surface(
             owner,
             &mode,
             navigation,
             presentation.notices,
-            !gestures.is_empty(),
+            holding_gesture,
             presentation.gesture_holds_available,
         );
 
@@ -327,6 +338,7 @@ impl<'a> UiViewModel<'a> {
             cursor_visible: presentation.cursor_visible,
             help,
             activity,
+            activity_live,
         }
     }
 }
@@ -353,6 +365,17 @@ fn gesture_activity_line(gestures: &[GestureActivity]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" · ")
+}
+
+/// The gesture-activity row's idle text: the key/name for every hold
+/// gesture, so the row that shows a live readout while holding still tells
+/// you what's available when nothing is held.
+fn gesture_idle_hint() -> String {
+    GestureKind::ALL
+        .iter()
+        .map(|kind| format!("{} {}", kind.key(), kind.name().to_ascii_lowercase()))
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 fn gesture_activities(session: &LiveSessionSnapshot, now_seconds: f64) -> Vec<GestureActivity> {
@@ -1206,6 +1229,33 @@ mod tests {
         let frame = render_model_with_session(&InteractionModel::default(), &session);
         assert!(frame.contains("Esc␠release␠·␠^Q␠quit"));
         assert!(frame.contains("Pads␠Bloom␠0%↑"));
+    }
+
+    #[test]
+    fn idle_browsing_shows_general_shortcuts_and_gesture_hints_on_separate_rows() {
+        let frame = render_model_with_session_at_size(
+            &InteractionModel::default(),
+            &session(),
+            TelemetryView::default(),
+            260,
+            MIN_TERMINAL_HEIGHT,
+        );
+        assert!(
+            frame.contains("jk␠select"),
+            "general shortcuts must stay on the footer row: {frame}"
+        );
+        assert!(
+            frame.contains("^Q␠quit"),
+            "general shortcuts must stay on the footer row: {frame}"
+        );
+        assert!(
+            frame.contains("z␠bloom"),
+            "gesture key hints must show on the activity row when idle: {frame}"
+        );
+        assert!(
+            frame.contains("x␠lift"),
+            "gesture key hints must show on the activity row when idle: {frame}"
+        );
     }
 
     #[test]
