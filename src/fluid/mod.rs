@@ -7,6 +7,7 @@
 
 use std::error::Error;
 use std::f32::consts::TAU;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -45,6 +46,7 @@ mod engine;
 mod gesture;
 mod interaction;
 mod module;
+mod osc;
 mod palette;
 mod range_epoch;
 mod registry;
@@ -142,9 +144,9 @@ impl FluidTelemetry {
 
 const APP_ID: &str = "nooise";
 
-pub(crate) fn run() -> Result<(), Box<dyn Error>> {
+pub(crate) fn run(osc: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
-    run_with_song_state(randomized_start_song(&mut rng))
+    run_with_song_state(randomized_start_song(&mut rng), osc)
 }
 
 fn randomized_start_song(rng: &mut impl Rng) -> SongState {
@@ -153,24 +155,33 @@ fn randomized_start_song(rng: &mut impl Rng) -> SongState {
     SongState::from_controls(controls)
 }
 
-pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run_with_song_state(
+    initial_song: SongState,
+    osc: Option<SocketAddr>,
+) -> Result<(), Box<dyn Error>> {
     // Interactive start: no morph running. `A` can begin one live, heading
     // toward the built-in states from wherever the user currently is.
     let auto_states = decode_auto_states();
-    run_interactive(initial_song, no_morph(), auto_states, DEFAULT_AUTO_BARS)
+    run_interactive(
+        initial_song,
+        no_morph(),
+        auto_states,
+        DEFAULT_AUTO_BARS,
+        osc,
+    )
 }
 
 /// Run the live interactive TUI already morphing forever between the built-in
 /// `AUTO_STATES` over `bars`-bar legs (`nooise auto [BARS]`). `A` toggles it off
 /// — as does touching any parameter — and back on from the current state.
-pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run_auto(bars: u32, osc: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
     let states = decode_auto_states();
     let initial_song = states[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
         states.clone(),
         bars,
     ))));
-    run_interactive(initial_song, morph, states, bars)
+    run_interactive(initial_song, morph, states, bars, osc)
 }
 
 /// Play built-in songs by number (`nooise 9`, `nooise 9,10,11`). One song
@@ -178,7 +189,11 @@ pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
 /// one-based to match the AUTO footer, and an unknown one is an error rather
 /// than a silent skip — a mistyped song should say so, not quietly play
 /// something else.
-pub(crate) fn run_songs(numbers: &[usize], bars: u32) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run_songs(
+    numbers: &[usize],
+    bars: u32,
+    osc: Option<SocketAddr>,
+) -> Result<(), Box<dyn Error>> {
     let all = decode_auto_states();
     if numbers.is_empty() {
         return Err("expected at least one song".into());
@@ -202,18 +217,20 @@ pub(crate) fn run_songs(numbers: &[usize], bars: u32) -> Result<(), Box<dyn Erro
         numbers.to_vec(),
         bars,
     ))));
-    run_interactive(initial_song, morph, chosen, bars)
+    run_interactive(initial_song, morph, chosen, bars, osc)
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
 /// around the aggregate live session, telemetry, and morph state. `morph` starts
 /// `Some` for `nooise auto` and `None` otherwise; `auto_states`/`auto_bars` let
-/// the UI build a fresh morph when the user toggles auto mode on live.
+/// the UI build a fresh morph when the user toggles auto mode on live. `osc`
+/// names a UDP target to mirror telemetry to for external visualizers.
 fn run_interactive(
     initial_song: SongState,
     morph: Arc<ArcSwap<Option<MorphState>>>,
     auto_states: Vec<SongState>,
     auto_bars: u32,
+    osc: Option<SocketAddr>,
 ) -> Result<(), Box<dyn Error>> {
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
     let session_for_engine = session.clone();
@@ -222,6 +239,9 @@ fn run_interactive(
     let telemetry_for_engine = Arc::clone(&telemetry);
     let updates = UpdateNotice::default();
     spawn_update_check(updates.clone());
+    let _osc_emitter = osc
+        .map(|target| osc::OscEmitter::spawn(target, Arc::clone(&telemetry)))
+        .transpose()?;
 
     let _audio_output = audio::start_stream(APP_ID, move |sr| {
         FluidEngine::new_with_tonal_session_state(

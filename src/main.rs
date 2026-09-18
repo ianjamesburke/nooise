@@ -3,6 +3,7 @@
 
 use clap::{Args, Parser, Subcommand};
 use std::error::Error;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::Command;
 use update_check::check_for_update;
@@ -18,12 +19,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
     match cli.command {
         None => match cli.song {
-            None => fluid::run(),
-            Some(song) => play_song(&song, bars),
+            None => fluid::run(cli.osc),
+            Some(song) => play_song(&song, bars, cli.osc),
         },
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::Render(args)) => render(args),
-        Some(CliCommand::Auto) => fluid::run_auto(bars),
+        Some(CliCommand::Auto) => fluid::run_auto(bars, cli.osc),
     }
 }
 
@@ -44,6 +45,10 @@ struct Cli {
     /// Bars each song holds before morphing into the next. Defaults to 64.
     #[arg(long, global = true)]
     bars: Option<u32>,
+    /// Mirror live telemetry (beat, chord, kick hits) as OSC over UDP to this
+    /// address, e.g. 127.0.0.1:9000, for an external visualizer.
+    #[arg(long, global = true, value_name = "ADDR")]
+    osc: Option<SocketAddr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
@@ -77,10 +82,10 @@ fn render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 /// built-in set — the same thing reached two ways, so they share one argument
 /// rather than one being a flag and the other a positional. Several numbers
 /// morph through in the order given and loop.
-fn play_song(song: &str, bars: u32) -> Result<(), Box<dyn Error>> {
+fn play_song(song: &str, bars: u32, osc: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
     if song.starts_with(fluid::CODE_PREFIX) {
         let state = fluid::decode_song_code(song).map_err(|error| error.to_string())?;
-        return fluid::run_with_song_state(state);
+        return fluid::run_with_song_state(state, osc);
     }
     let numbers = song
         .split(',')
@@ -90,7 +95,7 @@ fn play_song(song: &str, bars: u32) -> Result<(), Box<dyn Error>> {
                 .map_err(|_| format!("{part:?} is neither a song number nor an n1_ code").into())
         })
         .collect::<Result<Vec<usize>, Box<dyn Error>>>()?;
-    fluid::run_songs(&numbers, bars)
+    fluid::run_songs(&numbers, bars, osc)
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {
@@ -138,7 +143,28 @@ mod tests {
 
     #[test]
     fn no_args_runs_app() {
-        assert_eq!(parse(&[]).unwrap().command, None);
+        let cli = parse(&[]).unwrap();
+        assert_eq!(cli.command, None);
+        assert_eq!(cli.osc, None);
+    }
+
+    /// `--osc` is a global: it reads the same before a song, after it, and on
+    /// `auto`, and a value that is not a socket address is refused.
+    #[test]
+    fn osc_target_is_a_global_socket_address() {
+        let target = "127.0.0.1:9000".parse().ok();
+        for args in [
+            &["--osc", "127.0.0.1:9000"][..],
+            &["9", "--osc", "127.0.0.1:9000"],
+            &["--osc", "127.0.0.1:9000", "9"],
+            &["auto", "--osc", "127.0.0.1:9000"],
+        ] {
+            assert_eq!(parse(args).unwrap().osc, target, "{args:?}");
+        }
+        assert_eq!(
+            parse(&["--osc", "localhost"]).unwrap_err().kind(),
+            ErrorKind::ValueValidation
+        );
     }
 
     /// A song is one argument whether it is named by code or by number, and

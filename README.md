@@ -59,6 +59,15 @@ See [live performance](docs/PERFORMANCE.md) for overlap, saving, the clock
 stop, and the Jump leader.
 
 ```sh
+nooise --osc 127.0.0.1:9000
+```
+
+Mirrors the beat, chord, and every kick hit as OSC over UDP to that address,
+for an external visualizer such as [foorm](https://github.com/ianjamesburke/foorm)
+or TouchDesigner's OSC In CHOP. Off unless asked for. See
+`src/fluid/osc.rs` for the address vocabulary.
+
+```sh
 nooise --version
 ```
 
