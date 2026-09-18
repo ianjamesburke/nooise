@@ -13,7 +13,7 @@ use crate::fluid::interaction::{
 /// The minimum supported frame. Every top-level and nested owner must render
 /// a full buffer at this size.
 pub(crate) const MIN_TERMINAL_WIDTH: u16 = 46;
-pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 10;
+pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Who the keyboard belongs to this frame. Exactly one owner is live, which
@@ -129,6 +129,10 @@ pub(crate) struct UiViewModel<'a> {
     pub(crate) mute: &'a MuteState,
     pub(crate) cursor_visible: bool,
     pub(crate) help: HelpSurface,
+    /// Held/returning gesture readout for the footer's own row. Empty when no
+    /// gesture is active, so the row it renders into stays blank rather than
+    /// disappearing — that keeps the panel height stable during play.
+    pub(crate) activity: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,12 +304,13 @@ impl<'a> UiViewModel<'a> {
             &session.automation,
         );
         let gestures = gesture_activities(session, presentation.gesture_now_seconds);
+        let activity = gesture_activity_line(&gestures);
         let help = help_surface(
             owner,
             &mode,
             navigation,
             presentation.notices,
-            &gestures,
+            !gestures.is_empty(),
             presentation.gesture_holds_available,
         );
 
@@ -321,8 +326,33 @@ impl<'a> UiViewModel<'a> {
             mute: &session.muted,
             cursor_visible: presentation.cursor_visible,
             help,
+            activity,
         }
     }
+}
+
+/// The gesture-activity row's text: one entry per held/returning envelope,
+/// or empty when none are active. Kept separate from `help_surface` so a
+/// gesture readout never crowds out the exits/mode help sharing the footer.
+fn gesture_activity_line(gestures: &[GestureActivity]) -> String {
+    gestures
+        .iter()
+        .map(|gesture| {
+            let direction = match gesture.direction {
+                GestureDirection::Rising => "↑",
+                GestureDirection::Held => "●",
+                GestureDirection::Returning => "↓",
+            };
+            let restored = if gesture.restored { "R" } else { "" };
+            format!(
+                "{} {} {}%{direction}{restored}",
+                gesture.tab.name(),
+                gesture.kind.name(),
+                gesture.amount_pct
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn gesture_activities(session: &LiveSessionSnapshot, now_seconds: f64) -> Vec<GestureActivity> {
@@ -552,7 +582,7 @@ fn help_surface(
     mode: &ModeSurface<'_>,
     navigation: NavigationView,
     notices: ViewNotices,
-    gestures: &[GestureActivity],
+    holding_gesture: bool,
     gesture_holds_available: bool,
 ) -> HelpSurface {
     if owner != KeyboardOwner::Browsing {
@@ -575,31 +605,12 @@ fn help_surface(
         return HelpSurface::Notice { kind, text };
     }
 
-    if !gestures.is_empty() {
-        let activities = gestures
-            .iter()
-            .map(|gesture| {
-                let direction = match gesture.direction {
-                    GestureDirection::Rising => "↑",
-                    GestureDirection::Held => "●",
-                    GestureDirection::Returning => "↓",
-                };
-                let restored = if gesture.restored { "R" } else { "" };
-                format!(
-                    "{} {} {}%{direction}{restored}",
-                    gesture.tab.name(),
-                    gesture.kind.name(),
-                    gesture.amount_pct
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" · ");
-        // Keep both exits ahead of the expandable activity list so they stay
-        // visible at the 46-column minimum even when gestures overlap.
-        let text = format!("Esc release · ^Q quit · {activities}");
+    if holding_gesture {
+        // The activity row (rendered above this one) carries the expandable
+        // per-gesture detail; this row only needs to name the two exits.
         return HelpSurface::Owner {
             owner: KeyboardOwner::Browsing,
-            text,
+            text: "Esc release · ^Q quit".to_string(),
         };
     }
 
@@ -636,11 +647,8 @@ fn help_surface(
     }
     HelpSurface::Browsing {
         text: if gesture_holds_available {
-            GestureKind::ALL
-                .iter()
-                .map(|kind| format!("{} {}", kind.key(), kind.name().to_ascii_lowercase()))
-                .collect::<Vec<_>>()
-                .join("  ")
+            "BROWSE · jk select   h/l adjust   r random   Shift+R randomize set   / find   f LFO   e ENV   a auto   T units   ^Q quit"
+                .to_string()
         } else {
             "BROWSE · hold gestures require key-up support".to_string()
         },

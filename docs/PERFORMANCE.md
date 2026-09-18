@@ -14,8 +14,11 @@ stays fixed while the key is down, so arrows and Tab remain available and
 different gestures can overlap on different layers. Pressing during a return
 on the same layer catches it at its current amount.
 
-The footer names the target and amount: `↑` means rising, `↓` returning,
-and `R` marks a restored hold loaded from a song code.
+The footer is two rows: a gesture-activity row above a stable exits/mode-help
+row, so a held gesture never crowds out `Esc release · ^Q quit` or any other
+footer text. The activity row names the target and amount — `↑` means rising,
+`↓` returning, and `R` marks a restored hold loaded from a song code — and is
+blank when no gesture is active.
 
 These are temporary effects over the playing song. User module slots remain
 intact, automation and auto-morph continue, and edits made during a gesture
@@ -75,4 +78,5 @@ and existing bindings.
    Sequence according to the terminal's release capability.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
-checks. The minimum supported frame remains 46x10.
+checks. The minimum supported frame is 46x11 — the two-row footer costs the
+control-row area one line versus the former 46x10.

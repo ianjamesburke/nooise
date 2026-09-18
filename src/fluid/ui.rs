@@ -115,7 +115,8 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             Constraint::Length(1), // 2 tab line
             Constraint::Length(1), // 3 pad
             Constraint::Min(0),    // 4 control rows
-            Constraint::Length(1), // 5 footer
+            Constraint::Length(1), // 5 gesture activity row (blank when idle)
+            Constraint::Length(1), // 6 footer: exits/mode help/notices
         ])
         .split(inner);
 
@@ -151,7 +152,8 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
 
     draw_tabs(f, layout[2], &frame);
     draw_control_rows(f, layout[4], &frame);
-    draw_footer(f, layout[5], view);
+    draw_activity(f, layout[5], view);
+    draw_footer(f, layout[6], view);
 
     if let ModeSurface::Palette(palette) = &view.mode {
         draw_palette(
@@ -542,6 +544,17 @@ fn slider_markers(
         envelope: has_envelope.then(|| marker(&[], envelopes)),
         shadow,
     }
+}
+
+/// The gesture-activity row, above the footer proper. Blank when no gesture
+/// is held or returning, so its presence never shifts the layout above it.
+fn draw_activity(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
+    f.render_widget(
+        Paragraph::new(view.activity.as_str())
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(EMPHASIS_YELLOW)),
+        area,
+    );
 }
 
 /// The one help/notice line, emphasized when it is carrying something the
