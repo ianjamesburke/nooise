@@ -133,12 +133,14 @@ pub(crate) struct FluidTelemetry {
     /// the latest chord change, stored before `chord_slot` is written.
     pub(crate) chord_attack_bits: AtomicU32,
     pub(crate) chord_release_bits: AtomicU32,
-    /// Master output RMS over the latest `LEVEL_BLOCK` frames (`f32::to_bits`):
-    /// what is actually audible, so consumers can tell silence from tempo.
-    pub(crate) level_bits: AtomicU32,
+    /// Per-`Tab` output RMS over the latest `LEVEL_BLOCK` frames
+    /// (`f32::to_bits`), each voice as it enters the mix (post effects, mute,
+    /// and mix weight) and `Tab::Master` as the final output: what is actually
+    /// audible, so consumers can tell silence from tempo and see every layer.
+    pub(crate) level_bits: [AtomicU32; TAB_COUNT],
 }
 
-/// Frames per master-level measurement (~5.8 ms at 44.1 kHz).
+/// Frames per level measurement (~5.8 ms at 44.1 kHz).
 pub(crate) const LEVEL_BLOCK: u64 = 256;
 
 impl FluidTelemetry {
@@ -164,8 +166,13 @@ impl FluidTelemetry {
         self.chord_slot.store(slot, Ordering::Release);
     }
 
-    pub(crate) fn publish_level(&self, rms: f32) {
-        self.level_bits.store(rms.to_bits(), Ordering::Relaxed);
+    pub(crate) fn publish_level(&self, tab: Tab, rms: f32) {
+        self.level_bits[tab as usize].store(rms.to_bits(), Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn level(&self, tab: Tab) -> f32 {
+        f32::from_bits(self.level_bits[tab as usize].load(Ordering::Relaxed))
     }
 }
 

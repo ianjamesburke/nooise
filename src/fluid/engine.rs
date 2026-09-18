@@ -527,8 +527,8 @@ pub(crate) struct FluidEngine {
     pub(crate) morph: Arc<ArcSwap<Option<MorphState>>>,
     morph_writer: MorphWriter,
     pub(crate) telemetry: Arc<FluidTelemetry>,
-    /// Sum of squared master output samples since the last `LEVEL_BLOCK`.
-    level_acc: f32,
+    /// Per-`Tab` sum of squared output samples since the last `LEVEL_BLOCK`.
+    level_acc: [f32; TAB_COUNT],
     pub(crate) snapshot: FluidControls,
     gesture_snapshot: GestureState,
     transport: Transport,
@@ -589,7 +589,7 @@ impl FluidEngine {
             morph,
             morph_writer: MorphWriter::default(),
             telemetry,
-            level_acc: 0.0,
+            level_acc: [0.0; TAB_COUNT],
             snapshot,
             gesture_snapshot: live.gestures.clone(),
             transport: live.transport,
@@ -743,6 +743,11 @@ impl StereoEngine for FluidEngine {
             arp: arp_r,
             lead: lead_r,
         };
+        let heard_l = voices_l.weighted(fade);
+        let heard_r = voices_r.weighted(fade);
+        for (acc, (l, r)) in self.level_acc.iter_mut().zip(heard_l.iter().zip(&heard_r)) {
+            *acc += l * l + r * r;
+        }
         let raw_l = voices_l.sum(fade);
         let raw_r = voices_r.sum(fade);
         let master = self.module_fx.process(
@@ -759,11 +764,13 @@ impl StereoEngine for FluidEngine {
                 .process(master.0, master.1, &effective.master),
             mute_gains[Tab::Master as usize],
         );
-        self.level_acc += out.0 * out.0 + out.1 * out.1;
+        self.level_acc[Tab::Master as usize] += out.0 * out.0 + out.1 * out.1;
         if self.current_sample.is_multiple_of(LEVEL_BLOCK) {
-            self.telemetry
-                .publish_level((self.level_acc / (2 * LEVEL_BLOCK) as f32).sqrt());
-            self.level_acc = 0.0;
+            for (tab, acc) in Tab::all().into_iter().zip(&mut self.level_acc) {
+                self.telemetry
+                    .publish_level(tab, (*acc / (2 * LEVEL_BLOCK) as f32).sqrt());
+                *acc = 0.0;
+            }
         }
         out
     }
@@ -791,6 +798,8 @@ struct VoiceMix {
 }
 
 impl VoiceMix {
+    /// The mix. Kept as one expression: its rounding order is what the
+    /// golden render pins, so it is not rebuilt from `weighted`.
     #[inline]
     fn sum(&self, fade: f32) -> f32 {
         (self.pad
@@ -802,6 +811,22 @@ impl VoiceMix {
             + self.arp
             + self.lead)
             * fade
+    }
+
+    /// Each voice at its mix weight, indexed by `Tab` (`Tab::Master` stays
+    /// zero here), for level telemetry only.
+    #[inline]
+    fn weighted(&self, fade: f32) -> [f32; TAB_COUNT] {
+        let mut out = [0.0; TAB_COUNT];
+        out[Tab::Chords as usize] = self.pad * fade;
+        out[Tab::Perc as usize] = self.perc * 0.6 * fade;
+        out[Tab::Bass as usize] = self.bass * 0.75 * fade;
+        out[Tab::Kick as usize] = self.kick * 0.7 * fade;
+        out[Tab::Tonal as usize] = self.tonal * fade;
+        out[Tab::Clap as usize] = self.clap * 0.65 * fade;
+        out[Tab::Arp as usize] = self.arp * fade;
+        out[Tab::Lead as usize] = self.lead * fade;
+        out
     }
 }
 

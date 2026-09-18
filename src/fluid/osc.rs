@@ -10,6 +10,8 @@
 //! - `/nooise/beat` `f32` — engine beat position, sent whenever it advances
 //! - `/nooise/level` `f32` — master output RMS, sent whenever it changes;
 //!   zero means silence no matter what the tempo is doing
+//! - `/nooise/voice/<voice>/level` `f32` — that voice's RMS as it enters the
+//!   mix (post effects, mute, and mix weight), for `<voice>` in `VOICES`
 //! - `/nooise/chord` `i32 f32 f32` — pad chord index plus the attack and
 //!   release seconds of the layer it voiced, sent on change
 //! - `/nooise/voice/kick` `f32` — one message per kick hit carrying
@@ -25,9 +27,21 @@ use std::time::Duration;
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, encoder};
 
 use super::FluidTelemetry;
+use super::registry::{TAB_COUNT, Tab};
 
 pub(crate) const ADDR_BEAT: &str = "/nooise/beat";
 pub(crate) const ADDR_LEVEL: &str = "/nooise/level";
+/// Voice names in `Tab` order, minus `Tab::Master` (which is `ADDR_LEVEL`).
+pub(crate) const VOICES: [&str; TAB_COUNT - 1] = [
+    "pad", "perc", "bass", "kick", "tonal", "clap", "arp", "lead",
+];
+
+fn level_addr(tab: Tab) -> String {
+    match tab {
+        Tab::Master => ADDR_LEVEL.to_string(),
+        voice => format!("/nooise/voice/{}/level", VOICES[voice as usize]),
+    }
+}
 pub(crate) const ADDR_CHORD: &str = "/nooise/chord";
 pub(crate) const ADDR_KICK: &str = "/nooise/voice/kick";
 
@@ -83,7 +97,7 @@ struct Mirrored {
     chord_attack: f32,
     chord_release: f32,
     beat_bits: u64,
-    level_bits: u32,
+    level_bits: [u32; TAB_COUNT],
 }
 
 impl Mirrored {
@@ -99,7 +113,7 @@ impl Mirrored {
             chord_attack: f32::from_bits(telemetry.chord_attack_bits.load(Ordering::Relaxed)),
             chord_release: f32::from_bits(telemetry.chord_release_bits.load(Ordering::Relaxed)),
             beat_bits: telemetry.beat_bits.load(Ordering::Relaxed),
-            level_bits: telemetry.level_bits.load(Ordering::Relaxed),
+            level_bits: std::array::from_fn(|i| telemetry.level_bits[i].load(Ordering::Relaxed)),
         }
     }
 
@@ -114,11 +128,16 @@ impl Mirrored {
                 vec![OscType::Float(f64::from_bits(now.beat_bits) as f32)],
             ));
         }
-        if now.level_bits != self.level_bits {
-            out.push(message(
-                ADDR_LEVEL,
-                vec![OscType::Float(f32::from_bits(now.level_bits))],
-            ));
+        for (tab, (new, old)) in Tab::all()
+            .into_iter()
+            .zip(now.level_bits.iter().zip(&self.level_bits))
+        {
+            if new != old {
+                out.push(message(
+                    &level_addr(tab),
+                    vec![OscType::Float(f32::from_bits(*new))],
+                ));
+            }
         }
         if now.chord != self.chord {
             out.push(message(
@@ -191,23 +210,31 @@ mod tests {
         telemetry.publish_kick(0.75);
         telemetry.publish_chord(2, 6.0, 8.0);
         telemetry.publish_beat(4.5);
-        telemetry.publish_level(0.1);
+        telemetry.publish_level(Tab::Bass, 0.05);
+        telemetry.publish_level(Tab::Master, 0.1);
         let out = mirrored.diff(&telemetry);
         let addrs: Vec<&str> = out.iter().map(|m| m.addr.as_str()).collect();
         assert_eq!(
             addrs,
             [
-                ADDR_BEAT, ADDR_LEVEL, ADDR_CHORD, ADDR_KICK, ADDR_KICK, ADDR_KICK
+                ADDR_BEAT,
+                "/nooise/voice/bass/level",
+                ADDR_LEVEL,
+                ADDR_CHORD,
+                ADDR_KICK,
+                ADDR_KICK,
+                ADDR_KICK
             ]
         );
         assert_eq!(out[0].args, vec![OscType::Float(4.5)]);
-        assert_eq!(out[1].args, vec![OscType::Float(0.1)]);
+        assert_eq!(out[1].args, vec![OscType::Float(0.05)]);
+        assert_eq!(out[2].args, vec![OscType::Float(0.1)]);
         assert_eq!(
-            out[2].args,
+            out[3].args,
             vec![OscType::Int(2), OscType::Float(6.0), OscType::Float(8.0)]
         );
         // Hits inside one poll share the latest level.
-        assert_eq!(out[3].args, vec![OscType::Float(0.75)]);
+        assert_eq!(out[4].args, vec![OscType::Float(0.75)]);
         assert!(mirrored.diff(&telemetry).is_empty());
     }
 
@@ -228,6 +255,70 @@ mod tests {
         let addrs: Vec<String> = messages_in(packet).into_iter().map(|m| m.addr).collect();
         assert_eq!(addrs, [ADDR_KICK]);
         drop(emitter);
+    }
+
+    /// Level profile of a built-in song, for calibrating consumer
+    /// sensitivity from real material rather than guesses:
+    /// `NOOISE_SONG=12 cargo test --release song_level_profile -- --ignored --nocapture`
+    #[test]
+    #[ignore = "prints a calibration table; run on demand"]
+    fn song_level_profile() {
+        use crate::audio::StereoEngine;
+        use crate::fluid::auto::decode_auto_states;
+        use crate::fluid::{FluidEngine, LEVEL_BLOCK, LiveSession, LiveSessionSnapshot, no_morph};
+
+        let env_or = |key: &str, default: u64| {
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        };
+        let number = env_or("NOOISE_SONG", 12) as usize;
+        let bars = env_or("NOOISE_BARS", 32);
+        let song = decode_auto_states()
+            .into_iter()
+            .nth(number - 1)
+            .unwrap_or_else(|| panic!("no built-in song {number}"));
+        let sample_rate = 48_000.0;
+        let bpm = song.controls.master.bpm as f64;
+        let frames = (bars as f64 * 4.0 * 60.0 / bpm * sample_rate as f64) as u64;
+        let telemetry = Arc::new(FluidTelemetry::default());
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(&song));
+        let mut engine = FluidEngine::new(sample_rate, session, no_morph(), Arc::clone(&telemetry));
+        let mut blocks: Vec<Vec<f32>> = vec![Vec::new(); TAB_COUNT];
+        for frame in 1..=frames {
+            engine.next_stereo();
+            if frame % LEVEL_BLOCK == 0 {
+                for (tab, series) in Tab::all().into_iter().zip(&mut blocks) {
+                    series.push(telemetry.level(tab));
+                }
+            }
+        }
+        println!(
+            "song {number}, {bars} bars at {bpm} bpm, {} blocks per voice",
+            blocks[0].len()
+        );
+        println!(
+            "{:<8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            "voice", "p50", "p90", "p99", "max", "active%"
+        );
+        for (tab, series) in Tab::all().into_iter().zip(&mut blocks) {
+            series.sort_by(f32::total_cmp);
+            let at = |q: f64| series[((series.len() - 1) as f64 * q) as usize];
+            let active = series.iter().filter(|v| **v > 1e-4).count() as f64 / series.len() as f64;
+            let name = match tab {
+                Tab::Master => "master",
+                voice => VOICES[voice as usize],
+            };
+            println!(
+                "{name:<8} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>7.0}%",
+                at(0.5),
+                at(0.9),
+                at(0.99),
+                series[series.len() - 1],
+                active * 100.0
+            );
+        }
     }
 
     /// The whole path a visualizer depends on: engine renders, telemetry
