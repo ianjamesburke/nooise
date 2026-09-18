@@ -144,6 +144,9 @@ impl FluidTelemetry {
 
 const APP_ID: &str = "nooise";
 
+/// Where a bare `--osc` sends: foorm's default listen address.
+pub(crate) const DEFAULT_OSC_TARGET: &str = "127.0.0.1:9000";
+
 pub(crate) fn run(osc: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
     run_with_song_state(randomized_start_song(&mut rng), osc)

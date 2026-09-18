@@ -45,9 +45,17 @@ struct Cli {
     /// Bars each song holds before morphing into the next. Defaults to 64.
     #[arg(long, global = true)]
     bars: Option<u32>,
-    /// Mirror live telemetry (beat, chord, kick hits) as OSC over UDP to this
-    /// address, e.g. 127.0.0.1:9000, for an external visualizer.
-    #[arg(long, global = true, value_name = "ADDR")]
+    /// Mirror live telemetry (beat, chord, kick hits) as OSC over UDP for an
+    /// external visualizer. Bare `--osc` targets 127.0.0.1:9000, foorm's
+    /// default listen address; give ADDR to send elsewhere.
+    #[arg(
+        long,
+        global = true,
+        value_name = "ADDR",
+        num_args = 0..=1,
+        default_missing_value = fluid::DEFAULT_OSC_TARGET,
+        require_equals = true
+    )]
     osc: Option<SocketAddr>,
 }
 
@@ -149,20 +157,28 @@ mod tests {
     }
 
     /// `--osc` is a global: it reads the same before a song, after it, and on
-    /// `auto`, and a value that is not a socket address is refused.
+    /// `auto`. Bare `--osc` means foorm's default port; `--osc=ADDR` sends
+    /// elsewhere; a value that is not a socket address is refused. The value
+    /// needs `=` so a bare `--osc` never eats a following song argument.
     #[test]
-    fn osc_target_is_a_global_socket_address() {
-        let target = "127.0.0.1:9000".parse().ok();
+    fn osc_target_defaults_to_foorm_and_accepts_an_address() {
+        let default = "127.0.0.1:9000".parse().ok();
         for args in [
-            &["--osc", "127.0.0.1:9000"][..],
-            &["9", "--osc", "127.0.0.1:9000"],
-            &["--osc", "127.0.0.1:9000", "9"],
-            &["auto", "--osc", "127.0.0.1:9000"],
+            &["--osc"][..],
+            &["9", "--osc"],
+            &["--osc", "9"],
+            &["auto", "--osc"],
         ] {
-            assert_eq!(parse(args).unwrap().osc, target, "{args:?}");
+            let cli = parse(args).unwrap();
+            assert_eq!(cli.osc, default, "{args:?}");
         }
+        assert_eq!(parse(&["--osc", "9"]).unwrap().song.as_deref(), Some("9"));
         assert_eq!(
-            parse(&["--osc", "localhost"]).unwrap_err().kind(),
+            parse(&["--osc=10.0.0.5:7000", "9"]).unwrap().osc,
+            "10.0.0.5:7000".parse().ok()
+        );
+        assert_eq!(
+            parse(&["--osc=localhost"]).unwrap_err().kind(),
             ErrorKind::ValueValidation
         );
     }
