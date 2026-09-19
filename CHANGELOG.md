@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [2.5.2] — 2026-09-19
+
+### Fixed
+- fix: stop Windows key releases from firing every binding twice (#40)
 ## [2.5.1] — 2026-09-19
 
 ### Added
