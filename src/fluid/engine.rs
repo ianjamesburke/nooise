@@ -771,6 +771,12 @@ impl StereoEngine for FluidEngine {
                     .publish_level(tab, (*acc / (2 * LEVEL_BLOCK) as f32).sqrt());
                 *acc = 0.0;
             }
+            for (kind, amount) in GestureKind::ALL
+                .into_iter()
+                .zip(self.gesture_snapshot.amounts(now_seconds))
+            {
+                self.telemetry.publish_gesture(kind, amount);
+            }
         }
         out
     }

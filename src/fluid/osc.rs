@@ -12,10 +12,15 @@
 //!   zero means silence no matter what the tempo is doing
 //! - `/nooise/voice/<voice>/level` `f32` — that voice's RMS as it enters the
 //!   mix (post effects, mute, and mix weight), for `<voice>` in `VOICES`
-//! - `/nooise/chord` `i32 f32 f32` — pad chord index plus the attack and
-//!   release seconds of the layer it voiced, sent on change
+//! - `/nooise/chord` `i32 f32 f32` — the progression table slot (0..8) the
+//!   pad is sounding plus the attack and release seconds of the layer it
+//!   voiced, sent on change
 //! - `/nooise/voice/kick` `f32` — one message per kick hit carrying
 //!   `kick.level` (0 = inaudible)
+//! - `/nooise/gesture/<gesture>` `f32` — that live gesture's amount over the
+//!   Master bus (0..1), sent whenever it changes, for `<gesture>` in
+//!   `GESTURES`; a visual can rise and return with it. `thin` is retired
+//!   with its gesture and never sent
 
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
@@ -27,6 +32,7 @@ use std::time::Duration;
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, encoder};
 
 use super::FluidTelemetry;
+use super::gesture::{GESTURE_COUNT, GestureKind};
 use super::registry::{TAB_COUNT, Tab};
 
 pub(crate) const ADDR_BEAT: &str = "/nooise/beat";
@@ -41,6 +47,12 @@ fn level_addr(tab: Tab) -> String {
         Tab::Master => ADDR_LEVEL.to_string(),
         voice => format!("/nooise/voice/{}/level", VOICES[voice as usize]),
     }
+}
+/// Gesture names in `GestureKind::ALL` order.
+pub(crate) const GESTURES: [&str; GESTURE_COUNT] = ["bloom", "submerge", "echo", "lift"];
+
+fn gesture_addr(kind: GestureKind) -> String {
+    format!("/nooise/gesture/{}", GESTURES[kind as usize])
 }
 pub(crate) const ADDR_CHORD: &str = "/nooise/chord";
 pub(crate) const ADDR_KICK: &str = "/nooise/voice/kick";
@@ -98,6 +110,7 @@ struct Mirrored {
     chord_release: f32,
     beat_bits: u64,
     level_bits: [u32; TAB_COUNT],
+    gesture_bits: [u32; GESTURE_COUNT],
 }
 
 impl Mirrored {
@@ -114,6 +127,9 @@ impl Mirrored {
             chord_release: f32::from_bits(telemetry.chord_release_bits.load(Ordering::Relaxed)),
             beat_bits: telemetry.beat_bits.load(Ordering::Relaxed),
             level_bits: std::array::from_fn(|i| telemetry.level_bits[i].load(Ordering::Relaxed)),
+            gesture_bits: std::array::from_fn(|i| {
+                telemetry.gesture_bits[i].load(Ordering::Relaxed)
+            }),
         }
     }
 
@@ -135,6 +151,17 @@ impl Mirrored {
             if new != old {
                 out.push(message(
                     &level_addr(tab),
+                    vec![OscType::Float(f32::from_bits(*new))],
+                ));
+            }
+        }
+        for (kind, (new, old)) in GestureKind::ALL
+            .into_iter()
+            .zip(now.gesture_bits.iter().zip(&self.gesture_bits))
+        {
+            if new != old {
+                out.push(message(
+                    &gesture_addr(kind),
                     vec![OscType::Float(f32::from_bits(*new))],
                 ));
             }
@@ -212,6 +239,7 @@ mod tests {
         telemetry.publish_beat(4.5);
         telemetry.publish_level(Tab::Bass, 0.05);
         telemetry.publish_level(Tab::Master, 0.1);
+        telemetry.publish_gesture(GestureKind::Echo, 0.6);
         let out = mirrored.diff(&telemetry);
         let addrs: Vec<&str> = out.iter().map(|m| m.addr.as_str()).collect();
         assert_eq!(
@@ -220,6 +248,7 @@ mod tests {
                 ADDR_BEAT,
                 "/nooise/voice/bass/level",
                 ADDR_LEVEL,
+                "/nooise/gesture/echo",
                 ADDR_CHORD,
                 ADDR_KICK,
                 ADDR_KICK,
@@ -229,13 +258,30 @@ mod tests {
         assert_eq!(out[0].args, vec![OscType::Float(4.5)]);
         assert_eq!(out[1].args, vec![OscType::Float(0.05)]);
         assert_eq!(out[2].args, vec![OscType::Float(0.1)]);
+        assert_eq!(out[3].args, vec![OscType::Float(0.6)]);
         assert_eq!(
-            out[3].args,
+            out[4].args,
             vec![OscType::Int(2), OscType::Float(6.0), OscType::Float(8.0)]
         );
         // Hits inside one poll share the latest level.
-        assert_eq!(out[4].args, vec![OscType::Float(0.75)]);
+        assert_eq!(out[5].args, vec![OscType::Float(0.75)]);
         assert!(mirrored.diff(&telemetry).is_empty());
+    }
+
+    /// External visualizers match these strings; a new gesture extends the
+    /// list, and a retired one leaves it without its name being reused.
+    #[test]
+    fn gesture_addresses_are_the_published_contract() {
+        let addrs: Vec<String> = GestureKind::ALL.into_iter().map(gesture_addr).collect();
+        assert_eq!(
+            addrs,
+            [
+                "/nooise/gesture/bloom",
+                "/nooise/gesture/submerge",
+                "/nooise/gesture/echo",
+                "/nooise/gesture/lift",
+            ]
+        );
     }
 
     #[test]

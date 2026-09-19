@@ -138,6 +138,9 @@ pub(crate) struct FluidTelemetry {
     /// and mix weight) and `Tab::Master` as the final output: what is actually
     /// audible, so consumers can tell silence from tempo and see every layer.
     pub(crate) level_bits: [AtomicU32; TAB_COUNT],
+    /// Per-`GestureKind` Master-bus amount (`f32::to_bits`), published each
+    /// `LEVEL_BLOCK` frames so a consumer can mirror a held gesture.
+    pub(crate) gesture_bits: [AtomicU32; GESTURE_COUNT],
 }
 
 /// Frames per level measurement (~5.8 ms at 44.1 kHz).
@@ -168,6 +171,15 @@ impl FluidTelemetry {
 
     pub(crate) fn publish_level(&self, tab: Tab, rms: f32) {
         self.level_bits[tab as usize].store(rms.to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn publish_gesture(&self, kind: GestureKind, amount: f32) {
+        self.gesture_bits[kind as usize].store(amount.to_bits(), Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gesture(&self, kind: GestureKind) -> f32 {
+        f32::from_bits(self.gesture_bits[kind as usize].load(Ordering::Relaxed))
     }
 
     #[cfg(test)]

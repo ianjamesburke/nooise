@@ -62,7 +62,8 @@ stop, and the Jump leader.
 nooise --osc
 ```
 
-Mirrors the beat, chord, and every kick hit as OSC over UDP to
+Mirrors the beat, chord, every voice's level, every kick hit, and every
+held gesture as OSC over UDP to
 `127.0.0.1:9000`, where [foorm](https://github.com/ianjamesburke/foorm)
 listens by default. `--osc=ADDR` sends elsewhere, such as TouchDesigner's
 OSC In CHOP. Off unless asked for. See `src/fluid/osc.rs` for the address
