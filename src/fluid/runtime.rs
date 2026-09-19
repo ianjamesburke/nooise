@@ -135,7 +135,18 @@ impl<C: TerminalControl> TerminalLifecycle<C> {
             alternate_screen: false,
             focus_change_enabled: false,
             keyboard_flags_pushed: false,
-            capabilities: TerminalCapabilities::default(),
+            capabilities: if cfg!(windows) {
+                // Windows' console natively reports Press and Release for
+                // every key. That doesn't depend on the Kitty keyboard
+                // protocol, which crossterm always reports as unsupported
+                // on Windows regardless of which terminal you're in.
+                TerminalCapabilities {
+                    key_event_types: true,
+                    plain_key_releases: true,
+                }
+            } else {
+                TerminalCapabilities::default()
+            },
         };
 
         lifecycle.control.enable_raw()?;
