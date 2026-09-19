@@ -62,7 +62,8 @@ impl GesturePlayer {
         let event = normalize_key_event(
             KeyEvent::new_with_kind(code, modifiers, phase),
             self.capabilities,
-        );
+        )
+        .expect("full capabilities report every key event");
         let step = coordinate_production_event(
             &mut self.model,
             &event,

@@ -810,15 +810,15 @@ impl TransportEvent {
     }
 }
 
-fn normalize_event(event: Event, capabilities: TerminalCapabilities) -> TransportEvent {
-    match event {
-        Event::Key(key) => normalize_key_event(key, capabilities),
+fn normalize_event(event: Event, capabilities: TerminalCapabilities) -> Option<TransportEvent> {
+    Some(match event {
+        Event::Key(key) => return normalize_key_event(key, capabilities),
         Event::Resize(width, height) => TransportEvent::Resize { width, height },
         Event::FocusGained => TransportEvent::FocusGained,
         Event::FocusLost => TransportEvent::FocusLost,
         Event::Paste(text) => TransportEvent::Paste(text),
         Event::Mouse(mouse) => TransportEvent::Mouse(format!("{mouse:?}")),
-    }
+    })
 }
 
 /// Turn a Crossterm key event into transport facts — identity, phase,
@@ -826,12 +826,15 @@ fn normalize_event(event: Event, capabilities: TerminalCapabilities) -> Transpor
 ///
 /// Phase is the load-bearing part: with keyboard enhancement the reported kind
 /// is trusted, and without it every event is a Press, because a legacy
-/// terminal's repeat and release reports cannot be told apart. No musical or
-/// semantic meaning is assigned here; that is the kernel's job.
+/// terminal's repeat and release reports cannot be told apart. A release
+/// arriving without enhancement is dropped rather than flattened into a
+/// Press: the Windows console reports key-up for every key regardless of
+/// enhancement, and coercing those would fire every binding twice. No musical
+/// or semantic meaning is assigned here; that is the kernel's job.
 pub(crate) fn normalize_key_event(
     event: KeyEvent,
     capabilities: TerminalCapabilities,
-) -> TransportEvent {
+) -> Option<TransportEvent> {
     let phase = if capabilities.key_event_types {
         match event.kind {
             KeyEventKind::Press => InputPhase::Press,
@@ -842,16 +845,19 @@ pub(crate) fn normalize_key_event(
     } else {
         // Legacy terminals report no trustworthy phase distinction. Preserve
         // ordinary commands while ensuring ambiguous input cannot become a hold.
-        InputPhase::Press
+        match event.kind {
+            KeyEventKind::Press | KeyEventKind::Repeat => InputPhase::Press,
+            KeyEventKind::Release => return None,
+        }
     };
-    TransportEvent::Key {
+    Some(TransportEvent::Key {
         key: TransportKey {
             code: normalize_key_code(event.code),
             modifiers: normalize_modifiers(event.modifiers),
         },
         phase,
         repeat_count: 1,
-    }
+    })
 }
 
 fn normalize_key_code(code: KeyCode) -> PhysicalKey {
@@ -907,7 +913,10 @@ fn normalize_modifiers(modifiers: KeyModifiers) -> Modifiers {
 /// scripts them, so the same scheduler code runs in both.
 pub(crate) trait EventSource {
     fn poll(&mut self, timeout: Duration) -> io::Result<bool>;
-    fn read(&mut self) -> io::Result<TransportEvent>;
+    /// `None` means the transport delivered something that carries no input
+    /// at this terminal's capabilities; the read still counts against the
+    /// caller's budget.
+    fn read(&mut self) -> io::Result<Option<TransportEvent>>;
 }
 
 /// The production `EventSource`. Normalizes every event through
@@ -927,7 +936,7 @@ impl EventSource for CrosstermEventSource {
         event::poll(timeout)
     }
 
-    fn read(&mut self) -> io::Result<TransportEvent> {
+    fn read(&mut self) -> io::Result<Option<TransportEvent>> {
         event::read().map(|event| normalize_event(event, self.capabilities))
     }
 }
@@ -1053,10 +1062,12 @@ impl Scheduler {
 
             let event = source.read()?;
             reads += 1;
-            if matches!(event, TransportEvent::Shutdown) {
-                self.shutdown_seen = true;
+            if let Some(event) = event {
+                if matches!(event, TransportEvent::Shutdown) {
+                    self.shutdown_seen = true;
+                }
+                self.admit(event);
             }
-            self.admit(event);
 
             if self.hard_frame_due(clock.now()) {
                 break;
@@ -1611,7 +1622,8 @@ mod tests {
             KeyEventKind::Release,
         );
         assert_eq!(
-            normalize_key_event(event, TerminalCapabilities::full(),),
+            normalize_key_event(event, TerminalCapabilities::full(),)
+                .expect("full capabilities report every key event"),
             TransportEvent::key(
                 PhysicalKey::Character('p'),
                 Modifiers(Modifiers::CONTROL.0 | Modifiers::SHIFT.0),
@@ -1622,16 +1634,63 @@ mod tests {
 
     #[test]
     fn reduced_capabilities_never_normalize_ambiguous_phases_as_holds() {
-        for kind in [KeyEventKind::Repeat, KeyEventKind::Release] {
-            let event = KeyEvent::new_with_kind(KeyCode::Char('p'), KeyModifiers::NONE, kind);
-            assert!(matches!(
-                normalize_key_event(event, TerminalCapabilities::default()),
-                TransportEvent::Key {
-                    phase: InputPhase::Press,
-                    ..
-                }
-            ));
-        }
+        let event =
+            KeyEvent::new_with_kind(KeyCode::Char('p'), KeyModifiers::NONE, KeyEventKind::Repeat);
+        assert!(matches!(
+            normalize_key_event(event, TerminalCapabilities::default()),
+            Some(TransportEvent::Key {
+                phase: InputPhase::Press,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn reduced_capabilities_drop_releases_so_one_keypress_is_one_press() {
+        // The Windows console reports key-up for every key whether or not
+        // keyboard enhancement is negotiated, and crossterm never reports
+        // enhancement support there. Flattening those releases into presses
+        // fired every binding twice per keystroke.
+        let capabilities = TerminalCapabilities::default();
+        let press =
+            KeyEvent::new_with_kind(KeyCode::Char('p'), KeyModifiers::NONE, KeyEventKind::Press);
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('p'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+
+        assert!(matches!(
+            normalize_key_event(press, capabilities),
+            Some(TransportEvent::Key {
+                phase: InputPhase::Press,
+                ..
+            })
+        ));
+        assert_eq!(normalize_key_event(release, capabilities), None);
+    }
+
+    #[test]
+    fn dropped_events_never_reach_the_queue_but_still_cost_a_read() {
+        let clock = FakeClock::new();
+        let mut source = DroppingSource {
+            events: VecDeque::from(vec![
+                Some(key('p', InputPhase::Press)),
+                None,
+                Some(key('q', InputPhase::Press)),
+                None,
+            ]),
+        };
+        let mut scheduler = Scheduler::new(config(), clock.now());
+        scheduler.complete_frame(clock.now());
+        let turn = scheduler
+            .collect_turn(&mut source, &clock)
+            .expect("turn must collect");
+
+        assert_eq!(
+            turn.events,
+            vec![key('p', InputPhase::Press), key('q', InputPhase::Press)]
+        );
     }
 
     #[test]
@@ -2036,11 +2095,30 @@ mod tests {
             }
         }
 
-        fn read(&mut self) -> io::Result<TransportEvent> {
+        fn read(&mut self) -> io::Result<Option<TransportEvent>> {
             self.clock.advance(self.read_cost);
             self.events
                 .pop_front()
                 .or_else(|| self.infinite.clone())
+                .map(Some)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "no event"))
+        }
+    }
+
+    /// A source whose reads can yield nothing, the way a reduced-capability
+    /// terminal's key releases do.
+    struct DroppingSource {
+        events: VecDeque<Option<TransportEvent>>,
+    }
+
+    impl EventSource for DroppingSource {
+        fn poll(&mut self, _timeout: Duration) -> io::Result<bool> {
+            Ok(!self.events.is_empty())
+        }
+
+        fn read(&mut self) -> io::Result<Option<TransportEvent>> {
+            self.events
+                .pop_front()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "no event"))
         }
     }
