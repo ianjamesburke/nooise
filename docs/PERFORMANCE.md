@@ -57,16 +57,25 @@ adjust it and `j`/`k` move as always. The leader changes nothing by itself:
 it is an address, not an edit.
 
 `a`/`s`/`d`/`f` choose Pads/Bass/Kick/Perc and open that page. `j` is volume
-and `k` is filter. A second layer key re-aims a jump that has not completed,
-so a mistyped layer costs one key rather than an Escape and a restart.
-Escape leaves the leader; Space while it is pending is inert.
+and `k` is filter.
 
-Volume is the layer's own Level row. Filter is the shared filter module:
-Bass, Kick and Perc ship with one in slot 1, so `k` lands on the cutoff it
-is already performing with, and Pads gets one added into its first free slot
-at a transparent 8 kHz cutoff, so arriving is silent and turning the cutoff
-down is the first audible move. A layer whose chain is full says so and
-stays put.
+Skipping the layer key aims at the page you are already on, so `Space k` is
+the filter on whatever is in front of you. That shorthand is also the only
+way into the five layers no selector key names: Tonal, Clap, Arp, Lead and
+Master.
+
+A second layer key re-aims a jump that has not completed, so a mistyped
+layer costs one key rather than an Escape and a restart. Escape leaves the
+leader; Space while it is pending is inert.
+
+Volume is the layer's own Level row. Filter is the shared filter module's
+Cutoff, never its Amount: Amount is a detail-only wet/dry mix pinned fully
+wet, so Cutoff is the single knob the leader lands on and `h`/`l` sweep.
+Bass, Kick and Perc ship with a filter in slot 1, so `k` lands on the cutoff
+already in play. Pads gets one added into its first free slot at a
+transparent 8 kHz cutoff, so arriving is silent and turning the cutoff down
+is the first audible move. A layer whose chain is full says so and stays
+put.
 
 The leader only ever moves a cursor, so it needs no key-release support and
 behaves identically on every terminal. It renders as a footer line naming
@@ -93,10 +102,12 @@ and existing bindings.
 5. Save during a swell and load that code. Its amount should resume; the
    matching gesture key or Escape must let it return.
 6. Press Space, `s`, `j`: the cursor lands on Bass Level in Browse with
-   nothing changed, and `h`/`l` then move it. Press Space, `a`, `k`: a filter
-   appears on the Pads chain, inaudible, with the cursor on its Cutoff row,
+   nothing changed, and `h`/`l` then move it. From that page press Space,
+   `j` again: the same row, two keys, no layer key. Press Space, `a`, `k`: a
+   filter appears on the Pads chain, inaudible, cursor on its Cutoff row,
    and `h` sweeps it down. Repeat on Bass and confirm `k` reaches the filter
    already in slot 1 without resetting its cutoff or adding a second one.
+   On Master, confirm Space, `j` reaches Master Level.
 7. Press `?` from Browsing: the shortcut map should open over the tab and
    control rows, leaving both footer rows visible beneath it. Esc returns
    to Browsing.

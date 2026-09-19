@@ -2714,6 +2714,56 @@ fn jump_to_filter_reaches_a_loaded_one_and_adds_an_inert_one_otherwise() {
     );
 }
 
+/// Two keys reach a knob on the layer already open: `Space` then the
+/// parameter, no layer key. It works on pages no layer key names.
+#[test]
+fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
+    // Tab twice from Pads reaches Bass.
+    let on_bass = |mut trace: Vec<_>| {
+        let mut keys = vec![
+            key(0, FixtureKey::Tab, InputPhase::Press),
+            key(0, FixtureKey::Tab, InputPhase::Press),
+        ];
+        keys.append(&mut trace);
+        keys
+    };
+
+    let volume = replay(
+        &on_bass(vec![
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('j'), InputPhase::Press),
+        ]),
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(volume.model.mode, InteractionMode::Browsing);
+    assert_eq!(volume.recent_ids, ["bass.level"]);
+
+    let filter = replay(
+        &on_bass(vec![
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('k'), InputPhase::Press),
+        ]),
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(filter.model.mode, InteractionMode::Browsing);
+    assert_eq!(
+        filter.recent_ids,
+        ["bass.slot1.time"],
+        "the cursor landed on the filter's cutoff row"
+    );
+
+    // Master has no layer key at all, so the shorthand is the only way in.
+    let master = replay(
+        &[
+            key(0, FixtureKey::BackTab, InputPhase::Press),
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('j'), InputPhase::Press),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(master.recent_ids, ["master.level"]);
+}
+
 /// A mistyped layer costs one key: a second layer key re-aims the pending
 /// jump instead of being inert.
 #[test]

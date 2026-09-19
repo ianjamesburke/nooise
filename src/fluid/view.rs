@@ -640,7 +640,11 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         },
         KeyboardOwner::PerformanceJump => match mode {
             ModeSurface::Performance(PerformanceSurface::ChooseLayer) => {
-                format!("JUMP · {}   Esc", layer_keys_text())
+                format!(
+                    "JUMP · {}  {} layer   Esc",
+                    parameter_keys_text(),
+                    layer_keys_compact()
+                )
             }
             ModeSurface::Performance(PerformanceSurface::ChooseParameter { instrument }) => {
                 format!(
@@ -655,12 +659,15 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
     }
 }
 
-/// `a pads  s bass  …` from `INSTRUMENTS`, so the footer never restates the
-/// layer keys.
-fn layer_keys_text() -> String {
+/// `asdf` from `INSTRUMENTS`. The 46-column minimum frame cannot hold both
+/// key sets with the layer names spelled out, and the parameter keys are the
+/// ones that act from here, so the layer group is named by its keys alone.
+/// The shortcut map (`?`) spells out which layer each one opens.
+fn layer_keys_compact() -> String {
     PerformanceInstrument::ALL
-        .map(|instrument| format!("{} {}", instrument.key(), instrument.name().to_lowercase()))
-        .join("  ")
+        .map(|instrument| instrument.key())
+        .iter()
+        .collect()
 }
 
 /// `j volume  k filter` from `PARAMETERS`, for the same reason.
@@ -1025,6 +1032,26 @@ mod tests {
         assert!(
             entry_row.contains("rate"),
             "buffer rendered off its field:\n{frame}"
+        );
+    }
+
+    /// Before a layer key the leader offers the shorthand, since the page
+    /// already open is what `j`/`k` will aim at. The whole line has to fit
+    /// the 46-column minimum frame.
+    #[test]
+    fn jump_leader_offers_the_current_layer_shorthand_first() {
+        let session = session();
+        let mode = InteractionMode::Performance(PerformanceMode::Jump {
+            stage: JumpStage::ChooseLayer,
+        });
+        let line = owner_help(
+            KeyboardOwner::PerformanceJump,
+            &mode_surface(&mode, Tab::Bass, &session.controls, &session.automation),
+        );
+        assert_eq!(line, "JUMP · j volume  k filter  asdf layer   Esc");
+        assert!(
+            line.chars().count() <= usize::from(MIN_TERMINAL_WIDTH - 2),
+            "the leader's help line must fit the minimum frame: {line:?}"
         );
     }
 

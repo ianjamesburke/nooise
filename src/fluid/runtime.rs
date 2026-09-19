@@ -23,9 +23,9 @@ use ratatui::backend::CrosstermBackend;
 
 use super::GestureKind;
 use super::interaction::{
-    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, JumpStage, LEAD_PLAY_KEYS,
-    LeadNudge, Navigation, PageDirection, PerformanceInstrument, PerformanceKind, PerformanceMode,
-    PerformanceParameter, SemanticAction,
+    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge,
+    Navigation, PageDirection, PerformanceInstrument, PerformanceKind, PerformanceParameter,
+    SemanticAction,
 };
 
 /// Target spacing between drawn frames.
@@ -544,9 +544,9 @@ pub(crate) fn map_input(
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
         }
-        InteractionMode::Performance(performance) => {
+        InteractionMode::Performance(_) => {
             if unmodified {
-                performance_binding(performance, &key.code)
+                performance_binding(&key.code)
             } else {
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
@@ -672,29 +672,29 @@ fn palette_control_binding(code: &PhysicalKey) -> Option<Intent> {
 }
 
 /// The Jump leader's keyboard: Space re-arms it, `INSTRUMENTS` keys choose
-/// the layer, `PARAMETERS` keys complete the jump. Arrival moves the cursor
-/// and nothing else, so every binding is a plain Press and no phase or
-/// terminal capability changes what a key means.
-fn performance_binding(performance: &PerformanceMode, code: &PhysicalKey) -> Option<Intent> {
+/// the layer, `PARAMETERS` keys complete the jump — with or without a layer
+/// key first, since the kernel aims an unaimed jump at the open page. The
+/// two key sets are disjoint, so neither stage has to resolve a collision.
+/// Arrival moves the cursor and nothing else, so every binding is a plain
+/// Press and no phase or terminal capability changes what a key means.
+/// Neither key set changes meaning between stages, so the binding does not
+/// read the mode at all.
+fn performance_binding(code: &PhysicalKey) -> Option<Intent> {
     if let PhysicalKey::Character(' ') = *code {
         return Some(Intent::ActivatePerformance(PerformanceKind::Jump));
     }
     let PhysicalKey::Character(key) = *code else {
         return None;
     };
-    let PerformanceMode::Jump { stage } = performance;
-    match stage {
-        JumpStage::ChooseLayer => PerformanceInstrument::from_key(key)
-            .map(|instrument| Intent::SelectPerformanceInstrument { instrument }),
-        // A second layer key re-aims the pending jump rather than being
-        // inert, so a mistyped layer costs one key, not an Esc and a restart.
-        JumpStage::ChooseParameter { .. } => PerformanceParameter::from_key(key)
-            .map(Intent::JumpToParameter)
-            .or_else(|| {
-                PerformanceInstrument::from_key(key)
-                    .map(|instrument| Intent::SelectPerformanceInstrument { instrument })
-            }),
-    }
+    // A layer key aims or re-aims the jump, so a mistyped layer costs one
+    // key rather than an Esc and a restart; a parameter key completes it
+    // either way.
+    PerformanceParameter::from_key(key)
+        .map(Intent::JumpToParameter)
+        .or_else(|| {
+            PerformanceInstrument::from_key(key)
+                .map(|instrument| Intent::SelectPerformanceInstrument { instrument })
+        })
 }
 
 /// Arrows select and adjust the visible control, `LEAD_NUDGES` step Lead rows,
@@ -1741,9 +1741,10 @@ mod tests {
 
     #[test]
     fn canonical_mapper_defers_layer_key_phase_to_the_kernel() {
-        let model = InteractionMode::Performance(PerformanceMode::Jump {
-            stage: JumpStage::ChooseLayer,
-        });
+        let model =
+            InteractionMode::Performance(crate::fluid::interaction::PerformanceMode::Jump {
+                stage: crate::fluid::interaction::JumpStage::ChooseLayer,
+            });
         // The leader reads a layer key the same way at every phase; which
         // phases act is `Intent::phase_policy`'s call, made once for every
         // intent rather than restated per binding.

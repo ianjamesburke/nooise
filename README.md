@@ -47,7 +47,9 @@ a terminal that reports key releases; the footer shows when support is missing.
 
 Space is a leader key: a layer (`a` pads, `s` bass, `d` kick, `f` perc) then
 a parameter (`j` volume, `k` filter) puts the cursor on that control, where
-`h`/`l` move it. It jumps, it does not edit.
+`h`/`l` move it. Skip the layer key to aim at the page you are already on,
+so `Space k` is the filter on whatever is in front of you. It jumps, it does
+not edit.
 
 See [live performance](docs/PERFORMANCE.md) for overlap, saving, and the
 Jump leader.

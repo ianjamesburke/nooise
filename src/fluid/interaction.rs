@@ -822,8 +822,10 @@ pub(crate) enum Intent {
     SelectPerformanceInstrument {
         instrument: PerformanceInstrument,
     },
-    /// Complete the pending Jump on the chosen layer and hand the keyboard
-    /// back to browsing. Moves the cursor; never edits a value.
+    /// Complete the pending Jump and hand the keyboard back to browsing.
+    /// Without a layer key it aims at the page already open, so reaching a
+    /// knob on the layer in front of you is two keys. Moves the cursor;
+    /// never edits a value.
     JumpToParameter(PerformanceParameter),
     EnterLeadPlay,
     /// A 1-based Lead tone, from the letter row. `hold` is whether the
@@ -1732,10 +1734,19 @@ fn update_performance(
         }
         Intent::JumpToParameter(parameter) => {
             let PerformanceMode::Jump { stage } = *performance;
-            let JumpStage::ChooseParameter { instrument } = stage else {
+            let tab = match stage {
+                // No layer key: the page already open is the layer, so
+                // `Space k` reaches the filter on whatever is in front of
+                // you, on any page rather than only the four layer keys.
+                JumpStage::ChooseLayer => navigation.tab(),
+                JumpStage::ChooseParameter { instrument } => instrument.tab(),
+            };
+            let Some(effect) = jump_effect(tab, parameter) else {
+                // No address to move to. Stay in the leader rather than
+                // dropping the player somewhere they did not ask for.
                 return;
             };
-            effects.extend(jump_effect(instrument, parameter));
+            effects.push(effect);
             *next_mode = Some(InteractionMode::Browsing);
         }
         _ => {}
@@ -1745,11 +1756,10 @@ fn update_performance(
 /// Where one layer's parameter lives. Volume is the layer's own level row.
 /// Filter is the catalog filter module, which the adapter adds inert when
 /// the chain has none, so the leader reaches it whether or not it is loaded.
-fn jump_effect(
-    instrument: PerformanceInstrument,
-    parameter: PerformanceParameter,
-) -> Option<InteractionEffect> {
-    let tab = instrument.tab();
+///
+/// Takes a `Tab` rather than a `PerformanceInstrument` because the leader
+/// also aims at the open page, which can be a layer no selector key names.
+fn jump_effect(tab: Tab, parameter: PerformanceParameter) -> Option<InteractionEffect> {
     match parameter {
         PerformanceParameter::Volume => {
             let id = tab.level_id()?;
@@ -2511,26 +2521,34 @@ mod tests {
         }
     }
 
-    /// A parameter key before a layer is chosen cannot resolve an address,
-    /// so it leaves the leader pending rather than guessing a layer.
+    /// A parameter key with no layer key aims at the page already open, so
+    /// reaching a knob on the layer in front of you is two keys. It works on
+    /// every page, including the ones no layer key names.
     #[test]
-    fn a_parameter_key_before_a_layer_is_inert() {
-        let leader = update(
-            InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Jump),
-        )
-        .model;
-        let transition = update(
-            leader,
-            Intent::JumpToParameter(PerformanceParameter::Volume),
-        );
-        assert!(transition.effects.is_empty());
-        assert_eq!(
-            transition.model.mode,
-            InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseLayer
-            })
-        );
+    fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
+        for tab in Tab::all() {
+            let browsing = InteractionModel {
+                navigation: Navigation::for_page(page_for_tab(tab)),
+                ..InteractionModel::default()
+            };
+            let leader = update(browsing, Intent::ActivatePerformance(PerformanceKind::Jump)).model;
+            let arrived = update(
+                leader,
+                Intent::JumpToParameter(PerformanceParameter::Volume),
+            );
+
+            let id = tab.level_id().expect("every tab has a level row");
+            assert_eq!(
+                arrived.effects,
+                vec![InteractionEffect::JumpToControl {
+                    tab,
+                    index: super::super::spec_index(tab, id).expect("level row is on its own tab"),
+                    id,
+                }],
+                "{tab:?}"
+            );
+            assert_eq!(arrived.model.mode, InteractionMode::Browsing, "{tab:?}");
+        }
     }
 
     #[test]

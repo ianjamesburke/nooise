@@ -822,8 +822,11 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ],
     ));
     lines.extend(section(
-        "Jump (Space, layer, parameter)",
-        &[&[("a s d f", "layer"), ("j", "volume"), ("k", "filter")]],
+        "Jump (Space, then layer, then parameter)",
+        &[
+            &[("a", "pads"), ("s", "bass"), ("d", "kick"), ("f", "perc")],
+            &[("j", "volume"), ("k", "filter"), ("Space j/k", "this page")],
+        ],
     ));
     lines.push(Line::from(Span::styled("System", heading_style)));
     lines.push(Line::from(Span::styled(rule, rule_style)));
