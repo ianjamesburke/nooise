@@ -601,6 +601,7 @@ pub(crate) enum ModeKind {
     Automation,
     Performance,
     Lead,
+    Help,
 }
 
 /// Exactly one variant owns the keyboard. Mode-local data cannot coexist with
@@ -614,6 +615,9 @@ pub(crate) enum InteractionMode {
     Automation(AutomationMode),
     Performance(PerformanceMode),
     Lead(LeadPlay),
+    /// The full keyboard-shortcut map, opened with `?` from Browsing. Carries
+    /// no data: its content is static, so nothing needs projecting per frame.
+    Help,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -788,6 +792,8 @@ pub(crate) enum Intent {
     PaletteAutocomplete,
     Confirm,
     OpenPalette,
+    /// Open the full keyboard-shortcut map.
+    OpenHelp,
     OpenAutomation(AutomationKind),
     AddAutomation(AutomationKind),
     #[cfg_attr(
@@ -864,6 +870,7 @@ impl Intent {
                 ModeKind::Automation,
                 ModeKind::Performance,
                 ModeKind::Lead,
+                ModeKind::Help,
             ],
             Self::MoveSelection(_) => &[
                 ModeKind::Browsing,
@@ -889,6 +896,7 @@ impl Intent {
             | Self::ToggleLeadPattern
             | Self::CaptureLeadPhrase => &[ModeKind::Lead],
             Self::StartGesture(_) => &[ModeKind::Browsing],
+            Self::OpenHelp => &[ModeKind::Browsing],
             Self::ReleaseGesture(_) | Self::ReleaseAllGestures | Self::AbandonGestures => &[
                 ModeKind::Browsing,
                 ModeKind::Numeric,
@@ -896,6 +904,7 @@ impl Intent {
                 ModeKind::Automation,
                 ModeKind::Performance,
                 ModeKind::Lead,
+                ModeKind::Help,
             ],
             Self::ChangePage(_)
             | Self::BeginNumeric(_)
@@ -916,6 +925,7 @@ impl Intent {
                 ModeKind::Automation,
                 ModeKind::Performance,
                 ModeKind::Lead,
+                ModeKind::Help,
             ],
             Self::ActivatePerformance(_) => &[ModeKind::Browsing, ModeKind::Performance],
             Self::SelectPerformanceInstrument { .. }
@@ -950,6 +960,7 @@ impl Intent {
             | Self::PaletteAutocomplete
             | Self::Confirm
             | Self::OpenPalette
+            | Self::OpenHelp
             | Self::OpenAutomation(_)
             | Self::AddAutomation(_)
             | Self::OpenAutomationField
@@ -1262,6 +1273,7 @@ impl InteractionModel {
                 &mut next_mode,
                 &mut effects,
             ),
+            InteractionMode::Help => update_help(intent, &mut next_mode, &mut effects),
         }
         if self.gesture_input.has_active()
             && next_mode
@@ -1368,6 +1380,9 @@ fn update_browsing(
                 ..PaletteMode::default()
             }));
         }
+        Intent::OpenHelp => {
+            *next_mode = Some(InteractionMode::Help);
+        }
         Intent::OpenAutomation(kind) => {
             *next_mode = Some(InteractionMode::Automation(AutomationMode::new(kind)));
             effects.push(InteractionEffect::AutomationConfirm(kind));
@@ -1407,6 +1422,24 @@ fn update_browsing(
         Intent::RandomizeSelected => effects.push(InteractionEffect::RandomizeSelected),
         Intent::RandomizeScope => effects.push(InteractionEffect::RandomizeScope),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
+        Intent::Save => effects.push(InteractionEffect::Save),
+        Intent::Quit => effects.push(InteractionEffect::Quit),
+        _ => {}
+    }
+}
+
+/// The shortcut map's own table: it owns nothing but Esc-to-close and the
+/// global save/quit chords, since its content is static.
+fn update_help(
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    if !intent.is_handled_by(ModeKind::Help) {
+        return;
+    }
+    match intent {
+        Intent::Cancel => *next_mode = Some(InteractionMode::Browsing),
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
         _ => {}

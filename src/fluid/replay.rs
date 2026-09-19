@@ -393,6 +393,7 @@ struct FrameRecord {
     completed_at: Duration,
     owner: String,
     help: String,
+    activity: String,
     width: u16,
     height: u16,
     symbols: String,
@@ -863,6 +864,7 @@ impl ReplayHarness {
         let view = self.project(&session);
         let owner = view.owner.label().to_string();
         let help = view.help.text().to_string();
+        let activity = view.activity.clone();
         let mut terminal = match Terminal::new(TestBackend::new(self.width, self.height)) {
             Ok(terminal) => terminal,
             Err(error) => {
@@ -894,6 +896,7 @@ impl ReplayHarness {
             completed_at: now,
             owner,
             help,
+            activity,
             width: self.width,
             height: self.height,
             symbols,
@@ -1581,7 +1584,7 @@ fn gesture_mode_transition_and_focus_loss_release_without_rearming_quarantined_k
 }
 
 #[test]
-fn unsupported_gesture_press_is_inert_and_the_footer_explains_why() {
+fn unsupported_gesture_press_is_inert_and_the_activity_row_stays_blank() {
     let result = replay(
         &[key(0, FixtureKey::Character('z'), InputPhase::Press)],
         TerminalCapabilities::default(),
@@ -1590,10 +1593,8 @@ fn unsupported_gesture_press_is_inert_and_the_footer_explains_why() {
     assert!(result.effects.is_empty());
     assert!(result.state_history.is_empty());
     assert!(
-        result
-            .frames
-            .iter()
-            .any(|frame| { frame.help == "BROWSE · hold gestures require key-up support" })
+        result.frames.iter().all(|frame| frame.activity.is_empty()),
+        "a terminal without key-up support must never advertise a hold gesture"
     );
 }
 

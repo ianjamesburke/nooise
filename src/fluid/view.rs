@@ -13,7 +13,7 @@ use crate::fluid::interaction::{
 /// The minimum supported frame. Every top-level and nested owner must render
 /// a full buffer at this size.
 pub(crate) const MIN_TERMINAL_WIDTH: u16 = 46;
-pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 10;
+pub(crate) const MIN_TERMINAL_HEIGHT: u16 = 11;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Who the keyboard belongs to this frame. Exactly one owner is live, which
@@ -26,6 +26,7 @@ pub(crate) enum KeyboardOwner {
     Envelope,
     PerformanceSequence,
     Lead,
+    Help,
 }
 
 impl KeyboardOwner {
@@ -38,6 +39,7 @@ impl KeyboardOwner {
             Self::Envelope => AutomationKind::Envelope.label(),
             Self::PerformanceSequence => "SEQUENCE",
             Self::Lead => "LEAD",
+            Self::Help => "SHORTCUTS",
         }
     }
 }
@@ -129,6 +131,13 @@ pub(crate) struct UiViewModel<'a> {
     pub(crate) mute: &'a MuteState,
     pub(crate) cursor_visible: bool,
     pub(crate) help: HelpSurface,
+    /// The gesture-activity row's text: a held/returning readout, or an idle
+    /// key hint (`z bloom  c submerge  ...`) when nothing is held. Empty only
+    /// when the terminal cannot support holds at all.
+    pub(crate) activity: String,
+    /// True while `activity` is a live held/returning readout rather than the
+    /// idle key-hint list, so the row can render with different emphasis.
+    pub(crate) activity_live: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +173,8 @@ pub(crate) enum ModeSurface<'a> {
     Automation(AutomationSurface<'a>),
     Performance(PerformanceSurface),
     Lead(LeadSurface),
+    /// The shortcut map overlay. Static content, so nothing to project.
+    Help,
 }
 
 /// Lead play-mode render state: the tone last played, the live octave, and
@@ -300,13 +311,21 @@ impl<'a> UiViewModel<'a> {
             &session.automation,
         );
         let gestures = gesture_activities(session, presentation.gesture_now_seconds);
+        let holding_gesture = !gestures.is_empty();
+        let activity_live = holding_gesture;
+        let activity = if holding_gesture {
+            gesture_activity_line(&gestures)
+        } else if presentation.gesture_holds_available {
+            gesture_idle_hint()
+        } else {
+            String::new()
+        };
         let help = help_surface(
             owner,
             &mode,
             navigation,
             presentation.notices,
-            &gestures,
-            presentation.gesture_holds_available,
+            holding_gesture,
         );
 
         Self {
@@ -321,8 +340,45 @@ impl<'a> UiViewModel<'a> {
             mute: &session.muted,
             cursor_visible: presentation.cursor_visible,
             help,
+            activity,
+            activity_live,
         }
     }
+}
+
+/// The gesture-activity row's text: one entry per held/returning envelope,
+/// or empty when none are active. Kept separate from `help_surface` so a
+/// gesture readout never crowds out the exits/mode help sharing the footer.
+fn gesture_activity_line(gestures: &[GestureActivity]) -> String {
+    gestures
+        .iter()
+        .map(|gesture| {
+            let direction = match gesture.direction {
+                GestureDirection::Rising => "↑",
+                GestureDirection::Held => "●",
+                GestureDirection::Returning => "↓",
+            };
+            let restored = if gesture.restored { "R" } else { "" };
+            format!(
+                "{} {} {}%{direction}{restored}",
+                gesture.tab.name(),
+                gesture.kind.name(),
+                gesture.amount_pct
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The gesture-activity row's idle text: the key/name for every hold
+/// gesture, so the row that shows a live readout while holding still tells
+/// you what's available when nothing is held.
+fn gesture_idle_hint() -> String {
+    GestureKind::ALL
+        .iter()
+        .map(|kind| format!("{} {}", kind.key(), kind.name().to_ascii_lowercase()))
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 fn gesture_activities(session: &LiveSessionSnapshot, now_seconds: f64) -> Vec<GestureActivity> {
@@ -373,6 +429,7 @@ fn mode_surface<'a>(
         InteractionMode::Automation(mode) => {
             ModeSurface::Automation(automation_surface(*mode, automation))
         }
+        InteractionMode::Help => ModeSurface::Help,
         InteractionMode::Lead(play) => ModeSurface::Lead(LeadSurface {
             last_tone: play.last_tone,
             holds: play.holds,
@@ -544,6 +601,7 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
             KeyboardOwner::PerformanceSequence
         }
         InteractionMode::Lead(_) => KeyboardOwner::Lead,
+        InteractionMode::Help => KeyboardOwner::Help,
     }
 }
 
@@ -552,8 +610,7 @@ fn help_surface(
     mode: &ModeSurface<'_>,
     navigation: NavigationView,
     notices: ViewNotices,
-    gestures: &[GestureActivity],
-    gesture_holds_available: bool,
+    holding_gesture: bool,
 ) -> HelpSurface {
     if owner != KeyboardOwner::Browsing {
         return HelpSurface::Owner {
@@ -575,31 +632,12 @@ fn help_surface(
         return HelpSurface::Notice { kind, text };
     }
 
-    if !gestures.is_empty() {
-        let activities = gestures
-            .iter()
-            .map(|gesture| {
-                let direction = match gesture.direction {
-                    GestureDirection::Rising => "↑",
-                    GestureDirection::Held => "●",
-                    GestureDirection::Returning => "↓",
-                };
-                let restored = if gesture.restored { "R" } else { "" };
-                format!(
-                    "{} {} {}%{direction}{restored}",
-                    gesture.tab.name(),
-                    gesture.kind.name(),
-                    gesture.amount_pct
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" · ");
-        // Keep both exits ahead of the expandable activity list so they stay
-        // visible at the 46-column minimum even when gestures overlap.
-        let text = format!("Esc release · ^Q quit · {activities}");
+    if holding_gesture {
+        // The activity row (rendered above this one) carries the expandable
+        // per-gesture detail; this row only needs to name the two exits.
         return HelpSurface::Owner {
             owner: KeyboardOwner::Browsing,
-            text,
+            text: "Esc release · ^Q quit".to_string(),
         };
     }
 
@@ -635,15 +673,7 @@ fn help_surface(
         return HelpSurface::Notice { kind, text };
     }
     HelpSurface::Browsing {
-        text: if gesture_holds_available {
-            GestureKind::ALL
-                .iter()
-                .map(|kind| format!("{} {}", kind.key(), kind.name().to_ascii_lowercase()))
-                .collect::<Vec<_>>()
-                .join("  ")
-        } else {
-            "BROWSE · hold gestures require key-up support".to_string()
-        },
+        text: "BROWSE · ? shortcuts   ^Q quit".to_string(),
     }
 }
 
@@ -727,6 +757,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             }
             _ => unreachable!("sequence owner requires sequence mode"),
         },
+        KeyboardOwner::Help => "SHORTCUTS · Esc: close".to_string(),
     }
 }
 
@@ -1198,6 +1229,48 @@ mod tests {
         let frame = render_model_with_session(&InteractionModel::default(), &session);
         assert!(frame.contains("Esc␠release␠·␠^Q␠quit"));
         assert!(frame.contains("Pads␠Bloom␠0%↑"));
+    }
+
+    #[test]
+    fn idle_browsing_shows_a_terse_footer_and_gesture_hints_on_the_activity_row() {
+        let frame = render_model(&InteractionModel::default());
+        assert!(
+            frame.contains("?␠shortcuts"),
+            "the footer row must point at the shortcut overlay: {frame}"
+        );
+        assert!(
+            frame.contains("^Q␠quit"),
+            "the footer row must keep the quit exit visible: {frame}"
+        );
+        assert!(
+            frame.contains("z␠bloom"),
+            "gesture key hints must show on the activity row when idle: {frame}"
+        );
+        assert!(
+            frame.contains("x␠lift"),
+            "gesture key hints must show on the activity row when idle: {frame}"
+        );
+    }
+
+    #[test]
+    fn open_help_owns_the_keyboard_and_esc_returns_to_browsing() {
+        let opened = InteractionModel::default().update(SemanticAction::press(Intent::OpenHelp));
+        assert!(opened.effects.is_empty());
+        assert!(matches!(opened.model.mode, InteractionMode::Help));
+
+        let frame = render_model_with_session_at_size(
+            &opened.model,
+            &session(),
+            TelemetryView::default(),
+            260,
+            40,
+        );
+        assert!(frame.contains("SHORTCUTS"), "{frame}");
+        assert!(frame.contains("Gestures"), "{frame}");
+        assert!(frame.contains("Esc:␠close"), "{frame}");
+
+        let closed = opened.model.update(SemanticAction::press(Intent::Cancel));
+        assert_eq!(closed.model.mode, InteractionMode::Browsing);
     }
 
     #[test]

@@ -479,6 +479,22 @@ pub(crate) fn map_input(
         return semantic(*phase, Intent::StartGesture(kind));
     }
 
+    // The shortcut map answers to either report a terminal might send for
+    // Shift+/: the shifted glyph itself (most terminals, no modifier bit at
+    // all — unlike a shifted letter, crossterm never synthesizes SHIFT for
+    // punctuation), or the base key with an explicit SHIFT modifier (the
+    // keyboard-enhancement protocol's report-base-key-plus-modifier style).
+    // A plain, unshifted `/` is intentionally excluded so it still opens the
+    // palette.
+    if matches!(mode, InteractionMode::Browsing)
+        && *phase == InputPhase::Press
+        && (matches!(key.code, PhysicalKey::Character('?'))
+            || (matches!(key.code, PhysicalKey::Character('/'))
+                && key.modifiers.contains(Modifiers::SHIFT)))
+    {
+        return semantic(*phase, Intent::OpenHelp);
+    }
+
     // Global bindings resolve before any mode claims the key. The palette
     // keeps its own control chords and numeric entry swallows every chord.
     if has_control
@@ -542,6 +558,9 @@ pub(crate) fn map_input(
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
         }
+        // Esc (global, above) and Ctrl+S/Ctrl+Q (global, above) are the only
+        // bindings the overlay answers to; every other key is inert.
+        InteractionMode::Help => None,
     };
     intent.map_or(InputMapping::Ignored, |intent| semantic(*phase, intent))
 }
@@ -1630,6 +1649,74 @@ mod tests {
                 TerminalCapabilities::full()
             ),
             InputMapping::Ignored
+        );
+    }
+
+    #[test]
+    fn question_mark_opens_help_with_no_modifier_reported() {
+        // Most terminals report SHIFT for a shifted letter (crossterm
+        // synthesizes it from `char::is_uppercase`) but not for shifted
+        // punctuation, so a basic terminal delivers '?' with no modifier at
+        // all. The binding must not depend on SHIFT being present.
+        let event = TransportEvent::key(
+            PhysicalKey::Character('?'),
+            Modifiers::default(),
+            InputPhase::Press,
+        );
+        assert_eq!(
+            map_input(
+                &InteractionMode::Browsing,
+                Navigation::default(),
+                &event,
+                TerminalCapabilities::full()
+            ),
+            InputMapping::Action(SemanticAction {
+                phase: InputPhase::Press,
+                intent: Intent::OpenHelp,
+            })
+        );
+    }
+
+    #[test]
+    fn shift_slash_opens_help_when_reported_as_base_key_plus_modifier() {
+        // Some terminals report Shift+/ as the base key '/' with an explicit
+        // SHIFT modifier rather than the shifted glyph '?'. Either report
+        // must open help, and a plain unshifted '/' must still reach the
+        // palette instead.
+        let event = TransportEvent::key(
+            PhysicalKey::Character('/'),
+            Modifiers::SHIFT,
+            InputPhase::Press,
+        );
+        assert_eq!(
+            map_input(
+                &InteractionMode::Browsing,
+                Navigation::default(),
+                &event,
+                TerminalCapabilities::full()
+            ),
+            InputMapping::Action(SemanticAction {
+                phase: InputPhase::Press,
+                intent: Intent::OpenHelp,
+            })
+        );
+
+        let plain_slash = TransportEvent::key(
+            PhysicalKey::Character('/'),
+            Modifiers::default(),
+            InputPhase::Press,
+        );
+        assert_eq!(
+            map_input(
+                &InteractionMode::Browsing,
+                Navigation::default(),
+                &plain_slash,
+                TerminalCapabilities::full()
+            ),
+            InputMapping::Action(SemanticAction {
+                phase: InputPhase::Press,
+                intent: Intent::OpenPalette,
+            })
         );
     }
 
