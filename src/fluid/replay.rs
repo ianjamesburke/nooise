@@ -376,10 +376,10 @@ impl EventSource for ScriptedSource {
         ))
     }
 
-    fn read(&mut self) -> io::Result<TransportEvent> {
+    fn read(&mut self) -> io::Result<Option<TransportEvent>> {
         self.clock.advance(EVENT_COST);
         match self.events.pop_front() {
-            Some(PlaybackEvent::Transport(event)) => Ok(event),
+            Some(PlaybackEvent::Transport(event)) => Ok(Some(event)),
             _ => Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "script has no transport event",
@@ -1019,7 +1019,8 @@ fn sanitized_trace_fixture_round_trips_without_user_payloads() {
             state: KeyEventState::NONE,
         },
         TerminalCapabilities::full(),
-    );
+    )
+    .expect("full capabilities report every key event");
     if let TransportEvent::Key { repeat_count, .. } = &mut repeated {
         *repeat_count = 4;
     }
@@ -1029,7 +1030,8 @@ fn sanitized_trace_fixture_round_trips_without_user_payloads() {
             normalize_key_event(
                 KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
                 TerminalCapabilities::full(),
-            ),
+            )
+            .expect("full capabilities report every key event"),
         ),
         (2, repeated),
         (
@@ -1042,7 +1044,8 @@ fn sanitized_trace_fixture_round_trips_without_user_payloads() {
                     state: KeyEventState::NONE,
                 },
                 TerminalCapabilities::full(),
-            ),
+            )
+            .expect("full capabilities report every key event"),
         ),
         (
             4,
@@ -1060,7 +1063,8 @@ fn sanitized_trace_fixture_round_trips_without_user_payloads() {
             normalize_key_event(
                 KeyEvent::new(KeyCode::F(7), KeyModifiers::NONE),
                 TerminalCapabilities::full(),
-            ),
+            )
+            .expect("full capabilities report every key event"),
         ),
         (10, TransportEvent::Shutdown),
     ];
@@ -1226,7 +1230,8 @@ fn every_normalized_physical_key_identity_round_trips_through_replay() {
                             state: KeyEventState::NONE,
                         },
                         TerminalCapabilities::full(),
-                    );
+                    )
+                    .expect("full capabilities report every key event");
                     let TransportEvent::Key {
                         repeat_count: normalized_count,
                         ..
@@ -1298,7 +1303,7 @@ fn replay_modifier_bits_cover_the_complete_six_bit_transport_domain() {
         let clock = FakeClock::new();
         let mut source = ScriptedSource::new(&parsed, TerminalCapabilities::full(), clock);
         assert!(source.poll(Duration::ZERO).expect("poll"));
-        let TransportEvent::Key { key, .. } = source.read().expect("read") else {
+        let Some(TransportEvent::Key { key, .. }) = source.read().expect("read") else {
             panic!("expected key");
         };
         assert_eq!(key.modifiers, Modifiers::from_bits(bits));
@@ -1367,7 +1372,8 @@ fn recorded_backtab_round_trips_through_the_full_pipeline() {
                 state: KeyEventState::NONE,
             },
             TerminalCapabilities::full(),
-        ),
+        )
+        .expect("full capabilities report every key event"),
     );
     let fixture = recorder.finish();
     let trace = ReplayTrace::parse(&fixture).expect("recorder output must parse");
