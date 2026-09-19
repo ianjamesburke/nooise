@@ -817,6 +817,10 @@ fn draw_palette(
 /// The full keyboard-shortcut map, opened with `?` from Browsing. Covers the
 /// tab/control area but leaves the activity and footer rows showing beneath
 /// it, same as the palette leaving its own exits visible.
+/// One key-combo and what it does, rendered as a colour-matched pair so the
+/// keys scan as a column even though rows hold a variable number of pairs.
+type KeyRow<'a> = &'a [(&'a str, &'a str)];
+
 fn draw_help(f: &mut Frame, inner: Rect) {
     let above_footer = inner.height.saturating_sub(2);
     let area = Rect::new(
@@ -826,61 +830,122 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         above_footer,
     );
     fill_scrim(f.buffer_mut(), area, |cell| {
-        cell.set_bg(Color::Rgb(18, 22, 32));
+        cell.set_bg(Color::Rgb(16, 19, 28));
     });
     let block = Block::default()
-        .title(" Shortcuts ")
+        .title(Line::from(Span::styled(
+            " Shortcuts ",
+            Style::default()
+                .fg(EMPHASIS_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER));
-    let inner = block.inner(area);
+        .border_style(Style::default().fg(BORDER))
+        .padding(Padding::new(2, 2, 1, 1));
+    let inner_block = block.inner(area);
     f.render_widget(block, area);
 
-    let heading = Style::default()
+    let key_style = Style::default()
+        .fg(BROWSE_PALETTE.active)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::Rgb(205, 210, 222));
+    let heading_style = Style::default()
         .fg(EMPHASIS_YELLOW)
         .add_modifier(Modifier::BOLD);
-    let body = Style::default().fg(Color::White);
-    let section = |title: &'static str, rows: &'static [&'static str]| {
-        let mut lines = vec![Line::from(Span::styled(title, heading))];
-        lines.extend(rows.iter().map(|row| Line::from(Span::styled(*row, body))));
+    let rule_style = Style::default().fg(Color::Rgb(60, 66, 84));
+    let rule: String = "\u{2500}".repeat(inner_block.width as usize);
+
+    let key_row = |row: KeyRow| -> Line<'static> {
+        let mut spans = Vec::new();
+        for (i, (key, desc)) in row.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::raw("   "));
+            }
+            spans.push(Span::styled(key.to_string(), key_style));
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(desc.to_string(), desc_style));
+        }
+        Line::from(spans)
+    };
+    let section = |title: &'static str, rows: &[KeyRow]| -> Vec<Line<'static>> {
+        let mut lines = vec![
+            Line::from(Span::styled(title, heading_style)),
+            Line::from(Span::styled(rule.clone(), rule_style)),
+        ];
+        lines.extend(rows.iter().map(|row| key_row(row)));
         lines.push(Line::from(""));
         lines
     };
+
     let mut lines = section(
         "General",
         &[
-            "jk / \u{2191}\u{2193}  select      hl / \u{2190}\u{2192}  adjust      Tab / \u{21e7}Tab  page",
-            "r  random     \u{21e7}R  randomize set     \u{21b5}  open/confirm     x  remove",
-            "m  mute       \u{21e7}M  master mute        T  units",
+            &[
+                ("jk / \u{2191}\u{2193}", "select"),
+                ("hl / \u{2190}\u{2192}", "adjust"),
+                ("Tab / \u{21e7}Tab", "page"),
+            ],
+            &[
+                ("r", "random"),
+                ("\u{21e7}R", "randomize set"),
+                ("\u{21b5}", "open/confirm"),
+                ("x", "remove"),
+            ],
+            &[("m", "mute"), ("\u{21e7}M", "master mute"), ("T", "units")],
         ],
     );
     lines.extend(section(
         "Gestures (hold)",
-        &["z bloom   c submerge   v echo   b thin   x lift"],
+        &[&[
+            ("z", "bloom"),
+            ("c", "submerge"),
+            ("v", "echo"),
+            ("b", "thin"),
+            ("x", "lift"),
+        ]],
     ));
     lines.extend(section(
         "Editors",
         &[
-            "/  palette          f  LFO       \u{21e7}F  add LFO",
-            "a  toggle auto      e  ENV       \u{21e7}E  add ENV",
+            &[("/", "palette"), ("f", "LFO"), ("\u{21e7}F", "add LFO")],
+            &[("a", "toggle auto"), ("e", "ENV"), ("\u{21e7}E", "add ENV")],
         ],
     ));
     lines.extend(section(
         "Lead (i to enter)",
         &[
-            "a s d f g h j k l  tones     c  capture     Space  pattern on/off",
-            "z/x oct   q/w level   e/r decay   t/y glide",
+            &[
+                ("a s d f g h j k l", "tones"),
+                ("c", "capture"),
+                ("Space", "pattern on/off"),
+            ],
+            &[
+                ("z/x", "oct"),
+                ("q/w", "level"),
+                ("e/r", "decay"),
+                ("t/y", "glide"),
+            ],
         ],
     ));
     lines.extend(section(
         "Sequence (Space to enter)",
-        &["a s d f  instrument     hl length   jk level   ui density"],
+        &[&[
+            ("a s d f", "instrument"),
+            ("hl", "length"),
+            ("jk", "level"),
+            ("ui", "density"),
+        ]],
     ));
-    lines.push(Line::from(Span::styled("System", heading)));
-    lines.push(Line::from(Span::styled(
-        "^S save   ^Q quit   Esc back/cancel   ?  this screen",
-        body,
-    )));
-    f.render_widget(Paragraph::new(lines), inner);
+    lines.push(Line::from(Span::styled("System", heading_style)));
+    lines.push(Line::from(Span::styled(rule, rule_style)));
+    lines.push(key_row(&[
+        ("^S", "save"),
+        ("^Q", "quit"),
+        ("Esc", "back/cancel"),
+        ("?", "this screen"),
+    ]));
+    f.render_widget(Paragraph::new(lines), inner_block);
 }
 
 /// Colour pair for a row family: (active row, idle row).
