@@ -479,14 +479,18 @@ pub(crate) fn map_input(
         return semantic(*phase, Intent::StartGesture(kind));
     }
 
-    // `?` is matched on its own character rather than gated behind a SHIFT
-    // modifier: most terminals report shifted punctuation (unlike shifted
-    // letters) with no modifier bit at all, so requiring SHIFT here would
-    // make the binding silently unreachable outside the keyboard-enhancement
-    // protocol.
+    // The shortcut map answers to either report a terminal might send for
+    // Shift+/: the shifted glyph itself (most terminals, no modifier bit at
+    // all — unlike a shifted letter, crossterm never synthesizes SHIFT for
+    // punctuation), or the base key with an explicit SHIFT modifier (the
+    // keyboard-enhancement protocol's report-base-key-plus-modifier style).
+    // A plain, unshifted `/` is intentionally excluded so it still opens the
+    // palette.
     if matches!(mode, InteractionMode::Browsing)
         && *phase == InputPhase::Press
-        && matches!(key.code, PhysicalKey::Character('?'))
+        && (matches!(key.code, PhysicalKey::Character('?'))
+            || (matches!(key.code, PhysicalKey::Character('/'))
+                && key.modifiers.contains(Modifiers::SHIFT)))
     {
         return semantic(*phase, Intent::OpenHelp);
     }
@@ -1669,6 +1673,49 @@ mod tests {
             InputMapping::Action(SemanticAction {
                 phase: InputPhase::Press,
                 intent: Intent::OpenHelp,
+            })
+        );
+    }
+
+    #[test]
+    fn shift_slash_opens_help_when_reported_as_base_key_plus_modifier() {
+        // Some terminals report Shift+/ as the base key '/' with an explicit
+        // SHIFT modifier rather than the shifted glyph '?'. Either report
+        // must open help, and a plain unshifted '/' must still reach the
+        // palette instead.
+        let event = TransportEvent::key(
+            PhysicalKey::Character('/'),
+            Modifiers::SHIFT,
+            InputPhase::Press,
+        );
+        assert_eq!(
+            map_input(
+                &InteractionMode::Browsing,
+                Navigation::default(),
+                &event,
+                TerminalCapabilities::full()
+            ),
+            InputMapping::Action(SemanticAction {
+                phase: InputPhase::Press,
+                intent: Intent::OpenHelp,
+            })
+        );
+
+        let plain_slash = TransportEvent::key(
+            PhysicalKey::Character('/'),
+            Modifiers::default(),
+            InputPhase::Press,
+        );
+        assert_eq!(
+            map_input(
+                &InteractionMode::Browsing,
+                Navigation::default(),
+                &plain_slash,
+                TerminalCapabilities::full()
+            ),
+            InputMapping::Action(SemanticAction {
+                phase: InputPhase::Press,
+                intent: Intent::OpenPalette,
             })
         );
     }

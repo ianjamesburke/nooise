@@ -22,11 +22,12 @@ bold readout of target and amount — `↑` means rising, `↓` returning, and `
 marks a restored hold loaded from a song code. The row below stays a terse
 `BROWSE · ? shortcuts   ^Q quit`; pressing `?` opens the full keyboard-shortcut
 map (`InteractionMode::Help`), a static overlay covering the tab/control area
-that leaves both footer rows visible beneath it. Esc closes it. `?` is matched
-on the character itself rather than a Shift modifier: most terminals report
-Shift for a shifted letter but not for shifted punctuation, so a
-modifier-gated binding would be unreachable outside the keyboard-enhancement
-protocol.
+that leaves both footer rows visible beneath it. Esc closes it. Shift+/ is
+matched two ways, since terminals disagree on how they report it: the
+shifted glyph `?` alone (most terminals — unlike a shifted letter, no SHIFT
+modifier accompanies shifted punctuation), or the base key `/` with an
+explicit SHIFT modifier (the keyboard-enhancement protocol's report-base-key-
+plus-modifier style). A plain, unshifted `/` still opens the palette.
 
 These are temporary effects over the playing song. User module slots remain
 intact, automation and auto-morph continue, and edits made during a gesture
