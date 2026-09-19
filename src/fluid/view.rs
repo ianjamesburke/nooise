@@ -5,9 +5,8 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, LEAD_NUDGES,
-    LeadDrill, Navigation, PerformanceAction, PerformanceInstrument, PerformanceMode,
-    SequenceStage,
+    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, JumpStage,
+    LEAD_NUDGES, LeadDrill, Navigation, PerformanceInstrument, PerformanceMode,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -24,7 +23,7 @@ pub(crate) enum KeyboardOwner {
     Palette,
     Lfo,
     Envelope,
-    PerformanceSequence,
+    PerformanceJump,
     Lead,
     Help,
 }
@@ -37,7 +36,7 @@ impl KeyboardOwner {
             Self::Palette => "PALETTE",
             Self::Lfo => AutomationKind::Lfo.label(),
             Self::Envelope => AutomationKind::Envelope.label(),
-            Self::PerformanceSequence => "SEQUENCE",
+            Self::PerformanceJump => "JUMP",
             Self::Lead => "LEAD",
             Self::Help => "SHORTCUTS",
         }
@@ -253,35 +252,12 @@ impl AutomationSurface<'_> {
     }
 }
 
-/// One instrument's live row in the performance sequence. Level, length, and
-/// density come from the registry, so they read exactly what the control rows
-/// would.
-pub(crate) struct PerformanceInstrumentSurface {
-    pub(crate) instrument: PerformanceInstrument,
-    pub(crate) focused: bool,
-    pub(crate) held: bool,
-    pub(crate) level: ControlItem,
-    pub(crate) length: ControlItem,
-    pub(crate) density: ControlItem,
-}
-
-/// Performance render state: the closed instrument choices, which selectors
-/// are held, and how the current gesture completes under full versus reduced
-/// terminal capability.
+/// How far a pending Jump has got. The leader never covers the control
+/// rows: the page it lands on stays visible underneath, so the only thing
+/// to render is which key it is waiting for.
 pub(crate) enum PerformanceSurface {
-    Choose {
-        held_selector: Option<usize>,
-    },
-    Perform {
-        instrument: Option<usize>,
-        held_selector: Option<usize>,
-        values: Option<PerformanceInstrumentSurface>,
-    },
-    Complete {
-        instrument: Option<usize>,
-        release_pending: bool,
-        values: Option<PerformanceInstrumentSurface>,
-    },
+    ChooseLayer,
+    ChooseParameter { instrument: PerformanceInstrument },
 }
 
 impl<'a> UiViewModel<'a> {
@@ -438,74 +414,14 @@ fn mode_surface<'a>(
             reach_len: lead_page_reach(&controls.lead, &controls.pad).len(),
             pattern: LeadPattern::from_value(controls.lead.pattern),
         }),
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::ChooseInstrument,
-            held_selector,
-        }) => ModeSurface::Performance(PerformanceSurface::Choose {
-            held_selector: held_selector
-                .map(crate::fluid::interaction::PerformanceInstrument::index),
+        InteractionMode::Performance(PerformanceMode::Jump {
+            stage: JumpStage::ChooseLayer,
+        }) => ModeSurface::Performance(PerformanceSurface::ChooseLayer),
+        InteractionMode::Performance(PerformanceMode::Jump {
+            stage: JumpStage::ChooseParameter { instrument },
+        }) => ModeSurface::Performance(PerformanceSurface::ChooseParameter {
+            instrument: *instrument,
         }),
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::Perform { instrument },
-            held_selector,
-        }) => ModeSurface::Performance(PerformanceSurface::Perform {
-            instrument: Some(instrument.index()),
-            held_selector: held_selector
-                .map(crate::fluid::interaction::PerformanceInstrument::index),
-            values: Some(performance_instrument_surface(
-                controls,
-                *instrument,
-                Some(*instrument),
-                held_selector.is_some_and(|held| held == *instrument),
-            )),
-        }),
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::AwaitActionRelease { instrument, .. },
-            ..
-        }) => ModeSurface::Performance(PerformanceSurface::Complete {
-            instrument: Some(instrument.index()),
-            release_pending: true,
-            values: Some(performance_instrument_surface(
-                controls,
-                *instrument,
-                Some(*instrument),
-                false,
-            )),
-        }),
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::CompletedFallback { instrument },
-            ..
-        }) => ModeSurface::Performance(PerformanceSurface::Complete {
-            instrument: Some(instrument.index()),
-            release_pending: false,
-            values: Some(performance_instrument_surface(
-                controls,
-                *instrument,
-                Some(*instrument),
-                false,
-            )),
-        }),
-    }
-}
-
-fn performance_instrument_surface(
-    controls: &FluidControls,
-    instrument: PerformanceInstrument,
-    selected: Option<PerformanceInstrument>,
-    held: bool,
-) -> PerformanceInstrumentSurface {
-    let item = |action| {
-        let (_, _, spec, _) = performance_target(instrument, action)
-            .expect("closed performance grammar has every target");
-        spec.item(controls)
-    };
-    PerformanceInstrumentSurface {
-        instrument,
-        focused: selected == Some(instrument),
-        held,
-        level: item(PerformanceAction::Louder),
-        length: item(PerformanceAction::Longer),
-        density: item(PerformanceAction::Denser),
     }
 }
 
@@ -597,8 +513,8 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
         InteractionMode::Palette(_) => KeyboardOwner::Palette,
         InteractionMode::Automation(AutomationMode::Lfo { .. }) => KeyboardOwner::Lfo,
         InteractionMode::Automation(AutomationMode::Envelope { .. }) => KeyboardOwner::Envelope,
-        InteractionMode::Performance(PerformanceMode::Sequence { .. }) => {
-            KeyboardOwner::PerformanceSequence
+        InteractionMode::Performance(PerformanceMode::Jump { .. }) => {
+            KeyboardOwner::PerformanceJump
         }
         InteractionMode::Lead(_) => KeyboardOwner::Lead,
         InteractionMode::Help => KeyboardOwner::Help,
@@ -722,50 +638,36 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             ModeSurface::Lead(lead) => lead_owner_help(*lead),
             _ => unreachable!("lead owner requires lead surface"),
         },
-        KeyboardOwner::PerformanceSequence => match mode {
-            ModeSurface::Performance(PerformanceSurface::Choose { held_selector }) => {
+        KeyboardOwner::PerformanceJump => match mode {
+            ModeSurface::Performance(PerformanceSurface::ChooseLayer) => {
+                format!("JUMP · {}   Esc", layer_keys_text())
+            }
+            ModeSurface::Performance(PerformanceSurface::ChooseParameter { instrument }) => {
                 format!(
-                    "SEQUENCE · a/s/d/f choose   held {}   Esc",
-                    selector_text(*held_selector)
+                    "JUMP {} · {}   Esc",
+                    instrument.name(),
+                    parameter_keys_text()
                 )
             }
-            ModeSurface::Performance(PerformanceSurface::Perform {
-                instrument,
-                held_selector,
-                ..
-            }) => format!(
-                "SEQUENCE · instrument {}   h/l j/k u/i act once   held {}   Esc",
-                selector_text(*instrument),
-                selector_text(*held_selector)
-            ),
-            ModeSurface::Performance(PerformanceSurface::Complete {
-                instrument,
-                release_pending,
-                ..
-            }) => {
-                if *release_pending {
-                    format!(
-                        "SEQUENCE · {} applied   release action to return",
-                        selector_text(*instrument)
-                    )
-                } else {
-                    format!(
-                        "SEQUENCE · {} applied   Space: rearm   Esc: back",
-                        selector_text(*instrument)
-                    )
-                }
-            }
-            _ => unreachable!("sequence owner requires sequence mode"),
+            _ => unreachable!("jump owner requires a jump surface"),
         },
         KeyboardOwner::Help => "SHORTCUTS · Esc: close".to_string(),
     }
 }
 
-/// One-based selector index, or `none`; shared with the Sequence body in ui.rs.
-pub(crate) fn selector_text(selector: Option<usize>) -> String {
-    selector
-        .and_then(|index| index.checked_add(1))
-        .map_or_else(|| "none".to_string(), |index| index.to_string())
+/// `a pads  s bass  …` from `INSTRUMENTS`, so the footer never restates the
+/// layer keys.
+fn layer_keys_text() -> String {
+    PerformanceInstrument::ALL
+        .map(|instrument| format!("{} {}", instrument.key(), instrument.name().to_lowercase()))
+        .join("  ")
+}
+
+/// `j volume  k filter` from `PARAMETERS`, for the same reason.
+fn parameter_keys_text() -> String {
+    crate::fluid::interaction::PerformanceParameter::ALL
+        .map(|parameter| format!("{} {}", parameter.key(), parameter.label()))
+        .join("  ")
 }
 
 fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
@@ -1127,13 +1029,16 @@ mod tests {
     }
 
     #[test]
-    fn performance_sequence_shows_live_values_for_its_held_instrument() {
+    fn jump_leader_names_its_keys_without_covering_the_page() {
         let interaction = InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Sequence {
-                stage: SequenceStage::Perform {
+            navigation: Navigation::Standard {
+                page: crate::fluid::interaction::StandardPage::Kick,
+                selected: 0,
+            },
+            mode: InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseParameter {
                     instrument: PerformanceInstrument::Kick,
                 },
-                held_selector: Some(PerformanceInstrument::Kick),
             }),
             ..InteractionModel::default()
         };
@@ -1143,65 +1048,14 @@ mod tests {
         let rendered = render_model_with_session(&interaction, &session);
 
         assert!(
-            rendered.contains("●␠d␠Kick") && rendered.contains("D█░░1.25b"),
-            "Kick's live density is visible: {rendered:?}"
+            rendered.contains("JUMP\u{2420}Kick") && rendered.contains("volume"),
+            "the pending leader names its layer and keys: {rendered:?}"
         );
-    }
-
-    /// Sequence rows use the app's colour language rather than the terminal
-    /// terminal default and read as a different application. Snapshots only
-    /// capture symbols, so only a colour assertion catches a regression.
-    #[test]
-    fn performance_sequence_rows_carry_the_apps_colour_language() {
-        let interaction = InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Sequence {
-                stage: SequenceStage::Perform {
-                    instrument: PerformanceInstrument::Kick,
-                },
-                held_selector: Some(PerformanceInstrument::Kick),
-            }),
-            ..InteractionModel::default()
-        };
-        let session = session();
-        let fluid = RippleField::new();
-        let flipped = FlippedUnits::new();
-        let view = UiViewModel::project(ViewProjection {
-            interaction: &interaction,
-            session: &session,
-            telemetry: TelemetryView::default(),
-            presentation: ViewPresentation {
-                fluid: &fluid,
-                flipped: &flipped,
-                cursor_visible: true,
-                notices: ViewNotices::default(),
-                gesture_now_seconds: 0.0,
-                gesture_holds_available: true,
-            },
-        });
-        let mut terminal =
-            Terminal::new(TestBackend::new(MIN_TERMINAL_WIDTH, MIN_TERMINAL_HEIGHT)).unwrap();
-        terminal.draw(|frame| render(frame, &view)).unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let area = buffer.area;
-        // Anchor on the held marker, not the name: "Kick" also appears in the
-        // tab bar, which is styled independently.
-        let row = (0..area.height)
-            .find(|&y| {
-                let text = (0..area.width)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>();
-                text.contains('●') && text.contains("Kick")
-            })
-            .expect("the held Kick row is drawn");
-        // A held instrument is amber, distinct from focused cyan and idle
-        // grey, so the player can see what their fingers are on.
-        let held = (0..area.width)
-            .map(|x| buffer[(x, row)].fg)
-            .any(|fg| fg == Color::Rgb(255, 200, 90));
+        // The leader is a footer hint, so the page it is aiming at is still
+        // on screen underneath it.
         assert!(
-            held,
-            "held Sequence row must be amber, not the terminal default"
+            rendered.contains("Level"),
+            "the Kick page stays visible under the leader: {rendered:?}"
         );
     }
 

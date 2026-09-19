@@ -19,12 +19,12 @@ use super::coordinator::{
     ProductionCoordinatorContext, ProductionStep, coordinate_production_action,
     coordinate_production_tick, production_frame,
 };
-use super::effect::{Clipboard, ClipboardError, EffectAcknowledgement, EffectFailure};
+use super::effect::{Clipboard, ClipboardError, EffectAcknowledgement};
 use super::interaction::{
-    AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionEffect,
-    InteractionMode, InteractionModel, LeadDrill, LeadPlay, Navigation, NumericEntry, PaletteMode,
+    AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionMode,
+    InteractionModel, JumpStage, LeadDrill, LeadPlay, Navigation, NumericEntry, PaletteMode,
     PaletteStagedEdit, PerformanceInstrument, PerformanceKind, PerformanceMode, PhasePolicy,
-    SemanticAction, SequenceStage,
+    SemanticAction,
 };
 use super::runtime::{
     Clock, EventSource, FakeClock, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
@@ -414,7 +414,6 @@ struct ReplayResult {
     pending_target_bits: Option<u64>,
     frames: Vec<FrameRecord>,
     max_queue: usize,
-    unsupported_holds: usize,
     deferred_inputs: Vec<String>,
     clipboard_writes: usize,
     state_history: Vec<ActionRecord>,
@@ -541,7 +540,6 @@ struct ReplayHarness {
     effects: Vec<String>,
     frames: Vec<FrameRecord>,
     max_queue: usize,
-    unsupported_holds: usize,
     deferred_inputs: Vec<String>,
     clipboard: FakeClipboard,
     state_history: Vec<ActionRecord>,
@@ -583,7 +581,6 @@ impl ReplayHarness {
             effects: Vec::new(),
             frames: Vec::new(),
             max_queue: 0,
-            unsupported_holds: 0,
             deferred_inputs: Vec::new(),
             clipboard: FakeClipboard::default(),
             state_history: Vec::new(),
@@ -734,7 +731,6 @@ impl ReplayHarness {
             pending_target_bits: self.executor.pending().map(|(beat, _)| beat.to_bits()),
             frames: self.frames,
             max_queue: self.max_queue,
-            unsupported_holds: self.unsupported_holds,
             deferred_inputs: self.deferred_inputs,
             clipboard_writes: self.clipboard.writes,
             state_history: self.state_history,
@@ -773,15 +769,6 @@ impl ReplayHarness {
                 && changed;
             let mut effect_labels = Vec::new();
             for record in action.effects {
-                if matches!(
-                    record.result,
-                    Err(EffectFailure::UnsupportedInteraction(
-                        InteractionEffect::HoldPerformanceSelector(_)
-                            | InteractionEffect::ReleaseHeldSelector(_)
-                    ))
-                ) {
-                    self.unsupported_holds += 1;
-                }
                 let result = match record.result {
                     Ok(acknowledgement) => acknowledgement_label(&acknowledgement),
                     Err(failure) => format!("ERR:{failure:?}"),
@@ -1447,7 +1434,7 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
                 key(0, FixtureKey::Character(' '), InputPhase::Press),
                 key(0, FixtureKey::Character(' '), InputPhase::Press),
             ],
-            "SEQUENCE",
+            "JUMP",
         ),
         (
             "sustained entry key",
@@ -2035,9 +2022,9 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
             "{name}"
         );
     }
-    let name = "sequence entry";
+    let name = "jump leader entry";
     let code = FixtureKey::Character(' ');
-    let kind = PerformanceKind::Sequence;
+    let kind = PerformanceKind::Jump;
     let result = replay(&[plain(code)], TerminalCapabilities::full());
     assert!(
         matches!(result.model.mode, InteractionMode::Performance(_)),
@@ -2594,25 +2581,33 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
     );
 }
 
+/// The leader depends on no terminal capability: it only ever moves a
+/// cursor, so a press-only terminal and a full one reach the same state.
 #[test]
-fn performance_leaders_holds_and_fallback_are_explicit() {
-    let leaders = vec![
-        key(0, FixtureKey::Character('p'), InputPhase::Press),
-        key(0, FixtureKey::Character('p'), InputPhase::Repeat),
-        key(0, FixtureKey::Escape, InputPhase::Press),
-        key(0, FixtureKey::Character(' '), InputPhase::Press),
-        key(0, FixtureKey::Character(' '), InputPhase::Repeat),
-    ];
-    let result = replay(&leaders, TerminalCapabilities::full());
-    assert!(matches!(
-        result.model.mode,
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::ChooseInstrument,
-            ..
-        })
-    ));
-    assert!(result.deferred_inputs.is_empty());
-    assert!(result.effects.is_empty());
+fn performance_leader_is_capability_independent_and_idempotent() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        let leaders = vec![
+            key(0, FixtureKey::Character('p'), InputPhase::Press),
+            key(0, FixtureKey::Character('p'), InputPhase::Repeat),
+            key(0, FixtureKey::Escape, InputPhase::Press),
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character(' '), InputPhase::Repeat),
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+        ];
+        let result = replay(&leaders, capabilities);
+        assert!(matches!(
+            result.model.mode,
+            InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseLayer,
+            })
+        ));
+        assert!(result.deferred_inputs.is_empty());
+        assert!(result.effects.is_empty());
+        assert_eq!(result.session_generation, 0);
+    }
 
     let quit = replay(
         &[
@@ -2632,165 +2627,22 @@ fn performance_leaders_holds_and_fallback_are_explicit() {
     );
     assert_eq!(save.effect_count("Save"), 1);
     assert_eq!(save.clipboard_writes, 1);
-
-    let full = replay(
-        &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('s'), InputPhase::Press),
-            key(0, FixtureKey::Character('s'), InputPhase::Repeat),
-            key(0, FixtureKey::Character('s'), InputPhase::Release),
-        ],
-        TerminalCapabilities::full(),
-    );
-    assert_eq!(full.effect_count("HoldPerformanceSelector"), 1);
-    assert_eq!(full.effect_count("ReleaseHeldSelector"), 1);
-    assert_eq!(full.unsupported_holds, 0);
-
-    let fallback = replay(
-        &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('s'), InputPhase::Press),
-            key(0, FixtureKey::Character('k'), InputPhase::Press),
-            key(0, FixtureKey::Character('k'), InputPhase::Press),
-        ],
-        TerminalCapabilities::default(),
-    );
-    assert_eq!(fallback.unsupported_holds, 0);
-    assert!(fallback.deferred_inputs.is_empty());
-    assert!(matches!(
-        fallback.model.mode,
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::CompletedFallback {
-                instrument: PerformanceInstrument::Bass
-            },
-            ..
-        })
-    ));
-    assert_eq!(fallback.effect_count("PerformanceEdit"), 1);
-    assert!(
-        fallback
-            .effects
-            .iter()
-            .all(|effect| !effect.starts_with("HoldPerformanceSelector")
-                && !effect.starts_with("ReleaseHeldSelector"))
-    );
 }
 
+/// `Space s j` puts the cursor on Bass volume and hands the keyboard back,
+/// having changed no value: arrival is the whole gesture.
 #[test]
-fn performance_grammars_cover_actions_bursts_delayed_releases_escape_and_rearm() {
-    let sequence = replay(
-        &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Release),
-            key(0, FixtureKey::Character('i'), InputPhase::Press),
-            key(0, FixtureKey::Character('i'), InputPhase::Repeat),
-            key(0, FixtureKey::Character('i'), InputPhase::Release),
-        ],
-        TerminalCapabilities::full(),
-    );
-    assert_eq!(sequence.model.mode, InteractionMode::Browsing);
-    assert_eq!(sequence.session_generation, 1);
-    assert_eq!(
-        sequence.effect_count("PerformanceEdit"),
-        1,
-        "Sequence applies once and owns Repeat until Release"
-    );
-
-    let fallback = replay(
-        &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('f'), InputPhase::Press),
-            key(0, FixtureKey::Character('h'), InputPhase::Press),
-            key(0, FixtureKey::Character('h'), InputPhase::Press),
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-        ],
-        TerminalCapabilities::default(),
-    );
-    assert_eq!(fallback.session_generation, 1);
-    assert!(matches!(
-        fallback.model.mode,
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::ChooseInstrument,
-            held_selector: None,
-        })
-    ));
-}
-
-#[test]
-fn sequence_exits_only_on_the_armed_action_release() {
-    let prefix = [
-        key(0, FixtureKey::Character(' '), InputPhase::Press),
-        key(0, FixtureKey::Character('d'), InputPhase::Press),
-        key(0, FixtureKey::Character('d'), InputPhase::Release),
-        key(0, FixtureKey::Character('k'), InputPhase::Press),
-        key(0, FixtureKey::Character('j'), InputPhase::Release),
-        key(0, FixtureKey::Character('k'), InputPhase::Repeat),
-    ];
-    let contained = replay(&prefix, TerminalCapabilities::full());
-    assert!(matches!(
-        contained.model.mode,
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::AwaitActionRelease {
-                instrument: PerformanceInstrument::Kick,
-                action: super::interaction::PerformanceAction::Louder,
-            },
-            ..
-        })
-    ));
-    assert_eq!(contained.session_generation, 1);
-
-    let mut completed = prefix.to_vec();
-    completed.push(key(0, FixtureKey::Character('k'), InputPhase::Release));
-    let completed = replay(&completed, TerminalCapabilities::full());
-    assert_eq!(completed.model.mode, InteractionMode::Browsing);
-    assert_eq!(completed.effect_count("PerformanceEdit"), 1);
-}
-
-#[test]
-fn performance_action_repeat_phase_is_mode_specific() {
-    let sequence = replay(
-        &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Release),
-            key(0, FixtureKey::Character('k'), InputPhase::Repeat),
-        ],
-        TerminalCapabilities::full(),
-    );
-    assert_eq!(sequence.session_generation, 0);
-    assert_eq!(sequence.effect_count("PerformanceEdit"), 0);
-    assert!(matches!(
-        sequence.model.mode,
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::Perform {
-                instrument: PerformanceInstrument::Kick,
-            },
-            held_selector: None,
-        })
-    ));
-    assert!(
-        sequence
-            .state_history
-            .iter()
-            .all(|record| !matches!(record.action.intent, Intent::ApplyPerformanceAction { .. })),
-        "a raw Sequence Repeat before Press stays inert"
-    );
-}
-
-#[test]
-fn raw_performance_edit_acknowledges_real_cursor_target_exits_auto_and_updates_mru() {
+fn jump_to_volume_lands_the_cursor_without_editing() {
     let result = replay_with(
         &[
             key(0, FixtureKey::Character(' '), InputPhase::Press),
             key(0, FixtureKey::Character('s'), InputPhase::Press),
-            key(0, FixtureKey::Character('s'), InputPhase::Release),
-            key(0, FixtureKey::Character('k'), InputPhase::Press),
+            key(0, FixtureKey::Character('j'), InputPhase::Press),
         ],
         TerminalCapabilities::full(),
         ReplayHarness::with_auto_running,
     );
-    assert!(!result.auto_running);
+    assert_eq!(result.model.mode, InteractionMode::Browsing);
     assert_eq!(result.recent_ids, ["bass.level"]);
     assert!(matches!(
         result.model.navigation,
@@ -2799,11 +2651,114 @@ fn raw_performance_edit_acknowledges_real_cursor_target_exits_auto_and_updates_m
             selected: 0,
         }
     ));
-    assert_eq!(result.control("bass.level"), Some(0.02));
+    // Only an edit exits auto, and arriving is not an edit: the morph
+    // keeps running and the level is untouched.
+    assert!(result.auto_running);
+    assert_eq!(
+        result.control("bass.level"),
+        replay_with(
+            &[],
+            TerminalCapabilities::full(),
+            ReplayHarness::with_auto_running
+        )
+        .control("bass.level")
+    );
     assert!(result.effects.iter().any(|effect| {
-        effect.contains("focus: Bass, action: Louder")
-            && effect.contains("OK:PerformanceEdited { tab: Bass, index: 0, id: \"bass.level\"")
+        effect.contains(r#"OK:ControlSelected { tab: Bass, index: 0, id: "bass.level""#)
     }));
+}
+
+/// Filter is a catalog module, not a per-layer control. Bass, Kick and Perc
+/// ship with one in slot 1, so `k` jumps to it and leaves its amount alone;
+/// Pads ships without one, so `k` adds an inert filter and lands on that.
+#[test]
+fn jump_to_filter_reaches_a_loaded_one_and_adds_an_inert_one_otherwise() {
+    let jump = |layer| {
+        vec![
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character(layer), InputPhase::Press),
+            key(0, FixtureKey::Character('k'), InputPhase::Press),
+        ]
+    };
+    let filter_value = super::module_kind_value(super::interaction::FILTER_MODULE_ID);
+
+    // Bass already holds a filter: the leader must reach it, never stack a
+    // second one or reset the amount the player is performing with.
+    let loaded = replay(&jump('s'), TerminalCapabilities::full());
+    assert_eq!(loaded.model.mode, InteractionMode::Browsing);
+    assert_eq!(loaded.control("bass.slot1.kind"), Some(filter_value));
+    // Its cutoff is the row that was performing; the leader must not reset it.
+    assert_eq!(
+        loaded.control("bass.slot1.time"),
+        replay(&[], TerminalCapabilities::full()).control("bass.slot1.time")
+    );
+    assert_eq!(
+        loaded.recent_ids,
+        ["bass.slot1.time"],
+        "the cursor landed on the filter's cutoff row"
+    );
+
+    // Pads holds `room` in slot 1, so the filter goes into the first free
+    // slot, inert, and the existing chain is untouched.
+    let added = replay(&jump('a'), TerminalCapabilities::full());
+    assert_eq!(added.model.mode, InteractionMode::Browsing);
+    assert_eq!(added.control("pad.slot2.kind"), Some(filter_value));
+    // A filter is always fully wet; its cutoff is what starts transparent,
+    // so adding one is audibly free and `h` is the first audible move.
+    assert_eq!(added.control("pad.slot2.amount"), Some(1.0));
+    assert_eq!(added.control("pad.slot2.time"), Some(8_000.0));
+    assert_eq!(added.recent_ids, ["pad.slot2.time"]);
+    assert_eq!(
+        added.control("pad.slot1.kind"),
+        Some(super::module_kind_value("room"))
+    );
+}
+
+/// A mistyped layer costs one key: a second layer key re-aims the pending
+/// jump instead of being inert.
+#[test]
+fn a_second_layer_key_reaims_the_pending_jump() {
+    let result = replay(
+        &[
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('s'), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Press),
+            key(0, FixtureKey::Character('j'), InputPhase::Press),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(result.model.mode, InteractionMode::Browsing);
+    assert_eq!(result.recent_ids, ["kick.level"]);
+}
+
+/// Autorepeat inside the leader cannot fire a second jump, and a stray
+/// release never reaches it.
+#[test]
+fn leader_keys_ignore_repeat_and_release() {
+    let result = replay(
+        &[
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Repeat),
+            key(0, FixtureKey::Character('d'), InputPhase::Release),
+            key(0, FixtureKey::Character('j'), InputPhase::Repeat),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert!(matches!(
+        result.model.mode,
+        InteractionMode::Performance(PerformanceMode::Jump {
+            stage: JumpStage::ChooseParameter {
+                instrument: PerformanceInstrument::Kick,
+            },
+        })
+    ));
+    assert!(
+        result
+            .effects
+            .iter()
+            .all(|effect| !effect.contains("ControlSelected"))
+    );
 }
 
 #[test]
@@ -2819,15 +2774,14 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
         TerminalCapabilities::full(),
     );
     assert_eq!(palette.final_owner(), Some("PALETTE"));
-    let sequence = replay(
+    let leader = replay(
         &repeated(FixtureKey::Character(' ')),
         TerminalCapabilities::full(),
     );
     assert!(matches!(
-        sequence.model.mode,
-        InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::ChooseInstrument,
-            ..
+        leader.model.mode,
+        InteractionMode::Performance(PerformanceMode::Jump {
+            stage: JumpStage::ChooseLayer,
         })
     ));
 
@@ -2862,16 +2816,15 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
 
     let performance = replay_from_model(
         InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Sequence {
-                stage: SequenceStage::ChooseInstrument,
-                held_selector: None,
+            mode: InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseLayer,
             }),
             ..InteractionModel::default()
         },
         &repeated(FixtureKey::Character('a')),
         TerminalCapabilities::full(),
     );
-    assert_eq!(performance.effect_count("PerformanceInstrument"), 1);
+    assert_eq!(performance.effect_count("SelectPage"), 1);
 
     let drill = replay_from_model(
         InteractionModel {
@@ -2910,11 +2863,11 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         Intent::OpenPalette,
         Intent::OpenAutomation(AutomationKind::Lfo),
         Intent::OpenAutomationField,
-        Intent::ActivatePerformance(PerformanceKind::Sequence),
+        Intent::ActivatePerformance(PerformanceKind::Jump),
         Intent::SelectPerformanceInstrument {
             instrument: PerformanceInstrument::Pads,
-            hold: false,
         },
+        Intent::JumpToParameter(super::interaction::PerformanceParameter::Volume),
         Intent::AdjustSelected(1),
         Intent::ResetSelected,
         Intent::ToggleAuto,
@@ -2926,7 +2879,7 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         Intent::CommitPaletteAtBar,
         Intent::Save,
         Intent::Quit,
-        Intent::ReleaseHeldSelector(PerformanceInstrument::Pads),
+        Intent::ReleaseLeadTone(1),
     ];
     let edge_intents = candidate_intents
         .into_iter()
@@ -2991,37 +2944,16 @@ fn escape_converges_from_every_owner_and_nested_depth() {
             ..InteractionModel::default()
         },
         InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Sequence {
-                stage: SequenceStage::ChooseInstrument,
-                held_selector: None,
+            mode: InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseLayer,
             }),
             ..InteractionModel::default()
         },
         InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Sequence {
-                stage: SequenceStage::Perform {
+            mode: InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseParameter {
                     instrument: PerformanceInstrument::Kick,
                 },
-                held_selector: Some(PerformanceInstrument::Bass),
-            }),
-            ..InteractionModel::default()
-        },
-        InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Sequence {
-                stage: SequenceStage::AwaitActionRelease {
-                    instrument: PerformanceInstrument::Kick,
-                    action: super::interaction::PerformanceAction::Louder,
-                },
-                held_selector: None,
-            }),
-            ..InteractionModel::default()
-        },
-        InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Sequence {
-                stage: SequenceStage::CompletedFallback {
-                    instrument: PerformanceInstrument::Perc,
-                },
-                held_selector: None,
             }),
             ..InteractionModel::default()
         },
@@ -3167,7 +3099,6 @@ fn divergence_signature(left: &ReplayResult, right: &ReplayResult) -> Option<Div
     first_field!(pending_edits);
     first_field!(pending_target_bits);
     first_field!(max_queue);
-    first_field!(unsupported_holds);
     first_field!(deferred_inputs);
     first_field!(clipboard_writes);
     first_field!(explicit_ticks);

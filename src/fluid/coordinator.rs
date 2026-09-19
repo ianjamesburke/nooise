@@ -325,10 +325,6 @@ pub(crate) fn coordinate_production_action(
                 }
                 model.mode = interaction::InteractionMode::Browsing;
             }
-            Ok(EffectAcknowledgement::PerformanceEdited { tab, index, .. }) => {
-                let current_session = context.effects.session().load();
-                model.select_control(*tab, *index, &current_session.controls);
-            }
             Err(error) => {
                 let prefix = if effect == interaction::InteractionEffect::Save {
                     "Save failed"

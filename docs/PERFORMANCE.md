@@ -49,21 +49,29 @@ audio buffers. Loaded holds resume on their saved targets. Press the matching
 gesture key to claim a loaded hold and release it, or use Escape to release
 all loaded holds.
 
-## Sequence
+## Jump
 
-Space enters the one-shot Sequence owner. Repeated entry is inert while
-choosing or performing. `a/s/d/f` select Pads/Bass/Kick/Perc and open the
-corresponding page. `h/l` shorten/lengthen, `j/k` quieten/louden, and `u/i`
-make the selected instrument sparser/denser.
+Space is a leader key. A layer key then a parameter key puts the cursor on
+that control and hands the keyboard straight back to browsing, where `h`/`l`
+adjust it and `j`/`k` move as always. The leader changes nothing by itself:
+it is an address, not an edit.
 
-Each action applies once on Press. With releases, Sequence consumes subsequent
-Repeat events until the matching action Release returns to Browse. Unrelated
-releases are inert. Selector Press selects and marks the instrument held;
-its matching Release clears the hold. Selecting another instrument first
-releases the old one.
+`a`/`s`/`d`/`f` choose Pads/Bass/Kick/Perc and open that page. `j` is volume
+and `k` is filter. A second layer key re-aims a jump that has not completed,
+so a mistyped layer costs one key rather than an Escape and a restart.
+Escape leaves the leader; Space while it is pending is inert.
 
-Without releases, an action enters a visible completed stage. Autorepeat is
-inert there; Space rearms Sequence and Escape returns to Browse.
+Volume is the layer's own Level row. Filter is the shared filter module:
+Bass, Kick and Perc ship with one in slot 1, so `k` lands on the cutoff it
+is already performing with, and Pads gets one added into its first free slot
+at a transparent 8 kHz cutoff, so arriving is silent and turning the cutoff
+down is the first audible move. A layer whose chain is full says so and
+stays put.
+
+The leader only ever moves a cursor, so it needs no key-release support and
+behaves identically on every terminal. It renders as a footer line naming
+the keys it is waiting for; the page it is aiming at stays on screen beneath
+it.
 
 The former Deck entry on `p` is retired. Lead play retains its own `i` entry
 and existing bindings.
@@ -84,8 +92,11 @@ and existing bindings.
    Escape must also release held or loaded gestures.
 5. Save during a swell and load that code. Its amount should resume; the
    matching gesture key or Escape must let it return.
-6. Verify Space, `d`, `k` still makes one louder Kick edit and completes
-   Sequence according to the terminal's release capability.
+6. Press Space, `s`, `j`: the cursor lands on Bass Level in Browse with
+   nothing changed, and `h`/`l` then move it. Press Space, `a`, `k`: a filter
+   appears on the Pads chain, inaudible, with the cursor on its Cutoff row,
+   and `h` sweeps it down. Repeat on Bass and confirm `k` reaches the filter
+   already in slot 1 without resetting its cutoff or adding a second one.
 7. Press `?` from Browsing: the shortcut map should open over the tab and
    control rows, leaving both footer rows visible beneath it. Esc returns
    to Browsing.

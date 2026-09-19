@@ -7,7 +7,7 @@ Durable product direction and architecture decisions.
 ## Ownership
 
 - `NORTH_STAR.md` owns product vision and feature-evaluation commandments.
-- `PERFORMANCE.md` owns normal-mode gestures and Sequence, phase/fallback
+- `PERFORMANCE.md` owns normal-mode gestures and the Jump leader, phase
   contracts, and manual audio smoke.
 - `adr/` owns accepted architecture decisions. See `adr/AGENTS.md`.
 - `proposals/` owns feature designs and their decision status. See `proposals/AGENTS.md`.

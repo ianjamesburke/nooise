@@ -428,7 +428,7 @@ impl AutomationMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PerformanceKind {
-    Sequence,
+    Jump,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -439,48 +439,37 @@ pub(crate) enum PerformanceInstrument {
     Perc,
 }
 
-/// Everything one performance instrument is: the page it lives on, the
-/// selector key that holds it, and the registry ids its Sequence
-/// actions edit (level, shape, density).
+/// Everything one performance instrument is: the page it lives on and the
+/// selector key that reaches it from the Jump leader.
 pub(crate) struct InstrumentRow {
     pub(crate) instrument: PerformanceInstrument,
     pub(crate) page: Page,
     pub(crate) key: char,
-    pub(crate) shape: &'static str,
-    pub(crate) density: &'static str,
 }
 
 /// One row per instrument in `PerformanceInstrument` discriminant order
-/// (test-enforced), so the key map, page, display name, and registry
-/// targets all index this single table.
+/// (test-enforced), so the key map, page, and display name all index this
+/// single table.
 pub(crate) const INSTRUMENTS: [InstrumentRow; 4] = [
     InstrumentRow {
         instrument: PerformanceInstrument::Pads,
         page: Page::Chords,
         key: 'a',
-        shape: "pad.release_time",
-        density: "pad.chord_bars",
     },
     InstrumentRow {
         instrument: PerformanceInstrument::Bass,
         page: Page::Bass,
         key: 's',
-        shape: "bass.decay_time",
-        density: "bass.interval_beats",
     },
     InstrumentRow {
         instrument: PerformanceInstrument::Kick,
         page: Page::Kick,
         key: 'd',
-        shape: "kick.amp_decay_ms",
-        density: "kick.interval_beats",
     },
     InstrumentRow {
         instrument: PerformanceInstrument::Perc,
         page: Page::Perc,
         key: 'f',
-        shape: "perc.decay_ms",
-        density: "perc.interval_beats",
     },
 ];
 
@@ -503,7 +492,7 @@ impl PerformanceInstrument {
         tab_for_page(self.page())
     }
 
-    /// The selector key that chooses this instrument in Sequence.
+    /// The selector key that chooses this instrument under the Jump leader.
     pub(crate) const fn key(self) -> char {
         self.row().key
     }
@@ -521,72 +510,95 @@ impl PerformanceInstrument {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PerformanceTargets(u8);
+/// The catalog module `PerformanceParameter::Filter` reaches. Named once
+/// here so the leader and the catalog cannot drift apart.
+pub(crate) const FILTER_MODULE_ID: &str = "filter";
 
-impl PerformanceTargets {
-    pub(crate) fn single(instrument: PerformanceInstrument) -> Self {
-        Self(1 << instrument.index())
-    }
-
-    pub(crate) fn contains(self, instrument: PerformanceInstrument) -> bool {
-        self.0 & (1 << instrument.index()) != 0
-    }
-
-    pub(crate) fn iter(self) -> impl Iterator<Item = PerformanceInstrument> {
-        PerformanceInstrument::ALL
-            .into_iter()
-            .filter(move |instrument| self.contains(*instrument))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum SequenceStage {
-    #[default]
-    ChooseInstrument,
-    Perform {
-        instrument: PerformanceInstrument,
-    },
-    AwaitActionRelease {
-        instrument: PerformanceInstrument,
-        action: PerformanceAction,
-    },
-    CompletedFallback {
-        instrument: PerformanceInstrument,
-    },
-}
-
+/// One parameter the Jump leader reaches, and the key that reaches it.
+///
+/// Arrival is the whole gesture: the leader moves the cursor onto the row
+/// and hands the keyboard straight back to browsing, where the ordinary
+/// `h`/`l` adjust it. Nothing here edits a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PerformanceAction {
-    Shorter,
-    Longer,
-    Quieter,
-    Louder,
-    Sparser,
-    Denser,
+pub(crate) enum PerformanceParameter {
+    Volume,
+    Filter,
+}
+
+/// Everything one jump parameter is: the key that reaches it and the word
+/// the footer shows. The runtime key map and the footer read this table
+/// rather than restating the pair.
+pub(crate) struct ParameterRow {
+    pub(crate) parameter: PerformanceParameter,
+    pub(crate) key: char,
+    pub(crate) label: &'static str,
+}
+
+/// One row per parameter in `PerformanceParameter` discriminant order
+/// (test-enforced). `j`/`k` keep the browse row's vim geometry.
+pub(crate) const PARAMETERS: [ParameterRow; 2] = [
+    ParameterRow {
+        parameter: PerformanceParameter::Volume,
+        key: 'j',
+        label: "volume",
+    },
+    ParameterRow {
+        parameter: PerformanceParameter::Filter,
+        key: 'k',
+        label: "filter",
+    },
+];
+
+impl PerformanceParameter {
+    pub(crate) const ALL: [Self; 2] = [Self::Volume, Self::Filter];
+
+    pub(crate) const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub(crate) const fn row(self) -> &'static ParameterRow {
+        &PARAMETERS[self.index()]
+    }
+
+    pub(crate) const fn key(self) -> char {
+        self.row().key
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        self.row().label
+    }
+
+    pub(crate) fn from_key(key: char) -> Option<Self> {
+        PARAMETERS
+            .iter()
+            .find(|row| row.key == key)
+            .map(|row| row.parameter)
+    }
+}
+
+/// Where a pending Jump is: waiting for a layer, or waiting for the
+/// parameter on a layer already chosen. There is no third stage, because
+/// the parameter key completes the leader and returns to browsing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum JumpStage {
+    #[default]
+    ChooseLayer,
+    ChooseParameter {
+        instrument: PerformanceInstrument,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PerformanceMode {
-    Sequence {
-        stage: SequenceStage,
-        held_selector: Option<PerformanceInstrument>,
-    },
+    Jump { stage: JumpStage },
 }
 
 impl PerformanceMode {
     fn new(kind: PerformanceKind) -> Self {
         match kind {
-            PerformanceKind::Sequence => Self::Sequence {
-                stage: SequenceStage::ChooseInstrument,
-                held_selector: None,
+            PerformanceKind::Jump => Self::Jump {
+                stage: JumpStage::ChooseLayer,
             },
-        }
-    }
-
-    fn kind(self) -> PerformanceKind {
-        match self {
-            Self::Sequence { .. } => PerformanceKind::Sequence,
         }
     }
 }
@@ -805,15 +817,14 @@ pub(crate) enum Intent {
     )]
     OpenAutomationField,
     ActivatePerformance(PerformanceKind),
+    /// Choose the layer the pending Jump lands on. Opens its page so the
+    /// parameter key has somewhere visible to arrive.
     SelectPerformanceInstrument {
         instrument: PerformanceInstrument,
-        hold: bool,
     },
-    ApplyPerformanceAction {
-        action: PerformanceAction,
-        release_available: bool,
-    },
-    FinishPerformanceSequence(PerformanceAction),
+    /// Complete the pending Jump on the chosen layer and hand the keyboard
+    /// back to browsing. Moves the cursor; never edits a value.
+    JumpToParameter(PerformanceParameter),
     EnterLeadPlay,
     /// A 1-based Lead tone, from the letter row. `hold` is whether the
     /// terminal will report the key's release, so the note can sustain.
@@ -854,7 +865,6 @@ pub(crate) enum Intent {
     CommitPaletteAtBar,
     Save,
     Quit,
-    ReleaseHeldSelector(PerformanceInstrument),
 }
 
 impl Intent {
@@ -928,10 +938,9 @@ impl Intent {
                 ModeKind::Help,
             ],
             Self::ActivatePerformance(_) => &[ModeKind::Browsing, ModeKind::Performance],
-            Self::SelectPerformanceInstrument { .. }
-            | Self::ApplyPerformanceAction { .. }
-            | Self::FinishPerformanceSequence(_)
-            | Self::ReleaseHeldSelector(_) => &[ModeKind::Performance],
+            Self::SelectPerformanceInstrument { .. } | Self::JumpToParameter(_) => {
+                &[ModeKind::Performance]
+            }
         }
     }
 
@@ -945,12 +954,8 @@ impl Intent {
             | Self::ChangePage(_)
             | Self::TypeCharacter(_)
             | Self::Backspace
-            | Self::AdjustSelected(_)
-            | Self::ApplyPerformanceAction { .. } => PhasePolicy::Repeatable,
-            Self::ReleaseHeldSelector(_)
-            | Self::FinishPerformanceSequence(_)
-            | Self::ReleaseLeadTone(_)
-            | Self::ReleaseGesture(_) => PhasePolicy::ReleaseOnly,
+            | Self::AdjustSelected(_) => PhasePolicy::Repeatable,
+            Self::ReleaseLeadTone(_) | Self::ReleaseGesture(_) => PhasePolicy::ReleaseOnly,
             Self::Cancel
             | Self::EnterChordProgression
             | Self::EnterChordSlot(_)
@@ -966,6 +971,7 @@ impl Intent {
             | Self::OpenAutomationField
             | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
+            | Self::JumpToParameter(_)
             | Self::EnterLeadPlay
             | Self::PlayLeadTone { .. }
             | Self::NudgeLead { .. }
@@ -1017,7 +1023,8 @@ impl SemanticAction {
 pub(crate) enum InteractionEffect {
     AdjustSelected(i8),
     CommitNumeric(f32),
-    PaletteJump {
+    /// Put the cursor on control `id`, which is row `index` of `tab`.
+    JumpToControl {
         tab: Tab,
         index: usize,
         id: &'static str,
@@ -1026,7 +1033,7 @@ pub(crate) enum InteractionEffect {
     /// Put catalog module `catalog_index` on `tab`'s chain, or jump to it when the
     /// chain already holds it. The kernel cannot tell which, so it says what
     /// was asked for and lets the adapter resolve it.
-    PaletteModule {
+    PlaceModule {
         tab: Tab,
         catalog_index: usize,
     },
@@ -1046,14 +1053,6 @@ pub(crate) enum InteractionEffect {
     TouchSelected,
     PaletteCommitAtBar(Vec<PaletteStagedEdit>),
     SelectPage(Page),
-    PerformanceInstrument(PerformanceInstrument),
-    HoldPerformanceSelector(PerformanceInstrument),
-    ReleaseHeldSelector(PerformanceInstrument),
-    PerformanceEdit {
-        targets: PerformanceTargets,
-        focus: PerformanceInstrument,
-        action: PerformanceAction,
-    },
     /// Sound one Lead tone (1-based) now; a held tone sustains until
     /// `LeadRelease`.
     LeadTone {
@@ -1704,6 +1703,10 @@ fn update_lead(
     }
 }
 
+/// The Jump leader: `Space`, a layer key, a parameter key, and the cursor
+/// is on that row in browsing. It resolves an address and moves the
+/// selection; it never changes a value, so it needs no key releases, no
+/// capability branch, and no completion stage.
 fn update_performance(
     performance: &mut PerformanceMode,
     navigation: &mut Navigation,
@@ -1715,100 +1718,48 @@ fn update_performance(
         return;
     }
     match intent {
-        Intent::Cancel => {
-            let PerformanceMode::Sequence { held_selector, .. } = performance;
-            if let Some(selector) = held_selector.take() {
-                effects.push(InteractionEffect::ReleaseHeldSelector(selector));
-            }
-            *next_mode = Some(InteractionMode::Browsing);
-        }
-        Intent::ActivatePerformance(kind) if kind == performance.kind() => {
-            if matches!(
-                performance,
-                PerformanceMode::Sequence {
-                    stage: SequenceStage::CompletedFallback { .. },
-                    ..
-                }
-            ) {
-                *performance = PerformanceMode::new(PerformanceKind::Sequence);
-            }
-        }
+        Intent::Cancel => *next_mode = Some(InteractionMode::Browsing),
+        // Space while the leader is already pending leaves its stage alone.
         Intent::ActivatePerformance(_) => {}
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
-        Intent::SelectPerformanceInstrument { instrument, hold } => {
-            let PerformanceMode::Sequence {
-                stage,
-                held_selector,
-            } = performance;
-            if hold
-                && let Some(previous) = held_selector.replace(instrument)
-                && previous != instrument
-            {
-                effects.push(InteractionEffect::ReleaseHeldSelector(previous));
-            }
-            *stage = SequenceStage::Perform { instrument };
+        Intent::SelectPerformanceInstrument { instrument } => {
+            let PerformanceMode::Jump { stage } = performance;
+            *stage = JumpStage::ChooseParameter { instrument };
             let page = instrument.page();
             *navigation = Navigation::for_page(page);
-            effects.extend([
-                InteractionEffect::SelectPage(page),
-                InteractionEffect::PerformanceInstrument(instrument),
-            ]);
-            if hold {
-                effects.push(InteractionEffect::HoldPerformanceSelector(instrument));
-            }
+            effects.push(InteractionEffect::SelectPage(page));
         }
-        Intent::ReleaseHeldSelector(released) => {
-            let PerformanceMode::Sequence { held_selector, .. } = performance;
-            if *held_selector == Some(released) {
-                held_selector.take();
-                effects.push(InteractionEffect::ReleaseHeldSelector(released));
-            }
-        }
-        Intent::ApplyPerformanceAction {
-            action,
-            release_available,
-        } => {
-            let edit = match *performance {
-                PerformanceMode::Sequence {
-                    stage: SequenceStage::Perform { instrument },
-                    ..
-                } => Some((PerformanceTargets::single(instrument), instrument)),
-                PerformanceMode::Sequence { .. } => None,
+        Intent::JumpToParameter(parameter) => {
+            let PerformanceMode::Jump { stage } = *performance;
+            let JumpStage::ChooseParameter { instrument } = stage else {
+                return;
             };
-            if let Some((targets, focus)) = edit {
-                effects.push(InteractionEffect::PerformanceEdit {
-                    targets,
-                    focus,
-                    action,
-                });
-                let PerformanceMode::Sequence { stage, .. } = performance;
-                *stage = if release_available {
-                    SequenceStage::AwaitActionRelease {
-                        instrument: focus,
-                        action,
-                    }
-                } else {
-                    SequenceStage::CompletedFallback { instrument: focus }
-                };
-            }
-        }
-        Intent::FinishPerformanceSequence(released) => {
-            if matches!(
-                performance,
-                PerformanceMode::Sequence {
-                    stage: SequenceStage::AwaitActionRelease { action, .. },
-                    ..
-                } if *action == released
-            ) {
-                let PerformanceMode::Sequence { held_selector, .. } = performance;
-                if let Some(selector) = held_selector.take() {
-                    effects.push(InteractionEffect::ReleaseHeldSelector(selector));
-                }
-                *next_mode = Some(InteractionMode::Browsing);
-            }
+            effects.extend(jump_effect(instrument, parameter));
+            *next_mode = Some(InteractionMode::Browsing);
         }
         _ => {}
+    }
+}
+
+/// Where one layer's parameter lives. Volume is the layer's own level row.
+/// Filter is the catalog filter module, which the adapter adds inert when
+/// the chain has none, so the leader reaches it whether or not it is loaded.
+fn jump_effect(
+    instrument: PerformanceInstrument,
+    parameter: PerformanceParameter,
+) -> Option<InteractionEffect> {
+    let tab = instrument.tab();
+    match parameter {
+        PerformanceParameter::Volume => {
+            let id = tab.level_id()?;
+            let index = super::spec_index(tab, id)?;
+            Some(InteractionEffect::JumpToControl { tab, index, id })
+        }
+        PerformanceParameter::Filter => Some(InteractionEffect::PlaceModule {
+            tab,
+            catalog_index: super::module_catalog_index(FILTER_MODULE_ID),
+        }),
     }
 }
 
@@ -1830,16 +1781,16 @@ fn palette_confirm(entry: &PaletteEntry) -> InteractionEffect {
             tab,
             index_in_tab,
             spec,
-        } => InteractionEffect::PaletteJump {
+        } => InteractionEffect::JumpToControl {
             tab: *tab,
             index: *index_in_tab,
             id: spec.id,
         },
-        PaletteEntry::Module { tab, catalog_index } => InteractionEffect::PaletteModule {
+        PaletteEntry::Module { tab, catalog_index } => InteractionEffect::PlaceModule {
             tab: *tab,
             catalog_index: *catalog_index,
         },
-        PaletteEntry::ModuleControl { tab, spec, .. } => InteractionEffect::PaletteJump {
+        PaletteEntry::ModuleControl { tab, spec, .. } => InteractionEffect::JumpToControl {
             tab: *tab,
             index: super::tab_specs(*tab)
                 .iter()
@@ -1930,9 +1881,8 @@ mod tests {
                 InteractionMode::Browsing,
             ),
             (
-                InteractionMode::Performance(PerformanceMode::Sequence {
-                    stage: SequenceStage::ChooseInstrument,
-                    held_selector: None,
+                InteractionMode::Performance(PerformanceMode::Jump {
+                    stage: JumpStage::ChooseLayer,
                 }),
                 InteractionMode::Browsing,
             ),
@@ -2161,11 +2111,11 @@ mod tests {
             Intent::OpenPalette,
             Intent::OpenAutomation(AutomationKind::Lfo),
             Intent::OpenAutomationField,
-            Intent::ActivatePerformance(PerformanceKind::Sequence),
+            Intent::ActivatePerformance(PerformanceKind::Jump),
             Intent::SelectPerformanceInstrument {
                 instrument: PerformanceInstrument::Pads,
-                hold: false,
             },
+            Intent::JumpToParameter(PerformanceParameter::Volume),
             Intent::Save,
             Intent::Quit,
         ];
@@ -2174,7 +2124,7 @@ mod tests {
         }
 
         assert_eq!(
-            Intent::ReleaseHeldSelector(PerformanceInstrument::Pads).phase_policy(),
+            Intent::ReleaseLeadTone(1).phase_policy(),
             PhasePolicy::ReleaseOnly
         );
     }
@@ -2184,7 +2134,7 @@ mod tests {
         for phase in [InputPhase::Repeat, InputPhase::Release] {
             let action = SemanticAction {
                 phase,
-                intent: Intent::ActivatePerformance(PerformanceKind::Sequence),
+                intent: Intent::ActivatePerformance(PerformanceKind::Jump),
             };
             assert_eq!(
                 InteractionModel::default().update(action).model.mode,
@@ -2209,97 +2159,75 @@ mod tests {
 
     #[test]
     fn release_only_action_requires_and_ends_an_explicit_hold() {
-        let model = update(
-            InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Sequence),
-        )
-        .model;
-        let pressed_release =
-            model
-                .clone()
-                .update(SemanticAction::press(Intent::ReleaseHeldSelector(
-                    PerformanceInstrument::Perc,
-                )));
+        let model = update(InteractionModel::default(), Intent::EnterLeadPlay).model;
+        // A ReleaseOnly intent is inert on Press, whatever the mode holds.
+        let pressed_release = model
+            .clone()
+            .update(SemanticAction::press(Intent::ReleaseLeadTone(1)));
         assert!(pressed_release.effects.is_empty());
 
         let bare_release = model.clone().update(SemanticAction {
             phase: InputPhase::Release,
-            intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Perc),
+            intent: Intent::ReleaseLeadTone(1),
         });
         assert!(bare_release.effects.is_empty());
 
         let held = update(
             model,
-            Intent::SelectPerformanceInstrument {
-                instrument: PerformanceInstrument::Perc,
+            Intent::PlayLeadTone {
+                tone: 1,
                 hold: true,
             },
         );
         assert_eq!(
-            held.effects.last(),
-            Some(&InteractionEffect::HoldPerformanceSelector(
-                PerformanceInstrument::Perc
-            ))
+            held.effects,
+            vec![InteractionEffect::LeadTone {
+                tone: 1,
+                hold: true
+            }]
         );
 
         let released = held.model.update(SemanticAction {
             phase: InputPhase::Release,
-            intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Perc),
+            intent: Intent::ReleaseLeadTone(1),
         });
-        assert_eq!(
-            released.effects,
-            vec![InteractionEffect::ReleaseHeldSelector(
-                PerformanceInstrument::Perc
-            )]
-        );
+        assert_eq!(released.effects, vec![InteractionEffect::LeadRelease]);
         assert!(
             released
                 .model
                 .update(SemanticAction {
                     phase: InputPhase::Release,
-                    intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Perc),
+                    intent: Intent::ReleaseLeadTone(1),
                 })
                 .effects
                 .is_empty()
         );
     }
 
+    /// The leader owns no physical hold, so leaving it is a plain mode
+    /// change with nothing to hand back.
     #[test]
-    fn cancel_releases_an_active_hold_before_leaving_performance() {
-        let performance = update(
-            InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Sequence),
-        )
-        .model;
-        let held = update(
-            performance,
+    fn cancel_leaves_the_leader_without_emitting_effects() {
+        let aimed = update(
+            update(
+                InteractionModel::default(),
+                Intent::ActivatePerformance(PerformanceKind::Jump),
+            )
+            .model,
             Intent::SelectPerformanceInstrument {
                 instrument: PerformanceInstrument::Perc,
-                hold: true,
             },
         )
         .model;
 
-        let cancelled = update(held, Intent::Cancel);
-        assert_eq!(
-            cancelled.effects,
-            vec![InteractionEffect::ReleaseHeldSelector(
-                PerformanceInstrument::Perc
-            )]
-        );
+        let cancelled = update(aimed, Intent::Cancel);
+        assert!(cancelled.effects.is_empty());
         assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
-
-        let late_release = cancelled.model.update(SemanticAction {
-            phase: InputPhase::Release,
-            intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Perc),
-        });
-        assert!(late_release.effects.is_empty());
-        assert_eq!(late_release.model.mode, InteractionMode::Browsing);
     }
 
     #[test]
     fn duplicate_performance_activation_is_idempotent() {
-        let kind = PerformanceKind::Sequence;
+        let kind = PerformanceKind::Jump;
         let first = update(
             InteractionModel::default(),
             Intent::ActivatePerformance(kind),
@@ -2318,7 +2246,7 @@ mod tests {
             ),
             (
                 InteractionMode::Numeric(NumericEntry::default()),
-                Intent::ActivatePerformance(PerformanceKind::Sequence),
+                Intent::ActivatePerformance(PerformanceKind::Jump),
             ),
             (
                 InteractionMode::Palette(PaletteMode::default()),
@@ -2329,9 +2257,8 @@ mod tests {
                 Intent::OpenAutomation(AutomationKind::Lfo),
             ),
             (
-                InteractionMode::Performance(PerformanceMode::Sequence {
-                    stage: SequenceStage::ChooseInstrument,
-                    held_selector: None,
+                InteractionMode::Performance(PerformanceMode::Jump {
+                    stage: JumpStage::ChooseLayer,
                 }),
                 Intent::OpenAutomation(AutomationKind::Lfo),
             ),
@@ -2496,26 +2423,22 @@ mod tests {
     }
 
     #[test]
-    fn performance_selection_emits_effects_in_order() {
+    fn choosing_a_layer_opens_its_page_and_waits_for_a_parameter() {
         let model = update(
             InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Sequence),
+            Intent::ActivatePerformance(PerformanceKind::Jump),
         )
         .model;
         let transition = update(
             model,
             Intent::SelectPerformanceInstrument {
                 instrument: PerformanceInstrument::Perc,
-                hold: false,
             },
         );
 
         assert_eq!(
             transition.effects,
-            vec![
-                InteractionEffect::SelectPage(Page::Perc),
-                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Perc),
-            ]
+            vec![InteractionEffect::SelectPage(Page::Perc)]
         );
         assert_eq!(
             transition.model.navigation,
@@ -2524,30 +2447,90 @@ mod tests {
                 selected: 0,
             }
         );
+        assert_eq!(
+            transition.model.mode,
+            InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseParameter {
+                    instrument: PerformanceInstrument::Perc
+                }
+            })
+        );
     }
 
     #[test]
     fn performance_instruments_are_a_closed_four_choice_grammar() {
-        let sequence = update(
+        let leader = update(
             InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Sequence),
+            Intent::ActivatePerformance(PerformanceKind::Jump),
         )
         .model;
-        for instrument in [
-            PerformanceInstrument::Pads,
-            PerformanceInstrument::Bass,
-            PerformanceInstrument::Kick,
-            PerformanceInstrument::Perc,
-        ] {
+        for instrument in PerformanceInstrument::ALL {
             let transition = update(
-                sequence.clone(),
-                Intent::SelectPerformanceInstrument {
-                    instrument,
-                    hold: false,
-                },
+                leader.clone(),
+                Intent::SelectPerformanceInstrument { instrument },
             );
             assert_eq!(transition.model.navigation.page(), instrument.page());
         }
+    }
+
+    /// Arrival is the whole gesture: one effect that moves the cursor, and
+    /// the keyboard back in browsing so `h`/`l` adjust what it landed on.
+    #[test]
+    fn every_layer_and_parameter_jumps_and_returns_to_browsing() {
+        for instrument in PerformanceInstrument::ALL {
+            for parameter in PerformanceParameter::ALL {
+                let aimed = update(
+                    update(
+                        InteractionModel::default(),
+                        Intent::ActivatePerformance(PerformanceKind::Jump),
+                    )
+                    .model,
+                    Intent::SelectPerformanceInstrument { instrument },
+                )
+                .model;
+                let arrived = update(aimed, Intent::JumpToParameter(parameter));
+
+                let expected = match parameter {
+                    PerformanceParameter::Volume => InteractionEffect::JumpToControl {
+                        tab: instrument.tab(),
+                        index: super::super::spec_index(
+                            instrument.tab(),
+                            instrument.tab().level_id().expect("layer has a level"),
+                        )
+                        .expect("level row is on its own tab"),
+                        id: instrument.tab().level_id().expect("layer has a level"),
+                    },
+                    PerformanceParameter::Filter => InteractionEffect::PlaceModule {
+                        tab: instrument.tab(),
+                        catalog_index: super::super::module_catalog_index(FILTER_MODULE_ID),
+                    },
+                };
+                assert_eq!(arrived.effects, vec![expected]);
+                assert_eq!(arrived.model.mode, InteractionMode::Browsing);
+            }
+        }
+    }
+
+    /// A parameter key before a layer is chosen cannot resolve an address,
+    /// so it leaves the leader pending rather than guessing a layer.
+    #[test]
+    fn a_parameter_key_before_a_layer_is_inert() {
+        let leader = update(
+            InteractionModel::default(),
+            Intent::ActivatePerformance(PerformanceKind::Jump),
+        )
+        .model;
+        let transition = update(
+            leader,
+            Intent::JumpToParameter(PerformanceParameter::Volume),
+        );
+        assert!(transition.effects.is_empty());
+        assert_eq!(
+            transition.model.mode,
+            InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseLayer
+            })
+        );
     }
 
     #[test]

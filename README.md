@@ -44,7 +44,13 @@ to return in 50 ms. The
 current layer is the target; on Master, the gesture affects the whole mix.
 Arrows and Tab keep working while you hold a gesture. These holds require
 a terminal that reports key releases; the footer shows when support is missing.
-See [live performance](docs/PERFORMANCE.md) for overlap, saving, and Sequence.
+
+Space is a leader key: a layer (`a` pads, `s` bass, `d` kick, `f` perc) then
+a parameter (`j` volume, `k` filter) puts the cursor on that control, where
+`h`/`l` move it. It jumps, it does not edit.
+
+See [live performance](docs/PERFORMANCE.md) for overlap, saving, and the
+Jump leader.
 
 ```sh
 nooise --version

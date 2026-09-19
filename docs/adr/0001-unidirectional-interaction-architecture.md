@@ -69,8 +69,8 @@ automation editing, palette use, and future performance grammar directly.
 ### Keyboard ownership and legal states
 
 1. Exactly one `InteractionMode` variant owns keyboard input at a time.
-   Browsing, numeric entry, palette, automation editing, Sequence, and Lead
-   play cannot be simultaneously active. Temporary effect gestures belong to
+   Browsing, numeric entry, palette, automation editing, the Jump leader,
+   and Lead play cannot be simultaneously active. Temporary effect gestures belong to
    Browsing and do not take over navigation. Their audio returns can continue
    after another mode takes keyboard ownership.
 2. Mode-specific data is stored inside its owning enum variant. Illegal
@@ -223,8 +223,10 @@ the runtime or effect executor.
 6. **Migrate production and delete legacy paths.** Prove behavioral parity,
    switch the live terminal loop, and remove raw-key mutation, independent
    modal flags, the unbounded drain, and the many-argument render interface.
-7. **Rebuild performance interaction.** Sequence retains one-shot edits.
-   Normal-browsing gestures replace the persistent Deck workflow.
+7. **Rebuild performance interaction.** Normal-browsing gestures replace the
+   persistent Deck workflow. Space is a leader that resolves an address and
+   returns to Browsing; performance editing belongs to the browse keys it
+   lands on, not to a mode of its own.
 
 Audio DSP, audio routing, registry value semantics, automation math, and song
 serialization are outside this refactor. For unchanged seeds and session
@@ -253,14 +255,14 @@ With press-only capabilities, gesture keys are inert and the help states why.
 Rendered audio must prove a swell, a continuous partial release, and surviving
 Bloom/Echo tails; input and footer checks alone do not establish this behavior.
 
-### Duplicate Performance Sequence leader (double Space)
+### Duplicate Jump leader (double Space)
 
 Given ordinary browsing and two Space events available before the next poll,
-the Sequence leader enters `ChooseInstrument` once. Repeat is ignored and a
-second distinct activation is idempotent; Space does not cancel the sequence.
-A frame showing `ChooseInstrument` completes within 50 ms before any later
-instrument intent is processed past a due render boundary. No control or
-automation effect is emitted.
+the leader enters `ChooseLayer` once. Repeat is ignored and a second distinct
+activation is idempotent; Space does not cancel a pending jump. A frame
+showing `ChooseLayer` completes within 50 ms before any later layer intent is
+processed past a due render boundary. No control or automation effect is
+emitted.
 
 ### Sustained repeat under a permanently ready source
 
