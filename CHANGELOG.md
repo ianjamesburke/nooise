@@ -1,6 +1,16 @@
 # Changelog
 
 Newest releases appear first.
+## [2.5.1] — 2026-09-19
+
+### Added
+- feat: add Shift+? shortcut map, shrink footer to a terse hint
+
+### Fixed
+- fix: also accept Shift+/ reported as base key '/' plus modifier
+- fix: bind ? on its own character instead of a SHIFT-gated chord
+- fix: show gesture key hints on the activity row when idle
+- fix: restore two-layer footer with general shortcuts on bottom row
 ## [2.5.0] — 2026-09-17
 
 ### Added
