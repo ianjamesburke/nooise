@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [2.5.3] — 2026-09-20
+
+### Added
+- feat: replace built-in song 2 and swap songs 2 and 3
 ## [2.5.2] — 2026-09-19
 
 ### Fixed
