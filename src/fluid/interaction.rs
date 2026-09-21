@@ -434,9 +434,13 @@ pub(crate) enum PerformanceKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PerformanceInstrument {
     Pads,
+    Perc,
     Bass,
     Kick,
-    Perc,
+    Tonal,
+    Clap,
+    Arp,
+    Master,
 }
 
 /// Everything one performance instrument is: the page it lives on and the
@@ -450,31 +454,65 @@ pub(crate) struct InstrumentRow {
 /// One row per instrument in `PerformanceInstrument` discriminant order
 /// (test-enforced), so the key map, page, and display name all index this
 /// single table.
-pub(crate) const INSTRUMENTS: [InstrumentRow; 4] = [
+///
+/// The keys read left to right across the tab strip: the home row `asdf`
+/// for the first four pages, the row above it `qwer` for the rest, so `r`
+/// lands on Master. Lead has no selector key, since `i` already enters it
+/// and the no-layer-key shorthand reaches it from its own page.
+pub(crate) const INSTRUMENTS: [InstrumentRow; 8] = [
     InstrumentRow {
         instrument: PerformanceInstrument::Pads,
         page: Page::Chords,
         key: 'a',
     },
     InstrumentRow {
+        instrument: PerformanceInstrument::Perc,
+        page: Page::Perc,
+        key: 's',
+    },
+    InstrumentRow {
         instrument: PerformanceInstrument::Bass,
         page: Page::Bass,
-        key: 's',
+        key: 'd',
     },
     InstrumentRow {
         instrument: PerformanceInstrument::Kick,
         page: Page::Kick,
-        key: 'd',
+        key: 'f',
     },
     InstrumentRow {
-        instrument: PerformanceInstrument::Perc,
-        page: Page::Perc,
-        key: 'f',
+        instrument: PerformanceInstrument::Tonal,
+        page: Page::Tonal,
+        key: 'q',
+    },
+    InstrumentRow {
+        instrument: PerformanceInstrument::Clap,
+        page: Page::Clap,
+        key: 'w',
+    },
+    InstrumentRow {
+        instrument: PerformanceInstrument::Arp,
+        page: Page::Arp,
+        key: 'e',
+    },
+    InstrumentRow {
+        instrument: PerformanceInstrument::Master,
+        page: Page::Master,
+        key: 'r',
     },
 ];
 
 impl PerformanceInstrument {
-    pub(crate) const ALL: [Self; 4] = [Self::Pads, Self::Bass, Self::Kick, Self::Perc];
+    pub(crate) const ALL: [Self; 8] = [
+        Self::Pads,
+        Self::Perc,
+        Self::Bass,
+        Self::Kick,
+        Self::Tonal,
+        Self::Clap,
+        Self::Arp,
+        Self::Master,
+    ];
 
     pub(crate) const fn index(self) -> usize {
         self as usize

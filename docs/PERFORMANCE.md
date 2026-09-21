@@ -56,13 +56,17 @@ that control and hands the keyboard straight back to browsing, where `h`/`l`
 adjust it and `j`/`k` move as always. The leader changes nothing by itself:
 it is an address, not an edit.
 
-`a`/`s`/`d`/`f` choose Pads/Bass/Kick/Perc and open that page. `j` is volume
-and `k` is filter.
+The layer keys read left to right across the tab strip, so their positions
+mirror the pages on screen: `a` Pads, `s` Perc, `d` Bass, `f` Kick, `q`
+Tonal, `w` Clap, `e` Arp, `r` Master. `j` is volume and `k` is filter.
+
+Lead is the one page no selector key names. It already owns `i` for play
+entry, and the shorthand below reaches it from its own page.
 
 Skipping the layer key aims at the page you are already on, so `Space k` is
-the filter on whatever is in front of you. That shorthand is also the only
-way into the five layers no selector key names: Tonal, Clap, Arp, Lead and
-Master.
+the filter on whatever is in front of you. That shorthand is the only way
+into Lead, and stays the quickest route to the page already in front of
+you.
 
 A second layer key re-aims a jump that has not completed, so a mistyped
 layer costs one key rather than an Escape and a restart. Escape leaves the
@@ -101,13 +105,15 @@ and existing bindings.
    Escape must also release held or loaded gestures.
 5. Save during a swell and load that code. Its amount should resume; the
    matching gesture key or Escape must let it return.
-6. Press Space, `s`, `j`: the cursor lands on Bass Level in Browse with
+6. Press Space, `d`, `j`: the cursor lands on Bass Level in Browse with
    nothing changed, and `h`/`l` then move it. From that page press Space,
    `j` again: the same row, two keys, no layer key. Press Space, `a`, `k`: a
    filter appears on the Pads chain, inaudible, cursor on its Cutoff row,
    and `h` sweeps it down. Repeat on Bass and confirm `k` reaches the filter
    already in slot 1 without resetting its cutoff or adding a second one.
-   On Master, confirm Space, `j` reaches Master Level.
+   Press Space, `r`, `j` and confirm it reaches Master Level, and Space,
+   `q`/`w`/`e`, `j` the Tonal, Clap and Arp levels. On Lead, confirm Space,
+   `j` still reaches its Level.
 7. Press `?` from Browsing: the shortcut map should open over the tab and
    control rows, leaving both footer rows visible beneath it. Esc returns
    to Browsing.

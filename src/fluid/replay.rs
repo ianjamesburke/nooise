@@ -2629,14 +2629,14 @@ fn performance_leader_is_capability_independent_and_idempotent() {
     assert_eq!(save.clipboard_writes, 1);
 }
 
-/// `Space s j` puts the cursor on Bass volume and hands the keyboard back,
+/// `Space d j` puts the cursor on Bass volume and hands the keyboard back,
 /// having changed no value: arrival is the whole gesture.
 #[test]
 fn jump_to_volume_lands_the_cursor_without_editing() {
     let result = replay_with(
         &[
             key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('s'), InputPhase::Press),
+            key(0, FixtureKey::Character('d'), InputPhase::Press),
             key(0, FixtureKey::Character('j'), InputPhase::Press),
         ],
         TerminalCapabilities::full(),
@@ -2684,7 +2684,7 @@ fn jump_to_filter_reaches_a_loaded_one_and_adds_an_inert_one_otherwise() {
 
     // Bass already holds a filter: the leader must reach it, never stack a
     // second one or reset the amount the player is performing with.
-    let loaded = replay(&jump('s'), TerminalCapabilities::full());
+    let loaded = replay(&jump('d'), TerminalCapabilities::full());
     assert_eq!(loaded.model.mode, InteractionMode::Browsing);
     assert_eq!(loaded.control("bass.slot1.kind"), Some(filter_value));
     // Its cutoff is the row that was performing; the leader must not reset it.
@@ -2771,8 +2771,8 @@ fn a_second_layer_key_reaims_the_pending_jump() {
     let result = replay(
         &[
             key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('s'), InputPhase::Press),
             key(0, FixtureKey::Character('d'), InputPhase::Press),
+            key(0, FixtureKey::Character('f'), InputPhase::Press),
             key(0, FixtureKey::Character('j'), InputPhase::Press),
         ],
         TerminalCapabilities::full(),
@@ -2788,9 +2788,9 @@ fn leader_keys_ignore_repeat_and_release() {
     let result = replay(
         &[
             key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Repeat),
-            key(0, FixtureKey::Character('d'), InputPhase::Release),
+            key(0, FixtureKey::Character('f'), InputPhase::Press),
+            key(0, FixtureKey::Character('f'), InputPhase::Repeat),
+            key(0, FixtureKey::Character('f'), InputPhase::Release),
             key(0, FixtureKey::Character('j'), InputPhase::Repeat),
         ],
         TerminalCapabilities::full(),

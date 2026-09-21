@@ -641,9 +641,9 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         KeyboardOwner::PerformanceJump => match mode {
             ModeSurface::Performance(PerformanceSurface::ChooseLayer) => {
                 format!(
-                    "JUMP · {}  {} layer   Esc",
-                    parameter_keys_text(),
-                    layer_keys_compact()
+                    "JUMP · {} · {}  Esc",
+                    layer_keys_compact(),
+                    parameter_keys_text()
                 )
             }
             ModeSurface::Performance(PerformanceSurface::ChooseParameter { instrument }) => {
@@ -659,10 +659,10 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
     }
 }
 
-/// `asdf` from `INSTRUMENTS`. The 46-column minimum frame cannot hold both
-/// key sets with the layer names spelled out, and the parameter keys are the
-/// ones that act from here, so the layer group is named by its keys alone.
-/// The shortcut map (`?`) spells out which layer each one opens.
+/// `asdfqwer` from `INSTRUMENTS`. The 46-column minimum frame cannot hold
+/// both key sets with the layer names spelled out, so the layer group is
+/// named by its keys alone, in the order the tabs sit on screen. The
+/// shortcut map (`?`) spells out which layer each one opens.
 fn layer_keys_compact() -> String {
     PerformanceInstrument::ALL
         .map(|instrument| instrument.key())
@@ -1048,7 +1048,7 @@ mod tests {
             KeyboardOwner::PerformanceJump,
             &mode_surface(&mode, Tab::Bass, &session.controls, &session.automation),
         );
-        assert_eq!(line, "JUMP · j volume  k filter  asdf layer   Esc");
+        assert_eq!(line, "JUMP · asdfqwer · j volume  k filter  Esc");
         assert!(
             line.chars().count() <= usize::from(MIN_TERMINAL_WIDTH - 2),
             "the leader's help line must fit the minimum frame: {line:?}"

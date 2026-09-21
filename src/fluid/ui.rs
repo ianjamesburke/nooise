@@ -749,6 +749,17 @@ fn draw_help(f: &mut Frame, inner: Rect) {
     let rule_style = Style::default().fg(Color::Rgb(60, 66, 84));
     let rule: String = "\u{2500}".repeat(inner_block.width as usize);
 
+    // The leader's layer keys are spelled out here rather than restated,
+    // so the map and `INSTRUMENTS` cannot drift apart.
+    let jump_layer_names: Vec<(String, String)> = crate::fluid::interaction::INSTRUMENTS
+        .iter()
+        .map(|row| (row.key.to_string(), row.instrument.name().to_lowercase()))
+        .collect();
+    let jump_layers: Vec<(&str, &str)> = jump_layer_names
+        .iter()
+        .map(|(key, name)| (key.as_str(), name.as_str()))
+        .collect();
+
     let key_row = |row: KeyRow| -> Line<'static> {
         let mut spans = Vec::new();
         for (i, (key, desc)) in row.iter().enumerate() {
@@ -824,7 +835,8 @@ fn draw_help(f: &mut Frame, inner: Rect) {
     lines.extend(section(
         "Jump (Space, then layer, then parameter)",
         &[
-            &[("a", "pads"), ("s", "bass"), ("d", "kick"), ("f", "perc")],
+            &jump_layers[..4],
+            &jump_layers[4..],
             &[("j", "volume"), ("k", "filter"), ("Space j/k", "this page")],
         ],
     ));
