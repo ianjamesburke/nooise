@@ -898,7 +898,9 @@ pub(crate) enum Intent {
     /// Stop the beat clock so tails ring out, or start it again.
     ToggleTransport,
     RemoveAutomation,
-    ReseedAutomation,
+    /// Roll the automation editor row under the cursor: one field, one step,
+    /// or the parent control; a random shape's Shape row rerolls its seed.
+    RandomizeAutomationRow,
     /// Set the selected control to a random point on its own dial.
     RandomizeSelected,
     /// Set every control in the open surface to a random point on its own dial.
@@ -969,7 +971,7 @@ impl Intent {
             | Self::ToggleMute { .. }
             | Self::ToggleTransport
             | Self::RemoveAutomation
-            | Self::ReseedAutomation
+            | Self::RandomizeAutomationRow
             | Self::TouchSelected => &[ModeKind::Browsing, ModeKind::Automation],
             // Ctrl+S / Ctrl+Q reach every owner but the palette (its own
             // control chords) and numeric entry (swallows every chord).
@@ -1029,7 +1031,7 @@ impl Intent {
             | Self::ToggleMute { .. }
             | Self::ToggleTransport
             | Self::RemoveAutomation
-            | Self::ReseedAutomation
+            | Self::RandomizeAutomationRow
             | Self::RandomizeSelected
             | Self::RandomizeScope
             | Self::TouchSelected
@@ -1091,7 +1093,7 @@ pub(crate) enum InteractionEffect {
     },
     ToggleTransport,
     RemoveAutomation,
-    ReseedAutomation,
+    RandomizeAutomationRow,
     RandomizeSelected,
     RandomizeScope,
     CloseAutomationAll,
@@ -1463,7 +1465,7 @@ fn update_browsing(
         }
         Intent::ToggleTransport => effects.push(InteractionEffect::ToggleTransport),
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
-        Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
+        Intent::RandomizeAutomationRow => effects.push(InteractionEffect::RandomizeAutomationRow),
         Intent::RandomizeSelected => effects.push(InteractionEffect::RandomizeSelected),
         Intent::RandomizeScope => effects.push(InteractionEffect::RandomizeScope),
         Intent::TouchSelected => effects.push(InteractionEffect::TouchSelected),
@@ -1684,7 +1686,7 @@ fn update_automation(
             *next_mode = Some(InteractionMode::Browsing);
             effects.push(InteractionEffect::RemoveAutomation);
         }
-        Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
+        Intent::RandomizeAutomationRow => effects.push(InteractionEffect::RandomizeAutomationRow),
         Intent::RandomizeScope => effects.push(InteractionEffect::RandomizeScope),
         Intent::BeginNumeric(character) => {
             let mut entry = NumericEntry::default();

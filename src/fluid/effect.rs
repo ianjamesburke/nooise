@@ -545,7 +545,7 @@ impl EffectExecutor {
             | InteractionEffect::ToggleMute { .. }
             | InteractionEffect::ToggleTransport
             | InteractionEffect::RemoveAutomation
-            | InteractionEffect::ReseedAutomation
+            | InteractionEffect::RandomizeAutomationRow
             | InteractionEffect::RandomizeSelected
             | InteractionEffect::RandomizeScope
             | InteractionEffect::CloseAutomationAll
@@ -682,7 +682,20 @@ impl EffectExecutor {
                     context.automation_selected,
                 );
             }),
-            InteractionEffect::ReseedAutomation => self.with_automation(reseed_automation_effect),
+            InteractionEffect::RandomizeAutomationRow => {
+                let ratio = self.rng.r#gen::<f32>();
+                self.with_automation(|executor, automation| {
+                    randomize_lfo_or_control(
+                        executor,
+                        automation,
+                        context.automation_selected,
+                        context.tab,
+                        context.selected,
+                        ratio,
+                        context.beat,
+                    );
+                })
+            }
             InteractionEffect::RandomizeSelected => {
                 let id = selected_control(context.selected_control)?;
                 let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext("control"))?;
@@ -1293,6 +1306,107 @@ mod tests {
             (whole.cycle_beats, whole.depth_ratio, whole.seed),
             (rolled.cycle_beats, rolled.depth_ratio, rolled.seed),
             "a field row still rolls the whole route"
+        );
+    }
+
+    /// Plain `r` inside an editor rolls exactly the row under the cursor:
+    /// an LFO field, one step, an envelope field, or the parent control. On
+    /// a random shape's Shape row it rerolls the seed and keeps the shape.
+    #[test]
+    fn randomize_automation_row_rolls_only_the_row_under_the_cursor() {
+        let address = ControlAddress::new("pad.level");
+        let mut executor = executor();
+        executor.edit_session(None, |snapshot| {
+            let route = snapshot.automation.open_or_create(address);
+            route.shape = LfoShape::Steps;
+            route.set_step(StepTarget::Count, 4.0);
+        });
+        let mut flipped = FlippedUnits::default();
+        let mut clipboard = FakeClipboard::default();
+        let mut roll = |executor: &mut EffectExecutor, automation_selected| {
+            let mut context = ProductionInteractionContext {
+                selected_control: Some("pad.level"),
+                visible_control_ids: &[],
+                randomizes_automation: true,
+                tab: Tab::Chords,
+                selected: 0,
+                automation_selected,
+                beat: 0.0,
+                flipped: &mut flipped,
+            };
+            executor.execute_production_interactions_with_clipboard(
+                [InteractionEffect::RandomizeAutomationRow],
+                &mut context,
+                &mut clipboard,
+            );
+            executor.session().load()
+        };
+        let row_of = |target: LfoSubRow| {
+            let session = executor.session().load();
+            lfo_submenu_rows(&session.automation, address)
+                .iter()
+                .position(|row| *row == target)
+                .unwrap()
+                + 1
+        };
+        let amount_row = row_of(LfoSubRow::Field(LfoField::Amount));
+        let step_row = row_of(LfoSubRow::Step(StepTarget::Value(1)));
+        let shape_row = row_of(LfoSubRow::Field(LfoField::Shape));
+        let route = |session: &LiveSessionSnapshot| *session.automation.route(address).unwrap();
+
+        let before = route(&executor.session().load());
+        let after = route(&roll(&mut executor, amount_row));
+        assert_ne!(after.depth_ratio, before.depth_ratio, "amount rolls");
+        assert_eq!(
+            LfoRoute {
+                depth_ratio: before.depth_ratio,
+                ..after
+            },
+            before
+        );
+
+        let before = after;
+        let after = route(&roll(&mut executor, step_row));
+        assert_ne!(after.steps[1], before.steps[1], "the selected step rolls");
+        let mut expected = before;
+        expected.steps[1] = after.steps[1];
+        assert_eq!(after, expected, "only the selected step moved");
+
+        executor.edit_session(None, |snapshot| {
+            snapshot.automation.route_mut(address).unwrap().shape = LfoShape::SampleHold;
+        });
+        let before = route(&executor.session().load());
+        let after = route(&roll(&mut executor, shape_row));
+        assert_eq!(
+            after.shape,
+            LfoShape::SampleHold,
+            "a random shape keeps its shape"
+        );
+        assert_ne!(after.seed, before.seed, "and rerolls its pattern");
+
+        let level_before = executor.session().load().controls.pad.level;
+        let parent = roll(&mut executor, 0);
+        assert_ne!(
+            parent.controls.pad.level, level_before,
+            "row 0 rolls the control"
+        );
+
+        executor.edit_session(None, |snapshot| {
+            snapshot.automation.close_editor();
+            snapshot.automation.open_or_create_envelope(address);
+        });
+        let amount_before = executor
+            .session()
+            .load()
+            .automation
+            .envelope(address)
+            .unwrap()
+            .amount;
+        let rolled = roll(&mut executor, 1);
+        assert_ne!(
+            rolled.automation.envelope(address).unwrap().amount,
+            amount_before,
+            "the envelope amount rolls"
         );
     }
 

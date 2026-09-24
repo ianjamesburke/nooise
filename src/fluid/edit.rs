@@ -271,6 +271,10 @@ enum FieldOp<'a> {
         value: f32,
         flipped: &'a FlippedUnits,
     },
+    /// A uniform roll (`ratio` in 0..1) across the field's own dial.
+    Randomize {
+        ratio: f32,
+    },
 }
 
 impl<'a> FieldOp<'a> {
@@ -279,7 +283,7 @@ impl<'a> FieldOp<'a> {
     fn flipped(self) -> Option<&'a FlippedUnits> {
         match self {
             FieldOp::Adjust { flipped, .. } | FieldOp::Set { flipped, .. } => Some(flipped),
-            FieldOp::Reset => None,
+            FieldOp::Reset | FieldOp::Randomize { .. } => None,
         }
     }
 }
@@ -338,6 +342,13 @@ fn apply_field_op(
                     route.set_field_raw_at(field, flip_entry(TimeBase::Beats, value, bpm), beat);
                 }
                 FieldOp::Set { value, .. } => route.set_field_at(field, value, beat),
+                // A random shape's value is its pattern: roll the seed, keep the shape.
+                FieldOp::Randomize { .. }
+                    if field == LfoField::Shape && route.shape.is_random() =>
+                {
+                    route.reseed();
+                }
+                FieldOp::Randomize { ratio } => route.randomize_field_at(field, ratio, beat),
             }
         }
         ActiveField::Envelope(address, field) => {
@@ -360,6 +371,7 @@ fn apply_field_op(
                     route.set_field_raw(field, flip_entry(TimeBase::Beats, value, bpm));
                 }
                 FieldOp::Set { value, .. } => route.set_field(field, value),
+                FieldOp::Randomize { ratio } => route.randomize_field(field, ratio),
             }
         }
         ActiveField::LfoStep(address, target) => {
@@ -368,11 +380,17 @@ fn apply_field_op(
                     FieldOp::Adjust { dir, .. } => route.adjust_step(target, dir),
                     FieldOp::Reset => route.reset_step(target),
                     FieldOp::Set { value, .. } => route.set_step(target, value),
+                    FieldOp::Randomize { ratio } => route.randomize_step(target, ratio),
                 }
             }
         }
         ActiveField::Control => match op {
             FieldOp::Reset => apply_reset(tab, selected, &mut snapshot.controls),
+            FieldOp::Randomize { ratio } => {
+                if let Some(spec) = tab_specs(tab).get(selected) {
+                    spec.apply_ratio(ratio, &mut snapshot.controls);
+                }
+            }
             FieldOp::Adjust { .. } | FieldOp::Set { .. } => {
                 apply_control_value_op(snapshot, tab, selected, op, bpm)
             }
@@ -396,7 +414,9 @@ fn apply_control_value_op(
     {
         return;
     }
-    let flipped = op.flipped().expect("only Reset carries no flipped set");
+    let flipped = op
+        .flipped()
+        .expect("only Reset and Randomize carry no flipped set");
     let flipped_spec = spec.filter(|spec| {
         spec.time_base != TimeBase::None && flipped.contains(&unit_key(spec.id, None))
     });
@@ -422,7 +442,9 @@ fn apply_control_value_op(
         (None, FieldOp::Set { value, .. }) => {
             apply_value(tab, selected, value, &mut snapshot.controls)
         }
-        (_, FieldOp::Reset) => unreachable!("a reset never reaches the value path"),
+        (_, FieldOp::Reset | FieldOp::Randomize { .. }) => {
+            unreachable!("a reset or roll never reaches the value path")
+        }
     }
 }
 
@@ -612,17 +634,22 @@ pub(crate) fn remove_automation_effect(
     }
 }
 
-pub(crate) fn reseed_automation_effect(effects: &mut EffectExecutor, automation: &AutomationState) {
-    if let Some(address) = automation.active_address()
-        && automation.active_kind() == Some(ModKind::Lfo)
-    {
-        effects.edit_session(Some(address.id()), |snapshot| {
-            let state = &mut snapshot.automation;
-            if let Some(route) = state.route_mut(address)
-                && route.shape.is_random()
-            {
-                route.reseed();
-            }
-        });
-    }
+pub(crate) fn randomize_lfo_or_control(
+    effects: &mut EffectExecutor,
+    automation: &AutomationState,
+    lfo_selected: usize,
+    tab: Tab,
+    selected: usize,
+    ratio: f32,
+    beat: f64,
+) {
+    with_active_field(
+        effects,
+        automation,
+        lfo_selected,
+        tab,
+        selected,
+        beat,
+        FieldOp::Randomize { ratio },
+    );
 }

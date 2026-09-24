@@ -1897,14 +1897,14 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                     Intent::MoveSelection(1),
                     Intent::AdjustSelected(1),
                     Intent::ToggleUnits,
-                    Intent::ReseedAutomation,
+                    Intent::RandomizeAutomationRow,
                     Intent::Cancel,
                 ],
                 effects: vec![
                     "AutomationConfirm(Lfo)=>OK:Published { generation: 1 }",
                     "AdjustSelected(1)=>OK:Published { generation: 2 }",
                     "ToggleUnits=>OK:Published { generation: 3 }",
-                    "ReseedAutomation=>OK:Published { generation: 4 }",
+                    "RandomizeAutomationRow=>OK:Published { generation: 4 }",
                     "CloseAutomationAll=>OK:NoChange",
                 ],
                 notice: None,
@@ -2291,9 +2291,9 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
 }
 
 /// `r` while browsing rolls the selected control; the same key inside an
-/// LFO editor reseeds the lane instead, so the two never collide.
+/// LFO editor rolls the editor row under the cursor instead.
 #[test]
-fn r_randomizes_the_selected_control_while_browsing_and_reseeds_inside_an_editor() {
+fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor() {
     let plain = |code| key(0, code, InputPhase::Press);
     let shift = |code| modified_key(0, code, InputPhase::Press, 1);
 
@@ -2315,15 +2315,15 @@ fn r_randomizes_the_selected_control_while_browsing_and_reseeds_inside_an_editor
         "replay rolls the same dice"
     );
 
-    let reseeded = replay(
+    let row = replay(
         &[
             plain(FixtureKey::Character('f')),
             plain(FixtureKey::Character('r')),
         ],
         TerminalCapabilities::full(),
     );
-    assert_eq!(reseeded.effect_count("ReseedAutomation"), 1);
-    assert_eq!(reseeded.effect_count("RandomizeSelected"), 0);
+    assert_eq!(row.effect_count("RandomizeAutomationRow"), 1);
+    assert_eq!(row.effect_count("RandomizeSelected"), 0);
 
     let set = replay(
         &[shift(FixtureKey::Character('R'))],
@@ -2963,7 +2963,7 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         Intent::ToggleMute { master: false },
         Intent::ToggleTransport,
         Intent::RemoveAutomation,
-        Intent::ReseedAutomation,
+        Intent::RandomizeAutomationRow,
         Intent::TouchSelected,
         Intent::CommitPaletteAtBar,
         Intent::Save,
