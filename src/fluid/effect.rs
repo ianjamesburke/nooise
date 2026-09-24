@@ -761,7 +761,7 @@ impl EffectExecutor {
             // A played note is a gesture over the song, not an edit of it:
             // it publishes through the session so the audio thread sees it,
             // but never exits auto — soloing over a morph is the point. The
-            // phrase buffer remembers it so `r` can keep it afterwards.
+            // phrase buffer remembers it so `c` can keep it afterwards.
             InteractionEffect::LeadTone { tone, hold } => {
                 self.phrase.push(LeadPress {
                     beat: context.beat,
@@ -1398,7 +1398,7 @@ mod tests {
     }
 
     /// Play mode never arms anything: presses only publish play state and
-    /// feed the phrase buffer. `r` then lifts the phrase into the lane as
+    /// feed the phrase buffer. `c` then lifts the phrase into the lane as
     /// one auto-exiting edit and sets the lane playing; with nothing played
     /// it is an explicit no-change with a notice.
     #[test]
