@@ -193,7 +193,6 @@ pub(crate) struct ClapControls {
     pub(crate) slap_count: f32, // 1-8
     pub(crate) slap_spread_ms: f32, // 0-100 ms
     pub(crate) decay_ms: f32, // 10-200 ms
-    pub(crate) filter: f32, // 0=dark 1=bright
     pub(crate) body: f32,  // 0-1 low-freq flesh mix
 }
 
@@ -207,7 +206,6 @@ impl Default for ClapControls {
             slap_count: 3.0,
             slap_spread_ms: 8.0,
             decay_ms: 40.0,
-            filter: 0.7,
             body: 0.2,
         }
     }

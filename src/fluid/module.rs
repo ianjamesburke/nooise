@@ -353,6 +353,15 @@ pub(crate) const FILTER_CUTOFF_MAX_HZ: f32 = 20_000.0;
 /// at all, so moving this would re-voice every such song.
 const FACTORY_FILTER_CUTOFF_HZ: f32 = 8_000.0;
 
+/// Clap's factory Filter. The clap once ran its noise through a one-pole
+/// lowpass of its own (`clap.filter`, default 0.7). A two-pole low-pass has
+/// a steeper skirt, so the closest match is a partly wet one: this cutoff and
+/// mix are the least-squares fit of the shared Filter to the retired
+/// voice's rendered default clap, keeping its brightness and landing within
+/// half a decibel (`clap_factory_filter_matches_the_retired_default_level`).
+pub(crate) const CLAP_FACTORY_FILTER_CUTOFF_HZ: f32 = 3_170.0;
+pub(crate) const CLAP_FACTORY_FILTER_AMOUNT: f32 = 0.9;
+
 /// Change a Filter slot's response type. Swapping Low-pass and High-pass
 /// mirrors the cutoff across the dial (`min * max / hz`, the same number of
 /// octaves in from the opposite end), so a filter that was nearly
@@ -541,7 +550,12 @@ impl Default for LayerModules {
                 slots
             },
             tonal: with_preset("room", 0.1),
-            clap: empty,
+            clap: {
+                let mut slots = with_preset("filter", 1.0);
+                slots[0].amount = CLAP_FACTORY_FILTER_AMOUNT;
+                slots[0].time = CLAP_FACTORY_FILTER_CUTOFF_HZ;
+                slots
+            },
             arp: with_preset("room", 0.0),
             // The lead's "slightly distorted" character is the shared Drive
             // module, not a bespoke control, so a player can push it further

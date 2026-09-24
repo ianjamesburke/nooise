@@ -1534,7 +1534,6 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
     "clap",
     [
         gain_pct!("clap.level", "Level", clap.level),
-        gain_pct!("clap.filter", "Filter", 0.5, 1.0, clap.filter),
         time_ms!("clap.decay_ms", "Decay", 10.0, 200.0, 1.0, clap.decay_ms),
         beat_interval!(
             "clap.interval_beats",

@@ -98,9 +98,9 @@ layer costs one key rather than an Escape and a restart. Escape leaves the
 leader; Space while it is pending is inert.
 
 Volume is the layer's own Level row. Filter is the shared filter module's
-Cutoff, never its Amount: Amount is a detail-only wet/dry mix pinned fully
-wet, so Cutoff is the single knob the leader lands on and `h`/`l` sweep.
-Bass, Kick and Perc ship with a filter in slot 1, so `k` lands on the cutoff
+Cutoff, never its Amount: Amount is a detail-only wet/dry mix an added filter
+pins fully wet, so Cutoff is the single knob the leader lands on and `h`/`l` sweep.
+Bass, Kick, Perc and Clap ship with a filter in slot 1, so `k` lands on the cutoff
 already in play. Pads gets one added into its first free slot at a
 transparent 20 kHz cutoff, so arriving is silent and turning the cutoff down
 is the first audible move. A layer whose chain is full says so and stays

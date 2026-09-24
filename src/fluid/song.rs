@@ -1329,6 +1329,10 @@ mod retired_control_tests {
             decode_song_code(&code_setting("kick.filter")).err(),
             Some(SongCodeError::RetiredControl("kick.filter"))
         );
+        assert_eq!(
+            decode_song_code(&code_setting("clap.filter")).err(),
+            Some(SongCodeError::RetiredControl("clap.filter"))
+        );
     }
 
     /// The same skip that makes a retired id fatal must not catch an id from
