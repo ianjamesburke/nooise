@@ -120,11 +120,9 @@ const COMPRESSION_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
+/// Cutoff leads because it is the collapsed row; the wet/dry Amount a
+/// filter rarely needs sits last.
 const FILTER_PARAMETERS: &[EffectParameter] = &[
-    EffectParameter {
-        field: ModuleSlotField::Amount,
-        label: "Amount",
-    },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Cutoff",
@@ -136,6 +134,10 @@ const FILTER_PARAMETERS: &[EffectParameter] = &[
     EffectParameter {
         field: ModuleSlotField::Feedback,
         label: "Type",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Amount,
+        label: "Amount",
     },
 ];
 
@@ -171,6 +173,12 @@ impl ModuleKind {
     /// family collapses to its wet/dry `Amount` except Filter, whose most
     /// useful single knob is `Cutoff` (`Time`) — its `Amount` mix is a
     /// detail-only control, defaulted fully wet in [`preset_slot`].
+    /// Whether Enter on the collapsed row opens a detail drill: every family
+    /// with more than the one knob its collapsed row already shows.
+    pub(crate) fn has_detail(self) -> bool {
+        self.parameters().len() > 1
+    }
+
     pub(crate) fn collapsed_field(self) -> ModuleSlotField {
         match self.family {
             Family::Filter => ModuleSlotField::Time,
@@ -356,6 +364,16 @@ pub(crate) fn module_kind_at(value: f32) -> Option<&'static ModuleKind> {
 /// Display string for a slot's `kind` row.
 pub(crate) fn module_kind_label(value: f32) -> String {
     module_kind_at(value).map_or_else(|| "empty".to_string(), |kind| kind.display_name.to_string())
+}
+
+/// Label for a loaded slot's collapsed row on its page. A module with a
+/// detail drill carries the same `›` the tab strip shows once inside it, so
+/// the page says which rows Enter opens.
+pub(crate) fn module_row_label(value: f32) -> String {
+    match module_kind_at(value) {
+        Some(kind) if kind.has_detail() => format!("{} ›", kind.display_name),
+        _ => module_kind_label(value),
+    }
 }
 
 /// One slot's stored state. Defaults to empty and inert, which is what lets a
@@ -661,6 +679,20 @@ mod tests {
                     tab.name()
                 );
             }
+        }
+    }
+
+    /// A detail drill opens on the knob its collapsed row showed, so the
+    /// page and the drill agree on what the module's main control is.
+    #[test]
+    fn every_detail_drill_leads_with_its_collapsed_row() {
+        for kind in MODULE_CATALOG {
+            assert_eq!(
+                kind.parameters()[0].field,
+                kind.collapsed_field(),
+                "{} detail must lead with its collapsed row",
+                kind.id
+            );
         }
     }
 

@@ -149,7 +149,7 @@ pub(crate) fn coordinate_production_event(
         && let Some((slot, module)) =
             module_slot_at_collapsed_id(frame.tab, id, &frame.session.controls)
         && let Some(kind) = module.kind()
-        && kind.parameters().len() > 1
+        && kind.has_detail()
     {
         action.intent = interaction::Intent::EnterModuleDetail {
             tab: frame.tab,
@@ -260,44 +260,16 @@ pub(crate) fn coordinate_production_action(
     for (effect, result) in emitted.into_iter().zip(results) {
         match &result {
             Ok(EffectAcknowledgement::ControlSelected { tab, index, .. }) => {
-                let selected_spec = tab_specs(*tab).get(*index);
                 let current_session = context.effects.session().load();
-                let mut opened_module = false;
-                if let Some(spec) = selected_spec
-                    && let Some((slot, module)) =
-                        module_slot_at_collapsed_id(*tab, spec.id, &current_session.controls)
-                    && let Some(kind) = module.kind()
-                    && kind.parameters().len() > 1
-                {
-                    // Module rows live on every page's root, so the root
-                    // projection is the one to search.
-                    let return_to = match *tab {
-                        Tab::Chords => chords_tab_controls(
-                            &current_session.controls,
-                            interaction::ChordDrill::None,
-                        ),
-                        _ => tab_controls(*tab, &current_session.controls),
-                    }
-                    .iter()
-                    .position(|item| item.id == spec.id)
-                    .unwrap_or(0);
-                    model.navigation = interaction::Navigation::Module {
-                        tab: *tab,
-                        slot,
-                        catalog_index: module.kind.round() as usize - 1,
-                        selected: 0,
-                        return_to,
-                    };
-                    model.mode = interaction::InteractionMode::Browsing;
-                    opened_module = true;
-                }
-                if !opened_module
-                    && let interaction::Navigation::Module {
-                        tab: scoped_tab,
-                        slot,
-                        selected,
-                        ..
-                    } = &mut model.navigation
+                // Landing on a module row never opens its detail: a
+                // palette-added effect stays on the page it was added to,
+                // and Enter is the one way into a drill.
+                if let interaction::Navigation::Module {
+                    tab: scoped_tab,
+                    slot,
+                    selected,
+                    ..
+                } = &mut model.navigation
                     && *scoped_tab == *tab
                     && let Some(spec) = tab_specs(*tab).get(*index)
                 {
@@ -320,7 +292,7 @@ pub(crate) fn coordinate_production_action(
                     } else {
                         model.select_control(*tab, *index, &current_session.controls);
                     }
-                } else if !opened_module {
+                } else {
                     model.select_control(*tab, *index, &current_session.controls);
                 }
                 model.mode = interaction::InteractionMode::Browsing;

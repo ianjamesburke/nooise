@@ -2423,6 +2423,42 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
     );
 }
 
+/// Adding an effect from the palette lands on its row on the page it was
+/// added to. It never opens the effect's detail drill: Enter does that.
+#[test]
+fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
+    let mut events = vec![
+        key(0, FixtureKey::Tab, InputPhase::Press),
+        key(0, FixtureKey::Tab, InputPhase::Press),
+        key(0, FixtureKey::Character('/'), InputPhase::Press),
+    ];
+    events.extend(
+        "delay"
+            .chars()
+            .map(|c| key(0, FixtureKey::Character(c), InputPhase::Press)),
+    );
+    events.push(key(0, FixtureKey::Enter, InputPhase::Press));
+    let result = replay(&events, TerminalCapabilities::full());
+
+    assert_eq!(
+        result.control("bass.slot3.kind"),
+        Some(super::module_kind_value("delay"))
+    );
+    let mut controls = FluidControls::default();
+    controls.modules.bass[2] = super::preset_slot("delay", 0.0);
+    let row = super::tab_controls(Tab::Bass, &controls)
+        .iter()
+        .position(|item| item.id == "bass.slot3.amount")
+        .expect("the added delay has a row");
+    assert_eq!(
+        result.model.navigation,
+        Navigation::Standard {
+            page: super::interaction::StandardPage::Bass,
+            selected: row,
+        }
+    );
+}
+
 #[test]
 fn production_tick_commits_pending_palette_edits_at_the_bar() {
     let staged = InteractionModel {

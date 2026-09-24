@@ -1734,7 +1734,8 @@ fn a_loaded_slot_row_is_labelled_with_its_module() {
         .into_iter()
         .find(|item| item.id == "kick.slot1.time")
         .expect("kick slot 1 ships pre-loaded with Filter");
-    assert_eq!(row.label, "Filter");
+    // The `›` marks a module whose row Enter drills into; Drive has none.
+    assert_eq!(row.label, "Filter ›");
 
     let row = tab_controls(Tab::Kick, &controls)
         .into_iter()
@@ -1844,7 +1845,7 @@ fn effect_families_project_complete_coherent_detail_rows() {
         labels(3),
         ["Amount", "Threshold", "Ratio", "Release", "Makeup"]
     );
-    assert_eq!(labels(4), ["Amount", "Cutoff", "Resonance", "Type"]);
+    assert_eq!(labels(4), ["Cutoff", "Resonance", "Type", "Amount"]);
 }
 
 #[test]
@@ -1892,7 +1893,7 @@ fn master_compression_uses_the_shared_module_detail_shape() {
         .into_iter()
         .map(|item| item.label)
         .collect();
-    assert!(root_labels.iter().any(|label| label == "Compression"));
+    assert!(root_labels.iter().any(|label| label == "Compression ›"));
     assert!(!root_labels.iter().any(|label| label == "Comp Release"));
 
     let labels: Vec<_> = module_detail_controls(Tab::Master, 1, &controls)
@@ -3051,7 +3052,7 @@ fn bass_interval_crops_phrase_instead_of_stretching_it() {
 fn chords_shows_the_preloaded_shared_reverb_module() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
-    assert!(rows.iter().any(|row| row.label == "Reverb"));
+    assert!(rows.iter().any(|row| row.label == "Reverb ›"));
 }
 
 #[test]

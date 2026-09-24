@@ -809,7 +809,7 @@ fn time_row_label(kind_value: f32) -> String {
         return "Time".to_string();
     };
     if kind.collapsed_field() == ModuleSlotField::Time {
-        return module_kind_label(kind_value);
+        return module_row_label(kind_value);
     }
     kind.parameters()
         .iter()
@@ -849,7 +849,7 @@ macro_rules! module_slot_rows {
                 |c, v| c.modules.$layer[$slot - 1].amount = v,
                 |c| pct(c.modules.$layer[$slot - 1].amount),
             )
-            .labeled_by(|c| module_kind_label(c.modules.$layer[$slot - 1].kind))
+            .labeled_by(|c| module_row_label(c.modules.$layer[$slot - 1].kind))
             .reset_at(0.0),
             ControlSpec::new(
                 concat!($prefix, ".slot", $slot, ".time"),

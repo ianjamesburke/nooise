@@ -90,20 +90,16 @@ impl PaletteEntry {
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => (spec.display)(c),
+            // A loaded module shows its collapsed row's value, the same
+            // knob its page row shows (a Filter's cutoff, not its mix).
             Self::Module { tab, catalog_index } => {
                 let kind = MODULE_CATALOG[*catalog_index];
                 c.modules
                     .for_tab(*tab)
                     .and_then(|slots| chain_amount_slot(slots, kind.id))
-                    .map_or_else(
-                        || "add".to_string(),
-                        |slot| {
-                            format!(
-                                "{:.0}%",
-                                c.modules.for_tab(*tab).expect("layer exists")[slot].amount * 100.0
-                            )
-                        },
-                    )
+                    .and_then(|slot| module_slot_collapsed_id(*tab, slot, c))
+                    .and_then(spec_by_id)
+                    .map_or_else(|| "add".to_string(), |spec| (spec.display)(c))
             }
         }
     }
