@@ -176,7 +176,8 @@ acceptance; never discard active amounts or bake them into base controls.
 ## Replacing Deck
 
 This worktree replaces Deck: its `p` entry, Deck-only selector/action handling,
-help, fixtures, and documentation are retired together. `p` is unassigned.
+help, fixtures, and documentation are retired together. `p` now stops and
+starts the clock (`../PERFORMANCE.md`).
 
 Sequence on Space was outside this replacement's first scope; it has since
 been replaced by the Jump leader, which owns Space today — see

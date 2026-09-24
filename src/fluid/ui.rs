@@ -796,7 +796,12 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("\u{21b5}", "open/confirm"),
                 ("x", "remove"),
             ],
-            &[("m", "mute"), ("\u{21e7}M", "master mute"), ("T", "units")],
+            &[
+                ("m", "mute"),
+                ("\u{21e7}M", "master mute"),
+                ("T", "units"),
+                ("p", "stop/play"),
+            ],
         ],
     );
     lines.extend(section(

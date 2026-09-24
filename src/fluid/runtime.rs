@@ -588,6 +588,7 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('e') => Intent::OpenAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('a') => Intent::ToggleAuto,
         PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
+        PhysicalKey::Character('p') => Intent::ToggleTransport,
         PhysicalKey::Character('t') => Intent::ToggleUnits,
         PhysicalKey::Character('x') => Intent::RemoveAutomation,
         PhysicalKey::Character(character) if starts_numeric_entry(character) => {
@@ -1654,24 +1655,6 @@ mod tests {
     }
 
     #[test]
-    fn retired_deck_key_is_unassigned_in_browsing() {
-        let event = TransportEvent::key(
-            PhysicalKey::Character('p'),
-            Modifiers::default(),
-            InputPhase::Repeat,
-        );
-        assert_eq!(
-            map_input(
-                &InteractionMode::Browsing,
-                Navigation::default(),
-                &event,
-                TerminalCapabilities::full()
-            ),
-            InputMapping::Ignored
-        );
-    }
-
-    #[test]
     fn question_mark_opens_help_with_no_modifier_reported() {
         // Most terminals report SHIFT for a shifted letter (crossterm
         // synthesizes it from `char::is_uppercase`) but not for shifted
@@ -1979,6 +1962,7 @@ mod tests {
             ('e', Intent::OpenAutomation(super::AutomationKind::Envelope)),
             ('a', Intent::ToggleAuto),
             ('m', Intent::ToggleMute { master: false }),
+            ('p', Intent::ToggleTransport),
             ('t', Intent::ToggleUnits),
             ('x', Intent::RemoveAutomation),
             ('r', Intent::RandomizeSelected),

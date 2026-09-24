@@ -31,6 +31,9 @@
   automation, and user-audible runtime session state that must change
   coherently. Writers publish the aggregate with one atomic `ArcSwap`
   replacement. Audio readers load that same aggregate without locks.
+- **Transport:** whether the beat clock runs (`Transport::Playing` or
+  `Stopped`). Stopped holds the beat and fires no grid hit while audio keeps
+  running, so tails ring out. Live-session state, never in a song code.
 - **Frame:** one immutable view-model snapshot passed to the renderer and one
   completed terminal draw from that snapshot. A state change is not visibly
   complete until a corresponding frame has been drawn.

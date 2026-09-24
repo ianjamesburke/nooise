@@ -49,6 +49,30 @@ audio buffers. Loaded holds resume on their saved targets. Press the matching
 gesture key to claim a loaded hold and release it, or use Escape to release
 all loaded holds.
 
+## Clock stop
+
+`p` stops the clock and `p` again starts it. It works from browsing and from
+an open LFO or envelope editor, on every terminal: a plain Press, no
+key-release support needed, and autorepeat never flutters it.
+
+Stopped, the beat holds where it was. No new note, hit, chord, arp, or lane
+step fires, and sustaining Pad chords release into their tails. The audio
+path keeps running, so note releases, reverb, and delay tails ring out
+naturally. Automation and the auto morph wait on the held beat, and gestures
+still play into the tails. Played Lead keys still sound. A palette edit
+staged for the next bar waits for the clock to start.
+
+Starting resumes from the held beat rather than bar 1: grid voices fire at
+their next scheduled slot, and the Pads voice the current chord straight
+away instead of waiting out the chord boundary.
+
+While stopped the activity row leads with `■ STOPPED`, whoever owns the
+keyboard. Stopping is not an edit: it leaves auto running and the MRU
+untouched, like mute.
+
+A song code never carries the stopped state. A stopped song is silence,
+not a state worth sharing, so a loaded code always plays.
+
 ## Jump
 
 Space is a leader key. A layer key then a parameter key puts the cursor on
@@ -86,8 +110,7 @@ behaves identically on every terminal. It renders as a footer line naming
 the keys it is waiting for; the page it is aiming at stays on screen beneath
 it.
 
-The former Deck entry on `p` is retired. Lead play retains its own `i` entry
-and existing bindings.
+Lead play retains its own `i` entry and existing bindings.
 
 ## Audio smoke
 
@@ -117,6 +140,11 @@ and existing bindings.
 7. Press `?` from Browsing: the shortcut map should open over the tab and
    control rows, leaving both footer rows visible beneath it. Esc returns
    to Browsing.
+8. On Pads with Reverb loaded and Kick audible, press `p`: no new kick or
+   chord arrives, the chord and reverb fade out naturally rather than
+   cutting, and the activity row shows `■ STOPPED`. Hold `z` during the
+   tail and hear it bloom. Press `p` again: kicks return on the grid and the
+   current chord swells back in without waiting for a chord change.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the

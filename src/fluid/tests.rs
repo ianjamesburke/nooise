@@ -1162,6 +1162,120 @@ fn master_mute_gates_the_final_output_with_level_automation_active() {
     assert!((0..512).all(|_| engine.next_stereo() == (0.0, 0.0)));
 }
 
+#[test]
+fn a_stopped_clock_holds_its_beat_and_fires_no_grid_hit() {
+    let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
+    let mut trigger = GridTrigger::new();
+    let stopped = clock.tick(120.0, Transport::Stopped);
+    // Even a trigger that has never fired, sitting exactly on a hit, waits.
+    assert!(!trigger.pop(stopped, 1.0, 0.0));
+    for _ in 0..SAMPLE_RATE as usize {
+        let timing = clock.tick(120.0, Transport::Stopped);
+        assert_eq!(timing.beat, 0.0);
+        assert!(!trigger.pop(timing, 1.0, 0.0));
+    }
+    assert!(trigger.pop(clock.tick(120.0, Transport::Playing), 1.0, 0.0));
+    assert!(clock.beat > 0.0);
+}
+
+fn rms(samples: &[(f32, f32)]) -> f32 {
+    let sum: f32 = samples.iter().map(|(l, r)| l * l + r * r).sum();
+    (sum / (2 * samples.len()) as f32).sqrt()
+}
+
+fn render_seconds(engine: &mut FluidEngine, seconds: f32) -> Vec<(f32, f32)> {
+    (0..(SAMPLE_RATE * seconds) as usize)
+        .map(|_| engine.next_stereo())
+        .collect()
+}
+
+/// The clock stop exists to end a song on its tails: nothing new may start
+/// while stopped, everything already sounding must keep ringing and fading,
+/// and starting again brings the song back.
+#[test]
+fn stopping_the_clock_lets_tails_ring_out_and_starting_it_resumes_the_song() {
+    let mut controls = FluidControls::default();
+    controls.kick.level = 0.8;
+    controls.pad.chord_bars = 0.25;
+    controls.pad.attack_time = 0.05;
+    let session = live_session(controls, AutomationState::default());
+    let mut effects = EffectExecutor::new(
+        session.clone(),
+        AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+    );
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session.clone(),
+        no_morph(),
+        Arc::clone(&telemetry),
+    );
+    engine.reseed(7);
+    let quarter = (SAMPLE_RATE * 0.25) as usize;
+    let playing = render_seconds(&mut engine, 2.5);
+
+    effects.toggle_transport();
+    // The engine picks the session up on its next 128-sample read.
+    render_seconds(&mut engine, 0.005);
+    let beat = telemetry.beat();
+    let kicks = telemetry.kick_pulse.load(Ordering::Relaxed);
+    let chord = telemetry.chord_index.load(Ordering::Relaxed);
+    let tails = render_seconds(&mut engine, 3.0);
+
+    assert_eq!(telemetry.beat(), beat, "a stopped clock must hold its beat");
+    assert_eq!(telemetry.kick_pulse.load(Ordering::Relaxed), kicks);
+    assert_eq!(telemetry.chord_index.load(Ordering::Relaxed), chord);
+    let first = rms(&tails[..quarter]);
+    let last = rms(&tails[tails.len() - quarter..]);
+    assert!(
+        first > rms(&playing[playing.len() - quarter..]) * 0.1,
+        "stopping must not cut the sound: {first}"
+    );
+    assert!(last < first * 0.5, "tails must decay: {first} -> {last}");
+
+    effects.toggle_transport();
+    let resumed = render_seconds(&mut engine, 1.0);
+    assert!(
+        telemetry.beat() > beat,
+        "starting must move the clock again"
+    );
+    assert!(telemetry.kick_pulse.load(Ordering::Relaxed) > kicks);
+    let back = rms(&resumed[resumed.len() - quarter..]);
+    assert!(
+        back > last * 2.0,
+        "starting must bring the song back: {last} -> {back}"
+    );
+}
+
+/// A pad chord sustains until the next one replaces it, so stopping has to
+/// release it, and starting has to voice it again at once: waiting for the
+/// next chord boundary would leave the pads silent for up to `chord_bars`.
+#[test]
+fn pads_release_on_stop_and_revoice_on_start_between_chord_boundaries() {
+    let controls = PadControls {
+        attack_time: 0.05,
+        release_time: 0.5,
+        chord_bars: 8.0,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
+    let mut run = |pad: &mut PadEngine, seconds: f32, transport: Transport| {
+        let samples: Vec<(f32, f32)> = (0..(SAMPLE_RATE * seconds) as usize)
+            .map(|_| pad.next(&controls, 0.0, clock.tick(120.0, transport)))
+            .collect();
+        rms(&samples[samples.len() - samples.len() / 4..])
+    };
+
+    let sustained = run(&mut pad, 1.0, Transport::Playing);
+    let released = run(&mut pad, 2.0, Transport::Stopped);
+    let revoiced = run(&mut pad, 0.5, Transport::Playing);
+
+    assert!(released < sustained * 0.05, "{sustained} -> {released}");
+    assert!(revoiced > sustained * 0.5, "{released} -> {revoiced}");
+    assert_eq!(pad.step_index, 0, "no chord boundary was crossed");
+}
+
 // ============================================================
 // Golden render — reproducibility guardrail
 //
@@ -2700,7 +2814,7 @@ fn bass_engine_follows_pad_chord_root_across_advances() {
     // Step far enough to guarantee at least one chord advance and one
     // rhythm hit have occurred.
     for _ in 0..(sample_rate as usize) {
-        let timing = clock.tick(120.0);
+        let timing = clock.tick(120.0, Transport::Playing);
         bass.next(&bass_controls, &pad, 0.0, timing);
     }
 
@@ -2726,7 +2840,7 @@ fn bass_engine_is_monophonic_and_hard_cuts_on_retrigger() {
     // least two hits plus the short anti-click fade window has fully elapsed
     // after the second one.
     for _ in 0..(sample_rate * 1.2) as usize {
-        let timing = clock.tick(120.0);
+        let timing = clock.tick(120.0, Transport::Playing);
         bass.next(&bass_controls, &pad, 0.0, timing);
     }
 
@@ -3509,13 +3623,13 @@ fn pad_engine_chord_slot_edit_retriggers_immediately() {
 #[test]
 fn tempo_clock_preserves_beat_phase_when_bpm_changes() {
     let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
-    let mut before = clock.tick(120.0);
+    let mut before = clock.tick(120.0, Transport::Playing);
 
     for _ in 1..20_000 {
-        before = clock.tick(120.0);
+        before = clock.tick(120.0, Transport::Playing);
     }
 
-    let after = clock.tick(60.0);
+    let after = clock.tick(60.0, Transport::Playing);
 
     assert!(after.beat > before.beat);
     assert!(after.beat - before.beat < 0.001);
@@ -3529,12 +3643,12 @@ fn grid_trigger_keeps_next_hit_when_only_bpm_changes() {
     let mut trigger = GridTrigger::new();
 
     for _ in 0..25_000 {
-        let timing = clock.tick(120.0);
+        let timing = clock.tick(120.0, Transport::Playing);
         let _ = trigger.pop(timing, 1.0, 0.0);
     }
 
     let before = trigger.next_hit.map(|hit| hit.beat);
-    let timing = clock.tick(60.0);
+    let timing = clock.tick(60.0, Transport::Playing);
     let fired = trigger.pop(timing, 1.0, 0.0);
     let after = trigger.next_hit.map(|hit| hit.beat);
 
@@ -3573,7 +3687,7 @@ fn grid_trigger_no_silence_after_bpm_decrease() {
     let mut clap_hits: Vec<u64> = Vec::new();
 
     for sample in 0..change_at {
-        let timing = clock.tick(120.0);
+        let timing = clock.tick(120.0, Transport::Playing);
         if kick.pop(timing, 1.0, 0.0) {
             kick_hits.push(sample);
         }
@@ -3583,7 +3697,7 @@ fn grid_trigger_no_silence_after_bpm_decrease() {
     }
 
     for sample in change_at..(SAMPLE_RATE as u64 * 8) {
-        let timing = clock.tick(60.0);
+        let timing = clock.tick(60.0, Transport::Playing);
         if kick.pop(timing, 1.0, 0.0) {
             kick_hits.push(sample);
         }

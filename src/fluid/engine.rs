@@ -529,6 +529,7 @@ pub(crate) struct FluidEngine {
     pub(crate) telemetry: Arc<FluidTelemetry>,
     pub(crate) snapshot: FluidControls,
     gesture_snapshot: GestureState,
+    transport: Transport,
     /// Allocation-free per-sample plan, rebuilt only when aggregate
     /// automation differs from the last planned state.
     plan: AutomationPlan,
@@ -588,6 +589,7 @@ impl FluidEngine {
             telemetry,
             snapshot,
             gesture_snapshot: live.gestures.clone(),
+            transport: live.transport,
             plan,
             plan_source,
         }
@@ -629,6 +631,7 @@ impl StereoEngine for FluidEngine {
             let session = self.session.load();
             self.snapshot = session.controls.clone();
             self.gesture_snapshot = session.gestures.clone();
+            self.transport = session.transport;
             self.gain_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);
             self.mute_gates
@@ -644,7 +647,7 @@ impl StereoEngine for FluidEngine {
 
         let fade = startup_fade(self.current_sample, self.sample_rate);
         let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
-        let timing = self.tempo.tick(effective.master.bpm);
+        let timing = self.tempo.tick(effective.master.bpm, self.transport);
         if self.current_sample.is_multiple_of(256) {
             self.telemetry.publish_beat(timing.beat);
         }
@@ -1037,31 +1040,63 @@ impl TempoClock {
         }
     }
 
-    pub(crate) fn tick(&mut self, target_bpm: f32) -> TimingContext {
+    /// A stopped clock holds its beat, so every beat-derived value (LFO
+    /// positions, the auto morph, grid phases) waits where it was and
+    /// resumes from there. Tempo still glides toward its target.
+    pub(crate) fn tick(&mut self, target_bpm: f32, transport: Transport) -> TimingContext {
         let target_bpm = f64::from(target_bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX));
         self.bpm += (target_bpm - self.bpm) * self.smoothing_coeff;
 
-        let timing = TimingContext::new(self.sample_rate, self.bpm, self.beat);
-        self.beat += self.bpm / (60.0 * self.sample_rate);
+        let timing = TimingContext {
+            transport,
+            ..TimingContext::new(self.sample_rate, self.bpm, self.beat)
+        };
+        if transport == Transport::Playing {
+            self.beat += self.bpm / (60.0 * self.sample_rate);
+        }
         timing
     }
 }
 
-/// One sample's worth of transport: where the beat clock stands and the rates
-/// needed to turn musical time into samples. Every voice's `next` reads it.
+/// Whether the beat clock runs. Stopped fires no new grid hit anywhere and
+/// releases sustaining chords, while the audio path keeps running so
+/// releases, reverb, and delay tails ring out. A live-session value only:
+/// loading a song always starts it playing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Transport {
+    #[default]
+    Playing,
+    Stopped,
+}
+
+impl Transport {
+    pub(crate) fn toggled(self) -> Self {
+        match self {
+            Self::Playing => Self::Stopped,
+            Self::Stopped => Self::Playing,
+        }
+    }
+}
+
+/// One sample's worth of transport: where the beat clock stands, whether it
+/// is running, and the rates needed to turn musical time into samples. Every
+/// voice's `next` reads it.
 #[derive(Clone, Copy)]
 pub(crate) struct TimingContext {
     pub(crate) sample_rate: f64,
     pub(crate) bpm: f64,
     pub(crate) beat: f64,
+    pub(crate) transport: Transport,
 }
 
 impl TimingContext {
+    /// A playing transport at `beat`. Only `TempoClock::tick` stops one.
     pub(crate) fn new(sample_rate: f64, bpm: f64, beat: f64) -> Self {
         Self {
             sample_rate: sample_rate.max(1.0),
             bpm: bpm.max(1.0),
             beat,
+            transport: Transport::Playing,
         }
     }
 
@@ -1248,6 +1283,8 @@ impl GridTrigger {
 
     /// Like `pop`, but this voice's grid swings its odd subdivisions by
     /// `swing` (0 straight .. 1 max shuffle). Only voices that opt in call this.
+    /// A stopped transport fires nothing and leaves the schedule untouched;
+    /// a reshape made while stopped lands on the first playing sample.
     pub(crate) fn pop_swung(
         &mut self,
         timing: TimingContext,
@@ -1255,6 +1292,9 @@ impl GridTrigger {
         offset_beats: f32,
         swing: f32,
     ) -> bool {
+        if timing.transport == Transport::Stopped {
+            return false;
+        }
         let spec = GridSpec::new(interval_beats, offset_beats, swing);
         if self.spec != Some(spec) {
             self.spec = Some(spec);

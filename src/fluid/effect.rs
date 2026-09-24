@@ -473,6 +473,14 @@ impl EffectExecutor {
             .update(|snapshot| snapshot.muted[tab as usize] = !snapshot.muted[tab as usize]);
     }
 
+    /// Stop or start the beat clock. Like mute it is an overlay on the song,
+    /// not an edit of it, so it neither exits auto nor touches the MRU; the
+    /// morph simply waits on the held beat.
+    pub(crate) fn toggle_transport(&mut self) {
+        self.session
+            .update(|snapshot| snapshot.transport = snapshot.transport.toggled());
+    }
+
     /// Typed bridge from the pure interaction kernel to effect execution.
     /// Effects needing adapter-owned data must receive it explicitly through
     /// `context`; unsupported staged performance effects fail visibly.
@@ -535,6 +543,7 @@ impl EffectExecutor {
             | InteractionEffect::ToggleAuto
             | InteractionEffect::ToggleUnits
             | InteractionEffect::ToggleMute { .. }
+            | InteractionEffect::ToggleTransport
             | InteractionEffect::RemoveAutomation
             | InteractionEffect::ReseedAutomation
             | InteractionEffect::RandomizeSelected
@@ -659,6 +668,10 @@ impl EffectExecutor {
             }),
             InteractionEffect::ToggleMute { master } => {
                 self.toggle_mute(if master { Tab::Master } else { context.tab });
+                Ok(self.published())
+            }
+            InteractionEffect::ToggleTransport => {
+                self.toggle_transport();
                 Ok(self.published())
             }
             InteractionEffect::RemoveAutomation => self.with_automation(|executor, automation| {
