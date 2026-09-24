@@ -149,7 +149,6 @@ pub(crate) enum GestureDirection {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GestureActivity {
-    pub(crate) tab: Tab,
     pub(crate) kind: GestureKind,
     pub(crate) amount_pct: u8,
     pub(crate) direction: GestureDirection,
@@ -340,8 +339,7 @@ fn gesture_activity_line(gestures: &[GestureActivity]) -> String {
             };
             let restored = if gesture.restored { "R" } else { "" };
             format!(
-                "{} {} {}%{direction}{restored}",
-                gesture.tab.name(),
+                "{} {}%{direction}{restored}",
                 gesture.kind.name(),
                 gesture.amount_pct
             )
@@ -363,28 +361,25 @@ fn gesture_idle_hint() -> String {
 
 fn gesture_activities(session: &LiveSessionSnapshot, now_seconds: f64) -> Vec<GestureActivity> {
     let mut activities = Vec::new();
-    for tab in Tab::all() {
-        for kind in GestureKind::ALL {
-            let envelope = session.gestures.envelope(tab, kind);
-            let amount = envelope.amount_at(kind, now_seconds);
-            if !envelope.held && amount <= f32::EPSILON {
-                continue;
-            }
-            let direction = if !envelope.held {
-                GestureDirection::Returning
-            } else if amount >= 1.0 - f32::EPSILON {
-                GestureDirection::Held
-            } else {
-                GestureDirection::Rising
-            };
-            activities.push(GestureActivity {
-                tab,
-                kind,
-                amount_pct: (amount * 100.0).round() as u8,
-                direction,
-                restored: envelope.restored,
-            });
+    for kind in GestureKind::ALL {
+        let envelope = session.gestures.envelope(kind);
+        let amount = envelope.amount_at(kind, now_seconds);
+        if !envelope.held && amount <= f32::EPSILON {
+            continue;
         }
+        let direction = if !envelope.held {
+            GestureDirection::Returning
+        } else if amount >= 1.0 - f32::EPSILON {
+            GestureDirection::Held
+        } else {
+            GestureDirection::Rising
+        };
+        activities.push(GestureActivity {
+            kind,
+            amount_pct: (amount * 100.0).round() as u8,
+            direction,
+            restored: envelope.restored,
+        });
     }
     activities
 }
@@ -1119,11 +1114,11 @@ mod tests {
     #[test]
     fn active_gesture_keeps_release_and_quit_visible_at_minimum_width() {
         let mut session = session();
-        session.gestures.press(GestureKind::Bloom, Tab::Chords, 0.0);
+        session.gestures.press(GestureKind::Bloom, 0.0);
 
         let frame = render_model_with_session(&InteractionModel::default(), &session);
         assert!(frame.contains("Esc␠release␠·␠^Q␠quit"));
-        assert!(frame.contains("Pads␠Bloom␠0%↑"));
+        assert!(frame.contains("Bloom␠0%↑"));
     }
 
     #[test]

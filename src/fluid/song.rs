@@ -18,10 +18,10 @@ use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
-    EnvelopeRoute, FluidControls, GestureEnvelope, GestureKind, GestureState, LfoRoute, LfoShape,
-    MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS,
-    MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModuleSlotField, MuteState, Step, TAB_COUNT,
-    Tab, all_specs, parse_module_slot_id, spec_by_id,
+    EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState,
+    LfoRoute, LfoShape, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
+    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModuleSlotField,
+    MuteState, Step, TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -111,7 +111,6 @@ pub(crate) enum SongCodeError {
         target: u8,
         kind: u8,
     },
-    DuplicateHeldGesture(u8),
     DuplicateGestureRecord,
     /// The code sets a control this build retired. Its value has nowhere to
     /// go, so the code is refused rather than loaded with that value missing.
@@ -176,9 +175,6 @@ impl fmt::Display for SongCodeError {
                 f,
                 "song code repeats gesture kind {kind} on target {target}"
             ),
-            Self::DuplicateHeldGesture(kind) => {
-                write!(f, "song code holds gesture kind {kind} on multiple targets")
-            }
             Self::DuplicateGestureRecord => write!(f, "song code repeats the gesture record"),
             Self::RetiredControl(id) => write!(
                 f,
@@ -319,43 +315,38 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
 /// Gesture record: `u8 entry_count`, then fixed-width entries of stable
 /// `u8 target_mute_bit`, `u8 kind`, `u8 flags`, and a `u16` amount in 0..=1.
 /// One quantization step is 1/65,535 of the gesture throw, well below an
-/// audible envelope difference, and keeps all 45 possible lanes shareable.
+/// audible envelope difference. Gestures play over Master only, so the target
+/// is always Master's mute bit; an entry aimed at a voice is a retired
+/// per-layer gesture and the code is refused.
 fn write_gestures(gestures: &GestureState, out: &mut Vec<u8>) -> Result<bool, SongCodeError> {
+    let target = u8::try_from(Tab::Master.mute_bit()).map_err(|_| SongCodeError::TooLarge)?;
     let mut entries = Vec::new();
-    let mut held_kinds = BTreeSet::new();
-    for tab in Tab::all() {
-        for kind in GestureKind::ALL {
-            let envelope = gestures.envelope(tab, kind);
-            if !envelope.amount.is_finite() || !(0.0..=1.0).contains(&envelope.amount) {
-                return Err(SongCodeError::InvalidGestureAmount);
-            }
-            if !envelope.held && envelope.amount == 0.0 {
-                continue;
-            }
-            let target = u8::try_from(tab.mute_bit()).map_err(|_| SongCodeError::TooLarge)?;
-            if envelope.at_seconds != 0.0 {
-                return Err(SongCodeError::InvalidGestureTimeAnchor {
-                    target,
-                    kind: kind as u8,
-                });
-            }
-            if envelope.held && !held_kinds.insert(kind as u8) {
-                return Err(SongCodeError::DuplicateHeldGesture(kind as u8));
-            }
-            entries.push((
-                target,
-                kind as u8,
-                u8::from(envelope.held) * GESTURE_HELD_FLAG,
-                unit_to_u16(envelope.amount),
-            ));
+    for kind in GestureKind::ALL {
+        let envelope = gestures.envelope(kind);
+        if !envelope.amount.is_finite() || !(0.0..=1.0).contains(&envelope.amount) {
+            return Err(SongCodeError::InvalidGestureAmount);
         }
+        if !envelope.held && envelope.amount == 0.0 {
+            continue;
+        }
+        if envelope.at_seconds != 0.0 {
+            return Err(SongCodeError::InvalidGestureTimeAnchor {
+                target,
+                kind: kind as u8,
+            });
+        }
+        entries.push((
+            kind as u8,
+            u8::from(envelope.held) * GESTURE_HELD_FLAG,
+            unit_to_u16(envelope.amount),
+        ));
     }
     if entries.is_empty() {
         return Ok(false);
     }
     let count = u8::try_from(entries.len()).map_err(|_| SongCodeError::TooLarge)?;
     out.push(count);
-    for (target, kind, flags, amount) in entries {
+    for (kind, flags, amount) in entries {
         out.extend_from_slice(&[target, kind, flags]);
         out.extend_from_slice(&amount.to_le_bytes());
     }
@@ -365,33 +356,31 @@ fn write_gestures(gestures: &GestureState, out: &mut Vec<u8>) -> Result<bool, So
 fn read_gestures(bytes: &[u8], gestures: &mut GestureState) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(bytes);
     let count = reader.u8()?;
-    let max_count = TAB_COUNT * GestureKind::ALL.len();
-    if count as usize > max_count {
+    if count as usize > GESTURE_COUNT {
         return Err(SongCodeError::InvalidGestureCount(count));
     }
     let expected_len = 1 + count as usize * 5;
     if bytes.len() != expected_len {
         return Err(SongCodeError::Truncated);
     }
-    let mut seen = BTreeSet::new();
-    let mut held_kinds = BTreeSet::new();
-    for tab in Tab::all() {
-        for kind in GestureKind::ALL {
-            let envelope = gestures.envelope(tab, kind);
-            if envelope.held || envelope.amount > 0.0 {
-                seen.insert((tab.mute_bit() as u8, kind as u8));
-            }
-            if envelope.held {
-                held_kinds.insert(kind as u8);
-            }
-        }
-    }
+    let mut seen: BTreeSet<u8> = GestureKind::ALL
+        .into_iter()
+        .filter(|kind| {
+            let envelope = gestures.envelope(*kind);
+            envelope.held || envelope.amount > 0.0
+        })
+        .map(|kind| kind as u8)
+        .collect();
     for _ in 0..count {
         let target = reader.u8()?;
-        let tab = Tab::all()
+        match Tab::all()
             .into_iter()
             .find(|tab| tab.mute_bit() == target as usize)
-            .ok_or(SongCodeError::InvalidGestureTarget(target))?;
+        {
+            Some(Tab::Master) => {}
+            Some(_) => return Err(SongCodeError::RetiredControl("per-layer gesture")),
+            None => return Err(SongCodeError::InvalidGestureTarget(target)),
+        }
         let kind_tag = reader.u8()?;
         let kind = GestureKind::ALL
             .into_iter()
@@ -401,18 +390,15 @@ fn read_gestures(bytes: &[u8], gestures: &mut GestureState) -> Result<(), SongCo
         if flags & !GESTURE_HELD_FLAG != 0 {
             return Err(SongCodeError::InvalidGestureFlags(flags));
         }
-        if !seen.insert((target, kind_tag)) {
+        if !seen.insert(kind_tag) {
             return Err(SongCodeError::DuplicateGesture {
                 target,
                 kind: kind_tag,
             });
         }
         let held = flags & GESTURE_HELD_FLAG != 0;
-        if held && !held_kinds.insert(kind_tag) {
-            return Err(SongCodeError::DuplicateHeldGesture(kind_tag));
-        }
         let amount = u16_to_unit(reader.u16()?);
-        gestures.lanes[tab as usize][kind as usize] = GestureEnvelope {
+        gestures.lanes[kind as usize] = GestureEnvelope {
             amount,
             at_seconds: 0.0,
             held,
@@ -1103,7 +1089,7 @@ mod gesture_record_tests {
     #[test]
     fn held_gesture_round_trip_resumes_rising_from_time_zero() {
         let mut song = SongState::default();
-        song.gestures.lanes[Tab::Tonal as usize][GestureKind::Bloom as usize] = GestureEnvelope {
+        song.gestures.lanes[GestureKind::Bloom as usize] = GestureEnvelope {
             amount: 0.375,
             at_seconds: 0.0,
             held: true,
@@ -1111,7 +1097,7 @@ mod gesture_record_tests {
         };
 
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-        let envelope = decoded.gestures.envelope(Tab::Tonal, GestureKind::Bloom);
+        let envelope = decoded.gestures.envelope(GestureKind::Bloom);
 
         assert!((envelope.amount - 0.375).abs() <= AMOUNT_STEP);
         assert_eq!(envelope.at_seconds, 0.0);
@@ -1123,10 +1109,10 @@ mod gesture_record_tests {
     #[test]
     fn zero_amount_held_gesture_is_not_omitted_as_inactive() {
         let mut song = SongState::default();
-        song.gestures.lanes[Tab::Perc as usize][GestureKind::Thin as usize].held = true;
+        song.gestures.lanes[GestureKind::Thin as usize].held = true;
 
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-        let envelope = decoded.gestures.envelope(Tab::Perc, GestureKind::Thin);
+        let envelope = decoded.gestures.envelope(GestureKind::Thin);
 
         assert!(envelope.held);
         assert!(envelope.restored);
@@ -1135,7 +1121,7 @@ mod gesture_record_tests {
     #[test]
     fn returning_gesture_round_trip_resumes_returning_from_time_zero() {
         let mut song = SongState::default();
-        song.gestures.lanes[Tab::Kick as usize][GestureKind::Submerge as usize] = GestureEnvelope {
+        song.gestures.lanes[GestureKind::Submerge as usize] = GestureEnvelope {
             amount: 0.625,
             at_seconds: 0.0,
             held: false,
@@ -1143,7 +1129,7 @@ mod gesture_record_tests {
         };
 
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-        let envelope = decoded.gestures.envelope(Tab::Kick, GestureKind::Submerge);
+        let envelope = decoded.gestures.envelope(GestureKind::Submerge);
 
         assert!((envelope.amount - 0.625).abs() <= AMOUNT_STEP);
         assert_eq!(envelope.at_seconds, 0.0);
@@ -1153,33 +1139,16 @@ mod gesture_record_tests {
     }
 
     #[test]
-    fn returning_and_held_instances_of_one_kind_round_trip_on_different_targets() {
-        let mut song = SongState::default();
-        song.gestures.lanes[Tab::Chords as usize][GestureKind::Echo as usize] = GestureEnvelope {
-            amount: 0.7,
-            at_seconds: 0.0,
-            held: false,
-            restored: false,
-        };
-        song.gestures.lanes[Tab::Master as usize][GestureKind::Echo as usize] = GestureEnvelope {
-            amount: 0.2,
-            at_seconds: 0.0,
-            held: true,
-            restored: false,
-        };
-
-        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-
-        assert!(
-            decoded
-                .gestures
-                .envelope(Tab::Chords, GestureKind::Echo)
-                .amount
-                > 0.0
-        );
+    fn gesture_record_refuses_a_retired_per_layer_target() {
+        let payload = payload(&[entry(
+            Tab::Chords.mute_bit() as u8,
+            GestureKind::Echo as u8,
+            GESTURE_HELD_FLAG,
+            unit_to_u16(0.5),
+        )]);
         assert_eq!(
-            decoded.gestures.held_target(GestureKind::Echo),
-            Some(Tab::Master)
+            decode_song_code(&code_with_gesture_payload(&payload)).err(),
+            Some(SongCodeError::RetiredControl("per-layer gesture"))
         );
     }
 
@@ -1194,20 +1163,7 @@ mod gesture_record_tests {
 
         let decoded = decode_song_code(&code_with_gesture_payload(&payload)).unwrap();
 
-        assert!(
-            decoded
-                .gestures
-                .envelope(Tab::Master, GestureKind::Thin)
-                .amount
-                > 0.0
-        );
-        assert_eq!(
-            decoded
-                .gestures
-                .envelope(Tab::Lead, GestureKind::Thin)
-                .amount,
-            0.0
-        );
+        assert!(decoded.gestures.envelope(GestureKind::Thin).amount > 0.0);
     }
 
     #[test]
@@ -1221,7 +1177,7 @@ mod gesture_record_tests {
 
     #[test]
     fn gesture_record_rejects_unknown_kind() {
-        let payload = payload(&[entry(Tab::Chords.mute_bit() as u8, 255, 0, 1)]);
+        let payload = payload(&[entry(Tab::Master.mute_bit() as u8, 255, 0, 1)]);
         assert_eq!(
             decode_song_code(&code_with_gesture_payload(&payload)).err(),
             Some(SongCodeError::InvalidGestureKind(255))
@@ -1231,7 +1187,7 @@ mod gesture_record_tests {
     #[test]
     fn gesture_record_rejects_unknown_flags() {
         let payload = payload(&[entry(
-            Tab::Chords.mute_bit() as u8,
+            Tab::Master.mute_bit() as u8,
             GestureKind::Bloom as u8,
             0b10,
             1,
@@ -1244,49 +1200,25 @@ mod gesture_record_tests {
 
     #[test]
     fn gesture_record_rejects_more_entries_than_fixed_storage() {
-        let payload = [(TAB_COUNT * GestureKind::ALL.len() + 1) as u8];
+        let payload = [(GESTURE_COUNT + 1) as u8];
         assert_eq!(
             decode_song_code(&code_with_gesture_payload(&payload)).err(),
             Some(SongCodeError::InvalidGestureCount(
-                (TAB_COUNT * GestureKind::ALL.len() + 1) as u8
+                (GESTURE_COUNT + 1) as u8
             ))
         );
     }
 
     #[test]
     fn gesture_record_rejects_duplicate_target_and_kind() {
-        let duplicate = entry(Tab::Chords.mute_bit() as u8, GestureKind::Bloom as u8, 0, 1);
+        let duplicate = entry(Tab::Master.mute_bit() as u8, GestureKind::Bloom as u8, 0, 1);
         let payload = payload(&[duplicate, duplicate]);
         assert_eq!(
             decode_song_code(&code_with_gesture_payload(&payload)).err(),
             Some(SongCodeError::DuplicateGesture {
-                target: Tab::Chords.mute_bit() as u8,
+                target: Tab::Master.mute_bit() as u8,
                 kind: GestureKind::Bloom as u8,
             })
-        );
-    }
-
-    #[test]
-    fn gesture_record_rejects_multiple_held_targets_for_one_kind() {
-        let payload = payload(&[
-            entry(
-                Tab::Chords.mute_bit() as u8,
-                GestureKind::Bloom as u8,
-                GESTURE_HELD_FLAG,
-                1,
-            ),
-            entry(
-                Tab::Perc.mute_bit() as u8,
-                GestureKind::Bloom as u8,
-                GESTURE_HELD_FLAG,
-                1,
-            ),
-        ]);
-        assert_eq!(
-            decode_song_code(&code_with_gesture_payload(&payload)).err(),
-            Some(SongCodeError::DuplicateHeldGesture(
-                GestureKind::Bloom as u8
-            ))
         );
     }
 
@@ -1306,7 +1238,7 @@ mod gesture_record_tests {
 
     #[test]
     fn gesture_record_rejects_a_truncated_entry() {
-        let truncated = [1, Tab::Chords.mute_bit() as u8, GestureKind::Bloom as u8];
+        let truncated = [1, Tab::Master.mute_bit() as u8, GestureKind::Bloom as u8];
         assert_eq!(
             decode_song_code(&code_with_gesture_payload(&truncated)).err(),
             Some(SongCodeError::Truncated)
@@ -1326,7 +1258,7 @@ mod gesture_record_tests {
     fn gesture_writer_rejects_non_finite_or_out_of_range_amounts() {
         for amount in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
             let mut song = SongState::default();
-            song.gestures.lanes[Tab::Chords as usize][GestureKind::Thin as usize].amount = amount;
+            song.gestures.lanes[GestureKind::Thin as usize].amount = amount;
             assert_eq!(
                 encode_song_code(&song).err(),
                 Some(SongCodeError::InvalidGestureAmount)
@@ -1337,7 +1269,7 @@ mod gesture_record_tests {
     #[test]
     fn gesture_writer_rejects_an_active_envelope_not_rebased_to_time_zero() {
         let mut song = SongState::default();
-        song.gestures.lanes[Tab::Kick as usize][GestureKind::Echo as usize] = GestureEnvelope {
+        song.gestures.lanes[GestureKind::Echo as usize] = GestureEnvelope {
             amount: 0.5,
             at_seconds: 42.0,
             held: false,
@@ -1347,24 +1279,22 @@ mod gesture_record_tests {
         assert_eq!(
             encode_song_code(&song).err(),
             Some(SongCodeError::InvalidGestureTimeAnchor {
-                target: Tab::Kick.mute_bit() as u8,
+                target: Tab::Master.mute_bit() as u8,
                 kind: GestureKind::Echo as u8,
             })
         );
     }
 
     #[test]
-    fn maximum_gesture_record_stays_below_350_characters() {
+    fn maximum_gesture_record_stays_below_120_characters() {
         let mut song = SongState::default();
-        for tab in Tab::all() {
-            for kind in GestureKind::ALL {
-                song.gestures.lanes[tab as usize][kind as usize].amount = 1.0;
-            }
+        for kind in GestureKind::ALL {
+            song.gestures.lanes[kind as usize].amount = 1.0;
         }
 
         let code = encode_song_code(&song).unwrap();
 
-        assert!(code.len() < 350, "max gesture code is {} chars", code.len());
+        assert!(code.len() < 120, "max gesture code is {} chars", code.len());
     }
 }
 

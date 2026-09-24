@@ -162,7 +162,7 @@ automation editing, palette use, and future performance grammar directly.
     command's direction, or degrade arrow-key + Tab navigation. Browsing
     gestures are inactive without trustworthy releases and the footer names
     that requirement.
-22. Gesture Press pins a target; Repeat cannot retrigger or retarget it.
+22. Gestures play over the Master bus; Repeat cannot retrigger a held one.
     Matching key Release works after modifier changes. Modal entry releases
     gestures and quarantines still-down keys until their physical release.
     Reported focus loss and shutdown also release held gestures.
@@ -241,10 +241,9 @@ intent, transition, effect, and frame trace on failure.
 
 ### Normal browsing gesture lifecycle
 
-Given Browsing, a gesture Press starts its envelope on the current page's
-layer. Repeat leaves it untouched; navigation remains available. A matching
-Release, including one with changed modifiers, starts the return on the
-original layer. Opening another mode releases it, and a held key cannot
+Given Browsing, a gesture Press starts its envelope on the Master bus from
+any page. Repeat leaves it untouched; navigation remains available. A matching
+Release, including one with changed modifiers, starts the return. Opening another mode releases it, and a held key cannot
 reactivate it on return to Browsing until a physical release occurs.
 
 Escape releases held or restored gestures before leaving a drill. Focus loss

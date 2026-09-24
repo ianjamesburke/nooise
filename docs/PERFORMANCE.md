@@ -4,21 +4,23 @@
 
 Hold `z` for Bloom, `c` for Submerge, `v` for Echo, `b` for Thin, or `x` for
 Lift.
-The amount rises while held and returns smoothly on release. Bloom adds a
-reverb cloud, Submerge darkens the sound, Echo throws the phrase into repeats,
-Thin lowers its contribution, and Lift sweeps its low end away. The gesture
-input returns in 50 ms; reverb and echo tails finish after release.
+The amount rises while held and returns smoothly on release. Bloom blends the
+mix into a reverb cloud, Submerge darkens it, Echo throws it into repeats,
+Thin lowers it by up to 9 dB, and Lift thins its low end. The gesture input
+returns in 50 ms; reverb and echo tails finish after release.
 
-The current page supplies the target. Master affects the whole mix. The target
-stays fixed while the key is down, so arrows and Tab remain available and
-different gestures can overlap on different layers. Pressing during a return
-on the same layer catches it at its current amount.
+Every gesture plays over the whole mix, after Master's module chain, whatever
+page is open. Arrows and Tab remain available while a key is down, and
+different gestures can overlap. Pressing during a return catches it at its
+current amount. Gestures are gain-staged so a full throw never raises the
+master: Bloom and Echo trade dry level for their returns instead of stacking
+on top of it.
 
 The footer is two rows: a gesture-activity row above a stable exits/mode-help
 row, so a held gesture never crowds out `Esc release · ^Q quit` or the row
 below it. Idle, the activity row lists each hold's key and name (`z bloom
 c submerge  v echo  b thin  x lift`); held or returning, it switches to a
-bold readout of target and amount — `↑` means rising, `↓` returning, and `R`
+bold readout of gesture and amount — `↑` means rising, `↓` returning, and `R`
 marks a restored hold loaded from a song code. The row below stays a terse
 `BROWSE · ? shortcuts   ^Q quit`; pressing `?` opens the full keyboard-shortcut
 map (`InteractionMode::Help`), a static overlay covering the tab/control area
@@ -45,7 +47,9 @@ activity row stays blank and gesture keys remain inactive — the shortcut map
 The runtime never guesses release from a timeout or keyboard repeat.
 
 A saved song carries active gesture amounts and envelope direction, with no
-audio buffers. Loaded holds resume on their saved targets. Press the matching
+audio buffers. Loaded holds resume where they were. A code from a build with
+per-layer gestures that carries a gesture aimed at a voice is refused as a
+retired per-layer gesture. Press the matching
 gesture key to claim a loaded hold and release it, or use Escape to release
 all loaded holds.
 
@@ -116,12 +120,13 @@ Lead play retains its own `i` entry and existing bindings.
 ## Audio smoke
 
 1. Run `cargo run` in this worktree, in a terminal reporting key releases.
-   On Pads, hold `c`: expect a smooth darkening and a Submerge amount in the
-   footer. Release: expect the original clarity to return.
-2. Hold `z`, move with arrows and Tab, and release. The effect must stay on
-   Pads while navigation continues. On another audible layer, overlap a
-   different gesture and confirm each target is named.
-3. On Master, try short and long `v` presses, then `b` and `x`. Echoes should
+   On any page, hold `c`: expect the whole mix to darken smoothly and a
+   Submerge amount in the footer. Release: expect the original clarity to
+   return.
+2. Hold `z`, move with arrows and Tab, and release. The Bloom must keep
+   playing over the mix while navigation continues. Overlap a different
+   gesture and confirm both are named. Neither should make the mix louder.
+3. Try short and long `v` presses, then `b` and `x`. Echoes should
    finish after release; Thin should smoothly lower and restore the mix; Lift
    should clear its low end while held and restore it quickly on release.
 4. Open the palette during a held gesture, return to Browse, and keep the

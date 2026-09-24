@@ -1,20 +1,24 @@
-//! Fixed per-layer processors for temporary live gesture audio.
+//! The fixed Master-bus processors for temporary live gesture audio.
 
 use super::*;
 
-const SUBMERGE_MIN_CUTOFF_HZ: f32 = 420.0;
+const SUBMERGE_MIN_CUTOFF_HZ: f32 = 600.0;
 const SUBMERGE_OPEN_CUTOFF_HZ: f32 = 8_000.0;
-const LIFT_MIN_CUTOFF_HZ: f32 = 110.0;
-const LIFT_MAX_CUTOFF_HZ: f32 = 1_800.0;
-const BLOOM_SEND_GAIN: f32 = 0.72;
+const LIFT_MIN_CUTOFF_HZ: f32 = 40.0;
+const LIFT_MAX_CUTOFF_HZ: f32 = 320.0;
+const BLOOM_SEND_GAIN: f32 = 0.11;
+const BLOOM_DRY_DUCK: f32 = 0.4;
+const BLOOM_ROOM_SIZE: f32 = 0.82;
 const BLOOM_TAIL_SECONDS: f32 = 8.0;
-const ECHO_SEND_GAIN: f32 = 0.68;
+const ECHO_SEND_GAIN: f32 = 0.35;
+const ECHO_DRY_DUCK: f32 = 0.2;
+const ECHO_MAX_FEEDBACK: f32 = 0.5;
 const ECHO_TAIL_SECONDS: f32 = 6.0;
-const THIN_PEAK_DB: f32 = -12.0;
+const THIN_PEAK_DB: f32 = -9.0;
 const PROCESSOR_CLEAR_SAMPLES_PER_FRAME: usize = 512;
 const ECHO_FEEDBACK_SECONDS: f32 = 0.03;
 
-struct GestureLayerFx {
+struct GestureFx {
     submerge: SlotFx,
     lift: SlotFx,
     bloom: SlotFx,
@@ -33,7 +37,7 @@ struct GestureLayerFx {
     previous_echo_amount: f32,
 }
 
-impl GestureLayerFx {
+impl GestureFx {
     fn new(sample_rate: f32, max_delay_samples: usize) -> Self {
         Self {
             submerge: SlotFx::Filter(StereoFilter::default()),
@@ -88,7 +92,7 @@ impl GestureLayerFx {
             let slot = ModuleSlot {
                 amount: 1.0,
                 time: cutoff_hz,
-                right_time: 0.08,
+                right_time: 0.0,
                 feedback: 0.0,
                 ..ModuleSlot::default()
             };
@@ -118,7 +122,7 @@ impl GestureLayerFx {
             let slot = ModuleSlot {
                 amount: 1.0,
                 time: cutoff_hz,
-                right_time: 0.05,
+                right_time: 0.0,
                 feedback: 1.0,
                 ..ModuleSlot::default()
             };
@@ -156,9 +160,12 @@ impl GestureLayerFx {
             sample_rate,
         );
 
+        // The dry path ducks as each parallel return rises, so a full throw
+        // trades dry level for wet instead of stacking on top of it.
+        let dry = (1.0 - BLOOM_DRY_DUCK * bloom_amount) * (1.0 - ECHO_DRY_DUCK * echo_amount);
         (
-            source.0 + bloom_return.0 + echo_return.0,
-            source.1 + bloom_return.1 + echo_return.1,
+            source.0 * dry + bloom_return.0 + echo_return.0,
+            source.1 * dry + bloom_return.1 + echo_return.1,
         )
     }
 
@@ -193,7 +200,7 @@ impl GestureLayerFx {
 
         let slot = ModuleSlot {
             amount: 1.0,
-            time: 0.88,
+            time: BLOOM_ROOM_SIZE,
             feedback: 0.58,
             ..ModuleSlot::default()
         };
@@ -243,7 +250,7 @@ impl GestureLayerFx {
             self.echo_clear_cursor = 0;
             self.echo_tail_samples = tail_samples(sample_rate, ECHO_TAIL_SECONDS);
             if amount > self.previous_echo_amount {
-                self.echo_feedback_target = 0.25 + amount * 0.37;
+                self.echo_feedback_target = 0.25 + amount * (ECHO_MAX_FEEDBACK - 0.25);
             }
         }
         if !self.echo_has_history {
@@ -308,7 +315,7 @@ fn subtract(sample: (f32, f32), dry: (f32, f32)) -> (f32, f32) {
 }
 
 pub(super) struct GestureAudioBank {
-    layers: [GestureLayerFx; TAB_COUNT],
+    fx: GestureFx,
     max_delay_samples: usize,
     sample_rate: f32,
 }
@@ -317,7 +324,7 @@ impl GestureAudioBank {
     pub(super) fn new(sample_rate: f32) -> Self {
         let max_delay_samples = (sample_rate * (DELAY_FREE_MAX_MS / 1_000.0)).ceil() as usize;
         Self {
-            layers: std::array::from_fn(|_| GestureLayerFx::new(sample_rate, max_delay_samples)),
+            fx: GestureFx::new(sample_rate, max_delay_samples),
             max_delay_samples,
             sample_rate,
         }
@@ -325,12 +332,11 @@ impl GestureAudioBank {
 
     pub(super) fn process(
         &mut self,
-        tab: Tab,
         sample: (f32, f32),
         amounts: [f32; GESTURE_COUNT],
         timing: TimingContext,
     ) -> (f32, f32) {
-        self.layers[tab as usize].process(
+        self.fx.process(
             sample,
             amounts,
             timing,
@@ -361,10 +367,7 @@ mod tests {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
         let input = (0.4, -0.2);
 
-        assert_eq!(
-            bank.process(Tab::Chords, input, [0.0; GESTURE_COUNT], timing()),
-            input
-        );
+        assert_eq!(bank.process(input, [0.0; GESTURE_COUNT], timing()), input);
     }
 
     #[test]
@@ -377,7 +380,7 @@ mod tests {
             } else {
                 (-1.0, -1.0)
             };
-            let output = bank.process(Tab::Chords, input, active(GestureKind::Submerge), timing());
+            let output = bank.process(input, active(GestureKind::Submerge), timing());
             energy += output.0.abs() + output.1.abs();
         }
 
@@ -390,21 +393,18 @@ mod tests {
     #[test]
     fn full_lift_audibly_removes_low_frequency_content() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        let mut low_energy = 0.0;
+        let (mut dry_energy, mut low_energy) = (0.0, 0.0);
         for index in 0..SAMPLE_RATE as usize {
             let phase = index as f32 * std::f32::consts::TAU * 80.0 / SAMPLE_RATE;
-            let output = bank.process(
-                Tab::Chords,
-                (phase.sin(), phase.sin()),
-                active(GestureKind::Lift),
-                timing(),
-            );
+            let input = (phase.sin(), phase.sin());
+            let output = bank.process(input, active(GestureKind::Lift), timing());
+            dry_energy += input.0.abs() + input.1.abs();
             low_energy += output.0.abs() + output.1.abs();
         }
 
         assert!(
-            low_energy < 400.0,
-            "lift left low-frequency energy at {low_energy}"
+            low_energy < dry_energy / 8.0,
+            "lift left low-frequency energy at {low_energy} of {dry_energy}"
         );
     }
 
@@ -415,7 +415,7 @@ mod tests {
         let mut amounts = [0.0; GESTURE_COUNT];
         amounts[GestureKind::Submerge as usize] = 1e-6;
 
-        let output = bank.process(Tab::Perc, input, amounts, timing());
+        let output = bank.process(input, amounts, timing());
 
         assert!(
             (output.0 - input.0).abs() < 2e-6 && (output.1 - input.1).abs() < 2e-6,
@@ -432,19 +432,16 @@ mod tests {
             } else {
                 (-1.0, -1.0)
             };
-            used.process(Tab::Kick, sample, active(GestureKind::Submerge), timing());
+            used.process(sample, active(GestureKind::Submerge), timing());
         }
         let input = (0.3, -0.2);
-        assert_eq!(
-            used.process(Tab::Kick, input, [0.0; GESTURE_COUNT], timing()),
-            input
-        );
+        assert_eq!(used.process(input, [0.0; GESTURE_COUNT], timing()), input);
         let mut shallow = [0.0; GESTURE_COUNT];
         shallow[GestureKind::Submerge as usize] = 0.001;
-        let repressed = used.process(Tab::Kick, input, shallow, timing());
+        let repressed = used.process(input, shallow, timing());
         let mut fresh = GestureAudioBank::new(SAMPLE_RATE);
 
-        let clean_start = fresh.process(Tab::Kick, input, shallow, timing());
+        let clean_start = fresh.process(input, shallow, timing());
 
         assert_eq!(repressed, clean_start);
     }
@@ -453,7 +450,7 @@ mod tests {
     fn full_thin_reduces_the_target_by_twelve_decibels() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
 
-        let output = bank.process(Tab::Kick, (1.0, -1.0), active(GestureKind::Thin), timing());
+        let output = bank.process((1.0, -1.0), active(GestureKind::Thin), timing());
 
         let expected = 10.0_f32.powf(THIN_PEAK_DB / 20.0);
         assert!((output.0 - expected).abs() < 1e-6);
@@ -465,7 +462,7 @@ mod tests {
         let mut changed = false;
         for frame in 0..8_000 {
             let input = if frame == 0 { (1.0, 1.0) } else { (0.0, 0.0) };
-            let output = bank.process(Tab::Chords, input, active(GestureKind::Bloom), timing());
+            let output = bank.process(input, active(GestureKind::Bloom), timing());
             changed |= output != input;
         }
 
@@ -478,7 +475,7 @@ mod tests {
         let mut changed = false;
         for frame in 0..24_000 {
             let input = if frame == 0 { (1.0, -1.0) } else { (0.0, 0.0) };
-            let output = bank.process(Tab::Lead, input, active(GestureKind::Echo), timing());
+            let output = bank.process(input, active(GestureKind::Echo), timing());
             changed |= output != input;
         }
 
@@ -489,12 +486,11 @@ mod tests {
     fn bloom_tail_survives_after_the_send_returns_to_zero() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
         for _ in 0..8_000 {
-            bank.process(Tab::Tonal, (0.5, 0.5), active(GestureKind::Bloom), timing());
+            bank.process((0.5, 0.5), active(GestureKind::Bloom), timing());
         }
 
-        let tail_is_audible = (0..2_000).any(|_| {
-            bank.process(Tab::Tonal, (0.0, 0.0), [0.0; GESTURE_COUNT], timing()) != (0.0, 0.0)
-        });
+        let tail_is_audible = (0..2_000)
+            .any(|_| bank.process((0.0, 0.0), [0.0; GESTURE_COUNT], timing()) != (0.0, 0.0));
 
         assert!(tail_is_audible, "Bloom release cut its reverb tail");
     }
@@ -503,32 +499,30 @@ mod tests {
     fn echo_tail_survives_after_the_send_returns_to_zero() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
         for _ in 0..20_000 {
-            bank.process(Tab::Lead, (0.4, -0.4), active(GestureKind::Echo), timing());
+            bank.process((0.4, -0.4), active(GestureKind::Echo), timing());
         }
 
-        let tail_is_audible = (0..20_000).any(|_| {
-            bank.process(Tab::Lead, (0.0, 0.0), [0.0; GESTURE_COUNT], timing()) != (0.0, 0.0)
-        });
+        let tail_is_audible = (0..20_000)
+            .any(|_| bank.process((0.0, 0.0), [0.0; GESTURE_COUNT], timing()) != (0.0, 0.0));
 
         assert!(tail_is_audible, "Echo release cut its delay tail");
     }
 
+    /// The stage trades dry level for its returns, so even every gesture
+    /// thrown at once on a sustained tone stays near the input's own peak.
     #[test]
-    fn overlapping_gestures_across_every_target_keep_the_stage_bounded() {
+    fn every_gesture_at_full_throw_stays_near_input_level() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
         let mut peak = 0.0_f32;
-        for frame in 0..12_000 {
+        for frame in 0..48_000 {
             let input = (((frame as f32 * 0.07).sin() * 0.25), 0.0);
-            for tab in Tab::all() {
-                let output = bank.process(tab, input, [1.0; GESTURE_COUNT], timing());
-                peak = peak.max(output.0.abs()).max(output.1.abs());
-            }
+            let mut amounts = [1.0; GESTURE_COUNT];
+            amounts[GestureKind::Thin as usize] = 0.0;
+            let output = bank.process(input, amounts, timing());
+            peak = peak.max(output.0.abs()).max(output.1.abs());
         }
 
-        assert!(
-            peak.is_finite() && peak < 4.0,
-            "gesture stage peak was {peak}"
-        );
+        assert!(peak < 0.25 * 1.26, "gesture stage peak was {peak}");
     }
 
     #[test]
@@ -543,62 +537,44 @@ mod tests {
     #[test]
     fn drained_tails_clear_incrementally_then_restore_exact_dry_bypass() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        bank.process(
-            Tab::Master,
-            (0.5, -0.5),
-            [1.0, 0.0, 1.0, 0.0, 0.0],
-            timing(),
-        );
-        bank.layers[Tab::Master as usize].bloom_tail_samples = 0;
-        bank.layers[Tab::Master as usize].echo_tail_samples = 0;
+        bank.process((0.5, -0.5), [1.0, 0.0, 1.0, 0.0, 0.0], timing());
+        bank.fx.bloom_tail_samples = 0;
+        bank.fx.echo_tail_samples = 0;
         for _ in 0..1_000 {
-            bank.process(Tab::Master, (0.0, 0.0), [0.0; GESTURE_COUNT], timing());
-            let layer = &bank.layers[Tab::Master as usize];
+            bank.process((0.0, 0.0), [0.0; GESTURE_COUNT], timing());
+            let layer = &bank.fx;
             if !layer.bloom_has_history && !layer.echo_has_history {
                 break;
             }
         }
-        let layer = &bank.layers[Tab::Master as usize];
+        let layer = &bank.fx;
         assert!(!layer.bloom_has_history && !layer.echo_has_history);
 
         let input = (0.31, -0.27);
-        assert_eq!(
-            bank.process(Tab::Master, input, [0.0; GESTURE_COUNT], timing()),
-            input
-        );
+        assert_eq!(bank.process(input, [0.0; GESTURE_COUNT], timing()), input);
     }
 
     #[test]
     fn repress_during_incremental_clear_accepts_the_new_send() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        bank.process(Tab::Lead, (1.0, -1.0), active(GestureKind::Echo), timing());
-        bank.layers[Tab::Lead as usize].echo_tail_samples = 0;
+        bank.process((1.0, -1.0), active(GestureKind::Echo), timing());
+        bank.fx.echo_tail_samples = 0;
         for _ in 0..8 {
-            bank.process(Tab::Lead, (0.0, 0.0), [0.0; GESTURE_COUNT], timing());
+            bank.process((0.0, 0.0), [0.0; GESTURE_COUNT], timing());
         }
-        assert!(bank.layers[Tab::Lead as usize].echo_clear_cursor > 0);
+        assert!(bank.fx.echo_clear_cursor > 0);
         let mut shallow = [0.0; GESTURE_COUNT];
         shallow[GestureKind::Echo as usize] = 0.001;
-        bank.process(Tab::Lead, (1.0, -1.0), shallow, timing());
+        bank.process((1.0, -1.0), shallow, timing());
 
-        let heard_new_send = (0..20_000).any(|_| {
-            bank.process(Tab::Lead, (0.0, 0.0), [0.0; GESTURE_COUNT], timing()) != (0.0, 0.0)
-        });
+        let heard_new_send = (0..20_000)
+            .any(|_| bank.process((0.0, 0.0), [0.0; GESTURE_COUNT], timing()) != (0.0, 0.0));
 
         assert!(
             heard_new_send,
             "repress lost the new Echo send while clearing"
         );
-        assert_eq!(bank.layers[Tab::Lead as usize].echo_clear_cursor, 0);
-    }
-
-    #[test]
-    fn every_voice_and_master_have_an_independent_gesture_stage() {
-        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        for tab in Tab::all() {
-            let output = bank.process(tab, (1.0, -1.0), active(GestureKind::Thin), timing());
-            assert_ne!(output, (1.0, -1.0), "Thin was inert on {}", tab.name());
-        }
+        assert_eq!(bank.fx.echo_clear_cursor, 0);
     }
 
     #[test]
@@ -608,42 +584,8 @@ mod tests {
         let after_user_slots = user_bank.process(Tab::Perc, &user_slots, (0.4, -0.2), timing());
         let mut gesture_bank = GestureAudioBank::new(SAMPLE_RATE);
 
-        let output = gesture_bank.process(
-            Tab::Perc,
-            after_user_slots,
-            active(GestureKind::Thin),
-            timing(),
-        );
+        let output = gesture_bank.process(after_user_slots, active(GestureKind::Thin), timing());
 
         assert_ne!(output, after_user_slots);
-    }
-
-    #[test]
-    fn repeated_target_changes_reuse_the_fixed_processor_storage() {
-        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        let identities = bank.layers.each_ref().map(|layer| {
-            [
-                std::ptr::from_ref(&layer.submerge) as usize,
-                std::ptr::from_ref(&layer.bloom) as usize,
-                std::ptr::from_ref(&layer.echo) as usize,
-            ]
-        });
-
-        for pass in 0..128 {
-            for tab in Tab::all() {
-                let kind = GestureKind::ALL[(pass + tab as usize) % GESTURE_COUNT];
-                bank.process(tab, (0.1, -0.1), active(kind), timing());
-                bank.process(tab, (0.0, 0.0), [0.0; GESTURE_COUNT], timing());
-            }
-        }
-
-        let after = bank.layers.each_ref().map(|layer| {
-            [
-                std::ptr::from_ref(&layer.submerge) as usize,
-                std::ptr::from_ref(&layer.bloom) as usize,
-                std::ptr::from_ref(&layer.echo) as usize,
-            ]
-        });
-        assert_eq!(after, identities);
     }
 }

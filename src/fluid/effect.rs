@@ -556,7 +556,7 @@ impl EffectExecutor {
             | InteractionEffect::LeadNudge { .. }
             | InteractionEffect::LeadPattern
             | InteractionEffect::LeadCapture
-            | InteractionEffect::GesturePress { .. }
+            | InteractionEffect::GesturePress(_)
             | InteractionEffect::GestureRelease(_)
             | InteractionEffect::GestureReleaseAll) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
@@ -842,11 +842,11 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
-            InteractionEffect::GesturePress { kind, tab } => {
+            InteractionEffect::GesturePress(kind) => {
                 let now_seconds = self.session.audio_seconds();
                 let snapshot = self
                     .session
-                    .update(|snapshot| snapshot.gestures.press(kind, tab, now_seconds));
+                    .update(|snapshot| snapshot.gestures.press(kind, now_seconds));
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
