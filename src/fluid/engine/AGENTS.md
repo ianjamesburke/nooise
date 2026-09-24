@@ -14,7 +14,7 @@ Audio processing helpers owned by `../engine.rs`.
 
 - Reuse the shared module processor dispatch for Filter, Reverb, and Delay. Keep gesture state separate from user slots.
 - Allocate gesture processor storage before sample processing. Presses and effect tails must not grow storage.
-- Gestures never raise the master: returns trade dry level for wet (Bloom/Echo duck the dry path), filters carry no resonance, and a full throw of any gesture stays within about +2 dB sample peak of the song without it. The Master output stage is a hard clamp, so headroom is the gesture stage's job.
+- Gestures never raise the master: returns trade dry level for wet (Bloom/Echo duck the dry path), filters carry no resonance, and a full throw of any gesture stays within about +2 dB sample peak of the song without it. The Master output clamp stays as a backstop; headroom is the gesture stage's job.
 - Bloom/Echo retire after bounded eight-/six-second tails with a smooth final fade and incremental clearing. A fresh press during clearing must accept new input.
 - Zero envelopes with drained tails must pass dry audio unchanged. Mute and Master output protection remain downstream.
 - Tail buffers stay out of song codes; active scalar envelopes belong to the aggregate session.
@@ -28,6 +28,7 @@ Audio processing helpers owned by `../engine.rs`.
 
 - `cargo test fluid::engine::gesture_audio` covers temporary processing.
 - `cargo test fluid::gesture_audio_tests` covers raw terminal input through rendered audio and saves.
+- `cargo test fluid::gesture_level_probe` bounds a full Bloom+Echo+Submerge throw on the loudest built-in songs below the Master clamp; the clamp is the backstop, never the fix.
 - `cargo test --release gesture_level_probe -- --ignored --nocapture` prints peak/RMS deltas per song and gesture.
 
 ## Child DOX Index

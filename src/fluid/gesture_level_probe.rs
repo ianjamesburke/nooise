@@ -1,4 +1,5 @@
-//! Diagnostic: master level with each gesture held at full amount.
+//! Master headroom with each gesture held at full amount: an ignored
+//! diagnostic table and a regression bound.
 //! `cargo test --release gesture_level_probe -- --ignored --nocapture`
 
 use super::*;
@@ -75,4 +76,22 @@ fn gesture_level_probe() {
         println!("{line}");
     }
     println!("worst peak delta per case: {worst:?}");
+}
+
+/// The Master output clamp is a backstop, not gain staging: on the loudest
+/// built-in song and the one Bloom lifts most, every gesture that adds a
+/// return, thrown fully at once, must stay near the dry peak and short of
+/// the clamp.
+#[test]
+fn full_gesture_throw_never_reaches_the_master_clamp() {
+    use GestureKind::*;
+    let songs = decode_auto_states();
+    for index in [8, 18] {
+        let (base_peak, _) = render(&songs[index], &[]);
+        let (peak, _) = render(&songs[index], &[Bloom, Echo, Submerge]);
+        assert!(
+            peak < 0.95 && db(peak) - db(base_peak) < 2.0,
+            "song {index}: gesture peak {peak:.3} vs dry {base_peak:.3}"
+        );
+    }
 }
