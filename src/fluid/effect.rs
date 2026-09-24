@@ -96,12 +96,6 @@ pub(crate) enum EffectAcknowledgement {
         index: usize,
         id: &'static str,
     },
-    PerformanceEdited {
-        tab: Tab,
-        index: usize,
-        id: &'static str,
-        generation: u64,
-    },
     PageSelected(Page),
     QuitRequested,
     NoChange,
@@ -513,12 +507,12 @@ impl EffectExecutor {
                     edit: ControlEdit::Value(value),
                 })
             }
-            InteractionEffect::PaletteJump { tab, index, id } => {
+            InteractionEffect::JumpToControl { tab, index, id } => {
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
             // Needs only the session, so the generic bridge can resolve it;
             // the production path adds closing the open editor first.
-            InteractionEffect::PaletteModule { tab, catalog_index } => {
+            InteractionEffect::PlaceModule { tab, catalog_index } => {
                 self.place_module(tab, catalog_index)
             }
             InteractionEffect::PaletteCommit(edits) => {
@@ -548,10 +542,6 @@ impl EffectExecutor {
             | InteractionEffect::CloseAutomationAll
             | InteractionEffect::TouchSelected
             | InteractionEffect::PaletteCommitAtBar(_)
-            | InteractionEffect::PerformanceInstrument(_)
-            | InteractionEffect::HoldPerformanceSelector(_)
-            | InteractionEffect::ReleaseHeldSelector(_)
-            | InteractionEffect::PerformanceEdit { .. }
             | InteractionEffect::LeadTone { .. }
             | InteractionEffect::LeadRelease
             | InteractionEffect::LeadNudge { .. }
@@ -742,13 +732,10 @@ impl EffectExecutor {
                     edits,
                 })
             }
-            InteractionEffect::PaletteJump { tab, index, id } => {
+            InteractionEffect::JumpToControl { tab, index, id } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
-            InteractionEffect::PerformanceInstrument(_)
-            | InteractionEffect::HoldPerformanceSelector(_)
-            | InteractionEffect::ReleaseHeldSelector(_) => Ok(EffectAcknowledgement::NoChange),
             // A played note is a gesture over the song, not an edit of it:
             // it publishes through the session so the audio thread sees it,
             // but never exits auto — soloing over a morph is the point. The
@@ -850,39 +837,9 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
-            InteractionEffect::PaletteModule { tab, catalog_index } => {
+            InteractionEffect::PlaceModule { tab, catalog_index } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
                 self.place_module(tab, catalog_index)
-            }
-            InteractionEffect::PerformanceEdit {
-                targets,
-                focus,
-                action,
-            } => {
-                let edits = targets
-                    .iter()
-                    .map(|instrument| {
-                        performance_target(instrument, action)
-                            .ok_or(EffectFailure::MissingContext("performance target"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let (tab, index, focus_spec, _) = performance_target(focus, action)
-                    .ok_or(EffectFailure::MissingContext("performance focus"))?;
-                let snapshot = self.edit_session(None, |snapshot| {
-                    for (_, _, spec, direction) in &edits {
-                        spec.apply_delta(*direction, &mut snapshot.controls);
-                    }
-                });
-                for (_, _, spec, _) in &edits {
-                    self.recent.touch(spec.id);
-                }
-                self.recent.touch(focus_spec.id);
-                Ok(EffectAcknowledgement::PerformanceEdited {
-                    tab,
-                    index,
-                    id: focus_spec.id,
-                    generation: snapshot.generation,
-                })
             }
             other => self.execute_interaction_with_clipboard(
                 other,
@@ -944,7 +901,6 @@ impl RecentControls {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fluid::interaction::PerformanceInstrument;
 
     #[derive(Default)]
     struct FakeClipboard {
@@ -1066,7 +1022,7 @@ mod tests {
 
         let ack = executor
             .execute_interaction(
-                InteractionEffect::PaletteModule {
+                InteractionEffect::PlaceModule {
                     tab: Tab::Bass,
                     catalog_index: delay,
                 },
@@ -1096,7 +1052,7 @@ mod tests {
         let before = executor.session().load().controls.modules.kick;
         executor
             .execute_interaction(
-                InteractionEffect::PaletteModule {
+                InteractionEffect::PlaceModule {
                     tab: Tab::Kick,
                     catalog_index: drive,
                 },
@@ -1123,7 +1079,7 @@ mod tests {
 
         let ack = executor
             .execute_interaction(
-                InteractionEffect::PaletteModule {
+                InteractionEffect::PlaceModule {
                     tab: Tab::Chords,
                     catalog_index: delay,
                 },
@@ -1261,11 +1217,11 @@ mod tests {
         );
         assert_eq!(
             executor.execute_interaction(
-                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Kick),
+                InteractionEffect::ToggleAuto,
                 &InteractionExecutionContext::default(),
             ),
             Err(EffectFailure::UnsupportedInteraction(
-                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Kick)
+                InteractionEffect::ToggleAuto
             ))
         );
     }
@@ -1277,7 +1233,7 @@ mod tests {
         let results = executor.execute_interactions_ordered_with_clipboard(
             [
                 InteractionEffect::SelectPage(Page::Bass),
-                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Bass),
+                InteractionEffect::ToggleAuto,
                 InteractionEffect::Save,
             ],
             &InteractionExecutionContext::default(),
@@ -1291,18 +1247,18 @@ mod tests {
         assert_eq!(
             results[1],
             Err(EffectFailure::UnsupportedInteraction(
-                InteractionEffect::PerformanceInstrument(PerformanceInstrument::Bass)
+                InteractionEffect::ToggleAuto
             ))
         );
         assert_eq!(clipboard.value, None);
     }
 
     #[test]
-    fn typed_palette_jump_is_acknowledged_without_session_mutation() {
+    fn typed_jump_to_control_is_acknowledged_without_session_mutation() {
         let mut executor = executor();
         let acknowledgement = executor
             .execute_interaction(
-                InteractionEffect::PaletteJump {
+                InteractionEffect::JumpToControl {
                     tab: Tab::Master,
                     index: 1,
                     id: "master.bpm",

@@ -178,10 +178,10 @@ acceptance; never discard active amounts or bake them into base controls.
 This worktree replaces Deck: its `p` entry, Deck-only selector/action handling,
 help, fixtures, and documentation are retired together. `p` is unassigned.
 
-Sequence on Space is outside this replacement's first scope. Its shared
-instrument/action vocabulary must survive wherever Sequence still uses it.
-Lead play also keeps its existing ownership. Removing either is a separate
-product choice.
+Sequence on Space was outside this replacement's first scope; it has since
+been replaced by the Jump leader, which owns Space today — see
+[the performance reference](../PERFORMANCE.md). Lead play keeps its existing
+ownership.
 
 The [performance reference](../PERFORMANCE.md), source DOX rail, help, and
 [ADR 0001](../adr/0001-unidirectional-interaction-architecture.md) describe

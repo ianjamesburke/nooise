@@ -259,13 +259,11 @@ fn draw_tabs(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
 
 /// The control list: one row per control, each followed by whatever
 /// modulation it carries — an open editor's fields, the live lanes, a closed
-/// modulation chip. Performance takes the same area over entirely.
+/// modulation chip. A pending Jump renders here too, as the page it is
+/// aiming at: the leader lives in the footer so the player watches the rows
+/// they are about to land on.
 fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
     let view = frame.view;
-    if let ModeSurface::Performance(performance) = &view.mode {
-        f.render_widget(Paragraph::new(performance_lines(performance)), area);
-        return;
-    }
     let items = &view.items;
     let selected = view.navigation.selected;
     let automation = frame.automation_state();
@@ -604,111 +602,6 @@ fn lead_keyboard_line(lead: LeadSurface) -> Line<'static> {
     Line::from(spans)
 }
 
-fn performance_lines(surface: &PerformanceSurface) -> Vec<Line<'static>> {
-    match surface {
-        PerformanceSurface::Choose { held_selector } => vec![
-            Line::from("SEQUENCE · CHOOSE INSTRUMENT"),
-            Line::from("instrument · waiting"),
-            Line::from(format!("held · {}", selector_text(*held_selector))),
-        ],
-        PerformanceSurface::Perform {
-            instrument,
-            held_selector,
-            values,
-        } => {
-            let mut lines = vec![Line::from(format!(
-                "SEQUENCE · PERFORM · held {}",
-                selector_text(*held_selector)
-            ))];
-            if let Some(values) = values {
-                lines.push(performance_instrument_line(values));
-            } else {
-                lines.push(Line::from(format!(
-                    "instrument · {}",
-                    selector_text(*instrument)
-                )));
-            }
-            lines
-        }
-        PerformanceSurface::Complete {
-            instrument,
-            release_pending,
-            values,
-        } => {
-            let mut lines = vec![Line::from("SEQUENCE · APPLIED")];
-            if let Some(values) = values {
-                lines.push(performance_instrument_line(values));
-            } else {
-                lines.push(Line::from(format!(
-                    "instrument · {}",
-                    selector_text(*instrument)
-                )));
-            }
-            lines.push(Line::from(if *release_pending {
-                "release action to return"
-            } else {
-                "Space rearm · Esc back"
-            }));
-            lines
-        }
-    }
-}
-
-fn performance_instrument_line(values: &PerformanceInstrumentSurface) -> Line<'static> {
-    let marker = if values.held {
-        "●"
-    } else if values.focused {
-        "▶"
-    } else {
-        " "
-    };
-    // Sequence rows carry the browse colour language plus amber for an
-    // instrument the player is physically holding. Without a style they
-    // rendered in the terminal default and read as a different application.
-    let style = if values.held {
-        Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD)
-    } else {
-        BROWSE_PALETTE.style(values.focused)
-    };
-    let mut spans = vec![Span::styled(
-        format!(
-            "{marker} {} {:<4}",
-            values.instrument.key(),
-            values.instrument.name(),
-        ),
-        style,
-    )];
-    // Three compact dials per instrument. Sequence is deliberately denser
-    // than a browse row, but each bar is the same primitive, so modulation
-    // markers can use the same rendering path when routes are added here.
-    for (tag, item) in [
-        ("L", &values.level),
-        ("T", &values.length),
-        ("D", &values.density),
-    ] {
-        let dial = control_dial(item);
-        spans.push(Span::styled(format!(" {tag}"), style));
-        spans.extend(slider_spans(
-            dial.ratio(),
-            SliderMarkers::default(),
-            3,
-            style,
-        ));
-        spans.push(Span::styled(
-            compact_performance_value(&dial.display),
-            style,
-        ));
-    }
-    Line::from(spans)
-}
-
-fn compact_performance_value(value: &str) -> String {
-    value
-        .replace(" beats", "b")
-        .replace(" beat", "b")
-        .replace(' ', "")
-}
-
 /// Bottom-anchored palette overlay inside the main panel: prompt line,
 /// best-first matches (fuzzy hits highlighted), staged edits, key help.
 fn draw_palette(
@@ -856,6 +749,17 @@ fn draw_help(f: &mut Frame, inner: Rect) {
     let rule_style = Style::default().fg(Color::Rgb(60, 66, 84));
     let rule: String = "\u{2500}".repeat(inner_block.width as usize);
 
+    // The leader's layer keys are spelled out here rather than restated,
+    // so the map and `INSTRUMENTS` cannot drift apart.
+    let jump_layer_names: Vec<(String, String)> = crate::fluid::interaction::INSTRUMENTS
+        .iter()
+        .map(|row| (row.key.to_string(), row.instrument.name().to_lowercase()))
+        .collect();
+    let jump_layers: Vec<(&str, &str)> = jump_layer_names
+        .iter()
+        .map(|(key, name)| (key.as_str(), name.as_str()))
+        .collect();
+
     let key_row = |row: KeyRow| -> Line<'static> {
         let mut spans = Vec::new();
         for (i, (key, desc)) in row.iter().enumerate() {
@@ -929,13 +833,12 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ],
     ));
     lines.extend(section(
-        "Sequence (Space to enter)",
-        &[&[
-            ("a s d f", "instrument"),
-            ("hl", "length"),
-            ("jk", "level"),
-            ("ui", "density"),
-        ]],
+        "Jump (Space, then layer, then parameter)",
+        &[
+            &jump_layers[..4],
+            &jump_layers[4..],
+            &[("j", "volume"), ("k", "filter"), ("Space j/k", "this page")],
+        ],
     ));
     lines.push(Line::from(Span::styled("System", heading_style)));
     lines.push(Line::from(Span::styled(rule, rule_style)));
@@ -968,15 +871,15 @@ impl FieldPalette {
     }
 }
 
-/// Browse rows and Sequence share one colour language: idle grey, focused
-/// cyan.
+/// Browse rows and the Lead play keyboard share one colour language: idle
+/// grey, focused cyan.
 const BROWSE_PALETTE: FieldPalette = FieldPalette {
     active: Color::Rgb(120, 230, 255),
     idle: Color::Rgb(170, 178, 195),
 };
 
 /// Amber for something sounding or physically held right now: the playing
-/// chord badge and a held Sequence instrument.
+/// chord badge and a lane's active step.
 const LIVE_AMBER: Color = Color::Rgb(255, 200, 90);
 /// Help/notice text the user must act on, and staged palette edits.
 const EMPHASIS_YELLOW: Color = Color::Rgb(255, 220, 120);

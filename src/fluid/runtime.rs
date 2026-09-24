@@ -24,8 +24,8 @@ use ratatui::backend::CrosstermBackend;
 use super::GestureKind;
 use super::interaction::{
     AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge,
-    Navigation, PageDirection, PerformanceAction, PerformanceInstrument, PerformanceKind,
-    PerformanceMode, SemanticAction, SequenceStage,
+    Navigation, PageDirection, PerformanceInstrument, PerformanceKind, PerformanceParameter,
+    SemanticAction,
 };
 
 /// Target spacing between drawn frames.
@@ -43,7 +43,7 @@ pub(crate) const TICK_INTERVAL: Duration = Duration::from_millis(33);
 /// Everything phase-dependent branches on these rather than assuming: without
 /// `key_event_types` there is no trustworthy repeat/release distinction, and
 /// live gestures stay unavailable instead of silently misreading autorepeat
-/// as a hold. Sequence uses its own visible tap-completion fallback.
+/// as a hold.
 pub(crate) struct TerminalCapabilities {
     pub(crate) key_event_types: bool,
     pub(crate) plain_key_releases: bool,
@@ -544,9 +544,9 @@ pub(crate) fn map_input(
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
         }
-        InteractionMode::Performance(performance) => {
+        InteractionMode::Performance(_) => {
             if unmodified {
-                performance_binding(performance, &key.code, *phase, capabilities)
+                performance_binding(&key.code)
             } else {
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
@@ -603,7 +603,7 @@ fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent
         // editor the same key reseeds the open random lane instead.
         PhysicalKey::Character('r') => Intent::RandomizeSelected,
         PhysicalKey::Character('i') => Intent::EnterLeadPlay,
-        PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Sequence),
+        PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Jump),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         PhysicalKey::Enter => match navigation {
             Navigation::Chords {
@@ -671,58 +671,30 @@ fn palette_control_binding(code: &PhysicalKey) -> Option<Intent> {
     })
 }
 
-fn performance_binding(
-    performance: &PerformanceMode,
-    code: &PhysicalKey,
-    phase: InputPhase,
-    capabilities: TerminalCapabilities,
-) -> Option<Intent> {
+/// The Jump leader's keyboard: Space re-arms it, `INSTRUMENTS` keys choose
+/// the layer, `PARAMETERS` keys complete the jump — with or without a layer
+/// key first, since the kernel aims an unaimed jump at the open page. The
+/// two key sets are disjoint, so neither stage has to resolve a collision.
+/// Arrival moves the cursor and nothing else, so every binding is a plain
+/// Press and no phase or terminal capability changes what a key means.
+/// Neither key set changes meaning between stages, so the binding does not
+/// read the mode at all.
+fn performance_binding(code: &PhysicalKey) -> Option<Intent> {
     if let PhysicalKey::Character(' ') = *code {
-        return Some(Intent::ActivatePerformance(PerformanceKind::Sequence));
+        return Some(Intent::ActivatePerformance(PerformanceKind::Jump));
     }
-    if let PhysicalKey::Character(key) = code
-        && let Some(instrument) = PerformanceInstrument::from_key(*key)
-    {
-        return match phase {
-            InputPhase::Release => Some(Intent::ReleaseHeldSelector(instrument)),
-            InputPhase::Press
-                if matches!(
-                    performance,
-                    PerformanceMode::Sequence {
-                        stage: SequenceStage::ChooseInstrument | SequenceStage::Perform { .. },
-                        ..
-                    }
-                ) =>
-            {
-                Some(Intent::SelectPerformanceInstrument {
-                    instrument,
-                    hold: capabilities.supports_holds(),
-                })
-            }
-            _ => None,
-        };
-    }
-    let action = performance_action(code)?;
-    match (performance, phase) {
-        (
-            PerformanceMode::Sequence {
-                stage: SequenceStage::AwaitActionRelease { action: armed, .. },
-                ..
-            },
-            InputPhase::Release,
-        ) if action == *armed => Some(Intent::FinishPerformanceSequence(action)),
-        (
-            PerformanceMode::Sequence {
-                stage: SequenceStage::Perform { .. },
-                ..
-            },
-            InputPhase::Press,
-        ) => Some(Intent::ApplyPerformanceAction {
-            action,
-            release_available: capabilities.supports_holds(),
-        }),
-        _ => None,
-    }
+    let PhysicalKey::Character(key) = *code else {
+        return None;
+    };
+    // A layer key aims or re-aims the jump, so a mistyped layer costs one
+    // key rather than an Esc and a restart; a parameter key completes it
+    // either way.
+    PerformanceParameter::from_key(key)
+        .map(Intent::JumpToParameter)
+        .or_else(|| {
+            PerformanceInstrument::from_key(key)
+                .map(|instrument| Intent::SelectPerformanceInstrument { instrument })
+        })
 }
 
 /// Arrows select and adjust the visible control, `LEAD_NUDGES` step Lead rows,
@@ -768,18 +740,6 @@ fn lead_binding(
                 },
             })
         }
-    }
-}
-
-fn performance_action(key: &PhysicalKey) -> Option<PerformanceAction> {
-    match key {
-        PhysicalKey::Character('h') => Some(PerformanceAction::Shorter),
-        PhysicalKey::Character('l') => Some(PerformanceAction::Longer),
-        PhysicalKey::Character('j') => Some(PerformanceAction::Quieter),
-        PhysicalKey::Character('k') => Some(PerformanceAction::Louder),
-        PhysicalKey::Character('u') => Some(PerformanceAction::Sparser),
-        PhysicalKey::Character('i') => Some(PerformanceAction::Denser),
-        _ => None,
     }
 }
 
@@ -1780,27 +1740,23 @@ mod tests {
     }
 
     #[test]
-    fn canonical_mapper_maps_selector_press_repeat_and_matching_release() {
-        let model = InteractionMode::Performance(PerformanceMode::Sequence {
-            stage: SequenceStage::Perform {
-                instrument: PerformanceInstrument::Pads,
-            },
-            held_selector: None,
-        });
-        let expected = [
-            InputMapping::Action(SemanticAction {
-                phase: InputPhase::Press,
-                intent: Intent::SelectPerformanceInstrument {
-                    instrument: PerformanceInstrument::Pads,
-                    hold: true,
-                },
-            }),
-            InputMapping::Ignored,
-            InputMapping::Action(SemanticAction {
-                phase: InputPhase::Release,
-                intent: Intent::ReleaseHeldSelector(PerformanceInstrument::Pads),
-            }),
-        ];
+    fn canonical_mapper_defers_layer_key_phase_to_the_kernel() {
+        let model =
+            InteractionMode::Performance(crate::fluid::interaction::PerformanceMode::Jump {
+                stage: crate::fluid::interaction::JumpStage::ChooseLayer,
+            });
+        // The leader reads a layer key the same way at every phase; which
+        // phases act is `Intent::phase_policy`'s call, made once for every
+        // intent rather than restated per binding.
+        let intent = Intent::SelectPerformanceInstrument {
+            instrument: PerformanceInstrument::Pads,
+        };
+        assert_eq!(
+            intent.phase_policy(),
+            crate::fluid::interaction::PhasePolicy::Edge
+        );
+        let expected = [InputPhase::Press, InputPhase::Repeat, InputPhase::Release]
+            .map(|phase| InputMapping::Action(SemanticAction { phase, intent }));
         for (phase, expected) in [InputPhase::Press, InputPhase::Repeat, InputPhase::Release]
             .into_iter()
             .zip(expected)
@@ -1955,7 +1911,7 @@ mod tests {
             InputMapping::Ignored,
         );
         let code = PhysicalKey::Character(' ');
-        let kind = PerformanceKind::Sequence;
+        let kind = PerformanceKind::Jump;
         assert_eq!(
             map_input(
                 &browsing,
