@@ -52,8 +52,8 @@ struct PanelFrame<'a, 'v> {
     lfo_selected: usize,
     numeric: NumericDisplay<'a>,
     mod_ctx: ModContext,
-    /// Which custom-chord slot the pad engine is currently sounding, mapped
-    /// from the shared telemetry step index. Only meaningful on Chords.
+    /// The progression table slot the pad engine is sounding, straight from
+    /// telemetry. Only meaningful on Chords.
     active_slot: usize,
     bar_w: usize,
 }
@@ -126,8 +126,6 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         _ => None,
     };
     let controls = &view.session.controls;
-    let chord_count =
-        (controls.pad.chord_count.round() as usize).clamp(1, controls.pad.chord_slots.len());
     let frame = PanelFrame {
         view,
         automation,
@@ -144,7 +142,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             kick_interval_beats: controls.kick.interval_beats,
             kick_offset_beats: controls.kick.offset_beats,
         },
-        active_slot: (view.telemetry.active_chord as usize) % chord_count,
+        active_slot: view.telemetry.active_chord as usize,
         // One text row per control, blank line between for vertical breathing
         // room.
         bar_w: (inner.width as usize).saturating_sub(34).clamp(6, 80),
@@ -304,7 +302,23 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         } else {
             flip_display(address.spec().time_base, item.value, bpm).unwrap_or(display)
         };
-        let style = BROWSE_PALETTE.style(parent_active);
+        let in_chord_drill = view.navigation.tab == Tab::Chords
+            && matches!(
+                view.navigation.chord_drill,
+                interaction::ChordDrill::Progression { .. }
+            );
+        // The Root list shows all eight slots; the ones the window does not
+        // play recede so Count and Offset read at a glance.
+        let style = if in_chord_drill
+            && !parent_active
+            && !ChordWindow::requested(&frame.controls().pad)
+                .slots()
+                .any(|slot| slot == i)
+        {
+            Style::default().fg(DIM_TEXT)
+        } else {
+            BROWSE_PALETTE.style(parent_active)
+        };
         let markers = slider_markers(item, address, editor_here, frame);
         let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
         spans.extend(slider_spans(item_ratio(item), markers, frame.bar_w, style));
@@ -312,12 +326,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         // Badge the chord slot the pad engine is currently sounding, so the
         // progression list shows which chord is live. Distinct from the cursor
         // ▶ so a row can be both selected and playing.
-        let chord_playing = view.navigation.tab == Tab::Chords
-            && matches!(
-                view.navigation.chord_drill,
-                interaction::ChordDrill::Progression { .. }
-            )
-            && i == frame.active_slot;
+        let chord_playing = in_chord_drill && i == frame.active_slot;
         if chord_playing {
             spans.push(Span::styled(
                 " ♪",
@@ -403,11 +412,43 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             ));
         }
         if i + 1 < items.len() {
-            rows.push(Line::from(""));
+            // The spacer under Progression names the window's chords, so the
+            // row that picks a progression also shows what it plays.
+            rows.push(
+                if item.id == "pad.progression"
+                    && view.navigation.chord_drill == interaction::ChordDrill::None
+                {
+                    chord_window_line(&frame.controls().pad, frame.active_slot)
+                } else {
+                    Line::from("")
+                },
+            );
         }
     }
     let scroll = row_scroll(selected_line, rows.len(), area.height);
     f.render_widget(Paragraph::new(rows).scroll((scroll, 0)), area);
+}
+
+/// The chords of the playing window by name, in play order, indented to the
+/// slider column, with the one sounding now in amber.
+fn chord_window_line(pad: &PadControls, active_slot: usize) -> Line<'static> {
+    let window = ChordWindow::requested(pad);
+    let mut spans = vec![Span::raw(" ".repeat(18))];
+    for (step, slot) in window.slots().enumerate() {
+        if step > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let name = pad_chord_name(pad, window.progression, slot);
+        spans.push(if slot == active_slot {
+            Span::styled(
+                name,
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(name, Style::default().fg(DIM_TEXT))
+        });
+    }
+    Line::from(spans)
 }
 
 /// Lines to drop from the top so the selected row stays on screen. A row on

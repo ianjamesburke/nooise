@@ -21,9 +21,7 @@ pub(crate) struct PadEngine {
     pub(crate) sample_rate: f32,
     pub(crate) layers: Vec<PadLayer>,
     pub(crate) chord_trigger: GridTrigger,
-    pub(crate) step_index: usize,
-    pub(crate) active_progression: usize,
-    pub(crate) active_chord_count: usize,
+    pub(crate) cursor: ProgressionCursor,
     pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
     /// The transport seen on the previous sample, so a stop releases the
@@ -48,9 +46,12 @@ impl PadEngine {
         tune: f32,
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
-        let active_progression = progression_index(c.progression);
+        let cursor = ProgressionCursor::new(c);
         let active_character = wrapped_index(c.voice_type, PAD_TYPES.len());
-        let initial_notes = pad_chord_tones(c, active_progression, 0);
+        let initial_notes = pad_chord_tones(c, cursor.window.progression, cursor.slot());
+        telemetry
+            .chord_slot
+            .store(cursor.slot() as u64, Ordering::Relaxed);
         Self {
             sample_rate,
             layers: vec![PadLayer::new(
@@ -62,9 +63,7 @@ impl PadEngine {
                 c.release_time,
             )],
             chord_trigger: GridTrigger::after_start(),
-            step_index: 0,
-            active_progression,
-            active_chord_count: pad_chord_count(c),
+            cursor,
             active_character,
             last_chord_notes: initial_notes,
             transport: Transport::Playing,
@@ -76,19 +75,11 @@ impl PadEngine {
     }
 
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
-        let progression = progression_index(c.progression);
-        let chord_count = pad_chord_count(c);
-
         let advance = self.chord_trigger.pop(timing, c.chord_bars * 4.0, 0.0);
-        advance_pad_progression(
-            &mut self.step_index,
-            &mut self.active_chord_count,
-            &mut self.active_progression,
-            chord_count,
-            progression,
-            advance,
-        );
-        let chord_notes = pad_chord_tones(c, self.active_progression, self.step_index);
+        if advance {
+            self.cursor.advance(ChordWindow::requested(c));
+        }
+        let chord_notes = pad_chord_tones(c, self.cursor.window.progression, self.cursor.slot());
         let chord_edited = chord_notes != self.last_chord_notes;
         let character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let character_changed = character != self.active_character;
@@ -126,8 +117,8 @@ impl PadEngine {
                 layer.release();
             }
             self.telemetry
-                .chord_index
-                .store(self.step_index as u64, Ordering::Relaxed);
+                .chord_slot
+                .store(self.cursor.slot() as u64, Ordering::Relaxed);
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                 self.layers.drain(0..remove_count);
@@ -501,122 +492,334 @@ pub(crate) fn pad_tones(
         .collect()
 }
 
-pub(crate) const PROGRESSIONS: [[[i32; 4]; 8]; 8] = [
-    // Progression A: with an 8s release, each chord rings well into the next
-    // (and beyond), so voicings are chosen to hold at least one common tone
-    // across every step, including the loop back to step 0.
-    [
-        [45, 50, 55, 60], // Am
-        [43, 50, 57, 60], // G   (holds D3/C4 from Am)
-        [45, 52, 57, 60], // Am (alt voicing, holds A3/C4 from G)
-        [47, 52, 55, 62], // B   (holds E3 from Am)
-        [45, 52, 57, 64], // Am (alt voicing, holds E3 from B)
-        [43, 50, 55, 62], // G   (parallel shift from Am, glides in stepwise)
-        [48, 55, 60, 64], // C   (holds G3 from G)
-        [55, 59, 64, 67], // Em (holds G3/C4 from C, and G3 back into Am)
-    ],
-    [
-        [45, 50, 57, 60], // Am
-        [50, 53, 57, 62], // Dm
-        [48, 55, 60, 64], // C
-        [43, 50, 55, 59], // G
-        [41, 48, 53, 57], // F
-        [52, 59, 64, 67], // Em
-        [45, 52, 57, 60], // Am
-        [43, 50, 55, 59], // G (non-tonic close, leads back to Am)
-    ],
-    [
-        [45, 48, 52, 55], // Am7
-        [41, 45, 48, 52], // Fmaj7
-        [48, 52, 55, 59], // Cmaj7
-        [43, 47, 50, 53], // G7
-        [50, 53, 57, 60], // Dm7
-        [52, 55, 59, 62], // Em7
-        [47, 50, 53, 57], // Bm7b5 (half-diminished ii)
-        [43, 50, 55, 59], // G (non-tonic close)
-    ],
-    [
-        [45, 52, 57, 60], // Am, wide
-        [41, 45, 48, 55], // Fmaj9-flavor
-        [48, 55, 59, 62], // Cmaj9-flavor
-        [43, 50, 53, 57], // G9-flavor
-        [50, 57, 60, 64], // Dm9-flavor
-        [52, 55, 59, 64], // Em, open
-        [47, 53, 57, 64], // Bm7b5, wide (the "ache" chord)
-        [43, 50, 55, 64], // G, wide (non-tonic close)
-    ],
-    // Progression E: dark, phrygian-leaning modal (A phrygian: A Bb C D E F G).
-    // Suspended/added-tone voicings throughout; the bII-over-tonic close
-    // (step 7) is deliberately dissonant, resolving into the Am at step 0.
-    [
-        [45, 48, 52, 57], // Am
-        [46, 50, 53, 57], // Bbmaj7 (holds A3 from Am)
-        [48, 53, 55, 60], // Csus4 (holds F3 from Bbmaj7)
-        [50, 53, 60, 62], // Dm7, no 5th (holds C4 from Csus4)
-        [52, 59, 62, 64], // Em7sus, no 3rd (holds D4 from Dm7)
-        [55, 59, 62, 64], // G6 (holds B3/D4/E4 from Em7sus)
-        [55, 58, 62, 65], // Gm7 (holds G3/D4 from G6)
-        [45, 52, 58, 62], // Bbmaj7/A, ache (holds Bb3/D4 from Gm7, resolves to Am)
-    ],
-    // Progression F: suspended drone, phrygian-tinged E pedal (open fifths,
-    // sus chords). Harmonic rhythm barely moves; the E pedal keeps ringing
-    // through nearly every step for a moody, unresolved feel.
-    [
-        [52, 55, 59, 64], // Em (drone)
-        [47, 52, 59, 64], // E5/B, open (holds E3/B3/E4 from Em)
-        [50, 59, 62, 67], // G/D, sus (holds B3 from E5/B)
-        [45, 57, 62, 65], // Dm/A (holds D4 from G/D)
-        [45, 52, 57, 64], // Asus, open (holds A3/E4 from Dm/A)
-        [52, 60, 64, 67], // Cmaj/E (holds E3/E4 from Asus)
-        [55, 60, 62, 65], // Gsus4 (add C/D/F) (holds C4 from Cmaj/E)
-        [52, 55, 59, 62], // Em7 (holds G3 from Gsus4, resolves to Em drone)
-    ],
-    // Progression G: bright C-major pop loop (I-V-vi-IV), common-tone rich.
-    [
-        [48, 52, 55, 60], // C
-        [55, 60, 62, 67], // G (add C) (holds G3/C4 from C)
-        [45, 57, 60, 64], // Am (holds C4 from G)
-        [53, 57, 60, 65], // F (holds A3/C4 from Am)
-        [48, 52, 60, 65], // C (add F) (holds C4/F4 from F)
-        [55, 60, 62, 67], // G (add C) (holds C4 from C add F)
-        [53, 57, 60, 65], // F (holds C4 from G add C)
-        [48, 55, 60, 64], // C (open, add E) (holds C4 from F, loops to C)
-    ],
-    // Progression H: bright G-major "axis" loop (I-V-iii-vi, spelled here as
-    // G-D-Em7-C, played twice with varied voicings), uplifting pop feel.
-    [
-        [55, 59, 62, 67], // G
-        [50, 54, 57, 62], // D (holds D4 from G)
-        [52, 55, 59, 62], // Em7 (holds D4 from D)
-        [48, 52, 55, 60], // C (holds E3/G3 from Em7)
-        [43, 55, 62, 67], // G, wide (holds G3 from C)
-        [50, 57, 62, 66], // D (holds D4 from G)
-        [52, 59, 62, 64], // Em7 (holds D4 from D)
-        [48, 55, 60, 64], // C (holds E4 from Em7, loops to G)
-    ],
+/// One chord of a built-in progression: the symbol a listener reads and the
+/// four notes the Pad voices. The symbol is the voicing's only name, so the
+/// page can never show a chord other than the one sounding;
+/// `built_in_chord_names_match_their_voicings` holds every symbol to its
+/// notes.
+pub(crate) struct Chord {
+    pub(crate) name: &'static str,
+    pub(crate) notes: [i32; 4],
+}
+
+const fn chord(name: &'static str, notes: [i32; 4]) -> Chord {
+    Chord { name, notes }
+}
+
+/// A built-in progression: eight chords, the Bass line under them, and the
+/// mood word its label pairs with its key.
+pub(crate) struct Progression {
+    /// What a song code stores for this progression. Permanent: dial order
+    /// is free to change, a saved value is not. Never reuse or renumber one,
+    /// and never take `CUSTOM_SONG_VALUE`.
+    pub(crate) song_value: i8,
+    pub(crate) mood: &'static str,
+    pub(crate) chords: [Chord; CHORD_SLOT_COUNT],
+    /// One Bass note per chord, authored independently of the voicing so
+    /// the line can walk where the chord's lowest tone would not.
+    pub(crate) bass: [i32; CHORD_SLOT_COUNT],
+}
+
+/// Built-in progressions in dial order. With an 8 s release each chord rings
+/// well into the next, so voicings hold at least one common tone from step
+/// to step. Every progression from song value 9 on also holds one across the
+/// loop back and within each half's own loop (chords 4 → 1 and 8 → 5), so a
+/// Chord Count of 4 at Offset 0 or 4 is a complete progression in its own
+/// right (`voice_led_progressions_hold_a_tone_through_every_window`).
+pub(crate) const PROGRESSIONS: [Progression; 14] = [
+    Progression {
+        song_value: 0,
+        mood: "Drift",
+        chords: [
+            chord("Am11", [45, 50, 55, 60]),
+            chord("Gsus", [43, 50, 57, 60]),
+            chord("Am", [45, 52, 57, 60]),
+            chord("Em7/B", [47, 52, 55, 62]),
+            chord("A5", [45, 52, 57, 64]),
+            chord("G5", [43, 50, 55, 62]),
+            chord("C", [48, 55, 60, 64]),
+            chord("Em/G", [55, 59, 64, 67]),
+        ],
+        // Walks to G2 under the Em7/B instead of following its lowest tone,
+        // giving the bass its own melodic movement.
+        bass: [45, 47, 45, 43, 52, 53, 45, 45],
+    },
+    Progression {
+        song_value: 1,
+        mood: "Tide",
+        chords: [
+            chord("Am11", [45, 50, 57, 60]),
+            chord("Dm", [50, 53, 57, 62]),
+            chord("C", [48, 55, 60, 64]),
+            chord("G", [43, 50, 55, 59]),
+            chord("F", [41, 48, 53, 57]),
+            chord("Em", [52, 59, 64, 67]),
+            chord("Am", [45, 52, 57, 60]),
+            chord("G", [43, 50, 55, 59]),
+        ],
+        bass: [45, 50, 48, 43, 41, 52, 45, 43],
+    },
+    Progression {
+        song_value: 2,
+        mood: "Velvet",
+        chords: [
+            chord("Am7", [45, 48, 52, 55]),
+            chord("Fmaj7", [41, 45, 48, 52]),
+            chord("Cmaj7", [48, 52, 55, 59]),
+            chord("G7", [43, 47, 50, 53]),
+            chord("Dm7", [50, 53, 57, 60]),
+            chord("Em7", [52, 55, 59, 62]),
+            chord("Bm7b5", [47, 50, 53, 57]),
+            chord("G", [43, 50, 55, 59]),
+        ],
+        bass: [45, 41, 48, 43, 50, 52, 47, 43],
+    },
+    Progression {
+        song_value: 3,
+        mood: "Ache",
+        chords: [
+            chord("Am", [45, 52, 57, 60]),
+            chord("Fadd9", [41, 45, 48, 55]),
+            chord("G/C", [48, 55, 59, 62]),
+            chord("Dm/G", [43, 50, 53, 57]),
+            chord("Am/D", [50, 57, 60, 64]),
+            chord("Em", [52, 55, 59, 64]),
+            chord("Fmaj7/B", [47, 53, 57, 64]),
+            chord("Em7/G", [43, 50, 55, 64]),
+        ],
+        bass: [45, 41, 48, 43, 50, 52, 47, 43],
+    },
+    // A phrygian (A Bb C D E F G), suspended and added-tone voicings; the
+    // Bb over A that closes the loop is deliberately dissonant.
+    Progression {
+        song_value: 4,
+        mood: "Shadow",
+        chords: [
+            chord("Am", [45, 48, 52, 57]),
+            chord("Bbmaj7", [46, 50, 53, 57]),
+            chord("Csus4", [48, 53, 55, 60]),
+            chord("Dm7", [50, 53, 60, 62]),
+            chord("E7sus", [52, 59, 62, 64]),
+            chord("G6", [55, 59, 62, 64]),
+            chord("Gm7", [55, 58, 62, 65]),
+            chord("Bbmaj7#11/A", [45, 52, 58, 62]),
+        ],
+        bass: [45, 46, 48, 50, 52, 43, 43, 45],
+    },
+    // An E pedal rings through nearly every step; the harmony barely moves.
+    Progression {
+        song_value: 5,
+        mood: "Drone",
+        chords: [
+            chord("Em", [52, 55, 59, 64]),
+            chord("E5/B", [47, 52, 59, 64]),
+            chord("G/D", [50, 59, 62, 67]),
+            chord("Dm/A", [45, 57, 62, 65]),
+            chord("A5", [45, 52, 57, 64]),
+            chord("C/E", [52, 60, 64, 67]),
+            chord("G7sus", [55, 60, 62, 65]),
+            chord("Em7", [52, 55, 59, 62]),
+        ],
+        bass: [52, 47, 50, 45, 45, 52, 43, 52],
+    },
+    // I-V-vi-IV, common-tone rich.
+    Progression {
+        song_value: 6,
+        mood: "Sunny",
+        chords: [
+            chord("C", [48, 52, 55, 60]),
+            chord("Gsus4", [55, 60, 62, 67]),
+            chord("Am", [45, 57, 60, 64]),
+            chord("F", [53, 57, 60, 65]),
+            chord("Cadd4", [48, 52, 60, 65]),
+            chord("Gsus4", [55, 60, 62, 67]),
+            chord("F", [53, 57, 60, 65]),
+            chord("C", [48, 55, 60, 64]),
+        ],
+        bass: [48, 55, 45, 53, 48, 55, 53, 48],
+    },
+    // The I-V-vi-IV "axis" loop played twice with varied voicings.
+    Progression {
+        song_value: 7,
+        mood: "Lift",
+        chords: [
+            chord("G", [55, 59, 62, 67]),
+            chord("D", [50, 54, 57, 62]),
+            chord("Em7", [52, 55, 59, 62]),
+            chord("C", [48, 52, 55, 60]),
+            chord("G5", [43, 55, 62, 67]),
+            chord("D", [50, 57, 62, 66]),
+            chord("E7sus", [52, 59, 62, 64]),
+            chord("C", [48, 55, 60, 64]),
+        ],
+        bass: [43, 50, 52, 48, 43, 50, 52, 48],
+    },
+    // D lydian: the E over the D pedal is the raised fourth, bright and
+    // unresolved. A3 holds through all eight chords.
+    Progression {
+        song_value: 9,
+        mood: "Dawn",
+        chords: [
+            chord("Dmaj7", [50, 57, 61, 66]),
+            chord("E/D", [50, 56, 59, 64]),
+            chord("Bm7", [47, 57, 59, 62]),
+            chord("A/C#", [49, 57, 61, 64]),
+            chord("Gmaj9", [43, 57, 59, 66]),
+            chord("A6", [45, 57, 61, 66]),
+            chord("F#m7", [42, 57, 61, 64]),
+            chord("Bm7", [47, 57, 62, 66]),
+        ],
+        bass: [50, 50, 47, 49, 43, 45, 42, 47],
+    },
+    // D dorian: the major IV (G6) is the one bright colour in a minor key.
+    Progression {
+        song_value: 10,
+        mood: "Rain",
+        chords: [
+            chord("Dm9", [50, 53, 60, 64]),
+            chord("G6", [43, 55, 59, 64]),
+            chord("Am7", [45, 55, 60, 64]),
+            chord("Cmaj7", [48, 55, 59, 64]),
+            chord("Fmaj7", [41, 57, 60, 64]),
+            chord("Em", [52, 55, 59, 64]),
+            chord("G", [43, 55, 59, 62]),
+            chord("Asus", [45, 57, 62, 64]),
+        ],
+        bass: [50, 43, 45, 48, 41, 52, 43, 45],
+    },
+    // F# aeolian, the cinematic i-VI-III-VII, each half closing on a
+    // suspended or minor fifth that leans back home.
+    Progression {
+        song_value: 11,
+        mood: "Night",
+        chords: [
+            chord("F#m7", [54, 57, 61, 64]),
+            chord("Dmaj7", [50, 57, 61, 66]),
+            chord("A", [45, 57, 61, 64]),
+            chord("Esus4", [52, 57, 59, 64]),
+            chord("Bm7", [47, 57, 59, 62]),
+            chord("Dadd9", [50, 54, 57, 64]),
+            chord("A/C#", [49, 57, 61, 64]),
+            chord("C#m7", [49, 56, 59, 64]),
+        ],
+        bass: [42, 50, 45, 52, 47, 50, 49, 49],
+    },
+    // Eb major warmed by the borrowed minor iv (Abm) in the second half.
+    Progression {
+        song_value: 12,
+        mood: "Glow",
+        chords: [
+            chord("Ebmaj7", [51, 55, 58, 62]),
+            chord("Abmaj7", [44, 55, 60, 63]),
+            chord("Cm7", [48, 55, 58, 63]),
+            chord("Bbsus4", [46, 53, 58, 63]),
+            chord("Fm7", [41, 56, 60, 63]),
+            chord("Abm", [44, 56, 59, 63]),
+            chord("Eb/G", [43, 55, 58, 63]),
+            chord("Bb7sus", [46, 56, 58, 63]),
+        ],
+        bass: [51, 44, 48, 46, 41, 44, 43, 46],
+    },
+    // C mixolydian: the flat seventh (Bb) keeps it floating instead of
+    // resolving.
+    Progression {
+        song_value: 13,
+        mood: "Float",
+        chords: [
+            chord("Cadd9", [48, 55, 62, 64]),
+            chord("Bb", [46, 58, 62, 65]),
+            chord("F/A", [45, 57, 60, 65]),
+            chord("Gm7", [43, 58, 62, 65]),
+            chord("Dm7", [50, 57, 60, 65]),
+            chord("Bbmaj7", [46, 57, 62, 65]),
+            chord("F", [41, 57, 60, 65]),
+            chord("Csus4", [48, 55, 60, 65]),
+        ],
+        bass: [48, 46, 45, 43, 50, 46, 41, 48],
+    },
+    // C minor: the first half moves over a held C pedal, the second walks
+    // down from the minor v and hangs on a suspended fifth.
+    Progression {
+        song_value: 14,
+        mood: "Deep",
+        chords: [
+            chord("Cm", [48, 55, 60, 63]),
+            chord("Fm/C", [48, 56, 60, 65]),
+            chord("Ab/C", [48, 56, 60, 63]),
+            chord("Bb/C", [48, 58, 62, 65]),
+            chord("Gm7", [43, 58, 62, 65]),
+            chord("Ebmaj7", [51, 55, 58, 62]),
+            chord("Abmaj7", [44, 55, 60, 63]),
+            chord("Gsus4", [43, 55, 60, 62]),
+        ],
+        bass: [48, 48, 48, 48, 43, 51, 44, 43],
+    },
 ];
 
-/// The pad's current chord as raw MIDI note numbers (pre-`midi_to_hz`/tune),
-/// for voices — like Arp — that need to build their own note list (e.g.
-/// octave-extended cycles) rather than four fixed frequencies.
-pub(crate) fn pad_chord_midi(progression: usize, step: usize) -> [i32; 4] {
-    PROGRESSIONS[progression % PROGRESSIONS.len()][step % 8]
+/// What a song code stores when `pad.progression` is on Custom. Custom
+/// was the ninth value before any progression was added after it, and keeps
+/// that value for good.
+const CUSTOM_SONG_VALUE: i8 = 8;
+
+/// `pad.progression`'s song-code value at each dial position: every built-in
+/// in dial order, then Custom. `ControlSpec::song_values` reads it, so a
+/// progression added to the dial never changes what an existing code means.
+pub(crate) const PROGRESSION_SONG_VALUES: [i8; CUSTOM_PROGRESSION_INDEX + 1] = {
+    let mut values = [CUSTOM_SONG_VALUE; CUSTOM_PROGRESSION_INDEX + 1];
+    let mut index = 0;
+    while index < PROGRESSIONS.len() {
+        values[index] = PROGRESSIONS[index].song_value;
+        index += 1;
+    }
+    values
+};
+
+/// A built-in chord's raw MIDI notes (pre-`midi_to_hz`/tune), for voices —
+/// like Arp — that build their own note list rather than four fixed
+/// frequencies.
+pub(crate) fn pad_chord_midi(progression: usize, slot: usize) -> [i32; 4] {
+    PROGRESSIONS[progression % PROGRESSIONS.len()].chords[slot % CHORD_SLOT_COUNT].notes
+}
+
+/// The key a built-in progression is heard in: its first chord's root, with
+/// `m` when that chord is minor ("Am11" is in Am, "Ebmaj7" in Eb).
+pub(crate) fn progression_key(progression: &Progression) -> &'static str {
+    let name = progression.chords[0].name;
+    let root_len = match name.as_bytes().get(1) {
+        Some(b'b' | b'#') => 2,
+        _ => 1,
+    };
+    let rest = &name[root_len..];
+    if rest.starts_with('m') && !rest.starts_with("maj") {
+        &name[..root_len + 1]
+    } else {
+        &name[..root_len]
+    }
+}
+
+/// `pad.progression`'s label: key and mood for a built-in ("Am · Drift"),
+/// or "Custom".
+pub(crate) fn progression_label(progression: usize) -> String {
+    match PROGRESSIONS.get(progression) {
+        Some(built_in) => format!("{} · {}", progression_key(built_in), built_in.mood),
+        None => "Custom".to_string(),
+    }
 }
 
 // ============================================================
-// Custom chord-slot progression
+// Chord window and the shared progression cursor
 //
-// A ninth progression choice ("Custom") built from user-authored chord
-// slots instead of a fixed table. `progression_index`/`pad_chord_tones`
-// are the single chord-source path shared by Pad, Bass, and Arp: every
-// voice resolves "what chord is playing at this step" through here so a
-// custom progression drives all three identically. Built-in progressions
-// (0..PROGRESSIONS.len()) are untouched — this only adds one more index.
+// "Custom" is one more progression choice, built from user-authored chord
+// slots instead of a fixed table. `progression_index`/`pad_chord_tones` are
+// the single chord-source path shared by Pad, Bass, Arp, and Lead: every
+// voice resolves "what chord is playing at this slot" through here so a
+// custom progression drives all of them identically.
 // ============================================================
 
 /// Selecting this progression index switches Pad/Bass/Arp onto the user's
 /// chord slots (`PadControls::chord_slots`) instead of the `PROGRESSIONS`
-/// table.
+/// table. It is the dial position one past the last built-in, which is not
+/// what a song code stores for it (`PROGRESSION_SONG_VALUES`).
 pub(crate) const CUSTOM_PROGRESSION_INDEX: usize = PROGRESSIONS.len();
 
 /// Resolve `pad.progression`'s raw control value to a progression index,
@@ -629,86 +832,127 @@ pub(crate) fn is_custom_progression(progression: usize) -> bool {
     progression == CUSTOM_PROGRESSION_INDEX
 }
 
-/// Number of chords actually cycled through, for every progression: a
-/// built-in's 8-step table is truncated to its first `chord_count` chords
-/// exactly as a custom progression is, so the control never reads a length
-/// the engines don't play. `CHORD_SLOT_COUNT` matches the built-in tables'
-/// fixed 8-step length, so it bounds both cases.
-pub(crate) fn pad_chord_count(c: &PadControls) -> usize {
-    c.chord_count.round().clamp(1.0, CHORD_SLOT_COUNT as f32) as usize
+/// Which chords a progression loop plays: `count` chords starting at table
+/// slot `offset`, wrapping past the eighth back to the first. Count 4 at
+/// Offset 4 plays chords 5–8. The same for built-in and Custom
+/// progressions: both hold `CHORD_SLOT_COUNT` chords.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ChordWindow {
+    pub(crate) progression: usize,
+    pub(crate) count: usize,
+    pub(crate) offset: usize,
 }
 
-/// Advances one shared progression cursor. Count and progression changes are
-/// staged until the current loop reaches its final chord, so they never cut
-/// off the chord presently sounding.
-/// How Bass and Arp follow the Pad's chord loop without reaching into
+impl ChordWindow {
+    /// The window the controls ask for right now.
+    pub(crate) fn requested(c: &PadControls) -> Self {
+        Self {
+            progression: progression_index(c.progression),
+            count: c.chord_count.round().clamp(1.0, CHORD_SLOT_COUNT as f32) as usize,
+            offset: wrapped_index(c.chord_offset, CHORD_SLOT_COUNT),
+        }
+    }
+
+    /// The table slot the window's `step`th chord comes from.
+    pub(crate) fn slot(self, step: usize) -> usize {
+        (self.offset + step) % CHORD_SLOT_COUNT
+    }
+
+    /// Every slot the window plays, in play order.
+    pub(crate) fn slots(self) -> impl Iterator<Item = usize> {
+        (0..self.count).map(move |step| self.slot(step))
+    }
+}
+
+/// Where one engine is in its progression loop: the window it is playing
+/// and how far through it. Pad, Bass, Arp, and Lead each hold one and
+/// advance it on the same `pad.chord_bars` grid, so they always agree on the
+/// chord without reaching into each other.
+///
+/// A live Offset change lands on the next chord boundary, the way
+/// `tonal.offset_beats` lands on the next note: the chord sounding is never
+/// cut, and the loop keeps its phase, so moving Offset 0 → 4 on the second
+/// chord of a four-chord loop goes on to chord 7. Count and progression
+/// changes still wait for the loop to come round, since they change what
+/// the loop is rather than where it reads from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ProgressionCursor {
+    pub(crate) window: ChordWindow,
+    pub(crate) step: usize,
+}
+
+impl ProgressionCursor {
+    pub(crate) fn new(c: &PadControls) -> Self {
+        Self {
+            window: ChordWindow::requested(c),
+            step: 0,
+        }
+    }
+
+    /// The table slot sounding now.
+    pub(crate) fn slot(&self) -> usize {
+        self.window.slot(self.step)
+    }
+
+    /// One chord boundary: step on, adopt the requested offset, and at the
+    /// end of the loop adopt the requested count and progression too.
+    pub(crate) fn advance(&mut self, requested: ChordWindow) {
+        self.step += 1;
+        self.window.offset = requested.offset;
+        if self.step >= self.window.count {
+            self.step = 0;
+            self.window.count = requested.count;
+            self.window.progression = requested.progression;
+        }
+    }
+}
+
+/// How Bass, Arp, and Lead follow the Pad's chord loop without reaching into
 /// `PadEngine`: an independent trigger on the same `pad.chord_bars` grid and
-/// the same step/loop bookkeeping, so the follower's step always matches the
-/// pad's. The active loop is adopted from the first frame's controls and then
-/// only re-read at a loop boundary, exactly as the pad itself does.
+/// the same cursor, so the follower's chord always matches the pad's. The
+/// window is adopted from the first frame's controls, exactly as the pad
+/// adopts it at construction.
 pub(crate) struct ProgressionFollower {
     chord_trigger: GridTrigger,
-    pub(crate) step_index: usize,
-    active_chord_count: Option<usize>,
-    active_progression: Option<usize>,
+    pub(crate) cursor: Option<ProgressionCursor>,
 }
 
 impl ProgressionFollower {
     pub(crate) fn new() -> Self {
         Self {
             chord_trigger: GridTrigger::after_start(),
-            step_index: 0,
-            active_chord_count: None,
-            active_progression: None,
+            cursor: None,
         }
     }
 
-    /// Advances on the pad's chord grid and returns the `(progression, step)`
+    /// Advances on the pad's chord grid and returns the `(progression, slot)`
     /// to voice this frame.
     pub(crate) fn follow(&mut self, pad: &PadControls, timing: TimingContext) -> (usize, usize) {
-        let progression = progression_index(pad.progression);
-        let active_chord_count = self.active_chord_count.get_or_insert(pad_chord_count(pad));
-        let active_progression = self.active_progression.get_or_insert(progression);
-        advance_pad_progression(
-            &mut self.step_index,
-            active_chord_count,
-            active_progression,
-            pad_chord_count(pad),
-            progression,
-            self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0),
-        );
-        (*active_progression, self.step_index)
+        let cursor = self
+            .cursor
+            .get_or_insert_with(|| ProgressionCursor::new(pad));
+        if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
+            cursor.advance(ChordWindow::requested(pad));
+        }
+        (cursor.window.progression, cursor.slot())
     }
 }
 
-pub(crate) fn advance_pad_progression(
-    step_index: &mut usize,
-    active_chord_count: &mut usize,
-    active_progression: &mut usize,
-    requested_chord_count: usize,
-    requested_progression: usize,
-    advance: bool,
-) {
-    if !advance {
-        return;
-    }
-
-    *step_index += 1;
-    if *step_index == *active_chord_count {
-        *step_index = 0;
-        *active_chord_count = requested_chord_count;
-        *active_progression = requested_progression;
-    }
-}
-
-/// The shared chord-source entry point for an engine step already bounded by
-/// that engine's active progression length. It deliberately ignores a newly
-/// requested count while the previous loop finishes.
-pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, step: usize) -> [i32; 4] {
+/// The shared chord-source entry point: the four notes at one table slot of
+/// a progression, built-in or Custom.
+pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, slot: usize) -> [i32; 4] {
     if is_custom_progression(progression) {
-        pad_chord_notes_with_slot(&c.chord_slots[step])
+        pad_chord_notes_with_slot(&c.chord_slots[slot])
     } else {
-        pad_chord_midi(progression, step)
+        pad_chord_midi(progression, slot)
+    }
+}
+
+/// The name of the chord at one table slot, built-in or Custom.
+pub(crate) fn pad_chord_name(c: &PadControls, progression: usize, slot: usize) -> String {
+    match PROGRESSIONS.get(progression) {
+        Some(built_in) => built_in.chords[slot % CHORD_SLOT_COUNT].name.to_string(),
+        None => custom_chord_name(&c.chord_slots[slot]),
     }
 }
 
@@ -811,4 +1055,64 @@ fn dedupe_upwards(notes: &mut [i32; 4]) {
             notes[i] = shift_diatonic(notes[i], 1);
         }
     }
+}
+
+/// A Custom chord slot's name, read off the same fields that voice it:
+/// root (degree plus accidental), the third `slot_third` resolves, the
+/// extension's top voice, and the inversion's bass as a slash.
+pub(crate) fn custom_chord_name(slot: &ChordSlotControls) -> String {
+    const NATURALS: [&str; 12] = ["C", "", "D", "", "E", "F", "", "G", "", "A", "", "B"];
+    let natural = slot_root(slot);
+    let accidental = slot.accidental.round().clamp(-1.0, 1.0) as i32;
+    let minor = slot_third(slot, natural) - natural == 3;
+    let flat_five = shift_diatonic(natural, 4) - natural == 6;
+    let minor_seventh = shift_diatonic(natural, 6) - natural == 10;
+    let body = match (slot.extension.round().clamp(0.0, 3.0) as i32, minor) {
+        (1, true) => "m6",
+        (1, false) => "6",
+        (2, true) if minor_seventh && flat_five => "m7b5",
+        (2, true) if minor_seventh => "m7",
+        (2, true) => "mmaj7",
+        (2, false) if minor_seventh => "7",
+        (2, false) => "maj7",
+        (3, true) => "madd9",
+        (3, false) => "add9",
+        (_, true) if flat_five => "dim",
+        (_, true) => "m",
+        (_, false) => "",
+    };
+    // `dim` and `m7b5` already say the fifth is flat; nothing else does.
+    let flat_five_suffix = if flat_five && !matches!(body, "dim" | "m7b5") {
+        "b5"
+    } else {
+        ""
+    };
+    let root_name = format!(
+        "{}{}",
+        NATURALS[natural.rem_euclid(12) as usize],
+        match accidental {
+            -1 => "b",
+            1 => "#",
+            _ => "",
+        }
+    );
+    let bass = pad_chord_notes_with_slot(slot)[0];
+    let slash = if (bass - natural - accidental).rem_euclid(12) == 0 {
+        String::new()
+    } else {
+        format!("/{}", pitch_class_name(bass, accidental > 0))
+    };
+    format!("{root_name}{body}{flat_five_suffix}{slash}")
+}
+
+/// A note's pitch-class name, spelled with sharps or flats.
+fn pitch_class_name(note: i32, sharps: bool) -> &'static str {
+    const FLATS: [&str; 12] = [
+        "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+    ];
+    const SHARPS: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let pitch = note.rem_euclid(12) as usize;
+    if sharps { SHARPS[pitch] } else { FLATS[pitch] }
 }

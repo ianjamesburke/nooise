@@ -166,8 +166,9 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 //       that downbeat, rather than fading in with the other drum voices.
 //
 //   Snap (Discrete/Timing)  — never interpolated; hold `from`, then hard-jump.
-//       Structural params (progression + chord count/length + arp pattern) all
-//       jump together on the transition downbeat ("one") as one atomic event.
+//       Structural params (progression + chord count/offset/length + arp
+//       pattern) all jump together on the transition downbeat ("one") as one
+//       atomic event.
 //       Every other grid param staggers in at 8-bar offsets after it, in
 //       registry order, so similar sections hard-switch rather than crossfade.
 // ============================================================
@@ -185,6 +186,7 @@ const STAGGER_STEP_BARS: f64 = 8.0;
 const STRUCTURAL_SNAP_IDS: &[&str] = &[
     "pad.progression",
     "pad.chord_count",
+    "pad.chord_offset",
     "pad.chord_bars",
     "arp.pattern",
 ];

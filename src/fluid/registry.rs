@@ -277,6 +277,10 @@ pub(crate) struct ControlSpec {
     pub(crate) lfo_snap: LfoSnap,
     pub(crate) time_base: TimeBase,
     pub(crate) exact_in_song: bool,
+    /// For a table-indexed discrete row whose dial order is not its saved
+    /// identity: the value a song code stores at each dial position. `None`
+    /// stores the dial value itself.
+    pub(crate) song_values: Option<&'static [i8]>,
     pub(crate) get: GetFn,
     pub(crate) set: SetFn,
     pub(crate) display: DisplayFn,
@@ -312,6 +316,7 @@ impl ControlSpec {
             lfo_snap: LfoSnap::None,
             time_base: TimeBase::None,
             exact_in_song: false,
+            song_values: None,
             get,
             set,
             display,
@@ -381,6 +386,14 @@ impl ControlSpec {
 
     pub(crate) const fn exact_in_song(mut self) -> Self {
         self.exact_in_song = true;
+        self
+    }
+
+    /// Save this row through a permanent value table instead of its dial
+    /// position, so the table can grow anywhere without changing what a
+    /// saved code means.
+    pub(crate) const fn song_values(mut self, values: &'static [i8]) -> Self {
+        self.song_values = Some(values);
         self
     }
 
@@ -976,7 +989,10 @@ macro_rules! chord_slot_rows {
                 Entry::Round,
                 |c| c.pad.chord_slots[$slot - 1].degree,
                 |c, v| c.pad.chord_slots[$slot - 1].degree = v,
-                |c| format!("{:+.0}", c.pad.chord_slots[$slot - 1].degree),
+                |c| {
+                    let slot = &c.pad.chord_slots[$slot - 1];
+                    format!("{:+.0}  {}", slot.degree, custom_chord_name(slot))
+                },
             )
             .reset_at(0.0),
             ControlSpec::new(
@@ -1191,7 +1207,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-const CHORD_BASE_CONTROL_COUNT: usize = 10;
+const CHORD_BASE_CONTROL_COUNT: usize = 11;
 
 pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, "pad", [
     gain_pct!("pad.level", "Level", pad.level),
@@ -1251,6 +1267,18 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
     )
     .reset_at(CHORD_SLOT_COUNT as f32),
     ControlSpec::new(
+        "pad.chord_offset",
+        "Chord Offset",
+        ControlKind::Discrete,
+        0.0,
+        (CHORD_SLOT_COUNT - 1) as f32,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.chord_offset,
+        |c, v| c.pad.chord_offset = v,
+        |c| format!("{:.0}", c.pad.chord_offset),
+    ),
+    ControlSpec::new(
         "pad.progression",
         "Progression",
         ControlKind::Discrete,
@@ -1260,15 +1288,9 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         Entry::Round,
         |c| c.pad.progression,
         |c, v| c.pad.progression = v,
-        |c| {
-            let index = progression_index(c.pad.progression);
-            if is_custom_progression(index) {
-                "Custom".to_string()
-            } else {
-                letter_label(index)
-            }
-        },
-    ),
+        |c| progression_label(progression_index(c.pad.progression)),
+    )
+    .song_values(&PROGRESSION_SONG_VALUES),
     gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
     gain_pct!("pad.detune", "Detune", pad.detune),
     gain_pct!("pad.octave_mix", "Octave Mix", pad.octave_mix),
@@ -2107,10 +2129,12 @@ pub(crate) fn module_slot_row<'a>(
     slots.get(index).map(|slot| (slot, field))
 }
 
-/// Chords-tab visible rows for the given drill level: the 10 base params
-/// plus any occupied module slots, the active chord slots' Root list, or one
-/// chord slot's Accidental/Quality/Extension/Inversion. Read-only view over
-/// `CHORDS_CONTROLS`'s fixed layout (10 base rows, then 8 chord slots x 5
+/// Chords-tab visible rows for the given drill level: the 11 base params
+/// plus any occupied module slots, all eight chord slots' Root list (in
+/// table order, so a slot outside the playing window can be written before
+/// Offset or Count reaches it), or one chord slot's
+/// Accidental/Quality/Extension/Inversion. Read-only view over
+/// `CHORDS_CONTROLS`'s fixed layout (11 base rows, then 8 chord slots x 5
 /// rows, then 8 module slots x 8 rows) — never reorders the underlying
 /// array. `chords_drill_for_index` below is this projection's inverse and
 /// must stay consistent with it for every region.
@@ -2125,12 +2149,9 @@ pub(crate) fn chords_tab_controls(
             .filter(|spec| module_slot_row_visible(spec.id, c))
             .map(|spec| spec.item(c))
             .collect(),
-        interaction::ChordDrill::Progression { .. } => {
-            let count = (c.pad.chord_count.round() as usize).clamp(1, CHORD_SLOT_COUNT);
-            (0..count)
-                .map(|slot| CHORDS_CONTROLS[CHORD_BASE_CONTROL_COUNT + 5 * slot].item(c))
-                .collect()
-        }
+        interaction::ChordDrill::Progression { .. } => (0..CHORD_SLOT_COUNT)
+            .map(|slot| CHORDS_CONTROLS[CHORD_BASE_CONTROL_COUNT + 5 * slot].item(c))
+            .collect(),
         interaction::ChordDrill::Slot { slot, .. } => {
             let base = CHORD_BASE_CONTROL_COUNT + 5 * slot;
             [base + 1, base + 2, base + 3, base + 4]
@@ -2178,13 +2199,14 @@ pub(crate) fn chords_drill_for_index(
         return (interaction::ChordDrill::None, 0);
     };
     if let Some((slot, field)) = parse_chord_slot_id(spec.id) {
+        let return_to = CHORDS_CONTROLS
+            .iter()
+            .position(|spec| spec.id == "pad.progression")
+            .expect("CHORDS_CONTROLS holds pad.progression (chord_drills_return_to_the_progression_row)");
         return if field == 0 {
-            (interaction::ChordDrill::Progression { return_to: 4 }, slot)
+            (interaction::ChordDrill::Progression { return_to }, slot)
         } else {
-            (
-                interaction::ChordDrill::Slot { slot, return_to: 4 },
-                field - 1,
-            )
+            (interaction::ChordDrill::Slot { slot, return_to }, field - 1)
         };
     }
     let selected = chords_tab_controls(c, interaction::ChordDrill::None)

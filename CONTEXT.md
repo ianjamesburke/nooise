@@ -42,5 +42,18 @@
   Capabilities select safe interaction semantics; they are never inferred by
   a timeout inside the interaction kernel.
 
+## Music glossary
+
+- **Progression:** eight chords the Pad, Bass, Arp, and Lead all follow. A
+  built-in one is named by key and mood ("Am · Drift"); Custom is built from
+  eight user-authored chord slots.
+- **Chord window:** the part of a progression that loops: Chord Count chords
+  starting at Chord Offset, wrapping past the eighth. Count 4, Offset 4 plays
+  chords 5–8. An Offset change lands on the next chord; a Count or
+  progression change waits for the loop to come round.
+- **Song value:** what a song code stores for a table-indexed control. It is
+  permanent and separate from the control's dial position, so a table can
+  grow without changing what a saved code means.
+
 See [ADR 0001](docs/adr/0001-unidirectional-interaction-architecture.md) for
 the contracts that connect these concepts.

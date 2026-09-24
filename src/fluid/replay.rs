@@ -2616,7 +2616,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
             harness
                 .with_model(InteractionModel {
                     navigation: Navigation::Chords {
-                        selected: 6,
+                        selected: 7,
                         drill: ChordDrill::None,
                     },
                     ..InteractionModel::default()
@@ -2631,7 +2631,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
                 selected: 0,
                 drill: ChordDrill::Slot {
                     slot: 0,
-                    return_to: 6,
+                    return_to: 7,
                 },
             },
             ..InteractionModel::default()

@@ -407,7 +407,7 @@ pub(crate) fn production_ui_loop(
                 clipboard: &mut clipboard,
                 capabilities: terminal.capabilities(),
                 beat: telemetry.beat(),
-                active_chord: telemetry.chord_index.load(Ordering::Relaxed),
+                active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
             },
         )
         .expect("pending commit has no fallible effects");
@@ -455,7 +455,7 @@ pub(crate) fn production_ui_loop(
                 session: &frame_session,
                 telemetry: TelemetryView {
                     beat,
-                    active_chord: telemetry.chord_index.load(Ordering::Relaxed),
+                    active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
                 },
                 presentation: ViewPresentation {
                     fluid: &fluid,

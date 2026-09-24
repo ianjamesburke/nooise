@@ -206,11 +206,11 @@ pub(crate) fn lead_reach(
     follow: LeadFollow,
     pad: &PadControls,
     progression: usize,
-    step: usize,
+    slot: usize,
 ) -> LeadReach {
     match follow {
         LeadFollow::Chord => {
-            let chord = pad_chord_tones(pad, progression, step);
+            let chord = pad_chord_tones(pad, progression, slot);
             let mut notes = [0; LEAD_REACH_MAX];
             notes[..chord.len()].copy_from_slice(&chord);
             LeadReach {
@@ -222,15 +222,17 @@ pub(crate) fn lead_reach(
     }
 }
 
-/// A progression's scale: every pitch class its chords touch, laid out
-/// ascending from the tonic (its first chord's lowest note). Derived rather
-/// than declared, so a custom progression and each built-in table each
-/// yield their own scale, and a chord change never moves a key.
+/// A progression's scale: every pitch class the chords of its playing
+/// window touch, laid out ascending from the tonic (the lowest note of the
+/// progression's first chord, whatever the window's Offset, so the keys
+/// stay rooted in the key the page names). Derived rather than declared, so
+/// a custom progression and each built-in table each yield their own scale,
+/// and a chord change never moves a key.
 pub(crate) fn progression_scale(pad: &PadControls, progression: usize) -> LeadReach {
     let tonic = pad_chord_tones(pad, progression, 0)[0];
     let mut present = [false; 12];
-    for step in 0..pad_chord_count(pad) {
-        for note in pad_chord_tones(pad, progression, step) {
+    for slot in ChordWindow::requested(pad).slots() {
+        for note in pad_chord_tones(pad, progression, slot) {
             present[(note - tonic).rem_euclid(12) as usize] = true;
         }
     }
@@ -258,14 +260,15 @@ pub(crate) fn lead_step_label(value: f32, reach: &LeadReach) -> String {
 }
 
 /// The reach a page reads its labels against: the lane's tones are named
-/// by degree, which depends only on the reach's size, so the chord step
+/// by degree, which depends only on the reach's size, so the chord playing
 /// need not be known to label the page.
 pub(crate) fn lead_page_reach(lead: &LeadControls, pad: &PadControls) -> LeadReach {
+    let window = ChordWindow::requested(pad);
     lead_reach(
         LeadFollow::from_value(lead.follow),
         pad,
-        progression_index(pad.progression),
-        0,
+        window.progression,
+        window.slot(0),
     )
 }
 
@@ -533,7 +536,7 @@ impl LeadEngine {
         timing: TimingContext,
     ) -> (f32, f32) {
         // The same chord-source path Pad, Bass, and Arp resolve through.
-        let (progression, step) = self.progression.follow(pad, timing);
+        let (progression, slot) = self.progression.follow(pad, timing);
 
         let rate_beats = c.rate_beats.clamp(LEAD_RATE_BEATS_MIN, LEAD_RATE_BEATS_MAX);
         if self
@@ -553,7 +556,7 @@ impl LeadEngine {
                 && !self.held_seen
                 && let Some(tone) = lead_step_tone(c.steps[lane_step])
             {
-                let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, step);
+                let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
                 self.play(reach.note(tone, c.octave), tune, c, false);
             }
         }
@@ -563,7 +566,7 @@ impl LeadEngine {
             && c.level != 0.0
             && let Some(tone) = lead_step_tone(pressed as f32)
         {
-            let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, step);
+            let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
             self.play(reach.note(tone, c.octave), tune, c, hold);
         }
         if std::mem::take(&mut self.pending_release) {
