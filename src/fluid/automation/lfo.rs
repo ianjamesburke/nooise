@@ -6,7 +6,9 @@ use std::f32::consts::TAU;
 use crate::fluid::widget::DialScale;
 use crate::fluid::{Entry, beats2, pct, signed_pct, smoothstep, splitmix64_mix};
 
-use super::{FieldSpec, Stepping, clamped_index, morph_scalar_route, stepped_index};
+use super::{
+    FieldSpec, Stepping, clamped_index, index_at_ratio, morph_scalar_route, stepped_index,
+};
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
 pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.0;
@@ -555,16 +557,11 @@ impl LfoRoute {
     /// currently hides it.
     pub(crate) fn randomize(&mut self, rng: &mut impl rand::Rng, beat: f64) {
         for field in LfoField::ALL {
-            let value = match field {
-                LfoField::Shape => rng.r#gen::<f32>() * (LfoShape::ALL.len() - 1) as f32,
-                _ => random_field_value(field.spec(), rng),
-            };
-            self.set_field_at(field, value, beat);
+            self.randomize_field_at(field, rng.r#gen(), beat);
         }
         self.seed = rng.r#gen();
-        let count = random_step_value(StepTarget::Count, rng);
-        self.set_step(StepTarget::Count, count);
-        self.set_step(StepTarget::Glide, random_step_value(StepTarget::Glide, rng));
+        self.randomize_step(StepTarget::Count, rng.r#gen());
+        self.randomize_step(StepTarget::Glide, rng.r#gen());
         self.randomize_step_values(rng);
     }
 
@@ -572,11 +569,23 @@ impl LfoRoute {
     /// its count, glide, and every other field of the route untouched.
     pub(crate) fn randomize_step_values(&mut self, rng: &mut impl rand::Rng) {
         for step in 0..self.active_step_count() {
-            self.set_step(
-                StepTarget::Value(step),
-                random_step_value(StepTarget::Value(step), rng),
-            );
+            self.randomize_step(StepTarget::Value(step), rng.r#gen());
         }
+    }
+
+    /// Land one field on a uniform roll of `ratio` across its own dial.
+    pub(crate) fn randomize_field_at(&mut self, field: LfoField, ratio: f32, beat: f64) {
+        match field {
+            LfoField::Shape => {
+                self.write_shape(LfoShape::ALL[index_at_ratio(ratio, LfoShape::ALL.len())]);
+            }
+            _ => self.write_field_at(field, field.spec().value_at_ratio(ratio), beat),
+        }
+    }
+
+    /// Land one staircase target on a uniform roll of `ratio` across its dial.
+    pub(crate) fn randomize_step(&mut self, target: StepTarget, ratio: f32) {
+        self.write_step(target, target.spec().value_at_ratio(ratio));
     }
 
     pub(crate) fn adjust_field_at(&mut self, field: LfoField, dir: f32, beat: f64) {
@@ -695,21 +704,6 @@ impl LfoRoute {
             |r, v| r.depth_ratio = v,
         )
     }
-}
-
-fn random_field_value<F: Copy + PartialEq>(
-    spec: &super::FieldSpec<F>,
-    rng: &mut impl rand::Rng,
-) -> f32 {
-    let ratio = rng.r#gen::<f32>();
-    spec.scale.value_at(ratio).map_or_else(
-        || spec.min + ratio * (spec.max - spec.min),
-        |value| spec.quantize(value),
-    )
-}
-
-fn random_step_value(target: StepTarget, rng: &mut impl rand::Rng) -> f32 {
-    random_field_value(target.spec(), rng)
 }
 
 /// Every LFO derives position from the shared transport beat. A zero offset

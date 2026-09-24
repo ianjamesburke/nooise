@@ -1270,6 +1270,11 @@ mod tests {
 
         let rolled = randomize_at(&mut executor, first_value_row + 1);
         assert_ne!(rolled.steps, before_route.steps, "the live steps reroll");
+        assert!(
+            rolled.steps[..4].iter().any(|value| value.abs() > 0.1),
+            "steps reroll across the whole dial, not a nudge: {:?}",
+            &rolled.steps[..4]
+        );
         let mut expected = before_route;
         expected.steps[..4].copy_from_slice(&rolled.steps[..4]);
         assert_eq!(rolled, expected, "nothing but the live steps moved");

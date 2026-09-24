@@ -4278,6 +4278,30 @@ fn step_edits_clamp_count_glide_and_values() {
     assert_near(route.step_glide, 0.4);
 }
 
+/// A randomize roll spans each field's whole dial in stored units. Rolls once
+/// went through the numeric-entry setters, whose percent parse divided every
+/// amount, glide, and step value by 100, so Shift+R only nudged them.
+#[test]
+fn randomize_rolls_span_the_whole_dial() {
+    let mut route = lfo_shape(LfoShape::Steps);
+    route.randomize_step(StepTarget::Value(0), 0.0);
+    assert_near(route.steps[0], -1.0);
+    route.randomize_step(StepTarget::Value(0), 1.0);
+    assert_near(route.steps[0], 1.0);
+    route.randomize_step(StepTarget::Glide, 1.0);
+    assert_near(route.step_glide, 1.0);
+    route.randomize_field_at(LfoField::Amount, 0.9, 0.0);
+    assert_near(route.depth_ratio, 0.9);
+    route.randomize_field_at(LfoField::Interval, 1.0, 0.0);
+    assert_near(route.cycle_beats, MAX_LFO_CYCLE_BEATS);
+    route.randomize_field_at(LfoField::Shape, 1.0, 0.0);
+    assert_eq!(route.shape, LfoShape::ALL[LfoShape::ALL.len() - 1]);
+
+    let mut envelope = EnvelopeRoute::default();
+    envelope.randomize_field(EnvField::Amount, 1.0);
+    assert_near(envelope.amount, 1.0);
+}
+
 #[test]
 fn song_code_round_trips_steps_shape() {
     let mut automation = AutomationState::default();
