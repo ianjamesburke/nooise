@@ -49,8 +49,10 @@
   eight user-authored chord slots.
 - **Chord window:** the part of a progression that loops: Chord Count chords
   starting at Chord Offset, wrapping past the eighth. Count 4, Offset 4 plays
-  chords 5–8. An Offset change lands on the next chord; a Count or
-  progression change waits for the loop to come round.
+  chords 5–8.
+- **Phrase:** one run of the chord window at one Chord Length. Changing
+  Chord Length, Count, Progression, or Offset waits for the chord sounding
+  now to end, then starts a new phrase from the new window's first chord.
 - **Song value:** what a song code stores for a table-indexed control. It is
   permanent and separate from the control's dial position, so a table can
   grow without changing what a saved code means.

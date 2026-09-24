@@ -3614,7 +3614,7 @@ fn bass_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
 }
 
 #[test]
-fn pad_engine_chord_count_change_finishes_the_current_chord_before_relooping() {
+fn pad_engine_chord_count_change_waits_for_the_chord_then_restarts() {
     let mut controls = PadControls {
         chord_bars: 1.0,
         chord_count: 3.0,
@@ -3640,7 +3640,7 @@ fn pad_engine_chord_count_change_finishes_the_current_chord_before_relooping() {
 }
 
 #[test]
-fn pad_engine_progression_change_finishes_the_current_loop_before_switching() {
+fn pad_engine_progression_change_waits_for_the_chord_then_restarts() {
     let mut controls = PadControls {
         chord_bars: 1.0,
         chord_count: 3.0,
@@ -3696,11 +3696,11 @@ fn pad_engine_opens_on_the_offset_chord() {
     assert_eq!(pad.telemetry.chord_slot.load(Ordering::Relaxed), 4);
 }
 
-/// Offset lands on the next chord boundary without cutting the sounding
-/// chord, and keeps the loop's phase: Offset 0 -> 4 on the second chord of a
-/// four-chord loop goes on to chord 7, then 8, then wraps to 5.
+/// A phrase change waits for the sounding chord to end, then restarts the
+/// phrase: Offset 0 -> 4 during the second chord of a four-chord loop goes
+/// on to chord 5, the new window's first, then 6 and 7.
 #[test]
-fn pad_engine_offset_change_lands_on_the_next_chord() {
+fn pad_engine_offset_change_restarts_the_phrase_at_the_next_chord() {
     let mut controls = PadControls {
         chord_bars: 1.0,
         chord_count: 4.0,
@@ -3726,7 +3726,126 @@ fn pad_engine_offset_change_lands_on_the_next_chord() {
         );
         slots.push(pad.cursor.slot());
     }
-    assert_eq!(slots, vec![6, 7, 4]);
+    assert_eq!(slots, vec![4, 5, 6]);
+}
+
+/// Every chord boundary the cursor crosses while `controls_at` supplies the
+/// pad controls for each beat, as `(beat, slot, chord_beats, restarted)`.
+fn chord_boundaries(
+    controls_at: impl Fn(f64) -> PadControls,
+    beats: f64,
+) -> Vec<(f64, usize, f32, bool)> {
+    let mut cursor = ProgressionCursor::new(&controls_at(0.0));
+    let mut boundaries = Vec::new();
+    let mut sample = 0u64;
+    loop {
+        let timing = timing(sample, 120.0);
+        if timing.beat > beats {
+            return boundaries;
+        }
+        let before = cursor;
+        if cursor.tick(&controls_at(timing.beat), timing) {
+            let restarted =
+                cursor.window != before.window || cursor.chord_beats != before.chord_beats;
+            boundaries.push((
+                timing.beat.round(),
+                cursor.slot(),
+                cursor.chord_beats,
+                restarted,
+            ));
+        }
+        sample += 64;
+    }
+}
+
+/// A new Chord Length waits for the sounding chord, then times the new
+/// phrase's first chord and every one after it.
+#[test]
+fn chord_length_change_lands_at_the_next_chord_and_times_the_new_phrase() {
+    let long = PadControls {
+        chord_bars: 2.0,
+        ..PadControls::default()
+    };
+    let short = PadControls {
+        chord_bars: 1.0,
+        ..PadControls::default()
+    };
+    let boundaries = chord_boundaries(
+        |beat| {
+            if beat < 12.0 {
+                long.clone()
+            } else {
+                short.clone()
+            }
+        },
+        28.0,
+    );
+    assert_eq!(
+        boundaries,
+        vec![
+            (8.0, 1, 8.0, false),
+            (16.0, 0, 4.0, true),
+            (20.0, 1, 4.0, false),
+            (24.0, 2, 4.0, false),
+            (28.0, 3, 4.0, false),
+        ]
+    );
+
+    // Lengthening from mid-bar: the new phrase starts where the old chord
+    // ended and its chords run the new length from there.
+    let boundaries = chord_boundaries(
+        |beat| {
+            if beat < 2.0 {
+                short.clone()
+            } else {
+                long.clone()
+            }
+        },
+        30.0,
+    );
+    assert_eq!(
+        boundaries,
+        vec![
+            (4.0, 0, 8.0, true),
+            (12.0, 1, 8.0, false),
+            (20.0, 2, 8.0, false),
+            (28.0, 3, 8.0, false)
+        ]
+    );
+}
+
+/// The restart compares what the engine sees at a boundary against what the
+/// phrase started with, so a value that moves between boundaries and is back
+/// on the phrase's own value at the boundary never restarts it.
+#[test]
+fn a_change_undone_before_the_boundary_does_not_restart_the_phrase() {
+    let base = PadControls {
+        chord_bars: 1.0,
+        chord_count: 4.0,
+        ..PadControls::default()
+    };
+    let wobble = PadControls {
+        chord_offset: 4.0,
+        ..base.clone()
+    };
+    let boundaries = chord_boundaries(
+        |beat| {
+            if beat.rem_euclid(4.0) > 1.0 && beat.rem_euclid(4.0) < 3.0 {
+                wobble.clone()
+            } else {
+                base.clone()
+            }
+        },
+        20.0,
+    );
+    assert!(boundaries.iter().all(|&(_, _, _, restarted)| !restarted));
+    assert_eq!(
+        boundaries
+            .iter()
+            .map(|&(_, slot, _, _)| slot)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 0, 1]
+    );
 }
 
 /// Bass and Arp follow the offset window on their own cursors and land on

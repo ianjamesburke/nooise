@@ -20,7 +20,6 @@ const PAD_TYPE_CROSSFADE_SECONDS: f32 = 0.03;
 pub(crate) struct PadEngine {
     pub(crate) sample_rate: f32,
     pub(crate) layers: Vec<PadLayer>,
-    pub(crate) chord_trigger: GridTrigger,
     pub(crate) cursor: ProgressionCursor,
     pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
@@ -62,7 +61,6 @@ impl PadEngine {
                 c.attack_time,
                 c.release_time,
             )],
-            chord_trigger: GridTrigger::after_start(),
             cursor,
             active_character,
             last_chord_notes: initial_notes,
@@ -75,10 +73,7 @@ impl PadEngine {
     }
 
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
-        let advance = self.chord_trigger.pop(timing, c.chord_bars * 4.0, 0.0);
-        if advance {
-            self.cursor.advance(ChordWindow::requested(c));
-        }
+        let advance = self.cursor.tick(c, timing);
         let chord_notes = pad_chord_tones(c, self.cursor.window.progression, self.cursor.slot());
         let chord_edited = chord_notes != self.last_chord_notes;
         let character = wrapped_index(c.voice_type, PAD_TYPES.len());
@@ -864,28 +859,40 @@ impl ChordWindow {
     }
 }
 
-/// Where one engine is in its progression loop: the window it is playing
-/// and how far through it. Pad, Bass, Arp, and Lead each hold one and
-/// advance it on the same `pad.chord_bars` grid, so they always agree on the
-/// chord without reaching into each other.
+/// Where one engine is in its phrase: the chord window and chord length the
+/// phrase was started with, how far through it, and when the next chord
+/// begins. Pad, Bass, Arp, and Lead each hold one and advance it from the
+/// same transport beat, so they always agree on the chord without reaching
+/// into each other.
 ///
-/// A live Offset change lands on the next chord boundary, the way
-/// `tonal.offset_beats` lands on the next note: the chord sounding is never
-/// cut, and the loop keeps its phase, so moving Offset 0 → 4 on the second
-/// chord of a four-chord loop goes on to chord 7. Count and progression
-/// changes still wait for the loop to come round, since they change what
-/// the loop is rather than where it reads from.
+/// A phrase is fixed once it starts. A change to Chord Length, Chord Count,
+/// Progression, or Chord Offset waits for the chord sounding now to end,
+/// then restarts the phrase: the next chord is the first of the new window
+/// (the one at slot `offset`), and the new length times it and every chord
+/// after. The sounding chord is never cut short or stretched. A boundary
+/// only restarts when the values the engine sees there (after automation
+/// has snapped them) differ from the ones the phrase started with, so
+/// automation that settles back on the phrase's own values never pins the
+/// loop to its first chord, and an auto-morph that snaps all four together
+/// lands as one restart.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ProgressionCursor {
     pub(crate) window: ChordWindow,
+    /// `pad.chord_bars` in beats, as the phrase started with it.
+    pub(crate) chord_beats: f32,
     pub(crate) step: usize,
+    /// Transport beat the next chord starts on; set on the first tick, the
+    /// first chord boundary after the engine starts.
+    next_chord_beat: Option<f64>,
 }
 
 impl ProgressionCursor {
     pub(crate) fn new(c: &PadControls) -> Self {
         Self {
             window: ChordWindow::requested(c),
+            chord_beats: c.chord_bars * 4.0,
             step: 0,
+            next_chord_beat: None,
         }
     }
 
@@ -894,46 +901,56 @@ impl ProgressionCursor {
         self.window.slot(self.step)
     }
 
-    /// One chord boundary: step on, adopt the requested offset, and at the
-    /// end of the loop adopt the requested count and progression too.
-    pub(crate) fn advance(&mut self, requested: ChordWindow) {
-        self.step += 1;
-        self.window.offset = requested.offset;
-        if self.step >= self.window.count {
-            self.step = 0;
-            self.window.count = requested.count;
-            self.window.progression = requested.progression;
+    /// Moves the cursor up to `timing`'s beat, reading `c` only at a chord
+    /// boundary. Returns whether a new chord starts on this tick.
+    pub(crate) fn tick(&mut self, c: &PadControls, timing: TimingContext) -> bool {
+        let next = *self.next_chord_beat.get_or_insert_with(|| {
+            GridSpec::new(self.chord_beats, 0.0, 0.0)
+                .hit_after(timing.beat)
+                .beat
+        });
+        // A stopped transport holds its beat, and like every grid it fires
+        // nothing until the clock runs again.
+        if timing.transport == Transport::Stopped || timing.beat + GRID_BEAT_EPSILON < next {
+            return false;
         }
+        let window = ChordWindow::requested(c);
+        let chord_beats = c.chord_bars * 4.0;
+        if window != self.window || chord_beats != self.chord_beats {
+            self.window = window;
+            self.chord_beats = chord_beats;
+            self.step = 0;
+        } else {
+            self.step = (self.step + 1) % self.window.count;
+        }
+        // Counted from the boundary itself rather than the sample that
+        // noticed it, so chords stay on the transport grid.
+        self.next_chord_beat =
+            Some(next + GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats);
+        true
     }
 }
 
 /// How Bass, Arp, and Lead follow the Pad's chord loop without reaching into
-/// `PadEngine`: an independent trigger on the same `pad.chord_bars` grid and
-/// the same cursor, so the follower's chord always matches the pad's. The
-/// window is adopted from the first frame's controls, exactly as the pad
-/// adopts it at construction.
+/// `PadEngine`: the same cursor on the same transport beat, so the
+/// follower's chord always matches the pad's. The phrase is adopted from the
+/// first frame's controls, exactly as the pad adopts it at construction.
 pub(crate) struct ProgressionFollower {
-    chord_trigger: GridTrigger,
     pub(crate) cursor: Option<ProgressionCursor>,
 }
 
 impl ProgressionFollower {
     pub(crate) fn new() -> Self {
-        Self {
-            chord_trigger: GridTrigger::after_start(),
-            cursor: None,
-        }
+        Self { cursor: None }
     }
 
-    /// Advances on the pad's chord grid and returns the `(progression, slot)`
-    /// to voice this frame.
+    /// Advances the phrase and returns the `(progression, slot)` to voice
+    /// this frame.
     pub(crate) fn follow(&mut self, pad: &PadControls, timing: TimingContext) -> (usize, usize) {
         let cursor = self
             .cursor
             .get_or_insert_with(|| ProgressionCursor::new(pad));
-        if self.chord_trigger.pop(timing, pad.chord_bars * 4.0, 0.0) {
-            cursor.advance(ChordWindow::requested(pad));
-        }
+        cursor.tick(pad, timing);
         (cursor.window.progression, cursor.slot())
     }
 }
