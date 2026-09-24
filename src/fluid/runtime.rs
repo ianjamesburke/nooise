@@ -43,7 +43,7 @@ pub(crate) const TICK_INTERVAL: Duration = Duration::from_millis(33);
 /// Everything phase-dependent branches on these rather than assuming: without
 /// `key_event_types` there is no trustworthy repeat/release distinction, and
 /// live gestures stay unavailable instead of silently misreading autorepeat
-/// as a hold. Sequence uses its own visible tap-completion fallback.
+/// as a hold.
 pub(crate) struct TerminalCapabilities {
     pub(crate) key_event_types: bool,
     pub(crate) plain_key_releases: bool,

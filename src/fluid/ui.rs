@@ -871,15 +871,15 @@ impl FieldPalette {
     }
 }
 
-/// Browse rows and Sequence share one colour language: idle grey, focused
-/// cyan.
+/// Browse rows and the Lead play keyboard share one colour language: idle
+/// grey, focused cyan.
 const BROWSE_PALETTE: FieldPalette = FieldPalette {
     active: Color::Rgb(120, 230, 255),
     idle: Color::Rgb(170, 178, 195),
 };
 
 /// Amber for something sounding or physically held right now: the playing
-/// chord badge and a held Sequence instrument.
+/// chord badge and a lane's active step.
 const LIVE_AMBER: Color = Color::Rgb(255, 200, 90);
 /// Help/notice text the user must act on, and staged palette edits.
 const EMPHASIS_YELLOW: Color = Color::Rgb(255, 220, 120);

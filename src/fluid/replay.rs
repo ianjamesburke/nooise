@@ -2216,7 +2216,7 @@ fn space_toggles_the_lead_lane_and_c_keeps_the_phrase() {
     assert!(kept.deferred_inputs.is_empty());
 }
 
-/// Ctrl+Q and Ctrl+C quit from inside play mode and Sequence,
+/// Ctrl+Q and Ctrl+C quit from inside play mode and the Jump leader,
 /// not only from browsing: no keyboard owner traps the user.
 #[test]
 fn control_quit_reaches_the_lead_and_performance_owners() {
@@ -2228,11 +2228,11 @@ fn control_quit_reaches_the_lead_and_performance_owners() {
     let lead = replay(&lead, TerminalCapabilities::full());
     assert_eq!(lead.final_owner(), Some("LEAD"));
     assert_eq!(lead.effect_count("Quit"), 1);
-    let sequence = replay(
+    let jump = replay(
         &[plain(FixtureKey::Character(' ')), quit],
         TerminalCapabilities::full(),
     );
-    assert_eq!(sequence.effect_count("Quit"), 1);
+    assert_eq!(jump.effect_count("Quit"), 1);
 }
 
 /// Enter on the Lead's Steps row opens the lane instead of play mode; the
