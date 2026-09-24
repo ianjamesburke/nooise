@@ -565,6 +565,12 @@ impl LfoRoute {
         let count = random_step_value(StepTarget::Count, rng);
         self.set_step(StepTarget::Count, count);
         self.set_step(StepTarget::Glide, random_step_value(StepTarget::Glide, rng));
+        self.randomize_step_values(rng);
+    }
+
+    /// Randomize only the live step values of the Steps staircase, leaving
+    /// its count, glide, and every other field of the route untouched.
+    pub(crate) fn randomize_step_values(&mut self, rng: &mut impl rand::Rng) {
         for step in 0..self.active_step_count() {
             self.set_step(
                 StepTarget::Value(step),

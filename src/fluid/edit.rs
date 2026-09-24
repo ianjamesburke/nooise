@@ -140,6 +140,19 @@ pub(crate) fn lfo_submenu_rows(
     rows
 }
 
+/// Whether the LFO editor cursor (1-based; 0 is the parent slider row) sits on
+/// a row of the Steps staircase, where `Shift+R` rolls only the step values.
+pub(crate) fn lfo_steps_selected(
+    automation: &AutomationState,
+    address: ControlAddress,
+    selected: usize,
+) -> bool {
+    selected
+        .checked_sub(1)
+        .and_then(|row| lfo_submenu_rows(automation, address).get(row).copied())
+        .is_some_and(|row| matches!(row, LfoSubRow::Step(_)))
+}
+
 pub(crate) fn env_field_at(index: usize) -> Option<EnvField> {
     EnvField::ALL.get(index.checked_sub(1)?).copied()
 }

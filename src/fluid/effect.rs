@@ -700,10 +700,19 @@ impl EffectExecutor {
                     if context.randomizes_automation {
                         match snapshot.automation.active_kind() {
                             Some(ModKind::Lfo) => {
-                                if let Some(address) = snapshot.automation.active_address()
-                                    && let Some(route) = snapshot.automation.route_mut(address)
-                                {
-                                    route.randomize(&mut rng, context.beat);
+                                if let Some(address) = snapshot.automation.active_address() {
+                                    let on_steps = lfo_steps_selected(
+                                        &snapshot.automation,
+                                        address,
+                                        context.automation_selected,
+                                    );
+                                    if let Some(route) = snapshot.automation.route_mut(address) {
+                                        if on_steps {
+                                            route.randomize_step_values(&mut rng);
+                                        } else {
+                                            route.randomize(&mut rng, context.beat);
+                                        }
+                                    }
                                 }
                             }
                             Some(ModKind::Envelope) => {
@@ -1215,6 +1224,70 @@ mod tests {
         assert_eq!(
             executor.session().load().controls.modules.kick[2].time,
             390.0
+        );
+    }
+
+    /// With the LFO editor cursor inside the Steps staircase, `Shift+R` rolls
+    /// only the live step values: the route's rate, depth, shape, seed, count,
+    /// and glide, and every control, stay as they were. On a field row it
+    /// still rolls the whole route.
+    #[test]
+    fn randomize_scope_inside_lfo_steps_rolls_only_the_step_values() {
+        let address = ControlAddress::new("pad.level");
+        let mut executor = executor();
+        executor.edit_session(None, |snapshot| {
+            let route = snapshot.automation.open_or_create(address);
+            route.shape = LfoShape::Steps;
+            route.set_step(StepTarget::Count, 4.0);
+        });
+        let before = executor.session().load();
+        let before_route = *before.automation.route(address).unwrap();
+        let rows = lfo_submenu_rows(&before.automation, address);
+        let first_value_row = rows
+            .iter()
+            .position(|row| matches!(row, LfoSubRow::Step(StepTarget::Value(0))))
+            .unwrap();
+        let mut flipped = FlippedUnits::default();
+        let mut clipboard = FakeClipboard::default();
+        let mut randomize_at = |executor: &mut EffectExecutor, automation_selected| {
+            let mut context = ProductionInteractionContext {
+                selected_control: Some("pad.level"),
+                visible_control_ids: &[],
+                randomizes_automation: true,
+                tab: Tab::Chords,
+                selected: 0,
+                automation_selected,
+                beat: 0.0,
+                flipped: &mut flipped,
+            };
+            executor.execute_production_interactions_with_clipboard(
+                [InteractionEffect::RandomizeScope],
+                &mut context,
+                &mut clipboard,
+            );
+            *executor.session().load().automation.route(address).unwrap()
+        };
+
+        let rolled = randomize_at(&mut executor, first_value_row + 1);
+        assert_ne!(rolled.steps, before_route.steps, "the live steps reroll");
+        let mut expected = before_route;
+        expected.steps[..4].copy_from_slice(&rolled.steps[..4]);
+        assert_eq!(rolled, expected, "nothing but the live steps moved");
+        let after = executor.session().load();
+        for spec in all_specs() {
+            assert_eq!(
+                (spec.get)(&after.controls),
+                (spec.get)(&before.controls),
+                "{} is untouched",
+                spec.id
+            );
+        }
+
+        let whole = randomize_at(&mut executor, 1);
+        assert_ne!(
+            (whole.cycle_beats, whole.depth_ratio, whole.seed),
+            (rolled.cycle_beats, rolled.depth_ratio, rolled.seed),
+            "a field row still rolls the whole route"
         );
     }
 
