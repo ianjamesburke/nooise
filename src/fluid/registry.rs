@@ -468,12 +468,12 @@ impl ControlSpec {
             }
             (Family::Filter, ModuleSlotField::Time) => {
                 spec.kind = ControlKind::Continuous;
-                spec.min = 80.0;
-                spec.max = 8_000.0;
+                spec.min = FILTER_CUTOFF_MIN_HZ;
+                spec.max = FILTER_CUTOFF_MAX_HZ;
                 spec.step = Step::Linear(1.0);
                 spec.entry = Entry::Round;
                 spec.taper = Taper::Log2;
-                spec.reset = 8_000.0;
+                spec.reset = FILTER_CUTOFF_MAX_HZ;
             }
             (Family::Filter, ModuleSlotField::RightTime) => {
                 spec.kind = ControlKind::Continuous;

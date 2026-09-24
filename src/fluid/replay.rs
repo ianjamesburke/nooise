@@ -2459,6 +2459,36 @@ fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
     );
 }
 
+/// Switching a Filter from Low-pass to High-pass mirrors its cutoff, so Perc's
+/// factory filter at 8 kHz becomes a high-pass at 50 Hz rather than one that
+/// removes everything under 8 kHz.
+#[test]
+fn switching_a_filter_to_high_pass_mirrors_its_cutoff() {
+    let mut events = vec![
+        key(0, FixtureKey::Tab, InputPhase::Press),
+        key(0, FixtureKey::Character('/'), InputPhase::Press),
+    ];
+    events.extend(
+        "filter"
+            .chars()
+            .map(|c| key(0, FixtureKey::Character(c), InputPhase::Press)),
+    );
+    events.extend([
+        key(0, FixtureKey::Enter, InputPhase::Press),
+        key(0, FixtureKey::Enter, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Right, InputPhase::Press),
+    ]);
+    let result = replay(&events, TerminalCapabilities::full());
+
+    assert_eq!(result.control("perc.slot1.feedback"), Some(1.0));
+    let cutoff = result
+        .control("perc.slot1.time")
+        .expect("perc filter cutoff");
+    assert!((cutoff - 50.0).abs() < 0.01, "{cutoff}");
+}
+
 #[test]
 fn production_tick_commits_pending_palette_edits_at_the_bar() {
     let staged = InteractionModel {
@@ -2780,7 +2810,10 @@ fn jump_to_filter_reaches_a_loaded_one_and_adds_an_inert_one_otherwise() {
     // A filter is always fully wet; its cutoff is what starts transparent,
     // so adding one is audibly free and `h` is the first audible move.
     assert_eq!(added.control("pad.slot2.amount"), Some(1.0));
-    assert_eq!(added.control("pad.slot2.time"), Some(8_000.0));
+    assert_eq!(
+        added.control("pad.slot2.time"),
+        Some(super::FILTER_CUTOFF_MAX_HZ)
+    );
     assert_eq!(added.recent_ids, ["pad.slot2.time"]);
     assert_eq!(
         added.control("pad.slot1.kind"),

@@ -9,6 +9,8 @@
 //!
 //! See `docs/proposals/2026-07-30-module-slot-addressing.md`.
 
+use crate::fx::filter::FilterType;
+
 /// Slots per layer. Appending more later is a pure append to the song-id
 /// table; removing any is impossible, so this starts deliberately small.
 pub(crate) const MODULE_SLOTS: usize = 8;
@@ -342,6 +344,36 @@ impl DelayClock {
     }
 }
 
+/// A Filter's cutoff dial spans the audible band on a Log2 taper.
+pub(crate) const FILTER_CUTOFF_MIN_HZ: f32 = 20.0;
+pub(crate) const FILTER_CUTOFF_MAX_HZ: f32 = 20_000.0;
+
+/// Where Perc, Bass, and Kick's factory Filters sit. Their default sound was
+/// voiced there, and a saved song that never touched one carries no cutoff
+/// at all, so moving this would re-voice every such song.
+const FACTORY_FILTER_CUTOFF_HZ: f32 = 8_000.0;
+
+/// Change a Filter slot's response type. Swapping Low-pass and High-pass
+/// mirrors the cutoff across the dial (`min * max / hz`, the same number of
+/// octaves in from the opposite end), so a filter that was nearly
+/// transparent stays nearly transparent instead of a high-pass at a high
+/// cutoff taking out the whole signal. Band-pass has no transparent end, so
+/// a switch to or from it keeps the cutoff.
+pub(crate) fn switch_filter_type(slot: &mut ModuleSlot, next: f32) {
+    let flips = matches!(
+        (
+            FilterType::from_value(slot.feedback),
+            FilterType::from_value(next)
+        ),
+        (FilterType::Low, FilterType::High) | (FilterType::High, FilterType::Low)
+    );
+    if flips {
+        slot.time = (FILTER_CUTOFF_MIN_HZ * FILTER_CUTOFF_MAX_HZ / slot.time)
+            .clamp(FILTER_CUTOFF_MIN_HZ, FILTER_CUTOFF_MAX_HZ);
+    }
+    slot.feedback = next;
+}
+
 /// `kind` value meaning "no module here". Catalog entry `n` is stored as
 /// `n + 1`, so the empty slot is the default and prunes out of song codes.
 pub(crate) const MODULE_EMPTY: f32 = 0.0;
@@ -451,7 +483,7 @@ pub(crate) fn preset_slot(id: &str, amount: f32) -> ModuleSlot {
             // (audibly transparent low-pass); turning it down is the first
             // audible move, same as another module's amount starting at 0%.
             slot.amount = 1.0;
-            slot.time = 8_000.0;
+            slot.time = FILTER_CUTOFF_MAX_HZ;
             slot.right_time = 0.0;
             slot.feedback = 0.0;
         }
@@ -490,16 +522,21 @@ impl Default for LayerModules {
             slots[0] = preset_slot(id, amount);
             slots
         };
+        let with_factory_filter = || {
+            let mut slots = with_preset("filter", 1.0);
+            slots[0].time = FACTORY_FILTER_CUTOFF_HZ;
+            slots
+        };
         Self {
             pad: with_preset("room", 0.4),
-            perc: with_preset("filter", 1.0),
+            perc: with_factory_filter(),
             bass: {
-                let mut slots = with_preset("filter", 1.0);
+                let mut slots = with_factory_filter();
                 slots[1] = preset_slot("drive", 0.15);
                 slots
             },
             kick: {
-                let mut slots = with_preset("filter", 1.0);
+                let mut slots = with_factory_filter();
                 slots[1] = preset_slot("drive", 0.2);
                 slots
             },
@@ -694,6 +731,33 @@ mod tests {
                 kind.id
             );
         }
+    }
+
+    #[test]
+    fn an_added_filter_starts_at_the_top_of_its_dial() {
+        assert_eq!(preset_slot("filter", 0.0).time, FILTER_CUTOFF_MAX_HZ);
+    }
+
+    #[test]
+    fn swapping_low_and_high_pass_mirrors_the_cutoff_across_the_dial() {
+        let (low, high, band) = (0.0, 1.0, 2.0);
+        let mut slot = preset_slot("filter", 0.0);
+        switch_filter_type(&mut slot, high);
+        assert_eq!(slot.time, FILTER_CUTOFF_MIN_HZ);
+        switch_filter_type(&mut slot, low);
+        assert_eq!(slot.time, FILTER_CUTOFF_MAX_HZ);
+
+        // 1 kHz is as many octaves above the floor as 400 Hz is below the top.
+        slot.time = 1_000.0;
+        switch_filter_type(&mut slot, high);
+        assert!((slot.time - 400.0).abs() < 0.01, "{}", slot.time);
+
+        // Band-pass has no transparent end to mirror towards.
+        switch_filter_type(&mut slot, band);
+        assert!((slot.time - 400.0).abs() < 0.01, "{}", slot.time);
+        switch_filter_type(&mut slot, low);
+        assert!((slot.time - 400.0).abs() < 0.01, "{}", slot.time);
+        assert_eq!(slot.feedback, low);
     }
 
     #[test]

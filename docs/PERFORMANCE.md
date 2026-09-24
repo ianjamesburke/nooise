@@ -102,7 +102,7 @@ Cutoff, never its Amount: Amount is a detail-only wet/dry mix pinned fully
 wet, so Cutoff is the single knob the leader lands on and `h`/`l` sweep.
 Bass, Kick and Perc ship with a filter in slot 1, so `k` lands on the cutoff
 already in play. Pads gets one added into its first free slot at a
-transparent 8 kHz cutoff, so arriving is silent and turning the cutoff down
+transparent 20 kHz cutoff, so arriving is silent and turning the cutoff down
 is the first audible move. A layer whose chain is full says so and stays
 put.
 

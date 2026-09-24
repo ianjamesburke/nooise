@@ -384,18 +384,48 @@ fn apply_field_op(
                 }
             }
         }
-        ActiveField::Control => match op {
-            FieldOp::Reset => apply_reset(tab, selected, &mut snapshot.controls),
-            FieldOp::Randomize { ratio } => {
-                if let Some(spec) = tab_specs(tab).get(selected) {
-                    spec.apply_ratio(ratio, &mut snapshot.controls);
+        ActiveField::Control => {
+            let filter_type =
+                tab_specs(tab).get(selected).and_then(|spec| {
+                    match module_slot_field(tab, spec, &snapshot.controls, Family::Filter)? {
+                        (slot, ModuleSlotField::Feedback) => Some(slot),
+                        _ => None,
+                    }
+                });
+            let before =
+                filter_type.and_then(|slot| filter_slot(snapshot, tab, slot).map(|m| m.feedback));
+            match op {
+                FieldOp::Reset => apply_reset(tab, selected, &mut snapshot.controls),
+                FieldOp::Randomize { ratio } => {
+                    if let Some(spec) = tab_specs(tab).get(selected) {
+                        spec.apply_ratio(ratio, &mut snapshot.controls);
+                    }
+                }
+                FieldOp::Adjust { .. } | FieldOp::Set { .. } => {
+                    apply_control_value_op(snapshot, tab, selected, op, bpm)
                 }
             }
-            FieldOp::Adjust { .. } | FieldOp::Set { .. } => {
-                apply_control_value_op(snapshot, tab, selected, op, bpm)
+            // The Type row stepped like any discrete row; replay the change
+            // through `switch_filter_type` so the cutoff follows a flip. A
+            // roll lands anywhere on the dial, so it keeps its random cutoff.
+            if let (Some(slot), Some(before)) = (filter_type, before)
+                && !matches!(op, FieldOp::Randomize { .. })
+                && let Some(module) = filter_slot(snapshot, tab, slot)
+            {
+                let next = module.feedback;
+                module.feedback = before;
+                switch_filter_type(module, next);
             }
-        },
+        }
     }
+}
+
+fn filter_slot(
+    snapshot: &mut LiveSessionSnapshot,
+    tab: Tab,
+    slot: usize,
+) -> Option<&mut ModuleSlot> {
+    snapshot.controls.modules.for_tab_mut(tab)?.get_mut(slot)
 }
 
 /// The selected control taking a user-entered value: a Delay clock row
@@ -448,19 +478,20 @@ fn apply_control_value_op(
     }
 }
 
-/// Which field of a loaded Delay slot the row is, or `None` for any other
-/// row. The one decision behind every Delay-specific gesture: the clock
-/// row's arrow flip and the unit toggle on a time row.
-fn delay_slot_field(
+/// Which field of a loaded `family` slot the row is, or `None` for any other
+/// row. The one decision behind every module-specific gesture: a Delay's
+/// clock flip and time-unit toggle, a Filter's type switch.
+fn module_slot_field(
     tab: Tab,
     spec: &ControlSpec,
     controls: &FluidControls,
+    family: Family,
 ) -> Option<(usize, ModuleSlotField)> {
     let (_, slot, field) = parse_module_slot_id(spec.id)?;
     let module = controls.modules.for_tab(tab)?.get(slot)?;
     module
         .kind()
-        .is_some_and(|kind| kind.family == Family::Delay)
+        .is_some_and(|kind| kind.family == family)
         .then_some((slot, field))
 }
 
@@ -475,7 +506,8 @@ fn apply_delay_row(
     op: FieldOp<'_>,
     bpm: f32,
 ) -> bool {
-    let Some((slot, ModuleSlotField::Clock)) = delay_slot_field(tab, spec, &snapshot.controls)
+    let Some((slot, ModuleSlotField::Clock)) =
+        module_slot_field(tab, spec, &snapshot.controls, Family::Delay)
     else {
         return false;
     };
@@ -566,7 +598,7 @@ pub(crate) fn toggle_units_effect(
     if matches!(active_field(automation, lfo_selected), ActiveField::Control)
         && let Some(spec) = tab_specs(tab).get(selected)
         && let Some((slot, field @ (ModuleSlotField::Time | ModuleSlotField::RightTime))) =
-            delay_slot_field(tab, spec, &effects.session().load().controls)
+            module_slot_field(tab, spec, &effects.session().load().controls, Family::Delay)
     {
         effects.edit_session(Some(spec.id), |snapshot| {
             let bpm = snapshot.controls.master.bpm;
