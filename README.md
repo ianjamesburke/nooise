@@ -40,7 +40,7 @@ Press `Ctrl+Q` to quit.
 
 While browsing, hold `z` for a reverb Bloom, `c` to Submerge the sound,
 `v` for Echo, or `x` to Lift its low end out. Release
-to return in 50 ms. Every gesture plays over the whole mix, from any page.
+to stop within 10 ms. Every gesture plays over the whole mix, from any page.
 Arrows and Tab keep working while you hold a gesture. These holds require
 a terminal that reports key releases; the footer shows when support is missing.
 

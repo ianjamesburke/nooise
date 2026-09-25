@@ -3,6 +3,10 @@
 
 pub(crate) const GESTURE_COUNT: usize = 4;
 
+/// Every gesture lets go this fast on key-up: the envelope, and on the audio
+/// stage each wet return, reach zero within it.
+pub(crate) const GESTURE_RELEASE_SECONDS: f64 = 0.010;
+
 /// The discriminant is the storage index. The song-code tag is `wire_tag`,
 /// which never moves when a gesture retires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,7 +70,7 @@ impl GestureKind {
     }
 
     fn return_seconds(self) -> f64 {
-        0.05
+        GESTURE_RELEASE_SECONDS
     }
 }
 
@@ -188,22 +192,23 @@ mod tests {
         assert!((rising - 0.25).abs() < 1e-6);
         state.release(GestureKind::Submerge, 10.3);
         assert_eq!(state.amounts(10.3)[1], rising);
-        let returning = state.amounts(10.35)[1];
-        assert!(returning < rising);
-        state.press(GestureKind::Submerge, 10.35);
-        assert_eq!(state.amounts(10.35)[1], returning);
+        let returning = state.amounts(10.302)[1];
+        assert!(0.0 < returning && returning < rising);
+        state.press(GestureKind::Submerge, 10.302);
+        assert_eq!(state.amounts(10.302)[1], returning);
         assert!(state.amounts(10.4)[1] > returning);
     }
 
     #[test]
-    fn every_gesture_returns_to_rest_within_fifty_milliseconds() {
+    fn every_gesture_returns_to_rest_within_the_release_time() {
         for kind in GestureKind::ALL {
             let mut state = GestureState::default();
             state.press(kind, 0.0);
             state.release(kind, kind.rise_seconds());
             assert!(
-                state.amounts(kind.rise_seconds() + 0.05)[kind as usize] <= f32::EPSILON,
-                "{} did not return within 50 ms",
+                state.amounts(kind.rise_seconds() + GESTURE_RELEASE_SECONDS)[kind as usize]
+                    <= f32::EPSILON,
+                "{} did not return within the release time",
                 kind.name()
             );
         }

@@ -5,9 +5,9 @@
 Hold `z` for Bloom, `c` for Submerge, `v` for Echo, or `x` for Lift.
 The amount rises while held and returns smoothly on release. Bloom blends the
 mix into a bright reverb cloud built from its mids and highs, Submerge darkens
-it, Echo throws it into repeats, and Lift thins its low end. The gesture input
-returns in 50 ms. Bloom's whole wash lets go with it, so no reverb rings on;
-Echo's repeats finish after release. The former Thin
+it, Echo throws it into repeats, and Lift thins its low end. Every gesture
+lets go within 10 ms of release, wet returns included, so no reverb or echo
+rings on. The former Thin
 gesture on `b` is retired; a song code carrying one is refused.
 
 Every gesture plays over the whole mix, after Master's module chain, whatever
@@ -127,9 +127,9 @@ Lead play retains its own `i` entry and existing bindings.
 2. Hold `z`, move with arrows and Tab, and release. The Bloom must keep
    playing over the mix while navigation continues. Overlap a different
    gesture and confirm both are named. Neither should make the mix louder.
-3. Release `z` after a long hold: the wash must be gone within about 50 ms
-   with no click. Try short and long `v` presses, then `x`. Echoes should
-   finish after release; Lift should clear its low end while held and restore it quickly
+3. Release `z` after a long hold: the wash must be gone at once (10 ms)
+   with no click. Try short and long `v` presses, then `x`. Echoes stop on
+   release; Lift should clear its low end while held and restore it at once
    on release. `b` does nothing in Browse.
 4. Open the palette during a held gesture, return to Browse, and keep the
    physical key down. It must stay released until a fresh press after key-up.

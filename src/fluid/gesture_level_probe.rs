@@ -128,12 +128,19 @@ fn gesture_level_probe() {
     }
 }
 
-/// Bloom lets go in 50 ms without a click: rendered through the whole
-/// engine at real level, the wash's own sample-to-sample motion never jumps
-/// during the release beyond what it does while held, and once the release
-/// ends the output is the dry song, bit for bit.
+/// Bloom and Echo let go within `GESTURE_RELEASE_SECONDS` without a click:
+/// rendered through the whole engine at real level, the wash's own
+/// sample-to-sample motion never jumps during the release beyond what it does
+/// while held, and once the release ends the output is the dry song, bit for
+/// bit.
 #[test]
-fn bloom_release_lets_go_cleanly_within_fifty_milliseconds() {
+fn wet_gestures_let_go_cleanly_within_the_release_time() {
+    for kind in [GestureKind::Bloom, GestureKind::Echo] {
+        assert_releases_cleanly(kind);
+    }
+}
+
+fn assert_releases_cleanly(kind: GestureKind) {
     const RELEASE_AT: f64 = 4.0;
     let song = &decode_auto_states()[9];
     let render_frames = |gesture: GestureState| {
@@ -152,7 +159,7 @@ fn bloom_release_lets_go_cleanly_within_fifty_milliseconds() {
     };
     let mut released = GestureState::default();
     // Full from the start, returning from RELEASE_AT: exactly a key-up there.
-    released.lanes[GestureKind::Bloom as usize] = GestureEnvelope {
+    released.lanes[kind as usize] = GestureEnvelope {
         amount: 1.0,
         at_seconds: RELEASE_AT,
         held: false,
@@ -161,7 +168,7 @@ fn bloom_release_lets_go_cleanly_within_fifty_milliseconds() {
     let dry = render_frames(GestureState::default());
     let wet = render_frames(released);
     let release_frame = (RELEASE_AT * f64::from(RATE)) as usize;
-    let end_frame = release_frame + (0.05 * RATE) as usize + 2;
+    let end_frame = release_frame + (GESTURE_RELEASE_SECONDS * f64::from(RATE)) as usize + 2;
     let wash = |frame: usize| (wet[frame].0 - dry[frame].0, wet[frame].1 - dry[frame].1);
     let max_step = |frames: std::ops::Range<usize>| {
         frames
@@ -177,8 +184,9 @@ fn bloom_release_lets_go_cleanly_within_fifty_milliseconds() {
 
     assert!(
         release_step <= held_step,
-        "release stepped {release_step} against {held_step} while held"
+        "{} release stepped {release_step} against {held_step} while held",
+        kind.name()
     );
     let lingering = (end_frame..wet.len()).find(|frame| wet[*frame] != dry[*frame]);
-    assert_eq!(lingering, None, "Bloom outlived its release");
+    assert_eq!(lingering, None, "{} outlived its release", kind.name());
 }
