@@ -79,7 +79,7 @@ Default section order:
 - Currently working on: fluid core (`src/fluid/`)
 - Live performance gestures must be accessible from normal browsing, with arrows and Tab available throughout. A separate Deck mode must not be required. `docs/PERFORMANCE.md` owns their interaction and terminal-capability contracts.
 - Song saves must restore each user-audible session state as though playback never stopped; new stateful features must persist their runtime state, not only their controls. Excluded: state that regenerates from playback within about a second (FX tails and buffers). A song code has to stay short enough to paste into a message. Commandment 4 in `docs/NORTH_STAR.md` owns this rule — read it before changing what a code carries.
-- No migration layers. A retired control's saved values are gone with it: codes naming it are refused (`SongCodeError::RetiredControl`), never loaded with the value silently defaulted. Re-author the built-in `AUTO_STATES` through the current encoder instead of translating old ids.
+- No migration layers. A retired control's saved values are gone with it: codes naming it are refused (`SongCodeError::RetiredControl`), never loaded with the value silently defaulted. Re-author the built-in `AUTO_STATES` through the current encoder instead of translating old ids. A dial-range change is handled the same way: loading refuses a code whose modulation targets a moved dial (`SongCodeError::StaleRange`), and the built-in `AUTO_STATES` are re-authored across it.
 
 ## Purpose
 

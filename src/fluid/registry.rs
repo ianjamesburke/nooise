@@ -2087,7 +2087,7 @@ fn parse_chord_slot_id(id: &str) -> Option<(usize, usize)> {
 
 /// Parse `<layer>.slot<N>.<field>` back to the slot it addresses. `None` for
 /// any id that is not a module-slot row.
-fn module_slot_row<'a>(
+pub(crate) fn module_slot_row<'a>(
     id: &str,
     c: &'a FluidControls,
 ) -> Option<(&'a ModuleSlot, ModuleSlotField)> {
