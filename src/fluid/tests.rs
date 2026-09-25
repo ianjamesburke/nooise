@@ -1259,6 +1259,7 @@ fn midi_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop()
 fn pad_stabs_send_only_selected_steps_and_release_between_hits() {
     let controls = PadControls {
         trigger: 1.0,
+        gate_beats: 0.125,
         level: 0.0,
         ..PadControls::default()
     };
@@ -1285,6 +1286,77 @@ fn pad_stabs_send_only_selected_steps_and_release_between_hits() {
             MidiMessage::PadOff,
             MidiMessage::PadChord(notes)
         ]
+    );
+}
+
+#[test]
+fn pad_gate_holds_midi_until_its_selected_beat_length() {
+    let controls = PadControls {
+        trigger: 1.0,
+        steps: [
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let (sink, receiver) = MidiSink::test_channel();
+    pad.set_midi(sink);
+    for beat in [0.0, 0.125, 0.25, 0.375] {
+        pad.next(
+            &controls,
+            0.0,
+            TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
+        );
+    }
+    assert_eq!(
+        receiver
+            .try_iter()
+            .filter(|event| matches!(event, MidiMessage::PadChord(_) | MidiMessage::PadOff))
+            .collect::<Vec<_>>(),
+        [
+            MidiMessage::PadOff,
+            MidiMessage::PadChord(pad_notes(pad_chord_tones(&controls, 0, 0), 0.0))
+        ]
+    );
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.5),
+    );
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [MidiMessage::PadOff]
+    );
+}
+
+#[test]
+fn pad_gate_retriggers_on_an_adjacent_hit_even_when_set_longer() {
+    let controls = PadControls {
+        trigger: 1.0,
+        gate_beats: 2.0,
+        steps: [
+            1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let (sink, receiver) = MidiSink::test_channel();
+    pad.set_midi(sink);
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
+    );
+    receiver.try_iter().for_each(drop);
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.25),
+    );
+    let notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [MidiMessage::PadOff, MidiMessage::PadChord(notes)]
     );
 }
 
@@ -1381,6 +1453,7 @@ fn pad_switching_back_to_hold_revoices_current_chord() {
 fn pad_stab_audio_dies_between_hits() {
     let controls = PadControls {
         trigger: 1.0,
+        gate_beats: 0.125,
         steps: [
             1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ],
@@ -1407,6 +1480,41 @@ fn pad_stab_audio_dies_between_hits() {
     assert!(
         early > late * 100.0,
         "stab did not die away: early={early} late={late}"
+    );
+}
+
+#[test]
+fn pad_gate_length_changes_the_audible_stab() {
+    fn late_power(gate_beats: f32) -> f64 {
+        let controls = PadControls {
+            trigger: 1.0,
+            gate_beats,
+            steps: [
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            ..PadControls::default()
+        };
+        let mut pad = pad_engine(&controls);
+        let mut power = 0.0f64;
+        for sample in 0..9_000u64 {
+            let beat = sample as f64 * 120.0 / (SAMPLE_RATE as f64 * 60.0);
+            let (left, right) = pad.next(
+                &controls,
+                0.0,
+                TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
+            );
+            if sample >= 7_000 {
+                power += f64::from(left * left + right * right);
+            }
+        }
+        power
+    }
+
+    let short = late_power(0.125);
+    let long = late_power(0.5);
+    assert!(
+        long > short * 100.0,
+        "gate had no audible effect: short={short} long={long}"
     );
 }
 
@@ -2195,11 +2303,11 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
         (Tab::Chords, {
-            // 13 base rows, then 8 slots x 5 discrete rows
+            // 14 base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
             let mut kinds = vec![
                 Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Discrete,
-                Gain, Gain, Gain, Gain,
+                Gain, Timing, Gain, Gain, Gain,
             ];
             kinds.extend(vec![Discrete; 40]);
             kinds.push(Gain); // pre-loaded shared Reverb
@@ -2797,7 +2905,7 @@ fn chords_progression_adjusts_and_clamps() {
 fn chords_tab_controls_none_shows_only_base_params() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, ChordDrill::None);
-    assert_eq!(rows.len(), 14);
+    assert_eq!(rows.len(), 15);
     assert_eq!(rows[0].id, "pad.level");
     assert_eq!(rows[6].id, "pad.chord_offset");
     assert_eq!(rows[7].id, "pad.progression");
@@ -2875,12 +2983,12 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 #[test]
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0), 29);
-    assert_eq!(chords_flat_index(progression_drill(), 2), 39);
-    assert_eq!(chords_flat_index(slot_drill(2), 0), 40);
+    assert_eq!(chords_flat_index(progression_drill(), 0), 30);
+    assert_eq!(chords_flat_index(progression_drill(), 2), 40);
+    assert_eq!(chords_flat_index(slot_drill(2), 0), 41);
 
     let controls = FluidControls::default();
-    let expected = tab_controls(Tab::Chords, &controls)[24].id;
+    let expected = tab_controls(Tab::Chords, &controls)[25].id;
     assert_eq!(expected, "pad.chord3_accidental");
 }
 

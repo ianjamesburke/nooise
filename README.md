@@ -89,9 +89,11 @@ features to sync.
 On the Pads page, change Trigger from Hold to Stabs for a 16-step chord rhythm.
 Enter on Trigger opens the Hit/Rest steps. Up/Down selects, Left/Right changes,
 and Esc returns to the Pads page. Each step is a sixteenth note. Swing delays the
-offbeat steps. Stabs use the current progression and send the same short chord
-hits to audio and MIDI, with note-offs between hits. Hold restores the normal
-sustained Pad.
+offbeat steps. Stabs use the current progression and send the same chord hits
+to audio and MIDI. Gate sets how many beats each hit stays held, from 0.125 to
+2, with a 0.5-beat default. The next hit retriggers the chord even if Gate has
+not elapsed. MIDI Note Off starts the external synth's own release envelope;
+nooise does not change its ADSR. Hold restores the normal sustained Pad.
 
 ```sh
 nooise --version

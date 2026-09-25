@@ -90,6 +90,7 @@ pub(crate) struct PadControls {
     pub(crate) progression: f32,
     pub(crate) trigger: f32,
     pub(crate) swing: f32,
+    pub(crate) gate_beats: f32,
     pub(crate) steps: [f32; 16],
     pub(crate) chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
     pub(crate) stereo_width: f32,
@@ -110,6 +111,7 @@ impl Default for PadControls {
             progression: 0.0,
             trigger: 0.0,
             swing: 0.0,
+            gate_beats: 0.5,
             steps: [
                 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
             ],

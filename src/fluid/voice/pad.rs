@@ -196,7 +196,7 @@ impl PadEngine {
                         0.01,
                         0.08,
                     ));
-                    self.active_stab_until_beat = Some(timing.beat + 0.125);
+                    self.active_stab_until_beat = Some(timing.beat + f64::from(c.gate_beats));
                 }
             }
         }

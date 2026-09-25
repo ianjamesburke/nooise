@@ -1504,11 +1504,13 @@ mod song_value_tests {
         let mut song = SongState::default();
         song.controls.pad.trigger = 1.0;
         song.controls.pad.swing = 0.5;
+        song.controls.pad.gate_beats = 1.0;
         song.controls.pad.steps[1] = 1.0;
         song.controls.pad.steps[4] = 0.0;
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
         assert_eq!(decoded.controls.pad.trigger, 1.0);
         assert!((decoded.controls.pad.swing - 0.5).abs() < 0.001);
+        assert_eq!(decoded.controls.pad.gate_beats, 1.0);
         assert_eq!(decoded.controls.pad.steps, song.controls.pad.steps);
     }
 }
