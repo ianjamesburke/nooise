@@ -5,8 +5,9 @@
 Hold `z` for Bloom, `c` for Submerge, `v` for Echo, `b` for Thin, or `x` for
 Lift.
 The amount rises while held and returns smoothly on release. Bloom blends the
-mix into a reverb cloud, Submerge darkens it, Echo throws it into repeats,
-Thin lowers it by up to 9 dB, and Lift thins its low end. The gesture input
+mix into a bright reverb cloud built from its mids and highs, Submerge darkens
+it, Echo throws it into repeats, Thin lowers it by up to 9 dB, and Lift thins
+its low end. The gesture input
 returns in 50 ms; reverb and echo tails finish after release.
 
 Every gesture plays over the whole mix, after Master's module chain, whatever

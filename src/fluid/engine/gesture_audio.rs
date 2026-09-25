@@ -6,9 +6,14 @@ const SUBMERGE_MIN_CUTOFF_HZ: f32 = 600.0;
 const SUBMERGE_OPEN_CUTOFF_HZ: f32 = 8_000.0;
 const LIFT_MIN_CUTOFF_HZ: f32 = 40.0;
 const LIFT_MAX_CUTOFF_HZ: f32 = 320.0;
-const BLOOM_SEND_GAIN: f32 = 0.11;
-const BLOOM_DRY_DUCK: f32 = 0.4;
+const BLOOM_SEND_GAIN: f32 = 0.42;
+const BLOOM_DRY_DUCK: f32 = 0.3;
 const BLOOM_ROOM_SIZE: f32 = 0.82;
+/// Comb damping. Low, so the wash keeps its air instead of going dull.
+const BLOOM_DAMPING: f32 = 0.15;
+/// The send is high-passed so sustained lows never pile up in the combs:
+/// the wash is built from the mids and highs.
+const BLOOM_SEND_HIGH_PASS_HZ: f32 = 300.0;
 const BLOOM_TAIL_SECONDS: f32 = 8.0;
 const ECHO_SEND_GAIN: f32 = 0.35;
 const ECHO_DRY_DUCK: f32 = 0.2;
@@ -22,6 +27,7 @@ struct GestureFx {
     submerge: SlotFx,
     lift: SlotFx,
     bloom: SlotFx,
+    bloom_send_filter: StereoFilter,
     echo: SlotFx,
     submerge_active: bool,
     lift_active: bool,
@@ -43,6 +49,7 @@ impl GestureFx {
             submerge: SlotFx::Filter(StereoFilter::default()),
             lift: SlotFx::Filter(StereoFilter::default()),
             bloom: SlotFx::Reverb(Freeverb::new(sample_rate)),
+            bloom_send_filter: StereoFilter::default(),
             echo: SlotFx::Delay(StereoDelay::new(max_delay_samples)),
             submerge_active: false,
             lift_active: false,
@@ -194,14 +201,25 @@ impl GestureFx {
             {
                 self.bloom_has_history = false;
                 self.bloom_clear_cursor = 0;
+                self.bloom_send_filter = StereoFilter::default();
             }
             return (0.0, 0.0);
         }
 
+        let input = self.bloom_send_filter.process(
+            input,
+            FilterParams {
+                sample_rate,
+                cutoff_hz: BLOOM_SEND_HIGH_PASS_HZ,
+                resonance: 0.0,
+                filter_type: FilterType::High,
+                amount: 1.0,
+            },
+        );
         let slot = ModuleSlot {
             amount: 1.0,
             time: BLOOM_ROOM_SIZE,
-            feedback: 0.58,
+            feedback: BLOOM_DAMPING,
             ..ModuleSlot::default()
         };
         let processed = ModuleFxBank::process_slot_fx(

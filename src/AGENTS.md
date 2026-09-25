@@ -33,7 +33,7 @@ All engine, terminal UI, and live-control code for the nooise binary.
   - `widget.rs` — `Dial`/`DialScale`, the shared slider vocabulary every bar renders through. Owns all value-to-bar-position mapping and tapered position stepping; no other module derives a ratio.
   - `engine.rs` — `FluidEngine` (voice mixer), gain smoothers, tempo clock and its `Transport`, grid triggers, shared per-layer/master effect bank, master bus, and the Master-bus gesture stage. `engine/gesture_audio.rs` owns its bounded gesture processors; see `fluid/engine/AGENTS.md`.
   - `gesture.rs` — normal-browsing gesture vocabulary and one fixed scalar envelope per gesture, all over Master. Amounts are evaluated from monotonic audio seconds, independently of tempo, key repeat, or UI cadence.
-  - `gesture_level_probe.rs` — Master headroom renders: a regression bound on the loudest built-in songs, plus an ignored table of every song with each gesture held at full throw.
+  - `gesture_level_probe.rs` — real-playback-level Master headroom renders: a clamp-hit regression bound, plus an ignored table of every song with each gesture held at full throw.
   - `voice/` — one module per voice (pad, bass, perc, kick, tonal, clap, arp, lead) plus shared helpers (`midi_to_hz`, `tune_ratio`, `note_hz`, `soft_clip`, `normalized_lfo`, `mix_and_retain`/`mix_and_retain_mono`) in `voice/mod.rs`.
 - `fx/` — shared DSP building blocks (LFO, panner, reverb) consumed by voices. See `fx/AGENTS.md`.
 - `synth/` — shared synthesis primitives (envelope, oscillator, noise, multi-operator FM) consumed by voices. See `synth/AGENTS.md`.

@@ -1,17 +1,23 @@
-//! Master headroom with each gesture held at full amount: an ignored
-//! diagnostic table and a regression bound.
+//! Master headroom with gestures held at full amount, measured at real
+//! playback level through the whole engine, output clamp included: a
+//! regression bound and an ignored diagnostic table.
 //! `cargo test --release gesture_level_probe -- --ignored --nocapture`
 
 use super::*;
 
-const RATE: f32 = 44_100.0;
-const SECONDS: f32 = 14.0;
+const RATE: f32 = 48_000.0;
 const SKIP_SECONDS: f32 = 3.0;
-/// Master level is scaled down so the output clamp never engages; the
-/// readout is scaled back up to the level the song asked for.
-const PROBE_SCALE: f32 = 1.0 / 16.0;
+/// `MasterBus` clamps its output here; a sample sitting on it was clipped.
+const MASTER_CLAMP: f32 = 0.95;
 
-fn render(song: &SongState, held: &[GestureKind]) -> (f32, f32) {
+struct Level {
+    clamp_hits: u32,
+    peak: f32,
+    /// Energy below 250 Hz, 250 Hz to 2.5 kHz, and above 2.5 kHz.
+    bands_db: [f32; 3],
+}
+
+fn render(song: &SongState, held: &[GestureKind], seconds: f32) -> Level {
     let mut snapshot = LiveSessionSnapshot::from_song(song);
     snapshot.gestures = GestureState::default();
     for kind in held {
@@ -22,7 +28,6 @@ fn render(song: &SongState, held: &[GestureKind]) -> (f32, f32) {
             restored: false,
         };
     }
-    snapshot.controls.master.level *= PROBE_SCALE;
     let mut engine = FluidEngine::new(
         RATE,
         LiveSession::new(snapshot),
@@ -30,21 +35,55 @@ fn render(song: &SongState, held: &[GestureKind]) -> (f32, f32) {
         Arc::new(FluidTelemetry::default()),
     );
     engine.reseed(7);
-    let (mut peak, mut energy, mut count) = (0.0_f32, 0.0_f64, 0_u64);
-    for frame in 0..(SECONDS * RATE) as usize {
+    let one_pole = |hz: f32| 1.0 - (-std::f32::consts::TAU * hz / RATE).exp();
+    let (a_low, a_high) = (one_pole(250.0), one_pole(2_500.0));
+    let (mut lp_low, mut lp_high) = (0.0_f32, 0.0_f32);
+    let mut energy = [0.0_f64; 3];
+    let (mut clamp_hits, mut peak) = (0, 0.0_f32);
+    for frame in 0..(seconds * RATE) as usize {
         let (l, r) = engine.next_stereo();
-        let (l, r) = (l / PROBE_SCALE, r / PROBE_SCALE);
-        if frame as f32 >= SKIP_SECONDS * RATE {
-            peak = peak.max(l.abs()).max(r.abs());
-            energy += f64::from(l * l + r * r);
-            count += 2;
+        if (frame as f32) < SKIP_SECONDS * RATE {
+            continue;
+        }
+        for x in [l, r] {
+            clamp_hits += u32::from(x.abs() >= MASTER_CLAMP - 1e-6);
+            peak = peak.max(x.abs());
+        }
+        let mono = (l + r) * 0.5;
+        lp_low += a_low * (mono - lp_low);
+        lp_high += a_high * (mono - lp_high);
+        for (band, value) in [lp_low, lp_high - lp_low, mono - lp_high]
+            .into_iter()
+            .enumerate()
+        {
+            energy[band] += f64::from(value * value);
         }
     }
-    (peak, (energy / count as f64).sqrt() as f32)
+    Level {
+        clamp_hits,
+        peak,
+        bands_db: energy.map(|e| 10.0 * e.max(1e-12).log10() as f32),
+    }
 }
 
-fn db(x: f32) -> f32 {
-    20.0 * x.max(1e-9).log10()
+/// The Master clamp is a backstop, never gain staging. Every gesture that
+/// adds a return, thrown fully at once at real playback level, must never
+/// touch it and must keep 4 dB clear of it: on the song whose Bloom lifts
+/// peaks most (5), a song the pre-fix Bloom clipped 14,497 times (9), and
+/// the loudest built-in song (18).
+#[test]
+fn full_gesture_throw_never_reaches_the_master_clamp() {
+    use GestureKind::*;
+    let songs = decode_auto_states();
+    for index in [5, 9, 18] {
+        let level = render(&songs[index], &[Bloom, Echo, Submerge], 9.0);
+        assert!(
+            level.clamp_hits == 0 && level.peak < 0.6,
+            "song {index}: {} clamp hits, peak {:.3}",
+            level.clamp_hits,
+            level.peak
+        );
+    }
 }
 
 #[test]
@@ -59,39 +98,33 @@ fn gesture_level_probe() {
         ("Lift", &[Lift]),
         ("Bl+Ec+Su", &[Bloom, Echo, Submerge]),
     ];
-    let mut worst = [f32::MIN; 6];
-    for (index, song) in decode_auto_states().iter().enumerate() {
-        let (base_peak, base_rms) = render(song, &[]);
-        let mut line = format!("song {index:2} base {:+6.1} dBFS |", db(base_peak));
-        for (case, (name, held)) in cases.iter().enumerate() {
-            let (peak, rms) = render(song, held);
-            let dp = db(peak) - db(base_peak);
-            worst[case] = worst[case].max(dp);
-            line += &format!(
-                " {name} pk{dp:+5.1} rms{:+5.1}{}",
-                db(rms) - db(base_rms),
-                if peak > 0.95 { " CLAMP" } else { "" }
+    let mut songs: Vec<(String, SongState)> = decode_auto_states()
+        .into_iter()
+        .enumerate()
+        .map(|(index, song)| (format!("auto {index:2}"), song))
+        .collect();
+    for progression in 0..PROGRESSIONS.len() {
+        let mut controls = FluidControls::default();
+        controls.pad.progression = progression as f32;
+        songs.push((
+            format!("fresh {progression}"),
+            SongState::from_controls(controls),
+        ));
+    }
+    for (name, song) in &songs {
+        let dry = render(song, &[], 14.0);
+        println!("{name}: dry peak {:.3}, {} hits", dry.peak, dry.clamp_hits);
+        for (case, held) in cases {
+            let wet = render(song, held, 14.0);
+            let delta = |band: usize| wet.bands_db[band] - dry.bands_db[band];
+            println!(
+                "  {case:<8} peak {:.3} hits {:>5} | low {:+5.1} mid {:+5.1} high {:+5.1} dB",
+                wet.peak,
+                wet.clamp_hits,
+                delta(0),
+                delta(1),
+                delta(2)
             );
         }
-        println!("{line}");
-    }
-    println!("worst peak delta per case: {worst:?}");
-}
-
-/// The Master output clamp is a backstop, not gain staging: on the loudest
-/// built-in song and the one Bloom lifts most, every gesture that adds a
-/// return, thrown fully at once, must stay near the dry peak and short of
-/// the clamp.
-#[test]
-fn full_gesture_throw_never_reaches_the_master_clamp() {
-    use GestureKind::*;
-    let songs = decode_auto_states();
-    for index in [8, 18] {
-        let (base_peak, _) = render(&songs[index], &[]);
-        let (peak, _) = render(&songs[index], &[Bloom, Echo, Submerge]);
-        assert!(
-            peak < 0.95 && db(peak) - db(base_peak) < 2.0,
-            "song {index}: gesture peak {peak:.3} vs dry {base_peak:.3}"
-        );
     }
 }
