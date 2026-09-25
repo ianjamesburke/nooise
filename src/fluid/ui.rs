@@ -312,11 +312,19 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             );
         // The Root list shows all eight slots; the ones the window does not
         // play recede so Count and Offset read at a glance.
-        let style = if in_chord_drill
-            && !parent_active
-            && !ChordWindow::requested(&frame.controls().pad)
-                .slots()
-                .any(|slot| slot == i)
+        let midi_disables_step = view.navigation.tab == Tab::Chords
+            && matches!(
+                view.navigation.chord_drill,
+                interaction::ChordDrill::Pattern { .. }
+            )
+            && frame.controls().pad.midi_trigger >= 0.5
+            && pad_step_index(item.id).is_some();
+        let style = if midi_disables_step
+            || in_chord_drill
+                && !parent_active
+                && !ChordWindow::requested(&frame.controls().pad)
+                    .slots()
+                    .any(|slot| slot == i)
         {
             Style::default().fg(DIM_TEXT)
         } else {
@@ -361,6 +369,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 view.navigation.chord_drill,
                 interaction::ChordDrill::Pattern { .. }
             )
+            && frame.controls().pad.midi_trigger < 0.5
             && i == ((beat / 0.25).floor() as usize % 16);
         if pad_step_playing {
             spans.push(Span::styled(

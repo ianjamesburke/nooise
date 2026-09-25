@@ -475,6 +475,7 @@ pub(crate) struct LeadEngine {
     midi_active: bool,
     midi_held: bool,
     midi_gate_remaining_beats: Option<f64>,
+    input_note: Option<u8>,
     transport: Transport,
 }
 
@@ -500,12 +501,33 @@ impl LeadEngine {
             midi_active: false,
             midi_held: false,
             midi_gate_remaining_beats: None,
+            input_note: None,
             transport: Transport::Playing,
         }
     }
 
     pub(crate) fn set_midi(&mut self, sink: MidiSink) {
         self.midi = Some(sink);
+    }
+
+    /// MIDI input plays the Lead's sound at the received pitch. It does not
+    /// call `play_midi`, so the input is never echoed to MIDI output.
+    pub(crate) fn midi_note_on(&mut self, note: u8, c: &LeadControls, tune: f32) {
+        self.input_note = Some(note);
+        self.play(i32::from(note), tune, c, true);
+    }
+
+    pub(crate) fn midi_note_off(&mut self, note: u8) {
+        if self.input_note == Some(note) {
+            self.input_note = None;
+            self.release();
+        }
+    }
+
+    pub(crate) fn release_input(&mut self) {
+        if self.input_note.take().is_some() {
+            self.release();
+        }
     }
 
     fn release_midi(&mut self) {
@@ -604,6 +626,7 @@ impl LeadEngine {
             if (c.level != 0.0 || midi_enabled)
                 && LeadPattern::from_value(c.pattern) != LeadPattern::Off
                 && !self.held_seen
+                && self.input_note.is_none()
                 && let Some(tone) = lead_step_tone(c.steps[lane_step])
             {
                 let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
@@ -631,7 +654,7 @@ impl LeadEngine {
                 self.play_midi(note, tune, c.midi_gate_beats, hold);
             }
         }
-        if released {
+        if released && self.input_note.is_none() {
             self.release();
         }
 

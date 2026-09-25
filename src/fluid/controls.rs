@@ -89,7 +89,10 @@ pub(crate) struct PadControls {
     pub(crate) chord_offset: f32,
     pub(crate) progression: f32,
     pub(crate) chord_notes: f32,
+    pub(crate) midi_in: f32,
     pub(crate) midi_out: f32,
+    /// In Stabs mode, 0 reads the step lane and 1 fires on MIDI Note On.
+    pub(crate) midi_trigger: f32,
     pub(crate) trigger: f32,
     pub(crate) swing: f32,
     pub(crate) gate_beats: f32,
@@ -112,7 +115,9 @@ impl Default for PadControls {
             chord_offset: 0.0,
             progression: 0.0,
             chord_notes: 4.0,
+            midi_in: 1.0,
             midi_out: 1.0,
+            midi_trigger: 0.0,
             trigger: 0.0,
             swing: 0.0,
             gate_beats: 0.5,
@@ -260,6 +265,7 @@ impl Default for BassControls {
 #[derive(Clone)]
 pub(crate) struct ArpControls {
     pub(crate) gain: f32,
+    pub(crate) midi_in: f32,
     pub(crate) midi_out: f32,
     pub(crate) midi_gate_beats: f32,
     pub(crate) voice_type: f32, // same Sine/piano-profile set as tonal.synth_type
@@ -278,6 +284,7 @@ impl Default for ArpControls {
             // Silent by default: a new voice must never change the sound of
             // existing songs or a fresh startup.
             gain: 0.0,
+            midi_in: 0.0,
             midi_out: 0.0,
             midi_gate_beats: 0.5,
             // 6 => the "Pluck" piano profile, matching the arp's former
@@ -311,6 +318,7 @@ pub(crate) const DEFAULT_LEAD_STEPS: [f32; LEAD_STEP_COUNT] = [
 #[derive(Clone)]
 pub(crate) struct LeadControls {
     pub(crate) level: f32,
+    pub(crate) midi_in: f32,
     pub(crate) midi_out: f32,
     pub(crate) midi_gate_beats: f32,
     pub(crate) attack: f32,
@@ -333,6 +341,7 @@ impl Default for LeadControls {
             // Silent by default: a new voice must never change the sound of
             // existing songs or a fresh startup.
             level: 0.0,
+            midi_in: 0.0,
             midi_out: 0.0,
             midi_gate_beats: 0.5,
             attack: 0.02,

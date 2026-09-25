@@ -7,6 +7,7 @@ use crate::midi::{MidiMessage, MidiSink, pad_notes_with_count};
 use super::*;
 
 pub(crate) const MAX_PAD_LAYERS: usize = 4;
+const MAX_MIDI_PAD_VOICES: usize = 16;
 /// How long a `pad.type` change takes to crossfade from the outgoing
 /// character stage to the incoming one, inside each already-sounding tone.
 ///
@@ -21,6 +22,7 @@ const PAD_TYPE_CROSSFADE_SECONDS: f32 = 0.03;
 pub(crate) struct PadEngine {
     pub(crate) sample_rate: f32,
     pub(crate) layers: Vec<PadLayer>,
+    input_voices: Vec<PadInputVoice>,
     pub(crate) cursor: ProgressionCursor,
     pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
@@ -33,11 +35,23 @@ pub(crate) struct PadEngine {
     pub(crate) rng: StdRng,
     pub(crate) telemetry: Arc<FluidTelemetry>,
     midi: Option<MidiSink>,
+    midi_input_attached: bool,
+    internal_audio: EasedRamp,
     midi_suppressed: bool,
     midi_initial_pending: bool,
     stab_trigger: GridTrigger,
     active_stab_until_beat: Option<f64>,
+    active_stab_until_sample: Option<u64>,
+    sample_clock: u64,
+    last_midi_trigger_sample: Option<u64>,
     stabbing: bool,
+    midi_triggering: bool,
+}
+
+struct PadInputVoice {
+    note: u8,
+    held: bool,
+    tone: PadTone,
 }
 
 impl PadEngine {
@@ -71,6 +85,7 @@ impl PadEngine {
                 c.attack_time,
                 c.release_time,
             )],
+            input_voices: Vec::with_capacity(MAX_MIDI_PAD_VOICES),
             cursor,
             active_character,
             last_chord_notes: initial_notes,
@@ -81,17 +96,27 @@ impl PadEngine {
             rng: StdRng::from_entropy(),
             telemetry,
             midi: None,
+            midi_input_attached: false,
+            internal_audio: EasedRamp::settled(1.0),
             midi_suppressed: false,
             midi_initial_pending: false,
             stab_trigger: GridTrigger::new(),
             active_stab_until_beat: None,
+            active_stab_until_sample: None,
+            sample_clock: 0,
+            last_midi_trigger_sample: None,
             stabbing: false,
+            midi_triggering: false,
         }
     }
 
     pub(crate) fn set_midi(&mut self, sink: MidiSink) {
         self.midi = Some(sink);
         self.midi_initial_pending = true;
+    }
+
+    pub(crate) fn set_midi_input_attached(&mut self) {
+        self.midi_input_attached = true;
     }
 
     pub(crate) fn set_midi_suppressed(&mut self, suppressed: bool) {
@@ -117,11 +142,104 @@ impl PadEngine {
     }
 
     fn release_stab(&mut self) {
-        if self.active_stab_until_beat.take().is_some() {
+        let beat_active = self.active_stab_until_beat.take().is_some();
+        let sample_active = self.active_stab_until_sample.take().is_some();
+        if beat_active || sample_active {
             for layer in &mut self.layers {
                 layer.release();
             }
             self.send_midi(MidiMessage::PadOff);
+        }
+    }
+
+    pub(crate) fn release_input(&mut self) {
+        for voice in &mut self.input_voices {
+            if voice.held {
+                voice.held = false;
+                voice.tone.release();
+            }
+        }
+        if self.midi_triggering {
+            self.release_stab();
+        }
+    }
+
+    pub(crate) fn midi_note_off(&mut self, note: u8) {
+        for voice in &mut self.input_voices {
+            if voice.note == note && voice.held {
+                voice.held = false;
+                voice.tone.release();
+            }
+        }
+    }
+
+    pub(crate) fn midi_note_on(
+        &mut self,
+        note: u8,
+        c: &PadControls,
+        tune: f32,
+        timing: TimingContext,
+    ) {
+        if self.stabbing && self.midi_triggering {
+            let coalesce_samples = (self.sample_rate * 0.01).round() as u64;
+            if self.last_midi_trigger_sample.is_some_and(|previous| {
+                self.sample_clock.saturating_sub(previous) < coalesce_samples
+            }) {
+                return;
+            }
+            self.last_midi_trigger_sample = Some(self.sample_clock);
+            self.trigger_stab(c, tune, timing);
+            return;
+        }
+        self.midi_note_off(note);
+        if self.input_voices.len() >= MAX_MIDI_PAD_VOICES {
+            self.input_voices.remove(0);
+        }
+        self.input_voices.push(PadInputVoice {
+            note,
+            held: true,
+            tone: PadTone::new(
+                self.active_character,
+                note_hz(i32::from(note), tune),
+                0.0,
+                0.17,
+                c.attack_time,
+                c.release_time,
+                self.sample_rate,
+            ),
+        });
+    }
+
+    fn trigger_stab(&mut self, c: &PadControls, tune: f32, timing: TimingContext) {
+        self.release_stab();
+        let chord_notes = self.last_chord_notes;
+        self.telemetry
+            .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
+        self.send_midi(MidiMessage::PadChord(pad_notes_with_count(
+            chord_notes,
+            self.active_note_count,
+            tune,
+        )));
+        if self.layers.len() >= MAX_PAD_LAYERS {
+            let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
+            self.layers.drain(0..remove_count);
+        }
+        self.layers.push(PadLayer::new(
+            self.active_character,
+            chord_notes,
+            self.active_note_count,
+            tune,
+            self.sample_rate,
+            0.01,
+            0.08,
+        ));
+        if timing.transport == Transport::Stopped {
+            let samples = (f64::from(c.gate_beats) * 60.0 / timing.bpm
+                * f64::from(self.sample_rate))
+            .round() as u64;
+            self.active_stab_until_sample = Some(self.sample_clock + samples.max(1));
+        } else {
+            self.active_stab_until_beat = Some(timing.beat + f64::from(c.gate_beats));
         }
     }
 
@@ -148,6 +266,9 @@ impl PadEngine {
             for layer in &mut self.layers {
                 layer.set_character(character, self.sample_rate);
             }
+            for voice in &mut self.input_voices {
+                voice.tone.set_character(character, self.sample_rate);
+            }
         }
 
         // A chord sustains until the next one replaces it, so a stopped
@@ -158,8 +279,11 @@ impl PadEngine {
         self.transport = timing.transport;
         let playing = timing.transport == Transport::Playing;
         let stabbing = c.trigger >= 0.5;
+        let midi_triggering = stabbing && c.midi_trigger >= 0.5;
         let mode_changed = stabbing != self.stabbing;
+        let source_changed = midi_triggering != self.midi_triggering;
         self.stabbing = stabbing;
+        self.midi_triggering = midi_triggering;
         if mode_changed {
             if stabbing {
                 self.layers.clear();
@@ -170,7 +294,15 @@ impl PadEngine {
                 }
             }
             self.active_stab_until_beat = None;
+            self.active_stab_until_sample = None;
             self.send_midi(MidiMessage::PadOff);
+        }
+        if source_changed {
+            self.release_input();
+            self.release_stab();
+        }
+        if mode_changed || source_changed {
+            self.last_midi_trigger_sample = None;
         }
         if transport_changed && !playing {
             self.release_stab();
@@ -189,44 +321,25 @@ impl PadEngine {
                     0.08,
                 );
             }
-            if chord_edited && self.active_stab_until_beat.is_some() {
+            if chord_edited
+                && (self.active_stab_until_beat.is_some()
+                    || self.active_stab_until_sample.is_some())
+            {
                 self.release_stab();
             }
             if self
                 .active_stab_until_beat
                 .is_some_and(|end| timing.beat >= end)
-                || !playing
+                || self
+                    .active_stab_until_sample
+                    .is_some_and(|end| self.sample_clock >= end)
             {
                 self.release_stab();
             }
-            if self.stab_trigger.pop_swung(timing, 0.25, 0.0, c.swing) {
+            if self.stab_trigger.pop_swung(timing, 0.25, 0.0, c.swing) && !midi_triggering {
                 let step = ((timing.beat / 0.25).floor() as usize) % 16;
                 if c.steps[step] >= 0.5 {
-                    self.release_stab();
-                    self.telemetry.publish_hit(
-                        MusicalHit::Pad,
-                        c.level,
-                        pitch_class(chord_notes[0]),
-                    );
-                    self.send_midi(MidiMessage::PadChord(pad_notes_with_count(
-                        chord_notes,
-                        note_count,
-                        tune,
-                    )));
-                    if self.layers.len() >= MAX_PAD_LAYERS {
-                        let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
-                        self.layers.drain(0..remove_count);
-                    }
-                    self.layers.push(PadLayer::new(
-                        character,
-                        chord_notes,
-                        note_count,
-                        tune,
-                        self.sample_rate,
-                        0.01,
-                        0.08,
-                    ));
-                    self.active_stab_until_beat = Some(timing.beat + f64::from(c.gate_beats));
+                    self.trigger_stab(c, tune, timing);
                 }
             }
         }
@@ -284,6 +397,11 @@ impl PadEngine {
             |layer| layer.next_stereo(width, detune_mix, octave_mix),
             PadLayer::is_done,
         );
+        let (input_l, input_r) = mix_and_retain(
+            &mut self.input_voices,
+            |voice| voice.tone.next_stereo(width, detune_mix, octave_mix),
+            |voice| voice.tone.is_done(),
+        );
 
         let air = self.air.next_filtered(&mut self.rng, 0.0002) * 0.00025;
 
@@ -291,9 +409,23 @@ impl PadEngine {
         // `pad.level` at 100% should reach close to full scale on its own,
         // leaving final safety margin to the master bus's soft-clip/compressor.
         const OUTPUT_TRIM: f32 = 0.95;
+        // A connected keyboard owns Hold-mode Pad audio while MIDI In is on.
+        // The progression still advances and can drive MIDI Out; Stabs remain
+        // an explicit rhythm/chord-trigger surface.
+        let internal_target = if self.midi_input_attached && c.midi_in >= 0.5 && !stabbing {
+            0.0
+        } else {
+            1.0
+        };
+        if self.internal_audio.target != internal_target {
+            let samples = (LEVEL_RAMP_MS * 0.001 * self.sample_rate).round() as u32;
+            self.internal_audio.retarget(internal_target, samples);
+        }
+        let internal_gain = self.internal_audio.next();
+        self.sample_clock += 1;
         (
-            (dry_l * OUTPUT_TRIM + air) * c.level,
-            (dry_r * OUTPUT_TRIM + air) * c.level,
+            ((dry_l * internal_gain + input_l) * OUTPUT_TRIM + air) * c.level,
+            ((dry_r * internal_gain + input_r) * OUTPUT_TRIM + air) * c.level,
         )
     }
 }

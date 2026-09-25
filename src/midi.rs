@@ -1,14 +1,14 @@
-//! Opt-in MIDI output: a bounded audio-thread event queue and one MIDI
-//! sender thread. Channel 1 carries Pad chords, Arp notes, and Lead notes; system real-time messages
-//! carry the engine's transport and 24 PPQN clock.
+//! Opt-in MIDI input and output with bounded, nonblocking audio-thread queues.
+//! Note input is never echoed directly; generated Pad, Arp, and Lead notes
+//! and the engine's transport clock go to the chosen output channel.
 
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
-use midir::{MidiOutput, MidiOutputConnection};
+use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 
 use crate::fluid::{TimingContext, Transport, pad_voicing};
 
@@ -17,6 +17,27 @@ const CLOCKS_PER_BEAT: f64 = 24.0;
 const PAD_VELOCITY: u8 = 100;
 const ARP_VELOCITY: u8 = 100;
 const LEAD_VELOCITY: u8 = 100;
+const INPUT_DRAIN_LIMIT: usize = 128;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MidiConfig<'a> {
+    pub(crate) input: Option<MidiEndpoint<'a>>,
+    pub(crate) output: Option<MidiEndpoint<'a>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MidiEndpoint<'a> {
+    pub(crate) name: &'a str,
+    /// Human-facing channel, 1 through 16.
+    pub(crate) channel: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MidiInputEvent {
+    NoteOn(u8),
+    NoteOff(u8),
+    AllNotesOff,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MidiMessage {
@@ -46,8 +67,14 @@ impl PadMidiNotes {
 }
 
 pub(crate) enum MidiPortError {
-    Missing(String),
-    Ambiguous(String),
+    Missing {
+        direction: &'static str,
+        name: String,
+    },
+    Ambiguous {
+        direction: &'static str,
+        name: String,
+    },
 }
 
 impl fmt::Debug for MidiPortError {
@@ -59,11 +86,13 @@ impl fmt::Debug for MidiPortError {
 impl fmt::Display for MidiPortError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Missing(name) => write!(
+            Self::Missing { direction, name } => write!(
                 f,
-                "MIDI output port {name:?} was not found; run nooise midi-ports to list names"
+                "MIDI {direction} port {name:?} was not found; run nooise midi-ports to list names"
             ),
-            Self::Ambiguous(name) => write!(f, "multiple MIDI output ports are named {name:?}"),
+            Self::Ambiguous { direction, name } => {
+                write!(f, "multiple MIDI {direction} ports are named {name:?}")
+            }
         }
     }
 }
@@ -103,17 +132,22 @@ pub(crate) struct MidiOutputManager {
 }
 
 impl MidiOutputManager {
-    pub(crate) fn open(name: &str) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn open(endpoint: MidiEndpoint<'_>) -> Result<Self, Box<dyn Error>> {
         let output = MidiOutput::new("nooise MIDI output")?;
-        let mut matching = output
-            .ports()
-            .into_iter()
-            .filter(|port| output.port_name(port).is_ok_and(|found| found == name));
-        let port = matching
-            .next()
-            .ok_or_else(|| MidiPortError::Missing(name.to_owned()))?;
+        let mut matching = output.ports().into_iter().filter(|port| {
+            output
+                .port_name(port)
+                .is_ok_and(|found| found == endpoint.name)
+        });
+        let port = matching.next().ok_or_else(|| MidiPortError::Missing {
+            direction: "output",
+            name: endpoint.name.to_owned(),
+        })?;
         if matching.next().is_some() {
-            return Err(Box::new(MidiPortError::Ambiguous(name.to_owned())));
+            return Err(Box::new(MidiPortError::Ambiguous {
+                direction: "output",
+                name: endpoint.name.to_owned(),
+            }));
         }
         let connection = output.connect(&port, "nooise MIDI out")?;
         let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
@@ -121,7 +155,14 @@ impl MidiOutputManager {
         let writer_overflowed = Arc::clone(&overflowed);
         let writer = thread::Builder::new()
             .name("nooise-midi-out".into())
-            .spawn(move || write_events(connection, receiver, writer_overflowed))?;
+            .spawn(move || {
+                write_events(
+                    connection,
+                    receiver,
+                    writer_overflowed,
+                    endpoint.channel - 1,
+                )
+            })?;
         Ok(Self {
             sink: MidiSink { sender, overflowed },
             writer: Some(writer),
@@ -134,11 +175,117 @@ impl MidiOutputManager {
 }
 
 pub(crate) fn list_ports() -> Result<(), Box<dyn Error>> {
+    let input = MidiInput::new("nooise MIDI input discovery")?;
+    println!("Input:");
+    for port in input.ports() {
+        println!("  {}", input.port_name(&port)?);
+    }
     let output = MidiOutput::new("nooise MIDI discovery")?;
+    println!("Output:");
     for port in output.ports() {
-        println!("{}", output.port_name(&port)?);
+        println!("  {}", output.port_name(&port)?);
     }
     Ok(())
+}
+
+#[derive(Clone)]
+pub(crate) struct MidiInputSource {
+    receiver: Arc<Mutex<mpsc::Receiver<MidiInputEvent>>>,
+    overflowed: Arc<AtomicBool>,
+}
+
+impl MidiInputSource {
+    #[cfg(test)]
+    pub(crate) fn test_channel() -> (Self, mpsc::SyncSender<MidiInputEvent>) {
+        let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
+        (
+            Self {
+                receiver: Arc::new(Mutex::new(receiver)),
+                overflowed: Arc::new(AtomicBool::new(false)),
+            },
+            sender,
+        )
+    }
+
+    /// A busy input callback never makes the audio thread wait. When the
+    /// bounded queue overflows, the caller releases its held input notes.
+    pub(crate) fn drain(&self, mut consume: impl FnMut(MidiInputEvent)) -> bool {
+        let overflowed = self.overflowed.swap(false, Ordering::AcqRel);
+        if let Ok(receiver) = self.receiver.try_lock() {
+            for _ in 0..INPUT_DRAIN_LIMIT {
+                match receiver.try_recv() {
+                    Ok(event) => consume(event),
+                    Err(_) => break,
+                }
+            }
+        }
+        overflowed
+    }
+}
+
+pub(crate) struct MidiInputManager {
+    _connection: MidiInputConnection<()>,
+    source: MidiInputSource,
+}
+
+impl MidiInputManager {
+    pub(crate) fn open(endpoint: MidiEndpoint<'_>) -> Result<Self, Box<dyn Error>> {
+        let input = MidiInput::new("nooise MIDI input")?;
+        let mut matching = input.ports().into_iter().filter(|port| {
+            input
+                .port_name(port)
+                .is_ok_and(|found| found == endpoint.name)
+        });
+        let port = matching.next().ok_or_else(|| MidiPortError::Missing {
+            direction: "input",
+            name: endpoint.name.to_owned(),
+        })?;
+        if matching.next().is_some() {
+            return Err(Box::new(MidiPortError::Ambiguous {
+                direction: "input",
+                name: endpoint.name.to_owned(),
+            }));
+        }
+        let (sender, receiver) = mpsc::sync_channel(QUEUE_CAPACITY);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let callback_overflowed = Arc::clone(&overflowed);
+        let channel = endpoint.channel - 1;
+        let connection = input.connect(
+            &port,
+            "nooise MIDI in",
+            move |_, bytes, _| {
+                if let Some(event) = decode_input(bytes, channel)
+                    && sender.try_send(event).is_err()
+                {
+                    callback_overflowed.store(true, Ordering::Release);
+                }
+            },
+            (),
+        )?;
+        Ok(Self {
+            _connection: connection,
+            source: MidiInputSource {
+                receiver: Arc::new(Mutex::new(receiver)),
+                overflowed,
+            },
+        })
+    }
+
+    pub(crate) fn source(&self) -> MidiInputSource {
+        self.source.clone()
+    }
+}
+
+fn decode_input(bytes: &[u8], channel: u8) -> Option<MidiInputEvent> {
+    if bytes.len() < 3 || bytes[0] & 0x0f != channel {
+        return None;
+    }
+    match bytes[0] & 0xf0 {
+        0x90 if bytes[2] != 0 => Some(MidiInputEvent::NoteOn(bytes[1])),
+        0x80 | 0x90 => Some(MidiInputEvent::NoteOff(bytes[1])),
+        0xb0 if bytes[1] == 120 || bytes[1] == 123 => Some(MidiInputEvent::AllNotesOff),
+        _ => None,
+    }
 }
 
 impl Drop for MidiOutputManager {
@@ -156,25 +303,28 @@ fn write_events(
     mut connection: MidiOutputConnection,
     receiver: mpsc::Receiver<MidiMessage>,
     overflowed: Arc<AtomicBool>,
+    channel: u8,
 ) {
     let mut active = ActiveNotes::default();
     while let Ok(message) = receiver.recv() {
         if overflowed.swap(false, Ordering::AcqRel) {
             // A dropped Note Off must never leave a stuck note on the synth.
-            let _ = connection.send(&[0xb0, 123, 0]);
+            let _ = connection.send(&[0xb0 | channel, 123, 0]);
             active = ActiveNotes::default();
         }
-        match dispatch(message, &mut active, &mut |bytes| connection.send(bytes)) {
+        match dispatch_on_channel(message, channel, &mut active, &mut |bytes| {
+            connection.send(bytes)
+        }) {
             Ok(true) => {}
             Ok(false) => return,
             Err(_) => {
                 // A disconnected output cannot be repaired in the audio callback.
-                let _ = connection.send(&[0xb0, 123, 0]);
+                let _ = connection.send(&[0xb0 | channel, 123, 0]);
                 return;
             }
         }
     }
-    let _ = release_all(&mut active, &mut |bytes| connection.send(bytes));
+    let _ = release_all(&mut active, channel, &mut |bytes| connection.send(bytes));
     let _ = connection.send(&[0xfc]);
 }
 
@@ -193,8 +343,9 @@ impl ActiveNotes {
     }
 }
 
-fn dispatch<E>(
+fn dispatch_on_channel<E>(
     message: MidiMessage,
+    channel: u8,
     active: &mut ActiveNotes,
     send: &mut impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<bool, E> {
@@ -204,34 +355,34 @@ fn dispatch<E>(
         MidiMessage::Stop => send(&[0xfc])?,
         MidiMessage::Clock => send(&[0xf8])?,
         MidiMessage::PadChord(notes) => {
-            release_pad(active, send)?;
+            release_pad(active, channel, send)?;
             for &note in notes.active() {
                 if !active.contains(note) {
-                    send(&[0x90, note, PAD_VELOCITY])?;
+                    send(&[0x90 | channel, note, PAD_VELOCITY])?;
                 }
             }
             active.pad = Some(notes);
         }
-        MidiMessage::PadOff => release_pad(active, send)?,
+        MidiMessage::PadOff => release_pad(active, channel, send)?,
         MidiMessage::ArpNote(note) => {
-            release_arp(active, send)?;
+            release_arp(active, channel, send)?;
             if !active.contains(note) {
-                send(&[0x90, note, ARP_VELOCITY])?;
+                send(&[0x90 | channel, note, ARP_VELOCITY])?;
             }
             active.arp = Some(note);
         }
-        MidiMessage::ArpOff => release_arp(active, send)?,
+        MidiMessage::ArpOff => release_arp(active, channel, send)?,
         MidiMessage::LeadNote(note) => {
-            release_lead(active, send)?;
+            release_lead(active, channel, send)?;
             if !active.contains(note) {
-                send(&[0x90, note, LEAD_VELOCITY])?;
+                send(&[0x90 | channel, note, LEAD_VELOCITY])?;
             }
             active.lead = Some(note);
         }
-        MidiMessage::LeadOff => release_lead(active, send)?,
+        MidiMessage::LeadOff => release_lead(active, channel, send)?,
         MidiMessage::Shutdown => {
-            release_all(active, send)?;
-            send(&[0xb0, 123, 0])?;
+            release_all(active, channel, send)?;
+            send(&[0xb0 | channel, 123, 0])?;
             send(&[0xfc])?;
             return Ok(false);
         }
@@ -241,12 +392,13 @@ fn dispatch<E>(
 
 fn release_pad<E>(
     active: &mut ActiveNotes,
+    channel: u8,
     send: &mut impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
     if let Some(notes) = active.pad.take() {
         for &note in notes.active() {
             if !active.contains(note) {
-                send(&[0x80, note, 0])?;
+                send(&[0x80 | channel, note, 0])?;
             }
         }
     }
@@ -255,35 +407,47 @@ fn release_pad<E>(
 
 fn release_arp<E>(
     active: &mut ActiveNotes,
+    channel: u8,
     send: &mut impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
     if let Some(note) = active.arp.take()
         && !active.contains(note)
     {
-        send(&[0x80, note, 0])?;
+        send(&[0x80 | channel, note, 0])?;
     }
     Ok(())
 }
 
 fn release_lead<E>(
     active: &mut ActiveNotes,
+    channel: u8,
     send: &mut impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
     if let Some(note) = active.lead.take()
         && !active.contains(note)
     {
-        send(&[0x80, note, 0])?;
+        send(&[0x80 | channel, note, 0])?;
     }
     Ok(())
 }
 
 fn release_all<E>(
     active: &mut ActiveNotes,
+    channel: u8,
     send: &mut impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
-    release_pad(active, send)?;
-    release_arp(active, send)?;
-    release_lead(active, send)
+    release_pad(active, channel, send)?;
+    release_arp(active, channel, send)?;
+    release_lead(active, channel, send)
+}
+
+#[cfg(test)]
+fn dispatch<E>(
+    message: MidiMessage,
+    active: &mut ActiveNotes,
+    send: &mut impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<bool, E> {
+    dispatch_on_channel(message, 0, active, send)
 }
 
 pub(crate) struct MidiClockFollower {
@@ -524,6 +688,52 @@ mod tests {
                 vec![0x90, 64, ARP_VELOCITY],
                 vec![0x80, 64, 0],
                 vec![0xb0, 123, 0],
+                vec![0xfc],
+            ]
+        );
+    }
+
+    #[test]
+    fn input_decodes_only_note_messages_on_the_selected_channel() {
+        assert_eq!(
+            decode_input(&[0x91, 60, 100], 1),
+            Some(MidiInputEvent::NoteOn(60))
+        );
+        assert_eq!(
+            decode_input(&[0x91, 60, 0], 1),
+            Some(MidiInputEvent::NoteOff(60))
+        );
+        assert_eq!(
+            decode_input(&[0x81, 60, 64], 1),
+            Some(MidiInputEvent::NoteOff(60))
+        );
+        assert_eq!(decode_input(&[0x90, 60, 100], 1), None);
+        assert_eq!(decode_input(&[0xb1, 64, 127], 1), None);
+        assert_eq!(
+            decode_input(&[0xb1, 123, 0], 1),
+            Some(MidiInputEvent::AllNotesOff)
+        );
+        assert_eq!(decode_input(&[0xf8], 1), None);
+    }
+
+    #[test]
+    fn output_notes_and_safety_off_use_selected_channel_but_clock_is_global() {
+        let mut packets = Vec::<Vec<u8>>::new();
+        let mut active = ActiveNotes::default();
+        let mut send = |bytes: &[u8]| {
+            packets.push(bytes.to_vec());
+            Ok::<(), ()>(())
+        };
+        dispatch_on_channel(MidiMessage::Clock, 4, &mut active, &mut send).unwrap();
+        dispatch_on_channel(MidiMessage::LeadNote(60), 4, &mut active, &mut send).unwrap();
+        dispatch_on_channel(MidiMessage::Shutdown, 4, &mut active, &mut send).unwrap();
+        assert_eq!(
+            packets,
+            [
+                vec![0xf8],
+                vec![0x94, 60, LEAD_VELOCITY],
+                vec![0x84, 60, 0],
+                vec![0xb4, 123, 0],
                 vec![0xfc],
             ]
         );

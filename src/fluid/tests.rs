@@ -6,7 +6,10 @@
 use super::interaction::ChordDrill;
 use super::song_ids::song_id_index;
 use super::*;
-use crate::midi::{MidiMessage, MidiSink, pad_notes, pad_notes_with_count, tuned_note};
+use crate::midi::{
+    MidiInputEvent, MidiInputSource, MidiMessage, MidiSink, pad_notes, pad_notes_with_count,
+    tuned_note,
+};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ratatui::backend::TestBackend;
@@ -760,11 +763,28 @@ fn midi_controls_finish_their_instrument_pages() {
     let arp = tab_controls(Tab::Arp, &controls);
     let lead = lead_tab_controls(&controls, interaction::LeadDrill::None);
 
+    assert_eq!(pad[pad.len() - 2].id, "pad.midi_in");
     assert_eq!(pad.last().unwrap().id, "pad.midi_out");
-    assert_eq!(arp[arp.len() - 2].id, "arp.midi_gate_beats");
+    assert_eq!(arp[arp.len() - 3].id, "arp.midi_gate_beats");
+    assert_eq!(arp[arp.len() - 2].id, "arp.midi_in");
     assert_eq!(arp.last().unwrap().id, "arp.midi_out");
-    assert_eq!(lead[lead.len() - 2].id, "lead.midi_gate_beats");
+    assert_eq!(lead[lead.len() - 3].id, "lead.midi_gate_beats");
+    assert_eq!(lead[lead.len() - 2].id, "lead.midi_in");
     assert_eq!(lead.last().unwrap().id, "lead.midi_out");
+}
+
+#[test]
+fn midi_input_switches_and_pad_trigger_source_survive_song_codes() {
+    let mut song = SongState::default();
+    song.controls.pad.midi_in = 0.0;
+    song.controls.pad.midi_trigger = 1.0;
+    song.controls.arp.midi_in = 1.0;
+    song.controls.lead.midi_in = 1.0;
+    let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+    assert_eq!(decoded.controls.pad.midi_in, 0.0);
+    assert_eq!(decoded.controls.pad.midi_trigger, 1.0);
+    assert_eq!(decoded.controls.arp.midi_in, 1.0);
+    assert_eq!(decoded.controls.lead.midi_in, 1.0);
 }
 
 #[test]
@@ -1299,6 +1319,180 @@ fn midi_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop()
         receiver.try_iter().collect::<Vec<_>>(),
         [MidiMessage::Continue, MidiMessage::PadChord(expected)]
     );
+}
+
+#[test]
+fn pad_midi_input_plays_its_sound_at_the_received_pitch_without_echo() {
+    let mut controls = FluidControls::default();
+    controls.pad.trigger = 1.0;
+    controls.pad.steps.fill(0.0);
+    controls.pad.attack_time = 0.01;
+    controls.pad.level = 1.0;
+    controls.pad.midi_in = 1.0;
+    let session = live_session(controls, AutomationState::default());
+    let (source, sender) = MidiInputSource::test_channel();
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session,
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    )
+    .with_midi(sink)
+    .with_midi_input(source);
+    engine.reseed(42);
+    let baseline: f32 = render_seconds(&mut engine, 0.1)
+        .iter()
+        .map(|(left, right)| left.abs() + right.abs())
+        .sum();
+    sender.send(MidiInputEvent::NoteOn(60)).unwrap();
+    let played: f32 = render_seconds(&mut engine, 0.1)
+        .iter()
+        .map(|(left, right)| left.abs() + right.abs())
+        .sum();
+    assert!(played > baseline * 10.0, "Pad note must be audible");
+    assert!(
+        receiver
+            .try_iter()
+            .all(|message| !matches!(message, MidiMessage::PadChord(_)))
+    );
+}
+
+#[test]
+fn connected_pad_keyboard_owns_hold_audio_without_stopping_the_progression() {
+    let controls = PadControls {
+        attack_time: 0.01,
+        midi_in: 1.0,
+        ..PadControls::default()
+    };
+    let mut normal = pad_engine(&controls);
+    let mut keyboard = pad_engine(&controls);
+    keyboard.set_midi_input_attached();
+    let timing = TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0);
+    for _ in 0..2400 {
+        normal.next(&controls, 0.0, timing);
+        keyboard.next(&controls, 0.0, timing);
+    }
+    let mut normal_level = 0.0;
+    let mut keyboard_idle_level = 0.0;
+    for _ in 0..4800 {
+        normal_level += normal.next(&controls, 0.0, timing).0.abs();
+        keyboard_idle_level += keyboard.next(&controls, 0.0, timing).0.abs();
+    }
+    assert!(normal_level > keyboard_idle_level * 100.0);
+    keyboard.midi_note_on(60, &controls, 0.0, timing);
+    let mut keyboard_played_level = 0.0;
+    for _ in 0..4800 {
+        keyboard_played_level += keyboard.next(&controls, 0.0, timing).0.abs();
+    }
+    assert!(keyboard_played_level > keyboard_idle_level * 100.0);
+    assert_eq!(keyboard.cursor.slot(), normal.cursor.slot());
+}
+
+#[test]
+fn pad_midi_trigger_replaces_step_hits_with_the_current_chord() {
+    let mut controls = FluidControls::default();
+    controls.pad.trigger = 1.0;
+    controls.pad.midi_trigger = 1.0;
+    controls.pad.steps.fill(1.0);
+    controls.pad.midi_in = 1.0;
+    let session = live_session(controls, AutomationState::default());
+    let (source, sender) = MidiInputSource::test_channel();
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session,
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    )
+    .with_midi(sink)
+    .with_midi_input(source);
+    render_seconds(&mut engine, 0.4);
+    assert!(
+        receiver
+            .try_iter()
+            .all(|message| !matches!(message, MidiMessage::PadChord(_)))
+    );
+
+    sender.send(MidiInputEvent::NoteOn(48)).unwrap();
+    sender.send(MidiInputEvent::NoteOn(52)).unwrap();
+    sender.send(MidiInputEvent::NoteOn(55)).unwrap();
+    render_seconds(&mut engine, 0.01);
+    assert_eq!(
+        receiver
+            .try_iter()
+            .filter(|message| matches!(message, MidiMessage::PadChord(_)))
+            .count(),
+        1,
+        "one keyboard chord should fire one Pad chord"
+    );
+}
+
+#[test]
+fn midi_triggered_pad_chord_can_play_and_release_while_transport_is_stopped() {
+    let controls = PadControls {
+        trigger: 1.0,
+        midi_trigger: 1.0,
+        gate_beats: 0.125,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let (sink, receiver) = MidiSink::test_channel();
+    pad.set_midi(sink);
+    let mut timing = TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0);
+    timing.transport = Transport::Stopped;
+    pad.next(&controls, 0.0, timing);
+    receiver.try_iter().for_each(drop);
+    pad.midi_note_on(60, &controls, 0.0, timing);
+    assert!(
+        receiver
+            .try_iter()
+            .any(|message| matches!(message, MidiMessage::PadChord(_)))
+    );
+    for _ in 0..(SAMPLE_RATE * 0.1) as usize {
+        pad.next(&controls, 0.0, timing);
+    }
+    assert!(
+        receiver
+            .try_iter()
+            .any(|message| message == MidiMessage::PadOff)
+    );
+}
+
+#[test]
+fn arp_midi_input_becomes_its_note_source_and_lead_input_does_not_echo() {
+    let mut controls = FluidControls::default();
+    controls.pad.midi_out = 0.0;
+    controls.arp.midi_in = 1.0;
+    controls.arp.midi_out = 1.0;
+    controls.arp.rate_beats = 0.125;
+    controls.lead.midi_in = 1.0;
+    controls.lead.midi_out = 1.0;
+    controls.lead.pattern = 0.0;
+    controls.lead.level = 1.0;
+    let session = live_session(controls, AutomationState::default());
+    let (source, sender) = MidiInputSource::test_channel();
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session,
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    )
+    .with_midi(sink)
+    .with_midi_input(source);
+    sender.send(MidiInputEvent::NoteOn(72)).unwrap();
+    render_seconds(&mut engine, 0.2);
+    assert!(engine.lead.voice.is_some());
+    let messages = receiver.try_iter().collect::<Vec<_>>();
+    assert!(messages.contains(&MidiMessage::ArpNote(72)));
+    assert!(
+        !messages
+            .iter()
+            .any(|message| matches!(message, MidiMessage::LeadNote(_)))
+    );
+    sender.send(MidiInputEvent::NoteOff(72)).unwrap();
+    render_seconds(&mut engine, 0.01);
 }
 
 #[test]
@@ -2566,7 +2760,7 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
         (Tab::Chords, {
-            // 16 base rows, then 8 slots x 5 discrete rows
+            // 17 base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
             let mut kinds = vec![
                 Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Discrete,
@@ -2574,7 +2768,7 @@ fn tab_controls_classify_each_slider_kind() {
             ];
             kinds.extend(vec![Discrete; 40]);
             kinds.push(Gain); // pre-loaded shared Reverb
-            kinds.push(Discrete); // MIDI Out stays below loaded modules
+            kinds.extend([Discrete, Discrete]); // MIDI In and Out stay below loaded modules
             kinds
         }),
         (
@@ -2607,7 +2801,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Arp,
             vec![
                 Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain, Timing,
-                Discrete,
+                Discrete, Discrete,
             ],
         ),
         (
@@ -2615,7 +2809,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Lead,
             vec![
                 Gain, Discrete, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing,
-                Timing, Discrete, Gain, Timing, Discrete,
+                Timing, Discrete, Gain, Timing, Discrete, Discrete,
             ],
         ),
     ];
@@ -3170,7 +3364,7 @@ fn chords_progression_adjusts_and_clamps() {
 fn chords_tab_controls_none_shows_only_base_params() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, ChordDrill::None);
-    assert_eq!(rows.len(), 17);
+    assert_eq!(rows.len(), 18);
     assert_eq!(rows[0].id, "pad.level");
     assert_eq!(rows[6].id, "pad.chord_offset");
     assert_eq!(rows[7].id, "pad.progression");
@@ -3193,9 +3387,20 @@ fn pad_trigger_row_opens_sixteen_editable_steps() {
             return_to: trigger_row,
         },
     );
-    assert_eq!(pattern.len(), 16);
-    assert_eq!(pattern[0].id, "pad.step1");
-    assert_eq!(pattern[15].id, "pad.step16");
+    assert_eq!(pattern.len(), 17);
+    assert_eq!(pattern[0].id, PAD_MIDI_TRIGGER_ID);
+    assert_eq!(pattern[1].id, "pad.step1");
+    assert_eq!(pattern[16].id, "pad.step16");
+    let midi_flat = spec_index(Tab::Chords, PAD_MIDI_TRIGGER_ID).unwrap();
+    assert_eq!(
+        chords_drill_for_index(midi_flat, &controls),
+        (
+            ChordDrill::Pattern {
+                return_to: trigger_row
+            },
+            0
+        )
+    );
     let flat = CHORDS_CONTROLS
         .iter()
         .position(|spec| spec.id == "pad.step16")
@@ -3206,7 +3411,7 @@ fn pad_trigger_row_opens_sixteen_editable_steps() {
             ChordDrill::Pattern {
                 return_to: trigger_row
             },
-            15
+            16
         )
     );
 }
@@ -3249,9 +3454,9 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     let controls = FluidControls::default();
     assert_eq!(chords_flat_index(ChordDrill::None, 4, &controls), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0, &controls), 32);
-    assert_eq!(chords_flat_index(progression_drill(), 2, &controls), 42);
-    assert_eq!(chords_flat_index(slot_drill(2), 0, &controls), 43);
+    assert_eq!(chords_flat_index(progression_drill(), 0, &controls), 34);
+    assert_eq!(chords_flat_index(progression_drill(), 2, &controls), 44);
+    assert_eq!(chords_flat_index(slot_drill(2), 0, &controls), 45);
 }
 
 #[test]
@@ -3278,6 +3483,43 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
     let text = buffer_text(&buffer);
     assert!(text.contains("Pads › Chord 2"));
     assert!(text.contains("BROWSE · Chord 2   Shift+R randomize set   Esc: back"));
+}
+
+#[test]
+fn midi_trigger_renders_step_lane_dimmed() {
+    let mut controls = FluidControls::default();
+    controls.pad.midi_trigger = 1.0;
+    let fluid = RippleField::new();
+    let automation = AutomationState::default();
+    let buffer = render_to_buffer(RenderTest {
+        size: (120, 40),
+        tab: Tab::Chords,
+        cursor: 0,
+        submenu: 0,
+        beat: 0.0,
+        fluid: &fluid,
+        automation: &automation,
+        controls: &controls,
+        footer: None,
+        drill: ChordDrill::Pattern { return_to: 9 },
+        active_chord: 0,
+        mute: &[false; TAB_COUNT],
+    });
+    assert!(buffer_text(&buffer).contains("MIDI Trigger"));
+    let width = usize::from(buffer.area.width);
+    let (row_index, column) = buffer
+        .content
+        .chunks(width)
+        .enumerate()
+        .find_map(|(row_index, cells)| {
+            let line: String = cells.iter().map(ratatui::buffer::Cell::symbol).collect();
+            line.find("Step 1").map(|column| (row_index, column))
+        })
+        .unwrap();
+    assert_eq!(
+        buffer.content[row_index * width + column].fg,
+        ratatui::style::Color::Rgb(120, 128, 145)
+    );
 }
 
 fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
@@ -6361,8 +6603,12 @@ fn palette_layer_boost_matches_tab_name_and_id_namespace_alike() {
 #[test]
 fn palette_finds_midi_switches_after_the_page_reordering() {
     for (tab, id) in [
+        (Tab::Chords, "pad.midi_in"),
         (Tab::Chords, "pad.midi_out"),
+        (Tab::Chords, PAD_MIDI_TRIGGER_ID),
+        (Tab::Arp, "arp.midi_in"),
         (Tab::Arp, "arp.midi_out"),
+        (Tab::Lead, "lead.midi_in"),
         (Tab::Lead, "lead.midi_out"),
     ] {
         assert_eq!(palette_top_hit(tab, &[], id), id);

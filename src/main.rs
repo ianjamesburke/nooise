@@ -17,24 +17,25 @@ mod update_check;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-    if cli.midi_out.is_some()
+    if cli.midi_config() != midi::MidiConfig::default()
         && matches!(
             cli.command,
             Some(CliCommand::Update | CliCommand::MidiPorts | CliCommand::Render(_))
         )
     {
-        return Err("--midi-out only applies to live playback".into());
+        return Err("MIDI port flags only apply to live playback".into());
     }
+    let midi = cli.midi_config();
     let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
     match cli.command {
-        None => match cli.song {
-            None => fluid::run(cli.osc, cli.midi_out.as_deref()),
-            Some(song) => play_song(&song, bars, cli.osc, cli.midi_out.as_deref()),
+        None => match cli.song.as_deref() {
+            None => fluid::run(cli.osc, midi),
+            Some(song) => play_song(song, bars, cli.osc, midi),
         },
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::MidiPorts) => midi::list_ports(),
         Some(CliCommand::Render(args)) => render(args),
-        Some(CliCommand::Auto) => fluid::run_auto(bars, cli.osc, cli.midi_out.as_deref()),
+        Some(CliCommand::Auto) => fluid::run_auto(bars, cli.osc, midi),
     }
 }
 
@@ -67,16 +68,51 @@ struct Cli {
         require_equals = true
     )]
     osc: Option<SocketAddr>,
-    /// Send MIDI clock and Pad chords to an exactly named MIDI output port on channel 1.
+    /// Use one exact-name MIDI port for input and output, both on channel 1.
+    #[arg(long, global = true, value_name = "PORT")]
+    midi: Option<String>,
+    /// Receive MIDI notes from an exactly named input port.
+    #[arg(long, global = true, value_name = "PORT")]
+    midi_in: Option<String>,
+    /// Send MIDI notes and clock to an exactly named output port.
     #[arg(long, global = true, value_name = "PORT")]
     midi_out: Option<String>,
+    /// Input MIDI channel (1-16, default 1).
+    #[arg(long, global = true, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=16))]
+    midi_in_channel: u8,
+    /// Output MIDI channel (1-16, default 1).
+    #[arg(long, global = true, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=16))]
+    midi_out_channel: u8,
+}
+
+impl Cli {
+    fn midi_config(&self) -> midi::MidiConfig<'_> {
+        midi::MidiConfig {
+            input: self
+                .midi_in
+                .as_deref()
+                .or(self.midi.as_deref())
+                .map(|name| midi::MidiEndpoint {
+                    name,
+                    channel: self.midi_in_channel,
+                }),
+            output: self
+                .midi_out
+                .as_deref()
+                .or(self.midi.as_deref())
+                .map(|name| midi::MidiEndpoint {
+                    name,
+                    channel: self.midi_out_channel,
+                }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 enum CliCommand {
     #[command(about = "Update nooise from crates.io", visible_alias = "upgrade")]
     Update,
-    #[command(about = "List available MIDI output port names")]
+    #[command(about = "List available MIDI input and output port names")]
     MidiPorts,
     #[command(about = "Render the default mix to a wav file")]
     Render(RenderArgs),
@@ -109,11 +145,11 @@ fn play_song(
     song: &str,
     bars: u32,
     osc: Option<SocketAddr>,
-    midi_out: Option<&str>,
+    midi: midi::MidiConfig<'_>,
 ) -> Result<(), Box<dyn Error>> {
     if song.starts_with(fluid::CODE_PREFIX) {
         let state = fluid::decode_song_code(song).map_err(|error| error.to_string())?;
-        return fluid::run_with_song_state(state, osc, midi_out);
+        return fluid::run_with_song_state(state, osc, midi);
     }
     let numbers = song
         .split(',')
@@ -123,7 +159,7 @@ fn play_song(
                 .map_err(|_| format!("{part:?} is neither a song number nor an n1_ code").into())
         })
         .collect::<Result<Vec<usize>, Box<dyn Error>>>()?;
-    fluid::run_songs(&numbers, bars, osc, midi_out)
+    fluid::run_songs(&numbers, bars, osc, midi)
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {
@@ -190,6 +226,35 @@ mod tests {
             parse(&["midi-ports"]).unwrap().command,
             Some(CliCommand::MidiPorts)
         );
+    }
+
+    #[test]
+    fn midi_flag_selects_both_directions_with_independent_overrides() {
+        let cli = parse(&["--midi", "Take 5"]).unwrap();
+        let config = cli.midi_config();
+        assert_eq!(config.input.unwrap().name, "Take 5");
+        assert_eq!(config.output.unwrap().name, "Take 5");
+        assert_eq!(config.input.unwrap().channel, 1);
+        assert_eq!(config.output.unwrap().channel, 1);
+
+        let cli = parse(&[
+            "auto",
+            "--midi",
+            "Take 5",
+            "--midi-in",
+            "Keyboard",
+            "--midi-in-channel",
+            "2",
+            "--midi-out-channel",
+            "5",
+        ])
+        .unwrap();
+        let config = cli.midi_config();
+        assert_eq!(config.input.unwrap().name, "Keyboard");
+        assert_eq!(config.input.unwrap().channel, 2);
+        assert_eq!(config.output.unwrap().name, "Take 5");
+        assert_eq!(config.output.unwrap().channel, 5);
+        assert!(parse(&["--midi-in-channel", "17"]).is_err());
     }
 
     /// `--osc` is a global: it reads the same before a song, after it, and on

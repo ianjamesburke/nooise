@@ -103,6 +103,7 @@ pub(crate) struct ArpEngine {
     pub(crate) telemetry: Arc<FluidTelemetry>,
     midi: Option<MidiSink>,
     midi_active_until_beat: Option<f64>,
+    input_held: [bool; 128],
 }
 
 impl ArpEngine {
@@ -123,11 +124,24 @@ impl ArpEngine {
             telemetry,
             midi: None,
             midi_active_until_beat: None,
+            input_held: [false; 128],
         }
     }
 
     pub(crate) fn set_midi(&mut self, sink: MidiSink) {
         self.midi = Some(sink);
+    }
+
+    pub(crate) fn midi_note_on(&mut self, note: u8) {
+        self.input_held[usize::from(note)] = true;
+    }
+
+    pub(crate) fn midi_note_off(&mut self, note: u8) {
+        self.input_held[usize::from(note)] = false;
+    }
+
+    pub(crate) fn release_input(&mut self) {
+        self.input_held.fill(false);
     }
 
     pub(crate) fn next(
@@ -160,9 +174,24 @@ impl ArpEngine {
             .note_trigger
             .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
         {
-            let chord = pad_chord_tones(pad, progression, slot);
             let octaves = arp_octave_span(c.octaves);
-            let notes = arp_cycle_notes(chord, octaves);
+            let held: Vec<i32> = self
+                .input_held
+                .iter()
+                .enumerate()
+                .filter_map(|(note, held)| held.then_some(note as i32))
+                .collect();
+            let notes = if held.is_empty() {
+                arp_cycle_notes(pad_chord_tones(pad, progression, slot), octaves)
+            } else {
+                let mut notes = Vec::with_capacity(held.len() * octaves);
+                for octave in 0..octaves {
+                    for &note in &held {
+                        notes.push(note + 12 * octave as i32);
+                    }
+                }
+                notes
+            };
             let len = notes.len().max(1);
             // Chord/octave changes never reset the cycle position — just
             // clamp it into the (possibly resized) list so there's no click.

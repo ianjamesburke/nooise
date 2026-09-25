@@ -511,6 +511,8 @@ pub(crate) struct FluidEngine {
     pub(crate) tempo: TempoClock,
     beat_trigger: GridTrigger,
     midi_clock: Option<MidiClockFollower>,
+    midi_input: Option<crate::midi::MidiInputSource>,
+    midi_input_enabled: [bool; 3],
     pub(crate) gain_smoothers: GainSmoothers,
     mute_gates: OutputGates,
     pub(crate) pad: PadEngine,
@@ -569,6 +571,8 @@ impl FluidEngine {
             tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
             beat_trigger: GridTrigger::new(),
             midi_clock: None,
+            midi_input: None,
+            midi_input_enabled: [false; 3],
             gain_smoothers: GainSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
             pad: PadEngine::new(
@@ -610,6 +614,64 @@ impl FluidEngine {
         self.lead.set_midi(sink.clone());
         self.midi_clock = Some(MidiClockFollower::new(sink));
         self
+    }
+
+    pub(crate) fn with_midi_input(mut self, source: crate::midi::MidiInputSource) -> Self {
+        self.pad.set_midi_input_attached();
+        self.midi_input = Some(source);
+        self
+    }
+
+    fn route_midi_input(
+        &mut self,
+        event: crate::midi::MidiInputEvent,
+        controls: &FluidControls,
+        timing: TimingContext,
+    ) {
+        use crate::midi::MidiInputEvent::{NoteOff, NoteOn};
+        match event {
+            NoteOn(note) => {
+                if controls.pad.midi_in >= 0.5 {
+                    self.pad
+                        .midi_note_on(note, &controls.pad, controls.master.tune, timing);
+                }
+                if controls.arp.midi_in >= 0.5 {
+                    self.arp.midi_note_on(note);
+                }
+                if controls.lead.midi_in >= 0.5 {
+                    self.lead
+                        .midi_note_on(note, &controls.lead, controls.master.tune);
+                }
+            }
+            NoteOff(note) => {
+                self.pad.midi_note_off(note);
+                self.arp.midi_note_off(note);
+                self.lead.midi_note_off(note);
+            }
+            crate::midi::MidiInputEvent::AllNotesOff => {
+                self.pad.release_input();
+                self.arp.release_input();
+                self.lead.release_input();
+            }
+        }
+    }
+
+    fn sync_midi_input_switches(&mut self, controls: &FluidControls) {
+        let enabled = [
+            controls.pad.midi_in >= 0.5,
+            controls.arp.midi_in >= 0.5,
+            controls.lead.midi_in >= 0.5,
+        ];
+        if self.midi_input_enabled[0] && !enabled[0] {
+            self.pad.release_input();
+        }
+        if self.midi_input_enabled[1] && !enabled[1] {
+            self.arp.release_input();
+        }
+        if self.midi_input_enabled[2] && !enabled[2] {
+            self.lead.release_input();
+        }
+        self.midi_input_enabled = enabled;
     }
 }
 
@@ -677,6 +739,7 @@ impl StereoEngine for FluidEngine {
         }
         self.plan.apply(&mut effective, timing);
         resolve_module_chain(&mut effective);
+        self.sync_midi_input_switches(&effective);
         let mute_gains = self.mute_gates.next();
         let now_seconds = self.current_sample as f64 / self.sample_rate as f64;
 
@@ -743,6 +806,16 @@ impl StereoEngine for FluidEngine {
             timing,
         );
         let (lead_l, lead_r) = gate_stereo(lead, mute_gains[Tab::Lead as usize]);
+        if self.current_sample.is_multiple_of(128)
+            && let Some(source) = self.midi_input.clone()
+        {
+            let overflowed = source.drain(|event| self.route_midi_input(event, &effective, timing));
+            if overflowed {
+                self.pad.release_input();
+                self.arp.release_input();
+                self.lead.release_input();
+            }
+        }
         self.current_sample += 1;
 
         let voices_l = VoiceMix {

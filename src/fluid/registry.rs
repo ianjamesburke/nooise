@@ -1207,9 +1207,10 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-const CHORD_BASE_CONTROL_COUNT: usize = 32;
+const CHORD_BASE_CONTROL_COUNT: usize = 34;
 
 pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
+pub(crate) const PAD_MIDI_TRIGGER_ID: &str = "pad.midi_trigger";
 
 pub(crate) fn pad_step_index(id: &str) -> Option<usize> {
     let step: usize = id.strip_prefix("pad.step")?.parse().ok()?;
@@ -1347,6 +1348,18 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c| if c.pad.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
     ),
     ControlSpec::new(
+        "pad.midi_in",
+        "MIDI In",
+        ControlKind::Discrete,
+        0.0,
+        1.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.midi_in,
+        |c, v| c.pad.midi_in = v,
+        |c| if c.pad.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
+    ),
+    ControlSpec::new(
         PAD_TRIGGER_ID,
         "Trigger",
         ControlKind::Discrete,
@@ -1379,6 +1392,18 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
     pad_step_row!(14),
     pad_step_row!(15),
     pad_step_row!(16),
+    ControlSpec::new(
+        PAD_MIDI_TRIGGER_ID,
+        "MIDI Trigger",
+        ControlKind::Discrete,
+        0.0,
+        1.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.midi_trigger,
+        |c, v| c.pad.midi_trigger = v,
+        |c| if c.pad.midi_trigger >= 0.5 { "On" } else { "Off" }.to_string(),
+    ),
 ]);
 
 pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
@@ -1680,6 +1705,18 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
     [
         gain_pct!("arp.gain", "Level", arp.gain),
         ControlSpec::new(
+            "arp.midi_in",
+            "MIDI In",
+            ControlKind::Discrete,
+            0.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.arp.midi_in,
+            |c, v| c.arp.midi_in = v,
+            |c| if c.arp.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
+        ),
+        ControlSpec::new(
             "arp.midi_out",
             "MIDI Out",
             ControlKind::Discrete,
@@ -1776,6 +1813,18 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
     "lead",
     [
         gain_pct!("lead.level", "Level", lead.level),
+        ControlSpec::new(
+            "lead.midi_in",
+            "MIDI In",
+            ControlKind::Discrete,
+            0.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.midi_in,
+            |c, v| c.lead.midi_in = v,
+            |c| if c.lead.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
+        ),
         ControlSpec::new(
             "lead.midi_out",
             "MIDI Out",
@@ -1937,6 +1986,7 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
             module_slot_row_visible(spec.id, c)
                 && lead_step_index(spec.id).is_none()
                 && pad_step_index(spec.id).is_none()
+                && spec.id != PAD_MIDI_TRIGGER_ID
         })
         .map(|spec| spec.item(c))
         .collect();
@@ -1948,7 +1998,8 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
 fn midi_rows_last(mut rows: Vec<ControlItem>) -> Vec<ControlItem> {
     rows.sort_by_key(|item| match item.id {
         "arp.midi_gate_beats" | "lead.midi_gate_beats" => 1,
-        "pad.midi_out" | "arp.midi_out" | "lead.midi_out" => 2,
+        "pad.midi_in" | "arp.midi_in" | "lead.midi_in" => 2,
+        "pad.midi_out" | "arp.midi_out" | "lead.midi_out" => 3,
         _ => 0,
     });
     rows
@@ -2273,10 +2324,11 @@ pub(crate) fn module_slot_row<'a>(
 /// table order, so a slot outside the playing window can be written before
 /// Offset or Count reaches it), or one chord slot's
 /// Accidental/Quality/Extension/Inversion. Read-only view over
-/// `CHORDS_CONTROLS`'s fixed layout (16 root rows, then 16 Pad step rows,
-/// then 8 chord slots x 5
+/// `CHORDS_CONTROLS`'s fixed layout (17 root rows, then 16 Pad step rows
+/// and MIDI Trigger, then 8 chord slots x 5
 /// rows, then 8 module slots x 8 rows) — never reorders the underlying
-/// array. Pad steps live in the Trigger drill. `chords_drill_for_index` below is this projection's inverse and
+/// array. The Trigger drill shows MIDI Trigger first, then Pad steps.
+/// `chords_drill_for_index` below is this projection's inverse and
 /// must stay consistent with it for every region.
 pub(crate) fn chords_tab_controls(
     c: &FluidControls,
@@ -2288,14 +2340,21 @@ pub(crate) fn chords_tab_controls(
                 .iter()
                 .chain(CHORDS_CONTROLS[CHORD_BASE_CONTROL_COUNT + CHORD_SLOT_COUNT * 5..].iter())
                 .filter(|spec| {
-                    pad_step_index(spec.id).is_none() && module_slot_row_visible(spec.id, c)
+                    pad_step_index(spec.id).is_none()
+                        && spec.id != PAD_MIDI_TRIGGER_ID
+                        && module_slot_row_visible(spec.id, c)
                 })
                 .map(|spec| spec.item(c))
                 .collect(),
         ),
         interaction::ChordDrill::Pattern { .. } => CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
             .iter()
-            .filter(|spec| pad_step_index(spec.id).is_some())
+            .filter(|spec| spec.id == PAD_MIDI_TRIGGER_ID)
+            .chain(
+                CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
+                    .iter()
+                    .filter(|spec| pad_step_index(spec.id).is_some()),
+            )
             .map(|spec| spec.item(c))
             .collect(),
         interaction::ChordDrill::Progression { .. } => (0..CHORD_SLOT_COUNT)
@@ -2344,7 +2403,10 @@ pub(crate) fn chords_drill_for_index(
     let Some(spec) = CHORDS_CONTROLS.get(flat) else {
         return (interaction::ChordDrill::None, 0);
     };
-    if let Some(step) = pad_step_index(spec.id) {
+    if let Some(step) = pad_step_index(spec.id)
+        .map(|step| step + 1)
+        .or((spec.id == PAD_MIDI_TRIGGER_ID).then_some(0))
+    {
         let return_to = chords_tab_controls(c, interaction::ChordDrill::None)
             .iter()
             .position(|item| item.id == PAD_TRIGGER_ID)
