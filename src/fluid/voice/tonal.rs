@@ -17,6 +17,7 @@ pub(crate) struct TonalEngine {
     evolution_seed: u64,
     evolution_count: u64,
     session_state: Option<LiveSession>,
+    telemetry: Arc<FluidTelemetry>,
 }
 
 /// The mutable melodic state a song snapshot needs to resume evolution.
@@ -346,9 +347,22 @@ impl TonalEngine {
         Self::new_with_session_state(sample_rate, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_session_state(
         sample_rate: f32,
         session_state: Option<LiveSession>,
+    ) -> Self {
+        Self::new_with_live_state(
+            sample_rate,
+            session_state,
+            Arc::new(FluidTelemetry::default()),
+        )
+    }
+
+    pub(crate) fn new_with_live_state(
+        sample_rate: f32,
+        session_state: Option<LiveSession>,
+        telemetry: Arc<FluidTelemetry>,
     ) -> Self {
         let state = session_state
             .as_ref()
@@ -368,6 +382,7 @@ impl TonalEngine {
             evolution_seed: state.evolution_seed,
             evolution_count: state.evolution_count,
             session_state,
+            telemetry,
         }
     }
 
@@ -416,6 +431,8 @@ impl TonalEngine {
                         decay_time: c.decay,
                     },
                 ));
+                self.telemetry
+                    .publish_hit(MusicalHit::Tonal, c.level, pitch_class(note));
             }
         }
 

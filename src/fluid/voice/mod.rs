@@ -40,6 +40,12 @@ pub(crate) fn note_hz(note: i32, tune: f32) -> f32 {
     midi_to_hz(note) * tune_ratio(tune)
 }
 
+/// MIDI pitch folded into one octave for visual/event consumers: C is 0,
+/// B is 11/12, and octave transposition does not change the value.
+pub(crate) fn pitch_class(note: i32) -> f32 {
+    note.rem_euclid(12) as f32 / 12.0
+}
+
 pub(crate) fn normalized_lfo(sample: f32) -> f32 {
     (sample * 0.5 + 0.5).clamp(0.0, 1.0)
 }

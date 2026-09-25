@@ -99,10 +99,16 @@ pub(crate) struct ArpEngine {
     pub(crate) ping_pong_dir: i32,
     pub(crate) voices: Vec<TonalVoice>,
     pub(crate) rng: StdRng,
+    pub(crate) telemetry: Arc<FluidTelemetry>,
 }
 
 impl ArpEngine {
+    #[cfg(test)]
     pub(crate) fn new(sample_rate: f32) -> Self {
+        Self::with_telemetry(sample_rate, Arc::new(FluidTelemetry::default()))
+    }
+
+    pub(crate) fn with_telemetry(sample_rate: f32, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
             progression: ProgressionFollower::new(),
@@ -111,6 +117,7 @@ impl ArpEngine {
             ping_pong_dir: 1,
             voices: Vec::with_capacity(8),
             rng: StdRng::from_entropy(),
+            telemetry,
         }
     }
 
@@ -174,6 +181,8 @@ impl ArpEngine {
                         decay_time: c.decay,
                     },
                 ));
+                self.telemetry
+                    .publish_hit(MusicalHit::Arp, c.gain, pitch_class(note));
             }
         }
 

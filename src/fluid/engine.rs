@@ -508,6 +508,7 @@ pub(crate) struct FluidEngine {
     pub(crate) current_sample: u64,
     pub(crate) sample_rate: f32,
     pub(crate) tempo: TempoClock,
+    beat_trigger: GridTrigger,
     pub(crate) gain_smoothers: GainSmoothers,
     mute_gates: OutputGates,
     pub(crate) pad: PadEngine,
@@ -564,6 +565,7 @@ impl FluidEngine {
             current_sample: 0,
             sample_rate,
             tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
+            beat_trigger: GridTrigger::new(),
             gain_smoothers: GainSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
             pad: PadEngine::new(
@@ -572,15 +574,16 @@ impl FluidEngine {
                 snapshot.master.tune,
                 Arc::clone(&telemetry),
             ),
-            perc: PercEngine::new(sample_rate),
+            perc: PercEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
             kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
-            tonal: TonalEngine::new_with_session_state(
+            tonal: TonalEngine::new_with_live_state(
                 sample_rate,
                 publish_tonal_session_state.then(|| session.clone()),
+                Arc::clone(&telemetry),
             ),
-            clap: ClapEngine::new(sample_rate),
+            clap: ClapEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
             bass: BassEngine::new(sample_rate),
-            arp: ArpEngine::new(sample_rate),
+            arp: ArpEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
             lead: LeadEngine::with_play_state(sample_rate, live.lead_play),
             module_fx: ModuleFxBank::new(sample_rate),
             gesture_audio: GestureAudioBank::new(sample_rate),
@@ -651,6 +654,10 @@ impl StereoEngine for FluidEngine {
         let fade = startup_fade(self.current_sample, self.sample_rate);
         let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
         let timing = self.tempo.tick(effective.master.bpm, self.transport);
+        if self.beat_trigger.pop_swung(timing, 1.0, 0.0, 0.0) {
+            self.telemetry
+                .publish_hit(MusicalHit::Beat, 1.0, NO_PITCH_CLASS);
+        }
         if self.current_sample.is_multiple_of(256) {
             self.telemetry.publish_beat(timing.beat);
         }
