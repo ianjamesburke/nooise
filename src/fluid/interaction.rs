@@ -2071,20 +2071,26 @@ mod tests {
         let controls = super::super::FluidControls::default();
         let step = super::super::spec_index(Tab::Lead, "lead.step3").expect("step 3 is a row");
         let steps = super::super::spec_index(Tab::Lead, "lead.steps").expect("steps is a row");
+        let steps_row = super::super::lead_tab_controls(&controls, LeadDrill::None)
+            .iter()
+            .position(|row| row.id == "lead.steps")
+            .unwrap();
         let mut model = InteractionModel::default();
         model.select_control(Tab::Lead, step, &controls);
         assert_eq!(
             model.navigation,
             Navigation::Lead {
                 selected: 2,
-                drill: LeadDrill::Pattern { return_to: steps },
+                drill: LeadDrill::Pattern {
+                    return_to: steps_row
+                },
             }
         );
         model.select_control(Tab::Lead, steps, &controls);
         assert_eq!(
             model.navigation,
             Navigation::Lead {
-                selected: steps,
+                selected: steps_row,
                 drill: LeadDrill::None,
             }
         );

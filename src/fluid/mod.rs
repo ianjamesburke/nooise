@@ -289,12 +289,19 @@ pub(crate) const DEFAULT_OSC_TARGET: &str = "127.0.0.1:9000";
 
 pub(crate) fn run(osc: Option<SocketAddr>, midi_out: Option<&str>) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
-    run_with_song_state(randomized_start_song(&mut rng), osc, midi_out)
+    run_with_song_state(
+        randomized_start_song(&mut rng, midi_out.is_some()),
+        osc,
+        midi_out,
+    )
 }
 
-fn randomized_start_song(rng: &mut impl Rng) -> SongState {
+fn randomized_start_song(rng: &mut impl Rng, midi_out: bool) -> SongState {
     let mut controls = FluidControls::default();
     controls.pad.progression = rng.gen_range(0..PROGRESSIONS.len()) as f32;
+    if midi_out {
+        controls.pad.level = 0.0;
+    }
     SongState::from_controls(controls)
 }
 

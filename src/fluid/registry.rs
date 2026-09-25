@@ -1931,7 +1931,7 @@ pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
 /// A tab's root rows: every spec except the ones a page-local drill owns
 /// (Lead and Pad step rows) and the module-slot rows nothing is loaded into.
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
-    tab_specs(tab)
+    let rows = tab_specs(tab)
         .iter()
         .filter(|spec| {
             module_slot_row_visible(spec.id, c)
@@ -1939,7 +1939,19 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
                 && pad_step_index(spec.id).is_none()
         })
         .map(|spec| spec.item(c))
-        .collect()
+        .collect();
+    midi_rows_last(rows)
+}
+
+/// Keep MIDI setup below the instrument and loaded-module controls without
+/// moving stable registry addresses used by song codes and palette jumps.
+fn midi_rows_last(mut rows: Vec<ControlItem>) -> Vec<ControlItem> {
+    rows.sort_by_key(|item| match item.id {
+        "arp.midi_gate_beats" | "lead.midi_gate_beats" => 1,
+        "pad.midi_out" | "arp.midi_out" | "lead.midi_out" => 2,
+        _ => 0,
+    });
+    rows
 }
 
 /// Lead-tab visible rows for the given drill level: the root page, or the
@@ -2271,12 +2283,16 @@ pub(crate) fn chords_tab_controls(
     drill: interaction::ChordDrill,
 ) -> Vec<ControlItem> {
     match drill {
-        interaction::ChordDrill::None => CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
-            .iter()
-            .chain(CHORDS_CONTROLS[CHORD_BASE_CONTROL_COUNT + CHORD_SLOT_COUNT * 5..].iter())
-            .filter(|spec| pad_step_index(spec.id).is_none() && module_slot_row_visible(spec.id, c))
-            .map(|spec| spec.item(c))
-            .collect(),
+        interaction::ChordDrill::None => midi_rows_last(
+            CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
+                .iter()
+                .chain(CHORDS_CONTROLS[CHORD_BASE_CONTROL_COUNT + CHORD_SLOT_COUNT * 5..].iter())
+                .filter(|spec| {
+                    pad_step_index(spec.id).is_none() && module_slot_row_visible(spec.id, c)
+                })
+                .map(|spec| spec.item(c))
+                .collect(),
+        ),
         interaction::ChordDrill::Pattern { .. } => CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
             .iter()
             .filter(|spec| pad_step_index(spec.id).is_some())
@@ -2295,22 +2311,18 @@ pub(crate) fn chords_tab_controls(
     }
 }
 
-/// Maps a visible-row index under `chords_tab_controls` back to its real
-/// index into `CHORDS_CONTROLS`, for the chord-slot drill tests below. Covers
-/// only the base and chord-slot regions, where the mapping is fixed; it is
-/// not a complete inverse for module-slot rows, whose visible position
-/// depends on which slots are occupied (see `chords_drill_for_index`, which
-/// handles all three regions and is the real inverse of `chords_tab_controls`).
+/// Maps a visible Pad row back to its registry index for projection tests.
 #[cfg(test)]
-pub(crate) fn chords_flat_index(drill: interaction::ChordDrill, visible_row: usize) -> usize {
-    match drill {
-        interaction::ChordDrill::None => visible_row,
-        interaction::ChordDrill::Pattern { .. } => 16 + visible_row,
-        interaction::ChordDrill::Progression { .. } => CHORD_BASE_CONTROL_COUNT + 5 * visible_row,
-        interaction::ChordDrill::Slot { slot, .. } => {
-            CHORD_BASE_CONTROL_COUNT + 5 * slot + 1 + visible_row
-        }
-    }
+pub(crate) fn chords_flat_index(
+    drill: interaction::ChordDrill,
+    visible_row: usize,
+    controls: &FluidControls,
+) -> usize {
+    let id = chords_tab_controls(controls, drill)[visible_row].id;
+    CHORDS_CONTROLS
+        .iter()
+        .position(|spec| spec.id == id)
+        .unwrap()
 }
 
 /// Inverse of `chords_tab_controls`: the drill level + visible row that

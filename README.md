@@ -81,9 +81,10 @@ MIDI output uses channel 1. With Pad MIDI Out on, it sends the Pad's current
 2–5-note chord at startup and on chord changes, plus 24 MIDI clock pulses per
 beat and the transport's Start, Stop, and Continue messages. The Pad chord
 releases when another chord starts or the clock stops. MIDI output runs
-alongside nooise audio; set the Pad Level to zero to hear only the external
-synth for that layer. `--midi-out` also works with a song number, song code, or
-`auto`.
+alongside nooise audio. A fresh `--midi-out` session starts with Pad Level at
+0% and Pad MIDI Out on, so only the external synth sounds for that layer; the
+level remains adjustable. A song number, song code, or `auto` retains its saved
+Pad Level when launched with `--midi-out`.
 Set the receiving synth to follow USB MIDI clock if you want its own timed
 features to sync.
 
@@ -97,8 +98,8 @@ not elapsed. MIDI Note Off starts the external synth's own release envelope;
 nooise does not change its ADSR. Hold restores the normal sustained Pad.
 
 The Pads, Arp, and Lead pages each have a MIDI Out switch. Search for
-`pad.midi_out`, `arp.midi_out`, or `lead.midi_out` with `/`, or adjust the row on
-its page. Pad defaults On; Arp and Lead default Off. Set Pad Off and Arp On to
+`pad.midi_out`, `arp.midi_out`, or `lead.midi_out` with `/`, or adjust the last
+row on its page. Pad defaults On; Arp and Lead default Off. Set Pad Off and Arp On to
 send only the Arp to the Take 5. More than one can be On, though they share
 channel 1 and the synth's available voices. MIDI Out never mutes nooise audio.
 Arp and Lead play through MIDI even with their audio Level at zero. Their MIDI

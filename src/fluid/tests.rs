@@ -711,7 +711,12 @@ fn pad_defaults_use_progression_a_and_sixteen_beat_chords() {
 fn fresh_start_chooses_only_a_builtin_progression() {
     let mut rng = StdRng::seed_from_u64(42);
     let choices = (0..64)
-        .map(|_| randomized_start_song(&mut rng).controls.pad.progression as usize)
+        .map(|_| {
+            randomized_start_song(&mut rng, false)
+                .controls
+                .pad
+                .progression as usize
+        })
         .collect::<Vec<_>>();
 
     assert!(choices.iter().all(|&choice| choice < PROGRESSIONS.len()));
@@ -720,10 +725,46 @@ fn fresh_start_chooses_only_a_builtin_progression() {
 #[test]
 fn fresh_start_varies_the_progression_between_launches() {
     let mut rng = StdRng::seed_from_u64(42);
-    let first = randomized_start_song(&mut rng).controls.pad.progression;
-    let varied = (0..16).any(|_| randomized_start_song(&mut rng).controls.pad.progression != first);
+    let first = randomized_start_song(&mut rng, false)
+        .controls
+        .pad
+        .progression;
+    let varied = (0..16).any(|_| {
+        randomized_start_song(&mut rng, false)
+            .controls
+            .pad
+            .progression
+            != first
+    });
 
     assert!(varied);
+}
+
+#[test]
+fn midi_output_fresh_start_mutes_pad_audio_without_disabling_pad_midi() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let normal = randomized_start_song(&mut rng, false);
+    let midi = randomized_start_song(&mut rng, true);
+
+    assert!(normal.controls.pad.level > 0.0);
+    assert_eq!(midi.controls.pad.level, 0.0);
+    assert_eq!(midi.controls.pad.midi_out, 1.0);
+    assert_eq!(midi.controls.arp.midi_out, 0.0);
+    assert_eq!(midi.controls.lead.midi_out, 0.0);
+}
+
+#[test]
+fn midi_controls_finish_their_instrument_pages() {
+    let controls = FluidControls::default();
+    let pad = chords_tab_controls(&controls, ChordDrill::None);
+    let arp = tab_controls(Tab::Arp, &controls);
+    let lead = lead_tab_controls(&controls, interaction::LeadDrill::None);
+
+    assert_eq!(pad.last().unwrap().id, "pad.midi_out");
+    assert_eq!(arp[arp.len() - 2].id, "arp.midi_gate_beats");
+    assert_eq!(arp.last().unwrap().id, "arp.midi_out");
+    assert_eq!(lead[lead.len() - 2].id, "lead.midi_gate_beats");
+    assert_eq!(lead.last().unwrap().id, "lead.midi_out");
 }
 
 #[test]
@@ -2529,10 +2570,11 @@ fn tab_controls_classify_each_slider_kind() {
             // (degree/accidental/quality/extension/inversion).
             let mut kinds = vec![
                 Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Discrete,
-                Discrete, Discrete, Gain, Timing, Gain, Gain, Gain,
+                Discrete, Gain, Timing, Gain, Gain, Gain,
             ];
             kinds.extend(vec![Discrete; 40]);
             kinds.push(Gain); // pre-loaded shared Reverb
+            kinds.push(Discrete); // MIDI Out stays below loaded modules
             kinds
         }),
         (
@@ -2564,16 +2606,16 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Arp,
             vec![
-                Gain, Discrete, Timing, Timing, Timing, Discrete, Timing, Timing, Discrete,
-                Discrete, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain, Timing,
+                Discrete,
             ],
         ),
         (
             // Root rows only: the step lane lives in the pattern drill.
             Tab::Lead,
             vec![
-                Gain, Discrete, Timing, Discrete, Timing, Timing, Timing, Discrete, Discrete,
-                Discrete, Timing, Timing, Discrete, Gain,
+                Gain, Discrete, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing,
+                Timing, Discrete, Gain, Timing, Discrete,
             ],
         ),
     ];
@@ -3205,14 +3247,11 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 
 #[test]
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
-    assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0), 32);
-    assert_eq!(chords_flat_index(progression_drill(), 2), 42);
-    assert_eq!(chords_flat_index(slot_drill(2), 0), 43);
-
     let controls = FluidControls::default();
-    let expected = tab_controls(Tab::Chords, &controls)[27].id;
-    assert_eq!(expected, "pad.chord3_accidental");
+    assert_eq!(chords_flat_index(ChordDrill::None, 4, &controls), 4);
+    assert_eq!(chords_flat_index(progression_drill(), 0, &controls), 32);
+    assert_eq!(chords_flat_index(progression_drill(), 2, &controls), 42);
+    assert_eq!(chords_flat_index(slot_drill(2), 0, &controls), 43);
 }
 
 #[test]
@@ -6320,6 +6359,17 @@ fn palette_layer_boost_matches_tab_name_and_id_namespace_alike() {
 }
 
 #[test]
+fn palette_finds_midi_switches_after_the_page_reordering() {
+    for (tab, id) in [
+        (Tab::Chords, "pad.midi_out"),
+        (Tab::Arp, "arp.midi_out"),
+        (Tab::Lead, "lead.midi_out"),
+    ] {
+        assert_eq!(palette_top_hit(tab, &[], id), id);
+    }
+}
+
+#[test]
 fn palette_layer_boost_releases_once_the_query_outgrows_the_namespace() {
     // "bass.d" is no longer a prefix of "bass", so the fuzzy score governs
     // again and the specific control the user is spelling out wins.
@@ -6346,7 +6396,7 @@ fn chords_drill_for_index_inverts_chords_flat_index() {
     let controls = FluidControls::default();
     for flat in 0..(10 + CHORD_SLOT_COUNT * 5) {
         let (drill, row) = chords_drill_for_index(flat, &controls);
-        assert_eq!(chords_flat_index(drill, row), flat);
+        assert_eq!(chords_flat_index(drill, row, &controls), flat);
     }
 }
 
