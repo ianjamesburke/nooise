@@ -52,9 +52,9 @@ left to right across the tab strip, `asdf` then `qwer`, so `a` is Pads and
 `Space k` is the filter on whatever is in front of you. It jumps, it does
 not edit.
 
-Press `p` to stop the clock and let the song end on its tails: nothing new
-plays, and reverb, delay, and releasing notes ring out. Press `p` again to
-start.
+Press `Shift+P` to stop the clock and let the song end on its tails: nothing
+new plays, and reverb, delay, and releasing notes ring out. Press `Shift+P`
+again to start.
 
 See [live performance](docs/PERFORMANCE.md) for overlap, saving, the clock
 stop, and the Jump leader.

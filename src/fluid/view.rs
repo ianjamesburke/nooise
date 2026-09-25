@@ -295,7 +295,7 @@ impl<'a> UiViewModel<'a> {
             // Stopped leads the row in every owner, so silence is never
             // mistaken for a dead engine; gestures still play into the tails.
             (true, true) => format!("■ STOPPED · {}", gesture_activity_line(&gestures)),
-            (true, false) => "■ STOPPED · p play".to_string(),
+            (true, false) => "■ STOPPED · Shift+P play".to_string(),
             (false, true) => gesture_activity_line(&gestures),
             (false, false) if presentation.gesture_holds_available => gesture_idle_hint(),
             (false, false) => String::new(),

@@ -588,7 +588,6 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('e') => Intent::OpenAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('a') => Intent::ToggleAuto,
         PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
-        PhysicalKey::Character('p') => Intent::ToggleTransport,
         PhysicalKey::Character('t') => Intent::ToggleUnits,
         PhysicalKey::Character('x') => Intent::RemoveAutomation,
         PhysicalKey::Character(character) if starts_numeric_entry(character) => {
@@ -635,6 +634,8 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('E' | 'e') => Intent::AddAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
         PhysicalKey::Character('R' | 'r') => Intent::RandomizeScope,
+        // Shifted so a stray keystroke cannot end the song.
+        PhysicalKey::Character('P' | 'p') => Intent::ToggleTransport,
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         _ => return None,
     })
@@ -1655,6 +1656,23 @@ mod tests {
     }
 
     #[test]
+    fn only_shift_p_toggles_the_transport_in_browsing() {
+        let map = |modifiers| {
+            map_input(
+                &InteractionMode::Browsing,
+                Navigation::default(),
+                &TransportEvent::key(PhysicalKey::Character('p'), modifiers, InputPhase::Press),
+                TerminalCapabilities::full(),
+            )
+        };
+        assert_eq!(map(Modifiers::default()), InputMapping::Ignored);
+        assert_eq!(
+            map(Modifiers::SHIFT),
+            InputMapping::Action(SemanticAction::press(Intent::ToggleTransport))
+        );
+    }
+
+    #[test]
     fn question_mark_opens_help_with_no_modifier_reported() {
         // Most terminals report SHIFT for a shifted letter (crossterm
         // synthesizes it from `char::is_uppercase`) but not for shifted
@@ -1962,7 +1980,6 @@ mod tests {
             ('e', Intent::OpenAutomation(super::AutomationKind::Envelope)),
             ('a', Intent::ToggleAuto),
             ('m', Intent::ToggleMute { master: false }),
-            ('p', Intent::ToggleTransport),
             ('t', Intent::ToggleUnits),
             ('x', Intent::RemoveAutomation),
             ('r', Intent::RandomizeSelected),
@@ -1985,6 +2002,7 @@ mod tests {
             ('F', Intent::AddAutomation(super::AutomationKind::Lfo)),
             ('E', Intent::AddAutomation(super::AutomationKind::Envelope)),
             ('R', Intent::RandomizeScope),
+            ('P', Intent::ToggleTransport),
         ] {
             assert_eq!(
                 map_input(

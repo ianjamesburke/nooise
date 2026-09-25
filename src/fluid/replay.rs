@@ -1617,7 +1617,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("unit flip", vec![plain(FixtureKey::Character('t'))]),
         ("track mute", vec![plain(FixtureKey::Character('m'))]),
         ("master mute", vec![shift(FixtureKey::Character('M'))]),
-        ("clock stop", vec![plain(FixtureKey::Character('p'))]),
+        ("clock stop", vec![shift(FixtureKey::Character('P'))]),
         ("randomize", vec![plain(FixtureKey::Character('r'))]),
         ("randomize set", vec![shift(FixtureKey::Character('R'))]),
         ("numeric", vec![plain(FixtureKey::Character('1'))]),
@@ -2592,7 +2592,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
 
 /// The leader depends on no terminal capability: it only ever moves a
 /// cursor, so a press-only terminal and a full one reach the same state.
-/// `p` stops and starts the clock from browsing and from an open editor on
+/// Shift+P stops and starts the clock from browsing and from an open editor on
 /// every terminal: it is a Press edge, so autorepeat cannot flutter it, and
 /// the stopped marker stays on the activity row whoever owns the keyboard.
 #[test]
@@ -2601,9 +2601,11 @@ fn clock_stop_toggles_on_press_in_every_terminal_and_marks_the_activity_row() {
         TerminalCapabilities::full(),
         TerminalCapabilities::default(),
     ] {
+        let shift_p = |phase| modified_key(0, FixtureKey::Character('P'), phase, 1);
         let stop = vec![
             key(0, FixtureKey::Character('p'), InputPhase::Press),
-            key(0, FixtureKey::Character('p'), InputPhase::Repeat),
+            shift_p(InputPhase::Press),
+            shift_p(InputPhase::Repeat),
             key(0, FixtureKey::Character('f'), InputPhase::Press),
         ];
         let result = replay(&stop, capabilities);
@@ -2613,7 +2615,7 @@ fn clock_stop_toggles_on_press_in_every_terminal_and_marks_the_activity_row() {
         assert!(activity.contains("STOPPED"), "{activity}");
 
         let mut start = stop.clone();
-        start.push(key(0, FixtureKey::Character('p'), InputPhase::Press));
+        start.push(shift_p(InputPhase::Press));
         let result = replay(&start, capabilities);
         assert_eq!(result.effect_count("ToggleTransport"), 2);
         let activity = &result.frames.last().expect("a frame").activity;

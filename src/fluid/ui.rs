@@ -800,7 +800,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("m", "mute"),
                 ("\u{21e7}M", "master mute"),
                 ("T", "units"),
-                ("p", "stop/play"),
+                ("\u{21e7}P", "stop/play"),
             ],
         ],
     );

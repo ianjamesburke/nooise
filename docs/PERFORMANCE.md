@@ -51,8 +51,9 @@ all loaded holds.
 
 ## Clock stop
 
-`p` stops the clock and `p` again starts it. It works from browsing and from
-an open LFO or envelope editor, on every terminal: a plain Press, no
+Shift+P stops the clock and Shift+P again starts it. It is shifted so a stray
+keystroke cannot end the song; plain `p` does nothing. It works from browsing
+and from an open LFO or envelope editor, on every terminal: a Press edge, no
 key-release support needed, and autorepeat never flutters it.
 
 Stopped, the beat holds where it was. No new note, hit, chord, arp, or lane
@@ -140,10 +141,10 @@ Lead play retains its own `i` entry and existing bindings.
 7. Press `?` from Browsing: the shortcut map should open over the tab and
    control rows, leaving both footer rows visible beneath it. Esc returns
    to Browsing.
-8. On Pads with Reverb loaded and Kick audible, press `p`: no new kick or
+8. On Pads with Reverb loaded and Kick audible, press Shift+P: no new kick or
    chord arrives, the chord and reverb fade out naturally rather than
    cutting, and the activity row shows `■ STOPPED`. Hold `z` during the
-   tail and hear it bloom. Press `p` again: kicks return on the grid and the
+   tail and hear it bloom. Press Shift+P again: kicks return on the grid and the
    current chord swells back in without waiting for a chord change.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
