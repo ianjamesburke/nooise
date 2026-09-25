@@ -416,6 +416,7 @@ struct ReplayResult {
     max_queue: usize,
     deferred_inputs: Vec<String>,
     clipboard_writes: usize,
+    saved_automation_code: Option<String>,
     state_history: Vec<ActionRecord>,
     explicit_ticks: usize,
     explicit_tick_turn_ids: Vec<u64>,
@@ -507,14 +508,24 @@ struct ReplayOutcome {
 struct FakeClipboard {
     writes: usize,
     failure: Option<ClipboardError>,
+    automation_code: Option<String>,
 }
 
 impl Clipboard for FakeClipboard {
-    fn set_text(&mut self, _text: String) -> Result<(), ClipboardError> {
+    fn set_text(&mut self, text: String) -> Result<(), ClipboardError> {
         if let Some(error) = &self.failure {
             return Err(error.clone());
         }
         self.writes += 1;
+        // Capture the authored automation for save regressions. A full song
+        // also contains the live tonal generator's entropy-seeded runtime
+        // state, which is outside this input replay's deterministic clock.
+        let saved = song::decode_song_code(&text).expect("save emits a valid song code");
+        let automation_only = SongState {
+            automation: saved.automation,
+            ..SongState::default()
+        };
+        self.automation_code = Some(song::encode_song_code(&automation_only).unwrap());
         Ok(())
     }
 }
@@ -733,6 +744,7 @@ impl ReplayHarness {
             max_queue: self.max_queue,
             deferred_inputs: self.deferred_inputs,
             clipboard_writes: self.clipboard.writes,
+            saved_automation_code: self.clipboard.automation_code,
             state_history: self.state_history,
             explicit_ticks: self.explicit_ticks,
             explicit_tick_turn_ids: self.explicit_tick_turn_ids,
@@ -2097,6 +2109,67 @@ fn escape_closes_a_neutral_lfo_without_trapping_the_keyboard_owner() {
     assert_eq!(closed.automation_kind, None);
 }
 
+#[test]
+fn silent_lanes_survive_editor_exit_navigation_and_save() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let ctrl = |code| modified_key(0, code, InputPhase::Press, 1 << 1);
+    for family in ['f', 'e'] {
+        for exit in [FixtureKey::Escape, FixtureKey::Tab] {
+            let result = replay(
+                &[
+                    plain(FixtureKey::Character(family)),
+                    plain(exit),
+                    plain(FixtureKey::Tab),
+                    ctrl(FixtureKey::Character('s')),
+                ],
+                TerminalCapabilities::full(),
+            );
+            assert_eq!(result.model.mode, InteractionMode::Browsing);
+            let saved =
+                song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+            if family == 'f' {
+                assert_eq!(saved.automation.routes().count(), 1);
+                assert_eq!(saved.automation.routes().next().unwrap().1.depth_ratio, 0.0);
+            } else {
+                assert_eq!(saved.automation.envelopes().count(), 1);
+                assert_eq!(saved.automation.envelopes().next().unwrap().1.amount, 0.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn silent_lane_capacity_notice_and_x_removal_use_the_production_bindings() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let ctrl = |code| modified_key(0, code, InputPhase::Press, 1 << 1);
+    for family in ['f', 'e'] {
+        let add = modified_key(0, FixtureKey::Character(family), InputPhase::Press, 1);
+        let mut events = vec![plain(FixtureKey::Character(family))];
+        events.extend(std::iter::repeat_n(add.clone(), 4));
+        let full = replay(&events, TerminalCapabilities::full());
+        assert!(
+            full.effect_notice
+                .as_deref()
+                .unwrap()
+                .contains("four lanes")
+        );
+        events.extend([
+            plain(FixtureKey::Character('x')),
+            add,
+            ctrl(FixtureKey::Character('s')),
+        ]);
+        let replaced = replay(&events, TerminalCapabilities::full());
+        let saved =
+            song::decode_song_code(replaced.saved_automation_code.as_deref().unwrap()).unwrap();
+        let count = if family == 'f' {
+            saved.automation.routes().count()
+        } else {
+            saved.automation.envelopes().count()
+        };
+        assert_eq!(count, 4);
+    }
+}
+
 /// Enter on the Lead page opens play mode; arrows edit the selected control
 /// while the letter row still sounds tones, autorepeat plays nothing, and Esc
 /// returns to browsing.
@@ -3257,6 +3330,7 @@ fn divergence_signature(left: &ReplayResult, right: &ReplayResult) -> Option<Div
     first_field!(max_queue);
     first_field!(deferred_inputs);
     first_field!(clipboard_writes);
+    first_field!(saved_automation_code);
     first_field!(explicit_ticks);
     first_field!(explicit_tick_turn_ids);
     first_field!(idle_boundaries);

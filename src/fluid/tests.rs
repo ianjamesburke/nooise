@@ -1338,19 +1338,29 @@ fn lfo_rate_edit_keeps_offset_and_hands_off_where_waveforms_cross() {
 }
 
 #[test]
-fn close_editor_deletes_zero_depth_route() {
+fn close_editor_preserves_zero_depth_route() {
     let mut automation = AutomationState::default();
     let address = ControlAddress::new("master.level");
-    automation.open_or_create(address).depth_ratio = 0.0;
+    let authored = LfoRoute {
+        shape: LfoShape::Steps,
+        seed: 12345,
+        cycle_beats: 3.5,
+        phase_offset_beats: 1.25,
+        step_count: 3,
+        step_glide: 0.25,
+        ..LfoRoute::default()
+    };
+    *automation.open_or_create(address) = authored;
 
     automation.close_editor();
 
-    assert!(automation.route(address).is_none());
+    assert_eq!(automation.route(address), Some(&authored));
     assert!(!automation.is_editor_open());
 
     automation.open_or_create(address);
     automation.close_editor();
-    assert!(automation.route(address).is_none());
+    assert_eq!(automation.routes_for(address).count(), 1);
+    assert_eq!(automation.route(address), Some(&authored));
 }
 
 #[test]
@@ -6077,17 +6087,241 @@ fn open_or_create_envelope_defaults_to_neutral_amount() {
 }
 
 #[test]
-fn close_editor_deletes_zero_amount_envelope() {
+fn close_editor_preserves_zero_amount_envelope() {
     let mut automation = AutomationState::default();
     let address = ControlAddress::new("master.level");
-    automation.open_or_create_envelope(address);
+    let authored = EnvelopeRoute {
+        attack_beats: 0.75,
+        decay_beats: 2.5,
+        trigger: EnvTrigger::OnKick,
+        ..EnvelopeRoute::default()
+    };
+    *automation.open_or_create_envelope(address) = authored;
 
     automation.close_editor();
-    assert!(automation.envelope(address).is_none());
+    assert_eq!(automation.envelope(address), Some(&authored));
+    assert!(!automation.is_editor_open());
 
     automation.open_or_create_envelope(address).amount = 0.5;
     automation.close_editor();
     assert!(automation.envelope(address).is_some());
+}
+
+#[test]
+fn silent_lanes_keep_capacity_until_the_selected_lane_is_deleted() {
+    let address = ControlAddress::new("master.level");
+    for kind in [ModKind::Lfo, ModKind::Envelope] {
+        let mut automation = AutomationState::default();
+        for index in 0..MAX_AUTOMATION_LANES_PER_KIND {
+            assert!(automation.add_and_open(address, kind));
+            match kind {
+                ModKind::Lfo => {
+                    automation.route_mut(address).unwrap().cycle_beats = index as f32 + 1.0
+                }
+                ModKind::Envelope => {
+                    automation.envelope_mut(address).unwrap().decay_beats = index as f32 + 1.0
+                }
+            }
+            automation.close_editor();
+        }
+        assert!(!automation.add_and_open(address, kind));
+        // Opening/cycling existing lanes never allocates another lane.
+        automation.cycle_open(address, kind);
+        automation.cycle_open(address, kind);
+        assert_eq!(automation.active_lane_index(), Some(1));
+        assert_eq!(automation.active_lane_count(), Some(4));
+        automation.remove_open_route();
+        let remaining: Vec<_> = match kind {
+            ModKind::Lfo => automation
+                .routes_for(address)
+                .map(|route| route.cycle_beats)
+                .collect(),
+            ModKind::Envelope => automation
+                .envelopes_for(address)
+                .map(|route| route.decay_beats)
+                .collect(),
+        };
+        assert_eq!(remaining, vec![1.0, 3.0, 4.0]);
+        assert!(automation.add_and_open(address, kind));
+        assert_eq!(automation.active_lane_count(), Some(4));
+    }
+}
+
+#[test]
+fn silent_envelope_only_song_keeps_its_curve_when_raised_after_loading() {
+    let address = ControlAddress::new("master.level");
+    let mut original = SongState::from_controls(FluidControls::default());
+    let authored = EnvelopeRoute {
+        amount: -0.4,
+        attack_beats: 0.75,
+        decay_beats: 3.25,
+        trigger: EnvTrigger::EveryBeats(6.0),
+    };
+    original.automation.set_envelope(address, authored);
+    original.automation.envelope_mut(address).unwrap().amount = 0.0;
+    let mut restored = song::decode_song_code(&song::encode_song_code(&original).unwrap()).unwrap();
+    assert_song_states_agree(&original, &restored, "silent envelope only");
+    assert_eq!(restored.automation.envelope(address).unwrap().amount, 0.0);
+    restored.automation.envelope_mut(address).unwrap().amount = authored.amount;
+    assert_eq!(restored.automation.envelope(address), Some(&authored));
+}
+
+#[test]
+fn song_code_keeps_silent_lanes_between_active_lanes_in_both_families() {
+    let address = ControlAddress::new("master.level");
+    let mut original = SongState::from_controls(FluidControls::default());
+    for (index, amount) in [0.2, 0.0, 0.4, 0.0].into_iter().enumerate() {
+        assert!(original.automation.add_route(
+            address,
+            LfoRoute {
+                depth_ratio: amount,
+                seed: 100 + index as u32,
+                cycle_beats: index as f32 + 1.0,
+                shape: LfoShape::Steps,
+                ..LfoRoute::default()
+            }
+        ));
+        assert!(original.automation.add_envelope(
+            address,
+            EnvelopeRoute {
+                amount,
+                attack_beats: index as f32 + 0.25,
+                trigger: EnvTrigger::EveryBeats(index as f32 + 2.0),
+                ..EnvelopeRoute::default()
+            }
+        ));
+    }
+    let restored = song::decode_song_code(&song::encode_song_code(&original).unwrap()).unwrap();
+    assert_song_states_agree(&original, &restored, "silent stacked lanes");
+}
+
+#[test]
+fn steps_render_resumes_on_the_transport_after_a_silent_save_load_interval() {
+    let address = ControlAddress::new("master.level");
+    let mut authored = AutomationState::default();
+    let mut steps = LfoRoute {
+        shape: LfoShape::Steps,
+        depth_ratio: 0.4,
+        cycle_beats: 0.75,
+        phase_offset_beats: 0.25,
+        step_count: 5,
+        step_glide: 0.0,
+        seed: 98765,
+        ..LfoRoute::default()
+    };
+    steps.steps[..5].copy_from_slice(&[0.0, 1.0, 1.0, 0.0, 1.0]);
+    authored.set_route(address, steps);
+    let reference = live_session(FluidControls::default(), authored.clone());
+    let restored = live_session(FluidControls::default(), authored.clone());
+    let make_engine = |session: LiveSession| {
+        let mut engine = FluidEngine::new(
+            SAMPLE_RATE,
+            session,
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(42);
+        engine
+    };
+    let mut reference_engine = make_engine(reference.clone());
+    let mut restored_engine = make_engine(restored.clone());
+    for stage in 0..3 {
+        if stage == 1 {
+            reference
+                .update(|session| session.automation.route_mut(address).unwrap().depth_ratio = 0.0);
+            let mut silent = SongState::from_controls(FluidControls::default());
+            silent.automation = authored.clone();
+            silent.automation.open_or_create(address).depth_ratio = 0.0;
+            silent.automation.close_editor();
+            let decoded =
+                song::decode_song_code(&song::encode_song_code(&silent).unwrap()).unwrap();
+            assert_song_states_agree(&silent, &decoded, "silent Steps");
+            restored.update(|session| session.automation = decoded.automation.clone());
+        } else if stage == 2 {
+            reference.update(|session| session.automation = authored.clone());
+            restored.update(|session| {
+                session.automation.route_mut(address).unwrap().depth_ratio = steps.depth_ratio
+            });
+        }
+        let mut energy = 0.0;
+        for sample in 0..(SAMPLE_RATE as usize * 3) {
+            let expected = reference_engine.next_stereo();
+            let actual = restored_engine.next_stereo();
+            assert_eq!(actual, expected, "stage {stage} sample {sample}");
+            energy += actual.0 * actual.0 + actual.1 * actual.1;
+        }
+        assert!(energy > 1.0, "render stage {stage} must contain music");
+    }
+}
+
+#[test]
+fn silent_lfo_and_envelope_render_the_same_as_no_automation() {
+    let address = ControlAddress::new("master.level");
+    let mut neutral = AutomationState::default();
+    neutral.open_or_create(address).shape = LfoShape::Steps;
+    neutral.open_or_create_envelope(address).trigger = EnvTrigger::OnKick;
+    neutral.close_editor();
+    let mut dry = engine_for(FluidControls::default(), AutomationState::default());
+    let mut silent = engine_for(FluidControls::default(), neutral);
+    dry.reseed(42);
+    silent.reseed(42);
+    for _ in 0..SAMPLE_RATE as usize {
+        assert_eq!(silent.next_stereo(), dry.next_stereo());
+    }
+}
+
+#[test]
+fn morph_preserves_lane_ordinals_through_zero_amount() {
+    let address = ControlAddress::new("master.level");
+    let mut from = AutomationState::default();
+    let mut to = AutomationState::default();
+    for (index, amount) in [0.4, 0.0, 0.8].into_iter().enumerate() {
+        let lfo = LfoRoute {
+            depth_ratio: amount,
+            seed: index as u32,
+            ..LfoRoute::default()
+        };
+        assert!(from.add_route(address, lfo));
+        assert!(to.add_route(
+            address,
+            LfoRoute {
+                depth_ratio: 0.0,
+                ..lfo
+            }
+        ));
+        let env = EnvelopeRoute {
+            amount,
+            decay_beats: index as f32 + 1.0,
+            ..EnvelopeRoute::default()
+        };
+        assert!(from.add_envelope(address, env));
+        assert!(to.add_envelope(
+            address,
+            EnvelopeRoute {
+                amount: -amount,
+                ..env
+            }
+        ));
+    }
+    let crossing = AutomationState::morph(&from, &to, 0.5, true);
+    assert!(
+        crossing
+            .envelopes_for(address)
+            .all(|route| route.amount == 0.0)
+    );
+    assert_eq!(crossing.envelopes_for(address).count(), 3);
+    let mut silent = AutomationState::morph(&from, &to, 1.0, true);
+    silent.cycle_open(address, ModKind::Lfo);
+    silent.close_editor();
+    let resumed = AutomationState::morph(&silent, &from, 1.0, true);
+    assert_eq!(
+        resumed.routes_for(address).copied().collect::<Vec<_>>(),
+        from.routes_for(address).copied().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        resumed.envelopes_for(address).copied().collect::<Vec<_>>(),
+        from.envelopes_for(address).copied().collect::<Vec<_>>()
+    );
 }
 
 #[test]

@@ -441,34 +441,10 @@ impl AutomationState {
         }
     }
 
-    /// Close the editor; a route left at neutral amount is dead weight and is
-    /// removed so it never colours the UI or the song code.
+    /// Close the editor without changing the authored lanes. Zero amount
+    /// silences a lane; only explicit removal frees its slot.
     pub(crate) fn close_editor(&mut self) {
-        let Some(open) = self.open.take() else {
-            return;
-        };
-        if let Some(stack) = self.stacks.get_mut(&open.address) {
-            match open.kind {
-                ModKind::Lfo
-                    if stack
-                        .lfos
-                        .get(open.index)
-                        .is_some_and(|route| route.depth_ratio <= f32::EPSILON) =>
-                {
-                    stack.lfos.remove(open.index);
-                }
-                ModKind::Envelope
-                    if stack
-                        .envelopes
-                        .get(open.index)
-                        .is_some_and(|route| route.amount.abs() <= f32::EPSILON) =>
-                {
-                    stack.envelopes.remove(open.index);
-                }
-                ModKind::Lfo | ModKind::Envelope => {}
-            }
-        }
-        self.remove_stack_if_empty(open.address);
+        self.open = None;
     }
 
     pub(crate) fn is_editor_open(&self) -> bool {

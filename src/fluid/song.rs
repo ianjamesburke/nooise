@@ -67,9 +67,6 @@ const ENV_TRIGGER_ONCE: u8 = 2;
 /// Fallback `EveryBeats` interval for an envelope whose stored trigger param
 /// is non-finite; matches `EnvTrigger`'s own "every 4 beats" default.
 const DEFAULT_ENV_TRIGGER_BEATS: f32 = 4.0;
-/// A macro or envelope route with no audible effect is dead weight; skip it
-/// on encode exactly like the LFO editor already prunes zero-depth routes.
-const NEUTRAL_ENVELOPE_AMOUNT_EPSILON: f32 = f32::EPSILON;
 
 #[derive(Clone, Default)]
 pub(crate) struct SongState {
@@ -824,12 +821,8 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
     // Reserved legacy macro-route section. Always empty in current codes.
     write_u16(0, out)?;
 
-    let envelopes: Vec<_> = automation
-        .envelopes()
-        .filter(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
-        .collect();
-    write_u16(envelopes.len(), out)?;
-    for (address, route) in envelopes {
+    write_u16(automation.envelopes().count(), out)?;
+    for (address, route) in automation.envelopes() {
         write_control_index(address.id(), out)?;
         out.extend_from_slice(&bipolar_to_u16(route.amount).to_le_bytes());
         out.extend_from_slice(&route.attack_beats.to_le_bytes());
@@ -933,15 +926,9 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
     Ok(())
 }
 
-/// A route or envelope worth persisting. Mirrors the
-/// pruning `AutomationState::close_editor` already applies in the UI, so a
-/// route the editor would delete on close never round-trips through a song
-/// code either.
+/// Authored lanes persist even while their amount is zero.
 fn automation_has_content(automation: &AutomationState) -> bool {
-    automation.routes().next().is_some()
-        || automation
-            .envelopes()
-            .any(|(_, route)| route.amount.abs() > NEUTRAL_ENVELOPE_AMOUNT_EPSILON)
+    automation.routes().next().is_some() || automation.envelopes().next().is_some()
 }
 
 /// Shared `LfoRoute` construction for the reader: clamps every field to its
