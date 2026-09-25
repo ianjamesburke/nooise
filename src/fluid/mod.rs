@@ -308,13 +308,16 @@ fn randomized_start_song(rng: &mut impl Rng, midi_connected: bool) -> SongState 
 fn apply_midi_start(song: &mut SongState, midi: MidiConfig<'_>) {
     if midi.input.is_some() || midi.output.is_some() {
         song.controls.pad.level = 0.0;
+        song.controls.hidden_pad_rhythm_rows = PAD_RHYTHM_ROWS;
     }
     if midi.output.is_some() {
         song.controls.pad.midi_in = 0.0;
         song.controls.pad.midi_out = 1.0;
+        song.controls.midi_rows |= PAD_MIDI_OUT_ROW;
     } else if midi.input.is_some() {
         song.controls.pad.midi_in = 1.0;
         song.controls.pad.midi_out = 0.0;
+        song.controls.midi_rows |= PAD_MIDI_IN_ROW;
     }
 }
 

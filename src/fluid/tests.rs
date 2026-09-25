@@ -747,13 +747,23 @@ fn fresh_start_varies_the_progression_between_launches() {
 fn midi_output_fresh_start_mutes_pad_audio_without_disabling_pad_midi() {
     let mut rng = StdRng::seed_from_u64(42);
     let normal = randomized_start_song(&mut rng, false);
-    let midi = randomized_start_song(&mut rng, true);
+    let mut midi = randomized_start_song(&mut rng, true);
+    apply_midi_start(
+        &mut midi,
+        MidiConfig {
+            input: None,
+            output: Some(MidiEndpoint {
+                name: "Take5",
+                channel: 1,
+            }),
+        },
+    );
 
     assert!(normal.controls.pad.level > 0.0);
     assert_eq!(midi.controls.pad.level, 0.0);
     assert_eq!(midi.controls.pad.midi_in, 0.0);
     assert_eq!(midi.controls.pad.midi_out, 1.0);
-    assert_eq!(midi.controls.midi_rows, 0);
+    assert_eq!(midi.controls.midi_rows & PAD_MIDI_OUT_ROW, PAD_MIDI_OUT_ROW);
     assert_eq!(midi.controls.arp.midi_out, 0.0);
     assert_eq!(midi.controls.lead.midi_out, 0.0);
 }
@@ -779,6 +789,17 @@ fn duplex_midi_start_selects_pad_out_and_zero_level_even_for_an_authored_song() 
     assert_eq!(song.controls.pad.level, 0.0);
     assert_eq!(song.controls.pad.midi_in, 0.0);
     assert_eq!(song.controls.pad.midi_out, 1.0);
+    assert_eq!(song.controls.midi_rows & PAD_MIDI_OUT_ROW, PAD_MIDI_OUT_ROW);
+    assert_eq!(song.controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS);
+    let ids: Vec<_> = chords_tab_controls(&song.controls, ChordDrill::None)
+        .iter()
+        .map(|item| item.id)
+        .collect();
+    assert!(ids.contains(&"pad.midi_out"));
+    assert!(!ids.contains(&"pad.midi_in"));
+    for hidden in ["pad.trigger", "pad.swing", "pad.gate_beats"] {
+        assert!(!ids.contains(&hidden), "{hidden} should stay tucked away");
+    }
 }
 
 #[test]
@@ -797,6 +818,12 @@ fn input_only_midi_start_selects_pad_in_and_zero_level() {
     assert_eq!(song.controls.pad.level, 0.0);
     assert_eq!(song.controls.pad.midi_in, 1.0);
     assert_eq!(song.controls.pad.midi_out, 0.0);
+    assert_eq!(song.controls.midi_rows & PAD_MIDI_IN_ROW, PAD_MIDI_IN_ROW);
+    assert!(
+        chords_tab_controls(&song.controls, ChordDrill::None)
+            .iter()
+            .any(|item| item.id == "pad.midi_in")
+    );
 }
 
 #[test]
@@ -821,6 +848,14 @@ fn duplex_midi_start_keeps_auto_endpoints_at_zero_pad_level_and_output_on() {
     assert_eq!(morph.controls_at(0.0).pad.midi_in, 0.0);
     assert_eq!(morph.controls_at(0.0).pad.midi_out, 1.0);
     assert_eq!(morph.controls_at(32.0).pad.midi_out, 1.0);
+    assert_eq!(
+        morph.controls_at(0.0).midi_rows & PAD_MIDI_OUT_ROW,
+        PAD_MIDI_OUT_ROW
+    );
+    assert_eq!(
+        morph.controls_at(32.0).midi_rows & PAD_MIDI_OUT_ROW,
+        PAD_MIDI_OUT_ROW
+    );
 }
 
 #[test]
@@ -889,12 +924,14 @@ fn midi_input_switches_and_pad_trigger_source_survive_song_codes() {
     song.controls.arp.midi_in = 1.0;
     song.controls.lead.midi_in = 1.0;
     song.controls.midi_rows = 0b00_010101;
+    song.controls.hidden_pad_rhythm_rows = 0b0000_0101;
     let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
     assert_eq!(decoded.controls.pad.midi_in, 0.0);
     assert_eq!(decoded.controls.pad.midi_trigger, 1.0);
     assert_eq!(decoded.controls.arp.midi_in, 1.0);
     assert_eq!(decoded.controls.lead.midi_in, 1.0);
     assert_eq!(decoded.controls.midi_rows, 0b00_010101);
+    assert_eq!(decoded.controls.hidden_pad_rhythm_rows, 0b0000_0101);
 }
 
 #[test]

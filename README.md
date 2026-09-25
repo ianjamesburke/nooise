@@ -87,11 +87,12 @@ MIDI Out on, nooise sends the Pad's current
 beat and the transport's Start, Stop, and Continue messages. The Pad chord
 releases when another chord starts or the clock stops. MIDI output runs
 alongside nooise audio. With `--midi` or `--midi-out`, Pad starts with MIDI Out
-on, MIDI In off, and Level at 0%, including when loading a song. `--midi`
+on and visible, MIDI In off, and Level at 0%, including when loading a song. `--midi`
 still opens the input port for tracks whose MIDI In switch you turn on. An
-input-only `--midi-in` launch starts Pad with MIDI In on, MIDI Out off, and
+input-only `--midi-in` launch starts Pad with MIDI In on and visible, MIDI Out off, and
 Level at 0%; raise Pad Level to hear your keyboard through its sound. The
-other tracks keep their saved MIDI switches.
+other tracks keep their saved MIDI switches. MIDI launches tuck away Pad
+Trigger, Swing, and Gate. Find any of those rows with `/` to add it back.
 Set the receiving synth to follow USB MIDI clock if you want its own timed
 features to sync.
 
@@ -107,12 +108,11 @@ Trigger, turn MIDI Trigger On to stop the step hits and fire the current chord
 from incoming MIDI Note On messages. The step rows dim while MIDI Trigger is
 On; Gate still sets the chord's hold time.
 
-MIDI switches are hidden from the Pads, Arp, and Lead pages until you add
-one with `/`: find `pad.midi_in`, `arp.midi_out`, or another track's switch and
-press Enter. The switch then stays at the bottom of that page even when Off;
+Other MIDI switches stay hidden from the Pads, Arp, and Lead pages until you
+add one with `/`: find `pad.midi_in`, `arp.midi_out`, or another track's switch
+and press Enter. The switch then stays at the bottom of that page even when Off;
 Arp and Lead also show MIDI Gate when their Out switch is added. Adding a
-switch does not change its On/Off value, including Pad Out's MIDI-launch
-default. A track can use only one direction at a time: turning In on
+switch does not change its On/Off value. A track can use only one direction at a time: turning In on
 turns Out off, and vice versa. Pad defaults to Out; Arp and Lead default Off.
 Ordinary Pad MIDI In plays incoming pitches with the Pad sound. With a
 connected input, Hold-mode Pad audio follows your keyboard. Held Arp input

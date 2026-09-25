@@ -292,6 +292,12 @@ impl EffectExecutor {
                     self.session
                         .update(|snapshot| snapshot.controls.midi_rows |= bit);
                 }
+                if let Some(bit) = pad_rhythm_row_bit(id)
+                    && self.session.load().controls.hidden_pad_rhythm_rows & bit != 0
+                {
+                    self.session
+                        .update(|snapshot| snapshot.controls.hidden_pad_rhythm_rows &= !bit);
+                }
                 self.recent.touch(id);
                 Ok(EffectAcknowledgement::ControlSelected { tab, index, id })
             }
@@ -322,6 +328,9 @@ impl EffectExecutor {
                             .apply_value(edit.value, &mut snapshot.controls);
                         if let Some(bit) = midi_row_bit(edit.id) {
                             snapshot.controls.midi_rows |= bit;
+                        }
+                        if let Some(bit) = pad_rhythm_row_bit(edit.id) {
+                            snapshot.controls.hidden_pad_rhythm_rows &= !bit;
                         }
                     }
                 });
@@ -1667,6 +1676,29 @@ mod tests {
                 .iter()
                 .any(|item| item.id == "arp.midi_gate_beats")
         );
+    }
+
+    #[test]
+    fn selecting_a_tucked_pad_rhythm_row_restores_only_that_row() {
+        let mut executor = executor();
+        executor.session.update(|snapshot| {
+            snapshot.controls.hidden_pad_rhythm_rows = PAD_RHYTHM_ROWS;
+        });
+
+        executor
+            .execute(LiveEffect::SelectControl {
+                tab: Tab::Chords,
+                index: spec_index(Tab::Chords, "pad.trigger").unwrap(),
+                id: "pad.trigger",
+            })
+            .unwrap();
+
+        let controls = &executor.session.load().controls;
+        assert_eq!(controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS & !(1 << 0));
+        let rows = tab_controls(Tab::Chords, controls);
+        assert!(rows.iter().any(|item| item.id == "pad.trigger"));
+        assert!(rows.iter().all(|item| item.id != "pad.swing"));
+        assert!(rows.iter().all(|item| item.id != "pad.gate_beats"));
     }
 
     #[test]

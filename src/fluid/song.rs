@@ -45,6 +45,8 @@ const GESTURE_RECORD: u8 = 4;
 const RANGE_EPOCH_RECORD: u8 = 5;
 /// Optional MIDI-row visibility; one bit per Pad, Arp, and Lead In/Out row.
 const MIDI_ROWS_RECORD: u8 = 6;
+/// Pad rhythm rows hidden during MIDI startup and restored with a song.
+const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
 const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
@@ -116,6 +118,8 @@ pub(crate) enum SongCodeError {
     DuplicateGestureRecord,
     InvalidMidiRows(u8),
     DuplicateMidiRowsRecord,
+    InvalidPadRhythmRows(u8),
+    DuplicatePadRhythmRowsRecord,
     /// The code sets a control this build retired. Its value has nowhere to
     /// go, so the code is refused rather than loaded with that value missing.
     RetiredControl(&'static str),
@@ -184,6 +188,12 @@ impl fmt::Display for SongCodeError {
                 write!(f, "song code has unknown MIDI row bits {rows:#04x}")
             }
             Self::DuplicateMidiRowsRecord => write!(f, "song code repeats the MIDI rows record"),
+            Self::InvalidPadRhythmRows(rows) => {
+                write!(f, "song code has unknown Pad rhythm row bits {rows:#04x}")
+            }
+            Self::DuplicatePadRhythmRowsRecord => {
+                write!(f, "song code repeats the Pad rhythm rows record")
+            }
             Self::RetiredControl(id) => write!(
                 f,
                 "song code sets {id}, a control this build no longer has; the code predates the \
@@ -252,6 +262,13 @@ pub(crate) fn encode_song_code_at_epoch(
     if song.controls.midi_rows != 0 {
         write_record(MIDI_ROWS_RECORD, &[song.controls.midi_rows], &mut bytes)?;
     }
+    if song.controls.hidden_pad_rhythm_rows != 0 {
+        write_record(
+            PAD_RHYTHM_ROWS_RECORD,
+            &[song.controls.hidden_pad_rhythm_rows],
+            &mut bytes,
+        )?;
+    }
     let mut gestures = Vec::new();
     if write_gestures(&song.gestures, &mut gestures)? {
         write_record(GESTURE_RECORD, &gestures, &mut bytes)?;
@@ -292,6 +309,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut song = SongState::default();
     let mut gesture_record_seen = false;
     let mut midi_rows_record_seen = false;
+    let mut pad_rhythm_rows_record_seen = false;
     let mut epoch = 0;
 
     while !reader.is_empty() {
@@ -315,6 +333,18 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                     return Err(SongCodeError::InvalidMidiRows(bits));
                 }
                 song.controls.midi_rows = bits;
+            }
+            PAD_RHYTHM_ROWS_RECORD => {
+                if pad_rhythm_rows_record_seen {
+                    return Err(SongCodeError::DuplicatePadRhythmRowsRecord);
+                }
+                pad_rhythm_rows_record_seen = true;
+                let mut rows = Reader::new(payload);
+                let bits = rows.u8()?;
+                if !rows.is_empty() || bits & !0b0000_0111 != 0 {
+                    return Err(SongCodeError::InvalidPadRhythmRows(bits));
+                }
+                song.controls.hidden_pad_rhythm_rows = bits;
             }
             GESTURE_RECORD => {
                 if gesture_record_seen {
@@ -1018,6 +1048,23 @@ mod midi_rows_record_tests {
         assert_eq!(
             decode_song_code(&code).err(),
             Some(SongCodeError::DuplicateMidiRowsRecord)
+        );
+    }
+}
+
+#[cfg(test)]
+mod pad_rhythm_rows_record_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unknown_hidden_row_bits() {
+        let code = code_from_records(
+            CONTAINER_VERSION,
+            &[(PAD_RHYTHM_ROWS_RECORD, &[0b0000_1000])],
+        );
+        assert_eq!(
+            decode_song_code(&code).err(),
+            Some(SongCodeError::InvalidPadRhythmRows(0b0000_1000))
         );
     }
 }

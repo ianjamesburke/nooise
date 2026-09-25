@@ -90,7 +90,10 @@ impl PaletteEntry {
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => {
-                if super::midi_row_bit(spec.id).is_some_and(|bit| c.midi_rows & bit == 0) {
+                if super::midi_row_bit(spec.id).is_some_and(|bit| c.midi_rows & bit == 0)
+                    || super::pad_rhythm_row_bit(spec.id)
+                        .is_some_and(|bit| c.hidden_pad_rhythm_rows & bit != 0)
+                {
                     "add".to_string()
                 } else {
                     (spec.display)(c)

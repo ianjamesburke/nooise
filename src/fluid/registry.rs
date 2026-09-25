@@ -2007,12 +2007,16 @@ pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
     all_specs().find(|spec| spec.id == id)
 }
 
+pub(crate) const PAD_MIDI_IN_ROW: u8 = 1 << 0;
+pub(crate) const PAD_MIDI_OUT_ROW: u8 = 1 << 1;
+pub(crate) const PAD_RHYTHM_ROWS: u8 = 0b0000_0111;
+
 /// Optional MIDI rows retain their place after being added even when Off.
 /// Gate rows belong to their track's MIDI Out control.
 pub(crate) fn midi_row_bit(id: &str) -> Option<u8> {
     match id {
-        "pad.midi_in" => Some(1 << 0),
-        "pad.midi_out" => Some(1 << 1),
+        "pad.midi_in" => Some(PAD_MIDI_IN_ROW),
+        "pad.midi_out" => Some(PAD_MIDI_OUT_ROW),
         "arp.midi_in" => Some(1 << 2),
         "arp.midi_out" | "arp.midi_gate_beats" => Some(1 << 3),
         "lead.midi_in" => Some(1 << 4),
@@ -2021,8 +2025,22 @@ pub(crate) fn midi_row_bit(id: &str) -> Option<u8> {
     }
 }
 
+/// The Pad rhythm controls that a MIDI launch tucks out of the root page.
+pub(crate) fn pad_rhythm_row_bit(id: &str) -> Option<u8> {
+    match id {
+        "pad.trigger" => Some(1 << 0),
+        "pad.swing" => Some(1 << 1),
+        "pad.gate_beats" => Some(1 << 2),
+        _ => None,
+    }
+}
+
 fn midi_row_visible(id: &str, c: &FluidControls) -> bool {
     midi_row_bit(id).is_none_or(|bit| c.midi_rows & bit != 0)
+}
+
+fn pad_rhythm_row_visible(id: &str, c: &FluidControls) -> bool {
+    pad_rhythm_row_bit(id).is_none_or(|bit| c.hidden_pad_rhythm_rows & bit == 0)
 }
 
 /// A tab's root rows: every spec except page-local step rows, unloaded
@@ -2033,6 +2051,7 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
         .filter(|spec| {
             module_slot_row_visible(spec.id, c)
                 && midi_row_visible(spec.id, c)
+                && pad_rhythm_row_visible(spec.id, c)
                 && lead_step_index(spec.id).is_none()
                 && pad_step_index(spec.id).is_none()
                 && spec.id != PAD_MIDI_TRIGGER_ID
@@ -2392,6 +2411,7 @@ pub(crate) fn chords_tab_controls(
                     pad_step_index(spec.id).is_none()
                         && spec.id != PAD_MIDI_TRIGGER_ID
                         && midi_row_visible(spec.id, c)
+                        && pad_rhythm_row_visible(spec.id, c)
                         && module_slot_row_visible(spec.id, c)
                 })
                 .map(|spec| spec.item(c))
