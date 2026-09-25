@@ -113,11 +113,11 @@ pub(crate) fn splitmix64_mix(mut z: u64) -> u64 {
 
 /// Lock-free channel from the engine to the visualizer. The audio thread only
 /// ever stores; the UI thread only ever loads. `kick_pulse` is a monotonic
-/// counter (UI tracks the delta to fire one ripple per hit); `chord_index`
-/// mirrors the pad engine's current chord.
+/// counter (UI tracks the delta to fire one ripple per hit); `chord_slot`
+/// is the progression table slot (0..8) the pad engine is sounding.
 #[derive(Default)]
 pub(crate) struct FluidTelemetry {
-    pub(crate) chord_index: AtomicU64,
+    pub(crate) chord_slot: AtomicU64,
     pub(crate) kick_pulse: AtomicU64,
     /// Engine beat position as `f64::to_bits`, for beat-synced UI animation.
     pub(crate) beat_bits: AtomicU64,

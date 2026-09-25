@@ -740,6 +740,7 @@ const SONG_ID_TABLE: &[&str] = &[
     "lead.type",
     "lead.follow",
     "lead.pattern",
+    "pad.chord_offset",
 ];
 
 /// Index of `id` in the song-code id table, or `None` if the control has

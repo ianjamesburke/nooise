@@ -123,6 +123,16 @@ pub(crate) enum SongCodeError {
     /// range has changed since, so its depths would sweep the wrong span.
     /// Like a retired control, it is refused rather than reinterpreted.
     StaleRange(&'static str),
+    /// The code gives a table-indexed control (`ControlSpec::song_values`) a
+    /// value this build has no entry for, most likely one a newer build
+    /// added. Loading it would put some other entry in its place.
+    UnknownValue {
+        id: &'static str,
+        value: i16,
+    },
+    /// The code gives a table-indexed control a value that is not a whole
+    /// number, which no writer produces.
+    NotATableValue(&'static str),
     /// A live control has no `SONG_ID_TABLE` slot, so it cannot be saved.
     /// `song_ids_cover_every_registry_control` exists to stop this reaching a
     /// user; append the id to the table.
@@ -185,6 +195,14 @@ impl fmt::Display for SongCodeError {
                 "song code modulates {id}, whose dial range changed after the code was saved; \
                  the code predates that change and can no longer be loaded"
             ),
+            Self::UnknownValue { id, value } => write!(
+                f,
+                "song code sets {id} to {value}, which this build does not have; the code is \
+                 probably from a newer nooise"
+            ),
+            Self::NotATableValue(id) => {
+                write!(f, "song code gives {id} a value that is not a whole number")
+            }
             Self::UnregisteredControl(id) => {
                 write!(f, "control {id} is missing from the song id table")
             }
@@ -195,14 +213,19 @@ impl fmt::Display for SongCodeError {
 impl Error for SongCodeError {}
 
 pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError> {
+    encode_song_code_at_epoch(song, CURRENT_RANGE_EPOCH)
+}
+
+/// `encode_song_code` stamped with any dial-range epoch, so a test can write
+/// a code the way an older build would have.
+pub(crate) fn encode_song_code_at_epoch(
+    song: &SongState,
+    epoch: u16,
+) -> Result<String, SongCodeError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
     bytes.push(CONTAINER_VERSION);
-    write_record(
-        RANGE_EPOCH_RECORD,
-        &CURRENT_RANGE_EPOCH.to_le_bytes(),
-        &mut bytes,
-    )?;
+    write_record(RANGE_EPOCH_RECORD, &epoch.to_le_bytes(), &mut bytes)?;
 
     let mut snapshot = Vec::new();
     write_snapshot(&song.controls, &mut snapshot)?;
@@ -506,6 +529,11 @@ impl EncodedValue {
     /// whole numbers and would gain nothing but error from a round trip
     /// through 0..1.
     fn encode(spec: &ControlSpec, value: f32, c: &FluidControls) -> Self {
+        if let Some(values) = spec.song_values {
+            // `value` is quantized onto the dial, so it is a whole position
+            // within the table (`song_values_cover_every_dial_position`).
+            return Self::SmallInt(values[value as usize]);
+        }
         if !spec.exact_in_song
             && spec.kind != ControlKind::Discrete
             && matches!(spec.step, Step::Linear(_))
@@ -570,7 +598,26 @@ impl EncodedValue {
     /// `Taper::value_at` clamps its ratio but not its output, so the inverse
     /// can land a float hair outside the range; clamp here rather than relying
     /// on every caller to route through `apply_quantized_value`.
-    fn resolve(self, spec: &ControlSpec) -> f32 {
+    fn resolve(self, spec: &ControlSpec) -> Result<f32, SongCodeError> {
+        if let Some(values) = spec.song_values {
+            // Only an exact whole number names a table entry; the writer
+            // never spells one as a taper position.
+            let stored = match self {
+                Self::SmallInt(value) => value as i16,
+                Self::Int(value) => value,
+                Self::Float(_) | Self::Position(_) => {
+                    return Err(SongCodeError::NotATableValue(spec.id));
+                }
+            };
+            return values
+                .iter()
+                .position(|&value| value as i16 == stored)
+                .map(|position| position as f32)
+                .ok_or(SongCodeError::UnknownValue {
+                    id: spec.id,
+                    value: stored,
+                });
+        }
         let value = match self {
             Self::Position(position) => {
                 spec.taper
@@ -580,7 +627,7 @@ impl EncodedValue {
             Self::Int(value) => value as f32,
             Self::Float(value) => value,
         };
-        value.clamp(spec.min, spec.max)
+        Ok(value.clamp(spec.min, spec.max))
     }
 }
 
@@ -688,7 +735,7 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
             }
             if let Some(spec) = control_at(index) {
                 let spec = spec.contextual(controls);
-                spec.apply_quantized_value(value.resolve(&spec), controls);
+                spec.apply_quantized_value(value.resolve(&spec)?, controls);
             } else if !structural {
                 reject_retired_control(index)?;
             }
@@ -1419,5 +1466,82 @@ mod tests {
             read_mute(&[0, 0, 0], &mut muted),
             Err(SongCodeError::Truncated)
         );
+    }
+}
+
+#[cfg(test)]
+mod song_value_tests {
+    use super::super::voice::{CUSTOM_PROGRESSION_INDEX, PROGRESSIONS, progression_index};
+    use super::*;
+
+    /// A code whose only entry sets `pad.progression` to `value`.
+    fn code_with_progression(value: EncodedValue) -> String {
+        let mut snapshot = Vec::new();
+        write_u16(1usize, &mut snapshot).unwrap();
+        let index = song_id_index("pad.progression").expect("id is in the table");
+        snapshot.extend_from_slice(&index.to_le_bytes());
+        value.write(&mut snapshot);
+        code_from_records(CONTAINER_VERSION, &[(SNAPSHOT_RECORD, &snapshot)])
+    }
+
+    fn decoded_progression(value: EncodedValue) -> Result<usize, SongCodeError> {
+        decode_song_code(&code_with_progression(value))
+            .map(|song| progression_index(song.controls.pad.progression))
+    }
+
+    /// Every built-in song but four was saved on Custom as the value 8, from
+    /// when Custom was the ninth dial position. Progressions added after it
+    /// must leave that value naming Custom.
+    #[test]
+    fn saved_progression_values_keep_their_meaning() {
+        assert_eq!(
+            decoded_progression(EncodedValue::SmallInt(8)),
+            Ok(CUSTOM_PROGRESSION_INDEX)
+        );
+        for (letter, value) in ('A'..='H').zip(0..8) {
+            let progression = decoded_progression(EncodedValue::SmallInt(value)).unwrap();
+            assert_eq!(
+                PROGRESSIONS[progression].song_value, value,
+                "progression {letter}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_progression_round_trips_through_its_song_value() {
+        for position in 0..=CUSTOM_PROGRESSION_INDEX {
+            let mut song = SongState::default();
+            song.controls.pad.progression = position as f32;
+            let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+            assert_eq!(
+                progression_index(decoded.controls.pad.progression),
+                position
+            );
+        }
+    }
+
+    /// A progression from a newer build must not load as whatever this
+    /// build happens to hold at that number.
+    #[test]
+    fn an_unknown_progression_value_is_refused() {
+        assert_eq!(
+            decoded_progression(EncodedValue::SmallInt(99)),
+            Err(SongCodeError::UnknownValue {
+                id: "pad.progression",
+                value: 99
+            })
+        );
+        assert_eq!(
+            decoded_progression(EncodedValue::Float(2.5)),
+            Err(SongCodeError::NotATableValue("pad.progression"))
+        );
+    }
+
+    #[test]
+    fn chord_offset_round_trips() {
+        let mut song = SongState::default();
+        song.controls.pad.chord_offset = 4.0;
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(decoded.controls.pad.chord_offset, 4.0);
     }
 }

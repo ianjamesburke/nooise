@@ -76,7 +76,7 @@ pub(crate) struct ChordSlotControls {
 pub(crate) const DEFAULT_CHORD_SLOT_DEGREES: [f32; 8] = [0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 2.0, 4.0];
 
 /// Number of custom chord slots (`PadControls::chord_slots`), and the max of
-/// `pad.chord_count`. Matches the built-ins' fixed 8-step length.
+/// `pad.chord_count`. Matches the built-ins' fixed 8-chord length.
 pub(crate) const CHORD_SLOT_COUNT: usize = 8;
 
 #[derive(Clone)]
@@ -85,6 +85,8 @@ pub(crate) struct PadControls {
     pub(crate) voice_type: f32, // Character selector; labels and range live in PAD_TYPES.
     pub(crate) chord_bars: f32, // 1,2,4,8,16,32,64
     pub(crate) chord_count: f32,
+    /// The table slot the loop starts from, 0..8; `ChordWindow` wraps.
+    pub(crate) chord_offset: f32,
     pub(crate) progression: f32,
     pub(crate) chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
     pub(crate) stereo_width: f32,
@@ -101,6 +103,7 @@ impl Default for PadControls {
             voice_type: 0.0,
             chord_bars: 4.0,
             chord_count: 8.0,
+            chord_offset: 0.0,
             progression: 0.0,
             chord_slots: std::array::from_fn(|slot| ChordSlotControls {
                 degree: DEFAULT_CHORD_SLOT_DEGREES[slot],

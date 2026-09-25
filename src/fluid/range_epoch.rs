@@ -13,11 +13,13 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = 1;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = 2;
 
 /// Which dial a range change moved.
 #[derive(Clone, Copy)]
 enum RangeTarget {
+    /// One registry control, by id.
+    Control(&'static str),
     /// One field of any slot holding a module of this family.
     ModuleField {
         family: Family,
@@ -44,11 +46,18 @@ const RANGE_CHANGES: &[RangeChange] = &[
             field: ModuleSlotField::Time,
         },
     },
+    // Progression: 9 dial positions (A-H, Custom) became 15 when six
+    // progressions were added before Custom.
+    RangeChange {
+        epoch: 2,
+        target: RangeTarget::Control("pad.progression"),
+    },
 ];
 
 impl RangeChange {
     fn applies(&self, id: &str, controls: &FluidControls) -> bool {
         match self.target {
+            RangeTarget::Control(target) => id == target,
             RangeTarget::ModuleField { family, field } => module_slot_row(id, controls)
                 .is_some_and(|(slot, slot_field)| {
                     slot_field == field && slot.kind().is_some_and(|kind| kind.family == family)
@@ -78,7 +87,7 @@ pub(crate) fn stale_modulation(song: &SongState, epoch: u16) -> Option<&'static 
 
 #[cfg(test)]
 mod tests {
-    use super::super::song::SongCodeError;
+    use super::super::song::{SongCodeError, encode_song_code_at_epoch};
     use super::*;
 
     /// Built-in song 2 as the last build on the 80..8000 Hz cutoff dial
@@ -112,6 +121,32 @@ mod tests {
                 "{}",
                 spec.id
             );
+        }
+    }
+
+    /// A sweep on the Progression dial written before it grew from 9 to 15
+    /// positions would walk different progressions now, so it is refused;
+    /// the same song written today loads.
+    #[test]
+    fn an_old_code_sweeping_the_progression_dial_is_refused() {
+        let mut song = SongState::default();
+        song.automation
+            .open_or_create(ControlAddress::new("pad.progression"))
+            .depth_ratio = 0.5;
+        let stale = encode_song_code_at_epoch(&song, 1).unwrap();
+        assert_eq!(
+            decode_song_code(&stale).err(),
+            Some(SongCodeError::StaleRange("pad.progression"))
+        );
+        assert!(decode_song_code(&encode_song_code(&song).unwrap()).is_ok());
+    }
+
+    /// No built-in song sweeps the Progression dial, so none needed
+    /// re-authoring when it grew.
+    #[test]
+    fn no_built_in_song_modulates_the_progression() {
+        for song in decode_auto_states() {
+            assert_eq!(stale_modulation(&song, 1), None);
         }
     }
 

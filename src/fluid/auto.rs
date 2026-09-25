@@ -166,8 +166,9 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 //       that downbeat, rather than fading in with the other drum voices.
 //
 //   Snap (Discrete/Timing)  — never interpolated; hold `from`, then hard-jump.
-//       Structural params (progression + chord count/length + arp pattern) all
-//       jump together on the transition downbeat ("one") as one atomic event.
+//       Structural params (progression + chord count/offset/length + arp
+//       pattern) all jump together on the transition downbeat ("one") as one
+//       atomic event.
 //       Every other grid param staggers in at 8-bar offsets after it, in
 //       registry order, so similar sections hard-switch rather than crossfade.
 // ============================================================
@@ -185,6 +186,7 @@ const STAGGER_STEP_BARS: f64 = 8.0;
 const STRUCTURAL_SNAP_IDS: &[&str] = &[
     "pad.progression",
     "pad.chord_count",
+    "pad.chord_offset",
     "pad.chord_bars",
     "arp.pattern",
 ];
@@ -878,6 +880,44 @@ mod tests {
         assert!((morph.controls_at(20.0).modules.master[0].amount - 0.5).abs() < 1e-3);
         // Near the end of the transition: essentially `to`.
         assert!(morph.controls_at(23.9).modules.master[0].amount > 0.98);
+    }
+
+    /// A morph snaps every phrase control on one downbeat, so the phrase
+    /// restarts once, into the destination's window and chord length.
+    #[test]
+    fn a_morph_restarts_the_phrase_once() {
+        use crate::fluid::{ProgressionCursor, TimingContext};
+        let from = FluidControls::default();
+        let mut to = FluidControls::default();
+        to.pad.chord_bars = 1.0;
+        to.pad.chord_count = 4.0;
+        to.pad.progression = 3.0;
+        to.pad.chord_offset = 4.0;
+        // 6 bars/leg -> transition downbeat at beat 16.
+        let morph = MorphState::new(
+            vec![SongState::from_controls(from), SongState::from_controls(to)],
+            6,
+        );
+        let mut cursor = ProgressionCursor::new(&morph.controls_at(0.0).pad);
+        let mut restarts = 0;
+        let mut slots = Vec::new();
+        for tick in 0..(40 * 16) {
+            let beat = f64::from(tick) / 16.0;
+            let before = cursor;
+            if cursor.tick(
+                &morph.controls_at(beat).pad,
+                TimingContext::new(48_000.0, 120.0, beat),
+            ) {
+                restarts += usize::from(
+                    cursor.window != before.window || cursor.chord_beats != before.chord_beats,
+                );
+                slots.push(cursor.slot());
+            }
+        }
+        assert_eq!(restarts, 1);
+        assert_eq!(cursor.window.progression, 3);
+        assert_eq!(cursor.chord_beats, 4.0);
+        assert_eq!(slots[..5], [4, 5, 6, 7, 4]);
     }
 
     #[test]

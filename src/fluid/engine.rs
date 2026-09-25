@@ -1226,16 +1226,9 @@ pub(crate) struct GridHit {
     pub(crate) beat: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FirstGridHit {
-    AtOrAfterNow,
-    AfterNow,
-}
-
 pub(crate) struct GridTrigger {
     pub(crate) spec: Option<GridSpec>,
     pub(crate) next_hit: Option<GridHit>,
-    pub(crate) first_hit: FirstGridHit,
     /// Beat of the most recently emitted hit. A live grid reshape (rate/offset/
     /// swing change) may never reschedule the next hit within half an interval
     /// of this — the guard that stops a timing tweak from re-firing the slot
@@ -1245,22 +1238,15 @@ pub(crate) struct GridTrigger {
 
 impl GridTrigger {
     pub(crate) fn new() -> Self {
-        Self::with_first_hit(FirstGridHit::AtOrAfterNow)
-    }
-
-    pub(crate) fn after_start() -> Self {
-        Self::with_first_hit(FirstGridHit::AfterNow)
-    }
-
-    pub(crate) fn with_first_hit(first_hit: FirstGridHit) -> Self {
         Self {
             spec: None,
             next_hit: None,
-            first_hit,
             last_hit_beat: None,
         }
     }
 
+    /// An unswung `pop_swung`, for the grid tests.
+    #[cfg(test)]
     pub(crate) fn pop(
         &mut self,
         timing: TimingContext,
@@ -1299,12 +1285,7 @@ impl GridTrigger {
         if self.spec != Some(spec) {
             self.spec = Some(spec);
             match self.next_hit {
-                None => {
-                    self.next_hit = Some(match self.first_hit {
-                        FirstGridHit::AtOrAfterNow => spec.hit_at_or_after(timing.beat),
-                        FirstGridHit::AfterNow => spec.hit_after(timing.beat),
-                    });
-                }
+                None => self.next_hit = Some(spec.hit_at_or_after(timing.beat)),
                 // Pull the scheduled hit earlier when the reshaped grid lands
                 // sooner, so a denser grid isn't starved — but never earlier than
                 // `earliest_hit`, which rejects a re-fire of the slot that just

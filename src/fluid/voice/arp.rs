@@ -124,14 +124,14 @@ impl ArpEngine {
         // `pad_chord_tones` is the same chord-source path Pad and Bass
         // resolve through, so a custom progression drives all three
         // identically.
-        let (progression, step) = self.progression.follow(pad, timing);
+        let (progression, slot) = self.progression.follow(pad, timing);
 
         let rate_beats = c.rate_beats.clamp(ARP_RATE_BEATS_MIN, ARP_RATE_BEATS_MAX);
         if self
             .note_trigger
             .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
         {
-            let chord = pad_chord_tones(pad, progression, step);
+            let chord = pad_chord_tones(pad, progression, slot);
             let octaves = arp_octave_span(c.octaves);
             let notes = arp_cycle_notes(chord, octaves);
             let len = notes.len().max(1);

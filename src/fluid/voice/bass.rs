@@ -3,31 +3,13 @@
 
 use super::*;
 
-/// Bass line for each progression, authored independently of the Pad's
-/// chord voicings (one MIDI note per step, same 8-step indexing as
-/// PROGRESSIONS). B/C/D currently mirror their chord's lowest tone; A
-/// diverges deliberately (step 3 walks to G2 instead of following the
-/// B-chord's root) to give the bass its own melodic movement. E/F/G/H
-/// mostly follow their chord's root (transposed down an octave where the
-/// pad voicing sits too high for the bass register).
-pub(crate) const BASS_LINES: [[i32; 8]; 8] = [
-    [45, 47, 45, 43, 52, 53, 45, 45], // A
-    [45, 50, 48, 43, 41, 52, 45, 43], // B
-    [45, 41, 48, 43, 50, 52, 47, 43], // C
-    [45, 41, 48, 43, 50, 52, 47, 43], // D
-    [45, 46, 48, 50, 52, 43, 43, 45], // E: dark phrygian, walks up then falls back
-    [52, 47, 50, 45, 45, 52, 43, 52], // F: suspended drone, mostly pedal E
-    [48, 55, 45, 53, 48, 55, 53, 48], // G: bright C-G-Am-F pop bass
-    [43, 50, 52, 48, 43, 50, 52, 48], // H: bright G-D-Em-C axis-loop bass
-];
-
-/// Bass follows the same active progression step as Pad/Arp. For Custom it
-/// reads that slot's root directly; built-ins keep their authored bass lines.
-pub(crate) fn bass_root_note(progression: usize, step: usize, pad: &PadControls) -> i32 {
-    if is_custom_progression(progression) {
-        pad_chord_root_note(&pad.chord_slots[step])
-    } else {
-        BASS_LINES[progression % BASS_LINES.len()][step % 8]
+/// Bass follows the same active progression slot as Pad/Arp. For Custom it
+/// reads that slot's root directly; built-ins keep their authored bass lines
+/// (`Progression::bass`).
+pub(crate) fn bass_root_note(progression: usize, slot: usize, pad: &PadControls) -> i32 {
+    match PROGRESSIONS.get(progression) {
+        Some(built_in) => built_in.bass[slot % CHORD_SLOT_COUNT],
+        None => pad_chord_root_note(&pad.chord_slots[slot]),
     }
 }
 
@@ -112,7 +94,7 @@ impl BassEngine {
         tune: f32,
         timing: TimingContext,
     ) -> (f32, f32) {
-        let (progression, step) = self.progression.follow(pad, timing);
+        let (progression, slot) = self.progression.follow(pad, timing);
 
         let loop_len = (c.interval_beats / BASS_STEP_BEATS)
             .round()
@@ -126,7 +108,7 @@ impl BassEngine {
             let hit = self.rhythm_step < BASS_RHYTHMS[rhythm].len()
                 && BASS_RHYTHMS[rhythm][self.rhythm_step];
             if hit {
-                let note = bass_root_note(progression, step, pad) + (c.octave.round() as i32) * 12;
+                let note = bass_root_note(progression, slot, pad) + (c.octave.round() as i32) * 12;
                 let hz = note_hz(note, tune);
                 // Hard-cut: whatever was sounding hands off to the fade-out
                 // slot (replacing any prior fade in progress) and the new

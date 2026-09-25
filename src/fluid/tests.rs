@@ -259,7 +259,7 @@ fn pad_chord_converts_progression_d_last_chord() {
 
 #[test]
 fn pad_chord_wraps_progression_and_step_index() {
-    let wrapped_progression = pad_chord(8, 0, 0.0);
+    let wrapped_progression = pad_chord(PROGRESSIONS.len(), 0, 0.0);
     let base_progression = pad_chord(0, 0, 0.0);
     assert_eq!(wrapped_progression, base_progression);
 
@@ -268,25 +268,48 @@ fn pad_chord_wraps_progression_and_step_index() {
     assert_eq!(wrapped_step, base_step);
 }
 
-#[test]
-fn new_progressions_hold_a_common_tone_between_consecutive_steps() {
-    // Progressions E-H (indices 4-7, added alongside A-D's dark/major
-    // expansion) are held to the strict common-tone discipline described in
-    // their doc comments. A-D predate this test and include one documented
-    // exception (progression A, step 4->5, an intentional stepwise glide
-    // with no shared tone), so they are left unchecked here.
-    for (progression_index, progression) in PROGRESSIONS.iter().enumerate().skip(4) {
-        for step in 0..8 {
-            let current = progression[step];
-            let next = progression[(step + 1) % 8];
-            let shares_a_tone = current.iter().any(|note| next.contains(note));
+/// Every transition `windows` names shares at least one exact note: an 8 s
+/// release rings each chord into the next, so a held tone keeps them from
+/// clashing.
+fn assert_holds_a_tone(progression: &Progression, windows: &[(usize, usize)]) {
+    for &(offset, count) in windows {
+        for step in 0..count {
+            let from = (offset + step) % CHORD_SLOT_COUNT;
+            let to = (offset + (step + 1) % count) % CHORD_SLOT_COUNT;
+            let current = progression.chords[from].notes;
+            let next = progression.chords[to].notes;
             assert!(
-                shares_a_tone,
-                "progression {progression_index} step {step} -> {} shares no common tone \
-                 (an 8s release needs at least one held tone so chords don't clash)",
-                (step + 1) % 8
+                current.iter().any(|note| next.contains(note)),
+                "{} · {}: chord {} -> {} shares no common tone",
+                progression_key(progression),
+                progression.mood,
+                from + 1,
+                to + 1
             );
         }
+    }
+}
+
+/// E-H (song values 4-7) hold a tone across the full eight-chord loop. A-D
+/// predate the rule and include one intentional exception (A, chord 5 -> 6,
+/// a stepwise glide), so they are left unchecked.
+#[test]
+fn progressions_e_to_h_hold_a_common_tone_between_consecutive_steps() {
+    for progression in PROGRESSIONS
+        .iter()
+        .filter(|p| (4..8).contains(&p.song_value))
+    {
+        assert_holds_a_tone(progression, &[(0, 8)]);
+    }
+}
+
+/// Everything from song value 9 on was authored for the chord window: the
+/// full loop and both halves as their own four-chord loops, so Count 4 at
+/// Offset 0 or 4 is a complete progression.
+#[test]
+fn voice_led_progressions_hold_a_tone_through_every_window() {
+    for progression in PROGRESSIONS.iter().filter(|p| p.song_value >= 9) {
+        assert_holds_a_tone(progression, &[(0, 8), (0, 4), (4, 4)]);
     }
 }
 
@@ -1219,12 +1242,12 @@ fn stopping_the_clock_lets_tails_ring_out_and_starting_it_resumes_the_song() {
     render_seconds(&mut engine, 0.005);
     let beat = telemetry.beat();
     let kicks = telemetry.kick_pulse.load(Ordering::Relaxed);
-    let chord = telemetry.chord_index.load(Ordering::Relaxed);
+    let chord = telemetry.chord_slot.load(Ordering::Relaxed);
     let tails = render_seconds(&mut engine, 3.0);
 
     assert_eq!(telemetry.beat(), beat, "a stopped clock must hold its beat");
     assert_eq!(telemetry.kick_pulse.load(Ordering::Relaxed), kicks);
-    assert_eq!(telemetry.chord_index.load(Ordering::Relaxed), chord);
+    assert_eq!(telemetry.chord_slot.load(Ordering::Relaxed), chord);
     let first = rms(&tails[..quarter]);
     let last = rms(&tails[tails.len() - quarter..]);
     assert!(
@@ -1273,7 +1296,7 @@ fn pads_release_on_stop_and_revoice_on_start_between_chord_boundaries() {
 
     assert!(released < sustained * 0.05, "{sustained} -> {released}");
     assert!(revoiced > sustained * 0.5, "{released} -> {revoiced}");
-    assert_eq!(pad.step_index, 0, "no chord boundary was crossed");
+    assert_eq!(pad.cursor.step, 0, "no chord boundary was crossed");
 }
 
 // ============================================================
@@ -1974,10 +1997,11 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
         (Tab::Chords, {
-            // 10 base rows, then 8 slots x 5 discrete rows
+            // 11 base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
             let mut kinds = vec![
-                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Gain, Gain, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Gain, Gain,
+                Gain,
             ];
             kinds.extend(vec![Discrete; 40]);
             kinds.push(Gain); // pre-loaded shared Reverb
@@ -2508,21 +2532,27 @@ fn gain_smoothers_cover_every_unique_gain_spec() {
 }
 
 #[test]
-fn chords_tab_shows_progression_row_with_letter_display() {
+fn chords_tab_shows_progression_row_with_key_and_mood() {
     let mut controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
     assert_eq!(rows[5].label, "Chord Count");
     assert_eq!(rows[5].display, "8");
-    assert_eq!(rows[6].label, "Progression");
+    assert_eq!(rows[6].label, "Chord Offset");
+    assert_eq!(rows[6].display, "0");
+    assert_eq!(rows[7].label, "Progression");
 
     for (progression, display) in [
-        (0.0, "A"),
-        (2.0, "C"),
+        (0.0, "Am · Drift"),
+        (2.0, "Am · Velvet"),
+        (5.0, "Em · Drone"),
+        (8.0, "D · Dawn"),
+        (10.0, "F#m · Night"),
+        (13.0, "Cm · Deep"),
         (CUSTOM_PROGRESSION_INDEX as f32, "Custom"),
     ] {
         controls.pad.progression = progression;
         let rows = tab_controls(Tab::Chords, &controls);
-        assert_eq!(rows[6].display, display, "pad.progression {progression}");
+        assert_eq!(rows[7].display, display, "pad.progression {progression}");
     }
 }
 
@@ -2549,19 +2579,19 @@ fn tonal_tab_separates_rate_from_cycle() {
 fn chords_progression_adjusts_and_clamps() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Chords, 6, 1.0, &mut controls);
+    apply_delta(Tab::Chords, 7, 1.0, &mut controls);
     assert_close(controls.pad.progression, 1.0);
 
     controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
-    apply_delta(Tab::Chords, 6, 1.0, &mut controls);
+    apply_delta(Tab::Chords, 7, 1.0, &mut controls);
     assert_close(controls.pad.progression, CUSTOM_PROGRESSION_INDEX as f32);
 
     controls.pad.progression = 0.0;
-    apply_delta(Tab::Chords, 6, -1.0, &mut controls);
+    apply_delta(Tab::Chords, 7, -1.0, &mut controls);
     assert_close(controls.pad.progression, 0.0);
 
     controls.pad.progression = 2.0;
-    apply_reset(Tab::Chords, 6, &mut controls);
+    apply_reset(Tab::Chords, 7, &mut controls);
     assert_close(controls.pad.progression, 0.0);
 }
 
@@ -2569,28 +2599,31 @@ fn chords_progression_adjusts_and_clamps() {
 fn chords_tab_controls_none_shows_only_base_params() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, ChordDrill::None);
-    assert_eq!(rows.len(), 11);
+    assert_eq!(rows.len(), 12);
     assert_eq!(rows[0].id, "pad.level");
-    assert_eq!(rows[6].id, "pad.progression");
+    assert_eq!(rows[6].id, "pad.chord_offset");
+    assert_eq!(rows[7].id, "pad.progression");
     assert_eq!(rows[2].id, "pad.release_time");
     assert!(rows.iter().all(|r| !r.label.contains("Root")));
 }
 
+/// All eight slots stay listed in table order whatever the window, so a
+/// slot can be written before Count or Offset reaches it.
 #[test]
-fn chords_tab_controls_progression_lists_active_slot_roots() {
+fn chords_tab_controls_progression_lists_every_slot_root() {
     let mut controls = FluidControls::default();
 
-    controls.pad.chord_count = 3.0;
-    let rows = chords_tab_controls(&controls, progression_drill());
-    assert_eq!(
-        rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
-        vec!["Chord 1 Root", "Chord 2 Root", "Chord 3 Root"]
-    );
-
-    controls.pad.chord_count = 8.0;
-    let rows = chords_tab_controls(&controls, progression_drill());
-    assert_eq!(rows.len(), 8);
-    assert_eq!(rows[7].label, "Chord 8 Root");
+    for (count, offset) in [(3.0, 0.0), (4.0, 4.0), (8.0, 0.0)] {
+        controls.pad.chord_count = count;
+        controls.pad.chord_offset = offset;
+        let rows = chords_tab_controls(&controls, progression_drill());
+        assert_eq!(
+            rows.iter().map(|r| r.label.clone()).collect::<Vec<_>>(),
+            (1..=8)
+                .map(|slot| format!("Chord {slot} Root"))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 #[test]
@@ -2611,12 +2644,12 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 #[test]
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0), 10);
-    assert_eq!(chords_flat_index(progression_drill(), 2), 20);
-    assert_eq!(chords_flat_index(slot_drill(2), 0), 21);
+    assert_eq!(chords_flat_index(progression_drill(), 0), 11);
+    assert_eq!(chords_flat_index(progression_drill(), 2), 21);
+    assert_eq!(chords_flat_index(slot_drill(2), 0), 22);
 
     let controls = FluidControls::default();
-    let expected = tab_controls(Tab::Chords, &controls)[21].id;
+    let expected = tab_controls(Tab::Chords, &controls)[22].id;
     assert_eq!(expected, "pad.chord3_accidental");
 }
 
@@ -2674,13 +2707,45 @@ fn render_marks_single_active_chord_in_progression() {
     assert_eq!(text.matches('♪').count(), 1);
 }
 
+/// Telemetry names the table slot, so with Offset 4 the badge sits on the
+/// slot actually sounding, and the slots outside the window stay listed.
 #[test]
-fn render_active_chord_index_wraps_by_chord_count() {
+fn render_badges_the_sounding_slot_inside_an_offset_window() {
+    let mut controls = FluidControls::default();
+    controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
+    controls.pad.chord_count = 4.0;
+    controls.pad.chord_offset = 4.0;
+    let text = render_progression(&controls, 5);
+    assert_eq!(text.matches('♪').count(), 1);
+    let badged = text.lines().find(|line| line.contains('♪')).unwrap();
+    assert!(badged.contains("Chord 6 Root"), "{badged}");
+    assert!(text.contains("Chord 1 Root"));
+}
+
+/// The spacer under Progression names the window's chords in play order.
+#[test]
+fn render_names_the_chords_of_the_playing_window() {
     let mut controls = FluidControls::default();
     controls.pad.chord_count = 4.0;
-    // A step index past the chord count wraps: 6 % 4 == 2, still one badge.
-    let text = render_progression(&controls, 6);
-    assert_eq!(text.matches('♪').count(), 1);
+    controls.pad.chord_offset = 4.0;
+    let fluid = RippleField::new();
+    let automation = AutomationState::default();
+    let text = buffer_text(&render_to_buffer(RenderTest {
+        size: (120, 40),
+        tab: Tab::Chords,
+        cursor: 0,
+        submenu: 0,
+        beat: 0.0,
+        fluid: &fluid,
+        automation: &automation,
+        controls: &controls,
+        footer: None,
+        drill: ChordDrill::None,
+        active_chord: 5,
+        mute: &[false; TAB_COUNT],
+    }));
+    assert!(text.contains("Am · Drift"), "{text}");
+    assert!(text.contains("A5  G5  C  Em/G"), "{text}");
 }
 
 #[test]
@@ -2819,7 +2884,7 @@ fn bass_engine_follows_pad_chord_root_across_advances() {
         bass.next(&bass_controls, &pad, 0.0, timing);
     }
 
-    assert_ne!(bass.progression.step_index, 0);
+    assert_ne!(bass.progression.cursor.map(|cursor| cursor.step), Some(0));
     assert!(bass.rhythm_step < BASS_RHYTHMS[0].len());
 }
 
@@ -3265,7 +3330,7 @@ fn pad_engine_step_index_wraps_at_eight() {
 
     // Render 9 chord-advances and confirm the telemetry index wrapped past 8.
     advance_chords(&mut pad, &controls, 9);
-    let final_index = pad.telemetry.chord_index.load(Ordering::Relaxed);
+    let final_index = pad.telemetry.chord_slot.load(Ordering::Relaxed);
     assert!(
         final_index < 8,
         "step_index must wrap into 0..8, got {final_index}"
@@ -3489,14 +3554,14 @@ fn pad_chord_count_gates_step_wrap_in_every_progression_mode() {
         chord_count: 2.0, // truncates the built-in table to its first 2 chords
         ..PadControls::default()
     };
-    assert_eq!(pad_chord_count(&built_in), 2);
+    assert_eq!(ChordWindow::requested(&built_in).count, 2);
 
     let custom = PadControls {
         progression: CUSTOM_PROGRESSION_INDEX as f32,
         chord_count: 2.0,
         ..PadControls::default()
     };
-    assert_eq!(pad_chord_count(&custom), 2);
+    assert_eq!(ChordWindow::requested(&custom).count, 2);
 }
 
 /// The bug this guards: Chord Count read 2 while a built-in progression
@@ -3517,7 +3582,7 @@ fn pad_engine_step_index_wraps_at_pad_chord_count_on_built_in_and_custom_progres
             let sample = chord * SAMPLE_RATE as u64 * 2;
             let _ = pad.next(&controls, 0.0, timing(sample, 120.0));
             assert!(
-                pad.step_index < 2,
+                pad.cursor.step < 2,
                 "progression {progression} ran past its chord count"
             );
         }
@@ -3540,12 +3605,16 @@ fn bass_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
         let sample = chord * sample_rate as u64 * 2;
         let timing = timing(sample, 120.0);
         bass.next(&bass_controls, &pad, 0.0, timing);
-        assert!(bass.progression.step_index < 2);
+        assert!(
+            bass.progression
+                .cursor
+                .is_some_and(|cursor| cursor.step < 2)
+        );
     }
 }
 
 #[test]
-fn pad_engine_chord_count_change_finishes_the_current_chord_before_relooping() {
+fn pad_engine_chord_count_change_waits_for_the_chord_then_restarts() {
     let mut controls = PadControls {
         chord_bars: 1.0,
         chord_count: 3.0,
@@ -3555,23 +3624,23 @@ fn pad_engine_chord_count_change_finishes_the_current_chord_before_relooping() {
     let mut pad = pad_engine(&controls);
 
     advance_chords(&mut pad, &controls, 3);
-    assert_eq!(pad.step_index, 2);
+    assert_eq!(pad.cursor.step, 2);
 
     let layers_before = pad.layers.len();
     controls.chord_count = 2.0;
     let _ = pad.next(&controls, 0.0, timing(SAMPLE_RATE as u64 * 6, 120.0));
 
-    assert_eq!(pad.step_index, 2);
+    assert_eq!(pad.cursor.step, 2);
     assert_eq!(pad.layers.len(), layers_before);
 
     let _ = pad.next(&controls, 0.0, timing(SAMPLE_RATE as u64 * 8, 120.0));
 
-    assert_eq!(pad.step_index, 0);
-    assert_eq!(pad.active_chord_count, 2);
+    assert_eq!(pad.cursor.step, 0);
+    assert_eq!(pad.cursor.window.count, 2);
 }
 
 #[test]
-fn pad_engine_progression_change_finishes_the_current_loop_before_switching() {
+fn pad_engine_progression_change_waits_for_the_chord_then_restarts() {
     let mut controls = PadControls {
         chord_bars: 1.0,
         chord_count: 3.0,
@@ -3581,20 +3650,419 @@ fn pad_engine_progression_change_finishes_the_current_loop_before_switching() {
     let mut pad = pad_engine(&controls);
 
     advance_chords(&mut pad, &controls, 3);
-    assert_eq!(pad.step_index, 2);
+    assert_eq!(pad.cursor.step, 2);
 
     let layers_before = pad.layers.len();
     controls.progression = 1.0;
     let _ = pad.next(&controls, 0.0, timing(SAMPLE_RATE as u64 * 6, 120.0));
 
-    assert_eq!(pad.step_index, 2);
+    assert_eq!(pad.cursor.step, 2);
     assert_eq!(pad.layers.len(), layers_before);
-    assert_eq!(pad.active_progression, 0);
+    assert_eq!(pad.cursor.window.progression, 0);
 
     let _ = pad.next(&controls, 0.0, timing(SAMPLE_RATE as u64 * 8, 120.0));
 
-    assert_eq!(pad.step_index, 0);
-    assert_eq!(pad.active_progression, 1);
+    assert_eq!(pad.cursor.step, 0);
+    assert_eq!(pad.cursor.window.progression, 1);
+}
+
+#[test]
+fn chord_window_plays_count_chords_from_offset_wrapping() {
+    let window = |count: f32, offset: f32| {
+        ChordWindow::requested(&PadControls {
+            chord_count: count,
+            chord_offset: offset,
+            ..PadControls::default()
+        })
+        .slots()
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(window(4.0, 4.0), vec![4, 5, 6, 7]);
+    assert_eq!(window(4.0, 6.0), vec![6, 7, 0, 1]);
+    assert_eq!(window(8.0, 3.0), vec![3, 4, 5, 6, 7, 0, 1, 2]);
+    assert_eq!(window(2.0, 0.0), vec![0, 1]);
+}
+
+#[test]
+fn pad_engine_opens_on_the_offset_chord() {
+    let controls = PadControls {
+        chord_count: 4.0,
+        chord_offset: 4.0,
+        ..PadControls::default()
+    };
+    let pad = pad_engine(&controls);
+    assert_eq!(pad.cursor.slot(), 4);
+    assert_eq!(pad.last_chord_notes, PROGRESSIONS[0].chords[4].notes);
+    assert_eq!(pad.telemetry.chord_slot.load(Ordering::Relaxed), 4);
+}
+
+/// A phrase change waits for the sounding chord to end, then restarts the
+/// phrase: Offset 0 -> 4 during the second chord of a four-chord loop goes
+/// on to chord 5, the new window's first, then 6 and 7.
+#[test]
+fn pad_engine_offset_change_restarts_the_phrase_at_the_next_chord() {
+    let mut controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 4.0,
+        attack_time: 1.0,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    advance_chords(&mut pad, &controls, 2);
+    assert_eq!(pad.cursor.slot(), 1);
+
+    let layers_before = pad.layers.len();
+    controls.chord_offset = 4.0;
+    let _ = pad.next(&controls, 0.0, timing(SAMPLE_RATE as u64 * 5, 120.0));
+    assert_eq!(pad.cursor.slot(), 1);
+    assert_eq!(pad.layers.len(), layers_before);
+
+    let mut slots = Vec::new();
+    for chord in 3..=5 {
+        let _ = pad.next(
+            &controls,
+            0.0,
+            timing(chord * SAMPLE_RATE as u64 * 2, 120.0),
+        );
+        slots.push(pad.cursor.slot());
+    }
+    assert_eq!(slots, vec![4, 5, 6]);
+}
+
+/// Every chord boundary the cursor crosses while `controls_at` supplies the
+/// pad controls for each beat, as `(beat, slot, chord_beats, restarted)`.
+fn chord_boundaries(
+    controls_at: impl Fn(f64) -> PadControls,
+    beats: f64,
+) -> Vec<(f64, usize, f32, bool)> {
+    let mut cursor = ProgressionCursor::new(&controls_at(0.0));
+    let mut boundaries = Vec::new();
+    let mut sample = 0u64;
+    loop {
+        let timing = timing(sample, 120.0);
+        if timing.beat > beats {
+            return boundaries;
+        }
+        let before = cursor;
+        if cursor.tick(&controls_at(timing.beat), timing) {
+            let restarted =
+                cursor.window != before.window || cursor.chord_beats != before.chord_beats;
+            boundaries.push((
+                timing.beat.round(),
+                cursor.slot(),
+                cursor.chord_beats,
+                restarted,
+            ));
+        }
+        sample += 64;
+    }
+}
+
+/// A new Chord Length waits for the sounding chord, then times the new
+/// phrase's first chord and every one after it.
+#[test]
+fn chord_length_change_lands_at_the_next_chord_and_times_the_new_phrase() {
+    let long = PadControls {
+        chord_bars: 2.0,
+        ..PadControls::default()
+    };
+    let short = PadControls {
+        chord_bars: 1.0,
+        ..PadControls::default()
+    };
+    let boundaries = chord_boundaries(
+        |beat| {
+            if beat < 12.0 {
+                long.clone()
+            } else {
+                short.clone()
+            }
+        },
+        28.0,
+    );
+    assert_eq!(
+        boundaries,
+        vec![
+            (8.0, 1, 8.0, false),
+            (16.0, 0, 4.0, true),
+            (20.0, 1, 4.0, false),
+            (24.0, 2, 4.0, false),
+            (28.0, 3, 4.0, false),
+        ]
+    );
+
+    // Lengthening from mid-bar: the new phrase starts where the old chord
+    // ended and its chords run the new length from there.
+    let boundaries = chord_boundaries(
+        |beat| {
+            if beat < 2.0 {
+                short.clone()
+            } else {
+                long.clone()
+            }
+        },
+        30.0,
+    );
+    assert_eq!(
+        boundaries,
+        vec![
+            (4.0, 0, 8.0, true),
+            (12.0, 1, 8.0, false),
+            (20.0, 2, 8.0, false),
+            (28.0, 3, 8.0, false)
+        ]
+    );
+}
+
+/// The restart compares what the engine sees at a boundary against what the
+/// phrase started with, so a value that moves between boundaries and is back
+/// on the phrase's own value at the boundary never restarts it.
+#[test]
+fn a_change_undone_before_the_boundary_does_not_restart_the_phrase() {
+    let base = PadControls {
+        chord_bars: 1.0,
+        chord_count: 4.0,
+        ..PadControls::default()
+    };
+    let wobble = PadControls {
+        chord_offset: 4.0,
+        ..base.clone()
+    };
+    let boundaries = chord_boundaries(
+        |beat| {
+            if beat.rem_euclid(4.0) > 1.0 && beat.rem_euclid(4.0) < 3.0 {
+                wobble.clone()
+            } else {
+                base.clone()
+            }
+        },
+        20.0,
+    );
+    assert!(boundaries.iter().all(|&(_, _, _, restarted)| !restarted));
+    assert_eq!(
+        boundaries
+            .iter()
+            .map(|&(_, slot, _, _)| slot)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 0, 1]
+    );
+}
+
+/// Bass and Arp follow the offset window on their own cursors and land on
+/// the same slot as the Pad, chord for chord.
+#[test]
+fn followers_stay_in_lockstep_with_the_pad_through_an_offset_window() {
+    let controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 4.0,
+        chord_offset: 4.0,
+        attack_time: 1.0,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let mut follower = ProgressionFollower::new();
+    for chord in 0..=9u64 {
+        let timing = timing(chord * SAMPLE_RATE as u64 * 2, 120.0);
+        let _ = pad.next(&controls, 0.0, timing);
+        let (progression, slot) = follower.follow(&controls, timing);
+        assert_eq!((progression, slot), (0, pad.cursor.slot()), "chord {chord}");
+        assert!((4..8).contains(&slot));
+    }
+}
+
+/// The key a pitch-class set implies for a chord symbol's quality suffix,
+/// as intervals above the root. Only the suffixes `PROGRESSIONS` uses.
+fn chord_suffix_intervals(suffix: &str) -> &'static [i32] {
+    match suffix {
+        "" => &[0, 4, 7],
+        "m" => &[0, 3, 7],
+        "5" => &[0, 7],
+        "sus4" => &[0, 5, 7],
+        "sus" => &[0, 2, 5, 7],
+        "6" => &[0, 4, 7, 9],
+        "7" => &[0, 4, 7, 10],
+        "m7" => &[0, 3, 7, 10],
+        "maj7" => &[0, 4, 7, 11],
+        "m7b5" => &[0, 3, 6, 10],
+        "add4" => &[0, 4, 5, 7],
+        "add9" => &[0, 2, 4, 7],
+        "maj9" => &[0, 2, 4, 7, 11],
+        "m9" => &[0, 2, 3, 7, 10],
+        "m11" => &[0, 2, 3, 5, 7, 10],
+        "7sus" => &[0, 2, 5, 7, 10],
+        "maj7#11" => &[0, 4, 6, 7, 11],
+        other => panic!("chord suffix {other:?} has no interval table in this test"),
+    }
+}
+
+fn pitch_class_of(name: &str) -> i32 {
+    let base: i32 = match name.as_bytes()[0] {
+        b'C' => 0,
+        b'D' => 2,
+        b'E' => 4,
+        b'F' => 5,
+        b'G' => 7,
+        b'A' => 9,
+        b'B' => 11,
+        other => panic!("{} is not a note letter", other as char),
+    };
+    match name.as_bytes().get(1) {
+        Some(b'b') => base - 1,
+        Some(b'#') => base + 1,
+        _ => base,
+    }
+    .rem_euclid(12)
+}
+
+/// Each symbol names its voicing: the root sounds, every note belongs to
+/// the symbol (extensions a voicing leaves out are allowed), a symbol that
+/// promises a major or minor third has it, and a slash names the lowest
+/// note. Guards the page against showing a chord other than the one heard.
+#[test]
+fn built_in_chord_names_match_their_voicings() {
+    for progression in &PROGRESSIONS {
+        for chord in &progression.chords {
+            let (symbol, bass) = match chord.name.split_once('/') {
+                Some((symbol, bass)) => (symbol, Some(pitch_class_of(bass))),
+                None => (chord.name, None),
+            };
+            let root = pitch_class_of(symbol);
+            let root_len = if matches!(symbol.as_bytes().get(1), Some(b'b' | b'#')) {
+                2
+            } else {
+                1
+            };
+            let intervals = chord_suffix_intervals(&symbol[root_len..]);
+            let voiced: Vec<i32> = chord
+                .notes
+                .iter()
+                .map(|note| (note - root).rem_euclid(12))
+                .collect();
+            let context = format!(
+                "{} · {}: {}",
+                progression_key(progression),
+                progression.mood,
+                chord.name
+            );
+            assert!(voiced.contains(&0), "{context}: root does not sound");
+            for (note, interval) in chord.notes.iter().zip(&voiced) {
+                let in_bass = bass == Some(note.rem_euclid(12));
+                assert!(
+                    intervals.contains(interval) || in_bass,
+                    "{context}: note {note} is not in the chord"
+                );
+            }
+            for third in [3, 4] {
+                if intervals.contains(&third) {
+                    assert!(
+                        voiced.contains(&third),
+                        "{context}: its third does not sound"
+                    );
+                }
+            }
+            let lowest = chord.notes.iter().min().unwrap().rem_euclid(12);
+            assert_eq!(bass.unwrap_or(root), lowest, "{context}: wrong bass");
+        }
+    }
+}
+
+#[test]
+fn progression_labels_pair_key_and_mood() {
+    let labels: Vec<_> = (0..=CUSTOM_PROGRESSION_INDEX)
+        .map(progression_label)
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Am · Drift",
+            "Am · Tide",
+            "Am · Velvet",
+            "Am · Ache",
+            "Am · Shadow",
+            "Em · Drone",
+            "C · Sunny",
+            "G · Lift",
+            "D · Dawn",
+            "Dm · Rain",
+            "F#m · Night",
+            "Eb · Glow",
+            "C · Float",
+            "Cm · Deep",
+            "Custom",
+        ]
+    );
+}
+
+/// A song value is what a saved code means, so none may repeat or move:
+/// A-H keep 0-7 in dial order, Custom keeps 8, and a newer progression
+/// takes the next unused value.
+#[test]
+fn progression_song_values_are_permanent() {
+    assert_eq!(PROGRESSION_SONG_VALUES[..8], [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(PROGRESSION_SONG_VALUES[CUSTOM_PROGRESSION_INDEX], 8);
+    let mut seen = std::collections::BTreeSet::new();
+    for value in PROGRESSION_SONG_VALUES {
+        assert!(seen.insert(value), "song value {value} is used twice");
+    }
+}
+
+/// The codec indexes `song_values` by dial position, so a table must cover
+/// the row's whole range from 0.
+#[test]
+fn song_values_cover_every_dial_position() {
+    for spec in all_specs() {
+        if let Some(values) = spec.song_values {
+            assert_eq!(spec.min, 0.0, "{}", spec.id);
+            assert_eq!(values.len(), spec.max as usize + 1, "{}", spec.id);
+        }
+    }
+}
+
+#[test]
+fn custom_chord_names_read_the_slot_fields() {
+    let slot = |degree: f32, accidental: f32, quality: f32, extension: f32, inversion: f32| {
+        custom_chord_name(&ChordSlotControls {
+            degree,
+            accidental,
+            quality,
+            extension,
+            inversion,
+        })
+    };
+    // The default custom progression's roots walk around A minor.
+    let defaults = PadControls::default();
+    let names: Vec<_> = defaults.chord_slots.iter().map(custom_chord_name).collect();
+    assert_eq!(names, vec!["Am", "G", "Am", "Bdim", "Am", "G", "C", "Em"]);
+    assert_eq!(slot(0.0, 0.0, 1.0, 0.0, 0.0), "A");
+    assert_eq!(slot(0.0, 0.0, 0.0, 2.0, 0.0), "Am7");
+    assert_eq!(slot(1.0, 0.0, 0.0, 2.0, 0.0), "Bm7b5");
+    assert_eq!(slot(2.0, 0.0, 0.0, 2.0, 0.0), "Cmaj7");
+    assert_eq!(slot(2.0, 0.0, 0.0, 3.0, 0.0), "Cadd9");
+    assert_eq!(slot(-3.0, -1.0, 0.0, 0.0, 0.0), "Ebm");
+    assert_eq!(slot(2.0, 0.0, 0.0, 0.0, 1.0), "C/E");
+}
+
+#[test]
+fn chord_drills_return_to_the_progression_row() {
+    let controls = FluidControls::default();
+    let root = chords_tab_controls(&controls, ChordDrill::None);
+    let progression_row = root
+        .iter()
+        .position(|item| item.id == "pad.progression")
+        .unwrap();
+    let slot_root = CHORDS_CONTROLS
+        .iter()
+        .position(|spec| spec.id == "pad.chord3_degree")
+        .unwrap();
+    assert_eq!(
+        chords_drill_for_index(slot_root, &controls),
+        (
+            ChordDrill::Progression {
+                return_to: progression_row
+            },
+            2
+        )
+    );
 }
 
 #[test]
