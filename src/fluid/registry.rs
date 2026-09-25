@@ -581,6 +581,13 @@ impl ControlSpec {
         (spec.set)(c, spec.reset);
     }
 
+    /// Jump to the top of the control's range. The mirror of `apply_reset`,
+    /// which lands on the reset target rather than literally the ceiling.
+    pub(crate) fn apply_max(&self, c: &mut FluidControls) {
+        let spec = self.contextual(c);
+        (spec.set)(c, spec.max);
+    }
+
     pub(crate) fn apply_value(&self, value: f32, c: &mut FluidControls) {
         let spec = self.contextual(c);
         let next = match spec.entry {
@@ -2225,6 +2232,12 @@ pub(crate) fn apply_delta(tab: Tab, selected: usize, dir: f32, c: &mut FluidCont
 pub(crate) fn apply_reset(tab: Tab, selected: usize, c: &mut FluidControls) {
     if let Some(spec) = tab_specs(tab).get(selected) {
         spec.apply_reset(c);
+    }
+}
+
+pub(crate) fn apply_max(tab: Tab, selected: usize, c: &mut FluidControls) {
+    if let Some(spec) = tab_specs(tab).get(selected) {
+        spec.apply_max(c);
     }
 }
 

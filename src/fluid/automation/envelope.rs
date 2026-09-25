@@ -305,6 +305,15 @@ impl EnvelopeRoute {
         }
     }
 
+    /// Mirror of `reset_field`: take the field to the top of its own
+    /// `DialScale` range.
+    pub(crate) fn max_field(&mut self, field: EnvField) {
+        match field {
+            EnvField::Trigger => self.trigger = EnvTrigger::from_index(field.scale().max_value()),
+            _ => self.write_field(field, field.scale().max_value()),
+        }
+    }
+
     /// Store an already ranged value on the field its spec came from. Trigger
     /// is discrete and never routed here.
     fn write_field(&mut self, field: EnvField, value: f32) {
