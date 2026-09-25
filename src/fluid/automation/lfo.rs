@@ -4,7 +4,7 @@
 use std::f32::consts::TAU;
 
 use crate::fluid::widget::DialScale;
-use crate::fluid::{Entry, beats2, pct, signed_pct, smoothstep, splitmix64_mix};
+use crate::fluid::{Entry, beats2, pct, smoothstep, splitmix64_mix};
 
 use super::{
     FieldSpec, Stepping, clamped_index, index_at_ratio, morph_scalar_route, stepped_index,
@@ -63,7 +63,7 @@ pub(crate) enum LfoShape {
     Square,
     RandomDrift,
     SampleHold,
-    /// User-drawn staircase: a per-cycle sequence of `step_count` bipolar
+    /// User-drawn staircase: a per-cycle sequence of `step_count` unipolar
     /// values on `LfoRoute`, edited in the Shape row's inline step submenu.
     Steps,
 }
@@ -218,7 +218,7 @@ impl LfoField {
 }
 
 /// One editable target inside a `Steps` shape's inline submenu: the sequence
-/// length, the shared edge-glide, or one bipolar step value.
+/// length, the shared edge-glide, or one unipolar step value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StepTarget {
     Count,
@@ -271,7 +271,7 @@ pub(crate) const LFO_RATE_ARROW_STEPS: &[f32] = &[
 ];
 
 /// The inline `Steps` submenu's fields. Every `Value(i)` shares one spec —
-/// each step is the same bipolar depth, only its index differs.
+/// each step is the same unipolar depth, only its index differs.
 const STEP_FIELD_SPECS: &[FieldSpec<StepTarget>] = &[
     FieldSpec {
         field: StepTarget::Count,
@@ -298,10 +298,10 @@ const STEP_FIELD_SPECS: &[FieldSpec<StepTarget>] = &[
     FieldSpec {
         field: StepTarget::Value(0),
         label: "step",
-        min: -1.0,
+        min: 0.0,
         max: 1.0,
         step: STEP_VALUE_STEP,
-        scale: DialScale::bipolar(),
+        scale: DialScale::linear(0.0, 1.0),
         stepping: Stepping::Linear,
         entry: Entry::Percent,
         reset: 0.0,
@@ -336,7 +336,8 @@ pub(crate) struct LfoRoute {
     /// Seed for random shapes; hashed with the cycle index to produce values.
     pub(crate) seed: u32,
     /// Custom staircase for `LfoShape::Steps`; only the first `step_count`
-    /// entries are live. Bipolar (-1..1), inert unless the shape is `Steps`.
+    /// entries are live. Unipolar (0..1): a step only lifts the control from
+    /// its base, never pulls it below. Inert unless the shape is `Steps`.
     /// Each step spans one LFO interval (`cycle_beats`), so the full pattern
     /// lasts `step_count` intervals — raising the count extends the pattern.
     pub(crate) steps: [f32; MAX_LFO_STEPS],
@@ -489,7 +490,7 @@ impl LfoRoute {
     }
 
     /// Numeric entry for a step target: count is a whole number, glide a
-    /// unipolar percent, a step value a bipolar percent (`-100`..`100`).
+    /// unipolar percent, a step value a unipolar percent (`0`..`100`).
     pub(crate) fn set_step(&mut self, target: StepTarget, value: f32) {
         self.write_step(target, target.spec().parse_value(value));
     }
@@ -514,7 +515,7 @@ impl LfoRoute {
 
     /// How each inline staircase target maps onto bar position: the length
     /// spans the reachable step count, glide a plain unit span, and each step
-    /// value is a bipolar depth like every other modulation amount.
+    /// value a unipolar depth.
     pub(crate) fn step_scale(target: StepTarget) -> DialScale {
         target.spec().scale
     }
@@ -531,7 +532,7 @@ impl LfoRoute {
         match target {
             StepTarget::Count => format!("{}", self.active_step_count()),
             StepTarget::Glide => pct(self.step_glide),
-            StepTarget::Value(i) => signed_pct(self.steps.get(i).copied().unwrap_or(0.0)),
+            StepTarget::Value(i) => pct(self.steps.get(i).copied().unwrap_or(0.0)),
         }
     }
 
