@@ -2,7 +2,7 @@
 //! source Bass and Arp both follow.
 
 use crate::fx::crossfade::{Outgoing, mix};
-use crate::midi::{MidiMessage, MidiSink, pad_notes};
+use crate::midi::{MidiMessage, MidiSink, pad_notes_with_count};
 
 use super::*;
 
@@ -24,6 +24,7 @@ pub(crate) struct PadEngine {
     pub(crate) cursor: ProgressionCursor,
     pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
+    active_note_count: usize,
     /// The transport seen on the previous sample, so a stop releases the
     /// sounding chord once and a restart voices it once.
     transport: Transport,
@@ -55,6 +56,7 @@ impl PadEngine {
         let cursor = ProgressionCursor::new(c);
         let active_character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let initial_notes = pad_chord_tones(c, cursor.window.progression, cursor.slot());
+        let note_count = pad_note_count(c.chord_notes);
         telemetry
             .chord_slot
             .store(cursor.slot() as u64, Ordering::Relaxed);
@@ -63,6 +65,7 @@ impl PadEngine {
             layers: vec![PadLayer::new(
                 active_character,
                 initial_notes,
+                note_count,
                 tune,
                 sample_rate,
                 c.attack_time,
@@ -71,6 +74,7 @@ impl PadEngine {
             cursor,
             active_character,
             last_chord_notes: initial_notes,
+            active_note_count: note_count,
             transport: Transport::Playing,
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
             air: WhiteNoise::new(),
@@ -124,10 +128,13 @@ impl PadEngine {
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
         let advance = self.cursor.tick(c, timing);
         let chord_notes = pad_chord_tones(c, self.cursor.window.progression, self.cursor.slot());
-        let chord_edited = chord_notes != self.last_chord_notes;
+        let note_count = pad_note_count(c.chord_notes);
+        let chord_edited =
+            chord_notes != self.last_chord_notes || note_count != self.active_note_count;
         let character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let character_changed = character != self.active_character;
         self.last_chord_notes = chord_notes;
+        self.active_note_count = note_count;
         self.active_character = character;
 
         // A type change is a change of character, not a new note. Every
@@ -201,7 +208,11 @@ impl PadEngine {
                         c.level,
                         pitch_class(chord_notes[0]),
                     );
-                    self.send_midi(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
+                    self.send_midi(MidiMessage::PadChord(pad_notes_with_count(
+                        chord_notes,
+                        note_count,
+                        tune,
+                    )));
                     if self.layers.len() >= MAX_PAD_LAYERS {
                         let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                         self.layers.drain(0..remove_count);
@@ -209,6 +220,7 @@ impl PadEngine {
                     self.layers.push(PadLayer::new(
                         character,
                         chord_notes,
+                        note_count,
                         tune,
                         self.sample_rate,
                         0.01,
@@ -231,7 +243,11 @@ impl PadEngine {
             );
             self.telemetry
                 .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
-            self.send_midi(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
+            self.send_midi(MidiMessage::PadChord(pad_notes_with_count(
+                chord_notes,
+                note_count,
+                tune,
+            )));
             self.midi_initial_pending = false;
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
@@ -240,6 +256,7 @@ impl PadEngine {
             self.layers.push(PadLayer::new(
                 character,
                 chord_notes,
+                note_count,
                 tune,
                 self.sample_rate,
                 c.attack_time,
@@ -247,7 +264,11 @@ impl PadEngine {
             ));
         }
         if !stabbing && playing && self.midi_initial_pending {
-            self.send_midi(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
+            self.send_midi(MidiMessage::PadChord(pad_notes_with_count(
+                chord_notes,
+                note_count,
+                tune,
+            )));
             self.midi_initial_pending = false;
         }
 
@@ -285,6 +306,7 @@ impl PadLayer {
     pub(crate) fn new(
         character: usize,
         notes: [i32; 4],
+        note_count: usize,
         tune: f32,
         sample_rate: f32,
         attack_time: f32,
@@ -294,6 +316,7 @@ impl PadLayer {
             tones: pad_tones(
                 character,
                 notes,
+                note_count,
                 tune,
                 sample_rate,
                 attack_time,
@@ -584,22 +607,33 @@ impl PadTone {
 pub(crate) fn pad_tones(
     character: usize,
     notes: [i32; 4],
+    note_count: usize,
     tune: f32,
     sample_rate: f32,
     attack_time: f32,
     release_time: f32,
 ) -> Vec<PadTone> {
-    let freqs = notes.map(|note| note_hz(note, tune));
-    let pans = [-0.52_f32, -0.18, 0.16, 0.46];
-    let gains = [0.17_f32, 0.132, 0.126, 0.098];
-    freqs
+    let (voicing, count) = pad_voicing(notes, note_count);
+    let (pans, gains) = match count {
+        2 => ([-0.3, 0.3, 0.0, 0.0, 0.0], [0.17, 0.126, 0.0, 0.0, 0.0]),
+        3 => ([-0.45, 0.0, 0.45, 0.0, 0.0], [0.17, 0.132, 0.126, 0.0, 0.0]),
+        4 => (
+            [-0.52, -0.18, 0.16, 0.46, 0.0],
+            [0.17, 0.132, 0.126, 0.098, 0.0],
+        ),
+        _ => (
+            [-0.52, -0.25, 0.0, 0.25, 0.52],
+            [0.17, 0.132, 0.126, 0.098, 0.07],
+        ),
+    };
+    voicing[..count]
         .iter()
         .zip(pans)
         .zip(gains)
         .map(|((hz, pan), gain)| {
             PadTone::new(
                 character,
-                *hz,
+                note_hz(*hz, tune),
                 pan,
                 gain,
                 attack_time,
@@ -610,8 +644,23 @@ pub(crate) fn pad_tones(
         .collect()
 }
 
+pub(crate) fn pad_note_count(value: f32) -> usize {
+    (value.round() as i64).clamp(2, 5) as usize
+}
+
+/// Pad audio and MIDI use this same sparse-to-full voicing. Bass, Arp, and
+/// Lead keep following the underlying four chord tones.
+pub(crate) fn pad_voicing(notes: [i32; 4], count: usize) -> ([i32; 5], usize) {
+    let count = count.clamp(2, 5);
+    let mut voiced = [notes[0], notes[1], notes[2], notes[3], notes[0] + 24];
+    if count == 2 {
+        voiced[1] = notes[2];
+    }
+    (voiced, count)
+}
+
 /// One chord of a built-in progression: the symbol a listener reads and the
-/// four notes the Pad voices. The symbol is the voicing's only name, so the
+/// four source tones Pad can thin or extend. The symbol is the voicing's only name, so the
 /// page can never show a chord other than the one sounding;
 /// `built_in_chord_names_match_their_voicings` holds every symbol to its
 /// notes.

@@ -77,12 +77,13 @@ nooise midi-ports
 nooise --midi-out Take5
 ```
 
-MIDI output uses channel 1. It sends the Pad's current four-note chord at
-startup and on chord changes, plus 24 MIDI clock pulses per beat and the
-transport's Start, Stop, and Continue messages. The Pad chord releases when
-another chord starts or the clock stops. MIDI output runs alongside nooise
-audio; set the Pad Level to zero to hear only the external synth for that
-layer. `--midi-out` also works with a song number, song code, or `auto`.
+MIDI output uses channel 1. With Pad MIDI Out on, it sends the Pad's current
+2–5-note chord at startup and on chord changes, plus 24 MIDI clock pulses per
+beat and the transport's Start, Stop, and Continue messages. The Pad chord
+releases when another chord starts or the clock stops. MIDI output runs
+alongside nooise audio; set the Pad Level to zero to hear only the external
+synth for that layer. `--midi-out` also works with a song number, song code, or
+`auto`.
 Set the receiving synth to follow USB MIDI clock if you want its own timed
 features to sync.
 
@@ -103,6 +104,12 @@ channel 1 and the synth's available voices. MIDI Out never mutes nooise audio.
 Arp and Lead play through MIDI even with their audio Level at zero. Their MIDI
 Gate rows set the held length of step notes from 0.125 to 2 beats (default 0.5);
 a held Lead play key stays on until released.
+
+Pads' Chord Notes row sets how many notes each Pad chord plays in both audio
+and MIDI. Two keeps the root and fifth; three plays the triad; four keeps the
+original voicing; five adds a high root. The default is four. For a Take 5
+patch with a long release, try two or three to leave voices for the next chord.
+Arp, Bass, and Lead still follow the original chord tones.
 
 ```sh
 nooise --version

@@ -6,7 +6,7 @@
 use super::interaction::ChordDrill;
 use super::song_ids::song_id_index;
 use super::*;
-use crate::midi::{MidiMessage, MidiSink, pad_notes, tuned_note};
+use crate::midi::{MidiMessage, MidiSink, pad_notes, pad_notes_with_count, tuned_note};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ratatui::backend::TestBackend;
@@ -1261,6 +1261,53 @@ fn midi_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop()
 }
 
 #[test]
+fn pad_chord_note_count_changes_audio_and_midi_voicing_live() {
+    let mut controls = PadControls {
+        chord_notes: 2.0,
+        level: 0.0,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let (sink, receiver) = MidiSink::test_channel();
+    pad.set_midi(sink);
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
+    );
+    let two = pad_notes_with_count(pad_chord_tones(&controls, 0, 0), 2, 0.0);
+    assert_eq!(pad.layers.last().unwrap().tones.len(), 2);
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [MidiMessage::PadChord(two)]
+    );
+
+    controls.chord_notes = 5.0;
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.01),
+    );
+    let five = pad_notes_with_count(pad_chord_tones(&controls, 0, 0), 5, 0.0);
+    assert_eq!(pad.layers.last().unwrap().tones.len(), 5);
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [MidiMessage::PadChord(five)]
+    );
+}
+
+#[test]
+fn two_note_pad_voicing_changes_the_rendered_chord() {
+    let notes = [48, 52, 55, 60];
+    let mut two = PadLayer::new(0, notes, 2, 0.0, SAMPLE_RATE, 0.0, 8.0);
+    let mut four = PadLayer::new(0, notes, 4, 0.0, SAMPLE_RATE, 0.0, 8.0);
+    let two_audio: Vec<_> = (0..512).map(|_| two.next_stereo(1.0, 0.5, 0.5)).collect();
+    let four_audio: Vec<_> = (0..512).map(|_| four.next_stereo(1.0, 0.5, 0.5)).collect();
+    assert_ne!(two_audio, four_audio);
+    assert!(rms(&two_audio) > 0.0);
+}
+
+#[test]
 fn arp_midi_plays_at_zero_audio_level_and_releases_at_its_gate() {
     let controls = ArpControls {
         gain: 0.0,
@@ -2478,11 +2525,11 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
         (Tab::Chords, {
-            // 15 base rows, then 8 slots x 5 discrete rows
+            // 16 base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
             let mut kinds = vec![
                 Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Discrete,
-                Discrete, Gain, Timing, Gain, Gain, Gain,
+                Discrete, Discrete, Gain, Timing, Gain, Gain, Gain,
             ];
             kinds.extend(vec![Discrete; 40]);
             kinds.push(Gain); // pre-loaded shared Reverb
@@ -3081,7 +3128,7 @@ fn chords_progression_adjusts_and_clamps() {
 fn chords_tab_controls_none_shows_only_base_params() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, ChordDrill::None);
-    assert_eq!(rows.len(), 16);
+    assert_eq!(rows.len(), 17);
     assert_eq!(rows[0].id, "pad.level");
     assert_eq!(rows[6].id, "pad.chord_offset");
     assert_eq!(rows[7].id, "pad.progression");
@@ -3159,12 +3206,12 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 #[test]
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0), 31);
-    assert_eq!(chords_flat_index(progression_drill(), 2), 41);
-    assert_eq!(chords_flat_index(slot_drill(2), 0), 42);
+    assert_eq!(chords_flat_index(progression_drill(), 0), 32);
+    assert_eq!(chords_flat_index(progression_drill(), 2), 42);
+    assert_eq!(chords_flat_index(slot_drill(2), 0), 43);
 
     let controls = FluidControls::default();
-    let expected = tab_controls(Tab::Chords, &controls)[26].id;
+    let expected = tab_controls(Tab::Chords, &controls)[27].id;
     assert_eq!(expected, "pad.chord3_accidental");
 }
 

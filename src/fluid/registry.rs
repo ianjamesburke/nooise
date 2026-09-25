@@ -1207,7 +1207,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-const CHORD_BASE_CONTROL_COUNT: usize = 31;
+const CHORD_BASE_CONTROL_COUNT: usize = 32;
 
 pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
 
@@ -1322,6 +1322,18 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c| progression_label(progression_index(c.pad.progression)),
     )
     .song_values(&PROGRESSION_SONG_VALUES),
+    ControlSpec::new(
+        "pad.chord_notes",
+        "Chord Notes",
+        ControlKind::Discrete,
+        2.0,
+        5.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.chord_notes,
+        |c, v| c.pad.chord_notes = v,
+        |c| format!("{:.0}", c.pad.chord_notes),
+    ),
     ControlSpec::new(
         "pad.midi_out",
         "MIDI Out",
@@ -2249,7 +2261,7 @@ pub(crate) fn module_slot_row<'a>(
 /// table order, so a slot outside the playing window can be written before
 /// Offset or Count reaches it), or one chord slot's
 /// Accidental/Quality/Extension/Inversion. Read-only view over
-/// `CHORDS_CONTROLS`'s fixed layout (15 root rows, then 16 Pad step rows,
+/// `CHORDS_CONTROLS`'s fixed layout (16 root rows, then 16 Pad step rows,
 /// then 8 chord slots x 5
 /// rows, then 8 module slots x 8 rows) — never reorders the underlying
 /// array. Pad steps live in the Trigger drill. `chords_drill_for_index` below is this projection's inverse and
@@ -2293,7 +2305,7 @@ pub(crate) fn chords_tab_controls(
 pub(crate) fn chords_flat_index(drill: interaction::ChordDrill, visible_row: usize) -> usize {
     match drill {
         interaction::ChordDrill::None => visible_row,
-        interaction::ChordDrill::Pattern { .. } => 15 + visible_row,
+        interaction::ChordDrill::Pattern { .. } => 16 + visible_row,
         interaction::ChordDrill::Progression { .. } => CHORD_BASE_CONTROL_COUNT + 5 * visible_row,
         interaction::ChordDrill::Slot { slot, .. } => {
             CHORD_BASE_CONTROL_COUNT + 5 * slot + 1 + visible_row

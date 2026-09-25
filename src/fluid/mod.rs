@@ -92,6 +92,7 @@ pub(crate) use song::{CODE_PREFIX, SongState, decode_song_code, encode_song_code
 use ui::*;
 use view::*;
 use visualizer::*;
+pub(crate) use voice::pad_voicing;
 use voice::*;
 
 // ============================================================

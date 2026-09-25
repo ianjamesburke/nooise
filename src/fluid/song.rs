@@ -1535,4 +1535,12 @@ mod song_value_tests {
         assert_eq!(decoded.controls.lead.midi_out, 1.0);
         assert_eq!(decoded.controls.lead.midi_gate_beats, 1.5);
     }
+
+    #[test]
+    fn pad_chord_note_count_round_trips() {
+        let mut song = SongState::default();
+        song.controls.pad.chord_notes = 2.0;
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(decoded.controls.pad.chord_notes, 2.0);
+    }
 }

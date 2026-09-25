@@ -10,7 +10,7 @@ use std::thread;
 
 use midir::{MidiOutput, MidiOutputConnection};
 
-use crate::fluid::{TimingContext, Transport};
+use crate::fluid::{TimingContext, Transport, pad_voicing};
 
 const QUEUE_CAPACITY: usize = 4096;
 const CLOCKS_PER_BEAT: f64 = 24.0;
@@ -24,13 +24,25 @@ pub(crate) enum MidiMessage {
     Continue,
     Stop,
     Clock,
-    PadChord([u8; 4]),
+    PadChord(PadMidiNotes),
     PadOff,
     ArpNote(u8),
     ArpOff,
     LeadNote(u8),
     LeadOff,
     Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PadMidiNotes {
+    notes: [u8; 5],
+    count: usize,
+}
+
+impl PadMidiNotes {
+    fn active(&self) -> &[u8] {
+        &self.notes[..self.count]
+    }
 }
 
 pub(crate) enum MidiPortError {
@@ -168,14 +180,14 @@ fn write_events(
 
 #[derive(Default)]
 struct ActiveNotes {
-    pad: Option<[u8; 4]>,
+    pad: Option<PadMidiNotes>,
     arp: Option<u8>,
     lead: Option<u8>,
 }
 
 impl ActiveNotes {
     fn contains(&self, note: u8) -> bool {
-        self.pad.is_some_and(|notes| notes.contains(&note))
+        self.pad.is_some_and(|notes| notes.active().contains(&note))
             || self.arp == Some(note)
             || self.lead == Some(note)
     }
@@ -193,7 +205,7 @@ fn dispatch<E>(
         MidiMessage::Clock => send(&[0xf8])?,
         MidiMessage::PadChord(notes) => {
             release_pad(active, send)?;
-            for note in notes {
+            for &note in notes.active() {
                 if !active.contains(note) {
                     send(&[0x90, note, PAD_VELOCITY])?;
                 }
@@ -232,7 +244,7 @@ fn release_pad<E>(
     send: &mut impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
     if let Some(notes) = active.pad.take() {
-        for note in notes {
+        for &note in notes.active() {
             if !active.contains(note) {
                 send(&[0x80, note, 0])?;
             }
@@ -325,8 +337,17 @@ impl Drop for MidiClockFollower {
     }
 }
 
-pub(crate) fn pad_notes(notes: [i32; 4], tune: f32) -> [u8; 4] {
-    notes.map(|note| tuned_note(note, tune))
+#[cfg(test)]
+pub(crate) fn pad_notes(notes: [i32; 4], tune: f32) -> PadMidiNotes {
+    pad_notes_with_count(notes, 4, tune)
+}
+
+pub(crate) fn pad_notes_with_count(notes: [i32; 4], count: usize, tune: f32) -> PadMidiNotes {
+    let (voicing, count) = pad_voicing(notes, count);
+    PadMidiNotes {
+        notes: voicing.map(|note| tuned_note(note, tune)),
+        count,
+    }
 }
 
 pub(crate) fn tuned_note(note: i32, tune: f32) -> u8 {
@@ -371,7 +392,39 @@ mod tests {
 
     #[test]
     fn pad_notes_follow_master_tune_without_level_gating() {
-        assert_eq!(pad_notes([48, 52, 55, 60], 12.0), [60, 64, 67, 72]);
+        assert_eq!(pad_notes([48, 52, 55, 60], 12.0).active(), [60, 64, 67, 72]);
+    }
+
+    #[test]
+    fn pad_note_count_uses_fifth_for_two_and_top_root_for_five() {
+        assert_eq!(
+            pad_notes_with_count([48, 52, 55, 60], 2, 0.0).active(),
+            [48, 55]
+        );
+        assert_eq!(
+            pad_notes_with_count([48, 52, 55, 60], 5, 0.0).active(),
+            [48, 52, 55, 60, 72]
+        );
+    }
+
+    #[test]
+    fn five_note_pad_chord_releases_all_five_notes() {
+        let mut packets = Vec::<Vec<u8>>::new();
+        let mut active = ActiveNotes::default();
+        let mut send = |bytes: &[u8]| {
+            packets.push(bytes.to_vec());
+            Ok::<(), ()>(())
+        };
+        dispatch(
+            MidiMessage::PadChord(pad_notes_with_count([48, 52, 55, 60], 5, 0.0)),
+            &mut active,
+            &mut send,
+        )
+        .unwrap();
+        dispatch(MidiMessage::PadOff, &mut active, &mut send).unwrap();
+        assert_eq!(packets.len(), 10);
+        assert_eq!(packets[4], [0x90, 72, PAD_VELOCITY]);
+        assert_eq!(packets[9], [0x80, 72, 0]);
     }
 
     #[test]
@@ -383,13 +436,13 @@ mod tests {
             Ok::<(), ()>(())
         };
         dispatch(
-            MidiMessage::PadChord([48, 52, 55, 60]),
+            MidiMessage::PadChord(pad_notes([48, 52, 55, 60], 0.0)),
             &mut active,
             &mut send,
         )
         .unwrap();
         dispatch(
-            MidiMessage::PadChord([50, 53, 57, 62]),
+            MidiMessage::PadChord(pad_notes([50, 53, 57, 62], 0.0)),
             &mut active,
             &mut send,
         )
@@ -419,7 +472,7 @@ mod tests {
             Ok::<(), ()>(())
         };
         dispatch(
-            MidiMessage::PadChord([48, 52, 55, 60]),
+            MidiMessage::PadChord(pad_notes([48, 52, 55, 60], 0.0)),
             &mut active,
             &mut send,
         )
