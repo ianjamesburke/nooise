@@ -764,8 +764,32 @@ fn midi_output_fresh_start_mutes_pad_audio_without_disabling_pad_midi() {
     assert_eq!(midi.controls.pad.midi_in, 0.0);
     assert_eq!(midi.controls.pad.midi_out, 1.0);
     assert_eq!(midi.controls.midi_rows & PAD_MIDI_OUT_ROW, PAD_MIDI_OUT_ROW);
+    assert_eq!(normal.controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS);
+    assert_eq!(midi.controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS);
     assert_eq!(midi.controls.arp.midi_out, 0.0);
     assert_eq!(midi.controls.lead.midi_out, 0.0);
+}
+
+#[test]
+fn no_argument_start_hides_pad_rhythm_rows_without_showing_midi() {
+    let mut rng = StdRng::seed_from_u64(42);
+    let song = randomized_start_song(&mut rng, false);
+    let ids: Vec<_> = chords_tab_controls(&song.controls, ChordDrill::None)
+        .iter()
+        .map(|item| item.id)
+        .collect();
+    for hidden in [
+        "pad.trigger",
+        "pad.swing",
+        "pad.gate_beats",
+        "pad.midi_in",
+        "pad.midi_out",
+    ] {
+        assert!(
+            !ids.contains(&hidden),
+            "{hidden} should be absent at startup"
+        );
+    }
 }
 
 #[test]
@@ -932,6 +956,16 @@ fn midi_input_switches_and_pad_trigger_source_survive_song_codes() {
     assert_eq!(decoded.controls.lead.midi_in, 1.0);
     assert_eq!(decoded.controls.midi_rows, 0b00_010101);
     assert_eq!(decoded.controls.hidden_pad_rhythm_rows, 0b0000_0101);
+}
+
+#[test]
+fn song_code_restores_all_pad_rhythm_rows_after_they_are_added() {
+    let mut song = SongState::default();
+    song.controls.hidden_pad_rhythm_rows = 0;
+
+    let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+
+    assert_eq!(decoded.controls.hidden_pad_rhythm_rows, 0);
 }
 
 #[test]
@@ -2921,11 +2955,11 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
         (Tab::Chords, {
-            // 17 base rows, then 8 slots x 5 discrete rows
+            // 12 visible base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
             let mut kinds = vec![
                 Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Discrete,
-                Discrete, Gain, Timing, Gain, Gain, Gain,
+                Gain, Gain, Gain,
             ];
             kinds.extend(vec![Discrete; 40]);
             kinds.push(Gain); // pre-loaded shared Reverb
@@ -3523,7 +3557,7 @@ fn chords_progression_adjusts_and_clamps() {
 fn chords_tab_controls_none_shows_only_base_params() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, ChordDrill::None);
-    assert_eq!(rows.len(), 16);
+    assert_eq!(rows.len(), 13);
     assert_eq!(rows[0].id, "pad.level");
     assert_eq!(rows[6].id, "pad.chord_offset");
     assert_eq!(rows[7].id, "pad.progression");
@@ -3533,7 +3567,10 @@ fn chords_tab_controls_none_shows_only_base_params() {
 
 #[test]
 fn pad_trigger_row_opens_sixteen_editable_steps() {
-    let controls = FluidControls::default();
+    let controls = FluidControls {
+        hidden_pad_rhythm_rows: 0,
+        ..FluidControls::default()
+    };
     let root = chords_tab_controls(&controls, ChordDrill::None);
     let trigger_row = root
         .iter()
@@ -6877,6 +6914,7 @@ fn chords_drill_for_index_inverts_chords_flat_index() {
     // module-slot regression test below).
     let controls = FluidControls {
         midi_rows: 0b00_111111,
+        hidden_pad_rhythm_rows: 0,
         ..FluidControls::default()
     };
     for flat in 0..(10 + CHORD_SLOT_COUNT * 5) {

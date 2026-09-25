@@ -91,12 +91,12 @@ on and visible, MIDI In off, and Level at 0%, including when loading a song. `--
 still opens the input port for tracks whose MIDI In switch you turn on. An
 input-only `--midi-in` launch starts Pad with MIDI In on and visible, MIDI Out off, and
 Level at 0%; raise Pad Level to hear your keyboard through its sound. The
-other tracks keep their saved MIDI switches. MIDI launches tuck away Pad
-Trigger, Swing, and Gate. Find any of those rows with `/` to add it back.
+other tracks keep their saved MIDI switches. Pad Trigger, Swing, and Gate are
+hidden by default with or without MIDI. Find any of those rows with `/` to add it.
 Set the receiving synth to follow USB MIDI clock if you want its own timed
 features to sync.
 
-On the Pads page, change Trigger from Hold to Stabs for a 16-step chord rhythm.
+Add `pad.trigger` with `/`, then change Trigger from Hold to Stabs for a 16-step chord rhythm.
 Enter on Trigger opens the Hit/Rest steps. Up/Down selects, Left/Right changes,
 and Esc returns to the Pads page. Each step is a sixteenth note. Swing delays the
 offbeat steps. Stabs use the current progression and send the same chord hits

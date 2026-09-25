@@ -21,7 +21,7 @@ use super::{
     EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState,
     LfoRoute, LfoShape, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
     MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModuleSlotField,
-    MuteState, Step, TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
+    MuteState, PAD_RHYTHM_ROWS, Step, TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -262,7 +262,7 @@ pub(crate) fn encode_song_code_at_epoch(
     if song.controls.midi_rows != 0 {
         write_record(MIDI_ROWS_RECORD, &[song.controls.midi_rows], &mut bytes)?;
     }
-    if song.controls.hidden_pad_rhythm_rows != 0 {
+    if song.controls.hidden_pad_rhythm_rows != PAD_RHYTHM_ROWS {
         write_record(
             PAD_RHYTHM_ROWS_RECORD,
             &[song.controls.hidden_pad_rhythm_rows],
@@ -341,7 +341,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 pad_rhythm_rows_record_seen = true;
                 let mut rows = Reader::new(payload);
                 let bits = rows.u8()?;
-                if !rows.is_empty() || bits & !0b0000_0111 != 0 {
+                if !rows.is_empty() || bits & !PAD_RHYTHM_ROWS != 0 {
                     return Err(SongCodeError::InvalidPadRhythmRows(bits));
                 }
                 song.controls.hidden_pad_rhythm_rows = bits;

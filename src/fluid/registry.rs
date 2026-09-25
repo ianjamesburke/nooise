@@ -2009,7 +2009,6 @@ pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
 
 pub(crate) const PAD_MIDI_IN_ROW: u8 = 1 << 0;
 pub(crate) const PAD_MIDI_OUT_ROW: u8 = 1 << 1;
-pub(crate) const PAD_RHYTHM_ROWS: u8 = 0b0000_0111;
 
 /// Optional MIDI rows retain their place after being added even when Off.
 /// Gate rows belong to their track's MIDI Out control.
