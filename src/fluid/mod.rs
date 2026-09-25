@@ -305,17 +305,22 @@ fn randomized_start_song(rng: &mut impl Rng, midi_connected: bool) -> SongState 
     SongState::from_controls(controls)
 }
 
-fn apply_midi_input_start(song: &mut SongState, midi: MidiConfig<'_>) {
-    if midi.input.is_some() {
+fn apply_midi_start(song: &mut SongState, midi: MidiConfig<'_>) {
+    if midi.input.is_some() || midi.output.is_some() {
         song.controls.pad.level = 0.0;
+    }
+    if midi.output.is_some() {
+        song.controls.pad.midi_in = 0.0;
+        song.controls.pad.midi_out = 1.0;
+    } else if midi.input.is_some() {
         song.controls.pad.midi_in = 1.0;
         song.controls.pad.midi_out = 0.0;
     }
 }
 
-fn apply_midi_input_start_to_states(states: &mut [SongState], midi: MidiConfig<'_>) {
+fn apply_midi_start_to_states(states: &mut [SongState], midi: MidiConfig<'_>) {
     for state in states {
-        apply_midi_input_start(state, midi);
+        apply_midi_start(state, midi);
     }
 }
 
@@ -346,7 +351,7 @@ pub(crate) fn run_auto(
     midi: MidiConfig<'_>,
 ) -> Result<(), Box<dyn Error>> {
     let mut states = decode_auto_states();
-    apply_midi_input_start_to_states(&mut states, midi);
+    apply_midi_start_to_states(&mut states, midi);
     let initial_song = states[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
         states.clone(),
@@ -383,7 +388,7 @@ pub(crate) fn run_songs(
             }
         }
     }
-    apply_midi_input_start_to_states(&mut chosen, midi);
+    apply_midi_start_to_states(&mut chosen, midi);
     let initial_song = chosen[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
         chosen.clone(),
@@ -406,8 +411,8 @@ fn run_interactive(
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
 ) -> Result<(), Box<dyn Error>> {
-    apply_midi_input_start(&mut initial_song, midi);
-    apply_midi_input_start_to_states(&mut auto_states, midi);
+    apply_midi_start(&mut initial_song, midi);
+    apply_midi_start_to_states(&mut auto_states, midi);
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
     let session_for_engine = session.clone();
     let morph_for_engine = Arc::clone(&morph);

@@ -86,11 +86,12 @@ MIDI Out on, nooise sends the Pad's current
 2–5-note chord at startup and on chord changes, plus 24 MIDI clock pulses per
 beat and the transport's Start, Stop, and Continue messages. The Pad chord
 releases when another chord starts or the clock stops. MIDI output runs
-alongside nooise audio. A fresh `--midi-out` session starts with Pad Level at
-0% and Pad MIDI Out on. With `--midi` or `--midi-in`, Pad starts with MIDI In
-on, MIDI Out off, and Level at 0%, including when loading a song. Raise Pad
-Level to hear your keyboard through its sound. The other tracks keep their
-saved MIDI switches.
+alongside nooise audio. With `--midi` or `--midi-out`, Pad starts with MIDI Out
+on, MIDI In off, and Level at 0%, including when loading a song. `--midi`
+still opens the input port for tracks whose MIDI In switch you turn on. An
+input-only `--midi-in` launch starts Pad with MIDI In on, MIDI Out off, and
+Level at 0%; raise Pad Level to hear your keyboard through its sound. The
+other tracks keep their saved MIDI switches.
 Set the receiving synth to follow USB MIDI clock if you want its own timed
 features to sync.
 

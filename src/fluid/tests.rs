@@ -758,11 +758,11 @@ fn midi_output_fresh_start_mutes_pad_audio_without_disabling_pad_midi() {
 }
 
 #[test]
-fn midi_input_start_selects_pad_in_and_zero_level_even_for_an_authored_song() {
+fn duplex_midi_start_selects_pad_out_and_zero_level_even_for_an_authored_song() {
     let mut song = SongState::default();
     song.controls.pad.level = 0.8;
     song.controls.pad.midi_out = 1.0;
-    apply_midi_input_start(
+    apply_midi_start(
         &mut song,
         MidiConfig {
             input: Some(MidiEndpoint {
@@ -776,26 +776,50 @@ fn midi_input_start_selects_pad_in_and_zero_level_even_for_an_authored_song() {
         },
     );
     assert_eq!(song.controls.pad.level, 0.0);
+    assert_eq!(song.controls.pad.midi_in, 0.0);
+    assert_eq!(song.controls.pad.midi_out, 1.0);
+}
+
+#[test]
+fn input_only_midi_start_selects_pad_in_and_zero_level() {
+    let mut song = SongState::default();
+    apply_midi_start(
+        &mut song,
+        MidiConfig {
+            input: Some(MidiEndpoint {
+                name: "Keyboard",
+                channel: 1,
+            }),
+            output: None,
+        },
+    );
+    assert_eq!(song.controls.pad.level, 0.0);
     assert_eq!(song.controls.pad.midi_in, 1.0);
     assert_eq!(song.controls.pad.midi_out, 0.0);
 }
 
 #[test]
-fn midi_input_start_keeps_auto_endpoints_at_zero_pad_level() {
+fn duplex_midi_start_keeps_auto_endpoints_at_zero_pad_level_and_output_on() {
     let midi = MidiConfig {
         input: Some(MidiEndpoint {
             name: "Take5",
             channel: 1,
         }),
-        output: None,
+        output: Some(MidiEndpoint {
+            name: "Take5",
+            channel: 1,
+        }),
     };
     let mut states = vec![SongState::default(), SongState::default()];
     states[1].controls.pad.level = 0.9;
-    apply_midi_input_start_to_states(&mut states, midi);
+    apply_midi_start_to_states(&mut states, midi);
     let morph = MorphState::new(states, 4);
     assert_eq!(morph.controls_at(0.0).pad.level, 0.0);
     assert_eq!(morph.controls_at(16.0).pad.level, 0.0);
     assert_eq!(morph.controls_at(32.0).pad.level, 0.0);
+    assert_eq!(morph.controls_at(0.0).pad.midi_in, 0.0);
+    assert_eq!(morph.controls_at(0.0).pad.midi_out, 1.0);
+    assert_eq!(morph.controls_at(32.0).pad.midi_out, 1.0);
 }
 
 #[test]
