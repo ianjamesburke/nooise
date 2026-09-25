@@ -86,6 +86,13 @@ layer. `--midi-out` also works with a song number, song code, or `auto`.
 Set the receiving synth to follow USB MIDI clock if you want its own timed
 features to sync.
 
+On the Pads page, change Trigger from Hold to Stabs for a 16-step chord rhythm.
+Enter on Trigger opens the Hit/Rest steps. Up/Down selects, Left/Right changes,
+and Esc returns to the Pads page. Each step is a sixteenth note. Swing delays the
+offbeat steps. Stabs use the current progression and send the same short chord
+hits to audio and MIDI, with note-offs between hits. Hold restores the normal
+sustained Pad.
+
 ```sh
 nooise --version
 ```

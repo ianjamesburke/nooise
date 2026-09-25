@@ -145,6 +145,11 @@ pub(crate) fn coordinate_production_event(
         action.intent = interaction::Intent::EnterChordProgression;
     }
     if action.intent == interaction::Intent::TouchSelected
+        && frame.selected_control == Some(PAD_TRIGGER_ID)
+    {
+        action.intent = interaction::Intent::EnterPadPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
         && let Some(id) = frame.selected_control
         && let Some((slot, module)) =
             module_slot_at_collapsed_id(frame.tab, id, &frame.session.controls)

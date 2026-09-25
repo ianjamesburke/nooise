@@ -213,6 +213,9 @@ fn draw_tabs(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 )
             } else if *t == Tab::Chords {
                 match view.navigation.chord_drill {
+                    interaction::ChordDrill::Pattern { .. } => {
+                        format!("{} › Trigger", t.name())
+                    }
                     interaction::ChordDrill::Progression { .. } => {
                         format!("{} › Progression", t.name())
                     }
@@ -348,6 +351,18 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 lead_live_step_count(frame.controls().lead.step_count),
             );
         if lead_step_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
+        let pad_step_playing = view.navigation.tab == Tab::Chords
+            && matches!(
+                view.navigation.chord_drill,
+                interaction::ChordDrill::Pattern { .. }
+            )
+            && i == ((beat / 0.25).floor() as usize % 16);
+        if pad_step_playing {
             spans.push(Span::styled(
                 " ♪",
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),

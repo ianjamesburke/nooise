@@ -88,6 +88,9 @@ pub(crate) struct PadControls {
     /// The table slot the loop starts from, 0..8; `ChordWindow` wraps.
     pub(crate) chord_offset: f32,
     pub(crate) progression: f32,
+    pub(crate) trigger: f32,
+    pub(crate) swing: f32,
+    pub(crate) steps: [f32; 16],
     pub(crate) chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
     pub(crate) stereo_width: f32,
     pub(crate) detune: f32,
@@ -105,6 +108,11 @@ impl Default for PadControls {
             chord_count: 8.0,
             chord_offset: 0.0,
             progression: 0.0,
+            trigger: 0.0,
+            swing: 0.0,
+            steps: [
+                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
+            ],
             chord_slots: std::array::from_fn(|slot| ChordSlotControls {
                 degree: DEFAULT_CHORD_SLOT_DEGREES[slot],
                 ..ChordSlotControls::default()

@@ -1255,6 +1255,161 @@ fn midi_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop()
     );
 }
 
+#[test]
+fn pad_stabs_send_only_selected_steps_and_release_between_hits() {
+    let controls = PadControls {
+        trigger: 1.0,
+        level: 0.0,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let (sink, receiver) = MidiSink::test_channel();
+    pad.set_midi(sink);
+    for beat in [0.0, 0.125, 0.25, 0.5, 0.75, 1.0] {
+        pad.next(
+            &controls,
+            0.0,
+            TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
+        );
+    }
+    let notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
+    let events: Vec<_> = receiver
+        .try_iter()
+        .filter(|event| matches!(event, MidiMessage::PadChord(_) | MidiMessage::PadOff))
+        .collect();
+    assert_eq!(
+        events,
+        [
+            MidiMessage::PadOff,
+            MidiMessage::PadChord(notes),
+            MidiMessage::PadOff,
+            MidiMessage::PadChord(notes)
+        ]
+    );
+}
+
+#[test]
+fn pad_stab_swing_delays_the_offbeat_hit() {
+    let controls = PadControls {
+        trigger: 1.0,
+        swing: 1.0,
+        steps: [
+            0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let (sink, receiver) = MidiSink::test_channel();
+    pad.set_midi(sink);
+    for beat in [0.0, 0.25] {
+        pad.next(
+            &controls,
+            0.0,
+            TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
+        );
+    }
+    assert!(
+        !receiver
+            .try_iter()
+            .any(|event| matches!(event, MidiMessage::PadChord(_)))
+    );
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.375),
+    );
+    assert!(
+        receiver
+            .try_iter()
+            .any(|event| matches!(event, MidiMessage::PadChord(_)))
+    );
+}
+
+#[test]
+fn pad_stab_stop_releases_midi_before_its_gate_ends() {
+    let controls = PadControls {
+        trigger: 1.0,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let (sink, receiver) = MidiSink::test_channel();
+    pad.set_midi(sink);
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
+    );
+    receiver.try_iter().for_each(drop);
+    let mut stopped = TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.01);
+    stopped.transport = Transport::Stopped;
+    pad.next(&controls, 0.0, stopped);
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [MidiMessage::PadOff]
+    );
+}
+
+#[test]
+fn pad_switching_back_to_hold_revoices_current_chord() {
+    let mut controls = PadControls {
+        trigger: 1.0,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let (sink, receiver) = MidiSink::test_channel();
+    pad.set_midi(sink);
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
+    );
+    receiver.try_iter().for_each(drop);
+    controls.trigger = 0.0;
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.01),
+    );
+    let notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [MidiMessage::PadOff, MidiMessage::PadChord(notes)]
+    );
+}
+
+#[test]
+fn pad_stab_audio_dies_between_hits() {
+    let controls = PadControls {
+        trigger: 1.0,
+        steps: [
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let mut early = 0.0f64;
+    let mut late = 0.0f64;
+    for sample in 0..(SAMPLE_RATE * 0.5) as u64 {
+        let beat = sample as f64 * 120.0 / (SAMPLE_RATE as f64 * 60.0);
+        let (left, right) = pad.next(
+            &controls,
+            0.0,
+            TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
+        );
+        let power = f64::from(left * left + right * right);
+        if (2_000..4_000).contains(&sample) {
+            early += power;
+        }
+        if (12_000..14_000).contains(&sample) {
+            late += power;
+        }
+    }
+    assert!(
+        early > late * 100.0,
+        "stab did not die away: early={early} late={late}"
+    );
+}
+
 /// The clock stop exists to end a song on its tails: nothing new may start
 /// while stopped, everything already sounding must keep ringing and fading,
 /// and starting again brings the song back.
@@ -2040,11 +2195,11 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
         (Tab::Chords, {
-            // 11 base rows, then 8 slots x 5 discrete rows
+            // 13 base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
             let mut kinds = vec![
-                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Gain, Gain,
-                Gain,
+                Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Discrete,
+                Gain, Gain, Gain, Gain,
             ];
             kinds.extend(vec![Discrete; 40]);
             kinds.push(Gain); // pre-loaded shared Reverb
@@ -2642,12 +2797,45 @@ fn chords_progression_adjusts_and_clamps() {
 fn chords_tab_controls_none_shows_only_base_params() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, ChordDrill::None);
-    assert_eq!(rows.len(), 12);
+    assert_eq!(rows.len(), 14);
     assert_eq!(rows[0].id, "pad.level");
     assert_eq!(rows[6].id, "pad.chord_offset");
     assert_eq!(rows[7].id, "pad.progression");
     assert_eq!(rows[2].id, "pad.release_time");
     assert!(rows.iter().all(|r| !r.label.contains("Root")));
+}
+
+#[test]
+fn pad_trigger_row_opens_sixteen_editable_steps() {
+    let controls = FluidControls::default();
+    let root = chords_tab_controls(&controls, ChordDrill::None);
+    let trigger_row = root
+        .iter()
+        .position(|item| item.id == PAD_TRIGGER_ID)
+        .unwrap();
+    assert!(root.iter().all(|item| pad_step_index(item.id).is_none()));
+    let pattern = chords_tab_controls(
+        &controls,
+        ChordDrill::Pattern {
+            return_to: trigger_row,
+        },
+    );
+    assert_eq!(pattern.len(), 16);
+    assert_eq!(pattern[0].id, "pad.step1");
+    assert_eq!(pattern[15].id, "pad.step16");
+    let flat = CHORDS_CONTROLS
+        .iter()
+        .position(|spec| spec.id == "pad.step16")
+        .unwrap();
+    assert_eq!(
+        chords_drill_for_index(flat, &controls),
+        (
+            ChordDrill::Pattern {
+                return_to: trigger_row
+            },
+            15
+        )
+    );
 }
 
 /// All eight slots stay listed in table order whatever the window, so a
@@ -2687,12 +2875,12 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 #[test]
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     assert_eq!(chords_flat_index(ChordDrill::None, 4), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0), 11);
-    assert_eq!(chords_flat_index(progression_drill(), 2), 21);
-    assert_eq!(chords_flat_index(slot_drill(2), 0), 22);
+    assert_eq!(chords_flat_index(progression_drill(), 0), 29);
+    assert_eq!(chords_flat_index(progression_drill(), 2), 39);
+    assert_eq!(chords_flat_index(slot_drill(2), 0), 40);
 
     let controls = FluidControls::default();
-    let expected = tab_controls(Tab::Chords, &controls)[22].id;
+    let expected = tab_controls(Tab::Chords, &controls)[24].id;
     assert_eq!(expected, "pad.chord3_accidental");
 }
 

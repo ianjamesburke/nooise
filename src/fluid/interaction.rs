@@ -139,6 +139,9 @@ const LAYERS: [Layer; 9] = [
 pub(crate) enum ChordDrill {
     #[default]
     None,
+    Pattern {
+        return_to: usize,
+    },
     Progression {
         return_to: usize,
     },
@@ -273,6 +276,10 @@ impl Navigation {
     fn cancel_one_depth(&mut self) {
         match self {
             Self::Chords { selected, drill } => match *drill {
+                ChordDrill::Pattern { return_to } => {
+                    *selected = return_to;
+                    *drill = ChordDrill::None;
+                }
                 ChordDrill::Slot { slot, return_to } => {
                     *selected = slot;
                     *drill = ChordDrill::Progression { return_to };
@@ -828,6 +835,7 @@ pub(crate) enum Intent {
     ChangePage(PageDirection),
     Cancel,
     EnterChordProgression,
+    EnterPadPattern,
     EnterChordSlot(usize),
     /// Open the Lead's step lane from its Steps row.
     EnterLeadPattern,
@@ -937,6 +945,7 @@ impl Intent {
             Self::PaletteAutocomplete | Self::CommitPaletteAtBar => &[ModeKind::Palette],
             Self::OpenAutomationField => &[ModeKind::Automation],
             Self::EnterChordProgression
+            | Self::EnterPadPattern
             | Self::EnterChordSlot(_)
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
@@ -1003,6 +1012,7 @@ impl Intent {
             Self::ReleaseLeadTone(_) | Self::ReleaseGesture(_) => PhasePolicy::ReleaseOnly,
             Self::Cancel
             | Self::EnterChordProgression
+            | Self::EnterPadPattern
             | Self::EnterChordSlot(_)
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
@@ -1381,6 +1391,13 @@ fn update_browsing(
                 let return_to = *selected;
                 *selected = 0;
                 *drill = ChordDrill::Progression { return_to };
+            }
+        }
+        Intent::EnterPadPattern => {
+            if let Navigation::Chords { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = ChordDrill::Pattern { return_to };
             }
         }
         Intent::EnterChordSlot(slot) => {
@@ -2019,6 +2036,32 @@ mod tests {
             Navigation::Lead {
                 selected: 8,
                 drill: LeadDrill::None,
+            }
+        );
+    }
+
+    #[test]
+    fn pad_pattern_drill_opens_and_cancels_to_trigger() {
+        let model = InteractionModel {
+            navigation: Navigation::Chords {
+                selected: 8,
+                drill: ChordDrill::None,
+            },
+            ..InteractionModel::default()
+        };
+        let opened = update(model, Intent::EnterPadPattern).model;
+        assert_eq!(
+            opened.navigation,
+            Navigation::Chords {
+                selected: 0,
+                drill: ChordDrill::Pattern { return_to: 8 }
+            }
+        );
+        assert_eq!(
+            update(opened, Intent::Cancel).model.navigation,
+            Navigation::Chords {
+                selected: 8,
+                drill: ChordDrill::None
             }
         );
     }

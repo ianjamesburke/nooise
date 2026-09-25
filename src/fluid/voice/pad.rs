@@ -1,5 +1,5 @@
-//! The Pad voice: sustained chord drones, the chord source Bass and Arp
-//! both follow.
+//! The Pad voice: sustained chords or sixteenth-note stabs from the chord
+//! source Bass and Arp both follow.
 
 use crate::fx::crossfade::{Outgoing, mix};
 use crate::midi::{MidiMessage, MidiSink, pad_notes};
@@ -33,6 +33,9 @@ pub(crate) struct PadEngine {
     pub(crate) telemetry: Arc<FluidTelemetry>,
     midi: Option<MidiSink>,
     midi_initial_pending: bool,
+    stab_trigger: GridTrigger,
+    active_stab_until_beat: Option<f64>,
+    stabbing: bool,
 }
 
 impl PadEngine {
@@ -74,12 +77,26 @@ impl PadEngine {
             telemetry,
             midi: None,
             midi_initial_pending: false,
+            stab_trigger: GridTrigger::new(),
+            active_stab_until_beat: None,
+            stabbing: false,
         }
     }
 
     pub(crate) fn set_midi(&mut self, sink: MidiSink) {
         self.midi = Some(sink);
         self.midi_initial_pending = true;
+    }
+
+    fn release_stab(&mut self) {
+        if self.active_stab_until_beat.take().is_some() {
+            for layer in &mut self.layers {
+                layer.release();
+            }
+            if let Some(sink) = &self.midi {
+                sink.send(MidiMessage::PadOff);
+            }
+        }
     }
 
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
@@ -111,13 +128,80 @@ impl PadEngine {
         let transport_changed = timing.transport != self.transport;
         self.transport = timing.transport;
         let playing = timing.transport == Transport::Playing;
+        let stabbing = c.trigger >= 0.5;
+        let mode_changed = stabbing != self.stabbing;
+        self.stabbing = stabbing;
+        if mode_changed {
+            if stabbing {
+                self.layers.clear();
+                self.stab_trigger = GridTrigger::new();
+            } else {
+                for layer in &mut self.layers {
+                    layer.release();
+                }
+            }
+            self.active_stab_until_beat = None;
+            if let Some(sink) = &self.midi {
+                sink.send(MidiMessage::PadOff);
+            }
+        }
         if transport_changed && !playing {
+            self.release_stab();
             for layer in &mut self.layers {
                 layer.release();
             }
         }
 
-        if playing && (advance || chord_edited || transport_changed) {
+        if stabbing {
+            self.midi_initial_pending = false;
+            if playing && (advance || chord_edited) {
+                self.telemetry.publish_chord(
+                    self.cursor.slot() as u64,
+                    pitch_class(chord_notes[0]),
+                    0.01,
+                    0.08,
+                );
+            }
+            if chord_edited && self.active_stab_until_beat.is_some() {
+                self.release_stab();
+            }
+            if self
+                .active_stab_until_beat
+                .is_some_and(|end| timing.beat >= end)
+                || !playing
+            {
+                self.release_stab();
+            }
+            if self.stab_trigger.pop_swung(timing, 0.25, 0.0, c.swing) {
+                let step = ((timing.beat / 0.25).floor() as usize) % 16;
+                if c.steps[step] >= 0.5 {
+                    self.release_stab();
+                    self.telemetry.publish_hit(
+                        MusicalHit::Pad,
+                        c.level,
+                        pitch_class(chord_notes[0]),
+                    );
+                    if let Some(sink) = &self.midi {
+                        sink.send(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
+                    }
+                    if self.layers.len() >= MAX_PAD_LAYERS {
+                        let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
+                        self.layers.drain(0..remove_count);
+                    }
+                    self.layers.push(PadLayer::new(
+                        character,
+                        chord_notes,
+                        tune,
+                        self.sample_rate,
+                        0.01,
+                        0.08,
+                    ));
+                    self.active_stab_until_beat = Some(timing.beat + 0.125);
+                }
+            }
+        }
+
+        if !stabbing && playing && (advance || chord_edited || transport_changed || mode_changed) {
             for layer in &mut self.layers {
                 layer.release();
             }
@@ -146,7 +230,7 @@ impl PadEngine {
                 c.release_time,
             ));
         }
-        if playing && self.midi_initial_pending {
+        if !stabbing && playing && self.midi_initial_pending {
             if let Some(sink) = &self.midi {
                 sink.send(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
             }

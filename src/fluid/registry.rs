@@ -1207,7 +1207,38 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-const CHORD_BASE_CONTROL_COUNT: usize = 11;
+const CHORD_BASE_CONTROL_COUNT: usize = 29;
+
+pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
+
+pub(crate) fn pad_step_index(id: &str) -> Option<usize> {
+    let step: usize = id.strip_prefix("pad.step")?.parse().ok()?;
+    (1..=16).contains(&step).then(|| step - 1)
+}
+
+macro_rules! pad_step_row {
+    ($step:literal) => {
+        ControlSpec::new(
+            concat!("pad.step", $step),
+            concat!("Step ", $step),
+            ControlKind::Discrete,
+            0.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.pad.steps[$step - 1],
+            |c, v| c.pad.steps[$step - 1] = v,
+            |c| {
+                if c.pad.steps[$step - 1] >= 0.5 {
+                    "Hit"
+                } else {
+                    "Rest"
+                }
+                .to_string()
+            },
+        )
+    };
+}
 
 pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, "pad", [
     gain_pct!("pad.level", "Level", pad.level),
@@ -1291,9 +1322,38 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c| progression_label(progression_index(c.pad.progression)),
     )
     .song_values(&PROGRESSION_SONG_VALUES),
+    ControlSpec::new(
+        PAD_TRIGGER_ID,
+        "Trigger",
+        ControlKind::Discrete,
+        0.0,
+        1.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.trigger,
+        |c, v| c.pad.trigger = v,
+        |c| if c.pad.trigger >= 0.5 { "Stabs" } else { "Hold" }.to_string(),
+    ),
+    gain_pct!("pad.swing", "Swing", pad.swing),
     gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
     gain_pct!("pad.detune", "Detune", pad.detune),
     gain_pct!("pad.octave_mix", "Octave Mix", pad.octave_mix),
+    pad_step_row!(1),
+    pad_step_row!(2),
+    pad_step_row!(3),
+    pad_step_row!(4),
+    pad_step_row!(5),
+    pad_step_row!(6),
+    pad_step_row!(7),
+    pad_step_row!(8),
+    pad_step_row!(9),
+    pad_step_row!(10),
+    pad_step_row!(11),
+    pad_step_row!(12),
+    pad_step_row!(13),
+    pad_step_row!(14),
+    pad_step_row!(15),
+    pad_step_row!(16),
 ]);
 
 pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
@@ -1806,11 +1866,15 @@ pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
 }
 
 /// A tab's root rows: every spec except the ones a page-local drill owns
-/// (Lead step rows) and the module-slot rows nothing is loaded into.
+/// (Lead and Pad step rows) and the module-slot rows nothing is loaded into.
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
     tab_specs(tab)
         .iter()
-        .filter(|spec| module_slot_row_visible(spec.id, c) && lead_step_index(spec.id).is_none())
+        .filter(|spec| {
+            module_slot_row_visible(spec.id, c)
+                && lead_step_index(spec.id).is_none()
+                && pad_step_index(spec.id).is_none()
+        })
         .map(|spec| spec.item(c))
         .collect()
 }
@@ -2129,14 +2193,15 @@ pub(crate) fn module_slot_row<'a>(
     slots.get(index).map(|slot| (slot, field))
 }
 
-/// Chords-tab visible rows for the given drill level: the 11 base params
+/// Chords-tab visible rows for the given drill level: the 13 root params
 /// plus any occupied module slots, all eight chord slots' Root list (in
 /// table order, so a slot outside the playing window can be written before
 /// Offset or Count reaches it), or one chord slot's
 /// Accidental/Quality/Extension/Inversion. Read-only view over
-/// `CHORDS_CONTROLS`'s fixed layout (11 base rows, then 8 chord slots x 5
+/// `CHORDS_CONTROLS`'s fixed layout (13 root rows, then 16 Pad step rows,
+/// then 8 chord slots x 5
 /// rows, then 8 module slots x 8 rows) — never reorders the underlying
-/// array. `chords_drill_for_index` below is this projection's inverse and
+/// array. Pad steps live in the Trigger drill. `chords_drill_for_index` below is this projection's inverse and
 /// must stay consistent with it for every region.
 pub(crate) fn chords_tab_controls(
     c: &FluidControls,
@@ -2146,7 +2211,12 @@ pub(crate) fn chords_tab_controls(
         interaction::ChordDrill::None => CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
             .iter()
             .chain(CHORDS_CONTROLS[CHORD_BASE_CONTROL_COUNT + CHORD_SLOT_COUNT * 5..].iter())
-            .filter(|spec| module_slot_row_visible(spec.id, c))
+            .filter(|spec| pad_step_index(spec.id).is_none() && module_slot_row_visible(spec.id, c))
+            .map(|spec| spec.item(c))
+            .collect(),
+        interaction::ChordDrill::Pattern { .. } => CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
+            .iter()
+            .filter(|spec| pad_step_index(spec.id).is_some())
             .map(|spec| spec.item(c))
             .collect(),
         interaction::ChordDrill::Progression { .. } => (0..CHORD_SLOT_COUNT)
@@ -2172,6 +2242,7 @@ pub(crate) fn chords_tab_controls(
 pub(crate) fn chords_flat_index(drill: interaction::ChordDrill, visible_row: usize) -> usize {
     match drill {
         interaction::ChordDrill::None => visible_row,
+        interaction::ChordDrill::Pattern { .. } => 13 + visible_row,
         interaction::ChordDrill::Progression { .. } => CHORD_BASE_CONTROL_COUNT + 5 * visible_row,
         interaction::ChordDrill::Slot { slot, .. } => {
             CHORD_BASE_CONTROL_COUNT + 5 * slot + 1 + visible_row
@@ -2198,6 +2269,13 @@ pub(crate) fn chords_drill_for_index(
     let Some(spec) = CHORDS_CONTROLS.get(flat) else {
         return (interaction::ChordDrill::None, 0);
     };
+    if let Some(step) = pad_step_index(spec.id) {
+        let return_to = chords_tab_controls(c, interaction::ChordDrill::None)
+            .iter()
+            .position(|item| item.id == PAD_TRIGGER_ID)
+            .unwrap_or(0);
+        return (interaction::ChordDrill::Pattern { return_to }, step);
+    }
     if let Some((slot, field)) = parse_chord_slot_id(spec.id) {
         let return_to = CHORDS_CONTROLS
             .iter()
