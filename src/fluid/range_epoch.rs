@@ -102,8 +102,10 @@ mod tests {
         // Built-in song 0 on the pre-widening build: epoch 0, no automation.
         let song = decode_song_code("n1_Tk9PSQIADgAAAAIAlQAB5gPFAAJKMPtE")
             .expect("nothing it modulates has moved");
+        // The built-in re-encode differs only in pinning the clap filter's
+        // mix at its retired-voice fit, where the old code takes the factory.
         let current = &decode_auto_states()[0];
-        for spec in all_specs() {
+        for spec in all_specs().filter(|spec| spec.id != "clap.slot1.amount") {
             assert_eq!(
                 spec.quantized_value(&song.controls),
                 spec.quantized_value(&current.controls),

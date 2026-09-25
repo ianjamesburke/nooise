@@ -353,14 +353,14 @@ pub(crate) const FILTER_CUTOFF_MAX_HZ: f32 = 20_000.0;
 /// at all, so moving this would re-voice every such song.
 const FACTORY_FILTER_CUTOFF_HZ: f32 = 8_000.0;
 
-/// Clap's factory Filter. The clap once ran its noise through a one-pole
-/// lowpass of its own (`clap.filter`, default 0.7). A two-pole low-pass has
-/// a steeper skirt, so the closest match is a partly wet one: this cutoff and
-/// mix are the least-squares fit of the shared Filter to the retired
-/// voice's rendered default clap, keeping its brightness and landing within
-/// half a decibel (`clap_factory_filter_matches_the_retired_default_level`).
+/// Clap's factory Filter cutoff, fully wet like any Filter. The clap once ran
+/// its noise through a one-pole lowpass of its own (`clap.filter`, default
+/// 0.7); this is the cutoff of the least-squares fit of the shared Filter to
+/// that voice's rendered default clap. The fit wanted a 90% mix to keep the
+/// one-pole's gentler skirt; the factory filter starts fully wet instead, so
+/// the default clap is darker than the retired one (spectral centroid about
+/// 1.3 kHz against 1.7 kHz) and about half a decibel louder.
 pub(crate) const CLAP_FACTORY_FILTER_CUTOFF_HZ: f32 = 3_170.0;
-pub(crate) const CLAP_FACTORY_FILTER_AMOUNT: f32 = 0.9;
 
 /// Change a Filter slot's response type. Swapping Low-pass and High-pass
 /// mirrors the cutoff across the dial (`min * max / hz`, the same number of
@@ -552,7 +552,6 @@ impl Default for LayerModules {
             tonal: with_preset("room", 0.1),
             clap: {
                 let mut slots = with_preset("filter", 1.0);
-                slots[0].amount = CLAP_FACTORY_FILTER_AMOUNT;
                 slots[0].time = CLAP_FACTORY_FILTER_CUTOFF_HZ;
                 slots
             },
@@ -745,6 +744,19 @@ mod tests {
                 kind.id
             );
         }
+    }
+
+    #[test]
+    fn clap_factory_filter_is_a_fully_wet_low_pass_at_its_fitted_cutoff() {
+        let slot = LayerModules::default().clap[0];
+        assert_eq!(slot.kind().map(|kind| kind.id), Some("filter"));
+        assert_eq!(slot.amount, 1.0);
+        assert_eq!(slot.time, CLAP_FACTORY_FILTER_CUTOFF_HZ);
+        assert!(matches!(
+            FilterType::from_value(slot.feedback),
+            FilterType::Low
+        ));
+        assert_eq!(slot.right_time, 0.0);
     }
 
     #[test]

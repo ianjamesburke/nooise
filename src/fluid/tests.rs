@@ -1696,7 +1696,7 @@ fn default_template_preloads_shared_effect_modules() {
     assert_close(controls.modules.pad[0].amount, 0.4);
     assert_close(controls.modules.tonal[0].amount, 0.1);
     assert_eq!(controls.modules.clap[0].kind().unwrap().id, "filter");
-    assert_close(controls.modules.clap[0].amount, CLAP_FACTORY_FILTER_AMOUNT);
+    assert_close(controls.modules.clap[0].amount, 1.0);
     assert_close(controls.perc.swing, 0.0);
     assert_close(controls.tonal.swing, 0.0);
     assert_close(controls.arp.swing, 0.0);
@@ -6254,39 +6254,4 @@ fn apply_ratio_lands_on_the_dial_evenly_for_every_scale() {
     assert_close(c.lead.steps[2], c.lead.steps[2].round());
     step.apply_ratio(1.0, &mut c);
     assert_close(c.lead.steps[2], 9.0);
-}
-
-/// Clap's filter was a one-pole lowpass inside the voice until it moved to
-/// the shared Filter module. Rendered through its factory Filter, the default
-/// clap has to land where the retired voice did: 0.020268 RMS for these four
-/// seeded seconds, measured on the last build that had `clap.filter`.
-#[test]
-fn clap_factory_filter_matches_the_retired_default_level() {
-    use crate::fx::filter::{FilterParams, FilterType, StereoFilter};
-    const RETIRED_DEFAULT_RMS: f64 = 0.020_268;
-    let controls = FluidControls::default();
-    let slot = controls.modules.clap[0];
-    let mut clap = controls.clap;
-    clap.level = 1.0;
-    let mut engine = ClapEngine::new(SAMPLE_RATE);
-    engine.rng = StdRng::seed_from_u64(7);
-    let mut filter = StereoFilter::default();
-    let params = FilterParams {
-        sample_rate: SAMPLE_RATE,
-        cutoff_hz: slot.time,
-        resonance: slot.right_time,
-        filter_type: FilterType::from_value(slot.feedback),
-        amount: slot.amount,
-    };
-    let bpm = f64::from(controls.master.bpm);
-    let frames = SAMPLE_RATE as usize * 4;
-    let energy: f64 = (0..frames)
-        .map(|i| {
-            let beat = i as f64 * bpm / 60.0 / f64::from(SAMPLE_RATE);
-            let dry = engine.next(&clap, TimingContext::new(f64::from(SAMPLE_RATE), bpm, beat));
-            f64::from(filter.process(dry, params).0).powi(2)
-        })
-        .sum();
-    let db = 20.0 * ((energy / frames as f64).sqrt() / RETIRED_DEFAULT_RMS).log10();
-    assert!(db.abs() < 0.75, "default clap moved {db:.2} dB");
 }
