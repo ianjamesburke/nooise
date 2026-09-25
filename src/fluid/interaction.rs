@@ -895,6 +895,8 @@ pub(crate) enum Intent {
     ToggleMute {
         master: bool,
     },
+    /// Stop the beat clock so tails ring out, or start it again.
+    ToggleTransport,
     RemoveAutomation,
     ReseedAutomation,
     /// Set the selected control to a random point on its own dial.
@@ -965,6 +967,7 @@ impl Intent {
             | Self::ToggleAuto
             | Self::ToggleUnits
             | Self::ToggleMute { .. }
+            | Self::ToggleTransport
             | Self::RemoveAutomation
             | Self::ReseedAutomation
             | Self::TouchSelected => &[ModeKind::Browsing, ModeKind::Automation],
@@ -1024,6 +1027,7 @@ impl Intent {
             | Self::ToggleAuto
             | Self::ToggleUnits
             | Self::ToggleMute { .. }
+            | Self::ToggleTransport
             | Self::RemoveAutomation
             | Self::ReseedAutomation
             | Self::RandomizeSelected
@@ -1085,6 +1089,7 @@ pub(crate) enum InteractionEffect {
     ToggleMute {
         master: bool,
     },
+    ToggleTransport,
     RemoveAutomation,
     ReseedAutomation,
     RandomizeSelected,
@@ -1456,6 +1461,7 @@ fn update_browsing(
         Intent::ToggleMute { master } => {
             effects.push(InteractionEffect::ToggleMute { master });
         }
+        Intent::ToggleTransport => effects.push(InteractionEffect::ToggleTransport),
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
         Intent::ReseedAutomation => effects.push(InteractionEffect::ReseedAutomation),
         Intent::RandomizeSelected => effects.push(InteractionEffect::RandomizeSelected),
@@ -1673,6 +1679,7 @@ fn update_automation(
         Intent::ToggleMute { master } => {
             effects.push(InteractionEffect::ToggleMute { master });
         }
+        Intent::ToggleTransport => effects.push(InteractionEffect::ToggleTransport),
         Intent::RemoveAutomation => {
             *next_mode = Some(InteractionMode::Browsing);
             effects.push(InteractionEffect::RemoveAutomation);

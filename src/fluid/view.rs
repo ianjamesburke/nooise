@@ -130,12 +130,13 @@ pub(crate) struct UiViewModel<'a> {
     pub(crate) mute: &'a MuteState,
     pub(crate) cursor_visible: bool,
     pub(crate) help: HelpSurface,
-    /// The gesture-activity row's text: a held/returning readout, or an idle
-    /// key hint (`z bloom  c submerge  ...`) when nothing is held. Empty only
-    /// when the terminal cannot support holds at all.
+    /// The gesture-activity row's text: a stopped-clock marker and/or a
+    /// held/returning readout, or an idle key hint (`z bloom  c submerge
+    /// ...`) when nothing is held. Empty only when the clock runs and the
+    /// terminal cannot support holds at all.
     pub(crate) activity: String,
-    /// True while `activity` is a live held/returning readout rather than the
-    /// idle key-hint list, so the row can render with different emphasis.
+    /// True while `activity` is a live readout (stopped clock or held/returning
+    /// gesture) rather than the idle key-hint list, so the row can render with different emphasis.
     pub(crate) activity_live: bool,
 }
 
@@ -288,13 +289,16 @@ impl<'a> UiViewModel<'a> {
         );
         let gestures = gesture_activities(session, presentation.gesture_now_seconds);
         let holding_gesture = !gestures.is_empty();
-        let activity_live = holding_gesture;
-        let activity = if holding_gesture {
-            gesture_activity_line(&gestures)
-        } else if presentation.gesture_holds_available {
-            gesture_idle_hint()
-        } else {
-            String::new()
+        let stopped = session.transport == Transport::Stopped;
+        let activity_live = holding_gesture || stopped;
+        let activity = match (stopped, holding_gesture) {
+            // Stopped leads the row in every owner, so silence is never
+            // mistaken for a dead engine; gestures still play into the tails.
+            (true, true) => format!("■ STOPPED · {}", gesture_activity_line(&gestures)),
+            (true, false) => "■ STOPPED · Shift+P play".to_string(),
+            (false, true) => gesture_activity_line(&gestures),
+            (false, false) if presentation.gesture_holds_available => gesture_idle_hint(),
+            (false, false) => String::new(),
         };
         let help = help_surface(
             owner,

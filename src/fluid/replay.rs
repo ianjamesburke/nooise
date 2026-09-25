@@ -1617,6 +1617,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("unit flip", vec![plain(FixtureKey::Character('t'))]),
         ("track mute", vec![plain(FixtureKey::Character('m'))]),
         ("master mute", vec![shift(FixtureKey::Character('M'))]),
+        ("clock stop", vec![shift(FixtureKey::Character('P'))]),
         ("randomize", vec![plain(FixtureKey::Character('r'))]),
         ("randomize set", vec![shift(FixtureKey::Character('R'))]),
         ("numeric", vec![plain(FixtureKey::Character('1'))]),
@@ -1819,6 +1820,14 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 automation: None,
                 intents: vec![Intent::ToggleMute { master: true }],
                 effects: vec!["ToggleMute { master: true }=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "clock stop" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::ToggleTransport],
+                effects: vec!["ToggleTransport=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "randomize" => ExpectedBinding {
@@ -2583,6 +2592,37 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
 
 /// The leader depends on no terminal capability: it only ever moves a
 /// cursor, so a press-only terminal and a full one reach the same state.
+/// Shift+P stops and starts the clock from browsing and from an open editor on
+/// every terminal: it is a Press edge, so autorepeat cannot flutter it, and
+/// the stopped marker stays on the activity row whoever owns the keyboard.
+#[test]
+fn clock_stop_toggles_on_press_in_every_terminal_and_marks_the_activity_row() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        let shift_p = |phase| modified_key(0, FixtureKey::Character('P'), phase, 1);
+        let stop = vec![
+            key(0, FixtureKey::Character('p'), InputPhase::Press),
+            shift_p(InputPhase::Press),
+            shift_p(InputPhase::Repeat),
+            key(0, FixtureKey::Character('f'), InputPhase::Press),
+        ];
+        let result = replay(&stop, capabilities);
+        assert_eq!(result.effect_count("ToggleTransport"), 1);
+        assert_eq!(result.final_owner(), Some("LFO"));
+        let activity = &result.frames.last().expect("a frame").activity;
+        assert!(activity.contains("STOPPED"), "{activity}");
+
+        let mut start = stop.clone();
+        start.push(shift_p(InputPhase::Press));
+        let result = replay(&start, capabilities);
+        assert_eq!(result.effect_count("ToggleTransport"), 2);
+        let activity = &result.frames.last().expect("a frame").activity;
+        assert!(!activity.contains("STOPPED"), "{activity}");
+    }
+}
+
 #[test]
 fn performance_leader_is_capability_independent_and_idempotent() {
     for capabilities in [
@@ -2590,8 +2630,6 @@ fn performance_leader_is_capability_independent_and_idempotent() {
         TerminalCapabilities::default(),
     ] {
         let leaders = vec![
-            key(0, FixtureKey::Character('p'), InputPhase::Press),
-            key(0, FixtureKey::Character('p'), InputPhase::Repeat),
             key(0, FixtureKey::Escape, InputPhase::Press),
             key(0, FixtureKey::Character(' '), InputPhase::Press),
             key(0, FixtureKey::Character(' '), InputPhase::Repeat),
@@ -2923,6 +2961,7 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         Intent::ToggleAuto,
         Intent::ToggleUnits,
         Intent::ToggleMute { master: false },
+        Intent::ToggleTransport,
         Intent::RemoveAutomation,
         Intent::ReseedAutomation,
         Intent::TouchSelected,

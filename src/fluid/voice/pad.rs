@@ -26,6 +26,9 @@ pub(crate) struct PadEngine {
     pub(crate) active_chord_count: usize,
     pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
+    /// The transport seen on the previous sample, so a stop releases the
+    /// sounding chord once and a restart voices it once.
+    transport: Transport,
     pub(crate) width_lfo: DriftingLfo,
     pub(crate) air: WhiteNoise,
     pub(crate) rng: StdRng,
@@ -64,6 +67,7 @@ impl PadEngine {
             active_chord_count: pad_chord_count(c),
             active_character,
             last_chord_notes: initial_notes,
+            transport: Transport::Playing,
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
             air: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
@@ -104,7 +108,20 @@ impl PadEngine {
             }
         }
 
-        if advance || chord_edited {
+        // A chord sustains until the next one replaces it, so a stopped
+        // clock would otherwise hold it forever: stopping releases it into
+        // its tail, and restarting voices the current chord straight away
+        // rather than leaving the pads silent until the next chord boundary.
+        let transport_changed = timing.transport != self.transport;
+        self.transport = timing.transport;
+        let playing = timing.transport == Transport::Playing;
+        if transport_changed && !playing {
+            for layer in &mut self.layers {
+                layer.release();
+            }
+        }
+
+        if playing && (advance || chord_edited || transport_changed) {
             for layer in &mut self.layers {
                 layer.release();
             }

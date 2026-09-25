@@ -1,7 +1,7 @@
 //! The one publication boundary for user-audible live state.
 //!
 //! `LiveSessionSnapshot` is an immutable generation of controls, automation,
-//! tonal state, and mute state; every writer goes through `LiveSession::transact` so the
+//! tonal state, mute state, and the transport; every writer goes through `LiveSession::transact` so the
 //! audio thread only ever reads one coherent generation.
 
 use super::*;
@@ -20,6 +20,9 @@ pub(crate) struct LiveSessionSnapshot {
     /// Lead play-mode presses. Live-only: never written to a song code.
     pub(crate) lead_play: LeadPlayState,
     pub(crate) gestures: GestureState,
+    /// Whether the beat clock runs. Live-only: a stopped song is silence,
+    /// not a state worth sharing, so a loaded code always plays.
+    pub(crate) transport: Transport,
 }
 
 impl LiveSessionSnapshot {
@@ -31,6 +34,7 @@ impl LiveSessionSnapshot {
             muted: song.muted,
             lead_play: LeadPlayState::default(),
             gestures: song.gestures.restored(),
+            transport: Transport::Playing,
             tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
                 TonalSequenceState::from_phrase(wrapped_index(
                     song.controls.tonal.phrase,
@@ -53,6 +57,7 @@ impl LiveSessionSnapshot {
             muted: [false; TAB_COUNT],
             lead_play: LeadPlayState::default(),
             gestures: GestureState::default(),
+            transport: Transport::Playing,
         }
     }
 }

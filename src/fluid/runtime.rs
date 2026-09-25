@@ -634,6 +634,8 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('E' | 'e') => Intent::AddAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
         PhysicalKey::Character('R' | 'r') => Intent::RandomizeScope,
+        // Shifted so a stray keystroke cannot end the song.
+        PhysicalKey::Character('P' | 'p') => Intent::ToggleTransport,
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         _ => return None,
     })
@@ -1654,20 +1656,19 @@ mod tests {
     }
 
     #[test]
-    fn retired_deck_key_is_unassigned_in_browsing() {
-        let event = TransportEvent::key(
-            PhysicalKey::Character('p'),
-            Modifiers::default(),
-            InputPhase::Repeat,
-        );
-        assert_eq!(
+    fn only_shift_p_toggles_the_transport_in_browsing() {
+        let map = |modifiers| {
             map_input(
                 &InteractionMode::Browsing,
                 Navigation::default(),
-                &event,
-                TerminalCapabilities::full()
-            ),
-            InputMapping::Ignored
+                &TransportEvent::key(PhysicalKey::Character('p'), modifiers, InputPhase::Press),
+                TerminalCapabilities::full(),
+            )
+        };
+        assert_eq!(map(Modifiers::default()), InputMapping::Ignored);
+        assert_eq!(
+            map(Modifiers::SHIFT),
+            InputMapping::Action(SemanticAction::press(Intent::ToggleTransport))
         );
     }
 
@@ -2001,6 +2002,7 @@ mod tests {
             ('F', Intent::AddAutomation(super::AutomationKind::Lfo)),
             ('E', Intent::AddAutomation(super::AutomationKind::Envelope)),
             ('R', Intent::RandomizeScope),
+            ('P', Intent::ToggleTransport),
         ] {
             assert_eq!(
                 map_input(
