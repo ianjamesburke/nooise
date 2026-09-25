@@ -958,11 +958,15 @@ mod tests {
         executor_with(FluidControls::default())
     }
 
+    /// Seeded, so every random roll a test asserts on is the same draw on
+    /// every run. An entropy seed let a roll land on the value already there
+    /// (the amount grid is quantized) and fail "it rolls" about 1 run in 100.
     fn executor_with(controls: FluidControls) -> EffectExecutor {
         let session = LiveSession::new(LiveSessionSnapshot::from_controls(controls));
-        EffectExecutor::new(
+        EffectExecutor::seeded(
             session,
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+            42,
         )
     }
 
