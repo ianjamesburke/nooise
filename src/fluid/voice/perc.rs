@@ -14,16 +14,23 @@ pub(crate) struct PercEngine {
     pub(crate) hits: Vec<NoiseHit>,
     pub(crate) noise: WhiteNoise,
     pub(crate) rng: StdRng,
+    pub(crate) telemetry: Arc<FluidTelemetry>,
 }
 
 impl PercEngine {
+    #[cfg(test)]
     pub(crate) fn new(sample_rate: f32) -> Self {
+        Self::with_telemetry(sample_rate, Arc::new(FluidTelemetry::default()))
+    }
+
+    pub(crate) fn with_telemetry(sample_rate: f32, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
             trigger: GridTrigger::new(),
             hits: Vec::with_capacity(8),
             noise: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
+            telemetry,
         }
     }
 
@@ -41,6 +48,8 @@ impl PercEngine {
         {
             self.hits
                 .push(NoiseHit::new(c.level, c.decay_ms, self.sample_rate));
+            self.telemetry
+                .publish_hit(MusicalHit::Perc, c.level, NO_PITCH_CLASS);
         }
 
         let rng = &mut self.rng;

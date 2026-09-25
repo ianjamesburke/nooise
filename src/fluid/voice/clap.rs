@@ -13,15 +13,22 @@ pub(crate) struct ClapEngine {
     pub(crate) trigger: GridTrigger,
     pub(crate) voices: Vec<ClapVoice>,
     pub(crate) rng: StdRng,
+    pub(crate) telemetry: Arc<FluidTelemetry>,
 }
 
 impl ClapEngine {
+    #[cfg(test)]
     pub(crate) fn new(sample_rate: f32) -> Self {
+        Self::with_telemetry(sample_rate, Arc::new(FluidTelemetry::default()))
+    }
+
+    pub(crate) fn with_telemetry(sample_rate: f32, telemetry: Arc<FluidTelemetry>) -> Self {
         Self {
             sample_rate,
             trigger: GridTrigger::new(),
             voices: Vec::with_capacity(4),
             rng: StdRng::from_entropy(),
+            telemetry,
         }
     }
 
@@ -32,6 +39,8 @@ impl ClapEngine {
         {
             self.voices
                 .push(ClapVoice::new(c, self.sample_rate, &mut self.rng));
+            self.telemetry
+                .publish_hit(MusicalHit::Clap, c.level, NO_PITCH_CLASS);
         }
 
         let rng = &mut self.rng;

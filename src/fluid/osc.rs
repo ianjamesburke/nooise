@@ -15,8 +15,13 @@
 //! - `/nooise/chord` `i32 f32 f32` — the progression table slot (0..8) the
 //!   pad is sounding plus the attack and release seconds of the layer it
 //!   voiced, sent on change
-//! - `/nooise/voice/kick` `f32` — one message per kick hit carrying
+//! - `/nooise/voice/kick` `f32` — legacy one-message-per-kick hit carrying
 //!   `kick.level` (0 = inaudible)
+//! - `/nooise/hit/<source>` `f32 f32` — one message per Beat, Pad, Perc, Kick,
+//!   Tonal, Clap, or Arp onset. Arguments are that voice's level and pitch
+//!   class (C = 0, B = 11/12); unpitched voices send -1 for pitch class
+//! - `/nooise/chord/change` `i32 f32` — pad progression table slot (0..8)
+//!   and its root pitch class, sent beside the existing `/nooise/chord` feed
 //! - `/nooise/gesture/<gesture>` `f32` — that live gesture's amount over the
 //!   Master bus (0..1), sent whenever it changes, for `<gesture>` in
 //!   `GESTURES`; a visual can rise and return with it. `thin` is retired
@@ -31,9 +36,9 @@ use std::time::Duration;
 
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, encoder};
 
-use super::FluidTelemetry;
 use super::gesture::{GESTURE_COUNT, GestureKind};
 use super::registry::{TAB_COUNT, Tab};
+use super::{FluidTelemetry, MUSICAL_HIT_COUNT, MusicalHit};
 
 pub(crate) const ADDR_BEAT: &str = "/nooise/beat";
 pub(crate) const ADDR_LEVEL: &str = "/nooise/level";
@@ -55,7 +60,15 @@ fn gesture_addr(kind: GestureKind) -> String {
     format!("/nooise/gesture/{}", GESTURES[kind as usize])
 }
 pub(crate) const ADDR_CHORD: &str = "/nooise/chord";
+pub(crate) const ADDR_CHORD_CHANGE: &str = "/nooise/chord/change";
 pub(crate) const ADDR_KICK: &str = "/nooise/voice/kick";
+/// Names in `MusicalHit::ALL` order. They are part of the OSC contract.
+pub(crate) const HIT_NAMES: [&str; MUSICAL_HIT_COUNT] =
+    ["beat", "pad", "perc", "kick", "tonal", "clap", "arp"];
+
+fn hit_addr(hit: MusicalHit) -> String {
+    format!("/nooise/hit/{}", HIT_NAMES[hit as usize])
+}
 
 /// How often the emitter samples telemetry. Kick hits are counted, never
 /// missed, but their timestamps carry up to this much jitter.
@@ -108,9 +121,13 @@ struct Mirrored {
     chord: u64,
     chord_attack: f32,
     chord_release: f32,
+    chord_root_pitch_class: f32,
     beat_bits: u64,
     level_bits: [u32; TAB_COUNT],
     gesture_bits: [u32; GESTURE_COUNT],
+    hit_pulses: [u64; MUSICAL_HIT_COUNT],
+    hit_level_bits: [u32; MUSICAL_HIT_COUNT],
+    hit_pitch_class_bits: [u32; MUSICAL_HIT_COUNT],
 }
 
 impl Mirrored {
@@ -125,10 +142,22 @@ impl Mirrored {
             chord,
             chord_attack: f32::from_bits(telemetry.chord_attack_bits.load(Ordering::Relaxed)),
             chord_release: f32::from_bits(telemetry.chord_release_bits.load(Ordering::Relaxed)),
+            chord_root_pitch_class: f32::from_bits(
+                telemetry
+                    .chord_root_pitch_class_bits
+                    .load(Ordering::Relaxed),
+            ),
             beat_bits: telemetry.beat_bits.load(Ordering::Relaxed),
             level_bits: std::array::from_fn(|i| telemetry.level_bits[i].load(Ordering::Relaxed)),
             gesture_bits: std::array::from_fn(|i| {
                 telemetry.gesture_bits[i].load(Ordering::Relaxed)
+            }),
+            hit_pulses: std::array::from_fn(|i| telemetry.hits[i].pulse.load(Ordering::Acquire)),
+            hit_level_bits: std::array::from_fn(|i| {
+                telemetry.hits[i].level_bits.load(Ordering::Relaxed)
+            }),
+            hit_pitch_class_bits: std::array::from_fn(|i| {
+                telemetry.hits[i].pitch_class_bits.load(Ordering::Relaxed)
             }),
         }
     }
@@ -175,9 +204,28 @@ impl Mirrored {
                     OscType::Float(now.chord_release),
                 ],
             ));
+            out.push(message(
+                ADDR_CHORD_CHANGE,
+                vec![
+                    OscType::Int(now.chord as i32),
+                    OscType::Float(now.chord_root_pitch_class),
+                ],
+            ));
         }
         for _ in self.kick..now.kick {
             out.push(message(ADDR_KICK, vec![OscType::Float(now.kick_level)]));
+        }
+        for hit in MusicalHit::ALL {
+            let index = hit as usize;
+            for _ in self.hit_pulses[index]..now.hit_pulses[index] {
+                out.push(message(
+                    &hit_addr(hit),
+                    vec![
+                        OscType::Float(f32::from_bits(now.hit_level_bits[index])),
+                        OscType::Float(f32::from_bits(now.hit_pitch_class_bits[index])),
+                    ],
+                ));
+            }
         }
         *self = now;
         out
@@ -235,7 +283,7 @@ mod tests {
         telemetry.publish_kick(0.25);
         telemetry.publish_kick(0.5);
         telemetry.publish_kick(0.75);
-        telemetry.publish_chord(2, 6.0, 8.0);
+        telemetry.publish_chord(2, 0.25, 6.0, 8.0);
         telemetry.publish_beat(4.5);
         telemetry.publish_level(Tab::Bass, 0.05);
         telemetry.publish_level(Tab::Master, 0.1);
@@ -250,9 +298,13 @@ mod tests {
                 ADDR_LEVEL,
                 "/nooise/gesture/echo",
                 ADDR_CHORD,
+                ADDR_CHORD_CHANGE,
                 ADDR_KICK,
                 ADDR_KICK,
-                ADDR_KICK
+                ADDR_KICK,
+                "/nooise/hit/kick",
+                "/nooise/hit/kick",
+                "/nooise/hit/kick"
             ]
         );
         assert_eq!(out[0].args, vec![OscType::Float(4.5)]);
@@ -263,9 +315,53 @@ mod tests {
             out[4].args,
             vec![OscType::Int(2), OscType::Float(6.0), OscType::Float(8.0)]
         );
+        assert_eq!(out[5].args, vec![OscType::Int(2), OscType::Float(0.25)]);
         // Hits inside one poll share the latest level.
-        assert_eq!(out[5].args, vec![OscType::Float(0.75)]);
+        assert_eq!(out[6].args, vec![OscType::Float(0.75)]);
+        assert_eq!(
+            out[9].args,
+            vec![OscType::Float(0.75), OscType::Float(-1.0)]
+        );
         assert!(mirrored.diff(&telemetry).is_empty());
+    }
+
+    #[test]
+    fn hit_addresses_and_pitch_classes_cover_every_musical_voice() {
+        let telemetry = FluidTelemetry::default();
+        let mut mirrored = Mirrored::from(&telemetry);
+        for (hit, level, pitch_class) in [
+            (MusicalHit::Beat, 1.0, -1.0),
+            (MusicalHit::Pad, 0.1, 0.0),
+            (MusicalHit::Perc, 0.2, -1.0),
+            (MusicalHit::Kick, 0.3, -1.0),
+            (MusicalHit::Tonal, 0.4, 0.25),
+            (MusicalHit::Clap, 0.5, -1.0),
+            (MusicalHit::Arp, 0.6, 11.0 / 12.0),
+        ] {
+            telemetry.publish_hit(hit, level, pitch_class);
+        }
+
+        let messages = mirrored.diff(&telemetry);
+        let addresses: Vec<&str> = messages
+            .iter()
+            .map(|message| message.addr.as_str())
+            .collect();
+        assert_eq!(
+            addresses,
+            [
+                "/nooise/hit/beat",
+                "/nooise/hit/pad",
+                "/nooise/hit/perc",
+                "/nooise/hit/kick",
+                "/nooise/hit/tonal",
+                "/nooise/hit/clap",
+                "/nooise/hit/arp",
+            ]
+        );
+        assert_eq!(
+            messages[4].args,
+            vec![OscType::Float(0.4), OscType::Float(0.25)]
+        );
     }
 
     /// External visualizers match these strings; a new gesture extends the
@@ -299,7 +395,7 @@ mod tests {
         let (len, _) = receiver.recv_from(&mut buf).unwrap();
         let (_, packet) = decoder::decode_udp(&buf[..len]).unwrap();
         let addrs: Vec<String> = messages_in(packet).into_iter().map(|m| m.addr).collect();
-        assert_eq!(addrs, [ADDR_KICK]);
+        assert_eq!(addrs, [ADDR_KICK, "/nooise/hit/kick"]);
         drop(emitter);
     }
 

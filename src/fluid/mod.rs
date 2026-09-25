@@ -116,11 +116,58 @@ pub(crate) fn splitmix64_mix(mut z: u64) -> u64 {
 // Telemetry — audio thread publishes, UI thread reads
 // ============================================================
 
-/// Lock-free channel from the engine to the visualizer. The audio thread only
-/// ever stores; the UI thread only ever loads. `kick_pulse` is a monotonic
-/// counter (UI tracks the delta to fire one ripple per hit); `chord_slot`
-/// is the progression table slot (0..8) the pad engine is sounding.
-#[derive(Default)]
+/// A musical onset that OSC mirrors as a discrete hit. The order is stable:
+/// it indexes the telemetry arrays, not a UI or registry table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MusicalHit {
+    Beat,
+    Pad,
+    Perc,
+    Kick,
+    Tonal,
+    Clap,
+    Arp,
+}
+
+impl MusicalHit {
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Beat,
+        Self::Pad,
+        Self::Perc,
+        Self::Kick,
+        Self::Tonal,
+        Self::Clap,
+        Self::Arp,
+    ];
+}
+
+pub(crate) const MUSICAL_HIT_COUNT: usize = MusicalHit::ALL.len();
+/// Pitch-class sentinel for an unpitched onset.
+pub(crate) const NO_PITCH_CLASS: f32 = -1.0;
+
+/// The latest payload of one monotonically counted musical-onset stream.
+/// Payload stores happen before `pulse` advances, so a reader that observes a
+/// new pulse also observes the event's level and pitch class.
+pub(crate) struct HitTelemetry {
+    pub(crate) pulse: AtomicU64,
+    pub(crate) level_bits: AtomicU32,
+    pub(crate) pitch_class_bits: AtomicU32,
+}
+
+impl Default for HitTelemetry {
+    fn default() -> Self {
+        Self {
+            pulse: AtomicU64::new(0),
+            level_bits: AtomicU32::new(0.0f32.to_bits()),
+            pitch_class_bits: AtomicU32::new(NO_PITCH_CLASS.to_bits()),
+        }
+    }
+}
+
+/// Lock-free channel from the engine to visual consumers. The audio thread
+/// only ever stores; readers only ever load. `kick_pulse` remains the
+/// visualizer's dedicated ripple counter; `hits` mirrors every musical onset
+/// for OSC.
 pub(crate) struct FluidTelemetry {
     pub(crate) chord_slot: AtomicU64,
     pub(crate) kick_pulse: AtomicU64,
@@ -129,10 +176,13 @@ pub(crate) struct FluidTelemetry {
     /// `kick.level` at the latest hit (`f32::to_bits`), stored before
     /// `kick_pulse` advances so a reader that sees the hit sees its level.
     pub(crate) kick_level_bits: AtomicU32,
+    pub(crate) hits: [HitTelemetry; MUSICAL_HIT_COUNT],
     /// Pad attack and release seconds (`f32::to_bits`) of the layer voiced by
     /// the latest chord change, stored before `chord_slot` is written.
     pub(crate) chord_attack_bits: AtomicU32,
     pub(crate) chord_release_bits: AtomicU32,
+    /// Root pitch class of the latest chord onset (`f32::to_bits`).
+    pub(crate) chord_root_pitch_class_bits: AtomicU32,
     /// Per-`Tab` output RMS over the latest `LEVEL_BLOCK` frames
     /// (`f32::to_bits`), each voice as it enters the mix (post effects, mute,
     /// and mix weight) and `Tab::Master` as the final output: what is actually
@@ -141,6 +191,23 @@ pub(crate) struct FluidTelemetry {
     /// Per-`GestureKind` Master-bus amount (`f32::to_bits`), published each
     /// `LEVEL_BLOCK` frames so a consumer can mirror a held gesture.
     pub(crate) gesture_bits: [AtomicU32; GESTURE_COUNT],
+}
+
+impl Default for FluidTelemetry {
+    fn default() -> Self {
+        Self {
+            chord_slot: AtomicU64::new(0),
+            kick_pulse: AtomicU64::new(0),
+            beat_bits: AtomicU64::new(0.0f64.to_bits()),
+            kick_level_bits: AtomicU32::new(0.0f32.to_bits()),
+            hits: std::array::from_fn(|_| HitTelemetry::default()),
+            chord_attack_bits: AtomicU32::new(0.0f32.to_bits()),
+            chord_release_bits: AtomicU32::new(0.0f32.to_bits()),
+            chord_root_pitch_class_bits: AtomicU32::new(0.0f32.to_bits()),
+            level_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            gesture_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+        }
+    }
 }
 
 /// Frames per level measurement (~5.8 ms at 44.1 kHz).
@@ -159,13 +226,33 @@ impl FluidTelemetry {
         self.kick_level_bits
             .store(level.to_bits(), Ordering::Relaxed);
         self.kick_pulse.fetch_add(1, Ordering::Release);
+        self.publish_hit(MusicalHit::Kick, level, NO_PITCH_CLASS);
     }
 
-    pub(crate) fn publish_chord(&self, slot: u64, attack_secs: f32, release_secs: f32) {
+    pub(crate) fn publish_hit(&self, hit: MusicalHit, level: f32, pitch_class: f32) {
+        let telemetry = &self.hits[hit as usize];
+        telemetry
+            .level_bits
+            .store(level.to_bits(), Ordering::Relaxed);
+        telemetry
+            .pitch_class_bits
+            .store(pitch_class.to_bits(), Ordering::Relaxed);
+        telemetry.pulse.fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn publish_chord(
+        &self,
+        slot: u64,
+        root_pitch_class: f32,
+        attack_secs: f32,
+        release_secs: f32,
+    ) {
         self.chord_attack_bits
             .store(attack_secs.to_bits(), Ordering::Relaxed);
         self.chord_release_bits
             .store(release_secs.to_bits(), Ordering::Relaxed);
+        self.chord_root_pitch_class_bits
+            .store(root_pitch_class.to_bits(), Ordering::Relaxed);
         self.chord_slot.store(slot, Ordering::Release);
     }
 

@@ -111,8 +111,14 @@ impl PadEngine {
             for layer in &mut self.layers {
                 layer.release();
             }
+            self.telemetry.publish_chord(
+                self.cursor.slot() as u64,
+                pitch_class(chord_notes[0]),
+                c.attack_time,
+                c.release_time,
+            );
             self.telemetry
-                .publish_chord(self.cursor.slot() as u64, c.attack_time, c.release_time);
+                .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                 self.layers.drain(0..remove_count);
