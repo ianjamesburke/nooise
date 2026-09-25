@@ -213,14 +213,19 @@ impl fmt::Display for SongCodeError {
 impl Error for SongCodeError {}
 
 pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError> {
+    encode_song_code_at_epoch(song, CURRENT_RANGE_EPOCH)
+}
+
+/// `encode_song_code` stamped with any dial-range epoch, so a test can write
+/// a code the way an older build would have.
+pub(crate) fn encode_song_code_at_epoch(
+    song: &SongState,
+    epoch: u16,
+) -> Result<String, SongCodeError> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
     bytes.push(CONTAINER_VERSION);
-    write_record(
-        RANGE_EPOCH_RECORD,
-        &CURRENT_RANGE_EPOCH.to_le_bytes(),
-        &mut bytes,
-    )?;
+    write_record(RANGE_EPOCH_RECORD, &epoch.to_le_bytes(), &mut bytes)?;
 
     let mut snapshot = Vec::new();
     write_snapshot(&song.controls, &mut snapshot)?;
