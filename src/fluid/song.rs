@@ -13,6 +13,7 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use super::range_epoch::{CURRENT_RANGE_EPOCH, stale_modulation};
 use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
@@ -25,8 +26,10 @@ use super::{
 
 const MAGIC: &[u8; 4] = b"NOOI";
 /// Control ids are interned as `SONG_ID_TABLE` indexes and continuous values
-/// are quantized to a u16 taper position. This is the only version axis —
-/// record payloads carry no version byte of their own. Version 1 (length-
+/// are quantized to a u16 taper position. The container version is the
+/// format's version axis; record payloads carry no version byte of their own.
+/// The one other axis is the dial-range epoch (`range_epoch.rs`), which dates
+/// what a stored modulation depth means rather than how bytes are laid out. Version 1 (length-
 /// prefixed ids, f32 values, its own nested automation payload versions) is
 /// gone; a v1 code is rejected with a message telling the user why.
 pub(crate) const CONTAINER_VERSION: u8 = 2;
@@ -38,6 +41,8 @@ pub(crate) const AUTOMATION_RECORD: u8 = 1;
 const TONAL_SEQUENCE_RECORD: u8 = 2;
 const MUTE_RECORD: u8 = 3;
 const GESTURE_RECORD: u8 = 4;
+/// `u16` dial-range epoch the code was written under. Absent means epoch 0.
+const RANGE_EPOCH_RECORD: u8 = 5;
 const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
@@ -114,6 +119,10 @@ pub(crate) enum SongCodeError {
     /// An LFO Steps lane on this control carries a negative step. Steps are
     /// unipolar now; the value has no equivalent, so the code is refused.
     NegativeLfoStep(&'static str),
+    /// The code is from an older dial-range epoch and modulates a dial whose
+    /// range has changed since, so its depths would sweep the wrong span.
+    /// Like a retired control, it is refused rather than reinterpreted.
+    StaleRange(&'static str),
     /// A live control has no `SONG_ID_TABLE` slot, so it cannot be saved.
     /// `song_ids_cover_every_registry_control` exists to stop this reaching a
     /// user; append the id to the table.
@@ -171,6 +180,11 @@ impl fmt::Display for SongCodeError {
                 "song code gives the LFO on {id} a negative step; steps now run 0 to 100% and \
                  the code can no longer be loaded"
             ),
+            Self::StaleRange(id) => write!(
+                f,
+                "song code modulates {id}, whose dial range changed after the code was saved; \
+                 the code predates that change and can no longer be loaded"
+            ),
             Self::UnregisteredControl(id) => {
                 write!(f, "control {id} is missing from the song id table")
             }
@@ -184,6 +198,11 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
     bytes.push(CONTAINER_VERSION);
+    write_record(
+        RANGE_EPOCH_RECORD,
+        &CURRENT_RANGE_EPOCH.to_le_bytes(),
+        &mut bytes,
+    )?;
 
     let mut snapshot = Vec::new();
     write_snapshot(&song.controls, &mut snapshot)?;
@@ -210,7 +229,18 @@ pub(crate) fn encode_song_code(song: &SongState) -> Result<String, SongCodeError
     Ok(format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
+/// Decode a code this build can play. A code from an older dial-range epoch
+/// that modulates a dial moved since is refused (`StaleRange`).
 pub(crate) fn decode_song_code(code: &str) -> Result<SongState, SongCodeError> {
+    let (song, epoch) = decode_song_code_at_any_epoch(code)?;
+    match stale_modulation(&song, epoch) {
+        Some(id) => Err(SongCodeError::StaleRange(id)),
+        None => Ok(song),
+    }
+}
+
+/// Decode a code and report its dial-range epoch without judging it.
+fn decode_song_code_at_any_epoch(code: &str) -> Result<(SongState, u16), SongCodeError> {
     let encoded = code
         .strip_prefix(CODE_PREFIX)
         .ok_or(SongCodeError::MissingPrefix)?;
@@ -228,9 +258,10 @@ pub(crate) fn decode_song_code(code: &str) -> Result<SongState, SongCodeError> {
     }
 }
 
-fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
+fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeError> {
     let mut song = SongState::default();
     let mut gesture_record_seen = false;
+    let mut epoch = 0;
 
     while !reader.is_empty() {
         let record_type = reader.u8()?;
@@ -241,6 +272,7 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
             AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
             MUTE_RECORD => read_mute(payload, &mut song.muted)?,
+            RANGE_EPOCH_RECORD => epoch = Reader::new(payload).u16()?,
             GESTURE_RECORD => {
                 if gesture_record_seen {
                     return Err(SongCodeError::DuplicateGestureRecord);
@@ -258,7 +290,7 @@ fn decode_container(reader: &mut Reader) -> Result<SongState, SongCodeError> {
         }
     }
 
-    Ok(song)
+    Ok((song, epoch))
 }
 
 /// Gesture record: `u8 entry_count`, then fixed-width entries of stable
@@ -1007,7 +1039,11 @@ mod gesture_record_tests {
     fn inactive_gestures_add_no_song_code_payload() {
         let song = SongState::default();
         let snapshot = snapshot_payload(&song.controls);
-        let expected = code_from_records(CONTAINER_VERSION, &[(SNAPSHOT_RECORD, &snapshot)]);
+        let epoch = CURRENT_RANGE_EPOCH.to_le_bytes();
+        let expected = code_from_records(
+            CONTAINER_VERSION,
+            &[(RANGE_EPOCH_RECORD, &epoch), (SNAPSHOT_RECORD, &snapshot)],
+        );
 
         assert_eq!(encode_song_code(&song).unwrap(), expected);
     }
@@ -1328,6 +1364,10 @@ mod retired_control_tests {
         assert_eq!(
             decode_song_code(&code_setting("kick.filter")).err(),
             Some(SongCodeError::RetiredControl("kick.filter"))
+        );
+        assert_eq!(
+            decode_song_code(&code_setting("clap.filter")).err(),
+            Some(SongCodeError::RetiredControl("clap.filter"))
         );
     }
 

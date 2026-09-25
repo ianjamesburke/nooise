@@ -46,7 +46,6 @@ pub(crate) struct ClapVoice {
     pub(crate) bursts: Vec<ClapBurst>,
     pub(crate) current: u64,
     pub(crate) decay_samples: u64,
-    pub(crate) filter_smoothing: f32,
     pub(crate) body_coeff: f32,
     pub(crate) body_state: f32,
     pub(crate) level: f32,
@@ -72,7 +71,6 @@ impl ClapVoice {
             bursts: Vec::new(),
             current: 0,
             decay_samples: (c.decay_ms * 0.001 * sample_rate).round() as u64,
-            filter_smoothing: noise_filter_smoothing(c.filter),
             body_coeff: c.body * 0.08,
             body_state: 0.0,
             level: c.level,
@@ -101,7 +99,7 @@ impl ClapVoice {
             if burst.remaining > 0 {
                 let env = (burst.remaining as f32 / burst.total as f32).sqrt();
                 burst.remaining -= 1;
-                let raw = self.noise.next_filtered(rng, self.filter_smoothing);
+                let raw = self.noise.next(rng);
                 self.body_state += self.body_coeff * (raw - self.body_state);
                 out += (raw + self.body_state) * env;
             }

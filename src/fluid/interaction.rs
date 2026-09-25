@@ -1216,7 +1216,17 @@ impl InteractionModel {
         }
     }
 
+    /// Land on the root-page row showing registry index `index` of `tab`.
+    /// A registry index is not a row: hidden module fields sit between the
+    /// rows a page shows, so the row is found by id in the visible projection.
     pub(crate) fn select_control(&mut self, tab: Tab, index: usize, controls: &FluidControls) {
+        let root_row = || {
+            let id = super::tab_specs(tab).get(index).map(|spec| spec.id);
+            super::tab_controls(tab, controls)
+                .iter()
+                .position(|item| Some(item.id) == id)
+                .unwrap_or(0)
+        };
         self.navigation = match tab {
             Tab::Chords => {
                 let (drill, selected) = super::chords_drill_for_index(index, controls);
@@ -1226,11 +1236,13 @@ impl InteractionModel {
                 let (drill, selected) = super::lead_drill_for_index(index, controls);
                 Navigation::Lead { selected, drill }
             }
-            Tab::Master => Navigation::Master { selected: index },
+            Tab::Master => Navigation::Master {
+                selected: root_row(),
+            },
             _ => {
                 let mut navigation = Navigation::for_page(page_for_tab(tab));
                 if let Navigation::Standard { selected, .. } = &mut navigation {
-                    *selected = index;
+                    *selected = root_row();
                 }
                 navigation
             }

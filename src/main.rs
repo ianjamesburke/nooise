@@ -79,7 +79,8 @@ fn render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 /// morph through in the order given and loop.
 fn play_song(song: &str, bars: u32) -> Result<(), Box<dyn Error>> {
     if song.starts_with(fluid::CODE_PREFIX) {
-        return fluid::run_with_song_state(fluid::decode_song_code(song)?);
+        let state = fluid::decode_song_code(song).map_err(|error| error.to_string())?;
+        return fluid::run_with_song_state(state);
     }
     let numbers = song
         .split(',')

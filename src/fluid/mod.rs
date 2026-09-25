@@ -46,6 +46,7 @@ mod gesture;
 mod interaction;
 mod module;
 mod palette;
+mod range_epoch;
 mod registry;
 #[cfg(test)]
 mod replay;

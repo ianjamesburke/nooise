@@ -468,12 +468,12 @@ impl ControlSpec {
             }
             (Family::Filter, ModuleSlotField::Time) => {
                 spec.kind = ControlKind::Continuous;
-                spec.min = 80.0;
-                spec.max = 8_000.0;
+                spec.min = FILTER_CUTOFF_MIN_HZ;
+                spec.max = FILTER_CUTOFF_MAX_HZ;
                 spec.step = Step::Linear(1.0);
                 spec.entry = Entry::Round;
                 spec.taper = Taper::Log2;
-                spec.reset = 8_000.0;
+                spec.reset = FILTER_CUTOFF_MAX_HZ;
             }
             (Family::Filter, ModuleSlotField::RightTime) => {
                 spec.kind = ControlKind::Continuous;
@@ -809,7 +809,7 @@ fn time_row_label(kind_value: f32) -> String {
         return "Time".to_string();
     };
     if kind.collapsed_field() == ModuleSlotField::Time {
-        return module_kind_label(kind_value);
+        return module_row_label(kind_value);
     }
     kind.parameters()
         .iter()
@@ -849,7 +849,7 @@ macro_rules! module_slot_rows {
                 |c, v| c.modules.$layer[$slot - 1].amount = v,
                 |c| pct(c.modules.$layer[$slot - 1].amount),
             )
-            .labeled_by(|c| module_kind_label(c.modules.$layer[$slot - 1].kind))
+            .labeled_by(|c| module_row_label(c.modules.$layer[$slot - 1].kind))
             .reset_at(0.0),
             ControlSpec::new(
                 concat!($prefix, ".slot", $slot, ".time"),
@@ -1534,7 +1534,6 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
     "clap",
     [
         gain_pct!("clap.level", "Level", clap.level),
-        gain_pct!("clap.filter", "Filter", 0.5, 1.0, clap.filter),
         time_ms!("clap.decay_ms", "Decay", 10.0, 200.0, 1.0, clap.decay_ms),
         beat_interval!(
             "clap.interval_beats",
@@ -2088,7 +2087,7 @@ fn parse_chord_slot_id(id: &str) -> Option<(usize, usize)> {
 
 /// Parse `<layer>.slot<N>.<field>` back to the slot it addresses. `None` for
 /// any id that is not a module-slot row.
-fn module_slot_row<'a>(
+pub(crate) fn module_slot_row<'a>(
     id: &str,
     c: &'a FluidControls,
 ) -> Option<(&'a ModuleSlot, ModuleSlotField)> {

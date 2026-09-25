@@ -48,14 +48,6 @@ pub(crate) fn soft_clip(sample: f32) -> f32 {
     sample / (1.0 + sample.abs())
 }
 
-/// Shared `filter` control -> noise lowpass smoothing coefficient mapping
-/// used by Clap's noise-based hits. Kick's filter curve stays local to
-/// `kick.rs`.
-#[inline]
-pub(crate) fn noise_filter_smoothing(filter: f32) -> f32 {
-    10_f32.powf(filter * 4.0 - 4.0)
-}
-
 /// Shared sum-then-cull idiom: advance every voice (in order), accumulating
 /// its stereo output, then drop whichever voices are finished. Voice order
 /// and the summation order are unchanged from the equivalent hand-written
