@@ -2,13 +2,12 @@
 
 ## Normal browsing gestures
 
-Hold `z` for Bloom, `c` for Submerge, `v` for Echo, `b` for Thin, or `x` for
-Lift.
+Hold `z` for Bloom, `c` for Submerge, `v` for Echo, or `x` for Lift.
 The amount rises while held and returns smoothly on release. Bloom blends the
 mix into a bright reverb cloud built from its mids and highs, Submerge darkens
-it, Echo throws it into repeats, Thin lowers it by up to 9 dB, and Lift thins
-its low end. The gesture input
-returns in 50 ms; reverb and echo tails finish after release.
+it, Echo throws it into repeats, and Lift thins its low end. The gesture input
+returns in 50 ms; reverb and echo tails finish after release. The former Thin
+gesture on `b` is retired; a song code carrying one is refused.
 
 Every gesture plays over the whole mix, after Master's module chain, whatever
 page is open. Arrows and Tab remain available while a key is down, and
@@ -20,7 +19,7 @@ on top of it.
 The footer is two rows: a gesture-activity row above a stable exits/mode-help
 row, so a held gesture never crowds out `Esc release · ^Q quit` or the row
 below it. Idle, the activity row lists each hold's key and name (`z bloom
-c submerge  v echo  b thin  x lift`); held or returning, it switches to a
+c submerge  v echo  x lift`); held or returning, it switches to a
 bold readout of gesture and amount — `↑` means rising, `↓` returning, and `R`
 marks a restored hold loaded from a song code. The row below stays a terse
 `BROWSE · ? shortcuts   ^Q quit`; pressing `?` opens the full keyboard-shortcut
@@ -127,9 +126,9 @@ Lead play retains its own `i` entry and existing bindings.
 2. Hold `z`, move with arrows and Tab, and release. The Bloom must keep
    playing over the mix while navigation continues. Overlap a different
    gesture and confirm both are named. Neither should make the mix louder.
-3. Try short and long `v` presses, then `b` and `x`. Echoes should
-   finish after release; Thin should smoothly lower and restore the mix; Lift
-   should clear its low end while held and restore it quickly on release.
+3. Try short and long `v` presses, then `x`. Echoes should finish after
+   release; Lift should clear its low end while held and restore it quickly
+   on release. `b` does nothing in Browse.
 4. Open the palette during a held gesture, return to Browse, and keep the
    physical key down. It must stay released until a fresh press after key-up.
    Escape must also release held or loaded gestures.

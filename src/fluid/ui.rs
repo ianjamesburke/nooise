@@ -851,7 +851,6 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             ("z", "bloom"),
             ("c", "submerge"),
             ("v", "echo"),
-            ("b", "thin"),
             ("x", "lift"),
         ]],
     ));

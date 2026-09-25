@@ -1,26 +1,38 @@
 //! Temporary performance envelopes over the running song's Master bus. Audio time, rather
 //! than keyboard repeat or UI ticks, determines every gesture's amount.
 
-pub(crate) const GESTURE_COUNT: usize = 5;
+pub(crate) const GESTURE_COUNT: usize = 4;
 
+/// The discriminant is the storage index. The song-code tag is `wire_tag`,
+/// which never moves when a gesture retires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum GestureKind {
     Bloom,
     Submerge,
     Echo,
-    Thin,
     Lift,
 }
 
 impl GestureKind {
-    pub(crate) const ALL: [Self; GESTURE_COUNT] = [
-        Self::Bloom,
-        Self::Submerge,
-        Self::Echo,
-        Self::Thin,
-        Self::Lift,
-    ];
+    pub(crate) const ALL: [Self; GESTURE_COUNT] =
+        [Self::Bloom, Self::Submerge, Self::Echo, Self::Lift];
+
+    /// Wire tag 3 belonged to the retired Thin gesture and is never reused.
+    pub(crate) const RETIRED_THIN_WIRE_TAG: u8 = 3;
+
+    pub(crate) const fn wire_tag(self) -> u8 {
+        match self {
+            Self::Bloom => 0,
+            Self::Submerge => 1,
+            Self::Echo => 2,
+            Self::Lift => 4,
+        }
+    }
+
+    pub(crate) fn from_wire_tag(tag: u8) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.wire_tag() == tag)
+    }
 
     pub(crate) fn from_key(key: char) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.key() == key)
@@ -31,7 +43,6 @@ impl GestureKind {
             Self::Bloom => 'z',
             Self::Submerge => 'c',
             Self::Echo => 'v',
-            Self::Thin => 'b',
             Self::Lift => 'x',
         }
     }
@@ -41,7 +52,6 @@ impl GestureKind {
             Self::Bloom => "Bloom",
             Self::Submerge => "Submerge",
             Self::Echo => "Echo",
-            Self::Thin => "Thin",
             Self::Lift => "Lift",
         }
     }
@@ -51,7 +61,6 @@ impl GestureKind {
             Self::Bloom => 1.5,
             Self::Submerge => 1.2,
             Self::Echo => 0.7,
-            Self::Thin => 1.0,
             Self::Lift => 0.55,
         }
     }
@@ -212,8 +221,8 @@ mod tests {
     fn snapshot_resumes_held_and_returning_trajectories_at_zero() {
         let mut state = GestureState::default();
         state.press(GestureKind::Bloom, 8.0);
-        state.press(GestureKind::Thin, 7.0);
-        state.release(GestureKind::Thin, 8.4);
+        state.press(GestureKind::Lift, 7.0);
+        state.release(GestureKind::Lift, 8.4);
         let saved = state.snapshot_at(8.5);
         for offset in [0.0, 0.1, 0.2] {
             for kind in GestureKind::ALL {

@@ -90,11 +90,10 @@ fn full_gesture_throw_never_reaches_the_master_clamp() {
 #[ignore = "diagnostic render, prints a level table"]
 fn gesture_level_probe() {
     use GestureKind::*;
-    let cases: [(&str, &[GestureKind]); 6] = [
+    let cases: [(&str, &[GestureKind]); 5] = [
         ("Bloom", &[Bloom]),
         ("Submerge", &[Submerge]),
         ("Echo", &[Echo]),
-        ("Thin", &[Thin]),
         ("Lift", &[Lift]),
         ("Bl+Ec+Su", &[Bloom, Echo, Submerge]),
     ];

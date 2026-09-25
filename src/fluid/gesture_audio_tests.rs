@@ -227,7 +227,7 @@ fn live_gesture_keeps_auto_running_and_release_preserves_an_intervening_edit() {
         64,
     ))));
     player.render(2.0);
-    player.gesture(GestureKind::Thin, KeyEventKind::Press);
+    player.gesture(GestureKind::Lift, KeyEventKind::Press);
     player.render(0.2);
     assert!(
         player.engine.morph.load().is_some(),
@@ -247,7 +247,7 @@ fn live_gesture_keeps_auto_running_and_release_preserves_an_intervening_edit() {
         player.engine.morph.load().is_none(),
         "ordinary edits still exit auto"
     );
-    player.gesture(GestureKind::Thin, KeyEventKind::Release);
+    player.gesture(GestureKind::Lift, KeyEventKind::Release);
     player.render(0.5);
     assert_eq!(
         player.effects.session().load().controls.master.bpm,

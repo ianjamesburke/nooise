@@ -19,7 +19,6 @@ const ECHO_SEND_GAIN: f32 = 0.35;
 const ECHO_DRY_DUCK: f32 = 0.2;
 const ECHO_MAX_FEEDBACK: f32 = 0.5;
 const ECHO_TAIL_SECONDS: f32 = 6.0;
-const THIN_PEAK_DB: f32 = -9.0;
 const PROCESSOR_CLEAR_SAMPLES_PER_FRAME: usize = 512;
 const ECHO_FEEDBACK_SECONDS: f32 = 0.03;
 
@@ -83,13 +82,7 @@ impl GestureFx {
             return sample;
         }
 
-        let thin_amount = amounts[GestureKind::Thin as usize];
-        let thin_gain = if thin_amount > f32::EPSILON {
-            10.0_f32.powf(THIN_PEAK_DB * thin_amount / 20.0)
-        } else {
-            1.0
-        };
-        let mut source = (sample.0 * thin_gain, sample.1 * thin_gain);
+        let mut source = sample;
 
         let submerge_amount = amounts[GestureKind::Submerge as usize];
         if submerge_amount > f32::EPSILON {
@@ -111,11 +104,7 @@ impl GestureFx {
                 max_delay_samples,
                 sample_rate,
             );
-            source = mix_stereo(
-                (sample.0 * thin_gain, sample.1 * thin_gain),
-                source,
-                submerge_amount,
-            );
+            source = mix_stereo(sample, source, submerge_amount);
         } else if self.submerge_active {
             self.submerge = SlotFx::Filter(StereoFilter::default());
             self.submerge_active = false;
@@ -465,16 +454,6 @@ mod tests {
     }
 
     #[test]
-    fn full_thin_reduces_the_target_by_twelve_decibels() {
-        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-
-        let output = bank.process((1.0, -1.0), active(GestureKind::Thin), timing());
-
-        let expected = 10.0_f32.powf(THIN_PEAK_DB / 20.0);
-        assert!((output.0 - expected).abs() < 1e-6);
-    }
-
-    #[test]
     fn bloom_adds_a_parallel_reverb_return_without_removing_dry() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
         let mut changed = false;
@@ -534,9 +513,7 @@ mod tests {
         let mut peak = 0.0_f32;
         for frame in 0..48_000 {
             let input = (((frame as f32 * 0.07).sin() * 0.25), 0.0);
-            let mut amounts = [1.0; GESTURE_COUNT];
-            amounts[GestureKind::Thin as usize] = 0.0;
-            let output = bank.process(input, amounts, timing());
+            let output = bank.process(input, [1.0; GESTURE_COUNT], timing());
             peak = peak.max(output.0.abs()).max(output.1.abs());
         }
 
@@ -555,7 +532,7 @@ mod tests {
     #[test]
     fn drained_tails_clear_incrementally_then_restore_exact_dry_bypass() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        bank.process((0.5, -0.5), [1.0, 0.0, 1.0, 0.0, 0.0], timing());
+        bank.process((0.5, -0.5), [1.0, 0.0, 1.0, 0.0], timing());
         bank.fx.bloom_tail_samples = 0;
         bank.fx.echo_tail_samples = 0;
         for _ in 0..1_000 {
@@ -602,7 +579,8 @@ mod tests {
         let after_user_slots = user_bank.process(Tab::Perc, &user_slots, (0.4, -0.2), timing());
         let mut gesture_bank = GestureAudioBank::new(SAMPLE_RATE);
 
-        let output = gesture_bank.process(after_user_slots, active(GestureKind::Thin), timing());
+        let output =
+            gesture_bank.process(after_user_slots, active(GestureKind::Submerge), timing());
 
         assert_ne!(output, after_user_slots);
     }
