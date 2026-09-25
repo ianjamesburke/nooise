@@ -1207,7 +1207,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-const CHORD_BASE_CONTROL_COUNT: usize = 30;
+const CHORD_BASE_CONTROL_COUNT: usize = 31;
 
 pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
 
@@ -1322,6 +1322,18 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c| progression_label(progression_index(c.pad.progression)),
     )
     .song_values(&PROGRESSION_SONG_VALUES),
+    ControlSpec::new(
+        "pad.midi_out",
+        "MIDI Out",
+        ControlKind::Discrete,
+        0.0,
+        1.0,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.midi_out,
+        |c, v| c.pad.midi_out = v,
+        |c| if c.pad.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
+    ),
     ControlSpec::new(
         PAD_TRIGGER_ID,
         "Trigger",
@@ -1752,6 +1764,25 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
     "lead",
     [
         gain_pct!("lead.level", "Level", lead.level),
+        ControlSpec::new(
+            "lead.midi_out",
+            "MIDI Out",
+            ControlKind::Discrete,
+            0.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.midi_out,
+            |c, v| c.lead.midi_out = v,
+            |c| if c.lead.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
+        ),
+        beat_interval!(
+            "lead.midi_gate_beats",
+            "MIDI Gate",
+            0.125,
+            2.0,
+            lead.midi_gate_beats
+        ),
         ControlSpec::new(
             LEAD_PATTERN_ID,
             "Pattern",
@@ -2218,7 +2249,7 @@ pub(crate) fn module_slot_row<'a>(
 /// table order, so a slot outside the playing window can be written before
 /// Offset or Count reaches it), or one chord slot's
 /// Accidental/Quality/Extension/Inversion. Read-only view over
-/// `CHORDS_CONTROLS`'s fixed layout (14 root rows, then 16 Pad step rows,
+/// `CHORDS_CONTROLS`'s fixed layout (15 root rows, then 16 Pad step rows,
 /// then 8 chord slots x 5
 /// rows, then 8 module slots x 8 rows) — never reorders the underlying
 /// array. Pad steps live in the Trigger drill. `chords_drill_for_index` below is this projection's inverse and
@@ -2262,7 +2293,7 @@ pub(crate) fn chords_tab_controls(
 pub(crate) fn chords_flat_index(drill: interaction::ChordDrill, visible_row: usize) -> usize {
     match drill {
         interaction::ChordDrill::None => visible_row,
-        interaction::ChordDrill::Pattern { .. } => 14 + visible_row,
+        interaction::ChordDrill::Pattern { .. } => 15 + visible_row,
         interaction::ChordDrill::Progression { .. } => CHORD_BASE_CONTROL_COUNT + 5 * visible_row,
         interaction::ChordDrill::Slot { slot, .. } => {
             CHORD_BASE_CONTROL_COUNT + 5 * slot + 1 + visible_row

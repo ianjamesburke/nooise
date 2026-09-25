@@ -2,6 +2,7 @@
 //! chord tones, or the progression's scale, from a step lane on its own grid.
 
 use super::*;
+use crate::midi::{MidiMessage, MidiSink, tuned_note};
 
 pub(crate) const LEAD_RATE_BEATS_MIN: f32 = 0.125;
 pub(crate) const LEAD_RATE_BEATS_MAX: f32 = 4.0;
@@ -470,6 +471,11 @@ pub(crate) struct LeadEngine {
     held_seen: bool,
     pending_press: Option<(usize, bool)>,
     pending_release: bool,
+    midi: Option<MidiSink>,
+    midi_active: bool,
+    midi_held: bool,
+    midi_gate_remaining_beats: Option<f64>,
+    transport: Transport,
 }
 
 impl LeadEngine {
@@ -490,6 +496,35 @@ impl LeadEngine {
             held_seen: play.held,
             pending_press: None,
             pending_release: false,
+            midi: None,
+            midi_active: false,
+            midi_held: false,
+            midi_gate_remaining_beats: None,
+            transport: Transport::Playing,
+        }
+    }
+
+    pub(crate) fn set_midi(&mut self, sink: MidiSink) {
+        self.midi = Some(sink);
+    }
+
+    fn release_midi(&mut self) {
+        if self.midi_active {
+            if let Some(sink) = &self.midi {
+                sink.send(MidiMessage::LeadOff);
+            }
+            self.midi_active = false;
+            self.midi_held = false;
+            self.midi_gate_remaining_beats = None;
+        }
+    }
+
+    fn play_midi(&mut self, note: i32, tune: f32, gate_beats: f32, hold: bool) {
+        if let Some(sink) = &self.midi {
+            sink.send(MidiMessage::LeadNote(tuned_note(note, tune)));
+            self.midi_active = true;
+            self.midi_held = hold;
+            self.midi_gate_remaining_beats = (!hold).then_some(f64::from(gate_beats));
         }
     }
 
@@ -537,6 +572,21 @@ impl LeadEngine {
     ) -> (f32, f32) {
         // The same chord-source path Pad, Bass, and Arp resolve through.
         let (progression, slot) = self.progression.follow(pad, timing);
+        let midi_enabled = c.midi_out >= 0.5 && self.midi.is_some();
+        if !midi_enabled || timing.transport != self.transport {
+            self.release_midi();
+        }
+        self.transport = timing.transport;
+        if let Some(remaining) = &mut self.midi_gate_remaining_beats {
+            *remaining -= timing.bpm / (60.0 * timing.sample_rate);
+            if *remaining <= 0.0 {
+                self.release_midi();
+            }
+        }
+        let released = std::mem::take(&mut self.pending_release);
+        if released && self.midi_held {
+            self.release_midi();
+        }
 
         let rate_beats = c.rate_beats.clamp(LEAD_RATE_BEATS_MIN, LEAD_RATE_BEATS_MAX);
         if self
@@ -551,25 +601,37 @@ impl LeadEngine {
             // The lane yields to a held key: the player owns the voice
             // until the key comes up. An Off pattern is the solo position:
             // the trigger still ticks so Play resumes on the clock's step.
-            if c.level != 0.0
+            if (c.level != 0.0 || midi_enabled)
                 && LeadPattern::from_value(c.pattern) != LeadPattern::Off
                 && !self.held_seen
                 && let Some(tone) = lead_step_tone(c.steps[lane_step])
             {
                 let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
-                self.play(reach.note(tone, c.octave), tune, c, false);
+                let note = reach.note(tone, c.octave);
+                if c.level != 0.0 {
+                    self.play(note, tune, c, false);
+                }
+                if midi_enabled {
+                    self.play_midi(note, tune, c.midi_gate_beats, false);
+                }
             }
         }
         // A played key sounds the moment the engine sees it, on top of (and
         // sliding from) whatever the lane is doing.
         if let Some((pressed, hold)) = self.pending_press.take()
-            && c.level != 0.0
+            && (c.level != 0.0 || midi_enabled)
             && let Some(tone) = lead_step_tone(pressed as f32)
         {
             let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
-            self.play(reach.note(tone, c.octave), tune, c, hold);
+            let note = reach.note(tone, c.octave);
+            if c.level != 0.0 {
+                self.play(note, tune, c, hold);
+            }
+            if midi_enabled {
+                self.play_midi(note, tune, c.midi_gate_beats, hold);
+            }
         }
-        if std::mem::take(&mut self.pending_release) {
+        if released {
             self.release();
         }
 

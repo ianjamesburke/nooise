@@ -762,6 +762,9 @@ const SONG_ID_TABLE: &[&str] = &[
     "pad.gate_beats",
     "arp.midi_out",
     "arp.midi_gate_beats",
+    "pad.midi_out",
+    "lead.midi_out",
+    "lead.midi_gate_beats",
 ];
 
 /// Index of `id` in the song-code id table, or `None` if the control has

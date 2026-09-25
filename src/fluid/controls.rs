@@ -88,6 +88,7 @@ pub(crate) struct PadControls {
     /// The table slot the loop starts from, 0..8; `ChordWindow` wraps.
     pub(crate) chord_offset: f32,
     pub(crate) progression: f32,
+    pub(crate) midi_out: f32,
     pub(crate) trigger: f32,
     pub(crate) swing: f32,
     pub(crate) gate_beats: f32,
@@ -109,6 +110,7 @@ impl Default for PadControls {
             chord_count: 8.0,
             chord_offset: 0.0,
             progression: 0.0,
+            midi_out: 1.0,
             trigger: 0.0,
             swing: 0.0,
             gate_beats: 0.5,
@@ -307,6 +309,8 @@ pub(crate) const DEFAULT_LEAD_STEPS: [f32; LEAD_STEP_COUNT] = [
 #[derive(Clone)]
 pub(crate) struct LeadControls {
     pub(crate) level: f32,
+    pub(crate) midi_out: f32,
+    pub(crate) midi_gate_beats: f32,
     pub(crate) attack: f32,
     pub(crate) decay: f32,
     pub(crate) glide: f32,      // seconds for a pitch change to settle
@@ -327,6 +331,8 @@ impl Default for LeadControls {
             // Silent by default: a new voice must never change the sound of
             // existing songs or a fresh startup.
             level: 0.0,
+            midi_out: 0.0,
+            midi_gate_beats: 0.5,
             attack: 0.02,
             decay: 0.5,
             // Settled within a 32nd at 82 BPM: audible as a slide between
