@@ -7,8 +7,8 @@ use super::interaction::ChordDrill;
 use super::song_ids::song_id_index;
 use super::*;
 use crate::midi::{
-    MidiInputEvent, MidiInputSource, MidiMessage, MidiSink, pad_notes, pad_notes_with_count,
-    tuned_note,
+    MidiConfig, MidiEndpoint, MidiInputEvent, MidiInputSource, MidiMessage, MidiSink, pad_notes,
+    pad_notes_with_count, tuned_note,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -751,9 +751,84 @@ fn midi_output_fresh_start_mutes_pad_audio_without_disabling_pad_midi() {
 
     assert!(normal.controls.pad.level > 0.0);
     assert_eq!(midi.controls.pad.level, 0.0);
+    assert_eq!(midi.controls.pad.midi_in, 0.0);
     assert_eq!(midi.controls.pad.midi_out, 1.0);
     assert_eq!(midi.controls.arp.midi_out, 0.0);
     assert_eq!(midi.controls.lead.midi_out, 0.0);
+}
+
+#[test]
+fn midi_input_start_selects_pad_in_and_zero_level_even_for_an_authored_song() {
+    let mut song = SongState::default();
+    song.controls.pad.level = 0.8;
+    song.controls.pad.midi_out = 1.0;
+    apply_midi_input_start(
+        &mut song,
+        MidiConfig {
+            input: Some(MidiEndpoint {
+                name: "Take5",
+                channel: 1,
+            }),
+            output: Some(MidiEndpoint {
+                name: "Take5",
+                channel: 1,
+            }),
+        },
+    );
+    assert_eq!(song.controls.pad.level, 0.0);
+    assert_eq!(song.controls.pad.midi_in, 1.0);
+    assert_eq!(song.controls.pad.midi_out, 0.0);
+}
+
+#[test]
+fn midi_input_start_keeps_auto_endpoints_at_zero_pad_level() {
+    let midi = MidiConfig {
+        input: Some(MidiEndpoint {
+            name: "Take5",
+            channel: 1,
+        }),
+        output: None,
+    };
+    let mut states = vec![SongState::default(), SongState::default()];
+    states[1].controls.pad.level = 0.9;
+    apply_midi_input_start_to_states(&mut states, midi);
+    let morph = MorphState::new(states, 4);
+    assert_eq!(morph.controls_at(0.0).pad.level, 0.0);
+    assert_eq!(morph.controls_at(16.0).pad.level, 0.0);
+    assert_eq!(morph.controls_at(32.0).pad.level, 0.0);
+}
+
+#[test]
+fn turning_on_one_midi_direction_turns_off_the_other_on_each_track() {
+    let mut controls = FluidControls::default();
+    for (input, output) in [
+        ("pad.midi_in", "pad.midi_out"),
+        ("arp.midi_in", "arp.midi_out"),
+        ("lead.midi_in", "lead.midi_out"),
+    ] {
+        let input = spec_by_id(input).unwrap();
+        let output = spec_by_id(output).unwrap();
+        input.apply_value(1.0, &mut controls);
+        assert_eq!((input.get)(&controls), 1.0);
+        assert_eq!((output.get)(&controls), 0.0);
+        output.apply_value(1.0, &mut controls);
+        assert_eq!((input.get)(&controls), 0.0);
+        assert_eq!((output.get)(&controls), 1.0);
+    }
+}
+
+#[test]
+fn effective_midi_directions_never_run_both_sides_of_a_track() {
+    let mut controls = FluidControls::default();
+    controls.pad.midi_in = 1.0;
+    controls.arp.midi_in = 1.0;
+    controls.arp.midi_out = 1.0;
+    controls.lead.midi_in = 1.0;
+    controls.lead.midi_out = 1.0;
+    controls.keep_midi_directions_exclusive();
+    assert_eq!(controls.pad.midi_out, 0.0);
+    assert_eq!(controls.arp.midi_out, 0.0);
+    assert_eq!(controls.lead.midi_out, 0.0);
 }
 
 #[test]
@@ -1399,15 +1474,17 @@ fn pad_midi_trigger_replaces_step_hits_with_the_current_chord() {
     let session = live_session(controls, AutomationState::default());
     let (source, sender) = MidiInputSource::test_channel();
     let (sink, receiver) = MidiSink::test_channel();
-    let mut engine = FluidEngine::new(
-        SAMPLE_RATE,
-        session,
-        no_morph(),
-        Arc::new(FluidTelemetry::default()),
-    )
-    .with_midi(sink)
-    .with_midi_input(source);
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), Arc::clone(&telemetry))
+        .with_midi(sink)
+        .with_midi_input(source);
     render_seconds(&mut engine, 0.4);
+    assert_eq!(
+        telemetry.hits[MusicalHit::Pad as usize]
+            .pulse
+            .load(Ordering::Relaxed),
+        0
+    );
     assert!(
         receiver
             .try_iter()
@@ -1419,12 +1496,15 @@ fn pad_midi_trigger_replaces_step_hits_with_the_current_chord() {
     sender.send(MidiInputEvent::NoteOn(55)).unwrap();
     render_seconds(&mut engine, 0.01);
     assert_eq!(
+        telemetry.hits[MusicalHit::Pad as usize]
+            .pulse
+            .load(Ordering::Relaxed),
+        1
+    );
+    assert!(
         receiver
             .try_iter()
-            .filter(|message| matches!(message, MidiMessage::PadChord(_)))
-            .count(),
-        1,
-        "one keyboard chord should fire one Pad chord"
+            .all(|message| !matches!(message, MidiMessage::PadChord(_)))
     );
 }
 
@@ -1464,28 +1544,37 @@ fn arp_midi_input_becomes_its_note_source_and_lead_input_does_not_echo() {
     let mut controls = FluidControls::default();
     controls.pad.midi_out = 0.0;
     controls.arp.midi_in = 1.0;
-    controls.arp.midi_out = 1.0;
+    controls.arp.midi_out = 0.0;
+    controls.arp.gain = 1.0;
     controls.arp.rate_beats = 0.125;
     controls.lead.midi_in = 1.0;
-    controls.lead.midi_out = 1.0;
+    controls.lead.midi_out = 0.0;
     controls.lead.pattern = 0.0;
     controls.lead.level = 1.0;
     let session = live_session(controls, AutomationState::default());
     let (source, sender) = MidiInputSource::test_channel();
     let (sink, receiver) = MidiSink::test_channel();
-    let mut engine = FluidEngine::new(
-        SAMPLE_RATE,
-        session,
-        no_morph(),
-        Arc::new(FluidTelemetry::default()),
-    )
-    .with_midi(sink)
-    .with_midi_input(source);
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), Arc::clone(&telemetry))
+        .with_midi(sink)
+        .with_midi_input(source);
     sender.send(MidiInputEvent::NoteOn(72)).unwrap();
     render_seconds(&mut engine, 0.2);
     assert!(engine.lead.voice.is_some());
     let messages = receiver.try_iter().collect::<Vec<_>>();
-    assert!(messages.contains(&MidiMessage::ArpNote(72)));
+    assert_eq!(
+        f32::from_bits(
+            telemetry.hits[MusicalHit::Arp as usize]
+                .pitch_class_bits
+                .load(Ordering::Relaxed)
+        ),
+        0.0
+    );
+    assert!(
+        !messages
+            .iter()
+            .any(|message| matches!(message, MidiMessage::ArpNote(_)))
+    );
     assert!(
         !messages
             .iter()

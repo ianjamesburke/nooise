@@ -115,7 +115,7 @@ impl Default for PadControls {
             chord_offset: 0.0,
             progression: 0.0,
             chord_notes: 4.0,
-            midi_in: 1.0,
+            midi_in: 0.0,
             midi_out: 1.0,
             midi_trigger: 0.0,
             trigger: 0.0,
@@ -133,6 +133,23 @@ impl Default for PadControls {
             octave_mix: 0.5,
             attack_time: 6.0,
             release_time: 8.0,
+        }
+    }
+}
+
+impl FluidControls {
+    /// A morph or modulation can cross two saved direction switches at once.
+    /// In takes priority for that transient; direct edits turn the other side
+    /// off in the registry setter instead.
+    pub(crate) fn keep_midi_directions_exclusive(&mut self) {
+        if self.pad.midi_in >= 0.5 {
+            self.pad.midi_out = 0.0;
+        }
+        if self.arp.midi_in >= 0.5 {
+            self.arp.midi_out = 0.0;
+        }
+        if self.lead.midi_in >= 0.5 {
+            self.lead.midi_out = 0.0;
         }
     }
 }

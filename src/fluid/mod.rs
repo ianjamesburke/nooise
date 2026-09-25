@@ -290,19 +290,33 @@ pub(crate) const DEFAULT_OSC_TARGET: &str = "127.0.0.1:9000";
 pub(crate) fn run(osc: Option<SocketAddr>, midi: MidiConfig<'_>) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
     run_with_song_state(
-        randomized_start_song(&mut rng, midi.output.is_some() && midi.input.is_none()),
+        randomized_start_song(&mut rng, midi.input.is_some() || midi.output.is_some()),
         osc,
         midi,
     )
 }
 
-fn randomized_start_song(rng: &mut impl Rng, midi_out: bool) -> SongState {
+fn randomized_start_song(rng: &mut impl Rng, midi_connected: bool) -> SongState {
     let mut controls = FluidControls::default();
     controls.pad.progression = rng.gen_range(0..PROGRESSIONS.len()) as f32;
-    if midi_out {
+    if midi_connected {
         controls.pad.level = 0.0;
     }
     SongState::from_controls(controls)
+}
+
+fn apply_midi_input_start(song: &mut SongState, midi: MidiConfig<'_>) {
+    if midi.input.is_some() {
+        song.controls.pad.level = 0.0;
+        song.controls.pad.midi_in = 1.0;
+        song.controls.pad.midi_out = 0.0;
+    }
+}
+
+fn apply_midi_input_start_to_states(states: &mut [SongState], midi: MidiConfig<'_>) {
+    for state in states {
+        apply_midi_input_start(state, midi);
+    }
 }
 
 pub(crate) fn run_with_song_state(
@@ -331,7 +345,8 @@ pub(crate) fn run_auto(
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
 ) -> Result<(), Box<dyn Error>> {
-    let states = decode_auto_states();
+    let mut states = decode_auto_states();
+    apply_midi_input_start_to_states(&mut states, midi);
     let initial_song = states[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
         states.clone(),
@@ -368,6 +383,7 @@ pub(crate) fn run_songs(
             }
         }
     }
+    apply_midi_input_start_to_states(&mut chosen, midi);
     let initial_song = chosen[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
         chosen.clone(),
@@ -383,13 +399,15 @@ pub(crate) fn run_songs(
 /// the UI build a fresh morph when the user toggles auto mode on live. `osc`
 /// names a UDP target to mirror telemetry to for external visualizers.
 fn run_interactive(
-    initial_song: SongState,
+    mut initial_song: SongState,
     morph: Arc<ArcSwap<Option<MorphState>>>,
-    auto_states: Vec<SongState>,
+    mut auto_states: Vec<SongState>,
     auto_bars: u32,
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
 ) -> Result<(), Box<dyn Error>> {
+    apply_midi_input_start(&mut initial_song, midi);
+    apply_midi_input_start_to_states(&mut auto_states, midi);
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
     let session_for_engine = session.clone();
     let morph_for_engine = Arc::clone(&morph);

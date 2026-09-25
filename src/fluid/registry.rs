@@ -1344,7 +1344,12 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         Step::Linear(1.0),
         Entry::Round,
         |c| c.pad.midi_out,
-        |c, v| c.pad.midi_out = v,
+        |c, v| {
+            c.pad.midi_out = v;
+            if v >= 0.5 {
+                c.pad.midi_in = 0.0;
+            }
+        },
         |c| if c.pad.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
     ),
     ControlSpec::new(
@@ -1356,7 +1361,12 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         Step::Linear(1.0),
         Entry::Round,
         |c| c.pad.midi_in,
-        |c, v| c.pad.midi_in = v,
+        |c, v| {
+            c.pad.midi_in = v;
+            if v >= 0.5 {
+                c.pad.midi_out = 0.0;
+            }
+        },
         |c| if c.pad.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
     ),
     ControlSpec::new(
@@ -1713,7 +1723,12 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
             Step::Linear(1.0),
             Entry::Round,
             |c| c.arp.midi_in,
-            |c, v| c.arp.midi_in = v,
+            |c, v| {
+                c.arp.midi_in = v;
+                if v >= 0.5 {
+                    c.arp.midi_out = 0.0;
+                }
+            },
             |c| if c.arp.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
         ),
         ControlSpec::new(
@@ -1725,7 +1740,12 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
             Step::Linear(1.0),
             Entry::Round,
             |c| c.arp.midi_out,
-            |c, v| c.arp.midi_out = v,
+            |c, v| {
+                c.arp.midi_out = v;
+                if v >= 0.5 {
+                    c.arp.midi_in = 0.0;
+                }
+            },
             |c| if c.arp.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
         ),
         beat_interval!(
@@ -1822,7 +1842,12 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             Step::Linear(1.0),
             Entry::Round,
             |c| c.lead.midi_in,
-            |c, v| c.lead.midi_in = v,
+            |c, v| {
+                c.lead.midi_in = v;
+                if v >= 0.5 {
+                    c.lead.midi_out = 0.0;
+                }
+            },
             |c| if c.lead.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
         ),
         ControlSpec::new(
@@ -1834,7 +1859,12 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             Step::Linear(1.0),
             Entry::Round,
             |c| c.lead.midi_out,
-            |c, v| c.lead.midi_out = v,
+            |c, v| {
+                c.lead.midi_out = v;
+                if v >= 0.5 {
+                    c.lead.midi_in = 0.0;
+                }
+            },
             |c| if c.lead.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
         ),
         beat_interval!(

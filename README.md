@@ -86,10 +86,11 @@ MIDI Out on, nooise sends the Pad's current
 2–5-note chord at startup and on chord changes, plus 24 MIDI clock pulses per
 beat and the transport's Start, Stop, and Continue messages. The Pad chord
 releases when another chord starts or the clock stops. MIDI output runs
-alongside nooise audio. A fresh output-only `--midi-out` session starts with
-Pad Level at 0% and Pad MIDI Out on. A fresh `--midi` or `--midi-in` session
-keeps the normal Pad Level so keyboard notes can play its sound. A song
-number, song code, or `auto` retains its saved Pad Level.
+alongside nooise audio. A fresh `--midi-out` session starts with Pad Level at
+0% and Pad MIDI Out on. With `--midi` or `--midi-in`, Pad starts with MIDI In
+on, MIDI Out off, and Level at 0%, including when loading a song. Raise Pad
+Level to hear your keyboard through its sound. The other tracks keep their
+saved MIDI switches.
 Set the receiving synth to follow USB MIDI clock if you want its own timed
 features to sync.
 
@@ -107,13 +108,12 @@ On; Gate still sets the chord's hold time.
 
 The Pads, Arp, and Lead pages each have MIDI In and Out switches near the
 bottom. Find any switch by its id with `/`, such as `pad.midi_in` or
-`arp.midi_out`. Pad defaults In and Out On; Arp and Lead default Off. Ordinary
-Pad MIDI In plays incoming pitches with the Pad sound. With a connected input,
-Hold-mode Pad audio follows your keyboard while the progression can still
-drive Pad MIDI Out. Held Arp input notes replace its Pad-chord note source until
-released. Lead input notes play its sound at their incoming pitch. MIDI input
-never echoes raw notes straight back to output. Arp patterns and Pad MIDI
-chord triggers may generate MIDI output if that track's Out switch is On.
+`arp.midi_out`. A track can use only one direction at a time: turning In on
+turns Out off, and vice versa. Pad defaults to Out; Arp and Lead default Off.
+Ordinary Pad MIDI In plays incoming pitches with the Pad sound. With a
+connected input, Hold-mode Pad audio follows your keyboard. Held Arp input
+notes replace its Pad-chord note source until released. Lead input notes play
+its sound at their incoming pitch. MIDI input never echoes notes to output.
 More than one track can send MIDI, sharing the chosen output channel and the
 synth's available voices. MIDI Out never mutes nooise audio.
 Arp and Lead play through MIDI even with their audio Level at zero. Their MIDI

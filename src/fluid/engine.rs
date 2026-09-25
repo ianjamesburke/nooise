@@ -739,6 +739,7 @@ impl StereoEngine for FluidEngine {
         }
         self.plan.apply(&mut effective, timing);
         resolve_module_chain(&mut effective);
+        effective.keep_midi_directions_exclusive();
         self.sync_midi_input_switches(&effective);
         let mute_gains = self.mute_gates.next();
         let now_seconds = self.current_sample as f64 / self.sample_rate as f64;
