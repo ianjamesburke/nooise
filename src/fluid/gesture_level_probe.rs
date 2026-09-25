@@ -127,3 +127,58 @@ fn gesture_level_probe() {
         }
     }
 }
+
+/// Bloom lets go in 50 ms without a click: rendered through the whole
+/// engine at real level, the wash's own sample-to-sample motion never jumps
+/// during the release beyond what it does while held, and once the release
+/// ends the output is the dry song, bit for bit.
+#[test]
+fn bloom_release_lets_go_cleanly_within_fifty_milliseconds() {
+    const RELEASE_AT: f64 = 4.0;
+    let song = &decode_auto_states()[9];
+    let render_frames = |gesture: GestureState| {
+        let mut snapshot = LiveSessionSnapshot::from_song(song);
+        snapshot.gestures = gesture;
+        let mut engine = FluidEngine::new(
+            RATE,
+            LiveSession::new(snapshot),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(7);
+        (0..((RELEASE_AT + 0.5) * f64::from(RATE)) as usize)
+            .map(|_| engine.next_stereo())
+            .collect::<Vec<_>>()
+    };
+    let mut released = GestureState::default();
+    // Full from the start, returning from RELEASE_AT: exactly a key-up there.
+    released.lanes[GestureKind::Bloom as usize] = GestureEnvelope {
+        amount: 1.0,
+        at_seconds: RELEASE_AT,
+        held: false,
+        restored: false,
+    };
+    let dry = render_frames(GestureState::default());
+    let wet = render_frames(released);
+    let release_frame = (RELEASE_AT * f64::from(RATE)) as usize;
+    let end_frame = release_frame + (0.05 * RATE) as usize + 2;
+    let wash = |frame: usize| (wet[frame].0 - dry[frame].0, wet[frame].1 - dry[frame].1);
+    let max_step = |frames: std::ops::Range<usize>| {
+        frames
+            .map(|frame| {
+                let (now, before) = (wash(frame), wash(frame - 1));
+                (now.0 - before.0).abs().max((now.1 - before.1).abs())
+            })
+            .fold(0.0_f32, f32::max)
+    };
+
+    let held_step = max_step(release_frame - 48_000..release_frame);
+    let release_step = max_step(release_frame..end_frame);
+
+    assert!(
+        release_step <= held_step,
+        "release stepped {release_step} against {held_step} while held"
+    );
+    let lingering = (end_frame..wet.len()).find(|frame| wet[*frame] != dry[*frame]);
+    assert_eq!(lingering, None, "Bloom outlived its release");
+}

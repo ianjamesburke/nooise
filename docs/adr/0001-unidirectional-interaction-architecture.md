@@ -251,8 +251,8 @@ and shutdown release them through the same ordered effect path. A frame
 reflecting each accepted change completes within the 50 ms bound.
 
 With press-only capabilities, gesture keys are inert and the help states why.
-Rendered audio must prove a swell, a continuous partial release, and surviving
-Bloom/Echo tails; input and footer checks alone do not establish this behavior.
+Rendered audio must prove a swell, a continuous partial release, a click-free
+50 ms Bloom release, and a surviving Echo tail; input and footer checks alone do not establish this behavior.
 
 ### Duplicate Jump leader (double Space)
 

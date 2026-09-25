@@ -6,7 +6,8 @@ Hold `z` for Bloom, `c` for Submerge, `v` for Echo, or `x` for Lift.
 The amount rises while held and returns smoothly on release. Bloom blends the
 mix into a bright reverb cloud built from its mids and highs, Submerge darkens
 it, Echo throws it into repeats, and Lift thins its low end. The gesture input
-returns in 50 ms; reverb and echo tails finish after release. The former Thin
+returns in 50 ms. Bloom's whole wash lets go with it, so no reverb rings on;
+Echo's repeats finish after release. The former Thin
 gesture on `b` is retired; a song code carrying one is refused.
 
 Every gesture plays over the whole mix, after Master's module chain, whatever
@@ -36,8 +37,8 @@ intact, automation and auto-morph continue, and edits made during a gesture
 survive its return.
 
 Escape releases held gestures before backing out of a browsing drill.
-Opening a keyboard-owning editor or Lead play releases gestures; their tails
-can finish in the background. A key held through that transition must be
+Opening a keyboard-owning editor or Lead play releases gestures; Echo's
+repeats can finish in the background. A key held through that transition must be
 released before it can start another gesture. Reported focus loss and shutdown
 also release held gestures.
 
@@ -126,8 +127,9 @@ Lead play retains its own `i` entry and existing bindings.
 2. Hold `z`, move with arrows and Tab, and release. The Bloom must keep
    playing over the mix while navigation continues. Overlap a different
    gesture and confirm both are named. Neither should make the mix louder.
-3. Try short and long `v` presses, then `x`. Echoes should finish after
-   release; Lift should clear its low end while held and restore it quickly
+3. Release `z` after a long hold: the wash must be gone within about 50 ms
+   with no click. Try short and long `v` presses, then `x`. Echoes should
+   finish after release; Lift should clear its low end while held and restore it quickly
    on release. `b` does nothing in Browse.
 4. Open the palette during a held gesture, return to Browse, and keep the
    physical key down. It must stay released until a fresh press after key-up.

@@ -14,7 +14,9 @@ const BLOOM_DAMPING: f32 = 0.15;
 /// The send is high-passed so sustained lows never pile up in the combs:
 /// the wash is built from the mids and highs.
 const BLOOM_SEND_HIGH_PASS_HZ: f32 = 300.0;
-const BLOOM_TAIL_SECONDS: f32 = 8.0;
+/// Release: the whole wash ramps out linearly over this, instead of
+/// ringing on as a tail, while the dry duck returns with the envelope.
+const BLOOM_RELEASE_SECONDS: f32 = 0.05;
 const ECHO_SEND_GAIN: f32 = 0.35;
 const ECHO_DRY_DUCK: f32 = 0.2;
 const ECHO_MAX_FEEDBACK: f32 = 0.5;
@@ -32,7 +34,10 @@ struct GestureFx {
     lift_active: bool,
     bloom_has_history: bool,
     echo_has_history: bool,
-    bloom_tail_samples: u32,
+    /// Linear release weight on the Bloom return, slewed toward 0 while the
+    /// envelope falls and toward 1 otherwise.
+    bloom_wet: f32,
+    previous_bloom_amount: f32,
     echo_tail_samples: u32,
     bloom_clear_cursor: usize,
     echo_clear_cursor: usize,
@@ -54,7 +59,8 @@ impl GestureFx {
             lift_active: false,
             bloom_has_history: false,
             echo_has_history: false,
-            bloom_tail_samples: 0,
+            bloom_wet: 0.0,
+            previous_bloom_amount: 0.0,
             echo_tail_samples: 0,
             bloom_clear_cursor: 0,
             echo_clear_cursor: 0,
@@ -173,15 +179,27 @@ impl GestureFx {
         max_delay_samples: usize,
         sample_rate: f32,
     ) -> (f32, f32) {
+        let releasing = amount <= f32::EPSILON || amount < self.previous_bloom_amount;
+        self.previous_bloom_amount = amount;
         if amount > f32::EPSILON {
+            if !self.bloom_has_history {
+                // An empty reverb has nothing to fade in, so a fresh press
+                // opens the return at once and the attack is the send alone.
+                self.bloom_wet = 1.0;
+            }
             self.bloom_has_history = true;
             self.bloom_clear_cursor = 0;
-            self.bloom_tail_samples = tail_samples(sample_rate, BLOOM_TAIL_SECONDS);
         }
         if !self.bloom_has_history {
             return (0.0, 0.0);
         }
-        if amount <= f32::EPSILON && self.bloom_tail_samples == 0 {
+        let step = 1.0 / (BLOOM_RELEASE_SECONDS * sample_rate);
+        self.bloom_wet = if releasing {
+            (self.bloom_wet - step).max(0.0)
+        } else {
+            (self.bloom_wet + step).min(1.0)
+        };
+        if amount <= f32::EPSILON && self.bloom_wet == 0.0 {
             if let SlotFx::Reverb(reverb) = &mut self.bloom
                 && reverb.clear_chunk(
                     &mut self.bloom_clear_cursor,
@@ -219,14 +237,7 @@ impl GestureFx {
             max_delay_samples,
             sample_rate,
         );
-        let weight = if amount > f32::EPSILON {
-            1.0
-        } else {
-            let weight = tail_weight(self.bloom_tail_samples, sample_rate);
-            self.bloom_tail_samples -= 1;
-            weight
-        };
-        scale(subtract(processed, input), weight)
+        scale(subtract(processed, input), self.bloom_wet)
     }
 
     fn clear_echo(&mut self) {
@@ -480,16 +491,25 @@ mod tests {
     }
 
     #[test]
-    fn bloom_tail_survives_after_the_send_returns_to_zero() {
+    fn bloom_release_ramps_the_wash_out_within_fifty_milliseconds() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
         for _ in 0..8_000 {
             bank.process((0.5, 0.5), active(GestureKind::Bloom), timing());
         }
+        let release_samples = (BLOOM_RELEASE_SECONDS * SAMPLE_RATE) as usize;
+        let mut amounts = [0.0; GESTURE_COUNT];
+        let mut last_wet = f32::INFINITY;
+        for frame in 0..release_samples {
+            // The envelope falls linearly from full over the same 50 ms.
+            amounts[GestureKind::Bloom as usize] = 1.0 - frame as f32 / release_samples as f32;
+            bank.process((0.0, 0.0), amounts, timing());
+            assert!(bank.fx.bloom_wet <= last_wet, "release weight rose");
+            last_wet = bank.fx.bloom_wet;
+        }
 
-        let tail_is_audible = (0..2_000)
-            .any(|_| bank.process((0.0, 0.0), [0.0; GESTURE_COUNT], timing()) != (0.0, 0.0));
+        let after = bank.process((0.0, 0.0), [0.0; GESTURE_COUNT], timing());
 
-        assert!(tail_is_audible, "Bloom release cut its reverb tail");
+        assert_eq!(after, (0.0, 0.0), "Bloom rang on past its release");
     }
 
     #[test]
@@ -533,7 +553,7 @@ mod tests {
     fn drained_tails_clear_incrementally_then_restore_exact_dry_bypass() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
         bank.process((0.5, -0.5), [1.0, 0.0, 1.0, 0.0], timing());
-        bank.fx.bloom_tail_samples = 0;
+        bank.fx.bloom_wet = 0.0;
         bank.fx.echo_tail_samples = 0;
         for _ in 0..1_000 {
             bank.process((0.0, 0.0), [0.0; GESTURE_COUNT], timing());
