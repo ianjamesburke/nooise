@@ -105,7 +105,7 @@ const AUTO_STATES: &[&str] = &[
     // Baseline seed. Near-default state the cycle opens from.
     "n1_Tk9PSQIFAgAAAAEAABMAAAADAJUAAeYDxQACSjD7RPQAAGbm",
     // Sparse pad-led breakdown.
-    "n1_Tk9PSQIFAgAAAAEAAHgAAAAZAAAAAI_CAQAAVFMCAABIYQMAAwIEAAMCBQADBAYAAwgIAAC4ngkAAAAACgAAmZkOAAMDEAADBRMAAwIYAAMDGgADBR0AAwMeAAMCfAAAepQzAABcDzUAAHE5NgACAACIQJUAAUMBxQACSjD7RPQAAGbmcQAARUUBOwAAAAMACgAAAMA_pDAAAABAP9XNKX4zAAAAeEEfBQAAAAAAmaB_xJUAAACAP3QDAAAAgD4AAAAAAAAAAAAA",
+    "n1_Tk9PSQIFAgAAAAEAAHUAAAAYAAAAAI_CAQAAVFMCAABIYQMAAwIEAAMCBQADBAYAAwgIAAC4ngkAAAAACgAAmZkOAAMDEAADBRMAAwIYAAMDGgADBR0AAwMeAAMCfAAAepQzAACZGTUAAHE5NgACAACIQJUAApRCqkTFAAJKMPtEcQAARUUBOwAAAAMACgAAAMA_pDAAAABAP9XNKX4zAAAAAEHNDAAAAAAAmaB_xJUAAACAQVwPAAAAgD4AAAAAAAAAAAAAAjIAAAAACC0AAAAyAAAANwAAADAAAAA0AAAAOQAAADIAAAA3AAAADp-SwX3KueYAAAAAAAAAAA",
     "n1_Tk9PSQIFAgAAAAEAAOsAAAAuAAAAAAAAAQAACTsCAADrRAMAAwEEAAMCBQADAgYAAwgIAAAAAAkAAAAACgAA1yMQAAMFEwADARQAAwJ8AAAULjMAAB8FNQAAlByVAAJXsuFEOwECj8L1PJYAAwSXAADXI5gAAsL1aD9AAQKuR-E9OQAAcD08AADYbz4AAwJDAAD2KEUAAOhuRgAAWwnFAALWbxhDTgAAAABQAAMGUgADAVcAAFI43AAAAABaAAB7FPQAADLz9QAB7gRjAAB7FGcAAgAAAD4MAQCZGQ4BAwgPAQD__xABAhXUsUSVAgAAAEUCA_VGAgIAAJBAAYEAAAAGAAAAAACAPsxMBwAAAACy2to0CI8CZcb_f_9__7__f_-__3__fwAAAAAAQpkZBAAAAACz2to0NQAAAABAHwUAAAAAAMIYy342AAAAAECuBwAAAAAAviMbWZUAAAAAQZkZAAAAgEAAAAAAUwAAAABA6xEGAAAAAGdyy2MAAAAAAAACQgAAAAEMLQAAADQAAAA5AAAAPAAAADkAAAA0AAAAMgAAADAAAAAyAAAANwAAADQAAAAtAAAARLmlSq2DEyYAAAAAAAAAAA",
     // Full-band build with driving kick/clap and busy arp.
     "n1_Tk9PSQIFAgAAAAEAAM0AAAAqAAAAAAAAAQAAVFMCAABIYQQAAwEFAAMEBgADCAgAAAnXEAADAxoAA_weAAMDMwAAFC41AAAoMTYAAgAAAD-TAAMClAAAXA-VAAMAlgADCJcAAP__mAAB1QE5AAC4HjsAAAAAPAAAaI49AAMBQQADAK0AAe8BrwAAcD1DAAAULkUAAEtCRgAAWW9KAAD_58UAAq5LW0THAADrUVcAAAAAWgAA1yP0AABm5mMAAK5HZAAAAFBlAABUQ2YAAwBnAAIAAIA-DgEDAg8BAApXAV0AAAAFAGUAAAAAQY8CBAAAAACWKStpDwEAAABBzQwEAAAAAHaXimk1AAAAQEEfBQAAAAAAwhjLfjMAAACAP3sUAwAAQD-ZoH_EmAAAAIBA8AYAAACAPwAAAAAAAAAAAAA",
@@ -615,14 +615,16 @@ mod tests {
         assert_eq!(states.len(), AUTO_STATES.len());
     }
 
-    /// Every built-in cutoff LFO keeps the sweep it had on the 80..8000 Hz
-    /// dial: these lows and highs were measured through the engine's own
-    /// modulation sum on the last build with that dial (`a54b594`). A lane
-    /// the widening did not rescale would open about 1.5x wider in octaves.
+    /// Every built-in cutoff LFO keeps its authored sweep: these lows and
+    /// highs are measured through the engine's own modulation sum. Song index
+    /// 1 was re-authored on the 20..20000 Hz dial and is pinned there; the
+    /// rest were measured on the last build with the 80..8000 Hz dial
+    /// (`a54b594`), where a lane the widening did not rescale would open
+    /// about 1.5x wider in octaves.
     #[test]
     fn built_in_cutoff_sweeps_cover_the_hz_they_did_before_the_dial_widened() {
         const SWEEPS: [(usize, &str, f32, f32); 6] = [
-            (1, "perc.slot1.time", 294.3, 354.5),
+            (1, "perc.slot1.time", 899.9, 2061.6),
             (2, "perc.slot1.time", 904.9, 3602.5),
             (3, "perc.slot2.time", 388.9, 565.6),
             (5, "perc.slot1.time", 322.4, 682.2),
