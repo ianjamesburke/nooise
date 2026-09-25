@@ -4235,9 +4235,7 @@ fn steps_shape_is_continuous_with_glide() {
     let mut route = lfo_shape(LfoShape::Steps); // default glide
     route.steps = [0.0; MAX_LFO_STEPS];
     route.steps[0] = 1.0;
-    route.steps[1] = -1.0;
     route.steps[2] = 1.0;
-    route.steps[3] = -1.0;
     let eps = 1e-4;
     for i in 0..400 {
         let beat = f64::from(i) / 100.0; // full 4-step pattern, 1 beat per step
@@ -4253,10 +4251,9 @@ fn steps_with_zero_glide_hold_flat_then_jump() {
     let mut route = lfo_shape(LfoShape::Steps);
     route.step_glide = 0.0;
     route.steps = [0.0; MAX_LFO_STEPS];
-    route.steps[0] = -1.0;
     route.steps[1] = 1.0;
     assert_near(route.wave_at(0.4), route.wave_at(0.8));
-    assert!((route.wave_at(0.99) - route.wave_at(1.01)).abs() > 1.0);
+    assert!((route.wave_at(0.99) - route.wave_at(1.01)).abs() > 0.9);
 }
 
 #[test]
@@ -4268,14 +4265,40 @@ fn step_edits_clamp_count_glide_and_values() {
         route.adjust_step(StepTarget::Count, -1.0);
     }
     assert_eq!(route.active_step_count(), 1);
-    // Step values are bipolar percent entry, clamped to -1..1.
+    // Step values are unipolar percent entry, clamped to 0..1.
     route.set_step(StepTarget::Value(0), -250.0);
-    assert_near(route.steps[0], -1.0);
+    assert_near(route.steps[0], 0.0);
+    route.set_step(StepTarget::Value(0), 250.0);
+    assert_near(route.steps[0], 1.0);
     route.set_step(StepTarget::Value(0), 50.0);
     assert_near(route.steps[0], 0.5);
     // Glide is unipolar percent entry.
     route.set_step(StepTarget::Glide, 40.0);
     assert_near(route.step_glide, 0.4);
+}
+
+/// A randomize roll spans each field's whole dial in stored units. Rolls once
+/// went through the numeric-entry setters, whose percent parse divided every
+/// amount, glide, and step value by 100, so Shift+R only nudged them.
+#[test]
+fn randomize_rolls_span_the_whole_dial() {
+    let mut route = lfo_shape(LfoShape::Steps);
+    route.randomize_step(StepTarget::Value(0), 0.0);
+    assert_near(route.steps[0], 0.0);
+    route.randomize_step(StepTarget::Value(0), 1.0);
+    assert_near(route.steps[0], 1.0);
+    route.randomize_step(StepTarget::Glide, 1.0);
+    assert_near(route.step_glide, 1.0);
+    route.randomize_field_at(LfoField::Amount, 0.9, 0.0);
+    assert_near(route.depth_ratio, 0.9);
+    route.randomize_field_at(LfoField::Interval, 1.0, 0.0);
+    assert_near(route.cycle_beats, MAX_LFO_CYCLE_BEATS);
+    route.randomize_field_at(LfoField::Shape, 1.0, 0.0);
+    assert_eq!(route.shape, LfoShape::ALL[LfoShape::ALL.len() - 1]);
+
+    let mut envelope = EnvelopeRoute::default();
+    envelope.randomize_field(EnvField::Amount, 1.0);
+    assert_near(envelope.amount, 1.0);
 }
 
 #[test]
@@ -4291,9 +4314,8 @@ fn song_code_round_trips_steps_shape() {
     };
     route.steps = [0.0; MAX_LFO_STEPS];
     route.steps[0] = 1.0;
-    route.steps[1] = -0.5;
+    route.steps[1] = 0.5;
     route.steps[2] = 0.25;
-    route.steps[3] = -1.0;
     route.steps[4] = 0.8;
     automation.set_route(ControlAddress::new("master.level"), route);
     let song = SongState {
@@ -4314,6 +4336,26 @@ fn song_code_round_trips_steps_shape() {
     for i in 0..5 {
         assert_quantized(got.steps[i], route.steps[i]);
     }
+}
+
+/// Steps are unipolar. A code whose Steps lane carries a negative step has
+/// no equivalent now, so it is refused by name rather than loaded with the
+/// step silently floored at zero.
+#[test]
+fn a_code_with_a_negative_lfo_step_is_refused() {
+    let mut automation = AutomationState::default();
+    let mut route = lfo_shape(LfoShape::Steps);
+    route.steps[0] = -0.5;
+    automation.set_route(ControlAddress::new("master.level"), route);
+    let song = SongState {
+        automation,
+        ..SongState::from_controls(FluidControls::default())
+    };
+    let code = song::encode_song_code(&song).unwrap();
+    assert_eq!(
+        song::decode_song_code(&code).err(),
+        Some(song::SongCodeError::NegativeLfoStep("master.level"))
+    );
 }
 
 #[test]

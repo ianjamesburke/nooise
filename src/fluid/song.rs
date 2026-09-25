@@ -111,6 +111,9 @@ pub(crate) enum SongCodeError {
     /// The code sets a control this build retired. Its value has nowhere to
     /// go, so the code is refused rather than loaded with that value missing.
     RetiredControl(&'static str),
+    /// An LFO Steps lane on this control carries a negative step. Steps are
+    /// unipolar now; the value has no equivalent, so the code is refused.
+    NegativeLfoStep(&'static str),
     /// A live control has no `SONG_ID_TABLE` slot, so it cannot be saved.
     /// `song_ids_cover_every_registry_control` exists to stop this reaching a
     /// user; append the id to the table.
@@ -162,6 +165,11 @@ impl fmt::Display for SongCodeError {
                 f,
                 "song code sets {id}, a control this build no longer has; the code predates the \
                  change that retired it and can no longer be loaded"
+            ),
+            Self::NegativeLfoStep(id) => write!(
+                f,
+                "song code gives the LFO on {id} a negative step; steps now run 0 to 100% and \
+                 the code can no longer be loaded"
             ),
             Self::UnregisteredControl(id) => {
                 write!(f, "control {id} is missing from the song id table")
@@ -749,6 +757,11 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
             continue;
         };
         let mut route = build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed);
+        if let Some((_, _, values)) = steps
+            && values.iter().any(|value| *value < 0.0)
+        {
+            return Err(SongCodeError::NegativeLfoStep(spec.id));
+        }
         if let Some((step_count, step_glide, values)) = steps {
             route.step_count = step_count.clamp(1, MAX_LFO_STEPS as u8);
             route.step_glide = step_glide;

@@ -156,6 +156,34 @@ impl<F: Copy + PartialEq> FieldSpec<F> {
         }
     }
 
+    /// A uniform roll of `ratio` (0..1) onto the field's own dial, in stored
+    /// units: position space for a tapered field, an equal share per rung for
+    /// a ladder or the beat grid. The same roll `ControlSpec::apply_ratio`
+    /// makes for control rows.
+    pub(super) fn value_at_ratio(&self, ratio: f32) -> f32 {
+        let ratio = ratio.clamp(0.0, 1.0);
+        match self.scale.value_at(ratio) {
+            Some(value) => self.quantize(value),
+            None => {
+                let rungs = self.rungs();
+                rungs[index_at_ratio(ratio, rungs.len())]
+            }
+        }
+    }
+
+    /// Every value one arrow press can reach from the floor, ascending.
+    fn rungs(&self) -> Vec<f32> {
+        let mut rungs = vec![self.quantize(self.min)];
+        loop {
+            let last = rungs[rungs.len() - 1];
+            let next = self.adjust(last, 1.0);
+            if next <= last {
+                return rungs;
+            }
+            rungs.push(next);
+        }
+    }
+
     fn next_rung(&self, rungs: &[f32], value: f32, dir: f32) -> f32 {
         if dir > 0.0 {
             rungs
@@ -206,6 +234,12 @@ impl ModContext {
 pub(crate) fn stepped_index(index: usize, dir: f32, len: usize) -> usize {
     let next = index as i64 + i64::from(dir.signum() as i32);
     next.clamp(0, len.saturating_sub(1) as i64) as usize
+}
+
+/// The entry of a `len`-long table a uniform roll of `ratio` lands on, each
+/// entry an equal share of the throw.
+pub(crate) fn index_at_ratio(ratio: f32, len: usize) -> usize {
+    ((ratio.clamp(0.0, 1.0) * len as f32) as usize).min(len.saturating_sub(1))
 }
 
 /// Numeric entry for a discrete field: round and clamp to the valid range.

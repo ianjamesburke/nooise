@@ -684,19 +684,29 @@ fn parameter_keys_text() -> String {
 fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
     match surface {
         AutomationSurface::Lfo {
+            selected,
             address,
             lane_index,
             lane_count,
             route,
-            ..
+            state,
         } => {
-            let reseed = if route.shape.is_random() {
-                "   r reseed"
+            let on_shape = selected
+                .checked_sub(1)
+                .and_then(|row| lfo_submenu_rows(state, *address).get(row).copied())
+                == Some(LfoSubRow::Field(LfoField::Shape));
+            let roll = if on_shape && route.shape.is_random() {
+                "reseed"
             } else {
-                ""
+                "random"
+            };
+            let randomize = if lfo_steps_selected(state, *address, *selected) {
+                "randomize steps"
+            } else {
+                "randomize"
             };
             let text = format!(
-                "LFO {}/{} · {}   {}   {:.2} beats   depth {:.0}%{reseed}   Shift+R randomize   f next   Shift+F add   x remove   Esc close",
+                "LFO {}/{} · {}   {}   {:.2} beats   depth {:.0}%   r {roll}   Shift+R {randomize}   f next   Shift+F add   x remove   Esc close",
                 lane_index + 1,
                 lane_count,
                 address.id(),
@@ -713,7 +723,7 @@ fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
             route,
             ..
         } => format!(
-            "ENV {}/{} · {}   {}   amount {:+.0}%   Shift+R randomize   e next   Shift+E add   x remove   Esc close",
+            "ENV {}/{} · {}   {}   amount {:+.0}%   r random   Shift+R randomize   e next   Shift+E add   x remove   Esc close",
             lane_index + 1,
             lane_count,
             address.id(),
@@ -1247,5 +1257,25 @@ mod tests {
             lfo_step.contains('♪'),
             "active LFO step missing badge: {lfo_step}"
         );
+    }
+
+    #[test]
+    fn lfo_footer_names_the_steps_only_roll_inside_the_staircase() {
+        let address = ControlAddress::new("pad.level");
+        let mut state = AutomationState::default();
+        state.open_or_create(address).shape = LfoShape::Steps;
+        let rows = lfo_submenu_rows(&state, address);
+        let help = |selected| {
+            automation_owner_help(&AutomationSurface::Lfo {
+                selected,
+                address,
+                lane_index: 0,
+                lane_count: 1,
+                route: state.route(address).unwrap(),
+                state: &state,
+            })
+        };
+        assert!(help(1).contains("Shift+R randomize   "));
+        assert!(help(rows.len()).contains("Shift+R randomize steps"));
     }
 }

@@ -4,7 +4,10 @@
 use crate::fluid::widget::DialScale;
 use crate::fluid::{Entry, TIME_TAPER, Taper, beats2, signed_pct};
 
-use super::{FieldSpec, ModContext, Stepping, clamped_index, morph_scalar_route, stepped_index};
+use super::{
+    FieldSpec, ModContext, Stepping, clamped_index, index_at_ratio, morph_scalar_route,
+    stepped_index,
+};
 
 // Envelope route field ranges. Attack/decay reach into the minutes at slow
 // tempos (512 beats is ~6 min at 82 BPM, ~12 min at 40 BPM) so the same
@@ -175,22 +178,17 @@ impl EnvelopeRoute {
     /// Randomize every field the envelope editor owns.
     pub(crate) fn randomize(&mut self, rng: &mut impl rand::Rng) {
         for field in EnvField::ALL {
-            let spec = match field {
-                EnvField::Trigger => {
-                    self.set_field(
-                        field,
-                        rng.r#gen::<f32>() * (EnvTrigger::CYCLE.len() - 1) as f32,
-                    );
-                    continue;
-                }
-                _ => field.spec(),
-            };
-            let ratio = rng.r#gen::<f32>();
-            let value = spec.scale.value_at(ratio).map_or_else(
-                || spec.min + ratio * (spec.max - spec.min),
-                |value| spec.quantize(value),
-            );
-            self.set_field(field, value);
+            self.randomize_field(field, rng.r#gen());
+        }
+    }
+
+    /// Land one field on a uniform roll of `ratio` across its own dial.
+    pub(crate) fn randomize_field(&mut self, field: EnvField, ratio: f32) {
+        match field {
+            EnvField::Trigger => {
+                self.trigger = EnvTrigger::CYCLE[index_at_ratio(ratio, EnvTrigger::CYCLE.len())];
+            }
+            _ => self.write_field(field, field.spec().value_at_ratio(ratio)),
         }
     }
 

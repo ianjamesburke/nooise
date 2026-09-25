@@ -4,9 +4,11 @@
 use std::f32::consts::TAU;
 
 use crate::fluid::widget::DialScale;
-use crate::fluid::{Entry, beats2, pct, signed_pct, smoothstep, splitmix64_mix};
+use crate::fluid::{Entry, beats2, pct, smoothstep, splitmix64_mix};
 
-use super::{FieldSpec, Stepping, clamped_index, morph_scalar_route, stepped_index};
+use super::{
+    FieldSpec, Stepping, clamped_index, index_at_ratio, morph_scalar_route, stepped_index,
+};
 
 pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
 pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.0;
@@ -61,7 +63,7 @@ pub(crate) enum LfoShape {
     Square,
     RandomDrift,
     SampleHold,
-    /// User-drawn staircase: a per-cycle sequence of `step_count` bipolar
+    /// User-drawn staircase: a per-cycle sequence of `step_count` unipolar
     /// values on `LfoRoute`, edited in the Shape row's inline step submenu.
     Steps,
 }
@@ -216,7 +218,7 @@ impl LfoField {
 }
 
 /// One editable target inside a `Steps` shape's inline submenu: the sequence
-/// length, the shared edge-glide, or one bipolar step value.
+/// length, the shared edge-glide, or one unipolar step value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StepTarget {
     Count,
@@ -269,7 +271,7 @@ pub(crate) const LFO_RATE_ARROW_STEPS: &[f32] = &[
 ];
 
 /// The inline `Steps` submenu's fields. Every `Value(i)` shares one spec —
-/// each step is the same bipolar depth, only its index differs.
+/// each step is the same unipolar depth, only its index differs.
 const STEP_FIELD_SPECS: &[FieldSpec<StepTarget>] = &[
     FieldSpec {
         field: StepTarget::Count,
@@ -296,10 +298,10 @@ const STEP_FIELD_SPECS: &[FieldSpec<StepTarget>] = &[
     FieldSpec {
         field: StepTarget::Value(0),
         label: "step",
-        min: -1.0,
+        min: 0.0,
         max: 1.0,
         step: STEP_VALUE_STEP,
-        scale: DialScale::bipolar(),
+        scale: DialScale::linear(0.0, 1.0),
         stepping: Stepping::Linear,
         entry: Entry::Percent,
         reset: 0.0,
@@ -334,7 +336,8 @@ pub(crate) struct LfoRoute {
     /// Seed for random shapes; hashed with the cycle index to produce values.
     pub(crate) seed: u32,
     /// Custom staircase for `LfoShape::Steps`; only the first `step_count`
-    /// entries are live. Bipolar (-1..1), inert unless the shape is `Steps`.
+    /// entries are live. Unipolar (0..1): a step only lifts the control from
+    /// its base, never pulls it below. Inert unless the shape is `Steps`.
     /// Each step spans one LFO interval (`cycle_beats`), so the full pattern
     /// lasts `step_count` intervals — raising the count extends the pattern.
     pub(crate) steps: [f32; MAX_LFO_STEPS],
@@ -487,7 +490,7 @@ impl LfoRoute {
     }
 
     /// Numeric entry for a step target: count is a whole number, glide a
-    /// unipolar percent, a step value a bipolar percent (`-100`..`100`).
+    /// unipolar percent, a step value a unipolar percent (`0`..`100`).
     pub(crate) fn set_step(&mut self, target: StepTarget, value: f32) {
         self.write_step(target, target.spec().parse_value(value));
     }
@@ -512,7 +515,7 @@ impl LfoRoute {
 
     /// How each inline staircase target maps onto bar position: the length
     /// spans the reachable step count, glide a plain unit span, and each step
-    /// value is a bipolar depth like every other modulation amount.
+    /// value a unipolar depth.
     pub(crate) fn step_scale(target: StepTarget) -> DialScale {
         target.spec().scale
     }
@@ -529,7 +532,7 @@ impl LfoRoute {
         match target {
             StepTarget::Count => format!("{}", self.active_step_count()),
             StepTarget::Glide => pct(self.step_glide),
-            StepTarget::Value(i) => signed_pct(self.steps.get(i).copied().unwrap_or(0.0)),
+            StepTarget::Value(i) => pct(self.steps.get(i).copied().unwrap_or(0.0)),
         }
     }
 
@@ -555,22 +558,35 @@ impl LfoRoute {
     /// currently hides it.
     pub(crate) fn randomize(&mut self, rng: &mut impl rand::Rng, beat: f64) {
         for field in LfoField::ALL {
-            let value = match field {
-                LfoField::Shape => rng.r#gen::<f32>() * (LfoShape::ALL.len() - 1) as f32,
-                _ => random_field_value(field.spec(), rng),
-            };
-            self.set_field_at(field, value, beat);
+            self.randomize_field_at(field, rng.r#gen(), beat);
         }
         self.seed = rng.r#gen();
-        let count = random_step_value(StepTarget::Count, rng);
-        self.set_step(StepTarget::Count, count);
-        self.set_step(StepTarget::Glide, random_step_value(StepTarget::Glide, rng));
+        self.randomize_step(StepTarget::Count, rng.r#gen());
+        self.randomize_step(StepTarget::Glide, rng.r#gen());
+        self.randomize_step_values(rng);
+    }
+
+    /// Randomize only the live step values of the Steps staircase, leaving
+    /// its count, glide, and every other field of the route untouched.
+    pub(crate) fn randomize_step_values(&mut self, rng: &mut impl rand::Rng) {
         for step in 0..self.active_step_count() {
-            self.set_step(
-                StepTarget::Value(step),
-                random_step_value(StepTarget::Value(step), rng),
-            );
+            self.randomize_step(StepTarget::Value(step), rng.r#gen());
         }
+    }
+
+    /// Land one field on a uniform roll of `ratio` across its own dial.
+    pub(crate) fn randomize_field_at(&mut self, field: LfoField, ratio: f32, beat: f64) {
+        match field {
+            LfoField::Shape => {
+                self.write_shape(LfoShape::ALL[index_at_ratio(ratio, LfoShape::ALL.len())]);
+            }
+            _ => self.write_field_at(field, field.spec().value_at_ratio(ratio), beat),
+        }
+    }
+
+    /// Land one staircase target on a uniform roll of `ratio` across its dial.
+    pub(crate) fn randomize_step(&mut self, target: StepTarget, ratio: f32) {
+        self.write_step(target, target.spec().value_at_ratio(ratio));
     }
 
     pub(crate) fn adjust_field_at(&mut self, field: LfoField, dir: f32, beat: f64) {
@@ -689,21 +705,6 @@ impl LfoRoute {
             |r, v| r.depth_ratio = v,
         )
     }
-}
-
-fn random_field_value<F: Copy + PartialEq>(
-    spec: &super::FieldSpec<F>,
-    rng: &mut impl rand::Rng,
-) -> f32 {
-    let ratio = rng.r#gen::<f32>();
-    spec.scale.value_at(ratio).map_or_else(
-        || spec.min + ratio * (spec.max - spec.min),
-        |value| spec.quantize(value),
-    )
-}
-
-fn random_step_value(target: StepTarget, rng: &mut impl rand::Rng) -> f32 {
-    random_field_value(target.spec(), rng)
 }
 
 /// Every LFO derives position from the shared transport beat. A zero offset
