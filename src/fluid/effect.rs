@@ -540,6 +540,7 @@ impl EffectExecutor {
             unsupported @ (InteractionEffect::AutomationConfirm(_)
             | InteractionEffect::AddAutomation(_)
             | InteractionEffect::ResetSelected
+            | InteractionEffect::MaxSelected
             | InteractionEffect::ToggleAuto
             | InteractionEffect::ToggleUnits
             | InteractionEffect::ToggleMute { .. }
@@ -643,6 +644,16 @@ impl EffectExecutor {
             }
             InteractionEffect::ResetSelected => self.with_automation(|executor, automation| {
                 reset_lfo_or_control(
+                    executor,
+                    automation,
+                    context.automation_selected,
+                    context.tab,
+                    context.selected,
+                    context.beat,
+                );
+            }),
+            InteractionEffect::MaxSelected => self.with_automation(|executor, automation| {
+                max_lfo_or_control(
                     executor,
                     automation,
                     context.automation_selected,
@@ -1411,6 +1422,127 @@ mod tests {
             rolled.automation.envelope(address).unwrap().amount,
             amount_before,
             "the envelope amount rolls"
+        );
+    }
+
+    /// The ceiling gesture must reach every modulator field family, not fall
+    /// through to the control underneath — that fall-through is the bug this
+    /// gesture exists to close. One case per row family, driven through the
+    /// real production dispatch (`InteractionEffect::MaxSelected`).
+    #[test]
+    fn max_selected_tops_out_every_modulator_field_family() {
+        let address = ControlAddress::new("pad.level");
+        let mut flipped = FlippedUnits::default();
+        let mut clipboard = FakeClipboard::default();
+        let mut max_at = |executor: &mut EffectExecutor, automation_selected| {
+            let mut context = ProductionInteractionContext {
+                selected_control: Some("pad.level"),
+                visible_control_ids: &[],
+                randomizes_automation: true,
+                tab: Tab::Chords,
+                selected: 0,
+                automation_selected,
+                beat: 0.0,
+                flipped: &mut flipped,
+            };
+            executor.execute_production_interactions_with_clipboard(
+                [InteractionEffect::MaxSelected],
+                &mut context,
+                &mut clipboard,
+            );
+        };
+
+        // LFO fields. Shape is last in `LfoField::ALL` and its ceiling is
+        // `Steps` (also last in `LfoShape::ALL`), so maxing it cannot shift
+        // the rows this loop already visited.
+        let mut lfo_executor = executor();
+        lfo_executor.edit_session(None, |snapshot| {
+            snapshot.automation.open_or_create(address);
+        });
+        for (row, field) in LfoField::ALL.iter().enumerate() {
+            max_at(&mut lfo_executor, row + 1);
+            let session = lfo_executor.session().load();
+            let route = session.automation.route(address).unwrap();
+            let value = route.field_value(*field);
+            let max = field.scale().max_value();
+            assert!(
+                (value - max).abs() < f32::EPSILON,
+                "{} did not reach its ceiling: {value} vs {max}",
+                field.label()
+            );
+        }
+
+        // Steps staircase, now reachable because Shape maxed into `Steps`.
+        for target in [StepTarget::Count, StepTarget::Glide, StepTarget::Value(0)] {
+            let row = {
+                let session = lfo_executor.session().load();
+                lfo_submenu_rows(&session.automation, address)
+                    .iter()
+                    .position(|r| matches!(r, LfoSubRow::Step(t) if *t == target))
+                    .expect("a Steps-shaped LFO exposes its staircase rows")
+            };
+            max_at(&mut lfo_executor, row + 1);
+            let session = lfo_executor.session().load();
+            let route = session.automation.route(address).unwrap();
+            let value = route.step_value(target);
+            let max = LfoRoute::step_scale(target).max_value();
+            assert!(
+                (value - max).abs() < f32::EPSILON,
+                "{} did not reach its ceiling: {value} vs {max}",
+                route.step_label(target)
+            );
+        }
+
+        // Envelope fields.
+        let mut env_executor = executor();
+        env_executor.edit_session(None, |snapshot| {
+            snapshot.automation.open_or_create_envelope(address);
+        });
+        for (row, field) in EnvField::ALL.iter().enumerate() {
+            max_at(&mut env_executor, row + 1);
+            let session = env_executor.session().load();
+            let route = session.automation.envelope(address).unwrap();
+            let value = route.field_value(*field);
+            let max = field.scale().max_value();
+            assert!(
+                (value - max).abs() < f32::EPSILON,
+                "{} did not reach its ceiling: {value} vs {max}",
+                field.label()
+            );
+        }
+    }
+
+    /// Row 0 is the parent slider, so the gesture still reaches the control
+    /// itself while an editor is open — the reset gesture behaves the same way.
+    #[test]
+    fn max_selected_still_reaches_the_control_on_the_parent_row() {
+        let address = ControlAddress::new("pad.level");
+        let mut executor = executor();
+        executor.edit_session(None, |snapshot| {
+            snapshot.automation.open_or_create(address);
+        });
+        let spec = spec_by_id("pad.level").expect("pad.level exists");
+        let mut flipped = FlippedUnits::default();
+        let mut clipboard = FakeClipboard::default();
+        let mut context = ProductionInteractionContext {
+            selected_control: Some("pad.level"),
+            visible_control_ids: &[],
+            randomizes_automation: true,
+            tab: Tab::Chords,
+            selected: 0,
+            automation_selected: 0,
+            beat: 0.0,
+            flipped: &mut flipped,
+        };
+        executor.execute_production_interactions_with_clipboard(
+            [InteractionEffect::MaxSelected],
+            &mut context,
+            &mut clipboard,
+        );
+        let level = executor.session().load().controls.pad.level;
+        assert!(
+            (level - spec.max).abs() < f32::EPSILON,
+            "parent row should max the control, got {level}"
         );
     }
 

@@ -65,6 +65,17 @@ impl DialScale {
         }
     }
 
+    /// The top of the dial's throw, in the same units `value`/`field_value`
+    /// are expressed in — the single source of a field's ceiling, so the
+    /// `Shift+L` gesture and the bar's right edge cannot disagree. `Rungs`
+    /// tops out at its last reachable rung.
+    pub(crate) fn max_value(self) -> f32 {
+        match self {
+            Self::Tapered { max, .. } | Self::BeatGrid { max, .. } => max,
+            Self::Rungs(steps) => steps.last().copied().unwrap_or(0.0),
+        }
+    }
+
     /// Inverse of [`ratio`], defined only where the mapping is invertible.
     /// `BeatGrid` and `Rungs` have no inverse in the crate yet, so callers
     /// that need position-space stepping must use a `Tapered` scale.

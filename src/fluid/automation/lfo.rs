@@ -499,6 +499,12 @@ impl LfoRoute {
         self.write_step(target, target.spec().reset);
     }
 
+    /// Mirror of `reset_step`: take a step target to the top of its own
+    /// `step_scale` range.
+    pub(crate) fn max_step(&mut self, target: StepTarget) {
+        self.write_step(target, Self::step_scale(target).max_value());
+    }
+
     /// Store an already ranged value on the target its spec came from.
     fn write_step(&mut self, target: StepTarget, value: f32) {
         self.pickup = None;
@@ -622,6 +628,16 @@ impl LfoRoute {
         match field {
             LfoField::Shape => self.write_shape(LfoShape::Sine),
             _ => self.write_field_at(field, field.spec().reset, beat),
+        }
+    }
+
+    /// Mirror of `reset_field_at`: take the field to the top of its own
+    /// `DialScale` range. Interval still hands off through the rate pickup so
+    /// a live jump to the slowest rate does not click.
+    pub(crate) fn max_field_at(&mut self, field: LfoField, beat: f64) {
+        match field {
+            LfoField::Shape => self.write_shape(LfoShape::from_index(field.scale().max_value())),
+            _ => self.write_field_at(field, field.scale().max_value(), beat),
         }
     }
 

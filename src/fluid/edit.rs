@@ -266,6 +266,8 @@ enum FieldOp<'a> {
         flipped: &'a FlippedUnits,
     },
     Reset,
+    /// The mirror of `Reset`: jump to the top of the field's own range.
+    Max,
     /// A typed value, exact in the field's displayed unit.
     Set {
         value: f32,
@@ -283,7 +285,7 @@ impl<'a> FieldOp<'a> {
     fn flipped(self) -> Option<&'a FlippedUnits> {
         match self {
             FieldOp::Adjust { flipped, .. } | FieldOp::Set { flipped, .. } => Some(flipped),
-            FieldOp::Reset | FieldOp::Randomize { .. } => None,
+            FieldOp::Reset | FieldOp::Max | FieldOp::Randomize { .. } => None,
         }
     }
 }
@@ -336,6 +338,7 @@ fn apply_field_op(
                 }
                 FieldOp::Adjust { dir, .. } => route.adjust_field_at(field, dir, beat),
                 FieldOp::Reset => route.reset_field_at(field, beat),
+                FieldOp::Max => route.max_field_at(field, beat),
                 // Typed ms is exact: convert and clamp, but don't snap back
                 // onto the beat grid.
                 FieldOp::Set { value, .. } if is_flipped => {
@@ -367,6 +370,7 @@ fn apply_field_op(
                 }
                 FieldOp::Adjust { dir, .. } => route.adjust_field(field, dir),
                 FieldOp::Reset => route.reset_field(field),
+                FieldOp::Max => route.max_field(field),
                 FieldOp::Set { value, .. } if is_flipped => {
                     route.set_field_raw(field, flip_entry(TimeBase::Beats, value, bpm));
                 }
@@ -379,6 +383,7 @@ fn apply_field_op(
                 match op {
                     FieldOp::Adjust { dir, .. } => route.adjust_step(target, dir),
                     FieldOp::Reset => route.reset_step(target),
+                    FieldOp::Max => route.max_step(target),
                     FieldOp::Set { value, .. } => route.set_step(target, value),
                     FieldOp::Randomize { ratio } => route.randomize_step(target, ratio),
                 }
@@ -396,6 +401,7 @@ fn apply_field_op(
                 filter_type.and_then(|slot| filter_slot(snapshot, tab, slot).map(|m| m.feedback));
             match op {
                 FieldOp::Reset => apply_reset(tab, selected, &mut snapshot.controls),
+                FieldOp::Max => apply_max(tab, selected, &mut snapshot.controls),
                 FieldOp::Randomize { ratio } => {
                     if let Some(spec) = tab_specs(tab).get(selected) {
                         spec.apply_ratio(ratio, &mut snapshot.controls);
@@ -472,8 +478,8 @@ fn apply_control_value_op(
         (None, FieldOp::Set { value, .. }) => {
             apply_value(tab, selected, value, &mut snapshot.controls)
         }
-        (_, FieldOp::Reset | FieldOp::Randomize { .. }) => {
-            unreachable!("a reset or roll never reaches the value path")
+        (_, FieldOp::Reset | FieldOp::Max | FieldOp::Randomize { .. }) => {
+            unreachable!("a reset, max, or roll never reaches the value path")
         }
     }
 }
@@ -561,6 +567,28 @@ pub(crate) fn reset_lfo_or_control(
         selected,
         beat,
         FieldOp::Reset,
+    );
+}
+
+/// The ceiling half of the extremes gesture: the mirror of
+/// `reset_lfo_or_control` above, landing on each field's own range top
+/// instead of its reset target.
+pub(crate) fn max_lfo_or_control(
+    effects: &mut EffectExecutor,
+    automation: &AutomationState,
+    lfo_selected: usize,
+    tab: Tab,
+    selected: usize,
+    beat: f64,
+) {
+    with_active_field(
+        effects,
+        automation,
+        lfo_selected,
+        tab,
+        selected,
+        beat,
+        FieldOp::Max,
     );
 }
 
