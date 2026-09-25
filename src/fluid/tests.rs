@@ -6,6 +6,7 @@
 use super::interaction::ChordDrill;
 use super::song_ids::song_id_index;
 use super::*;
+use crate::midi::{MidiMessage, MidiSink, pad_notes};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ratatui::backend::TestBackend;
@@ -1210,6 +1211,48 @@ fn render_seconds(engine: &mut FluidEngine, seconds: f32) -> Vec<(f32, f32)> {
     (0..(SAMPLE_RATE * seconds) as usize)
         .map(|_| engine.next_stereo())
         .collect()
+}
+
+#[test]
+fn midi_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop() {
+    let mut controls = FluidControls::default();
+    controls.pad.level = 0.0;
+    controls.master.tune = 5.0;
+    let expected = pad_notes(pad_chord_tones(&controls.pad, 0, 0), controls.master.tune);
+    let session = live_session(controls, AutomationState::default());
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session.clone(),
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    )
+    .with_midi(sink);
+    engine.next_stereo();
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [
+            MidiMessage::Start,
+            MidiMessage::Clock,
+            MidiMessage::PadChord(expected),
+        ]
+    );
+    session.update(|snapshot| snapshot.transport = Transport::Stopped);
+    for _ in 0..128 {
+        engine.next_stereo();
+    }
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [MidiMessage::PadOff, MidiMessage::Stop]
+    );
+    session.update(|snapshot| snapshot.transport = Transport::Playing);
+    for _ in 0..128 {
+        engine.next_stereo();
+    }
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [MidiMessage::Continue, MidiMessage::PadChord(expected)]
+    );
 }
 
 /// The clock stop exists to end a song on its tails: nothing new may start

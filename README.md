@@ -69,6 +69,23 @@ listens by default. `--osc=ADDR` sends elsewhere, such as TouchDesigner's
 OSC In CHOP. Off unless asked for. See `src/fluid/osc.rs` for the address
 vocabulary.
 
+For a connected MIDI synth, list its output port name and start nooise with
+that exact name:
+
+```sh
+nooise midi-ports
+nooise --midi-out Take5
+```
+
+MIDI output uses channel 1. It sends the Pad's current four-note chord at
+startup and on chord changes, plus 24 MIDI clock pulses per beat and the
+transport's Start, Stop, and Continue messages. The Pad chord releases when
+another chord starts or the clock stops. MIDI output runs alongside nooise
+audio; set the Pad Level to zero to hear only the external synth for that
+layer. `--midi-out` also works with a song number, song code, or `auto`.
+Set the receiving synth to follow USB MIDI clock if you want its own timed
+features to sync.
+
 ```sh
 nooise --version
 ```

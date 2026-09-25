@@ -30,6 +30,7 @@ use ratatui::{
 use crate::audio::{self, StereoEngine};
 use crate::fx::lfo::DriftingLfo;
 use crate::fx::panner::StereoPanner;
+use crate::midi::MidiOutputManager;
 use crate::synth::envelope::Adsr;
 use crate::synth::fm::{FmPair, FmStack, FmWave};
 use crate::synth::noise::WhiteNoise;
@@ -81,6 +82,7 @@ use coordinator::*;
 use edit::*;
 use effect::*;
 use engine::*;
+pub(crate) use engine::{TimingContext, Transport};
 use gesture::*;
 use module::*;
 use palette::*;
@@ -284,9 +286,9 @@ const APP_ID: &str = "nooise";
 /// Where a bare `--osc` sends: foorm's default listen address.
 pub(crate) const DEFAULT_OSC_TARGET: &str = "127.0.0.1:9000";
 
-pub(crate) fn run(osc: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run(osc: Option<SocketAddr>, midi_out: Option<&str>) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
-    run_with_song_state(randomized_start_song(&mut rng), osc)
+    run_with_song_state(randomized_start_song(&mut rng), osc, midi_out)
 }
 
 fn randomized_start_song(rng: &mut impl Rng) -> SongState {
@@ -298,6 +300,7 @@ fn randomized_start_song(rng: &mut impl Rng) -> SongState {
 pub(crate) fn run_with_song_state(
     initial_song: SongState,
     osc: Option<SocketAddr>,
+    midi_out: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     // Interactive start: no morph running. `A` can begin one live, heading
     // toward the built-in states from wherever the user currently is.
@@ -308,20 +311,25 @@ pub(crate) fn run_with_song_state(
         auto_states,
         DEFAULT_AUTO_BARS,
         osc,
+        midi_out,
     )
 }
 
 /// Run the live interactive TUI already morphing forever between the built-in
 /// `AUTO_STATES` over `bars`-bar legs (`nooise auto [BARS]`). `A` toggles it off
 /// — as does touching any parameter — and back on from the current state.
-pub(crate) fn run_auto(bars: u32, osc: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run_auto(
+    bars: u32,
+    osc: Option<SocketAddr>,
+    midi_out: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
     let states = decode_auto_states();
     let initial_song = states[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
         states.clone(),
         bars,
     ))));
-    run_interactive(initial_song, morph, states, bars, osc)
+    run_interactive(initial_song, morph, states, bars, osc, midi_out)
 }
 
 /// Play built-in songs by number (`nooise 9`, `nooise 9,10,11`). One song
@@ -333,6 +341,7 @@ pub(crate) fn run_songs(
     numbers: &[usize],
     bars: u32,
     osc: Option<SocketAddr>,
+    midi_out: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let all = decode_auto_states();
     if numbers.is_empty() {
@@ -357,7 +366,7 @@ pub(crate) fn run_songs(
         numbers.to_vec(),
         bars,
     ))));
-    run_interactive(initial_song, morph, chosen, bars, osc)
+    run_interactive(initial_song, morph, chosen, bars, osc, midi_out)
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
@@ -371,6 +380,7 @@ fn run_interactive(
     auto_states: Vec<SongState>,
     auto_bars: u32,
     osc: Option<SocketAddr>,
+    midi_out: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
     let session_for_engine = session.clone();
@@ -383,14 +393,21 @@ fn run_interactive(
         .map(|target| osc::OscEmitter::spawn(target, Arc::clone(&telemetry)))
         .transpose()?;
 
+    let _midi_output = midi_out.map(MidiOutputManager::open).transpose()?;
+    let midi_for_engine = _midi_output.as_ref().map(MidiOutputManager::sink);
+
     let _audio_output = audio::start_stream(APP_ID, move |sr| {
-        FluidEngine::new_with_tonal_session_state(
+        let engine = FluidEngine::new_with_tonal_session_state(
             sr,
             session_for_engine.clone(),
             Arc::clone(&morph_for_engine),
             Arc::clone(&telemetry_for_engine),
             true,
-        )
+        );
+        match &midi_for_engine {
+            Some(sink) => engine.with_midi(sink.clone()),
+            None => engine,
+        }
     })?;
 
     let mut terminal = runtime::TerminalSession::enter()?;

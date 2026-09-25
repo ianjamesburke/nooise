@@ -11,20 +11,30 @@ use update_check::check_for_update;
 mod audio;
 mod fluid;
 mod fx;
+mod midi;
 mod synth;
 mod update_check;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    if cli.midi_out.is_some()
+        && matches!(
+            cli.command,
+            Some(CliCommand::Update | CliCommand::MidiPorts | CliCommand::Render(_))
+        )
+    {
+        return Err("--midi-out only applies to live playback".into());
+    }
     let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
     match cli.command {
         None => match cli.song {
-            None => fluid::run(cli.osc),
-            Some(song) => play_song(&song, bars, cli.osc),
+            None => fluid::run(cli.osc, cli.midi_out.as_deref()),
+            Some(song) => play_song(&song, bars, cli.osc, cli.midi_out.as_deref()),
         },
         Some(CliCommand::Update) => update_nooise(),
+        Some(CliCommand::MidiPorts) => midi::list_ports(),
         Some(CliCommand::Render(args)) => render(args),
-        Some(CliCommand::Auto) => fluid::run_auto(bars, cli.osc),
+        Some(CliCommand::Auto) => fluid::run_auto(bars, cli.osc, cli.midi_out.as_deref()),
     }
 }
 
@@ -57,12 +67,17 @@ struct Cli {
         require_equals = true
     )]
     osc: Option<SocketAddr>,
+    /// Send MIDI clock and Pad chords to an exactly named MIDI output port on channel 1.
+    #[arg(long, global = true, value_name = "PORT")]
+    midi_out: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 enum CliCommand {
     #[command(about = "Update nooise from crates.io", visible_alias = "upgrade")]
     Update,
+    #[command(about = "List available MIDI output port names")]
+    MidiPorts,
     #[command(about = "Render the default mix to a wav file")]
     Render(RenderArgs),
     #[command(about = "Morph through every built-in song, forever")]
@@ -90,10 +105,15 @@ fn render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 /// built-in set — the same thing reached two ways, so they share one argument
 /// rather than one being a flag and the other a positional. Several numbers
 /// morph through in the order given and loop.
-fn play_song(song: &str, bars: u32, osc: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
+fn play_song(
+    song: &str,
+    bars: u32,
+    osc: Option<SocketAddr>,
+    midi_out: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
     if song.starts_with(fluid::CODE_PREFIX) {
         let state = fluid::decode_song_code(song).map_err(|error| error.to_string())?;
-        return fluid::run_with_song_state(state, osc);
+        return fluid::run_with_song_state(state, osc, midi_out);
     }
     let numbers = song
         .split(',')
@@ -103,7 +123,7 @@ fn play_song(song: &str, bars: u32, osc: Option<SocketAddr>) -> Result<(), Box<d
                 .map_err(|_| format!("{part:?} is neither a song number nor an n1_ code").into())
         })
         .collect::<Result<Vec<usize>, Box<dyn Error>>>()?;
-    fluid::run_songs(&numbers, bars, osc)
+    fluid::run_songs(&numbers, bars, osc, midi_out)
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {
@@ -154,6 +174,22 @@ mod tests {
         let cli = parse(&[]).unwrap();
         assert_eq!(cli.command, None);
         assert_eq!(cli.osc, None);
+        assert_eq!(cli.midi_out, None);
+    }
+
+    #[test]
+    fn midi_output_name_is_global_and_channel_is_implicitly_one() {
+        for args in [
+            &["--midi-out", "Take 5", "9"][..],
+            &["9", "--midi-out", "Take 5"],
+            &["auto", "--midi-out", "Take 5"],
+        ] {
+            assert_eq!(parse(args).unwrap().midi_out.as_deref(), Some("Take 5"));
+        }
+        assert_eq!(
+            parse(&["midi-ports"]).unwrap().command,
+            Some(CliCommand::MidiPorts)
+        );
     }
 
     /// `--osc` is a global: it reads the same before a song, after it, and on

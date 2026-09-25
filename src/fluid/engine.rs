@@ -4,6 +4,7 @@
 //! on, registry-derived gain smoothing, the per-layer and master module effect
 //! banks, and the master bus.
 
+use crate::midi::{MidiClockFollower, MidiSink};
 use std::collections::BTreeSet;
 
 use crate::fx::compression::{CompressorParams, StereoCompressor};
@@ -509,6 +510,7 @@ pub(crate) struct FluidEngine {
     pub(crate) sample_rate: f32,
     pub(crate) tempo: TempoClock,
     beat_trigger: GridTrigger,
+    midi_clock: Option<MidiClockFollower>,
     pub(crate) gain_smoothers: GainSmoothers,
     mute_gates: OutputGates,
     pub(crate) pad: PadEngine,
@@ -566,6 +568,7 @@ impl FluidEngine {
             sample_rate,
             tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
             beat_trigger: GridTrigger::new(),
+            midi_clock: None,
             gain_smoothers: GainSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
             pad: PadEngine::new(
@@ -599,6 +602,12 @@ impl FluidEngine {
             plan,
             plan_source,
         }
+    }
+
+    pub(crate) fn with_midi(mut self, sink: MidiSink) -> Self {
+        self.pad.set_midi(sink.clone());
+        self.midi_clock = Some(MidiClockFollower::new(sink));
+        self
     }
 }
 
@@ -654,6 +663,9 @@ impl StereoEngine for FluidEngine {
         let fade = startup_fade(self.current_sample, self.sample_rate);
         let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
         let timing = self.tempo.tick(effective.master.bpm, self.transport);
+        if let Some(clock) = &mut self.midi_clock {
+            clock.tick(timing);
+        }
         if self.beat_trigger.pop_swung(timing, 1.0, 0.0, 0.0) {
             self.telemetry
                 .publish_hit(MusicalHit::Beat, 1.0, NO_PITCH_CLASS);

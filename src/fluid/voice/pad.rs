@@ -2,6 +2,7 @@
 //! both follow.
 
 use crate::fx::crossfade::{Outgoing, mix};
+use crate::midi::{MidiMessage, MidiSink, pad_notes};
 
 use super::*;
 
@@ -30,6 +31,8 @@ pub(crate) struct PadEngine {
     pub(crate) air: WhiteNoise,
     pub(crate) rng: StdRng,
     pub(crate) telemetry: Arc<FluidTelemetry>,
+    midi: Option<MidiSink>,
+    midi_initial_pending: bool,
 }
 
 impl PadEngine {
@@ -69,7 +72,14 @@ impl PadEngine {
             air: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
             telemetry,
+            midi: None,
+            midi_initial_pending: false,
         }
+    }
+
+    pub(crate) fn set_midi(&mut self, sink: MidiSink) {
+        self.midi = Some(sink);
+        self.midi_initial_pending = true;
     }
 
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
@@ -119,6 +129,10 @@ impl PadEngine {
             );
             self.telemetry
                 .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
+            if let Some(sink) = &self.midi {
+                sink.send(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
+            }
+            self.midi_initial_pending = false;
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                 self.layers.drain(0..remove_count);
@@ -131,6 +145,12 @@ impl PadEngine {
                 c.attack_time,
                 c.release_time,
             ));
+        }
+        if playing && self.midi_initial_pending {
+            if let Some(sink) = &self.midi {
+                sink.send(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
+            }
+            self.midi_initial_pending = false;
         }
 
         let width = c.stereo_width
