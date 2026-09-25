@@ -392,6 +392,9 @@ pub(crate) struct FluidControls {
     pub(crate) bass: BassControls,
     pub(crate) arp: ArpControls,
     pub(crate) lead: LeadControls,
+    /// Which optional MIDI rows have been added through the control palette.
+    /// Bits are assigned by `midi_row_bit` and saved separately from values.
+    pub(crate) midi_rows: u8,
     /// Per-layer module chains, including the factory presets defined by
     /// `LayerModules::default`.
     pub(crate) modules: LayerModules,

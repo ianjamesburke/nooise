@@ -107,9 +107,12 @@ Trigger, turn MIDI Trigger On to stop the step hits and fire the current chord
 from incoming MIDI Note On messages. The step rows dim while MIDI Trigger is
 On; Gate still sets the chord's hold time.
 
-The Pads, Arp, and Lead pages each have MIDI In and Out switches near the
-bottom. Find any switch by its id with `/`, such as `pad.midi_in` or
-`arp.midi_out`. A track can use only one direction at a time: turning In on
+MIDI switches are hidden from the Pads, Arp, and Lead pages until you add
+one with `/`: find `pad.midi_in`, `arp.midi_out`, or another track's switch and
+press Enter. The switch then stays at the bottom of that page even when Off;
+Arp and Lead also show MIDI Gate when their Out switch is added. Adding a
+switch does not change its On/Off value, including Pad Out's MIDI-launch
+default. A track can use only one direction at a time: turning In on
 turns Out off, and vice versa. Pad defaults to Out; Arp and Lead default Off.
 Ordinary Pad MIDI In plays incoming pitches with the Pad sound. With a
 connected input, Hold-mode Pad audio follows your keyboard. Held Arp input

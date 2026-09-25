@@ -286,6 +286,12 @@ impl EffectExecutor {
                 if spec_by_id(id).is_none() {
                     return Err(EffectFailure::UnknownControl(id));
                 }
+                if let Some(bit) = midi_row_bit(id)
+                    && self.session.load().controls.midi_rows & bit == 0
+                {
+                    self.session
+                        .update(|snapshot| snapshot.controls.midi_rows |= bit);
+                }
                 self.recent.touch(id);
                 Ok(EffectAcknowledgement::ControlSelected { tab, index, id })
             }
@@ -314,6 +320,9 @@ impl EffectExecutor {
                         spec_by_id(edit.id)
                             .expect("validated staged control")
                             .apply_value(edit.value, &mut snapshot.controls);
+                        if let Some(bit) = midi_row_bit(edit.id) {
+                            snapshot.controls.midi_rows |= bit;
+                        }
                     }
                 });
                 self.pending = None;
@@ -1626,6 +1635,38 @@ mod tests {
         );
         assert_eq!(executor.recent.ids(), &["master.bpm"]);
         assert_eq!(executor.session.load().generation, 0);
+    }
+
+    #[test]
+    fn selecting_midi_from_palette_adds_its_row_without_turning_it_on() {
+        let mut executor = executor();
+        let index = spec_index(Tab::Arp, "arp.midi_out").unwrap();
+        assert!(
+            tab_controls(Tab::Arp, &executor.session.load().controls)
+                .iter()
+                .all(|item| item.id != "arp.midi_out")
+        );
+
+        executor
+            .execute(LiveEffect::SelectControl {
+                tab: Tab::Arp,
+                index,
+                id: "arp.midi_out",
+            })
+            .unwrap();
+
+        let controls = &executor.session.load().controls;
+        assert_eq!(controls.arp.midi_out, 0.0);
+        assert!(
+            tab_controls(Tab::Arp, controls)
+                .iter()
+                .any(|item| item.id == "arp.midi_out")
+        );
+        assert!(
+            tab_controls(Tab::Arp, controls)
+                .iter()
+                .any(|item| item.id == "arp.midi_gate_beats")
+        );
     }
 
     #[test]

@@ -2007,13 +2007,32 @@ pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
     all_specs().find(|spec| spec.id == id)
 }
 
-/// A tab's root rows: every spec except the ones a page-local drill owns
-/// (Lead and Pad step rows) and the module-slot rows nothing is loaded into.
+/// Optional MIDI rows retain their place after being added even when Off.
+/// Gate rows belong to their track's MIDI Out control.
+pub(crate) fn midi_row_bit(id: &str) -> Option<u8> {
+    match id {
+        "pad.midi_in" => Some(1 << 0),
+        "pad.midi_out" => Some(1 << 1),
+        "arp.midi_in" => Some(1 << 2),
+        "arp.midi_out" | "arp.midi_gate_beats" => Some(1 << 3),
+        "lead.midi_in" => Some(1 << 4),
+        "lead.midi_out" | "lead.midi_gate_beats" => Some(1 << 5),
+        _ => None,
+    }
+}
+
+fn midi_row_visible(id: &str, c: &FluidControls) -> bool {
+    midi_row_bit(id).is_none_or(|bit| c.midi_rows & bit != 0)
+}
+
+/// A tab's root rows: every spec except page-local step rows, unloaded
+/// module-slot rows, and MIDI rows that have not been added through `/`.
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
     let rows = tab_specs(tab)
         .iter()
         .filter(|spec| {
             module_slot_row_visible(spec.id, c)
+                && midi_row_visible(spec.id, c)
                 && lead_step_index(spec.id).is_none()
                 && pad_step_index(spec.id).is_none()
                 && spec.id != PAD_MIDI_TRIGGER_ID
@@ -2350,7 +2369,7 @@ pub(crate) fn module_slot_row<'a>(
 }
 
 /// Chords-tab visible rows for the given drill level: the 14 root params
-/// plus any occupied module slots, all eight chord slots' Root list (in
+/// plus any occupied module slots and added MIDI rows, all eight chord slots' Root list (in
 /// table order, so a slot outside the playing window can be written before
 /// Offset or Count reaches it), or one chord slot's
 /// Accidental/Quality/Extension/Inversion. Read-only view over
@@ -2372,6 +2391,7 @@ pub(crate) fn chords_tab_controls(
                 .filter(|spec| {
                     pad_step_index(spec.id).is_none()
                         && spec.id != PAD_MIDI_TRIGGER_ID
+                        && midi_row_visible(spec.id, c)
                         && module_slot_row_visible(spec.id, c)
                 })
                 .map(|spec| spec.item(c))

@@ -753,6 +753,7 @@ fn midi_output_fresh_start_mutes_pad_audio_without_disabling_pad_midi() {
     assert_eq!(midi.controls.pad.level, 0.0);
     assert_eq!(midi.controls.pad.midi_in, 0.0);
     assert_eq!(midi.controls.pad.midi_out, 1.0);
+    assert_eq!(midi.controls.midi_rows, 0);
     assert_eq!(midi.controls.arp.midi_out, 0.0);
     assert_eq!(midi.controls.lead.midi_out, 0.0);
 }
@@ -857,7 +858,15 @@ fn effective_midi_directions_never_run_both_sides_of_a_track() {
 
 #[test]
 fn midi_controls_finish_their_instrument_pages() {
-    let controls = FluidControls::default();
+    let mut controls = FluidControls::default();
+    for tab in [Tab::Chords, Tab::Arp, Tab::Lead] {
+        assert!(
+            tab_controls(tab, &controls)
+                .iter()
+                .all(|item| !item.id.contains(".midi_"))
+        );
+    }
+    controls.midi_rows = 0b00_111111;
     let pad = chords_tab_controls(&controls, ChordDrill::None);
     let arp = tab_controls(Tab::Arp, &controls);
     let lead = lead_tab_controls(&controls, interaction::LeadDrill::None);
@@ -879,11 +888,13 @@ fn midi_input_switches_and_pad_trigger_source_survive_song_codes() {
     song.controls.pad.midi_trigger = 1.0;
     song.controls.arp.midi_in = 1.0;
     song.controls.lead.midi_in = 1.0;
+    song.controls.midi_rows = 0b00_010101;
     let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
     assert_eq!(decoded.controls.pad.midi_in, 0.0);
     assert_eq!(decoded.controls.pad.midi_trigger, 1.0);
     assert_eq!(decoded.controls.arp.midi_in, 1.0);
     assert_eq!(decoded.controls.lead.midi_in, 1.0);
+    assert_eq!(decoded.controls.midi_rows, 0b00_010101);
 }
 
 #[test]
@@ -2881,7 +2892,6 @@ fn tab_controls_classify_each_slider_kind() {
             ];
             kinds.extend(vec![Discrete; 40]);
             kinds.push(Gain); // pre-loaded shared Reverb
-            kinds.extend([Discrete, Discrete]); // MIDI In and Out stay below loaded modules
             kinds
         }),
         (
@@ -2913,8 +2923,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Arp,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain, Timing,
-                Discrete, Discrete,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain,
             ],
         ),
         (
@@ -2922,7 +2931,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Lead,
             vec![
                 Gain, Discrete, Timing, Timing, Timing, Discrete, Discrete, Discrete, Timing,
-                Timing, Discrete, Gain, Timing, Discrete, Discrete,
+                Timing, Discrete, Gain,
             ],
         ),
     ];
@@ -3477,7 +3486,7 @@ fn chords_progression_adjusts_and_clamps() {
 fn chords_tab_controls_none_shows_only_base_params() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, ChordDrill::None);
-    assert_eq!(rows.len(), 18);
+    assert_eq!(rows.len(), 16);
     assert_eq!(rows[0].id, "pad.level");
     assert_eq!(rows[6].id, "pad.chord_offset");
     assert_eq!(rows[7].id, "pad.progression");
@@ -4570,7 +4579,7 @@ fn bass_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
 }
 
 #[test]
-fn pad_engine_chord_count_change_waits_for_the_chord_then_restarts() {
+fn pad_engine_chord_count_change_waits_for_the_chord_then_keeps_the_next_slot() {
     let mut controls = PadControls {
         chord_bars: 1.0,
         chord_count: 3.0,
@@ -4593,6 +4602,80 @@ fn pad_engine_chord_count_change_waits_for_the_chord_then_restarts() {
 
     assert_eq!(pad.cursor.step, 0);
     assert_eq!(pad.cursor.window.count, 2);
+}
+
+#[test]
+fn chord_count_expansion_plays_the_new_successor_without_restarting() {
+    let mut controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 3.0,
+        ..PadControls::default()
+    };
+    let mut cursor = ProgressionCursor::new(&controls);
+    assert!(!cursor.tick(&controls, timing(0, 120.0)));
+    for beat in [4, 8] {
+        assert!(cursor.tick(&controls, timing(beat * SAMPLE_RATE as u64 / 2, 120.0)));
+    }
+    assert_eq!(cursor.slot(), 2);
+
+    controls.chord_count = 4.0;
+    assert!(cursor.tick(&controls, timing(6 * SAMPLE_RATE as u64, 120.0)));
+    assert_eq!(cursor.slot(), 3);
+}
+
+#[test]
+fn offset_edit_keeps_the_successor_of_the_sounding_chord() {
+    let mut controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 4.0,
+        ..PadControls::default()
+    };
+    let mut cursor = ProgressionCursor::new(&controls);
+    assert!(!cursor.tick(&controls, timing(0, 120.0)));
+    assert!(cursor.tick(&controls, timing(2 * SAMPLE_RATE as u64, 120.0)));
+    assert_eq!(cursor.slot(), 1);
+
+    controls.chord_offset = 1.0;
+    assert!(cursor.tick(&controls, timing(4 * SAMPLE_RATE as u64, 120.0)));
+    assert_eq!(cursor.slot(), 2);
+}
+
+#[test]
+fn offset_edit_uses_the_old_next_slot_when_current_slot_was_removed() {
+    let mut controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 4.0,
+        ..PadControls::default()
+    };
+    let mut cursor = ProgressionCursor::new(&controls);
+    assert!(!cursor.tick(&controls, timing(0, 120.0)));
+    for beat in [4, 8, 12] {
+        assert!(cursor.tick(&controls, timing(beat * SAMPLE_RATE as u64 / 2, 120.0)));
+    }
+    assert_eq!(cursor.slot(), 3);
+
+    controls.chord_offset = 7.0;
+    assert!(cursor.tick(&controls, timing(8 * SAMPLE_RATE as u64, 120.0)));
+    assert_eq!(cursor.slot(), 0);
+}
+
+#[test]
+fn count_shrink_restarts_when_neither_current_nor_next_slot_remains() {
+    let mut controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 6.0,
+        ..PadControls::default()
+    };
+    let mut cursor = ProgressionCursor::new(&controls);
+    assert!(!cursor.tick(&controls, timing(0, 120.0)));
+    for beat in [4, 8, 12, 16] {
+        assert!(cursor.tick(&controls, timing(beat * SAMPLE_RATE as u64 / 2, 120.0)));
+    }
+    assert_eq!(cursor.slot(), 4);
+
+    controls.chord_count = 2.0;
+    assert!(cursor.tick(&controls, timing(10 * SAMPLE_RATE as u64, 120.0)));
+    assert_eq!(cursor.slot(), 0);
 }
 
 #[test]
@@ -4686,7 +4769,7 @@ fn pad_engine_offset_change_restarts_the_phrase_at_the_next_chord() {
 }
 
 /// Every chord boundary the cursor crosses while `controls_at` supplies the
-/// pad controls for each beat, as `(beat, slot, chord_beats, restarted)`.
+/// pad controls for each beat, as `(beat, slot, chord_beats, reconfigured)`.
 fn chord_boundaries(
     controls_at: impl Fn(f64) -> PadControls,
     beats: f64,
@@ -4701,21 +4784,21 @@ fn chord_boundaries(
         }
         let before = cursor;
         if cursor.tick(&controls_at(timing.beat), timing) {
-            let restarted =
+            let reconfigured =
                 cursor.window != before.window || cursor.chord_beats != before.chord_beats;
             boundaries.push((
                 timing.beat.round(),
                 cursor.slot(),
                 cursor.chord_beats,
-                restarted,
+                reconfigured,
             ));
         }
         sample += 64;
     }
 }
 
-/// A new Chord Length waits for the sounding chord, then times the new
-/// phrase's first chord and every one after it.
+/// A new Chord Length waits for the sounding chord, keeps the next slot,
+/// and times subsequent chords from that boundary.
 #[test]
 fn chord_length_change_lands_at_the_next_chord_and_times_the_new_phrase() {
     let long = PadControls {
@@ -4740,15 +4823,15 @@ fn chord_length_change_lands_at_the_next_chord_and_times_the_new_phrase() {
         boundaries,
         vec![
             (8.0, 1, 8.0, false),
-            (16.0, 0, 4.0, true),
-            (20.0, 1, 4.0, false),
-            (24.0, 2, 4.0, false),
-            (28.0, 3, 4.0, false),
+            (16.0, 2, 4.0, true),
+            (20.0, 3, 4.0, false),
+            (24.0, 4, 4.0, false),
+            (28.0, 5, 4.0, false),
         ]
     );
 
-    // Lengthening from mid-bar: the new phrase starts where the old chord
-    // ended and its chords run the new length from there.
+    // Lengthening from mid-bar: the next chord starts where the old one
+    // ended and later chords run the new length from there.
     let boundaries = chord_boundaries(
         |beat| {
             if beat < 2.0 {
@@ -4762,17 +4845,16 @@ fn chord_length_change_lands_at_the_next_chord_and_times_the_new_phrase() {
     assert_eq!(
         boundaries,
         vec![
-            (4.0, 0, 8.0, true),
-            (12.0, 1, 8.0, false),
-            (20.0, 2, 8.0, false),
-            (28.0, 3, 8.0, false)
+            (4.0, 1, 8.0, true),
+            (12.0, 2, 8.0, false),
+            (20.0, 3, 8.0, false),
+            (28.0, 4, 8.0, false)
         ]
     );
 }
 
-/// The restart compares what the engine sees at a boundary against what the
-/// phrase started with, so a value that moves between boundaries and is back
-/// on the phrase's own value at the boundary never restarts it.
+/// A value that moves between boundaries and is back on the phrase's own
+/// value at the boundary never reconfigures it.
 #[test]
 fn a_change_undone_before_the_boundary_does_not_restart_the_phrase() {
     let base = PadControls {
@@ -4794,7 +4876,11 @@ fn a_change_undone_before_the_boundary_does_not_restart_the_phrase() {
         },
         20.0,
     );
-    assert!(boundaries.iter().all(|&(_, _, _, restarted)| !restarted));
+    assert!(
+        boundaries
+            .iter()
+            .all(|&(_, _, _, reconfigured)| !reconfigured)
+    );
     assert_eq!(
         boundaries
             .iter()
@@ -6752,7 +6838,10 @@ fn chords_drill_for_index_inverts_chords_flat_index() {
     // `chords_flat_index` doesn't cover module-slot rows (their visible
     // position depends on which slots are occupied — see the dedicated
     // module-slot regression test below).
-    let controls = FluidControls::default();
+    let controls = FluidControls {
+        midi_rows: 0b00_111111,
+        ..FluidControls::default()
+    };
     for flat in 0..(10 + CHORD_SLOT_COUNT * 5) {
         let (drill, row) = chords_drill_for_index(flat, &controls);
         assert_eq!(chords_flat_index(drill, row, &controls), flat);

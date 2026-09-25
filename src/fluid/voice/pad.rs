@@ -1169,16 +1169,13 @@ impl ChordWindow {
 /// same transport beat, so they always agree on the chord without reaching
 /// into each other.
 ///
-/// A phrase is fixed once it starts. A change to Chord Length, Chord Count,
-/// Progression, or Chord Offset waits for the chord sounding now to end,
-/// then restarts the phrase: the next chord is the first of the new window
-/// (the one at slot `offset`), and the new length times it and every chord
-/// after. The sounding chord is never cut short or stretched. A boundary
-/// only restarts when the values the engine sees there (after automation
-/// has snapped them) differ from the ones the phrase started with, so
-/// automation that settles back on the phrase's own values never pins the
-/// loop to its first chord, and an auto-morph that snaps all four together
-/// lands as one restart.
+/// Window and length edits take effect at the next chord boundary without
+/// cutting short the sounding chord. A window that still contains the current
+/// slot continues with its new successor; if the current slot was removed but
+/// its old successor remains, that successor plays next. Otherwise the new
+/// window begins at its offset. Switching progressions always begins there
+/// because the slot numbers now name different chords. The old chord length
+/// times the pending boundary and the new length times later boundaries.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ProgressionCursor {
     pub(crate) window: ChordWindow,
@@ -1220,13 +1217,19 @@ impl ProgressionCursor {
         }
         let window = ChordWindow::requested(c);
         let chord_beats = c.chord_bars * 4.0;
-        if window != self.window || chord_beats != self.chord_beats {
-            self.window = window;
-            self.chord_beats = chord_beats;
-            self.step = 0;
+        let old_next_slot = self.window.slot((self.step + 1) % self.window.count);
+        self.step = if window.progression != self.window.progression {
+            0
+        } else if let Some(current_step) = window.slots().position(|slot| slot == self.slot()) {
+            (current_step + 1) % window.count
         } else {
-            self.step = (self.step + 1) % self.window.count;
-        }
+            window
+                .slots()
+                .position(|slot| slot == old_next_slot)
+                .unwrap_or(0)
+        };
+        self.window = window;
+        self.chord_beats = chord_beats;
         // Counted from the boundary itself rather than the sample that
         // noticed it, so chords stay on the transport grid.
         self.next_chord_beat =

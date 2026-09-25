@@ -89,7 +89,13 @@ impl PaletteEntry {
     /// matched against, so it cannot affect indices.
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
-            Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => (spec.display)(c),
+            Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => {
+                if super::midi_row_bit(spec.id).is_some_and(|bit| c.midi_rows & bit == 0) {
+                    "add".to_string()
+                } else {
+                    (spec.display)(c)
+                }
+            }
             // A loaded module shows its collapsed row's value, the same
             // knob its page row shows (a Filter's cutoff, not its mix).
             Self::Module { tab, catalog_index } => {

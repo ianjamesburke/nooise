@@ -43,6 +43,8 @@ const MUTE_RECORD: u8 = 3;
 const GESTURE_RECORD: u8 = 4;
 /// `u16` dial-range epoch the code was written under. Absent means epoch 0.
 const RANGE_EPOCH_RECORD: u8 = 5;
+/// Optional MIDI-row visibility; one bit per Pad, Arp, and Lead In/Out row.
+const MIDI_ROWS_RECORD: u8 = 6;
 const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
@@ -112,6 +114,8 @@ pub(crate) enum SongCodeError {
         kind: u8,
     },
     DuplicateGestureRecord,
+    InvalidMidiRows(u8),
+    DuplicateMidiRowsRecord,
     /// The code sets a control this build retired. Its value has nowhere to
     /// go, so the code is refused rather than loaded with that value missing.
     RetiredControl(&'static str),
@@ -176,6 +180,10 @@ impl fmt::Display for SongCodeError {
                 "song code repeats gesture kind {kind} on target {target}"
             ),
             Self::DuplicateGestureRecord => write!(f, "song code repeats the gesture record"),
+            Self::InvalidMidiRows(rows) => {
+                write!(f, "song code has unknown MIDI row bits {rows:#04x}")
+            }
+            Self::DuplicateMidiRowsRecord => write!(f, "song code repeats the MIDI rows record"),
             Self::RetiredControl(id) => write!(
                 f,
                 "song code sets {id}, a control this build no longer has; the code predates the \
@@ -241,6 +249,9 @@ pub(crate) fn encode_song_code_at_epoch(
     if song.muted.iter().any(|muted| *muted) {
         write_record(MUTE_RECORD, &mute_bytes(&song.muted), &mut bytes)?;
     }
+    if song.controls.midi_rows != 0 {
+        write_record(MIDI_ROWS_RECORD, &[song.controls.midi_rows], &mut bytes)?;
+    }
     let mut gestures = Vec::new();
     if write_gestures(&song.gestures, &mut gestures)? {
         write_record(GESTURE_RECORD, &gestures, &mut bytes)?;
@@ -280,6 +291,7 @@ fn decode_song_code_at_any_epoch(code: &str) -> Result<(SongState, u16), SongCod
 fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeError> {
     let mut song = SongState::default();
     let mut gesture_record_seen = false;
+    let mut midi_rows_record_seen = false;
     let mut epoch = 0;
 
     while !reader.is_empty() {
@@ -292,6 +304,18 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
             MUTE_RECORD => read_mute(payload, &mut song.muted)?,
             RANGE_EPOCH_RECORD => epoch = Reader::new(payload).u16()?,
+            MIDI_ROWS_RECORD => {
+                if midi_rows_record_seen {
+                    return Err(SongCodeError::DuplicateMidiRowsRecord);
+                }
+                midi_rows_record_seen = true;
+                let mut rows = Reader::new(payload);
+                let bits = rows.u8()?;
+                if !rows.is_empty() || bits & !0b00_111111 != 0 {
+                    return Err(SongCodeError::InvalidMidiRows(bits));
+                }
+                song.controls.midi_rows = bits;
+            }
             GESTURE_RECORD => {
                 if gesture_record_seen {
                     return Err(SongCodeError::DuplicateGestureRecord);
@@ -970,6 +994,32 @@ pub(crate) fn code_from_records(version: u8, records: &[(u8, &[u8])]) -> String 
         write_record(*record_type, payload, &mut bytes).unwrap();
     }
     format!("{CODE_PREFIX}{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+#[cfg(test)]
+mod midi_rows_record_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unknown_row_bits() {
+        let code = code_from_records(CONTAINER_VERSION, &[(MIDI_ROWS_RECORD, &[0b0100_0000])]);
+        assert_eq!(
+            decode_song_code(&code).err(),
+            Some(SongCodeError::InvalidMidiRows(0b0100_0000))
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_row_records() {
+        let code = code_from_records(
+            CONTAINER_VERSION,
+            &[(MIDI_ROWS_RECORD, &[1]), (MIDI_ROWS_RECORD, &[2])],
+        );
+        assert_eq!(
+            decode_song_code(&code).err(),
+            Some(SongCodeError::DuplicateMidiRowsRecord)
+        );
+    }
 }
 
 /// The snapshot record payload `encode_song_code` writes for `controls`.
