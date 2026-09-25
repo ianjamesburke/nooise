@@ -1027,7 +1027,7 @@ fn automation_open_or_create_uses_safe_lfo_defaults() {
 
     let route = automation.open_or_create(address);
 
-    assert_close(route.cycle_beats, 2.0);
+    assert_close(route.cycle_beats, 1.0);
     assert_close(route.depth_ratio, 0.0);
     assert_eq!(route.shape, LfoShape::Sine);
     assert_close(route.phase_offset_beats, 0.0);
@@ -1045,7 +1045,7 @@ fn lfo_field_adjust_steps_and_clamps() {
     assert_close(route.depth_ratio, 0.0);
 
     route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
-    assert_close(route.cycle_beats, 2.25);
+    assert_close(route.cycle_beats, 1.25);
     route.set_field_at(LfoField::Interval, 4.0, 0.0);
     for expected in [8.0, 12.0, 16.0, 32.0, 64.0, 64.0] {
         route.adjust_field_at(LfoField::Interval, 1.0, 0.0);
@@ -2473,9 +2473,9 @@ fn render_fluid_draws_lfo_submenu_and_animated_lane() {
     assert!(text.contains("offset"));
     assert!(text.contains("0%"));
 
-    // Default cycle is 2 beats, so beat 1.0 is the opposite phase: the lane's
+    // Default cycle is 1 beat, so beat 0.5 is the opposite phase: the lane's
     // bright head has moved even though the 0% wave glyphs are flat.
-    let at_half_cycle = draw_at(1.0);
+    let at_half_cycle = draw_at(0.5);
     assert_ne!(at_start, at_half_cycle);
 }
 
@@ -2484,8 +2484,8 @@ fn lfo_lane_is_phase_locked() {
     let route = LfoRoute::default();
 
     let start = lfo_lane_line(&route, 0.0, 24, true);
-    let same_phase = lfo_lane_line(&route, 2.0, 24, true);
-    let opposite_phase = lfo_lane_line(&route, 1.0, 24, true);
+    let same_phase = lfo_lane_line(&route, 1.0, 24, true);
+    let opposite_phase = lfo_lane_line(&route, 0.5, 24, true);
 
     let styles =
         |line: &ratatui::text::Line<'_>| line.spans.iter().map(|s| s.style).collect::<Vec<_>>();
@@ -2525,7 +2525,7 @@ fn automation_applies_bounded_lfo_offset_and_clamps_to_spec_range() {
     apply_automation(
         &mut controls,
         &automation,
-        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.25),
     );
 
     assert_close(controls.master.level, 1.0);
@@ -2570,7 +2570,7 @@ fn automation_preserves_base_controls_and_modulates_only_effective_clone() {
     apply_automation(
         &mut effective,
         &automation,
-        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.25),
     );
 
     assert_near(effective.master.level, 0.75);
@@ -3325,6 +3325,28 @@ fn song_code_decodes_snapshot_only_payload_with_empty_automation() {
     let decoded = song::decode_song_code(&code).unwrap();
 
     assert_eq!(decoded.automation.routes().count(), 0);
+}
+
+#[test]
+fn song_code_preserves_explicit_lfo_rates_when_reopened() {
+    let address = ControlAddress::new("master.level");
+    for cycle_beats in [0.125, 0.75, 1.0, 2.0, 3.25, 8.0, 64.0] {
+        let mut song = SongState::from_controls(FluidControls::default());
+        song.automation.set_route(
+            address,
+            LfoRoute {
+                cycle_beats,
+                depth_ratio: 0.4,
+                ..LfoRoute::default()
+            },
+        );
+        let code = song::encode_song_code(&song).unwrap();
+        let mut decoded = song::decode_song_code(&code).unwrap();
+        assert_eq!(
+            decoded.automation.open_or_create(address).cycle_beats,
+            cycle_beats
+        );
+    }
 }
 
 #[test]

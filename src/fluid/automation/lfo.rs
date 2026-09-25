@@ -10,7 +10,7 @@ use super::{
     FieldSpec, Stepping, clamped_index, index_at_ratio, morph_scalar_route, stepped_index,
 };
 
-pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 2.0;
+pub(crate) const DEFAULT_LFO_CYCLE_BEATS: f32 = 1.0;
 pub(crate) const DEFAULT_LFO_DEPTH_RATIO: f32 = 0.0;
 pub(crate) const MIN_LFO_CYCLE_BEATS: f32 = 0.125;
 pub(crate) const MAX_LFO_CYCLE_BEATS: f32 = 64.0;
