@@ -108,6 +108,7 @@ All feature work lands in a worktree, never in the root checkout. The root check
 - `docs/adr/`: durable architecture decisions; ADR 0001 owns the interaction-kernel and terminal-runtime contracts.
 - `docs/superpowers/`: local brainstorming specs and plans produced by the superpowers skill workflow; ignored by git and not part of the shipped crate.
 - `.stint/`: local sprint/task tracking tool state, not part of the shipped crate.
+- `ROADMAP.md`: local V2/V3 roadmap (git-ignored); orders the stint tasks, each stint stays the source of truth.
 
 ## Verification
 
