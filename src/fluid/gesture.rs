@@ -1,28 +1,38 @@
-//! Temporary performance envelopes over the running song. Audio time, rather
+//! Temporary performance envelopes over the running song's Master bus. Audio time, rather
 //! than keyboard repeat or UI ticks, determines every gesture's amount.
 
-use super::*;
+pub(crate) const GESTURE_COUNT: usize = 4;
 
-pub(crate) const GESTURE_COUNT: usize = 5;
-
+/// The discriminant is the storage index. The song-code tag is `wire_tag`,
+/// which never moves when a gesture retires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum GestureKind {
     Bloom,
     Submerge,
     Echo,
-    Thin,
     Lift,
 }
 
 impl GestureKind {
-    pub(crate) const ALL: [Self; GESTURE_COUNT] = [
-        Self::Bloom,
-        Self::Submerge,
-        Self::Echo,
-        Self::Thin,
-        Self::Lift,
-    ];
+    pub(crate) const ALL: [Self; GESTURE_COUNT] =
+        [Self::Bloom, Self::Submerge, Self::Echo, Self::Lift];
+
+    /// Wire tag 3 belonged to the retired Thin gesture and is never reused.
+    pub(crate) const RETIRED_THIN_WIRE_TAG: u8 = 3;
+
+    pub(crate) const fn wire_tag(self) -> u8 {
+        match self {
+            Self::Bloom => 0,
+            Self::Submerge => 1,
+            Self::Echo => 2,
+            Self::Lift => 4,
+        }
+    }
+
+    pub(crate) fn from_wire_tag(tag: u8) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.wire_tag() == tag)
+    }
 
     pub(crate) fn from_key(key: char) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.key() == key)
@@ -33,7 +43,6 @@ impl GestureKind {
             Self::Bloom => 'z',
             Self::Submerge => 'c',
             Self::Echo => 'v',
-            Self::Thin => 'b',
             Self::Lift => 'x',
         }
     }
@@ -43,7 +52,6 @@ impl GestureKind {
             Self::Bloom => "Bloom",
             Self::Submerge => "Submerge",
             Self::Echo => "Echo",
-            Self::Thin => "Thin",
             Self::Lift => "Lift",
         }
     }
@@ -53,7 +61,6 @@ impl GestureKind {
             Self::Bloom => 1.5,
             Self::Submerge => 1.2,
             Self::Echo => 0.7,
-            Self::Thin => 1.0,
             Self::Lift => 0.55,
         }
     }
@@ -95,40 +102,34 @@ impl GestureEnvelope {
     }
 }
 
-/// Fixed storage per layer and gesture. A released envelope may coexist with
-/// the same gesture newly held on another layer; no target change allocates.
+/// One envelope per gesture. Every gesture plays over the Master bus, so the
+/// state carries no target; the key alone names the lane.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct GestureState {
-    pub(crate) lanes: [[GestureEnvelope; GESTURE_COUNT]; TAB_COUNT],
+    pub(crate) lanes: [GestureEnvelope; GESTURE_COUNT],
 }
 
 impl GestureState {
-    pub(crate) fn envelope(&self, tab: Tab, kind: GestureKind) -> &GestureEnvelope {
-        &self.lanes[tab as usize][kind as usize]
+    pub(crate) fn envelope(&self, kind: GestureKind) -> &GestureEnvelope {
+        &self.lanes[kind as usize]
     }
 
-    pub(crate) fn amounts(&self, tab: Tab, now_seconds: f64) -> [f32; GESTURE_COUNT] {
-        GestureKind::ALL.map(|kind| self.envelope(tab, kind).amount_at(kind, now_seconds))
+    pub(crate) fn amounts(&self, now_seconds: f64) -> [f32; GESTURE_COUNT] {
+        GestureKind::ALL.map(|kind| self.envelope(kind).amount_at(kind, now_seconds))
     }
 
     pub(crate) fn has_held(&self) -> bool {
-        self.lanes.iter().flatten().any(|envelope| envelope.held)
+        self.lanes.iter().any(|envelope| envelope.held)
     }
 
-    pub(crate) fn held_target(&self, kind: GestureKind) -> Option<Tab> {
-        Tab::all()
-            .into_iter()
-            .find(|tab| self.envelope(*tab, kind).held)
-    }
-
-    pub(crate) fn press(&mut self, kind: GestureKind, tab: Tab, now_seconds: f64) {
-        // A restored hold is claimed where it was saved. Repeat/duplicate
-        // presses also cannot retarget or restart a gesture already held.
-        if let Some(held_tab) = self.held_target(kind) {
-            self.lanes[held_tab as usize][kind as usize].restored = false;
+    pub(crate) fn press(&mut self, kind: GestureKind, now_seconds: f64) {
+        let envelope = &mut self.lanes[kind as usize];
+        // A restored hold is claimed rather than restarted, and a repeat or
+        // duplicate press cannot restart a gesture already held.
+        if envelope.held {
+            envelope.restored = false;
             return;
         }
-        let envelope = &mut self.lanes[tab as usize][kind as usize];
         *envelope = GestureEnvelope {
             amount: envelope.amount_at(kind, now_seconds),
             at_seconds: now_seconds,
@@ -138,9 +139,7 @@ impl GestureState {
     }
 
     pub(crate) fn release(&mut self, kind: GestureKind, now_seconds: f64) {
-        for layer in &mut self.lanes {
-            layer[kind as usize].release(kind, now_seconds);
-        }
+        self.lanes[kind as usize].release(kind, now_seconds);
     }
 
     pub(crate) fn release_all(&mut self, now_seconds: f64) {
@@ -153,18 +152,16 @@ impl GestureState {
     /// Completed returns disappear; processor tails are deliberately absent.
     pub(crate) fn snapshot_at(&self, now_seconds: f64) -> Self {
         let mut saved = Self::default();
-        for tab in Tab::all() {
-            for kind in GestureKind::ALL {
-                let envelope = self.envelope(tab, kind);
-                let amount = envelope.amount_at(kind, now_seconds);
-                if envelope.held || amount > 0.0 {
-                    saved.lanes[tab as usize][kind as usize] = GestureEnvelope {
-                        amount,
-                        at_seconds: 0.0,
-                        held: envelope.held,
-                        restored: envelope.held,
-                    };
-                }
+        for kind in GestureKind::ALL {
+            let envelope = self.envelope(kind);
+            let amount = envelope.amount_at(kind, now_seconds);
+            if envelope.held || amount > 0.0 {
+                saved.lanes[kind as usize] = GestureEnvelope {
+                    amount,
+                    at_seconds: 0.0,
+                    held: envelope.held,
+                    restored: envelope.held,
+                };
             }
         }
         saved
@@ -172,7 +169,7 @@ impl GestureState {
 
     pub(crate) fn restored(&self) -> Self {
         let mut state = self.clone();
-        for envelope in state.lanes.iter_mut().flatten() {
+        for envelope in &mut state.lanes {
             envelope.restored = envelope.held;
         }
         state
@@ -186,27 +183,26 @@ mod tests {
     #[test]
     fn short_touch_release_and_repress_are_continuous() {
         let mut state = GestureState::default();
-        state.press(GestureKind::Submerge, Tab::Chords, 10.0);
-        let rising = state.amounts(Tab::Chords, 10.3)[1];
+        state.press(GestureKind::Submerge, 10.0);
+        let rising = state.amounts(10.3)[1];
         assert!((rising - 0.25).abs() < 1e-6);
         state.release(GestureKind::Submerge, 10.3);
-        assert_eq!(state.amounts(Tab::Chords, 10.3)[1], rising);
-        let returning = state.amounts(Tab::Chords, 10.35)[1];
+        assert_eq!(state.amounts(10.3)[1], rising);
+        let returning = state.amounts(10.35)[1];
         assert!(returning < rising);
-        state.press(GestureKind::Submerge, Tab::Chords, 10.35);
-        assert_eq!(state.amounts(Tab::Chords, 10.35)[1], returning);
-        assert!(state.amounts(Tab::Chords, 10.4)[1] > returning);
+        state.press(GestureKind::Submerge, 10.35);
+        assert_eq!(state.amounts(10.35)[1], returning);
+        assert!(state.amounts(10.4)[1] > returning);
     }
 
     #[test]
     fn every_gesture_returns_to_rest_within_fifty_milliseconds() {
         for kind in GestureKind::ALL {
             let mut state = GestureState::default();
-            state.press(kind, Tab::Chords, 0.0);
+            state.press(kind, 0.0);
             state.release(kind, kind.rise_seconds());
             assert!(
-                state.amounts(Tab::Chords, kind.rise_seconds() + 0.05)[kind as usize]
-                    <= f32::EPSILON,
+                state.amounts(kind.rise_seconds() + 0.05)[kind as usize] <= f32::EPSILON,
                 "{} did not return within 50 ms",
                 kind.name()
             );
@@ -214,56 +210,41 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_press_keeps_original_target_and_trajectory() {
+    fn duplicate_press_keeps_the_original_trajectory() {
         let mut state = GestureState::default();
-        state.press(GestureKind::Bloom, Tab::Chords, 2.0);
-        state.press(GestureKind::Bloom, Tab::Perc, 2.5);
-        assert_eq!(state.held_target(GestureKind::Bloom), Some(Tab::Chords));
-        assert_eq!(state.amounts(Tab::Perc, 3.0), [0.0; GESTURE_COUNT]);
-        assert!((state.amounts(Tab::Chords, 2.75)[0] - 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn old_target_returns_while_new_target_rises() {
-        let mut state = GestureState::default();
-        state.press(GestureKind::Bloom, Tab::Chords, 0.0);
-        state.release(GestureKind::Bloom, 1.5);
-        state.press(GestureKind::Bloom, Tab::Perc, 1.52);
-        assert!(state.amounts(Tab::Chords, 1.54)[0] > 0.0);
-        assert!(state.amounts(Tab::Perc, 1.54)[0] > 0.0);
-        assert_eq!(state.held_target(GestureKind::Bloom), Some(Tab::Perc));
+        state.press(GestureKind::Bloom, 2.0);
+        state.press(GestureKind::Bloom, 2.5);
+        assert!((state.amounts(2.75)[0] - 0.5).abs() < 1e-6);
     }
 
     #[test]
     fn snapshot_resumes_held_and_returning_trajectories_at_zero() {
         let mut state = GestureState::default();
-        state.press(GestureKind::Bloom, Tab::Chords, 8.0);
-        state.press(GestureKind::Thin, Tab::Master, 7.0);
-        state.release(GestureKind::Thin, 8.4);
+        state.press(GestureKind::Bloom, 8.0);
+        state.press(GestureKind::Lift, 7.0);
+        state.release(GestureKind::Lift, 8.4);
         let saved = state.snapshot_at(8.5);
         for offset in [0.0, 0.1, 0.2] {
-            for tab in [Tab::Chords, Tab::Master] {
-                for kind in GestureKind::ALL {
-                    assert!(
-                        (state.envelope(tab, kind).amount_at(kind, 8.5 + offset)
-                            - saved.envelope(tab, kind).amount_at(kind, offset))
-                        .abs()
-                            < 1e-6
-                    );
-                }
+            for kind in GestureKind::ALL {
+                assert!(
+                    (state.envelope(kind).amount_at(kind, 8.5 + offset)
+                        - saved.envelope(kind).amount_at(kind, offset))
+                    .abs()
+                        < 1e-6
+                );
             }
         }
-        assert!(saved.envelope(Tab::Chords, GestureKind::Bloom).restored);
+        assert!(saved.envelope(GestureKind::Bloom).restored);
     }
 
     #[test]
-    fn restored_hold_is_claimed_on_its_saved_target_then_releases() {
+    fn restored_hold_is_claimed_then_releases() {
         let mut state = GestureState::default();
-        state.press(GestureKind::Echo, Tab::Tonal, 0.0);
+        state.press(GestureKind::Echo, 0.0);
         let mut saved = state.snapshot_at(0.2);
-        saved.press(GestureKind::Echo, Tab::Master, 0.1);
-        assert_eq!(saved.held_target(GestureKind::Echo), Some(Tab::Tonal));
-        assert!(!saved.envelope(Tab::Tonal, GestureKind::Echo).restored);
+        saved.press(GestureKind::Echo, 0.1);
+        assert!(saved.envelope(GestureKind::Echo).held);
+        assert!(!saved.envelope(GestureKind::Echo).restored);
         saved.release_all(0.2);
         assert!(!saved.has_held());
         assert_eq!(saved.snapshot_at(1.0), GestureState::default());

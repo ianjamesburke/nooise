@@ -5923,40 +5923,22 @@ const POSITION_STEP: f32 = 1.0 / 65_535.0;
 /// transport state that is not persisted and must not be.
 fn assert_song_states_agree(a: &SongState, b: &SongState, label: &str) {
     assert_eq!(a.muted, b.muted, "{label}: mute state");
-    for tab in Tab::all() {
-        for kind in GestureKind::ALL {
-            let before = a.gestures.envelope(tab, kind);
-            let after = b.gestures.envelope(tab, kind);
-            assert!(
-                (before.amount - after.amount).abs() <= POSITION_STEP,
-                "{label}: {} {} gesture amount drifted ({} -> {})",
-                tab.name(),
-                kind.name(),
-                before.amount,
-                after.amount
-            );
-            assert_eq!(
-                before.held,
-                after.held,
-                "{label}: {} {} held state",
-                tab.name(),
-                kind.name()
-            );
-            assert_eq!(
-                after.restored,
-                after.held,
-                "{label}: {} {} restored marker",
-                tab.name(),
-                kind.name()
-            );
-            assert_eq!(
-                after.at_seconds,
-                0.0,
-                "{label}: {} {} time origin",
-                tab.name(),
-                kind.name()
-            );
-        }
+    for kind in GestureKind::ALL {
+        let before = a.gestures.envelope(kind);
+        let after = b.gestures.envelope(kind);
+        let name = kind.name();
+        assert!(
+            (before.amount - after.amount).abs() <= POSITION_STEP,
+            "{label}: {name} gesture amount drifted ({} -> {})",
+            before.amount,
+            after.amount
+        );
+        assert_eq!(before.held, after.held, "{label}: {name} held state");
+        assert_eq!(
+            after.restored, after.held,
+            "{label}: {name} restored marker"
+        );
+        assert_eq!(after.at_seconds, 0.0, "{label}: {name} time origin");
     }
     let mut seen = std::collections::BTreeSet::new();
     for spec in all_specs() {

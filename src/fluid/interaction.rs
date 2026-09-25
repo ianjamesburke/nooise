@@ -1117,10 +1117,7 @@ pub(crate) enum InteractionEffect {
     LeadPattern,
     /// Write the phrase just played into the lane and set it playing.
     LeadCapture,
-    GesturePress {
-        kind: GestureKind,
-        tab: Tab,
-    },
+    GesturePress(GestureKind),
     GestureRelease(GestureKind),
     GestureReleaseAll,
     Save,
@@ -1462,10 +1459,7 @@ fn update_browsing(
         }
         Intent::StartGesture(kind) => {
             if gesture_input.press(kind) {
-                effects.push(InteractionEffect::GesturePress {
-                    kind,
-                    tab: tab_for_page(navigation.page()),
-                });
+                effects.push(InteractionEffect::GesturePress(kind));
             }
         }
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),

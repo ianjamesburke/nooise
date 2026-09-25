@@ -136,7 +136,7 @@ fn every_normal_mode_gesture_changes_the_rendered_audio() {
                 .session()
                 .load()
                 .gestures
-                .amounts(Tab::Master, played.effects.session().audio_seconds(),),
+                .amounts(played.effects.session().audio_seconds(),),
             [0.0; GESTURE_COUNT]
         );
     }
@@ -154,25 +154,15 @@ fn saving_mid_swell_captures_audio_time_and_preserves_base_controls() {
         KeyModifiers::CONTROL,
     );
     let saved = decode_song_code(&played.clipboard.0).unwrap();
-    let amount = saved.gestures.amounts(Tab::Master, 0.0)[GestureKind::Submerge as usize];
+    let amount = saved.gestures.amounts(0.0)[GestureKind::Submerge as usize];
     assert!((amount - 1.0 / 3.0).abs() < 0.02, "saved amount {amount}");
-    assert!(
-        saved
-            .gestures
-            .envelope(Tab::Master, GestureKind::Submerge)
-            .held
-    );
+    assert!(saved.gestures.envelope(GestureKind::Submerge).held);
     assert_eq!(
         saved.controls.master.level,
         FluidControls::default().master.level
     );
     let restored = LiveSessionSnapshot::from_song(&saved);
-    assert!(
-        restored
-            .gestures
-            .envelope(Tab::Master, GestureKind::Submerge)
-            .restored
-    );
+    assert!(restored.gestures.envelope(GestureKind::Submerge).restored);
 }
 
 #[test]
@@ -205,16 +195,8 @@ fn restored_hold_changes_audio_and_can_be_claimed_after_navigation() {
     wet.key(KeyCode::Tab, KeyEventKind::Press, KeyModifiers::NONE);
     wet.gesture(GestureKind::Submerge, KeyEventKind::Press);
     let snapshot = wet.effects.session().load();
-    assert_eq!(
-        snapshot.gestures.held_target(GestureKind::Submerge),
-        Some(Tab::Master)
-    );
-    assert!(
-        !snapshot
-            .gestures
-            .envelope(Tab::Master, GestureKind::Submerge)
-            .restored
-    );
+    assert!(snapshot.gestures.envelope(GestureKind::Submerge).held);
+    assert!(!snapshot.gestures.envelope(GestureKind::Submerge).restored);
     wet.gesture(GestureKind::Submerge, KeyEventKind::Release);
     wet.render(0.5);
     assert_eq!(
@@ -222,7 +204,7 @@ fn restored_hold_changes_audio_and_can_be_claimed_after_navigation() {
             .session()
             .load()
             .gestures
-            .amounts(Tab::Master, wet.effects.session().audio_seconds()),
+            .amounts(wet.effects.session().audio_seconds()),
         [0.0; GESTURE_COUNT]
     );
 
@@ -245,7 +227,7 @@ fn live_gesture_keeps_auto_running_and_release_preserves_an_intervening_edit() {
         64,
     ))));
     player.render(2.0);
-    player.gesture(GestureKind::Thin, KeyEventKind::Press);
+    player.gesture(GestureKind::Lift, KeyEventKind::Press);
     player.render(0.2);
     assert!(
         player.engine.morph.load().is_some(),
@@ -265,7 +247,7 @@ fn live_gesture_keeps_auto_running_and_release_preserves_an_intervening_edit() {
         player.engine.morph.load().is_none(),
         "ordinary edits still exit auto"
     );
-    player.gesture(GestureKind::Thin, KeyEventKind::Release);
+    player.gesture(GestureKind::Lift, KeyEventKind::Release);
     player.render(0.5);
     assert_eq!(
         player.effects.session().load().controls.master.bpm,
@@ -277,7 +259,7 @@ fn live_gesture_keeps_auto_running_and_release_preserves_an_intervening_edit() {
             .session()
             .load()
             .gestures
-            .amounts(Tab::Master, player.effects.session().audio_seconds(),),
+            .amounts(player.effects.session().audio_seconds(),),
         [0.0; GESTURE_COUNT]
     );
 }

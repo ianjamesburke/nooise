@@ -1521,7 +1521,7 @@ fn gesture_press_repeat_navigation_and_modified_release_follow_the_production_pa
         result
             .effects
             .iter()
-            .any(|effect| { effect.starts_with("GesturePress { kind: Bloom, tab: Chords }") })
+            .any(|effect| { effect.starts_with("GesturePress(Bloom)") })
     );
     assert_eq!(
         result
@@ -1793,9 +1793,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 generation: 1,
                 automation: None,
                 intents: vec![Intent::StartGesture(GestureKind::Lift)],
-                effects: vec![
-                    "GesturePress { kind: Lift, tab: Chords }=>OK:Published { generation: 1 }",
-                ],
+                effects: vec!["GesturePress(Lift)=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "unit flip" => ExpectedBinding {

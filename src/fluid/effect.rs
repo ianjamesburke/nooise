@@ -556,7 +556,7 @@ impl EffectExecutor {
             | InteractionEffect::LeadNudge { .. }
             | InteractionEffect::LeadPattern
             | InteractionEffect::LeadCapture
-            | InteractionEffect::GesturePress { .. }
+            | InteractionEffect::GesturePress(_)
             | InteractionEffect::GestureRelease(_)
             | InteractionEffect::GestureReleaseAll) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
@@ -842,11 +842,11 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
-            InteractionEffect::GesturePress { kind, tab } => {
+            InteractionEffect::GesturePress(kind) => {
                 let now_seconds = self.session.audio_seconds();
                 let snapshot = self
                     .session
-                    .update(|snapshot| snapshot.gestures.press(kind, tab, now_seconds));
+                    .update(|snapshot| snapshot.gestures.press(kind, now_seconds));
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
@@ -958,11 +958,15 @@ mod tests {
         executor_with(FluidControls::default())
     }
 
+    /// Seeded, so every random roll a test asserts on is the same draw on
+    /// every run. An entropy seed let a roll land on the value already there
+    /// (the amount grid is quantized) and fail "it rolls" about 1 run in 100.
     fn executor_with(controls: FluidControls) -> EffectExecutor {
         let session = LiveSession::new(LiveSessionSnapshot::from_controls(controls));
-        EffectExecutor::new(
+        EffectExecutor::seeded(
             session,
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+            42,
         )
     }
 

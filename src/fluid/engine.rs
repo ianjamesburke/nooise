@@ -663,15 +663,7 @@ impl StereoEngine for FluidEngine {
             self.pad.next(&effective.pad, tune, timing),
             timing,
         );
-        let (pad_l, pad_r) = gate_stereo(
-            self.gesture_audio.process(
-                Tab::Chords,
-                pad,
-                self.gesture_snapshot.amounts(Tab::Chords, now_seconds),
-                timing,
-            ),
-            mute_gains[Tab::Chords as usize],
-        );
+        let (pad_l, pad_r) = gate_stereo(pad, mute_gains[Tab::Chords as usize]);
         let perc = self.module_fx.process(
             Tab::Perc,
             &effective.modules.perc,
@@ -681,60 +673,28 @@ impl StereoEngine for FluidEngine {
             },
             timing,
         );
-        let (perc_l, perc_r) = gate_stereo(
-            self.gesture_audio.process(
-                Tab::Perc,
-                perc,
-                self.gesture_snapshot.amounts(Tab::Perc, now_seconds),
-                timing,
-            ),
-            mute_gains[Tab::Perc as usize],
-        );
+        let (perc_l, perc_r) = gate_stereo(perc, mute_gains[Tab::Perc as usize]);
         let kick = self.module_fx.process(
             Tab::Kick,
             &effective.modules.kick,
             self.kick.next(&effective.kick, timing),
             timing,
         );
-        let (kick_l, kick_r) = gate_stereo(
-            self.gesture_audio.process(
-                Tab::Kick,
-                kick,
-                self.gesture_snapshot.amounts(Tab::Kick, now_seconds),
-                timing,
-            ),
-            mute_gains[Tab::Kick as usize],
-        );
+        let (kick_l, kick_r) = gate_stereo(kick, mute_gains[Tab::Kick as usize]);
         let tonal = self.module_fx.process(
             Tab::Tonal,
             &effective.modules.tonal,
             self.tonal.next(&effective.tonal, tune, timing),
             timing,
         );
-        let (ton_l, ton_r) = gate_stereo(
-            self.gesture_audio.process(
-                Tab::Tonal,
-                tonal,
-                self.gesture_snapshot.amounts(Tab::Tonal, now_seconds),
-                timing,
-            ),
-            mute_gains[Tab::Tonal as usize],
-        );
+        let (ton_l, ton_r) = gate_stereo(tonal, mute_gains[Tab::Tonal as usize]);
         let clap = self.module_fx.process(
             Tab::Clap,
             &effective.modules.clap,
             self.clap.next(&effective.clap, timing),
             timing,
         );
-        let (clap_l, clap_r) = gate_stereo(
-            self.gesture_audio.process(
-                Tab::Clap,
-                clap,
-                self.gesture_snapshot.amounts(Tab::Clap, now_seconds),
-                timing,
-            ),
-            mute_gains[Tab::Clap as usize],
-        );
+        let (clap_l, clap_r) = gate_stereo(clap, mute_gains[Tab::Clap as usize]);
         let bass = self.module_fx.process(
             Tab::Bass,
             &effective.modules.bass,
@@ -742,30 +702,14 @@ impl StereoEngine for FluidEngine {
                 .next(&effective.bass, &effective.pad, tune, timing),
             timing,
         );
-        let (bass_l, bass_r) = gate_stereo(
-            self.gesture_audio.process(
-                Tab::Bass,
-                bass,
-                self.gesture_snapshot.amounts(Tab::Bass, now_seconds),
-                timing,
-            ),
-            mute_gains[Tab::Bass as usize],
-        );
+        let (bass_l, bass_r) = gate_stereo(bass, mute_gains[Tab::Bass as usize]);
         let arp = self.module_fx.process(
             Tab::Arp,
             &effective.modules.arp,
             self.arp.next(&effective.arp, &effective.pad, tune, timing),
             timing,
         );
-        let (arp_l, arp_r) = gate_stereo(
-            self.gesture_audio.process(
-                Tab::Arp,
-                arp,
-                self.gesture_snapshot.amounts(Tab::Arp, now_seconds),
-                timing,
-            ),
-            mute_gains[Tab::Arp as usize],
-        );
+        let (arp_l, arp_r) = gate_stereo(arp, mute_gains[Tab::Arp as usize]);
         let lead = self.module_fx.process(
             Tab::Lead,
             &effective.modules.lead,
@@ -773,15 +717,7 @@ impl StereoEngine for FluidEngine {
                 .next(&effective.lead, &effective.pad, tune, timing),
             timing,
         );
-        let (lead_l, lead_r) = gate_stereo(
-            self.gesture_audio.process(
-                Tab::Lead,
-                lead,
-                self.gesture_snapshot.amounts(Tab::Lead, now_seconds),
-                timing,
-            ),
-            mute_gains[Tab::Lead as usize],
-        );
+        let (lead_l, lead_r) = gate_stereo(lead, mute_gains[Tab::Lead as usize]);
         self.current_sample += 1;
 
         let voices_l = VoiceMix {
@@ -812,12 +748,9 @@ impl StereoEngine for FluidEngine {
             (raw_l, raw_r),
             timing,
         );
-        let master = self.gesture_audio.process(
-            Tab::Master,
-            master,
-            self.gesture_snapshot.amounts(Tab::Master, now_seconds),
-            timing,
-        );
+        let master =
+            self.gesture_audio
+                .process(master, self.gesture_snapshot.amounts(now_seconds), timing);
         gate_stereo(
             self.master_bus
                 .process(master.0, master.1, &effective.master),
