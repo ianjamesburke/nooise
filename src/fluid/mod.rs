@@ -7,8 +7,9 @@
 
 use std::error::Error;
 use std::f32::consts::TAU;
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -45,6 +46,7 @@ mod engine;
 mod gesture;
 mod interaction;
 mod module;
+mod osc;
 mod palette;
 mod range_epoch;
 mod registry;
@@ -124,7 +126,25 @@ pub(crate) struct FluidTelemetry {
     pub(crate) kick_pulse: AtomicU64,
     /// Engine beat position as `f64::to_bits`, for beat-synced UI animation.
     pub(crate) beat_bits: AtomicU64,
+    /// `kick.level` at the latest hit (`f32::to_bits`), stored before
+    /// `kick_pulse` advances so a reader that sees the hit sees its level.
+    pub(crate) kick_level_bits: AtomicU32,
+    /// Pad attack and release seconds (`f32::to_bits`) of the layer voiced by
+    /// the latest chord change, stored before `chord_slot` is written.
+    pub(crate) chord_attack_bits: AtomicU32,
+    pub(crate) chord_release_bits: AtomicU32,
+    /// Per-`Tab` output RMS over the latest `LEVEL_BLOCK` frames
+    /// (`f32::to_bits`), each voice as it enters the mix (post effects, mute,
+    /// and mix weight) and `Tab::Master` as the final output: what is actually
+    /// audible, so consumers can tell silence from tempo and see every layer.
+    pub(crate) level_bits: [AtomicU32; TAB_COUNT],
+    /// Per-`GestureKind` Master-bus amount (`f32::to_bits`), published each
+    /// `LEVEL_BLOCK` frames so a consumer can mirror a held gesture.
+    pub(crate) gesture_bits: [AtomicU32; GESTURE_COUNT],
 }
+
+/// Frames per level measurement (~5.8 ms at 44.1 kHz).
+pub(crate) const LEVEL_BLOCK: u64 = 256;
 
 impl FluidTelemetry {
     pub(crate) fn publish_beat(&self, beat: f64) {
@@ -134,6 +154,38 @@ impl FluidTelemetry {
     pub(crate) fn beat(&self) -> f64 {
         f64::from_bits(self.beat_bits.load(Ordering::Relaxed))
     }
+
+    pub(crate) fn publish_kick(&self, level: f32) {
+        self.kick_level_bits
+            .store(level.to_bits(), Ordering::Relaxed);
+        self.kick_pulse.fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn publish_chord(&self, slot: u64, attack_secs: f32, release_secs: f32) {
+        self.chord_attack_bits
+            .store(attack_secs.to_bits(), Ordering::Relaxed);
+        self.chord_release_bits
+            .store(release_secs.to_bits(), Ordering::Relaxed);
+        self.chord_slot.store(slot, Ordering::Release);
+    }
+
+    pub(crate) fn publish_level(&self, tab: Tab, rms: f32) {
+        self.level_bits[tab as usize].store(rms.to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn publish_gesture(&self, kind: GestureKind, amount: f32) {
+        self.gesture_bits[kind as usize].store(amount.to_bits(), Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gesture(&self, kind: GestureKind) -> f32 {
+        f32::from_bits(self.gesture_bits[kind as usize].load(Ordering::Relaxed))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn level(&self, tab: Tab) -> f32 {
+        f32::from_bits(self.level_bits[tab as usize].load(Ordering::Relaxed))
+    }
 }
 
 // ============================================================
@@ -142,9 +194,12 @@ impl FluidTelemetry {
 
 const APP_ID: &str = "nooise";
 
-pub(crate) fn run() -> Result<(), Box<dyn Error>> {
+/// Where a bare `--osc` sends: foorm's default listen address.
+pub(crate) const DEFAULT_OSC_TARGET: &str = "127.0.0.1:9000";
+
+pub(crate) fn run(osc: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
-    run_with_song_state(randomized_start_song(&mut rng))
+    run_with_song_state(randomized_start_song(&mut rng), osc)
 }
 
 fn randomized_start_song(rng: &mut impl Rng) -> SongState {
@@ -153,24 +208,33 @@ fn randomized_start_song(rng: &mut impl Rng) -> SongState {
     SongState::from_controls(controls)
 }
 
-pub(crate) fn run_with_song_state(initial_song: SongState) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run_with_song_state(
+    initial_song: SongState,
+    osc: Option<SocketAddr>,
+) -> Result<(), Box<dyn Error>> {
     // Interactive start: no morph running. `A` can begin one live, heading
     // toward the built-in states from wherever the user currently is.
     let auto_states = decode_auto_states();
-    run_interactive(initial_song, no_morph(), auto_states, DEFAULT_AUTO_BARS)
+    run_interactive(
+        initial_song,
+        no_morph(),
+        auto_states,
+        DEFAULT_AUTO_BARS,
+        osc,
+    )
 }
 
 /// Run the live interactive TUI already morphing forever between the built-in
 /// `AUTO_STATES` over `bars`-bar legs (`nooise auto [BARS]`). `A` toggles it off
 /// — as does touching any parameter — and back on from the current state.
-pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run_auto(bars: u32, osc: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
     let states = decode_auto_states();
     let initial_song = states[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
         states.clone(),
         bars,
     ))));
-    run_interactive(initial_song, morph, states, bars)
+    run_interactive(initial_song, morph, states, bars, osc)
 }
 
 /// Play built-in songs by number (`nooise 9`, `nooise 9,10,11`). One song
@@ -178,7 +242,11 @@ pub(crate) fn run_auto(bars: u32) -> Result<(), Box<dyn Error>> {
 /// one-based to match the AUTO footer, and an unknown one is an error rather
 /// than a silent skip — a mistyped song should say so, not quietly play
 /// something else.
-pub(crate) fn run_songs(numbers: &[usize], bars: u32) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run_songs(
+    numbers: &[usize],
+    bars: u32,
+    osc: Option<SocketAddr>,
+) -> Result<(), Box<dyn Error>> {
     let all = decode_auto_states();
     if numbers.is_empty() {
         return Err("expected at least one song".into());
@@ -202,18 +270,20 @@ pub(crate) fn run_songs(numbers: &[usize], bars: u32) -> Result<(), Box<dyn Erro
         numbers.to_vec(),
         bars,
     ))));
-    run_interactive(initial_song, morph, chosen, bars)
+    run_interactive(initial_song, morph, chosen, bars, osc)
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
 /// around the aggregate live session, telemetry, and morph state. `morph` starts
 /// `Some` for `nooise auto` and `None` otherwise; `auto_states`/`auto_bars` let
-/// the UI build a fresh morph when the user toggles auto mode on live.
+/// the UI build a fresh morph when the user toggles auto mode on live. `osc`
+/// names a UDP target to mirror telemetry to for external visualizers.
 fn run_interactive(
     initial_song: SongState,
     morph: Arc<ArcSwap<Option<MorphState>>>,
     auto_states: Vec<SongState>,
     auto_bars: u32,
+    osc: Option<SocketAddr>,
 ) -> Result<(), Box<dyn Error>> {
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
     let session_for_engine = session.clone();
@@ -222,6 +292,9 @@ fn run_interactive(
     let telemetry_for_engine = Arc::clone(&telemetry);
     let updates = UpdateNotice::default();
     spawn_update_check(updates.clone());
+    let _osc_emitter = osc
+        .map(|target| osc::OscEmitter::spawn(target, Arc::clone(&telemetry)))
+        .transpose()?;
 
     let _audio_output = audio::start_stream(APP_ID, move |sr| {
         FluidEngine::new_with_tonal_session_state(

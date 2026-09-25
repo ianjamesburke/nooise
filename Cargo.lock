@@ -206,6 +206,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95832e849adfb21180ccb6826a99da14e5d266ae5c2e668e1602cf234f153797"
 
 [[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
 name = "byteorder-lite"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1394,6 +1400,7 @@ dependencies = [
  "hound",
  "rand 0.8.8",
  "ratatui",
+ "rosc",
  "update-informer",
 ]
 
@@ -1992,6 +1999,17 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rosc"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd37602e1513794e952274082d074e8d31aa7f64d047e3acb746c91db40600a5"
+dependencies = [
+ "byteorder",
+ "nom",
+ "time",
 ]
 
 [[package]]

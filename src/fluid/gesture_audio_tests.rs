@@ -143,6 +143,22 @@ fn every_normal_mode_gesture_changes_the_rendered_audio() {
 }
 
 #[test]
+fn held_gesture_amount_reaches_telemetry_and_returns_on_release() {
+    let mut played = GesturePlayer::new(12_000.0);
+    played.render(0.5);
+    assert_eq!(played.engine.telemetry.gesture(GestureKind::Lift), 0.0);
+    played.gesture(GestureKind::Lift, KeyEventKind::Press);
+    played.render(0.3);
+    let rising = played.engine.telemetry.gesture(GestureKind::Lift);
+    assert!(rising > 0.3 && rising < 1.0, "lift amount {rising}");
+    played.render(1.0);
+    assert_eq!(played.engine.telemetry.gesture(GestureKind::Lift), 1.0);
+    played.gesture(GestureKind::Lift, KeyEventKind::Release);
+    played.render(0.5);
+    assert_eq!(played.engine.telemetry.gesture(GestureKind::Lift), 0.0);
+}
+
+#[test]
 fn saving_mid_swell_captures_audio_time_and_preserves_base_controls() {
     let mut played = GesturePlayer::new(12_000.0);
     played.render(2.0);
