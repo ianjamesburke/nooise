@@ -256,6 +256,8 @@ impl Default for BassControls {
 #[derive(Clone)]
 pub(crate) struct ArpControls {
     pub(crate) gain: f32,
+    pub(crate) midi_out: f32,
+    pub(crate) midi_gate_beats: f32,
     pub(crate) voice_type: f32, // same Sine/piano-profile set as tonal.synth_type
     pub(crate) rate_beats: f32,
     pub(crate) offset_beats: f32,
@@ -272,6 +274,8 @@ impl Default for ArpControls {
             // Silent by default: a new voice must never change the sound of
             // existing songs or a fresh startup.
             gain: 0.0,
+            midi_out: 0.0,
+            midi_gate_beats: 0.5,
             // 6 => the "Pluck" piano profile, matching the arp's former
             // fixed synth character byte-for-byte.
             voice_type: 6.0,

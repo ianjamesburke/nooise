@@ -1,6 +1,7 @@
 //! The Arp voice: cycles the Pad's current chord tones on its own grid.
 
 use super::*;
+use crate::midi::{MidiMessage, MidiSink, tuned_note};
 
 pub(crate) const ARP_RATE_BEATS_MIN: f32 = 0.125;
 pub(crate) const ARP_RATE_BEATS_MAX: f32 = 4.0;
@@ -100,6 +101,8 @@ pub(crate) struct ArpEngine {
     pub(crate) voices: Vec<TonalVoice>,
     pub(crate) rng: StdRng,
     pub(crate) telemetry: Arc<FluidTelemetry>,
+    midi: Option<MidiSink>,
+    midi_active_until_beat: Option<f64>,
 }
 
 impl ArpEngine {
@@ -118,7 +121,13 @@ impl ArpEngine {
             voices: Vec::with_capacity(8),
             rng: StdRng::from_entropy(),
             telemetry,
+            midi: None,
+            midi_active_until_beat: None,
         }
+    }
+
+    pub(crate) fn set_midi(&mut self, sink: MidiSink) {
+        self.midi = Some(sink);
     }
 
     pub(crate) fn next(
@@ -132,6 +141,19 @@ impl ArpEngine {
         // resolve through, so a custom progression drives all three
         // identically.
         let (progression, slot) = self.progression.follow(pad, timing);
+        let midi_enabled = c.midi_out >= 0.5 && self.midi.is_some();
+        if self.midi_active_until_beat.is_some()
+            && (!midi_enabled
+                || timing.transport == Transport::Stopped
+                || self
+                    .midi_active_until_beat
+                    .is_some_and(|end| timing.beat >= end))
+        {
+            if let Some(sink) = &self.midi {
+                sink.send(MidiMessage::ArpOff);
+            }
+            self.midi_active_until_beat = None;
+        }
 
         let rate_beats = c.rate_beats.clamp(ARP_RATE_BEATS_MIN, ARP_RATE_BEATS_MAX);
         if self
@@ -148,6 +170,12 @@ impl ArpEngine {
 
             let pattern = arp_pattern_from_control(c.pattern);
             let note = notes[self.cycle_pos];
+            if midi_enabled {
+                if let Some(sink) = &self.midi {
+                    sink.send(MidiMessage::ArpNote(tuned_note(note, tune)));
+                }
+                self.midi_active_until_beat = Some(timing.beat + f64::from(c.midi_gate_beats));
+            }
 
             let (next_pos, next_dir) = arp_advance(
                 self.cycle_pos,
@@ -165,10 +193,9 @@ impl ArpEngine {
             // instead of being cut at the step. `rate_beats` only sets the
             // trigger spacing below.
             let pan = self.rng.gen_range(-0.4f32..0.4);
-            // A silent layer still triggers nothing: skipping keeps a Vol of
-            // exactly 0 (the default) from accumulating inaudible voices.
-            // Every RNG draw above still happens, keeping seeded renders
-            // byte-identical.
+            // Audio Level 0 skips voice allocation. MIDI Out is independent
+            // of that level, so an external synth can play alone. Every RNG
+            // draw above still happens, keeping seeded renders byte-identical.
             if c.gain != 0.0 {
                 self.voices.push(TonalVoice::new(
                     wrapped_index(c.voice_type, TONAL_SYNTH_TYPES.len()),
@@ -181,6 +208,8 @@ impl ArpEngine {
                         decay_time: c.decay,
                     },
                 ));
+            }
+            if c.gain != 0.0 || midi_enabled {
                 self.telemetry
                     .publish_hit(MusicalHit::Arp, c.gain, pitch_class(note));
             }

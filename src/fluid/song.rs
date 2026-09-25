@@ -1513,4 +1513,14 @@ mod song_value_tests {
         assert_eq!(decoded.controls.pad.gate_beats, 1.0);
         assert_eq!(decoded.controls.pad.steps, song.controls.pad.steps);
     }
+
+    #[test]
+    fn arp_midi_mode_and_gate_round_trip() {
+        let mut song = SongState::default();
+        song.controls.arp.midi_out = 1.0;
+        song.controls.arp.midi_gate_beats = 1.0;
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(decoded.controls.arp.midi_out, 1.0);
+        assert_eq!(decoded.controls.arp.midi_gate_beats, 1.0);
+    }
 }

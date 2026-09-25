@@ -1,5 +1,5 @@
 //! Opt-in MIDI output: a bounded audio-thread event queue and one MIDI
-//! sender thread. Channel 1 carries Pad chords; system real-time messages
+//! sender thread. Channel 1 carries Pad chords or Arp notes; system real-time messages
 //! carry the engine's transport and 24 PPQN clock.
 
 use std::error::Error;
@@ -15,6 +15,7 @@ use crate::fluid::{TimingContext, Transport};
 const QUEUE_CAPACITY: usize = 4096;
 const CLOCKS_PER_BEAT: f64 = 24.0;
 const PAD_VELOCITY: u8 = 100;
+const ARP_VELOCITY: u8 = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MidiMessage {
@@ -24,6 +25,8 @@ pub(crate) enum MidiMessage {
     Clock,
     PadChord([u8; 4]),
     PadOff,
+    ArpNote(u8),
+    ArpOff,
     Shutdown,
 }
 
@@ -139,12 +142,12 @@ fn write_events(
     receiver: mpsc::Receiver<MidiMessage>,
     overflowed: Arc<AtomicBool>,
 ) {
-    let mut active: Option<[u8; 4]> = None;
+    let mut active = ActiveNotes::default();
     while let Ok(message) = receiver.recv() {
         if overflowed.swap(false, Ordering::AcqRel) {
             // A dropped Note Off must never leave a stuck note on the synth.
             let _ = connection.send(&[0xb0, 123, 0]);
-            active = None;
+            active = ActiveNotes::default();
         }
         match dispatch(message, &mut active, &mut |bytes| connection.send(bytes)) {
             Ok(true) => {}
@@ -156,13 +159,19 @@ fn write_events(
             }
         }
     }
-    let _ = release_pad(&mut active, &mut |bytes| connection.send(bytes));
+    let _ = release_all(&mut active, &mut |bytes| connection.send(bytes));
     let _ = connection.send(&[0xfc]);
+}
+
+#[derive(Default)]
+struct ActiveNotes {
+    pad: Option<[u8; 4]>,
+    arp: Option<u8>,
 }
 
 fn dispatch<E>(
     message: MidiMessage,
-    active: &mut Option<[u8; 4]>,
+    active: &mut ActiveNotes,
     send: &mut impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<bool, E> {
     match message {
@@ -171,15 +180,21 @@ fn dispatch<E>(
         MidiMessage::Stop => send(&[0xfc])?,
         MidiMessage::Clock => send(&[0xf8])?,
         MidiMessage::PadChord(notes) => {
-            release_pad(active, send)?;
-            *active = Some(notes);
+            release_all(active, send)?;
+            active.pad = Some(notes);
             for note in notes {
                 send(&[0x90, note, PAD_VELOCITY])?;
             }
         }
         MidiMessage::PadOff => release_pad(active, send)?,
+        MidiMessage::ArpNote(note) => {
+            release_all(active, send)?;
+            active.arp = Some(note);
+            send(&[0x90, note, ARP_VELOCITY])?;
+        }
+        MidiMessage::ArpOff => release_arp(active, send)?,
         MidiMessage::Shutdown => {
-            release_pad(active, send)?;
+            release_all(active, send)?;
             send(&[0xb0, 123, 0])?;
             send(&[0xfc])?;
             return Ok(false);
@@ -189,15 +204,33 @@ fn dispatch<E>(
 }
 
 fn release_pad<E>(
-    active: &mut Option<[u8; 4]>,
+    active: &mut ActiveNotes,
     send: &mut impl FnMut(&[u8]) -> Result<(), E>,
 ) -> Result<(), E> {
-    if let Some(notes) = active.take() {
+    if let Some(notes) = active.pad.take() {
         for note in notes {
             send(&[0x80, note, 0])?;
         }
     }
     Ok(())
+}
+
+fn release_arp<E>(
+    active: &mut ActiveNotes,
+    send: &mut impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<(), E> {
+    if let Some(note) = active.arp.take() {
+        send(&[0x80, note, 0])?;
+    }
+    Ok(())
+}
+
+fn release_all<E>(
+    active: &mut ActiveNotes,
+    send: &mut impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<(), E> {
+    release_pad(active, send)?;
+    release_arp(active, send)
 }
 
 pub(crate) struct MidiClockFollower {
@@ -225,6 +258,7 @@ impl MidiClockFollower {
                 }),
                 Transport::Stopped => {
                     self.sink.send(MidiMessage::PadOff);
+                    self.sink.send(MidiMessage::ArpOff);
                     self.sink.send(MidiMessage::Stop);
                 }
             }
@@ -243,12 +277,17 @@ impl MidiClockFollower {
 impl Drop for MidiClockFollower {
     fn drop(&mut self) {
         self.sink.send(MidiMessage::PadOff);
+        self.sink.send(MidiMessage::ArpOff);
         self.sink.send(MidiMessage::Stop);
     }
 }
 
 pub(crate) fn pad_notes(notes: [i32; 4], tune: f32) -> [u8; 4] {
-    notes.map(|note| (note + tune.round() as i32).clamp(0, 127) as u8)
+    notes.map(|note| tuned_note(note, tune))
+}
+
+pub(crate) fn tuned_note(note: i32, tune: f32) -> u8 {
+    (note + tune.round() as i32).clamp(0, 127) as u8
 }
 
 #[cfg(test)]
@@ -279,6 +318,7 @@ mod tests {
                 MidiMessage::Clock,
                 MidiMessage::Clock,
                 MidiMessage::PadOff,
+                MidiMessage::ArpOff,
                 MidiMessage::Stop,
                 MidiMessage::Continue,
             ]
@@ -293,7 +333,7 @@ mod tests {
     #[test]
     fn pad_chord_change_releases_old_notes_and_shutdown_clears_channel_one() {
         let mut packets = Vec::<Vec<u8>>::new();
-        let mut active = None;
+        let mut active = ActiveNotes::default();
         let mut send = |bytes: &[u8]| {
             packets.push(bytes.to_vec());
             Ok::<(), ()>(())
@@ -324,5 +364,55 @@ mod tests {
             ]
         );
         assert_eq!(&packets[16..], &[vec![0xb0, 123, 0], vec![0xfc]]);
+    }
+
+    #[test]
+    fn arp_note_replaces_pad_chord_and_releases_on_gate_end() {
+        let mut packets = Vec::<Vec<u8>>::new();
+        let mut active = ActiveNotes::default();
+        let mut send = |bytes: &[u8]| {
+            packets.push(bytes.to_vec());
+            Ok::<(), ()>(())
+        };
+        dispatch(
+            MidiMessage::PadChord([48, 52, 55, 60]),
+            &mut active,
+            &mut send,
+        )
+        .unwrap();
+        dispatch(MidiMessage::ArpNote(64), &mut active, &mut send).unwrap();
+        dispatch(MidiMessage::ArpOff, &mut active, &mut send).unwrap();
+        assert_eq!(
+            &packets[4..],
+            &[
+                vec![0x80, 48, 0],
+                vec![0x80, 52, 0],
+                vec![0x80, 55, 0],
+                vec![0x80, 60, 0],
+                vec![0x90, 64, ARP_VELOCITY],
+                vec![0x80, 64, 0],
+            ]
+        );
+    }
+
+    #[test]
+    fn shutdown_releases_an_active_arp_note() {
+        let mut packets = Vec::<Vec<u8>>::new();
+        let mut active = ActiveNotes::default();
+        let mut send = |bytes: &[u8]| {
+            packets.push(bytes.to_vec());
+            Ok::<(), ()>(())
+        };
+        dispatch(MidiMessage::ArpNote(64), &mut active, &mut send).unwrap();
+        assert!(!dispatch(MidiMessage::Shutdown, &mut active, &mut send).unwrap());
+        assert_eq!(
+            packets,
+            [
+                vec![0x90, 64, ARP_VELOCITY],
+                vec![0x80, 64, 0],
+                vec![0xb0, 123, 0],
+                vec![0xfc],
+            ]
+        );
     }
 }

@@ -606,6 +606,7 @@ impl FluidEngine {
 
     pub(crate) fn with_midi(mut self, sink: MidiSink) -> Self {
         self.pad.set_midi(sink.clone());
+        self.arp.set_midi(sink.clone());
         self.midi_clock = Some(MidiClockFollower::new(sink));
         self
     }
@@ -679,6 +680,7 @@ impl StereoEngine for FluidEngine {
         let now_seconds = self.current_sample as f64 / self.sample_rate as f64;
 
         let tune = effective.master.tune;
+        self.pad.set_midi_suppressed(effective.arp.midi_out >= 0.5);
         let pad = self.module_fx.process(
             Tab::Chords,
             &effective.modules.pad,

@@ -6,7 +6,7 @@
 use super::interaction::ChordDrill;
 use super::song_ids::song_id_index;
 use super::*;
-use crate::midi::{MidiMessage, MidiSink, pad_notes};
+use crate::midi::{MidiMessage, MidiSink, pad_notes, tuned_note};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ratatui::backend::TestBackend;
@@ -1243,7 +1243,7 @@ fn midi_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop()
     }
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::PadOff, MidiMessage::Stop]
+        [MidiMessage::PadOff, MidiMessage::ArpOff, MidiMessage::Stop]
     );
     session.update(|snapshot| snapshot.transport = Transport::Playing);
     for _ in 0..128 {
@@ -1253,6 +1253,111 @@ fn midi_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop()
         receiver.try_iter().collect::<Vec<_>>(),
         [MidiMessage::Continue, MidiMessage::PadChord(expected)]
     );
+}
+
+#[test]
+fn arp_midi_plays_at_zero_audio_level_and_releases_at_its_gate() {
+    let controls = ArpControls {
+        gain: 0.0,
+        midi_out: 1.0,
+        rate_beats: 1.0,
+        midi_gate_beats: 0.5,
+        ..ArpControls::default()
+    };
+    let pad = PadControls::default();
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut arp = ArpEngine::new(SAMPLE_RATE);
+    arp.set_midi(sink);
+    let first_note = tuned_note(pad_chord_tones(&pad, 0, 0)[0], 5.0);
+    for beat in [0.0, 0.25, 0.5] {
+        let audio = arp.next(
+            &controls,
+            &pad,
+            5.0,
+            TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
+        );
+        assert_eq!(audio, (0.0, 0.0));
+    }
+    assert_eq!(
+        receiver.try_iter().collect::<Vec<_>>(),
+        [MidiMessage::ArpNote(first_note), MidiMessage::ArpOff]
+    );
+}
+
+#[test]
+fn arp_midi_uses_the_swung_note_grid() {
+    let controls = ArpControls {
+        gain: 0.0,
+        midi_out: 1.0,
+        rate_beats: 0.5,
+        midi_gate_beats: 0.5,
+        swing: 1.0,
+        ..ArpControls::default()
+    };
+    let pad = PadControls::default();
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut arp = ArpEngine::new(SAMPLE_RATE);
+    arp.set_midi(sink);
+    for beat in [0.0, 0.5] {
+        arp.next(
+            &controls,
+            &pad,
+            0.0,
+            TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
+        );
+    }
+    let before_offbeat = receiver.try_iter().collect::<Vec<_>>();
+    assert_eq!(
+        before_offbeat,
+        [
+            MidiMessage::ArpNote(tuned_note(pad_chord_tones(&pad, 0, 0)[0], 0.0)),
+            MidiMessage::ArpOff,
+        ]
+    );
+    arp.next(
+        &controls,
+        &pad,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.75),
+    );
+    assert!(matches!(
+        receiver.try_iter().collect::<Vec<_>>().as_slice(),
+        [MidiMessage::ArpNote(_)]
+    ));
+}
+
+#[test]
+fn arp_midi_mode_replaces_pad_midi_and_restores_it_when_off() {
+    let mut controls = FluidControls::default();
+    controls.arp.midi_out = 1.0;
+    controls.arp.gain = 0.0;
+    let session = live_session(controls, AutomationState::default());
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session.clone(),
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    )
+    .with_midi(sink);
+    engine.next_stereo();
+    let initial: Vec<_> = receiver
+        .try_iter()
+        .filter(|event| matches!(event, MidiMessage::ArpNote(_) | MidiMessage::PadChord(_)))
+        .collect();
+    assert!(matches!(initial.as_slice(), [MidiMessage::ArpNote(_)]));
+    session.update(|snapshot| snapshot.controls.arp.midi_out = 0.0);
+    for _ in 0..128 {
+        engine.next_stereo();
+    }
+    let restored: Vec<_> = receiver
+        .try_iter()
+        .filter(|event| matches!(event, MidiMessage::ArpOff | MidiMessage::PadChord(_)))
+        .collect();
+    assert!(matches!(
+        restored.as_slice(),
+        [MidiMessage::PadChord(_), MidiMessage::ArpOff]
+    ));
 }
 
 #[test]
@@ -2342,7 +2447,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Arp,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain,
+                Gain, Discrete, Timing, Timing, Timing, Discrete, Timing, Timing, Discrete,
+                Discrete, Gain,
             ],
         ),
         (

@@ -1655,6 +1655,25 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
     "arp",
     [
         gain_pct!("arp.gain", "Level", arp.gain),
+        ControlSpec::new(
+            "arp.midi_out",
+            "MIDI Out",
+            ControlKind::Discrete,
+            0.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.arp.midi_out,
+            |c, v| c.arp.midi_out = v,
+            |c| if c.arp.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
+        ),
+        beat_interval!(
+            "arp.midi_gate_beats",
+            "MIDI Gate",
+            0.125,
+            2.0,
+            arp.midi_gate_beats
+        ),
         time_secs!("arp.attack", "Attack", 0.0, 1.0, 0.001, arp.attack),
         time_secs!("arp.decay", "Decay", TONAL_DECAY_MIN, 6.0, 0.001, arp.decay),
         ControlSpec::new(

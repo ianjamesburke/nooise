@@ -95,6 +95,12 @@ to audio and MIDI. Gate sets how many beats each hit stays held, from 0.125 to
 not elapsed. MIDI Note Off starts the external synth's own release envelope;
 nooise does not change its ADSR. Hold restores the normal sustained Pad.
 
+On the Arp page, MIDI Out switches channel 1 from Pad chords to the Arp's
+single notes. MIDI Gate sets their held length from 0.125 to 2 beats (default
+0.5). The Arp's pattern, rate, swing, octave span, and the current Pad chord
+choose the notes. Arp Level can stay at zero while the Take 5 plays; turning
+MIDI Out off restores Pad chord MIDI. Audio keeps playing either way.
+
 ```sh
 nooise --version
 ```

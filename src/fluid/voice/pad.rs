@@ -32,6 +32,7 @@ pub(crate) struct PadEngine {
     pub(crate) rng: StdRng,
     pub(crate) telemetry: Arc<FluidTelemetry>,
     midi: Option<MidiSink>,
+    midi_suppressed: bool,
     midi_initial_pending: bool,
     stab_trigger: GridTrigger,
     active_stab_until_beat: Option<f64>,
@@ -76,6 +77,7 @@ impl PadEngine {
             rng: StdRng::from_entropy(),
             telemetry,
             midi: None,
+            midi_suppressed: false,
             midi_initial_pending: false,
             stab_trigger: GridTrigger::new(),
             active_stab_until_beat: None,
@@ -88,14 +90,34 @@ impl PadEngine {
         self.midi_initial_pending = true;
     }
 
+    pub(crate) fn set_midi_suppressed(&mut self, suppressed: bool) {
+        if self.midi_suppressed != suppressed {
+            if suppressed {
+                if let Some(sink) = &self.midi {
+                    sink.send(MidiMessage::PadOff);
+                }
+                self.midi_initial_pending = false;
+            } else {
+                self.midi_initial_pending = true;
+            }
+            self.midi_suppressed = suppressed;
+        }
+    }
+
+    fn send_midi(&self, message: MidiMessage) {
+        if !self.midi_suppressed
+            && let Some(sink) = &self.midi
+        {
+            sink.send(message);
+        }
+    }
+
     fn release_stab(&mut self) {
         if self.active_stab_until_beat.take().is_some() {
             for layer in &mut self.layers {
                 layer.release();
             }
-            if let Some(sink) = &self.midi {
-                sink.send(MidiMessage::PadOff);
-            }
+            self.send_midi(MidiMessage::PadOff);
         }
     }
 
@@ -141,9 +163,7 @@ impl PadEngine {
                 }
             }
             self.active_stab_until_beat = None;
-            if let Some(sink) = &self.midi {
-                sink.send(MidiMessage::PadOff);
-            }
+            self.send_midi(MidiMessage::PadOff);
         }
         if transport_changed && !playing {
             self.release_stab();
@@ -181,9 +201,7 @@ impl PadEngine {
                         c.level,
                         pitch_class(chord_notes[0]),
                     );
-                    if let Some(sink) = &self.midi {
-                        sink.send(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
-                    }
+                    self.send_midi(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
                     if self.layers.len() >= MAX_PAD_LAYERS {
                         let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                         self.layers.drain(0..remove_count);
@@ -213,9 +231,7 @@ impl PadEngine {
             );
             self.telemetry
                 .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
-            if let Some(sink) = &self.midi {
-                sink.send(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
-            }
+            self.send_midi(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
             self.midi_initial_pending = false;
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
@@ -231,9 +247,7 @@ impl PadEngine {
             ));
         }
         if !stabbing && playing && self.midi_initial_pending {
-            if let Some(sink) = &self.midi {
-                sink.send(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
-            }
+            self.send_midi(MidiMessage::PadChord(pad_notes(chord_notes, tune)));
             self.midi_initial_pending = false;
         }
 
