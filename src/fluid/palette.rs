@@ -20,6 +20,7 @@ use super::*;
 /// controls could desync them and jump to the wrong control. Live state is
 /// resolved where it exists — in the adapter, and in the value column.
 pub(crate) enum PaletteEntry {
+    Capture(CaptureAction),
     MixAction(super::mix_action::MixAction),
     Recipe(super::recipe::RecipeId),
     /// Jump to a control at the tab that natively owns it.
@@ -50,6 +51,7 @@ impl PaletteEntry {
     /// entry, for the reason on the enum.
     pub(crate) fn haystack(&self) -> String {
         match self {
+            Self::Capture(action) => format!("{} · {}", action.name(), action.description()),
             Self::MixAction(action) => {
                 format!("{} · {}", action.name(), action.aliases().join(" "))
             }
@@ -126,7 +128,7 @@ impl PaletteEntry {
     pub(crate) fn spec(&self) -> Option<&'static ControlSpec> {
         match self {
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => Some(spec),
-            Self::Module { .. } | Self::Recipe(_) | Self::MixAction(_) => None,
+            Self::Module { .. } | Self::Recipe(_) | Self::MixAction(_) | Self::Capture(_) => None,
         }
     }
 
@@ -138,6 +140,7 @@ impl PaletteEntry {
     /// matched against, so it cannot affect indices.
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
+            Self::Capture(_) => "selected knob".to_string(),
             Self::MixAction(action) => action.description().to_string(),
             Self::Recipe(_) => "add lane".to_string(),
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => {
@@ -207,6 +210,7 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
             .copied()
             .map(PaletteEntry::MixAction),
     );
+    entries.extend(CaptureAction::ALL.into_iter().map(PaletteEntry::Capture));
     entries
 }
 
@@ -380,6 +384,7 @@ fn module_palette_entries(tab: Tab, slot: usize, catalog_index: usize) -> Vec<Pa
                 .copied()
                 .map(PaletteEntry::MixAction),
         )
+        .chain(CaptureAction::ALL.into_iter().map(PaletteEntry::Capture))
         .collect()
 }
 
@@ -426,7 +431,7 @@ fn context_rank(
     // A module offered for the page you are on ranks with that page's own
     // controls, so "swing" on Bass reaches Bass before it reaches Tonal.
     let page_index = match palette_entry {
-        PaletteEntry::Recipe(_) | PaletteEntry::MixAction(_) => None,
+        PaletteEntry::Recipe(_) | PaletteEntry::MixAction(_) | PaletteEntry::Capture(_) => None,
         PaletteEntry::Module { tab, catalog_index } => {
             (*tab == current_tab).then_some(tab_specs(current_tab).len() + catalog_index)
         }

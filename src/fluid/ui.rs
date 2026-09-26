@@ -377,6 +377,12 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
             ));
         }
+        if let Some(clip) = automation.captures.get(&address) {
+            spans.push(Span::styled(
+                format!(" ↻ {}", clip.status(beat)),
+                Style::default().fg(LIVE_AMBER),
+            ));
+        }
         rows.push(Line::from(spans));
 
         let lfo_count = automation.routes_for(address).count();
@@ -562,7 +568,8 @@ fn slider_markers(
     // spec must be the contextual one — a loaded slot's family bounds, not
     // the registry's raw row.
     let spec = address.spec().contextual(controls);
-    let base = item.value;
+    let capture_delta = automation.capture_delta(address, item.value, controls, mod_ctx.beat);
+    let base = modulated_control_value_from_delta(&spec, item.value, capture_delta);
     let ratio_of = |value: f32| spec.ratio(value, controls);
     let lfos = automation.lfo_lanes(address);
     let envelopes = automation.envelope_lanes(address);
@@ -606,7 +613,8 @@ fn slider_markers(
         )
     });
     SliderMarkers {
-        effective: (has_lfo || has_envelope).then(|| marker(lfos, envelopes)),
+        effective: (has_lfo || has_envelope || capture_delta != 0.0)
+            .then(|| marker(lfos, envelopes)),
         lfo: has_lfo.then(|| marker(lfos, &[])),
         envelope: has_envelope.then(|| marker(&[], envelopes)),
         shadow,

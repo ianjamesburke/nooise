@@ -47,6 +47,7 @@ const RANGE_EPOCH_RECORD: u8 = 5;
 const MIDI_ROWS_RECORD: u8 = 6;
 /// Pad rhythm rows hidden during MIDI startup and restored with a song.
 const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
+const CAPTURE_RECORD: u8 = 8;
 const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
@@ -117,6 +118,7 @@ pub(crate) enum SongCodeError {
     DuplicateMidiRowsRecord,
     InvalidPadRhythmRows(u8),
     DuplicatePadRhythmRowsRecord,
+    InvalidCapture,
     /// The code sets a control this build retired. Its value has nowhere to
     /// go, so the code is refused rather than loaded with that value missing.
     RetiredControl(&'static str),
@@ -146,6 +148,7 @@ pub(crate) enum SongCodeError {
 impl fmt::Display for SongCodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidCapture => write!(f, "song code has an invalid captured loop"),
             Self::MissingPrefix => write!(f, "song code must start with {CODE_PREFIX}"),
             Self::InvalidBase64 => write!(f, "song code is not valid base64url"),
             Self::InvalidMagic => write!(f, "song code is not a nooise snapshot"),
@@ -247,6 +250,27 @@ pub(crate) fn encode_song_code_at_epoch(
         write_automation(&song.automation, &mut automation)?;
         write_record(AUTOMATION_RECORD, &automation, &mut bytes)?;
     }
+    if !song.automation.captures.is_empty() {
+        let mut captures = Vec::new();
+        if song.automation.captures.len() > super::MAX_CAPTURES {
+            return Err(SongCodeError::InvalidCapture);
+        }
+        captures.push(song.automation.captures.len() as u8);
+        for (address, clip) in &song.automation.captures {
+            validate_capture(clip)?;
+            if !super::capture_eligible(&address.spec().contextual(&song.controls)) {
+                return Err(SongCodeError::InvalidCapture);
+            }
+            let id = song_id_index(address.id())
+                .ok_or(SongCodeError::UnregisteredControl(address.id()))?;
+            captures.extend_from_slice(&id.to_le_bytes());
+            captures.push(u8::from(clip.enabled));
+            captures.extend_from_slice(&clip.origin.to_le_bytes());
+            captures.extend_from_slice(&clip.launch.to_le_bytes());
+            captures.extend_from_slice(&clip.samples);
+        }
+        write_record(CAPTURE_RECORD, &captures, &mut bytes)?;
+    }
 
     if let Some(sequence) = &song.tonal_sequence {
         let mut tonal_sequence = Vec::new();
@@ -307,6 +331,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut gesture_record_seen = false;
     let mut midi_rows_record_seen = false;
     let mut pad_rhythm_rows_record_seen = false;
+    let mut capture_record_seen = false;
     let mut epoch = 0;
 
     while !reader.is_empty() {
@@ -314,6 +339,13 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
         let len = reader.u32()? as usize;
         let payload = reader.bytes(len)?;
         match record_type {
+            CAPTURE_RECORD => {
+                if capture_record_seen {
+                    return Err(SongCodeError::InvalidCapture);
+                }
+                capture_record_seen = true;
+                read_captures(payload, &mut song.automation)?;
+            }
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
             AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
@@ -360,7 +392,137 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
         }
     }
 
+    for address in song.automation.captures.keys() {
+        if !super::capture_eligible(&address.spec().contextual(&song.controls))
+            || (parse_module_slot_id(address.id()).is_some()
+                && super::module_slot_row(address.id(), &song.controls)
+                    .is_none_or(|(slot, _)| slot.kind().is_none()))
+        {
+            return Err(SongCodeError::InvalidCapture);
+        }
+    }
     Ok((song, epoch))
+}
+
+fn validate_capture(clip: &super::CaptureClip) -> Result<(), SongCodeError> {
+    if !clip.origin.is_finite()
+        || !(-super::CAPTURE_BEATS..=0.0).contains(&clip.origin)
+        || !clip.launch.is_finite()
+        || !(0.0..=4.0).contains(&clip.launch)
+    {
+        return Err(SongCodeError::InvalidCapture);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod capture_codec_tests {
+    use super::*;
+
+    fn payload(id: &str) -> Vec<u8> {
+        let mut payload = vec![1];
+        payload.extend_from_slice(&song_id_index(id).unwrap().to_le_bytes());
+        payload.push(1);
+        payload.extend_from_slice(&0.0f64.to_le_bytes());
+        payload.extend_from_slice(&0.0f64.to_le_bytes());
+        payload.extend_from_slice(&[128; super::super::CAPTURE_SAMPLES]);
+        payload
+    }
+
+    fn decode(payload: &[u8]) -> Result<SongState, SongCodeError> {
+        decode_song_code(&code_from_records(
+            CONTAINER_VERSION,
+            &[
+                (RANGE_EPOCH_RECORD, &CURRENT_RANGE_EPOCH.to_le_bytes()),
+                (CAPTURE_RECORD, payload),
+            ],
+        ))
+    }
+
+    #[test]
+    fn capture_record_refuses_invalid_anchors_flags_duplicates_and_targets() {
+        let original = payload("pad.level");
+        assert!(decode(&original).is_ok());
+        let mut invalid = original.clone();
+        invalid[3] = 2;
+        assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
+        invalid = original.clone();
+        invalid[4..12].copy_from_slice(&f64::NAN.to_le_bytes());
+        assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
+        invalid = original.clone();
+        invalid[12..20].copy_from_slice(&5.0f64.to_le_bytes());
+        assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
+        invalid = original.clone();
+        invalid[0] = 2;
+        invalid.extend_from_slice(&original[1..]);
+        assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
+        assert_eq!(
+            decode(&payload("pad.type")).err(),
+            Some(SongCodeError::InvalidCapture)
+        );
+        assert_eq!(
+            decode(&payload("kick.filter")).err(),
+            Some(SongCodeError::RetiredControl("kick.filter"))
+        );
+        assert_eq!(
+            decode(&original[..original.len() - 1]).err(),
+            Some(SongCodeError::Truncated)
+        );
+    }
+
+    #[test]
+    fn captured_filter_positions_obey_the_dial_range_epoch() {
+        let bytes = payload("bass.slot1.time");
+        let code = code_from_records(CONTAINER_VERSION, &[(CAPTURE_RECORD, &bytes)]);
+        assert_eq!(
+            decode_song_code(&code).err(),
+            Some(SongCodeError::StaleRange("bass.slot1.time"))
+        );
+    }
+}
+
+fn read_captures(payload: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
+    let mut reader = Reader::new(payload);
+    let count = reader.u8()? as usize;
+    if count > super::MAX_CAPTURES {
+        return Err(SongCodeError::InvalidCapture);
+    }
+    let mut seen = BTreeSet::new();
+    for _ in 0..count {
+        let index = reader.u16()?;
+        if !seen.insert(index) {
+            return Err(SongCodeError::InvalidCapture);
+        }
+        let enabled = match reader.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(SongCodeError::InvalidCapture),
+        };
+        let mut anchor = [0; 8];
+        anchor.copy_from_slice(reader.bytes(8)?);
+        let origin = f64::from_le_bytes(anchor);
+        anchor.copy_from_slice(reader.bytes(8)?);
+        let launch = f64::from_le_bytes(anchor);
+        let mut samples = [0; super::CAPTURE_SAMPLES];
+        samples.copy_from_slice(reader.bytes(super::CAPTURE_SAMPLES)?);
+        let clip = super::CaptureClip {
+            samples,
+            origin,
+            launch,
+            enabled,
+        };
+        validate_capture(&clip)?;
+        if let Some(id) = song_id_at(index) {
+            if spec_by_id(id).is_none() {
+                return Err(SongCodeError::RetiredControl(id));
+            }
+            automation.captures.insert(ControlAddress::new(id), clip);
+        }
+    }
+    if !reader.is_empty() {
+        return Err(SongCodeError::InvalidCapture);
+    }
+    Ok(())
 }
 
 /// Gesture record: `u8 entry_count`, then fixed-width entries of stable

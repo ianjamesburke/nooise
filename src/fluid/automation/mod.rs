@@ -301,6 +301,7 @@ struct AutomationStack {
 #[derive(Clone, Default, PartialEq)]
 pub(crate) struct AutomationState {
     stacks: BTreeMap<ControlAddress, AutomationStack>,
+    pub(crate) captures: BTreeMap<ControlAddress, super::CaptureClip>,
     open: Option<OpenEditor>,
 }
 
@@ -436,6 +437,7 @@ impl AutomationState {
     /// Strip every modulator from a control, closing the editor if it was open.
     pub(crate) fn clear_control(&mut self, address: ControlAddress) {
         self.stacks.remove(&address);
+        self.captures.remove(&address);
         if self.open.is_some_and(|open| open.address == address) {
             self.open = None;
         }
@@ -565,7 +567,33 @@ impl AutomationState {
     }
 
     fn modulated_addresses(&self) -> BTreeSet<ControlAddress> {
-        self.stacks.keys().copied().collect()
+        self.stacks
+            .keys()
+            .chain(self.captures.keys())
+            .copied()
+            .collect()
+    }
+
+    pub(crate) fn snapshot_at(&self, beat: f64) -> Self {
+        let mut snapshot = self.clone();
+        for clip in snapshot.captures.values_mut() {
+            clip.rebase(beat);
+        }
+        snapshot
+    }
+
+    pub(crate) fn capture_delta(
+        &self,
+        address: ControlAddress,
+        base: f32,
+        controls: &FluidControls,
+        beat: f64,
+    ) -> f32 {
+        let spec = address.spec();
+        self.captures
+            .get(&address)
+            .and_then(|clip| clip.position(beat))
+            .map_or(0.0, |position| position - spec.ratio(base, controls))
     }
 
     /// Morphed automation state for a leg transition between `from` and `to`,
@@ -587,7 +615,14 @@ impl AutomationState {
         tt: f32,
         use_to: bool,
     ) -> AutomationState {
-        let mut result = AutomationState::default();
+        let mut result = AutomationState {
+            captures: if use_to {
+                to.captures.clone()
+            } else {
+                from.captures.clone()
+            },
+            ..AutomationState::default()
+        };
         let addresses: BTreeSet<_> = from
             .stacks
             .keys()
@@ -667,7 +702,7 @@ fn automation_delta(lfos: &[LfoRoute], envelopes: &[EnvelopeRoute], ctx: ModCont
     lfo_delta + envelope_delta
 }
 
-fn modulated_control_value_from_delta(spec: &ControlSpec, base: f32, delta: f32) -> f32 {
+pub(crate) fn modulated_control_value_from_delta(spec: &ControlSpec, base: f32, delta: f32) -> f32 {
     let scale = DialScale::from_step(spec.min, spec.max, spec.step, spec.taper);
     // Grid and rung scales have no inverse, so they keep the value-space
     // offset. Their taper is Linear anyway, so nothing else changes.
@@ -706,6 +741,7 @@ struct PlannedRoute {
     spec: &'static ControlSpec,
     lfos: Vec<LfoRoute>,
     envelopes: Vec<EnvelopeRoute>,
+    capture: Option<super::CaptureClip>,
     smoothed_delta: Option<f32>,
 }
 
@@ -727,6 +763,7 @@ impl PlannedRoute {
     fn is_finished_fading(&self) -> bool {
         self.lfos.is_empty()
             && self.envelopes.is_empty()
+            && self.capture.is_none()
             && self
                 .smoothed_delta
                 .is_none_or(|delta| delta.abs() <= f32::EPSILON)
@@ -755,12 +792,14 @@ impl AutomationPlan {
                 spec: address.spec(),
                 lfos: automation.routes_for(address).copied().collect(),
                 envelopes: automation.envelopes_for(address).copied().collect(),
+                capture: automation.captures.get(&address).cloned(),
                 smoothed_delta,
             });
         }
         for mut removed in previous {
             removed.lfos.clear();
             removed.envelopes.clear();
+            removed.capture = None;
             self.routes.push(removed);
         }
     }
@@ -772,10 +811,16 @@ impl AutomationPlan {
             kick_offset_beats: controls.kick.offset_beats,
         };
         for planned in &mut self.routes {
-            let target_delta = automation_delta(&planned.lfos, &planned.envelopes, ctx);
-            let delta = planned.next_delta(target_delta, timing.sample_rate);
             let spec = planned.spec.contextual(controls);
             let base = (spec.get)(controls);
+            let capture_delta = planned
+                .capture
+                .as_ref()
+                .and_then(|clip| clip.position(ctx.beat))
+                .map_or(0.0, |position| position - spec.ratio(base, controls));
+            let target_delta =
+                capture_delta + automation_delta(&planned.lfos, &planned.envelopes, ctx);
+            let delta = planned.next_delta(target_delta, timing.sample_rate);
             let value = modulated_control_value_from_delta(&spec, base, delta);
             (spec.set)(controls, value);
         }

@@ -2557,6 +2557,99 @@ fn recipe_keys(query: &str) -> Vec<TraceEvent> {
 }
 
 #[test]
+fn capture_palette_freezes_history_and_keeps_navigation_on_both_terminals() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        let make_trace = |delay| {
+            let mut events = vec![
+                TraceEvent::Resize {
+                    after_ms: 0,
+                    width: MIN_TERMINAL_WIDTH,
+                    height: MIN_TERMINAL_HEIGHT,
+                },
+                key(1000, FixtureKey::Left, InputPhase::Press),
+                key(250, FixtureKey::Left, InputPhase::Press),
+                TraceEvent::Idle { after_ms: 750 },
+            ];
+            let mut command = recipe_keys("capture");
+            command.insert(1, TraceEvent::Idle { after_ms: delay });
+            events.extend(command);
+            events.push(TraceEvent::Idle { after_ms: 40 });
+            events.push(modified_key(
+                0,
+                FixtureKey::Character('s'),
+                InputPhase::Press,
+                1 << 1,
+            ));
+            events
+        };
+        let immediate = replay(&make_trace(0), capabilities);
+        let mut delayed_trace = make_trace(18000);
+        let delayed = replay(&delayed_trace, capabilities);
+        let read_clip = |result: &ReplayResult| {
+            decode_song_code(result.saved_automation_code.as_deref().unwrap())
+                .unwrap()
+                .automation
+                .captures
+        };
+        let address = ControlAddress::new("pad.level");
+        assert_eq!(
+            read_clip(&immediate)[&address].samples,
+            read_clip(&delayed)[&address].samples
+        );
+        assert_eq!(delayed.model.navigation, Navigation::default());
+        assert_eq!(delayed.model.mode, InteractionMode::Browsing);
+        assert!(
+            delayed
+                .frames
+                .iter()
+                .any(|frame| frame.text.contains("queued"))
+        );
+        delayed_trace.push(TraceEvent::Idle { after_ms: 4500 });
+        delayed_trace.extend(recipe_keys("bypass"));
+        delayed_trace.push(TraceEvent::Idle { after_ms: 40 });
+        delayed_trace.push(modified_key(
+            0,
+            FixtureKey::Character('s'),
+            InputPhase::Press,
+            1 << 1,
+        ));
+        let bypassed = replay(&delayed_trace, capabilities);
+        assert!(!read_clip(&bypassed)[&address].enabled);
+        assert!(
+            bypassed
+                .frames
+                .iter()
+                .any(|frame| frame.text.contains("bypassed"))
+        );
+        delayed_trace.extend(recipe_keys("resume"));
+        delayed_trace.push(TraceEvent::Idle { after_ms: 40 });
+        delayed_trace.push(modified_key(
+            0,
+            FixtureKey::Character('s'),
+            InputPhase::Press,
+            1 << 1,
+        ));
+        let resumed = replay(&delayed_trace, capabilities);
+        assert!(read_clip(&resumed)[&address].enabled);
+        delayed_trace.extend(recipe_keys("delete"));
+        delayed_trace.push(modified_key(
+            0,
+            FixtureKey::Character('s'),
+            InputPhase::Press,
+            1 << 1,
+        ));
+        delayed_trace.push(key(0, FixtureKey::Down, InputPhase::Press));
+        delayed_trace.push(key(0, FixtureKey::Tab, InputPhase::Press));
+        let deleted = replay(&delayed_trace, capabilities);
+        assert!(read_clip(&deleted).is_empty());
+        assert_ne!(deleted.model.navigation, Navigation::default());
+    }
+}
+
+#[test]
 fn mute_kick_palette_action_preserves_other_mutes_and_saves_them() {
     for capabilities in [
         TerminalCapabilities::full(),

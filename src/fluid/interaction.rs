@@ -322,6 +322,7 @@ pub(crate) struct NumericEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PaletteMode {
+    pub(crate) capture_beat_bits: u64,
     pub(crate) recipe_target: Option<super::recipe::RecipeTarget>,
     pub(crate) query: String,
     pub(crate) selected: usize,
@@ -1092,6 +1093,11 @@ pub(crate) enum InteractionEffect {
         recipe: super::recipe::RecipeId,
         target: Option<super::recipe::RecipeTarget>,
     },
+    Capture {
+        action: super::CaptureAction,
+        target: Option<super::recipe::RecipeTarget>,
+        end_beat_bits: u64,
+    },
     /// Put catalog module `catalog_index` on `tab`'s chain, or jump to it when the
     /// chain already holds it. The kernel cannot tell which, so it says what
     /// was asked for and lets the adapter resolve it.
@@ -1600,7 +1606,10 @@ fn update_palette(
             if palette.locked.is_none()
                 && let Some(found) = state.matches.get(state.selected)
             {
-                if let PaletteEntry::MixAction(action) = state.entry(found.entry_index) {
+                if let PaletteEntry::Capture(action) = state.entry(found.entry_index) {
+                    palette.query = action.name().to_string();
+                    palette.selected = 0;
+                } else if let PaletteEntry::MixAction(action) = state.entry(found.entry_index) {
                     palette.query = action.name().to_string();
                     palette.selected = 0;
                 } else if let PaletteEntry::Recipe(recipe) = state.entry(found.entry_index) {
@@ -1625,7 +1634,11 @@ fn update_palette(
                     palette.query.clear();
                     palette.selected = 0;
                 } else {
-                    effects.push(palette_confirm(entry, palette.recipe_target));
+                    effects.push(palette_confirm(
+                        entry,
+                        palette.recipe_target,
+                        palette.capture_beat_bits,
+                    ));
                     *next_mode = Some(if matches!(entry, PaletteEntry::MixAction(_)) {
                         resume_mode(palette.resume)
                     } else {
@@ -1639,7 +1652,11 @@ fn update_palette(
                 *next_mode = Some(resume_mode(palette.resume));
             } else if let Some(found) = state.matches.get(state.selected) {
                 let entry = state.entry(found.entry_index);
-                effects.push(palette_confirm(entry, palette.recipe_target));
+                effects.push(palette_confirm(
+                    entry,
+                    palette.recipe_target,
+                    palette.capture_beat_bits,
+                ));
                 *next_mode = Some(if matches!(entry, PaletteEntry::MixAction(_)) {
                     resume_mode(palette.resume)
                 } else {
@@ -1881,8 +1898,14 @@ fn push_numeric(buffer: &mut String, character: char) {
 fn palette_confirm(
     entry: &PaletteEntry,
     target: Option<super::recipe::RecipeTarget>,
+    end_beat_bits: u64,
 ) -> InteractionEffect {
     match entry {
+        PaletteEntry::Capture(action) => InteractionEffect::Capture {
+            action: *action,
+            target,
+            end_beat_bits,
+        },
         PaletteEntry::MixAction(action) => InteractionEffect::ApplyMixAction(*action),
         PaletteEntry::Recipe(recipe) => InteractionEffect::ApplyRecipe {
             recipe: *recipe,
@@ -2513,7 +2536,7 @@ mod tests {
             ..PaletteMode::default()
         };
         let projected = base.project(Tab::Bass);
-        let expected = palette_confirm(projected.entry(projected.matches[1].entry_index), None);
+        let expected = palette_confirm(projected.entry(projected.matches[1].entry_index), None, 0);
 
         let ordinary = update(palette_model(base.clone()), Intent::Confirm);
         assert_eq!(ordinary.effects, vec![expected.clone()]);

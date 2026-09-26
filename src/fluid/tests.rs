@@ -7624,6 +7624,10 @@ const POSITION_STEP: f32 = 1.0 / 65_535.0;
 /// compares `open`, `open_field`, and `LfoRoute::pickup` — live editor and
 /// transport state that is not persisted and must not be.
 fn assert_song_states_agree(a: &SongState, b: &SongState, label: &str) {
+    assert_eq!(
+        a.automation.captures, b.automation.captures,
+        "{label}: captured loops"
+    );
     assert_eq!(a.muted, b.muted, "{label}: mute state");
     for kind in GestureKind::ALL {
         let before = a.gestures.envelope(kind);

@@ -73,6 +73,7 @@ pub(crate) struct LiveSession {
     /// Audio-owned monotonic clock; gestures store their anchors in the
     /// aggregate snapshot, while readers sample this clock without a lock.
     audio_seconds_bits: Arc<AtomicU64>,
+    audio_beat_bits: Arc<AtomicU64>,
 }
 
 impl LiveSession {
@@ -80,6 +81,7 @@ impl LiveSession {
         Self {
             published: Arc::new(ArcSwap::from_pointee(snapshot)),
             audio_seconds_bits: Arc::new(AtomicU64::new(0)),
+            audio_beat_bits: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -89,6 +91,15 @@ impl LiveSession {
 
     pub(crate) fn audio_seconds(&self) -> f64 {
         f64::from_bits(self.audio_seconds_bits.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn audio_beat(&self) -> f64 {
+        f64::from_bits(self.audio_beat_bits.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn publish_audio_beat(&self, beat: f64) {
+        self.audio_beat_bits
+            .store(beat.to_bits(), Ordering::Relaxed);
     }
 
     pub(crate) fn publish_audio_seconds(&self, seconds: f64) {
@@ -121,6 +132,13 @@ impl LiveSession {
                     })
             }) {
                 next.module_topology_revision = current.module_topology_revision.wrapping_add(1);
+                next.automation.captures.retain(|address, _| {
+                    let Some((before, _)) = module_slot_row(address.id(), &current.controls) else {
+                        return true;
+                    };
+                    module_slot_row(address.id(), &next.controls)
+                        .is_some_and(|(after, _)| before.kind == after.kind)
+                });
             }
             next.generation = current.generation.wrapping_add(1);
             let next = Arc::new(next);

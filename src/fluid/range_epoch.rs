@@ -73,7 +73,8 @@ pub(crate) fn stale_modulation(song: &SongState, epoch: u16) -> Option<&'static 
         .automation
         .routes()
         .map(|(address, _)| address)
-        .chain(song.automation.envelopes().map(|(address, _)| address));
+        .chain(song.automation.envelopes().map(|(address, _)| address))
+        .chain(song.automation.captures.keys().copied());
     for address in modulated {
         if RANGE_CHANGES
             .iter()

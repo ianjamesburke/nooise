@@ -236,6 +236,7 @@ pub(crate) fn coordinate_production_action(
     {
         palette.recipe_target =
             selected_control.and_then(|id| recipe::RecipeTarget::capture(id, frame_session));
+        palette.capture_beat_bits = context.beat.to_bits();
     }
     model.seed_palette_recent(context.effects.recent().ids());
     let entered_modal_owner = matches!(before.mode, interaction::InteractionMode::Browsing)

@@ -39,6 +39,7 @@ use crate::update_check::{UpdateNotice, spawn_update_check};
 
 mod auto;
 mod automation;
+mod capture;
 mod controls;
 mod coordinator;
 mod edit;
@@ -52,6 +53,7 @@ mod osc;
 mod palette;
 mod range_epoch;
 mod recipe;
+use capture::*;
 mod registry;
 #[cfg(test)]
 mod replay;

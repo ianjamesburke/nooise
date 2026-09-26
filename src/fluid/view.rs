@@ -289,13 +289,23 @@ impl<'a> UiViewModel<'a> {
         let gestures = gesture_activities(session, presentation.gesture_now_seconds);
         let holding_gesture = !gestures.is_empty();
         let stopped = session.transport == Transport::Stopped;
-        let activity_live = holding_gesture || stopped;
+        let capture = items.get(navigation.selected).and_then(|item| {
+            session
+                .automation
+                .captures
+                .get(&ControlAddress::new(item.id))
+        });
+        let activity_live = holding_gesture || stopped || capture.is_some();
         let activity = match (stopped, holding_gesture) {
             // Stopped leads the row in every owner, so silence is never
             // mistaken for a dead engine; gestures still play into the tails.
             (true, true) => format!("■ STOPPED · {}", gesture_activity_line(&gestures)),
             (true, false) => "■ STOPPED · Shift+P play".to_string(),
             (false, true) => gesture_activity_line(&gestures),
+            (false, false) if capture.is_some() => format!(
+                "↻ 16 beats · {} · / bypass resume delete",
+                capture.map_or("", |clip| clip.status(telemetry.beat))
+            ),
             (false, false) if presentation.gesture_holds_available => gesture_idle_hint(),
             (false, false) => String::new(),
         };
@@ -879,6 +889,7 @@ mod tests {
         let model = InteractionModel {
             navigation: Navigation::default(),
             mode: InteractionMode::Palette(PaletteMode {
+                capture_beat_bits: 0,
                 recipe_target: None,
                 query: "bass".to_string(),
                 selected: 1,

@@ -693,6 +693,7 @@ impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         if self.current_sample.is_multiple_of(128) {
+            self.session.publish_audio_beat(self.tempo.beat);
             self.session
                 .publish_audio_seconds(self.current_sample as f64 / self.sample_rate as f64);
             let morph_source = self.morph.load_full();

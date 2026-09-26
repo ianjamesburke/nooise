@@ -404,6 +404,9 @@ fn apply_field_op(
                         _ => None,
                     }
                 });
+            if let Some(spec) = tab_specs(tab).get(selected) {
+                suspend_capture(snapshot, spec.id);
+            }
             let before =
                 filter_type.and_then(|slot| filter_slot(snapshot, tab, slot).map(|m| m.feedback));
             match op {

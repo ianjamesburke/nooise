@@ -30,6 +30,8 @@ pub(crate) enum EffectFailure {
     /// The selected control already carries the maximum lanes of this family.
     AutomationLaneLimit,
     StaleRecipeTarget,
+    CaptureUnavailable,
+    CaptureLimit,
     /// The kernel emitted an effect this executor does not implement. New
     /// effects are rejected explicitly rather than silently dropped.
     UnsupportedInteraction(InteractionEffect),
@@ -38,6 +40,11 @@ pub(crate) enum EffectFailure {
 impl fmt::Display for EffectFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CaptureUnavailable => write!(
+                f,
+                "no recent movement to capture on this continuous knob (history may be full)"
+            ),
+            Self::CaptureLimit => write!(f, "four captured loops already kept; delete one first"),
             Self::UnknownControl(id) => write!(f, "no control named {id}"),
             Self::SongEncode(error) => write!(f, "{error}"),
             Self::Clipboard(error) => write!(f, "{error}"),
@@ -201,6 +208,8 @@ pub(crate) struct EffectExecutor {
     rng: StdRng,
     /// What play mode has played lately, for `LeadCapture`. Live-only.
     phrase: LeadPhraseBuffer,
+    capture_history: CaptureHistory,
+    edit_beat: f64,
 }
 
 impl EffectExecutor {
@@ -217,11 +226,86 @@ impl EffectExecutor {
             message: None,
             rng: StdRng::seed_from_u64(seed),
             phrase: LeadPhraseBuffer::default(),
+            capture_history: CaptureHistory::default(),
+            edit_beat: 0.0,
         }
     }
 
     pub(crate) fn session(&self) -> &LiveSession {
         &self.session
+    }
+
+    fn apply_capture(
+        &mut self,
+        action: CaptureAction,
+        target: Option<recipe::RecipeTarget>,
+        end: f64,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let target = target.ok_or(EffectFailure::CaptureUnavailable)?;
+        let current = self.session.load();
+        let address = ControlAddress::new(target.id);
+        if !target.is_current(&current) {
+            return Err(EffectFailure::StaleRecipeTarget);
+        }
+        if !capture_eligible(&address.spec().contextual(&current.controls)) {
+            return Err(EffectFailure::CaptureUnavailable);
+        }
+        let clip = if action == CaptureAction::Capture {
+            Some(
+                self.capture_history
+                    .clip(target, end, beat)
+                    .ok_or(EffectFailure::CaptureUnavailable)?,
+            )
+        } else {
+            None
+        };
+        let check = |snapshot: &LiveSessionSnapshot| {
+            if !target.is_current(snapshot) {
+                return Err(EffectFailure::StaleRecipeTarget);
+            }
+            if action == CaptureAction::Capture {
+                if snapshot.automation.captures.len() >= MAX_CAPTURES
+                    && !snapshot.automation.captures.contains_key(&address)
+                {
+                    return Err(EffectFailure::CaptureLimit);
+                }
+            } else if !snapshot.automation.captures.contains_key(&address) {
+                return Err(EffectFailure::MissingContext("captured loop on this knob"));
+            }
+            Ok(())
+        };
+        let snapshot = self.edit_session_checked(target.id, check, |snapshot| {
+            check(snapshot)?;
+            if let Some(clip) = &clip {
+                snapshot.automation.captures.insert(address, clip.clone());
+            } else if action == CaptureAction::Delete {
+                snapshot.automation.captures.remove(&address);
+            } else if let Some(clip) = snapshot.automation.captures.get_mut(&address) {
+                clip.enabled = action == CaptureAction::Resume;
+                if clip.enabled {
+                    clip.launch = next_bar_beat(beat);
+                }
+            }
+            snapshot.automation.close_editor();
+            Ok(())
+        })?;
+        self.message = Some((
+            format!(
+                "{} {} · {}",
+                action.name(),
+                target.id,
+                snapshot
+                    .automation
+                    .captures
+                    .get(&address)
+                    .map_or("deleted", |clip| clip.status(beat))
+            ),
+            Instant::now(),
+        ));
+        Ok(EffectAcknowledgement::Published {
+            generation: snapshot.generation,
+        })
     }
 
     pub(crate) fn auto_position(&self, beat: f64) -> Option<MorphPosition> {
@@ -278,9 +362,16 @@ impl EffectExecutor {
         match effect {
             LiveEffect::EditControl { id, edit } => {
                 let spec = spec_by_id(id).ok_or(EffectFailure::UnknownControl(id))?;
-                let snapshot = self.edit_session(Some(id), |snapshot| match edit {
-                    ControlEdit::Delta(delta) => spec.apply_delta(delta, &mut snapshot.controls),
-                    ControlEdit::Value(value) => spec.apply_value(value, &mut snapshot.controls),
+                let snapshot = self.edit_session(Some(id), |snapshot| {
+                    suspend_capture(snapshot, id);
+                    match edit {
+                        ControlEdit::Delta(delta) => {
+                            spec.apply_delta(delta, &mut snapshot.controls)
+                        }
+                        ControlEdit::Value(value) => {
+                            spec.apply_value(value, &mut snapshot.controls)
+                        }
+                    }
                 });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
@@ -324,9 +415,10 @@ impl EffectExecutor {
                 if let Some(unknown) = edits.iter().find(|edit| spec_by_id(edit.id).is_none()) {
                     return Err(EffectFailure::UnknownControl(unknown.id));
                 }
-                self.auto.exit();
-                let snapshot = self.session.update(|snapshot| {
+                self.edit_beat = beat;
+                let snapshot = self.edit_session(None, |snapshot| {
                     for edit in &edits {
+                        suspend_capture(snapshot, edit.id);
                         spec_by_id(edit.id)
                             .expect("validated staged control")
                             .apply_value(edit.value, &mut snapshot.controls);
@@ -352,7 +444,9 @@ impl EffectExecutor {
                 let now_seconds = self.session.audio_seconds();
                 let code = encode_song_code(&SongState {
                     controls: snapshot.controls.clone(),
-                    automation: snapshot.automation.clone(),
+                    automation: snapshot
+                        .automation
+                        .snapshot_at(self.session.audio_beat().max(self.edit_beat)),
                     tonal_sequence: Some(snapshot.tonal_sequence.clone()),
                     muted: snapshot.muted,
                     gestures: snapshot.gestures.snapshot_at(now_seconds),
@@ -389,7 +483,14 @@ impl EffectExecutor {
         mut edit: impl FnMut(&mut LiveSessionSnapshot),
     ) -> Arc<LiveSessionSnapshot> {
         self.auto.exit();
-        let snapshot = self.session.update(|snapshot| edit(snapshot));
+        let mut before = self.session.load();
+        let snapshot = self.session.update(|snapshot| {
+            before = Arc::new(snapshot.clone());
+            edit(snapshot);
+            suspend_changed_captures(&before, snapshot);
+        });
+        self.capture_history
+            .record_changes(&before, &snapshot, self.edit_beat);
         if let Some(id) = recent_id {
             self.recent.touch(id);
         }
@@ -411,11 +512,19 @@ impl EffectExecutor {
         &mut self,
         recent_id: &'static str,
         check: impl Fn(&LiveSessionSnapshot) -> Result<(), EffectFailure>,
-        edit: impl FnMut(&mut LiveSessionSnapshot) -> Result<(), EffectFailure>,
+        mut edit: impl FnMut(&mut LiveSessionSnapshot) -> Result<(), EffectFailure>,
     ) -> Result<Arc<LiveSessionSnapshot>, EffectFailure> {
         check(&self.session.load())?;
         self.auto.exit();
-        let snapshot = self.session.transact(edit)?;
+        let mut before = self.session.load();
+        let snapshot = self.session.transact(|snapshot| {
+            before = Arc::new(snapshot.clone());
+            edit(snapshot)?;
+            suspend_changed_captures(&before, snapshot);
+            Ok(())
+        })?;
+        self.capture_history
+            .record_changes(&before, &snapshot, self.edit_beat);
         self.recent.touch(recent_id);
         Ok(snapshot)
     }
@@ -537,7 +646,13 @@ impl EffectExecutor {
         context: &InteractionExecutionContext,
         clipboard: &mut dyn Clipboard,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
+        self.edit_beat = context.beat;
         match effect {
+            InteractionEffect::Capture {
+                action,
+                target,
+                end_beat_bits,
+            } => self.apply_capture(action, target, f64::from_bits(end_beat_bits), context.beat),
             InteractionEffect::AdjustSelected(delta) => {
                 let id = selected_control(context.selected_control)?;
                 self.execute(LiveEffect::EditControl {
@@ -655,6 +770,7 @@ impl EffectExecutor {
         context: &mut ProductionInteractionContext<'_>,
         clipboard: &mut dyn Clipboard,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
+        self.edit_beat = context.beat;
         match effect {
             InteractionEffect::AdjustSelected(delta) => {
                 self.with_automation(|executor, automation| {
@@ -1014,6 +1130,78 @@ mod tests {
 
     fn executor() -> EffectExecutor {
         executor_with(FluidControls::default())
+    }
+
+    #[test]
+    fn capture_takeover_at_clamped_base_and_automation_edits_are_distinct() {
+        let mut executor = executor();
+        let address = ControlAddress::new("pad.level");
+        executor.session.update(|snapshot| {
+            snapshot.controls.pad.level = 1.0;
+            snapshot.automation.captures.insert(
+                address,
+                CaptureClip {
+                    samples: [128; CAPTURE_SAMPLES],
+                    origin: 0.0,
+                    launch: 0.0,
+                    enabled: true,
+                },
+            );
+        });
+        executor.edit_session(Some("pad.level"), |snapshot| {
+            snapshot.automation.open_or_create(address).depth_ratio = 0.2;
+        });
+        assert!(executor.session.load().automation.captures[&address].enabled);
+        executor
+            .execute(LiveEffect::EditControl {
+                id: "pad.level",
+                edit: ControlEdit::Delta(1.0),
+            })
+            .unwrap();
+        assert!(!executor.session.load().automation.captures[&address].enabled);
+        assert_eq!(executor.session.load().controls.pad.level, 1.0);
+    }
+
+    #[test]
+    fn capture_limit_refuses_new_target_but_allows_replacement_without_publication_on_failure() {
+        let mut executor = executor();
+        let ids = [
+            "pad.level",
+            "tonal.level",
+            "lead.level",
+            "bass.level",
+            "kick.level",
+        ];
+        for id in ids {
+            executor
+                .execute_interaction(
+                    InteractionEffect::CommitNumeric(20.0),
+                    &InteractionExecutionContext {
+                        selected_control: Some(id),
+                        beat: 1.0,
+                    },
+                )
+                .unwrap();
+        }
+        for (index, id) in ids.into_iter().enumerate() {
+            let target = recipe::RecipeTarget::capture(id, &executor.session.load());
+            let generation = executor.session.load().generation;
+            let result = executor.apply_capture(CaptureAction::Capture, target, 2.0, 2.0);
+            if index == MAX_CAPTURES {
+                assert_eq!(result, Err(EffectFailure::CaptureLimit));
+                assert_eq!(executor.session.load().generation, generation);
+            } else {
+                result.unwrap();
+            }
+        }
+        let target = recipe::RecipeTarget::capture("pad.level", &executor.session.load());
+        executor
+            .apply_capture(CaptureAction::Capture, target, 2.0, 5.0)
+            .unwrap();
+        assert_eq!(
+            executor.session.load().automation.captures.len(),
+            MAX_CAPTURES
+        );
     }
 
     /// Seeded, so every random roll a test asserts on is the same draw on
