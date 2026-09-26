@@ -1029,6 +1029,43 @@ mod tests {
     }
 
     #[test]
+    fn mute_kick_preserves_controls_routes_transport_and_auto() {
+        let mut executor = executor();
+        executor.session.update(|snapshot| {
+            snapshot.transport = Transport::Stopped;
+            snapshot.muted[Tab::Master as usize] = true;
+            snapshot
+                .automation
+                .open_or_create(ControlAddress::new("pad.level"))
+                .depth_ratio = 0.3;
+            snapshot.controls.arp.midi_out = 1.0;
+        });
+        executor.toggle_auto(0.0);
+        let before = executor.session.load();
+        for _ in 0..2 {
+            executor
+                .execute_interaction(
+                    InteractionEffect::ApplyMixAction(mix_action::MixAction::MuteKick),
+                    &InteractionExecutionContext::default(),
+                )
+                .unwrap();
+            let after = executor.session.load();
+            assert!(after.automation == before.automation);
+            assert!(executor.auto.is_running());
+            assert_eq!(after.transport, before.transport);
+            for tab in Tab::all() {
+                assert_eq!(
+                    after.muted[tab as usize],
+                    tab == Tab::Kick || before.muted[tab as usize]
+                );
+            }
+            for spec in all_specs() {
+                assert_eq!((spec.get)(&after.controls), (spec.get)(&before.controls));
+            }
+        }
+    }
+
+    #[test]
     fn kick_only_changes_just_the_mute_snapshot_and_never_restores_it() {
         let mut executor = executor();
         executor.session.update(|snapshot| {

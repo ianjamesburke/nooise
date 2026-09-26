@@ -138,7 +138,7 @@ impl PaletteEntry {
     /// matched against, so it cannot affect indices.
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
-            Self::MixAction(_) => "mute others".to_string(),
+            Self::MixAction(action) => action.description().to_string(),
             Self::Recipe(_) => "add lane".to_string(),
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => {
                 if super::midi_row_bit(spec.id).is_some_and(|bit| c.midi_rows & bit == 0)
