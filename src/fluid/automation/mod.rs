@@ -605,7 +605,9 @@ impl AutomationState {
         self.captures
             .get(&address)
             .and_then(|clip| clip.position(beat))
-            .map_or(0.0, |position| position - spec.ratio(base, controls))
+            .map_or(0.0, |position| {
+                position - super::capture_ratio(spec, base, controls)
+            })
     }
 
     /// Morphed automation state for a leg transition between `from` and `to`,
@@ -823,13 +825,18 @@ impl AutomationPlan {
             kick_offset_beats: controls.kick.offset_beats,
         };
         for planned in &mut self.routes {
-            let spec = planned.spec.contextual(controls);
+            let mut spec = planned.spec.contextual(controls);
+            if let Some(clip) = &planned.capture {
+                spec = clip.playback_spec(spec, ctx.beat);
+            }
             let base = (spec.get)(controls);
             let capture_delta = planned
                 .capture
                 .as_ref()
                 .and_then(|clip| clip.position(ctx.beat))
-                .map_or(0.0, |position| position - spec.ratio(base, controls));
+                .map_or(0.0, |position| {
+                    position - super::capture_ratio(&spec, base, controls)
+                });
             let target_delta =
                 capture_delta + automation_delta(&planned.lfos, &planned.envelopes, ctx);
             let delta = planned.next_delta(target_delta, timing.sample_rate);

@@ -567,7 +567,10 @@ fn slider_markers(
     // Markers all sit on the same tapered bar as the value itself, so the
     // spec must be the contextual one — a loaded slot's family bounds, not
     // the registry's raw row.
-    let spec = address.spec().contextual(controls);
+    let mut spec = address.spec().contextual(controls);
+    if let Some(clip) = automation.captures.get(&address) {
+        spec = clip.playback_spec(spec, mod_ctx.beat);
+    }
     let capture_delta = automation.capture_delta(address, item.value, controls, mod_ctx.beat);
     let base = modulated_control_value_from_delta(&spec, item.value, capture_delta);
     let ratio_of = |value: f32| spec.ratio(value, controls);

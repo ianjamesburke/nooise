@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use super::widget::DialScale;
 use super::*;
 
 pub(crate) const CAPTURE_BARS: f64 = 16.0;
@@ -13,6 +14,29 @@ const HISTORY_TARGETS: usize = 16;
 /// Two full phrases let the player keep the completed phrase through the next.
 const HISTORY_BEATS: f64 = CAPTURE_BEATS * 2.0;
 const HISTORY_EVENTS: usize = 4_096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CaptureHistoryError {
+    PhrasePending { bars_remaining: u32 },
+    NoMovement,
+    IncompleteHistory,
+}
+
+impl std::fmt::Display for CaptureHistoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PhrasePending { bars_remaining } => {
+                write!(f, "phrase recording; capture in {bars_remaining} bars")
+            }
+            Self::NoMovement => write!(f, "no edits on this knob in the previous 16 bars"),
+            Self::IncompleteHistory => {
+                write!(f, "capture history full; record a new 16-bar phrase")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CaptureHistoryError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CaptureAction {
@@ -54,6 +78,15 @@ pub(crate) struct CaptureClip {
 }
 
 impl CaptureClip {
+    pub(crate) fn playback_spec(&self, mut spec: ControlSpec, beat: f64) -> ControlSpec {
+        if self.enabled && beat >= self.launch && spec.kind == ControlKind::Timing {
+            // Played intervals may include 0.75 or 1.25, outside the LFO's
+            // power-of-two ladder. Preserve the control's own editing grid.
+            spec.lfo_snap = LfoSnap::Step;
+        }
+        spec
+    }
+
     pub(crate) fn position(&self, beat: f64) -> Option<f32> {
         if !self.enabled || beat < self.launch {
             return None;
@@ -83,7 +116,22 @@ impl CaptureClip {
 }
 
 pub(crate) fn capture_eligible(spec: &ControlSpec) -> bool {
-    matches!(spec.kind, ControlKind::Gain | ControlKind::Continuous)
+    matches!(
+        spec.kind,
+        ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing
+    )
+}
+
+pub(crate) fn capture_ratio(spec: &ControlSpec, value: f32, controls: &FluidControls) -> f32 {
+    let spec = spec.contextual(controls);
+    let scale = spec.scale();
+    // Match modulation's value-space fallback for beat grids, whose display
+    // scale has no inverse. Other controls retain their tapered positions.
+    if scale.value_at(0.0).is_some() {
+        scale.ratio(value)
+    } else {
+        DialScale::linear(spec.min, spec.max).ratio(value)
+    }
 }
 
 struct KnobHistory {
@@ -127,7 +175,7 @@ impl CaptureHistory {
                 .and_then(|index| self.knobs.remove(index))
                 .unwrap_or_else(|| KnobHistory {
                     target,
-                    initial: spec.ratio(old, &before.controls),
+                    initial: capture_ratio(spec, old, &before.controls),
                     events: VecDeque::new(),
                     lost_before: None,
                 });
@@ -143,7 +191,7 @@ impl CaptureHistory {
                 }
             }
             knob.events
-                .push_back((beat, spec.ratio(new, &after.controls)));
+                .push_back((beat, capture_ratio(spec, new, &after.controls)));
             self.knobs.push_back(knob);
             while self.knobs.len() > HISTORY_TARGETS {
                 self.knobs.pop_front();
@@ -156,23 +204,44 @@ impl CaptureHistory {
         target: recipe::RecipeTarget,
         end: f64,
         now: f64,
-    ) -> Option<CaptureClip> {
-        let knob = self.knobs.iter().find(|knob| knob.target == target)?;
+    ) -> Result<CaptureClip, CaptureHistoryError> {
+        let requested = end;
         // Capture always takes the completed phrase before the phrase in which
         // `/capture` was opened. This gives a full sixteen-bar grace phrase.
         let end = (end / CAPTURE_BEATS).floor() * CAPTURE_BEATS;
+        let pending = || CaptureHistoryError::PhrasePending {
+            bars_remaining: ((end + CAPTURE_BEATS - requested) / BEATS_PER_BAR).ceil() as u32,
+        };
+        if end < CAPTURE_BEATS {
+            return Err(pending());
+        }
+        let knob = self
+            .knobs
+            .iter()
+            .find(|knob| knob.target == target)
+            .ok_or(CaptureHistoryError::NoMovement)?;
         if knob
             .lost_before
             .is_some_and(|beat| beat >= end - CAPTURE_BEATS)
         {
-            return None;
+            return Err(CaptureHistoryError::IncompleteHistory);
         }
         if !knob
             .events
             .iter()
-            .any(|event| event.0 >= end - CAPTURE_BEATS && event.0 <= end)
+            .any(|event| event.0 >= end - CAPTURE_BEATS && event.0 < end)
         {
-            return None;
+            return Err(
+                if knob
+                    .events
+                    .iter()
+                    .any(|event| event.0 >= end && event.0 <= requested)
+                {
+                    pending()
+                } else {
+                    CaptureHistoryError::NoMovement
+                },
+            );
         }
         let samples = std::array::from_fn(|index| {
             let beat = end - CAPTURE_BEATS + index as f64 * CAPTURE_BEATS / CAPTURE_SAMPLES as f64;
@@ -185,7 +254,7 @@ impl CaptureHistory {
             (value.clamp(0.0, 1.0) * 255.0).round() as u8
         });
         let launch = next_bar_beat(now);
-        Some(CaptureClip {
+        Ok(CaptureClip {
             samples,
             origin: launch,
             launch,
@@ -250,7 +319,10 @@ mod tests {
         // ends, even when the palette opens near its final bar.
         let late = history.clip(target, 127.9, 127.9).unwrap();
         assert_eq!(late.samples, clip.samples);
-        assert!(history.clip(target, 128.0, 128.0).is_none());
+        assert_eq!(
+            history.clip(target, 128.0, 128.0),
+            Err(CaptureHistoryError::NoMovement)
+        );
     }
 
     #[test]
@@ -292,10 +364,75 @@ mod tests {
                 (index % 2) as f32,
             );
         }
-        assert!(history.clip(target, 64.0, 64.0).is_none());
-        change(&mut history, &mut snapshot, 128.0, 0.3);
-        assert!(history.clip(target, 129.0, 129.0).is_some());
+        assert_eq!(
+            history.clip(target, 64.0, 64.0),
+            Err(CaptureHistoryError::IncompleteHistory)
+        );
+        change(&mut history, &mut snapshot, 64.0, 0.3);
+        assert!(history.clip(target, 129.0, 129.0).is_ok());
         assert!(history.knobs[0].events.len() <= HISTORY_EVENTS);
+    }
+
+    #[test]
+    fn timing_capture_replays_the_edited_grid_values_after_save_and_load() {
+        for id in [
+            "kick.interval_beats",
+            "kick.offset_beats",
+            "pad.chord_bars",
+            "tonal.attack",
+        ] {
+            let spec = spec_by_id(id).unwrap();
+            let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+            let target = recipe::RecipeTarget::capture(id, &snapshot).unwrap();
+            let mut history = CaptureHistory::default();
+            let before = snapshot.clone();
+            spec.apply_delta(1.0, &mut snapshot.controls);
+            let expected = (spec.get)(&snapshot.controls);
+            history.record_changes(&before, &snapshot, 1.0);
+            let mut clip = history.clip(target, 64.0, 64.0).unwrap();
+            clip.rebase(64.0);
+            let mut song = SongState::default();
+            song.automation
+                .captures
+                .insert(ControlAddress::new(id), clip);
+            let code = encode_song_code(&song).unwrap();
+            let restored = decode_song_code(&code).unwrap();
+            let mut controls = restored.controls;
+            apply_automation(
+                &mut controls,
+                &restored.automation,
+                TimingContext::new(44100.0, 120.0, 8.0),
+            );
+            let actual = (spec.get)(&controls);
+            if matches!(spec.step, Step::BeatGrid | Step::PowerOfTwo) {
+                assert_eq!(actual, expected, "{id}");
+            } else {
+                assert!(
+                    (capture_ratio(spec, actual, &controls)
+                        - capture_ratio(spec, expected, &controls))
+                    .abs()
+                        < 1.0 / 255.0,
+                    "{id}: {actual} != {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn capture_reports_pending_phrase_and_excludes_edits_on_its_end_boundary() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
+        let mut history = CaptureHistory::default();
+        change(&mut history, &mut snapshot, 64.0, 0.3);
+        assert_eq!(
+            history.clip(target, 8.0, 8.0),
+            Err(CaptureHistoryError::PhrasePending { bars_remaining: 14 })
+        );
+        assert_eq!(
+            history.clip(target, 64.0, 64.0),
+            Err(CaptureHistoryError::PhrasePending { bars_remaining: 16 })
+        );
+        assert!(history.clip(target, 128.0, 128.0).is_ok());
     }
 
     #[test]

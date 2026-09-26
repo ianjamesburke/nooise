@@ -2579,6 +2579,34 @@ fn recipe_keys(query: &str) -> Vec<TraceEvent> {
 }
 
 #[test]
+fn capture_keeps_manual_interval_edits_through_the_palette() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        let mut events = recipe_keys("kick.interval_beats");
+        events.push(key(0, FixtureKey::Right, InputPhase::Press));
+        events.push(TraceEvent::Idle { after_ms: 64_000 });
+        events.extend(recipe_keys("capture"));
+        events.push(modified_key(
+            0,
+            FixtureKey::Character('s'),
+            InputPhase::Press,
+            1 << 1,
+        ));
+        let result = replay_with(&events, capabilities, |harness| harness);
+        let song = decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+        assert!(
+            song.automation
+                .captures
+                .contains_key(&ControlAddress::new("kick.interval_beats")),
+            "capture failed: {:?}",
+            result.effects
+        );
+    }
+}
+
+#[test]
 fn capture_palette_freezes_completed_phrase_and_keeps_navigation_on_both_terminals() {
     for capabilities in [
         TerminalCapabilities::full(),

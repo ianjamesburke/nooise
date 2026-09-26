@@ -31,6 +31,7 @@ pub(crate) enum EffectFailure {
     AutomationLaneLimit,
     StaleRecipeTarget,
     CaptureUnavailable,
+    CaptureHistory(CaptureHistoryError),
     CaptureLimit,
     /// The kernel emitted an effect this executor does not implement. New
     /// effects are rejected explicitly rather than silently dropped.
@@ -40,10 +41,10 @@ pub(crate) enum EffectFailure {
 impl fmt::Display for EffectFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CaptureUnavailable => write!(
-                f,
-                "no recent movement to capture on this continuous knob (history may be full)"
-            ),
+            Self::CaptureUnavailable => {
+                write!(f, "select a level, continuous, or timing knob to capture")
+            }
+            Self::CaptureHistory(error) => write!(f, "{error}"),
             Self::CaptureLimit => write!(f, "four captured loops already kept; delete one first"),
             Self::UnknownControl(id) => write!(f, "no control named {id}"),
             Self::SongEncode(error) => write!(f, "{error}"),
@@ -67,6 +68,7 @@ impl Error for EffectFailure {
         match self {
             Self::SongEncode(error) => Some(error),
             Self::Clipboard(error) => Some(error),
+            Self::CaptureHistory(error) => Some(error),
             _ => None,
         }
     }
@@ -255,7 +257,7 @@ impl EffectExecutor {
             Some(
                 self.capture_history
                     .clip(target, end, beat)
-                    .ok_or(EffectFailure::CaptureUnavailable)?,
+                    .map_err(EffectFailure::CaptureHistory)?,
             )
         } else {
             None
