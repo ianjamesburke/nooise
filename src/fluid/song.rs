@@ -48,6 +48,9 @@ const MIDI_ROWS_RECORD: u8 = 6;
 /// Pad rhythm rows hidden during MIDI startup and restored with a song.
 const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
 const CAPTURE_RECORD: u8 = 8;
+/// The playback period is semantic song state, so old sixteen-beat captures
+/// must refuse instead of silently becoming sixteen-bar loops.
+const CAPTURE_WIRE_VERSION: u8 = 2;
 const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
@@ -255,6 +258,7 @@ pub(crate) fn encode_song_code_at_epoch(
         if song.automation.captures.len() > super::MAX_CAPTURES {
             return Err(SongCodeError::InvalidCapture);
         }
+        captures.push(CAPTURE_WIRE_VERSION);
         captures.push(song.automation.captures.len() as u8);
         for (address, clip) in &song.automation.captures {
             validate_capture(clip)?;
@@ -420,7 +424,7 @@ mod capture_codec_tests {
     use super::*;
 
     fn payload(id: &str) -> Vec<u8> {
-        let mut payload = vec![1];
+        let mut payload = vec![CAPTURE_WIRE_VERSION, 1];
         payload.extend_from_slice(&song_id_index(id).unwrap().to_le_bytes());
         payload.push(1);
         payload.extend_from_slice(&0.0f64.to_le_bytes());
@@ -444,17 +448,17 @@ mod capture_codec_tests {
         let original = payload("pad.level");
         assert!(decode(&original).is_ok());
         let mut invalid = original.clone();
-        invalid[3] = 2;
+        invalid[4] = 2;
         assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
         invalid = original.clone();
-        invalid[4..12].copy_from_slice(&f64::NAN.to_le_bytes());
+        invalid[5..13].copy_from_slice(&f64::NAN.to_le_bytes());
         assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
         invalid = original.clone();
-        invalid[12..20].copy_from_slice(&5.0f64.to_le_bytes());
+        invalid[13..21].copy_from_slice(&5.0f64.to_le_bytes());
         assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
         invalid = original.clone();
-        invalid[0] = 2;
-        invalid.extend_from_slice(&original[1..]);
+        invalid[1] = 2;
+        invalid.extend_from_slice(&original[2..]);
         assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
         assert_eq!(
             decode(&payload("pad.type")).err(),
@@ -479,10 +483,19 @@ mod capture_codec_tests {
             Some(SongCodeError::StaleRange("bass.slot1.time"))
         );
     }
+
+    #[test]
+    fn old_sixteen_beat_capture_records_refuse_instead_of_changing_duration() {
+        let old = payload("pad.level")[1..].to_vec();
+        assert_eq!(decode(&old).err(), Some(SongCodeError::InvalidCapture));
+    }
 }
 
 fn read_captures(payload: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(payload);
+    if reader.u8()? != CAPTURE_WIRE_VERSION {
+        return Err(SongCodeError::InvalidCapture);
+    }
     let count = reader.u8()? as usize;
     if count > super::MAX_CAPTURES {
         return Err(SongCodeError::InvalidCapture);

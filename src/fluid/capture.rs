@@ -1,14 +1,18 @@
-//! Retrospective manual-knob history and compact sixteen-beat playback curves.
+//! Retrospective, bar-aligned manual-knob history and sixteen-bar playback curves.
 
 use std::collections::VecDeque;
 
 use super::*;
 
-pub(crate) const CAPTURE_BEATS: f64 = 16.0;
+pub(crate) const CAPTURE_BARS: f64 = 16.0;
+pub(crate) const BEATS_PER_BAR: f64 = 4.0;
+pub(crate) const CAPTURE_BEATS: f64 = CAPTURE_BARS * BEATS_PER_BAR;
 pub(crate) const CAPTURE_SAMPLES: usize = 128;
 pub(crate) const MAX_CAPTURES: usize = 4;
 const HISTORY_TARGETS: usize = 16;
-const HISTORY_EVENTS: usize = 512;
+/// Two full phrases let the player keep the completed phrase through the next.
+const HISTORY_BEATS: f64 = CAPTURE_BEATS * 2.0;
+const HISTORY_EVENTS: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CaptureAction {
@@ -32,7 +36,7 @@ impl CaptureAction {
 
     pub(crate) fn description(self) -> &'static str {
         match self {
-            Self::Capture => "keep last 16 beats of this knob",
+            Self::Capture => "keep previous 16 bars of this knob",
             Self::Bypass => "bypass this knob's captured loop",
             Self::Resume => "resume captured loop next bar",
             Self::Delete => "delete this knob's captured loop",
@@ -130,7 +134,7 @@ impl CaptureHistory {
             while knob
                 .events
                 .front()
-                .is_some_and(|event| event.0 < beat - CAPTURE_BEATS)
+                .is_some_and(|event| event.0 < beat - HISTORY_BEATS)
                 || knob.events.len() >= HISTORY_EVENTS
             {
                 if let Some((at, value)) = knob.events.pop_front() {
@@ -154,9 +158,12 @@ impl CaptureHistory {
         now: f64,
     ) -> Option<CaptureClip> {
         let knob = self.knobs.iter().find(|knob| knob.target == target)?;
+        // Capture always takes the completed phrase before the phrase in which
+        // `/capture` was opened. This gives a full sixteen-bar grace phrase.
+        let end = (end / CAPTURE_BEATS).floor() * CAPTURE_BEATS;
         if knob
             .lost_before
-            .is_some_and(|beat| beat > end - CAPTURE_BEATS)
+            .is_some_and(|beat| beat >= end - CAPTURE_BEATS)
         {
             return None;
         }
@@ -225,21 +232,25 @@ mod tests {
     }
 
     #[test]
-    fn capture_keeps_sixteen_beats_prefills_early_history_and_expires_idle_takes() {
+    fn capture_keeps_the_previous_sixteen_bar_phrase_through_the_following_phrase() {
         let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
         snapshot.controls.pad.level = 0.0;
         let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
         let mut history = CaptureHistory::default();
-        change(&mut history, &mut snapshot, 1.0, 1.0);
-        change(&mut history, &mut snapshot, 2.0, 0.5);
-        let clip = history.clip(target, 3.0, 9.0).unwrap();
-        assert_eq!(clip.origin, 12.0);
-        assert_eq!(clip.position(11.999), None);
-        assert_eq!(clip.samples[0], 0);
-        assert_eq!(clip.samples[14 * 8], 255);
-        assert_eq!(clip.samples[15 * 8], 128);
-        assert_eq!(clip.position(12.0), clip.position(28.0));
-        assert!(history.clip(target, 19.0, 19.0).is_none());
+        change(&mut history, &mut snapshot, 0.0, 1.0);
+        change(&mut history, &mut snapshot, 32.0, 0.5);
+        let clip = history.clip(target, 96.0, 96.0).unwrap();
+        assert_eq!(clip.origin, 100.0);
+        assert_eq!(clip.position(99.999), None);
+        assert_eq!(clip.samples[0], 255);
+        assert_eq!(clip.samples[32 * 2], 128);
+        assert_eq!(clip.position(100.0), clip.position(164.0));
+
+        // The capture window remains the first phrase until the grace phrase
+        // ends, even when the palette opens near its final bar.
+        let late = history.clip(target, 127.9, 127.9).unwrap();
+        assert_eq!(late.samples, clip.samples);
+        assert!(history.clip(target, 128.0, 128.0).is_none());
     }
 
     #[test]
@@ -251,11 +262,11 @@ mod tests {
             enabled: true,
         };
         clip.samples[1] = 255;
-        assert_eq!(clip.position(20.0625), Some(0.5));
+        assert_eq!(clip.position(20.25), Some(0.5));
         for beat in [18.0, 20.0625, 71.0] {
             let mut restored = clip.clone();
             restored.rebase(beat);
-            for elapsed in [0.0, 0.125, 2.0, 16.0, 21.0] {
+            for elapsed in [0.0, 0.5, 2.0, 16.0, 64.0, 71.0] {
                 assert_eq!(restored.position(elapsed), clip.position(beat + elapsed));
             }
         }
@@ -269,21 +280,21 @@ mod tests {
     }
 
     #[test]
-    fn capture_refuses_history_overflow_until_a_complete_window_is_available() {
+    fn capture_refuses_history_overflow_until_a_complete_phrase_is_available() {
         let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
         let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
         let mut history = CaptureHistory::default();
-        for index in 0..600 {
+        for index in 0..(HISTORY_EVENTS + 1) {
             change(
                 &mut history,
                 &mut snapshot,
-                index as f64 / 100.0,
+                index as f64 / 1_000.0,
                 (index % 2) as f32,
             );
         }
-        assert!(history.clip(target, 6.0, 6.0).is_none());
-        change(&mut history, &mut snapshot, 30.0, 0.3);
-        assert!(history.clip(target, 31.0, 31.0).is_some());
+        assert!(history.clip(target, 64.0, 64.0).is_none());
+        change(&mut history, &mut snapshot, 128.0, 0.3);
+        assert!(history.clip(target, 129.0, 129.0).is_some());
         assert!(history.knobs[0].events.len() <= HISTORY_EVENTS);
     }
 
@@ -368,14 +379,14 @@ mod tests {
             );
             engine.reseed(42);
             let mut energy = [0.0f64; 3];
-            for sample in 0..104_000 {
+            for sample in 0..312_000 {
                 let (left, right) = engine.next_stereo();
                 let second = sample as f64 / 8_000.0;
                 let window = if (3.0..5.0).contains(&second) {
                     Some(0)
-                } else if (7.0..9.0).contains(&second) {
+                } else if (20.0..22.0).contains(&second) {
                     Some(1)
-                } else if (11.0..13.0).contains(&second) {
+                } else if (36.0..38.0).contains(&second) {
                     Some(2)
                 } else {
                     None

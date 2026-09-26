@@ -619,6 +619,26 @@ impl ReplayHarness {
         self
     }
 
+    fn with_pad_capture_history(mut self) -> Self {
+        self.executor
+            .execute_interaction(
+                interaction::InteractionEffect::CommitNumeric(20.0),
+                &InteractionExecutionContext {
+                    selected_control: Some("pad.level"),
+                    beat: 0.0,
+                },
+            )
+            .expect("the test capture edit publishes");
+        self
+    }
+
+    fn at_beat(mut self, beat: f64) -> Self {
+        self.clock.advance(Duration::from_secs_f64(beat));
+        self.scheduler = Scheduler::new(SchedulerConfig::default(), self.clock.now());
+        self.requested_at = Some(self.clock.now());
+        self
+    }
+
     fn with_auto_running(mut self) -> Self {
         self.executor.toggle_auto(0.0);
         self
@@ -2559,22 +2579,17 @@ fn recipe_keys(query: &str) -> Vec<TraceEvent> {
 }
 
 #[test]
-fn capture_palette_freezes_history_and_keeps_navigation_on_both_terminals() {
+fn capture_palette_freezes_completed_phrase_and_keeps_navigation_on_both_terminals() {
     for capabilities in [
         TerminalCapabilities::full(),
         TerminalCapabilities::default(),
     ] {
         let make_trace = |delay| {
-            let mut events = vec![
-                TraceEvent::Resize {
-                    after_ms: 0,
-                    width: MIN_TERMINAL_WIDTH,
-                    height: MIN_TERMINAL_HEIGHT,
-                },
-                key(1000, FixtureKey::Left, InputPhase::Press),
-                key(250, FixtureKey::Left, InputPhase::Press),
-                TraceEvent::Idle { after_ms: 750 },
-            ];
+            let mut events = vec![TraceEvent::Resize {
+                after_ms: 0,
+                width: MIN_TERMINAL_WIDTH,
+                height: MIN_TERMINAL_HEIGHT,
+            }];
             let mut command = recipe_keys("capture");
             command.insert(1, TraceEvent::Idle { after_ms: delay });
             events.extend(command);
@@ -2587,9 +2602,10 @@ fn capture_palette_freezes_history_and_keeps_navigation_on_both_terminals() {
             ));
             events
         };
-        let immediate = replay(&make_trace(0), capabilities);
-        let mut delayed_trace = make_trace(18000);
-        let delayed = replay(&delayed_trace, capabilities);
+        let configure = |harness: ReplayHarness| harness.with_pad_capture_history().at_beat(64.0);
+        let immediate = replay_with(&make_trace(0), capabilities, configure);
+        let mut delayed_trace = make_trace(1_000);
+        let delayed = replay_with(&delayed_trace, capabilities, configure);
         let read_clip = |result: &ReplayResult| {
             decode_song_code(result.saved_automation_code.as_deref().unwrap())
                 .unwrap()
@@ -2618,7 +2634,7 @@ fn capture_palette_freezes_history_and_keeps_navigation_on_both_terminals() {
             InputPhase::Press,
             1 << 1,
         ));
-        let bypassed = replay(&delayed_trace, capabilities);
+        let bypassed = replay_with(&delayed_trace, capabilities, configure);
         assert!(!read_clip(&bypassed)[&address].enabled);
         assert!(
             bypassed
@@ -2634,7 +2650,7 @@ fn capture_palette_freezes_history_and_keeps_navigation_on_both_terminals() {
             InputPhase::Press,
             1 << 1,
         ));
-        let resumed = replay(&delayed_trace, capabilities);
+        let resumed = replay_with(&delayed_trace, capabilities, configure);
         assert!(read_clip(&resumed)[&address].enabled);
         delayed_trace.extend(recipe_keys("delete"));
         delayed_trace.push(modified_key(
@@ -2645,7 +2661,7 @@ fn capture_palette_freezes_history_and_keeps_navigation_on_both_terminals() {
         ));
         delayed_trace.push(key(0, FixtureKey::Down, InputPhase::Press));
         delayed_trace.push(key(0, FixtureKey::Tab, InputPhase::Press));
-        let deleted = replay(&delayed_trace, capabilities);
+        let deleted = replay_with(&delayed_trace, capabilities, configure);
         assert!(read_clip(&deleted).is_empty());
         assert_ne!(deleted.model.navigation, Navigation::default());
     }
