@@ -1201,7 +1201,7 @@ mod tests {
         for (index, id) in ids.into_iter().enumerate() {
             let target = recipe::RecipeTarget::capture(id, &executor.session.load());
             let generation = executor.session.load().generation;
-            let result = executor.apply_capture(CaptureAction::Capture, target, 64.0, 64.0);
+            let result = executor.apply_capture(CaptureAction::Capture, target, 16.0, 16.0);
             if index == MAX_CAPTURES {
                 assert_eq!(result, Err(EffectFailure::CaptureLimit));
                 assert_eq!(executor.session.load().generation, generation);
@@ -1211,7 +1211,7 @@ mod tests {
         }
         let target = recipe::RecipeTarget::capture("pad.level", &executor.session.load());
         executor
-            .apply_capture(CaptureAction::Capture, target, 64.0, 65.0)
+            .apply_capture(CaptureAction::Capture, target, 16.0, 17.0)
             .unwrap();
         assert_eq!(
             executor.session.load().automation.captures.len(),

@@ -2586,7 +2586,7 @@ fn capture_keeps_manual_interval_edits_through_the_palette() {
     ] {
         let mut events = recipe_keys("kick.interval_beats");
         events.push(key(0, FixtureKey::Right, InputPhase::Press));
-        events.push(TraceEvent::Idle { after_ms: 64_000 });
+        events.push(TraceEvent::Idle { after_ms: 16_000 });
         events.extend(recipe_keys("capture"));
         events.push(modified_key(
             0,
@@ -2630,7 +2630,7 @@ fn capture_palette_freezes_completed_phrase_and_keeps_navigation_on_both_termina
             ));
             events
         };
-        let configure = |harness: ReplayHarness| harness.with_pad_capture_history().at_beat(64.0);
+        let configure = |harness: ReplayHarness| harness.with_pad_capture_history().at_beat(16.0);
         let immediate = replay_with(&make_trace(0), capabilities, configure);
         let mut delayed_trace = make_trace(1_000);
         let delayed = replay_with(&delayed_trace, capabilities, configure);

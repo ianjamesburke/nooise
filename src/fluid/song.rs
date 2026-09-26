@@ -48,9 +48,9 @@ const MIDI_ROWS_RECORD: u8 = 6;
 /// Pad rhythm rows hidden during MIDI startup and restored with a song.
 const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
 const CAPTURE_RECORD: u8 = 8;
-/// The playback period is semantic song state, so old sixteen-beat captures
-/// must refuse instead of silently becoming sixteen-bar loops.
-const CAPTURE_WIRE_VERSION: u8 = 2;
+/// The playback period is semantic song state: refuse the sixteen-bar format
+/// rather than silently speeding up saved loops.
+const CAPTURE_WIRE_VERSION: u8 = 3;
 const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
@@ -485,8 +485,9 @@ mod capture_codec_tests {
     }
 
     #[test]
-    fn old_sixteen_beat_capture_records_refuse_instead_of_changing_duration() {
-        let old = payload("pad.level")[1..].to_vec();
+    fn sixteen_bar_capture_records_refuse_instead_of_changing_duration() {
+        let mut old = payload("pad.level");
+        old[0] = 2;
         assert_eq!(decode(&old).err(), Some(SongCodeError::InvalidCapture));
     }
 }
