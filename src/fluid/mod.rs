@@ -303,6 +303,7 @@ pub(crate) fn run(osc: Option<SocketAddr>, midi: MidiConfig<'_>) -> Result<(), B
 fn randomized_start_song(rng: &mut impl Rng, midi_connected: bool) -> SongState {
     let mut controls = FluidControls::default();
     controls.pad.progression = rng.gen_range(0..PROGRESSIONS.len()) as f32;
+    controls.tonal.phrase = rng.gen_range(0..TONAL_PHRASES.len()) as f32;
     if midi_connected {
         controls.pad.level = 0.0;
     }

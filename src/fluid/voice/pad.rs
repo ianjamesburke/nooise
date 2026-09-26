@@ -243,6 +243,16 @@ impl PadEngine {
         }
     }
 
+    pub(crate) fn restart_sequence(&mut self, c: &PadControls) {
+        self.release_stab();
+        for layer in &mut self.layers {
+            layer.release();
+        }
+        self.cursor = ProgressionCursor::new(c);
+        self.stab_trigger = GridTrigger::new();
+        self.transport = Transport::Stopped;
+    }
+
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
         let advance = self.cursor.tick(c, timing);
         let chord_notes = pad_chord_tones(c, self.cursor.window.progression, self.cursor.slot());

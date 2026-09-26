@@ -306,6 +306,18 @@ pub(crate) struct AutomationState {
 }
 
 impl AutomationState {
+    pub(crate) fn restart(&mut self) {
+        for stack in self.stacks.values_mut() {
+            for route in &mut stack.lfos {
+                route.pickup = None;
+            }
+        }
+        for clip in self.captures.values_mut() {
+            clip.origin = 0.0;
+            clip.launch = 0.0;
+        }
+    }
+
     fn remove_stack_if_empty(&mut self, address: ControlAddress) {
         if self
             .stacks

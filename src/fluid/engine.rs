@@ -538,6 +538,7 @@ pub(crate) struct FluidEngine {
     pub(crate) snapshot: FluidControls,
     gesture_snapshot: GestureState,
     transport: Transport,
+    transport_restart: u64,
     /// Allocation-free per-sample plan, rebuilt only when aggregate
     /// automation differs from the last planned state.
     plan: AutomationPlan,
@@ -605,8 +606,35 @@ impl FluidEngine {
             snapshot,
             gesture_snapshot: live.gestures.clone(),
             transport: live.transport,
+            transport_restart: live.transport_restart,
             plan,
             plan_source,
+        }
+    }
+
+    /// Rewind musical schedulers while release envelopes and effect tails keep running.
+    fn restart_sequence(&mut self) {
+        self.tempo.beat = 0.0;
+        self.morph_writer = MorphWriter::default();
+        self.morph
+            .rcu(|current| current.as_ref().as_ref().map(MorphState::restarted));
+        self.beat_trigger = GridTrigger::new();
+        self.bass.progression = ProgressionFollower::new();
+        self.bass.step_trigger = GridTrigger::new();
+        self.perc.trigger = GridTrigger::new();
+        self.kick.trigger = GridTrigger::new();
+        self.clap.trigger = GridTrigger::new();
+        self.tonal.step_trigger = GridTrigger::new();
+        self.tonal.step_index = 0;
+        self.tonal.last_cycle = None;
+        self.arp.progression = ProgressionFollower::new();
+        self.arp.note_trigger = GridTrigger::new();
+        self.arp.cycle_pos = 0;
+        self.arp.ping_pong_dir = 1;
+        self.lead.progression = ProgressionFollower::new();
+        self.lead.step_trigger = GridTrigger::new();
+        if let Some(clock) = &mut self.midi_clock {
+            clock.restart();
         }
     }
 
@@ -693,6 +721,12 @@ impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         if self.current_sample.is_multiple_of(128) {
+            let live = self.session.load();
+            let restarting = self.transport_restart != live.transport_restart;
+            if restarting {
+                self.transport_restart = live.transport_restart;
+                self.restart_sequence();
+            }
             self.session.publish_audio_beat(self.tempo.beat);
             self.session
                 .publish_audio_seconds(self.current_sample as f64 / self.sample_rate as f64);
@@ -712,6 +746,9 @@ impl StereoEngine for FluidEngine {
             }
             let session = self.session.load();
             self.snapshot = session.controls.clone();
+            if restarting {
+                self.pad.restart_sequence(&self.snapshot.pad);
+            }
             self.gesture_snapshot = session.gestures.clone();
             self.transport = session.transport;
             self.gain_smoothers

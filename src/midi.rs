@@ -490,6 +490,14 @@ impl MidiClockFollower {
             }
         }
     }
+
+    pub(crate) fn restart(&mut self) {
+        self.sink.send(MidiMessage::PadOff);
+        self.sink.send(MidiMessage::ArpOff);
+        self.sink.send(MidiMessage::LeadOff);
+        self.last_transport = None;
+        self.next_clock = 0;
+    }
 }
 
 impl Drop for MidiClockFollower {

@@ -26,6 +26,8 @@ pub(crate) struct LiveSessionSnapshot {
     /// Whether the beat clock runs. Live-only: a stopped song is silence,
     /// not a state worth sharing, so a loaded code always plays.
     pub(crate) transport: Transport,
+    /// Counts explicit restarts, including stop/play between audio reads.
+    pub(crate) transport_restart: u64,
 }
 
 impl LiveSessionSnapshot {
@@ -39,6 +41,7 @@ impl LiveSessionSnapshot {
             lead_play: LeadPlayState::default(),
             gestures: song.gestures.restored(),
             transport: Transport::Playing,
+            transport_restart: 0,
             tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
                 TonalSequenceState::from_phrase(wrapped_index(
                     song.controls.tonal.phrase,
@@ -63,6 +66,7 @@ impl LiveSessionSnapshot {
             lead_play: LeadPlayState::default(),
             gestures: GestureState::default(),
             transport: Transport::Playing,
+            transport_restart: 0,
         }
     }
 }

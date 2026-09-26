@@ -711,36 +711,44 @@ fn pad_defaults_use_progression_a_and_sixteen_beat_chords() {
 }
 
 #[test]
-fn fresh_start_chooses_only_a_builtin_progression() {
+fn fresh_start_chooses_only_builtin_progressions_and_tonal_phrases() {
     let mut rng = StdRng::seed_from_u64(42);
-    let choices = (0..64)
-        .map(|_| {
-            randomized_start_song(&mut rng, false)
-                .controls
-                .pad
-                .progression as usize
-        })
-        .collect::<Vec<_>>();
-
-    assert!(choices.iter().all(|&choice| choice < PROGRESSIONS.len()));
+    for _ in 0..64 {
+        let song = randomized_start_song(&mut rng, false);
+        assert!((song.controls.pad.progression as usize) < PROGRESSIONS.len());
+        assert!((song.controls.tonal.phrase as usize) < TONAL_PHRASES.len());
+    }
 }
 
 #[test]
-fn fresh_start_varies_the_progression_between_launches() {
+fn fresh_start_varies_both_musical_selections_between_launches() {
     let mut rng = StdRng::seed_from_u64(42);
-    let first = randomized_start_song(&mut rng, false)
-        .controls
-        .pad
-        .progression;
-    let varied = (0..16).any(|_| {
-        randomized_start_song(&mut rng, false)
-            .controls
-            .pad
-            .progression
-            != first
-    });
+    let first = randomized_start_song(&mut rng, false).controls;
+    let mut progression_varied = false;
+    let mut phrase_varied = false;
+    for _ in 0..16 {
+        let next = randomized_start_song(&mut rng, false).controls;
+        progression_varied |= next.pad.progression != first.pad.progression;
+        phrase_varied |= next.tonal.phrase != first.tonal.phrase;
+    }
 
-    assert!(varied);
+    assert!(progression_varied);
+    assert!(phrase_varied);
+}
+
+#[test]
+fn fresh_start_musical_selections_are_independent_of_midi_routing() {
+    let mut normal_rng = StdRng::seed_from_u64(42);
+    let mut midi_rng = StdRng::seed_from_u64(42);
+    for _ in 0..16 {
+        let normal = randomized_start_song(&mut normal_rng, false);
+        let midi = randomized_start_song(&mut midi_rng, true);
+        assert_eq!(
+            normal.controls.pad.progression,
+            midi.controls.pad.progression
+        );
+        assert_eq!(normal.controls.tonal.phrase, midi.controls.tonal.phrase);
+    }
 }
 
 #[test]
@@ -2341,7 +2349,7 @@ fn pad_gate_length_changes_the_audible_stab() {
 /// while stopped, everything already sounding must keep ringing and fading,
 /// and starting again brings the song back.
 #[test]
-fn stopping_the_clock_lets_tails_ring_out_and_starting_it_resumes_the_song() {
+fn stopping_the_clock_lets_tails_ring_out_and_starting_it_restarts_the_song() {
     let mut controls = FluidControls::default();
     controls.kick.level = 0.8;
     controls.pad.chord_bars = 0.25;
@@ -2382,16 +2390,114 @@ fn stopping_the_clock_lets_tails_ring_out_and_starting_it_resumes_the_song() {
     assert!(last < first * 0.5, "tails must decay: {first} -> {last}");
 
     effects.toggle_transport();
+    render_seconds(&mut engine, 0.01);
+    assert!(telemetry.beat() < 0.1, "play must restart at beat zero");
+    assert_eq!(telemetry.chord_slot.load(Ordering::Relaxed), 0);
     let resumed = render_seconds(&mut engine, 1.0);
-    assert!(
-        telemetry.beat() > beat,
-        "starting must move the clock again"
-    );
+    assert!(telemetry.beat() > 0.1, "starting must move the clock again");
     assert!(telemetry.kick_pulse.load(Ordering::Relaxed) > kicks);
     let back = rms(&resumed[resumed.len() - quarter..]);
     assert!(
         back > last * 2.0,
         "starting must bring the song back: {last} -> {back}"
+    );
+}
+
+#[test]
+fn quick_stop_play_restarts_all_sequences_and_midi_on_the_opening_chord() {
+    let mut controls = FluidControls::default();
+    controls.pad.chord_bars = 0.25;
+    controls.pad.chord_offset = 2.0;
+    controls.arp.midi_out = 1.0;
+    controls.arp.rate_beats = 0.5;
+    let session = live_session(controls, AutomationState::default());
+    let mut effects = EffectExecutor::new(
+        session.clone(),
+        AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+    );
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let (sink, messages) = MidiSink::test_channel();
+    let mut engine =
+        FluidEngine::new(SAMPLE_RATE, session, no_morph(), Arc::clone(&telemetry)).with_midi(sink);
+    render_seconds(&mut engine, 2.5);
+    assert_ne!(engine.pad.cursor.slot(), 2);
+    messages.try_iter().for_each(drop);
+
+    // Both UI edges can arrive before the next 128-sample session read.
+    effects.toggle_transport();
+    effects.toggle_transport();
+    render_seconds(&mut engine, 0.01);
+    assert!(engine.tempo.beat < 0.1);
+    assert_eq!(engine.pad.cursor.slot(), 2);
+    assert_eq!(engine.tonal.step_index, 0);
+    assert_eq!(engine.arp.cycle_pos, 1, "the opening Arp note just fired");
+    assert_eq!(engine.bass.progression.cursor.as_ref().unwrap().slot(), 2);
+    assert_eq!(engine.lead.progression.cursor.as_ref().unwrap().slot(), 2);
+    let messages: Vec<_> = messages.try_iter().collect();
+    assert!(messages.contains(&MidiMessage::Start));
+    assert!(messages.contains(&MidiMessage::Clock));
+    assert!(!messages.contains(&MidiMessage::Continue));
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, MidiMessage::ArpNote(_)))
+    );
+}
+
+#[test]
+fn transport_restart_restarts_captured_loops_and_live_auto_from_beat_zero() {
+    let mut controls = FluidControls::default();
+    controls.pad.chord_offset = 3.0;
+    let address = ControlAddress::new("pad.level");
+    let mut automation = AutomationState::default();
+    automation.captures.insert(
+        address,
+        CaptureClip {
+            samples: [127; CAPTURE_SAMPLES],
+            origin: 100.0,
+            launch: 100.0,
+            enabled: true,
+        },
+    );
+    let session = live_session(controls.clone(), automation.clone());
+    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::from_live(
+        controls,
+        automation,
+        decode_auto_states(),
+        DEFAULT_AUTO_BARS,
+        100.0,
+    ))));
+    let mut effects = EffectExecutor::new(
+        session.clone(),
+        AutoControls::new(Arc::clone(&morph), decode_auto_states(), DEFAULT_AUTO_BARS),
+    );
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session.clone(),
+        Arc::clone(&morph),
+        Arc::new(FluidTelemetry::default()),
+    );
+    engine.tempo.beat = 110.0;
+    effects.toggle_transport();
+    effects.toggle_transport();
+    render_seconds(&mut engine, 0.01);
+    let snapshot = session.load();
+    let clip = &snapshot.automation.captures[&address];
+    assert_eq!(clip.origin, 0.0);
+    assert_eq!(clip.launch, 0.0);
+    assert!(clip.position(engine.tempo.beat).is_some());
+    assert_eq!(engine.pad.cursor.slot(), 3);
+    // A live morph's first leg lasts 64 beats; the old 100-beat origin
+    // must not delay its transition after the sequence restarts.
+    assert!(
+        morph
+            .load()
+            .as_ref()
+            .as_ref()
+            .unwrap()
+            .position_at(64.0)
+            .playing
+            .is_some()
     );
 }
 

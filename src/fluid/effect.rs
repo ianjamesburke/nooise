@@ -621,10 +621,23 @@ impl EffectExecutor {
 
     /// Stop or start the beat clock. Like mute it is an overlay on the song,
     /// not an edit of it, so it neither exits auto nor touches the MRU; the
-    /// morph simply waits on the held beat.
+    /// next play starts the sequence at beat zero.
     pub(crate) fn toggle_transport(&mut self) {
-        self.session
-            .update(|snapshot| snapshot.transport = snapshot.transport.toggled());
+        self.session.update(|snapshot| {
+            snapshot.transport = snapshot.transport.toggled();
+            if snapshot.transport == Transport::Playing {
+                snapshot.transport_restart = snapshot.transport_restart.wrapping_add(1);
+                snapshot.automation.restart();
+            }
+        });
+        if self.session.load().transport == Transport::Playing {
+            self.capture_history = CaptureHistory::default();
+            self.phrase = LeadPhraseBuffer::default();
+            self.edit_beat = 0.0;
+            if let Some((beat, _)) = &mut self.pending {
+                *beat = 4.0;
+            }
+        }
     }
 
     /// Typed bridge from the pure interaction kernel to effect execution.

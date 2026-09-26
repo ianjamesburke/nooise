@@ -404,6 +404,7 @@ struct FrameRecord {
 struct ReplayResult {
     model: InteractionModel,
     session_generation: u64,
+    transport_restart: u64,
     control_bits: Vec<(&'static str, u32)>,
     automation_kind: Option<String>,
     automation_address: Option<&'static str>,
@@ -729,6 +730,7 @@ impl ReplayHarness {
         let result = ReplayResult {
             model: self.model,
             session_generation: session.generation,
+            transport_restart: session.transport_restart,
             control_bits: all_specs()
                 .map(|spec| (spec.id, (spec.get)(&session.controls).to_bits()))
                 .collect(),
@@ -3249,6 +3251,7 @@ fn clock_stop_toggles_on_press_in_every_terminal_and_marks_the_activity_row() {
         ];
         let result = replay(&stop, capabilities);
         assert_eq!(result.effect_count("ToggleTransport"), 1);
+        assert_eq!(result.transport_restart, 0);
         assert_eq!(result.final_owner(), Some("LFO"));
         let activity = &result.frames.last().expect("a frame").activity;
         assert!(activity.contains("STOPPED"), "{activity}");
@@ -3257,6 +3260,7 @@ fn clock_stop_toggles_on_press_in_every_terminal_and_marks_the_activity_row() {
         start.push(shift_p(InputPhase::Press));
         let result = replay(&start, capabilities);
         assert_eq!(result.effect_count("ToggleTransport"), 2);
+        assert_eq!(result.transport_restart, 1);
         let activity = &result.frames.last().expect("a frame").activity;
         assert!(!activity.contains("STOPPED"), "{activity}");
     }
@@ -3820,6 +3824,7 @@ fn divergence_signature(left: &ReplayResult, right: &ReplayResult) -> Option<Div
     }
     first_field!(model);
     first_field!(session_generation);
+    first_field!(transport_restart);
     first_field!(control_bits);
     first_field!(automation_kind);
     first_field!(automation_address);

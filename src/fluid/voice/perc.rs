@@ -2,11 +2,9 @@
 
 use super::*;
 
-/// Headroom trim on filtered-noise output, not a character control —
-/// `perc.level` at 100% should reach close to full scale on its own (for a
-/// single hit / continuous mode), leaving overlap safety margin to the
-/// master bus's soft-clip/compressor plus `mix_voices`'s own perc weight.
-const OUTPUT_TRIM: f32 = 0.5;
+/// Keep the noise layer's useful Level range above the first dial step.
+/// Built-in songs compensate their Level and its LFO depths by three.
+const OUTPUT_TRIM: f32 = 0.5 / 3.0;
 
 pub(crate) struct PercEngine {
     pub(crate) sample_rate: f32,

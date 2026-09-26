@@ -68,9 +68,12 @@ naturally. Automation and the auto morph wait on the held beat, and gestures
 still play into the tails. Played Lead keys still sound. A palette edit
 staged for the next bar waits for the clock to start.
 
-Starting resumes from the held beat rather than bar 1: grid voices fire at
-their next scheduled slot, and the Pads voice the current chord straight
-away instead of waiting out the chord boundary.
+Starting returns to bar 1. Every voice grid and phrase position restarts,
+and Pads voice the first chord in the selected chord window. Captured knob
+loops restart from their first sample, and auto morph restarts its first
+endpoint. Pending palette edits land on the first new bar. Live capture
+history clears; saved curves and Tonal's evolved notes remain. Existing
+release envelopes and effect tails keep ringing. MIDI output sends Start.
 
 While stopped the activity row leads with `■ STOPPED`, whoever owns the
 keyboard. Stopping is not an edit: it leaves auto running and the MRU
@@ -151,8 +154,8 @@ Lead play retains its own `i` entry and existing bindings.
 8. On Pads with Reverb loaded and Kick audible, press Shift+P: no new kick or
    chord arrives, the chord and reverb fade out naturally rather than
    cutting, and the activity row shows `■ STOPPED`. Hold `z` during the
-   tail and hear it bloom. Press Shift+P again: kicks return on the grid and the
-   current chord swells back in without waiting for a chord change.
+   tail and hear it bloom. Press Shift+P again: the grid restarts at bar 1 and
+   the first chord in the selected window swells back in.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the
