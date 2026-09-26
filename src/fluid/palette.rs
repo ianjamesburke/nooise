@@ -14,12 +14,13 @@ use super::*;
 
 /// What a palette row does when confirmed.
 ///
-/// Entries are a pure function of the current tab, deliberately: the
+/// Entries derive only from registry/catalog/recipe constants and scope: the
 /// interaction kernel and the renderer each build this list independently and
 /// confirm works by index, so anything that made the list depend on live
 /// controls could desync them and jump to the wrong control. Live state is
 /// resolved where it exists — in the adapter, and in the value column.
 pub(crate) enum PaletteEntry {
+    Recipe(super::recipe::RecipeId),
     /// Jump to a control at the tab that natively owns it.
     Control {
         tab: Tab,
@@ -29,7 +30,10 @@ pub(crate) enum PaletteEntry {
     /// A catalog module on `tab`'s chain. Whether confirming adds it or jumps
     /// to the copy already there is decided at execution time, so the palette
     /// can never silently create a second copy.
-    Module { tab: Tab, catalog_index: usize },
+    Module {
+        tab: Tab,
+        catalog_index: usize,
+    },
     /// A stable slot control projected under the active module's human-facing
     /// dotted scope; its backing id remains slot-addressed for song codes.
     ModuleControl {
@@ -45,6 +49,10 @@ impl PaletteEntry {
     /// entry, for the reason on the enum.
     pub(crate) fn haystack(&self) -> String {
         match self {
+            Self::Recipe(id) => {
+                let recipe = id.recipe();
+                format!("{} · {}", self.display_text(), recipe.aliases.join(" "))
+            }
             Self::Control { tab, spec, .. } => {
                 format!("{} · {} · {}", spec.id, tab.name(), spec.label)
             }
@@ -74,10 +82,38 @@ impl PaletteEntry {
         }
     }
 
+    pub(crate) fn display_text(&self) -> String {
+        match self {
+            Self::Recipe(id) => format!("{} · {}", id.recipe().name, id.recipe().description),
+            _ => self.haystack(),
+        }
+    }
+
+    fn match_query(&self, query: &str) -> Option<(i32, Vec<usize>)> {
+        if let Self::Recipe(id) = self
+            && id
+                .recipe()
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(query))
+        {
+            // An exact alias wins over scattered matches. Highlight the name,
+            // never alias offsets that have no corresponding display text.
+            return Some((i32::MAX, (0..id.recipe().name.chars().count()).collect()));
+        }
+        fuzzy_score(query, &self.haystack()).map(|(score, hits)| {
+            let display_len = self.display_text().chars().count();
+            (
+                score,
+                hits.into_iter().filter(|&hit| hit < display_len).collect(),
+            )
+        })
+    }
+
     pub(crate) fn spec(&self) -> Option<&'static ControlSpec> {
         match self {
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => Some(spec),
-            Self::Module { .. } => None,
+            Self::Module { .. } | Self::Recipe(_) => None,
         }
     }
 
@@ -89,6 +125,7 @@ impl PaletteEntry {
     /// matched against, so it cannot affect indices.
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
+            Self::Recipe(_) => "add lane".to_string(),
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => {
                 if super::midi_row_bit(spec.id).is_some_and(|bit| c.midi_rows & bit == 0)
                     || super::pad_rhythm_row_bit(spec.id)
@@ -115,7 +152,7 @@ impl PaletteEntry {
 }
 
 /// Flat address space the palette searches: every unique control at its
-/// owning tab, plus every catalog module on every layer that has a chain.
+/// owning tab, every available catalog module, and the static lane recipes.
 /// Duplicated placements (e.g. `pad.level` on both Master and Chords) collapse
 /// to the owning tab. Module slot rows are excluded as controls — a module is
 /// reached through its `Module` entry, which knows how to find or create it.
@@ -145,6 +182,11 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
             }
         }
     }
+    entries.extend(
+        super::recipe::RECIPES
+            .iter()
+            .map(|recipe| PaletteEntry::Recipe(recipe.id)),
+    );
     entries
 }
 
@@ -249,7 +291,7 @@ impl PaletteState {
             self.sort_by_context();
         } else {
             for (entry_index, entry) in self.entries.iter().enumerate() {
-                if let Some((score, hits)) = fuzzy_score(&self.query, &entry.haystack()) {
+                if let Some((score, hits)) = entry.match_query(&self.query) {
                     self.matches.push(PaletteMatch {
                         entry_index,
                         score,
@@ -307,6 +349,11 @@ fn module_palette_entries(tab: Tab, slot: usize, catalog_index: usize) -> Vec<Pa
                 parameter: parameter.label,
             })
         })
+        .chain(
+            super::recipe::RECIPES
+                .iter()
+                .map(|recipe| PaletteEntry::Recipe(recipe.id)),
+        )
         .collect()
 }
 
@@ -353,6 +400,7 @@ fn context_rank(
     // A module offered for the page you are on ranks with that page's own
     // controls, so "swing" on Bass reaches Bass before it reaches Tonal.
     let page_index = match palette_entry {
+        PaletteEntry::Recipe(_) => None,
         PaletteEntry::Module { tab, catalog_index } => {
             (*tab == current_tab).then_some(tab_specs(current_tab).len() + catalog_index)
         }

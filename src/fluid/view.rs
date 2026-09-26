@@ -879,6 +879,7 @@ mod tests {
         let model = InteractionModel {
             navigation: Navigation::default(),
             mode: InteractionMode::Palette(PaletteMode {
+                recipe_target: None,
                 query: "bass".to_string(),
                 selected: 1,
                 recent: vec!["master.bpm"],

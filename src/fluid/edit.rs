@@ -194,6 +194,18 @@ pub(crate) fn open_modulator_effect_for_id(
     *sub_selected = 1;
 }
 
+pub(crate) fn apply_recipe_effect(
+    effects: &mut EffectExecutor,
+    recipe: &recipe::Recipe,
+    target: recipe::RecipeTarget,
+) -> Result<Arc<LiveSessionSnapshot>, EffectFailure> {
+    effects.edit_session_checked(
+        target.id,
+        |snapshot| recipe.check(snapshot, target),
+        |snapshot| recipe.apply(snapshot, target),
+    )
+}
+
 pub(crate) fn add_modulator_effect_for_id(
     effects: &mut EffectExecutor,
     id: &'static str,

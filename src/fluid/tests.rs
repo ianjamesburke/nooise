@@ -6189,6 +6189,30 @@ fn silent_envelope_only_song_keeps_its_curve_when_raised_after_loading() {
 }
 
 #[test]
+fn palette_recipes_round_trip_as_ordinary_editable_lanes() {
+    let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+    let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
+    for recipe in recipe::RECIPES {
+        recipe.apply(&mut snapshot, target).unwrap();
+    }
+    let original = SongState {
+        controls: snapshot.controls,
+        automation: snapshot.automation,
+        ..SongState::default()
+    };
+    let code = song::encode_song_code(&original).unwrap();
+    let mut restored = song::decode_song_code(&code).unwrap();
+    assert_song_states_agree(&original, &restored, "palette recipes");
+    let address = ControlAddress::new("pad.level");
+    assert_eq!(restored.automation.routes_for(address).count(), 2);
+    assert_eq!(restored.automation.envelopes_for(address).count(), 1);
+    restored.automation.route_mut(address).unwrap().depth_ratio = 0.0;
+    restored.automation.envelope_mut(address).unwrap().amount = 0.0;
+    let silent = song::decode_song_code(&song::encode_song_code(&restored).unwrap()).unwrap();
+    assert_song_states_agree(&restored, &silent, "silenced recipes");
+}
+
+#[test]
 fn song_code_keeps_silent_lanes_between_active_lanes_in_both_families() {
     let address = ControlAddress::new("master.level");
     let mut original = SongState::from_controls(FluidControls::default());
@@ -6289,6 +6313,77 @@ fn silent_lfo_and_envelope_render_the_same_as_no_automation() {
     silent.reseed(42);
     for _ in 0..SAMPLE_RATE as usize {
         assert_eq!(silent.next_stereo(), dry.next_stereo());
+    }
+}
+
+#[test]
+fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
+    let address = ControlAddress::new("master.level");
+    for id in [
+        recipe::RecipeId::Sway,
+        recipe::RecipeId::Tremolo,
+        recipe::RecipeId::Sidechain,
+    ] {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        snapshot.controls.master.level = 0.65;
+        let target = recipe::RecipeTarget::capture(address.id(), &snapshot).unwrap();
+        id.recipe().apply(&mut snapshot, target).unwrap();
+        let mut authored = AutomationState::default();
+        match id {
+            recipe::RecipeId::Sway | recipe::RecipeId::Tremolo => {
+                authored.add_route(
+                    address,
+                    LfoRoute {
+                        depth_ratio: 0.25,
+                        cycle_beats: if id == recipe::RecipeId::Sway {
+                            8.0
+                        } else {
+                            0.5
+                        },
+                        shape: LfoShape::Sine,
+                        ..LfoRoute::default()
+                    },
+                );
+            }
+            recipe::RecipeId::Sidechain => {
+                authored.add_envelope(
+                    address,
+                    EnvelopeRoute {
+                        amount: -0.5,
+                        attack_beats: 0.0,
+                        decay_beats: 1.0,
+                        trigger: EnvTrigger::OnKick,
+                    },
+                );
+            }
+        }
+        let mut recipe_engine = engine_for(snapshot.controls.clone(), snapshot.automation);
+        let mut authored_engine = engine_for(snapshot.controls.clone(), authored);
+        let mut dry_engine = engine_for(snapshot.controls, AutomationState::default());
+        for engine in [&mut recipe_engine, &mut authored_engine, &mut dry_engine] {
+            engine.reseed(42);
+        }
+        let mut difference_energy = 0.0f64;
+        let mut dry_energy = 0.0f64;
+        for sample in 0..SAMPLE_RATE as usize * 6 {
+            let actual = recipe_engine.next_stereo();
+            assert_eq!(
+                actual,
+                authored_engine.next_stereo(),
+                "{id:?}, sample {sample}"
+            );
+            let dry = dry_engine.next_stereo();
+            if sample >= SAMPLE_RATE as usize * 2 {
+                difference_energy +=
+                    f64::from((actual.0 - dry.0).powi(2) + (actual.1 - dry.1).powi(2));
+                dry_energy += f64::from(dry.0.powi(2) + dry.1.powi(2));
+            }
+        }
+        assert!(dry_energy > 1.0, "fixture must contain music");
+        assert!(
+            difference_energy / dry_energy > 0.001,
+            "{id:?} must audibly change settled output"
+        );
     }
 }
 

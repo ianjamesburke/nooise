@@ -50,6 +50,7 @@ mod module;
 mod osc;
 mod palette;
 mod range_epoch;
+mod recipe;
 mod registry;
 #[cfg(test)]
 mod replay;

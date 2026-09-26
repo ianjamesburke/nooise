@@ -741,7 +741,7 @@ fn draw_palette(
         let hit = Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD);
-        let haystack = entry.haystack();
+        let haystack = entry.display_text();
         let mut spans = vec![Span::styled(marker, base)];
         for (i, ch) in haystack.chars().enumerate() {
             let style = if m.hits.contains(&i) { hit } else { base };

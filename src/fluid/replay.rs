@@ -397,6 +397,7 @@ struct FrameRecord {
     width: u16,
     height: u16,
     symbols: String,
+    text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -821,7 +822,10 @@ impl ReplayHarness {
                 fluid: &self.fluid,
                 flipped: &self.flipped,
                 cursor_visible: true,
-                notices: ViewNotices::default(),
+                notices: ViewNotices {
+                    effect: self.executor.message().map(str::to_string),
+                    ..ViewNotices::default()
+                },
                 gesture_now_seconds: self.clock.now().as_secs_f64(),
                 gesture_holds_available: self.capabilities.supports_holds(),
             },
@@ -880,6 +884,14 @@ impl ReplayHarness {
             return;
         }
         let buffer = terminal.backend().buffer();
+        let text = (0..self.height)
+            .map(|y| {
+                (0..self.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let symbols = (0..self.height)
             .map(|y| {
                 (0..self.width)
@@ -899,6 +911,7 @@ impl ReplayHarness {
             width: self.width,
             height: self.height,
             symbols,
+            text,
         });
         self.scheduler.complete_frame(now);
         self.requested_at = None;
@@ -2527,6 +2540,226 @@ fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
             page: super::interaction::StandardPage::Bass,
             selected: row,
         }
+    );
+}
+
+fn recipe_keys(query: &str) -> Vec<TraceEvent> {
+    let mut events = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
+    events.extend(
+        query
+            .chars()
+            .map(|c| key(0, FixtureKey::Character(c), InputPhase::Press)),
+    );
+    events.push(key(0, FixtureKey::Enter, InputPhase::Press));
+    events
+}
+
+#[test]
+fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        for (query, id) in [
+            ("sway", recipe::RecipeId::Sway),
+            ("tremolo", recipe::RecipeId::Tremolo),
+            ("sc", recipe::RecipeId::Sidechain),
+        ] {
+            let mut events = recipe_keys(query);
+            events.push(TraceEvent::Idle { after_ms: 40 });
+            events.push(modified_key(
+                0,
+                FixtureKey::Character('s'),
+                InputPhase::Press,
+                1 << 1,
+            ));
+            let result = replay_with(&events, capabilities, ReplayHarness::with_auto_running);
+            assert_eq!(result.model.navigation, Navigation::default());
+            assert_eq!(result.model.mode, InteractionMode::Browsing);
+            assert!(!result.auto_running);
+            assert_eq!(result.effect_count("ApplyRecipe"), 1);
+            assert!(result.frames.iter().any(|frame| {
+                frame
+                    .help
+                    .contains(&format!("{} added to pad.level", id.recipe().name))
+            }));
+            let saved =
+                song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+            let address = ControlAddress::new("pad.level");
+            match id.recipe().lane {
+                recipe::RecipeLane::Sine { beats, depth } => {
+                    let lane = saved.automation.route(address).unwrap();
+                    assert_eq!(lane.cycle_beats, beats);
+                    assert!((lane.depth_ratio - depth).abs() < 0.0001);
+                    assert_eq!(lane.shape, LfoShape::Sine);
+                }
+                recipe::RecipeLane::Envelope(route) => {
+                    let lane = saved.automation.envelope(address).unwrap();
+                    assert_eq!(lane.trigger, route.trigger);
+                    assert_eq!(lane.decay_beats, route.decay_beats);
+                    assert!((lane.amount - route.amount).abs() < 0.0001);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn recipe_alias_renders_cleanly_and_tab_completes_its_name() {
+    let mut events = recipe_keys("sc");
+    events.pop();
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    events.push(key(0, FixtureKey::Tab, InputPhase::Press));
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    events.insert(
+        0,
+        TraceEvent::Resize {
+            after_ms: 0,
+            width: MIN_TERMINAL_WIDTH,
+            height: MIN_TERMINAL_HEIGHT,
+        },
+    );
+    let result = replay(&events, TerminalCapabilities::full());
+    let palette = result
+        .frames
+        .iter()
+        .find(|frame| frame.text.contains("Sidechain · kick duck"))
+        .unwrap();
+    assert!(!palette.text.contains(" · sc"));
+    let InteractionMode::Palette(mode) = result.model.mode else {
+        panic!("palette stays open")
+    };
+    assert_eq!(mode.query, "Sidechain");
+    assert_eq!(mode.locked, None);
+}
+
+#[test]
+fn scoped_palette_recipe_targets_the_original_module_control() {
+    let mut events = recipe_keys("sway");
+    events.extend([
+        key(0, FixtureKey::Character('f'), InputPhase::Press),
+        key(0, FixtureKey::Right, InputPhase::Press),
+        key(0, FixtureKey::Escape, InputPhase::Press),
+        modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1),
+    ]);
+    let model = InteractionModel {
+        navigation: Navigation::Module {
+            tab: Tab::Bass,
+            slot: 0,
+            catalog_index: module_catalog_index("filter"),
+            selected: 0,
+            return_to: 0,
+        },
+        ..InteractionModel::default()
+    };
+    let result = replay_from_model(model.clone(), &events, TerminalCapabilities::full());
+    assert_eq!(result.model.navigation, model.navigation);
+    let saved = song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+    assert_eq!(saved.automation.routes().count(), 1);
+    let lane = saved
+        .automation
+        .route(ControlAddress::new("bass.slot1.time"))
+        .unwrap();
+    assert!(
+        lane.depth_ratio > 0.25,
+        "ordinary editor adjusts recipe depth"
+    );
+}
+
+#[test]
+fn repeated_recipe_hits_the_cap_and_keeps_all_existing_lanes() {
+    let mut events = Vec::new();
+    for _ in 0..5 {
+        events.extend(recipe_keys("sway"));
+    }
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    events.push(modified_key(
+        0,
+        FixtureKey::Character('s'),
+        InputPhase::Press,
+        1 << 1,
+    ));
+    let result = replay(&events, TerminalCapabilities::full());
+    assert!(
+        result
+            .frames
+            .iter()
+            .any(|frame| frame.help.contains("four lanes"))
+    );
+    let saved = song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        saved
+            .automation
+            .routes_for(ControlAddress::new("pad.level"))
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn palette_recipe_refuses_delete_and_readd_of_the_same_module() {
+    let mut harness =
+        ReplayHarness::new(TerminalCapabilities::full()).with_model(InteractionModel {
+            navigation: Navigation::Module {
+                tab: Tab::Bass,
+                slot: 0,
+                catalog_index: module_catalog_index("filter"),
+                selected: 0,
+                return_to: 0,
+            },
+            ..InteractionModel::default()
+        });
+    let open = TransportEvent::key(
+        PhysicalKey::Character('/'),
+        Modifiers::default(),
+        InputPhase::Press,
+    );
+    let turn = super::coordinator::coordinate_production_turn(
+        &mut harness.model,
+        &[open],
+        false,
+        &mut ProductionCoordinatorContext {
+            effects: &mut harness.executor,
+            fluid: &harness.fluid,
+            flipped: &mut harness.flipped,
+            clipboard: &mut harness.clipboard,
+            capabilities: harness.capabilities,
+            beat: 0.0,
+            active_chord: 0,
+        },
+    )
+    .unwrap();
+    for step in turn.steps {
+        harness.consume_production_step(step);
+    }
+    let original = harness.executor.session().load().controls.modules.bass[0];
+    harness.executor.edit_session(None, |snapshot| {
+        snapshot.controls.modules.bass[0] = ModuleSlot::default()
+    });
+    harness.executor.edit_session(None, |snapshot| {
+        snapshot.controls.modules.bass[0] = original
+    });
+    let generation = harness.executor.session().load().generation;
+    let mut events = recipe_keys("sway");
+    events.remove(0);
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    let outcome = harness.replay(&ReplayTrace { events });
+    assert_eq!(outcome.violation, None);
+    assert_eq!(outcome.result.session_generation, generation);
+    assert!(
+        outcome
+            .result
+            .effect_notice
+            .as_deref()
+            .unwrap()
+            .contains("recipe target changed")
+    );
+    assert!(
+        outcome
+            .result
+            .frames
+            .iter()
+            .any(|frame| frame.text.contains("recipe target changed"))
     );
 }
 

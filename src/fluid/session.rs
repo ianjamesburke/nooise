@@ -13,6 +13,9 @@ pub(crate) type MuteState = [bool; TAB_COUNT];
 #[derive(Clone)]
 pub(crate) struct LiveSessionSnapshot {
     pub(crate) generation: u64,
+    /// Live-only invalidation for pending slot-targeted edits. Parameter
+    /// changes leave it alone; replacing any slot kind advances it.
+    pub(crate) module_topology_revision: u64,
     pub(crate) controls: FluidControls,
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: TonalSequenceState,
@@ -29,6 +32,7 @@ impl LiveSessionSnapshot {
     pub(crate) fn from_song(song: &SongState) -> Self {
         Self {
             generation: 0,
+            module_topology_revision: 0,
             controls: song.controls.clone(),
             automation: song.automation.clone(),
             muted: song.muted,
@@ -48,6 +52,7 @@ impl LiveSessionSnapshot {
     pub(crate) fn from_controls(controls: FluidControls) -> Self {
         Self {
             generation: 0,
+            module_topology_revision: 0,
             tonal_sequence: TonalSequenceState::from_phrase(wrapped_index(
                 controls.tonal.phrase,
                 TONAL_PHRASES.len(),
@@ -102,6 +107,21 @@ impl LiveSession {
             let current = self.published.load_full();
             let mut next = current.as_ref().clone();
             edit(&mut next)?;
+            if Tab::all().iter().any(|&tab| {
+                current
+                    .controls
+                    .modules
+                    .for_tab(tab)
+                    .zip(next.controls.modules.for_tab(tab))
+                    .is_some_and(|(before, after)| {
+                        before
+                            .iter()
+                            .zip(after)
+                            .any(|(before, after)| before.kind.to_bits() != after.kind.to_bits())
+                    })
+            }) {
+                next.module_topology_revision = current.module_topology_revision.wrapping_add(1);
+            }
             next.generation = current.generation.wrapping_add(1);
             let next = Arc::new(next);
             let previous = self.published.compare_and_swap(&current, Arc::clone(&next));
@@ -127,6 +147,17 @@ impl LiveSession {
 mod tests {
     use std::sync::Barrier;
     use std::thread;
+
+    #[test]
+    fn module_topology_revision_tracks_replacement_but_not_parameter_edits() {
+        let session =
+            LiveSession::new(LiveSessionSnapshot::from_controls(FluidControls::default()));
+        session.update(|snapshot| snapshot.controls.modules.bass[0].time = 1234.0);
+        assert_eq!(session.load().module_topology_revision, 0);
+        session.update(|snapshot| snapshot.controls.modules.bass[0] = ModuleSlot::default());
+        session.update(|snapshot| snapshot.controls.modules.bass[0] = preset_slot("filter", 1.0));
+        assert_eq!(session.load().module_topology_revision, 2);
+    }
 
     use super::*;
 

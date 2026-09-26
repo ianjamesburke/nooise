@@ -231,6 +231,12 @@ pub(crate) fn coordinate_production_action(
         .clone()
         .update_bounded(action, automation_row_count, frame.item_count);
     *model = transition.model;
+    if let interaction::InteractionMode::Palette(palette) = &mut model.mode
+        && !matches!(before.mode, interaction::InteractionMode::Palette(_))
+    {
+        palette.recipe_target =
+            selected_control.and_then(|id| recipe::RecipeTarget::capture(id, frame_session));
+    }
     model.seed_palette_recent(context.effects.recent().ids());
     let entered_modal_owner = matches!(before.mode, interaction::InteractionMode::Browsing)
         && !matches!(model.mode, interaction::InteractionMode::Browsing);

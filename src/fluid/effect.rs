@@ -29,6 +29,7 @@ pub(crate) enum EffectFailure {
     MissingContext(&'static str),
     /// The selected control already carries the maximum lanes of this family.
     AutomationLaneLimit,
+    StaleRecipeTarget,
     /// The kernel emitted an effect this executor does not implement. New
     /// effects are rejected explicitly rather than silently dropped.
     UnsupportedInteraction(InteractionEffect),
@@ -43,6 +44,9 @@ impl fmt::Display for EffectFailure {
             Self::MissingContext(what) => write!(f, "no {what} in this frame"),
             Self::AutomationLaneLimit => {
                 write!(f, "this slider already has four lanes of that kind")
+            }
+            Self::StaleRecipeTarget => {
+                write!(f, "recipe target changed; reopen / on the desired knob")
             }
             Self::UnsupportedInteraction(effect) => {
                 write!(f, "unsupported interaction effect {effect:?}")
@@ -401,6 +405,21 @@ impl EffectExecutor {
         }
     }
 
+    /// Preflight before exiting auto; retry the same fallible edit inside the
+    /// transaction so a concurrent publication cannot bypass its checks.
+    pub(crate) fn edit_session_checked(
+        &mut self,
+        recent_id: &'static str,
+        check: impl Fn(&LiveSessionSnapshot) -> Result<(), EffectFailure>,
+        edit: impl FnMut(&mut LiveSessionSnapshot) -> Result<(), EffectFailure>,
+    ) -> Result<Arc<LiveSessionSnapshot>, EffectFailure> {
+        check(&self.session.load())?;
+        self.auto.exit();
+        let snapshot = self.session.transact(edit)?;
+        self.recent.touch(recent_id);
+        Ok(snapshot)
+    }
+
     /// Run an automation edit against a detached copy of the automation the
     /// frame started from, then acknowledge what it published. The copy is
     /// what lets the edit read the route it is about to replace while the
@@ -551,6 +570,18 @@ impl EffectExecutor {
                     edits,
                 })?;
                 self.execute(LiveEffect::CommitPending { beat: context.beat })
+            }
+            InteractionEffect::ApplyRecipe { recipe, target } => {
+                let target = target.ok_or(EffectFailure::StaleRecipeTarget)?;
+                let recipe = recipe.recipe();
+                let snapshot = apply_recipe_effect(self, recipe, target)?;
+                self.message = Some((
+                    format!("{} added to {}", recipe.name, target.id),
+                    Instant::now(),
+                ));
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
             }
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
@@ -1001,6 +1032,54 @@ mod tests {
         executor.toggle_mute(Tab::Perc);
         assert_eq!(executor.session().load().controls.perc.level, 0.65);
         assert!(!executor.session().load().muted[Tab::Perc as usize]);
+    }
+
+    #[test]
+    fn recipes_stack_to_each_family_cap_without_changing_a_full_stack() {
+        for recipe in recipe::RECIPES {
+            let mut executor = executor();
+            let target =
+                recipe::RecipeTarget::capture("pad.level", &executor.session.load()).unwrap();
+            let effect = InteractionEffect::ApplyRecipe {
+                recipe: recipe.id,
+                target: Some(target),
+            };
+            for _ in 0..MAX_AUTOMATION_LANES_PER_KIND {
+                executor
+                    .execute_interaction(effect.clone(), &InteractionExecutionContext::default())
+                    .unwrap();
+            }
+            executor.toggle_auto(0.0);
+            let before = executor.session.load();
+            assert_eq!(
+                executor.execute_interaction(effect, &InteractionExecutionContext::default()),
+                Err(EffectFailure::AutomationLaneLimit)
+            );
+            assert!(Arc::ptr_eq(&before, &executor.session.load()));
+            assert!(executor.auto.is_running());
+        }
+    }
+
+    #[test]
+    fn recipe_refuses_a_replaced_module_without_publishing() {
+        let mut executor = executor();
+        let target =
+            recipe::RecipeTarget::capture("bass.slot1.time", &executor.session.load()).unwrap();
+        executor.edit_session(None, |snapshot| {
+            snapshot.controls.modules.bass[0] = preset_slot("delay", 0.0)
+        });
+        let before = executor.session.load();
+        assert_eq!(
+            executor.execute_interaction(
+                InteractionEffect::ApplyRecipe {
+                    recipe: recipe::RecipeId::Sway,
+                    target: Some(target)
+                },
+                &InteractionExecutionContext::default()
+            ),
+            Err(EffectFailure::StaleRecipeTarget)
+        );
+        assert!(Arc::ptr_eq(&before, &executor.session.load()));
     }
 
     #[test]

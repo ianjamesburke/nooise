@@ -322,6 +322,7 @@ pub(crate) struct NumericEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PaletteMode {
+    pub(crate) recipe_target: Option<super::recipe::RecipeTarget>,
     pub(crate) query: String,
     pub(crate) selected: usize,
     pub(crate) recent: Vec<&'static str>,
@@ -1086,6 +1087,10 @@ pub(crate) enum InteractionEffect {
         id: &'static str,
     },
     PaletteCommit(Vec<PaletteStagedEdit>),
+    ApplyRecipe {
+        recipe: super::recipe::RecipeId,
+        target: Option<super::recipe::RecipeTarget>,
+    },
     /// Put catalog module `catalog_index` on `tab`'s chain, or jump to it when the
     /// chain already holds it. The kernel cannot tell which, so it says what
     /// was asked for and lets the adapter resolve it.
@@ -1594,7 +1599,12 @@ fn update_palette(
             if palette.locked.is_none()
                 && let Some(found) = state.matches.get(state.selected)
             {
-                palette.locked = Some(found.entry_index);
+                if let PaletteEntry::Recipe(recipe) = state.entry(found.entry_index) {
+                    palette.query = recipe.recipe().name.to_string();
+                    palette.selected = 0;
+                } else {
+                    palette.locked = Some(found.entry_index);
+                }
             }
         }
         Intent::Confirm => {
@@ -1611,7 +1621,7 @@ fn update_palette(
                     palette.query.clear();
                     palette.selected = 0;
                 } else {
-                    effects.push(palette_confirm(entry));
+                    effects.push(palette_confirm(entry, palette.recipe_target));
                     *next_mode = Some(InteractionMode::Browsing);
                 }
             } else if !palette.staged.is_empty() && palette.query.is_empty() {
@@ -1620,7 +1630,10 @@ fn update_palette(
                 )));
                 *next_mode = Some(resume_mode(palette.resume));
             } else if let Some(found) = state.matches.get(state.selected) {
-                effects.push(palette_confirm(state.entry(found.entry_index)));
+                effects.push(palette_confirm(
+                    state.entry(found.entry_index),
+                    palette.recipe_target,
+                ));
                 *next_mode = Some(InteractionMode::Browsing);
             }
         }
@@ -1855,8 +1868,15 @@ fn push_numeric(buffer: &mut String, character: char) {
 /// What confirming a palette row does. A module row resolves to add-or-jump
 /// in the adapter, which is the only place that can see whether the layer
 /// already holds it.
-fn palette_confirm(entry: &PaletteEntry) -> InteractionEffect {
+fn palette_confirm(
+    entry: &PaletteEntry,
+    target: Option<super::recipe::RecipeTarget>,
+) -> InteractionEffect {
     match entry {
+        PaletteEntry::Recipe(recipe) => InteractionEffect::ApplyRecipe {
+            recipe: *recipe,
+            target,
+        },
         PaletteEntry::Control {
             tab,
             index_in_tab,
@@ -2482,7 +2502,7 @@ mod tests {
             ..PaletteMode::default()
         };
         let projected = base.project(Tab::Bass);
-        let expected = palette_confirm(projected.entry(projected.matches[1].entry_index));
+        let expected = palette_confirm(projected.entry(projected.matches[1].entry_index), None);
 
         let ordinary = update(palette_model(base.clone()), Intent::Confirm);
         assert_eq!(ordinary.effects, vec![expected.clone()]);
