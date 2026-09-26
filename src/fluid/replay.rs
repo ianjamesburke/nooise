@@ -2775,12 +2775,6 @@ fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
                     assert_eq!(lane.shape, shape);
                     assert_eq!(lane.seed, seed);
                 }
-                recipe::RecipeLane::Envelope(route) => {
-                    let lane = saved.automation.envelope(address).unwrap();
-                    assert_eq!(lane.trigger, route.trigger);
-                    assert_eq!(lane.decay_beats, route.decay_beats);
-                    assert!((lane.amount - route.amount).abs() < 0.0001);
-                }
             }
         }
     }
@@ -2805,7 +2799,7 @@ fn recipe_alias_renders_cleanly_and_tab_completes_its_name() {
     let palette = result
         .frames
         .iter()
-        .find(|frame| frame.text.contains("Sidechain · kick duck"))
+        .find(|frame| frame.text.contains("Sidechain · beat ramp duck"))
         .unwrap();
     assert!(!palette.text.contains(" · sc"));
     let InteractionMode::Palette(mode) = result.model.mode else {

@@ -2651,9 +2651,12 @@ fn lfo_lane_is_phase_locked() {
 }
 
 #[test]
-fn envelope_lane_shows_sidechain_rising_from_below_neutral() {
-    let recipe::RecipeLane::Envelope(sidechain) = recipe::RecipeId::Sidechain.recipe().lane else {
-        panic!("Sidechain is an envelope")
+fn envelope_lane_shows_negative_amount_rising_from_below_neutral() {
+    let sidechain = EnvelopeRoute {
+        amount: -0.5,
+        attack_beats: 0.0,
+        decay_beats: 1.0,
+        trigger: EnvTrigger::OnKick,
     };
     let heights = |amount| {
         let route = EnvelopeRoute {
@@ -6559,13 +6562,13 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                 );
             }
             recipe::RecipeId::Sidechain => {
-                authored.add_envelope(
+                authored.add_route(
                     address,
-                    EnvelopeRoute {
-                        amount: -0.5,
-                        attack_beats: 0.0,
-                        decay_beats: 1.0,
-                        trigger: EnvTrigger::OnKick,
+                    LfoRoute {
+                        depth_ratio: 0.25,
+                        cycle_beats: 1.0,
+                        shape: LfoShape::RampUp,
+                        ..LfoRoute::default()
                     },
                 );
             }

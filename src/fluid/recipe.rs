@@ -27,7 +27,6 @@ pub(crate) enum RecipeLane {
         depth: f32,
         seed: u32,
     },
-    Envelope(EnvelopeRoute),
 }
 
 pub(crate) const RECIPES: &[Recipe] = &[
@@ -59,13 +58,13 @@ pub(crate) const RECIPES: &[Recipe] = &[
         id: RecipeId::Sidechain,
         name: "Sidechain",
         aliases: &["sc"],
-        description: "kick duck, 1 beat, 50%",
-        lane: RecipeLane::Envelope(EnvelopeRoute {
-            amount: -0.5,
-            attack_beats: 0.0,
-            decay_beats: 1.0,
-            trigger: EnvTrigger::OnKick,
-        }),
+        description: "beat ramp duck, 1 beat, 50%",
+        lane: RecipeLane::Lfo {
+            shape: LfoShape::RampUp,
+            beats: 1.0,
+            depth: 0.25,
+            seed: 0,
+        },
     },
     Recipe {
         id: RecipeId::Pulse,
@@ -155,7 +154,6 @@ impl Recipe {
         let address = ControlAddress::new(target.id);
         let count = match self.lane {
             RecipeLane::Lfo { .. } => snapshot.automation.routes_for(address).count(),
-            RecipeLane::Envelope(_) => snapshot.automation.envelopes_for(address).count(),
         };
         if count >= MAX_AUTOMATION_LANES_PER_KIND {
             return Err(EffectFailure::AutomationLaneLimit);
@@ -170,6 +168,11 @@ impl Recipe {
     ) -> Result<(), EffectFailure> {
         self.check(snapshot, target)?;
         let address = ControlAddress::new(target.id);
+        if self.id == RecipeId::Sidechain {
+            let spec = spec_by_id(target.id).ok_or(EffectFailure::StaleRecipeTarget)?;
+            let ratio = spec.ratio((spec.get)(&snapshot.controls), &snapshot.controls);
+            spec.apply_ratio((ratio - 0.25).max(0.0), &mut snapshot.controls);
+        }
         match self.lane {
             RecipeLane::Lfo {
                 shape,
@@ -187,9 +190,6 @@ impl Recipe {
                         ..LfoRoute::default()
                     },
                 );
-            }
-            RecipeLane::Envelope(route) => {
-                snapshot.automation.add_envelope(address, route);
             }
         }
         snapshot.automation.close_editor();
@@ -218,11 +218,6 @@ mod tests {
                 RecipeLane::Lfo { beats, depth, .. } => {
                     assert!((MIN_LFO_CYCLE_BEATS..=MAX_LFO_CYCLE_BEATS).contains(&beats));
                     assert!(depth > 0.0 && depth <= 1.0);
-                }
-                RecipeLane::Envelope(route) => {
-                    assert!(route.amount.abs() > 0.0 && route.amount.abs() <= 1.0);
-                    assert!((0.0..=MAX_ENV_ATTACK_BEATS).contains(&route.attack_beats));
-                    assert!(route.decay_beats > 0.0 && route.decay_beats <= MAX_ENV_DECAY_BEATS);
                 }
             }
         }
@@ -264,11 +259,6 @@ mod tests {
                     RecipeLane::Lfo { .. } => {
                         snapshot.automation.add_route(address, LfoRoute::default());
                     }
-                    RecipeLane::Envelope(_) => {
-                        snapshot
-                            .automation
-                            .add_envelope(address, EnvelopeRoute::default());
-                    }
                 }
             }
             let before = snapshot.automation.clone();
@@ -299,13 +289,16 @@ mod tests {
             let found = &palette.matches[0];
             let entry = palette.entry(found.entry_index);
             assert!(matches!(entry, PaletteEntry::Recipe(RecipeId::Sidechain)));
-            assert_eq!(entry.display_text(), "Sidechain · kick duck, 1 beat, 50%");
+            assert_eq!(
+                entry.display_text(),
+                "Sidechain · beat ramp duck, 1 beat, 50%"
+            );
             assert!(found.hits.iter().all(|&index| index < "Sidechain".len()));
         }
     }
 
     #[test]
-    fn sidechain_ducks_half_the_dial_and_recovers_on_the_kick_grid() {
+    fn sidechain_rises_each_beat_independently_of_the_kick_grid() {
         let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
         snapshot.controls.pad.level = 0.75;
         let target = RecipeTarget::capture("pad.level", &snapshot).unwrap();
@@ -314,17 +307,29 @@ mod tests {
             .apply(&mut snapshot, target)
             .unwrap();
         let address = ControlAddress::new(target.id);
-        let route = snapshot.automation.envelope(address).unwrap();
+        let route = snapshot.automation.route(address).unwrap();
         let context = |beat| ModContext {
             beat,
             kick_interval_beats: 2.0,
             kick_offset_beats: 0.5,
         };
-        assert_eq!(route.amount * route.level_at(context(0.25)), 0.0);
-        assert_eq!(route.amount * route.level_at(context(0.5)), -0.5);
-        assert_eq!(route.amount * route.level_at(context(1.0)), -0.25);
-        assert_eq!(route.amount * route.level_at(context(1.5)), 0.0);
-        assert_eq!(route.amount * route.level_at(context(2.5)), -0.5);
-        assert_eq!(snapshot.controls.pad.level, 0.75);
+        let spec = spec_by_id(target.id).unwrap();
+        let value = |beat| {
+            modulated_control_value_full(
+                spec,
+                &[*route],
+                &[],
+                snapshot.controls.pad.level,
+                context(beat),
+            )
+        };
+        assert_eq!(route.shape, LfoShape::RampUp);
+        assert_eq!(value(0.0), 0.25);
+        assert_eq!(value(0.25), 0.375);
+        assert_eq!(value(0.5), 0.5);
+        assert_eq!(value(0.75), 0.625);
+        assert_eq!(value(1.0), 0.25);
+        assert_eq!(snapshot.controls.pad.level, 0.5);
+        assert!(snapshot.automation.envelope(address).is_none());
     }
 }
