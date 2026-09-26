@@ -901,6 +901,9 @@ pub(crate) enum Intent {
     AbandonGestures,
     AdjustSelected(i8),
     ResetSelected,
+    /// Jump the selected control (or open modulator field) to the top of its
+    /// range. Mirror of the reset intent, which already owns the bottom.
+    MaxSelected,
     ToggleAuto,
     ToggleUnits,
     ToggleMute {
@@ -978,6 +981,7 @@ impl Intent {
             | Self::OpenAutomation(_)
             | Self::AddAutomation(_)
             | Self::ResetSelected
+            | Self::MaxSelected
             | Self::ToggleAuto
             | Self::ToggleUnits
             | Self::ToggleMute { .. }
@@ -1039,6 +1043,7 @@ impl Intent {
             | Self::ReleaseAllGestures
             | Self::AbandonGestures
             | Self::ResetSelected
+            | Self::MaxSelected
             | Self::ToggleAuto
             | Self::ToggleUnits
             | Self::ToggleMute { .. }
@@ -1113,6 +1118,7 @@ pub(crate) enum InteractionEffect {
     AutomationConfirm(AutomationKind),
     AddAutomation(AutomationKind),
     ResetSelected,
+    MaxSelected,
     ToggleAuto,
     ToggleUnits,
     ToggleMute {
@@ -1498,6 +1504,7 @@ fn update_browsing(
         }
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
         Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
+        Intent::MaxSelected => effects.push(InteractionEffect::MaxSelected),
         Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
         Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
         Intent::ToggleMute { master } => {
@@ -1728,6 +1735,7 @@ fn update_automation(
             effects.push(InteractionEffect::AdjustSelected(delta));
         }
         Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
+        Intent::MaxSelected => effects.push(InteractionEffect::MaxSelected),
         Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
         Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
         Intent::ToggleMute { master } => {

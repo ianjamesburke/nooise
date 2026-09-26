@@ -2948,6 +2948,47 @@ fn apply_reset_moves_selected_control_to_floor() {
     assert_close(controls.pad.chord_bars, 1.0);
 }
 
+/// Shift+L is the mirror of the reset gesture: reset already owns the bottom
+/// of a range, this takes the top.
+#[test]
+fn apply_max_moves_selected_control_to_the_top_of_its_range() {
+    let mut controls = FluidControls::default();
+    let spec = spec_by_id("bass.level").expect("bass.level exists");
+
+    spec.apply_max(&mut controls);
+    assert_close(controls.bass.level, spec.max);
+
+    // And its opposite still lands on the reset target, not necessarily the
+    // raw floor, so a control whose reset sits mid-range keeps that behavior.
+    spec.apply_reset(&mut controls);
+    assert_close(controls.bass.level, spec.reset);
+}
+
+/// Both ends have to work on every registered control, including the
+/// grid-stepped, discrete, and module-contextual ones.
+#[test]
+fn both_range_extremes_land_in_range_for_every_control() {
+    for spec in all_specs() {
+        let mut controls = FluidControls::default();
+        spec.apply_max(&mut controls);
+        let contextual = spec.contextual(&controls);
+        let at_max = (contextual.get)(&controls);
+        assert!(
+            at_max >= contextual.min && at_max <= contextual.max,
+            "{} left its range at max: {at_max}",
+            spec.id
+        );
+        spec.apply_reset(&mut controls);
+        let contextual = spec.contextual(&controls);
+        let at_reset = (contextual.get)(&controls);
+        assert!(
+            at_reset >= contextual.min && at_reset <= contextual.max,
+            "{} left its range at reset: {at_reset}",
+            spec.id
+        );
+    }
+}
+
 #[test]
 fn apply_value_accepts_percent_style_unit_controls() {
     let mut controls = FluidControls::default();
@@ -7650,7 +7691,7 @@ fn next_bar_beat_targets_the_following_downbeat() {
 #[test]
 fn built_in_auto_states_are_container_v2() {
     let states = decode_auto_states();
-    assert_eq!(states.len(), 20);
+    assert_eq!(states.len(), 21);
 
     for state in &states {
         let code = song::encode_song_code(state).unwrap();
@@ -7894,7 +7935,7 @@ fn baked_in_auto_state_codes_are_container_v2_on_disk() {
         .filter_map(|line| line.trim().strip_prefix('"')?.strip_suffix("\","))
         .filter(|code| code.starts_with("n1_"))
         .collect();
-    assert_eq!(codes.len(), 20);
+    assert_eq!(codes.len(), 21);
 
     for code in codes {
         let bytes = URL_SAFE_NO_PAD

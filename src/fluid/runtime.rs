@@ -628,6 +628,9 @@ fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
 fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
     Some(match *code {
         PhysicalKey::Left | PhysicalKey::Character('H' | 'h') => Intent::ResetSelected,
+        // Mirror of the reset gesture: reset already owns the bottom of a
+        // control's range, this takes the top.
+        PhysicalKey::Right | PhysicalKey::Character('L' | 'l') => Intent::MaxSelected,
         PhysicalKey::Character('M' | 'm') => Intent::ToggleMute { master: true },
         PhysicalKey::Character('T' | 't') => Intent::ToggleUnits,
         PhysicalKey::Character('F' | 'f') => Intent::AddAutomation(AutomationKind::Lfo),
