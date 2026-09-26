@@ -14,11 +14,13 @@ use super::{
 
 mod envelope;
 mod lfo;
+mod lifecycle;
 
 // The submodules split one flat module along its route families; their
 // `pub(crate)` surface is this module's surface, unchanged by the split.
 pub(crate) use envelope::*;
 pub(crate) use lfo::*;
+pub(crate) use lifecycle::*;
 
 /// Stable key for a control or one of its automation fields.
 pub(crate) fn unit_key(id: &str, field: Option<&str>) -> String {
@@ -306,6 +308,25 @@ pub(crate) struct AutomationState {
 }
 
 impl AutomationState {
+    pub(crate) fn same_lanes(&self, other: &Self) -> bool {
+        self.stacks.len() == other.stacks.len()
+            && self.stacks.iter().all(|(address, stack)| {
+                other.stacks.get(address).is_some_and(|other| {
+                    stack.envelopes == other.envelopes
+                        && stack.lfos.len() == other.lfos.len()
+                        && stack.lfos.iter().zip(&other.lfos).all(|(before, after)| {
+                            LfoRoute {
+                                pickup: None,
+                                ..*before
+                            } == LfoRoute {
+                                pickup: None,
+                                ..*after
+                            }
+                        })
+                })
+            })
+    }
+
     pub(crate) fn restart(&mut self) {
         for stack in self.stacks.values_mut() {
             for route in &mut stack.lfos {
@@ -705,12 +726,12 @@ pub(crate) fn modulated_control_value_full(
 fn automation_delta(lfos: &[LfoRoute], envelopes: &[EnvelopeRoute], ctx: ModContext) -> f32 {
     let lfo_delta: f32 = lfos
         .iter()
-        .filter(|route| route.depth_ratio > f32::EPSILON)
+        .filter(|route| route.enabled && route.depth_ratio > f32::EPSILON)
         .map(|route| route.wave_at(ctx.beat) * route.depth_ratio.clamp(0.0, 1.0))
         .sum();
     let envelope_delta: f32 = envelopes
         .iter()
-        .filter(|route| route.amount.abs() > f32::EPSILON)
+        .filter(|route| route.enabled && route.amount.abs() > f32::EPSILON)
         .map(|route| route.level_at(ctx) * route.amount.clamp(-1.0, 1.0))
         .sum();
     lfo_delta + envelope_delta

@@ -54,6 +54,7 @@ pub(crate) enum NoticeKind {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ViewNotices {
     pub(crate) effect: Option<String>,
+    pub(crate) effect_failed: bool,
     pub(crate) pending_commit: Option<String>,
     pub(crate) auto: Option<String>,
     pub(crate) update: Option<String>,
@@ -537,6 +538,15 @@ fn help_surface(
     notices: ViewNotices,
     holding_gesture: bool,
 ) -> HelpSurface {
+    if matches!(owner, KeyboardOwner::Lfo | KeyboardOwner::Envelope)
+        && notices.effect_failed
+        && let Some(text) = notices.effect.as_ref()
+    {
+        return HelpSurface::Notice {
+            kind: NoticeKind::Effect,
+            text: text.clone(),
+        };
+    }
     if owner != KeyboardOwner::Browsing {
         return HelpSurface::Owner {
             owner,
@@ -549,6 +559,7 @@ fn help_surface(
         pending_commit,
         auto,
         update,
+        effect_failed: _,
     } = notices;
     if let Some((kind, text)) = effect
         .map(|text| (NoticeKind::Effect, text))
@@ -687,6 +698,27 @@ fn parameter_keys_text() -> String {
 }
 
 fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
+    let bypassed = match surface {
+        AutomationSurface::Lfo {
+            lane_index,
+            lane_count,
+            route,
+            ..
+        } if !route.enabled => Some(("LFO", lane_index, lane_count)),
+        AutomationSurface::Envelope {
+            lane_index,
+            lane_count,
+            route,
+            ..
+        } if !route.enabled => Some(("ENV", lane_index, lane_count)),
+        _ => None,
+    };
+    if let Some((label, index, count)) = bypassed {
+        return format!(
+            "{label} {}/{count} bypassed · /resume · Esc close",
+            index + 1
+        );
+    }
     match surface {
         AutomationSurface::Lfo {
             selected,
@@ -891,6 +923,7 @@ mod tests {
             mode: InteractionMode::Palette(PaletteMode {
                 capture_beat_bits: 0,
                 recipe_target: None,
+                lane_target: None,
                 query: "bass".to_string(),
                 selected: 1,
                 recent: vec!["master.bpm"],
@@ -999,6 +1032,7 @@ mod tests {
                 cursor_visible: false,
                 notices: ViewNotices {
                     effect: Some("saved".to_string()),
+                    effect_failed: false,
                     pending_commit: Some("pending".to_string()),
                     auto: Some("auto".to_string()),
                     update: Some("update".to_string()),

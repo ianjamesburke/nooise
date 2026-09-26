@@ -399,7 +399,12 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 };
                 push_lfo_editor_rows(&mut rows, lfo_state, route, address, frame);
             }
-            let label = format!("LFO {}/{}", lane_index + 1, lfo_count);
+            let label = format!(
+                "LFO {}/{}{}",
+                lane_index + 1,
+                lfo_count,
+                if route.enabled { "" } else { " bypassed" }
+            );
             rows.push(lfo_lane_line_with_label(
                 route,
                 beat,
@@ -432,7 +437,12 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                     ));
                 }
             }
-            let label = format!("ENV {}/{}", lane_index + 1, envelope_count);
+            let label = format!(
+                "ENV {}/{}{}",
+                lane_index + 1,
+                envelope_count,
+                if route.enabled { "" } else { " bypassed" }
+            );
             rows.push(env_lane_line_with_label(
                 route,
                 frame.mod_ctx,
@@ -576,10 +586,12 @@ fn slider_markers(
     let ratio_of = |value: f32| spec.ratio(value, controls);
     let lfos = automation.lfo_lanes(address);
     let envelopes = automation.envelope_lanes(address);
-    let has_lfo = lfos.iter().any(|route| route.depth_ratio > f32::EPSILON);
+    let has_lfo = lfos
+        .iter()
+        .any(|route| route.enabled && route.depth_ratio > f32::EPSILON);
     let has_envelope = envelopes
         .iter()
-        .any(|route| route.amount.abs() > f32::EPSILON);
+        .any(|route| route.enabled && route.amount.abs() > f32::EPSILON);
     let marker = |l: &[LfoRoute], e: &[EnvelopeRoute]| {
         ratio_of(modulated_control_value_full(&spec, l, e, base, mod_ctx))
     };
@@ -593,6 +605,7 @@ fn slider_markers(
         let mut hi = base;
         let lfo_depth: f32 = lfos
             .iter()
+            .filter(|route| route.enabled)
             .map(|route| route.depth_ratio.clamp(0.0, 1.0))
             .sum();
         if lfo_depth > f32::EPSILON {
@@ -602,10 +615,12 @@ fn slider_markers(
         }
         let envelope_min: f32 = envelopes
             .iter()
+            .filter(|route| route.enabled)
             .map(|route| route.amount.clamp(-1.0, 0.0))
             .sum();
         let envelope_max: f32 = envelopes
             .iter()
+            .filter(|route| route.enabled)
             .map(|route| route.amount.clamp(0.0, 1.0))
             .sum();
         lo = lo.min(base + mod_range * envelope_min);
@@ -1092,6 +1107,12 @@ fn lfo_lane_line_with_label(
     label: &str,
 ) -> Line<'static> {
     let width = width.clamp(6, 80);
+    if !route.enabled {
+        return Line::from(vec![
+            lane_prefix(label),
+            Span::styled("─".repeat(width), Style::default().fg(DIM_TEXT)),
+        ]);
+    }
     if route.shape.is_random() {
         let window = f64::from(route.cycle_beats.max(MIN_LFO_CYCLE_BEATS) * RANDOM_LANE_CYCLES);
         return lane_line(label, width, active, 0.6, |i| {
@@ -1140,6 +1161,12 @@ fn env_lane_line_with_label(
     label: &str,
 ) -> Line<'static> {
     let width = width.clamp(6, 80);
+    if !route.enabled {
+        return Line::from(vec![
+            lane_prefix(label),
+            Span::styled("─".repeat(width), Style::default().fg(DIM_TEXT)),
+        ]);
+    }
     let window = f64::from(route.window_beats());
     let head = ((route.lane_head_phase(ctx) * width as f32) as usize).min(width - 1);
     lane_line(label, width, active, 0.55, |i| {

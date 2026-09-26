@@ -16,6 +16,8 @@ pub(crate) struct LiveSessionSnapshot {
     /// Live-only invalidation for pending slot-targeted edits. Parameter
     /// changes leave it alone; replacing any slot kind advances it.
     pub(crate) module_topology_revision: u64,
+    /// Live-only invalidation of palette targets when authored lanes change.
+    pub(crate) automation_revision: u64,
     pub(crate) controls: FluidControls,
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: TonalSequenceState,
@@ -35,6 +37,7 @@ impl LiveSessionSnapshot {
         Self {
             generation: 0,
             module_topology_revision: 0,
+            automation_revision: 0,
             controls: song.controls.clone(),
             automation: song.automation.clone(),
             muted: song.muted,
@@ -56,6 +59,7 @@ impl LiveSessionSnapshot {
         Self {
             generation: 0,
             module_topology_revision: 0,
+            automation_revision: 0,
             tonal_sequence: TonalSequenceState::from_phrase(wrapped_index(
                 controls.tonal.phrase,
                 TONAL_PHRASES.len(),
@@ -143,6 +147,9 @@ impl LiveSession {
                     module_slot_row(address.id(), &next.controls)
                         .is_some_and(|(after, _)| before.kind == after.kind)
                 });
+            }
+            if !current.automation.same_lanes(&next.automation) {
+                next.automation_revision = current.automation_revision.wrapping_add(1);
             }
             next.generation = current.generation.wrapping_add(1);
             let next = Arc::new(next);

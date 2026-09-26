@@ -2759,6 +2759,7 @@ fn lfo_lane_is_phase_locked() {
 #[test]
 fn envelope_lane_shows_negative_amount_rising_from_below_neutral() {
     let sidechain = EnvelopeRoute {
+        enabled: true,
         amount: -0.5,
         attack_beats: 0.0,
         decay_beats: 1.0,
@@ -6326,6 +6327,7 @@ fn reseed_changes_pattern_but_stays_repeatable() {
 #[test]
 fn envelope_level_follows_attack_then_decay() {
     let env = EnvelopeRoute {
+        enabled: true,
         amount: 1.0,
         attack_beats: 2.0,
         decay_beats: 2.0,
@@ -6342,6 +6344,7 @@ fn envelope_level_follows_attack_then_decay() {
 #[test]
 fn envelope_macro_holds_at_peak_when_decay_is_zero() {
     let env = EnvelopeRoute {
+        enabled: true,
         amount: 1.0,
         attack_beats: 4.0,
         decay_beats: 0.0,
@@ -6355,6 +6358,7 @@ fn envelope_macro_holds_at_peak_when_decay_is_zero() {
 #[test]
 fn envelope_every_n_beats_retriggers() {
     let env = EnvelopeRoute {
+        enabled: true,
         amount: 1.0,
         attack_beats: 0.0,
         decay_beats: 4.0,
@@ -6370,6 +6374,7 @@ fn envelope_every_n_beats_retriggers() {
 #[test]
 fn envelope_on_kick_tracks_the_kick_grid() {
     let env = EnvelopeRoute {
+        enabled: true,
         amount: 1.0,
         attack_beats: 0.0,
         decay_beats: 1.0,
@@ -6418,6 +6423,7 @@ fn close_editor_preserves_zero_amount_envelope() {
     let mut automation = AutomationState::default();
     let address = ControlAddress::new("master.level");
     let authored = EnvelopeRoute {
+        enabled: true,
         attack_beats: 0.75,
         decay_beats: 2.5,
         trigger: EnvTrigger::OnKick,
@@ -6480,6 +6486,7 @@ fn silent_envelope_only_song_keeps_its_curve_when_raised_after_loading() {
     let mut original = SongState::from_controls(FluidControls::default());
     let authored = EnvelopeRoute {
         amount: -0.4,
+        enabled: true,
         attack_beats: 0.75,
         decay_beats: 3.25,
         trigger: EnvTrigger::EveryBeats(6.0),
@@ -6859,6 +6866,7 @@ fn automation_plan_declicks_an_envelope_retrigger() {
             attack_beats: 0.0,
             decay_beats: 1.0,
             trigger: EnvTrigger::EveryBeats(1.0),
+            enabled: true,
         },
     );
     let mut plan = AutomationPlan::default();
@@ -6942,6 +6950,7 @@ fn combined_lfo_and_envelope_sum_and_clamp() {
             attack_beats: 0.0,
             decay_beats: 64.0,
             trigger: EnvTrigger::Once,
+            enabled: true,
         },
     );
 
@@ -6993,6 +7002,7 @@ fn song_code_round_trips_envelope_routes() {
             attack_beats: 1.5,
             decay_beats: 3.0,
             trigger: EnvTrigger::OnKick,
+            enabled: true,
         },
     );
     let song = SongState {
@@ -7066,6 +7076,7 @@ fn song_code_round_trips_seeded_lfo_and_envelope() {
             attack_beats: 1.25,
             decay_beats: 6.0,
             trigger: EnvTrigger::EveryBeats(8.0),
+            enabled: true,
         },
     );
     let song = SongState {
@@ -7783,6 +7794,10 @@ fn assert_song_states_agree(a: &SongState, b: &SongState, label: &str) {
     for ((address_a, route_a), (address_b, route_b)) in routes_a.iter().zip(&routes_b) {
         let id = address_a.id();
         assert_eq!(id, address_b.id(), "{label}: LFO route order");
+        assert_eq!(
+            route_a.enabled, route_b.enabled,
+            "{label}: {id} LFO enabled"
+        );
         assert_eq!(route_a.shape, route_b.shape, "{label}: {id} shape");
         assert_eq!(
             route_a.seed, route_b.seed,
@@ -7821,6 +7836,10 @@ fn assert_song_states_agree(a: &SongState, b: &SongState, label: &str) {
     for ((address_a, env_a), (address_b, env_b)) in envelopes_a.iter().zip(&envelopes_b) {
         let id = address_a.id();
         assert_eq!(id, address_b.id(), "{label}: envelope order");
+        assert_eq!(
+            env_a.enabled, env_b.enabled,
+            "{label}: {id} envelope enabled"
+        );
         assert_quantized_named(env_b.amount, env_a.amount, id);
         assert_eq!(
             env_a.attack_beats, env_b.attack_beats,

@@ -237,6 +237,10 @@ pub(crate) fn coordinate_production_action(
         palette.recipe_target =
             selected_control.and_then(|id| recipe::RecipeTarget::capture(id, frame_session));
         palette.capture_beat_bits = context.beat.to_bits();
+        palette.lane_target = palette
+            .resume
+            .and_then(|_| LaneTarget::capture(frame_session))
+            .map(Box::new);
     }
     model.seed_palette_recent(context.effects.recent().ids());
     let entered_modal_owner = matches!(before.mode, interaction::InteractionMode::Browsing)
@@ -315,10 +319,7 @@ pub(crate) fn coordinate_production_action(
                 } else {
                     "Action failed"
                 };
-                context
-                    .effects
-                    .execute(LiveEffect::ShowMessage(format!("{prefix}: {error}")))
-                    .expect("message is infallible");
+                context.effects.show_failure(format!("{prefix}: {error}"));
             }
             Ok(_) => {}
         }
@@ -475,6 +476,7 @@ pub(crate) fn production_ui_loop(
                     cursor_visible: (started.elapsed().as_millis() / 400).is_multiple_of(2),
                     notices: ViewNotices {
                         effect: effects.message().map(str::to_string),
+                        effect_failed: effects.message_failed(),
                         pending_commit: pending_message,
                         auto: auto_message,
                         update: updates.message(),

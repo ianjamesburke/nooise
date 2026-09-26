@@ -329,6 +329,7 @@ pub(crate) struct LfoPickup {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct LfoRoute {
+    pub(crate) enabled: bool,
     pub(crate) depth_ratio: f32,
     pub(crate) cycle_beats: f32,
     pub(crate) phase_offset_beats: f32,
@@ -354,6 +355,7 @@ pub(crate) struct LfoRoute {
 impl Default for LfoRoute {
     fn default() -> Self {
         Self {
+            enabled: true,
             depth_ratio: DEFAULT_LFO_DEPTH_RATIO,
             cycle_beats: DEFAULT_LFO_CYCLE_BEATS,
             phase_offset_beats: 0.0,

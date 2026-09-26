@@ -324,6 +324,7 @@ pub(crate) struct NumericEntry {
 pub(crate) struct PaletteMode {
     pub(crate) capture_beat_bits: u64,
     pub(crate) recipe_target: Option<super::recipe::RecipeTarget>,
+    pub(crate) lane_target: Option<Box<super::LaneTarget>>,
     pub(crate) query: String,
     pub(crate) selected: usize,
     pub(crate) recent: Vec<&'static str>,
@@ -1098,6 +1099,10 @@ pub(crate) enum InteractionEffect {
         target: Option<super::recipe::RecipeTarget>,
         end_beat_bits: u64,
     },
+    Lane {
+        action: super::LaneAction,
+        target: Option<super::LaneTarget>,
+    },
     /// Put catalog module `catalog_index` on `tab`'s chain, or jump to it when the
     /// chain already holds it. The kernel cannot tell which, so it says what
     /// was asked for and lets the adapter resolve it.
@@ -1634,16 +1639,8 @@ fn update_palette(
                     palette.query.clear();
                     palette.selected = 0;
                 } else {
-                    effects.push(palette_confirm(
-                        entry,
-                        palette.recipe_target,
-                        palette.capture_beat_bits,
-                    ));
-                    *next_mode = Some(if matches!(entry, PaletteEntry::MixAction(_)) {
-                        resume_mode(palette.resume)
-                    } else {
-                        InteractionMode::Browsing
-                    });
+                    effects.push(palette_confirm(entry, palette));
+                    *next_mode = Some(palette_after_confirm(entry, palette));
                 }
             } else if !palette.staged.is_empty() && palette.query.is_empty() {
                 effects.push(InteractionEffect::PaletteCommit(std::mem::take(
@@ -1652,16 +1649,8 @@ fn update_palette(
                 *next_mode = Some(resume_mode(palette.resume));
             } else if let Some(found) = state.matches.get(state.selected) {
                 let entry = state.entry(found.entry_index);
-                effects.push(palette_confirm(
-                    entry,
-                    palette.recipe_target,
-                    palette.capture_beat_bits,
-                ));
-                *next_mode = Some(if matches!(entry, PaletteEntry::MixAction(_)) {
-                    resume_mode(palette.resume)
-                } else {
-                    InteractionMode::Browsing
-                });
+                effects.push(palette_confirm(entry, palette));
+                *next_mode = Some(palette_after_confirm(entry, palette));
             }
         }
         Intent::CommitPaletteAtBar => {
@@ -1895,21 +1884,40 @@ fn push_numeric(buffer: &mut String, character: char) {
 /// What confirming a palette row does. A module row resolves to add-or-jump
 /// in the adapter, which is the only place that can see whether the layer
 /// already holds it.
-fn palette_confirm(
-    entry: &PaletteEntry,
-    target: Option<super::recipe::RecipeTarget>,
-    end_beat_bits: u64,
-) -> InteractionEffect {
+fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionMode {
+    if matches!(entry, PaletteEntry::MixAction(_))
+        || (palette.resume.is_some()
+            && matches!(
+                entry,
+                PaletteEntry::Capture(super::CaptureAction::Bypass | super::CaptureAction::Resume)
+            ))
+    {
+        resume_mode(palette.resume)
+    } else {
+        InteractionMode::Browsing
+    }
+}
+
+fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEffect {
+    if palette.resume.is_some()
+        && let PaletteEntry::Capture(action) = entry
+        && let Some(action) = super::LaneAction::from_capture(*action)
+    {
+        return InteractionEffect::Lane {
+            action,
+            target: palette.lane_target.as_deref().copied(),
+        };
+    }
     match entry {
         PaletteEntry::Capture(action) => InteractionEffect::Capture {
             action: *action,
-            target,
-            end_beat_bits,
+            target: palette.recipe_target,
+            end_beat_bits: palette.capture_beat_bits,
         },
         PaletteEntry::MixAction(action) => InteractionEffect::ApplyMixAction(*action),
         PaletteEntry::Recipe(recipe) => InteractionEffect::ApplyRecipe {
             recipe: *recipe,
-            target,
+            target: palette.recipe_target,
         },
         PaletteEntry::Control {
             tab,
@@ -2536,7 +2544,7 @@ mod tests {
             ..PaletteMode::default()
         };
         let projected = base.project(Tab::Bass);
-        let expected = palette_confirm(projected.entry(projected.matches[1].entry_index), None, 0);
+        let expected = palette_confirm(projected.entry(projected.matches[1].entry_index), &base);
 
         let ordinary = update(palette_model(base.clone()), Intent::Confirm);
         assert_eq!(ordinary.effects, vec![expected.clone()]);

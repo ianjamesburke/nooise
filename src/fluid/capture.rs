@@ -59,9 +59,9 @@ impl CaptureAction {
     pub(crate) fn description(self) -> &'static str {
         match self {
             Self::Capture => "keep previous 16 beats of this knob",
-            Self::Bypass => "bypass this knob's captured loop",
-            Self::Resume => "resume captured loop next bar",
-            Self::Delete => "delete this knob's captured loop",
+            Self::Bypass => "bypass open lane or captured loop",
+            Self::Resume => "resume open lane or captured loop",
+            Self::Delete => "delete open lane or captured loop",
         }
     }
 }

@@ -848,6 +848,7 @@ impl ReplayHarness {
                 cursor_visible: true,
                 notices: ViewNotices {
                     effect: self.executor.message().map(str::to_string),
+                    effect_failed: self.executor.message_failed(),
                     ..ViewNotices::default()
                 },
                 gesture_now_seconds: self.clock.now().as_secs_f64(),
@@ -2830,6 +2831,144 @@ fn mix_actions_preserve_the_open_automation_owner_and_normal_navigation() {
             assert_ne!(navigated.model.navigation, after.model.navigation);
         }
     }
+}
+
+#[test]
+fn lane_bypass_resume_delete_preserve_editor_and_saved_lane_settings() {
+    let address = ControlAddress::new("pad.level");
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        for (open, kind) in [('f', ModKind::Lfo), ('e', ModKind::Envelope)] {
+            let mut events = vec![
+                TraceEvent::Resize {
+                    after_ms: 0,
+                    width: MIN_TERMINAL_WIDTH,
+                    height: MIN_TERMINAL_HEIGHT,
+                },
+                key(0, FixtureKey::Character(open), InputPhase::Press),
+                modified_key(
+                    0,
+                    FixtureKey::Character(open.to_ascii_uppercase()),
+                    InputPhase::Press,
+                    1,
+                ),
+            ];
+            events.extend(recipe_keys("bypass"));
+            events.push(TraceEvent::Idle { after_ms: 40 });
+            events.push(modified_key(
+                0,
+                FixtureKey::Character('s'),
+                InputPhase::Press,
+                1 << 1,
+            ));
+            let bypassed = replay(&events, capabilities);
+            assert_eq!(bypassed.automation_kind, Some(format!("{kind:?}")));
+            assert!(
+                bypassed
+                    .frames
+                    .iter()
+                    .any(|frame| frame.text.contains("bypassed · /resume"))
+            );
+            let song =
+                song::decode_song_code(bypassed.saved_automation_code.as_deref().unwrap()).unwrap();
+            assert_eq!(song.automation.lane_enabled(address, kind, 0), Some(true));
+            assert_eq!(song.automation.lane_enabled(address, kind, 1), Some(false));
+            events.extend(recipe_keys("resume"));
+            events.push(modified_key(
+                0,
+                FixtureKey::Character('s'),
+                InputPhase::Press,
+                1 << 1,
+            ));
+            let resumed = replay(&events, capabilities);
+            assert_eq!(resumed.model.mode, bypassed.model.mode);
+            let song =
+                song::decode_song_code(resumed.saved_automation_code.as_deref().unwrap()).unwrap();
+            assert_eq!(song.automation.lane_enabled(address, kind, 0), Some(true));
+            assert_eq!(song.automation.lane_enabled(address, kind, 1), Some(true));
+            events.extend(recipe_keys("delete"));
+            events.push(modified_key(
+                0,
+                FixtureKey::Character('s'),
+                InputPhase::Press,
+                1 << 1,
+            ));
+            events.extend([
+                key(0, FixtureKey::Down, InputPhase::Press),
+                key(0, FixtureKey::Tab, InputPhase::Press),
+            ]);
+            let deleted = replay(&events, capabilities);
+            assert_eq!(deleted.model.mode, InteractionMode::Browsing);
+            let song =
+                song::decode_song_code(deleted.saved_automation_code.as_deref().unwrap()).unwrap();
+            assert_eq!(song.automation.lane_enabled(address, kind, 0), Some(true));
+            assert_eq!(song.automation.lane_enabled(address, kind, 1), None);
+        }
+    }
+}
+
+#[test]
+fn stale_lane_palette_target_shows_failure_without_touching_replacement() {
+    let address = ControlAddress::new("pad.level");
+    let mut harness = ReplayHarness::new(TerminalCapabilities::full());
+    harness.width = MIN_TERMINAL_WIDTH;
+    harness.height = MIN_TERMINAL_HEIGHT;
+    let keys = ['f', '/'].map(|key| {
+        TransportEvent::key(
+            PhysicalKey::Character(key),
+            Modifiers::default(),
+            InputPhase::Press,
+        )
+    });
+    let turn = super::coordinator::coordinate_production_turn(
+        &mut harness.model,
+        &keys,
+        false,
+        &mut ProductionCoordinatorContext {
+            effects: &mut harness.executor,
+            fluid: &harness.fluid,
+            flipped: &mut harness.flipped,
+            clipboard: &mut harness.clipboard,
+            capabilities: harness.capabilities,
+            beat: 0.0,
+            active_chord: 0,
+        },
+    )
+    .unwrap();
+    for step in turn.steps {
+        harness.consume_production_step(step);
+    }
+    harness
+        .executor
+        .session()
+        .update(|snapshot| snapshot.automation.remove_open_route());
+    harness.executor.session().update(|snapshot| {
+        snapshot.automation.open_or_create(address);
+    });
+    let generation = harness.executor.session().load().generation;
+    let mut events = recipe_keys("bypass");
+    events.remove(0);
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    let session = harness.executor.session().clone();
+    let result = harness.replay(&ReplayTrace { events });
+    assert_eq!(result.violation, None);
+    assert_eq!(result.result.session_generation, generation);
+    assert!(
+        result
+            .result
+            .frames
+            .iter()
+            .any(|frame| frame.text.contains("lane changed; reopen /"))
+    );
+    assert_eq!(
+        session
+            .load()
+            .automation
+            .lane_enabled(address, ModKind::Lfo, 0),
+        Some(true)
+    );
 }
 
 #[test]

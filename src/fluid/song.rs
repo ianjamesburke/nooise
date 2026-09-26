@@ -19,15 +19,17 @@ use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
     EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState,
-    LfoRoute, LfoShape, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
-    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModuleSlotField,
-    MuteState, PAD_RHYTHM_ROWS, Step, TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
+    LfoRoute, LfoShape, MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
+    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES,
+    ModKind, ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, Step, TAB_COUNT, Tab, all_specs,
+    parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
 /// Control ids are interned as `SONG_ID_TABLE` indexes and continuous values
 /// are quantized to a u16 taper position. The container version is the
-/// format's version axis; record payloads carry no version byte of their own.
+/// format's version axis. Capture alone versions its playback-period payload;
+/// other record payloads carry no version byte of their own.
 /// The one other axis is the dial-range epoch (`range_epoch.rs`), which dates
 /// what a stored modulation depth means rather than how bytes are laid out. Version 1 (length-
 /// prefixed ids, f32 values, its own nested automation payload versions) is
@@ -48,6 +50,7 @@ const MIDI_ROWS_RECORD: u8 = 6;
 /// Pad rhythm rows hidden during MIDI startup and restored with a song.
 const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
 const CAPTURE_RECORD: u8 = 8;
+const LANE_BYPASS_RECORD: u8 = 9;
 /// The playback period is semantic song state: refuse the sixteen-bar format
 /// rather than silently speeding up saved loops.
 const CAPTURE_WIRE_VERSION: u8 = 3;
@@ -122,6 +125,7 @@ pub(crate) enum SongCodeError {
     InvalidPadRhythmRows(u8),
     DuplicatePadRhythmRowsRecord,
     InvalidCapture,
+    InvalidLaneBypass,
     /// The code sets a control this build retired. Its value has nowhere to
     /// go, so the code is refused rather than loaded with that value missing.
     RetiredControl(&'static str),
@@ -152,6 +156,7 @@ impl fmt::Display for SongCodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidCapture => write!(f, "song code has an invalid captured loop"),
+            Self::InvalidLaneBypass => write!(f, "song code has invalid lane bypass data"),
             Self::MissingPrefix => write!(f, "song code must start with {CODE_PREFIX}"),
             Self::InvalidBase64 => write!(f, "song code is not valid base64url"),
             Self::InvalidMagic => write!(f, "song code is not a nooise snapshot"),
@@ -253,6 +258,14 @@ pub(crate) fn encode_song_code_at_epoch(
         write_automation(&song.automation, &mut automation)?;
         write_record(AUTOMATION_RECORD, &automation, &mut bytes)?;
     }
+    let mut bypass = Vec::new();
+    for (address, lfos, envelopes) in song.automation.bypass_masks() {
+        write_control_index(address.id(), &mut bypass)?;
+        bypass.extend_from_slice(&[lfos, envelopes]);
+    }
+    if !bypass.is_empty() {
+        write_record(LANE_BYPASS_RECORD, &bypass, &mut bytes)?;
+    }
     if !song.automation.captures.is_empty() {
         let mut captures = Vec::new();
         if song.automation.captures.len() > super::MAX_CAPTURES {
@@ -336,6 +349,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut midi_rows_record_seen = false;
     let mut pad_rhythm_rows_record_seen = false;
     let mut capture_record_seen = false;
+    let mut lane_bypass = None;
     let mut epoch = 0;
 
     while !reader.is_empty() {
@@ -343,6 +357,11 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
         let len = reader.u32()? as usize;
         let payload = reader.bytes(len)?;
         match record_type {
+            LANE_BYPASS_RECORD => {
+                if lane_bypass.replace(payload).is_some() {
+                    return Err(SongCodeError::InvalidLaneBypass);
+                }
+            }
             CAPTURE_RECORD => {
                 if capture_record_seen {
                     return Err(SongCodeError::InvalidCapture);
@@ -396,6 +415,9 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
         }
     }
 
+    if let Some(payload) = lane_bypass {
+        read_lane_bypass(payload, &mut song)?;
+    }
     for address in song.automation.captures.keys() {
         if !super::capture_eligible(&address.spec().contextual(&song.controls))
             || (parse_module_slot_id(address.id()).is_some()
@@ -406,6 +428,170 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
         }
     }
     Ok((song, epoch))
+}
+
+fn read_lane_bypass(payload: &[u8], song: &mut SongState) -> Result<(), SongCodeError> {
+    if payload.is_empty() || !payload.len().is_multiple_of(4) {
+        return Err(SongCodeError::InvalidLaneBypass);
+    }
+    let mut seen = BTreeSet::new();
+    for entry in payload.chunks_exact(4) {
+        let index = u16::from_le_bytes([entry[0], entry[1]]);
+        reject_retired_control(index)?;
+        let spec = control_at(index).ok_or(SongCodeError::InvalidLaneBypass)?;
+        let address = ControlAddress::new(spec.id);
+        let [lfos, envelopes] = [entry[2], entry[3]];
+        if !seen.insert(address)
+            || lfos | envelopes == 0
+            || (lfos | envelopes) & !0x0f != 0
+            || (parse_module_slot_id(spec.id).is_some()
+                && super::module_slot_row(spec.id, &song.controls)
+                    .is_none_or(|(slot, _)| slot.kind().is_none()))
+        {
+            return Err(SongCodeError::InvalidLaneBypass);
+        }
+        for (kind, mask) in [(ModKind::Lfo, lfos), (ModKind::Envelope, envelopes)] {
+            for lane in 0..MAX_AUTOMATION_LANES_PER_KIND {
+                if mask & (1 << lane) != 0
+                    && !song.automation.set_lane_enabled(address, kind, lane, false)
+                {
+                    return Err(SongCodeError::InvalidLaneBypass);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod lane_bypass_codec_tests {
+    use super::*;
+
+    fn source() -> SongState {
+        let mut song = SongState::default();
+        let address = ControlAddress::new("master.level");
+        for index in 0..4 {
+            song.automation.add_route(
+                address,
+                LfoRoute {
+                    enabled: index % 2 == 0,
+                    depth_ratio: 0.25,
+                    ..LfoRoute::default()
+                },
+            );
+            song.automation.add_envelope(
+                address,
+                EnvelopeRoute {
+                    enabled: index % 2 != 0,
+                    amount: -0.5,
+                    ..EnvelopeRoute::default()
+                },
+            );
+        }
+        song
+    }
+
+    #[test]
+    fn bypass_masks_round_trip_and_can_precede_lane_records() {
+        let song = source();
+        let code = encode_song_code(&song).unwrap();
+        assert!(code.len() < 2000);
+        let loaded = decode_song_code(&code).unwrap();
+        assert_eq!(
+            song.automation.bypass_masks().collect::<Vec<_>>(),
+            loaded.automation.bypass_masks().collect::<Vec<_>>()
+        );
+        let id = song_id_index("master.level").unwrap().to_le_bytes();
+        let payload = [id[0], id[1], 0b1010, 0b0101];
+        let mut lanes = Vec::new();
+        write_automation(&song.automation, &mut lanes).unwrap();
+        let reversed = code_from_records(
+            CONTAINER_VERSION,
+            &[(LANE_BYPASS_RECORD, &payload), (AUTOMATION_RECORD, &lanes)],
+        );
+        assert_eq!(
+            decode_song_code(&reversed)
+                .unwrap()
+                .automation
+                .bypass_masks()
+                .collect::<Vec<_>>(),
+            loaded.automation.bypass_masks().collect::<Vec<_>>()
+        );
+        let old = code_from_records(CONTAINER_VERSION, &[(AUTOMATION_RECORD, &lanes)]);
+        let old = decode_song_code(&old).unwrap();
+        assert!(old.automation.routes().all(|(_, lane)| lane.enabled));
+        assert!(old.automation.envelopes().all(|(_, lane)| lane.enabled));
+        assert!(old.automation.bypass_masks().next().is_none());
+    }
+
+    #[test]
+    fn malformed_bypass_masks_are_refused_instead_of_ignored() {
+        let id = song_id_index("master.level").unwrap().to_le_bytes();
+        let valid = [id[0], id[1], 1, 0];
+        let mut lanes = Vec::new();
+        write_automation(&source().automation, &mut lanes).unwrap();
+        for invalid in [
+            vec![],
+            vec![id[0]],
+            vec![id[0], id[1], 1, 0, 0],
+            vec![id[0], id[1], 0, 0],
+            vec![id[0], id[1], 16, 0],
+            vec![id[0], id[1], 0, 16],
+            vec![255, 255, 1, 0],
+            valid.repeat(2),
+        ] {
+            let code = code_from_records(
+                CONTAINER_VERSION,
+                &[(AUTOMATION_RECORD, &lanes), (LANE_BYPASS_RECORD, &invalid)],
+            );
+            assert_eq!(
+                decode_song_code(&code).err(),
+                Some(SongCodeError::InvalidLaneBypass),
+                "{invalid:?}"
+            );
+        }
+        let duplicate = code_from_records(
+            CONTAINER_VERSION,
+            &[
+                (AUTOMATION_RECORD, &lanes),
+                (LANE_BYPASS_RECORD, &valid),
+                (LANE_BYPASS_RECORD, &valid),
+            ],
+        );
+        assert_eq!(
+            decode_song_code(&duplicate).err(),
+            Some(SongCodeError::InvalidLaneBypass)
+        );
+        let missing = code_from_records(CONTAINER_VERSION, &[(LANE_BYPASS_RECORD, &valid)]);
+        assert_eq!(
+            decode_song_code(&missing).err(),
+            Some(SongCodeError::InvalidLaneBypass)
+        );
+        let retired = song_id_index("pad.reverb_mix").unwrap().to_le_bytes();
+        let mut one_lane = AutomationState::default();
+        one_lane.add_route(ControlAddress::new("master.level"), LfoRoute::default());
+        let mut one_lane_bytes = Vec::new();
+        write_automation(&one_lane, &mut one_lane_bytes).unwrap();
+        let sparse = code_from_records(
+            CONTAINER_VERSION,
+            &[
+                (AUTOMATION_RECORD, &one_lane_bytes),
+                (LANE_BYPASS_RECORD, &[id[0], id[1], 8, 0]),
+            ],
+        );
+        assert_eq!(
+            decode_song_code(&sparse).err(),
+            Some(SongCodeError::InvalidLaneBypass)
+        );
+        let code = code_from_records(
+            CONTAINER_VERSION,
+            &[(LANE_BYPASS_RECORD, &[retired[0], retired[1], 1, 0])],
+        );
+        assert_eq!(
+            decode_song_code(&code).err(),
+            Some(SongCodeError::RetiredControl("pad.reverb_mix"))
+        );
+    }
 }
 
 fn validate_capture(clip: &super::CaptureClip) -> Result<(), SongCodeError> {
@@ -1086,6 +1272,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         automation.add_envelope(
             ControlAddress::new(spec.id),
             EnvelopeRoute {
+                enabled: true,
                 amount,
                 attack_beats: finite_or(attack_beats, 0.0).clamp(0.0, MAX_ENV_ATTACK_BEATS),
                 decay_beats: finite_or(decay_beats, 0.0).clamp(0.0, MAX_ENV_DECAY_BEATS),

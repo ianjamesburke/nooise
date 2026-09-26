@@ -155,6 +155,7 @@ const ENV_FIELD_SPECS: &[FieldSpec<EnvField>] = &[
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct EnvelopeRoute {
+    pub(crate) enabled: bool,
     /// Bipolar sweep depth in -1..1; positive blooms up, negative dips down.
     pub(crate) amount: f32,
     pub(crate) attack_beats: f32,
@@ -166,6 +167,7 @@ pub(crate) struct EnvelopeRoute {
 impl Default for EnvelopeRoute {
     fn default() -> Self {
         Self {
+            enabled: true,
             amount: 0.0,
             attack_beats: DEFAULT_ENV_ATTACK_BEATS,
             decay_beats: DEFAULT_ENV_DECAY_BEATS,

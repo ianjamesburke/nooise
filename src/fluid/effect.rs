@@ -30,6 +30,7 @@ pub(crate) enum EffectFailure {
     /// The selected control already carries the maximum lanes of this family.
     AutomationLaneLimit,
     StaleRecipeTarget,
+    StaleLaneTarget,
     CaptureUnavailable,
     CaptureHistory(CaptureHistoryError),
     CaptureLimit,
@@ -56,6 +57,7 @@ impl fmt::Display for EffectFailure {
             Self::StaleRecipeTarget => {
                 write!(f, "recipe target changed; reopen / on the desired knob")
             }
+            Self::StaleLaneTarget => write!(f, "lane changed; reopen /"),
             Self::UnsupportedInteraction(effect) => {
                 write!(f, "unsupported interaction effect {effect:?}")
             }
@@ -139,6 +141,7 @@ pub(crate) enum LiveEffect {
         beat: f64,
     },
     CopySong,
+    #[cfg(test)]
     ShowMessage(String),
 }
 
@@ -203,7 +206,7 @@ pub(crate) struct EffectExecutor {
     auto: AutoControls,
     recent: RecentControls,
     pending: Option<(f64, Vec<StagedEdit>)>,
-    message: Option<(String, Instant)>,
+    message: Option<EffectMessage>,
     /// The one source of randomness an effect may draw on (`r` rolls a
     /// control). Seeded from entropy in production and from a fixed seed in
     /// replay, so a replayed trace rolls the same values twice.
@@ -212,6 +215,12 @@ pub(crate) struct EffectExecutor {
     phrase: LeadPhraseBuffer,
     capture_history: CaptureHistory,
     edit_beat: f64,
+}
+
+struct EffectMessage {
+    text: String,
+    shown_at: Instant,
+    failed: bool,
 }
 
 impl EffectExecutor {
@@ -292,19 +301,55 @@ impl EffectExecutor {
             snapshot.automation.close_editor();
             Ok(())
         })?;
-        self.message = Some((
-            format!(
-                "{} {} · {}",
-                action.name(),
-                target.id,
-                snapshot
-                    .automation
-                    .captures
-                    .get(&address)
-                    .map_or("deleted", |clip| clip.status(beat))
-            ),
-            Instant::now(),
+        self.show_message(format!(
+            "{} {} · {}",
+            action.name(),
+            target.id,
+            snapshot
+                .automation
+                .captures
+                .get(&address)
+                .map_or("deleted", |clip| clip.status(beat))
         ));
+        Ok(EffectAcknowledgement::Published {
+            generation: snapshot.generation,
+        })
+    }
+
+    fn apply_lane(
+        &mut self,
+        action: LaneAction,
+        target: Option<LaneTarget>,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let target = target.ok_or(EffectFailure::StaleLaneTarget)?;
+        let check = |snapshot: &LiveSessionSnapshot| {
+            if target.is_current(snapshot) {
+                Ok(())
+            } else {
+                Err(EffectFailure::StaleLaneTarget)
+            }
+        };
+        let snapshot = self.edit_session_checked(target.control.id, check, |snapshot| {
+            check(snapshot)?;
+            match action {
+                LaneAction::Delete => snapshot.automation.remove_open_route(),
+                LaneAction::Bypass | LaneAction::Resume => {
+                    snapshot.automation.set_lane_enabled(
+                        ControlAddress::new(target.control.id),
+                        target.kind,
+                        target.index,
+                        action == LaneAction::Resume,
+                    );
+                }
+            }
+            Ok(())
+        })?;
+        let status = match action {
+            LaneAction::Bypass => "bypassed",
+            LaneAction::Resume => "resumed",
+            LaneAction::Delete => "deleted",
+        };
+        self.show_message(format!("lane {} {status}", target.index + 1));
         Ok(EffectAcknowledgement::Published {
             generation: snapshot.generation,
         })
@@ -335,14 +380,34 @@ impl EffectExecutor {
     }
 
     pub(crate) fn message(&self) -> Option<&str> {
-        self.message.as_ref().map(|(message, _)| message.as_str())
+        self.message.as_ref().map(|message| message.text.as_str())
+    }
+
+    fn show_message(&mut self, text: String) {
+        self.message = Some(EffectMessage {
+            text,
+            shown_at: Instant::now(),
+            failed: false,
+        });
+    }
+
+    pub(crate) fn show_failure(&mut self, text: String) {
+        self.message = Some(EffectMessage {
+            text,
+            shown_at: Instant::now(),
+            failed: true,
+        });
+    }
+
+    pub(crate) fn message_failed(&self) -> bool {
+        self.message.as_ref().is_some_and(|message| message.failed)
     }
 
     pub(crate) fn expire_message(&mut self, ttl: std::time::Duration) {
         if self
             .message
             .as_ref()
-            .is_some_and(|(_, shown_at)| shown_at.elapsed() >= ttl)
+            .is_some_and(|message| message.shown_at.elapsed() >= ttl)
         {
             self.message = None;
         }
@@ -436,7 +501,7 @@ impl EffectExecutor {
                 self.recent.touch_edits(&edits);
                 let plural = if edits.len() == 1 { "" } else { "s" };
                 let message = format!("{} edit{plural} applied", edits.len());
-                self.message = Some((message, Instant::now()));
+                self.show_message(message);
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
@@ -456,11 +521,12 @@ impl EffectExecutor {
                 .map_err(EffectFailure::SongEncode)?;
                 clipboard.set_text(code).map_err(EffectFailure::Clipboard)?;
                 let message = "song code copied to clipboard".to_string();
-                self.message = Some((message.clone(), Instant::now()));
+                self.show_message(message.clone());
                 Ok(EffectAcknowledgement::Message(message))
             }
+            #[cfg(test)]
             LiveEffect::ShowMessage(message) => {
-                self.message = Some((message.clone(), Instant::now()));
+                self.show_message(message.clone());
                 Ok(EffectAcknowledgement::Message(message))
             }
         }
@@ -663,6 +729,7 @@ impl EffectExecutor {
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         self.edit_beat = context.beat;
         match effect {
+            InteractionEffect::Lane { action, target } => self.apply_lane(action, target),
             InteractionEffect::Capture {
                 action,
                 target,
@@ -705,7 +772,7 @@ impl EffectExecutor {
                 let snapshot = self
                     .session
                     .update(|snapshot| action.apply(&mut snapshot.muted));
-                self.message = Some((action.name().to_string(), Instant::now()));
+                self.show_message(action.name().to_string());
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
@@ -714,10 +781,7 @@ impl EffectExecutor {
                 let target = target.ok_or(EffectFailure::StaleRecipeTarget)?;
                 let recipe = recipe.recipe();
                 let snapshot = apply_recipe_effect(self, recipe, target)?;
-                self.message = Some((
-                    format!("{} added to {}", recipe.name, target.id),
-                    Instant::now(),
-                ));
+                self.show_message(format!("{} added to {}", recipe.name, target.id));
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
@@ -1014,7 +1078,7 @@ impl EffectExecutor {
                     lead.rate_beats,
                     lead.offset_beats,
                 ) else {
-                    self.message = Some(("nothing played yet".to_string(), Instant::now()));
+                    self.show_message("nothing played yet".to_string());
                     return Ok(EffectAcknowledgement::NoChange);
                 };
                 let steps = spec_by_id(LEAD_STEPS_ID)
@@ -1026,7 +1090,7 @@ impl EffectExecutor {
                     steps.apply_value(capture.count as f32, &mut snapshot.controls);
                     pattern.apply_value(LeadPattern::Play.value(), &mut snapshot.controls);
                 });
-                self.message = Some((format!("kept {} steps", capture.count), Instant::now()));
+                self.show_message(format!("kept {} steps", capture.count));
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
