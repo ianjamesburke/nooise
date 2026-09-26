@@ -2494,6 +2494,45 @@ fn lfo_lane_is_phase_locked() {
 }
 
 #[test]
+fn envelope_lane_shows_sidechain_rising_from_below_neutral() {
+    let recipe::RecipeLane::Envelope(sidechain) = recipe::RecipeId::Sidechain.recipe().lane else {
+        panic!("Sidechain is an envelope")
+    };
+    let heights = |amount| {
+        let route = EnvelopeRoute {
+            amount,
+            ..sidechain
+        };
+        env_lane_line(&route, env_ctx(0.0), 24, true)
+            .spans
+            .into_iter()
+            .skip(1)
+            .map(|span| {
+                "▁▂▃▄▅▆▇█"
+                    .chars()
+                    .position(|glyph| span.content.starts_with(glyph))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let negative = heights(sidechain.amount);
+    let positive = heights(-sidechain.amount);
+    let neutral = heights(0.0);
+    assert!(negative[0] < neutral[0]);
+    assert!(positive[0] > neutral[0]);
+    assert!(negative.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(positive.windows(2).all(|pair| pair[0] >= pair[1]));
+    assert!(negative.last().unwrap() > &negative[0]);
+    assert!(positive.last().unwrap() < &positive[0]);
+    for (low, high) in negative.iter().zip(&positive) {
+        assert!(
+            (low + high).abs_diff(7) <= 1,
+            "signed curves mirror about neutral"
+        );
+    }
+}
+
+#[test]
 fn envelope_lane_keeps_its_green_palette_for_negative_amounts() {
     let positive = EnvelopeRoute {
         amount: 0.5,
@@ -6190,26 +6229,37 @@ fn silent_envelope_only_song_keeps_its_curve_when_raised_after_loading() {
 
 #[test]
 fn palette_recipes_round_trip_as_ordinary_editable_lanes() {
-    let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
-    let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
-    for recipe in recipe::RECIPES {
-        recipe.apply(&mut snapshot, target).unwrap();
+    for recipes in recipe::RECIPES.chunks(MAX_AUTOMATION_LANES_PER_KIND) {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
+        for recipe in recipes {
+            recipe.apply(&mut snapshot, target).unwrap();
+        }
+        let original = SongState {
+            controls: snapshot.controls,
+            automation: snapshot.automation,
+            ..SongState::default()
+        };
+        let code = song::encode_song_code(&original).unwrap();
+        let mut restored = song::decode_song_code(&code).unwrap();
+        assert_song_states_agree(&original, &restored, "palette recipes");
+        let address = ControlAddress::new("pad.level");
+        let lfo_count = recipes
+            .iter()
+            .filter(|recipe| matches!(recipe.lane, recipe::RecipeLane::Lfo { .. }))
+            .count();
+        assert_eq!(restored.automation.routes_for(address).count(), lfo_count);
+        assert_eq!(
+            restored.automation.envelopes_for(address).count(),
+            recipes.len() - lfo_count
+        );
+        restored.automation.route_mut(address).unwrap().depth_ratio = 0.0;
+        if let Some(envelope) = restored.automation.envelope_mut(address) {
+            envelope.amount = 0.0;
+        }
+        let silent = song::decode_song_code(&song::encode_song_code(&restored).unwrap()).unwrap();
+        assert_song_states_agree(&restored, &silent, "silenced recipes");
     }
-    let original = SongState {
-        controls: snapshot.controls,
-        automation: snapshot.automation,
-        ..SongState::default()
-    };
-    let code = song::encode_song_code(&original).unwrap();
-    let mut restored = song::decode_song_code(&code).unwrap();
-    assert_song_states_agree(&original, &restored, "palette recipes");
-    let address = ControlAddress::new("pad.level");
-    assert_eq!(restored.automation.routes_for(address).count(), 2);
-    assert_eq!(restored.automation.envelopes_for(address).count(), 1);
-    restored.automation.route_mut(address).unwrap().depth_ratio = 0.0;
-    restored.automation.envelope_mut(address).unwrap().amount = 0.0;
-    let silent = song::decode_song_code(&song::encode_song_code(&restored).unwrap()).unwrap();
-    assert_song_states_agree(&restored, &silent, "silenced recipes");
 }
 
 #[test]
@@ -6319,28 +6369,34 @@ fn silent_lfo_and_envelope_render_the_same_as_no_automation() {
 #[test]
 fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
     let address = ControlAddress::new("master.level");
-    for id in [
-        recipe::RecipeId::Sway,
-        recipe::RecipeId::Tremolo,
-        recipe::RecipeId::Sidechain,
-    ] {
+    for recipe in recipe::RECIPES {
+        let id = recipe.id;
         let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
         snapshot.controls.master.level = 0.65;
         let target = recipe::RecipeTarget::capture(address.id(), &snapshot).unwrap();
         id.recipe().apply(&mut snapshot, target).unwrap();
         let mut authored = AutomationState::default();
         match id {
-            recipe::RecipeId::Sway | recipe::RecipeId::Tremolo => {
+            recipe::RecipeId::Sway
+            | recipe::RecipeId::Tremolo
+            | recipe::RecipeId::Pulse
+            | recipe::RecipeId::Drift
+            | recipe::RecipeId::Rise => {
+                let (shape, cycle_beats, seed) = match id {
+                    recipe::RecipeId::Sway => (LfoShape::Sine, 8.0, 0),
+                    recipe::RecipeId::Tremolo => (LfoShape::Sine, 0.5, 0),
+                    recipe::RecipeId::Pulse => (LfoShape::Square, 1.0, 0),
+                    recipe::RecipeId::Drift => (LfoShape::RandomDrift, 16.0, 0x4452_4946),
+                    recipe::RecipeId::Rise => (LfoShape::RampUp, 8.0, 0),
+                    recipe::RecipeId::Sidechain => unreachable!(),
+                };
                 authored.add_route(
                     address,
                     LfoRoute {
                         depth_ratio: 0.25,
-                        cycle_beats: if id == recipe::RecipeId::Sway {
-                            8.0
-                        } else {
-                            0.5
-                        },
-                        shape: LfoShape::Sine,
+                        cycle_beats,
+                        shape,
+                        seed,
                         ..LfoRoute::default()
                     },
                 );

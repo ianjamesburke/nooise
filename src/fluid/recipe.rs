@@ -7,6 +7,9 @@ pub(crate) enum RecipeId {
     Sway,
     Tremolo,
     Sidechain,
+    Pulse,
+    Drift,
+    Rise,
 }
 
 pub(crate) struct Recipe {
@@ -18,7 +21,12 @@ pub(crate) struct Recipe {
 }
 
 pub(crate) enum RecipeLane {
-    Sine { beats: f32, depth: f32 },
+    Lfo {
+        shape: LfoShape,
+        beats: f32,
+        depth: f32,
+        seed: u32,
+    },
     Envelope(EnvelopeRoute),
 }
 
@@ -28,7 +36,9 @@ pub(crate) const RECIPES: &[Recipe] = &[
         name: "Sway",
         aliases: &[],
         description: "slow sine, 8 beats, 25%",
-        lane: RecipeLane::Sine {
+        lane: RecipeLane::Lfo {
+            shape: LfoShape::Sine,
+            seed: 0,
             beats: 8.0,
             depth: 0.25,
         },
@@ -38,7 +48,9 @@ pub(crate) const RECIPES: &[Recipe] = &[
         name: "Tremolo",
         aliases: &[],
         description: "fast sine, 1/2 beat, 25%",
-        lane: RecipeLane::Sine {
+        lane: RecipeLane::Lfo {
+            shape: LfoShape::Sine,
+            seed: 0,
             beats: 0.5,
             depth: 0.25,
         },
@@ -54,6 +66,42 @@ pub(crate) const RECIPES: &[Recipe] = &[
             decay_beats: 1.0,
             trigger: EnvTrigger::OnKick,
         }),
+    },
+    Recipe {
+        id: RecipeId::Pulse,
+        name: "Pulse",
+        aliases: &[],
+        description: "square, 1 beat, 25%",
+        lane: RecipeLane::Lfo {
+            shape: LfoShape::Square,
+            beats: 1.0,
+            depth: 0.25,
+            seed: 0,
+        },
+    },
+    Recipe {
+        id: RecipeId::Drift,
+        name: "Drift",
+        aliases: &[],
+        description: "slow random drift, 16 beats, 25%",
+        lane: RecipeLane::Lfo {
+            shape: LfoShape::RandomDrift,
+            beats: 16.0,
+            depth: 0.25,
+            seed: 0x4452_4946,
+        },
+    },
+    Recipe {
+        id: RecipeId::Rise,
+        name: "Rise",
+        aliases: &[],
+        description: "ramp up, 8 beats, 25%",
+        lane: RecipeLane::Lfo {
+            shape: LfoShape::RampUp,
+            beats: 8.0,
+            depth: 0.25,
+            seed: 0,
+        },
     },
 ];
 
@@ -106,7 +154,7 @@ impl Recipe {
         }
         let address = ControlAddress::new(target.id);
         let count = match self.lane {
-            RecipeLane::Sine { .. } => snapshot.automation.routes_for(address).count(),
+            RecipeLane::Lfo { .. } => snapshot.automation.routes_for(address).count(),
             RecipeLane::Envelope(_) => snapshot.automation.envelopes_for(address).count(),
         };
         if count >= MAX_AUTOMATION_LANES_PER_KIND {
@@ -123,12 +171,19 @@ impl Recipe {
         self.check(snapshot, target)?;
         let address = ControlAddress::new(target.id);
         match self.lane {
-            RecipeLane::Sine { beats, depth } => {
+            RecipeLane::Lfo {
+                shape,
+                beats,
+                depth,
+                seed,
+            } => {
                 snapshot.automation.add_route(
                     address,
                     LfoRoute {
                         cycle_beats: beats,
                         depth_ratio: depth,
+                        shape,
+                        seed,
                         ..LfoRoute::default()
                     },
                 );
@@ -148,12 +203,19 @@ mod tests {
 
     #[test]
     fn recipe_table_has_unique_ids_and_valid_lanes() {
-        for id in [RecipeId::Sway, RecipeId::Tremolo, RecipeId::Sidechain] {
+        for id in [
+            RecipeId::Sway,
+            RecipeId::Tremolo,
+            RecipeId::Sidechain,
+            RecipeId::Pulse,
+            RecipeId::Drift,
+            RecipeId::Rise,
+        ] {
             assert_eq!(RECIPES.iter().filter(|recipe| recipe.id == id).count(), 1);
             let recipe = id.recipe();
             assert!(!recipe.name.is_empty());
             match recipe.lane {
-                RecipeLane::Sine { beats, depth } => {
+                RecipeLane::Lfo { beats, depth, .. } => {
                     assert!((MIN_LFO_CYCLE_BEATS..=MAX_LFO_CYCLE_BEATS).contains(&beats));
                     assert!(depth > 0.0 && depth <= 1.0);
                 }
@@ -163,6 +225,61 @@ mod tests {
                     assert!(route.decay_beats > 0.0 && route.decay_beats <= MAX_ENV_DECAY_BEATS);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn every_recipe_name_matches_in_global_and_module_palettes() {
+        for scope in [
+            None,
+            Some(ModuleScope {
+                tab: Tab::Bass,
+                slot: 0,
+                catalog_index: module_catalog_index("filter"),
+            }),
+        ] {
+            for recipe in RECIPES {
+                let mut palette = PaletteState::new(Tab::Bass, &[], scope);
+                for c in recipe.name.to_lowercase().chars() {
+                    palette.push_char(c);
+                }
+                let entry = palette.entry(palette.matches[0].entry_index);
+                assert!(
+                    matches!(entry, PaletteEntry::Recipe(id) if *id == recipe.id),
+                    "{}",
+                    recipe.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_recipe_respects_existing_silent_lane_capacity() {
+        for recipe in RECIPES {
+            let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+            let target = RecipeTarget::capture("pad.level", &snapshot).unwrap();
+            let address = ControlAddress::new(target.id);
+            for _ in 0..MAX_AUTOMATION_LANES_PER_KIND {
+                match recipe.lane {
+                    RecipeLane::Lfo { .. } => {
+                        snapshot.automation.add_route(address, LfoRoute::default());
+                    }
+                    RecipeLane::Envelope(_) => {
+                        snapshot
+                            .automation
+                            .add_envelope(address, EnvelopeRoute::default());
+                    }
+                }
+            }
+            let before = snapshot.automation.clone();
+            assert_eq!(
+                recipe.apply(&mut snapshot, target),
+                Err(EffectFailure::AutomationLaneLimit)
+            );
+            assert!(
+                snapshot.automation == before,
+                "capacity failure leaves lanes untouched"
+            );
         }
     }
 

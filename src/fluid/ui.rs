@@ -1134,7 +1134,7 @@ fn env_lane_line_with_label(
     lane_line(label, width, active, 0.55, |i| {
         let col_since = (i as f64 / width as f64 * window) as f32;
         (
-            route.level_for_lane(col_since) * route.amount.abs(),
+            route.level_for_lane(col_since) * route.amount * 0.5 + 0.5,
             ENV_LANE_HUE,
             // The ramp does not wrap: it runs once from trigger to release.
             1.0 - (i.abs_diff(head) as f32 / width as f32) * 2.0,

@@ -2564,6 +2564,9 @@ fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
             ("sway", recipe::RecipeId::Sway),
             ("tremolo", recipe::RecipeId::Tremolo),
             ("sc", recipe::RecipeId::Sidechain),
+            ("pulse", recipe::RecipeId::Pulse),
+            ("drift", recipe::RecipeId::Drift),
+            ("rise", recipe::RecipeId::Rise),
         ] {
             let mut events = recipe_keys(query);
             events.push(TraceEvent::Idle { after_ms: 40 });
@@ -2587,11 +2590,17 @@ fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
                 song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
             let address = ControlAddress::new("pad.level");
             match id.recipe().lane {
-                recipe::RecipeLane::Sine { beats, depth } => {
+                recipe::RecipeLane::Lfo {
+                    shape,
+                    beats,
+                    depth,
+                    seed,
+                } => {
                     let lane = saved.automation.route(address).unwrap();
                     assert_eq!(lane.cycle_beats, beats);
                     assert!((lane.depth_ratio - depth).abs() < 0.0001);
-                    assert_eq!(lane.shape, LfoShape::Sine);
+                    assert_eq!(lane.shape, shape);
+                    assert_eq!(lane.seed, seed);
                 }
                 recipe::RecipeLane::Envelope(route) => {
                     let lane = saved.automation.envelope(address).unwrap();
