@@ -571,6 +571,15 @@ impl EffectExecutor {
                 })?;
                 self.execute(LiveEffect::CommitPending { beat: context.beat })
             }
+            InteractionEffect::ApplyMixAction(action) => {
+                let snapshot = self
+                    .session
+                    .update(|snapshot| action.apply(&mut snapshot.muted));
+                self.message = Some((action.name().to_string(), Instant::now()));
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::ApplyRecipe { recipe, target } => {
                 let target = target.ok_or(EffectFailure::StaleRecipeTarget)?;
                 let recipe = recipe.recipe();
@@ -1017,6 +1026,42 @@ mod tests {
             AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
             42,
         )
+    }
+
+    #[test]
+    fn kick_only_changes_just_the_mute_snapshot_and_never_restores_it() {
+        let mut executor = executor();
+        executor.session.update(|snapshot| {
+            snapshot.transport = Transport::Stopped;
+            snapshot.muted[Tab::Kick as usize] = true;
+            snapshot
+                .automation
+                .open_or_create(ControlAddress::new("pad.level"))
+                .depth_ratio = 0.3;
+        });
+        executor.toggle_auto(0.0);
+        let before = executor.session.load();
+        for _ in 0..2 {
+            executor
+                .execute_interaction(
+                    InteractionEffect::ApplyMixAction(mix_action::MixAction::KickOnly),
+                    &InteractionExecutionContext::default(),
+                )
+                .unwrap();
+            let after = executor.session.load();
+            assert!(after.automation == before.automation);
+            assert!(executor.auto.is_running());
+            assert_eq!(after.transport, Transport::Stopped);
+            for tab in Tab::all() {
+                assert_eq!(
+                    after.muted[tab as usize],
+                    !matches!(tab, Tab::Kick | Tab::Master)
+                );
+            }
+            for spec in all_specs() {
+                assert_eq!((spec.get)(&after.controls), (spec.get)(&before.controls));
+            }
+        }
     }
 
     #[test]

@@ -46,6 +46,7 @@ mod effect;
 mod engine;
 mod gesture;
 mod interaction;
+mod mix_action;
 mod module;
 mod osc;
 mod palette;

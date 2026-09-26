@@ -515,6 +515,7 @@ pub(crate) struct FluidEngine {
     midi_input_enabled: [bool; 3],
     pub(crate) gain_smoothers: GainSmoothers,
     mute_gates: OutputGates,
+    muted: MuteState,
     pub(crate) pad: PadEngine,
     pub(crate) perc: PercEngine,
     pub(crate) kick: KickEngine,
@@ -575,6 +576,7 @@ impl FluidEngine {
             midi_input_enabled: [false; 3],
             gain_smoothers: GainSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
+            muted: live.muted,
             pad: PadEngine::new(
                 sample_rate,
                 &snapshot.pad,
@@ -715,6 +717,7 @@ impl StereoEngine for FluidEngine {
                 .set_targets(&self.snapshot, self.sample_rate);
             self.mute_gates
                 .set_targets(&session.muted, self.sample_rate);
+            self.muted = session.muted;
             self.lead.observe(session.lead_play);
             self.master_bus
                 .set_controls(&self.snapshot.master, self.sample_rate);
@@ -741,6 +744,18 @@ impl StereoEngine for FluidEngine {
         resolve_module_chain(&mut effective);
         effective.keep_midi_directions_exclusive();
         self.sync_midi_input_switches(&effective);
+        // Suppress only effective output routing; authored switches, input,
+        // transport, and the source-owned Note Off paths stay intact.
+        let master_muted = self.muted[Tab::Master as usize];
+        if master_muted || self.muted[Tab::Chords as usize] {
+            effective.pad.midi_out = 0.0;
+        }
+        if master_muted || self.muted[Tab::Arp as usize] {
+            effective.arp.midi_out = 0.0;
+        }
+        if master_muted || self.muted[Tab::Lead as usize] {
+            effective.lead.midi_out = 0.0;
+        }
         let mute_gains = self.mute_gates.next();
         let now_seconds = self.current_sample as f64 / self.sample_rate as f64;
 

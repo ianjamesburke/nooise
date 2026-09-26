@@ -1819,6 +1819,163 @@ fn arp_midi_uses_the_swung_note_grid() {
 }
 
 #[test]
+fn saved_kick_only_mutes_suppress_opening_midi_notes() {
+    let mut song = SongState::default();
+    song.controls.arp.midi_out = 1.0;
+    song.controls.lead.midi_out = 1.0;
+    mix_action::MixAction::KickOnly.apply(&mut song.muted);
+    let loaded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
+    let session = LiveSession::new(LiveSessionSnapshot::from_song(&loaded));
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session,
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    )
+    .with_midi(sink);
+    for _ in 0..24_000 {
+        engine.next_stereo();
+    }
+    let events: Vec<_> = receiver.try_iter().collect();
+    assert!(events.contains(&MidiMessage::Start));
+    assert!(events.contains(&MidiMessage::Clock));
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        MidiMessage::PadChord(_) | MidiMessage::ArpNote(_) | MidiMessage::LeadNote(_)
+    )));
+}
+
+#[test]
+fn track_and_master_mutes_release_midi_sources_without_stopping_clock() {
+    for tab in [Tab::Chords, Tab::Arp, Tab::Lead, Tab::Master] {
+        let mut controls = FluidControls::default();
+        controls.master.bpm = 120.0;
+        controls.arp.midi_out = 1.0;
+        controls.lead.midi_out = 1.0;
+        controls.lead.steps = [1.0; 16];
+        let session = live_session(controls, AutomationState::default());
+        let (sink, receiver) = MidiSink::test_channel();
+        let mut engine = FluidEngine::new(
+            SAMPLE_RATE,
+            session.clone(),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        )
+        .with_midi(sink);
+        engine.next_stereo();
+        let opening: Vec<_> = receiver.try_iter().collect();
+        assert!(
+            opening
+                .iter()
+                .any(|e| matches!(e, MidiMessage::PadChord(_)))
+        );
+        assert!(opening.iter().any(|e| matches!(e, MidiMessage::ArpNote(_))));
+        assert!(
+            opening
+                .iter()
+                .any(|e| matches!(e, MidiMessage::LeadNote(_)))
+        );
+        session.update(|snapshot| snapshot.muted[tab as usize] = true);
+        for _ in 0..128 {
+            engine.next_stereo();
+        }
+        let released: Vec<_> = receiver.try_iter().collect();
+        for (source, off) in [
+            (Tab::Chords, MidiMessage::PadOff),
+            (Tab::Arp, MidiMessage::ArpOff),
+            (Tab::Lead, MidiMessage::LeadOff),
+        ] {
+            assert_eq!(
+                released.contains(&off),
+                tab == source || tab == Tab::Master,
+                "{tab:?}: {released:?}"
+            );
+        }
+        for _ in 0..48_000 {
+            engine.next_stereo();
+        }
+        let muted: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(
+            muted.iter().filter(|e| **e == MidiMessage::Clock).count(),
+            48
+        );
+        assert!(!muted.iter().any(|e| match e {
+            MidiMessage::PadChord(_) => matches!(tab, Tab::Chords | Tab::Master),
+            MidiMessage::ArpNote(_) => matches!(tab, Tab::Arp | Tab::Master),
+            MidiMessage::LeadNote(_) => matches!(tab, Tab::Lead | Tab::Master),
+            MidiMessage::Stop
+            | MidiMessage::Start
+            | MidiMessage::Continue
+            | MidiMessage::Shutdown => true,
+            _ => false,
+        }));
+        let snapshot = session.load();
+        assert_eq!(snapshot.controls.pad.midi_out, 1.0);
+        assert_eq!(snapshot.controls.arp.midi_out, 1.0);
+        assert_eq!(snapshot.controls.lead.midi_out, 1.0);
+        session.update(|snapshot| snapshot.muted[tab as usize] = false);
+        for _ in 0..48_000 {
+            engine.next_stereo();
+        }
+        let resumed: Vec<_> = receiver.try_iter().collect();
+        if matches!(tab, Tab::Chords | Tab::Master) {
+            assert!(
+                resumed
+                    .iter()
+                    .any(|e| matches!(e, MidiMessage::PadChord(_)))
+            );
+        }
+        assert!(resumed.iter().any(|e| matches!(e, MidiMessage::ArpNote(_))));
+        assert!(
+            resumed
+                .iter()
+                .any(|e| matches!(e, MidiMessage::LeadNote(_)))
+        );
+    }
+}
+
+#[test]
+fn kick_only_render_matches_independently_muted_reference() {
+    let mut controls = FluidControls::default();
+    controls.kick.level = 0.6;
+    controls.arp.gain = 0.4;
+    controls.lead.level = 0.4;
+    let mut actual = engine_for(controls.clone(), AutomationState::default());
+    let mut reference = engine_for(controls, AutomationState::default());
+    actual.reseed(173);
+    reference.reseed(173);
+    for _ in 0..24_000 {
+        assert_eq!(actual.next_stereo(), reference.next_stereo());
+    }
+    actual
+        .session
+        .update(|snapshot| mix_action::MixAction::KickOnly.apply(&mut snapshot.muted));
+    reference.session.update(|snapshot| {
+        for tab in [
+            Tab::Chords,
+            Tab::Perc,
+            Tab::Tonal,
+            Tab::Clap,
+            Tab::Bass,
+            Tab::Arp,
+            Tab::Lead,
+        ] {
+            snapshot.muted[tab as usize] = true;
+        }
+        snapshot.muted[Tab::Kick as usize] = false;
+        snapshot.muted[Tab::Master as usize] = false;
+    });
+    let mut energy = 0.0;
+    for _ in 0..96_000 {
+        let sample = actual.next_stereo();
+        assert_eq!(sample, reference.next_stereo());
+        energy += sample.0 * sample.0 + sample.1 * sample.1;
+    }
+    assert!(energy > 0.1, "kick remains audible");
+}
+
+#[test]
 fn pad_and_arp_midi_out_switches_are_independent() {
     let mut controls = FluidControls::default();
     controls.arp.midi_out = 1.0;

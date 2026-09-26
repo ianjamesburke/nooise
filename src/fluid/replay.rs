@@ -518,15 +518,17 @@ impl Clipboard for FakeClipboard {
             return Err(error.clone());
         }
         self.writes += 1;
-        // Capture the authored automation for save regressions. A full song
+        // Capture authored controls, mutes, and automation for save regressions. A full song
         // also contains the live tonal generator's entropy-seeded runtime
         // state, which is outside this input replay's deterministic clock.
         let saved = song::decode_song_code(&text).expect("save emits a valid song code");
-        let automation_only = SongState {
+        let authored = SongState {
+            controls: saved.controls,
+            muted: saved.muted,
             automation: saved.automation,
             ..SongState::default()
         };
-        self.automation_code = Some(song::encode_song_code(&automation_only).unwrap());
+        self.automation_code = Some(song::encode_song_code(&authored).unwrap());
         Ok(())
     }
 }
@@ -2552,6 +2554,115 @@ fn recipe_keys(query: &str) -> Vec<TraceEvent> {
     );
     events.push(key(0, FixtureKey::Enter, InputPhase::Press));
     events
+}
+
+#[test]
+fn kick_only_palette_action_preserves_auto_navigation_and_saved_controls() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        for query in ["kick only", "solo kick"] {
+            let configure = |harness: ReplayHarness| {
+                harness
+                    .with_session_edit(|snapshot| {
+                        snapshot.muted[Tab::Kick as usize] = true;
+                        snapshot.muted[Tab::Master as usize] = true;
+                        snapshot.controls.arp.midi_out = 1.0;
+                        snapshot.controls.lead.midi_out = 1.0;
+                    })
+                    .with_auto_running()
+            };
+            let before = replay_with(&[], capabilities, configure);
+            let mut events = recipe_keys(query);
+            events.push(TraceEvent::Idle { after_ms: 40 });
+            events.push(modified_key(
+                0,
+                FixtureKey::Character('s'),
+                InputPhase::Press,
+                1 << 1,
+            ));
+            let result = replay_with(&events, capabilities, configure);
+            assert_eq!(result.session_generation, before.session_generation + 1);
+            assert_eq!(result.model.navigation, before.model.navigation);
+            assert_eq!(result.model.mode, InteractionMode::Browsing);
+            assert_eq!(result.control_bits, before.control_bits);
+            assert_eq!(result.recent_ids, before.recent_ids);
+            assert!(result.auto_running);
+            assert_eq!(result.pending_edits, 0);
+            assert_eq!(result.effect_count("ApplyMixAction"), 1);
+            assert!(
+                result
+                    .frames
+                    .iter()
+                    .any(|frame| frame.help.contains("Kick Only"))
+            );
+            let saved =
+                song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+            for tab in Tab::all() {
+                assert_eq!(
+                    saved.muted[tab as usize],
+                    !matches!(tab, Tab::Kick | Tab::Master)
+                );
+            }
+            assert_eq!(saved.controls.arp.midi_out, 1.0);
+            assert_eq!(saved.controls.lead.midi_out, 1.0);
+        }
+    }
+}
+
+#[test]
+fn kick_only_preserves_the_open_automation_owner_and_normal_navigation() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        let open = key(0, FixtureKey::Character('f'), InputPhase::Press);
+        let before = replay(std::slice::from_ref(&open), capabilities);
+        let mut events = vec![open];
+        events.extend(recipe_keys("kick only"));
+        let after = replay(&events, capabilities);
+        assert_eq!(after.model.mode, before.model.mode);
+        assert_eq!(after.model.navigation, before.model.navigation);
+        assert_eq!(after.automation_address, before.automation_address);
+        events.extend([
+            key(0, FixtureKey::Escape, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Tab, InputPhase::Press),
+        ]);
+        let navigated = replay(&events, capabilities);
+        assert_eq!(navigated.model.mode, InteractionMode::Browsing);
+        assert_ne!(navigated.model.navigation, after.model.navigation);
+    }
+}
+
+#[test]
+fn kick_only_alias_renders_at_minimum_size_and_autocompletes_without_value_entry() {
+    let mut events = recipe_keys("solo kick");
+    events.pop();
+    events.insert(
+        0,
+        TraceEvent::Resize {
+            after_ms: 0,
+            width: MIN_TERMINAL_WIDTH,
+            height: MIN_TERMINAL_HEIGHT,
+        },
+    );
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    events.push(key(0, FixtureKey::Tab, InputPhase::Press));
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    let result = replay(&events, TerminalCapabilities::full());
+    assert!(
+        result
+            .frames
+            .iter()
+            .any(|frame| frame.text.contains("Kick Only") && frame.text.contains("mute others"))
+    );
+    let InteractionMode::Palette(mode) = result.model.mode else {
+        panic!("palette stays open")
+    };
+    assert_eq!(mode.query, "Kick Only");
+    assert_eq!(mode.locked, None);
 }
 
 #[test]

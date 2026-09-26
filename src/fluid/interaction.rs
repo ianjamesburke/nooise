@@ -1087,6 +1087,7 @@ pub(crate) enum InteractionEffect {
         id: &'static str,
     },
     PaletteCommit(Vec<PaletteStagedEdit>),
+    ApplyMixAction(super::mix_action::MixAction),
     ApplyRecipe {
         recipe: super::recipe::RecipeId,
         target: Option<super::recipe::RecipeTarget>,
@@ -1599,7 +1600,10 @@ fn update_palette(
             if palette.locked.is_none()
                 && let Some(found) = state.matches.get(state.selected)
             {
-                if let PaletteEntry::Recipe(recipe) = state.entry(found.entry_index) {
+                if let PaletteEntry::MixAction(action) = state.entry(found.entry_index) {
+                    palette.query = action.name().to_string();
+                    palette.selected = 0;
+                } else if let PaletteEntry::Recipe(recipe) = state.entry(found.entry_index) {
                     palette.query = recipe.recipe().name.to_string();
                     palette.selected = 0;
                 } else {
@@ -1622,7 +1626,11 @@ fn update_palette(
                     palette.selected = 0;
                 } else {
                     effects.push(palette_confirm(entry, palette.recipe_target));
-                    *next_mode = Some(InteractionMode::Browsing);
+                    *next_mode = Some(if matches!(entry, PaletteEntry::MixAction(_)) {
+                        resume_mode(palette.resume)
+                    } else {
+                        InteractionMode::Browsing
+                    });
                 }
             } else if !palette.staged.is_empty() && palette.query.is_empty() {
                 effects.push(InteractionEffect::PaletteCommit(std::mem::take(
@@ -1630,11 +1638,13 @@ fn update_palette(
                 )));
                 *next_mode = Some(resume_mode(palette.resume));
             } else if let Some(found) = state.matches.get(state.selected) {
-                effects.push(palette_confirm(
-                    state.entry(found.entry_index),
-                    palette.recipe_target,
-                ));
-                *next_mode = Some(InteractionMode::Browsing);
+                let entry = state.entry(found.entry_index);
+                effects.push(palette_confirm(entry, palette.recipe_target));
+                *next_mode = Some(if matches!(entry, PaletteEntry::MixAction(_)) {
+                    resume_mode(palette.resume)
+                } else {
+                    InteractionMode::Browsing
+                });
             }
         }
         Intent::CommitPaletteAtBar => {
@@ -1873,6 +1883,7 @@ fn palette_confirm(
     target: Option<super::recipe::RecipeTarget>,
 ) -> InteractionEffect {
     match entry {
+        PaletteEntry::MixAction(action) => InteractionEffect::ApplyMixAction(*action),
         PaletteEntry::Recipe(recipe) => InteractionEffect::ApplyRecipe {
             recipe: *recipe,
             target,

@@ -658,6 +658,50 @@ mod tests {
     }
 
     #[test]
+    fn all_three_sources_release_shared_notes_without_channel_wide_reset() {
+        for order in [
+            [
+                MidiMessage::PadOff,
+                MidiMessage::ArpOff,
+                MidiMessage::LeadOff,
+            ],
+            [
+                MidiMessage::LeadOff,
+                MidiMessage::PadOff,
+                MidiMessage::ArpOff,
+            ],
+        ] {
+            let mut packets = Vec::<Vec<u8>>::new();
+            let mut active = ActiveNotes::default();
+            let mut send = |bytes: &[u8]| {
+                packets.push(bytes.to_vec());
+                Ok::<(), ()>(())
+            };
+            dispatch(
+                MidiMessage::PadChord(pad_notes([48, 52, 55, 60], 0.0)),
+                &mut active,
+                &mut send,
+            )
+            .unwrap();
+            dispatch(MidiMessage::ArpNote(60), &mut active, &mut send).unwrap();
+            dispatch(MidiMessage::LeadNote(60), &mut active, &mut send).unwrap();
+            for off in order {
+                dispatch(off, &mut active, &mut send).unwrap();
+            }
+            assert_eq!(packets.last().unwrap(), &[0x80, 60, 0]);
+            assert_eq!(
+                packets
+                    .iter()
+                    .filter(|packet| packet.as_slice() == [0x80, 60, 0])
+                    .count(),
+                1
+            );
+            assert_eq!(packets.len(), 8);
+            assert!(packets.iter().all(|packet| packet[0] != 0xb0));
+        }
+    }
+
+    #[test]
     fn shared_pitch_stays_on_until_both_sources_release_it() {
         let mut packets = Vec::<Vec<u8>>::new();
         let mut active = ActiveNotes::default();
