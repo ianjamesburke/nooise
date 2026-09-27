@@ -614,7 +614,7 @@ impl FluidEngine {
 
     /// Rewind musical schedulers while release envelopes and effect tails keep running.
     fn restart_sequence(&mut self) {
-        self.tempo.beat = 0.0;
+        self.tempo.restart();
         self.morph_writer = MorphWriter::default();
         self.morph
             .rcu(|current| current.as_ref().as_ref().map(MorphState::restarted));
@@ -643,6 +643,11 @@ impl FluidEngine {
         self.arp.set_midi(sink.clone());
         self.lead.set_midi(sink.clone());
         self.midi_clock = Some(MidiClockFollower::new(sink));
+        self
+    }
+
+    pub(crate) fn with_link(mut self, clock: LinkClock) -> Self {
+        self.tempo.link = Some(clock);
         self
     }
 
@@ -718,6 +723,20 @@ impl FluidEngine {
 }
 
 impl StereoEngine for FluidEngine {
+    fn begin_buffer(&mut self, output_latency: std::time::Duration) {
+        if let Some(link) = &mut self.tempo.link {
+            link.begin_buffer(
+                self.current_sample,
+                output_latency,
+                LocalTiming {
+                    transport: self.transport,
+                    restart: self.transport_restart,
+                    target_bpm: self.snapshot.master.bpm,
+                },
+            );
+        }
+    }
+
     fn next_stereo(&mut self) -> (f32, f32) {
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         if self.current_sample.is_multiple_of(128) {
@@ -1149,6 +1168,9 @@ pub(crate) struct TempoClock {
     pub(crate) bpm: f64,
     pub(crate) sample_rate: f64,
     pub(crate) smoothing_coeff: f64,
+    /// `Some` under `--link`: beat and tempo come from the shared timeline
+    /// instead of accumulating locally.
+    pub(crate) link: Option<LinkClock>,
 }
 
 impl TempoClock {
@@ -1160,6 +1182,14 @@ impl TempoClock {
             bpm: f64::from(bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX)),
             sample_rate,
             smoothing_coeff: 1.0 - (-1.0 / smoothing_samples).exp(),
+            link: None,
+        }
+    }
+
+    pub(crate) fn restart(&mut self) {
+        self.beat = 0.0;
+        if let Some(link) = &mut self.link {
+            link.restart();
         }
     }
 
@@ -1167,6 +1197,10 @@ impl TempoClock {
     /// positions, the auto morph, grid phases) waits where it was and
     /// resumes from there. Tempo still glides toward its target.
     pub(crate) fn tick(&mut self, target_bpm: f32, transport: Transport) -> TimingContext {
+        if let Some(link) = &mut self.link {
+            let sample = link.next_sample();
+            return self.follow_link(sample, transport);
+        }
         let target_bpm = f64::from(target_bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX));
         self.bpm += (target_bpm - self.bpm) * self.smoothing_coeff;
 
@@ -1179,6 +1213,23 @@ impl TempoClock {
         }
         timing
     }
+
+    /// A stopped transport holds its beat exactly as the free clock does; a
+    /// launch waiting for its downbeat reads as stopped at beat zero.
+    fn follow_link(&mut self, sample: LinkSample, transport: Transport) -> TimingContext {
+        self.bpm = sample.bpm;
+        let transport = match (transport, sample.beat) {
+            (Transport::Playing, Some(beat)) => {
+                self.beat = beat;
+                Transport::Playing
+            }
+            _ => Transport::Stopped,
+        };
+        TimingContext {
+            transport,
+            ..TimingContext::new(self.sample_rate, self.bpm, self.beat)
+        }
+    }
 }
 
 /// Whether the beat clock runs. Stopped fires no new grid hit anywhere and
@@ -1190,15 +1241,6 @@ pub(crate) enum Transport {
     #[default]
     Playing,
     Stopped,
-}
-
-impl Transport {
-    pub(crate) fn toggled(self) -> Self {
-        match self {
-            Self::Playing => Self::Stopped,
-            Self::Stopped => Self::Playing,
-        }
-    }
 }
 
 /// One sample's worth of transport: where the beat clock stands, whether it

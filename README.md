@@ -29,6 +29,11 @@ Open a new terminal after rustup finishes, then install nooise:
 cargo install nooise --locked
 ```
 
+Ableton Link support compiles Ableton's C++ library, so installing also needs
+[CMake](https://cmake.org) 3.14 or newer (`brew install cmake` on macOS) and a
+C++ compiler with libclang (Xcode Command Line Tools on macOS,
+`build-essential` and `libclang-dev` on Debian/Ubuntu).
+
 ## Start
 
 ```sh
@@ -71,6 +76,17 @@ every held gesture as OSC over UDP to
 listens by default. `--osc=ADDR` sends elsewhere, such as TouchDesigner's
 OSC In CHOP. Off unless asked for. See `src/fluid/osc.rs` for the address
 vocabulary.
+
+```sh
+nooise --link
+```
+
+Joins the Ableton Link session on your local network, so nooise shares tempo,
+bar phase, and start/stop with Live and any other Link app. Turning Master
+Tempo proposes a new tempo to everyone, and a tempo change from another app
+moves the dial. `Shift+P` starts and stops every app with start/stop sync on;
+a start waits for the next shared bar. Launching nooise never starts anyone
+else's transport. While auto morph runs, its tempo changes lead the session.
 
 List the exact input and output port names, then choose one device for both
 directions or name them separately:

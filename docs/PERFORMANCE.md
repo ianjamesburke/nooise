@@ -101,6 +101,13 @@ endpoint. Pending palette edits land on the first new bar. Live capture
 history clears; saved curves and Tonal's evolved notes remain. Existing
 release envelopes and effect tails keep ringing. MIDI output sends Start.
 
+Under `--link` the clock is the shared Link timeline. Shift+P stops and starts
+every peer with Link start/stop sync, and a Play waits for the next shared bar
+line before bar 1 begins, so MIDI Start lands on it. A peer's Play or Stop
+reaches nooise the same way: Play always restarts at bar 1, aligned to their
+start, even if nooise was already playing. Launching nooise joins in phase
+without starting anyone's transport.
+
 While stopped the activity row leads with `■ STOPPED`, whoever owns the
 keyboard. Stopping is not an edit: it leaves auto running and the MRU
 untouched, like mute.
