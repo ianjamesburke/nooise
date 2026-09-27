@@ -1,6 +1,71 @@
 # Changelog
 
 Newest releases appear first.
+## [2.5.4] — 2026-09-27
+
+### Added
+- feat: add auto-morph state
+- feat: Shift+L reaches every control and modulator field's ceiling
+- feat: bypass and resume selected automation lanes
+- feat: capture completed sixteen bar phrases
+- feat: restart performance sequences and balance percussion
+- feat: capture sixteen beats of knob movement into looping automation
+- feat: add Mute Kick palette action
+- feat: add Kick Only palette action and honor mutes in MIDI output
+- feat: add Pulse Drift and Rise modulation recipes
+- feat: add focused-knob modulation recipes to the palette
+- feat: preserve chord flow across window edits and add MIDI rows on demand
+- feat: route MIDI input through Pads Arp and Lead
+- feat: add fresh-session MIDI output setup and lower MIDI controls
+- feat: let Pad voice two to five chord notes
+- feat: add independent Pad and Lead MIDI output controls
+- feat: add Arp MIDI output mode
+- feat: make Pad stab gate adjustable
+- feat: add swung Pad stab pattern for audio and MIDI
+- feat: send Pad chords and transport clock to MIDI output
+- feat: emit OSC musical hit events
+- feat: emit OSC musical hit events
+- feat: mirror live gesture amounts in the OSC feed
+- feat: per-voice levels in the OSC feed and a song level profile
+- feat: carry kick level, pad envelope, and master level in the OSC feed
+- feat: bare --osc targets foorm's default port
+- feat: mirror live telemetry as OSC with --osc
+- feat: let every live gesture go within 10 ms of release
+- feat: retire the Thin gesture
+- feat: play live gestures over Master only, gain-staged under the clamp
+- feat: refuse old codes that sweep the grown Progression dial
+- feat: restart the chord phrase at the next chord change
+- feat: add Chord Offset, name progressions by key and mood, add six progressions
+- feat: replace built-in song 2 with Ian's brighter perc take
+- feat: start the clap's factory filter fully wet
+- feat: refuse old codes whose sweeps target a moved dial
+- feat: move clap's filter into the shared Filter module
+- feat: open the filter dial to 20 kHz and mirror its cutoff on a type flip
+- feat: LFO steps run 0 to 100%
+- feat: Shift+R inside an LFO's steps rerolls only the step values
+- feat: move the clock stop to Shift+P so a stray key cannot end the song
+- feat: add a clock stop on p so a song can end on its tails
+- feat: read the Jump leader's layer keys off the tab strip
+- feat: let a Jump parameter key aim at the page already open
+- feat: replace the Sequence mode with a Jump leader on Space
+
+### Fixed
+- fix: read swing amount rows on the 50-75% dial scale
+- fix: integrate main controls and preserve morph balance
+- fix: use sixteen beats for capture blocks and playback
+- fix: capture timing knobs and explain pending phrases
+- fix: use a beat ramp LFO for the sidechain recipe
+- fix: start fresh LFOs at one beat
+- fix: preserve silent automation until explicit deletion
+- fix: hide Pad rhythm controls on every fresh start
+- fix: show active Pad MIDI switch on MIDI launch
+- fix: default duplex MIDI sessions to Pad output
+- fix: keep MIDI track directions exclusive at startup and edit time
+- fix: let Bloom go in 50 ms on release
+- fix: brighten Bloom and measure gesture headroom at real playback level
+- fix: keep palette-added effects on their page and mark drillable rows
+- fix: plain r in an automation editor rolls the row under the cursor
+- fix: Shift+R rolls automation fields across their whole dial
 ## [2.5.3] — 2026-09-20
 
 ### Added
