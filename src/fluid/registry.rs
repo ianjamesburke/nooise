@@ -591,6 +591,8 @@ impl ControlSpec {
     pub(crate) fn apply_value(&self, value: f32, c: &mut FluidControls) {
         let spec = self.contextual(c);
         let next = match spec.entry {
+            Entry::Percent if spec.id == "pad.swing" => normalize_swing_input(value),
+            Entry::Percent if is_swing_amount_row(spec.id, c) => normalize_swing_input(value),
             Entry::Percent if parse_module_slot_id(spec.id).is_some() => {
                 normalize_unit_input(value)
             }
@@ -683,6 +685,31 @@ impl ControlSpec {
 
 pub(crate) fn pct(v: f32) -> String {
     format!("{:.0}%", v * 100.0)
+}
+
+/// Swing's own percent convention (matches classic drum-machine swing dials):
+/// 50% is straight, 75% pushes the off-beat all the way to a dotted-note
+/// position on this voice's own grid (a dotted eighth on an eighth-note grid,
+/// a dotted sixteenth on a sixteenth-note grid, etc). The underlying `0..1`
+/// value is unchanged; only the readout and typed-entry scale differ from a
+/// plain `pct` row.
+pub(crate) fn swing_pct(v: f32) -> String {
+    format!("{:.0}%", 50.0 + v.clamp(0.0, 1.0) * 25.0)
+}
+
+/// Inverse of `swing_pct`: a typed `50..=75` reading back to `0..1`.
+pub(crate) fn normalize_swing_input(value: f32) -> f32 {
+    ((value - 50.0) / 25.0).clamp(0.0, 1.0)
+}
+
+/// Whether a module-slot id's `.amount` field is showing the Swing module,
+/// the one `SingleAmount` family whose amount reads on the 50-75% scale
+/// instead of the generic 0-100%.
+fn is_swing_amount_row(id: &str, c: &FluidControls) -> bool {
+    matches!(
+        module_slot_row(id, c),
+        Some((slot, ModuleSlotField::Amount)) if slot.kind().is_some_and(|kind| kind.id == "swing")
+    )
 }
 
 /// A bipolar `-1..=1` ratio as a signed whole percent (`+25%`, `-40%`).
@@ -867,7 +894,17 @@ macro_rules! module_slot_rows {
                 Entry::Percent,
                 |c| c.modules.$layer[$slot - 1].amount,
                 |c, v| c.modules.$layer[$slot - 1].amount = v,
-                |c| pct(c.modules.$layer[$slot - 1].amount),
+                |c| {
+                    let amount = c.modules.$layer[$slot - 1].amount;
+                    if c.modules.$layer[$slot - 1]
+                        .kind()
+                        .is_some_and(|kind| kind.id == "swing")
+                    {
+                        swing_pct(amount)
+                    } else {
+                        pct(amount)
+                    }
+                },
             )
             .labeled_by(|c| module_row_label(c.modules.$layer[$slot - 1].kind))
             .reset_at(0.0),
@@ -1388,7 +1425,15 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c, v| c.pad.trigger = v,
         |c| if c.pad.trigger >= 0.5 { "Stabs" } else { "Hold" }.to_string(),
     ),
-    gain_pct!("pad.swing", "Swing", pad.swing),
+    ControlSpec::gain(
+        "pad.swing",
+        "Swing",
+        0.0,
+        1.0,
+        |c| c.pad.swing,
+        |c, v| c.pad.swing = v,
+        |c| swing_pct(c.pad.swing),
+    ),
     beat_interval!("pad.gate_beats", "Gate", 0.125, 2.0, pad.gate_beats),
     gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
     gain_pct!("pad.detune", "Detune", pad.detune),
