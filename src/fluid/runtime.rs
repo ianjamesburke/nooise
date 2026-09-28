@@ -25,7 +25,7 @@ use super::GestureKind;
 use super::interaction::{
     AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge,
     Navigation, PageDirection, PerformanceInstrument, PerformanceKind, PerformanceParameter,
-    SemanticAction,
+    SemanticAction, hub_layer,
 };
 
 /// Target spacing between drawn frames.
@@ -610,6 +610,9 @@ fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent
                 selected,
                 drill: ChordDrill::Progression { .. },
             } => Intent::EnterChordSlot(selected),
+            Navigation::Hub { selected } => {
+                hub_layer(selected).map_or(Intent::TouchSelected, Intent::EnterLayer)
+            }
             _ => Intent::TouchSelected,
         },
         _ => return slider_binding(code),

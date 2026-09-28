@@ -165,7 +165,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
             selected: cursor,
             drill,
         },
-        Tab::Master => interaction::Navigation::Master { selected: cursor },
+        Tab::Master => interaction::Navigation::Hub { selected: cursor },
         Tab::Lead => interaction::Navigation::Lead {
             selected: cursor,
             drill: interaction::LeadDrill::None,

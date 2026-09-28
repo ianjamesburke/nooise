@@ -112,7 +112,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         .constraints([
             Constraint::Length(1), // 0 top pad
             Constraint::Length(1), // 1 pad
-            Constraint::Length(1), // 2 tab line
+            Constraint::Length(1), // 2 breadcrumb
             Constraint::Length(1), // 3 pad
             Constraint::Min(0),    // 4 control rows
             Constraint::Length(1), // 5 gesture activity row (blank when idle)
@@ -148,7 +148,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         bar_w: (inner.width as usize).saturating_sub(34).clamp(6, 80),
     };
 
-    draw_tabs(f, layout[2], &frame);
+    draw_breadcrumb(f, layout[2], view);
     draw_control_rows(f, layout[4], &frame);
     draw_activity(f, layout[5], view);
     draw_footer(f, layout[6], view);
@@ -190,70 +190,16 @@ fn fill_scrim(buf: &mut Buffer, area: Rect, paint: impl Fn(&mut ratatui::buffer:
     }
 }
 
-/// The tab strip, with the active tab bracketed and carrying whatever it is
-/// drilled into (a module, a chord slot, the progression).
-fn draw_tabs(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
-    let view = frame.view;
-    let active_tab = view.navigation.tab;
-    let controls = frame.controls();
-    let tab_line: String = Tab::all()
-        .iter()
-        .map(|t| {
-            let name = if *t == active_tab
-                && let Some(slot) = view.navigation.module_slot
-            {
-                let module = controls
-                    .modules
-                    .for_tab(*t)
-                    .and_then(|slots| slots[slot].kind());
-                format!(
-                    "{} › {}",
-                    t.name(),
-                    module.map_or("Module", |kind| kind.display_name)
-                )
-            } else if *t == Tab::Chords {
-                match view.navigation.chord_drill {
-                    interaction::ChordDrill::Pattern { .. } => {
-                        format!("{} › Trigger", t.name())
-                    }
-                    interaction::ChordDrill::Progression { .. } => {
-                        format!("{} › Progression", t.name())
-                    }
-                    interaction::ChordDrill::Slot { slot: n, .. } => {
-                        let live = if n == frame.active_slot { " ♪" } else { "" };
-                        format!("{} › Chord {}{live}", t.name(), n + 1)
-                    }
-                    interaction::ChordDrill::None => t.name().to_string(),
-                }
-            } else if *t == Tab::Lead
-                && matches!(
-                    view.navigation.lead_drill,
-                    interaction::LeadDrill::Pattern { .. }
-                )
-            {
-                format!("{} › Pattern ♪", t.name())
-            } else {
-                t.name().to_string()
-            };
-            let name = if view.mute[*t as usize] {
-                format!("{name} (M)")
-            } else {
-                name
-            };
-            if *t == active_tab {
-                format!("[{name}]")
-            } else {
-                name
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("  ");
+/// The breadcrumb from the hub to the open page, as the view derived it.
+fn draw_breadcrumb(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
     f.render_widget(
-        Paragraph::new(tab_line).alignment(Alignment::Center).style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Paragraph::new(view.breadcrumb.as_str())
+            .alignment(Alignment::Center)
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
         area,
     );
 }
@@ -799,7 +745,7 @@ fn draw_palette(
 }
 
 /// The full keyboard-shortcut map, opened with `?` from Browsing. Covers the
-/// tab/control area but leaves the activity and footer rows showing beneath
+/// breadcrumb/control area but leaves the activity and footer rows showing beneath
 /// it, same as the palette leaving its own exits visible.
 /// One key-combo and what it does, rendered as a colour-matched pair so the
 /// keys scan as a column even though rows hold a variable number of pairs.
@@ -879,12 +825,12 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             &[
                 ("jk / \u{2191}\u{2193}", "select"),
                 ("hl / \u{2190}\u{2192}", "adjust"),
-                ("Tab / \u{21e7}Tab", "page"),
+                ("Tab / \u{21e7}Tab", "next/prev layer"),
             ],
             &[
                 ("r", "random"),
                 ("\u{21e7}R", "randomize set"),
-                ("\u{21b5}", "open/confirm"),
+                ("\u{21b5}", "enter/confirm"),
                 ("x", "remove"),
             ],
             &[
@@ -940,7 +886,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
     lines.push(key_row(&[
         ("^S", "save"),
         ("^Q", "quit"),
-        ("Esc", "back/cancel"),
+        ("Esc", "back to Master"),
         ("?", "this screen"),
     ]));
     f.render_widget(Paragraph::new(lines), inner_block);
