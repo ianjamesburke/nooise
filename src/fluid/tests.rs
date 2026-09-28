@@ -788,7 +788,6 @@ fn no_argument_start_hides_pad_rhythm_rows_without_showing_midi() {
         .collect();
     for hidden in [
         "pad.trigger",
-        "pad.swing",
         "pad.gate_beats",
         "pad.midi_in",
         "pad.midi_out",
@@ -829,7 +828,7 @@ fn duplex_midi_start_selects_pad_out_and_zero_level_even_for_an_authored_song() 
         .collect();
     assert!(ids.contains(&"pad.midi_out"));
     assert!(!ids.contains(&"pad.midi_in"));
-    for hidden in ["pad.trigger", "pad.swing", "pad.gate_beats"] {
+    for hidden in ["pad.trigger", "pad.gate_beats"] {
         assert!(!ids.contains(&hidden), "{hidden} should stay tucked away");
     }
 }
@@ -3055,6 +3054,7 @@ fn a_slots_amount_drives_the_voice_it_belongs_to() {
     controls.modules.tonal[1] = preset_slot("swing", 0.4);
     controls.modules.clap[1] = preset_slot("swing", 0.4);
     controls.modules.arp[1] = preset_slot("swing", 0.4);
+    controls.modules.pad[1] = preset_slot("swing", 0.4);
     resolve_module_chain(&mut controls);
 
     assert_close(controls.kick.swing, 0.4);
@@ -3063,6 +3063,7 @@ fn a_slots_amount_drives_the_voice_it_belongs_to() {
     assert_close(controls.tonal.swing, 0.4);
     assert_close(controls.clap.swing, 0.4);
     assert_close(controls.arp.swing, 0.4);
+    assert_close(controls.pad.swing, 0.4);
 
     controls.modules.kick[1] = ModuleSlot::default();
     resolve_module_chain(&mut controls);
@@ -3102,6 +3103,7 @@ fn the_folded_slider_ids_are_gone_from_the_registry() {
         "perc.swing",
         "tonal.swing",
         "arp.swing",
+        "pad.swing",
         "bass.drive",
         "kick.drive",
         "clap.room",
@@ -3119,6 +3121,32 @@ fn the_folded_slider_ids_are_gone_from_the_registry() {
         "kick.filter",
     ] {
         assert!(spec_by_id(id).is_none(), "{id} should be retired");
+    }
+}
+
+/// NORTH_STAR commandment 5: a layer never carries a bespoke control for a
+/// capability the module catalog already provides on that layer.
+#[test]
+fn no_layer_duplicates_an_available_module_as_a_bespoke_control() {
+    for tab in Tab::all() {
+        for kind in super::module::MODULE_CATALOG {
+            if !super::module::module_available_on(*kind, tab) {
+                continue;
+            }
+            for spec in tab_specs(tab) {
+                let bespoke = spec
+                    .id
+                    .split_once('.')
+                    .is_some_and(|(_, name)| name == kind.id);
+                assert!(
+                    !bespoke,
+                    "{} duplicates the {} module on {}",
+                    spec.id,
+                    kind.id,
+                    tab.name()
+                );
+            }
+        }
     }
 }
 
@@ -4022,9 +4050,9 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     let controls = FluidControls::default();
     assert_eq!(chords_flat_index(ChordDrill::None, 4, &controls), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0, &controls), 34);
-    assert_eq!(chords_flat_index(progression_drill(), 2, &controls), 44);
-    assert_eq!(chords_flat_index(slot_drill(2), 0, &controls), 45);
+    assert_eq!(chords_flat_index(progression_drill(), 0, &controls), 33);
+    assert_eq!(chords_flat_index(progression_drill(), 2, &controls), 43);
+    assert_eq!(chords_flat_index(slot_drill(2), 0, &controls), 44);
 }
 
 #[test]
@@ -7595,7 +7623,6 @@ fn palette_finds_midi_switches_after_the_page_reordering() {
     for (tab, id) in [
         (Tab::Chords, "pad.midi_in"),
         (Tab::Chords, "pad.midi_out"),
-        (Tab::Chords, PAD_MIDI_TRIGGER_ID),
         (Tab::Arp, "arp.midi_in"),
         (Tab::Arp, "arp.midi_out"),
         (Tab::Lead, "lead.midi_in"),
@@ -7603,6 +7630,15 @@ fn palette_finds_midi_switches_after_the_page_reordering() {
     ] {
         assert_eq!(palette_top_hit(tab, &[], id), id);
     }
+}
+
+#[test]
+fn palette_never_offers_the_unsurfaced_midi_trigger() {
+    assert!(
+        palette_entries()
+            .iter()
+            .all(|entry| entry.id() != Some(PAD_MIDI_TRIGGER_ID))
+    );
 }
 
 #[test]

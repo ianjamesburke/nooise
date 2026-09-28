@@ -2257,7 +2257,6 @@ mod tests {
         assert_eq!(controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS & !(1 << 0));
         let rows = tab_controls(Tab::Chords, controls);
         assert!(rows.iter().any(|item| item.id == "pad.trigger"));
-        assert!(rows.iter().all(|item| item.id != "pad.swing"));
         assert!(rows.iter().all(|item| item.id != "pad.gate_beats"));
     }
 

@@ -615,7 +615,7 @@ pub(crate) fn tab_has_module_chain(_tab: super::Tab) -> bool {
 /// palette until they have DSP; an addable row must never be inert.
 pub(crate) fn module_available_on(kind: ModuleKind, tab: super::Tab) -> bool {
     match kind.id {
-        "swing" => !matches!(tab, super::Tab::Chords | super::Tab::Master),
+        "swing" => !matches!(tab, super::Tab::Master),
         "drive" | "room" | "delay" | "compression" | "filter" => tab_has_module_chain(tab),
         _ => false,
     }
@@ -646,6 +646,7 @@ pub(crate) fn chain_amount_slot(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) ->
 /// Post-synthesis effects execute directly through `ModuleFxBank` instead of
 /// being copied back into bespoke voice controls.
 pub(crate) fn resolve_module_chain(c: &mut super::FluidControls) {
+    c.pad.swing = chain_amount(&c.modules.pad, "swing");
     c.perc.swing = chain_amount(&c.modules.perc, "swing");
     c.kick.swing = chain_amount(&c.modules.kick, "swing");
     c.tonal.swing = chain_amount(&c.modules.tonal, "swing");
@@ -710,7 +711,8 @@ mod tests {
                     }
                     "swing" => matches!(
                         tab,
-                        super::super::Tab::Perc
+                        super::super::Tab::Chords
+                            | super::super::Tab::Perc
                             | super::super::Tab::Bass
                             | super::super::Tab::Kick
                             | super::super::Tab::Tonal

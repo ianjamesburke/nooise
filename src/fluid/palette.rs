@@ -173,12 +173,14 @@ impl PaletteEntry {
 /// Duplicated placements (e.g. `pad.level` on both Master and Chords) collapse
 /// to the owning tab. Module slot rows are excluded as controls — a module is
 /// reached through its `Module` entry, which knows how to find or create it.
+/// MIDI Trigger is excluded because no page surfaces it; it only decodes.
 pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
     let mut entries: Vec<PaletteEntry> = Vec::new();
     for tab in Tab::all() {
         for (index_in_tab, spec) in tab_specs(tab).iter().enumerate() {
             if tab_owning_control(spec.id) == Some(tab)
                 && parse_module_slot_id(spec.id).is_none()
+                && spec.id != super::PAD_MIDI_TRIGGER_ID
                 && !entries.iter().any(|e| e.id() == Some(spec.id))
             {
                 entries.push(PaletteEntry::Control {

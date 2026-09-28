@@ -91,22 +91,20 @@ on and visible, MIDI In off, and Level at 0%, including when loading a song. `--
 still opens the input port for tracks whose MIDI In switch you turn on. An
 input-only `--midi-in` launch starts Pad with MIDI In on and visible, MIDI Out off, and
 Level at 0%; raise Pad Level to hear your keyboard through its sound. The
-other tracks keep their saved MIDI switches. Pad Trigger, Swing, and Gate are
-hidden by default with or without MIDI. Find any of those rows with `/` to add it.
+other tracks keep their saved MIDI switches. Pad Trigger and Gate are
+hidden by default with or without MIDI. Find either row with `/` to add it.
 Set the receiving synth to follow USB MIDI clock if you want its own timed
 features to sync.
 
 Add `pad.trigger` with `/`, then change Trigger from Hold to Stabs for a 16-step chord rhythm.
 Enter on Trigger opens the Hit/Rest steps. Up/Down selects, Left/Right changes,
-and Esc returns to the Pads page. Each step is a sixteenth note. Swing delays the
-offbeat steps. Stabs use the current progression and send the same chord hits
-to audio and MIDI. Gate sets how many beats each hit stays held, from 0.125 to
+and Esc returns to the Pads page. Each step is a sixteenth note. Add the Swing
+module to Pads with `/` to delay the offbeat steps. Stabs follow the Pad's Attack
+and Release, use the current progression, and send the same chord hits to audio
+and MIDI. Gate sets how many beats each hit stays held, from 0.125 to
 2, with a 0.5-beat default. The next hit retriggers the chord even if Gate has
 not elapsed. MIDI Note Off starts the external synth's own release envelope;
-nooise does not change its ADSR. Hold restores the normal sustained Pad. Inside
-Trigger, turn MIDI Trigger On to stop the step hits and fire the current chord
-from incoming MIDI Note On messages. The step rows dim while MIDI Trigger is
-On; Gate still sets the chord's hold time.
+nooise does not change its ADSR. Hold restores the normal sustained Pad.
 
 Other MIDI switches stay hidden from the Pads, Arp, and Lead pages until you
 add one with `/`: find `pad.midi_in`, `arp.midi_out`, or another track's switch

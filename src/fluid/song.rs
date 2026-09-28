@@ -49,6 +49,9 @@ const RANGE_EPOCH_RECORD: u8 = 5;
 const MIDI_ROWS_RECORD: u8 = 6;
 /// Pad rhythm rows hidden during MIDI startup and restored with a song.
 const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
+/// Visibility bit of the retired `pad.swing` row. Visibility is not audible
+/// state; the swing value itself is refused as `RetiredControl`.
+const RETIRED_PAD_SWING_ROW: u8 = 1 << 1;
 const CAPTURE_RECORD: u8 = 8;
 const LANE_BYPASS_RECORD: u8 = 9;
 /// The playback period is semantic song state: refuse the sixteen-bar format
@@ -393,10 +396,10 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 pad_rhythm_rows_record_seen = true;
                 let mut rows = Reader::new(payload);
                 let bits = rows.u8()?;
-                if !rows.is_empty() || bits & !PAD_RHYTHM_ROWS != 0 {
+                if !rows.is_empty() || bits & !(PAD_RHYTHM_ROWS | RETIRED_PAD_SWING_ROW) != 0 {
                     return Err(SongCodeError::InvalidPadRhythmRows(bits));
                 }
-                song.controls.hidden_pad_rhythm_rows = bits;
+                song.controls.hidden_pad_rhythm_rows = bits & PAD_RHYTHM_ROWS;
             }
             GESTURE_RECORD => {
                 if gesture_record_seen {
@@ -1417,6 +1420,21 @@ mod pad_rhythm_rows_record_tests {
             Some(SongCodeError::InvalidPadRhythmRows(0b0000_1000))
         );
     }
+
+    #[test]
+    fn drops_the_retired_swing_row_bit() {
+        let code = code_from_records(
+            CONTAINER_VERSION,
+            &[(PAD_RHYTHM_ROWS_RECORD, &[0b0000_0110])],
+        );
+        assert_eq!(
+            decode_song_code(&code)
+                .unwrap()
+                .controls
+                .hidden_pad_rhythm_rows,
+            0b0000_0100
+        );
+    }
 }
 
 /// The snapshot record payload `encode_song_code` writes for `controls`.
@@ -1804,6 +1822,14 @@ mod retired_control_tests {
     }
 
     #[test]
+    fn a_code_setting_the_retired_pad_swing_is_refused() {
+        assert_eq!(
+            decode_song_code(&code_setting("pad.swing")).err(),
+            Some(SongCodeError::RetiredControl("pad.swing"))
+        );
+    }
+
+    #[test]
     fn a_code_setting_a_retired_filter_control_is_refused() {
         assert_eq!(
             decode_song_code(&code_setting("bass.cutoff")).err(),
@@ -1950,13 +1976,13 @@ mod song_value_tests {
     fn pad_stab_pattern_round_trips() {
         let mut song = SongState::default();
         song.controls.pad.trigger = 1.0;
-        song.controls.pad.swing = 0.5;
+        song.controls.modules.pad[1] = super::super::module::preset_slot("swing", 0.5);
         song.controls.pad.gate_beats = 1.0;
         song.controls.pad.steps[1] = 1.0;
         song.controls.pad.steps[4] = 0.0;
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
         assert_eq!(decoded.controls.pad.trigger, 1.0);
-        assert!((decoded.controls.pad.swing - 0.5).abs() < 0.001);
+        assert!((decoded.controls.modules.pad[1].amount - 0.5).abs() < 0.001);
         assert_eq!(decoded.controls.pad.gate_beats, 1.0);
         assert_eq!(decoded.controls.pad.steps, song.controls.pad.steps);
     }

@@ -78,7 +78,7 @@ pub(crate) const DEFAULT_CHORD_SLOT_DEGREES: [f32; 8] = [0.0, -1.0, 0.0, 1.0, 0.
 /// Number of custom chord slots (`PadControls::chord_slots`), and the max of
 /// `pad.chord_count`. Matches the built-ins' fixed 8-chord length.
 pub(crate) const CHORD_SLOT_COUNT: usize = 8;
-pub(crate) const PAD_RHYTHM_ROWS: u8 = 0b0000_0111;
+pub(crate) const PAD_RHYTHM_ROWS: u8 = 0b0000_0101;
 
 #[derive(Clone)]
 pub(crate) struct PadControls {
@@ -396,7 +396,7 @@ pub(crate) struct FluidControls {
     /// Which optional MIDI rows have been added through the control palette.
     /// Bits are assigned by `midi_row_bit` and saved separately from values.
     pub(crate) midi_rows: u8,
-    /// Pad Trigger, Swing, and Gate rows hidden until selected through `/`.
+    /// Pad Trigger and Gate rows hidden until selected through `/`.
     pub(crate) hidden_pad_rhythm_rows: u8,
     /// Per-layer module chains, including the factory presets defined by
     /// `LayerModules::default`.

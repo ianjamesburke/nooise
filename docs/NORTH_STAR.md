@@ -6,13 +6,15 @@
 
 ## Feature-evaluation commandments
 
-Before adding any control or feature, weigh it against all three:
+Before adding any control or feature, weigh it against every commandment below:
 
 1. **Is this the most ergonomic way to reach the intended musical result?** If a simpler gesture gets the same result, use the simpler gesture.
 2. **Is it a mechanical problem?** Controls exist to solve mechanical/expressive problems (timing, pitch, texture), not to compensate for something that's off.
 3. **Could it be fixed upstream instead?** If a control exists only to correct an imbalance between layers, the fix is better mixing/default balance in the engine, not a knob that hands the user a mixing job.
 
 4. **Does it change what a song code carries?** A code saves the state a person chose, and nothing else. It never saves audio — no delay lines, no reverb tails, no analysis buffers, no envelope followers. If it rebuilds itself from a second of playback, it is not state, it is sound, and sound is not saved. A code has to stay short enough to paste into a message; the day one Delay slot pushed a code past a million characters, the code stopped being shareable and the feature stopped existing.
+
+5. **Does another layer already have it as a module?** A capability shared across layers (Swing, Drive, Filter, Room, Delay, Compression) is one module in the catalog, added through `/` the same way on every layer it fits. Never give one layer a private control for it: the palette then shows one layer's version as a plain row next to everyone else's module, and it reads as a bug. A layer the module does not fit is excluded in `module_available_on` for a sound reason, not a UI one. Pads' private Swing row was retired onto the module for exactly this; `no_layer_duplicates_an_available_module_as_a_bespoke_control` enforces it.
 
 **Retirement, not migration.** When a control goes away, its saved values go away with it. Codes that carry a retired control are refused with a message naming it (`SongCodeError::RetiredControl`), never loaded with the value silently dropped to a default. Built-in songs are re-authored through the current encoder instead; nooise carries no translation layer between old and new control names.
 

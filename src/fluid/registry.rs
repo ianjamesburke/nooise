@@ -1214,7 +1214,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-const CHORD_BASE_CONTROL_COUNT: usize = 34;
+const CHORD_BASE_CONTROL_COUNT: usize = 33;
 
 pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
 pub(crate) const PAD_MIDI_TRIGGER_ID: &str = "pad.midi_trigger";
@@ -1388,7 +1388,6 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c, v| c.pad.trigger = v,
         |c| if c.pad.trigger >= 0.5 { "Stabs" } else { "Hold" }.to_string(),
     ),
-    gain_pct!("pad.swing", "Swing", pad.swing),
     beat_interval!("pad.gate_beats", "Gate", 0.125, 2.0, pad.gate_beats),
     gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
     gain_pct!("pad.detune", "Detune", pad.detune),
@@ -2035,7 +2034,6 @@ pub(crate) fn midi_row_bit(id: &str) -> Option<u8> {
 pub(crate) fn pad_rhythm_row_bit(id: &str) -> Option<u8> {
     match id {
         "pad.trigger" => Some(1 << 0),
-        "pad.swing" => Some(1 << 1),
         "pad.gate_beats" => Some(1 << 2),
         _ => None,
     }
@@ -2398,7 +2396,7 @@ pub(crate) fn module_slot_row<'a>(
 /// table order, so a slot outside the playing window can be written before
 /// Offset or Count reaches it), or one chord slot's
 /// Accidental/Quality/Extension/Inversion. Read-only view over
-/// `CHORDS_CONTROLS`'s fixed layout (17 root rows, then 16 Pad step rows
+/// `CHORDS_CONTROLS`'s fixed layout (16 root rows, then 16 Pad step rows
 /// and MIDI Trigger, then 8 chord slots x 5
 /// rows, then 8 module slots x 8 rows) — never reorders the underlying
 /// array. The Trigger drill shows only the 16 Pad steps; MIDI Trigger stays
