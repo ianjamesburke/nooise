@@ -3623,7 +3623,7 @@ fn jump_to_filter_reaches_a_loaded_one_and_adds_an_inert_one_otherwise() {
 }
 
 /// The hub is the way into every layer: Enter opens the highlighted one,
-/// Tab moves between siblings without surfacing, and Esc comes back up onto
+/// Tab moves to the next sibling in place, and Esc comes back up onto
 /// the row of whichever layer it left, which resumes where it was.
 #[test]
 fn enter_tab_and_esc_move_between_the_hub_and_its_layers() {

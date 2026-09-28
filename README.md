@@ -37,7 +37,8 @@ nooise
 
 nooise opens on Master, the hub: one row per layer with its level, then
 Master's own controls. Use arrows to browse and adjust, Enter to go into a
-layer, and Esc to come back out. Inside a layer, Tab moves to the next one.
+layer, and Esc to come back out. Tab steps through the layers and back to
+the hub.
 Press `Ctrl+Q` to quit.
 
 While browsing, hold `z` for a reverb Bloom, `c` to Submerge the sound,

@@ -55,21 +55,15 @@ pub(crate) enum Page {
 }
 
 impl Page {
-    /// The sibling layer after this one. Tab cycles the layers and never
-    /// lands on the hub; from the hub it enters the first layer.
+    /// The page after this one. Tab cycles every layer and then the hub, in
+    /// the hub's old tab-strip place, so arrows and Tab alone reach every
+    /// page (the North Star floor) without Esc.
     fn next(self) -> Self {
-        match self {
-            Self::Master => LAYERS[0].page,
-            layer => LAYERS[(layer as usize + 1) % LAYER_COUNT].page,
-        }
+        LAYERS[(self as usize + 1) % LAYERS.len()].page
     }
 
-    /// The sibling layer before this one; from the hub, the last layer.
     fn previous(self) -> Self {
-        match self {
-            Self::Master => LAYERS[LAYER_COUNT - 1].page,
-            layer => LAYERS[(layer as usize + LAYER_COUNT - 1) % LAYER_COUNT].page,
-        }
+        LAYERS[(self as usize + LAYERS.len() - 1) % LAYERS.len()].page
     }
 }
 
@@ -907,7 +901,7 @@ pub(crate) enum PageDirection {
 }
 
 impl PageDirection {
-    /// The sibling layer Tab or Shift+Tab opens from `navigation`.
+    /// The page Tab or Shift+Tab opens from `navigation`.
     fn from(self, navigation: Navigation) -> Page {
         match self {
             Self::Next => navigation.page().next(),
@@ -2443,16 +2437,17 @@ mod tests {
         );
     }
 
+    /// The hub sits in the Tab cycle after Lead, so a player who knows only
+    /// arrows and Tab can always get back to Master's own rows.
     #[test]
-    fn tab_cycles_sibling_layers_and_never_lands_on_the_hub() {
+    fn tab_cycles_every_layer_then_the_hub() {
         let hub = InteractionModel::default();
-        let first = update(hub.clone(), Intent::ChangePage(PageDirection::Next)).model;
-        assert_eq!(first.navigation.page(), Page::Chords);
-        let last = update(hub, Intent::ChangePage(PageDirection::Previous)).model;
+        let last = update(hub.clone(), Intent::ChangePage(PageDirection::Previous)).model;
         assert_eq!(last.navigation.page(), Page::Lead);
 
-        let mut model = first;
+        let mut model = hub;
         for page in [
+            Page::Chords,
             Page::Perc,
             Page::Bass,
             Page::Kick,
@@ -2460,17 +2455,15 @@ mod tests {
             Page::Clap,
             Page::Arp,
             Page::Lead,
-            Page::Chords,
         ] {
             model = update(model, Intent::ChangePage(PageDirection::Next)).model;
             assert_eq!(model.navigation.page(), page);
         }
         assert_eq!(
-            update(model, Intent::ChangePage(PageDirection::Previous))
+            update(model, Intent::ChangePage(PageDirection::Next))
                 .model
-                .navigation
-                .page(),
-            Page::Lead
+                .navigation,
+            Navigation::Hub { selected: 0 }
         );
     }
 

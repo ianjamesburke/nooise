@@ -39,8 +39,8 @@
   complete until a corresponding frame has been drawn.
 - **Hub:** the Master page, where the app opens. Its first rows are the
   layers, each showing its level and opening that layer on Enter; Master's
-  own controls follow. Tab moves between layers without visiting it, and
-  Esc from a layer's root returns to it on that layer's row.
+  own controls follow. Tab reaches it after Lead, and Esc from a layer's
+  root returns to it on that layer's row.
 - **Layer:** one voice's page (Pads, Perc, Bass, Kick, Tonal, Clap, Arp,
   Lead), entered from the hub. It remembers its row for the session.
 - **Breadcrumb:** the line naming the path from the hub to the open page,

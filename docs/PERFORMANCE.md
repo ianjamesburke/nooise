@@ -8,9 +8,13 @@ every row that opens a deeper page carries and showing that layer's level.
 Master's own rows follow. On a layer row, `h`/`l` adjust its level, `m`
 mutes that layer, and Enter goes into it; Shift+M mutes Master from any row.
 
-Inside a layer, Tab and Shift+Tab move straight to the next or previous
-layer, wrapping, without passing through the hub. On the hub they enter the
-first or last layer. Esc backs out one level at a time: the innermost drill
+Tab and Shift+Tab step through every layer and then the hub, in Master's
+old last place: Pads … Lead, hub, then Pads again. From the hub, Tab enters
+Pads and Shift+Tab enters Lead. The hub stays in the cycle because of the
+arrow-and-Tab floor (`docs/NORTH_STAR.md`, ADR 0001 invariant 9): a player
+who knows only arrows and Tab must still reach every page, and with Esc as
+the only way up, Master's own rows (BPM, Tone, Drive) would be lost to them
+after leaving the hub. Esc backs out one level at a time: the innermost drill
 first, then from the layer's root to the hub with the cursor on that
 layer's row. A held gesture is released by the first Esc instead, as
 below. Each layer remembers the row it was left on for the session, however
@@ -181,7 +185,8 @@ Lead play retains its own `i` entry and existing bindings.
 9. Launch: the hub shows `Master` above one `›` row per layer. Press `m` on
    Kick: its row and nothing else reads `(M)`. Enter Bass, move down two
    rows, Tab to Kick and Esc: the cursor is on the hub's Kick row. Enter
-   Bass again: the cursor is back where it was left.
+   Bass again: the cursor is back where it was left. Shift+Tab to Lead, then
+   Tab: the hub is back, with BPM reachable by arrows.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the
