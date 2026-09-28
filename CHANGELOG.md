@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [2.5.5] — 2026-09-28
+
+### Fixed
+- fix: step the Swing dial one readout point per press
+- fix: pad stabs follow attack/release and swing through the Swing module
+- fix: retire MIDI Trigger from Pad Trigger drill, share Stabs envelope with Hold
 ## [2.5.4] — 2026-09-27
 
 ### Added
