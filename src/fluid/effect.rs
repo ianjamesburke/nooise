@@ -719,6 +719,7 @@ impl EffectExecutor {
 
     /// A Link peer pressed Play or Stop. Play always restarts, so nooise's
     /// beat zero lands on the peer's start even when it was already playing.
+    #[cfg(feature = "link")]
     pub(crate) fn follow_peer_transport(&mut self, transport: Transport) {
         match transport {
             Transport::Playing => self.start_transport(),
@@ -732,6 +733,7 @@ impl EffectExecutor {
     /// A Link peer changed the session tempo. It lands on the Master tempo
     /// dial like any control value, so the dial and a song save match what
     /// plays; it is not a user edit, so a running auto morph keeps going.
+    #[cfg(feature = "link")]
     pub(crate) fn follow_peer_tempo(&mut self, link_bpm: f64) {
         let bpm = dial_bpm(link_bpm);
         if self.session.load().controls.master.bpm != bpm {

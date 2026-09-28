@@ -112,7 +112,7 @@ All feature work lands in a worktree, never in the root checkout. The root check
 
 ## Verification
 
-- `cargo build` and `cargo test` from repo root before committing engine changes.
+- `cargo build` and `cargo test` from repo root before committing engine changes; `just test` and `just check` also cover the `link` feature build (needs CMake).
 - `python3 -m unittest scripts.test_add_morph` after changing the auto-state authoring workflow.
 - Hard rule: `cargo fmt` (no diff from `cargo fmt --check`) and `cargo clippy --all-targets` with zero warnings before every commit. Fix warnings at the source; `#[allow]` only with a one-line justification comment.
 

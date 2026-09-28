@@ -47,6 +47,7 @@ mod effect;
 mod engine;
 mod gesture;
 mod interaction;
+#[cfg(feature = "link")]
 mod link;
 mod mix_action;
 mod module;
@@ -89,6 +90,7 @@ use effect::*;
 use engine::*;
 pub(crate) use engine::{TimingContext, Transport};
 use gesture::*;
+#[cfg(feature = "link")]
 use link::*;
 use module::*;
 use palette::*;
@@ -301,6 +303,7 @@ pub(crate) struct LiveConnections<'a> {
     pub(crate) midi: MidiConfig<'a>,
     /// Join the local-network Ableton Link session for shared tempo, phase,
     /// and start/stop.
+    #[cfg(feature = "link")]
     pub(crate) link: bool,
 }
 
@@ -422,7 +425,12 @@ fn run_interactive(
     auto_bars: u32,
     connections: LiveConnections<'_>,
 ) -> Result<(), Box<dyn Error>> {
-    let LiveConnections { osc, midi, link } = connections;
+    let LiveConnections {
+        osc,
+        midi,
+        #[cfg(feature = "link")]
+        link,
+    } = connections;
     apply_midi_start(&mut initial_song, midi);
     apply_midi_start_to_states(&mut auto_states, midi);
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
@@ -440,7 +448,9 @@ fn run_interactive(
     let midi_for_input = _midi_input.as_ref().map(MidiInputManager::source);
     let _midi_output = midi.output.map(MidiOutputManager::open).transpose()?;
     let midi_for_engine = _midi_output.as_ref().map(MidiOutputManager::sink);
+    #[cfg(feature = "link")]
     let link = link.then(|| Arc::new(LinkSession::join(initial_song.controls.master.bpm)));
+    #[cfg(feature = "link")]
     let link_for_engine = link.clone();
 
     let _audio_output = audio::start_stream(APP_ID, move |sr| {
@@ -455,6 +465,7 @@ fn run_interactive(
             Some(sink) => engine.with_midi(sink.clone()),
             None => engine,
         };
+        #[cfg(feature = "link")]
         let engine = match &link_for_engine {
             Some(link) => engine.with_link(link.clock(sr)),
             None => engine,
@@ -474,6 +485,7 @@ fn run_interactive(
         telemetry,
         updates,
         AutoControls::new(morph, auto_states, auto_bars),
+        #[cfg(feature = "link")]
         link.as_deref().map(LinkSession::follower),
     );
 

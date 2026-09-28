@@ -25,9 +25,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     {
         return Err("MIDI and Link flags only apply to live playback".into());
     }
+    if cli.link && !cfg!(feature = "link") {
+        return Err(format!(
+            "--link needs Ableton Link support, which this build left out; \
+             reinstall with `{}` (needs CMake and libclang)",
+            LINK_INSTALL
+        )
+        .into());
+    }
     let connections = fluid::LiveConnections {
         osc: cli.osc,
         midi: cli.midi_config(),
+        #[cfg(feature = "link")]
         link: cli.link,
     };
     let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
@@ -88,7 +97,8 @@ struct Cli {
     #[arg(long, global = true, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=16))]
     midi_out_channel: u8,
     /// Join the Ableton Link session on the local network: shared tempo,
-    /// bar phase, and start/stop with Live and other Link apps.
+    /// bar phase, and start/stop with Live and other Link apps. Needs a
+    /// build with `--features link`.
     #[arg(long, global = true)]
     link: bool,
 }
@@ -190,15 +200,23 @@ fn update_nooise() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn cargo_install_args(version: &str) -> [&str; 6] {
-    [
+const LINK_INSTALL: &str = "cargo install nooise --locked --features link";
+
+/// An update keeps the features this build has, so `nooise update` never
+/// drops Link from a Link build.
+fn cargo_install_args(version: &str) -> Vec<&str> {
+    let mut args = vec![
         "install",
         "nooise",
         "--locked",
         "--version",
         version,
         "--force",
-    ]
+    ];
+    if cfg!(feature = "link") {
+        args.extend(["--features", "link"]);
+    }
+    args
 }
 
 #[cfg(test)]
@@ -359,18 +377,19 @@ mod tests {
     }
 
     #[test]
-    fn updater_installs_exact_latest_version() {
-        assert_eq!(
-            cargo_install_args("1.2.3"),
-            [
-                "install",
-                "nooise",
-                "--locked",
-                "--version",
-                "1.2.3",
-                "--force"
-            ]
-        );
+    fn updater_installs_exact_latest_version_with_this_builds_features() {
+        let mut expected = vec![
+            "install",
+            "nooise",
+            "--locked",
+            "--version",
+            "1.2.3",
+            "--force",
+        ];
+        if cfg!(feature = "link") {
+            expected.extend(["--features", "link"]);
+        }
+        assert_eq!(cargo_install_args("1.2.3"), expected);
     }
 
     #[test]

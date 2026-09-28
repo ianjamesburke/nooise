@@ -29,10 +29,18 @@ Open a new terminal after rustup finishes, then install nooise:
 cargo install nooise --locked
 ```
 
-Ableton Link support compiles Ableton's C++ library, so installing also needs
+For Ableton Link sync (`--link`), install with the `link` feature instead:
+
+```sh
+cargo install nooise --locked --features link
+```
+
+This compiles Ableton's C++ Link library, so it also needs
 [CMake](https://cmake.org) 3.14 or newer (`brew install cmake` on macOS) and a
 C++ compiler with libclang (Xcode Command Line Tools on macOS,
-`build-essential` and `libclang-dev` on Debian/Ubuntu).
+`build-essential` and `libclang-dev` on Debian/Ubuntu). Link is licensed
+GPL-2.0-or-later, so a nooise built with it is a GPL-2.0-or-later program;
+the default build is MIT. `nooise update` keeps whichever build you have.
 
 ## Start
 
@@ -81,8 +89,9 @@ vocabulary.
 nooise --link
 ```
 
-Joins the Ableton Link session on your local network, so nooise shares tempo,
-bar phase, and start/stop with Live and any other Link app. Turning Master
+Needs the `link` build (see Install). Joins the Ableton Link session on your
+local network, so nooise shares tempo, bar phase, and start/stop with Live and
+any other Link app. Turning Master
 Tempo proposes a new tempo to everyone, and a tempo change from another app
 moves the dial. `Shift+P` starts and stops every app with start/stop sync on;
 a start waits for the next shared bar. Launching nooise never starts anyone

@@ -381,7 +381,7 @@ pub(crate) fn production_ui_loop(
     telemetry: Arc<FluidTelemetry>,
     updates: UpdateNotice,
     auto: AutoControls,
-    link: Option<LinkFollower>,
+    #[cfg(feature = "link")] link: Option<LinkFollower>,
 ) -> Result<(), Box<dyn Error>> {
     let mut model = interaction::InteractionModel::default();
     let mut effects = EffectExecutor::new(session.live, auto);
@@ -431,6 +431,7 @@ pub(crate) fn production_ui_loop(
         }
 
         if tick_due {
+            #[cfg(feature = "link")]
             if let Some(link) = &link {
                 link.follow_peers(&mut effects);
             }

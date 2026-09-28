@@ -646,6 +646,7 @@ impl FluidEngine {
         self
     }
 
+    #[cfg(feature = "link")]
     pub(crate) fn with_link(mut self, clock: LinkClock) -> Self {
         self.tempo.link = Some(clock);
         self
@@ -723,6 +724,7 @@ impl FluidEngine {
 }
 
 impl StereoEngine for FluidEngine {
+    #[cfg(feature = "link")]
     fn begin_buffer(&mut self, output_latency: std::time::Duration) {
         if let Some(link) = &mut self.tempo.link {
             link.begin_buffer(
@@ -1170,6 +1172,7 @@ pub(crate) struct TempoClock {
     pub(crate) smoothing_coeff: f64,
     /// `Some` under `--link`: beat and tempo come from the shared timeline
     /// instead of accumulating locally.
+    #[cfg(feature = "link")]
     pub(crate) link: Option<LinkClock>,
 }
 
@@ -1182,12 +1185,14 @@ impl TempoClock {
             bpm: f64::from(bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX)),
             sample_rate,
             smoothing_coeff: 1.0 - (-1.0 / smoothing_samples).exp(),
+            #[cfg(feature = "link")]
             link: None,
         }
     }
 
     pub(crate) fn restart(&mut self) {
         self.beat = 0.0;
+        #[cfg(feature = "link")]
         if let Some(link) = &mut self.link {
             link.restart();
         }
@@ -1197,6 +1202,7 @@ impl TempoClock {
     /// positions, the auto morph, grid phases) waits where it was and
     /// resumes from there. Tempo still glides toward its target.
     pub(crate) fn tick(&mut self, target_bpm: f32, transport: Transport) -> TimingContext {
+        #[cfg(feature = "link")]
         if let Some(link) = &mut self.link {
             let sample = link.next_sample();
             return self.follow_link(sample, transport);
@@ -1216,6 +1222,7 @@ impl TempoClock {
 
     /// A stopped transport holds its beat exactly as the free clock does; a
     /// launch waiting for its downbeat reads as stopped at beat zero.
+    #[cfg(feature = "link")]
     fn follow_link(&mut self, sample: LinkSample, transport: Transport) -> TimingContext {
         self.bpm = sample.bpm;
         let transport = match (transport, sample.beat) {

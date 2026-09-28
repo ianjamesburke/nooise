@@ -5,11 +5,13 @@ fluid:
 # Run all tests
 test:
     cargo test
+    cargo test --features link
     python3 -m unittest scripts.test_add_morph
 
 # Lint all targets
 check:
     cargo clippy --all-targets
+    cargo clippy --all-targets --features link
 
 # Render a reproducible wav without audio hardware
 render out="nooise.wav" seed="7":
