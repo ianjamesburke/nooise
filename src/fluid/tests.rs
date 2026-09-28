@@ -2281,6 +2281,8 @@ fn pad_stab_audio_dies_between_hits() {
     let controls = PadControls {
         trigger: 1.0,
         gate_beats: 0.125,
+        attack_time: 0.01,
+        release_time: 0.08,
         steps: [
             1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         ],
@@ -2316,6 +2318,8 @@ fn pad_gate_length_changes_the_audible_stab() {
         let controls = PadControls {
             trigger: 1.0,
             gate_beats,
+            attack_time: 0.01,
+            release_time: 0.08,
             steps: [
                 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
@@ -3962,20 +3966,9 @@ fn pad_trigger_row_opens_sixteen_editable_steps() {
             return_to: trigger_row,
         },
     );
-    assert_eq!(pattern.len(), 17);
-    assert_eq!(pattern[0].id, PAD_MIDI_TRIGGER_ID);
-    assert_eq!(pattern[1].id, "pad.step1");
-    assert_eq!(pattern[16].id, "pad.step16");
-    let midi_flat = spec_index(Tab::Chords, PAD_MIDI_TRIGGER_ID).unwrap();
-    assert_eq!(
-        chords_drill_for_index(midi_flat, &controls),
-        (
-            ChordDrill::Pattern {
-                return_to: trigger_row
-            },
-            0
-        )
-    );
+    assert_eq!(pattern.len(), 16);
+    assert_eq!(pattern[0].id, "pad.step1");
+    assert_eq!(pattern[15].id, "pad.step16");
     let flat = CHORDS_CONTROLS
         .iter()
         .position(|spec| spec.id == "pad.step16")
@@ -3986,7 +3979,7 @@ fn pad_trigger_row_opens_sixteen_editable_steps() {
             ChordDrill::Pattern {
                 return_to: trigger_row
             },
-            16
+            15
         )
     );
 }
@@ -4080,7 +4073,6 @@ fn midi_trigger_renders_step_lane_dimmed() {
         active_chord: 0,
         mute: &[false; TAB_COUNT],
     });
-    assert!(buffer_text(&buffer).contains("MIDI Trigger"));
     let width = usize::from(buffer.area.width);
     let (row_index, column) = buffer
         .content
@@ -7642,7 +7634,16 @@ fn chords_drill_for_index_inverts_chords_flat_index() {
         hidden_pad_rhythm_rows: 0,
         ..FluidControls::default()
     };
-    for flat in 0..(10 + CHORD_SLOT_COUNT * 5) {
+    for (flat, spec) in CHORDS_CONTROLS
+        .iter()
+        .enumerate()
+        .take(10 + CHORD_SLOT_COUNT * 5)
+    {
+        // MIDI Trigger's slot is kept only for song-code compatibility and is
+        // no longer surfaced by any drill, so it has no inverse to check.
+        if spec.id == PAD_MIDI_TRIGGER_ID {
+            continue;
+        }
         let (drill, row) = chords_drill_for_index(flat, &controls);
         assert_eq!(chords_flat_index(drill, row, &controls), flat);
     }

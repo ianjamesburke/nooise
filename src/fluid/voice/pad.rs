@@ -230,8 +230,8 @@ impl PadEngine {
             self.active_note_count,
             tune,
             self.sample_rate,
-            0.01,
-            0.08,
+            c.attack_time,
+            c.release_time,
         ));
         if timing.transport == Transport::Stopped {
             let samples = (f64::from(c.gate_beats) * 60.0 / timing.bpm

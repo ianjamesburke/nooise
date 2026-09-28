@@ -2401,7 +2401,8 @@ pub(crate) fn module_slot_row<'a>(
 /// `CHORDS_CONTROLS`'s fixed layout (17 root rows, then 16 Pad step rows
 /// and MIDI Trigger, then 8 chord slots x 5
 /// rows, then 8 module slots x 8 rows) — never reorders the underlying
-/// array. The Trigger drill shows MIDI Trigger first, then Pad steps.
+/// array. The Trigger drill shows only the 16 Pad steps; MIDI Trigger stays
+/// in the table for song-code compatibility but is not surfaced anywhere.
 /// `chords_drill_for_index` below is this projection's inverse and
 /// must stay consistent with it for every region.
 pub(crate) fn chords_tab_controls(
@@ -2425,12 +2426,7 @@ pub(crate) fn chords_tab_controls(
         ),
         interaction::ChordDrill::Pattern { .. } => CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
             .iter()
-            .filter(|spec| spec.id == PAD_MIDI_TRIGGER_ID)
-            .chain(
-                CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
-                    .iter()
-                    .filter(|spec| pad_step_index(spec.id).is_some()),
-            )
+            .filter(|spec| pad_step_index(spec.id).is_some())
             .map(|spec| spec.item(c))
             .collect(),
         interaction::ChordDrill::Progression { .. } => (0..CHORD_SLOT_COUNT)
@@ -2479,10 +2475,7 @@ pub(crate) fn chords_drill_for_index(
     let Some(spec) = CHORDS_CONTROLS.get(flat) else {
         return (interaction::ChordDrill::None, 0);
     };
-    if let Some(step) = pad_step_index(spec.id)
-        .map(|step| step + 1)
-        .or((spec.id == PAD_MIDI_TRIGGER_ID).then_some(0))
-    {
+    if let Some(step) = pad_step_index(spec.id) {
         let return_to = chords_tab_controls(c, interaction::ChordDrill::None)
             .iter()
             .position(|item| item.id == PAD_TRIGGER_ID)
