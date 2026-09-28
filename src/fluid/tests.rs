@@ -3070,6 +3070,19 @@ fn a_slots_amount_drives_the_voice_it_belongs_to() {
     assert_close(controls.kick.swing, 0.0);
 }
 
+/// Swing reads 50-75%, so each press must move that readout by one point
+/// rather than a fraction of one that rounds away.
+#[test]
+fn every_swing_press_moves_its_readout_one_point() {
+    let mut controls = FluidControls::default();
+    controls.modules.pad[1] = preset_slot("swing", 0.0);
+    let spec = crate::fluid::registry::spec_by_id("pad.slot2.amount").unwrap();
+    for point in 51..=75 {
+        spec.apply_delta(1.0, &mut controls);
+        assert_eq!(spec.item(&controls).display, format!("{point}%"));
+    }
+}
+
 /// A loaded slot must read as the module it holds, not as its index.
 #[test]
 fn a_loaded_slot_row_is_labelled_with_its_module() {

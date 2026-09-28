@@ -409,6 +409,9 @@ impl ControlSpec {
             return *self;
         };
         let mut spec = *self;
+        if kind.id == "swing" && field == ModuleSlotField::Amount {
+            spec.step = Step::Linear(1.0 / SWING_DIAL_SPAN);
+        }
         match (kind.family, field) {
             (Family::Delay, ModuleSlotField::Time | ModuleSlotField::RightTime) => {
                 let clock = if field == ModuleSlotField::RightTime {
@@ -693,12 +696,16 @@ pub(crate) fn pct(v: f32) -> String {
 /// value is unchanged; only the readout and typed-entry scale differ from a
 /// plain `pct` row.
 pub(crate) fn swing_pct(v: f32) -> String {
-    format!("{:.0}%", 50.0 + v.clamp(0.0, 1.0) * 25.0)
+    format!("{:.0}%", 50.0 + v.clamp(0.0, 1.0) * SWING_DIAL_SPAN)
 }
+
+/// Readout points the Swing dial spans (50% to 75%). One press steps one
+/// readout point, so every h/l visibly moves the number.
+const SWING_DIAL_SPAN: f32 = 25.0;
 
 /// Inverse of `swing_pct`: a typed `50..=75` reading back to `0..1`.
 pub(crate) fn normalize_swing_input(value: f32) -> f32 {
-    ((value - 50.0) / 25.0).clamp(0.0, 1.0)
+    ((value - 50.0) / SWING_DIAL_SPAN).clamp(0.0, 1.0)
 }
 
 /// Whether a module-slot id's `.amount` field is showing the Swing module,
