@@ -412,6 +412,14 @@ impl ControlSpec {
         if kind.id == "swing" && field == ModuleSlotField::Amount {
             spec.step = Step::Linear(1.0 / SWING_DIAL_SPAN);
         }
+        if kind.id == "drunken" && field == ModuleSlotField::Amount {
+            spec.kind = ControlKind::Timing;
+            spec.min = 0.0;
+            spec.max = 1.0;
+            spec.step = Step::Linear(0.1);
+            spec.entry = Entry::Free;
+            spec.reset = 0.0;
+        }
         match (kind.family, field) {
             (Family::Delay, ModuleSlotField::Time | ModuleSlotField::RightTime) => {
                 let clock = if field == ModuleSlotField::RightTime {
@@ -595,6 +603,7 @@ impl ControlSpec {
         let spec = self.contextual(c);
         let next = match spec.entry {
             Entry::Percent if is_swing_amount_row(spec.id, c) => normalize_swing_input(value),
+            Entry::Free if is_drunken_amount_row(spec.id, c) => spec.quantize(value / 50.0),
             Entry::Percent if parse_module_slot_id(spec.id).is_some() => {
                 normalize_unit_input(value)
             }
@@ -715,6 +724,13 @@ fn is_swing_amount_row(id: &str, c: &FluidControls) -> bool {
     matches!(
         module_slot_row(id, c),
         Some((slot, ModuleSlotField::Amount)) if slot.kind().is_some_and(|kind| kind.id == "swing")
+    )
+}
+
+fn is_drunken_amount_row(id: &str, c: &FluidControls) -> bool {
+    matches!(
+        module_slot_row(id, c),
+        Some((slot, ModuleSlotField::Amount)) if slot.kind().is_some_and(|kind| kind.id == "drunken")
     )
 }
 
@@ -907,6 +923,15 @@ macro_rules! module_slot_rows {
                         .is_some_and(|kind| kind.id == "swing")
                     {
                         swing_pct(amount)
+                    } else if c.modules.$layer[$slot - 1]
+                        .kind()
+                        .is_some_and(|kind| kind.id == "drunken")
+                    {
+                        if amount <= 0.0 {
+                            "off".to_string()
+                        } else {
+                            format!("{:.0} ms", amount * 50.0)
+                        }
                     } else {
                         pct(amount)
                     }
