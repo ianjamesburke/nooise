@@ -1413,11 +1413,11 @@ mod pad_rhythm_rows_record_tests {
     fn rejects_unknown_hidden_row_bits() {
         let code = code_from_records(
             CONTAINER_VERSION,
-            &[(PAD_RHYTHM_ROWS_RECORD, &[0b0000_1000])],
+            &[(PAD_RHYTHM_ROWS_RECORD, &[0b0001_0000])],
         );
         assert_eq!(
             decode_song_code(&code).err(),
-            Some(SongCodeError::InvalidPadRhythmRows(0b0000_1000))
+            Some(SongCodeError::InvalidPadRhythmRows(0b0001_0000))
         );
     }
 

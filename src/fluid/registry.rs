@@ -1260,7 +1260,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-const CHORD_BASE_CONTROL_COUNT: usize = 33;
+const CHORD_BASE_CONTROL_COUNT: usize = 34;
 
 pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
 pub(crate) const PAD_MIDI_TRIGGER_ID: &str = "pad.midi_trigger";
@@ -1435,6 +1435,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c| if c.pad.trigger >= 0.5 { "Stabs" } else { "Hold" }.to_string(),
     ),
     beat_interval!("pad.gate_beats", "Gate", 0.125, 2.0, pad.gate_beats),
+    beat_offset!("pad.offset_beats", "Offset", 4.0, pad.offset_beats),
     gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
     gain_pct!("pad.detune", "Detune", pad.detune),
     gain_pct!("pad.octave_mix", "Octave Mix", pad.octave_mix),
@@ -2076,11 +2077,12 @@ pub(crate) fn midi_row_bit(id: &str) -> Option<u8> {
     }
 }
 
-/// The Pad rhythm controls that a MIDI launch tucks out of the root page.
+/// The Pad rhythm controls tucked out of the root page until added through `/`.
 pub(crate) fn pad_rhythm_row_bit(id: &str) -> Option<u8> {
     match id {
         "pad.trigger" => Some(1 << 0),
         "pad.gate_beats" => Some(1 << 2),
+        "pad.offset_beats" => Some(1 << 3),
         _ => None,
     }
 }

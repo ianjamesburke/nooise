@@ -976,6 +976,27 @@ fn song_code_restores_all_pad_rhythm_rows_after_they_are_added() {
 }
 
 #[test]
+fn pad_offset_is_hidden_by_default_and_survives_song_codes() {
+    let mut song = SongState::default();
+    assert!(
+        tab_controls(Tab::Chords, &song.controls)
+            .iter()
+            .all(|item| item.id != "pad.offset_beats")
+    );
+    song.controls.pad.offset_beats = 0.5;
+    song.controls.hidden_pad_rhythm_rows &= !(1 << 3);
+
+    let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+
+    assert_eq!(decoded.controls.pad.offset_beats, 0.5);
+    assert!(
+        tab_controls(Tab::Chords, &decoded.controls)
+            .iter()
+            .any(|item| item.id == "pad.offset_beats")
+    );
+}
+
+#[test]
 fn chords_tab_shows_type_row_with_letter_display() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Chords, &controls);
@@ -2221,6 +2242,40 @@ fn pad_stab_swing_delays_the_offbeat_hit() {
             .try_iter()
             .any(|event| matches!(event, MidiMessage::PadChord(_)))
     );
+}
+
+#[test]
+fn pad_stab_offset_rotates_the_step_lane_with_the_grid() {
+    let controls = PadControls {
+        trigger: 1.0,
+        offset_beats: 0.5,
+        steps: [
+            1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+    let (sink, receiver) = MidiSink::test_channel();
+    pad.set_midi(sink);
+    let chord_fired = |receiver: &std::sync::mpsc::Receiver<MidiMessage>| {
+        receiver
+            .try_iter()
+            .any(|event| matches!(event, MidiMessage::PadChord(_)))
+    };
+    for beat in [0.0, 0.25] {
+        pad.next(
+            &controls,
+            0.0,
+            TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
+        );
+    }
+    assert!(!chord_fired(&receiver), "hit before the offset");
+    pad.next(
+        &controls,
+        0.0,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.5),
+    );
+    assert!(chord_fired(&receiver), "step 1 lands on the offset");
 }
 
 #[test]
@@ -4063,9 +4118,9 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     let controls = FluidControls::default();
     assert_eq!(chords_flat_index(ChordDrill::None, 4, &controls), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0, &controls), 33);
-    assert_eq!(chords_flat_index(progression_drill(), 2, &controls), 43);
-    assert_eq!(chords_flat_index(slot_drill(2), 0, &controls), 44);
+    assert_eq!(chords_flat_index(progression_drill(), 0, &controls), 34);
+    assert_eq!(chords_flat_index(progression_drill(), 2, &controls), 44);
+    assert_eq!(chords_flat_index(slot_drill(2), 0, &controls), 45);
 }
 
 #[test]
