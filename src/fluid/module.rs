@@ -33,6 +33,8 @@ pub(crate) enum Family {
     SingleAmount,
     /// `amount` plus `time`.
     TwoKnob,
+    /// Global timing drift with Amount and a wave length in trigger hits.
+    Drunken,
     /// Stereo delay with a persisted clock mode, left/right time, and feedback.
     Delay,
     /// Reverb with size and damping controls behind one Amount row.
@@ -159,11 +161,23 @@ const TWO_KNOB_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
+const DRUNKEN_PARAMETERS: &[EffectParameter] = &[
+    EffectParameter {
+        field: ModuleSlotField::Amount,
+        label: "Amount",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Time,
+        label: "Pace",
+    },
+];
+
 impl ModuleKind {
     pub(crate) fn parameters(self) -> &'static [EffectParameter] {
         match self.family {
             Family::SingleAmount => SINGLE_AMOUNT_PARAMETERS,
             Family::TwoKnob => TWO_KNOB_PARAMETERS,
+            Family::Drunken => DRUNKEN_PARAMETERS,
             Family::Delay => DELAY_PARAMETERS,
             Family::Reverb => REVERB_PARAMETERS,
             Family::Compression => COMPRESSION_PARAMETERS,
@@ -257,7 +271,7 @@ pub(crate) const MODULE_CATALOG: &[ModuleKind] = &[
         id: "drunken",
         display_name: "Drunken",
         domain: Domain::Pre,
-        family: Family::SingleAmount,
+        family: Family::Drunken,
     },
 ];
 
@@ -502,6 +516,7 @@ pub(crate) fn preset_slot(id: &str, amount: f32) -> ModuleSlot {
             slot.right_time = 0.0;
             slot.feedback = 0.0;
         }
+        "drunken" => slot.time = 7.0,
         _ => {}
     }
     slot
@@ -654,7 +669,9 @@ pub(crate) fn chain_amount_slot(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) ->
 /// being copied back into bespoke voice controls.
 pub(crate) fn resolve_module_chain(c: &mut super::FluidControls) {
     c.master.swing = chain_amount(&c.modules.master, "swing");
-    c.master.drunken_ms = chain_amount(&c.modules.master, "drunken") * 50.0;
+    c.master.drunken_amount = chain_amount(&c.modules.master, "drunken");
+    c.master.drunken_pace = chain_amount_slot(&c.modules.master, "drunken")
+        .map_or(7.0, |index| c.modules.master[index].time);
     let swing_for = |slots: &[ModuleSlot; MODULE_SLOTS]| {
         chain_amount_slot(slots, "swing").map_or(c.master.swing, |index| slots[index].amount)
     };
@@ -746,7 +763,8 @@ mod tests {
         controls.modules.perc[1] = preset_slot("swing", 0.0);
         resolve_module_chain(&mut controls);
         assert_eq!(controls.master.swing, 0.6);
-        assert_eq!(controls.master.drunken_ms, 25.0);
+        assert_eq!(controls.master.drunken_amount, 0.5);
+        assert_eq!(controls.master.drunken_pace, 7.0);
         assert_eq!(controls.pad.swing, 0.6);
         assert_eq!(controls.kick.swing, 0.2);
         assert_eq!(controls.perc.swing, 0.0);

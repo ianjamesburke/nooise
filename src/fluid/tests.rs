@@ -3155,17 +3155,30 @@ fn every_swing_press_moves_its_readout_one_point() {
 }
 
 #[test]
-fn drunken_dial_uses_five_to_fifty_millisecond_steps() {
+fn drunken_drill_exposes_percent_amount_and_trigger_pace() {
     let mut controls = FluidControls::default();
     controls.modules.master[2] = preset_slot("drunken", 0.0);
     let spec = spec_by_id("master.slot3.amount").unwrap();
-    assert_eq!(spec.item(&controls).display, "off");
-    for ms in (5..=50).step_by(5) {
+    assert_eq!(spec.item(&controls).display, "0%");
+    for percent in 1..=100 {
         spec.apply_delta(1.0, &mut controls);
-        assert_eq!(spec.item(&controls).display, format!("{ms} ms"));
+        assert_eq!(spec.item(&controls).display, format!("{percent}%"));
     }
-    spec.apply_value(17.0, &mut controls);
-    assert_eq!(spec.item(&controls).display, "15 ms");
+    spec.apply_value(37.0, &mut controls);
+    assert_eq!(spec.item(&controls).display, "37%");
+    let pace = spec_by_id("master.slot3.time").unwrap();
+    assert_eq!(controls.modules.master[2].time, 7.0);
+    let drill = module_detail_controls(Tab::Master, 2, &controls);
+    assert_eq!(
+        drill
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Amount", "Pace"]
+    );
+    assert_eq!(drill[1].display, "7 hits");
+    pace.apply_value(10.0, &mut controls);
+    assert_eq!(controls.modules.master[2].time, 10.0);
 }
 
 #[test]
@@ -3190,7 +3203,8 @@ fn master_drunken_delays_audible_perc_deterministically() {
             .position(|(left, right)| left.abs() + right.abs() > 1e-10)
             .expect("Perc should sound")
     };
-    assert!(first_sound(&drunk) > first_sound(&straight));
+    assert!(first_sound(&drunk) >= first_sound(&straight));
+    assert_ne!(drunk, straight);
     assert_eq!(first_sound(&drunk), first_sound(&again));
 }
 

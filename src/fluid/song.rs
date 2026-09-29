@@ -54,6 +54,8 @@ const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
 const RETIRED_PAD_SWING_ROW: u8 = 1 << 1;
 const CAPTURE_RECORD: u8 = 8;
 const LANE_BYPASS_RECORD: u8 = 9;
+/// Beat offset that lets a saved Drunken wave resume its phrase position.
+const DRUNKEN_PHASE_RECORD: u8 = 10;
 /// The playback period is semantic song state: refuse the sixteen-bar format
 /// rather than silently speeding up saved loops.
 const CAPTURE_WIRE_VERSION: u8 = 3;
@@ -85,6 +87,7 @@ pub(crate) struct SongState {
     pub(crate) tonal_sequence: Option<TonalSequenceState>,
     pub(crate) muted: MuteState,
     pub(crate) gestures: GestureState,
+    pub(crate) drunken_phase_beat: f64,
 }
 
 impl SongState {
@@ -95,6 +98,7 @@ impl SongState {
             tonal_sequence: None,
             muted: [false; TAB_COUNT],
             gestures: GestureState::default(),
+            drunken_phase_beat: 0.0,
         }
     }
 }
@@ -129,6 +133,8 @@ pub(crate) enum SongCodeError {
     DuplicatePadRhythmRowsRecord,
     InvalidCapture,
     InvalidLaneBypass,
+    InvalidDrunkenPhase,
+    StaleDrunken,
     /// The code sets a control this build retired. Its value has nowhere to
     /// go, so the code is refused rather than loaded with that value missing.
     RetiredControl(&'static str),
@@ -205,6 +211,11 @@ impl fmt::Display for SongCodeError {
             Self::DuplicatePadRhythmRowsRecord => {
                 write!(f, "song code repeats the Pad rhythm rows record")
             }
+            Self::InvalidDrunkenPhase => write!(f, "song code has an invalid Drunken phase"),
+            Self::StaleDrunken => write!(
+                f,
+                "song code uses the retired millisecond Drunken timing model and can no longer be loaded"
+            ),
             Self::RetiredControl(id) => write!(
                 f,
                 "song code sets {id}, a control this build no longer has; the code predates the \
@@ -310,6 +321,16 @@ pub(crate) fn encode_song_code_at_epoch(
             &mut bytes,
         )?;
     }
+    if song.drunken_phase_beat != 0.0 {
+        if !song.drunken_phase_beat.is_finite() || song.drunken_phase_beat < 0.0 {
+            return Err(SongCodeError::InvalidDrunkenPhase);
+        }
+        write_record(
+            DRUNKEN_PHASE_RECORD,
+            &song.drunken_phase_beat.to_le_bytes(),
+            &mut bytes,
+        )?;
+    }
     let mut gestures = Vec::new();
     if write_gestures(&song.gestures, &mut gestures)? {
         write_record(GESTURE_RECORD, &gestures, &mut bytes)?;
@@ -321,6 +342,16 @@ pub(crate) fn encode_song_code_at_epoch(
 /// that modulates a dial moved since is refused (`StaleRange`).
 pub(crate) fn decode_song_code(code: &str) -> Result<SongState, SongCodeError> {
     let (song, epoch) = decode_song_code_at_any_epoch(code)?;
+    if epoch < 3
+        && song
+            .controls
+            .modules
+            .master
+            .iter()
+            .any(|slot| slot.kind().is_some_and(|kind| kind.id == "drunken"))
+    {
+        return Err(SongCodeError::StaleDrunken);
+    }
     match stale_modulation(&song, epoch) {
         Some(id) => Err(SongCodeError::StaleRange(id)),
         None => Ok(song),
@@ -351,6 +382,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut gesture_record_seen = false;
     let mut midi_rows_record_seen = false;
     let mut pad_rhythm_rows_record_seen = false;
+    let mut drunken_phase_record_seen = false;
     let mut capture_record_seen = false;
     let mut lane_bypass = None;
     let mut epoch = 0;
@@ -407,6 +439,20 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 }
                 gesture_record_seen = true;
                 read_gestures(payload, &mut song.gestures)?;
+            }
+            DRUNKEN_PHASE_RECORD => {
+                if drunken_phase_record_seen || payload.len() != 8 {
+                    return Err(SongCodeError::InvalidDrunkenPhase);
+                }
+                drunken_phase_record_seen = true;
+                song.drunken_phase_beat = f64::from_le_bytes(
+                    payload
+                        .try_into()
+                        .map_err(|_| SongCodeError::InvalidDrunkenPhase)?,
+                );
+                if !song.drunken_phase_beat.is_finite() || song.drunken_phase_beat < 0.0 {
+                    return Err(SongCodeError::InvalidDrunkenPhase);
+                }
             }
             // Records are length-prefixed, so an unknown one is skipped
             // without losing alignment. This stays permissive on purpose: it
@@ -1992,13 +2038,28 @@ mod song_value_tests {
         let mut song = SongState::default();
         song.controls.modules.master[2] = super::super::module::preset_slot("swing", 0.6);
         song.controls.modules.master[3] = super::super::module::preset_slot("drunken", 0.5);
+        song.controls.modules.master[3].time = 10.0;
+        song.drunken_phase_beat = 13.75;
         let code = encode_song_code(&song).unwrap();
         let mut decoded = decode_song_code(&code).unwrap();
         super::super::module::resolve_module_chain(&mut decoded.controls);
         assert!((decoded.controls.master.swing - 0.6).abs() < 0.001);
-        assert_eq!(decoded.controls.master.drunken_ms, 25.0);
+        assert_eq!(decoded.controls.master.drunken_amount, 0.5);
+        assert_eq!(decoded.controls.master.drunken_pace, 10.0);
+        assert_eq!(decoded.drunken_phase_beat, 13.75);
         assert!((decoded.controls.pad.swing - 0.6).abs() < 0.001);
         assert!(code.len() < 2_000);
+    }
+
+    #[test]
+    fn old_millisecond_drunken_codes_are_refused() {
+        let mut song = SongState::default();
+        song.controls.modules.master[0] = super::super::module::preset_slot("drunken", 0.5);
+        let old_code = encode_song_code_at_epoch(&song, 2).unwrap();
+        assert!(matches!(
+            decode_song_code(&old_code),
+            Err(SongCodeError::StaleDrunken)
+        ));
     }
 
     #[test]

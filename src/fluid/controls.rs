@@ -15,10 +15,11 @@ pub(crate) const LEVEL_RAMP_MS: f32 = 30.0;
 pub(crate) struct MasterControls {
     pub(crate) bpm: f32,
     pub(crate) level: f32,
-    pub(crate) tone: f32,       // -1 (bass) to +1 (treble)
-    pub(crate) tune: f32,       // semitones, -12 (1 octave down) to +12 (1 octave up)
-    pub(crate) swing: f32,      // fallback for voices without a Swing module
-    pub(crate) drunken_ms: f32, // maximum per-hit delay, derived from the Master module
+    pub(crate) tone: f32,           // -1 (bass) to +1 (treble)
+    pub(crate) tune: f32,           // semitones, -12 (1 octave down) to +12 (1 octave up)
+    pub(crate) swing: f32,          // fallback for voices without a Swing module
+    pub(crate) drunken_amount: f32, // 0..1, derived from the Master module
+    pub(crate) drunken_pace: f32,   // nominal rise-and-fall length in trigger hits
 }
 
 impl Default for MasterControls {
@@ -29,7 +30,8 @@ impl Default for MasterControls {
             tone: 0.0,
             tune: 0.0,
             swing: 0.0,
-            drunken_ms: 0.0,
+            drunken_amount: 0.0,
+            drunken_pace: 7.0,
         }
     }
 }

@@ -7,13 +7,15 @@
 //! without one is epoch 0). Decoding refuses a code from an older epoch that
 //! modulates a dial `RANGE_CHANGES` lists as changed since, the way a code
 //! naming a retired control is refused; every other old code loads
-//! untouched. No load ever reinterprets a depth.
+//! untouched except a code containing the retired millisecond Drunken model,
+//! which is refused even without modulation. No load reinterprets timing or
+//! modulation depth.
 
 use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = 3;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = 4;
 
 /// Which dial a range change moved.
 #[derive(Clone, Copy)]
@@ -57,6 +59,16 @@ const RANGE_CHANGES: &[RangeChange] = &[
     RangeChange {
         epoch: 3,
         target: RangeTarget::Control("kick.type"),
+    },
+    // Drunken's Amount changed from a fixed millisecond ceiling to a
+    // BPM-relative wave depth. An old Drunken slot is refused separately;
+    // this entry also catches modulation on its Amount.
+    RangeChange {
+        epoch: 4,
+        target: RangeTarget::ModuleField {
+            family: Family::Drunken,
+            field: ModuleSlotField::Amount,
+        },
     },
 ];
 
