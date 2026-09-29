@@ -15,7 +15,7 @@ use super::automation::{
     ControlAddress, LfoRoute, LfoShape, ModContext, modulated_control_value_full,
 };
 use super::module::ModuleSlotField;
-use super::registry::parse_module_slot_id;
+use super::registry::{is_swing_amount_row, parse_module_slot_id};
 use super::{
     AutomationState, ControlKind, ControlSpec, FluidControls, SongState, Tab, all_specs,
     decode_song_code, spec_by_id,
@@ -168,6 +168,9 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 //       transition downbeat when the target has no drums. Kick also starts on
 //       that downbeat, rather than fading in with the other drum voices.
 //
+//   Swing — a Swing module's Amount is a groove, not a level: it jumps on the
+//       transition downbeat like the structural group instead of drifting.
+//
 //   Module swap — a slot whose module (or delay clock) differs between the two
 //       states is one unit: every row of it holds `from`, then all jump on the
 //       transition downbeat. Its rows mean different things under different
@@ -234,6 +237,38 @@ fn level_distance(a: &FluidControls, b: &FluidControls) -> f32 {
         .sum()
 }
 
+/// How one control crosses a leg. `move_of` is the only place that decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Move {
+    /// Lerp across the transition window.
+    Glide,
+    /// Hold `from`, jump to `to` on the transition downbeat.
+    Snap,
+    /// Hold `from`, jump to `to` at this row's staggered offset after it.
+    Stagger,
+}
+
+/// The single rule table for morph behavior, first match wins. Everything
+/// that must not blend lives here; the default follows the row's `ControlKind`.
+fn move_of(
+    spec: &ControlSpec,
+    from: &FluidControls,
+    to: &FluidControls,
+    swapped: &[(&str, usize)],
+) -> Move {
+    if is_structural(spec.id)
+        || in_swapped_slot(swapped, spec.id)
+        || snaps_drum_level(spec.id, (spec.get)(from), (spec.get)(to))
+        || is_swing_amount_row(spec.id, from)
+    {
+        return Move::Snap;
+    }
+    match spec.kind {
+        ControlKind::Gain | ControlKind::Continuous => Move::Glide,
+        ControlKind::Timing | ControlKind::Discrete => Move::Stagger,
+    }
+}
+
 /// (spec index into `all_specs()` order, jump offset in bars from the
 /// transition downbeat) for every changed non-structural grid param on a leg,
 /// staggered in registry order. Structural and glide params aren't listed.
@@ -241,8 +276,7 @@ fn stepped_offsets(from: &FluidControls, to: &FluidControls) -> Vec<(usize, f64)
     let swapped = swapped_slots(from, to);
     all_specs()
         .enumerate()
-        .filter(|(_, spec)| matches!(spec.kind, ControlKind::Discrete | ControlKind::Timing))
-        .filter(|(_, spec)| !is_structural(spec.id) && !in_swapped_slot(&swapped, spec.id))
+        .filter(|(_, spec)| move_of(spec, from, to, &swapped) == Move::Stagger)
         .filter(|(_, spec)| (spec.get)(from) != (spec.get)(to))
         .enumerate()
         .map(|(order, (index, _))| (index, (order + 1) as f64 * STAGGER_STEP_BARS))
@@ -486,36 +520,25 @@ impl MorphState {
             let from_v = (spec.get)(from);
             let to_v = (spec.get)(to);
 
-            let value = match spec.kind {
-                _ if in_swapped_slot(swapped, spec.id) => {
+            let value = match move_of(spec, from, to, swapped) {
+                Move::Snap => {
                     if t_beat < transition_start {
                         from_v
                     } else {
                         to_v
                     }
                 }
-                ControlKind::Gain if snaps_drum_level(spec.id, from_v, to_v) => {
-                    if t_beat < transition_start {
-                        from_v
-                    } else {
-                        to_v
-                    }
-                }
-                ControlKind::Gain | ControlKind::Continuous => {
+                Move::Glide => {
                     let tt =
                         ((t_beat - transition_start) / transition_beats).clamp(0.0, 1.0) as f32;
                     from_v + (to_v - from_v) * tt
                 }
-                ControlKind::Timing | ControlKind::Discrete => {
-                    let jump_beat = if is_structural(spec.id) {
-                        transition_start
-                    } else {
-                        match offsets.iter().find(|(i, _)| *i == index) {
-                            Some(&(_, offset_bars)) => {
-                                (transition_start + offset_bars * 4.0).min(beats_per_leg)
-                            }
-                            None => transition_start, // unchanged: `from` and `to` are identical
+                Move::Stagger => {
+                    let jump_beat = match offsets.iter().find(|(i, _)| *i == index) {
+                        Some(&(_, offset_bars)) => {
+                            (transition_start + offset_bars * 4.0).min(beats_per_leg)
                         }
+                        None => transition_start, // unchanged: `from` and `to` are identical
                     };
                     spec.quantize(if t_beat < jump_beat { from_v } else { to_v })
                 }
@@ -650,6 +673,7 @@ impl MorphWriter {
 
 #[cfg(test)]
 mod tests {
+    use super::super::module::preset_slot;
     use super::*;
 
     /// (playing, next) for a beat, the pair the tests care about.
@@ -1395,5 +1419,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn swing_amount_jumps_on_the_transition_downbeat_instead_of_drifting() {
+        let swung = |amount: f32| {
+            let mut c = FluidControls::default();
+            c.modules.perc[0] = preset_slot("swing", amount);
+            c
+        };
+        let morph = MorphState::new(
+            vec![
+                SongState::from_controls(swung(0.1)),
+                SongState::from_controls(swung(0.6)),
+            ],
+            64,
+        );
+        let amount =
+            |beat: f64| (spec_by_id("perc.slot1.amount").unwrap().get)(&morph.controls_at(beat));
+        let downbeat = 42.0 * 4.0;
+        assert_eq!(amount(downbeat - 0.5), 0.1);
+        assert_eq!(amount(downbeat), 0.6);
+        assert_eq!(amount(downbeat + 40.0), 0.6);
     }
 }

@@ -711,7 +711,7 @@ pub(crate) fn normalize_swing_input(value: f32) -> f32 {
 /// Whether a module-slot id's `.amount` field is showing the Swing module,
 /// the one `SingleAmount` family whose amount reads on the 50-75% scale
 /// instead of the generic 0-100%.
-fn is_swing_amount_row(id: &str, c: &FluidControls) -> bool {
+pub(crate) fn is_swing_amount_row(id: &str, c: &FluidControls) -> bool {
     matches!(
         module_slot_row(id, c),
         Some((slot, ModuleSlotField::Amount)) if slot.kind().is_some_and(|kind| kind.id == "swing")
