@@ -416,11 +416,19 @@ impl ControlSpec {
             spec.kind = ControlKind::Timing;
             spec.min = 0.0;
             spec.max = 1.0;
-            spec.step = Step::Linear(0.1);
-            spec.entry = Entry::Free;
+            spec.step = Step::Linear(0.01);
+            spec.entry = Entry::Percent;
             spec.reset = 0.0;
         }
         match (kind.family, field) {
+            (Family::Drunken, ModuleSlotField::Time) => {
+                spec.kind = ControlKind::Discrete;
+                spec.min = 4.0;
+                spec.max = 12.0;
+                spec.step = Step::Linear(1.0);
+                spec.entry = Entry::Round;
+                spec.reset = 7.0;
+            }
             (Family::Delay, ModuleSlotField::Time | ModuleSlotField::RightTime) => {
                 let clock = if field == ModuleSlotField::RightTime {
                     DelayClock::from_value(slot.right_clock)
@@ -603,7 +611,6 @@ impl ControlSpec {
         let spec = self.contextual(c);
         let next = match spec.entry {
             Entry::Percent if is_swing_amount_row(spec.id, c) => normalize_swing_input(value),
-            Entry::Free if is_drunken_amount_row(spec.id, c) => spec.quantize(value / 50.0),
             Entry::Percent if parse_module_slot_id(spec.id).is_some() => {
                 normalize_unit_input(value)
             }
@@ -724,13 +731,6 @@ fn is_swing_amount_row(id: &str, c: &FluidControls) -> bool {
     matches!(
         module_slot_row(id, c),
         Some((slot, ModuleSlotField::Amount)) if slot.kind().is_some_and(|kind| kind.id == "swing")
-    )
-}
-
-fn is_drunken_amount_row(id: &str, c: &FluidControls) -> bool {
-    matches!(
-        module_slot_row(id, c),
-        Some((slot, ModuleSlotField::Amount)) if slot.kind().is_some_and(|kind| kind.id == "drunken")
     )
 }
 
@@ -923,15 +923,6 @@ macro_rules! module_slot_rows {
                         .is_some_and(|kind| kind.id == "swing")
                     {
                         swing_pct(amount)
-                    } else if c.modules.$layer[$slot - 1]
-                        .kind()
-                        .is_some_and(|kind| kind.id == "drunken")
-                    {
-                        if amount <= 0.0 {
-                            "off".to_string()
-                        } else {
-                            format!("{:.0} ms", amount * 50.0)
-                        }
                     } else {
                         pct(amount)
                     }
@@ -2288,6 +2279,13 @@ pub(crate) fn module_detail_controls(
                 Some(ModuleSlotField::Time | ModuleSlotField::Feedback)
             ) {
                 item.display = pct(item.value);
+            }
+        }
+    }
+    if kind.family == Family::Drunken {
+        for item in &mut items {
+            if field_of(item.id) == Some(ModuleSlotField::Time) {
+                item.display = format!("{:.0} hits", item.value);
             }
         }
     }
