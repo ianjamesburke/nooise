@@ -2,9 +2,9 @@
 
 ## Hub navigation
 
-The app opens on Master, the hub. Its first rows are the layers in order
-(Pads, Perc, Bass, Kick, Tonal, Clap, Arp, Lead), each named with the `›`
-every row that opens a deeper page carries and showing that layer's level.
+The app opens on Master, the hub. Its first rows list the layers in order
+(Pads, Perc, Bass, Kick, Tonal, Clap, Arp, Lead). Each row shows the layer's
+level and carries `›` to show that Enter opens the layer.
 Master's own rows follow. On a layer row, `h`/`l` adjust its level, `m`
 mutes that layer, and Enter goes into it; Shift+M mutes Master from any row.
 
