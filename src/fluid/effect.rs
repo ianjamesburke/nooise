@@ -2258,6 +2258,7 @@ mod tests {
         let rows = tab_controls(Tab::Chords, controls);
         assert!(rows.iter().any(|item| item.id == "pad.trigger"));
         assert!(rows.iter().all(|item| item.id != "pad.gate_beats"));
+        assert!(rows.iter().all(|item| item.id != "pad.offset_beats"));
     }
 
     #[test]

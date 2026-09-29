@@ -78,7 +78,7 @@ pub(crate) const DEFAULT_CHORD_SLOT_DEGREES: [f32; 8] = [0.0, -1.0, 0.0, 1.0, 0.
 /// Number of custom chord slots (`PadControls::chord_slots`), and the max of
 /// `pad.chord_count`. Matches the built-ins' fixed 8-chord length.
 pub(crate) const CHORD_SLOT_COUNT: usize = 8;
-pub(crate) const PAD_RHYTHM_ROWS: u8 = 0b0000_0101;
+pub(crate) const PAD_RHYTHM_ROWS: u8 = 0b0000_1101;
 
 #[derive(Clone)]
 pub(crate) struct PadControls {
@@ -97,6 +97,8 @@ pub(crate) struct PadControls {
     pub(crate) trigger: f32,
     pub(crate) swing: f32,
     pub(crate) gate_beats: f32,
+    /// Beats the Stabs step lane is shifted; 0 keeps the lane on the grid.
+    pub(crate) offset_beats: f32,
     pub(crate) steps: [f32; 16],
     pub(crate) chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
     pub(crate) stereo_width: f32,
@@ -122,6 +124,7 @@ impl Default for PadControls {
             trigger: 0.0,
             swing: 0.0,
             gate_beats: 0.5,
+            offset_beats: 0.0,
             steps: [
                 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
             ],
@@ -396,7 +399,7 @@ pub(crate) struct FluidControls {
     /// Which optional MIDI rows have been added through the control palette.
     /// Bits are assigned by `midi_row_bit` and saved separately from values.
     pub(crate) midi_rows: u8,
-    /// Pad Trigger and Gate rows hidden until selected through `/`.
+    /// Pad Trigger, Gate, and Offset rows hidden until selected through `/`.
     pub(crate) hidden_pad_rhythm_rows: u8,
     /// Per-layer module chains, including the factory presets defined by
     /// `LayerModules::default`.
