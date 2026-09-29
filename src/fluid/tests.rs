@@ -3897,6 +3897,19 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
 }
 
 #[test]
+fn module_amount_smoother_does_not_carry_an_old_module_into_swing() {
+    let mut before = FluidControls::default();
+    before.modules.perc[0] = preset_slot("filter", 1.0);
+    let mut onset = before.clone();
+    onset.modules.perc[0] = preset_slot("swing", 0.0);
+    let mut smoothers = GainSmoothers::new(&before);
+    smoothers.set_targets(&onset, SAMPLE_RATE);
+    let mut effective = smoothers.next_controls(&onset);
+    resolve_module_chain(&mut effective);
+    assert_eq!(effective.perc.swing, 0.0);
+}
+
+#[test]
 fn gain_smoothers_cover_every_unique_gain_spec() {
     let controls = FluidControls::default();
     let smoothers = GainSmoothers::new(&controls);

@@ -168,14 +168,16 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 //       transition downbeat when the target has no drums. Kick also starts on
 //       that downbeat, rather than fading in with the other drum voices.
 //
-//   Swing — a Swing module's Amount is a groove, not a level: it jumps on the
-//       transition downbeat like the structural group instead of drifting.
+//   Swing — its module appears on the transition downbeat, but its Amount
+//       starts at zero and glides through the crossing. Existing Swing amounts
+//       also glide; a groove change should be heard between endpoints.
 //
 //   Module swap — a slot whose module (or delay clock) differs between the two
-//       states is one unit: every row of it holds `from`, then all jump on the
+//       states changes its identity and non-Swing rows together on the
 //       transition downbeat. Its rows mean different things under different
 //       modules, so blending them (a Reverb's size dragged toward a Filter's
-//       Hz) is never a valid in-between.
+//       Hz) is never a valid in-between. Incoming Swing Amount is the one
+//       exception: it starts at zero after the identity changes.
 //
 //   Snap (Discrete/Timing)  — never interpolated; hold `from`, then hard-jump.
 //       Structural params (progression + chord count/offset/length + arp
@@ -256,10 +258,12 @@ fn move_of(
     to: &FluidControls,
     swapped: &[(&str, usize)],
 ) -> Move {
+    if is_swing_amount_row(spec.id, to) {
+        return Move::Glide;
+    }
     if is_structural(spec.id)
         || in_swapped_slot(swapped, spec.id)
         || snaps_drum_level(spec.id, (spec.get)(from), (spec.get)(to))
-        || is_swing_amount_row(spec.id, from)
     {
         return Move::Snap;
     }
@@ -289,7 +293,7 @@ fn in_swapped_slot(swapped: &[(&str, usize)], spec_id: &str) -> bool {
 
 /// The module slots (layer prefix, 0-based slot) whose module or clock differs
 /// between two states. Their rows mean different things on each side, so a leg
-/// swaps such a slot whole instead of blending it.
+/// snaps their identity and non-Swing rows instead of blending them.
 fn swapped_slots(from: &FluidControls, to: &FluidControls) -> Vec<(&'static str, usize)> {
     let mut swapped = Vec::new();
     for spec in all_specs() {
@@ -531,7 +535,18 @@ impl MorphState {
                 Move::Glide => {
                     let tt =
                         ((t_beat - transition_start) / transition_beats).clamp(0.0, 1.0) as f32;
-                    from_v + (to_v - from_v) * tt
+                    if t_beat < transition_start {
+                        from_v
+                    } else {
+                        let start = if is_swing_amount_row(spec.id, to)
+                            && !is_swing_amount_row(spec.id, from)
+                        {
+                            0.0
+                        } else {
+                            from_v
+                        };
+                        start + (to_v - start) * tt
+                    }
                 }
                 Move::Stagger => {
                     let jump_beat = match offsets.iter().find(|(i, _)| *i == index) {
@@ -1382,7 +1397,7 @@ mod tests {
 
     /// A module's Time/Amount rows mean different things under different
     /// modules (a Reverb's size 0..1, a Filter's cutoff in Hz), so a slot whose
-    /// module changes across a leg has to swap whole. Gliding its params while
+    /// module changes across a leg snaps its non-Swing params. Gliding them while
     /// the old kind still sounds once drove a Reverb's size to 4000 and its wet
     /// mix to full on noise while the level rose ninefold: song 3 to 4.
     #[test]
@@ -1404,6 +1419,8 @@ mod tests {
                 );
                 if (kind.get)(&states[from].controls) == (kind.get)(&states[to].controls)
                     || field == ModuleSlotField::Kind
+                    || (field == ModuleSlotField::Amount
+                        && is_swing_amount_row(spec.id, &states[to].controls))
                 {
                     continue;
                 }
@@ -1422,7 +1439,7 @@ mod tests {
     }
 
     #[test]
-    fn swing_amount_jumps_on_the_transition_downbeat_instead_of_drifting() {
+    fn swing_amount_waits_for_the_transition_then_glides() {
         let swung = |amount: f32| {
             let mut c = FluidControls::default();
             c.modules.perc[0] = preset_slot("swing", amount);
@@ -1439,7 +1456,45 @@ mod tests {
             |beat: f64| (spec_by_id("perc.slot1.amount").unwrap().get)(&morph.controls_at(beat));
         let downbeat = 42.0 * 4.0;
         assert_eq!(amount(downbeat - 0.5), 0.1);
-        assert_eq!(amount(downbeat), 0.6);
-        assert_eq!(amount(downbeat + 40.0), 0.6);
+        assert_eq!(amount(downbeat), 0.1);
+        assert!((amount(downbeat + 44.0) - 0.35).abs() < 1e-4);
+        assert_eq!(amount(256.0), 0.6);
+    }
+
+    #[test]
+    fn song_three_to_four_introduces_swing_at_zero_then_builds_it() {
+        let states = decode_auto_states();
+        let morph = MorphState::new(vec![states[2].clone(), states[3].clone()], 64);
+        for (tab, slot) in [(Tab::Perc, 0), (Tab::Arp, 1)] {
+            let id = match tab {
+                Tab::Perc => "perc.slot1.amount",
+                Tab::Arp => "arp.slot2.amount",
+                _ => unreachable!(),
+            };
+            let target = (spec_by_id(id).unwrap().get)(&states[3].controls);
+            let before = morph.controls_at(167.5);
+            assert!(
+                !before.modules.for_tab(tab).unwrap()[slot]
+                    .kind()
+                    .is_some_and(|kind| kind.id == "swing")
+            );
+            let mut onset = morph.controls_at(168.0);
+            assert_eq!(
+                onset.modules.for_tab(tab).unwrap()[slot].kind().unwrap().id,
+                "swing"
+            );
+            assert_eq!((spec_by_id(id).unwrap().get)(&onset), 0.0);
+            super::super::module::resolve_module_chain(&mut onset);
+            match tab {
+                Tab::Perc => assert_eq!(onset.perc.swing, 0.0),
+                Tab::Arp => assert_eq!(onset.arp.swing, 0.0),
+                _ => unreachable!(),
+            }
+            let midpoint = morph.controls_at(212.0);
+            assert!(((spec_by_id(id).unwrap().get)(&midpoint) - target * 0.5).abs() < 1e-4);
+            assert!(
+                ((spec_by_id(id).unwrap().get)(&morph.controls_at(256.0)) - target).abs() < 1e-4
+            );
+        }
     }
 }

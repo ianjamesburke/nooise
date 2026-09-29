@@ -1066,6 +1066,7 @@ impl OutputGates {
 pub(crate) struct GainSmoother {
     pub(crate) spec: &'static ControlSpec,
     pub(crate) ramp: EasedRamp,
+    slot_kind: Option<f32>,
     /// True while the smoother is settled AND its target equals the snapshot
     /// value bit-for-bit, so `next_controls` can skip the per-sample write
     /// (which would be a no-op). Recomputed every `set_targets` call; stays
@@ -1089,6 +1090,7 @@ impl GainSmoother {
         Self {
             spec,
             ramp: EasedRamp::settled(value),
+            slot_kind: None,
             idle: false,
         }
     }
@@ -1115,7 +1117,11 @@ impl GainSmoothers {
         let smoothers = all_specs()
             .filter(|spec| spec.kind.smooths_audio())
             .filter(|spec| seen.insert(spec.id))
-            .map(|spec| GainSmoother::for_spec(spec, (spec.get)(c)))
+            .map(|spec| {
+                let mut smoother = GainSmoother::for_spec(spec, (spec.get)(c));
+                smoother.slot_kind = module_slot_row(spec.id, c).map(|(slot, _)| slot.kind);
+                smoother
+            })
             .collect();
         Self { smoothers }
     }
@@ -1124,6 +1130,13 @@ impl GainSmoothers {
         let ramp_samples = (LEVEL_RAMP_MS * 0.001 * sample_rate).round() as u32;
         for smoother in &mut self.smoothers {
             let snapshot_value = (smoother.spec.get)(c);
+            let slot_kind = module_slot_row(smoother.spec.id, c).map(|(slot, _)| slot.kind);
+            if slot_kind != smoother.slot_kind {
+                // A slot's amount belongs to its module, so the outgoing
+                // module's ramp must never become the incoming module's value.
+                smoother.ramp = EasedRamp::settled(snapshot_value);
+                smoother.slot_kind = slot_kind;
+            }
             smoother.set_target(snapshot_value, ramp_samples);
             smoother.idle =
                 smoother.ramp.samples_remaining == 0 && smoother.ramp.target == snapshot_value;
