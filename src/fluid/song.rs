@@ -1988,6 +1988,20 @@ mod song_value_tests {
     }
 
     #[test]
+    fn master_groove_modules_round_trip() {
+        let mut song = SongState::default();
+        song.controls.modules.master[2] = super::super::module::preset_slot("swing", 0.6);
+        song.controls.modules.master[3] = super::super::module::preset_slot("drunken", 0.5);
+        let code = encode_song_code(&song).unwrap();
+        let mut decoded = decode_song_code(&code).unwrap();
+        super::super::module::resolve_module_chain(&mut decoded.controls);
+        assert!((decoded.controls.master.swing - 0.6).abs() < 0.001);
+        assert_eq!(decoded.controls.master.drunken_ms, 25.0);
+        assert!((decoded.controls.pad.swing - 0.6).abs() < 0.001);
+        assert!(code.len() < 2_000);
+    }
+
+    #[test]
     fn arp_midi_mode_and_gate_round_trip() {
         let mut song = SongState::default();
         song.controls.arp.midi_out = 1.0;

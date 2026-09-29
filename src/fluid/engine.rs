@@ -767,7 +767,7 @@ impl StereoEngine for FluidEngine {
 
         let fade = startup_fade(self.current_sample, self.sample_rate);
         let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
-        let timing = self.tempo.tick(effective.master.bpm, self.transport);
+        let mut timing = self.tempo.tick(effective.master.bpm, self.transport);
         if let Some(clock) = &mut self.midi_clock {
             clock.tick(timing);
         }
@@ -780,6 +780,7 @@ impl StereoEngine for FluidEngine {
         }
         self.plan.apply(&mut effective, timing);
         resolve_module_chain(&mut effective);
+        timing.drunken_ms = effective.master.drunken_ms;
         effective.keep_midi_directions_exclusive();
         self.sync_midi_input_switches(&effective);
         // Suppress only effective output routing; authored switches, input,
@@ -802,7 +803,8 @@ impl StereoEngine for FluidEngine {
         let pad = self.module_fx.process(
             Tab::Chords,
             &effective.modules.pad,
-            self.pad.next(&effective.pad, tune, timing),
+            self.pad
+                .next(&effective.pad, tune, timing.with_groove_seed(1)),
             timing,
         );
         let (pad_l, pad_r) = gate_stereo(pad, mute_gains[Tab::Chords as usize]);
@@ -810,7 +812,7 @@ impl StereoEngine for FluidEngine {
             Tab::Perc,
             &effective.modules.perc,
             {
-                let perc = self.perc.next(&effective.perc, timing);
+                let perc = self.perc.next(&effective.perc, timing.with_groove_seed(2));
                 (perc, perc)
             },
             timing,
@@ -819,44 +821,58 @@ impl StereoEngine for FluidEngine {
         let kick = self.module_fx.process(
             Tab::Kick,
             &effective.modules.kick,
-            self.kick.next(&effective.kick, timing),
+            self.kick.next(&effective.kick, timing.with_groove_seed(3)),
             timing,
         );
         let (kick_l, kick_r) = gate_stereo(kick, mute_gains[Tab::Kick as usize]);
         let tonal = self.module_fx.process(
             Tab::Tonal,
             &effective.modules.tonal,
-            self.tonal.next(&effective.tonal, tune, timing),
+            self.tonal
+                .next(&effective.tonal, tune, timing.with_groove_seed(4)),
             timing,
         );
         let (ton_l, ton_r) = gate_stereo(tonal, mute_gains[Tab::Tonal as usize]);
         let clap = self.module_fx.process(
             Tab::Clap,
             &effective.modules.clap,
-            self.clap.next(&effective.clap, timing),
+            self.clap.next(&effective.clap, timing.with_groove_seed(5)),
             timing,
         );
         let (clap_l, clap_r) = gate_stereo(clap, mute_gains[Tab::Clap as usize]);
         let bass = self.module_fx.process(
             Tab::Bass,
             &effective.modules.bass,
-            self.bass
-                .next(&effective.bass, &effective.pad, tune, timing),
+            self.bass.next(
+                &effective.bass,
+                &effective.pad,
+                tune,
+                timing.with_groove_seed(6),
+            ),
             timing,
         );
         let (bass_l, bass_r) = gate_stereo(bass, mute_gains[Tab::Bass as usize]);
         let arp = self.module_fx.process(
             Tab::Arp,
             &effective.modules.arp,
-            self.arp.next(&effective.arp, &effective.pad, tune, timing),
+            self.arp.next(
+                &effective.arp,
+                &effective.pad,
+                tune,
+                timing.with_groove_seed(7),
+            ),
             timing,
         );
         let (arp_l, arp_r) = gate_stereo(arp, mute_gains[Tab::Arp as usize]);
         let lead = self.module_fx.process(
             Tab::Lead,
             &effective.modules.lead,
-            self.lead
-                .next(&effective.lead, &effective.pad, tune, timing),
+            self.lead.next(
+                &effective.lead,
+                &effective.pad,
+                tune,
+                timing.with_groove_seed(8),
+            ),
             timing,
         );
         let (lead_l, lead_r) = gate_stereo(lead, mute_gains[Tab::Lead as usize]);
@@ -1210,6 +1226,8 @@ pub(crate) struct TimingContext {
     pub(crate) bpm: f64,
     pub(crate) beat: f64,
     pub(crate) transport: Transport,
+    pub(crate) drunken_ms: f32,
+    pub(crate) groove_seed: u64,
 }
 
 impl TimingContext {
@@ -1220,7 +1238,14 @@ impl TimingContext {
             bpm: bpm.max(1.0),
             beat,
             transport: Transport::Playing,
+            drunken_ms: 0.0,
+            groove_seed: 0,
         }
+    }
+
+    fn with_groove_seed(mut self, seed: u64) -> Self {
+        self.groove_seed = seed;
+        self
     }
 
     /// Tests that predict a voice's step spacing compute it from the same
@@ -1246,16 +1271,40 @@ const SWING_MAX_INTERVAL_BEATS: f64 = 1.0;
 /// shuffle that still keeps slots strictly ordered.
 const SWING_MAX_FRACTION: f64 = 0.5;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct GridSpec {
     pub(crate) interval_beats: f64,
     pub(crate) offset_beats: f64,
     /// Beats each odd slot is pushed late; 0 on straight or chord-rate grids.
     swing_delay_beats: f64,
+    drunken_ms: f32,
+    drunken_max_beats: f64,
+    groove_seed: u64,
+}
+
+impl PartialEq for GridSpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.interval_beats == other.interval_beats
+            && self.offset_beats == other.offset_beats
+            && self.swing_delay_beats == other.swing_delay_beats
+            && self.drunken_ms == other.drunken_ms
+            && self.groove_seed == other.groove_seed
+    }
 }
 
 impl GridSpec {
     pub(crate) fn new(interval_beats: f32, offset_beats: f32, swing: f32) -> Self {
+        Self::new_grooved(interval_beats, offset_beats, swing, 0.0, 120.0, 0)
+    }
+
+    fn new_grooved(
+        interval_beats: f32,
+        offset_beats: f32,
+        swing: f32,
+        drunken_ms: f32,
+        bpm: f64,
+        groove_seed: u64,
+    ) -> Self {
         let interval_beats = f64::from(interval_beats).max(1.0 / 64.0);
         let swing_fraction = if interval_beats <= SWING_MAX_INTERVAL_BEATS {
             f64::from(swing.clamp(0.0, 1.0)) * SWING_MAX_FRACTION
@@ -1266,6 +1315,11 @@ impl GridSpec {
             interval_beats,
             offset_beats: f64::from(offset_beats).rem_euclid(interval_beats),
             swing_delay_beats: swing_fraction * interval_beats,
+            drunken_ms,
+            // Keep even slots after swung odd slots, including at fast tempos.
+            drunken_max_beats: (f64::from(drunken_ms.clamp(0.0, 50.0)) * bpm / 60_000.0)
+                .min(interval_beats * 0.45),
+            groove_seed,
         }
     }
 
@@ -1273,18 +1327,24 @@ impl GridSpec {
     /// Strictly increasing in `slot` since the delay is always < one interval.
     fn swung_beat(self, slot: u64) -> f64 {
         let base = self.offset_beats + slot as f64 * self.interval_beats;
-        if slot % 2 == 1 {
-            base + self.swing_delay_beats
+        let swing = if slot % 2 == 1 {
+            self.swing_delay_beats
         } else {
-            base
-        }
+            0.0
+        };
+        let drunken = if self.drunken_max_beats > 0.0 {
+            let mixed = splitmix64_mix(slot ^ self.groove_seed.wrapping_mul(0x9e3779b97f4a7c15));
+            let fraction = (mixed >> 11) as f64 / (1u64 << 53) as f64;
+            fraction * self.drunken_max_beats
+        } else {
+            0.0
+        };
+        base + swing + drunken
     }
 
     pub(crate) fn hit_at_or_after(self, beat: f64) -> GridHit {
         if beat <= self.offset_beats {
-            return GridHit {
-                beat: self.offset_beats,
-            };
+            return self.hit_for_slot(0);
         }
         // Straight-grid estimate, then walk forward to the first swung slot at
         // or after `beat`. Swing moves a slot by less than one interval, so the
@@ -1296,9 +1356,16 @@ impl GridSpec {
         loop {
             let hit = self.swung_beat(slot);
             if hit >= beat {
-                return GridHit { beat: hit };
+                return self.hit_for_slot(slot);
             }
             slot += 1;
+        }
+    }
+
+    fn hit_for_slot(self, slot: u64) -> GridHit {
+        GridHit {
+            beat: self.swung_beat(slot),
+            slot,
         }
     }
 
@@ -1340,6 +1407,59 @@ mod grid_swing_tests {
         assert_eq!(straight, asked_to_swing);
         assert_eq!(asked_to_swing.hit_at_or_after(4.1).beat, 8.0);
     }
+
+    #[test]
+    fn drunken_delays_each_grid_hit_deterministically_without_reordering() {
+        let grid = GridSpec::new_grooved(0.25, 0.0, 1.0, 50.0, 120.0, 3);
+        let again = GridSpec::new_grooved(0.25, 0.0, 1.0, 50.0, 120.0, 3);
+        let other_voice = GridSpec::new_grooved(0.25, 0.0, 1.0, 50.0, 120.0, 4);
+        let mut differs = false;
+        for slot in 0..64 {
+            let base = slot as f64 * 0.25 + if slot % 2 == 1 { 0.125 } else { 0.0 };
+            let hit = grid.swung_beat(slot);
+            assert!((base..=base + 0.1).contains(&hit));
+            assert_eq!(hit, again.swung_beat(slot));
+            differs |= hit != other_voice.swung_beat(slot);
+            if slot > 0 {
+                assert!(hit > grid.swung_beat(slot - 1));
+            }
+        }
+        assert!(differs, "each voice needs its own timing variation");
+        assert_eq!(grid.hit_at_or_after(0.0).beat, grid.swung_beat(0));
+    }
+
+    #[test]
+    fn fast_grid_caps_drunken_delay_and_still_fires_every_slot() {
+        let spec = GridSpec::new_grooved(0.125, 0.0, 1.0, 50.0, 200.0, 2);
+        assert_eq!(spec.drunken_max_beats, 0.125 * 0.45);
+        let mut trigger = GridTrigger::new();
+        let mut hits = 0;
+        for sample in 0..48_000 {
+            let mut timing = TimingContext::new(48_000.0, 200.0, sample as f64 / 14_400.0);
+            timing.drunken_ms = 50.0;
+            timing.groove_seed = 2;
+            hits += usize::from(trigger.pop_swung(timing, 0.125, 0.0, 1.0));
+        }
+        assert_eq!(hits, 27);
+    }
+
+    #[test]
+    fn tempo_glide_keeps_the_same_drunken_grid_schedule() {
+        let slow = GridSpec::new_grooved(0.25, 0.0, 0.0, 50.0, 100.0, 2);
+        let fast = GridSpec::new_grooved(0.25, 0.0, 0.0, 50.0, 200.0, 2);
+        assert_eq!(slow, fast);
+        assert_ne!(slow.drunken_max_beats, fast.drunken_max_beats);
+        let mut trigger = GridTrigger::new();
+        let mut timing = TimingContext::new(48_000.0, 100.0, slow.swung_beat(0));
+        timing.drunken_ms = 50.0;
+        timing.groove_seed = 2;
+        assert!(trigger.pop_swung(timing, 0.25, 0.0, 0.0));
+        assert_eq!(trigger.next_hit.unwrap().slot, 1);
+        timing.bpm = 200.0;
+        timing.beat = trigger.next_hit.unwrap().beat;
+        assert!(trigger.pop_swung(timing, 0.25, 0.0, 0.0));
+        assert_eq!(trigger.next_hit.unwrap().slot, 2);
+    }
 }
 
 pub(crate) const GRID_BEAT_EPSILON: f64 = 1e-9;
@@ -1347,15 +1467,15 @@ pub(crate) const GRID_BEAT_EPSILON: f64 = 1e-9;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct GridHit {
     pub(crate) beat: f64,
+    slot: u64,
 }
 
 pub(crate) struct GridTrigger {
     pub(crate) spec: Option<GridSpec>,
     pub(crate) next_hit: Option<GridHit>,
-    /// Beat of the most recently emitted hit. A live grid reshape (rate/offset/
-    /// swing change) may never reschedule the next hit within half an interval
-    /// of this — the guard that stops a timing tweak from re-firing the slot
-    /// that just sounded (an audible double-trigger / flam).
+    scheduled_spec: Option<GridSpec>,
+    /// Beat of the most recently emitted hit. A live grid reshape may never
+    /// reschedule inside half an interval of this beat.
     last_hit_beat: Option<f64>,
 }
 
@@ -1364,6 +1484,7 @@ impl GridTrigger {
         Self {
             spec: None,
             next_hit: None,
+            scheduled_spec: None,
             last_hit_beat: None,
         }
     }
@@ -1379,10 +1500,9 @@ impl GridTrigger {
         self.pop_swung(timing, interval_beats, offset_beats, 0.0)
     }
 
-    /// Earliest beat the next hit may occupy: at or after the playhead, and
-    /// never within half an interval of the hit already emitted. A live reshape
-    /// (swing/offset/rate) moves any slot by at most half an interval, so this
-    /// floor is what stops the just-played slot from being scheduled again.
+    /// Earliest beat a live reshape may pull a hit to: at or after the
+    /// playhead, and never within half an interval of the last hit. Regular
+    /// drunken progression advances by slot so tight swung hits are preserved.
     fn earliest_hit(&self, spec: GridSpec, beat: f64) -> f64 {
         let floor = self
             .last_hit_beat
@@ -1390,8 +1510,8 @@ impl GridTrigger {
         (beat + GRID_BEAT_EPSILON).max(floor)
     }
 
-    /// Like `pop`, but this voice's grid swings its odd subdivisions by
-    /// `swing` (0 straight .. 1 max shuffle). Only voices that opt in call this.
+    /// Swing the voice's odd subdivisions and apply its deterministic drunken
+    /// delay from `timing`, if present.
     /// A stopped transport fires nothing and leaves the schedule untouched;
     /// a reshape made while stopped lands on the first playing sample.
     pub(crate) fn pop_swung(
@@ -1404,11 +1524,21 @@ impl GridTrigger {
         if timing.transport == Transport::Stopped {
             return false;
         }
-        let spec = GridSpec::new(interval_beats, offset_beats, swing);
+        let spec = GridSpec::new_grooved(
+            interval_beats,
+            offset_beats,
+            swing,
+            timing.drunken_ms,
+            timing.bpm,
+            timing.groove_seed,
+        );
         if self.spec != Some(spec) {
             self.spec = Some(spec);
             match self.next_hit {
-                None => self.next_hit = Some(spec.hit_at_or_after(timing.beat)),
+                None => {
+                    self.next_hit = Some(spec.hit_at_or_after(timing.beat));
+                    self.scheduled_spec = Some(spec);
+                }
                 // Pull the scheduled hit earlier when the reshaped grid lands
                 // sooner, so a denser grid isn't starved — but never earlier than
                 // `earliest_hit`, which rejects a re-fire of the slot that just
@@ -1417,6 +1547,7 @@ impl GridTrigger {
                     let candidate = spec.hit_at_or_after(self.earliest_hit(spec, timing.beat));
                     if candidate.beat < hit.beat {
                         self.next_hit = Some(candidate);
+                        self.scheduled_spec = Some(spec);
                     }
                 }
             }
@@ -1427,7 +1558,14 @@ impl GridTrigger {
         };
         if timing.beat + GRID_BEAT_EPSILON >= next_hit.beat {
             self.last_hit_beat = Some(next_hit.beat);
-            self.next_hit = Some(spec.hit_at_or_after(self.earliest_hit(spec, timing.beat)));
+            self.next_hit = Some(
+                if spec.drunken_max_beats > 0.0 && self.scheduled_spec == Some(spec) {
+                    spec.hit_for_slot(next_hit.slot + 1)
+                } else {
+                    spec.hit_at_or_after(self.earliest_hit(spec, timing.beat))
+                },
+            );
+            self.scheduled_spec = Some(spec);
             true
         } else {
             false

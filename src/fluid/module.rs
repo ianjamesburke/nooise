@@ -253,6 +253,12 @@ pub(crate) const MODULE_CATALOG: &[ModuleKind] = &[
         domain: Domain::Post,
         family: Family::Filter,
     },
+    ModuleKind {
+        id: "drunken",
+        display_name: "Drunken",
+        domain: Domain::Pre,
+        family: Family::SingleAmount,
+    },
 ];
 
 /// The timing behavior an active delay uses. The stored time values carry
@@ -615,7 +621,8 @@ pub(crate) fn tab_has_module_chain(_tab: super::Tab) -> bool {
 /// palette until they have DSP; an addable row must never be inert.
 pub(crate) fn module_available_on(kind: ModuleKind, tab: super::Tab) -> bool {
     match kind.id {
-        "swing" => !matches!(tab, super::Tab::Master),
+        "swing" => tab_has_module_chain(tab),
+        "drunken" => matches!(tab, super::Tab::Master),
         "drive" | "room" | "delay" | "compression" | "filter" => tab_has_module_chain(tab),
         _ => false,
     }
@@ -646,14 +653,19 @@ pub(crate) fn chain_amount_slot(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) ->
 /// Post-synthesis effects execute directly through `ModuleFxBank` instead of
 /// being copied back into bespoke voice controls.
 pub(crate) fn resolve_module_chain(c: &mut super::FluidControls) {
-    c.pad.swing = chain_amount(&c.modules.pad, "swing");
-    c.perc.swing = chain_amount(&c.modules.perc, "swing");
-    c.kick.swing = chain_amount(&c.modules.kick, "swing");
-    c.tonal.swing = chain_amount(&c.modules.tonal, "swing");
-    c.arp.swing = chain_amount(&c.modules.arp, "swing");
-    c.lead.swing = chain_amount(&c.modules.lead, "swing");
-    c.clap.swing = chain_amount(&c.modules.clap, "swing");
-    c.bass.swing = chain_amount(&c.modules.bass, "swing");
+    c.master.swing = chain_amount(&c.modules.master, "swing");
+    c.master.drunken_ms = chain_amount(&c.modules.master, "drunken") * 50.0;
+    let swing_for = |slots: &[ModuleSlot; MODULE_SLOTS]| {
+        chain_amount_slot(slots, "swing").map_or(c.master.swing, |index| slots[index].amount)
+    };
+    c.pad.swing = swing_for(&c.modules.pad);
+    c.perc.swing = swing_for(&c.modules.perc);
+    c.kick.swing = swing_for(&c.modules.kick);
+    c.tonal.swing = swing_for(&c.modules.tonal);
+    c.arp.swing = swing_for(&c.modules.arp);
+    c.lead.swing = swing_for(&c.modules.lead);
+    c.clap.swing = swing_for(&c.modules.clap);
+    c.bass.swing = swing_for(&c.modules.bass);
 }
 
 #[cfg(test)]
@@ -709,17 +721,8 @@ mod tests {
                     "drive" | "room" | "delay" | "compression" | "filter" => {
                         tab_has_module_chain(tab)
                     }
-                    "swing" => matches!(
-                        tab,
-                        super::super::Tab::Chords
-                            | super::super::Tab::Perc
-                            | super::super::Tab::Bass
-                            | super::super::Tab::Kick
-                            | super::super::Tab::Tonal
-                            | super::super::Tab::Clap
-                            | super::super::Tab::Arp
-                            | super::super::Tab::Lead
-                    ),
+                    "swing" => tab_has_module_chain(tab),
+                    "drunken" => matches!(tab, super::super::Tab::Master),
                     "alcohol" | "sidechain" => false,
                     other => panic!("catalog entry {other} needs an availability contract"),
                 };
@@ -732,6 +735,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn master_swing_fills_only_layers_without_their_own_swing() {
+        let mut controls = super::super::FluidControls::default();
+        controls.modules.master[2] = preset_slot("swing", 0.6);
+        controls.modules.master[3] = preset_slot("drunken", 0.5);
+        controls.modules.kick[3] = preset_slot("swing", 0.2);
+        controls.modules.perc[1] = preset_slot("swing", 0.0);
+        resolve_module_chain(&mut controls);
+        assert_eq!(controls.master.swing, 0.6);
+        assert_eq!(controls.master.drunken_ms, 25.0);
+        assert_eq!(controls.pad.swing, 0.6);
+        assert_eq!(controls.kick.swing, 0.2);
+        assert_eq!(controls.perc.swing, 0.0);
+        controls.modules.kick[3] = ModuleSlot::default();
+        resolve_module_chain(&mut controls);
+        assert_eq!(controls.kick.swing, 0.6);
     }
 
     /// A detail drill opens on the knob its collapsed row showed, so the
