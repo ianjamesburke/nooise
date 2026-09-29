@@ -14,6 +14,8 @@ use arc_swap::ArcSwap;
 use super::automation::{
     ControlAddress, LfoRoute, LfoShape, ModContext, modulated_control_value_full,
 };
+use super::module::ModuleSlotField;
+use super::registry::parse_module_slot_id;
 use super::{
     AutomationState, ControlKind, ControlSpec, FluidControls, SongState, Tab, all_specs,
     decode_song_code, spec_by_id,
@@ -108,7 +110,7 @@ const AUTO_STATES: &[&str] = &[
     "n1_Tk9PSQIFAgAAAAIAAHUAAAAYAAAAAI_CAQAAVFMCAABIYQMAAwIEAAMCBQADBAYAAwgIAAC4ngkAAAAACgAAmZkOAAMDEAADBRMAAwIYAAMDGgADBR0AAwMeAAMCfAAAepQzAADMTDUAAHE5NgACAACIQJUAApRCqkTFAAJKMPtEcQAARUUBOwAAAAMACgAAAMA_pDAAAABAP9XNKX4zAAAAAEFnJgAAAAAAmaB_xJUAAACAQVwPAAAAgD4AAAAAAAAAAAAAAjIAAAAACC0AAAAyAAAANwAAADAAAAA0AAAAOQAAADIAAAA3AAAADp-SwX3KueYAAAAAAAAAAA",
     "n1_Tk9PSQIFAgAAAAIAAOsAAAAuAAAAAAAAAQAACTsCAADrRAMAAwEEAAMCBQADAgYAAwgIAAAAAAkAAAAACgAA1yMQAAMFEwADARQAAwJ8AAAULjMAAFwPNQAAlByVAAJXsuFEOwECj8L1PJYAAwSXAADXI5gAAsL1aD9AAQKuR-E9OQAAcD08AADYbz4AAwJDAAD2KEUAAOhuRgAAWwnFAALWbxhDTgAAAABQAAMGUgADAVcAAFI43AAAAABaAAB7FPQAADLz9QAB7gRjAAB7FGcAAgAAAD4MAQCZGQ4BAwgPAQD__xABAhXUsUSVAgAAAEUCA_VGAgIAAJBAAYEAAAAGAAAAAACAPsxMBwAAAACy2to0CI8CZcb_f_9__7__f_-__3__fwAAAAAAQpkZBAAAAACz2to0NQAAAABAHwUAAAAAAMIYy342AAAAAECuBwAAAAAAviMbWZUAAAAAQZkZAAAAgEAAAAAAUwAAAABA6xEGAAAAAGdyy2MAAAAAAAACQgAAAAEMLQAAADQAAAA5AAAAPAAAADkAAAA0AAAAMgAAADAAAAAyAAAANwAAADQAAAAtAAAARLmlSq2DEyYAAAAAAAAAAA",
     // Full-band build with driving kick/clap and busy arp.
-    "n1_Tk9PSQIFAgAAAAIAAM0AAAAqAAAAAAAAAQAAVFMCAABIYQQAAwEFAAMEBgADCAgAAAnXEAADAxoAA_weAAMDMwAAPYo1AAAoMTYAAgAAAD-TAAMClAAAXA-VAAMAlgADCJcAAP__mAAB1QE5AAC4HjsAAAAAPAAAaI49AAMBQQADAK0AAe8BrwAAcD1DAAAULkUAAEtCRgAAWW9KAAD_58UAAq5LW0THAADrUVcAAAAAWgAA1yP0AABm5mMAAK5HZAAAAFBlAABUQ2YAAwBnAAIAAIA-DgEDAg8BAApXAV0AAAAFAGUAAAAAQY8CBAAAAACWKStpDwEAAABBzQwEAAAAAHaXimk1AAAAQEEfBQAAAAAAwhjLfjMAAACAP3E9AwAAQD-ZoH_EmAAAAIBA8AYAAACAPwAAAAAAAAAAAAA",
+    "n1_Tk9PSQIFAgAAAAIAANQAAAArAAAAAAAAAQAAVFMCAABIYQQAAwEFAAMEBgADCAgAAAnXEAADAxoAA_weAAMDMwAA4Xo1AAB9JpMAAwKUAACjcJUAAwCWAAMIlwAA__-YAAIE1n1FOQAAMzM7AACqKjwAABOJPQADAa0AAv4_nEavAADMTEMAAMxMRQAAS0JGAABZb0oAAP_nxQACrktbRMcAAOtRVwAAAABaAADXI_QAAGbmYwAArkdkAAAAUGUAAFRDZgADAGcAAgAAgD4OAQMCDwEAKVw8AgAAAEQCAJlZRQID_QFdAAAABQBlAAAAAEGPAgQAAAAAlikraQ8BAAAAQc0MBAAAAAB2l4ppNQAAAABAzQwGAAAAAMIYy34zAAAAgD8AAAMAAEA_maB_xJgAAABAQR8FAAAAgD8AAAAAAAAAAAAAAjIAAAAACC0AAAAyAAAANwAAADAAAAA0AAAAOQAAADIAAAA3AAAA1971-0X8CdsAAAAAAAAAAA",
     "n1_Tk9PSQIFAgAAAAIAAIAAAAAbAAAAAOvRAQAAVFMCAABIYQQAAwIFAAMEBgADCAgAAIVrCQAA61EKAABmZhAAAwAVAAMFGgADBHwAADOzlQAB5gPFAAJKMPtETQAAexRPAAAUclAAAwNTAAMBVAADBFcAAAAA3AAAHoXeAAMC3wAAPQr0AABm5nEAAEhIdwADBQEqAAAAAgBPAAAAgEFcDwAAAAAA_60XCE0AAACAQCkcAgAAwD83UFCgAAAAAAAA",
     "n1_Tk9PSQIFAgAAAAIAANEAAAAqAAAAAOvRAQAAVFMCAABIYQQAAwIFAAMEBgADCAgAAIVrCQAA61EKAABmZhAAAwAVAAMFGgADBHwAADOzMwAAFC41AADSGzYAAgAAAD6VAAHVAUMAAB8FSAACAAAAP8UAAvnt0ERNAAA9Ck8AABRyUAADA1MAAwFUAAMEVwAAAADcAAAehd4AAwLfAAA9CloAALgeXAAAC11gAAD5mGIAAFI49AAAUfj1AAGUAmMAAFI4ZAAAcSZlAAD_PWcAAgAAgD4MAQBcj3EAAEhIdwADBQFuAAAABgBlAAAAAEEfBQAAAAAAlikraUMAAAAAQM0MAgAAAADzMjuHNQAAAEBBjwIAAAAAAMIYy36VAAAAQEHjDQAAAAAAAAAAAE8AAACAQVwPAAAAAAD_rRcITQAAAIBAKRwCAADAPzdQUKAAAAAAAAA",
     "n1_Tk9PSQIFAgAAAAIAANUAAAAtAAAAAEfhAQAACTsCAADrRAMAAwIEAAMCBgADCAgAAACADgADARAAAwEUAAMBGAADARoAAwIdAAMBHgADAR8AAwUiAAMBJAADAicAAwEpAAMELAADAS4AAwYxAAMCMgADAXwAAACAMwAAFC41AAB9FjYAAgAAAD-VAAGACEgAAgAAgD7FAAL57dBEWgAAMzNcAAALPV4AAwD0AADW4_UAAWcOYwAArkdlAACqSGsAAwIMAQAJ13EAAFRUcgAAM7N2AABmhjwCALgeRgICAAAgQEgCA30BTAAAAAQAZQAAAIBAPQoAAAAAQJYpK2lnAAAAAEDXIwYAAAAAGL6w-0MAAADAPwoXBAAAAADzMjuHNQAAAIBBjwIAAACAQMIYy34AAAAAAAA",
@@ -165,6 +167,12 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 //       Drum exits are the exception: perc, kick, and clap cut together on the
 //       transition downbeat when the target has no drums. Kick also starts on
 //       that downbeat, rather than fading in with the other drum voices.
+//
+//   Module swap — a slot whose module (or delay clock) differs between the two
+//       states is one unit: every row of it holds `from`, then all jump on the
+//       transition downbeat. Its rows mean different things under different
+//       modules, so blending them (a Reverb's size dragged toward a Filter's
+//       Hz) is never a valid in-between.
 //
 //   Snap (Discrete/Timing)  — never interpolated; hold `from`, then hard-jump.
 //       Structural params (progression + chord count/offset/length + arp
@@ -230,14 +238,39 @@ fn level_distance(a: &FluidControls, b: &FluidControls) -> f32 {
 /// transition downbeat) for every changed non-structural grid param on a leg,
 /// staggered in registry order. Structural and glide params aren't listed.
 fn stepped_offsets(from: &FluidControls, to: &FluidControls) -> Vec<(usize, f64)> {
+    let swapped = swapped_slots(from, to);
     all_specs()
         .enumerate()
         .filter(|(_, spec)| matches!(spec.kind, ControlKind::Discrete | ControlKind::Timing))
-        .filter(|(_, spec)| !is_structural(spec.id))
+        .filter(|(_, spec)| !is_structural(spec.id) && !in_swapped_slot(&swapped, spec.id))
         .filter(|(_, spec)| (spec.get)(from) != (spec.get)(to))
         .enumerate()
         .map(|(order, (index, _))| (index, (order + 1) as f64 * STAGGER_STEP_BARS))
         .collect()
+}
+
+fn in_swapped_slot(swapped: &[(&str, usize)], spec_id: &str) -> bool {
+    parse_module_slot_id(spec_id).is_some_and(|(layer, slot, _)| swapped.contains(&(layer, slot)))
+}
+
+/// The module slots (layer prefix, 0-based slot) whose module or clock differs
+/// between two states. Their rows mean different things on each side, so a leg
+/// swaps such a slot whole instead of blending it.
+fn swapped_slots(from: &FluidControls, to: &FluidControls) -> Vec<(&'static str, usize)> {
+    let mut swapped = Vec::new();
+    for spec in all_specs() {
+        let Some((layer, slot, field)) = parse_module_slot_id(spec.id) else {
+            continue;
+        };
+        let identity = matches!(
+            field,
+            ModuleSlotField::Kind | ModuleSlotField::Clock | ModuleSlotField::RightClock
+        );
+        if identity && (spec.get)(from) != (spec.get)(to) && !swapped.contains(&(layer, slot)) {
+            swapped.push((layer, slot));
+        }
+    }
+    swapped
 }
 
 /// Where the morph is right now: the state actually sounding, the one it will
@@ -260,6 +293,9 @@ pub(crate) struct MorphState {
     bars: u32,
     /// Staggered hard-switch offsets for leg i -> i+1 (mod n), precomputed once.
     stepped: Vec<Vec<(usize, f64)>>,
+    /// Module slots that swap whole on the transition downbeat for leg i ->
+    /// i+1 (mod n), precomputed once.
+    swapped: Vec<Vec<(&'static str, usize)>>,
     /// Engine beat the morph timeline is anchored to. Zero for the baked-in
     /// loop (which starts at beat 0); set to the toggle beat for a live start
     /// so the first leg begins from the current state, not mid-loop.
@@ -280,11 +316,15 @@ impl MorphState {
         let stepped = (0..n)
             .map(|i| stepped_offsets(&endpoints[i].controls, &endpoints[(i + 1) % n].controls))
             .collect();
+        let swapped = (0..n)
+            .map(|i| swapped_slots(&endpoints[i].controls, &endpoints[(i + 1) % n].controls))
+            .collect();
         Self {
             endpoints,
             morph_ids: (1..=n).map(Some).collect(),
             bars: bars.max(1),
             stepped,
+            swapped,
             origin_beat: 0.0,
             first_leg_bars: None,
         }
@@ -435,6 +475,7 @@ impl MorphState {
         let from = &self.endpoints[from_idx].controls;
         let to = &self.endpoints[to_idx].controls;
         let offsets = &self.stepped[from_idx];
+        let swapped = &self.swapped[from_idx];
         let beats_per_leg = self.leg_beats(leg_index);
         let t_beat = t * beats_per_leg;
         let transition_start = self.leg_transition_start_beat(leg_index);
@@ -446,6 +487,13 @@ impl MorphState {
             let to_v = (spec.get)(to);
 
             let value = match spec.kind {
+                _ if in_swapped_slot(swapped, spec.id) => {
+                    if t_beat < transition_start {
+                        from_v
+                    } else {
+                        to_v
+                    }
+                }
                 ControlKind::Gain if snaps_drum_level(spec.id, from_v, to_v) => {
                     if t_beat < transition_start {
                         from_v
@@ -631,12 +679,12 @@ mod tests {
     #[test]
     fn built_in_perc_levels_and_sweeps_keep_their_balance_after_the_output_trim() {
         let previous_levels = [
-            0.0, 0.10, 0.02, 0.18, 0.0, 0.06, 0.06, 0.08, 0.02, 0.26, 0.08, 0.08, 0.06, 0.0, 0.0,
+            0.0, 0.10, 0.02, 0.16, 0.0, 0.06, 0.06, 0.08, 0.02, 0.26, 0.08, 0.08, 0.06, 0.0, 0.0,
             0.10, 0.10, 0.06, 0.14, 0.0, 0.02,
         ];
         let previous_depths = [
             (1, 0.050003815),
-            (3, 0.08000305),
+            (3, 0.0),
             (14, 0.058258947),
             (17, 0.029999238),
             (18, 0.08999771),
@@ -665,8 +713,8 @@ mod tests {
     }
 
     /// Every built-in cutoff LFO keeps its authored sweep: these lows and
-    /// highs are measured through the engine's own modulation sum. Song index
-    /// 1 was re-authored on the 20..20000 Hz dial and is pinned there; the
+    /// highs are measured through the engine's own modulation sum. Song indexes
+    /// 1 and 3 were re-authored on the 20..20000 Hz dial and are pinned there; the
     /// rest were measured on the last build with the 80..8000 Hz dial
     /// (`a54b594`), where a lane the widening did not rescale would open
     /// about 1.5x wider in octaves.
@@ -675,7 +723,7 @@ mod tests {
         const SWEEPS: [(usize, &str, f32, f32); 6] = [
             (1, "perc.slot1.time", 899.9, 2061.6),
             (2, "perc.slot1.time", 904.9, 3602.5),
-            (3, "perc.slot2.time", 388.9, 565.6),
+            (3, "perc.slot2.time", 3537.2, 4663.2),
             (5, "perc.slot1.time", 322.4, 682.2),
             (13, "kick.slot1.time", 1832.7, 3829.1),
             (14, "perc.slot2.time", 492.8, 647.8),
@@ -1306,5 +1354,46 @@ mod tests {
                 .depth_ratio,
             0.5
         );
+    }
+
+    /// A module's Time/Amount rows mean different things under different
+    /// modules (a Reverb's size 0..1, a Filter's cutoff in Hz), so a slot whose
+    /// module changes across a leg has to swap whole. Gliding its params while
+    /// the old kind still sounds once drove a Reverb's size to 4000 and its wet
+    /// mix to full on noise while the level rose ninefold: song 3 to 4.
+    #[test]
+    fn a_slot_whose_module_changes_never_blends_its_params() {
+        let states = decode_auto_states();
+        let n = states.len();
+        for from in 0..n {
+            let to = (from + 1) % n;
+            let morph = MorphState::new(vec![states[from].clone(), states[to].clone()], 64);
+            for spec in all_specs() {
+                let Some((layer, slot, field)) = parse_module_slot_id(spec.id) else {
+                    continue;
+                };
+                let kind_id = format!("{layer}.slot{}.kind", slot + 1);
+                let kind = spec_by_id(&kind_id).expect("slot kind row");
+                let (a, b) = (
+                    (spec.get)(&states[from].controls),
+                    (spec.get)(&states[to].controls),
+                );
+                if (kind.get)(&states[from].controls) == (kind.get)(&states[to].controls)
+                    || field == ModuleSlotField::Kind
+                {
+                    continue;
+                }
+                for step in 0..=256 {
+                    let v = (spec.get)(&morph.controls_at(f64::from(step)));
+                    assert!(
+                        v == a || v == b,
+                        "song {} -> {}: {} blended to {v} between {a} and {b} at beat {step} while its module changes",
+                        from + 1,
+                        to + 1,
+                        spec.id
+                    );
+                }
+            }
+        }
     }
 }
