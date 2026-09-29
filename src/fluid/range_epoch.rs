@@ -13,7 +13,7 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = 2;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = 3;
 
 /// Which dial a range change moved.
 #[derive(Clone, Copy)]
@@ -51,6 +51,12 @@ const RANGE_CHANGES: &[RangeChange] = &[
     RangeChange {
         epoch: 2,
         target: RangeTarget::Control("pad.progression"),
+    },
+    // Kick Type gained Punch, Hollow, and Grit after Felt. A saved sweep's
+    // depth would cover a different set of characters on the wider dial.
+    RangeChange {
+        epoch: 3,
+        target: RangeTarget::Control("kick.type"),
     },
 ];
 
@@ -148,6 +154,38 @@ mod tests {
     fn no_built_in_song_modulates_the_progression() {
         for song in decode_auto_states() {
             assert_eq!(stale_modulation(&song, 1), None);
+        }
+    }
+
+    #[test]
+    fn old_kick_type_sweeps_are_refused_after_the_dial_grows() {
+        let mut song = SongState::default();
+        song.automation
+            .open_or_create(ControlAddress::new("kick.type"))
+            .depth_ratio = 0.5;
+        let stale = encode_song_code_at_epoch(&song, 2).unwrap();
+        assert_eq!(
+            decode_song_code(&stale).err(),
+            Some(SongCodeError::StaleRange("kick.type"))
+        );
+        assert!(decode_song_code(&encode_song_code(&song).unwrap()).is_ok());
+    }
+
+    #[test]
+    fn built_in_songs_do_not_sweep_the_kick_type_dial() {
+        for song in decode_auto_states() {
+            assert_eq!(stale_modulation(&song, 2), None);
+        }
+    }
+
+    #[test]
+    fn new_kick_characters_round_trip_in_song_codes() {
+        for voice_type in 4..=6 {
+            let mut song = SongState::default();
+            song.controls.kick.voice_type = voice_type as f32;
+            let code = encode_song_code(&song).unwrap();
+            let loaded = decode_song_code(&code).unwrap();
+            assert_eq!(loaded.controls.kick.voice_type, voice_type as f32);
         }
     }
 

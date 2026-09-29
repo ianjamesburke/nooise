@@ -161,7 +161,7 @@ impl FluidControls {
 #[derive(Clone)]
 pub(crate) struct KickControls {
     pub(crate) level: f32,
-    pub(crate) voice_type: f32, // 0=Sub (legacy), 1=Punch, 2=Membrane, 3=Driven character selector
+    pub(crate) voice_type: f32, // index into KICK_TYPES; 0=legacy Sub
     pub(crate) start_freq: f32,
     pub(crate) pitch_decay_ms: f32,
     pub(crate) amp_decay_ms: f32,
