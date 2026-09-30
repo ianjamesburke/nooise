@@ -376,7 +376,7 @@ impl Default for LeadControls {
             // Settled within a 32nd at 82 BPM: audible as a slide between
             // held notes, invisible as lag under a played line.
             glide: 0.03,
-            voice_type: 0.0,
+            voice_type: 2.0,
             octave: 0.0,
             follow: 0.0,
             rate_beats: 0.5,

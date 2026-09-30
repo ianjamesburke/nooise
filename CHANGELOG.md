@@ -1,6 +1,14 @@
 # Changelog
 
 Newest releases appear first.
+## [2.7.0] — 2026-09-30
+
+### Added
+- feat: shape drunken timing into per-layer waves
+- feat: add global swing and drunken timing modules
+
+### Fixed
+- fix: make lead default to soft voice
 ## [2.6.0] — 2026-09-30
 
 ### Added
