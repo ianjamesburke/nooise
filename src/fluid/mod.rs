@@ -77,8 +77,8 @@ mod gesture_audio_tests;
 mod gesture_level_probe;
 
 pub(crate) use auto::{
-    AutoControls, DEFAULT_AUTO_BARS, MorphPosition, MorphState, MorphWriter, decode_auto_states,
-    no_morph,
+    AutoControls, DEFAULT_AUTO_BARS, MorphPosition, MorphState, MorphWriter, auto_song_numbers,
+    decode_auto_states, no_morph,
 };
 use automation::*;
 use controls::*;
@@ -360,20 +360,26 @@ pub(crate) fn run_with_song_state(
 }
 
 /// Run the live interactive TUI already morphing forever between the built-in
-/// `AUTO_STATES` over `bars`-bar legs (`nooise auto [BARS]`). `A` toggles it off
+/// `AUTO_STATES`, starting at `from` and wrapping (`nooise auto --from N`).
+/// `bars` requests phrase-rounded legs. `A` toggles it off
 /// — as does touching any parameter — and back on from the current state.
 pub(crate) fn run_auto(
     bars: u32,
+    from: usize,
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
     start_muted: bool,
 ) -> Result<(), Box<dyn Error>> {
+    let numbers = auto_song_numbers(from)?;
     let mut states = decode_auto_states();
     apply_live_start_to_states(&mut states, midi, start_muted);
-    let initial_song = states[0].clone();
-    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
-        states.clone(),
-        bars,
+    let initial_song = states[from - 1].clone();
+    let chosen = numbers
+        .iter()
+        .map(|number| states[number - 1].clone())
+        .collect();
+    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
+        chosen, numbers, bars,
     ))));
     run_interactive(initial_song, morph, states, bars, osc, midi, start_muted)
 }

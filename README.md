@@ -35,6 +35,16 @@ cargo install nooise --locked
 nooise
 ```
 
+To morph through the built-in songs starting at song 4:
+
+```sh
+nooise auto --from 4 --bars 4
+```
+
+The loop plays 4 through the last song, wraps to 1, and keeps going.
+`nooise --from 4` also starts this loop. `--bars` sets the approximate length
+of each song plus its transition, rounded to whole phrases (default 64).
+
 nooise opens on Master, the hub: one row per layer with its level, then
 Master's own controls. Use arrows to browse and adjust, Enter to go into a
 layer, and Esc to come back out. Tab steps through the layers and back to

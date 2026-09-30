@@ -146,6 +146,32 @@ pub(crate) fn decode_auto_states() -> Vec<SongState> {
         .collect()
 }
 
+#[derive(Debug)]
+pub(crate) struct AutoStartError {
+    number: usize,
+}
+
+impl std::fmt::Display for AutoStartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "there is no song {}; --from must be in 1..={}",
+            self.number,
+            AUTO_STATES.len()
+        )
+    }
+}
+
+impl std::error::Error for AutoStartError {}
+
+/// Full built-in order, rotated to a one-based song number without renumbering.
+pub(crate) fn auto_song_numbers(from: usize) -> Result<Vec<usize>, AutoStartError> {
+    if !(1..=AUTO_STATES.len()).contains(&from) {
+        return Err(AutoStartError { number: from });
+    }
+    Ok((from..=AUTO_STATES.len()).chain(1..from).collect())
+}
+
 /// Throttle granularity for the morph writer: one 1/8 note, i.e. half a beat.
 const MORPH_TICK_BEATS: f64 = 0.5;
 
@@ -938,6 +964,38 @@ impl MorphWriter {
 mod tests {
     use super::super::module::preset_slot;
     use super::*;
+
+    #[test]
+    fn auto_from_last_song_wraps_and_keeps_original_labels() {
+        let states = decode_auto_states();
+        let count = states.len();
+        let numbers = auto_song_numbers(count).unwrap();
+        assert_eq!(numbers.len(), count);
+        assert_eq!(numbers[0], count);
+        assert_eq!(numbers[1], 1);
+        let selected = numbers
+            .iter()
+            .map(|number| states[number - 1].clone())
+            .collect();
+        let morph = MorphState::labelled(selected, numbers, 4);
+        let mut beat = 0.0;
+        for leg in 0..=(count * 2) {
+            let expected = if leg % count == 0 { count } else { leg % count };
+            assert_eq!(morph.position_at(beat).playing, Some(expected));
+            assert_eq!(
+                morph.controls_at(beat).master.bpm,
+                states[expected - 1].controls.master.bpm
+            );
+            beat += morph.leg_beats(leg as i64);
+        }
+        assert_eq!(
+            auto_song_numbers(1).unwrap(),
+            (1..=count).collect::<Vec<_>>()
+        );
+        for invalid in [0, count + 1, usize::MAX] {
+            assert!(auto_song_numbers(invalid).is_err());
+        }
+    }
 
     #[test]
     fn tempo_chooses_glide_half_double_or_landing_jump() {

@@ -1,7 +1,7 @@
 //! Binary entry point: CLI parsing for `run`/`version`/`update`/`render`/`auto`
 //! and a bare song code, then handoff to the matching `fluid` entry.
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -17,6 +17,9 @@ mod update_check;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    if let Err(error) = cli.validate_from() {
+        error.exit();
+    }
     if matches!(
         cli.command,
         Some(CliCommand::Update | CliCommand::MidiPorts | CliCommand::Render(_))
@@ -32,13 +35,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
     match cli.command {
         None => match cli.song.as_deref() {
-            None => fluid::run(cli.osc, midi, cli.start_muted),
+            None => match cli.from {
+                Some(from) => fluid::run_auto(bars, from, cli.osc, midi, cli.start_muted),
+                None => fluid::run(cli.osc, midi, cli.start_muted),
+            },
             Some(song) => play_song(song, bars, cli.osc, midi, cli.start_muted),
         },
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::MidiPorts) => midi::list_ports(),
         Some(CliCommand::Render(args)) => render(args),
-        Some(CliCommand::Auto) => fluid::run_auto(bars, cli.osc, midi, cli.start_muted),
+        Some(CliCommand::Auto) => {
+            fluid::run_auto(bars, cli.from.unwrap_or(1), cli.osc, midi, cli.start_muted)
+        }
     }
 }
 
@@ -59,6 +67,9 @@ struct Cli {
     /// Approximate bars per song plus transition, rounded to whole phrases. Defaults to 64.
     #[arg(long, global = true)]
     bars: Option<u32>,
+    /// Start the full built-in song loop at this song number, then wrap around.
+    #[arg(long, global = true, value_name = "SONG")]
+    from: Option<usize>,
     /// Start live playback with Master Level at 0%.
     #[arg(short = 'M', long, global = true)]
     start_muted: bool,
@@ -92,6 +103,23 @@ struct Cli {
 }
 
 impl Cli {
+    fn validate_from(&self) -> Result<(), clap::Error> {
+        if self.from.is_some()
+            && (self.song.is_some() || !matches!(self.command, None | Some(CliCommand::Auto)))
+        {
+            return Err(Self::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--from starts the full song loop; use it alone or with auto, without a separate song selection",
+            ));
+        }
+        if let Some(from) = self.from {
+            fluid::auto_song_numbers(from).map_err(|error| {
+                Self::command().error(clap::error::ErrorKind::ValueValidation, error.to_string())
+            })?;
+        }
+        Ok(())
+    }
+
     fn midi_config(&self) -> midi::MidiConfig<'_> {
         midi::MidiConfig {
             input: self
@@ -210,6 +238,46 @@ mod tests {
     fn parse(items: &[&str]) -> Result<Cli, clap::Error> {
         let args = std::iter::once("nooise").chain(items.iter().copied());
         Cli::try_parse_from(args)
+    }
+
+    #[test]
+    fn from_selects_the_auto_start_before_or_after_the_subcommand() {
+        for args in [
+            &["--from", "4"][..],
+            &["auto", "--from", "4"],
+            &["--from", "4", "auto"],
+            &["auto", "--from", "4", "--bars", "8", "-M"],
+        ] {
+            let cli = parse(args).unwrap();
+            cli.validate_from().unwrap();
+            assert_eq!(cli.from, Some(4));
+        }
+        for args in [
+            &["4", "--from", "2"][..],
+            &["4,5", "--from", "2"],
+            &["render", "--from", "2"],
+            &["update", "--from", "2"],
+            &["midi-ports", "--from", "2"],
+        ] {
+            assert_eq!(
+                parse(args).unwrap().validate_from().unwrap_err().kind(),
+                ErrorKind::ArgumentConflict
+            );
+        }
+        for invalid in [0, crate::fluid::decode_auto_states().len() + 1, usize::MAX] {
+            let number = invalid.to_string();
+            assert_eq!(
+                parse(&["--from", &number])
+                    .unwrap()
+                    .validate_from()
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::ValueValidation
+            );
+        }
+        for args in [&["--from"][..], &["--from", "nope"], &["--from", "-1"]] {
+            assert!(parse(args).is_err());
+        }
     }
 
     #[test]
