@@ -1209,7 +1209,7 @@ mod tests {
 
         assert!(
             rendered.contains("JUMP\u{2420}Kick")
-                && rendered.contains("Kick\u{2420}selected")
+                && rendered.contains("Kick")
                 && rendered.contains("j\u{2420}volume"),
             "the pending leader names its target and keys: {rendered:?}"
         );

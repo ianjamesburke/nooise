@@ -918,8 +918,7 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
         )))
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(BORDER))
-        .padding(Padding::new(1, 1, 1, 1));
+        .border_style(Style::default().fg(BORDER));
     let content = block.inner(area);
     f.render_widget(block, area);
 
@@ -931,21 +930,33 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
         .join("  ");
     let lines = match surface {
         PerformanceSurface::ChooseLayer => vec![
-            INSTRUMENTS[..4]
-                .iter()
-                .map(|row| binding(row.key, row.instrument.name()))
-                .collect::<Vec<_>>()
-                .join("  "),
-            INSTRUMENTS[4..]
-                .iter()
-                .map(|row| binding(row.key, row.instrument.name()))
-                .collect::<Vec<_>>()
-                .join("  "),
+            format!(
+                "{:<12}{}",
+                binding(INSTRUMENTS[0].key, INSTRUMENTS[0].instrument.name()),
+                binding(INSTRUMENTS[4].key, INSTRUMENTS[4].instrument.name())
+            ),
+            format!(
+                "{:<12}{}",
+                binding(INSTRUMENTS[1].key, INSTRUMENTS[1].instrument.name()),
+                binding(INSTRUMENTS[5].key, INSTRUMENTS[5].instrument.name())
+            ),
+            format!(
+                "{:<12}{}",
+                binding(INSTRUMENTS[2].key, INSTRUMENTS[2].instrument.name()),
+                binding(INSTRUMENTS[6].key, INSTRUMENTS[6].instrument.name())
+            ),
+            format!(
+                "{:<12}{}",
+                binding(INSTRUMENTS[3].key, INSTRUMENTS[3].instrument.name()),
+                binding(INSTRUMENTS[7].key, INSTRUMENTS[7].instrument.name())
+            ),
             format!("{parameter_line}  Esc cancel"),
         ],
         PerformanceSurface::ChooseParameter { instrument } => vec![
-            format!("{} selected", instrument.name()),
-            format!("{parameter_line}  Esc cancel"),
+            instrument.name().to_string(),
+            binding(PARAMETERS[0].key, PARAMETERS[0].label),
+            binding(PARAMETERS[1].key, PARAMETERS[1].label),
+            "Esc cancel".to_string(),
         ],
     };
     f.render_widget(

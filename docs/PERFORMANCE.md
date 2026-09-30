@@ -140,9 +140,10 @@ is the first audible move. A layer whose chain is full says so and stays
 put.
 
 The leader only ever moves a cursor, so it needs no key-release support and
-behaves identically on every terminal. It renders an immediate Jump map over
-the control area, naming every layer key and the current-page Level and
-Filter routes. The breadcrumb, gesture row, and footer remain visible.
+behaves identically on every terminal. It renders an immediate Jump menu over
+the control area: layers form a two-column list, and the last line holds the
+current-page Volume and Filter routes. The gesture row and footer remain
+visible.
 
 Lead play retains its own `i` entry and existing bindings.
 

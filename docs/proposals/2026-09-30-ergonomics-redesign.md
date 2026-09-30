@@ -69,9 +69,9 @@ Esc cancel
 current-page shortcuts when the player wants Level or Filter rather than the
 remembered row.
 
-The map replaces the control area in the same way as Help. The breadcrumb,
-activity row, and stable footer remain visible. At the minimum 46x11 frame,
-the root map uses two target rows and a compact current-page row.
+The map replaces the breadcrumb and control area. The activity row and stable
+footer remain visible. At the minimum 46x11 frame, the root is a two-column
+layer list with one current-page route row beneath it.
 
 Leader hints default to on. Hints may later be set to off as a local interface
 preference. The leader still works when hints are off. Hint visibility never
