@@ -67,6 +67,10 @@
   next song. `--bars` requests an approximate total length. Hold and crossing
   each round to whole outgoing phrases, at least one phrase per section.
   Progression, chord length/window, Kick, and Swing change on the landing.
+- **Tempo bridge:** a transition tempo near the outgoing BPM that is half or
+  double the incoming BPM. The crossing glides to this bridge, then switches
+  to the incoming song's authored BPM on landing. Nearby tempos glide
+  directly; large gaps without a close bridge jump on landing.
 - **Song value:** what a song code stores for a table-indexed control. It is
   permanent and separate from the control's dial position, so a table can
   grow without changing what a saved code means.

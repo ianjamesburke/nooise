@@ -18,7 +18,8 @@ use super::module::{ModuleSlotField, module_kind_at};
 use super::registry::parse_module_slot_id;
 use super::{
     AutomationState, ControlKind, ControlSpec, FluidControls, GRID_BEAT_EPSILON, LEVEL_RAMP_MS,
-    SongState, Tab, all_specs, decode_song_code, smoothstep, spec_by_id,
+    MASTER_BPM_MAX, MASTER_BPM_MIN, SongState, Tab, all_specs, decode_song_code, smoothstep,
+    spec_by_id,
 };
 
 /// Requested bars per morph leg; each section rounds to complete phrases.
@@ -158,6 +159,9 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 // During the transition each control moves by its own behavior, derived from
 // its `ControlKind`:
 //
+//   Tempo — ease toward the destination or its nearby half/double-time
+//       bridge; unmatched large gaps wait for a jump at the landing.
+//
 //   Glide (Gain/Continuous) — lerp `from`→`to` across the transition window.
 //       Levels glide too, except the drum cuts below. Perc and Clap exit on
 //       the transition downbeat when their target levels are zero. Kick is silent
@@ -231,6 +235,8 @@ fn level_distance(a: &FluidControls, b: &FluidControls) -> f32 {
 /// How one control crosses a leg. `move_of` is the only place that decides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Move {
+    /// Follow the leg's tempo plan, including half/double-time landings.
+    Tempo,
     /// Lerp across the transition window.
     Glide,
     /// Hold `from` through the hold, then go silent for the crossing.
@@ -252,6 +258,9 @@ fn move_of(
     swapped: &[(&str, usize)],
     held: &[(&str, usize)],
 ) -> Move {
+    if spec.id == "master.bpm" {
+        return Move::Tempo;
+    }
     if Tab::Kick.level_id() == Some(spec.id) {
         return Move::Drop;
     }
@@ -388,6 +397,7 @@ pub(crate) struct MorphState {
     /// Cumulative leg starts, including the end of one complete cycle.
     leg_starts: Vec<f64>,
     timings: Vec<LegTiming>,
+    tempo_moves: Vec<TempoMove>,
     /// Staggered hard-switch offsets for leg i -> i+1 (mod n), precomputed once.
     stepped: Vec<Vec<(usize, f64)>>,
     /// Slots held as a unit through leg i -> i+1 because they carry Swing or
@@ -402,6 +412,41 @@ pub(crate) struct MorphState {
     origin_beat: f64,
     /// A live toggle has a shorter first leg and preserves the sounding phrase.
     first_leg: Option<LegTiming>,
+}
+
+/// A 15 BPM gap at 80 BPM, expressed as a faster/slower ratio so the
+/// threshold is symmetric in both directions. Shared by glides and bridges.
+const TEMPO_MATCH_RATIO: f32 = 1.0 + 15.0 / 80.0;
+
+#[derive(Clone, Copy, Debug)]
+enum TempoMove {
+    /// Glide to this tempo during the crossing; the next leg restores its
+    /// authored BPM, giving an exact half/double-time switch when applicable.
+    Glide(f32),
+    /// Keep the outgoing tempo until the destination downbeat.
+    Jump,
+}
+
+impl TempoMove {
+    fn new(from: f32, to: f32) -> Self {
+        let distance = |bpm: f32| from.max(bpm) / from.min(bpm);
+        if distance(to) <= TEMPO_MATCH_RATIO {
+            return Self::Glide(to);
+        }
+        let bridge = [to * 0.5, to * 2.0]
+            .into_iter()
+            .filter(|bpm| (MASTER_BPM_MIN..=MASTER_BPM_MAX).contains(bpm))
+            .filter(|bpm| distance(*bpm) <= TEMPO_MATCH_RATIO)
+            .min_by(|a, b| distance(*a).total_cmp(&distance(*b)));
+        bridge.map_or(Self::Jump, Self::Glide)
+    }
+
+    fn bpm_at(self, from: f32, progress: f32) -> f32 {
+        match self {
+            Self::Glide(to) => from + (to - from) * smoothstep(progress),
+            Self::Jump => from,
+        }
+    }
 }
 
 /// Hold and crossing each span whole phrases of the outgoing song.
@@ -465,6 +510,14 @@ impl MorphState {
         let timings: Vec<_> = (0..n)
             .map(|i| LegTiming::new(&endpoints[i].controls, bars))
             .collect();
+        let tempo_moves = (0..n)
+            .map(|i| {
+                TempoMove::new(
+                    endpoints[i].controls.master.bpm,
+                    endpoints[(i + 1) % n].controls.master.bpm,
+                )
+            })
+            .collect();
         let mut leg_starts = vec![0.0];
         for timing in &timings {
             leg_starts.push(leg_starts.last().copied().unwrap_or(0.0) + timing.beats());
@@ -474,6 +527,7 @@ impl MorphState {
             morph_ids: (1..=n).map(Some).collect(),
             leg_starts,
             timings,
+            tempo_moves,
             stepped,
             held,
             swapped,
@@ -670,6 +724,16 @@ impl MorphState {
         }
     }
 
+    /// One tempo curve for the published controls and the audio-rate clock.
+    /// At landing, leg selection returns the incoming song's authored BPM.
+    pub(crate) fn tempo_at(&self, beat: f64) -> f32 {
+        let (from, _, t, leg) = self.leg_at_indexed(beat);
+        let timing = self.leg_timing(leg);
+        let progress =
+            ((t * timing.beats() - timing.hold) / timing.crossing).clamp(0.0, 1.0) as f32;
+        self.tempo_moves[from].bpm_at(self.endpoints[from].controls.master.bpm, progress)
+    }
+
     /// Fade the Kick layer's existing voice and effect tail during the last
     /// 30 ms of the hold. The whole percentage phase is exactly silent, and
     /// the next leg opens at full gain for the destination's first hit.
@@ -703,6 +767,7 @@ impl MorphState {
             let to_v = (spec.get)(to);
 
             let value = match move_of(spec, from, to, swapped, held) {
+                Move::Tempo => self.tempo_at(beat),
                 Move::Drop => {
                     if t_beat < transition_start {
                         from_v
@@ -873,6 +938,44 @@ impl MorphWriter {
 mod tests {
     use super::super::module::preset_slot;
     use super::*;
+
+    #[test]
+    fn tempo_chooses_glide_half_double_or_landing_jump() {
+        for (source, target, bridge) in [
+            (100.0, 115.0, 115.0),
+            (115.0, 100.0, 100.0),
+            (80.0, 150.0, 75.0),
+            (150.0, 80.0, 160.0),
+            (70.0, 140.0, 70.0),
+            (140.0, 70.0, 140.0),
+            (80.0, 120.0, 80.0),
+            (120.0, 80.0, 120.0),
+            (80.0, 95.0, 95.0),
+            (80.0, 96.0, 80.0),
+            (80.0, 190.0, 95.0),
+            (80.0, 191.0, 80.0),
+            (80.0, 135.0, 67.5),
+            (135.0, 80.0, 160.0),
+            (30.0, 200.0, 30.0),
+        ] {
+            let mut from = phrase_controls();
+            from.master.bpm = source;
+            let mut to = from.clone();
+            to.master.bpm = target;
+            let morph = MorphState::new(
+                vec![SongState::from_controls(from), SongState::from_controls(to)],
+                6,
+            );
+            assert_eq!(morph.controls_at(15.0).master.bpm, source);
+            assert_eq!(morph.controls_at(16.0).master.bpm, source);
+            assert!(
+                (morph.controls_at(20.0).master.bpm - (source + bridge) * 0.5).abs() < 0.001,
+                "{source} -> {target}: midpoint should head toward {bridge}"
+            );
+            assert!((morph.controls_at(23.999).master.bpm - bridge).abs() < 0.001);
+            assert_eq!(morph.controls_at(24.0).master.bpm, target);
+        }
+    }
 
     #[test]
     fn songs_three_and_four_cross_on_complete_phrases_in_both_directions() {

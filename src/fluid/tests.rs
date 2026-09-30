@@ -1057,6 +1057,78 @@ fn live_morph_uses_the_audio_phrase_anchor_after_a_progression_edit() {
 }
 
 #[test]
+fn morph_tempo_reaches_the_audio_clock_and_lands_with_the_first_kick() {
+    for (source, target, bridge) in [
+        (120.0, 132.0, 132.0),
+        (80.0, 150.0, 75.0),
+        (150.0, 80.0, 160.0),
+        (80.0, 120.0, 80.0),
+    ] {
+        let sample_rate = 8_000.0;
+        let mut from = FluidControls::default();
+        from.master.bpm = source;
+        from.pad.chord_bars = 0.5;
+        from.pad.chord_count = 2.0;
+        from.pad.level = 0.0;
+        from.kick.level = 0.8;
+        from.kick.interval_beats = 1.0;
+        let mut to = from.clone();
+        to.master.bpm = target;
+        to.pad.chord_offset = 4.0;
+        to.modules.kick[2] = preset_slot("swing", 0.5);
+        let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
+            vec![
+                SongState::from_controls(from.clone()),
+                SongState::from_controls(to),
+            ],
+            3,
+        ))));
+        let mut engine = FluidEngine::new(
+            sample_rate,
+            live_session(from, AutomationState::default()),
+            morph,
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(7);
+        for (beat, bpm) in [
+            (8.0, source),
+            (10.0, (source + bridge) * 0.5),
+            (12.0, target),
+            (24.0, source),
+        ] {
+            while engine.tempo.beat + GRID_BEAT_EPSILON < beat {
+                engine.next_stereo();
+            }
+            let before = engine.tempo.beat;
+            engine.next_stereo();
+            assert!(
+                (engine.tempo.bpm - f64::from(bpm)).abs() < 0.01,
+                "{source} -> {target} at beat {beat}: clock {} wanted {bpm}",
+                engine.tempo.bpm
+            );
+            assert!(
+                (engine.tempo.beat - before - engine.tempo.bpm / (60.0 * f64::from(sample_rate)))
+                    .abs()
+                    < 1e-12,
+                "tempo changes must not reset or jump the beat position"
+            );
+            if beat == 12.0 || beat == 24.0 {
+                assert_eq!(engine.pad.cursor.slot(), if beat == 12.0 { 4 } else { 0 });
+                let mut peak = 0.0f32;
+                while engine.tempo.beat < beat + 0.15 {
+                    let (left, right) = engine.next_stereo();
+                    peak = peak.max(left.abs()).max(right.abs());
+                }
+                assert!(
+                    peak > 0.005,
+                    "{source} -> {target}: first Kick at beat {beat} missing: {peak}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn morph_landing_first_kick_is_as_audible_as_a_held_hit() {
     let sample_rate = 8_000.0;
     let mut controls = FluidControls::default();

@@ -789,6 +789,14 @@ impl StereoEngine for FluidEngine {
 
         let fade = startup_fade(self.current_sample, self.sample_rate);
         let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
+        let morph = self.morph.load();
+        let active_morph = morph.as_ref().as_ref();
+        if let Some(morph) = active_morph {
+            effective.master.bpm = morph.tempo_at(self.tempo.beat);
+            // The morph already supplies a smooth curve at sample rate.
+            // A second lag would drag half/double-time jumps past the landing.
+            self.tempo.bpm = f64::from(effective.master.bpm);
+        }
         let mut timing = self.tempo.tick(effective.master.bpm, self.transport);
         if let Some(clock) = &mut self.midi_clock {
             clock.tick(timing);
@@ -803,8 +811,6 @@ impl StereoEngine for FluidEngine {
         self.plan.apply(&mut effective, timing);
         // A morph's percentage phase has no Kick, including automation that
         // lifts its Level above zero and tails from Kick-layer effects.
-        let morph = self.morph.load();
-        let active_morph = morph.as_ref().as_ref();
         timing.morph_phrase_start =
             active_morph.and_then(|morph| morph.phrase_start_at(timing.beat));
         let kick_gain =
