@@ -507,11 +507,12 @@ impl EffectExecutor {
                         generation: snapshot.generation,
                     };
                 }
-                if let Some(action) = self
-                    .session
-                    .load()
-                    .planned
-                    .filter(|action| action.is_due(beat))
+                if !self.session.audio_clock_active()
+                    && let Some(action) = self
+                        .session
+                        .load()
+                        .planned
+                        .filter(|action| action.is_due(beat))
                 {
                     let tab = action.tab();
                     let snapshot = self.session.update(|snapshot| {
@@ -1480,6 +1481,26 @@ mod tests {
         executor.plan_mute(Tab::Kick, 8.0).unwrap();
         executor.plan_mute(Tab::Kick, 8.0).unwrap();
         assert_eq!(executor.session().load().planned, None);
+    }
+
+    #[test]
+    fn audio_clock_owns_armed_mute_boundary() {
+        let mut executor = executor();
+        executor.plan_mute(Tab::Kick, 5.25).unwrap();
+        executor.session().publish_audio_beat(7.99);
+
+        executor
+            .execute(LiveEffect::CommitPending { beat: 8.0 })
+            .unwrap();
+
+        assert!(!executor.session().load().muted[Tab::Kick as usize]);
+        assert_eq!(
+            executor.session().load().planned,
+            Some(PlannedAction::Mute {
+                tab: Tab::Kick,
+                target_beat: 8.0,
+            })
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::error::Error;
 use std::f32::consts::TAU;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;

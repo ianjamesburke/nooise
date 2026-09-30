@@ -129,7 +129,9 @@ into Lead, and stays the quickest route to the page already in front of
 you.
 
 `Space m` arms the visible layer's mute for the next bar. Its breadcrumb and
-hub row show a small `m` until the boundary, where it becomes `(M)`. Repeating
+hub row show a small `m` until the boundary, where it becomes `(M)`. The audio
+gate completes its click-free ramp before that downbeat, so its first onset is
+already muted or audible. Repeating
 `Space m` before that bar cancels the same planned mute. The action is part of
 the saved session state, rebased to the next song's beat zero. Escape leaves a
 pending leader; Space while it is pending is inert.
@@ -181,7 +183,7 @@ Lead play retains its own `i` entry and existing bindings.
    its Level.
 7. On Kick, press Space, `m`: its hub row and breadcrumb show `m` while the
    sound continues. On the next bar it reads `(M)` and the Kick drops out
-   click-free. Repeat Space, `m` before the boundary to cancel. Save while it
+   click-free with no first hit. Repeat Space, `m` before the boundary to cancel. Save while it
    is armed, load the code, and confirm it still lands at the loaded song's
    next bar.
 8. Press `?` from Browsing: the shortcut map should open over the

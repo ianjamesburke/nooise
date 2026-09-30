@@ -91,6 +91,8 @@ pub(crate) struct LiveSession {
     audio_seconds_bits: Arc<AtomicU64>,
     audio_beat_bits: Arc<AtomicU64>,
     audio_phrase_start_bits: Arc<AtomicU64>,
+    /// Once rendering has begun, the audio clock owns exact-boundary actions.
+    audio_clock_active: Arc<AtomicBool>,
 }
 
 impl LiveSession {
@@ -100,6 +102,7 @@ impl LiveSession {
             audio_seconds_bits: Arc::new(AtomicU64::new(0)),
             audio_beat_bits: Arc::new(AtomicU64::new(0)),
             audio_phrase_start_bits: Arc::new(AtomicU64::new(0)),
+            audio_clock_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -116,8 +119,15 @@ impl LiveSession {
     }
 
     pub(crate) fn publish_audio_beat(&self, beat: f64) {
+        self.audio_clock_active.store(true, Ordering::Relaxed);
         self.audio_beat_bits
             .store(beat.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Whether an audio callback has started and therefore owns musical
+    /// boundaries more precisely than the terminal scheduler can.
+    pub(crate) fn audio_clock_active(&self) -> bool {
+        self.audio_clock_active.load(Ordering::Relaxed)
     }
 
     pub(crate) fn audio_phrase_start(&self) -> f64 {

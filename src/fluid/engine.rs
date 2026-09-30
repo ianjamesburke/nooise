@@ -516,6 +516,9 @@ pub(crate) struct FluidEngine {
     pub(crate) gain_smoothers: GainSmoothers,
     mute_gates: OutputGates,
     muted: MuteState,
+    /// The UI publishes planned actions ahead of time; audio owns their exact
+    /// boundary so an onset never sees the previous mute state.
+    planned: Option<PlannedAction>,
     pub(crate) pad: PadEngine,
     pub(crate) perc: PercEngine,
     pub(crate) kick: KickEngine,
@@ -579,6 +582,7 @@ impl FluidEngine {
             gain_smoothers: GainSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
             muted: live.muted,
+            planned: live.planned,
             pad: PadEngine::new(
                 sample_rate,
                 &snapshot.pad,
@@ -777,9 +781,10 @@ impl StereoEngine for FluidEngine {
                 self.gain_smoothers
                     .settle("bass.level", self.snapshot.bass.level);
             }
-            self.mute_gates
-                .set_targets(&session.muted, self.sample_rate);
-            self.muted = session.muted;
+            self.planned = session.planned;
+            let muted = self.planned_mute_state(self.tempo.beat, self.tempo.bpm, session.muted);
+            self.mute_gates.set_targets(&muted, self.sample_rate);
+            self.muted = muted;
             self.lead.observe(session.lead_play);
             self.master_bus
                 .set_controls(&self.snapshot.master, self.sample_rate);
@@ -800,6 +805,7 @@ impl StereoEngine for FluidEngine {
             self.tempo.bpm = f64::from(effective.master.bpm);
         }
         let mut timing = self.tempo.tick(effective.master.bpm, self.transport);
+        self.advance_planned_mute(timing);
         if let Some(clock) = &mut self.midi_clock {
             clock.tick(timing);
         }
@@ -988,6 +994,128 @@ impl StereoEngine for FluidEngine {
             }
         }
         out
+    }
+}
+
+impl FluidEngine {
+    /// Start the existing click-free gate early enough that it reaches its
+    /// target on the downbeat, then publish the audible state on that sample.
+    fn advance_planned_mute(&mut self, timing: TimingContext) {
+        if timing.transport != Transport::Playing {
+            return;
+        }
+        let Some(PlannedAction::Mute { tab, target_beat }) = self.planned else {
+            return;
+        };
+        let action = PlannedAction::Mute { tab, target_beat };
+        let session = self.session.load();
+        if session.planned != Some(action) {
+            self.planned = session.planned;
+            self.mute_gates
+                .set_targets(&session.muted, self.sample_rate);
+            self.muted = session.muted;
+            return;
+        }
+
+        let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
+        self.mute_gates
+            .set_targets(&boundary_muted, self.sample_rate);
+        self.muted = boundary_muted;
+
+        if timing.beat < target_beat {
+            return;
+        }
+        match self.session.transact(|snapshot| {
+            if snapshot.planned != Some(action) {
+                return Err(());
+            }
+            snapshot.muted[tab as usize] = !snapshot.muted[tab as usize];
+            snapshot.planned = None;
+            Ok(())
+        }) {
+            Ok(snapshot) => {
+                self.muted = snapshot.muted;
+                self.planned = None;
+            }
+            Err(()) => {
+                let session = self.session.load();
+                self.mute_gates
+                    .set_targets(&session.muted, self.sample_rate);
+                self.muted = session.muted;
+                self.planned = session.planned;
+            }
+        }
+    }
+
+    /// State the gate must be approaching before a planned mute's boundary.
+    /// The extra sample guarantees the eased ramp has settled before the
+    /// first onset at that downbeat is rendered.
+    fn planned_mute_state(&self, beat: f64, bpm: f64, muted: MuteState) -> MuteState {
+        let Some(PlannedAction::Mute { tab, target_beat }) = self.planned else {
+            return muted;
+        };
+        let ramp_samples = (LEVEL_RAMP_MS * 0.001 * self.sample_rate).round() as f64 + 1.0;
+        let ramp_beats = ramp_samples * bpm / (60.0 * f64::from(self.sample_rate));
+        if beat < target_beat - ramp_beats {
+            return muted;
+        }
+        let mut boundary_muted = muted;
+        boundary_muted[tab as usize] = !boundary_muted[tab as usize];
+        boundary_muted
+    }
+}
+
+#[cfg(test)]
+mod planned_mute_tests {
+    use super::*;
+
+    const SAMPLE_RATE: f32 = 48_000.0;
+    const TARGET_BEAT: f64 = 0.1;
+
+    fn engine_with_planned_mute(initially_muted: bool) -> (FluidEngine, LiveSession) {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        snapshot.muted[Tab::Kick as usize] = initially_muted;
+        snapshot.planned = Some(PlannedAction::Mute {
+            tab: Tab::Kick,
+            target_beat: TARGET_BEAT,
+        });
+        let session = LiveSession::new(snapshot);
+        let engine = FluidEngine::new(
+            SAMPLE_RATE,
+            session.clone(),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        (engine, session)
+    }
+
+    fn render_through_boundary(engine: &mut FluidEngine) {
+        while engine.tempo.beat < TARGET_BEAT {
+            engine.next_stereo();
+        }
+        // TempoClock reports the sample's beat before it advances, so render
+        // the first sample at or beyond the boundary as well.
+        engine.next_stereo();
+    }
+
+    #[test]
+    fn planned_mute_gate_is_closed_at_its_downbeat() {
+        let (mut engine, session) = engine_with_planned_mute(false);
+        render_through_boundary(&mut engine);
+
+        assert!(session.load().muted[Tab::Kick as usize]);
+        assert_eq!(session.load().planned, None);
+        assert_eq!(engine.mute_gates.gates[Tab::Kick as usize].current, 0.0);
+    }
+
+    #[test]
+    fn planned_unmute_gate_is_open_at_its_downbeat() {
+        let (mut engine, session) = engine_with_planned_mute(true);
+        render_through_boundary(&mut engine);
+
+        assert!(!session.load().muted[Tab::Kick as usize]);
+        assert_eq!(session.load().planned, None);
+        assert_eq!(engine.mute_gates.gates[Tab::Kick as usize].current, 1.0);
     }
 }
 

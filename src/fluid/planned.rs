@@ -5,7 +5,7 @@ use super::Tab;
 /// A user-visible action that will land at an absolute song beat.
 ///
 /// The action stays in the aggregate session rather than the UI executor so a
-/// save carries the audible future and the production tick owns its commit.
+/// save carries the audible future and the audio clock owns its exact commit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum PlannedAction {
     Mute { tab: Tab, target_beat: f64 },
