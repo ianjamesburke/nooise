@@ -906,6 +906,53 @@ fn start_muted_zeros_master_level_across_morph_endpoints() {
 }
 
 #[test]
+fn morph_percentage_phase_has_no_kick_audio_even_with_a_kick_effect_tail() {
+    let sample_rate = 8_000.0;
+    let mut controls = FluidControls::default();
+    controls.master.bpm = 120.0;
+    controls.pad.level = 0.0;
+    controls.kick.level = 0.8;
+    controls.kick.interval_beats = 0.25;
+    controls.modules.kick[2] = preset_slot("room", 0.7);
+    let mut song = SongState::from_controls(controls.clone());
+    song.automation.set_route(
+        ControlAddress::new("kick.level"),
+        LfoRoute {
+            depth_ratio: 0.2,
+            ..LfoRoute::default()
+        },
+    );
+    let automation = song.automation.clone();
+    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(vec![song], 3))));
+    let mut engine = FluidEngine::new(
+        sample_rate,
+        live_session(controls, automation),
+        morph,
+        Arc::new(FluidTelemetry::default()),
+    );
+    engine.reseed(7);
+
+    let mut held_peak = 0.0f32;
+    let mut crossing_peak = 0.0f32;
+    let mut landed_peak = 0.0f32;
+    for frame in 0..(sample_rate * 6.5) as usize {
+        let (left, right) = engine.next_stereo();
+        let peak = left.abs().max(right.abs());
+        let seconds = frame as f32 / sample_rate;
+        if (3.5..3.9).contains(&seconds) {
+            held_peak = held_peak.max(peak);
+        } else if (4.25..5.75).contains(&seconds) {
+            crossing_peak = crossing_peak.max(peak);
+        } else if (6.1..6.4).contains(&seconds) {
+            landed_peak = landed_peak.max(peak);
+        }
+    }
+    assert!(held_peak > 0.001, "the hold needs an audible Kick");
+    assert_eq!(crossing_peak, 0.0, "Kick and its reverb must be silent");
+    assert!(landed_peak > 0.001, "Kick must return after the landing");
+}
+
+#[test]
 fn turning_on_one_midi_direction_turns_off_the_other_on_each_track() {
     let mut controls = FluidControls::default();
     for (input, output) in [

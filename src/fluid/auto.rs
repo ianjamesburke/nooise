@@ -17,8 +17,8 @@ use super::automation::{
 use super::module::{ModuleSlotField, module_kind_at};
 use super::registry::parse_module_slot_id;
 use super::{
-    AutomationState, ControlKind, ControlSpec, FluidControls, SongState, Tab, all_specs,
-    decode_song_code, spec_by_id,
+    AutomationState, ControlKind, ControlSpec, FluidControls, LEVEL_RAMP_MS, SongState, Tab,
+    all_specs, decode_song_code, smoothstep, spec_by_id,
 };
 
 /// Bars per morph leg, matching the throttled-writer granularity of one leg
@@ -162,11 +162,9 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 // its `ControlKind`:
 //
 //   Glide (Gain/Continuous) — lerp `from`→`to` across the transition window.
-//       Levels glide too, so total audible energy always stays between the two
-//       endpoints: a morph can never introduce silence the endpoints don't have.
-//       Drum exits are the exception: perc, kick, and clap cut together on the
-//       transition downbeat when the target has no drums. Kick also starts on
-//       that downbeat, rather than fading in with the other drum voices.
+//       Levels glide too, except the drum cuts below. Perc and Clap exit on
+//       the transition downbeat when their target levels are zero. Kick is silent
+//       for every percentage transition and returns on the next song downbeat.
 //
 //   Swing — any slot holding Swing on either endpoint waits through the full
 //       crossing. Its identity and Amount change together on the next song's
@@ -208,19 +206,21 @@ const STRUCTURAL_SNAP_IDS: &[&str] = &[
     "arp.pattern",
 ];
 
-/// The drum voices, whose level ids (`Tab::level_id`) snap instead of glide.
-const DRUM_TABS: [Tab; 3] = [Tab::Perc, Tab::Kick, Tab::Clap];
+/// Drum levels that cut on exit instead of gliding to zero.
+const EXIT_DRUM_TABS: [Tab; 2] = [Tab::Perc, Tab::Clap];
 
 fn is_structural(spec_id: &str) -> bool {
     STRUCTURAL_SNAP_IDS.contains(&spec_id)
 }
 
 fn is_drum_level(spec_id: &str) -> bool {
-    DRUM_TABS.iter().any(|tab| tab.level_id() == Some(spec_id))
+    EXIT_DRUM_TABS
+        .iter()
+        .any(|tab| tab.level_id() == Some(spec_id))
 }
 
 fn snaps_drum_level(spec_id: &str, from: f32, to: f32) -> bool {
-    Tab::Kick.level_id() == Some(spec_id) || (is_drum_level(spec_id) && from > 0.0 && to == 0.0)
+    is_drum_level(spec_id) && from > 0.0 && to == 0.0
 }
 
 /// Every performing voice's level/gain row: each non-Master tab's
@@ -247,6 +247,8 @@ fn level_distance(a: &FluidControls, b: &FluidControls) -> f32 {
 enum Move {
     /// Lerp across the transition window.
     Glide,
+    /// Hold `from` through the hold, then go silent for the crossing.
+    Drop,
     /// Hold `from` for the full leg; the next leg begins at `to`.
     Wait,
     /// Hold `from`, jump to `to` on the transition downbeat.
@@ -264,6 +266,9 @@ fn move_of(
     swapped: &[(&str, usize)],
     held: &[(&str, usize)],
 ) -> Move {
+    if Tab::Kick.level_id() == Some(spec.id) {
+        return Move::Drop;
+    }
     if in_slot_set(held, spec.id) {
         return Move::Wait;
     }
@@ -583,6 +588,17 @@ impl MorphState {
         }
     }
 
+    /// Fade the Kick layer's existing voice and effect tail during the last
+    /// 30 ms of the hold. The whole percentage phase is exactly silent, and
+    /// the next leg opens at full gain for the destination's first hit.
+    pub(crate) fn kick_gain_at(&self, beat: f64, bpm: f64) -> f32 {
+        let (_, _, t, leg_index) = self.leg_at_indexed(beat);
+        let remaining_beats =
+            self.leg_transition_start_beat(leg_index) - t * self.leg_beats(leg_index);
+        let fade_beats = f64::from(LEVEL_RAMP_MS) * 0.001 * bpm.max(1.0) / 60.0;
+        smoothstep((remaining_beats / fade_beats).clamp(0.0, 1.0) as f32)
+    }
+
     /// The morphed `FluidControls` at `beat`: hold `from`, then glide or
     /// hard-switch each control across the transition window (see the module
     /// comment). At the leg boundary `leg_at` wraps to the next leg's `from`,
@@ -605,6 +621,13 @@ impl MorphState {
             let to_v = (spec.get)(to);
 
             let value = match move_of(spec, from, to, swapped, held) {
+                Move::Drop => {
+                    if t_beat < transition_start {
+                        from_v
+                    } else {
+                        0.0
+                    }
+                }
                 Move::Wait => from_v,
                 Move::Snap => {
                     if t_beat < transition_start {
@@ -1144,7 +1167,7 @@ mod tests {
     }
 
     #[test]
-    fn kick_starts_on_the_transition_downbeat_while_other_drums_can_fade_in() {
+    fn kick_is_absent_from_every_percentage_transition_and_returns_on_the_next_song() {
         let from = FluidControls::default();
         let mut to = FluidControls::default();
         to.perc.level = 0.4;
@@ -1158,8 +1181,31 @@ mod tests {
 
         let mid = morph.controls_at(20.0);
         assert!((mid.perc.level - 0.2).abs() < 1e-4);
-        assert_eq!(mid.kick.level, 0.8);
+        assert_eq!(mid.kick.level, 0.0);
         assert!((mid.clap.level - 0.3).abs() < 1e-4);
+        for beat in [16.0, 20.0, 23.99, 40.0, 44.0, 47.99] {
+            assert!(morph.position_at(beat).blend.is_some());
+            assert_eq!(morph.controls_at(beat).kick.level, 0.0, "beat {beat}");
+        }
+        assert_eq!(morph.controls_at(15.99).kick.level, 0.0);
+        assert_eq!(morph.controls_at(24.0).kick.level, 0.8);
+        assert_eq!(morph.controls_at(39.99).kick.level, 0.8);
+        assert_eq!(morph.controls_at(48.0).kick.level, 0.0);
+    }
+
+    #[test]
+    fn a_steady_kick_also_drops_for_the_crossing() {
+        let mut song = FluidControls::default();
+        song.kick.level = 0.6;
+        let morph = MorphState::new(vec![SongState::from_controls(song)], 6);
+        assert_eq!(morph.controls_at(15.99).kick.level, 0.6);
+        assert_eq!(morph.controls_at(16.0).kick.level, 0.0);
+        assert_eq!(morph.controls_at(23.99).kick.level, 0.0);
+        assert_eq!(morph.controls_at(24.0).kick.level, 0.6);
+        assert_eq!(morph.kick_gain_at(15.9, 120.0), 1.0);
+        assert!(morph.kick_gain_at(15.97, 120.0) < 1.0);
+        assert_eq!(morph.kick_gain_at(16.0, 120.0), 0.0);
+        assert_eq!(morph.kick_gain_at(24.0, 120.0), 1.0);
     }
 
     #[test]

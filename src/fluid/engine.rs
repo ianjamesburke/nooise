@@ -782,6 +782,18 @@ impl StereoEngine for FluidEngine {
             self.telemetry.publish_beat(timing.beat);
         }
         self.plan.apply(&mut effective, timing);
+        // A morph's percentage phase has no Kick, including automation that
+        // lifts its Level above zero and tails from Kick-layer effects.
+        let kick_gain = self
+            .morph
+            .load()
+            .as_ref()
+            .as_ref()
+            .map_or(1.0, |morph| morph.kick_gain_at(timing.beat, timing.bpm));
+        let kick_crossing = kick_gain == 0.0;
+        if kick_crossing {
+            effective.kick.level = 0.0;
+        }
         resolve_module_chain(&mut effective);
         timing.drunken_amount = effective.master.drunken_amount;
         timing.drunken_pace = effective.master.drunken_pace;
@@ -829,7 +841,7 @@ impl StereoEngine for FluidEngine {
             self.kick.next(&effective.kick, timing.with_groove_seed(3)),
             timing,
         );
-        let (kick_l, kick_r) = gate_stereo(kick, mute_gains[Tab::Kick as usize]);
+        let (kick_l, kick_r) = gate_stereo(kick, mute_gains[Tab::Kick as usize] * kick_gain);
         let tonal = self.module_fx.process(
             Tab::Tonal,
             &effective.modules.tonal,
