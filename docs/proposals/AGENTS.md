@@ -8,6 +8,7 @@ Feature designs that can be discussed before changing runtime behavior.
 
 - Dated proposal files own each feature's scope, interaction, tradeoffs, and acceptance criteria.
 - `2026-09-16-live-gestures.md` records the implemented worktree design and hands-on acceptance criteria for temporary effects in normal browsing and replacing Deck.
+- `2026-09-30-ergonomics-redesign.md` owns the draft operation registry, Space leader, planned-action, and Motion-lane redesign.
 - Product rules remain in `../NORTH_STAR.md`; accepted architecture belongs in `../adr/`; shipped performance behavior belongs in `../PERFORMANCE.md`.
 
 ## Local Contracts
