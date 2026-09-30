@@ -8175,6 +8175,7 @@ fn container_v1_song_codes_are_rejected_with_an_explanation() {
 fn lead_defaults_are_silent_and_carry_a_drive_module() {
     let controls = FluidControls::default();
     assert_close(controls.lead.level, 0.0);
+    assert_eq!(lead_type_label(controls.lead.voice_type), "Soft");
     assert_eq!(controls.modules.lead[0].kind().unwrap().id, "drive");
     assert!(
         spec_by_id("lead.drive").is_none(),
