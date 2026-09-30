@@ -1131,9 +1131,9 @@ impl GainSmoothers {
         for smoother in &mut self.smoothers {
             let snapshot_value = (smoother.spec.get)(c);
             let slot_kind = module_slot_row(smoother.spec.id, c).map(|(slot, _)| slot.kind);
-            if slot_kind != smoother.slot_kind {
-                // A slot's amount belongs to its module, so the outgoing
-                // module's ramp must never become the incoming module's value.
+            if slot_kind != smoother.slot_kind || is_swing_amount_row(smoother.spec.id, c) {
+                // A slot's amount belongs to its module. Swing also changes
+                // timing, so its authored downbeat must not gain-ramp late.
                 smoother.ramp = EasedRamp::settled(snapshot_value);
                 smoother.slot_kind = slot_kind;
             }

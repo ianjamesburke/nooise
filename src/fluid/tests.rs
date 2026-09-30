@@ -3910,6 +3910,19 @@ fn module_amount_smoother_does_not_carry_an_old_module_into_swing() {
 }
 
 #[test]
+fn swing_amount_does_not_ramp_after_a_song_boundary() {
+    let mut before = FluidControls::default();
+    before.modules.perc[0] = preset_slot("swing", 0.1);
+    let mut after = before.clone();
+    after.modules.perc[0].amount = 0.6;
+    let mut smoothers = GainSmoothers::new(&before);
+    smoothers.set_targets(&after, SAMPLE_RATE);
+    let mut effective = smoothers.next_controls(&after);
+    resolve_module_chain(&mut effective);
+    assert_eq!(effective.perc.swing, 0.6);
+}
+
+#[test]
 fn gain_smoothers_cover_every_unique_gain_spec() {
     let controls = FluidControls::default();
     let smoothers = GainSmoothers::new(&controls);
