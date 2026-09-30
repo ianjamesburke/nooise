@@ -25,6 +25,8 @@ pub(crate) struct LiveSessionSnapshot {
     /// Lead play-mode presses. Live-only: never written to a song code.
     pub(crate) lead_play: LeadPlayState,
     pub(crate) gestures: GestureState,
+    /// Drunken phrase position at song beat zero, carried through saves.
+    pub(crate) drunken_phase_beat: f64,
     /// Whether the beat clock runs. Live-only: a stopped song is silence,
     /// not a state worth sharing, so a loaded code always plays.
     pub(crate) transport: Transport,
@@ -43,6 +45,7 @@ impl LiveSessionSnapshot {
             muted: song.muted,
             lead_play: LeadPlayState::default(),
             gestures: song.gestures.restored(),
+            drunken_phase_beat: song.drunken_phase_beat,
             transport: Transport::Playing,
             transport_restart: 0,
             tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
@@ -69,6 +72,7 @@ impl LiveSessionSnapshot {
             muted: [false; TAB_COUNT],
             lead_play: LeadPlayState::default(),
             gestures: GestureState::default(),
+            drunken_phase_beat: 0.0,
             transport: Transport::Playing,
             transport_restart: 0,
         }

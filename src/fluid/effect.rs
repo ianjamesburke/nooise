@@ -517,6 +517,17 @@ impl EffectExecutor {
                     tonal_sequence: Some(snapshot.tonal_sequence.clone()),
                     muted: snapshot.muted,
                     gestures: snapshot.gestures.snapshot_at(now_seconds),
+                    drunken_phase_beat: if snapshot
+                        .controls
+                        .modules
+                        .master
+                        .iter()
+                        .any(|slot| slot.kind().is_some_and(|kind| kind.id == "drunken"))
+                    {
+                        snapshot.drunken_phase_beat + self.session.audio_beat()
+                    } else {
+                        0.0
+                    },
                 })
                 .map_err(EffectFailure::SongEncode)?;
                 clipboard.set_text(code).map_err(EffectFailure::Clipboard)?;
@@ -1644,6 +1655,23 @@ mod tests {
             )))
         );
         assert_eq!(executor.message(), None);
+    }
+
+    #[test]
+    fn copying_a_running_drunken_song_carries_its_wave_position() {
+        let mut controls = FluidControls::default();
+        controls.modules.master[0] = preset_slot("drunken", 0.5);
+        let mut executor = executor_with(controls);
+        executor
+            .session
+            .update(|snapshot| snapshot.drunken_phase_beat = 3.0);
+        executor.session.publish_audio_beat(12.5);
+        let mut clipboard = FakeClipboard::default();
+        executor
+            .execute_with_clipboard(LiveEffect::CopySong, &mut clipboard)
+            .unwrap();
+        let loaded = decode_song_code(clipboard.value.as_deref().unwrap()).unwrap();
+        assert_eq!(loaded.drunken_phase_beat, 15.5);
     }
 
     /// A Delay time row steps through the registry: `contextual` hands the
