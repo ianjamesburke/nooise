@@ -936,15 +936,18 @@ fn morph_phrase_boundaries_reach_every_chord_follower_on_the_same_sample() {
     );
     engine.reseed(7);
 
-    // 6-beat source phrases and 4-beat target phrases produce a 16-beat
-    // outward leg and an 18-beat return. Include the next loop's crossing.
+    // Hold and crossing both use outgoing phrases: 18 beats outward,
+    // 16 back. Check the middle of each crossing as well as its boundaries.
     let boundaries = [
-        (12.0, 4, true),
-        (16.0, 4, false),
-        (28.0, 1, true),
+        (12.0, 1, true),
+        (14.0, 2, true),
+        (16.0, 3, true),
+        (18.0, 4, false),
+        (30.0, 4, true),
+        (32.0, 5, true),
         (34.0, 1, false),
-        (46.0, 4, true),
-        (50.0, 4, false),
+        (46.0, 1, true),
+        (52.0, 4, false),
     ];
     for (boundary, slot, crossing) in boundaries {
         while engine.tempo.beat < boundary {
@@ -1041,10 +1044,55 @@ fn live_morph_uses_the_audio_phrase_anchor_after_a_progression_edit() {
             .blend
             .is_some()
     );
+    assert_eq!(engine.pad.cursor.slot(), 0, "the outgoing phrase repeats");
+    while engine.tempo.beat < 68.0 {
+        engine.next_stereo();
+    }
+    engine.next_stereo();
     assert_eq!(
         engine.pad.cursor.slot(),
         4,
-        "the incoming phrase starts on its first chord"
+        "the incoming phrase starts on its first chord at landing"
+    );
+}
+
+#[test]
+fn morph_landing_first_kick_is_as_audible_as_a_held_hit() {
+    let sample_rate = 8_000.0;
+    let mut controls = FluidControls::default();
+    controls.master.bpm = 120.0;
+    controls.pad.chord_bars = 0.5;
+    controls.pad.chord_count = 2.0;
+    controls.pad.level = 0.0;
+    controls.kick.level = 0.8;
+    controls.kick.interval_beats = 1.0;
+    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
+        vec![SongState::from_controls(controls.clone())],
+        3,
+    ))));
+    let mut engine = FluidEngine::new(
+        sample_rate,
+        live_session(controls, AutomationState::default()),
+        morph,
+        Arc::new(FluidTelemetry::default()),
+    );
+    engine.reseed(7);
+    let mut held_peak = 0.0f32;
+    let mut landed_peak = 0.0f32;
+    while engine.tempo.beat < 12.2 {
+        let beat = engine.tempo.beat;
+        let (left, right) = engine.next_stereo();
+        let peak = left.abs().max(right.abs());
+        if (6.0..6.2).contains(&beat) {
+            held_peak = held_peak.max(peak);
+        } else if (12.0..12.2).contains(&beat) {
+            landed_peak = landed_peak.max(peak);
+        }
+    }
+    assert!(held_peak > 0.001);
+    assert!(
+        landed_peak >= held_peak * 0.8,
+        "first landing hit {landed_peak} is missing or weak beside held hit {held_peak}"
     );
 }
 

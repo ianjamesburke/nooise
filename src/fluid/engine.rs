@@ -764,6 +764,17 @@ impl StereoEngine for FluidEngine {
             self.transport = session.transport;
             self.gain_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);
+            if morph_boundary
+                && morph_source
+                    .as_ref()
+                    .as_ref()
+                    .is_some_and(|morph| morph.position_at(self.tempo.beat).blend.is_none())
+            {
+                // Kick captures Level at trigger time. The landing's first
+                // hit must see the destination gain before it is constructed.
+                self.gain_smoothers
+                    .settle("kick.level", self.snapshot.kick.level);
+            }
             self.mute_gates
                 .set_targets(&session.muted, self.sample_rate);
             self.muted = session.muted;
@@ -1184,6 +1195,13 @@ impl GainSmoothers {
         }
     }
 
+    fn settle(&mut self, id: &str, value: f32) {
+        if let Some(smoother) = self.smoothers.iter_mut().find(|s| s.spec.id == id) {
+            smoother.ramp = EasedRamp::settled(value);
+            smoother.idle = true;
+        }
+    }
+
     pub(crate) fn next_controls(&mut self, c: &FluidControls) -> FluidControls {
         let mut next = c.clone();
         for smoother in &mut self.smoothers {
@@ -1268,7 +1286,7 @@ pub(crate) struct TimingContext {
     pub(crate) drunken_pace: f32,
     pub(crate) drunken_phase_beat: f64,
     pub(crate) groove_seed: u64,
-    /// Auto crossing anchor shared by all chord followers; normal playback uses its cursor.
+    /// Auto song-landing anchor shared by chord followers; normal playback uses its cursor.
     pub(crate) morph_phrase_start: Option<f64>,
 }
 

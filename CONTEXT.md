@@ -61,12 +61,12 @@
 - **Phrase:** one run of the chord window at one Chord Length. Manual
   window/length edits wait for the sounding chord to end, then preserve its
   successor where possible; selecting another progression starts at its first
-  chord. An auto morph finishes an outgoing phrase, starts the incoming
-  phrase for its kickless crossing, then lands after whole incoming phrases.
+  chord. An auto morph keeps the outgoing harmony through whole kickless
+  phrases, then starts the incoming window at its first chord on landing.
 - **Morph leg:** an outgoing song's hold followed by its crossing into the
-  next song. `--bars` requests an approximate total length: the hold rounds
-  to whole outgoing phrases and the crossing to whole incoming phrases,
-  at least one of each. Kick returns and Swing changes on the landing.
+  next song. `--bars` requests an approximate total length. Hold and crossing
+  each round to whole outgoing phrases, at least one phrase per section.
+  Progression, chord length/window, Kick, and Swing change on the landing.
 - **Song value:** what a song code stores for a table-indexed control. It is
   permanent and separate from the control's dial position, so a table can
   grow without changing what a saved code means.
