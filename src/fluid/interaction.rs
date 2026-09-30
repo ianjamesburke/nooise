@@ -55,6 +55,9 @@ pub(crate) enum Page {
 }
 
 impl Page {
+    /// The page after this one. Tab cycles every layer and then the hub, in
+    /// the hub's old tab-strip place, so arrows and Tab alone reach every
+    /// page (the North Star floor) without Esc.
     fn next(self) -> Self {
         LAYERS[(self as usize + 1) % LAYERS.len()].page
     }
@@ -64,14 +67,14 @@ impl Page {
     }
 }
 
-/// The navigation a layer opens on. Chords, Lead, and Master own page-local
-/// navigation no other layer can construct; the rest share one standard list.
+/// The navigation a page opens on. Chords, Lead, and the hub own page-local
+/// navigation no other page can construct; the rest share one standard list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerNavigation {
     Chords,
     Standard(StandardPage),
     Lead,
-    Master,
+    Hub,
 }
 
 /// One row of `LAYERS`: a page, the tab it shows, and the navigation opening
@@ -131,9 +134,46 @@ const LAYERS: [Layer; 9] = [
     Layer {
         page: Page::Master,
         tab: Tab::Master,
-        navigation: LayerNavigation::Master,
+        navigation: LayerNavigation::Hub,
     },
 ];
+
+/// Every page before the hub is a layer. The hub is the last `LAYERS` row
+/// and its first `LAYER_COUNT` rows are those layers' level rows in the same
+/// order (both test-enforced), so a hub row and a layer page translate by
+/// index.
+pub(crate) const LAYER_COUNT: usize = LAYERS.len() - 1;
+
+/// The layer a hub row opens, when the row is one of the hub's layer rows.
+pub(crate) fn hub_layer(row: usize) -> Option<Tab> {
+    (row < LAYER_COUNT).then(|| LAYERS[row].tab)
+}
+
+/// The root row each layer was left on, so re-entering a layer from the hub
+/// or by Tab resumes where the player was. Session-only navigation context:
+/// never persisted.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LayerRows([usize; LAYER_COUNT]);
+
+impl LayerRows {
+    /// The navigation `page` opens on: a layer at its remembered root row,
+    /// or the hub at its first row.
+    fn open(&self, page: Page) -> Navigation {
+        let mut navigation = Navigation::for_page(page);
+        if let Some(&row) = self.0.get(page as usize) {
+            *navigation.selected_mut() = row;
+        }
+        navigation
+    }
+
+    /// Remember the root row of the layer `navigation` is leaving. The hub
+    /// is not a layer and has nothing to remember.
+    fn leave(&mut self, navigation: Navigation) {
+        if let Some(row) = self.0.get_mut(navigation.page() as usize) {
+            *row = navigation.root_row();
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ChordDrill {
@@ -182,8 +222,8 @@ impl StandardPage {
     }
 }
 
-/// Page-local navigation makes a Chords drill on Master, a Lead drill on
-/// Chords, or a Master drill on any other page, impossible to construct.
+/// Page-local navigation makes a Chords drill on the hub, or a Lead drill on
+/// Chords, impossible to construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Navigation {
     Chords {
@@ -198,7 +238,9 @@ pub(crate) enum Navigation {
         selected: usize,
         drill: LeadDrill,
     },
-    Master {
+    /// The Master page, which the app opens on: one row per layer, entered
+    /// with Enter, then Master's own controls.
+    Hub {
         selected: usize,
     },
     /// A module owns a reusable detail scope while keeping its layer as the
@@ -214,7 +256,7 @@ pub(crate) enum Navigation {
 
 impl Default for Navigation {
     fn default() -> Self {
-        Self::for_page(Page::Chords)
+        Self::for_page(Page::Master)
     }
 }
 
@@ -230,7 +272,7 @@ impl Navigation {
                 selected: 0,
                 drill: LeadDrill::None,
             },
-            LayerNavigation::Master => Self::Master { selected: 0 },
+            LayerNavigation::Hub => Self::Hub { selected: 0 },
         }
     }
 
@@ -239,7 +281,7 @@ impl Navigation {
             Self::Chords { .. } => Page::Chords,
             Self::Standard { page, .. } => page.page(),
             Self::Lead { .. } => Page::Lead,
-            Self::Master { .. } => Page::Master,
+            Self::Hub { .. } => Page::Master,
             Self::Module { tab, .. } => page_for_tab(tab),
         }
     }
@@ -253,7 +295,7 @@ impl Navigation {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
             | Self::Lead { selected, .. }
-            | Self::Master { selected, .. }
+            | Self::Hub { selected, .. }
             | Self::Module { selected, .. } => selected,
         }
     }
@@ -263,8 +305,38 @@ impl Navigation {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
             | Self::Lead { selected, .. }
-            | Self::Master { selected, .. }
+            | Self::Hub { selected, .. }
             | Self::Module { selected, .. } => selected,
+        }
+    }
+
+    /// The page's root row under any drill: the row a drill returns to.
+    fn root_row(self) -> usize {
+        match self {
+            Self::Chords {
+                drill:
+                    ChordDrill::Pattern { return_to }
+                    | ChordDrill::Progression { return_to }
+                    | ChordDrill::Slot { return_to, .. },
+                ..
+            }
+            | Self::Lead {
+                drill: LeadDrill::Pattern { return_to },
+                ..
+            }
+            | Self::Module { return_to, .. } => return_to,
+            Self::Chords { selected, .. }
+            | Self::Standard { selected, .. }
+            | Self::Lead { selected, .. }
+            | Self::Hub { selected } => selected,
+        }
+    }
+
+    /// The layer `m` mutes: the one a hub row names, or else this page's own.
+    fn mute_target(self) -> Tab {
+        match self {
+            Self::Hub { selected } => hub_layer(selected).unwrap_or(Tab::Master),
+            navigation => navigation.tab(),
         }
     }
 
@@ -273,7 +345,12 @@ impl Navigation {
         *selected = selected.saturating_add_signed(delta);
     }
 
+    /// Esc in browsing: pop the innermost drill, or from a layer's root go
+    /// back to the hub on that layer's row. On the hub itself it is a no-op.
     fn cancel_one_depth(&mut self) {
+        let to_hub = Self::Hub {
+            selected: self.page() as usize,
+        };
         match self {
             Self::Chords { selected, drill } => match *drill {
                 ChordDrill::Pattern { return_to } => {
@@ -288,28 +365,22 @@ impl Navigation {
                     *selected = return_to;
                     *drill = ChordDrill::None;
                 }
-                ChordDrill::None => {}
+                ChordDrill::None => *self = to_hub,
             },
-            Self::Lead { selected, drill } => {
-                if let LeadDrill::Pattern { return_to } = *drill {
+            Self::Lead { selected, drill } => match *drill {
+                LeadDrill::Pattern { return_to } => {
                     *selected = return_to;
                     *drill = LeadDrill::None;
                 }
-            }
+                LeadDrill::None => *self = to_hub,
+            },
             Self::Module { tab, return_to, .. } => {
                 let mut parent = Self::for_page(page_for_tab(*tab));
-                match &mut parent {
-                    Self::Chords { selected, .. }
-                    | Self::Standard { selected, .. }
-                    | Self::Lead { selected, .. }
-                    | Self::Master { selected, .. } => *selected = *return_to,
-                    Self::Module { .. } => {
-                        unreachable!("page navigation cannot create a module drill")
-                    }
-                }
+                *parent.selected_mut() = *return_to;
                 *self = parent;
             }
-            Self::Master { .. } | Self::Standard { .. } => {}
+            Self::Standard { .. } => *self = to_hub,
+            Self::Hub { .. } => {}
         }
     }
 }
@@ -465,9 +536,9 @@ pub(crate) struct InstrumentRow {
 /// (test-enforced), so the key map, page, and display name all index this
 /// single table.
 ///
-/// The keys read left to right across the tab strip: the home row `asdf`
-/// for the first four pages, the row above it `qwer` for the rest, so `r`
-/// lands on Master. Lead has no selector key, since `i` already enters it
+/// The keys read down the hub's layer rows: the home row `asdf` for the
+/// first four layers, the row above it `qwer` for the rest, so `r` lands on
+/// the hub itself. Lead has no selector key, since `i` already enters it
 /// and the no-layer-key shorthand reaches it from its own page.
 pub(crate) const INSTRUMENTS: [InstrumentRow; 8] = [
     InstrumentRow {
@@ -807,8 +878,9 @@ pub(crate) struct LeadPlay {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-/// The entire interaction state: where the cursor is, who owns the keyboard,
-/// and which gesture keys have semantic physical ownership. It carries no
+/// The entire interaction state: where the cursor is, the row each layer was
+/// left on, who owns the keyboard, and which gesture keys have semantic
+/// physical ownership. It carries no
 /// terminal capabilities, clock, or session data.
 ///
 /// `update` is a deterministic pure function of this plus one action, and
@@ -817,6 +889,7 @@ pub(crate) struct LeadPlay {
 /// the replay property tests assert exactly that.
 pub(crate) struct InteractionModel {
     pub(crate) navigation: Navigation,
+    pub(crate) layer_rows: LayerRows,
     pub(crate) mode: InteractionMode,
     pub(crate) gesture_input: GestureInputState,
 }
@@ -825,6 +898,16 @@ pub(crate) struct InteractionModel {
 pub(crate) enum PageDirection {
     Next,
     Previous,
+}
+
+impl PageDirection {
+    /// The page Tab or Shift+Tab opens from `navigation`.
+    fn from(self, navigation: Navigation) -> Page {
+        match self {
+            Self::Next => navigation.page().next(),
+            Self::Previous => navigation.page().previous(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -837,6 +920,8 @@ pub(crate) enum Intent {
     MoveSelection(isize),
     ChangePage(PageDirection),
     Cancel,
+    /// Open a layer from its hub row, on the row it was last left on.
+    EnterLayer(Tab),
     EnterChordProgression,
     EnterPadPattern,
     EnterChordSlot(usize),
@@ -950,7 +1035,8 @@ impl Intent {
             Self::TypeCharacter(_) | Self::Backspace => &[ModeKind::Numeric, ModeKind::Palette],
             Self::PaletteAutocomplete | Self::CommitPaletteAtBar => &[ModeKind::Palette],
             Self::OpenAutomationField => &[ModeKind::Automation],
-            Self::EnterChordProgression
+            Self::EnterLayer(_)
+            | Self::EnterChordProgression
             | Self::EnterPadPattern
             | Self::EnterChordSlot(_)
             | Self::EnterLeadPattern
@@ -1018,6 +1104,7 @@ impl Intent {
             | Self::AdjustSelected(_) => PhasePolicy::Repeatable,
             Self::ReleaseLeadTone(_) | Self::ReleaseGesture(_) => PhasePolicy::ReleaseOnly,
             Self::Cancel
+            | Self::EnterLayer(_)
             | Self::EnterChordProgression
             | Self::EnterPadPattern
             | Self::EnterChordSlot(_)
@@ -1121,9 +1208,8 @@ pub(crate) enum InteractionEffect {
     MaxSelected,
     ToggleAuto,
     ToggleUnits,
-    ToggleMute {
-        master: bool,
-    },
+    /// Mute or unmute this layer (or Master) as a whole.
+    ToggleMute(Tab),
     ToggleTransport,
     RemoveAutomation,
     RandomizeAutomationRow,
@@ -1257,6 +1343,9 @@ impl InteractionModel {
                 .position(|item| Some(item.id) == id)
                 .unwrap_or(0)
         };
+        if self.navigation.tab() != tab {
+            self.layer_rows.leave(self.navigation);
+        }
         self.navigation = match tab {
             Tab::Chords => {
                 let (drill, selected) = super::chords_drill_for_index(index, controls);
@@ -1266,7 +1355,7 @@ impl InteractionModel {
                 let (drill, selected) = super::lead_drill_for_index(index, controls);
                 Navigation::Lead { selected, drill }
             }
-            Tab::Master => Navigation::Master {
+            Tab::Master => Navigation::Hub {
                 selected: root_row(),
             },
             _ => {
@@ -1321,13 +1410,15 @@ impl InteractionModel {
                 effects: vec![InteractionEffect::GestureReleaseAll],
             };
         }
-        let page = self.navigation.page();
+        let departing = self.navigation;
+        let page = departing.page();
         let mut effects = Vec::new();
         let mut next_mode = None;
         match &mut self.mode {
             InteractionMode::Browsing => {
                 update_browsing(
                     &mut self.navigation,
+                    &self.layer_rows,
                     &mut self.gesture_input,
                     intent,
                     &mut next_mode,
@@ -1343,6 +1434,7 @@ impl InteractionModel {
             InteractionMode::Automation(automation) => update_automation(
                 automation,
                 &mut self.navigation,
+                &self.layer_rows,
                 intent,
                 &mut next_mode,
                 &mut effects,
@@ -1350,6 +1442,7 @@ impl InteractionModel {
             InteractionMode::Performance(performance) => update_performance(
                 performance,
                 &mut self.navigation,
+                &self.layer_rows,
                 intent,
                 &mut next_mode,
                 &mut effects,
@@ -1362,6 +1455,9 @@ impl InteractionModel {
                 &mut effects,
             ),
             InteractionMode::Help => update_help(intent, &mut next_mode, &mut effects),
+        }
+        if self.navigation.page() != page {
+            self.layer_rows.leave(departing);
         }
         if self.gesture_input.has_active()
             && next_mode
@@ -1391,6 +1487,7 @@ fn resume_mode(resume: Option<AutomationMode>) -> InteractionMode {
 
 fn update_browsing(
     navigation: &mut Navigation,
+    layer_rows: &LayerRows,
     gesture_input: &mut GestureInputState,
     intent: Intent,
     next_mode: &mut Option<InteractionMode>,
@@ -1401,14 +1498,9 @@ fn update_browsing(
     }
     match intent {
         Intent::MoveSelection(delta) => navigation.move_selection(delta),
-        Intent::ChangePage(direction) => {
-            let page = match direction {
-                PageDirection::Next => navigation.page().next(),
-                PageDirection::Previous => navigation.page().previous(),
-            };
-            *navigation = Navigation::for_page(page);
-        }
+        Intent::ChangePage(direction) => *navigation = layer_rows.open(direction.from(*navigation)),
         Intent::Cancel => navigation.cancel_one_depth(),
+        Intent::EnterLayer(tab) => *navigation = layer_rows.open(page_for_tab(tab)),
         Intent::EnterChordProgression => {
             if let Navigation::Chords { selected, drill } = navigation {
                 let return_to = *selected;
@@ -1493,7 +1585,7 @@ fn update_browsing(
             // The Lead page is the instrument: entering from elsewhere lands
             // on it so the rows the nudges edit are in view.
             if navigation.page() != Page::Lead {
-                *navigation = Navigation::for_page(Page::Lead);
+                *navigation = layer_rows.open(Page::Lead);
             }
             *next_mode = Some(InteractionMode::Lead(LeadPlay::default()));
         }
@@ -1507,9 +1599,11 @@ fn update_browsing(
         Intent::MaxSelected => effects.push(InteractionEffect::MaxSelected),
         Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
         Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
-        Intent::ToggleMute { master } => {
-            effects.push(InteractionEffect::ToggleMute { master });
-        }
+        Intent::ToggleMute { master } => effects.push(InteractionEffect::ToggleMute(if master {
+            Tab::Master
+        } else {
+            navigation.mute_target()
+        })),
         Intent::ToggleTransport => effects.push(InteractionEffect::ToggleTransport),
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
         Intent::RandomizeAutomationRow => effects.push(InteractionEffect::RandomizeAutomationRow),
@@ -1687,6 +1781,7 @@ fn update_palette(
 fn update_automation(
     automation: &mut AutomationMode,
     navigation: &mut Navigation,
+    layer_rows: &LayerRows,
     intent: Intent,
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
@@ -1715,11 +1810,7 @@ fn update_automation(
             effects.push(InteractionEffect::AutomationConfirm(automation.kind()));
         }
         Intent::ChangePage(direction) => {
-            let page = match direction {
-                PageDirection::Next => navigation.page().next(),
-                PageDirection::Previous => navigation.page().previous(),
-            };
-            *navigation = Navigation::for_page(page);
+            *navigation = layer_rows.open(direction.from(*navigation));
             *next_mode = Some(InteractionMode::Browsing);
             effects.push(InteractionEffect::CloseAutomationAll);
         }
@@ -1738,9 +1829,11 @@ fn update_automation(
         Intent::MaxSelected => effects.push(InteractionEffect::MaxSelected),
         Intent::ToggleAuto => effects.push(InteractionEffect::ToggleAuto),
         Intent::ToggleUnits => effects.push(InteractionEffect::ToggleUnits),
-        Intent::ToggleMute { master } => {
-            effects.push(InteractionEffect::ToggleMute { master });
-        }
+        Intent::ToggleMute { master } => effects.push(InteractionEffect::ToggleMute(if master {
+            Tab::Master
+        } else {
+            navigation.mute_target()
+        })),
         Intent::ToggleTransport => effects.push(InteractionEffect::ToggleTransport),
         Intent::RemoveAutomation => {
             *next_mode = Some(InteractionMode::Browsing);
@@ -1819,6 +1912,7 @@ fn update_lead(
 fn update_performance(
     performance: &mut PerformanceMode,
     navigation: &mut Navigation,
+    layer_rows: &LayerRows,
     intent: Intent,
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
@@ -1836,7 +1930,7 @@ fn update_performance(
             let PerformanceMode::Jump { stage } = performance;
             *stage = JumpStage::ChooseParameter { instrument };
             let page = instrument.page();
-            *navigation = Navigation::for_page(page);
+            *navigation = layer_rows.open(page);
             effects.push(InteractionEffect::SelectPage(page));
         }
         Intent::JumpToParameter(parameter) => {
@@ -2242,32 +2336,184 @@ mod tests {
         );
     }
 
+    /// A hub row and a layer page translate by index, so the hub has to
+    /// open with every layer's level row in page order and sit after them.
     #[test]
-    fn page_change_resets_selection_and_page_local_drill() {
-        let model = InteractionModel {
-            navigation: Navigation::Chords {
-                selected: 4,
-                drill: ChordDrill::Progression { return_to: 4 },
-            },
-            ..InteractionModel::default()
-        };
+    fn hub_rows_open_with_every_layer_in_page_order() {
+        assert_eq!(LAYERS[LAYER_COUNT].page, Page::Master);
+        let rows = super::super::tab_controls(Tab::Master, &FluidControls::default());
+        for (row, layer) in LAYERS[..LAYER_COUNT].iter().enumerate() {
+            assert_eq!(Some(rows[row].id), layer.tab.level_id(), "{row}");
+            assert_eq!(hub_layer(row), Some(layer.tab));
+        }
+        assert_eq!(hub_layer(LAYER_COUNT), None);
+    }
 
+    #[test]
+    fn the_app_opens_on_the_hub() {
         assert_eq!(
-            update(model, Intent::ChangePage(PageDirection::Previous))
-                .model
-                .navigation,
-            Navigation::Master { selected: 0 }
+            InteractionModel::default().navigation,
+            Navigation::Hub { selected: 0 }
         );
     }
 
     #[test]
-    fn browsing_cancel_on_master_is_a_no_op() {
+    fn enter_opens_a_layer_and_esc_at_its_root_returns_to_its_hub_row() {
         let model = InteractionModel {
-            navigation: Navigation::Master { selected: 2 },
+            navigation: Navigation::Hub { selected: 2 },
             ..InteractionModel::default()
         };
+        let bass = update(model, Intent::EnterLayer(Tab::Bass)).model;
+        assert_eq!(
+            bass.navigation,
+            Navigation::Standard {
+                page: StandardPage::Bass,
+                selected: 0,
+            }
+        );
+        let moved = update(bass, Intent::MoveSelection(3)).model;
+        let hub = update(moved, Intent::Cancel).model;
+        assert_eq!(hub.navigation, Navigation::Hub { selected: 2 });
+        assert_eq!(update(hub.clone(), Intent::Cancel).model, hub);
 
-        assert_eq!(update(model.clone(), Intent::Cancel).model, model);
+        // The layer resumes on the row it was left on.
+        assert_eq!(
+            update(hub, Intent::EnterLayer(Tab::Bass)).model.navigation,
+            Navigation::Standard {
+                page: StandardPage::Bass,
+                selected: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn esc_pops_the_innermost_drill_before_leaving_the_layer() {
+        let model = InteractionModel {
+            navigation: Navigation::Lead {
+                selected: 4,
+                drill: LeadDrill::Pattern { return_to: 10 },
+            },
+            ..InteractionModel::default()
+        };
+        let root = update(model, Intent::Cancel).model;
+        assert_eq!(
+            root.navigation,
+            Navigation::Lead {
+                selected: 10,
+                drill: LeadDrill::None,
+            }
+        );
+        let hub = update(root, Intent::Cancel).model;
+        assert_eq!(
+            hub.navigation,
+            Navigation::Hub {
+                selected: Page::Lead as usize,
+            }
+        );
+        assert_eq!(
+            update(hub, Intent::EnterLayer(Tab::Lead)).model.navigation,
+            Navigation::Lead {
+                selected: 10,
+                drill: LeadDrill::None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_master_module_detail_returns_to_its_hub_row() {
+        let model = InteractionModel {
+            navigation: Navigation::Module {
+                tab: Tab::Master,
+                slot: 1,
+                catalog_index: 3,
+                selected: 2,
+                return_to: 13,
+            },
+            ..InteractionModel::default()
+        };
+        assert_eq!(
+            update(model, Intent::Cancel).model.navigation,
+            Navigation::Hub { selected: 13 }
+        );
+    }
+
+    /// The hub sits in the Tab cycle after Lead, so a player who knows only
+    /// arrows and Tab can always get back to Master's own rows.
+    #[test]
+    fn tab_cycles_every_layer_then_the_hub() {
+        let hub = InteractionModel::default();
+        let last = update(hub.clone(), Intent::ChangePage(PageDirection::Previous)).model;
+        assert_eq!(last.navigation.page(), Page::Lead);
+
+        let mut model = hub;
+        for page in [
+            Page::Chords,
+            Page::Perc,
+            Page::Bass,
+            Page::Kick,
+            Page::Tonal,
+            Page::Clap,
+            Page::Arp,
+            Page::Lead,
+        ] {
+            model = update(model, Intent::ChangePage(PageDirection::Next)).model;
+            assert_eq!(model.navigation.page(), page);
+        }
+        assert_eq!(
+            update(model, Intent::ChangePage(PageDirection::Next))
+                .model
+                .navigation,
+            Navigation::Hub { selected: 0 }
+        );
+    }
+
+    #[test]
+    fn tab_leaves_a_drill_for_the_sibling_and_back_at_the_drills_row() {
+        let model = InteractionModel {
+            navigation: Navigation::Chords {
+                selected: 2,
+                drill: ChordDrill::Progression { return_to: 4 },
+            },
+            ..InteractionModel::default()
+        };
+        let perc = update(model, Intent::ChangePage(PageDirection::Next)).model;
+        assert_eq!(
+            perc.navigation,
+            Navigation::Standard {
+                page: StandardPage::Perc,
+                selected: 0,
+            }
+        );
+        assert_eq!(
+            update(perc, Intent::ChangePage(PageDirection::Previous))
+                .model
+                .navigation,
+            Navigation::Chords {
+                selected: 4,
+                drill: ChordDrill::None,
+            }
+        );
+    }
+
+    #[test]
+    fn mute_on_a_hub_layer_row_mutes_that_layer() {
+        let on_row = |selected| InteractionModel {
+            navigation: Navigation::Hub { selected },
+            ..InteractionModel::default()
+        };
+        let mute = |model, master| update(model, Intent::ToggleMute { master }).effects;
+        assert_eq!(
+            mute(on_row(Page::Kick as usize), false),
+            vec![InteractionEffect::ToggleMute(Tab::Kick)]
+        );
+        assert_eq!(
+            mute(on_row(Page::Kick as usize), true),
+            vec![InteractionEffect::ToggleMute(Tab::Master)]
+        );
+        assert_eq!(
+            mute(on_row(LAYER_COUNT), false),
+            vec![InteractionEffect::ToggleMute(Tab::Master)]
+        );
     }
 
     #[test]
@@ -2285,6 +2531,7 @@ mod tests {
 
         let edge_triggered = [
             Intent::Cancel,
+            Intent::EnterLayer(Tab::Chords),
             Intent::EnterChordProgression,
             Intent::EnterChordSlot(0),
             Intent::BeginNumeric('1'),

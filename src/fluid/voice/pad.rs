@@ -346,8 +346,15 @@ impl PadEngine {
             {
                 self.release_stab();
             }
-            if self.stab_trigger.pop_swung(timing, 0.25, 0.0, c.swing) && !midi_triggering {
-                let step = ((timing.beat / 0.25).floor() as usize) % 16;
+            if self
+                .stab_trigger
+                .pop_swung(timing, 0.25, c.offset_beats, c.swing)
+                && !midi_triggering
+            {
+                // The lane travels with the grid: slot k of the shifted grid
+                // plays step k, so Offset rotates the pattern, not just the clock.
+                let slot = ((timing.beat - f64::from(c.offset_beats)) / 0.25 + 1e-6).floor() as i64;
+                let step = slot.rem_euclid(16) as usize;
                 if c.steps[step] >= 0.5 {
                     self.trigger_stab(c, tune, timing);
                 }

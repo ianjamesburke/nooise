@@ -408,7 +408,7 @@ pub(crate) fn module_kind_label(value: f32) -> String {
 }
 
 /// Label for a loaded slot's collapsed row on its page. A module with a
-/// detail drill carries the same `›` the tab strip shows once inside it, so
+/// detail drill carries the same `›` the breadcrumb shows once inside it, so
 /// the page says which rows Enter opens.
 pub(crate) fn module_row_label(value: f32) -> String {
     match module_kind_at(value) {

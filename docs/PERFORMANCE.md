@@ -1,5 +1,31 @@
 # Live performance
 
+## Hub navigation
+
+The app opens on Master, the hub. Its first rows list the layers in order
+(Pads, Perc, Bass, Kick, Tonal, Clap, Arp, Lead). Each row shows the layer's
+level and carries `›` to show that Enter opens the layer.
+Master's own rows follow. On a layer row, `h`/`l` adjust its level, `m`
+mutes that layer, and Enter goes into it; Shift+M mutes Master from any row.
+
+Tab and Shift+Tab step through every layer and then the hub, in Master's
+old last place: Pads … Lead, hub, then Pads again. From the hub, Tab enters
+Pads and Shift+Tab enters Lead. The hub stays in the cycle because of the
+arrow-and-Tab floor (`docs/NORTH_STAR.md`, ADR 0001 invariant 9): a player
+who knows only arrows and Tab must still reach every page, and with Esc as
+the only way up, Master's own rows (BPM, Tone, Drive) would be lost to them
+after leaving the hub. Esc backs out one level at a time: the innermost drill
+first, then from the layer's root to the hub with the cursor on that
+layer's row. A held gesture is released by the first Esc instead, as
+below. Each layer remembers the row it was left on for the session, however
+it is re-entered. Esc on the hub does nothing.
+
+The line above the rows is a breadcrumb: `Master` on the hub, `Master ›
+Pads` in a layer, `Master › Pads › Progression` in a drill, `Master › Pads
+› Reverb` in a module. A muted page's crumb and hub row read `(M)`, and a
+playing chord slot or lane carries `♪`. Its longest paths fit the minimum
+frame. Navigation is never saved in a song code.
+
 ## Normal browsing gestures
 
 Hold `z` for Bloom, `c` for Submerge, `v` for Echo, or `x` for Lift.
@@ -24,7 +50,7 @@ c submerge  v echo  x lift`); held or returning, it switches to a
 bold readout of gesture and amount — `↑` means rising, `↓` returning, and `R`
 marks a restored hold loaded from a song code. The row below stays a terse
 `BROWSE · ? shortcuts   ^Q quit`; pressing `?` opens the full keyboard-shortcut
-map (`InteractionMode::Help`), a static overlay covering the tab/control area
+map (`InteractionMode::Help`), a static overlay covering the breadcrumb/control area
 that leaves both footer rows visible beneath it. Esc closes it. Shift+/ is
 matched two ways, since terminals disagree on how they report it: the
 shifted glyph `?` alone (most terminals — unlike a shifted letter, no SHIFT
@@ -89,9 +115,9 @@ that control and hands the keyboard straight back to browsing, where `h`/`l`
 adjust it and `j`/`k` move as always. The leader changes nothing by itself:
 it is an address, not an edit.
 
-The layer keys read left to right across the tab strip, so their positions
-mirror the pages on screen: `a` Pads, `s` Perc, `d` Bass, `f` Kick, `q`
-Tonal, `w` Clap, `e` Arp, `r` Master. `j` is volume and `k` is filter.
+The layer keys read down the hub's layer rows, so their positions mirror
+the layers on screen: `a` Pads, `s` Perc, `d` Bass, `f` Kick, `q` Tonal,
+`w` Clap, `e` Arp, and `r` the hub itself. `j` is volume and `k` is filter.
 
 Lead is the one page no selector key names. It already owns `i` for play
 entry, and the shorthand below reaches it from its own page.
@@ -148,14 +174,19 @@ Lead play retains its own `i` entry and existing bindings.
    Press Space, `r`, `j` and confirm it reaches Master Level, and Space,
    `q`/`w`/`e`, `j` the Tonal, Clap and Arp levels. On Lead, confirm Space,
    `j` still reaches its Level.
-7. Press `?` from Browsing: the shortcut map should open over the tab and
-   control rows, leaving both footer rows visible beneath it. Esc returns
-   to Browsing.
+7. Press `?` from Browsing: the shortcut map should open over the
+   breadcrumb and control rows, leaving both footer rows visible beneath
+   it. Esc returns to Browsing.
 8. On Pads with Reverb loaded and Kick audible, press Shift+P: no new kick or
    chord arrives, the chord and reverb fade out naturally rather than
    cutting, and the activity row shows `■ STOPPED`. Hold `z` during the
    tail and hear it bloom. Press Shift+P again: the grid restarts at bar 1 and
    the first chord in the selected window swells back in.
+9. Launch: the hub shows `Master` above one `›` row per layer. Press `m` on
+   Kick: its row and nothing else reads `(M)`. Enter Bass, move down two
+   rows, Tab to Kick and Esc: the cursor is on the hub's Kick row. Enter
+   Bass again: the cursor is back where it was left. Shift+Tab to Lead, then
+   Tab: the hub is back, with BPM reachable by arrows.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the

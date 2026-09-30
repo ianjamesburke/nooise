@@ -35,7 +35,10 @@ cargo install nooise --locked
 nooise
 ```
 
-Use arrows to browse and adjust controls, and Tab to move between layers.
+nooise opens on Master, the hub: one row per layer with its level, then
+Master's own controls. Use arrows to browse and adjust, Enter to go into a
+layer, and Esc to come back out. Tab steps through the layers and back to
+the hub.
 Press `Ctrl+Q` to quit.
 
 While browsing, hold `z` for a reverb Bloom, `c` to Submerge the sound,
@@ -46,8 +49,8 @@ a terminal that reports key releases; the footer shows when support is missing.
 
 Space is a leader key: a layer key then a parameter (`j` volume, `k` filter)
 puts the cursor on that control, where `h`/`l` move it. The layer keys read
-left to right across the tab strip, `asdf` then `qwer`, so `a` is Pads and
-`r` is Master. Skip the layer key to aim at the page you are already on, so
+down the hub's layer rows, `asdf` then `qwer`, so `a` is Pads and `r` is
+Master. Skip the layer key to aim at the page you are already on, so
 `Space k` is the filter on whatever is in front of you. It jumps, it does
 not edit.
 

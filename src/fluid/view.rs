@@ -6,7 +6,7 @@
 use super::*;
 use crate::fluid::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, JumpStage,
-    LEAD_NUDGES, LeadDrill, Navigation, PerformanceInstrument, PerformanceMode,
+    LEAD_NUDGES, LeadDrill, Navigation, PerformanceInstrument, PerformanceMode, hub_layer,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -128,7 +128,9 @@ pub(crate) struct UiViewModel<'a> {
     pub(crate) telemetry: TelemetryView,
     pub(crate) fluid: &'a RippleField,
     pub(crate) flipped: &'a FlippedUnits,
-    pub(crate) mute: &'a MuteState,
+    /// Where the page sits under the hub: `Master`, `Master › Pads`, or
+    /// `Master › Pads › Progression`, each muted crumb marked `(M)`.
+    pub(crate) breadcrumb: String,
     pub(crate) cursor_visible: bool,
     pub(crate) help: HelpSurface,
     /// The gesture-activity row's text: a stopped-clock marker and/or a
@@ -275,6 +277,7 @@ impl<'a> UiViewModel<'a> {
             None => match navigation.tab {
                 Tab::Chords => chords_tab_controls(&session.controls, navigation.chord_drill),
                 Tab::Lead => lead_tab_controls(&session.controls, navigation.lead_drill),
+                Tab::Master => hub_controls(&session.controls, &session.muted),
                 tab => tab_controls(tab, &session.controls),
             },
         };
@@ -317,6 +320,12 @@ impl<'a> UiViewModel<'a> {
             presentation.notices,
             holding_gesture,
         );
+        let breadcrumb = breadcrumb(
+            navigation,
+            &session.controls,
+            &session.muted,
+            telemetry.active_chord as usize,
+        );
 
         Self {
             owner,
@@ -327,13 +336,75 @@ impl<'a> UiViewModel<'a> {
             telemetry,
             fluid: presentation.fluid,
             flipped: presentation.flipped,
-            mute: &session.muted,
+            breadcrumb,
             cursor_visible: presentation.cursor_visible,
             help,
             activity,
             activity_live,
         }
     }
+}
+
+/// The hub's rows: Master's controls, whose leading layer rows each name
+/// their layer, carry its mute marker, and end in the `›` every row that
+/// opens a deeper page shows.
+fn hub_controls(controls: &FluidControls, muted: &MuteState) -> Vec<ControlItem> {
+    let mut items = tab_controls(Tab::Master, controls);
+    for (row, item) in items.iter_mut().enumerate() {
+        if let Some(tab) = hub_layer(row) {
+            item.label = format!("{} ›", crumb(tab, muted));
+        }
+    }
+    items
+}
+
+/// A page's name as the breadcrumb and hub rows show it, marked when muted.
+fn crumb(tab: Tab, muted: &MuteState) -> String {
+    if muted[tab as usize] {
+        format!("{} (M)", tab.name())
+    } else {
+        tab.name().to_string()
+    }
+}
+
+/// The path from the hub to the open page: the hub, then the layer, then
+/// whatever the layer is drilled into (a module, a chord slot, a lane). A
+/// playing chord slot or lane carries the same `♪` its rows do.
+fn breadcrumb(
+    navigation: NavigationView,
+    controls: &FluidControls,
+    muted: &MuteState,
+    active_slot: usize,
+) -> String {
+    let tab = navigation.tab;
+    let mut crumbs = vec![crumb(Tab::Master, muted)];
+    if tab != Tab::Master {
+        crumbs.push(crumb(tab, muted));
+    }
+    let drill = if let Some(slot) = navigation.module_slot {
+        let module = controls
+            .modules
+            .for_tab(tab)
+            .and_then(|slots| slots[slot].kind());
+        Some(
+            module
+                .map_or("Module", |kind| kind.display_name)
+                .to_string(),
+        )
+    } else {
+        match (navigation.chord_drill, navigation.lead_drill) {
+            (ChordDrill::Pattern { .. }, _) => Some("Trigger".to_string()),
+            (ChordDrill::Progression { .. }, _) => Some("Progression".to_string()),
+            (ChordDrill::Slot { slot, .. }, _) => {
+                let live = if slot == active_slot { " ♪" } else { "" };
+                Some(format!("Chord {}{live}", slot + 1))
+            }
+            (ChordDrill::None, LeadDrill::Pattern { .. }) => Some("Pattern ♪".to_string()),
+            (ChordDrill::None, LeadDrill::None) => None,
+        }
+    };
+    crumbs.extend(drill);
+    crumbs.join(" › ")
 }
 
 /// The gesture-activity row's text: one entry per held/returning envelope,
@@ -508,7 +579,7 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
         Navigation::Chords { drill, .. } => view.chord_drill = drill,
         Navigation::Lead { drill, .. } => view.lead_drill = drill,
         Navigation::Module { slot, .. } => view.module_slot = Some(slot),
-        Navigation::Standard { .. } | Navigation::Master { .. } => {}
+        Navigation::Standard { .. } | Navigation::Hub { .. } => {}
     }
     view
 }
@@ -608,8 +679,18 @@ fn help_surface(
     {
         return HelpSurface::Notice { kind, text };
     }
+    // The one way down from the hub is Enter, and the one way up from a
+    // layer is Esc, so the idle line names whichever this page offers.
+    let way = if navigation.tab == Tab::Master {
+        "↵ enter"
+    } else if navigation.chord_drill != ChordDrill::None || navigation.lead_drill != LeadDrill::None
+    {
+        "Esc back"
+    } else {
+        "Esc Master"
+    };
     HelpSurface::Browsing {
-        text: "BROWSE · ? shortcuts   ^Q quit".to_string(),
+        text: format!("BROWSE · {way}   ? shortcuts   ^Q quit"),
     }
 }
 
@@ -888,7 +969,7 @@ mod tests {
         session.generation = 42;
         session.controls.master.bpm = 91.0;
         let interaction = InteractionModel {
-            navigation: Navigation::Master {
+            navigation: Navigation::Hub {
                 selected: usize::MAX,
             },
             mode: InteractionMode::Browsing,
@@ -1273,7 +1354,7 @@ mod tests {
         route.cycle_beats = 0.5;
         route.step_count = 4;
         let lfo = InteractionModel {
-            navigation: Navigation::Master { selected: 0 },
+            navigation: Navigation::Hub { selected: 0 },
             mode: InteractionMode::Automation(AutomationMode::Lfo {
                 depth: LfoDepth::Editor,
                 selected: 9,
@@ -1298,6 +1379,106 @@ mod tests {
             lfo_step.contains('♪'),
             "active LFO step missing badge: {lfo_step}"
         );
+    }
+
+    #[test]
+    fn the_hub_lists_every_layer_as_a_row_that_opens() {
+        let mut session = session();
+        session.muted[Tab::Kick as usize] = true;
+        let frame = render_model_with_session_at_size(
+            &InteractionModel::default(),
+            &session,
+            TelemetryView::default(),
+            100,
+            44,
+        );
+        let lines: Vec<&str> = frame.lines().collect();
+        let crumb = lines
+            .iter()
+            .position(|line| line.contains("Master") && !line.contains("Level"))
+            .unwrap_or_else(|| panic!("breadcrumb missing:\n{frame}"));
+        assert!(!lines[crumb].contains('›'), "{frame}");
+        let labels = [
+            "▶␠Pads␠›",
+            "Perc␠›",
+            "Bass␠›",
+            "Kick␠(M)␠›",
+            "Tonal␠›",
+            "Clap␠›",
+            "Arp␠›",
+            "Lead␠›",
+            "Master␠Level",
+        ];
+        let mut rows = labels.iter().map(|label| {
+            lines
+                .iter()
+                .position(|line| line.contains(label))
+                .unwrap_or_else(|| panic!("{label} missing:\n{frame}"))
+        });
+        let mut previous = rows.next().expect("the hub has rows");
+        for row in rows {
+            assert!(row > previous, "hub rows out of order:\n{frame}");
+            previous = row;
+        }
+        assert!(frame.contains("↵␠enter"), "{frame}");
+    }
+
+    #[test]
+    fn a_layer_names_its_path_and_the_way_back_to_the_hub() {
+        let pads = InteractionModel {
+            navigation: Navigation::for_page(Page::Chords),
+            ..InteractionModel::default()
+        };
+        let frame = render_model_with_session(&pads, &session());
+        assert!(frame.contains("Master␠›␠Pads"), "{frame}");
+        assert!(frame.contains("Esc␠Master"), "{frame}");
+    }
+
+    /// The breadcrumb replaces a tab strip that ran off a narrow frame, so
+    /// its longest paths must still read whole at the minimum width.
+    #[test]
+    fn the_breadcrumb_fits_the_minimum_frame() {
+        let mut session = session();
+        session.muted[Tab::Master as usize] = true;
+        session.muted[Tab::Chords as usize] = true;
+        session.muted[Tab::Tonal as usize] = true;
+        session.controls.modules.tonal[0] = preset_slot("compression", 0.5);
+        let cases = [
+            (
+                Navigation::Chords {
+                    selected: 0,
+                    drill: ChordDrill::Slot {
+                        slot: 7,
+                        return_to: 0,
+                    },
+                },
+                "Master␠(M)␠›␠Pads␠(M)␠›␠Chord␠8␠♪",
+            ),
+            (
+                Navigation::Module {
+                    tab: Tab::Tonal,
+                    slot: 0,
+                    catalog_index: module_catalog_index("compression"),
+                    selected: 0,
+                    return_to: 0,
+                },
+                "Master␠(M)␠›␠Tonal␠(M)␠›␠Compression",
+            ),
+        ];
+        for (navigation, crumb) in cases {
+            let frame = render_model_with_session_at(
+                &InteractionModel {
+                    navigation,
+                    ..InteractionModel::default()
+                },
+                &session,
+                TelemetryView {
+                    beat: 0.0,
+                    active_chord: 7,
+                },
+            );
+            assert!(frame.contains(crumb), "{frame}");
+        }
     }
 
     #[test]

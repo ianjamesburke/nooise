@@ -1425,7 +1425,8 @@ fn recorded_backtab_round_trips_through_the_full_pipeline() {
         }]
     );
     let result = replay(&trace.events, TerminalCapabilities::full());
-    assert!(matches!(result.model.navigation, Navigation::Master { .. }));
+    // From the hub, Shift+Tab enters the last layer.
+    assert!(matches!(result.model.navigation, Navigation::Lead { .. }));
     assert!(result.state_history.iter().any(|record| {
         record.action.intent == Intent::ChangePage(super::interaction::PageDirection::Previous)
     }));
@@ -1558,13 +1559,8 @@ fn gesture_press_repeat_navigation_and_modified_release_follow_the_production_pa
         TerminalCapabilities::full(),
     );
 
-    assert!(matches!(
-        result.model.navigation,
-        Navigation::Standard {
-            page: super::interaction::StandardPage::Perc,
-            ..
-        }
-    ));
+    // Tab from the hub enters the first layer while the gesture plays.
+    assert!(matches!(result.model.navigation, Navigation::Chords { .. }));
     assert_eq!(result.effect_count("GesturePress"), 1);
     assert_eq!(result.effect_count("GestureRelease(Bloom)"), 1);
     assert!(
@@ -1673,7 +1669,15 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("randomize", vec![plain(FixtureKey::Character('r'))]),
         ("randomize set", vec![shift(FixtureKey::Character('R'))]),
         ("numeric", vec![plain(FixtureKey::Character('1'))]),
-        ("touch", vec![plain(FixtureKey::Enter)]),
+        ("enter layer", vec![plain(FixtureKey::Enter)]),
+        (
+            "layer back",
+            vec![plain(FixtureKey::Enter), plain(FixtureKey::Escape)],
+        ),
+        (
+            "touch",
+            vec![plain(FixtureKey::Enter), plain(FixtureKey::Enter)],
+        ),
         ("save", vec![ctrl(FixtureKey::Character('s'))]),
         ("ctrl-q", vec![ctrl(FixtureKey::Character('q'))]),
         ("ctrl-c", vec![ctrl(FixtureKey::Character('c'))]),
@@ -1869,7 +1873,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 generation: 1,
                 automation: None,
                 intents: vec![Intent::ToggleMute { master: false }],
-                effects: vec!["ToggleMute { master: false }=>OK:Published { generation: 1 }"],
+                effects: vec!["ToggleMute(Chords)=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "master mute" => ExpectedBinding {
@@ -1877,7 +1881,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 generation: 1,
                 automation: None,
                 intents: vec![Intent::ToggleMute { master: true }],
-                effects: vec!["ToggleMute { master: true }=>OK:Published { generation: 1 }"],
+                effects: vec!["ToggleMute(Master)=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "clock stop" => ExpectedBinding {
@@ -1912,11 +1916,27 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 effects: vec![],
                 notice: None,
             },
+            "enter layer" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::EnterLayer(Tab::Chords)],
+                effects: vec![],
+                notice: None,
+            },
+            "layer back" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 0,
+                automation: None,
+                intents: vec![Intent::EnterLayer(Tab::Chords), Intent::Cancel],
+                effects: vec![],
+                notice: None,
+            },
             "touch" => ExpectedBinding {
                 owner: "BROWSE",
                 generation: 0,
                 automation: None,
-                intents: vec![Intent::TouchSelected],
+                intents: vec![Intent::EnterLayer(Tab::Chords), Intent::TouchSelected],
                 effects: vec![
                     "TouchSelected=>OK:ControlSelected { tab: Chords, index: 0, id: \"pad.level\" }",
                 ],
@@ -2224,7 +2244,8 @@ fn silent_lane_capacity_notice_and_x_removal_use_the_production_bindings() {
 #[test]
 fn lead_play_mode_keeps_letters_for_tones_while_arrows_edit_controls() {
     let plain = |code| key(0, code, InputPhase::Press);
-    let to_lead: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    // Shift+Tab from the hub enters Lead, the last layer.
+    let to_lead = vec![modified_key(0, FixtureKey::BackTab, InputPhase::Press, 1)];
 
     let mut opened = to_lead.clone();
     opened.push(plain(FixtureKey::Enter));
@@ -2319,7 +2340,8 @@ fn i_enters_play_mode_from_any_page_and_the_top_row_nudges_rows() {
 #[test]
 fn space_toggles_the_lead_lane_and_c_keeps_the_phrase() {
     let plain = |code| key(0, code, InputPhase::Press);
-    let mut trace: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    // Shift+Tab from the hub enters Lead, the last layer.
+    let mut trace = vec![modified_key(0, FixtureKey::BackTab, InputPhase::Press, 1)];
     trace.push(plain(FixtureKey::Enter));
     trace.push(plain(FixtureKey::Character(' ')));
     let off = replay(&trace, TerminalCapabilities::full());
@@ -2351,7 +2373,8 @@ fn control_quit_reaches_the_lead_and_performance_owners() {
     let plain = |code| key(0, code, InputPhase::Press);
     // Bit 1 is Control in the fixture encoding (`Modifiers::CONTROL`).
     let quit = modified_key(0, FixtureKey::Character('c'), InputPhase::Press, 1 << 1);
-    let mut lead: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    // Shift+Tab from the hub enters Lead, the last layer.
+    let mut lead = vec![modified_key(0, FixtureKey::BackTab, InputPhase::Press, 1)];
     lead.extend([plain(FixtureKey::Enter), quit.clone()]);
     let lead = replay(&lead, TerminalCapabilities::full());
     assert_eq!(lead.final_owner(), Some("LEAD"));
@@ -2368,7 +2391,8 @@ fn control_quit_reaches_the_lead_and_performance_owners() {
 #[test]
 fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     let plain = |code| key(0, code, InputPhase::Press);
-    let mut trace: Vec<_> = std::iter::repeat_n(plain(FixtureKey::Tab), 7).collect();
+    // Shift+Tab from the hub enters Lead, the last layer.
+    let mut trace = vec![modified_key(0, FixtureKey::BackTab, InputPhase::Press, 1)];
     trace.extend(std::iter::repeat_n(plain(FixtureKey::Down), 10));
     trace.push(plain(FixtureKey::Enter));
     let opened = replay(&trace, TerminalCapabilities::full());
@@ -2415,9 +2439,10 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
 fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor() {
     let plain = |code| key(0, code, InputPhase::Press);
     let shift = |code| modified_key(0, code, InputPhase::Press, 1);
+    // Enter on the hub's first row opens Pads, whose Level is its first row.
 
     let rolled = replay(
-        &[plain(FixtureKey::Character('r'))],
+        &[plain(FixtureKey::Enter), plain(FixtureKey::Character('r'))],
         TerminalCapabilities::full(),
     );
     assert_eq!(rolled.effect_count("RandomizeSelected"), 1);
@@ -2425,7 +2450,7 @@ fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor
     let level = rolled.control("pad.level").unwrap();
     assert!((0.0..=1.0).contains(&level));
     let again = replay(
-        &[plain(FixtureKey::Character('r'))],
+        &[plain(FixtureKey::Enter), plain(FixtureKey::Character('r'))],
         TerminalCapabilities::full(),
     );
     assert_eq!(
@@ -2436,6 +2461,7 @@ fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor
 
     let row = replay(
         &[
+            plain(FixtureKey::Enter),
             plain(FixtureKey::Character('f')),
             plain(FixtureKey::Character('r')),
         ],
@@ -2445,7 +2471,7 @@ fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor
     assert_eq!(row.effect_count("RandomizeSelected"), 0);
 
     let set = replay(
-        &[shift(FixtureKey::Character('R'))],
+        &[plain(FixtureKey::Enter), shift(FixtureKey::Character('R'))],
         TerminalCapabilities::full(),
     );
     assert_eq!(set.effect_count("RandomizeScope"), 1);
@@ -2461,6 +2487,7 @@ fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor
 
     let lfo_set = replay(
         &[
+            plain(FixtureKey::Enter),
             plain(FixtureKey::Character('f')),
             shift(FixtureKey::Character('R')),
         ],
@@ -2546,7 +2573,9 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
 /// added to. It never opens the effect's detail drill: Enter does that.
 #[test]
 fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
+    // Tab from the hub enters Pads; twice more reaches Bass.
     let mut events = vec![
+        key(0, FixtureKey::Tab, InputPhase::Press),
         key(0, FixtureKey::Tab, InputPhase::Press),
         key(0, FixtureKey::Tab, InputPhase::Press),
         key(0, FixtureKey::Character('/'), InputPhase::Press),
@@ -3232,7 +3261,9 @@ fn palette_recipe_refuses_delete_and_readd_of_the_same_module() {
 /// removes everything under 8 kHz.
 #[test]
 fn switching_a_filter_to_high_pass_mirrors_its_cutoff() {
+    // Tab from the hub enters Pads; once more reaches Perc.
     let mut events = vec![
+        key(0, FixtureKey::Tab, InputPhase::Press),
         key(0, FixtureKey::Tab, InputPhase::Press),
         key(0, FixtureKey::Character('/'), InputPhase::Press),
     ];
@@ -3591,13 +3622,60 @@ fn jump_to_filter_reaches_a_loaded_one_and_adds_an_inert_one_otherwise() {
     );
 }
 
+/// The hub is the way into every layer: Enter opens the highlighted one,
+/// Tab moves to the next sibling in place, and Esc comes back up onto
+/// the row of whichever layer it left, which resumes where it was.
+#[test]
+fn enter_tab_and_esc_move_between_the_hub_and_its_layers() {
+    let plain = |code| key(0, code, InputPhase::Press);
+    let result = replay(
+        &[
+            plain(FixtureKey::Down),
+            plain(FixtureKey::Down),
+            plain(FixtureKey::Enter),
+            plain(FixtureKey::Down),
+            plain(FixtureKey::Tab),
+            plain(FixtureKey::Escape),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(
+        result.model.navigation,
+        Navigation::Hub {
+            selected: super::interaction::Page::Kick as usize,
+        }
+    );
+    assert_eq!(result.session_generation, 0, "moving edits nothing");
+    assert!(result.deferred_inputs.is_empty());
+
+    let resumed = replay(
+        &[
+            plain(FixtureKey::Down),
+            plain(FixtureKey::Down),
+            plain(FixtureKey::Enter),
+            plain(FixtureKey::Down),
+            plain(FixtureKey::Escape),
+            plain(FixtureKey::Enter),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(
+        resumed.model.navigation,
+        Navigation::Standard {
+            page: super::interaction::StandardPage::Bass,
+            selected: 1,
+        }
+    );
+}
+
 /// Two keys reach a knob on the layer already open: `Space` then the
 /// parameter, no layer key. It works on pages no layer key names.
 #[test]
 fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
-    // Tab twice from Pads reaches Bass.
+    // Tab from the hub enters Pads; twice more reaches Bass.
     let on_bass = |mut trace: Vec<_>| {
         let mut keys = vec![
+            key(0, FixtureKey::Tab, InputPhase::Press),
             key(0, FixtureKey::Tab, InputPhase::Press),
             key(0, FixtureKey::Tab, InputPhase::Press),
         ];
@@ -3629,8 +3707,18 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
         "the cursor landed on the filter's cutoff row"
     );
 
-    // Master has no layer key at all, so the shorthand is the only way in.
+    // The app opens on the hub, whose own level is Master Level.
     let master = replay(
+        &[
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('j'), InputPhase::Press),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(master.recent_ids, ["master.level"]);
+
+    // Lead has no layer key at all, so the shorthand is the only way in.
+    let lead = replay(
         &[
             key(0, FixtureKey::BackTab, InputPhase::Press),
             key(0, FixtureKey::Character(' '), InputPhase::Press),
@@ -3638,7 +3726,7 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
         ],
         TerminalCapabilities::full(),
     );
-    assert_eq!(master.recent_ids, ["master.level"]);
+    assert_eq!(lead.recent_ids, ["lead.level"]);
 }
 
 /// A mistyped layer costs one key: a second layer key re-aims the pending
@@ -3915,7 +4003,7 @@ fn escape_converges_from_every_owner_and_nested_depth() {
                 Navigation::Chords {
                     drill: ChordDrill::None,
                     ..
-                } | Navigation::Master { .. }
+                } | Navigation::Hub { .. }
                     | Navigation::Standard { .. }
             ),
             "Escape left a navigation drill open: {:?}",

@@ -1164,14 +1164,17 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
     master,
     "master",
     [
-        gain_pct!("pad.level", "Pads Vol", pad.level),
-        gain_pct!("perc.level", "Perc Vol", perc.level),
-        gain_pct!("kick.level", "Kick Vol", kick.level),
-        gain_pct!("tonal.level", "Tonal Vol", tonal.level),
-        gain_pct!("clap.level", "Clap Vol", clap.level),
-        gain_pct!("bass.level", "Bass Vol", bass.level),
-        gain_pct!("arp.gain", "Arp Vol", arp.gain),
-        gain_pct!("lead.level", "Lead Vol", lead.level),
+        // The hub's layer rows, one per layer in page order
+        // (`hub_rows_open_with_every_layer_in_page_order`): each is that
+        // layer's level, and Enter on it enters the layer.
+        gain_pct!("pad.level", "Pads", pad.level),
+        gain_pct!("perc.level", "Perc", perc.level),
+        gain_pct!("bass.level", "Bass", bass.level),
+        gain_pct!("kick.level", "Kick", kick.level),
+        gain_pct!("tonal.level", "Tonal", tonal.level),
+        gain_pct!("clap.level", "Clap", clap.level),
+        gain_pct!("arp.gain", "Arp", arp.gain),
+        gain_pct!("lead.level", "Lead", lead.level),
         ControlSpec::new(
             "master.bpm",
             "BPM",
@@ -1257,7 +1260,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-const CHORD_BASE_CONTROL_COUNT: usize = 33;
+const CHORD_BASE_CONTROL_COUNT: usize = 34;
 
 pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
 pub(crate) const PAD_MIDI_TRIGGER_ID: &str = "pad.midi_trigger";
@@ -1432,6 +1435,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c| if c.pad.trigger >= 0.5 { "Stabs" } else { "Hold" }.to_string(),
     ),
     beat_interval!("pad.gate_beats", "Gate", 0.125, 2.0, pad.gate_beats),
+    beat_offset!("pad.offset_beats", "Offset", 4.0, pad.offset_beats),
     gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
     gain_pct!("pad.detune", "Detune", pad.detune),
     gain_pct!("pad.octave_mix", "Octave Mix", pad.octave_mix),
@@ -2023,9 +2027,9 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
     ]
 );
 
-/// The tab a control lives on natively (its deepest editing surface), so
-/// Enter on a cross-tab row like the Master voice levels expands into that
-/// voice's own tab. Master picks up its own rows via the fallback scan.
+/// The tab a control lives on natively (its deepest editing surface), so a
+/// cross-tab row like a hub layer level resolves to that layer's own tab.
+/// Master picks up its own rows via the fallback scan.
 pub(crate) fn tab_owning_control(id: &str) -> Option<Tab> {
     let owner = Tab::all()
         .into_iter()
@@ -2073,11 +2077,12 @@ pub(crate) fn midi_row_bit(id: &str) -> Option<u8> {
     }
 }
 
-/// The Pad rhythm controls that a MIDI launch tucks out of the root page.
+/// The Pad rhythm controls tucked out of the root page until added through `/`.
 pub(crate) fn pad_rhythm_row_bit(id: &str) -> Option<u8> {
     match id {
         "pad.trigger" => Some(1 << 0),
         "pad.gate_beats" => Some(1 << 2),
+        "pad.offset_beats" => Some(1 << 3),
         _ => None,
     }
 }

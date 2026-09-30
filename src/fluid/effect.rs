@@ -795,7 +795,7 @@ impl EffectExecutor {
             | InteractionEffect::MaxSelected
             | InteractionEffect::ToggleAuto
             | InteractionEffect::ToggleUnits
-            | InteractionEffect::ToggleMute { .. }
+            | InteractionEffect::ToggleMute(_)
             | InteractionEffect::ToggleTransport
             | InteractionEffect::RemoveAutomation
             | InteractionEffect::RandomizeAutomationRow
@@ -930,8 +930,8 @@ impl EffectExecutor {
                     context.beat,
                 );
             }),
-            InteractionEffect::ToggleMute { master } => {
-                self.toggle_mute(if master { Tab::Master } else { context.tab });
+            InteractionEffect::ToggleMute(tab) => {
+                self.toggle_mute(tab);
                 Ok(self.published())
             }
             InteractionEffect::ToggleTransport => {
@@ -1020,7 +1020,7 @@ impl EffectExecutor {
             }
             InteractionEffect::TouchSelected => {
                 let id = selected_control(context.selected_control)?;
-                let tab = tab_owning_control(id).unwrap_or(context.tab);
+                let tab = context.tab;
                 let index = spec_index(tab, id).unwrap_or(context.selected);
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
@@ -2258,6 +2258,7 @@ mod tests {
         let rows = tab_controls(Tab::Chords, controls);
         assert!(rows.iter().any(|item| item.id == "pad.trigger"));
         assert!(rows.iter().all(|item| item.id != "pad.gate_beats"));
+        assert!(rows.iter().all(|item| item.id != "pad.offset_beats"));
     }
 
     #[test]
