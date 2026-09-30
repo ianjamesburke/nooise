@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use super::interaction::{INSTRUMENTS, LEAD_PLAY_KEYS, PARAMETERS};
+use super::interaction::{LEAD_PLAY_KEYS, PARAMETERS};
 use super::widget::{Dial, DialScale};
 use super::*;
 
@@ -800,15 +800,18 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         .map(|(key, name)| (key.as_str(), name.as_str()))
         .collect();
 
+    let column_count = if inner_block.width >= 64 { 2 } else { 1 };
+    let column_width = usize::from(inner_block.width).saturating_sub(1) / column_count;
+    let key_width = if column_count == 2 { 12 } else { 20 };
     let key_row = |row: KeyRow| -> Line<'static> {
         let mut spans = Vec::new();
-        for (i, (key, desc)) in row.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::raw("   "));
-            }
-            spans.push(Span::styled(key.to_string(), key_style));
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(desc.to_string(), desc_style));
+        for (key, desc) in row {
+            let description_width = column_width.saturating_sub(key_width);
+            spans.push(Span::styled(format!("{key:<key_width$}"), key_style));
+            spans.push(Span::styled(
+                format!("{desc:<description_width$}"),
+                desc_style,
+            ));
         }
         Line::from(spans)
     };
@@ -817,7 +820,10 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             Line::from(Span::styled(title, heading_style)),
             Line::from(Span::styled(rule.clone(), rule_style)),
         ];
-        lines.extend(rows.iter().map(|row| key_row(row)));
+        lines.extend(
+            rows.iter()
+                .flat_map(|row| row.chunks(column_count).map(key_row)),
+        );
         lines.push(Line::from(""));
         lines
     };
@@ -895,16 +901,21 @@ fn draw_help(f: &mut Frame, inner: Rect) {
     f.render_widget(Paragraph::new(lines), inner_block);
 }
 
-/// The immediate Space map. It covers the controls while preserving the
-/// breadcrumb and both footer rows, so a player sees the whole sentence
-/// before committing its next key.
+/// The immediate Space map is a compact, centered menu with a dedicated
+/// cancel row. It leaves the footer visible at every terminal size.
 fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
-    let above_footer = inner.height.saturating_sub(2);
+    let available_height = inner.height.saturating_sub(1);
+    let desired_height = match surface {
+        PerformanceSurface::ChooseLayer => 8,
+        PerformanceSurface::ChooseParameter { .. } => 7,
+    };
+    let height = desired_height.min(available_height);
+    let width = 34.min(inner.width.saturating_sub(2));
     let area = Rect::new(
-        inner.x + 1,
-        inner.y,
-        inner.width.saturating_sub(2),
-        above_footer,
+        inner.x + (inner.width.saturating_sub(width)) / 2,
+        inner.y + (available_height.saturating_sub(height)) / 2,
+        width,
+        height,
     );
     fill_scrim(f.buffer_mut(), area, |cell| {
         cell.set_bg(Color::Rgb(16, 19, 28));
@@ -922,49 +933,47 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
     let content = block.inner(area);
     f.render_widget(block, area);
 
-    let binding = |key: char, label: &str| format!("{key} {label}");
-    let parameter_line = PARAMETERS
-        .iter()
-        .map(|row| binding(row.key, row.label))
-        .collect::<Vec<_>>()
-        .join("  ");
+    let key_style = Style::default()
+        .fg(BROWSE_PALETTE.active)
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(Color::Rgb(205, 210, 222));
+    let pair = |left_key: char, left_label: &str, right_key: char, right_label: &str| {
+        Line::from(vec![
+            Span::styled(format!("{left_key:<2}"), key_style),
+            Span::styled(format!("{left_label:<11}"), label_style),
+            Span::styled(format!("{right_key:<2}"), key_style),
+            Span::styled(right_label.to_string(), label_style),
+        ])
+    };
+    let single = |key: &str, label: &str| {
+        Line::from(vec![
+            Span::styled(format!("{key:<5}"), key_style),
+            Span::styled(label.to_string(), label_style),
+        ])
+    };
     let lines = match surface {
         PerformanceSurface::ChooseLayer => vec![
-            format!(
-                "{:<12}{}",
-                binding(INSTRUMENTS[0].key, INSTRUMENTS[0].instrument.name()),
-                binding(INSTRUMENTS[4].key, INSTRUMENTS[4].instrument.name())
+            pair('a', "Pads", 'q', "Tonal"),
+            pair('s', "Perc", 'w', "Clap"),
+            pair('d', "Bass", 'e', "Arp"),
+            pair('f', "Kick", 'r', "Master"),
+            pair(
+                PARAMETERS[0].key,
+                PARAMETERS[0].label,
+                PARAMETERS[1].key,
+                PARAMETERS[1].label,
             ),
-            format!(
-                "{:<12}{}",
-                binding(INSTRUMENTS[1].key, INSTRUMENTS[1].instrument.name()),
-                binding(INSTRUMENTS[5].key, INSTRUMENTS[5].instrument.name())
-            ),
-            format!(
-                "{:<12}{}",
-                binding(INSTRUMENTS[2].key, INSTRUMENTS[2].instrument.name()),
-                binding(INSTRUMENTS[6].key, INSTRUMENTS[6].instrument.name())
-            ),
-            format!(
-                "{:<12}{}",
-                binding(INSTRUMENTS[3].key, INSTRUMENTS[3].instrument.name()),
-                binding(INSTRUMENTS[7].key, INSTRUMENTS[7].instrument.name())
-            ),
-            format!("{parameter_line}  Esc cancel"),
+            single("Esc", "Cancel"),
         ],
         PerformanceSurface::ChooseParameter { instrument } => vec![
-            instrument.name().to_string(),
-            binding(PARAMETERS[0].key, PARAMETERS[0].label),
-            binding(PARAMETERS[1].key, PARAMETERS[1].label),
-            "Esc cancel".to_string(),
+            Line::from(Span::styled(instrument.name().to_string(), label_style)),
+            single(&PARAMETERS[0].key.to_string(), PARAMETERS[0].label),
+            single(&PARAMETERS[1].key.to_string(), PARAMETERS[1].label),
+            Line::from(""),
+            single("Esc", "Cancel"),
         ],
     };
-    f.render_widget(
-        Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>())
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::Rgb(205, 210, 222))),
-        content,
-    );
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
 }
 
 /// Colour pair for a row family: (active row, idle row).

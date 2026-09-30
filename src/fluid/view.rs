@@ -1181,8 +1181,9 @@ mod tests {
             "w\u{2420}Clap",
             "e\u{2420}Arp",
             "r\u{2420}Master",
-            "j\u{2420}volume\u{2420}\u{2420}k\u{2420}filter",
-            "Esc\u{2420}cancel",
+            "j\u{2420}volume",
+            "k\u{2420}filter",
+            "Esc\u{2420}\u{2420}Cancel",
         ] {
             assert!(rendered.contains(text), "missing {text:?}:\n{rendered}");
         }
@@ -1210,7 +1211,7 @@ mod tests {
         assert!(
             rendered.contains("JUMP\u{2420}Kick")
                 && rendered.contains("Kick")
-                && rendered.contains("j\u{2420}volume"),
+                && rendered.contains("j\u{2420}\u{2420}\u{2420}\u{2420}volume"),
             "the pending leader names its target and keys: {rendered:?}"
         );
     }
