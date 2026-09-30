@@ -11,6 +11,7 @@ pub(crate) enum Operation {
     Capture(CaptureAction),
     Mix(mix_action::MixAction),
     Recipe(recipe::RecipeId),
+    PlannedMute,
 }
 
 /// The display metadata belonging to one [`Operation`].
@@ -23,7 +24,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 12] = [
+    pub(crate) const ALL: [Self; 13] = [
         Self::Capture(CaptureAction::Capture),
         Self::Capture(CaptureAction::Bypass),
         Self::Capture(CaptureAction::Resume),
@@ -36,6 +37,7 @@ impl Operation {
         Self::Recipe(recipe::RecipeId::Pulse),
         Self::Recipe(recipe::RecipeId::Drift),
         Self::Recipe(recipe::RecipeId::Rise),
+        Self::PlannedMute,
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -61,13 +63,19 @@ impl Operation {
                     description: recipe.description,
                 }
             }
+            Self::PlannedMute => OperationSpec {
+                operation: self,
+                label: "Mute next bar",
+                aliases: &["planned mute", "mute next"],
+                description: "mute the visible layer at the next bar",
+            },
         }
     }
 
     pub(crate) const fn capture_action(self) -> Option<CaptureAction> {
         match self {
             Self::Capture(action) => Some(action),
-            Self::Mix(_) | Self::Recipe(_) => None,
+            Self::Mix(_) | Self::Recipe(_) | Self::PlannedMute => None,
         }
     }
 

@@ -128,7 +128,11 @@ the filter on whatever is in front of you. That shorthand is the only way
 into Lead, and stays the quickest route to the page already in front of
 you.
 
-Escape leaves a pending leader; Space while it is pending is inert.
+`Space m` arms the visible layer's mute for the next bar. Its breadcrumb and
+hub row show a small `m` until the boundary, where it becomes `(M)`. Repeating
+`Space m` before that bar cancels the same planned mute. The action is part of
+the saved session state, rebased to the next song's beat zero. Escape leaves a
+pending leader; Space while it is pending is inert.
 
 Volume is the layer's own Level row. Filter is the shared filter module's
 Cutoff, never its Amount: Amount is a detail-only wet/dry mix an added filter
@@ -139,10 +143,11 @@ transparent 20 kHz cutoff, so arriving is silent and turning the cutoff down
 is the first audible move. A layer whose chain is full says so and stays
 put.
 
-The leader only ever moves a cursor, so it needs no key-release support and
-behaves identically on every terminal. It renders a compact centered Jump
-menu: layers form a two-column list, current-page Volume and Filter share a
-row, and `Esc Cancel` has the bottom row. The footer remains visible.
+The leader only ever moves a cursor except for `Space m`, which is a press-only
+boundary action and needs no key-release support. It renders a compact centered
+Jump menu: layers form a two-column list, current-page Volume, Filter, and
+Mute share a row, and `Esc Cancel` has the bottom row. The footer remains
+visible.
 
 Lead play retains its own `i` entry and existing bindings.
 
@@ -174,15 +179,20 @@ Lead play retains its own `i` entry and existing bindings.
    Space, `j` and confirm it reaches Master Level. Repeat the direct layer
    jump for Tonal, Clap, and Arp. On Lead, confirm Space, `j` still reaches
    its Level.
-7. Press `?` from Browsing: the shortcut map should open over the
+7. On Kick, press Space, `m`: its hub row and breadcrumb show `m` while the
+   sound continues. On the next bar it reads `(M)` and the Kick drops out
+   click-free. Repeat Space, `m` before the boundary to cancel. Save while it
+   is armed, load the code, and confirm it still lands at the loaded song's
+   next bar.
+8. Press `?` from Browsing: the shortcut map should open over the
    breadcrumb and control rows, leaving both footer rows visible beneath
    it. Esc returns to Browsing.
-8. On Pads with Reverb loaded and Kick audible, press Shift+P: no new kick or
+9. On Pads with Reverb loaded and Kick audible, press Shift+P: no new kick or
    chord arrives, the chord and reverb fade out naturally rather than
    cutting, and the activity row shows `■ STOPPED`. Hold `z` during the
    tail and hear it bloom. Press Shift+P again: the grid restarts at bar 1 and
    the first chord in the selected window swells back in.
-9. Launch: the hub shows `Master` above one `›` row per layer. Press `m` on
+10. Launch: the hub shows `Master` above one `›` row per layer. Press `m` on
    Kick: its row and nothing else reads `(M)`. Enter Bass, move down two
    rows, Tab to Kick and Esc: the cursor is on the hub's Kick row. Enter
    Bass again: the cursor is back where it was left. Shift+Tab to Lead, then

@@ -442,10 +442,20 @@ pub(crate) fn production_ui_loop(
             let frame_session = effects.session().load();
             let gesture_now_seconds = effects.session().audio_seconds();
             let beat = telemetry.beat();
-            let pending_message = effects.pending().map(|(_, edits)| {
-                let plural = if edits.len() == 1 { "" } else { "s" };
-                format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
-            });
+            let pending_message = frame_session
+                .planned
+                .map(|action| {
+                    format!(
+                        "\u{25cb} {} mute lands on the next bar",
+                        action.tab().name()
+                    )
+                })
+                .or_else(|| {
+                    effects.pending().map(|(_, edits)| {
+                        let plural = if edits.len() == 1 { "" } else { "s" };
+                        format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
+                    })
+                });
             let auto_message = effects.auto_position(beat).map(|position| {
                 let name =
                     |id: Option<usize>| id.map_or_else(|| "LIVE".to_string(), |id| id.to_string());

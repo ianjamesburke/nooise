@@ -697,6 +697,7 @@ fn performance_binding(code: &PhysicalKey) -> Option<Intent> {
     // current-page address.
     PerformanceParameter::from_key(key)
         .map(Intent::JumpToParameter)
+        .or_else(|| (key == 'm').then_some(Intent::PlanMute))
         .or_else(|| {
             PerformanceInstrument::from_key(key)
                 .map(|instrument| Intent::SelectPerformanceInstrument { instrument })

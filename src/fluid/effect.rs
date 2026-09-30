@@ -476,39 +476,55 @@ impl EffectExecutor {
                 Ok(EffectAcknowledgement::Staged { count })
             }
             LiveEffect::CommitPending { beat } => {
-                let Some((target, edits)) = self.pending.as_ref() else {
-                    return Ok(EffectAcknowledgement::NoChange);
-                };
-                if beat < *target {
-                    return Ok(EffectAcknowledgement::NoChange);
-                }
-                let edits = edits.clone();
-                if let Some(unknown) = edits.iter().find(|edit| spec_by_id(edit.id).is_none()) {
-                    return Err(EffectFailure::UnknownControl(unknown.id));
-                }
-                self.edit_beat = beat;
-                let snapshot = self.edit_session(None, |snapshot| {
-                    for edit in &edits {
-                        suspend_capture(snapshot, edit.id);
-                        spec_by_id(edit.id)
-                            .expect("validated staged control")
-                            .apply_value(edit.value, &mut snapshot.controls);
-                        if let Some(bit) = midi_row_bit(edit.id) {
-                            snapshot.controls.midi_rows |= bit;
-                        }
-                        if let Some(bit) = pad_rhythm_row_bit(edit.id) {
-                            snapshot.controls.hidden_pad_rhythm_rows &= !bit;
-                        }
+                let mut acknowledgement = EffectAcknowledgement::NoChange;
+                if let Some((target, edits)) = self.pending.as_ref()
+                    && beat >= *target
+                {
+                    let edits = edits.clone();
+                    if let Some(unknown) = edits.iter().find(|edit| spec_by_id(edit.id).is_none()) {
+                        return Err(EffectFailure::UnknownControl(unknown.id));
                     }
-                });
-                self.pending = None;
-                self.recent.touch_edits(&edits);
-                let plural = if edits.len() == 1 { "" } else { "s" };
-                let message = format!("{} edit{plural} applied", edits.len());
-                self.show_message(message);
-                Ok(EffectAcknowledgement::Published {
-                    generation: snapshot.generation,
-                })
+                    self.edit_beat = beat;
+                    let snapshot = self.edit_session(None, |snapshot| {
+                        for edit in &edits {
+                            suspend_capture(snapshot, edit.id);
+                            spec_by_id(edit.id)
+                                .expect("validated staged control")
+                                .apply_value(edit.value, &mut snapshot.controls);
+                            if let Some(bit) = midi_row_bit(edit.id) {
+                                snapshot.controls.midi_rows |= bit;
+                            }
+                            if let Some(bit) = pad_rhythm_row_bit(edit.id) {
+                                snapshot.controls.hidden_pad_rhythm_rows &= !bit;
+                            }
+                        }
+                    });
+                    self.pending = None;
+                    self.recent.touch_edits(&edits);
+                    let plural = if edits.len() == 1 { "" } else { "s" };
+                    self.show_message(format!("{} edit{plural} applied", edits.len()));
+                    acknowledgement = EffectAcknowledgement::Published {
+                        generation: snapshot.generation,
+                    };
+                }
+                if let Some(action) = self
+                    .session
+                    .load()
+                    .planned
+                    .filter(|action| action.is_due(beat))
+                {
+                    let tab = action.tab();
+                    let snapshot = self.session.update(|snapshot| {
+                        snapshot.muted[tab as usize] = !snapshot.muted[tab as usize];
+                        snapshot.planned = None;
+                    });
+                    self.recent.touch(tab.level_id().unwrap_or("master.level"));
+                    self.show_message(format!("{} mute applied", tab.name()));
+                    acknowledgement = EffectAcknowledgement::Published {
+                        generation: snapshot.generation,
+                    };
+                }
+                Ok(acknowledgement)
             }
             LiveEffect::CopySong => {
                 let snapshot = self.session.load();
@@ -520,6 +536,9 @@ impl EffectExecutor {
                         .snapshot_at(self.session.audio_beat().max(self.edit_beat)),
                     tonal_sequence: Some(snapshot.tonal_sequence.clone()),
                     muted: snapshot.muted,
+                    planned: snapshot.planned.map(|action| {
+                        action.rebased_at(self.session.audio_beat().max(self.edit_beat))
+                    }),
                     gestures: snapshot.gestures.snapshot_at(now_seconds),
                     drunken_phase_beat: if snapshot
                         .controls
@@ -702,6 +721,25 @@ impl EffectExecutor {
             .update(|snapshot| snapshot.muted[tab as usize] = !snapshot.muted[tab as usize]);
     }
 
+    fn plan_mute(&mut self, tab: Tab, beat: f64) -> Result<EffectAcknowledgement, EffectFailure> {
+        let target_beat = next_bar_beat(beat);
+        let snapshot = self.session.update(|snapshot| {
+            snapshot.planned = match snapshot.planned {
+                Some(PlannedAction::Mute { tab: armed, .. }) if armed == tab => None,
+                _ => Some(PlannedAction::Mute { tab, target_beat }),
+            };
+        });
+        let message = if snapshot.planned.is_some() {
+            format!("{} mute armed for next bar", tab.name())
+        } else {
+            format!("{} mute cancelled", tab.name())
+        };
+        self.show_message(message);
+        Ok(EffectAcknowledgement::Published {
+            generation: snapshot.generation,
+        })
+    }
+
     /// Stop or start the beat clock. Like mute it is an overlay on the song,
     /// not an edit of it, so it neither exits auto nor touches the MRU; the
     /// next play starts the sequence at beat zero.
@@ -711,6 +749,12 @@ impl EffectExecutor {
             if snapshot.transport == Transport::Playing {
                 snapshot.transport_restart = snapshot.transport_restart.wrapping_add(1);
                 snapshot.automation.restart();
+                snapshot.planned = snapshot.planned.map(|action| match action {
+                    PlannedAction::Mute { tab, .. } => PlannedAction::Mute {
+                        tab,
+                        target_beat: 4.0,
+                    },
+                });
             }
         });
         if self.session.load().transport == Transport::Playing {
@@ -802,6 +846,7 @@ impl EffectExecutor {
                 })
             }
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
+            InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
             InteractionEffect::Quit => Ok(EffectAcknowledgement::QuitRequested),
             unsupported @ (InteractionEffect::AutomationConfirm(_)
@@ -949,6 +994,7 @@ impl EffectExecutor {
                 self.toggle_mute(tab);
                 Ok(self.published())
             }
+            InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::ToggleTransport => {
                 self.toggle_transport();
                 Ok(self.published())
@@ -1407,6 +1453,54 @@ mod tests {
         executor.toggle_mute(Tab::Perc);
         assert_eq!(executor.session().load().controls.perc.level, 0.65);
         assert!(!executor.session().load().muted[Tab::Perc as usize]);
+    }
+
+    #[test]
+    fn planned_mute_commits_on_its_bar_and_repeating_it_cancels() {
+        let mut executor = executor();
+
+        executor.plan_mute(Tab::Kick, 5.25).unwrap();
+        assert_eq!(
+            executor.session().load().planned,
+            Some(PlannedAction::Mute {
+                tab: Tab::Kick,
+                target_beat: 8.0,
+            })
+        );
+        executor
+            .execute(LiveEffect::CommitPending { beat: 7.99 })
+            .unwrap();
+        assert!(!executor.session().load().muted[Tab::Kick as usize]);
+        executor
+            .execute(LiveEffect::CommitPending { beat: 8.0 })
+            .unwrap();
+        assert!(executor.session().load().muted[Tab::Kick as usize]);
+        assert_eq!(executor.session().load().planned, None);
+
+        executor.plan_mute(Tab::Kick, 8.0).unwrap();
+        executor.plan_mute(Tab::Kick, 8.0).unwrap();
+        assert_eq!(executor.session().load().planned, None);
+    }
+
+    #[test]
+    fn saving_an_armed_mute_rebases_its_remaining_wait() {
+        let mut executor = executor();
+        executor.plan_mute(Tab::Kick, 5.25).unwrap();
+        executor.session().publish_audio_beat(6.0);
+        let mut clipboard = FakeClipboard::default();
+
+        executor
+            .execute_with_clipboard(LiveEffect::CopySong, &mut clipboard)
+            .unwrap();
+
+        let song = decode_song_code(clipboard.value.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            song.planned,
+            Some(PlannedAction::Mute {
+                tab: Tab::Kick,
+                target_beat: 2.0,
+            })
+        );
     }
 
     #[test]

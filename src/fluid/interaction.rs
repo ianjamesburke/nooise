@@ -404,6 +404,8 @@ pub(crate) struct PaletteMode {
     pub(crate) staged: Vec<PaletteStagedEdit>,
     pub(crate) resume: Option<AutomationMode>,
     pub(crate) module_scope: Option<ModuleScope>,
+    /// The layer a planned operation addresses, frozen when the palette opens.
+    pub(crate) planned_tab: Option<Tab>,
 }
 
 impl PaletteMode {
@@ -937,6 +939,8 @@ pub(crate) enum Intent {
     /// Jump to a parameter on the page already open, then hand the keyboard
     /// back to browsing. Moves the cursor; never edits a value.
     JumpToParameter(PerformanceParameter),
+    /// Arm or cancel the visible layer's next-bar mute.
+    PlanMute,
     EnterLeadPlay,
     /// A 1-based Lead tone, from the letter row. `hold` is whether the
     /// terminal will report the key's release, so the note can sustain.
@@ -1061,9 +1065,9 @@ impl Intent {
                 ModeKind::Help,
             ],
             Self::ActivatePerformance(_) => &[ModeKind::Browsing, ModeKind::Performance],
-            Self::SelectPerformanceInstrument { .. } | Self::JumpToParameter(_) => {
-                &[ModeKind::Performance]
-            }
+            Self::SelectPerformanceInstrument { .. }
+            | Self::JumpToParameter(_)
+            | Self::PlanMute => &[ModeKind::Performance],
         }
     }
 
@@ -1097,6 +1101,7 @@ impl Intent {
             | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
             | Self::JumpToParameter(_)
+            | Self::PlanMute
             | Self::EnterLeadPlay
             | Self::PlayLeadTone { .. }
             | Self::NudgeLead { .. }
@@ -1186,6 +1191,8 @@ pub(crate) enum InteractionEffect {
     ToggleUnits,
     /// Mute or unmute this layer (or Master) as a whole.
     ToggleMute(Tab),
+    /// Arm or cancel this layer's mute at the next bar.
+    PlanMute(Tab),
     ToggleTransport,
     RemoveAutomation,
     RandomizeAutomationRow,
@@ -1527,6 +1534,7 @@ fn update_browsing(
         }
         Intent::OpenPalette => {
             *next_mode = Some(InteractionMode::Palette(PaletteMode {
+                planned_tab: Some(navigation.mute_target()),
                 module_scope: match navigation {
                     Navigation::Module {
                         tab,
@@ -1821,6 +1829,7 @@ fn update_automation(
             *next_mode = Some(InteractionMode::Palette(PaletteMode {
                 recent: Vec::new(),
                 resume: Some(*automation),
+                planned_tab: Some(navigation.mute_target()),
                 ..PaletteMode::default()
             }));
         }
@@ -1925,6 +1934,10 @@ fn update_performance(
             effects.push(effect);
             *next_mode = Some(InteractionMode::Browsing);
         }
+        Intent::PlanMute => {
+            effects.push(InteractionEffect::PlanMute(navigation.mute_target()));
+            *next_mode = Some(InteractionMode::Browsing);
+        }
         _ => {}
     }
 }
@@ -2027,6 +2040,9 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
             recipe,
             target: palette.recipe_target,
         },
+        Operation::PlannedMute => {
+            InteractionEffect::PlanMute(palette.planned_tab.unwrap_or(Tab::Master))
+        }
     }
 }
 
@@ -2502,6 +2518,27 @@ mod tests {
     }
 
     #[test]
+    fn leader_mute_arms_the_visible_layer_and_returns_to_browsing() {
+        let model = InteractionModel {
+            navigation: Navigation::Hub {
+                selected: Page::Kick as usize,
+            },
+            mode: InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseLayer,
+            }),
+            ..InteractionModel::default()
+        };
+
+        let transition = update(model, Intent::PlanMute);
+
+        assert_eq!(transition.model.mode, InteractionMode::Browsing);
+        assert_eq!(
+            transition.effects,
+            vec![InteractionEffect::PlanMute(Tab::Kick)]
+        );
+    }
+
+    #[test]
     fn every_intent_declares_press_repeat_release_behavior() {
         let repeatable = [
             Intent::MoveSelection(1),
@@ -2530,6 +2567,7 @@ mod tests {
                 instrument: PerformanceInstrument::Pads,
             },
             Intent::JumpToParameter(PerformanceParameter::Volume),
+            Intent::PlanMute,
             Intent::Save,
             Intent::Quit,
         ];

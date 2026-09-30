@@ -21,8 +21,8 @@ use super::{
     EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState,
     LfoRoute, LfoShape, MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
     MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES,
-    ModKind, ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, Step, TAB_COUNT, Tab, all_specs,
-    parse_module_slot_id, spec_by_id,
+    ModKind, ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, PlannedAction, Step, TAB_COUNT, Tab,
+    all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -56,6 +56,10 @@ const CAPTURE_RECORD: u8 = 8;
 const LANE_BYPASS_RECORD: u8 = 9;
 /// Beat offset that lets a saved Drunken wave resume its phrase position.
 const DRUNKEN_PHASE_RECORD: u8 = 10;
+/// One planned boundary action. It stores its remaining beat offset, rebased
+/// to transport zero whenever a song code is copied.
+const PLANNED_ACTION_RECORD: u8 = 11;
+const PLANNED_MUTE_TAG: u8 = 0;
 /// The playback period is semantic song state: refuse the sixteen-bar format
 /// rather than silently speeding up saved loops.
 const CAPTURE_WIRE_VERSION: u8 = 3;
@@ -86,6 +90,7 @@ pub(crate) struct SongState {
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: Option<TonalSequenceState>,
     pub(crate) muted: MuteState,
+    pub(crate) planned: Option<PlannedAction>,
     pub(crate) gestures: GestureState,
     pub(crate) drunken_phase_beat: f64,
 }
@@ -97,6 +102,7 @@ impl SongState {
             automation: AutomationState::default(),
             tonal_sequence: None,
             muted: [false; TAB_COUNT],
+            planned: None,
             gestures: GestureState::default(),
             drunken_phase_beat: 0.0,
         }
@@ -122,6 +128,7 @@ pub(crate) enum SongCodeError {
         target: u8,
         kind: u8,
     },
+    InvalidPlannedAction,
     DuplicateGesture {
         target: u8,
         kind: u8,
@@ -164,6 +171,7 @@ pub(crate) enum SongCodeError {
 impl fmt::Display for SongCodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidPlannedAction => write!(f, "song code has an invalid planned action"),
             Self::InvalidCapture => write!(f, "song code has an invalid captured loop"),
             Self::InvalidLaneBypass => write!(f, "song code has invalid lane bypass data"),
             Self::MissingPrefix => write!(f, "song code must start with {CODE_PREFIX}"),
@@ -311,6 +319,11 @@ pub(crate) fn encode_song_code_at_epoch(
     if song.muted.iter().any(|muted| *muted) {
         write_record(MUTE_RECORD, &mute_bytes(&song.muted), &mut bytes)?;
     }
+    if let Some(action) = song.planned {
+        let mut planned = Vec::new();
+        write_planned_action(action, &mut planned);
+        write_record(PLANNED_ACTION_RECORD, &planned, &mut bytes)?;
+    }
     if song.controls.midi_rows != 0 {
         write_record(MIDI_ROWS_RECORD, &[song.controls.midi_rows], &mut bytes)?;
     }
@@ -384,6 +397,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut pad_rhythm_rows_record_seen = false;
     let mut drunken_phase_record_seen = false;
     let mut capture_record_seen = false;
+    let mut planned_action_record_seen = false;
     let mut lane_bypass = None;
     let mut epoch = 0;
 
@@ -408,6 +422,13 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
             AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
             TONAL_SEQUENCE_RECORD => song.tonal_sequence = Some(read_tonal_sequence(payload)?),
             MUTE_RECORD => read_mute(payload, &mut song.muted)?,
+            PLANNED_ACTION_RECORD => {
+                if planned_action_record_seen {
+                    return Err(SongCodeError::InvalidPlannedAction);
+                }
+                planned_action_record_seen = true;
+                song.planned = Some(read_planned_action(payload)?);
+            }
             RANGE_EPOCH_RECORD => epoch = Reader::new(payload).u16()?,
             MIDI_ROWS_RECORD => {
                 if midi_rows_record_seen {
@@ -901,6 +922,74 @@ fn read_mute(bytes: &[u8], muted: &mut MuteState) -> Result<(), SongCodeError> {
             .is_some_and(|byte| byte & (1 << (bit % 8)) != 0);
     }
     Ok(())
+}
+
+fn write_planned_action(action: PlannedAction, out: &mut Vec<u8>) {
+    match action {
+        PlannedAction::Mute { tab, target_beat } => {
+            out.push(PLANNED_MUTE_TAG);
+            out.push(tab.mute_bit() as u8);
+            out.extend_from_slice(&target_beat.to_le_bytes());
+        }
+    }
+}
+
+fn read_planned_action(bytes: &[u8]) -> Result<PlannedAction, SongCodeError> {
+    let mut reader = Reader::new(bytes);
+    if reader
+        .u8()
+        .map_err(|_| SongCodeError::InvalidPlannedAction)?
+        != PLANNED_MUTE_TAG
+    {
+        return Err(SongCodeError::InvalidPlannedAction);
+    }
+    let mute_bit = reader
+        .u8()
+        .map_err(|_| SongCodeError::InvalidPlannedAction)? as usize;
+    let target_beat = reader
+        .f64()
+        .map_err(|_| SongCodeError::InvalidPlannedAction)?;
+    if !reader.is_empty() || !target_beat.is_finite() || target_beat < 0.0 {
+        return Err(SongCodeError::InvalidPlannedAction);
+    }
+    let tab = Tab::all()
+        .into_iter()
+        .find(|tab| tab.mute_bit() == mute_bit)
+        .ok_or(SongCodeError::InvalidPlannedAction)?;
+    Ok(PlannedAction::Mute { tab, target_beat })
+}
+
+#[cfg(test)]
+mod planned_action_codec_tests {
+    use super::*;
+
+    #[test]
+    fn planned_mute_round_trips_with_its_rebased_target() {
+        let song = SongState {
+            planned: Some(PlannedAction::Mute {
+                tab: Tab::Kick,
+                target_beat: 2.5,
+            }),
+            ..SongState::default()
+        };
+
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+
+        assert_eq!(decoded.planned, song.planned);
+    }
+
+    #[test]
+    fn malformed_planned_mute_is_refused() {
+        let invalid = code_from_records(
+            CONTAINER_VERSION,
+            &[(PLANNED_ACTION_RECORD, &[PLANNED_MUTE_TAG, 99])],
+        );
+
+        assert_eq!(
+            decode_song_code(&invalid).err(),
+            Some(SongCodeError::InvalidPlannedAction)
+        );
+    }
 }
 
 fn write_tonal_sequence(
@@ -1556,6 +1645,10 @@ impl<'a> Reader<'a> {
 
     fn f32(&mut self) -> Result<f32, SongCodeError> {
         Ok(f32::from_le_bytes(self.read_array()?))
+    }
+
+    fn f64(&mut self) -> Result<f64, SongCodeError> {
+        Ok(f64::from_le_bytes(self.read_array()?))
     }
 }
 

@@ -276,7 +276,11 @@ impl<'a> UiViewModel<'a> {
             None => match navigation.tab {
                 Tab::Chords => chords_tab_controls(&session.controls, navigation.chord_drill),
                 Tab::Lead => lead_tab_controls(&session.controls, navigation.lead_drill),
-                Tab::Master => hub_controls(&session.controls, &session.muted),
+                Tab::Master => hub_controls(
+                    &session.controls,
+                    &session.muted,
+                    session.planned.map(PlannedAction::tab),
+                ),
                 tab => tab_controls(tab, &session.controls),
             },
         };
@@ -323,6 +327,7 @@ impl<'a> UiViewModel<'a> {
             navigation,
             &session.controls,
             &session.muted,
+            session.planned.map(PlannedAction::tab),
             telemetry.active_chord as usize,
         );
 
@@ -347,20 +352,26 @@ impl<'a> UiViewModel<'a> {
 /// The hub's rows: Master's controls, whose leading layer rows each name
 /// their layer, carry its mute marker, and end in the `›` every row that
 /// opens a deeper page shows.
-fn hub_controls(controls: &FluidControls, muted: &MuteState) -> Vec<ControlItem> {
+fn hub_controls(
+    controls: &FluidControls,
+    muted: &MuteState,
+    planned: Option<Tab>,
+) -> Vec<ControlItem> {
     let mut items = tab_controls(Tab::Master, controls);
     for (row, item) in items.iter_mut().enumerate() {
         if let Some(tab) = hub_layer(row) {
-            item.label = format!("{} ›", crumb(tab, muted));
+            item.label = format!("{} ›", crumb(tab, muted, planned));
         }
     }
     items
 }
 
 /// A page's name as the breadcrumb and hub rows show it, marked when muted.
-fn crumb(tab: Tab, muted: &MuteState) -> String {
+fn crumb(tab: Tab, muted: &MuteState, planned: Option<Tab>) -> String {
     if muted[tab as usize] {
         format!("{} (M)", tab.name())
+    } else if planned == Some(tab) {
+        format!("{} m", tab.name())
     } else {
         tab.name().to_string()
     }
@@ -373,12 +384,13 @@ fn breadcrumb(
     navigation: NavigationView,
     controls: &FluidControls,
     muted: &MuteState,
+    planned: Option<Tab>,
     active_slot: usize,
 ) -> String {
     let tab = navigation.tab;
-    let mut crumbs = vec![crumb(Tab::Master, muted)];
+    let mut crumbs = vec![crumb(Tab::Master, muted, planned)];
     if tab != Tab::Master {
-        crumbs.push(crumb(tab, muted));
+        crumbs.push(crumb(tab, muted, planned));
     }
     let drill = if let Some(slot) = navigation.module_slot {
         let module = controls
@@ -978,6 +990,7 @@ mod tests {
                 capture_beat_bits: 0,
                 recipe_target: None,
                 lane_target: None,
+                planned_tab: None,
                 query: "bass".to_string(),
                 selected: 1,
                 recent: vec!["master.bpm"],
@@ -1181,8 +1194,9 @@ mod tests {
             "w\u{2420}Clap",
             "e\u{2420}Arp",
             "r\u{2420}Master",
-            "j\u{2420}volume",
-            "k\u{2420}filter",
+            "j\u{2420}Vol",
+            "k\u{2420}Filter",
+            "m\u{2420}Mute",
             "Esc\u{2420}\u{2420}Cancel",
         ] {
             assert!(rendered.contains(text), "missing {text:?}:\n{rendered}");
@@ -1415,6 +1429,28 @@ mod tests {
             previous = row;
         }
         assert!(frame.contains("↵␠enter"), "{frame}");
+    }
+
+    #[test]
+    fn pending_mute_uses_the_small_m_marker_until_the_bar() {
+        let mut session = session();
+        session.planned = Some(PlannedAction::Mute {
+            tab: Tab::Kick,
+            target_beat: 4.0,
+        });
+
+        let rendered = render_model_with_session_at_size(
+            &InteractionModel::default(),
+            &session,
+            TelemetryView::default(),
+            80,
+            24,
+        );
+
+        assert!(
+            rendered.contains("Kick\u{2420}m"),
+            "missing planned marker:\n{rendered}"
+        );
     }
 
     #[test]

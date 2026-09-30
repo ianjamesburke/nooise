@@ -887,7 +887,12 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         &[
             &jump_layers[..4],
             &jump_layers[4..],
-            &[("j", "volume"), ("k", "filter"), ("Space j/k", "this page")],
+            &[
+                ("j", "volume"),
+                ("k", "filter"),
+                ("m", "mute next bar"),
+                ("Space j/k", "this page"),
+            ],
         ],
     ));
     lines.push(Line::from(Span::styled("System", heading_style)));
@@ -907,7 +912,7 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
     let available_height = inner.height.saturating_sub(1);
     let desired_height = match surface {
         PerformanceSurface::ChooseLayer => 8,
-        PerformanceSurface::ChooseParameter { .. } => 7,
+        PerformanceSurface::ChooseParameter { .. } => 8,
     };
     let height = desired_height.min(available_height);
     let width = 34.min(inner.width.saturating_sub(2));
@@ -957,18 +962,21 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
             pair('s', "Perc", 'w', "Clap"),
             pair('d', "Bass", 'e', "Arp"),
             pair('f', "Kick", 'r', "Master"),
-            pair(
-                PARAMETERS[0].key,
-                PARAMETERS[0].label,
-                PARAMETERS[1].key,
-                PARAMETERS[1].label,
-            ),
+            Line::from(vec![
+                Span::styled("j ", key_style),
+                Span::styled("Vol    ", label_style),
+                Span::styled("k ", key_style),
+                Span::styled("Filter ", label_style),
+                Span::styled("m ", key_style),
+                Span::styled("Mute", label_style),
+            ]),
             single("Esc", "Cancel"),
         ],
         PerformanceSurface::ChooseParameter { instrument } => vec![
             Line::from(Span::styled(instrument.name().to_string(), label_style)),
             single(&PARAMETERS[0].key.to_string(), PARAMETERS[0].label),
             single(&PARAMETERS[1].key.to_string(), PARAMETERS[1].label),
+            single("m", "Mute next bar"),
             Line::from(""),
             single("Esc", "Cancel"),
         ],

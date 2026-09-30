@@ -79,7 +79,7 @@ enters the interaction model, live session, or a song code. Adding durable
 local configuration is separate work; until it exists, the default map is the
 honest product behavior.
 
-Planned mute is the first candidate for a new leader operation:
+Planned mute is the first landed leader operation:
 
 ```
 m           mute the visible layer now
@@ -90,9 +90,10 @@ Jump to another layer first, then use `Space m`, rather than making a layer
 selector wait for a possible third key. A later targeted-action grammar needs
 its own explicit sentence if it earns one.
 
-A small `m` means mute armed. `(M)` means muted. The planned action is
-cancelable and persists because it changes the audible future of the session.
-It is a later slice, not part of the leader-menu parity slice.
+A small `m` means mute armed. `(M)` means muted. Repeating `Space m` cancels
+the visible layer's armed mute. The pending action persists with its remaining
+distance rebased to song beat zero, because it changes the audible future of
+the session.
 
 ## Time has three meanings
 
@@ -184,8 +185,9 @@ and MRU behavior retain their existing deliberate ordering.
    effects are unchanged.
 2. Done: Jump renders an immediate map from the existing layer and parameter
    tables. Its routes and typed effects are unchanged.
-3. Play that leader before adding a new action. Add planned mute only if the
-   map makes its target and cancellation obvious.
+3. Done: `Space m` and `/Mute next bar` arm the visible layer's mute at the
+   next bar. The small `m`, repeat-to-cancel behavior, production-tick commit,
+   and song-code rebasing make its target and cancellation visible.
 4. Replace Capture with palette-only Motion. Generalize lane lifecycle and
    song persistence together. Do not add overdub.
 5. Only after a second musical action needs it, consider a shared internal

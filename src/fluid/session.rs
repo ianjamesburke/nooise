@@ -22,6 +22,8 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: TonalSequenceState,
     pub(crate) muted: MuteState,
+    /// A boundary action that changes the audible future of this session.
+    pub(crate) planned: Option<PlannedAction>,
     /// Lead play-mode presses. Live-only: never written to a song code.
     pub(crate) lead_play: LeadPlayState,
     pub(crate) gestures: GestureState,
@@ -43,6 +45,7 @@ impl LiveSessionSnapshot {
             controls: song.controls.clone(),
             automation: song.automation.clone(),
             muted: song.muted,
+            planned: song.planned,
             lead_play: LeadPlayState::default(),
             gestures: song.gestures.restored(),
             drunken_phase_beat: song.drunken_phase_beat,
@@ -70,6 +73,7 @@ impl LiveSessionSnapshot {
             controls,
             automation: AutomationState::default(),
             muted: [false; TAB_COUNT],
+            planned: None,
             lead_play: LeadPlayState::default(),
             gestures: GestureState::default(),
             drunken_phase_beat: 0.0,
