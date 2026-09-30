@@ -412,7 +412,23 @@ impl ControlSpec {
         if kind.id == "swing" && field == ModuleSlotField::Amount {
             spec.step = Step::Linear(1.0 / SWING_DIAL_SPAN);
         }
+        if kind.id == "drunken" && field == ModuleSlotField::Amount {
+            spec.kind = ControlKind::Timing;
+            spec.min = 0.0;
+            spec.max = 1.0;
+            spec.step = Step::Linear(0.01);
+            spec.entry = Entry::Percent;
+            spec.reset = 0.0;
+        }
         match (kind.family, field) {
+            (Family::Drunken, ModuleSlotField::Time) => {
+                spec.kind = ControlKind::Discrete;
+                spec.min = 4.0;
+                spec.max = 12.0;
+                spec.step = Step::Linear(1.0);
+                spec.entry = Entry::Round;
+                spec.reset = 7.0;
+            }
             (Family::Delay, ModuleSlotField::Time | ModuleSlotField::RightTime) => {
                 let clock = if field == ModuleSlotField::RightTime {
                     DelayClock::from_value(slot.right_clock)
@@ -1542,7 +1558,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
 /// its slider range can never disagree.
 pub(crate) const BASS_TYPES: &[&str] = &["Sub", "Saw", "Pluck"];
 pub(crate) const PAD_TYPES: &[&str] = &["Warm", "Dark", "Glass", "Choir", "Hollow", "Tape"];
-pub(crate) const KICK_TYPES: &[&str] = &["Sub", "Warm", "Wood", "Felt"];
+pub(crate) const KICK_TYPES: &[&str] = &["Sub", "Warm", "Wood", "Felt", "909", "Deep", "Dust"];
 pub(crate) const TONAL_SYNTH_TYPES: &[&str] = &[
     "Sine",
     "Rhodes",
@@ -2266,6 +2282,13 @@ pub(crate) fn module_detail_controls(
                 Some(ModuleSlotField::Time | ModuleSlotField::Feedback)
             ) {
                 item.display = pct(item.value);
+            }
+        }
+    }
+    if kind.family == Family::Drunken {
+        for item in &mut items {
+            if field_of(item.id) == Some(ModuleSlotField::Time) {
+                item.display = format!("{:.0} hits", item.value);
             }
         }
     }

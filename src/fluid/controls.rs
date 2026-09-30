@@ -15,8 +15,11 @@ pub(crate) const LEVEL_RAMP_MS: f32 = 30.0;
 pub(crate) struct MasterControls {
     pub(crate) bpm: f32,
     pub(crate) level: f32,
-    pub(crate) tone: f32, // -1 (bass) to +1 (treble)
-    pub(crate) tune: f32, // semitones, -12 (1 octave down) to +12 (1 octave up)
+    pub(crate) tone: f32,           // -1 (bass) to +1 (treble)
+    pub(crate) tune: f32,           // semitones, -12 (1 octave down) to +12 (1 octave up)
+    pub(crate) swing: f32,          // fallback for voices without a Swing module
+    pub(crate) drunken_amount: f32, // 0..1, derived from the Master module
+    pub(crate) drunken_pace: f32,   // nominal rise-and-fall length in trigger hits
 }
 
 impl Default for MasterControls {
@@ -26,6 +29,9 @@ impl Default for MasterControls {
             level: 0.8,
             tone: 0.0,
             tune: 0.0,
+            swing: 0.0,
+            drunken_amount: 0.0,
+            drunken_pace: 7.0,
         }
     }
 }
@@ -161,7 +167,7 @@ impl FluidControls {
 #[derive(Clone)]
 pub(crate) struct KickControls {
     pub(crate) level: f32,
-    pub(crate) voice_type: f32, // 0=Sub (legacy), 1=Punch, 2=Membrane, 3=Driven character selector
+    pub(crate) voice_type: f32, // index into KICK_TYPES; 0=legacy Sub
     pub(crate) start_freq: f32,
     pub(crate) pitch_decay_ms: f32,
     pub(crate) amp_decay_ms: f32,

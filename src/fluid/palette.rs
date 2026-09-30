@@ -64,6 +64,9 @@ impl PaletteEntry {
             }
             Self::Module { tab, catalog_index } => {
                 let kind = MODULE_CATALOG[*catalog_index];
+                if *tab == Tab::Master && kind.id == "swing" {
+                    return "Global Swing · Master · module".to_string();
+                }
                 format!(
                     "{} · {} · {} · module",
                     kind.id,
@@ -214,6 +217,26 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
     );
     entries.extend(CaptureAction::ALL.into_iter().map(PaletteEntry::Capture));
     entries
+}
+
+#[cfg(test)]
+mod global_groove_tests {
+    use super::*;
+
+    #[test]
+    fn global_swing_and_drunken_are_addable_from_any_page() {
+        for (query, id) in [("global swing", "swing"), ("drunken", "drunken")] {
+            let mut palette = PaletteState::new(Tab::Kick, &[], None);
+            for character in query.chars() {
+                palette.push_char(character);
+            }
+            assert!(palette.matches.iter().any(|hit| matches!(
+                palette.entry(hit.entry_index),
+                PaletteEntry::Module { tab: Tab::Master, catalog_index }
+                    if MODULE_CATALOG[*catalog_index].id == id
+            )));
+        }
+    }
 }
 
 /// One fuzzy candidate: which entry, how well it scored, and which characters
