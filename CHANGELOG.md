@@ -1,6 +1,19 @@
 # Changelog
 
 Newest releases appear first.
+## [2.6.0] — 2026-09-30
+
+### Added
+- feat: shape drunken timing into per-layer waves
+- feat: add global swing and drunken timing modules
+- feat: add muted startup flag
+- feat: add midrange kick characters for exploration
+- feat: optional Pad Offset shifts the stab lane
+- feat: open on a Master hub and enter layers instead of paging a tab strip
+
+### Fixed
+- fix: reshape exploratory kicks around 909 reference
+- fix: keep the hub in the Tab cycle so arrows and Tab reach every page
 ## [2.5.5] — 2026-09-28
 
 ### Fixed

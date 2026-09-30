@@ -1,6 +1,6 @@
 [package]
 name = "nooise"
-version = "2.5.5"
+version = "2.6.0"
 edition = "2024"
 default-run = "nooise"
 description = "Ambient music generator for the terminal"
