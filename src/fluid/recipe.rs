@@ -240,7 +240,7 @@ mod tests {
                 }
                 let entry = palette.entry(palette.matches[0].entry_index);
                 assert!(
-                    matches!(entry, PaletteEntry::Recipe(id) if *id == recipe.id),
+                    matches!(entry, PaletteEntry::Operation(Operation::Recipe(id)) if *id == recipe.id),
                     "{}",
                     recipe.name
                 );
@@ -288,7 +288,10 @@ mod tests {
             palette.push_char('c');
             let found = &palette.matches[0];
             let entry = palette.entry(found.entry_index);
-            assert!(matches!(entry, PaletteEntry::Recipe(RecipeId::Sidechain)));
+            assert!(matches!(
+                entry,
+                PaletteEntry::Operation(Operation::Recipe(RecipeId::Sidechain))
+            ));
             assert_eq!(
                 entry.display_text(),
                 "Sidechain · beat ramp duck, 1 beat, 50%"

@@ -6,7 +6,7 @@
 use super::ModKind;
 use super::Tab;
 use super::palette::{ModuleScope, PaletteEntry, PaletteState, StagedEdit};
-use super::{FluidControls, GESTURE_COUNT, GestureKind};
+use super::{FluidControls, GESTURE_COUNT, GestureKind, Operation};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 /// Which edge of a physical key produced this event. A legacy terminal can
@@ -1710,14 +1710,8 @@ fn update_palette(
             if palette.locked.is_none()
                 && let Some(found) = state.matches.get(state.selected)
             {
-                if let PaletteEntry::Capture(action) = state.entry(found.entry_index) {
-                    palette.query = action.name().to_string();
-                    palette.selected = 0;
-                } else if let PaletteEntry::MixAction(action) = state.entry(found.entry_index) {
-                    palette.query = action.name().to_string();
-                    palette.selected = 0;
-                } else if let PaletteEntry::Recipe(recipe) = state.entry(found.entry_index) {
-                    palette.query = recipe.recipe().name.to_string();
+                if let PaletteEntry::Operation(operation) = state.entry(found.entry_index) {
+                    palette.query = operation.spec().label.to_string();
                     palette.selected = 0;
                 } else {
                     palette.locked = Some(found.entry_index);
@@ -1990,11 +1984,13 @@ fn push_numeric(buffer: &mut String, character: char) {
 /// in the adapter, which is the only place that can see whether the layer
 /// already holds it.
 fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionMode {
-    if matches!(entry, PaletteEntry::MixAction(_))
+    if matches!(entry, PaletteEntry::Operation(operation) if operation.is_mix())
         || (palette.resume.is_some()
             && matches!(
                 entry,
-                PaletteEntry::Capture(super::CaptureAction::Bypass | super::CaptureAction::Resume)
+                PaletteEntry::Operation(Operation::Capture(
+                    super::CaptureAction::Bypass | super::CaptureAction::Resume
+                ))
             ))
     {
         resume_mode(palette.resume)
@@ -2005,8 +2001,10 @@ fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> Interac
 
 fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEffect {
     if palette.resume.is_some()
-        && let PaletteEntry::Capture(action) = entry
-        && let Some(action) = super::LaneAction::from_capture(*action)
+        && let PaletteEntry::Operation(operation) = entry
+        && let Some(action) = operation
+            .capture_action()
+            .and_then(super::LaneAction::from_capture)
     {
         return InteractionEffect::Lane {
             action,
@@ -2014,16 +2012,7 @@ fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEf
         };
     }
     match entry {
-        PaletteEntry::Capture(action) => InteractionEffect::Capture {
-            action: *action,
-            target: palette.recipe_target,
-            end_beat_bits: palette.capture_beat_bits,
-        },
-        PaletteEntry::MixAction(action) => InteractionEffect::ApplyMixAction(*action),
-        PaletteEntry::Recipe(recipe) => InteractionEffect::ApplyRecipe {
-            recipe: *recipe,
-            target: palette.recipe_target,
-        },
+        PaletteEntry::Operation(operation) => operation_effect(*operation, palette),
         PaletteEntry::Control {
             tab,
             index_in_tab,
@@ -2044,6 +2033,21 @@ fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEf
                 .position(|candidate| candidate.id == spec.id)
                 .expect("scoped module entry uses its owning tab spec"),
             id: spec.id,
+        },
+    }
+}
+
+fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionEffect {
+    match operation {
+        Operation::Capture(action) => InteractionEffect::Capture {
+            action,
+            target: palette.recipe_target,
+            end_beat_bits: palette.capture_beat_bits,
+        },
+        Operation::Mix(action) => InteractionEffect::ApplyMixAction(action),
+        Operation::Recipe(recipe) => InteractionEffect::ApplyRecipe {
+            recipe,
+            target: palette.recipe_target,
         },
     }
 }

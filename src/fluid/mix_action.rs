@@ -8,8 +8,6 @@ pub(crate) enum MixAction {
     MuteKick,
 }
 
-pub(crate) const MIX_ACTIONS: &[MixAction] = &[MixAction::KickOnly, MixAction::MuteKick];
-
 impl MixAction {
     pub(crate) fn name(self) -> &'static str {
         match self {
@@ -66,7 +64,7 @@ mod tests {
                 }
                 assert!(matches!(
                     palette.entry(palette.matches[0].entry_index),
-                    PaletteEntry::MixAction(MixAction::MuteKick)
+                    PaletteEntry::Operation(Operation::Mix(MixAction::MuteKick))
                 ));
             }
         }

@@ -20,9 +20,7 @@ use super::*;
 /// controls could desync them and jump to the wrong control. Live state is
 /// resolved where it exists — in the adapter, and in the value column.
 pub(crate) enum PaletteEntry {
-    Capture(CaptureAction),
-    MixAction(super::mix_action::MixAction),
-    Recipe(super::recipe::RecipeId),
+    Operation(Operation),
     /// Jump to a control at the tab that natively owns it.
     Control {
         tab: Tab,
@@ -51,13 +49,14 @@ impl PaletteEntry {
     /// entry, for the reason on the enum.
     pub(crate) fn haystack(&self) -> String {
         match self {
-            Self::Capture(action) => format!("{} · {}", action.name(), action.description()),
-            Self::MixAction(action) => {
-                format!("{} · {}", action.name(), action.aliases().join(" "))
-            }
-            Self::Recipe(id) => {
-                let recipe = id.recipe();
-                format!("{} · {}", self.display_text(), recipe.aliases.join(" "))
+            Self::Operation(operation) => {
+                let spec = operation.spec();
+                format!(
+                    "{} · {} · {}",
+                    spec.label,
+                    spec.description,
+                    spec.aliases.join(" ")
+                )
             }
             Self::Control { tab, spec, .. } => {
                 format!("{} · {} · {}", spec.id, tab.name(), spec.label)
@@ -93,31 +92,28 @@ impl PaletteEntry {
 
     pub(crate) fn display_text(&self) -> String {
         match self {
-            Self::MixAction(action) => action.name().to_string(),
-            Self::Recipe(id) => format!("{} · {}", id.recipe().name, id.recipe().description),
+            Self::Operation(operation) => {
+                let spec = operation.spec();
+                format!("{} · {}", spec.label, spec.description)
+            }
             _ => self.haystack(),
         }
     }
 
     fn match_query(&self, query: &str) -> Option<(i32, Vec<usize>)> {
-        if let Self::MixAction(action) = self
-            && action
-                .aliases()
-                .iter()
-                .any(|alias| alias.eq_ignore_ascii_case(query))
-        {
-            return Some((i32::MAX, (0..action.name().chars().count()).collect()));
-        }
-        if let Self::Recipe(id) = self
-            && id
-                .recipe()
+        if let Self::Operation(operation) = self
+            && operation
+                .spec()
                 .aliases
                 .iter()
                 .any(|alias| alias.eq_ignore_ascii_case(query))
         {
             // An exact alias wins over scattered matches. Highlight the name,
             // never alias offsets that have no corresponding display text.
-            return Some((i32::MAX, (0..id.recipe().name.chars().count()).collect()));
+            return Some((
+                i32::MAX,
+                (0..operation.spec().label.chars().count()).collect(),
+            ));
         }
         fuzzy_score(query, &self.haystack()).map(|(score, hits)| {
             let display_len = self.display_text().chars().count();
@@ -131,7 +127,7 @@ impl PaletteEntry {
     pub(crate) fn spec(&self) -> Option<&'static ControlSpec> {
         match self {
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => Some(spec),
-            Self::Module { .. } | Self::Recipe(_) | Self::MixAction(_) | Self::Capture(_) => None,
+            Self::Module { .. } | Self::Operation(_) => None,
         }
     }
 
@@ -143,9 +139,11 @@ impl PaletteEntry {
     /// matched against, so it cannot affect indices.
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
-            Self::Capture(_) => "selected knob".to_string(),
-            Self::MixAction(action) => action.description().to_string(),
-            Self::Recipe(_) => "add lane".to_string(),
+            Self::Operation(operation) => match operation {
+                Operation::Capture(_) => "selected knob".to_string(),
+                Operation::Mix(_) => operation.spec().description.to_string(),
+                Operation::Recipe(_) => "add lane".to_string(),
+            },
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => {
                 if super::midi_row_bit(spec.id).is_some_and(|bit| c.midi_rows & bit == 0)
                     || super::pad_rhythm_row_bit(spec.id)
@@ -204,18 +202,7 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
             }
         }
     }
-    entries.extend(
-        super::recipe::RECIPES
-            .iter()
-            .map(|recipe| PaletteEntry::Recipe(recipe.id)),
-    );
-    entries.extend(
-        super::mix_action::MIX_ACTIONS
-            .iter()
-            .copied()
-            .map(PaletteEntry::MixAction),
-    );
-    entries.extend(CaptureAction::ALL.into_iter().map(PaletteEntry::Capture));
+    entries.extend(Operation::ALL.into_iter().map(PaletteEntry::Operation));
     entries
 }
 
@@ -440,18 +427,7 @@ fn module_palette_entries(tab: Tab, slot: usize, catalog_index: usize) -> Vec<Pa
                 parameter: parameter.label,
             })
         })
-        .chain(
-            super::recipe::RECIPES
-                .iter()
-                .map(|recipe| PaletteEntry::Recipe(recipe.id)),
-        )
-        .chain(
-            super::mix_action::MIX_ACTIONS
-                .iter()
-                .copied()
-                .map(PaletteEntry::MixAction),
-        )
-        .chain(CaptureAction::ALL.into_iter().map(PaletteEntry::Capture))
+        .chain(Operation::ALL.into_iter().map(PaletteEntry::Operation))
         .collect()
 }
 
@@ -498,7 +474,7 @@ fn context_rank(
     // A module offered for the page you are on ranks with that page's own
     // controls, so "swing" on Bass reaches Bass before it reaches Tonal.
     let page_index = match palette_entry {
-        PaletteEntry::Recipe(_) | PaletteEntry::MixAction(_) | PaletteEntry::Capture(_) => None,
+        PaletteEntry::Operation(_) => None,
         PaletteEntry::Module { tab, catalog_index } => {
             (*tab == current_tab).then_some(tab_specs(current_tab).len() + catalog_index)
         }

@@ -45,8 +45,6 @@ pub(crate) enum CaptureAction {
 }
 
 impl CaptureAction {
-    pub(crate) const ALL: [Self; 4] = [Self::Capture, Self::Bypass, Self::Resume, Self::Delete];
-
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Capture => "Capture",

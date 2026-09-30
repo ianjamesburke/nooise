@@ -179,8 +179,9 @@ and MRU behavior retain their existing deliberate ordering.
 
 ## Implementation order
 
-1. Add the static operation metadata and project existing palette actions
-   through it. Behavior and typed effects stay unchanged.
+1. Done: static operation metadata projects existing Capture, mix, and recipe
+   palette actions through one closed vocabulary. Their behavior and typed
+   effects are unchanged.
 2. Replace Jump's hard-coded footer with the immediate leader map, using only
    the existing Jump routes. Add interaction, runtime, view, UI, and replay
    parity coverage.
