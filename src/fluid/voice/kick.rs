@@ -1,5 +1,5 @@
-//! The Kick voice: a pitch-glide FM body shared by every character,
-//! with optional independent low-mid FM tone, click, and amp envelope.
+//! The Kick voice: legacy FM characters and 909-style resonant characters
+//! under one trigger grid and Type selector.
 
 use super::*;
 
@@ -42,7 +42,7 @@ impl KickEngine {
 }
 
 /// Shared click transient + amplitude envelope + soft-attack + pan
-/// machinery behind every `kick.type` voice: a single exponential amplitude
+/// machinery behind the original four `kick.type` voices: a single exponential amplitude
 /// decay (also gates voice life via `is_done`), an optional short noise click
 /// layered in at onset, an optional linear fade-in that rounds off the onset
 /// transient, and a fixed per-voice
@@ -122,10 +122,11 @@ impl KickVoiceCore {
 /// Index 0 (`Sub`) is the legacy voice, unchanged and the default; switching
 /// type never touches the shared trigger/scheduling path in
 /// `KickEngine::next` above. Types 1-3 stay soft and textural. Types 4-6
-/// carry an independent low-mid FM tone for a more present kick.
+/// use a 909-style resonant body with an onset impulse and longer bass ring.
 pub(crate) enum KickVoice {
     Lowpass(LowpassKickVoice),
     Wood(WoodKickVoice),
+    Analog(AnalogKickVoice),
 }
 
 impl KickVoice {
@@ -140,9 +141,9 @@ impl KickVoice {
             1 => Self::Lowpass(LowpassKickVoice::new(&KICK_WARM, c, sample_rate, rng)),
             2 => Self::Wood(WoodKickVoice::new(c, sample_rate, rng)),
             3 => Self::Lowpass(LowpassKickVoice::new(&KICK_FELT, c, sample_rate, rng)),
-            4 => Self::Lowpass(LowpassKickVoice::new(&KICK_PUNCH, c, sample_rate, rng)),
-            5 => Self::Lowpass(LowpassKickVoice::new(&KICK_HOLLOW, c, sample_rate, rng)),
-            _ => Self::Lowpass(LowpassKickVoice::new(&KICK_GRIT, c, sample_rate, rng)),
+            4 => Self::Analog(AnalogKickVoice::new(&KICK_909, c, sample_rate, rng)),
+            5 => Self::Analog(AnalogKickVoice::new(&KICK_DEEP, c, sample_rate, rng)),
+            _ => Self::Analog(AnalogKickVoice::new(&KICK_DUST, c, sample_rate, rng)),
         }
     }
 
@@ -150,6 +151,7 @@ impl KickVoice {
         match self {
             Self::Lowpass(voice) => voice.next(rng),
             Self::Wood(voice) => voice.next(rng),
+            Self::Analog(voice) => voice.next(rng),
         }
     }
 
@@ -157,11 +159,12 @@ impl KickVoice {
         match self {
             Self::Lowpass(voice) => voice.is_done(),
             Self::Wood(voice) => voice.is_done(),
+            Self::Analog(voice) => voice.is_done(),
         }
     }
 }
 
-/// Shared FM body behind every `kick.type` voice: an exponential pitch glide
+/// Shared FM body behind the original four `kick.type` voices: an exponential pitch glide
 /// from `start_freq` toward a per-type drop ratio, feeding a single
 /// modulator→carrier `FmStack` pair whose modulation index decays ~3x faster
 /// than the pitch, which is what makes the onset read as a tight thud. Each
@@ -215,9 +218,8 @@ impl KickFmBody {
 /// the carrier ratio exists for.
 const KICK_CARRIER_RATIO: f32 = 1.0;
 
-/// Where every voice-local filter sits, now that the interactive sweep is a
-/// Filter module in the kick's chain. Each type is voiced around this one
-/// position and colors the body from there; `bias` shifts it per type.
+/// Where the original voices' local filters sit, now that the interactive
+/// sweep is a Filter module in the kick's chain.
 pub(crate) const KICK_CHARACTER_FILTER_POSITION: f32 = 0.7;
 
 /// One-pole lowpass at the fixed character position, shared by every type
@@ -244,9 +246,8 @@ impl KickLowPass {
 }
 
 /// Everything that distinguishes one lowpass-filtered kick character from
-/// another. Every non-Wood type uses the same signal path — `KickVoiceCore`
-/// shaping a `KickFmBody` and optional `KickMidBody`, trimmed, through a
-/// `KickLowPass`. Wood is the one type with a different path.
+/// another. Sub, Warm, and Felt use `KickVoiceCore` shaping a `KickFmBody`,
+/// trimmed through `KickLowPass`. Wood has its own bandpass path.
 pub(crate) struct LowpassKickRecipe {
     /// Linear onset fade-in; 0.0 leaves `KickVoiceCore`'s fade branch untaken.
     attack_ms: f32,
@@ -260,50 +261,11 @@ pub(crate) struct LowpassKickRecipe {
     /// `KickLowPass` mapping bias; Sub's is the reference the others are
     /// stated relative to.
     filter_bias: f32,
-    mid: Option<KickMidRecipe>,
     /// Output trim: brings the voice to Sub's rendered level at the same
     /// `kick.level`. Measured, not chosen by ear —
     /// `kick_types_render_at_a_matched_level` pins it. Sub's is exactly 1.0,
     /// an f32 identity, so its render stays byte-for-byte the legacy voice.
     output_gain: f32,
-}
-
-/// A second FM pair with its own amplitude and index decay. Its carrier
-/// stays in the low mids while the main body glides down into the sub range.
-pub(crate) struct KickMidRecipe {
-    frequency_ratio: f32,
-    mod_ratio: f32,
-    index: f32,
-    level: f32,
-    decay_ms: f32,
-}
-
-pub(crate) struct KickMidBody {
-    stack: FmStack,
-    frequency: f32,
-    level: f32,
-    decay: f32,
-}
-
-impl KickMidBody {
-    fn new(recipe: &KickMidRecipe, c: &KickControls, sample_rate: f32) -> Self {
-        let tau = (recipe.decay_ms * 0.001 * sample_rate).max(1.0);
-        Self {
-            stack: FmStack::new(sample_rate).with_pair(
-                FmPair::new(recipe.mod_ratio, 1.0, recipe.index).with_index_decay(tau / 3.0),
-            ),
-            frequency: c.start_freq * recipe.frequency_ratio,
-            level: recipe.level,
-            decay: (-1.0 / tau).exp(),
-        }
-    }
-
-    #[inline]
-    fn next(&mut self) -> f32 {
-        let sample = self.stack.next(self.frequency) * self.level;
-        self.level *= self.decay;
-        sample
-    }
 }
 
 /// Type 0 (default): the original kick voice, byte-for-byte unchanged. A
@@ -323,7 +285,6 @@ pub(crate) const KICK_SUB: LowpassKickRecipe = LowpassKickRecipe {
     fm_depth: 3.5,
     wave: FmWave::Sine,
     filter_bias: -2.5,
-    mid: None,
     output_gain: 1.0,
 };
 
@@ -351,7 +312,6 @@ pub(crate) const KICK_WARM: LowpassKickRecipe = LowpassKickRecipe {
     // Nudged up from Sub's -2.5 so this voice's slightly higher body isn't
     // over-attenuated, but kept most of the way back so it stays dark.
     filter_bias: -2.35,
-    mid: None,
     output_gain: 1.11,
 };
 
@@ -376,75 +336,16 @@ pub(crate) const KICK_FELT: LowpassKickRecipe = LowpassKickRecipe {
     // Below Sub's -2.5, so the same character position lands darker and
     // duller — the felt-beater muffling.
     filter_bias: -2.9,
-    mid: None,
     output_gain: 1.36,
 };
 
-/// A firm 200-300 Hz knock that remains after the Sub's brief FM edge.
-pub(crate) const KICK_PUNCH: LowpassKickRecipe = LowpassKickRecipe {
-    attack_ms: 1.0,
-    click_scale: 0.7,
-    pitch_drop_ratio: 0.34,
-    fm_mod_ratio: 2.0,
-    fm_depth: 2.7,
-    wave: FmWave::Sine,
-    filter_bias: -2.15,
-    mid: Some(KickMidRecipe {
-        frequency_ratio: 1.45,
-        mod_ratio: 1.0,
-        index: 0.7,
-        level: 1.8,
-        decay_ms: 135.0,
-    }),
-    output_gain: 0.56,
-};
-
-/// A lower, longer, inharmonic wooden knock without losing the sub body.
-pub(crate) const KICK_HOLLOW: LowpassKickRecipe = LowpassKickRecipe {
-    attack_ms: 3.0,
-    click_scale: 0.35,
-    pitch_drop_ratio: 0.38,
-    fm_mod_ratio: 1.5,
-    fm_depth: 1.6,
-    wave: FmWave::Sine,
-    filter_bias: -2.2,
-    mid: Some(KickMidRecipe {
-        frequency_ratio: 1.75,
-        mod_ratio: 1.5,
-        index: 1.0,
-        level: 1.6,
-        decay_ms: 175.0,
-    }),
-    output_gain: 0.66,
-};
-
-/// A shorter, rougher midrange bite from a wider FM sideband spectrum.
-pub(crate) const KICK_GRIT: LowpassKickRecipe = LowpassKickRecipe {
-    attack_ms: 1.0,
-    click_scale: 0.55,
-    pitch_drop_ratio: 0.3,
-    fm_mod_ratio: 2.0,
-    fm_depth: 3.0,
-    wave: FmWave::Sine,
-    filter_bias: -2.05,
-    mid: Some(KickMidRecipe {
-        frequency_ratio: 2.4,
-        mod_ratio: 2.3,
-        index: 2.0,
-        level: 2.0,
-        decay_ms: 115.0,
-    }),
-    output_gain: 0.52,
-};
-
-/// The lowpass-filtered kick signal path for all types except Wood:
-/// `KickVoiceCore` shaping the FM body and optional low-mid tone, the
-/// recipe's output trim, then the one-pole `KickLowPass`.
+/// The lowpass-filtered FM signal path for Sub, Warm, and Felt:
+/// `KickVoiceCore` shaping the FM body, the recipe's output trim, then the
+/// one-pole `KickLowPass`.
 pub(crate) struct LowpassKickVoice {
     pub(crate) core: KickVoiceCore,
     pub(crate) body: KickFmBody,
     pub(crate) lowpass: KickLowPass,
-    mid: Option<KickMidBody>,
     pub(crate) output_gain: f32,
 }
 
@@ -466,10 +367,6 @@ impl LowpassKickVoice {
                 recipe.wave,
             ),
             lowpass: KickLowPass::new(KICK_CHARACTER_FILTER_POSITION, recipe.filter_bias),
-            mid: recipe
-                .mid
-                .as_ref()
-                .map(|mid| KickMidBody::new(mid, c, sample_rate)),
             output_gain: recipe.output_gain,
         }
     }
@@ -480,16 +377,176 @@ impl LowpassKickVoice {
         }
 
         let body = self.body.next();
-        let mid = self.mid.as_mut().map_or(0.0, KickMidBody::next);
         let s = self
             .lowpass
-            .process(self.core.shape(body + mid, rng) * self.output_gain);
+            .process(self.core.shape(body, rng) * self.output_gain);
 
         (s * self.core.pan_gains.0, s * self.core.pan_gains.1)
     }
 
     pub(crate) fn is_done(&self) -> bool {
         self.core.is_done()
+    }
+}
+
+/// A 909-style resonant body. Pitch falls through the low mids in the first
+/// few cycles, then one sine oscillator rings at the bass fundamental. Its
+/// long amplitude decay is independent of that pitch sweep. An onset-only
+/// noise burst supplies the short beater sound without a separate mid tone.
+pub(crate) struct AnalogKickRecipe {
+    start_ratio: f32,
+    end_ratio: f32,
+    pitch_tau_ratio: f32,
+    amp_tau_ratio: f32,
+    click_scale: f32,
+    attack_harmonic: f32,
+    excitation: f32,
+    impact: f32,
+    output_gain: f32,
+}
+
+pub(crate) const KICK_909: AnalogKickRecipe = AnalogKickRecipe {
+    start_ratio: 1.3,
+    end_ratio: 0.27,
+    pitch_tau_ratio: 0.48,
+    amp_tau_ratio: 1.2,
+    click_scale: 5.0,
+    attack_harmonic: 0.1,
+    excitation: 0.75,
+    impact: 2.0,
+    output_gain: 0.72,
+};
+
+pub(crate) const KICK_DEEP: AnalogKickRecipe = AnalogKickRecipe {
+    start_ratio: 1.15,
+    end_ratio: 0.25,
+    pitch_tau_ratio: 0.55,
+    amp_tau_ratio: 1.25,
+    click_scale: 2.5,
+    attack_harmonic: 0.05,
+    excitation: 0.35,
+    impact: 1.4,
+    output_gain: 0.75,
+};
+
+pub(crate) const KICK_DUST: AnalogKickRecipe = AnalogKickRecipe {
+    start_ratio: 1.3,
+    end_ratio: 0.27,
+    pitch_tau_ratio: 0.48,
+    amp_tau_ratio: 0.9,
+    click_scale: 6.0,
+    attack_harmonic: 0.25,
+    excitation: 0.9,
+    impact: 1.5,
+    output_gain: 0.77,
+};
+
+pub(crate) struct AnalogKickVoice {
+    sample_rate: f32,
+    sample_index: u64,
+    onset_samples: u64,
+    attack_samples: f32,
+    impact_center: f32,
+    impact_half_width: f32,
+    impact: f32,
+    phase: f32,
+    freq: f32,
+    target_freq: f32,
+    freq_glide: f32,
+    amp: f32,
+    amp_decay: f32,
+    click: f32,
+    click_remaining: u64,
+    click_decay: f32,
+    attack_harmonic: f32,
+    harmonic_decay: f32,
+    excitation: f32,
+    excitation_decay: f32,
+    output_gain: f32,
+    pan_gains: (f32, f32),
+}
+
+impl AnalogKickVoice {
+    pub(crate) fn new(
+        recipe: &AnalogKickRecipe,
+        c: &KickControls,
+        sample_rate: f32,
+        rng: &mut StdRng,
+    ) -> Self {
+        let pitch_tau = (c.pitch_decay_ms * 0.001 * sample_rate * recipe.pitch_tau_ratio).max(1.0);
+        let amp_tau = (c.amp_decay_ms * 0.001 * sample_rate * recipe.amp_tau_ratio).max(1.0);
+        Self {
+            sample_rate,
+            sample_index: 0,
+            onset_samples: (0.0027 * sample_rate).round() as u64,
+            attack_samples: 0.001 * sample_rate,
+            impact_center: 0.0034 * sample_rate,
+            impact_half_width: 0.00018 * sample_rate,
+            impact: recipe.impact,
+            phase: -1.3,
+            freq: c.start_freq * recipe.start_ratio,
+            target_freq: c.start_freq * recipe.end_ratio,
+            freq_glide: 1.0 - (-1.0 / pitch_tau).exp(),
+            amp: c.level,
+            amp_decay: (-1.0 / amp_tau).exp(),
+            click: c.click * recipe.click_scale * c.level,
+            click_remaining: (0.015 * sample_rate).round() as u64,
+            click_decay: (-1.0 / (0.003 * sample_rate)).exp(),
+            attack_harmonic: recipe.attack_harmonic,
+            harmonic_decay: (-1.0 / (0.018 * sample_rate)).exp(),
+            excitation: recipe.excitation,
+            excitation_decay: (-1.0 / (0.015 * sample_rate)).exp(),
+            output_gain: recipe.output_gain,
+            pan_gains: StereoPanner::gains(rng.gen_range(-0.15f32..0.15)),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn next<R: Rng>(&mut self, rng: &mut R) -> (f32, f32) {
+        if self.is_done() {
+            return (0.0, 0.0);
+        }
+        self.freq += (self.target_freq - self.freq) * self.freq_glide;
+        let body = if self.sample_index < self.onset_samples {
+            0.0
+        } else {
+            self.phase += std::f32::consts::TAU * self.freq / self.sample_rate;
+            if self.phase >= std::f32::consts::TAU {
+                self.phase -= std::f32::consts::TAU;
+            }
+            let attack =
+                ((self.sample_index - self.onset_samples) as f32 / self.attack_samples).min(1.0);
+            let harmonic = if self.attack_harmonic > 0.0001 {
+                self.attack_harmonic * (self.phase * 2.0).sin()
+            } else {
+                0.0
+            };
+            (self.phase.sin() + harmonic) * attack
+        };
+        let impact_distance = (self.sample_index as f32 - self.impact_center).abs();
+        let impact = if impact_distance < self.impact_half_width {
+            self.impact * (1.0 - impact_distance / self.impact_half_width)
+        } else {
+            0.0
+        };
+        let click = if self.click_remaining > 0 {
+            self.click_remaining -= 1;
+            rng.gen_range(-1.0f32..1.0) * self.click
+        } else {
+            0.0
+        };
+        let sample = (body * self.amp * (1.0 + self.excitation) + click - impact * self.amp)
+            * self.output_gain;
+        self.amp *= self.amp_decay;
+        self.click *= self.click_decay;
+        self.attack_harmonic *= self.harmonic_decay;
+        self.excitation *= self.excitation_decay;
+        self.sample_index += 1;
+        (sample * self.pan_gains.0, sample * self.pan_gains.1)
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.amp < 0.001
     }
 }
 
@@ -653,10 +710,7 @@ mod tests {
         rendered
     }
 
-    /// Compare low-mid energy after the onset. Two one-pole lowpasses form
-    /// an approximate 160-900 Hz band; the same filter is applied to every
-    /// character, so the ratio matters more than its exact skirt.
-    fn low_mid_body(voice_type: usize) -> f32 {
+    fn render_mono_hit(voice_type: usize) -> Vec<f32> {
         const SAMPLE_RATE: f32 = 48_000.0;
         let controls = KickControls {
             level: 1.0,
@@ -664,14 +718,26 @@ mod tests {
         };
         let mut rng = StdRng::seed_from_u64(42);
         let mut voice = KickVoice::new(voice_type, &controls, SAMPLE_RATE, &mut rng);
-        let low_coeff = 1.0 - (-std::f32::consts::TAU * 160.0 / SAMPLE_RATE).exp();
-        let high_coeff = 1.0 - (-std::f32::consts::TAU * 900.0 / SAMPLE_RATE).exp();
-        let (mut low, mut high, mut energy) = (0.0f32, 0.0f32, 0.0f32);
-        let start = (0.04 * SAMPLE_RATE) as usize;
-        let end = (0.16 * SAMPLE_RATE) as usize;
-        for sample_index in 0..end {
+        let mut rendered = Vec::with_capacity(SAMPLE_RATE as usize / 2);
+        for _ in 0..SAMPLE_RATE as usize / 2 {
             let (left, right) = voice.next(&mut rng);
-            let sample = (left + right) * 0.5;
+            rendered.push((left + right) * 0.5);
+        }
+        rendered
+    }
+
+    fn window_rms(samples: &[f32], start_ms: usize, end_ms: usize) -> f32 {
+        crate::synth::fm::rms(&samples[start_ms * 48..end_ms * 48])
+    }
+
+    fn band_rms(samples: &[f32], low_hz: f32, high_hz: f32, start_ms: usize, end_ms: usize) -> f32 {
+        const SAMPLE_RATE: f32 = 48_000.0;
+        let low_coeff = 1.0 - (-std::f32::consts::TAU * low_hz / SAMPLE_RATE).exp();
+        let high_coeff = 1.0 - (-std::f32::consts::TAU * high_hz / SAMPLE_RATE).exp();
+        let (mut low, mut high, mut energy) = (0.0f32, 0.0f32, 0.0f32);
+        let start = start_ms * 48;
+        let end = end_ms * 48;
+        for (sample_index, &sample) in samples[..end].iter().enumerate() {
             low += low_coeff * (sample - low);
             high += high_coeff * (sample - high);
             if sample_index >= start {
@@ -681,16 +747,43 @@ mod tests {
         (energy / (end - start) as f32).sqrt()
     }
 
+    /// The Oramics Detroit TR-909 kick reference has a short audible attack
+    /// and a bass ring: its 180-300 ms RMS is about 26% of its 10-40 ms RMS.
+    /// The previous FM-mid versions inverted that shape, leaving a pitched
+    /// low-mid tone without enough tail. Keep a broad tolerance so this
+    /// protects the shape, not the exact recording or its mastering level.
+    /// https://oramics.github.io/sampled/DM/TR-909/Detroit/
     #[test]
-    fn new_kick_characters_have_audible_low_mid_body_after_the_onset() {
-        let sub = low_mid_body(0);
-        for (voice_type, label) in KICK_TYPES.iter().enumerate().skip(4) {
-            let ratio = low_mid_body(voice_type) / sub;
-            assert!(
-                ratio >= 1.5,
-                "kick type {voice_type} ({label}) has only {ratio:.2}x Sub's low-mid energy"
-            );
-        }
+    fn kick_909_has_a_short_attack_and_audible_bass_tail() {
+        let samples = render_mono_hit(4);
+        let attack = window_rms(&samples, 10, 40);
+        let middle = window_rms(&samples, 40, 100);
+        let tail = window_rms(&samples, 180, 300);
+        assert!(attack > middle * 1.3, "attack must lead the body");
+        assert!(
+            (0.18..=0.36).contains(&(tail / attack)),
+            "bass tail is {:.2}x the attack, outside the reference shape",
+            tail / attack
+        );
+    }
+
+    #[test]
+    fn kick_909_moves_from_low_mids_into_bass_instead_of_holding_a_second_tone() {
+        let samples = render_mono_hit(4);
+        let early_mid = band_rms(&samples, 160.0, 500.0, 10, 40);
+        let late_mid = band_rms(&samples, 160.0, 500.0, 100, 180);
+        let tail_bass = band_rms(&samples, 20.0, 90.0, 180, 300);
+        let tail_mid = band_rms(&samples, 160.0, 500.0, 180, 300);
+        assert!(
+            early_mid > late_mid * 4.0,
+            "midrange should be an attack: {:.1}x",
+            early_mid / late_mid
+        );
+        assert!(
+            tail_bass > tail_mid * 3.0,
+            "tail should ring in the bass: {:.1}x",
+            tail_bass / tail_mid
+        );
     }
 
     /// Switching `kick.type` is a change of character, not of level: all types

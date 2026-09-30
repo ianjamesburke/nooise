@@ -1542,7 +1542,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
 /// its slider range can never disagree.
 pub(crate) const BASS_TYPES: &[&str] = &["Sub", "Saw", "Pluck"];
 pub(crate) const PAD_TYPES: &[&str] = &["Warm", "Dark", "Glass", "Choir", "Hollow", "Tape"];
-pub(crate) const KICK_TYPES: &[&str] = &["Sub", "Warm", "Wood", "Felt", "Punch", "Hollow", "Grit"];
+pub(crate) const KICK_TYPES: &[&str] = &["Sub", "Warm", "Wood", "Felt", "909", "Deep", "Dust"];
 pub(crate) const TONAL_SYNTH_TYPES: &[&str] = &[
     "Sine",
     "Rhodes",

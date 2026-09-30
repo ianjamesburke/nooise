@@ -52,7 +52,7 @@ const RANGE_CHANGES: &[RangeChange] = &[
         epoch: 2,
         target: RangeTarget::Control("pad.progression"),
     },
-    // Kick Type gained Punch, Hollow, and Grit after Felt. A saved sweep's
+    // Kick Type gained three characters after Felt. A saved sweep's
     // depth would cover a different set of characters on the wider dial.
     RangeChange {
         epoch: 3,
