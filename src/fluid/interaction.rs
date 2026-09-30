@@ -584,6 +584,7 @@ pub(crate) const INSTRUMENTS: [InstrumentRow; 8] = [
 ];
 
 impl PerformanceInstrument {
+    #[cfg(test)]
     pub(crate) const ALL: [Self; 8] = [
         Self::Pads,
         Self::Perc,
@@ -609,11 +610,6 @@ impl PerformanceInstrument {
 
     pub(crate) fn tab(self) -> Tab {
         tab_for_page(self.page())
-    }
-
-    /// The selector key that chooses this instrument under the Jump leader.
-    pub(crate) const fn key(self) -> char {
-        self.row().key
     }
 
     pub(crate) fn from_key(key: char) -> Option<Self> {
@@ -669,24 +665,6 @@ pub(crate) const PARAMETERS: [ParameterRow; 2] = [
 ];
 
 impl PerformanceParameter {
-    pub(crate) const ALL: [Self; 2] = [Self::Volume, Self::Filter];
-
-    pub(crate) const fn index(self) -> usize {
-        self as usize
-    }
-
-    pub(crate) const fn row(self) -> &'static ParameterRow {
-        &PARAMETERS[self.index()]
-    }
-
-    pub(crate) const fn key(self) -> char {
-        self.row().key
-    }
-
-    pub(crate) const fn label(self) -> &'static str {
-        self.row().label
-    }
-
     pub(crate) fn from_key(key: char) -> Option<Self> {
         PARAMETERS
             .iter()

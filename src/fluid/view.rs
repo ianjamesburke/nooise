@@ -255,9 +255,8 @@ impl AutomationSurface<'_> {
     }
 }
 
-/// How far a pending Jump has got. The leader never covers the control
-/// rows: the page it lands on stays visible underneath, so the only thing
-/// to render is which key it is waiting for.
+/// How far a pending Jump has got. The leader renders this as an immediate
+/// map over the control rows while keeping the breadcrumb and footer visible.
 pub(crate) enum PerformanceSurface {
     ChooseLayer,
     ChooseParameter { instrument: PerformanceInstrument },
@@ -741,41 +740,15 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         },
         KeyboardOwner::PerformanceJump => match mode {
             ModeSurface::Performance(PerformanceSurface::ChooseLayer) => {
-                format!(
-                    "JUMP · {} · {}  Esc",
-                    layer_keys_compact(),
-                    parameter_keys_text()
-                )
+                "JUMP · map open   Esc".to_string()
             }
             ModeSurface::Performance(PerformanceSurface::ChooseParameter { instrument }) => {
-                format!(
-                    "JUMP {} · {}   Esc",
-                    instrument.name(),
-                    parameter_keys_text()
-                )
+                format!("JUMP {} · map open   Esc", instrument.name())
             }
             _ => unreachable!("jump owner requires a jump surface"),
         },
         KeyboardOwner::Help => "SHORTCUTS · Esc: close".to_string(),
     }
-}
-
-/// `asdfqwer` from `INSTRUMENTS`. The 46-column minimum frame cannot hold
-/// both key sets with the layer names spelled out, so the layer group is
-/// named by its keys alone, in the order the tabs sit on screen. The
-/// shortcut map (`?`) spells out which layer each one opens.
-fn layer_keys_compact() -> String {
-    PerformanceInstrument::ALL
-        .map(|instrument| instrument.key())
-        .iter()
-        .collect()
-}
-
-/// `j volume  k filter` from `PARAMETERS`, for the same reason.
-fn parameter_keys_text() -> String {
-    crate::fluid::interaction::PerformanceParameter::ALL
-        .map(|parameter| format!("{} {}", parameter.key(), parameter.label()))
-        .join("  ")
 }
 
 fn automation_owner_help(surface: &AutomationSurface<'_>) -> String {
@@ -1171,11 +1144,10 @@ mod tests {
         );
     }
 
-    /// Before a layer key the leader offers the shorthand, since the page
-    /// already open is what `j`/`k` will aim at. The whole line has to fit
-    /// the 46-column minimum frame.
+    /// The footer stays short because the immediate map spells out the
+    /// available routes over the control area.
     #[test]
-    fn jump_leader_offers_the_current_layer_shorthand_first() {
+    fn jump_leader_footer_names_the_open_map() {
         let session = session();
         let mode = InteractionMode::Performance(PerformanceMode::Jump {
             stage: JumpStage::ChooseLayer,
@@ -1184,15 +1156,40 @@ mod tests {
             KeyboardOwner::PerformanceJump,
             &mode_surface(&mode, Tab::Bass, &session.controls, &session.automation),
         );
-        assert_eq!(line, "JUMP · asdfqwer · j volume  k filter  Esc");
+        assert_eq!(line, "JUMP · map open   Esc");
         assert!(
             line.chars().count() <= usize::from(MIN_TERMINAL_WIDTH - 2),
-            "the leader's help line must fit the minimum frame: {line:?}"
+            "the leader footer must fit the minimum frame: {line:?}"
         );
     }
 
     #[test]
-    fn jump_leader_names_its_keys_without_covering_the_page() {
+    fn jump_leader_root_map_lists_layers_and_current_page_routes_at_minimum_size() {
+        let model = InteractionModel {
+            mode: InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseLayer,
+            }),
+            ..InteractionModel::default()
+        };
+        let rendered = render_model(&model);
+        for text in [
+            "a\u{2420}Pads",
+            "s\u{2420}Perc",
+            "d\u{2420}Bass",
+            "f\u{2420}Kick",
+            "q\u{2420}Tonal",
+            "w\u{2420}Clap",
+            "e\u{2420}Arp",
+            "r\u{2420}Master",
+            "j\u{2420}volume\u{2420}\u{2420}k\u{2420}filter",
+            "Esc\u{2420}cancel",
+        ] {
+            assert!(rendered.contains(text), "missing {text:?}:\n{rendered}");
+        }
+    }
+
+    #[test]
+    fn jump_leader_renders_a_map_over_the_control_area() {
         let interaction = InteractionModel {
             navigation: Navigation::Standard {
                 page: crate::fluid::interaction::StandardPage::Kick,
@@ -1211,14 +1208,10 @@ mod tests {
         let rendered = render_model_with_session(&interaction, &session);
 
         assert!(
-            rendered.contains("JUMP\u{2420}Kick") && rendered.contains("volume"),
-            "the pending leader names its layer and keys: {rendered:?}"
-        );
-        // The leader is a footer hint, so the page it is aiming at is still
-        // on screen underneath it.
-        assert!(
-            rendered.contains("Level"),
-            "the Kick page stays visible under the leader: {rendered:?}"
+            rendered.contains("JUMP\u{2420}Kick")
+                && rendered.contains("Kick\u{2420}selected")
+                && rendered.contains("j\u{2420}volume"),
+            "the pending leader names its target and keys: {rendered:?}"
         );
     }
 

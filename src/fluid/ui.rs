@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use super::interaction::LEAD_PLAY_KEYS;
+use super::interaction::{INSTRUMENTS, LEAD_PLAY_KEYS, PARAMETERS};
 use super::widget::{Dial, DialScale};
 use super::*;
 
@@ -165,6 +165,9 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
 
     if matches!(view.mode, ModeSurface::Help) {
         draw_help(f, inner);
+    }
+    if let ModeSurface::Performance(surface) = &view.mode {
+        draw_leader(f, inner, surface);
     }
 }
 
@@ -890,6 +893,67 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ("?", "this screen"),
     ]));
     f.render_widget(Paragraph::new(lines), inner_block);
+}
+
+/// The immediate Space map. It covers the controls while preserving the
+/// breadcrumb and both footer rows, so a player sees the whole sentence
+/// before committing its next key.
+fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
+    let above_footer = inner.height.saturating_sub(2);
+    let area = Rect::new(
+        inner.x + 1,
+        inner.y,
+        inner.width.saturating_sub(2),
+        above_footer,
+    );
+    fill_scrim(f.buffer_mut(), area, |cell| {
+        cell.set_bg(Color::Rgb(16, 19, 28));
+    });
+    let block = Block::default()
+        .title(Line::from(Span::styled(
+            " Jump ",
+            Style::default()
+                .fg(EMPHASIS_YELLOW)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER))
+        .padding(Padding::new(1, 1, 1, 1));
+    let content = block.inner(area);
+    f.render_widget(block, area);
+
+    let binding = |key: char, label: &str| format!("{key} {label}");
+    let parameter_line = PARAMETERS
+        .iter()
+        .map(|row| binding(row.key, row.label))
+        .collect::<Vec<_>>()
+        .join("  ");
+    let lines = match surface {
+        PerformanceSurface::ChooseLayer => vec![
+            INSTRUMENTS[..4]
+                .iter()
+                .map(|row| binding(row.key, row.instrument.name()))
+                .collect::<Vec<_>>()
+                .join("  "),
+            INSTRUMENTS[4..]
+                .iter()
+                .map(|row| binding(row.key, row.instrument.name()))
+                .collect::<Vec<_>>()
+                .join("  "),
+            format!("{parameter_line}  Esc cancel"),
+        ],
+        PerformanceSurface::ChooseParameter { instrument } => vec![
+            format!("{} selected", instrument.name()),
+            format!("{parameter_line}  Esc cancel"),
+        ],
+    };
+    f.render_widget(
+        Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>())
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Rgb(205, 210, 222))),
+        content,
+    );
 }
 
 /// Colour pair for a row family: (active row, idle row).

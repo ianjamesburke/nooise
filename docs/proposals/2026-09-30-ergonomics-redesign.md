@@ -182,9 +182,8 @@ and MRU behavior retain their existing deliberate ordering.
 1. Done: static operation metadata projects existing Capture, mix, and recipe
    palette actions through one closed vocabulary. Their behavior and typed
    effects are unchanged.
-2. Replace Jump's hard-coded footer with the immediate leader map, using only
-   the existing Jump routes. Add interaction, runtime, view, UI, and replay
-   parity coverage.
+2. Done: Jump renders an immediate map from the existing layer and parameter
+   tables. Its routes and typed effects are unchanged.
 3. Play that leader before adding a new action. Add planned mute only if the
    map makes its target and cancellation obvious.
 4. Replace Capture with palette-only Motion. Generalize lane lifecycle and
