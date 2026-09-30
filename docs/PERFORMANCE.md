@@ -164,15 +164,16 @@ Lead play retains its own `i` entry and existing bindings.
    Escape must also release held or loaded gestures.
 5. Save during a swell and load that code. Its amount should resume; the
    matching gesture key or Escape must let it return.
-6. Press Space, `d`, `j`: the cursor lands on Bass Level in Browse with
-   nothing changed, and `h`/`l` then move it. From that page press Space,
-   `j` again: the same row, two keys, no layer key. Press Space, `a`, `k`: a
-   filter appears on the Pads chain, inaudible, cursor on its Cutoff row,
-   and `h` sweeps it down. Repeat on Bass and confirm `k` reaches the filter
-   already in slot 1 without resetting its cutoff or adding a second one.
-   Press Space, `r`, `j` and confirm it reaches Master Level, and Space,
-   `q`/`w`/`e`, `j` the Tonal, Clap and Arp levels. On Lead, confirm Space,
-   `j` still reaches its Level.
+6. Move to a non-Level Bass row, then press Space, `d`: it returns to that
+   remembered Bass row in Browse with nothing changed, and `h`/`j`/`k`/`l`
+   work at once. From Bass press Space, `j`: the cursor reaches Bass Level.
+   Press Space, `a`, then Space, `k`: a filter appears on the Pads chain,
+   inaudible, cursor on its Cutoff row, and `h` sweeps it down. Repeat on
+   Bass and confirm `k` reaches the filter already in slot 1 without
+   resetting its cutoff or adding a second one. Press Space, `r`, then
+   Space, `j` and confirm it reaches Master Level. Repeat the direct layer
+   jump for Tonal, Clap, and Arp. On Lead, confirm Space, `j` still reaches
+   its Level.
 7. Press `?` from Browsing: the shortcut map should open over the
    breadcrumb and control rows, leaving both footer rows visible beneath
    it. Esc returns to Browsing.
