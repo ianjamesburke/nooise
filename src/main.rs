@@ -17,25 +17,28 @@ mod update_check;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-    if cli.midi_config() != midi::MidiConfig::default()
-        && matches!(
-            cli.command,
-            Some(CliCommand::Update | CliCommand::MidiPorts | CliCommand::Render(_))
-        )
-    {
-        return Err("MIDI port flags only apply to live playback".into());
+    if matches!(
+        cli.command,
+        Some(CliCommand::Update | CliCommand::MidiPorts | CliCommand::Render(_))
+    ) {
+        if cli.midi_config() != midi::MidiConfig::default() {
+            return Err("MIDI port flags only apply to live playback".into());
+        }
+        if cli.start_muted {
+            return Err("-M/--start-muted only applies to live playback".into());
+        }
     }
     let midi = cli.midi_config();
     let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
     match cli.command {
         None => match cli.song.as_deref() {
-            None => fluid::run(cli.osc, midi),
-            Some(song) => play_song(song, bars, cli.osc, midi),
+            None => fluid::run(cli.osc, midi, cli.start_muted),
+            Some(song) => play_song(song, bars, cli.osc, midi, cli.start_muted),
         },
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::MidiPorts) => midi::list_ports(),
         Some(CliCommand::Render(args)) => render(args),
-        Some(CliCommand::Auto) => fluid::run_auto(bars, cli.osc, midi),
+        Some(CliCommand::Auto) => fluid::run_auto(bars, cli.osc, midi, cli.start_muted),
     }
 }
 
@@ -56,6 +59,9 @@ struct Cli {
     /// Bars each song holds before morphing into the next. Defaults to 64.
     #[arg(long, global = true)]
     bars: Option<u32>,
+    /// Start live playback with Master Level at 0%.
+    #[arg(short = 'M', long, global = true)]
+    start_muted: bool,
     /// Mirror live telemetry (beat, chord, kick hits) as OSC over UDP for an
     /// external visualizer. Bare `--osc` targets 127.0.0.1:9000, foorm's
     /// default listen address; give ADDR to send elsewhere.
@@ -146,10 +152,11 @@ fn play_song(
     bars: u32,
     osc: Option<SocketAddr>,
     midi: midi::MidiConfig<'_>,
+    start_muted: bool,
 ) -> Result<(), Box<dyn Error>> {
     if song.starts_with(fluid::CODE_PREFIX) {
         let state = fluid::decode_song_code(song).map_err(|error| error.to_string())?;
-        return fluid::run_with_song_state(state, osc, midi);
+        return fluid::run_with_song_state(state, osc, midi, start_muted);
     }
     let numbers = song
         .split(',')
@@ -159,7 +166,7 @@ fn play_song(
                 .map_err(|_| format!("{part:?} is neither a song number nor an n1_ code").into())
         })
         .collect::<Result<Vec<usize>, Box<dyn Error>>>()?;
-    fluid::run_songs(&numbers, bars, osc, midi)
+    fluid::run_songs(&numbers, bars, osc, midi, start_muted)
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {
@@ -211,6 +218,7 @@ mod tests {
         assert_eq!(cli.command, None);
         assert_eq!(cli.osc, None);
         assert_eq!(cli.midi_out, None);
+        assert!(!cli.start_muted);
     }
 
     #[test]
@@ -226,6 +234,14 @@ mod tests {
             parse(&["midi-ports"]).unwrap().command,
             Some(CliCommand::MidiPorts)
         );
+    }
+
+    #[test]
+    fn start_muted_is_global_for_live_playback() {
+        for args in [&["-M", "9"][..], &["9", "-M"], &["auto", "-M"]] {
+            assert!(parse(args).unwrap().start_muted, "{args:?}");
+        }
+        assert!(!parse(&["9"]).unwrap().start_muted);
     }
 
     #[test]

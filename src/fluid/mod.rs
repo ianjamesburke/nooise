@@ -291,12 +291,17 @@ const APP_ID: &str = "nooise";
 /// Where a bare `--osc` sends: foorm's default listen address.
 pub(crate) const DEFAULT_OSC_TARGET: &str = "127.0.0.1:9000";
 
-pub(crate) fn run(osc: Option<SocketAddr>, midi: MidiConfig<'_>) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run(
+    osc: Option<SocketAddr>,
+    midi: MidiConfig<'_>,
+    start_muted: bool,
+) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
     run_with_song_state(
         randomized_start_song(&mut rng, midi.input.is_some() || midi.output.is_some()),
         osc,
         midi,
+        start_muted,
     )
 }
 
@@ -310,7 +315,10 @@ fn randomized_start_song(rng: &mut impl Rng, midi_connected: bool) -> SongState 
     SongState::from_controls(controls)
 }
 
-fn apply_midi_start(song: &mut SongState, midi: MidiConfig<'_>) {
+fn apply_live_start(song: &mut SongState, midi: MidiConfig<'_>, start_muted: bool) {
+    if start_muted {
+        song.controls.master.level = 0.0;
+    }
     if midi.input.is_some() || midi.output.is_some() {
         song.controls.pad.level = 0.0;
     }
@@ -325,9 +333,9 @@ fn apply_midi_start(song: &mut SongState, midi: MidiConfig<'_>) {
     }
 }
 
-fn apply_midi_start_to_states(states: &mut [SongState], midi: MidiConfig<'_>) {
+fn apply_live_start_to_states(states: &mut [SongState], midi: MidiConfig<'_>, start_muted: bool) {
     for state in states {
-        apply_midi_start(state, midi);
+        apply_live_start(state, midi, start_muted);
     }
 }
 
@@ -335,6 +343,7 @@ pub(crate) fn run_with_song_state(
     initial_song: SongState,
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
+    start_muted: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Interactive start: no morph running. `A` can begin one live, heading
     // toward the built-in states from wherever the user currently is.
@@ -346,6 +355,7 @@ pub(crate) fn run_with_song_state(
         DEFAULT_AUTO_BARS,
         osc,
         midi,
+        start_muted,
     )
 }
 
@@ -356,15 +366,16 @@ pub(crate) fn run_auto(
     bars: u32,
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
+    start_muted: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut states = decode_auto_states();
-    apply_midi_start_to_states(&mut states, midi);
+    apply_live_start_to_states(&mut states, midi, start_muted);
     let initial_song = states[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
         states.clone(),
         bars,
     ))));
-    run_interactive(initial_song, morph, states, bars, osc, midi)
+    run_interactive(initial_song, morph, states, bars, osc, midi, start_muted)
 }
 
 /// Play built-in songs by number (`nooise 9`, `nooise 9,10,11`). One song
@@ -377,6 +388,7 @@ pub(crate) fn run_songs(
     bars: u32,
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
+    start_muted: bool,
 ) -> Result<(), Box<dyn Error>> {
     let all = decode_auto_states();
     if numbers.is_empty() {
@@ -395,14 +407,14 @@ pub(crate) fn run_songs(
             }
         }
     }
-    apply_midi_start_to_states(&mut chosen, midi);
+    apply_live_start_to_states(&mut chosen, midi, start_muted);
     let initial_song = chosen[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
         chosen.clone(),
         numbers.to_vec(),
         bars,
     ))));
-    run_interactive(initial_song, morph, chosen, bars, osc, midi)
+    run_interactive(initial_song, morph, chosen, bars, osc, midi, start_muted)
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
@@ -417,9 +429,10 @@ fn run_interactive(
     auto_bars: u32,
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
+    start_muted: bool,
 ) -> Result<(), Box<dyn Error>> {
-    apply_midi_start(&mut initial_song, midi);
-    apply_midi_start_to_states(&mut auto_states, midi);
+    apply_live_start(&mut initial_song, midi, start_muted);
+    apply_live_start_to_states(&mut auto_states, midi, start_muted);
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
     let session_for_engine = session.clone();
     let morph_for_engine = Arc::clone(&morph);
