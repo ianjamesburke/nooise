@@ -14,8 +14,8 @@ use arc_swap::ArcSwap;
 use super::automation::{
     ControlAddress, LfoRoute, LfoShape, ModContext, modulated_control_value_full,
 };
-use super::module::ModuleSlotField;
-use super::registry::{module_slot_row, parse_module_slot_id};
+use super::module::{ModuleSlotField, module_kind_at};
+use super::registry::parse_module_slot_id;
 use super::{
     AutomationState, ControlKind, ControlSpec, FluidControls, SongState, Tab, all_specs,
     decode_song_code, spec_by_id,
@@ -172,11 +172,15 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 //       crossing. Its identity and Amount change together on the next song's
 //       downbeat, whether Swing is arriving, leaving, or changing Amount.
 //
+//   Moving module — if the same module moves to another slot on its layer,
+//       both slots and their automation wait for the next song downbeat. This
+//       preserves one live instance throughout the crossing.
+//
 //   Module swap — a slot whose module (or delay clock) differs between the two
 //       states changes its identity and rows together on the
 //       transition downbeat. Its rows mean different things under different
 //       modules, so blending them (a Reverb's size dragged toward a Filter's
-//       Hz) is never a valid in-between. Swing-bearing slots wait instead.
+//       Hz) is never a valid in-between. Swing and moving-module slots wait.
 //
 //   Snap (Discrete/Timing)  — never interpolated; hold `from`, then hard-jump.
 //       Structural params (progression + chord count/offset/length + arp
@@ -258,12 +262,13 @@ fn move_of(
     from: &FluidControls,
     to: &FluidControls,
     swapped: &[(&str, usize)],
+    held: &[(&str, usize)],
 ) -> Move {
-    if is_swing_slot_row(spec.id, from) || is_swing_slot_row(spec.id, to) {
+    if in_slot_set(held, spec.id) {
         return Move::Wait;
     }
     if is_structural(spec.id)
-        || in_swapped_slot(swapped, spec.id)
+        || in_slot_set(swapped, spec.id)
         || snaps_drum_level(spec.id, (spec.get)(from), (spec.get)(to))
     {
         return Move::Snap;
@@ -274,33 +279,87 @@ fn move_of(
     }
 }
 
-fn is_swing_slot_row(id: &str, controls: &FluidControls) -> bool {
-    module_slot_row(id, controls)
-        .is_some_and(|(slot, _)| slot.kind().is_some_and(|kind| kind.id == "swing"))
-}
-
 /// (spec index into `all_specs()` order, jump offset in bars from the
 /// transition downbeat) for every changed non-structural grid param on a leg,
 /// staggered in registry order. Structural and glide params aren't listed.
-fn stepped_offsets(from: &FluidControls, to: &FluidControls) -> Vec<(usize, f64)> {
+fn stepped_offsets(
+    from: &FluidControls,
+    to: &FluidControls,
+    held: &[(&str, usize)],
+) -> Vec<(usize, f64)> {
     let swapped = swapped_slots(from, to);
     all_specs()
         .enumerate()
-        .filter(|(_, spec)| move_of(spec, from, to, &swapped) == Move::Stagger)
+        .filter(|(_, spec)| move_of(spec, from, to, &swapped, held) == Move::Stagger)
         .filter(|(_, spec)| (spec.get)(from) != (spec.get)(to))
         .enumerate()
         .map(|(order, (index, _))| (index, (order + 1) as f64 * STAGGER_STEP_BARS))
         .collect()
 }
 
-fn in_swapped_slot(swapped: &[(&str, usize)], spec_id: &str) -> bool {
-    parse_module_slot_id(spec_id).is_some_and(|(layer, slot, _)| swapped.contains(&(layer, slot)))
+fn in_slot_set(slots: &[(&str, usize)], spec_id: &str) -> bool {
+    parse_module_slot_id(spec_id).is_some_and(|(layer, slot, _)| slots.contains(&(layer, slot)))
+}
+
+/// Hold a slot until the next song if it carries Swing or a module that moves
+/// to another slot on the same layer. A moving Filter must never be doubled by
+/// loading its target slot early, or lost by clearing its source slot early.
+fn held_slots(from: &FluidControls, to: &FluidControls) -> Vec<(&'static str, usize)> {
+    let identities: Vec<_> = all_specs()
+        .filter_map(|spec| {
+            let (layer, slot, field) = parse_module_slot_id(spec.id)?;
+            (field == ModuleSlotField::Kind).then_some((
+                layer,
+                slot,
+                (spec.get)(from),
+                (spec.get)(to),
+            ))
+        })
+        .collect();
+    let mut held = Vec::new();
+    for &(layer, slot, from_kind, to_kind) in &identities {
+        if [from_kind, to_kind]
+            .into_iter()
+            .any(|value| module_kind_at(value).is_some_and(|kind| kind.id == "swing"))
+        {
+            held.push((layer, slot));
+        }
+    }
+    for &(layer, source, kind, _) in &identities {
+        if module_kind_at(kind).is_none()
+            || identities
+                .iter()
+                .filter(|&&(candidate_layer, _, candidate_kind, _)| {
+                    candidate_layer == layer && candidate_kind == kind
+                })
+                .count()
+                != 1
+        {
+            continue;
+        }
+        let mut targets = identities
+            .iter()
+            .filter(|&&(candidate_layer, _, _, target_kind)| {
+                candidate_layer == layer && target_kind == kind
+            });
+        let (Some(&(_, target, _, _)), None) = (targets.next(), targets.next()) else {
+            continue;
+        };
+        if source != target {
+            for slot in [source, target] {
+                if !held.contains(&(layer, slot)) {
+                    held.push((layer, slot));
+                }
+            }
+        }
+    }
+    held
 }
 
 /// The module slots (layer prefix, 0-based slot) whose module or clock differs
 /// between two states. Their rows mean different things on each side, so a leg
 /// snaps their identity and rows instead of blending them, except when Swing
-/// occupies either endpoint; those slots wait until the next leg.
+/// occupies either endpoint or a module moves between slots; those wait.
 fn swapped_slots(from: &FluidControls, to: &FluidControls) -> Vec<(&'static str, usize)> {
     let mut swapped = Vec::new();
     for spec in all_specs() {
@@ -338,6 +397,9 @@ pub(crate) struct MorphState {
     bars: u32,
     /// Staggered hard-switch offsets for leg i -> i+1 (mod n), precomputed once.
     stepped: Vec<Vec<(usize, f64)>>,
+    /// Slots held as a unit through leg i -> i+1 because they carry Swing or
+    /// a module moving between slot addresses.
+    held: Vec<Vec<(&'static str, usize)>>,
     /// Module slots that swap whole on the transition downbeat for leg i ->
     /// i+1 (mod n), precomputed once.
     swapped: Vec<Vec<(&'static str, usize)>>,
@@ -358,8 +420,17 @@ impl MorphState {
             "auto-morph requires at least one state"
         );
         let n = endpoints.len();
+        let held: Vec<_> = (0..n)
+            .map(|i| held_slots(&endpoints[i].controls, &endpoints[(i + 1) % n].controls))
+            .collect();
         let stepped = (0..n)
-            .map(|i| stepped_offsets(&endpoints[i].controls, &endpoints[(i + 1) % n].controls))
+            .map(|i| {
+                stepped_offsets(
+                    &endpoints[i].controls,
+                    &endpoints[(i + 1) % n].controls,
+                    &held[i],
+                )
+            })
             .collect();
         let swapped = (0..n)
             .map(|i| swapped_slots(&endpoints[i].controls, &endpoints[(i + 1) % n].controls))
@@ -369,6 +440,7 @@ impl MorphState {
             morph_ids: (1..=n).map(Some).collect(),
             bars: bars.max(1),
             stepped,
+            held,
             swapped,
             origin_beat: 0.0,
             first_leg_bars: None,
@@ -521,6 +593,7 @@ impl MorphState {
         let to = &self.endpoints[to_idx].controls;
         let offsets = &self.stepped[from_idx];
         let swapped = &self.swapped[from_idx];
+        let held = &self.held[from_idx];
         let beats_per_leg = self.leg_beats(leg_index);
         let t_beat = t * beats_per_leg;
         let transition_start = self.leg_transition_start_beat(leg_index);
@@ -531,7 +604,7 @@ impl MorphState {
             let from_v = (spec.get)(from);
             let to_v = (spec.get)(to);
 
-            let value = match move_of(spec, from, to, swapped) {
+            let value = match move_of(spec, from, to, swapped, held) {
                 Move::Wait => from_v,
                 Move::Snap => {
                     if t_beat < transition_start {
@@ -566,7 +639,8 @@ impl MorphState {
     /// non-level fields together at the single transition downbeat (no
     /// per-field staggering, unlike `controls_at`'s grid params) while its
     /// level field glides continuously — see `AutomationState::morph` for the
-    /// full rationale.
+    /// full rationale. Automation addressed to a held module slot stays at its
+    /// source state until the next song, matching the controls it modulates.
     pub(crate) fn automation_at(&self, beat: f64) -> AutomationState {
         let (from_idx, to_idx, t, leg_index) = self.leg_at_indexed(beat);
         let from = &self.endpoints[from_idx].automation;
@@ -576,7 +650,11 @@ impl MorphState {
         let transition_start = self.leg_transition_start_beat(leg_index);
         let transition_beats = (beats_per_leg - transition_start).max(1e-6);
         let tt = ((t_beat - transition_start) / transition_beats).clamp(0.0, 1.0) as f32;
-        AutomationState::morph(from, to, tt, t_beat >= transition_start)
+        let mut automation = AutomationState::morph(from, to, tt, t_beat >= transition_start);
+        automation.hold_addresses_from(from, |address| {
+            in_slot_set(&self.held[from_idx], address.id())
+        });
+        automation
     }
 }
 
@@ -687,6 +765,96 @@ impl MorphWriter {
 mod tests {
     use super::super::module::preset_slot;
     use super::*;
+
+    #[test]
+    fn a_filter_moving_between_slots_stays_single_and_keeps_its_automation() {
+        let states = decode_auto_states();
+        for (from, to, source_slot, source_id, target_id) in [
+            (2, 3, 0, "perc.slot1.time", "perc.slot2.time"),
+            (3, 2, 1, "perc.slot2.time", "perc.slot1.time"),
+        ] {
+            let morph = MorphState::new(vec![states[from].clone(), states[to].clone()], 64);
+            let source = ControlAddress::new(source_id);
+            let target = ControlAddress::new(target_id);
+            for beat in [168.0, 212.0, 255.5] {
+                let controls = morph.controls_at(beat);
+                let filters: Vec<_> = controls
+                    .modules
+                    .perc
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, value)| {
+                        value
+                            .kind()
+                            .is_some_and(|kind| kind.id == "filter")
+                            .then_some(slot)
+                    })
+                    .collect();
+                assert_eq!(
+                    filters,
+                    [source_slot],
+                    "song {} -> {} at beat {beat}",
+                    from + 1,
+                    to + 1
+                );
+                let automation = morph.automation_at(beat);
+                assert_eq!(automation.lfo_lanes(source).len(), 1);
+                assert_eq!(automation.lfo_lanes(target).len(), 0);
+                assert_eq!(
+                    automation.lfo_lanes(source)[0].depth_ratio,
+                    states[from].automation.lfo_lanes(source)[0].depth_ratio
+                );
+            }
+            let landed = morph.controls_at(256.0);
+            let target_slot = 1 - source_slot;
+            assert_eq!(
+                landed.modules.perc[target_slot].kind().unwrap().id,
+                "filter"
+            );
+            assert_eq!(morph.automation_at(256.0).lfo_lanes(target).len(), 1);
+        }
+    }
+
+    #[test]
+    fn built_in_morphs_do_not_duplicate_or_drop_a_shared_effect() {
+        let states = decode_auto_states();
+        for from in 0..states.len() {
+            let to = (from + 1) % states.len();
+            let morph = MorphState::new(vec![states[from].clone(), states[to].clone()], 64);
+            for tab in Tab::all() {
+                let Some(from_slots) = states[from].controls.modules.for_tab(tab) else {
+                    continue;
+                };
+                let to_slots = states[to].controls.modules.for_tab(tab).unwrap();
+                for kind in super::super::module::MODULE_CATALOG {
+                    let count =
+                        |slots: &[super::super::module::ModuleSlot;
+                              super::super::module::MODULE_SLOTS]| {
+                            slots
+                                .iter()
+                                .filter(|slot| {
+                                    slot.kind().is_some_and(|loaded| loaded.id == kind.id)
+                                })
+                                .count()
+                        };
+                    if count(from_slots) != 1 || count(to_slots) != 1 {
+                        continue;
+                    }
+                    for beat in [168.0, 212.0, 255.5] {
+                        let controls = morph.controls_at(beat);
+                        assert_eq!(
+                            count(controls.modules.for_tab(tab).unwrap()),
+                            1,
+                            "song {} -> {}, {tab:?} {} at beat {beat}",
+                            from + 1,
+                            to + 1,
+                            kind.id
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// (playing, next) for a beat, the pair the tests care about.
     fn ids(morph: &MorphState, beat: f64) -> (Option<usize>, Option<usize>) {

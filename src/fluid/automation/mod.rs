@@ -686,6 +686,30 @@ impl AutomationState {
         }
         result
     }
+
+    /// Keep source automation at addresses whose module slot waits for the
+    /// next song. Slot-addressed lanes belong to that slot's current module;
+    /// fading in the target lane early would automate a different module.
+    pub(crate) fn hold_addresses_from(
+        &mut self,
+        from: &AutomationState,
+        mut held: impl FnMut(ControlAddress) -> bool,
+    ) {
+        self.stacks.retain(|address, _| !held(*address));
+        self.stacks.extend(
+            from.stacks
+                .iter()
+                .filter(|(address, _)| held(**address))
+                .map(|(address, stack)| (*address, stack.clone())),
+        );
+        self.captures.retain(|address, _| !held(*address));
+        self.captures.extend(
+            from.captures
+                .iter()
+                .filter(|(address, _)| held(**address))
+                .map(|(address, clip)| (*address, clip.clone())),
+        );
+    }
 }
 
 fn morph_lane_family<T>(
