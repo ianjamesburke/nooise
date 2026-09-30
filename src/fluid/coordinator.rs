@@ -381,6 +381,7 @@ pub(crate) fn production_ui_loop(
     telemetry: Arc<FluidTelemetry>,
     updates: UpdateNotice,
     auto: AutoControls,
+    #[cfg(feature = "link")] link: Option<LinkFollower>,
 ) -> Result<(), Box<dyn Error>> {
     let mut model = interaction::InteractionModel::default();
     let mut effects = EffectExecutor::new(session.live, auto);
@@ -430,6 +431,10 @@ pub(crate) fn production_ui_loop(
         }
 
         if tick_due {
+            #[cfg(feature = "link")]
+            if let Some(link) = &link {
+                link.follow_peers(&mut effects);
+            }
             effects.expire_message(SAVE_MESSAGE_TTL);
             let dt = now.saturating_sub(last_tick).as_secs_f32().min(0.05);
             fluid.tick(dt, &telemetry);

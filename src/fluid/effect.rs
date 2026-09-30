@@ -691,20 +691,54 @@ impl EffectExecutor {
     /// not an edit of it, so it neither exits auto nor touches the MRU; the
     /// next play starts the sequence at beat zero.
     pub(crate) fn toggle_transport(&mut self) {
+        match self.session.load().transport {
+            Transport::Playing => self.stop_transport(),
+            Transport::Stopped => self.start_transport(),
+        }
+    }
+
+    /// Play from beat zero; from Playing this is a restart.
+    fn start_transport(&mut self) {
         self.session.update(|snapshot| {
-            snapshot.transport = snapshot.transport.toggled();
-            if snapshot.transport == Transport::Playing {
-                snapshot.transport_restart = snapshot.transport_restart.wrapping_add(1);
-                snapshot.automation.restart();
-            }
+            snapshot.transport = Transport::Playing;
+            snapshot.transport_restart = snapshot.transport_restart.wrapping_add(1);
+            snapshot.automation.restart();
         });
-        if self.session.load().transport == Transport::Playing {
-            self.capture_history = CaptureHistory::default();
-            self.phrase = LeadPhraseBuffer::default();
-            self.edit_beat = 0.0;
-            if let Some((beat, _)) = &mut self.pending {
-                *beat = 4.0;
+        self.capture_history = CaptureHistory::default();
+        self.phrase = LeadPhraseBuffer::default();
+        self.edit_beat = 0.0;
+        if let Some((beat, _)) = &mut self.pending {
+            *beat = 4.0;
+        }
+    }
+
+    fn stop_transport(&mut self) {
+        self.session
+            .update(|snapshot| snapshot.transport = Transport::Stopped);
+    }
+
+    /// A Link peer pressed Play or Stop. Play always restarts, so nooise's
+    /// beat zero lands on the peer's start even when it was already playing.
+    #[cfg(feature = "link")]
+    pub(crate) fn follow_peer_transport(&mut self, transport: Transport) {
+        match transport {
+            Transport::Playing => self.start_transport(),
+            Transport::Stopped if self.session.load().transport == Transport::Playing => {
+                self.stop_transport();
             }
+            Transport::Stopped => {}
+        }
+    }
+
+    /// A Link peer changed the session tempo. It lands on the Master tempo
+    /// dial like any control value, so the dial and a song save match what
+    /// plays; it is not a user edit, so a running auto morph keeps going.
+    #[cfg(feature = "link")]
+    pub(crate) fn follow_peer_tempo(&mut self, link_bpm: f64) {
+        let bpm = dial_bpm(link_bpm);
+        if self.session.load().controls.master.bpm != bpm {
+            self.session
+                .update(|snapshot| snapshot.controls.master.bpm = bpm);
         }
     }
 

@@ -8680,3 +8680,189 @@ fn apply_ratio_lands_on_the_dial_evenly_for_every_scale() {
     step.apply_ratio(1.0, &mut c);
     assert_close(c.lead.steps[2], 9.0);
 }
+
+// ============================================================
+// Ableton Link
+// ============================================================
+
+#[cfg(feature = "link")]
+mod link {
+    use super::*;
+
+    fn linked_clock(link: &LinkSession, bpm: f32) -> TempoClock {
+        let mut clock = TempoClock::new(SAMPLE_RATE, bpm);
+        clock.link = Some(link.clock(SAMPLE_RATE));
+        clock
+    }
+
+    fn begin_linked_buffer(clock: &mut TempoClock, sample_clock: u64, local: LocalTiming) {
+        clock
+            .link
+            .as_mut()
+            .expect("linked_clock attaches a link clock")
+            .begin_buffer(sample_clock, std::time::Duration::ZERO, local);
+    }
+
+    fn playing_at(bpm: f32, restart: u64) -> LocalTiming {
+        LocalTiming {
+            transport: Transport::Playing,
+            restart,
+            target_bpm: bpm,
+        }
+    }
+
+    /// Link forwards commits between its app and audio threads asynchronously,
+    /// and after the audio thread's own commit it ignores foreign changes for a
+    /// one-second grace period (`kLocalModGracePeriod`, link Controller.hpp).
+    fn eventually(mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "Link never settled");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_linked_launch_starts_at_beat_zero_and_runs_at_link_tempo() {
+        let link = LinkSession::offline(120.0);
+        let mut clock = linked_clock(&link, 120.0);
+        begin_linked_buffer(&mut clock, 0, playing_at(120.0, 0));
+        let first = clock.tick(120.0, Transport::Playing);
+        assert!(first.transport == Transport::Playing);
+        assert!(first.beat.abs() < 1e-3, "launch beat {}", first.beat);
+        let mut last = first;
+        for _ in 0..4_800 {
+            last = clock.tick(120.0, Transport::Playing);
+        }
+        // 4,800 samples at 48 kHz is 0.1 s: a fifth of a beat at 120 BPM.
+        assert!(
+            (last.beat - 0.2).abs() < 1e-3,
+            "beat after 0.1 s: {}",
+            last.beat
+        );
+        assert!((last.bpm - 120.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_linked_restart_holds_beat_zero_until_its_launch_is_mapped() {
+        let link = LinkSession::offline(120.0);
+        let mut clock = linked_clock(&link, 120.0);
+        begin_linked_buffer(&mut clock, 0, playing_at(120.0, 0));
+        for _ in 0..48_000 {
+            clock.tick(120.0, Transport::Playing);
+        }
+        clock.restart();
+        let held = clock.tick(120.0, Transport::Playing);
+        assert!(held.transport == Transport::Stopped);
+        assert_eq!(held.beat, 0.0);
+
+        begin_linked_buffer(&mut clock, 48_001, playing_at(120.0, 1));
+        let launched = clock.tick(120.0, Transport::Playing);
+        assert!(launched.transport == Transport::Playing);
+        assert!(
+            launched.beat.abs() < 1e-3,
+            "relaunch beat {}",
+            launched.beat
+        );
+        // A Play press, unlike launching nooise, starts the shared transport.
+        eventually(|| link.timeline().is_playing());
+    }
+
+    #[test]
+    fn launching_nooise_does_not_start_the_shared_transport() {
+        let link = LinkSession::offline(120.0);
+        let mut clock = linked_clock(&link, 120.0);
+        begin_linked_buffer(&mut clock, 0, playing_at(120.0, 0));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!link.timeline().is_playing());
+    }
+
+    #[test]
+    fn a_local_tempo_edit_reaches_the_timeline_and_is_not_reported_back() {
+        let link = LinkSession::offline(120.0);
+        let mut clock = linked_clock(&link, 120.0);
+        begin_linked_buffer(&mut clock, 0, playing_at(120.0, 0));
+        link.changes.take_tempo();
+        begin_linked_buffer(&mut clock, 256, playing_at(96.0, 0));
+        assert!((clock.tick(96.0, Transport::Playing).bpm - 96.0).abs() < 1e-9);
+        eventually(|| (link.timeline().tempo() - 96.0).abs() < 1e-9);
+        begin_linked_buffer(&mut clock, 512, playing_at(96.0, 0));
+        assert_eq!(link.changes.take_tempo(), None);
+    }
+
+    /// A second clock on the same Link instance stands in for a peer: joining at
+    /// `joined_bpm`, then making `edit`, it commits the way a foreign change
+    /// reaches the first clock's capture.
+    fn peer_commits(link: &LinkSession, joined_bpm: f32, edit: LocalTiming) {
+        let mut peer = linked_clock(link, joined_bpm);
+        begin_linked_buffer(&mut peer, 0, playing_at(joined_bpm, 0));
+        begin_linked_buffer(&mut peer, 256, edit);
+    }
+
+    #[test]
+    fn peer_tempo_and_start_land_on_the_session_through_the_follower() {
+        let link = LinkSession::offline(120.0);
+        let mut clock = linked_clock(&link, 120.0);
+        let session = live_session(FluidControls::default(), AutomationState::default());
+        let mut effects = EffectExecutor::new(
+            session.clone(),
+            AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+        );
+        begin_linked_buffer(&mut clock, 0, playing_at(120.0, 0));
+        effects.toggle_transport();
+        let stopped_local = LocalTiming {
+            transport: Transport::Stopped,
+            restart: 0,
+            target_bpm: 120.0,
+        };
+        begin_linked_buffer(&mut clock, 256, stopped_local);
+        link.follower().follow_peers(&mut effects);
+        let stopped = session.load();
+        assert!(stopped.transport == Transport::Stopped);
+
+        peer_commits(&link, 120.0, playing_at(132.0, 1));
+        begin_linked_buffer(&mut clock, 512, stopped_local);
+        link.follower().follow_peers(&mut effects);
+
+        let live = session.load();
+        assert!(live.transport == Transport::Playing);
+        assert_eq!(live.transport_restart, stopped.transport_restart + 1);
+        assert!((live.controls.master.bpm - 132.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_peer_tempo_past_the_dial_rests_at_its_end_without_being_pushed_back() {
+        let link = LinkSession::offline(120.0);
+        let mut clock = linked_clock(&link, 120.0);
+        begin_linked_buffer(&mut clock, 0, playing_at(120.0, 0));
+        link.changes.take_tempo();
+        peer_commits(&link, 120.0, playing_at(250.0, 0));
+        begin_linked_buffer(&mut clock, 256, playing_at(120.0, 0));
+        let reported = link
+            .changes
+            .take_tempo()
+            .expect("the peer tempo is reported");
+        assert!((reported - 250.0).abs() < 1e-9, "reported {reported}");
+        assert_eq!(dial_bpm(reported), MASTER_BPM_MAX);
+        begin_linked_buffer(&mut clock, 512, playing_at(MASTER_BPM_MAX, 0));
+        // Pushing the dial's end back would read 200 here.
+        assert!((clock.tick(MASTER_BPM_MAX, Transport::Playing).bpm - 250.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_peer_play_restarts_a_playing_session_and_a_peer_stop_stops_it() {
+        let session = live_session(FluidControls::default(), AutomationState::default());
+        let mut effects = EffectExecutor::new(
+            session.clone(),
+            AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
+        );
+        let before = session.load().transport_restart;
+        effects.follow_peer_transport(Transport::Playing);
+        assert!(session.load().transport == Transport::Playing);
+        assert_eq!(session.load().transport_restart, before + 1);
+        effects.follow_peer_transport(Transport::Stopped);
+        assert!(session.load().transport == Transport::Stopped);
+        effects.follow_peer_transport(Transport::Stopped);
+        assert_eq!(session.load().transport_restart, before + 1);
+    }
+}

@@ -466,6 +466,11 @@ impl MidiClockFollower {
     }
 
     pub(crate) fn tick(&mut self, timing: TimingContext) {
+        // A clock that has not started has nothing to stop, so a launch that
+        // waits for its downbeat still opens with Start rather than Continue.
+        if self.last_transport.is_none() && timing.transport == Transport::Stopped {
+            return;
+        }
         if self.last_transport != Some(timing.transport) {
             match timing.transport {
                 Transport::Playing => self.sink.send(if self.last_transport.is_none() {
@@ -529,6 +534,24 @@ pub(crate) fn tuned_note(note: i32, tune: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clock_waiting_for_its_first_downbeat_opens_with_start() {
+        let (sender, receiver) = mpsc::sync_channel(64);
+        let sink = MidiSink {
+            sender,
+            overflowed: Arc::new(AtomicBool::new(false)),
+        };
+        let mut clock = MidiClockFollower::new(sink);
+        let mut waiting = TimingContext::new(44_100.0, 120.0, 0.0);
+        waiting.transport = Transport::Stopped;
+        clock.tick(waiting);
+        clock.tick(TimingContext::new(44_100.0, 120.0, 0.0));
+        assert_eq!(
+            receiver.try_iter().collect::<Vec<_>>(),
+            [MidiMessage::Start, MidiMessage::Clock]
+        );
+    }
 
     #[test]
     fn clock_follows_audio_beats_and_transport_without_restarting_the_song() {

@@ -38,3 +38,9 @@ hound = "3.5.1"
 update-informer = "1.3"
 rosc = "0.11"
 midir = "0.11"
+rusty_link = { version = "0.4.9", optional = true }
+
+[features]
+# Ableton Link (`--link`). Off by default: it compiles Ableton's GPL-2.0-or-later
+# C++ library, which needs CMake and libclang.
+link = ["dep:rusty_link"]

@@ -47,6 +47,8 @@ mod effect;
 mod engine;
 mod gesture;
 mod interaction;
+#[cfg(feature = "link")]
+mod link;
 mod mix_action;
 mod module;
 mod osc;
@@ -88,6 +90,8 @@ use effect::*;
 use engine::*;
 pub(crate) use engine::{TimingContext, Transport};
 use gesture::*;
+#[cfg(feature = "link")]
+use link::*;
 use module::*;
 use palette::*;
 use registry::*;
@@ -291,12 +295,24 @@ const APP_ID: &str = "nooise";
 /// Where a bare `--osc` sends: foorm's default listen address.
 pub(crate) const DEFAULT_OSC_TARGET: &str = "127.0.0.1:9000";
 
-pub(crate) fn run(osc: Option<SocketAddr>, midi: MidiConfig<'_>) -> Result<(), Box<dyn Error>> {
+/// The runtime connections a live session opens. None of them is song state:
+/// a code never carries a port, a target, or whether Link is on.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LiveConnections<'a> {
+    pub(crate) osc: Option<SocketAddr>,
+    pub(crate) midi: MidiConfig<'a>,
+    /// Join the local-network Ableton Link session for shared tempo, phase,
+    /// and start/stop.
+    #[cfg(feature = "link")]
+    pub(crate) link: bool,
+}
+
+pub(crate) fn run(connections: LiveConnections<'_>) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
+    let midi = connections.midi;
     run_with_song_state(
         randomized_start_song(&mut rng, midi.input.is_some() || midi.output.is_some()),
-        osc,
-        midi,
+        connections,
     )
 }
 
@@ -333,8 +349,7 @@ fn apply_midi_start_to_states(states: &mut [SongState], midi: MidiConfig<'_>) {
 
 pub(crate) fn run_with_song_state(
     initial_song: SongState,
-    osc: Option<SocketAddr>,
-    midi: MidiConfig<'_>,
+    connections: LiveConnections<'_>,
 ) -> Result<(), Box<dyn Error>> {
     // Interactive start: no morph running. `A` can begin one live, heading
     // toward the built-in states from wherever the user currently is.
@@ -344,27 +359,22 @@ pub(crate) fn run_with_song_state(
         no_morph(),
         auto_states,
         DEFAULT_AUTO_BARS,
-        osc,
-        midi,
+        connections,
     )
 }
 
 /// Run the live interactive TUI already morphing forever between the built-in
 /// `AUTO_STATES` over `bars`-bar legs (`nooise auto [BARS]`). `A` toggles it off
 /// — as does touching any parameter — and back on from the current state.
-pub(crate) fn run_auto(
-    bars: u32,
-    osc: Option<SocketAddr>,
-    midi: MidiConfig<'_>,
-) -> Result<(), Box<dyn Error>> {
+pub(crate) fn run_auto(bars: u32, connections: LiveConnections<'_>) -> Result<(), Box<dyn Error>> {
     let mut states = decode_auto_states();
-    apply_midi_start_to_states(&mut states, midi);
+    apply_midi_start_to_states(&mut states, connections.midi);
     let initial_song = states[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
         states.clone(),
         bars,
     ))));
-    run_interactive(initial_song, morph, states, bars, osc, midi)
+    run_interactive(initial_song, morph, states, bars, connections)
 }
 
 /// Play built-in songs by number (`nooise 9`, `nooise 9,10,11`). One song
@@ -375,8 +385,7 @@ pub(crate) fn run_auto(
 pub(crate) fn run_songs(
     numbers: &[usize],
     bars: u32,
-    osc: Option<SocketAddr>,
-    midi: MidiConfig<'_>,
+    connections: LiveConnections<'_>,
 ) -> Result<(), Box<dyn Error>> {
     let all = decode_auto_states();
     if numbers.is_empty() {
@@ -395,29 +404,33 @@ pub(crate) fn run_songs(
             }
         }
     }
-    apply_midi_start_to_states(&mut chosen, midi);
+    apply_midi_start_to_states(&mut chosen, connections.midi);
     let initial_song = chosen[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
         chosen.clone(),
         numbers.to_vec(),
         bars,
     ))));
-    run_interactive(initial_song, morph, chosen, bars, osc, midi)
+    run_interactive(initial_song, morph, chosen, bars, connections)
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
 /// around the aggregate live session, telemetry, and morph state. `morph` starts
 /// `Some` for `nooise auto` and `None` otherwise; `auto_states`/`auto_bars` let
-/// the UI build a fresh morph when the user toggles auto mode on live. `osc`
-/// names a UDP target to mirror telemetry to for external visualizers.
+/// the UI build a fresh morph when the user toggles auto mode on live.
 fn run_interactive(
     mut initial_song: SongState,
     morph: Arc<ArcSwap<Option<MorphState>>>,
     mut auto_states: Vec<SongState>,
     auto_bars: u32,
-    osc: Option<SocketAddr>,
-    midi: MidiConfig<'_>,
+    connections: LiveConnections<'_>,
 ) -> Result<(), Box<dyn Error>> {
+    let LiveConnections {
+        osc,
+        midi,
+        #[cfg(feature = "link")]
+        link,
+    } = connections;
     apply_midi_start(&mut initial_song, midi);
     apply_midi_start_to_states(&mut auto_states, midi);
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
@@ -435,6 +448,10 @@ fn run_interactive(
     let midi_for_input = _midi_input.as_ref().map(MidiInputManager::source);
     let _midi_output = midi.output.map(MidiOutputManager::open).transpose()?;
     let midi_for_engine = _midi_output.as_ref().map(MidiOutputManager::sink);
+    #[cfg(feature = "link")]
+    let link = link.then(|| Arc::new(LinkSession::join(initial_song.controls.master.bpm)));
+    #[cfg(feature = "link")]
+    let link_for_engine = link.clone();
 
     let _audio_output = audio::start_stream(APP_ID, move |sr| {
         let engine = FluidEngine::new_with_tonal_session_state(
@@ -446,6 +463,11 @@ fn run_interactive(
         );
         let engine = match &midi_for_engine {
             Some(sink) => engine.with_midi(sink.clone()),
+            None => engine,
+        };
+        #[cfg(feature = "link")]
+        let engine = match &link_for_engine {
+            Some(link) => engine.with_link(link.clock(sr)),
             None => engine,
         };
         match &midi_for_input {
@@ -463,6 +485,8 @@ fn run_interactive(
         telemetry,
         updates,
         AutoControls::new(morph, auto_states, auto_bars),
+        #[cfg(feature = "link")]
+        link.as_deref().map(LinkSession::follower),
     );
 
     let restore = terminal.restore();
