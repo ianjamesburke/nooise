@@ -906,10 +906,155 @@ fn start_muted_zeros_master_level_across_morph_endpoints() {
 }
 
 #[test]
+fn morph_phrase_boundaries_reach_every_chord_follower_on_the_same_sample() {
+    let sample_rate = 8_000.0;
+    let mut from = FluidControls::default();
+    from.master.bpm = 120.0;
+    from.pad.chord_bars = 0.5;
+    from.pad.chord_count = 3.0;
+    from.pad.chord_offset = 1.0;
+    from.kick.level = 0.5;
+    from.kick.interval_beats = 0.25;
+    let mut to = from.clone();
+    // Same progression, different window: ordinary edits preserve the old
+    // successor, but a morph must start the incoming phrase at its first chord.
+    to.pad.chord_count = 2.0;
+    to.pad.chord_offset = 4.0;
+    to.modules.kick[2] = preset_slot("swing", 0.5);
+    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
+        vec![
+            SongState::from_controls(from.clone()),
+            SongState::from_controls(to),
+        ],
+        4,
+    ))));
+    let mut engine = FluidEngine::new(
+        sample_rate,
+        live_session(from, AutomationState::default()),
+        Arc::clone(&morph),
+        Arc::new(FluidTelemetry::default()),
+    );
+    engine.reseed(7);
+
+    // 6-beat source phrases and 4-beat target phrases produce a 16-beat
+    // outward leg and an 18-beat return. Include the next loop's crossing.
+    let boundaries = [
+        (12.0, 4, true),
+        (16.0, 4, false),
+        (28.0, 1, true),
+        (34.0, 1, false),
+        (46.0, 4, true),
+        (50.0, 4, false),
+    ];
+    for (boundary, slot, crossing) in boundaries {
+        while engine.tempo.beat < boundary {
+            engine.next_stereo();
+        }
+        engine.next_stereo();
+        assert_eq!(engine.pad.cursor.slot(), slot, "Pad at beat {boundary}");
+        for follower in [
+            &engine.bass.progression,
+            &engine.arp.progression,
+            &engine.lead.progression,
+        ] {
+            assert_eq!(
+                follower.cursor.as_ref().unwrap().slot(),
+                slot,
+                "follower at beat {boundary}"
+            );
+        }
+        assert_eq!(
+            engine.snapshot.kick.level == 0.0,
+            crossing,
+            "Kick at beat {boundary}"
+        );
+        assert_eq!(
+            morph
+                .load()
+                .as_ref()
+                .as_ref()
+                .unwrap()
+                .position_at(engine.tempo.beat)
+                .blend
+                .is_some(),
+            crossing
+        );
+        if !crossing && slot == 4 {
+            assert_eq!(engine.snapshot.modules.kick[2].kind().unwrap().id, "swing");
+            assert_eq!(engine.snapshot.modules.kick[2].amount, 0.5);
+        }
+    }
+}
+
+#[test]
+fn live_morph_uses_the_audio_phrase_anchor_after_a_progression_edit() {
+    let mut controls = FluidControls::default();
+    controls.master.bpm = 120.0;
+    controls.pad.chord_bars = 0.5;
+    controls.pad.chord_count = 3.0;
+    let mut target = controls.clone();
+    target.pad.chord_count = 2.0;
+    target.pad.chord_offset = 4.0;
+    let session = live_session(controls, AutomationState::default());
+    let morph = no_morph();
+    let auto = AutoControls::new(
+        Arc::clone(&morph),
+        vec![SongState::from_controls(target)],
+        4,
+    );
+    let mut effects = EffectExecutor::new(session.clone(), auto);
+    let mut engine = FluidEngine::new(
+        8_000.0,
+        session.clone(),
+        Arc::clone(&morph),
+        Arc::new(FluidTelemetry::default()),
+    );
+    while engine.tempo.beat < 1.0 {
+        engine.next_stereo();
+    }
+    session.update(|snapshot| snapshot.controls.pad.progression = 1.0);
+    while engine.tempo.beat < 3.37 {
+        engine.next_stereo();
+    }
+    assert_eq!(session.audio_phrase_start(), 2.0);
+    effects.toggle_auto(engine.tempo.beat);
+    while engine.tempo.beat < 43.99 {
+        engine.next_stereo();
+    }
+    assert_eq!(
+        effects.auto_position(engine.tempo.beat).unwrap().blend,
+        None
+    );
+    assert_eq!(
+        engine.pad.cursor.slot(),
+        2,
+        "the outgoing phrase must finish"
+    );
+    while engine.tempo.beat < 44.0 {
+        engine.next_stereo();
+    }
+    engine.next_stereo();
+    assert!(
+        effects
+            .auto_position(engine.tempo.beat)
+            .unwrap()
+            .blend
+            .is_some()
+    );
+    assert_eq!(
+        engine.pad.cursor.slot(),
+        4,
+        "the incoming phrase starts on its first chord"
+    );
+}
+
+#[test]
 fn morph_percentage_phase_has_no_kick_audio_even_with_a_kick_effect_tail() {
     let sample_rate = 8_000.0;
     let mut controls = FluidControls::default();
     controls.master.bpm = 120.0;
+    controls.pad.chord_bars = 0.5;
+    controls.pad.chord_count = 2.0;
     controls.pad.level = 0.0;
     controls.kick.level = 0.8;
     controls.kick.interval_beats = 0.25;
@@ -2568,6 +2713,8 @@ fn quick_stop_play_restarts_all_sequences_and_midi_on_the_opening_chord() {
 #[test]
 fn transport_restart_restarts_captured_loops_and_live_auto_from_beat_zero() {
     let mut controls = FluidControls::default();
+    controls.pad.chord_bars = 0.25;
+    controls.pad.chord_count = 4.0;
     controls.pad.chord_offset = 3.0;
     let address = ControlAddress::new("pad.level");
     let mut automation = AutomationState::default();
@@ -2608,16 +2755,16 @@ fn transport_restart_restarts_captured_loops_and_live_auto_from_beat_zero() {
     assert_eq!(clip.launch, 0.0);
     assert!(clip.position(engine.tempo.beat).is_some());
     assert_eq!(engine.pad.cursor.slot(), 3);
-    // A live morph's first leg lasts 64 beats; the old 100-beat origin
-    // must not delay its transition after the sequence restarts.
+    // The short request rounds its hold to eleven four-beat phrases.
+    // The old 100-beat origin must not delay the crossing after restart.
     assert!(
         morph
             .load()
             .as_ref()
             .as_ref()
             .unwrap()
-            .position_at(64.0)
-            .playing
+            .position_at(44.0)
+            .blend
             .is_some()
     );
 }

@@ -722,7 +722,13 @@ impl FluidEngine {
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
-        if self.current_sample.is_multiple_of(128) {
+        let morph_boundary = self
+            .morph
+            .load()
+            .as_ref()
+            .as_ref()
+            .is_some_and(|morph| self.morph_writer.boundary_due(morph, self.tempo.beat));
+        if self.current_sample.is_multiple_of(128) || morph_boundary {
             let live = self.session.load();
             let restarting = self.transport_restart != live.transport_restart;
             if restarting {
@@ -730,6 +736,8 @@ impl StereoEngine for FluidEngine {
                 self.restart_sequence();
             }
             self.session.publish_audio_beat(self.tempo.beat);
+            self.session
+                .publish_audio_phrase_start(self.pad.cursor.phrase_start_beat());
             self.session
                 .publish_audio_seconds(self.current_sample as f64 / self.sample_rate as f64);
             let morph_source = self.morph.load_full();
@@ -784,12 +792,12 @@ impl StereoEngine for FluidEngine {
         self.plan.apply(&mut effective, timing);
         // A morph's percentage phase has no Kick, including automation that
         // lifts its Level above zero and tails from Kick-layer effects.
-        let kick_gain = self
-            .morph
-            .load()
-            .as_ref()
-            .as_ref()
-            .map_or(1.0, |morph| morph.kick_gain_at(timing.beat, timing.bpm));
+        let morph = self.morph.load();
+        let active_morph = morph.as_ref().as_ref();
+        timing.morph_phrase_start =
+            active_morph.and_then(|morph| morph.phrase_start_at(timing.beat));
+        let kick_gain =
+            active_morph.map_or(1.0, |morph| morph.kick_gain_at(timing.beat, timing.bpm));
         let kick_crossing = kick_gain == 0.0;
         if kick_crossing {
             effective.kick.level = 0.0;
@@ -1260,6 +1268,8 @@ pub(crate) struct TimingContext {
     pub(crate) drunken_pace: f32,
     pub(crate) drunken_phase_beat: f64,
     pub(crate) groove_seed: u64,
+    /// Auto crossing anchor shared by all chord followers; normal playback uses its cursor.
+    pub(crate) morph_phrase_start: Option<f64>,
 }
 
 impl TimingContext {
@@ -1274,6 +1284,7 @@ impl TimingContext {
             drunken_pace: 7.0,
             drunken_phase_beat: 0.0,
             groove_seed: 0,
+            morph_phrase_start: None,
         }
     }
 

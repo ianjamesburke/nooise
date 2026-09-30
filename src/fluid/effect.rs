@@ -365,8 +365,12 @@ impl EffectExecutor {
             self.session.update(|_| {});
         } else {
             let current = self.session.load();
-            self.auto
-                .toggle(current.controls.clone(), current.automation.clone(), beat);
+            self.auto.toggle(
+                current.controls.clone(),
+                current.automation.clone(),
+                beat,
+                self.session.audio_phrase_start(),
+            );
             self.session.update(|_| {});
         }
     }

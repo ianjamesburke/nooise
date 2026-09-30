@@ -86,6 +86,7 @@ pub(crate) struct LiveSession {
     /// aggregate snapshot, while readers sample this clock without a lock.
     audio_seconds_bits: Arc<AtomicU64>,
     audio_beat_bits: Arc<AtomicU64>,
+    audio_phrase_start_bits: Arc<AtomicU64>,
 }
 
 impl LiveSession {
@@ -94,6 +95,7 @@ impl LiveSession {
             published: Arc::new(ArcSwap::from_pointee(snapshot)),
             audio_seconds_bits: Arc::new(AtomicU64::new(0)),
             audio_beat_bits: Arc::new(AtomicU64::new(0)),
+            audio_phrase_start_bits: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -111,6 +113,15 @@ impl LiveSession {
 
     pub(crate) fn publish_audio_beat(&self, beat: f64) {
         self.audio_beat_bits
+            .store(beat.to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn audio_phrase_start(&self) -> f64 {
+        f64::from_bits(self.audio_phrase_start_bits.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn publish_audio_phrase_start(&self, beat: f64) {
+        self.audio_phrase_start_bits
             .store(beat.to_bits(), Ordering::Relaxed);
     }
 

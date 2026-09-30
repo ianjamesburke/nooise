@@ -56,7 +56,7 @@ struct Cli {
     /// A song to play: a built-in number (9), several of them (9,10,11), or a
     /// shared `n1_` code.
     song: Option<String>,
-    /// Bars each song holds before morphing into the next. Defaults to 64.
+    /// Approximate bars per song plus transition, rounded to whole phrases. Defaults to 64.
     #[arg(long, global = true)]
     bars: Option<u32>,
     /// Start live playback with Master Level at 0%.

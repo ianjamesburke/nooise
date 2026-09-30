@@ -21,14 +21,11 @@ use super::{
     all_specs, decode_song_code, smoothstep, spec_by_id,
 };
 
-/// Bars per morph leg, matching the throttled-writer granularity of one leg
-/// spanning `bars * 4` beats (4/4).
+/// Requested bars per morph leg; each section rounds to complete phrases.
 pub(crate) const DEFAULT_AUTO_BARS: u32 = 64;
 
-/// Bars for a live toggle's first leg. Short on purpose: pressing `a` mid-vibe
-/// should start audibly moving toward the destination almost immediately
-/// instead of waiting out a full slow-evolution leg. Every leg after this one
-/// reverts to the loop's normal `bars` length.
+/// Requested bars for a live toggle's first leg, rounded to whole phrases.
+/// Later legs use the loop's configured request; long phrases can extend either.
 const LIVE_FIRST_LEG_BARS: u32 = 16;
 
 /// Ordered share codes for the built-in auto-morph states. The morph loops
@@ -155,8 +152,8 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 // Morph model
 //
 // Every leg is HOLD then TRANSITION: the `from` state is held steady for the
-// first `HOLD_FRACTION` of the leg, then the states cross over in the final
-// stretch. Sections actually sit still instead of fading the whole time.
+// requested `HOLD_FRACTION`, rounded to whole outgoing phrases; the
+// remainder rounds to whole incoming phrases for the crossing. Sections actually sit still instead of fading the whole time.
 //
 // During the transition each control moves by its own behavior, derived from
 // its `ControlKind`:
@@ -188,8 +185,7 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 //       registry order, so similar sections hard-switch rather than crossfade.
 // ============================================================
 
-/// Fraction of a leg spent holding the `from` state before the transition. The
-/// transition gets the remaining third, so transition length ≈ half the hold.
+/// Requested hold share before each section rounds to its own phrase length.
 const HOLD_FRACTION: f64 = 2.0 / 3.0;
 
 /// Spacing between successive non-structural grid hard-switches, in bars.
@@ -399,7 +395,9 @@ pub(crate) struct MorphPosition {
 pub(crate) struct MorphState {
     endpoints: Vec<SongState>,
     morph_ids: Vec<Option<usize>>,
-    bars: u32,
+    /// Cumulative leg starts, including the end of one complete cycle.
+    leg_starts: Vec<f64>,
+    timings: Vec<LegTiming>,
     /// Staggered hard-switch offsets for leg i -> i+1 (mod n), precomputed once.
     stepped: Vec<Vec<(usize, f64)>>,
     /// Slots held as a unit through leg i -> i+1 because they carry Swing or
@@ -412,10 +410,33 @@ pub(crate) struct MorphState {
     /// loop (which starts at beat 0); set to the toggle beat for a live start
     /// so the first leg begins from the current state, not mid-loop.
     origin_beat: f64,
-    /// Override leg length for leg 0 only. `None` for the baked-in loop,
-    /// where every leg (including 0) uses `bars`; `Some(LIVE_FIRST_LEG_BARS)`
-    /// for a live toggle, so only the just-triggered leg is short.
-    first_leg_bars: Option<u32>,
+    /// A live toggle has a shorter first leg and preserves the sounding phrase.
+    first_leg: Option<LegTiming>,
+}
+
+/// One outgoing hold followed by whole phrases of the incoming song.
+#[derive(Clone, Copy)]
+struct LegTiming {
+    hold: f64,
+    crossing: f64,
+}
+
+impl LegTiming {
+    fn new(from: &FluidControls, to: &FluidControls, bars: u32) -> Self {
+        let requested = f64::from(bars.max(1)) * 4.0;
+        let round_phrases = |beats: f64, controls: &FluidControls| {
+            let phrase = super::ChordWindow::requested(&controls.pad).phrase_beats(&controls.pad);
+            (beats / phrase).round().max(1.0) * phrase
+        };
+        Self {
+            hold: round_phrases(requested * HOLD_FRACTION, from),
+            crossing: round_phrases(requested * (1.0 - HOLD_FRACTION), to),
+        }
+    }
+
+    fn beats(self) -> f64 {
+        self.hold + self.crossing
+    }
 }
 
 impl MorphState {
@@ -440,22 +461,36 @@ impl MorphState {
         let swapped = (0..n)
             .map(|i| swapped_slots(&endpoints[i].controls, &endpoints[(i + 1) % n].controls))
             .collect();
+        let timings: Vec<_> = (0..n)
+            .map(|i| {
+                LegTiming::new(
+                    &endpoints[i].controls,
+                    &endpoints[(i + 1) % n].controls,
+                    bars,
+                )
+            })
+            .collect();
+        let mut leg_starts = vec![0.0];
+        for timing in &timings {
+            leg_starts.push(leg_starts.last().copied().unwrap_or(0.0) + timing.beats());
+        }
         Self {
             endpoints,
             morph_ids: (1..=n).map(Some).collect(),
-            bars: bars.max(1),
+            leg_starts,
+            timings,
             stepped,
             held,
             swapped,
             origin_beat: 0.0,
-            first_leg_bars: None,
+            first_leg: None,
         }
     }
 
     /// A morph over a hand-picked set of songs, each carrying the number it
     /// should report rather than its position in this cycle — so `nooise 9,12`
     /// still reads `song 9 → 12` instead of `1 → 2`. One song is a legal
-    /// cycle: it morphs to itself, which holds it.
+    /// cycle: its controls stay fixed except for the crossing's Kick drop.
     pub(crate) fn labelled(endpoints: Vec<SongState>, labels: Vec<usize>, bars: u32) -> Self {
         assert_eq!(
             endpoints.len(),
@@ -503,62 +538,126 @@ impl MorphState {
             .chain((1..=nearest).map(Some))
             .collect();
         morph.origin_beat = start_beat.max(0.0);
-        morph.first_leg_bars = Some(LIVE_FIRST_LEG_BARS);
+        morph.first_leg = Some(LegTiming::new(
+            &morph.endpoints[0].controls,
+            &morph.endpoints[1].controls,
+            LIVE_FIRST_LEG_BARS,
+        ));
+        // The caller can replace this with the actual sounding phrase anchor.
+        morph.align_live_phrase(0.0);
         morph
     }
 
-    /// Bars for `leg_index`: `first_leg_bars` for leg 0 when set, `bars`
-    /// otherwise. Legs after 0 always use `bars`, even for a live toggle.
-    fn leg_bars(&self, leg_index: i64) -> u32 {
-        if leg_index == 0 {
-            self.first_leg_bars.unwrap_or(self.bars)
-        } else {
-            self.bars
+    fn leg_timing(&self, leg_index: i64) -> LegTiming {
+        if leg_index == 0
+            && let Some(first) = self.first_leg
+        {
+            return first;
         }
+        self.timings[leg_index.rem_euclid(self.endpoints.len() as i64) as usize]
     }
 
     fn leg_beats(&self, leg_index: i64) -> f64 {
-        f64::from(self.leg_bars(leg_index)) * 4.0
+        self.leg_timing(leg_index).beats()
     }
 
-    /// Beat within `leg_index` at which the hold ends and the transition
-    /// begins, snapped down to a bar downbeat so structural changes land on
-    /// "one".
+    fn leg_transition_start_beat(&self, leg_index: i64) -> f64 {
+        self.leg_timing(leg_index).hold
+    }
+
+    /// Preserve the live cursor's phase instead of treating the toggle as beat one.
+    fn align_live_phrase(&mut self, phrase_start: f64) {
+        if let Some(first) = &mut self.first_leg {
+            let controls = &self.endpoints[0].controls.pad;
+            let phrase = super::ChordWindow::requested(controls).phrase_beats(controls);
+            let requested_hold = LegTiming::new(
+                &self.endpoints[0].controls,
+                &self.endpoints[1].controls,
+                LIVE_FIRST_LEG_BARS,
+            )
+            .hold;
+            let desired = self.origin_beat + requested_hold;
+            let boundary = phrase_start + ((desired - phrase_start) / phrase).round() * phrase;
+            first.hold = (boundary - self.origin_beat).max(
+                phrase_start
+                    + ((self.origin_beat - phrase_start) / phrase).floor() * phrase
+                    + phrase
+                    - self.origin_beat,
+            );
+        }
+    }
+
     pub(crate) fn restarted(&self) -> Self {
         let mut restarted = self.clone();
         restarted.origin_beat = 0.0;
+        if restarted.first_leg.is_some() {
+            restarted.first_leg = Some(LegTiming::new(
+                &restarted.endpoints[0].controls,
+                &restarted.endpoints[1].controls,
+                LIVE_FIRST_LEG_BARS,
+            ));
+        }
         for state in &mut restarted.endpoints {
             state.automation.restart();
         }
         restarted
     }
 
-    fn leg_transition_start_beat(&self, leg_index: i64) -> f64 {
-        (f64::from(self.leg_bars(leg_index)) * HOLD_FRACTION).floor() * 4.0
+    /// Locate a leg in the precomputed variable-length cycle without walking
+    /// elapsed loops. Only the first live leg can override that cycle.
+    fn leg_at_indexed(&self, beat: f64) -> (usize, usize, f64, i64) {
+        let elapsed = (beat - self.origin_beat).max(0.0);
+        let first_end = self.origin_beat + self.leg_beats(0);
+        if beat < first_end {
+            return (0, 1 % self.endpoints.len(), elapsed / self.leg_beats(0), 0);
+        }
+        // Subtract the absolute landing once: subtracting a fractional live
+        // origin and first-leg duration separately can miss later boundaries.
+        let cycle_beat = beat - first_end + self.timings[0].beats();
+        let cycle_beats = self.leg_starts[self.endpoints.len()];
+        let cycle = (cycle_beat / cycle_beats).floor() as i64;
+        let within_cycle = cycle_beat.rem_euclid(cycle_beats);
+        let from = self
+            .leg_starts
+            .partition_point(|start| *start <= within_cycle)
+            - 1;
+        let leg_index = cycle * self.endpoints.len() as i64 + from as i64;
+        let t = (within_cycle - self.leg_starts[from]) / self.timings[from].beats();
+        (from, (from + 1) % self.endpoints.len(), t, leg_index)
     }
 
-    /// (from index, to index, t in [0,1), leg index) for the leg containing
-    /// `beat`. Leg 0 may run a different length than the rest (a live
-    /// toggle's short first leg); every leg after it is uniform, so once
-    /// past leg 0 this steps at a fixed cadence. Looping A→B→…→A forever
-    /// falls out of the modulo, correct for any N.
-    fn leg_at_indexed(&self, beat: f64) -> (usize, usize, f64, i64) {
-        let beat = (beat - self.origin_beat).max(0.0);
-        let first_leg_beats = self.leg_beats(0);
-        let (leg_index, within_leg) = if beat < first_leg_beats {
-            (0, beat)
+    /// Anchor the shared chord cursor at the crossing, including when both
+    /// songs use the same progression but different chord windows or lengths.
+    pub(crate) fn phrase_start_at(&self, beat: f64) -> Option<f64> {
+        let (_, _, t, leg_index) = self.leg_at_indexed(beat);
+        let within = t * self.leg_beats(leg_index);
+        let from = leg_index.rem_euclid(self.endpoints.len() as i64) as usize;
+        let cycle = leg_index / self.endpoints.len() as i64;
+        let start = if leg_index == 0 {
+            self.origin_beat
         } else {
-            let steady_beats_per_leg = self.leg_beats(1);
-            let rest = beat - first_leg_beats;
-            let steps = (rest / steady_beats_per_leg).floor() as i64;
-            (steps + 1, rest - steps as f64 * steady_beats_per_leg)
+            self.origin_beat + self.leg_beats(0) - self.timings[0].beats()
+                + cycle as f64 * self.leg_starts[self.endpoints.len()]
+                + self.leg_starts[from]
         };
-        let beats_per_leg = self.leg_beats(leg_index);
-        let t = (within_leg / beats_per_leg).clamp(0.0, 1.0);
-        let n = self.endpoints.len() as i64;
-        let from = leg_index.rem_euclid(n) as usize;
-        let to = (leg_index + 1).rem_euclid(n) as usize;
-        (from, to, t, leg_index)
+        let hold = self.leg_transition_start_beat(leg_index);
+        if within >= hold {
+            Some(start + hold)
+        } else if leg_index > 0 {
+            Some(start - self.leg_timing(leg_index - 1).crossing)
+        } else if self.first_leg.is_some() {
+            None
+        } else {
+            Some(self.origin_beat)
+        }
+    }
+
+    fn section_at(&self, beat: f64) -> (i64, bool) {
+        let (_, _, t, leg) = self.leg_at_indexed(beat);
+        (
+            leg,
+            t * self.leg_beats(leg) >= self.leg_transition_start_beat(leg),
+        )
     }
 
     /// (from index, to index, t in [0,1)) for the leg containing `beat`.
@@ -568,8 +667,8 @@ impl MorphState {
         (from, to, t)
     }
 
-    /// What is sounding at `beat`. A leg holds its `from` state for the first
-    /// `HOLD_FRACTION` and only then crosses, so for most of a leg the honest
+    /// What is sounding at `beat`. A leg holds its `from` state for whole
+    /// outgoing phrases before crossing, so through that hold the honest
     /// answer is one state playing, not a morph in progress — reporting the
     /// pair the whole time names a transition that has not started.
     pub(crate) fn position_at(&self, beat: f64) -> MorphPosition {
@@ -739,32 +838,37 @@ impl AutoControls {
         current: FluidControls,
         current_automation: AutomationState,
         beat: f64,
+        phrase_start: f64,
     ) {
         if self.is_running() {
             self.exit();
         } else {
-            let state = MorphState::from_live(
+            let mut state = MorphState::from_live(
                 current,
                 current_automation,
                 self.states.clone(),
                 self.bars,
                 beat,
             );
+            state.align_live_phrase(phrase_start);
             self.morph.store(Arc::new(Some(state)));
         }
     }
 }
 
-/// Throttled writer driving the morph from the engine's control-reload tick.
-/// Recomputes and returns the morphed controls and automation only once per
-/// 1/8 note, tracking the last beat it fired on so the audio thread never
-/// rewrites the shared Arcs more often than that.
+/// The engine publishes regular morph updates on absolute eighth-note ticks.
+/// Section boundaries bypass throttling so structure and Kick arrive together.
 #[derive(Default)]
 pub(crate) struct MorphWriter {
-    last_tick_beat: Option<f64>,
+    last_tick: Option<i64>,
+    last_section: Option<(i64, bool)>,
 }
 
 impl MorphWriter {
+    pub(crate) fn boundary_due(&self, morph: &MorphState, beat: f64) -> bool {
+        self.last_section != Some(morph.section_at(beat))
+    }
+
     /// `Some((controls, automation))` when a new morph tick is due at `beat`;
     /// `None` otherwise (call site should skip the write).
     pub(crate) fn tick(
@@ -772,14 +876,12 @@ impl MorphWriter {
         morph: &MorphState,
         beat: f64,
     ) -> Option<(FluidControls, AutomationState)> {
-        let due = match self.last_tick_beat {
-            None => true,
-            Some(last) => beat - last >= MORPH_TICK_BEATS,
-        };
-        if !due {
+        let tick = (beat / MORPH_TICK_BEATS).floor() as i64;
+        if self.last_tick == Some(tick) && !self.boundary_due(morph, beat) {
             return None;
         }
-        self.last_tick_beat = Some(beat);
+        self.last_tick = Some(tick);
+        self.last_section = Some(morph.section_at(beat));
         Some((morph.controls_at(beat), morph.automation_at(beat)))
     }
 }
@@ -788,6 +890,74 @@ impl MorphWriter {
 mod tests {
     use super::super::module::preset_slot;
     use super::*;
+
+    #[test]
+    fn songs_three_and_four_cross_on_complete_phrases_in_both_directions() {
+        let states = decode_auto_states();
+        for (from, to) in [(2, 3), (3, 2)] {
+            let morph = MorphState::new(vec![states[from].clone(), states[to].clone()], 4);
+            let source = &states[from].controls.pad;
+            let target = &states[to].controls.pad;
+            let source_phrase = f64::from(source.chord_bars * 4.0 * source.chord_count);
+            let target_phrase = f64::from(target.chord_bars * 4.0 * target.chord_count);
+            let hold = morph.leg_transition_start_beat(0);
+            let crossing = morph.leg_beats(0) - hold;
+            assert!(
+                hold >= source_phrase && hold % source_phrase == 0.0,
+                "{} -> {}: hold {hold} splits source phrase {source_phrase}",
+                from + 1,
+                to + 1
+            );
+            assert!(
+                crossing >= target_phrase && crossing % target_phrase == 0.0,
+                "{} -> {}: crossing {crossing} splits target phrase {target_phrase}",
+                from + 1,
+                to + 1
+            );
+        }
+    }
+
+    #[test]
+    fn writer_does_not_drift_past_a_musical_boundary() {
+        let morph = MorphState::new(vec![SongState::default()], 4);
+        let mut writer = MorphWriter::default();
+        assert!(writer.tick(&morph, 0.01).is_some());
+        assert!(
+            writer.tick(&morph, 0.501).is_some(),
+            "the half-beat boundary must not wait until 0.51"
+        );
+    }
+
+    #[test]
+    fn live_toggle_preserves_the_sounding_phrase_and_repeats_variable_legs() {
+        let mut source = phrase_controls();
+        source.pad.chord_count = 3.0;
+        source.pad.chord_bars = 0.5;
+        let mut target = source.clone();
+        target.pad.chord_count = 2.0;
+        let morph_handle = no_morph();
+        let auto = AutoControls::new(
+            Arc::clone(&morph_handle),
+            vec![SongState::from_controls(target)],
+            4,
+        );
+        // A previous chord edit started a six-beat phrase at beat 2.
+        // Toggling partway through it must preserve that anchor.
+        auto.toggle(source, AutomationState::default(), 3.37, 2.0);
+        let loaded = morph_handle.load();
+        let morph = loaded.as_ref().as_ref().unwrap();
+        assert_eq!(morph.position_at(43.99).blend, None);
+        assert_eq!(morph.phrase_start_at(43.99), None);
+        assert_eq!(morph.position_at(44.0).blend, Some(0.0));
+        assert_eq!(morph.phrase_start_at(44.0), Some(44.0));
+        assert_eq!(morph.position_at(64.0).playing, Some(1));
+        assert_eq!(morph.position_at(64.0).blend, None);
+        // Only the first leg uses the 16-bar request. Later legs use four:
+        // target -> source = 12 + 6 beats; source -> target = 12 + 4.
+        assert_eq!(morph.position_at(82.0).playing, None);
+        assert_eq!(morph.position_at(98.0).playing, Some(1));
+        assert_eq!(morph.position_at(116.0).playing, None);
+    }
 
     #[test]
     fn a_filter_moving_between_slots_stays_single_and_keeps_its_automation() {
@@ -885,8 +1055,16 @@ mod tests {
         (at.playing, at.next)
     }
 
+    /// Two four-beat chords make an explicit eight-beat phrase for control tests.
+    fn phrase_controls() -> FluidControls {
+        let mut controls = FluidControls::default();
+        controls.pad.chord_bars = 1.0;
+        controls.pad.chord_count = 2.0;
+        controls
+    }
+
     fn state(bpm: f32) -> FluidControls {
-        let mut c = FluidControls::default();
+        let mut c = phrase_controls();
         c.master.bpm = bpm;
         c
     }
@@ -1034,12 +1212,12 @@ mod tests {
             ],
             2,
         );
-        // 2 bars/leg * 4 beats = 8 beats per leg.
+        // A short request still gets one eight-beat hold and one crossing phrase.
         assert_eq!(morph.leg_at(0.0), (0, 1, 0.0));
-        assert_eq!(morph.leg_at(4.0), (0, 1, 0.5));
-        assert_eq!(morph.leg_at(8.0), (1, 0, 0.0));
-        assert_eq!(morph.leg_at(12.0), (1, 0, 0.5));
-        assert_eq!(morph.leg_at(16.0), (0, 1, 0.0));
+        assert_eq!(morph.leg_at(8.0), (0, 1, 0.5));
+        assert_eq!(morph.leg_at(16.0), (1, 0, 0.0));
+        assert_eq!(morph.leg_at(24.0), (1, 0, 0.5));
+        assert_eq!(morph.leg_at(32.0), (0, 1, 0.0));
     }
 
     #[test]
@@ -1048,11 +1226,11 @@ mod tests {
             .map(|i| SongState::from_controls(state(80.0 + i as f32)))
             .collect();
         let morph = MorphState::new(endpoints, 1);
-        // 1 bar/leg * 4 beats = 4 beats per leg.
+        // Every short leg lasts two eight-beat phrases.
         assert_eq!(morph.leg_at(0.0), (0, 1, 0.0));
-        assert_eq!(morph.leg_at(28.0), (7, 0, 0.0));
-        assert_eq!(morph.leg_at(30.0), (7, 0, 0.5));
-        assert_eq!(morph.leg_at(32.0), (0, 1, 0.0));
+        assert_eq!(morph.leg_at(112.0), (7, 0, 0.0));
+        assert_eq!(morph.leg_at(120.0), (7, 0, 0.5));
+        assert_eq!(morph.leg_at(128.0), (0, 1, 0.0));
     }
 
     /// The footer reads this. Through the hold there is one song sounding and
@@ -1068,7 +1246,7 @@ mod tests {
             .collect();
         let morph = MorphState::labelled(endpoints, vec![9, 12], 1);
         assert_eq!(ids(&morph, 0.0), (Some(9), Some(12)));
-        assert_eq!(ids(&morph, 4.0), (Some(12), Some(9)));
+        assert_eq!(ids(&morph, 16.0), (Some(12), Some(9)));
 
         let held = MorphState::labelled(vec![SongState::from_controls(state(99.0))], vec![9], 1);
         assert_eq!(ids(&held, 0.0), (Some(9), Some(9)));
@@ -1105,7 +1283,7 @@ mod tests {
             .collect();
         let morph = MorphState::new(endpoints, 1);
 
-        assert_eq!(ids(&morph, 4.0), (Some(2), Some(3)));
+        assert_eq!(ids(&morph, 16.0), (Some(2), Some(3)));
     }
 
     #[test]
@@ -1119,33 +1297,33 @@ mod tests {
         );
         let (_, _, t_start) = morph.leg_at(0.0);
         assert_eq!(t_start, 0.0);
-        let (from, to, t_end) = morph.leg_at(3.999_999);
+        let (from, to, t_end) = morph.leg_at(15.999_999);
         assert_eq!((from, to), (0, 1));
         assert!(t_end > 0.99);
     }
 
     #[test]
     fn gain_param_lerps_linearly() {
-        // 1 bar/leg: no hold window, so the whole leg is a linear glide.
-        let mut from = FluidControls::default();
+        // The short request rounds to one eight-beat phrase per section.
+        let mut from = phrase_controls();
         from.pad.level = 0.0;
-        let mut to = FluidControls::default();
+        let mut to = phrase_controls();
         to.pad.level = 1.0;
         let morph = MorphState::new(
             vec![SongState::from_controls(from), SongState::from_controls(to)],
             1,
         );
-        let controls = morph.controls_at(4.0 * 0.25);
+        let controls = morph.controls_at(8.0 + 8.0 * 0.25);
         assert!((controls.pad.level - 0.25).abs() < 1e-4);
     }
 
     #[test]
     fn drum_exits_cut_together_on_the_transition_downbeat() {
-        let mut from = FluidControls::default();
+        let mut from = phrase_controls();
         from.perc.level = 0.4;
         from.kick.level = 0.8;
         from.clap.level = 0.6;
-        let to = FluidControls::default();
+        let to = phrase_controls();
         // 6 bars/leg -> transition downbeat at beat 16.
         let morph = MorphState::new(
             vec![
@@ -1168,8 +1346,8 @@ mod tests {
 
     #[test]
     fn kick_is_absent_from_every_percentage_transition_and_returns_on_the_next_song() {
-        let from = FluidControls::default();
-        let mut to = FluidControls::default();
+        let from = phrase_controls();
+        let mut to = phrase_controls();
         to.perc.level = 0.4;
         to.kick.level = 0.8;
         to.clap.level = 0.6;
@@ -1195,7 +1373,7 @@ mod tests {
 
     #[test]
     fn a_steady_kick_also_drops_for_the_crossing() {
-        let mut song = FluidControls::default();
+        let mut song = phrase_controls();
         song.kick.level = 0.6;
         let morph = MorphState::new(vec![SongState::from_controls(song)], 6);
         assert_eq!(morph.controls_at(15.99).kick.level, 0.6);
@@ -1210,9 +1388,9 @@ mod tests {
 
     #[test]
     fn glide_holds_through_hold_window_then_lerps() {
-        let mut from = FluidControls::default();
+        let mut from = phrase_controls();
         from.modules.master[0].amount = 0.0;
-        let mut to = FluidControls::default();
+        let mut to = phrase_controls();
         to.modules.master[0].amount = 1.0;
         // 6 bars/leg: hold 4 bars (transition_start=16 beats), transition 8 beats.
         let morph = MorphState::new(
@@ -1232,8 +1410,8 @@ mod tests {
     #[test]
     fn a_morph_restarts_the_phrase_once() {
         use crate::fluid::{ProgressionCursor, TimingContext};
-        let from = FluidControls::default();
-        let mut to = FluidControls::default();
+        let from = phrase_controls();
+        let mut to = phrase_controls();
         to.pad.chord_bars = 1.0;
         to.pad.chord_count = 4.0;
         to.pad.progression = 3.0;
@@ -1251,12 +1429,17 @@ mod tests {
             let before = cursor;
             if cursor.tick(
                 &morph.controls_at(beat).pad,
-                TimingContext::new(48_000.0, 120.0, beat),
+                TimingContext {
+                    morph_phrase_start: morph.phrase_start_at(beat),
+                    ..TimingContext::new(48_000.0, 120.0, beat)
+                },
             ) {
                 restarts += usize::from(
                     cursor.window != before.window || cursor.chord_beats != before.chord_beats,
                 );
-                slots.push(cursor.slot());
+                if beat >= 16.0 {
+                    slots.push(cursor.slot());
+                }
             }
         }
         assert_eq!(restarts, 1);
@@ -1267,10 +1450,10 @@ mod tests {
 
     #[test]
     fn structural_params_snap_together_on_transition_downbeat() {
-        let from = FluidControls::default();
-        let mut to = FluidControls::default();
+        let from = phrase_controls();
+        let mut to = phrase_controls();
         to.pad.progression = 3.0;
-        to.pad.chord_count = 2.0;
+        to.pad.chord_count = 3.0;
         to.arp.pattern = 2.0;
         // 6 bars/leg -> transition downbeat at beat 16.
         let morph = MorphState::new(
@@ -1290,14 +1473,14 @@ mod tests {
         // On the downbeat: all three jump together, no interpolation.
         let after = morph.controls_at(16.0);
         assert_eq!(after.pad.progression, 3.0);
-        assert_eq!(after.pad.chord_count, 2.0);
+        assert_eq!(after.pad.chord_count, 3.0);
         assert_eq!(after.arp.pattern, 2.0);
     }
 
     #[test]
     fn nonstructural_grid_param_staggers_after_the_structural_downbeat() {
-        let from = FluidControls::default();
-        let mut to = FluidControls::default();
+        let from = phrase_controls();
+        let mut to = phrase_controls();
         to.tonal.synth_type = 1.0; // one changed non-structural grid param -> 8-bar offset
         // 30 bars/leg: hold 20 bars (transition_start=80), its jump at 80+8*4=112.
         let morph = MorphState::new(
@@ -1323,11 +1506,11 @@ mod tests {
 
     #[test]
     fn morph_never_dips_below_the_quieter_endpoint() {
-        let mut loud = FluidControls::default();
+        let mut loud = phrase_controls();
         loud.pad.level = 0.9;
         loud.kick.level = 0.8;
         loud.bass.level = 0.7;
-        let mut quiet = FluidControls::default();
+        let mut quiet = phrase_controls();
         quiet.pad.level = 0.2;
         quiet.perc.level = 0.0;
         quiet.kick.level = 0.0;
@@ -1356,13 +1539,13 @@ mod tests {
 
     #[test]
     fn from_live_starts_at_current_and_heads_to_nearest_state() {
-        let mut current = FluidControls::default();
+        let mut current = phrase_controls();
         current.pad.level = 0.5;
-        let mut far = FluidControls::default();
+        let mut far = phrase_controls();
         far.pad.level = 1.0;
         far.kick.level = 1.0;
         far.bass.level = 1.0;
-        let mut near = FluidControls::default();
+        let mut near = phrase_controls();
         near.pad.level = 0.5; // matches current, everything else default -> closest
 
         let morph = MorphState::from_live(
@@ -1384,9 +1567,9 @@ mod tests {
 
     #[test]
     fn from_live_timeline_starts_at_the_toggle_beat() {
-        let mut current = FluidControls::default();
+        let mut current = phrase_controls();
         current.pad.level = 0.2;
-        let mut target = FluidControls::default();
+        let mut target = phrase_controls();
         target.pad.level = 0.9;
         // Toggle on at beat 1000: the leg must start there, not mid-loop.
         let morph = MorphState::from_live(
@@ -1401,10 +1584,10 @@ mod tests {
     }
 
     #[test]
-    fn from_live_first_leg_finishes_transitioning_within_sixteen_bars() {
-        let mut current = FluidControls::default();
+    fn live_first_leg_uses_the_short_request_before_phrase_rounding() {
+        let mut current = phrase_controls();
         current.pad.level = 0.2;
-        let mut target = FluidControls::default();
+        let mut target = phrase_controls();
         target.pad.level = 0.9;
         // The loop's normal leg length (64 bars) would otherwise push the
         // transition out past bar 40; a live toggle's first leg must not
@@ -1460,9 +1643,9 @@ mod tests {
 
     #[test]
     fn automation_route_present_on_both_sides_glides_depth_and_snaps_shape() {
-        let mut from_state = FluidControls::default();
+        let mut from_state = phrase_controls();
         from_state.modules.master[0].amount = 0.0;
-        let mut to_state = FluidControls::default();
+        let mut to_state = phrase_controls();
         to_state.modules.master[0].amount = 0.0;
 
         let address = ControlAddress::new("pad.level");
@@ -1527,11 +1710,11 @@ mod tests {
             vec![
                 SongState {
                     automation: from_auto,
-                    ..SongState::from_controls(FluidControls::default())
+                    ..SongState::from_controls(phrase_controls())
                 },
                 SongState {
                     automation: to_auto,
-                    ..SongState::from_controls(FluidControls::default())
+                    ..SongState::from_controls(phrase_controls())
                 },
             ],
             6,
@@ -1558,15 +1741,15 @@ mod tests {
             vec![
                 SongState {
                     automation: routed,
-                    ..SongState::from_controls(FluidControls::default())
+                    ..SongState::from_controls(phrase_controls())
                 },
                 SongState {
                     automation: unrouted.clone(),
-                    ..SongState::from_controls(FluidControls::default())
+                    ..SongState::from_controls(phrase_controls())
                 },
                 SongState {
                     automation: unrouted,
-                    ..SongState::from_controls(FluidControls::default())
+                    ..SongState::from_controls(phrase_controls())
                 },
             ],
             6,
@@ -1590,9 +1773,9 @@ mod tests {
         current_auto.set_route(address, lfo_route(0.5));
 
         let morph = MorphState::from_live(
-            FluidControls::default(),
+            phrase_controls(),
             current_auto.clone(),
-            vec![SongState::from_controls(FluidControls::default())],
+            vec![SongState::from_controls(phrase_controls())],
             4,
             0.0,
         );
@@ -1650,7 +1833,7 @@ mod tests {
     #[test]
     fn swing_amount_waits_for_the_next_song_downbeat() {
         let swung = |amount: f32| {
-            let mut c = FluidControls::default();
+            let mut c = phrase_controls();
             c.modules.perc[0] = preset_slot("swing", amount);
             c
         };
@@ -1671,9 +1854,9 @@ mod tests {
 
     #[test]
     fn outgoing_swing_waits_until_the_next_song_downbeat() {
-        let mut from = FluidControls::default();
+        let mut from = phrase_controls();
         from.modules.perc[0] = preset_slot("swing", 0.6);
-        let mut to = FluidControls::default();
+        let mut to = phrase_controls();
         to.modules.perc[0] = preset_slot("filter", 1.0);
         let morph = MorphState::new(
             vec![SongState::from_controls(from), SongState::from_controls(to)],

@@ -1169,6 +1169,11 @@ impl ChordWindow {
         }
     }
 
+    /// One full pass through this window, shared by playback and morph timing.
+    pub(crate) fn phrase_beats(self, c: &PadControls) -> f64 {
+        GridSpec::new(c.chord_bars * 4.0, 0.0, 0.0).interval_beats * self.count as f64
+    }
+
     /// The table slot the window's `step`th chord comes from.
     pub(crate) fn slot(self, step: usize) -> usize {
         (self.offset + step) % CHORD_SLOT_COUNT
@@ -1202,6 +1207,7 @@ pub(crate) struct ProgressionCursor {
     /// Transport beat the next chord starts on; set on the first tick, the
     /// first chord boundary after the engine starts.
     next_chord_beat: Option<f64>,
+    morph_phrase_start: Option<f64>,
 }
 
 impl ProgressionCursor {
@@ -1211,6 +1217,7 @@ impl ProgressionCursor {
             chord_beats: c.chord_bars * 4.0,
             step: 0,
             next_chord_beat: None,
+            morph_phrase_start: None,
         }
     }
 
@@ -1219,9 +1226,32 @@ impl ProgressionCursor {
         self.window.slot(self.step)
     }
 
+    /// Start of the sounding phrase, for a live auto toggle after chord edits.
+    pub(crate) fn phrase_start_beat(&self) -> f64 {
+        self.next_chord_beat.map_or(0.0, |next| {
+            next - f64::from(self.chord_beats) * (self.step + 1) as f64
+        })
+    }
+
     /// Moves the cursor up to `timing`'s beat, reading `c` only at a chord
     /// boundary. Returns whether a new chord starts on this tick.
     pub(crate) fn tick(&mut self, c: &PadControls, timing: TimingContext) -> bool {
+        if timing.transport == Transport::Stopped {
+            return false;
+        }
+        if let Some(start) = timing.morph_phrase_start
+            && self.morph_phrase_start != Some(start)
+        {
+            self.morph_phrase_start = Some(start);
+            self.window = ChordWindow::requested(c);
+            self.chord_beats = c.chord_bars * 4.0;
+            let interval = GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats;
+            let chord = ((timing.beat - start).max(0.0) / interval).floor();
+            self.step = chord as usize % self.window.count;
+            self.next_chord_beat = Some(start + (chord + 1.0) * interval);
+            return timing.beat > 0.0;
+        }
+        self.morph_phrase_start = timing.morph_phrase_start;
         let next = *self.next_chord_beat.get_or_insert_with(|| {
             GridSpec::new(self.chord_beats, 0.0, 0.0)
                 .hit_after(timing.beat)
@@ -1229,7 +1259,7 @@ impl ProgressionCursor {
         });
         // A stopped transport holds its beat, and like every grid it fires
         // nothing until the clock runs again.
-        if timing.transport == Transport::Stopped || timing.beat + GRID_BEAT_EPSILON < next {
+        if timing.beat + GRID_BEAT_EPSILON < next {
             return false;
         }
         let window = ChordWindow::requested(c);
