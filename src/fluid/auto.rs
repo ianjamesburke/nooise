@@ -190,7 +190,7 @@ const MORPH_TICK_BEATS: f64 = 0.5;
 //
 //   Glide (Gain/Continuous) — lerp `from`→`to` across the transition window.
 //       Levels glide too, except the drum cuts below. Perc and Clap exit on
-//       the transition downbeat when their target levels are zero. Kick is silent
+//       the transition downbeat when their target levels are zero. Kick and Bass are silent
 //       for every percentage transition and returns on the next song downbeat.
 //
 //   Swing — any slot holding Swing on either endpoint waits through the full
@@ -287,7 +287,10 @@ fn move_of(
     if spec.id == "master.bpm" {
         return Move::Tempo;
     }
-    if Tab::Kick.level_id() == Some(spec.id) {
+    if [Tab::Kick, Tab::Bass]
+        .into_iter()
+        .any(|tab| tab.level_id() == Some(spec.id))
+    {
         return Move::Drop;
     }
     if waits_for_harmony(spec.id) || in_slot_set(held, spec.id) {
@@ -565,7 +568,7 @@ impl MorphState {
     /// A morph over a hand-picked set of songs, each carrying the number it
     /// should report rather than its position in this cycle — so `nooise 9,12`
     /// still reads `song 9 → 12` instead of `1 → 2`. One song is a legal
-    /// cycle: its controls stay fixed except for the crossing's Kick drop.
+    /// cycle: its controls stay fixed except for the crossing's Kick and Bass drop.
     pub(crate) fn labelled(endpoints: Vec<SongState>, labels: Vec<usize>, bars: u32) -> Self {
         assert_eq!(
             endpoints.len(),
@@ -760,10 +763,10 @@ impl MorphState {
         self.tempo_moves[from].bpm_at(self.endpoints[from].controls.master.bpm, progress)
     }
 
-    /// Fade the Kick layer's existing voice and effect tail during the last
+    /// Fade the dropped layers' existing voices and effect tails during the last
     /// 30 ms of the hold. The whole percentage phase is exactly silent, and
     /// the next leg opens at full gain for the destination's first hit.
-    pub(crate) fn kick_gain_at(&self, beat: f64, bpm: f64) -> f32 {
+    pub(crate) fn drop_gain_at(&self, beat: f64, bpm: f64) -> f32 {
         let (_, _, t, leg_index) = self.leg_at_indexed(beat);
         let remaining_beats =
             self.leg_transition_start_beat(leg_index) - t * self.leg_beats(leg_index);
@@ -931,7 +934,7 @@ impl AutoControls {
 }
 
 /// The engine publishes regular morph updates on absolute eighth-note ticks.
-/// Section boundaries bypass throttling so structure and Kick arrive together.
+/// Section boundaries bypass throttling so structure, Kick and Bass arrive together.
 #[derive(Default)]
 pub(crate) struct MorphWriter {
     last_tick: Option<i64>,
@@ -1243,10 +1246,12 @@ mod tests {
         c
     }
 
-    /// Sum of every performing element's level/gain: the audible-energy proxy
-    /// the never-silent invariant is checked against.
-    fn total_level(c: &FluidControls) -> f32 {
-        voice_level_specs().map(|spec| (spec.get)(c)).sum()
+    /// Energy proxy for layers that continue through the transition.
+    fn continuing_level(c: &FluidControls) -> f32 {
+        voice_level_specs()
+            .filter(|spec| !matches!(spec.id, "kick.level" | "bass.level"))
+            .map(|spec| (spec.get)(c))
+            .sum()
     }
 
     #[test]
@@ -1519,11 +1524,12 @@ mod tests {
     }
 
     #[test]
-    fn kick_is_absent_from_every_percentage_transition_and_returns_on_the_next_song() {
+    fn kick_and_bass_are_absent_from_every_percentage_transition_and_returns_on_the_next_song() {
         let from = phrase_controls();
         let mut to = phrase_controls();
         to.perc.level = 0.4;
         to.kick.level = 0.8;
+        to.bass.level = 0.7;
         to.clap.level = 0.6;
         // 6 bars/leg -> transition runs from beat 16 through beat 24.
         let morph = MorphState::new(
@@ -1534,15 +1540,19 @@ mod tests {
         let mid = morph.controls_at(20.0);
         assert!((mid.perc.level - 0.2).abs() < 1e-4);
         assert_eq!(mid.kick.level, 0.0);
+        assert_eq!(mid.bass.level, 0.0);
         assert!((mid.clap.level - 0.3).abs() < 1e-4);
         for beat in [16.0, 20.0, 23.99, 40.0, 44.0, 47.99] {
             assert!(morph.position_at(beat).blend.is_some());
             assert_eq!(morph.controls_at(beat).kick.level, 0.0, "beat {beat}");
+            assert_eq!(morph.controls_at(beat).bass.level, 0.0, "beat {beat}");
         }
         assert_eq!(morph.controls_at(15.99).kick.level, 0.0);
         assert_eq!(morph.controls_at(24.0).kick.level, 0.8);
+        assert_eq!(morph.controls_at(24.0).bass.level, 0.7);
         assert_eq!(morph.controls_at(39.99).kick.level, 0.8);
         assert_eq!(morph.controls_at(48.0).kick.level, 0.0);
+        assert_eq!(morph.controls_at(48.0).bass.level, 0.0);
     }
 
     #[test]
@@ -1554,10 +1564,10 @@ mod tests {
         assert_eq!(morph.controls_at(16.0).kick.level, 0.0);
         assert_eq!(morph.controls_at(23.99).kick.level, 0.0);
         assert_eq!(morph.controls_at(24.0).kick.level, 0.6);
-        assert_eq!(morph.kick_gain_at(15.9, 120.0), 1.0);
-        assert!(morph.kick_gain_at(15.97, 120.0) < 1.0);
-        assert_eq!(morph.kick_gain_at(16.0, 120.0), 0.0);
-        assert_eq!(morph.kick_gain_at(24.0, 120.0), 1.0);
+        assert_eq!(morph.drop_gain_at(15.9, 120.0), 1.0);
+        assert!(morph.drop_gain_at(15.97, 120.0) < 1.0);
+        assert_eq!(morph.drop_gain_at(16.0, 120.0), 0.0);
+        assert_eq!(morph.drop_gain_at(24.0, 120.0), 1.0);
     }
 
     #[test]
@@ -1683,7 +1693,7 @@ mod tests {
     }
 
     #[test]
-    fn morph_never_dips_below_the_quieter_endpoint() {
+    fn morph_continuing_layers_do_not_dip_below_the_quieter_endpoint() {
         let mut loud = phrase_controls();
         loud.pad.level = 0.9;
         loud.kick.level = 0.8;
@@ -1696,7 +1706,7 @@ mod tests {
         quiet.clap.level = 0.0;
         quiet.bass.level = 0.1;
         quiet.arp.gain = 0.0;
-        let floor = total_level(&loud).min(total_level(&quiet));
+        let floor = continuing_level(&loud).min(continuing_level(&quiet));
         let morph = MorphState::new(
             vec![
                 SongState::from_controls(loud),
@@ -1709,7 +1719,7 @@ mod tests {
         for i in 0..=64 {
             let beat = beats_per_leg * i as f64 / 64.0;
             assert!(
-                total_level(&morph.controls_at(beat)) >= floor - 1e-4,
+                continuing_level(&morph.controls_at(beat)) >= floor - 1e-4,
                 "morph dipped below the quieter endpoint at beat {beat}"
             );
         }

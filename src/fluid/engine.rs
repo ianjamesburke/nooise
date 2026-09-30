@@ -770,10 +770,12 @@ impl StereoEngine for FluidEngine {
                     .as_ref()
                     .is_some_and(|morph| morph.position_at(self.tempo.beat).blend.is_none())
             {
-                // Kick captures Level at trigger time. The landing's first
-                // hit must see the destination gain before it is constructed.
+                // Restore both dropped layers for the first landing note.
+                // Kick also captures Level when the hit is constructed.
                 self.gain_smoothers
                     .settle("kick.level", self.snapshot.kick.level);
+                self.gain_smoothers
+                    .settle("bass.level", self.snapshot.bass.level);
             }
             self.mute_gates
                 .set_targets(&session.muted, self.sample_rate);
@@ -809,15 +811,15 @@ impl StereoEngine for FluidEngine {
             self.telemetry.publish_beat(timing.beat);
         }
         self.plan.apply(&mut effective, timing);
-        // A morph's percentage phase has no Kick, including automation that
-        // lifts its Level above zero and tails from Kick-layer effects.
+        // Both dropped layers stay silent through the percentage phase,
+        // including Level automation and their post-module effect tails.
         timing.morph_phrase_start =
             active_morph.and_then(|morph| morph.phrase_start_at(timing.beat));
-        let kick_gain =
-            active_morph.map_or(1.0, |morph| morph.kick_gain_at(timing.beat, timing.bpm));
-        let kick_crossing = kick_gain == 0.0;
-        if kick_crossing {
+        let drop_gain =
+            active_morph.map_or(1.0, |morph| morph.drop_gain_at(timing.beat, timing.bpm));
+        if drop_gain == 0.0 {
             effective.kick.level = 0.0;
+            effective.bass.level = 0.0;
         }
         resolve_module_chain(&mut effective);
         timing.drunken_amount = effective.master.drunken_amount;
@@ -866,7 +868,7 @@ impl StereoEngine for FluidEngine {
             self.kick.next(&effective.kick, timing.with_groove_seed(3)),
             timing,
         );
-        let (kick_l, kick_r) = gate_stereo(kick, mute_gains[Tab::Kick as usize] * kick_gain);
+        let (kick_l, kick_r) = gate_stereo(kick, mute_gains[Tab::Kick as usize] * drop_gain);
         let tonal = self.module_fx.process(
             Tab::Tonal,
             &effective.modules.tonal,
@@ -893,7 +895,7 @@ impl StereoEngine for FluidEngine {
             ),
             timing,
         );
-        let (bass_l, bass_r) = gate_stereo(bass, mute_gains[Tab::Bass as usize]);
+        let (bass_l, bass_r) = gate_stereo(bass, mute_gains[Tab::Bass as usize] * drop_gain);
         let arp = self.module_fx.process(
             Tab::Arp,
             &effective.modules.arp,

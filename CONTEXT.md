@@ -61,12 +61,14 @@
 - **Phrase:** one run of the chord window at one Chord Length. Manual
   window/length edits wait for the sounding chord to end, then preserve its
   successor where possible; selecting another progression starts at its first
-  chord. An auto morph keeps the outgoing harmony through whole kickless
-  phrases, then starts the incoming window at its first chord on landing.
+  chord. An auto morph keeps the outgoing harmony through whole phrases
+  with Kick and Bass silent, then starts the incoming window at its first
+  chord on landing.
 - **Morph leg:** an outgoing song's hold followed by its crossing into the
   next song. `--bars` requests an approximate total length. Hold and crossing
   each round to whole outgoing phrases, at least one phrase per section.
-  Progression, chord length/window, Kick, and Swing change on the landing.
+  Progression, chord length/window, and Swing change on the landing; Kick
+  and Bass return at their destination levels.
 - **Tempo bridge:** a transition tempo near the outgoing BPM that is half or
   double the incoming BPM. The crossing glides to this bridge, then switches
   to the incoming song's authored BPM on landing. Nearby tempos glide
