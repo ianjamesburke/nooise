@@ -51,7 +51,8 @@ kernel and renderer from indexing different lists.
 Space opens an immediate command map. It does not wait for a timeout.
 
 The root map shows the layer targets and the valid current-page endings. A
-chosen layer narrows the map to its available verbs. Escape cancels the
+layer selector completes immediately: it opens that page at the layer's
+remembered row and gives the keyboard back to Browsing. Escape cancels an
 unfinished sentence. A repeated Space is inert. Press and release capabilities
 do not change the grammar.
 
@@ -61,11 +62,12 @@ The first code slice keeps every existing Jump result intact:
 Space: a Pads  s Perc  d Bass  f Kick  q Tonal  w Clap  e Arp  r Master
 Current page: j level  k filter
 Esc cancel
-
-Space a:
-Pads: j go to level  k go to filter
-Esc cancel
 ```
+
+`Space a` is enough to arrive at Pads, on the knob last active there. Normal
+`h`/`j`/`k`/`l` then work immediately. `Space j` and `Space k` remain direct
+current-page shortcuts when the player wants Level or Filter rather than the
+remembered row.
 
 The map replaces the control area in the same way as Help. The breadcrumb,
 activity row, and stable footer remain visible. At the minimum 46x11 frame,
@@ -82,8 +84,11 @@ Planned mute is the first candidate for a new leader operation:
 ```
 m           mute the visible layer now
 Space m     arm current layer mute at next bar
-Space a m   arm Pads mute at next bar
 ```
+
+Jump to another layer first, then use `Space m`, rather than making a layer
+selector wait for a possible third key. A later targeted-action grammar needs
+its own explicit sentence if it earns one.
 
 A small `m` means mute armed. `(M)` means muted. The planned action is
 cancelable and persists because it changes the audible future of the session.
@@ -159,6 +164,18 @@ they carry affected data.
 The coordinator's existing production tick is the one place that advances and
 closes an armed Motion. The executor does not depend on a later keypress to
 finish recording.
+
+## Contextual palette ranking
+
+When a query is the canonical name of a module available on the current page,
+that page's module outranks the same module elsewhere before fuzzy score is
+considered. On Master, typing `swing` therefore starts at `Global Swing ·
+Master · module`, not a Pads Swing entry whose shorter label happens to score
+better. The same rule makes a voice page reach that voice's Swing first.
+
+This is a narrow scope preference, not a general instruction to put every
+current-page fuzzy match above a stronger result. Layer-name primary controls
+and MRU behavior retain their existing deliberate ordering.
 
 ## Implementation order
 

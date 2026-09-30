@@ -237,6 +237,19 @@ mod global_groove_tests {
             )));
         }
     }
+
+    #[test]
+    fn matching_module_on_the_current_page_outranks_another_pages_fuzzy_hit() {
+        let mut palette = PaletteState::new(Tab::Master, &[], None);
+        for character in "swing".chars() {
+            palette.push_char(character);
+        }
+        assert!(matches!(
+            palette.entry(palette.matches[0].entry_index),
+            PaletteEntry::Module { tab: Tab::Master, catalog_index }
+                if MODULE_CATALOG[*catalog_index].id == "swing"
+        ));
+    }
 }
 
 /// One fuzzy candidate: which entry, how well it scored, and which characters
@@ -366,6 +379,15 @@ impl PaletteState {
             self.matches.sort_by(|left, right| {
                 primary_key(left.entry_index)
                     .cmp(&primary_key(right.entry_index))
+                    .then_with(|| {
+                        matching_module_context_rank(entries, left.entry_index, query, current_tab)
+                            .cmp(&matching_module_context_rank(
+                                entries,
+                                right.entry_index,
+                                query,
+                                current_tab,
+                            ))
+                    })
                     .then_with(|| right.score.cmp(&left.score))
                     .then_with(|| {
                         context_rank(entries, left.entry_index, current_tab, recent).cmp(
@@ -383,6 +405,26 @@ impl PaletteState {
         let current_tab = self.current_tab;
         self.matches
             .sort_by_key(|m| context_rank(entries, m.entry_index, current_tab, recent));
+    }
+}
+
+/// A canonical module query belongs first to the module on the page in front
+/// of the player. Fuzzy-score ordering alone makes "Swing" on Pads outrank
+/// "Global Swing · Master" because the latter's first match sits later in its
+/// label, even while Master is the active page.
+fn matching_module_context_rank(
+    entries: &[PaletteEntry],
+    entry: usize,
+    query: &str,
+    current_tab: Tab,
+) -> u8 {
+    match entries[entry] {
+        PaletteEntry::Module { tab, catalog_index }
+            if starts_with_ignore_case(MODULE_CATALOG[catalog_index].id, query) =>
+        {
+            if tab == current_tab { 0 } else { 1 }
+        }
+        _ => 2,
     }
 }
 
