@@ -679,10 +679,9 @@ fn palette_control_binding(code: &PhysicalKey) -> Option<Intent> {
     })
 }
 
-/// The Jump leader's keyboard: Space re-arms it, `INSTRUMENTS` keys choose
-/// the layer, `PARAMETERS` keys complete the jump — with or without a layer
-/// key first, since the kernel aims an unaimed jump at the open page. The
-/// two key sets are disjoint, so neither stage has to resolve a collision.
+/// The Jump leader's keyboard: Space re-arms it, `INSTRUMENTS` keys open a
+/// layer, and `PARAMETERS` keys address the page already open. The two key
+/// sets are disjoint, so neither stage has to resolve a collision.
 /// Arrival moves the cursor and nothing else, so every binding is a plain
 /// Press and no phase or terminal capability changes what a key means.
 /// Neither key set changes meaning between stages, so the binding does not
@@ -694,9 +693,8 @@ fn performance_binding(code: &PhysicalKey) -> Option<Intent> {
     let PhysicalKey::Character(key) = *code else {
         return None;
     };
-    // A layer key aims or re-aims the jump, so a mistyped layer costs one
-    // key rather than an Esc and a restart; a parameter key completes it
-    // either way.
+    // A layer key completes the page jump; a parameter key completes the
+    // current-page address.
     PerformanceParameter::from_key(key)
         .map(Intent::JumpToParameter)
         .or_else(|| {

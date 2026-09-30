@@ -3534,94 +3534,6 @@ fn performance_leader_is_capability_independent_and_idempotent() {
     assert_eq!(save.clipboard_writes, 1);
 }
 
-/// `Space d j` puts the cursor on Bass volume and hands the keyboard back,
-/// having changed no value: arrival is the whole gesture.
-#[test]
-fn jump_to_volume_lands_the_cursor_without_editing() {
-    let result = replay_with(
-        &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Press),
-            key(0, FixtureKey::Character('j'), InputPhase::Press),
-        ],
-        TerminalCapabilities::full(),
-        ReplayHarness::with_auto_running,
-    );
-    assert_eq!(result.model.mode, InteractionMode::Browsing);
-    assert_eq!(result.recent_ids, ["bass.level"]);
-    assert!(matches!(
-        result.model.navigation,
-        Navigation::Standard {
-            page: super::interaction::StandardPage::Bass,
-            selected: 0,
-        }
-    ));
-    // Only an edit exits auto, and arriving is not an edit: the morph
-    // keeps running and the level is untouched.
-    assert!(result.auto_running);
-    assert_eq!(
-        result.control("bass.level"),
-        replay_with(
-            &[],
-            TerminalCapabilities::full(),
-            ReplayHarness::with_auto_running
-        )
-        .control("bass.level")
-    );
-    assert!(result.effects.iter().any(|effect| {
-        effect.contains(r#"OK:ControlSelected { tab: Bass, index: 0, id: "bass.level""#)
-    }));
-}
-
-/// Filter is a catalog module, not a per-layer control. Bass, Kick and Perc
-/// ship with one in slot 1, so `k` jumps to it and leaves its amount alone;
-/// Pads ships without one, so `k` adds an inert filter and lands on that.
-#[test]
-fn jump_to_filter_reaches_a_loaded_one_and_adds_an_inert_one_otherwise() {
-    let jump = |layer| {
-        vec![
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character(layer), InputPhase::Press),
-            key(0, FixtureKey::Character('k'), InputPhase::Press),
-        ]
-    };
-    let filter_value = super::module_kind_value(super::interaction::FILTER_MODULE_ID);
-
-    // Bass already holds a filter: the leader must reach it, never stack a
-    // second one or reset the amount the player is performing with.
-    let loaded = replay(&jump('d'), TerminalCapabilities::full());
-    assert_eq!(loaded.model.mode, InteractionMode::Browsing);
-    assert_eq!(loaded.control("bass.slot1.kind"), Some(filter_value));
-    // Its cutoff is the row that was performing; the leader must not reset it.
-    assert_eq!(
-        loaded.control("bass.slot1.time"),
-        replay(&[], TerminalCapabilities::full()).control("bass.slot1.time")
-    );
-    assert_eq!(
-        loaded.recent_ids,
-        ["bass.slot1.time"],
-        "the cursor landed on the filter's cutoff row"
-    );
-
-    // Pads holds `room` in slot 1, so the filter goes into the first free
-    // slot, inert, and the existing chain is untouched.
-    let added = replay(&jump('a'), TerminalCapabilities::full());
-    assert_eq!(added.model.mode, InteractionMode::Browsing);
-    assert_eq!(added.control("pad.slot2.kind"), Some(filter_value));
-    // A filter is always fully wet; its cutoff is what starts transparent,
-    // so adding one is audibly free and `h` is the first audible move.
-    assert_eq!(added.control("pad.slot2.amount"), Some(1.0));
-    assert_eq!(
-        added.control("pad.slot2.time"),
-        Some(super::FILTER_CUTOFF_MAX_HZ)
-    );
-    assert_eq!(added.recent_ids, ["pad.slot2.time"]);
-    assert_eq!(
-        added.control("pad.slot1.kind"),
-        Some(super::module_kind_value("room"))
-    );
-}
-
 /// The hub is the way into every layer: Enter opens the highlighted one,
 /// Tab moves to the next sibling in place, and Esc comes back up onto
 /// the row of whichever layer it left, which resumes where it was.
@@ -3729,21 +3641,22 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
     assert_eq!(lead.recent_ids, ["lead.level"]);
 }
 
-/// A mistyped layer costs one key: a second layer key re-aims the pending
-/// jump instead of being inert.
+/// A layer selector completes immediately and restores ordinary browsing.
 #[test]
-fn a_second_layer_key_reaims_the_pending_jump() {
+fn a_layer_key_returns_to_browsing_without_a_parameter() {
     let result = replay(
         &[
             key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character('d'), InputPhase::Press),
             key(0, FixtureKey::Character('f'), InputPhase::Press),
-            key(0, FixtureKey::Character('j'), InputPhase::Press),
         ],
         TerminalCapabilities::full(),
     );
     assert_eq!(result.model.mode, InteractionMode::Browsing);
-    assert_eq!(result.recent_ids, ["kick.level"]);
+    assert_eq!(
+        result.model.navigation.page(),
+        PerformanceInstrument::Kick.page()
+    );
+    assert!(result.recent_ids.is_empty());
 }
 
 /// Autorepeat inside the leader cannot fire a second jump, and a stray
@@ -3760,14 +3673,11 @@ fn leader_keys_ignore_repeat_and_release() {
         ],
         TerminalCapabilities::full(),
     );
-    assert!(matches!(
-        result.model.mode,
-        InteractionMode::Performance(PerformanceMode::Jump {
-            stage: JumpStage::ChooseParameter {
-                instrument: PerformanceInstrument::Kick,
-            },
-        })
-    ));
+    assert_eq!(result.model.mode, InteractionMode::Browsing);
+    assert_eq!(
+        result.model.navigation.page(),
+        PerformanceInstrument::Kick.page()
+    );
     assert!(
         result
             .effects

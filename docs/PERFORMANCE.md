@@ -110,10 +110,11 @@ not a state worth sharing, so a loaded code always plays.
 
 ## Jump
 
-Space is a leader key. A layer key then a parameter key puts the cursor on
-that control and hands the keyboard straight back to browsing, where `h`/`l`
-adjust it and `j`/`k` move as always. The leader changes nothing by itself:
-it is an address, not an edit.
+Space is a leader key. A layer key opens that layer at the row last active
+there and hands the keyboard straight back to browsing, where `h`/`l`
+adjust it and `j`/`k` move as always. `Space j` and `Space k` put the
+cursor on Level or Filter for the page already open. The leader changes
+nothing by itself: it is an address, not an edit.
 
 The layer keys read down the hub's layer rows, so their positions mirror
 the layers on screen: `a` Pads, `s` Perc, `d` Bass, `f` Kick, `q` Tonal,
@@ -127,9 +128,7 @@ the filter on whatever is in front of you. That shorthand is the only way
 into Lead, and stays the quickest route to the page already in front of
 you.
 
-A second layer key re-aims a jump that has not completed, so a mistyped
-layer costs one key rather than an Escape and a restart. Escape leaves the
-leader; Space while it is pending is inert.
+Escape leaves a pending leader; Space while it is pending is inert.
 
 Volume is the layer's own Level row. Filter is the shared filter module's
 Cutoff, never its Amount: Amount is a detail-only wet/dry mix an added filter

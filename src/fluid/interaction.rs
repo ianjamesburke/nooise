@@ -951,15 +951,13 @@ pub(crate) enum Intent {
     )]
     OpenAutomationField,
     ActivatePerformance(PerformanceKind),
-    /// Choose the layer the pending Jump lands on. Opens its page so the
-    /// parameter key has somewhere visible to arrive.
+    /// Open the layer named by the Jump leader and restore its remembered
+    /// browsing cursor.
     SelectPerformanceInstrument {
         instrument: PerformanceInstrument,
     },
-    /// Complete the pending Jump and hand the keyboard back to browsing.
-    /// Without a layer key it aims at the page already open, so reaching a
-    /// knob on the layer in front of you is two keys. Moves the cursor;
-    /// never edits a value.
+    /// Jump to a parameter on the page already open, then hand the keyboard
+    /// back to browsing. Moves the cursor; never edits a value.
     JumpToParameter(PerformanceParameter),
     EnterLeadPlay,
     /// A 1-based Lead tone, from the letter row. `hold` is whether the
@@ -1905,10 +1903,10 @@ fn update_lead(
     }
 }
 
-/// The Jump leader: `Space`, a layer key, a parameter key, and the cursor
-/// is on that row in browsing. It resolves an address and moves the
-/// selection; it never changes a value, so it needs no key releases, no
-/// capability branch, and no completion stage.
+/// The Jump leader: `Space` plus a layer key restores that layer's cursor;
+/// `Space` plus a parameter key addresses the current layer. Each route
+/// returns to browsing without changing a value, so it needs no key releases
+/// or capability branch.
 fn update_performance(
     performance: &mut PerformanceMode,
     navigation: &mut Navigation,
@@ -1927,11 +1925,16 @@ fn update_performance(
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
         Intent::SelectPerformanceInstrument { instrument } => {
+            // Keep the selected target in the transient leader state until
+            // the transition applies Browsing. This preserves the closed
+            // grammar's typed representation without making a layer jump
+            // wait for another key.
             let PerformanceMode::Jump { stage } = performance;
             *stage = JumpStage::ChooseParameter { instrument };
             let page = instrument.page();
             *navigation = layer_rows.open(page);
             effects.push(InteractionEffect::SelectPage(page));
+            *next_mode = Some(InteractionMode::Browsing);
         }
         Intent::JumpToParameter(parameter) => {
             let PerformanceMode::Jump { stage } = *performance;
@@ -2852,7 +2855,7 @@ mod tests {
     }
 
     #[test]
-    fn choosing_a_layer_opens_its_page_and_waits_for_a_parameter() {
+    fn choosing_a_layer_opens_its_page_and_returns_to_browsing() {
         let model = update(
             InteractionModel::default(),
             Intent::ActivatePerformance(PerformanceKind::Jump),
@@ -2876,14 +2879,7 @@ mod tests {
                 selected: 0,
             }
         );
-        assert_eq!(
-            transition.model.mode,
-            InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseParameter {
-                    instrument: PerformanceInstrument::Perc
-                }
-            })
-        );
+        assert_eq!(transition.model.mode, InteractionMode::Browsing);
     }
 
     #[test]
@@ -2902,41 +2898,23 @@ mod tests {
         }
     }
 
-    /// Arrival is the whole gesture: one effect that moves the cursor, and
-    /// the keyboard back in browsing so `h`/`l` adjust what it landed on.
+    /// Every layer selector arrives in browsing, on its remembered row.
     #[test]
-    fn every_layer_and_parameter_jumps_and_returns_to_browsing() {
+    fn every_layer_jump_returns_to_browsing() {
         for instrument in PerformanceInstrument::ALL {
-            for parameter in PerformanceParameter::ALL {
-                let aimed = update(
-                    update(
-                        InteractionModel::default(),
-                        Intent::ActivatePerformance(PerformanceKind::Jump),
-                    )
-                    .model,
-                    Intent::SelectPerformanceInstrument { instrument },
+            let arrived = update(
+                update(
+                    InteractionModel::default(),
+                    Intent::ActivatePerformance(PerformanceKind::Jump),
                 )
-                .model;
-                let arrived = update(aimed, Intent::JumpToParameter(parameter));
-
-                let expected = match parameter {
-                    PerformanceParameter::Volume => InteractionEffect::JumpToControl {
-                        tab: instrument.tab(),
-                        index: super::super::spec_index(
-                            instrument.tab(),
-                            instrument.tab().level_id().expect("layer has a level"),
-                        )
-                        .expect("level row is on its own tab"),
-                        id: instrument.tab().level_id().expect("layer has a level"),
-                    },
-                    PerformanceParameter::Filter => InteractionEffect::PlaceModule {
-                        tab: instrument.tab(),
-                        catalog_index: super::super::module_catalog_index(FILTER_MODULE_ID),
-                    },
-                };
-                assert_eq!(arrived.effects, vec![expected]);
-                assert_eq!(arrived.model.mode, InteractionMode::Browsing);
-            }
+                .model,
+                Intent::SelectPerformanceInstrument { instrument },
+            );
+            assert_eq!(
+                arrived.effects,
+                vec![InteractionEffect::SelectPage(instrument.page())]
+            );
+            assert_eq!(arrived.model.mode, InteractionMode::Browsing);
         }
     }
 
