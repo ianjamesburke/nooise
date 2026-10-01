@@ -13,6 +13,62 @@ const HISTORY_TARGETS: usize = 16;
 const HISTORY_BEATS: f64 = CAPTURE_BEATS * 2.0;
 const HISTORY_EVENTS: usize = 4_096;
 
+/// A playable Motion phrase. Its compact eight-samples-per-beat resolution
+/// makes the duration part of the lane, rather than an accidental property of
+/// the old sixteen-beat capture buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MotionDuration {
+    Beats4,
+    Beats8,
+    Beats16,
+}
+
+/// A palette-visible Motion command. Capture remains an implementation name
+/// only until its on-disk record is replaced; players see one automation lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MotionAction {
+    Grab(MotionDuration),
+    Bypass,
+    Resume,
+    Delete,
+}
+
+impl MotionAction {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Grab(MotionDuration::Beats4) => "Motion Grab 4",
+            Self::Grab(MotionDuration::Beats8) => "Motion Grab 8",
+            Self::Grab(MotionDuration::Beats16) => "Motion Grab 16",
+            Self::Bypass => "Motion Bypass",
+            Self::Resume => "Motion Resume",
+            Self::Delete => "Motion Delete",
+        }
+    }
+
+    pub(crate) fn description(self) -> &'static str {
+        match self {
+            Self::Grab(_) => "loop recent movement on this knob",
+            Self::Bypass => "bypass Motion on this knob",
+            Self::Resume => "resume Motion on this knob",
+            Self::Delete => "delete Motion on this knob",
+        }
+    }
+}
+
+impl MotionDuration {
+    pub(crate) const fn beats(self) -> u8 {
+        match self {
+            Self::Beats4 => 4,
+            Self::Beats8 => 8,
+            Self::Beats16 => 16,
+        }
+    }
+
+    pub(crate) const fn samples(self) -> usize {
+        self.beats() as usize * 8
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CaptureHistoryError {
     PhrasePending { beats_remaining: u32 },
@@ -51,15 +107,6 @@ impl CaptureAction {
             Self::Bypass => "Bypass",
             Self::Resume => "Resume",
             Self::Delete => "Delete",
-        }
-    }
-
-    pub(crate) fn description(self) -> &'static str {
-        match self {
-            Self::Capture => "keep previous 16 beats of this knob",
-            Self::Bypass => "bypass open lane or captured loop",
-            Self::Resume => "resume open lane or captured loop",
-            Self::Delete => "delete open lane or captured loop",
         }
     }
 }
@@ -257,6 +304,55 @@ impl CaptureHistory {
             enabled: true,
         })
     }
+
+    /// Build a Motion loop from the finished interval ending at `end`.
+    ///
+    /// `CaptureClip` still uses its established 128-sample storage while the
+    /// Motion format cut is in progress, so a shorter phrase repeats through
+    /// that backing buffer. The audible period is nevertheless the requested
+    /// duration and every sample keeps the existing eight-per-beat resolution.
+    pub(crate) fn motion_clip(
+        &self,
+        target: recipe::RecipeTarget,
+        duration: MotionDuration,
+        end: f64,
+        now: f64,
+    ) -> Result<CaptureClip, CaptureHistoryError> {
+        let beats = f64::from(duration.beats());
+        let knob = self
+            .knobs
+            .iter()
+            .find(|knob| knob.target == target)
+            .ok_or(CaptureHistoryError::NoMovement)?;
+        if knob.lost_before.is_some_and(|beat| beat >= end - beats) {
+            return Err(CaptureHistoryError::IncompleteHistory);
+        }
+        if !knob
+            .events
+            .iter()
+            .any(|event| event.0 >= end - beats && event.0 < end)
+        {
+            return Err(CaptureHistoryError::NoMovement);
+        }
+        let samples = std::array::from_fn(|index| {
+            let phrase_index = index % duration.samples();
+            let beat = end - beats + phrase_index as f64 / 8.0;
+            let value = knob
+                .events
+                .iter()
+                .rev()
+                .find(|event| event.0 <= beat)
+                .map_or(knob.initial, |event| event.1);
+            (value.clamp(0.0, 1.0) * 255.0).round() as u8
+        });
+        let launch = next_bar_beat(now);
+        Ok(CaptureClip {
+            samples,
+            origin: launch,
+            launch,
+            enabled: true,
+        })
+    }
 }
 
 pub(crate) fn suspend_changed_captures(
@@ -319,6 +415,26 @@ mod tests {
             history.clip(target, 32.0, 32.0),
             Err(CaptureHistoryError::NoMovement)
         );
+    }
+
+    #[test]
+    fn motion_grab_uses_the_recent_requested_window_and_repeats_its_phrase() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        snapshot.controls.pad.level = 0.0;
+        let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
+        let mut history = CaptureHistory::default();
+        change(&mut history, &mut snapshot, 8.0, 1.0);
+        change(&mut history, &mut snapshot, 11.0, 0.5);
+
+        let clip = history
+            .motion_clip(target, MotionDuration::Beats4, 12.0, 12.0)
+            .unwrap();
+
+        assert_eq!(clip.origin, 16.0);
+        assert_eq!(clip.samples[0], 255);
+        assert_eq!(clip.samples[24], 128);
+        assert_eq!(clip.samples[32], clip.samples[0]);
+        assert_eq!(clip.samples[56], clip.samples[24]);
     }
 
     #[test]

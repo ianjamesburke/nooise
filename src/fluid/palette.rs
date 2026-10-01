@@ -140,7 +140,7 @@ impl PaletteEntry {
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
             Self::Operation(operation) => match operation {
-                Operation::Capture(_) => "selected knob".to_string(),
+                Operation::Motion(_) => "selected knob".to_string(),
                 Operation::Mix(_) => operation.spec().description.to_string(),
                 Operation::Recipe(_) => "add lane".to_string(),
                 Operation::PlannedMute => "visible layer".to_string(),

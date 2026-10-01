@@ -8,7 +8,7 @@ use super::*;
 /// execution payload stay together here; no surface dispatches a string.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Operation {
-    Capture(CaptureAction),
+    Motion(MotionAction),
     Mix(mix_action::MixAction),
     Recipe(recipe::RecipeId),
     PlannedMute,
@@ -24,11 +24,13 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 13] = [
-        Self::Capture(CaptureAction::Capture),
-        Self::Capture(CaptureAction::Bypass),
-        Self::Capture(CaptureAction::Resume),
-        Self::Capture(CaptureAction::Delete),
+    pub(crate) const ALL: [Self; 15] = [
+        Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
+        Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
+        Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
+        Self::Motion(MotionAction::Bypass),
+        Self::Motion(MotionAction::Resume),
+        Self::Motion(MotionAction::Delete),
         Self::Mix(mix_action::MixAction::KickOnly),
         Self::Mix(mix_action::MixAction::MuteKick),
         Self::Recipe(recipe::RecipeId::Sway),
@@ -42,7 +44,7 @@ impl Operation {
 
     pub(crate) fn spec(self) -> OperationSpec {
         match self {
-            Self::Capture(action) => OperationSpec {
+            Self::Motion(action) => OperationSpec {
                 operation: self,
                 label: action.name(),
                 aliases: &[],
@@ -74,7 +76,12 @@ impl Operation {
 
     pub(crate) const fn capture_action(self) -> Option<CaptureAction> {
         match self {
-            Self::Capture(action) => Some(action),
+            Self::Motion(action) => match action {
+                MotionAction::Grab(_) => None,
+                MotionAction::Bypass => Some(CaptureAction::Bypass),
+                MotionAction::Resume => Some(CaptureAction::Resume),
+                MotionAction::Delete => Some(CaptureAction::Delete),
+            },
             Self::Mix(_) | Self::Recipe(_) | Self::PlannedMute => None,
         }
     }

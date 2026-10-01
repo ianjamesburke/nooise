@@ -2619,15 +2619,15 @@ fn recipe_keys(query: &str) -> Vec<TraceEvent> {
 }
 
 #[test]
-fn capture_keeps_manual_interval_edits_through_the_palette() {
+fn motion_grab_keeps_manual_interval_edits_through_the_palette() {
     for capabilities in [
         TerminalCapabilities::full(),
         TerminalCapabilities::default(),
     ] {
         let mut events = recipe_keys("kick.interval_beats");
         events.push(key(0, FixtureKey::Right, InputPhase::Press));
-        events.push(TraceEvent::Idle { after_ms: 16_000 });
-        events.extend(recipe_keys("capture"));
+        events.push(TraceEvent::Idle { after_ms: 3_000 });
+        events.extend(recipe_keys("motion grab 16"));
         events.push(modified_key(
             0,
             FixtureKey::Character('s'),
@@ -2640,14 +2640,14 @@ fn capture_keeps_manual_interval_edits_through_the_palette() {
             song.automation
                 .captures
                 .contains_key(&ControlAddress::new("kick.interval_beats")),
-            "capture failed: {:?}",
+            "Motion Grab failed: {:?}",
             result.effects
         );
     }
 }
 
 #[test]
-fn capture_palette_freezes_completed_phrase_and_keeps_navigation_on_both_terminals() {
+fn motion_grab_freezes_its_recent_window_and_keeps_navigation_on_both_terminals() {
     for capabilities in [
         TerminalCapabilities::full(),
         TerminalCapabilities::default(),
@@ -2658,7 +2658,7 @@ fn capture_palette_freezes_completed_phrase_and_keeps_navigation_on_both_termina
                 width: MIN_TERMINAL_WIDTH,
                 height: MIN_TERMINAL_HEIGHT,
             }];
-            let mut command = recipe_keys("capture");
+            let mut command = recipe_keys("motion grab 16");
             command.insert(1, TraceEvent::Idle { after_ms: delay });
             events.extend(command);
             events.push(TraceEvent::Idle { after_ms: 40 });
@@ -2670,7 +2670,7 @@ fn capture_palette_freezes_completed_phrase_and_keeps_navigation_on_both_termina
             ));
             events
         };
-        let configure = |harness: ReplayHarness| harness.with_pad_capture_history().at_beat(16.0);
+        let configure = |harness: ReplayHarness| harness.with_pad_capture_history().at_beat(8.0);
         let immediate = replay_with(&make_trace(0), capabilities, configure);
         let mut delayed_trace = make_trace(1_000);
         let delayed = replay_with(&delayed_trace, capabilities, configure);

@@ -316,6 +316,50 @@ impl EffectExecutor {
         })
     }
 
+    fn apply_motion_grab(
+        &mut self,
+        duration: MotionDuration,
+        target: Option<recipe::RecipeTarget>,
+        end: f64,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let target = target.ok_or(EffectFailure::CaptureUnavailable)?;
+        let current = self.session.load();
+        let address = ControlAddress::new(target.id);
+        if !target.is_current(&current)
+            || !capture_eligible(&address.spec().contextual(&current.controls))
+        {
+            return Err(EffectFailure::CaptureUnavailable);
+        }
+        let clip = self
+            .capture_history
+            .motion_clip(target, duration, end, beat)
+            .map_err(EffectFailure::CaptureHistory)?;
+        let snapshot = self.edit_session_checked(
+            target.id,
+            |snapshot| {
+                if !target.is_current(snapshot) {
+                    return Err(EffectFailure::StaleRecipeTarget);
+                }
+                if snapshot.automation.captures.len() >= MAX_CAPTURES
+                    && !snapshot.automation.captures.contains_key(&address)
+                {
+                    return Err(EffectFailure::CaptureLimit);
+                }
+                Ok(())
+            },
+            |snapshot| {
+                snapshot.automation.captures.insert(address, clip.clone());
+                snapshot.automation.close_editor();
+                Ok(())
+            },
+        )?;
+        self.show_message(format!("Motion Grab {} · queued", duration.beats()));
+        Ok(EffectAcknowledgement::Published {
+            generation: snapshot.generation,
+        })
+    }
+
     fn apply_lane(
         &mut self,
         action: LaneAction,
@@ -795,6 +839,16 @@ impl EffectExecutor {
                 target,
                 end_beat_bits,
             } => self.apply_capture(action, target, f64::from_bits(end_beat_bits), context.beat),
+            InteractionEffect::MotionGrab {
+                duration,
+                target,
+                end_beat_bits,
+            } => self.apply_motion_grab(
+                duration,
+                target,
+                f64::from_bits(end_beat_bits),
+                context.beat,
+            ),
             InteractionEffect::AdjustSelected(delta) => {
                 let id = selected_control(context.selected_control)?;
                 self.execute(LiveEffect::EditControl {

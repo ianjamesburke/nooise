@@ -1172,6 +1172,11 @@ pub(crate) enum InteractionEffect {
         target: Option<super::recipe::RecipeTarget>,
         end_beat_bits: u64,
     },
+    MotionGrab {
+        duration: super::MotionDuration,
+        target: Option<super::recipe::RecipeTarget>,
+        end_beat_bits: u64,
+    },
     Lane {
         action: super::LaneAction,
         target: Option<super::LaneTarget>,
@@ -1979,8 +1984,8 @@ fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> Interac
         || (palette.resume.is_some()
             && matches!(
                 entry,
-                PaletteEntry::Operation(Operation::Capture(
-                    super::CaptureAction::Bypass | super::CaptureAction::Resume
+                PaletteEntry::Operation(Operation::Motion(
+                    super::MotionAction::Bypass | super::MotionAction::Resume
                 ))
             ))
     {
@@ -2030,8 +2035,18 @@ fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEf
 
 fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionEffect {
     match operation {
-        Operation::Capture(action) => InteractionEffect::Capture {
-            action,
+        Operation::Motion(super::MotionAction::Grab(duration)) => InteractionEffect::MotionGrab {
+            duration,
+            target: palette.recipe_target,
+            end_beat_bits: palette.capture_beat_bits,
+        },
+        Operation::Motion(action) => InteractionEffect::Capture {
+            action: match action {
+                super::MotionAction::Bypass => super::CaptureAction::Bypass,
+                super::MotionAction::Resume => super::CaptureAction::Resume,
+                super::MotionAction::Delete => super::CaptureAction::Delete,
+                super::MotionAction::Grab(_) => unreachable!("Grab matches above"),
+            },
             target: palette.recipe_target,
             end_beat_bits: palette.capture_beat_bits,
         },
