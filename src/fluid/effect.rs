@@ -387,7 +387,7 @@ impl EffectExecutor {
         self.message.as_ref().map(|message| message.text.as_str())
     }
 
-    fn show_message(&mut self, text: String) {
+    pub(crate) fn show_message(&mut self, text: String) {
         self.message = Some(EffectMessage {
             text,
             shown_at: Instant::now(),
