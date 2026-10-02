@@ -188,9 +188,10 @@ and MRU behavior retain their existing deliberate ordering.
 3. Done: `Space m` and `/Mute next bar` arm the visible layer's mute at the
    next bar. The small `m`, repeat-to-cancel behavior, production-tick commit,
    and song-code rebasing make its target and cancellation visible.
-4. In progress: `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16` take
-   the finished interval ending when the palette opened and queue it for the
-   next bar. Record, the Motion wire format, and shared lane lifecycle still
+4. In progress: `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16` use
+   their nearest bar downbeat as both history end and loop phase anchor.
+   `Space 1`, `Space 2`, and `Space 4` are the fast paths for one, two, and
+   four bars. Record, the Motion wire format, and shared lane lifecycle still
    need to land together. Do not add overdub.
 5. Only after a second musical action needs it, consider a shared internal
    boundary-action type. State recall is a likely test once marks exist.

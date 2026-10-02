@@ -849,6 +849,11 @@ impl EffectExecutor {
                 f64::from_bits(end_beat_bits),
                 context.beat,
             ),
+            InteractionEffect::MotionGrabSelected(duration) => {
+                let id = selected_control(context.selected_control)?;
+                let target = recipe::RecipeTarget::capture(id, &self.session.load());
+                self.apply_motion_grab(duration, target, context.beat, context.beat)
+            }
             InteractionEffect::AdjustSelected(delta) => {
                 let id = selected_control(context.selected_control)?;
                 self.execute(LiveEffect::EditControl {

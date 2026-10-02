@@ -892,6 +892,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("k", "filter"),
                 ("m", "mute next bar"),
                 ("Space j/k", "this page"),
+                ("Space 1/2/4", "grab 1/2/4 bars"),
             ],
         ],
     ));
@@ -915,7 +916,7 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
         PerformanceSurface::ChooseParameter { .. } => 8,
     };
     let height = desired_height.min(available_height);
-    let width = 34.min(inner.width.saturating_sub(2));
+    let width = 38.min(inner.width.saturating_sub(2));
     let area = Rect::new(
         inner.x + (inner.width.saturating_sub(width)) / 2,
         inner.y + (available_height.saturating_sub(height)) / 2,
@@ -968,7 +969,9 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
                 Span::styled("k ", key_style),
                 Span::styled("Filter ", label_style),
                 Span::styled("m ", key_style),
-                Span::styled("Mute", label_style),
+                Span::styled("Mute ", label_style),
+                Span::styled("1/2/4 ", key_style),
+                Span::styled("Grab", label_style),
             ]),
             single("Esc", "Cancel"),
         ],
@@ -977,7 +980,7 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
             single(&PARAMETERS[0].key.to_string(), PARAMETERS[0].label),
             single(&PARAMETERS[1].key.to_string(), PARAMETERS[1].label),
             single("m", "Mute next bar"),
-            Line::from(""),
+            single("1/2/4", "Grab 1/2/4 bars"),
             single("Esc", "Cancel"),
         ],
     };

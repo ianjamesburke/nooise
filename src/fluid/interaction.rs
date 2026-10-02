@@ -941,6 +941,9 @@ pub(crate) enum Intent {
     JumpToParameter(PerformanceParameter),
     /// Arm or cancel the visible layer's next-bar mute.
     PlanMute,
+    /// Grab recent movement on the visible knob, phase-anchored to its
+    /// nearest bar downbeat.
+    GrabMotion(super::MotionDuration),
     EnterLeadPlay,
     /// A 1-based Lead tone, from the letter row. `hold` is whether the
     /// terminal will report the key's release, so the note can sustain.
@@ -1067,7 +1070,8 @@ impl Intent {
             Self::ActivatePerformance(_) => &[ModeKind::Browsing, ModeKind::Performance],
             Self::SelectPerformanceInstrument { .. }
             | Self::JumpToParameter(_)
-            | Self::PlanMute => &[ModeKind::Performance],
+            | Self::PlanMute
+            | Self::GrabMotion(_) => &[ModeKind::Performance],
         }
     }
 
@@ -1102,6 +1106,7 @@ impl Intent {
             | Self::SelectPerformanceInstrument { .. }
             | Self::JumpToParameter(_)
             | Self::PlanMute
+            | Self::GrabMotion(_)
             | Self::EnterLeadPlay
             | Self::PlayLeadTone { .. }
             | Self::NudgeLead { .. }
@@ -1177,6 +1182,7 @@ pub(crate) enum InteractionEffect {
         target: Option<super::recipe::RecipeTarget>,
         end_beat_bits: u64,
     },
+    MotionGrabSelected(super::MotionDuration),
     Lane {
         action: super::LaneAction,
         target: Option<super::LaneTarget>,
@@ -1943,6 +1949,10 @@ fn update_performance(
             effects.push(InteractionEffect::PlanMute(navigation.mute_target()));
             *next_mode = Some(InteractionMode::Browsing);
         }
+        Intent::GrabMotion(duration) => {
+            effects.push(InteractionEffect::MotionGrabSelected(duration));
+            *next_mode = Some(InteractionMode::Browsing);
+        }
         _ => {}
     }
 }
@@ -2072,6 +2082,7 @@ fn page_for_tab(tab: Tab) -> Page {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fluid::MotionDuration;
 
     fn update(model: InteractionModel, intent: Intent) -> Transition {
         model.update(SemanticAction::press(intent))
@@ -2554,6 +2565,26 @@ mod tests {
     }
 
     #[test]
+    fn leader_motion_grab_targets_the_visible_knob_and_returns_to_browsing() {
+        let model = InteractionModel {
+            mode: InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::ChooseLayer,
+            }),
+            ..InteractionModel::default()
+        };
+
+        let transition = update(model, Intent::GrabMotion(MotionDuration::Beats8));
+
+        assert_eq!(transition.model.mode, InteractionMode::Browsing);
+        assert_eq!(
+            transition.effects,
+            vec![InteractionEffect::MotionGrabSelected(
+                MotionDuration::Beats8
+            )]
+        );
+    }
+
+    #[test]
     fn every_intent_declares_press_repeat_release_behavior() {
         let repeatable = [
             Intent::MoveSelection(1),
@@ -2583,6 +2614,7 @@ mod tests {
             },
             Intent::JumpToParameter(PerformanceParameter::Volume),
             Intent::PlanMute,
+            Intent::GrabMotion(MotionDuration::Beats4),
             Intent::Save,
             Intent::Quit,
         ];

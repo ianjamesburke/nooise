@@ -698,10 +698,36 @@ fn performance_binding(code: &PhysicalKey) -> Option<Intent> {
     PerformanceParameter::from_key(key)
         .map(Intent::JumpToParameter)
         .or_else(|| (key == 'm').then_some(Intent::PlanMute))
+        .or(match key {
+            '1' => Some(Intent::GrabMotion(super::MotionDuration::Beats4)),
+            '2' => Some(Intent::GrabMotion(super::MotionDuration::Beats8)),
+            '4' => Some(Intent::GrabMotion(super::MotionDuration::Beats16)),
+            _ => None,
+        })
         .or_else(|| {
             PerformanceInstrument::from_key(key)
                 .map(|instrument| Intent::SelectPerformanceInstrument { instrument })
         })
+}
+
+#[cfg(test)]
+mod motion_leader_tests {
+    use super::*;
+    use crate::fluid::MotionDuration;
+
+    #[test]
+    fn leader_number_keys_map_to_the_matching_motion_duration() {
+        for (key, duration) in [
+            ('1', MotionDuration::Beats4),
+            ('2', MotionDuration::Beats8),
+            ('4', MotionDuration::Beats16),
+        ] {
+            assert_eq!(
+                performance_binding(&PhysicalKey::Character(key)),
+                Some(Intent::GrabMotion(duration))
+            );
+        }
+    }
 }
 
 /// Arrows select and adjust the visible control, `LEAD_NUDGES` step Lead rows,

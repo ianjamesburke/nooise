@@ -1197,6 +1197,7 @@ mod tests {
             "j\u{2420}Vol",
             "k\u{2420}Filter",
             "m\u{2420}Mute",
+            "1/2/4\u{2420}Grab",
             "Esc\u{2420}\u{2420}Cancel",
         ] {
             assert!(rendered.contains(text), "missing {text:?}:\n{rendered}");

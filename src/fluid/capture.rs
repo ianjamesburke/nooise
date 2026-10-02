@@ -177,6 +177,12 @@ pub(crate) fn capture_ratio(spec: &ControlSpec, value: f32, controls: &FluidCont
     }
 }
 
+/// The bar downbeat a Motion Grab belongs to. Ties choose the earlier bar so
+/// a press exactly halfway through the bar joins the phrase already heard.
+pub(crate) fn nearest_bar_beat(beat: f64) -> f64 {
+    ((beat + 2.0 - f64::EPSILON) / 4.0).floor() * 4.0
+}
+
 struct KnobHistory {
     target: recipe::RecipeTarget,
     initial: f32,
@@ -309,15 +315,18 @@ impl CaptureHistory {
     ///
     /// `CaptureClip` still uses its established 128-sample storage while the
     /// Motion format cut is in progress, so a shorter phrase repeats through
-    /// that backing buffer. The audible period is nevertheless the requested
-    /// duration and every sample keeps the existing eight-per-beat resolution.
+    /// that backing buffer. The named bar downbeat is both the history end
+    /// and phase anchor: a future anchor queues, while a past anchor joins
+    /// the already-running phrase at its current phase.
     pub(crate) fn motion_clip(
         &self,
         target: recipe::RecipeTarget,
         duration: MotionDuration,
         end: f64,
-        now: f64,
+        _now: f64,
     ) -> Result<CaptureClip, CaptureHistoryError> {
+        let anchor = nearest_bar_beat(end);
+        let end = anchor;
         let beats = f64::from(duration.beats());
         let knob = self
             .knobs
@@ -345,11 +354,10 @@ impl CaptureHistory {
                 .map_or(knob.initial, |event| event.1);
             (value.clamp(0.0, 1.0) * 255.0).round() as u8
         });
-        let launch = next_bar_beat(now);
         Ok(CaptureClip {
             samples,
-            origin: launch,
-            launch,
+            origin: anchor,
+            launch: anchor,
             enabled: true,
         })
     }
@@ -430,11 +438,34 @@ mod tests {
             .motion_clip(target, MotionDuration::Beats4, 12.0, 12.0)
             .unwrap();
 
-        assert_eq!(clip.origin, 16.0);
+        assert_eq!(clip.origin, 12.0);
         assert_eq!(clip.samples[0], 255);
         assert_eq!(clip.samples[24], 128);
         assert_eq!(clip.samples[32], clip.samples[0]);
         assert_eq!(clip.samples[56], clip.samples[24]);
+    }
+
+    #[test]
+    fn motion_grab_queues_before_its_nearest_downbeat_and_joins_after_it() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        snapshot.controls.pad.level = 0.0;
+        let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
+        let mut history = CaptureHistory::default();
+        change(&mut history, &mut snapshot, 0.0, 1.0);
+
+        let early = history
+            .motion_clip(target, MotionDuration::Beats4, 3.0, 3.0)
+            .unwrap();
+        assert_eq!(early.launch, 4.0);
+        assert_eq!(early.position(3.99), None);
+        assert_eq!(early.position(4.0), Some(1.0));
+
+        change(&mut history, &mut snapshot, 1.0, 0.5);
+        let late = history
+            .motion_clip(target, MotionDuration::Beats4, 5.0, 5.0)
+            .unwrap();
+        assert_eq!(late.launch, 4.0);
+        assert_eq!(late.position(5.0), Some(128.0 / 255.0));
     }
 
     #[test]

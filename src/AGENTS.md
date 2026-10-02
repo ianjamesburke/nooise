@@ -47,10 +47,12 @@ All engine, terminal UI, and live-control code for the nooise binary.
 ## Local Contracts
 
 - Motion is the palette name for retrospective knob loops. `Motion Grab 4`,
-  `Motion Grab 8`, and `Motion Grab 16` each take the finished recent window
-  ending when the palette opens and start it at the next bar. The existing
-  capture payload remains an internal backing format until Record and the
-  Motion song-format cut land together; do not add public `/capture` controls.
+  `Motion Grab 8`, and `Motion Grab 16` use their nearest bar downbeat as
+  both history end and phase anchor: a future anchor queues, while a past
+  anchor joins at its running phase. `Space 1`, `Space 2`, and `Space 4`
+  reach the same one-, two-, and four-bar grabs. The existing capture payload
+  remains an internal backing format until Record and the Motion song-format
+  cut land together; do not add public `/capture` controls.
 
 - `automation/lifecycle.rs` owns typed `/bypass`, `/resume`, and `/delete` actions on the open LFO/envelope lane. From an automation editor, the palette freezes that lane's control, family, index, module topology, and live-only `automation_revision`; any authored lane-stack change invalidates the target, including delete/re-add, while editor changes, LFO pickups, captures, and unrelated controls do not advance that revision. A stale action publishes nothing and asks the player to reopen `/`. Bypass/resume return to the same editor; delete removes the selected lane and returns to browsing. In browsing, Motion lifecycle actions address the selected knob's loop.
 - LFO and envelope `enabled` defaults true and is independent of amount, editing, randomizing, and lifetime. Bypassed lanes retain their settings and count toward the four-lane family limit. Shared audio/UI summing excludes them; resume joins the current transport phase immediately through the existing de-clicker, and envelope Once does not retrigger. The UI shows a flat bypassed lane and a compact `bypassed · /resume` owner footer at 46x11; automation-owner action failures remain visible. Morphing selects enabled with the structural endpoint. Song record 9 stores only nonzero per-control disabled-lane masks (u16 control ID, four LFO bits, four envelope bits), applied after all lane records decode. Missing records mean enabled; duplicate records/targets, empty/trailing data, out-of-range masks, missing lanes, unknown IDs, and inactive module targets are refused, while retired IDs retain their specific refusal. The live revision never persists.

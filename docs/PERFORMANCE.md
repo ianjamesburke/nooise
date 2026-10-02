@@ -136,6 +136,13 @@ already muted or audible. Repeating
 the saved session state, rebased to the next song's beat zero. Escape leaves a
 pending leader; Space while it is pending is inert.
 
+`Space 1`, `Space 2`, and `Space 4` grab Motion from the selected knob: the
+last one, two, or four bars. A grab belongs to its nearest bar downbeat. When
+that downbeat is ahead, the current value holds until it arrives and the loop
+starts there. When it has passed, the loop joins immediately at the phase it
+would already have reached from that downbeat. The palette keeps the same
+Motion Grab choices.
+
 Volume is the layer's own Level row. Filter is the shared filter module's
 Cutoff, never its Amount: Amount is a detail-only wet/dry mix an added filter
 pins fully wet, so Cutoff is the single knob the leader lands on and `h`/`l` sweep.
