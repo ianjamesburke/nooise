@@ -400,6 +400,7 @@ pub(crate) fn production_ui_loop(
     telemetry: Arc<FluidTelemetry>,
     updates: UpdateNotice,
     auto: AutoControls,
+    chassis_tap: Option<ChassisTapReceiver>,
 ) -> Result<(), Box<dyn Error>> {
     let mut model = interaction::InteractionModel::default();
     let mut effects = EffectExecutor::new(session.live, auto);
@@ -415,6 +416,7 @@ pub(crate) fn production_ui_loop(
     let started = Instant::now();
     let mut last_tick = runtime::Clock::now(&clock);
     let mut quit = false;
+    let mut tap_tempo = TapTempo::default();
 
     while !quit {
         let turn = scheduler.collect_turn(&mut source, &clock)?;
@@ -422,6 +424,16 @@ pub(crate) fn production_ui_loop(
         let tick_due = turn.tick_due;
         let render_due = turn.render_due;
         let events = turn.events;
+        if let Some(receiver) = &chassis_tap {
+            for (count, bpm) in receiver.drain(&mut tap_tempo) {
+                effects.execute(LiveEffect::EditControl {
+                    id: "master.bpm",
+                    edit: ControlEdit::Value(bpm),
+                })?;
+                effects.show_message(format!("● TAP {count} · {bpm:.0} BPM"));
+                scheduler.request_frame();
+            }
+        }
         if events
             .iter()
             .any(|event| matches!(event, runtime::TransportEvent::Resize { .. }))

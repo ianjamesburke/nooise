@@ -5998,7 +5998,24 @@ fn progression_labels_pair_key_and_mood() {
             "Eb · Glow",
             "C · Float",
             "Cm · Deep",
+            "Fm · Hosking",
             "Custom",
+        ]
+    );
+}
+
+#[test]
+fn hosking_progression_moves_from_a_gentle_opening_into_extensions() {
+    let hosking = PROGRESSIONS
+        .iter()
+        .find(|progression| progression.mood == "Hosking")
+        .expect("Hosking is a built-in progression");
+
+    let names: Vec<_> = hosking.chords.iter().map(|chord| chord.name).collect();
+    assert_eq!(
+        names,
+        vec![
+            "Fm7", "Abmaj7/C", "Bbm7", "Db/F", "Fm9/Ab", "Ebadd9/G", "Bbadd9/D", "Fm11/C",
         ]
     );
 }

@@ -40,6 +40,7 @@ use crate::update_check::{UpdateNotice, spawn_update_check};
 mod auto;
 mod automation;
 mod capture;
+mod chassis_tap;
 mod controls;
 mod coordinator;
 mod edit;
@@ -56,6 +57,7 @@ mod planned;
 mod range_epoch;
 mod recipe;
 use capture::*;
+use chassis_tap::*;
 mod registry;
 #[cfg(test)]
 mod replay;
@@ -292,6 +294,12 @@ impl FluidTelemetry {
 
 const APP_ID: &str = "nooise";
 
+#[derive(Clone, Copy)]
+struct LiveStartOptions {
+    start_muted: bool,
+    chassis_tap: bool,
+}
+
 /// Where a bare `--osc` sends: foorm's default listen address.
 pub(crate) const DEFAULT_OSC_TARGET: &str = "127.0.0.1:9000";
 
@@ -299,6 +307,7 @@ pub(crate) fn run(
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
     start_muted: bool,
+    chassis_tap: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
     run_with_song_state(
@@ -306,6 +315,7 @@ pub(crate) fn run(
         osc,
         midi,
         start_muted,
+        chassis_tap,
     )
 }
 
@@ -348,6 +358,7 @@ pub(crate) fn run_with_song_state(
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
     start_muted: bool,
+    chassis_tap: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Interactive start: no morph running. `A` can begin one live, heading
     // toward the built-in states from wherever the user currently is.
@@ -359,7 +370,10 @@ pub(crate) fn run_with_song_state(
         DEFAULT_AUTO_BARS,
         osc,
         midi,
-        start_muted,
+        LiveStartOptions {
+            start_muted,
+            chassis_tap,
+        },
     )
 }
 
@@ -373,6 +387,7 @@ pub(crate) fn run_auto(
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
     start_muted: bool,
+    chassis_tap: bool,
 ) -> Result<(), Box<dyn Error>> {
     let numbers = auto_song_numbers(from)?;
     let mut states = decode_auto_states();
@@ -385,7 +400,18 @@ pub(crate) fn run_auto(
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
         chosen, numbers, bars,
     ))));
-    run_interactive(initial_song, morph, states, bars, osc, midi, start_muted)
+    run_interactive(
+        initial_song,
+        morph,
+        states,
+        bars,
+        osc,
+        midi,
+        LiveStartOptions {
+            start_muted,
+            chassis_tap,
+        },
+    )
 }
 
 /// Play built-in songs by number (`nooise 9`, `nooise 9,10,11`). One song
@@ -399,6 +425,7 @@ pub(crate) fn run_songs(
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
     start_muted: bool,
+    chassis_tap: bool,
 ) -> Result<(), Box<dyn Error>> {
     let all = decode_auto_states();
     if numbers.is_empty() {
@@ -424,7 +451,18 @@ pub(crate) fn run_songs(
         numbers.to_vec(),
         bars,
     ))));
-    run_interactive(initial_song, morph, chosen, bars, osc, midi, start_muted)
+    run_interactive(
+        initial_song,
+        morph,
+        chosen,
+        bars,
+        osc,
+        midi,
+        LiveStartOptions {
+            start_muted,
+            chassis_tap,
+        },
+    )
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
@@ -439,11 +477,15 @@ fn run_interactive(
     auto_bars: u32,
     osc: Option<SocketAddr>,
     midi: MidiConfig<'_>,
-    start_muted: bool,
+    options: LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
-    apply_live_start(&mut initial_song, midi, start_muted);
-    apply_live_start_to_states(&mut auto_states, midi, start_muted);
+    apply_live_start(&mut initial_song, midi, options.start_muted);
+    apply_live_start_to_states(&mut auto_states, midi, options.start_muted);
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
+    let chassis_tap = options
+        .chassis_tap
+        .then(ChassisTapReceiver::start)
+        .transpose()?;
     let session_for_engine = session.clone();
     let morph_for_engine = Arc::clone(&morph);
     let telemetry = Arc::new(FluidTelemetry::default());
@@ -486,6 +528,7 @@ fn run_interactive(
         telemetry,
         updates,
         AutoControls::new(morph, auto_states, auto_bars),
+        chassis_tap,
     );
 
     let restore = terminal.restore();

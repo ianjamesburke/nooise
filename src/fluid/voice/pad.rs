@@ -842,7 +842,7 @@ pub(crate) struct Progression {
 /// loop back and within each half's own loop (chords 4 → 1 and 8 → 5), so a
 /// Chord Count of 4 at Offset 0 or 4 is a complete progression in its own
 /// right (`voice_led_progressions_hold_a_tone_through_every_window`).
-pub(crate) const PROGRESSIONS: [Progression; 14] = [
+pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 0,
         mood: "Drift",
@@ -1069,6 +1069,23 @@ pub(crate) const PROGRESSIONS: [Progression; 14] = [
             chord("Gsus4", [43, 55, 60, 62]),
         ],
         bass: [48, 48, 48, 48, 43, 51, 44, 43],
+    },
+    // F minor, inferred from Jay Hosking's "Crown": a consonant first half
+    // opens into the richer suspended colour of the second.
+    Progression {
+        song_value: 15,
+        mood: "Hosking",
+        chords: [
+            chord("Fm7", [53, 56, 60, 63]),
+            chord("Abmaj7/C", [48, 56, 60, 67]),
+            chord("Bbm7", [46, 53, 56, 61]),
+            chord("Db/F", [53, 56, 61, 65]),
+            chord("Fm9/Ab", [44, 51, 53, 55]),
+            chord("Ebadd9/G", [55, 58, 63, 65]),
+            chord("Bbadd9/D", [50, 53, 58, 60]),
+            chord("Fm11/C", [48, 53, 56, 58]),
+        ],
+        bass: [41, 48, 46, 53, 44, 55, 50, 48],
     },
 ];
 

@@ -80,6 +80,28 @@ retired per-layer gesture. Press the matching
 gesture key to claim a loaded hold and release it, or use Escape to release
 all loaded holds.
 
+## Chassis tap tempo (experimental)
+
+`nooise --chassis-tap` explicitly arms tap tempo from the Apple Silicon
+MacBook's undocumented SPU accelerometer. The feature is macOS-only and
+fails at startup on hardware without that sensor; it does not request
+Accessibility, Input Monitoring, or a persistent system permission.
+
+Tap the chassis or desk beside it at the desired quarter-note pulse. The
+first two accepted impulses establish a phrase; the third and later set BPM
+from the median of the most recent two to four intervals (up to five taps).
+Impulses closer than 250 ms are bounce/noise, and a pause longer than two
+seconds starts a fresh phrase. A confirmation such as `● TAP 4 · 120 BPM`
+appears in the normal footer. The detector runs on its own IOKit run-loop
+thread and posts timestamps to the UI loop; it never runs in the audio
+callback. Applying BPM uses the ordinary `master.bpm` edit path, so beat
+phase is continuous and the result saves with the song while tap history does
+not.
+
+The flag is the arm/disarm boundary. Nothing listens by default, and no new
+keyboard mode or binding is introduced: arrows and Tab remain available as
+usual.
+
 ## Clock stop
 
 Shift+P stops the clock and Shift+P again starts it. It is shifted so a stray
