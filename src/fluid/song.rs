@@ -60,9 +60,9 @@ const DRUNKEN_PHASE_RECORD: u8 = 10;
 /// to transport zero whenever a song code is copied.
 const PLANNED_ACTION_RECORD: u8 = 11;
 const PLANNED_MUTE_TAG: u8 = 0;
-/// The playback period is semantic song state: refuse the sixteen-bar format
-/// rather than silently speeding up saved loops.
-const CAPTURE_WIRE_VERSION: u8 = 3;
+/// Motion owns its true phrase length. The former fixed sixteen-beat capture
+/// payload is refused rather than reinterpreted as a shorter loop.
+const CAPTURE_WIRE_VERSION: u8 = 4;
 const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
@@ -172,7 +172,7 @@ impl fmt::Display for SongCodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPlannedAction => write!(f, "song code has an invalid planned action"),
-            Self::InvalidCapture => write!(f, "song code has an invalid captured loop"),
+            Self::InvalidCapture => write!(f, "song code has invalid Motion data"),
             Self::InvalidLaneBypass => write!(f, "song code has invalid lane bypass data"),
             Self::MissingPrefix => write!(f, "song code must start with {CODE_PREFIX}"),
             Self::InvalidBase64 => write!(f, "song code is not valid base64url"),
@@ -303,10 +303,12 @@ pub(crate) fn encode_song_code_at_epoch(
             let id = song_id_index(address.id())
                 .ok_or(SongCodeError::UnregisteredControl(address.id()))?;
             captures.extend_from_slice(&id.to_le_bytes());
+            captures.push(motion_duration_tag(clip.duration));
             captures.push(u8::from(clip.enabled));
             captures.extend_from_slice(&clip.origin.to_le_bytes());
             captures.extend_from_slice(&clip.launch.to_le_bytes());
-            captures.extend_from_slice(&clip.samples);
+            captures.push(clip.duration.samples() as u8);
+            captures.extend_from_slice(&clip.samples[..clip.duration.samples()]);
         }
         write_record(CAPTURE_RECORD, &captures, &mut bytes)?;
     }
@@ -666,7 +668,7 @@ mod lane_bypass_codec_tests {
 
 fn validate_capture(clip: &super::CaptureClip) -> Result<(), SongCodeError> {
     if !clip.origin.is_finite()
-        || !(-super::CAPTURE_BEATS..=0.0).contains(&clip.origin)
+        || !(-f64::from(clip.duration.beats())..=0.0).contains(&clip.origin)
         || !clip.launch.is_finite()
         || !(0.0..=4.0).contains(&clip.launch)
     {
@@ -675,16 +677,36 @@ fn validate_capture(clip: &super::CaptureClip) -> Result<(), SongCodeError> {
     Ok(())
 }
 
+fn motion_duration_tag(duration: super::MotionDuration) -> u8 {
+    match duration {
+        super::MotionDuration::Beats4 => 0,
+        super::MotionDuration::Beats8 => 1,
+        super::MotionDuration::Beats16 => 2,
+    }
+}
+
+fn motion_duration_from_tag(tag: u8) -> Option<super::MotionDuration> {
+    match tag {
+        0 => Some(super::MotionDuration::Beats4),
+        1 => Some(super::MotionDuration::Beats8),
+        2 => Some(super::MotionDuration::Beats16),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod capture_codec_tests {
     use super::*;
 
     fn payload(id: &str) -> Vec<u8> {
+        let duration = super::super::MotionDuration::Beats16;
         let mut payload = vec![CAPTURE_WIRE_VERSION, 1];
         payload.extend_from_slice(&song_id_index(id).unwrap().to_le_bytes());
+        payload.push(motion_duration_tag(duration));
         payload.push(1);
         payload.extend_from_slice(&0.0f64.to_le_bytes());
         payload.extend_from_slice(&0.0f64.to_le_bytes());
+        payload.push(duration.samples() as u8);
         payload.extend_from_slice(&[128; super::super::CAPTURE_SAMPLES]);
         payload
     }
@@ -704,13 +726,16 @@ mod capture_codec_tests {
         let original = payload("pad.level");
         assert!(decode(&original).is_ok());
         let mut invalid = original.clone();
-        invalid[4] = 2;
+        invalid[4] = 3;
         assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
         invalid = original.clone();
-        invalid[5..13].copy_from_slice(&f64::NAN.to_le_bytes());
+        invalid[5] = 2;
         assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
         invalid = original.clone();
-        invalid[13..21].copy_from_slice(&5.0f64.to_le_bytes());
+        invalid[6..14].copy_from_slice(&f64::NAN.to_le_bytes());
+        assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
+        invalid = original.clone();
+        invalid[14..22].copy_from_slice(&5.0f64.to_le_bytes());
         assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
         invalid = original.clone();
         invalid[1] = 2;
@@ -741,9 +766,9 @@ mod capture_codec_tests {
     }
 
     #[test]
-    fn sixteen_bar_capture_records_refuse_instead_of_changing_duration() {
+    fn legacy_capture_records_refuse_instead_of_changing_duration() {
         let mut old = payload("pad.level");
-        old[0] = 2;
+        old[0] = 3;
         assert_eq!(decode(&old).err(), Some(SongCodeError::InvalidCapture));
     }
 }
@@ -763,6 +788,8 @@ fn read_captures(payload: &[u8], automation: &mut AutomationState) -> Result<(),
         if !seen.insert(index) {
             return Err(SongCodeError::InvalidCapture);
         }
+        let duration =
+            motion_duration_from_tag(reader.u8()?).ok_or(SongCodeError::InvalidCapture)?;
         let enabled = match reader.u8()? {
             0 => false,
             1 => true,
@@ -773,9 +800,13 @@ fn read_captures(payload: &[u8], automation: &mut AutomationState) -> Result<(),
         let origin = f64::from_le_bytes(anchor);
         anchor.copy_from_slice(reader.bytes(8)?);
         let launch = f64::from_le_bytes(anchor);
+        if reader.u8()? as usize != duration.samples() {
+            return Err(SongCodeError::InvalidCapture);
+        }
         let mut samples = [0; super::CAPTURE_SAMPLES];
-        samples.copy_from_slice(reader.bytes(super::CAPTURE_SAMPLES)?);
+        samples[..duration.samples()].copy_from_slice(reader.bytes(duration.samples())?);
         let clip = super::CaptureClip {
+            duration,
             samples,
             origin,
             launch,

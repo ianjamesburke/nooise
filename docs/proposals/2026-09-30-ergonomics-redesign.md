@@ -143,11 +143,11 @@ player the current value. It does not guess a new recording range or silently
 replace the loop. A player chooses Record to replace it. During an armed or
 recording Motion, those edits become the recorded movement.
 
-The first version allows one Motion per target and no more than four live
-Motion loops. It excludes overdub, relative/additive movement, multiple Motion
-lanes on one knob, and a leader binding. Motion begins palette-only because its
-duration choice and lifecycle need to be played before they deserve a compact
-sentence.
+The first version allows one Motion per target and up to sixteen live Motion
+loops. It excludes overdub, relative/additive movement, and multiple
+Motion lanes on one knob. `Space 1`, `Space 2`, and `Space 4` are the fast
+paths for one-, two-, and four-bar Grab; the palette retains the explicit
+Motion choices.
 
 ## State and persistence
 
@@ -191,8 +191,10 @@ and MRU behavior retain their existing deliberate ordering.
 4. In progress: `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16` use
    their nearest bar downbeat as both history end and loop phase anchor.
    `Space 1`, `Space 2`, and `Space 4` are the fast paths for one, two, and
-   four bars. Record, the Motion wire format, and shared lane lifecycle still
-   need to land together. Do not add overdub.
+   four bars. The Motion wire format now stores the real duration and only its
+   samples, refusing legacy Capture payloads rather than reinterpreting them.
+   The loop holds its terminal sample until its next boundary. Record and a
+   shared lane lifecycle still need to land together. Do not add overdub.
 5. Only after a second musical action needs it, consider a shared internal
    boundary-action type. State recall is a likely test once marks exist.
 

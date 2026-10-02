@@ -2856,6 +2856,7 @@ fn transport_restart_restarts_captured_loops_and_live_auto_from_beat_zero() {
     automation.captures.insert(
         address,
         CaptureClip {
+            duration: MotionDuration::Beats16,
             samples: [127; CAPTURE_SAMPLES],
             origin: 100.0,
             launch: 100.0,

@@ -1352,6 +1352,7 @@ mod tests {
             snapshot.automation.captures.insert(
                 address,
                 CaptureClip {
+                    duration: MotionDuration::Beats16,
                     samples: [128; CAPTURE_SAMPLES],
                     origin: 0.0,
                     launch: 0.0,
@@ -1376,25 +1377,30 @@ mod tests {
     #[test]
     fn capture_limit_refuses_new_target_but_allows_replacement_without_publication_on_failure() {
         let mut executor = executor();
-        let ids = [
-            "pad.level",
-            "tonal.level",
-            "lead.level",
-            "bass.level",
-            "kick.level",
-        ];
-        for id in ids {
-            executor
-                .execute_interaction(
-                    InteractionEffect::CommitNumeric(20.0),
-                    &InteractionExecutionContext {
-                        selected_control: Some(id),
-                        beat: 1.0,
-                    },
-                )
-                .unwrap();
-        }
-        for (index, id) in ids.into_iter().enumerate() {
+        let controls = executor.session.load().controls.clone();
+        let ids: Vec<_> = all_specs()
+            .filter(|spec| {
+                matches!(
+                    spec.contextual(&controls).kind,
+                    ControlKind::Gain | ControlKind::Continuous
+                ) && recipe::RecipeTarget::capture(spec.id, &executor.session.load()).is_some()
+            })
+            .map(|spec| spec.id)
+            .take(MAX_CAPTURES + 1)
+            .collect();
+        assert_eq!(ids.len(), MAX_CAPTURES + 1);
+        for (index, id) in ids.iter().copied().enumerate() {
+            for value in [20.0, 21.0] {
+                executor
+                    .execute_interaction(
+                        InteractionEffect::CommitNumeric(value),
+                        &InteractionExecutionContext {
+                            selected_control: Some(id),
+                            beat: 1.0,
+                        },
+                    )
+                    .unwrap();
+            }
             let target = recipe::RecipeTarget::capture(id, &executor.session.load());
             let generation = executor.session.load().generation;
             let result = executor.apply_capture(CaptureAction::Capture, target, 16.0, 16.0);
@@ -1402,10 +1408,20 @@ mod tests {
                 assert_eq!(result, Err(EffectFailure::CaptureLimit));
                 assert_eq!(executor.session.load().generation, generation);
             } else {
-                result.unwrap();
+                result.unwrap_or_else(|error| panic!("{id}: {error:?}"));
             }
         }
-        let target = recipe::RecipeTarget::capture("pad.level", &executor.session.load());
+        let replacement = ids[0];
+        executor
+            .execute_interaction(
+                InteractionEffect::CommitNumeric(22.0),
+                &InteractionExecutionContext {
+                    selected_control: Some(replacement),
+                    beat: 1.0,
+                },
+            )
+            .unwrap();
+        let target = recipe::RecipeTarget::capture(replacement, &executor.session.load());
         executor
             .apply_capture(CaptureAction::Capture, target, 16.0, 17.0)
             .unwrap();

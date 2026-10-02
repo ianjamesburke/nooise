@@ -140,8 +140,10 @@ pending leader; Space while it is pending is inert.
 last one, two, or four bars. A grab belongs to its nearest bar downbeat. When
 that downbeat is ahead, the current value holds until it arrives and the loop
 starts there. When it has passed, the loop joins immediately at the phase it
-would already have reached from that downbeat. The palette keeps the same
-Motion Grab choices.
+would already have reached from that downbeat. Its last sampled value holds
+through the remainder of its real one-, two-, or four-bar phrase; only the
+following downbeat starts the next pass through the existing de-clicker. The
+palette keeps the same Motion Grab choices.
 
 Volume is the layer's own Level row. Filter is the shared filter module's
 Cutoff, never its Amount: Amount is a detail-only wet/dry mix an added filter

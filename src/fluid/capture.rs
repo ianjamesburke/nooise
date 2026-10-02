@@ -1,4 +1,4 @@
-//! Retrospective manual-knob history and transport-aligned sixteen-beat loops.
+//! Retrospective manual-knob history and transport-aligned Motion loops.
 
 use std::collections::VecDeque;
 
@@ -7,7 +7,9 @@ use super::*;
 
 pub(crate) const CAPTURE_BEATS: f64 = 16.0;
 pub(crate) const CAPTURE_SAMPLES: usize = 128;
-pub(crate) const MAX_CAPTURES: usize = 4;
+/// Operational ceiling for simultaneously saved Motion phrases. Playback is
+/// map-backed; this bounds only deliberately admitted state and song payload.
+pub(crate) const MAX_CAPTURES: usize = 16;
 const HISTORY_TARGETS: usize = 16;
 /// Two full phrases let the player keep the completed phrase through the next.
 const HISTORY_BEATS: f64 = CAPTURE_BEATS * 2.0;
@@ -23,8 +25,7 @@ pub(crate) enum MotionDuration {
     Beats16,
 }
 
-/// A palette-visible Motion command. Capture remains an implementation name
-/// only until its on-disk record is replaced; players see one automation lane.
+/// A palette-visible Motion command. Players see one automation lane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MotionAction {
     Grab(MotionDuration),
@@ -113,6 +114,8 @@ impl CaptureAction {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CaptureClip {
+    /// The actual phrase length. Samples outside this phrase are unused.
+    pub(crate) duration: MotionDuration,
     pub(crate) samples: [u8; CAPTURE_SAMPLES],
     /// Loop phase anchor and admission beat are distinct: resume keeps phase.
     pub(crate) origin: f64,
@@ -134,11 +137,20 @@ impl CaptureClip {
         if !self.enabled || beat < self.launch {
             return None;
         }
-        let position =
-            (beat - self.origin).rem_euclid(CAPTURE_BEATS) * CAPTURE_SAMPLES as f64 / CAPTURE_BEATS;
-        let index = position.floor() as usize % CAPTURE_SAMPLES;
+        let sample_count = self.duration.samples();
+        let position = (beat - self.origin).rem_euclid(f64::from(self.duration.beats()))
+            * sample_count as f64
+            / f64::from(self.duration.beats());
+        let index = position.floor() as usize % sample_count;
         let a = f32::from(self.samples[index]);
-        let b = f32::from(self.samples[(index + 1) % CAPTURE_SAMPLES]);
+        // A captured phrase holds its terminal value through its final sample.
+        // The de-clicker, not sample interpolation, handles the reset at the
+        // next phrase downbeat.
+        let b = f32::from(if index + 1 < sample_count {
+            self.samples[index + 1]
+        } else {
+            self.samples[index]
+        });
         Some((a + (b - a) * position.fract() as f32) / 255.0)
     }
 
@@ -153,7 +165,7 @@ impl CaptureClip {
     }
 
     pub(crate) fn rebase(&mut self, beat: f64) {
-        self.origin = -(beat - self.origin).rem_euclid(CAPTURE_BEATS);
+        self.origin = -(beat - self.origin).rem_euclid(f64::from(self.duration.beats()));
         self.launch = (self.launch - beat).max(0.0);
     }
 }
@@ -304,6 +316,7 @@ impl CaptureHistory {
         });
         let launch = next_bar_beat(now);
         Ok(CaptureClip {
+            duration: MotionDuration::Beats16,
             samples,
             origin: launch,
             launch,
@@ -344,8 +357,10 @@ impl CaptureHistory {
             return Err(CaptureHistoryError::NoMovement);
         }
         let samples = std::array::from_fn(|index| {
-            let phrase_index = index % duration.samples();
-            let beat = end - beats + phrase_index as f64 / 8.0;
+            if index >= duration.samples() {
+                return 0;
+            }
+            let beat = end - beats + index as f64 / 8.0;
             let value = knob
                 .events
                 .iter()
@@ -355,6 +370,7 @@ impl CaptureHistory {
             (value.clamp(0.0, 1.0) * 255.0).round() as u8
         });
         Ok(CaptureClip {
+            duration,
             samples,
             origin: anchor,
             launch: anchor,
@@ -426,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn motion_grab_uses_the_recent_requested_window_and_repeats_its_phrase() {
+    fn motion_grab_uses_only_its_requested_duration() {
         let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
         snapshot.controls.pad.level = 0.0;
         let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
@@ -439,10 +455,29 @@ mod tests {
             .unwrap();
 
         assert_eq!(clip.origin, 12.0);
+        assert_eq!(clip.duration, MotionDuration::Beats4);
         assert_eq!(clip.samples[0], 255);
         assert_eq!(clip.samples[24], 128);
-        assert_eq!(clip.samples[32], clip.samples[0]);
-        assert_eq!(clip.samples[56], clip.samples[24]);
+        assert_eq!(clip.samples[32], 0);
+        assert_eq!(clip.samples[56], 0);
+    }
+
+    #[test]
+    fn motion_grab_holds_its_terminal_value_until_the_loop_boundary() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        snapshot.controls.pad.level = 0.0;
+        let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
+        let mut history = CaptureHistory::default();
+        change(&mut history, &mut snapshot, 7.0, 1.0);
+
+        let clip = history
+            .motion_clip(target, MotionDuration::Beats8, 7.0, 7.0)
+            .unwrap();
+
+        assert_eq!(clip.origin, 8.0);
+        assert_eq!(clip.position(15.0), Some(1.0));
+        assert_eq!(clip.position(15.99), Some(1.0));
+        assert_eq!(clip.position(16.0), Some(0.0));
     }
 
     #[test]
@@ -471,6 +506,7 @@ mod tests {
     #[test]
     fn capture_interpolates_within_the_beat_and_rebases_live_pending_and_bypassed_phase() {
         let mut clip = CaptureClip {
+            duration: MotionDuration::Beats16,
             samples: [0; CAPTURE_SAMPLES],
             origin: 20.0,
             launch: 20.0,
@@ -587,6 +623,7 @@ mod tests {
         automation.captures.insert(
             address,
             CaptureClip {
+                duration: MotionDuration::Beats16,
                 samples: [51; CAPTURE_SAMPLES],
                 origin: 0.0,
                 launch: 0.0,
@@ -646,6 +683,7 @@ mod tests {
             song.automation.captures.insert(
                 ControlAddress::new("pad.level"),
                 CaptureClip {
+                    duration: MotionDuration::Beats16,
                     samples: std::array::from_fn(|index| if index < 64 { 0 } else { 255 }),
                     origin: 4.0,
                     launch: 4.0,
@@ -696,14 +734,26 @@ mod tests {
         song.controls.modules.pad[0] = preset_slot("delay", 0.8);
         song.controls.modules.pad[1] = preset_slot("room", 0.8);
         song.controls.modules.bass[0] = preset_slot("compression", 0.8);
-        for (index, id) in ["pad.level", "tonal.level", "lead.level", "bass.level"]
-            .into_iter()
-            .enumerate()
+        for (index, (id, duration)) in [
+            ("pad.level", MotionDuration::Beats4),
+            ("tonal.level", MotionDuration::Beats8),
+            ("lead.level", MotionDuration::Beats16),
+            ("bass.level", MotionDuration::Beats4),
+        ]
+        .into_iter()
+        .enumerate()
         {
             song.automation.captures.insert(
                 ControlAddress::new(id),
                 CaptureClip {
-                    samples: std::array::from_fn(|sample| (sample * 37) as u8),
+                    duration,
+                    samples: std::array::from_fn(|sample| {
+                        if sample < duration.samples() {
+                            (sample * 37) as u8
+                        } else {
+                            0
+                        }
+                    }),
                     origin: -(index as f64) - 0.25,
                     launch: index as f64,
                     enabled: index != 2,

@@ -310,7 +310,8 @@ impl<'a> UiViewModel<'a> {
             (true, false) => "■ STOPPED · Shift+P play".to_string(),
             (false, true) => gesture_activity_line(&gestures),
             (false, false) if capture.is_some() => format!(
-                "↻ 16 beats · {} · / bypass resume delete",
+                "↻ {} beats · {} · / bypass resume delete",
+                capture.map_or(0, |clip| clip.duration.beats()),
                 capture.map_or("", |clip| clip.status(telemetry.beat))
             ),
             (false, false) if presentation.gesture_holds_available => gesture_idle_hint(),
