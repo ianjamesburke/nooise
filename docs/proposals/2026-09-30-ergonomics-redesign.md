@@ -118,9 +118,10 @@ LFO and envelope.
 A Motion lane has one target, one duration, phase, enabled state, and a
 launch point. Gain, continuous, and timing controls use eight position
 samples per beat. Discrete controls use changes on a 1/256-beat grid,
-with an initial value and held tail. Inline Steps LFO rows are addressed
-by parent control, LFO lane, and step row (count, glide, or value); count
-uses discrete changes while glide and values use samples. A Lead pitch
+with an initial value and held tail. LFO and envelope editor fields are
+addressed by parent control, lane family, index, and field; Steps count,
+glide, and values use the same path. Shape, trigger, and count use discrete
+changes while continuous fields use samples. A Lead pitch
 or Pads trigger choice never passes through an invalid intermediate state.
 
 Sampled phrase sizes are:
@@ -199,8 +200,8 @@ and MRU behavior retain their existing deliberate ordering.
    `Space 1`, `Space 2`, and `Space 4` are the fast paths for one, two, and
    four bars. The Motion wire format stores the real duration and either its
    active samples or timed events, refusing legacy Capture payloads rather
-   than reinterpreting them. Registry controls and Steps LFO count, glide,
-   and value rows can each carry a loop. The terminal value holds until its
+   than reinterpreting them. Registry controls and every LFO/envelope editor
+   field can each carry a loop. The terminal value holds until its
    next boundary. Record and a
    shared lane lifecycle still need to land together. Do not add overdub.
 5. Only after a second musical action needs it, consider a shared internal

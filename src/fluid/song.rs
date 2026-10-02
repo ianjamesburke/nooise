@@ -17,12 +17,13 @@ use super::range_epoch::{CURRENT_RANGE_EPOCH, DRUNKEN_WAVE_EPOCH, stale_modulati
 use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
-    AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EnvTrigger,
-    EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState,
-    LfoRoute, LfoShape, MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
-    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES,
-    ModKind, ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, PlannedAction, Step, StepMotionAddress,
-    StepTarget, TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
+    AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO,
+    EditorMotionAddress, EditorMotionField, EnvField, EnvTrigger, EnvelopeRoute, FluidControls,
+    GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState, LfoField, LfoRoute, LfoShape,
+    MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
+    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField,
+    MuteState, PAD_RHYTHM_ROWS, PlannedAction, Step, StepTarget, TAB_COUNT, Tab, all_specs,
+    parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -53,13 +54,14 @@ const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
 /// state; the swing value itself is refused as `RetiredControl`.
 const RETIRED_PAD_SWING_ROW: u8 = 1 << 1;
 const CAPTURE_RECORD: u8 = 8;
-const STEP_MOTION_RECORD: u8 = 12;
 const LANE_BYPASS_RECORD: u8 = 9;
 /// Beat offset that lets a saved Drunken wave resume its phrase position.
 const DRUNKEN_PHASE_RECORD: u8 = 10;
 /// One planned boundary action. It stores its remaining beat offset, rebased
 /// to transport zero whenever a song code is copied.
 const PLANNED_ACTION_RECORD: u8 = 11;
+/// Addressed Motion on LFO, envelope, and inline Steps editor fields.
+const EDITOR_MOTION_RECORD: u8 = 12;
 const PLANNED_MUTE_TAG: u8 = 0;
 /// Motion owns its true phrase length. The former fixed sixteen-beat capture
 /// payload is refused rather than reinterpreted as a shorter loop.
@@ -289,9 +291,9 @@ pub(crate) fn encode_song_code_at_epoch(
     if !bypass.is_empty() {
         write_record(LANE_BYPASS_RECORD, &bypass, &mut bytes)?;
     }
-    if !song.automation.captures.is_empty() || !song.automation.step_captures.is_empty() {
+    if !song.automation.captures.is_empty() || !song.automation.editor_captures.is_empty() {
         let mut captures = Vec::new();
-        if song.automation.captures.len() + song.automation.step_captures.len()
+        if song.automation.captures.len() + song.automation.editor_captures.len()
             > super::MAX_CAPTURES
         {
             return Err(SongCodeError::InvalidCapture);
@@ -315,23 +317,23 @@ pub(crate) fn encode_song_code_at_epoch(
         }
         write_record(CAPTURE_RECORD, &captures, &mut bytes)?;
     }
-    if !song.automation.step_captures.is_empty() {
-        let mut steps = vec![1, song.automation.step_captures.len() as u8];
-        if song.automation.captures.len() + song.automation.step_captures.len()
+    if !song.automation.editor_captures.is_empty() {
+        let mut fields = vec![2, song.automation.editor_captures.len() as u8];
+        if song.automation.captures.len() + song.automation.editor_captures.len()
             > super::MAX_CAPTURES
         {
             return Err(SongCodeError::InvalidCapture);
         }
-        for (target, clip) in &song.automation.step_captures {
-            validate_step_motion_target(*target, clip, &song.automation)?;
+        for (target, clip) in &song.automation.editor_captures {
+            validate_editor_motion_target(*target, clip, &song.automation)?;
             let id = song_id_index(target.control.id())
                 .ok_or(SongCodeError::UnregisteredControl(target.control.id()))?;
-            steps.extend_from_slice(&id.to_le_bytes());
-            steps.push(target.lane_index as u8);
-            steps.push(step_motion_tag(target.target));
-            write_motion_clip(clip, &mut steps);
+            fields.extend_from_slice(&id.to_le_bytes());
+            fields.push(target.lane_index as u8);
+            fields.push(editor_motion_tag(target.target));
+            write_motion_clip(clip, &mut fields);
         }
-        write_record(STEP_MOTION_RECORD, &steps, &mut bytes)?;
+        write_record(EDITOR_MOTION_RECORD, &fields, &mut bytes)?;
     }
 
     if let Some(sequence) = &song.tonal_sequence {
@@ -420,7 +422,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut pad_rhythm_rows_record_seen = false;
     let mut drunken_phase_record_seen = false;
     let mut capture_record_seen = false;
-    let mut step_motion_record_seen = false;
+    let mut editor_motion_record_seen = false;
     let mut planned_action_record_seen = false;
     let mut lane_bypass = None;
     let mut epoch = 0;
@@ -442,12 +444,12 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 capture_record_seen = true;
                 read_captures(payload, &mut song.automation)?;
             }
-            STEP_MOTION_RECORD => {
-                if step_motion_record_seen {
+            EDITOR_MOTION_RECORD => {
+                if editor_motion_record_seen {
                     return Err(SongCodeError::InvalidCapture);
                 }
-                step_motion_record_seen = true;
-                read_step_motion(payload, &mut song.automation)?;
+                editor_motion_record_seen = true;
+                read_editor_motion(payload, &mut song.automation)?;
             }
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
             AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
@@ -530,11 +532,12 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
             return Err(SongCodeError::InvalidCapture);
         }
     }
-    if song.automation.captures.len() + song.automation.step_captures.len() > super::MAX_CAPTURES {
+    if song.automation.captures.len() + song.automation.editor_captures.len() > super::MAX_CAPTURES
+    {
         return Err(SongCodeError::InvalidCapture);
     }
-    for (target, clip) in &song.automation.step_captures {
-        validate_step_motion_target(*target, clip, &song.automation)?;
+    for (target, clip) in &song.automation.editor_captures {
+        validate_editor_motion_target(*target, clip, &song.automation)?;
     }
     Ok((song, epoch))
 }
@@ -747,35 +750,58 @@ fn write_motion_clip(clip: &super::CaptureClip, bytes: &mut Vec<u8>) {
     }
 }
 
-fn step_motion_tag(target: StepTarget) -> u8 {
+fn editor_motion_tag(target: EditorMotionField) -> u8 {
     match target {
-        StepTarget::Count => 0,
-        StepTarget::Glide => 1,
-        StepTarget::Value(index) => (index + 2) as u8,
+        EditorMotionField::Step(StepTarget::Count) => 0,
+        EditorMotionField::Step(StepTarget::Glide) => 1,
+        EditorMotionField::Step(StepTarget::Value(index)) => (index + 2) as u8,
+        EditorMotionField::Lfo(LfoField::Amount) => 18,
+        EditorMotionField::Lfo(LfoField::Interval) => 19,
+        EditorMotionField::Lfo(LfoField::Offset) => 20,
+        EditorMotionField::Lfo(LfoField::Shape) => 21,
+        EditorMotionField::Envelope(EnvField::Amount) => 22,
+        EditorMotionField::Envelope(EnvField::Attack) => 23,
+        EditorMotionField::Envelope(EnvField::Decay) => 24,
+        EditorMotionField::Envelope(EnvField::Trigger) => 25,
     }
 }
 
-fn step_motion_from_tag(tag: u8) -> Option<StepTarget> {
+fn editor_motion_from_tag(tag: u8) -> Option<EditorMotionField> {
     match tag {
-        0 => Some(StepTarget::Count),
-        1 => Some(StepTarget::Glide),
-        2..=17 => Some(StepTarget::Value(usize::from(tag - 2))),
+        0 => Some(EditorMotionField::Step(StepTarget::Count)),
+        1 => Some(EditorMotionField::Step(StepTarget::Glide)),
+        2..=17 => Some(EditorMotionField::Step(StepTarget::Value(usize::from(
+            tag - 2,
+        )))),
+        18 => Some(EditorMotionField::Lfo(LfoField::Amount)),
+        19 => Some(EditorMotionField::Lfo(LfoField::Interval)),
+        20 => Some(EditorMotionField::Lfo(LfoField::Offset)),
+        21 => Some(EditorMotionField::Lfo(LfoField::Shape)),
+        22 => Some(EditorMotionField::Envelope(EnvField::Amount)),
+        23 => Some(EditorMotionField::Envelope(EnvField::Attack)),
+        24 => Some(EditorMotionField::Envelope(EnvField::Decay)),
+        25 => Some(EditorMotionField::Envelope(EnvField::Trigger)),
         _ => None,
     }
 }
 
-fn validate_step_motion_target(
-    target: StepMotionAddress,
+fn validate_editor_motion_target(
+    target: EditorMotionAddress,
     clip: &super::CaptureClip,
     automation: &AutomationState,
 ) -> Result<(), SongCodeError> {
     validate_capture(clip)?;
     if target.lane_index >= MAX_AUTOMATION_LANES_PER_KIND
-        || matches!(target.target, StepTarget::Value(index) if index >= MAX_LFO_STEPS)
-        || (target.target == StepTarget::Count) != !clip.events.is_empty()
-        || automation
-            .route_at(target.control, target.lane_index)
-            .is_none()
+        || matches!(target.target, EditorMotionField::Step(StepTarget::Value(index)) if index >= MAX_LFO_STEPS)
+        || target.target.is_discrete() != !clip.events.is_empty()
+        || match target.target.kind() {
+            ModKind::Lfo => automation
+                .route_at(target.control, target.lane_index)
+                .is_none(),
+            ModKind::Envelope => automation
+                .envelope_at(target.control, target.lane_index)
+                .is_none(),
+        }
     {
         return Err(SongCodeError::InvalidCapture);
     }
@@ -910,9 +936,12 @@ fn read_captures(payload: &[u8], automation: &mut AutomationState) -> Result<(),
     Ok(())
 }
 
-fn read_step_motion(payload: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
+fn read_editor_motion(
+    payload: &[u8],
+    automation: &mut AutomationState,
+) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(payload);
-    if reader.u8()? != 1 {
+    if reader.u8()? != 2 {
         return Err(SongCodeError::InvalidCapture);
     }
     let count = reader.u8()? as usize;
@@ -924,13 +953,13 @@ fn read_step_motion(payload: &[u8], automation: &mut AutomationState) -> Result<
         if spec_by_id(id).is_none() {
             return Err(SongCodeError::RetiredControl(id));
         }
-        let target = StepMotionAddress {
+        let target = EditorMotionAddress {
             control: ControlAddress::new(id),
             lane_index: usize::from(reader.u8()?),
-            target: step_motion_from_tag(reader.u8()?).ok_or(SongCodeError::InvalidCapture)?,
+            target: editor_motion_from_tag(reader.u8()?).ok_or(SongCodeError::InvalidCapture)?,
         };
         let clip = read_motion_clip(&mut reader)?;
-        if automation.step_captures.insert(target, clip).is_some() {
+        if automation.editor_captures.insert(target, clip).is_some() {
             return Err(SongCodeError::InvalidCapture);
         }
     }

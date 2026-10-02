@@ -67,7 +67,7 @@ impl EnvTrigger {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum EnvField {
     Amount,
     Attack,
@@ -76,6 +76,21 @@ pub(crate) enum EnvField {
 }
 
 impl EnvField {
+    pub(crate) fn motion_position(self, route: &EnvelopeRoute) -> f32 {
+        self.scale().ratio(route.field_value(self))
+    }
+
+    pub(crate) fn apply_motion_position(self, route: &mut EnvelopeRoute, position: f32) {
+        let value = if self == Self::Trigger {
+            self.scale().value_at(position).unwrap_or(0.0).round()
+        } else {
+            self.spec().value_at_ratio(position)
+        };
+        match self {
+            Self::Trigger => route.trigger = EnvTrigger::from_index(value),
+            _ => route.write_field(self, value),
+        }
+    }
     pub(crate) const ALL: [EnvField; 4] = [Self::Amount, Self::Attack, Self::Decay, Self::Trigger];
 
     /// The `FlippedUnits` sub-key for a field that carries a time base;

@@ -993,7 +993,7 @@ mod tests {
             mode: InteractionMode::Palette(PaletteMode {
                 capture_beat_bits: 0,
                 recipe_target: None,
-                step_motion_target: None,
+                editor_motion_target: None,
                 lane_target: None,
                 planned_tab: None,
                 query: "bass".to_string(),

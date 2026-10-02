@@ -176,7 +176,7 @@ impl LiveSession {
                     module_slot_row(address.id(), &next.controls)
                         .is_some_and(|(after, _)| before.kind == after.kind)
                 });
-                next.automation.step_captures.retain(|target, _| {
+                next.automation.editor_captures.retain(|target, _| {
                     let Some((before, _)) = module_slot_row(target.control.id(), &current.controls)
                     else {
                         return true;

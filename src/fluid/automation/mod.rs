@@ -85,10 +85,47 @@ impl PartialOrd for ControlAddress {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct StepMotionAddress {
+pub(crate) enum EditorMotionField {
+    Lfo(LfoField),
+    Envelope(EnvField),
+    Step(StepTarget),
+}
+
+impl EditorMotionField {
+    pub(crate) fn kind(self) -> ModKind {
+        match self {
+            Self::Lfo(_) | Self::Step(_) => ModKind::Lfo,
+            Self::Envelope(_) => ModKind::Envelope,
+        }
+    }
+
+    pub(crate) fn is_discrete(self) -> bool {
+        matches!(
+            self,
+            Self::Lfo(LfoField::Shape)
+                | Self::Envelope(EnvField::Trigger)
+                | Self::Step(StepTarget::Count)
+        )
+    }
+
+    pub(crate) fn position(
+        self,
+        lfo: Option<&LfoRoute>,
+        envelope: Option<&EnvelopeRoute>,
+    ) -> Option<f32> {
+        match self {
+            Self::Lfo(field) => Some(field.motion_position(lfo?)),
+            Self::Envelope(field) => Some(field.motion_position(envelope?)),
+            Self::Step(target) => Some(target.motion_position(lfo?)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct EditorMotionAddress {
     pub(crate) control: ControlAddress,
     pub(crate) lane_index: usize,
-    pub(crate) target: StepTarget,
+    pub(crate) target: EditorMotionField,
 }
 
 /// How one h/l press moves a continuous automation field.
@@ -311,7 +348,7 @@ struct AutomationStack {
 pub(crate) struct AutomationState {
     stacks: BTreeMap<ControlAddress, AutomationStack>,
     pub(crate) captures: BTreeMap<ControlAddress, super::CaptureClip>,
-    pub(crate) step_captures: BTreeMap<StepMotionAddress, super::CaptureClip>,
+    pub(crate) editor_captures: BTreeMap<EditorMotionAddress, super::CaptureClip>,
     open: Option<OpenEditor>,
 }
 
@@ -345,7 +382,7 @@ impl AutomationState {
             clip.origin = 0.0;
             clip.launch = 0.0;
         }
-        for clip in self.step_captures.values_mut() {
+        for clip in self.editor_captures.values_mut() {
             clip.origin = 0.0;
             clip.launch = 0.0;
         }
@@ -476,11 +513,11 @@ impl AutomationState {
                 ModKind::Lfo | ModKind::Envelope => {}
             }
         }
-        if open.kind == ModKind::Lfo {
-            self.step_captures.retain(|target, _| {
-                target.control != open.address || target.lane_index < open.index
-            });
-        }
+        self.editor_captures.retain(|target, _| {
+            target.control != open.address
+                || target.target.kind() != open.kind
+                || target.lane_index < open.index
+        });
         self.remove_stack_if_empty(open.address);
     }
 
@@ -488,7 +525,7 @@ impl AutomationState {
     pub(crate) fn clear_control(&mut self, address: ControlAddress) {
         self.stacks.remove(&address);
         self.captures.remove(&address);
-        self.step_captures
+        self.editor_captures
             .retain(|target, _| target.control != address);
         if self.open.is_some_and(|open| open.address == address) {
             self.open = None;
@@ -573,6 +610,26 @@ impl AutomationState {
         self.stacks.get(&address)?.lfos.get(index)
     }
 
+    pub(crate) fn indexed_envelopes(
+        &self,
+    ) -> impl Iterator<Item = (ControlAddress, usize, &EnvelopeRoute)> {
+        self.stacks.iter().flat_map(|(address, stack)| {
+            stack
+                .envelopes
+                .iter()
+                .enumerate()
+                .map(move |(index, route)| (*address, index, route))
+        })
+    }
+
+    pub(crate) fn envelope_at(
+        &self,
+        address: ControlAddress,
+        index: usize,
+    ) -> Option<&EnvelopeRoute> {
+        self.stacks.get(&address)?.envelopes.get(index)
+    }
+
     pub(crate) fn routes_for(&self, address: ControlAddress) -> impl Iterator<Item = &LfoRoute> {
         self.stacks
             .get(&address)
@@ -647,7 +704,7 @@ impl AutomationState {
         for clip in snapshot.captures.values_mut() {
             clip.rebase(beat);
         }
-        for clip in snapshot.step_captures.values_mut() {
+        for clip in snapshot.editor_captures.values_mut() {
             clip.rebase(beat);
         }
         snapshot
@@ -694,10 +751,10 @@ impl AutomationState {
             } else {
                 from.captures.clone()
             },
-            step_captures: if use_to {
-                to.step_captures.clone()
+            editor_captures: if use_to {
+                to.editor_captures.clone()
             } else {
-                from.step_captures.clone()
+                from.editor_captures.clone()
             },
             ..AutomationState::default()
         };
@@ -752,9 +809,10 @@ impl AutomationState {
                 .filter(|(address, _)| held(**address))
                 .map(|(address, clip)| (*address, clip.clone())),
         );
-        self.step_captures.retain(|target, _| !held(target.control));
-        self.step_captures.extend(
-            from.step_captures
+        self.editor_captures
+            .retain(|target, _| !held(target.control));
+        self.editor_captures.extend(
+            from.editor_captures
                 .iter()
                 .filter(|(target, _)| held(target.control))
                 .map(|(target, clip)| (*target, clip.clone())),
@@ -851,7 +909,7 @@ struct PlannedRoute {
     lfos: Vec<LfoRoute>,
     envelopes: Vec<EnvelopeRoute>,
     capture: Option<super::CaptureClip>,
-    step_captures: Vec<(StepMotionAddress, super::CaptureClip)>,
+    editor_captures: Vec<(EditorMotionAddress, super::CaptureClip)>,
     smoothed_delta: Option<f32>,
 }
 
@@ -874,7 +932,7 @@ impl PlannedRoute {
         self.lfos.is_empty()
             && self.envelopes.is_empty()
             && self.capture.is_none()
-            && self.step_captures.is_empty()
+            && self.editor_captures.is_empty()
             && self
                 .smoothed_delta
                 .is_none_or(|delta| delta.abs() <= f32::EPSILON)
@@ -904,8 +962,8 @@ impl AutomationPlan {
                 lfos: automation.routes_for(address).copied().collect(),
                 envelopes: automation.envelopes_for(address).copied().collect(),
                 capture: automation.captures.get(&address).cloned(),
-                step_captures: automation
-                    .step_captures
+                editor_captures: automation
+                    .editor_captures
                     .iter()
                     .filter(|(target, _)| target.control == address)
                     .map(|(target, clip)| (*target, clip.clone()))
@@ -917,7 +975,7 @@ impl AutomationPlan {
             removed.lfos.clear();
             removed.envelopes.clear();
             removed.capture = None;
-            removed.step_captures.clear();
+            removed.editor_captures.clear();
             self.routes.push(removed);
         }
     }
@@ -929,11 +987,25 @@ impl AutomationPlan {
             kick_offset_beats: controls.kick.offset_beats,
         };
         for planned in &mut self.routes {
-            for (target, clip) in &planned.step_captures {
-                if let Some(position) = clip.position(ctx.beat)
-                    && let Some(route) = planned.lfos.get_mut(target.lane_index)
-                {
-                    target.target.apply_motion_position(route, position);
+            for (target, clip) in &planned.editor_captures {
+                if let Some(position) = clip.position(ctx.beat) {
+                    match target.target {
+                        EditorMotionField::Lfo(field) => {
+                            if let Some(route) = planned.lfos.get_mut(target.lane_index) {
+                                field.apply_motion_position(route, position);
+                            }
+                        }
+                        EditorMotionField::Envelope(field) => {
+                            if let Some(route) = planned.envelopes.get_mut(target.lane_index) {
+                                field.apply_motion_position(route, position);
+                            }
+                        }
+                        EditorMotionField::Step(step) => {
+                            if let Some(route) = planned.lfos.get_mut(target.lane_index) {
+                                step.apply_motion_position(route, position);
+                            }
+                        }
+                    }
                 }
             }
             let mut spec = planned.spec.contextual(controls);

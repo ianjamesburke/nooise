@@ -376,14 +376,24 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                         .filter(|_| *field != EnvField::Decay || route.decay_beats > 0.0)
                         .and_then(|_| flip_display(TimeBase::Beats, route.field_value(*field), bpm))
                         .unwrap_or_else(|| route.field_display(*field));
-                    rows.push(field_line(
+                    let mut line = field_line(
                         field.label(),
                         &Dial::new(route.field_value(*field), field.scale(), value_display),
                         frame.lfo_selected == fi + 1,
                         &frame.numeric,
                         frame.bar_w,
                         ENV_PALETTE,
-                    ));
+                    );
+                    add_editor_motion_badge(
+                        &mut line,
+                        automation,
+                        EditorMotionAddress {
+                            control: address,
+                            lane_index,
+                            target: EditorMotionField::Envelope(*field),
+                        },
+                    );
+                    rows.push(line);
                 }
             }
             let label = format!(
@@ -476,14 +486,24 @@ fn push_lfo_editor_rows(
                     .filter(|key| flipped.contains(&unit_key(id, Some(key))))
                     .and_then(|_| flip_display(TimeBase::Beats, route.field_value(field), bpm))
                     .unwrap_or_else(|| route.field_display(field));
-                rows.push(field_line(
+                let mut line = field_line(
                     field.label(),
                     &Dial::new(route.field_value(field), field.scale(), value_display),
                     active,
                     &frame.numeric,
                     frame.bar_w,
                     LFO_PALETTE,
-                ));
+                );
+                add_editor_motion_badge(
+                    &mut line,
+                    lfo_state,
+                    EditorMotionAddress {
+                        control: address,
+                        lane_index: lfo_state.active_lane_index().unwrap_or(0),
+                        target: EditorMotionField::Lfo(field),
+                    },
+                );
+                rows.push(line);
             }
             LfoSubRow::Step(target) => {
                 let mut line = field_line(
@@ -505,19 +525,31 @@ fn push_lfo_editor_rows(
                         Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
                     ));
                 }
-                if let Some(clip) = lfo_state.step_captures.get(&StepMotionAddress {
-                    control: address,
-                    lane_index: lfo_state.active_lane_index().unwrap_or(0),
-                    target,
-                }) {
-                    line.spans.push(Span::styled(
-                        if clip.enabled { " ↻" } else { " ○" },
-                        Style::default().fg(LIVE_AMBER),
-                    ));
-                }
+                add_editor_motion_badge(
+                    &mut line,
+                    lfo_state,
+                    EditorMotionAddress {
+                        control: address,
+                        lane_index: lfo_state.active_lane_index().unwrap_or(0),
+                        target: EditorMotionField::Step(target),
+                    },
+                );
                 rows.push(line);
             }
         }
+    }
+}
+
+fn add_editor_motion_badge(
+    line: &mut Line<'static>,
+    automation: &AutomationState,
+    target: EditorMotionAddress,
+) {
+    if let Some(clip) = automation.editor_captures.get(&target) {
+        line.spans.push(Span::styled(
+            if clip.enabled { " ↻" } else { " ○" },
+            Style::default().fg(LIVE_AMBER),
+        ));
     }
 }
 

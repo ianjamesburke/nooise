@@ -276,7 +276,7 @@ impl EffectExecutor {
                 return Err(EffectFailure::StaleRecipeTarget);
             }
             if action == CaptureAction::Capture {
-                if snapshot.automation.captures.len() + snapshot.automation.step_captures.len()
+                if snapshot.automation.captures.len() + snapshot.automation.editor_captures.len()
                     >= MAX_CAPTURES
                     && !snapshot.automation.captures.contains_key(&address)
                 {
@@ -342,7 +342,7 @@ impl EffectExecutor {
                 if !target.is_current(snapshot) {
                     return Err(EffectFailure::StaleRecipeTarget);
                 }
-                if snapshot.automation.captures.len() + snapshot.automation.step_captures.len()
+                if snapshot.automation.captures.len() + snapshot.automation.editor_captures.len()
                     >= MAX_CAPTURES
                     && !snapshot.automation.captures.contains_key(&address)
                 {
@@ -361,20 +361,33 @@ impl EffectExecutor {
         })
     }
 
-    fn apply_step_motion(
+    fn apply_editor_motion(
         &mut self,
         action: MotionAction,
-        target: StepMotionAddress,
+        target: EditorMotionAddress,
         lane_guard: Option<LaneTarget>,
         end: f64,
         beat: f64,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         let valid = |snapshot: &LiveSessionSnapshot| {
-            lane_guard.is_none_or(|guard| guard.is_current(snapshot))
-                && snapshot
+            lane_guard.is_none_or(|guard| {
+                guard.kind == target.target.kind()
+                    && guard.index == target.lane_index
+                    && guard.is_current(snapshot)
+            }) && match target.target {
+                EditorMotionField::Step(_) => snapshot
                     .automation
                     .route_at(target.control, target.lane_index)
-                    .is_some_and(|route| route.shape == LfoShape::Steps)
+                    .is_some_and(|route| route.shape == LfoShape::Steps),
+                EditorMotionField::Lfo(_) => snapshot
+                    .automation
+                    .route_at(target.control, target.lane_index)
+                    .is_some(),
+                EditorMotionField::Envelope(_) => snapshot
+                    .automation
+                    .envelope_at(target.control, target.lane_index)
+                    .is_some(),
+            }
         };
         if !valid(&self.session.load()) {
             return Err(EffectFailure::CaptureUnavailable);
@@ -382,7 +395,7 @@ impl EffectExecutor {
         let clip = if let MotionAction::Grab(duration) = action {
             Some(
                 self.capture_history
-                    .step_motion_clip(target, duration, end)
+                    .editor_motion_clip(target, duration, end)
                     .map_err(EffectFailure::CaptureHistory)?,
             )
         } else {
@@ -395,14 +408,17 @@ impl EffectExecutor {
                     return Err(EffectFailure::CaptureUnavailable);
                 }
                 if clip.is_some() {
-                    if snapshot.automation.captures.len() + snapshot.automation.step_captures.len()
+                    if snapshot.automation.captures.len()
+                        + snapshot.automation.editor_captures.len()
                         >= MAX_CAPTURES
-                        && !snapshot.automation.step_captures.contains_key(&target)
+                        && !snapshot.automation.editor_captures.contains_key(&target)
                     {
                         return Err(EffectFailure::CaptureLimit);
                     }
-                } else if !snapshot.automation.step_captures.contains_key(&target) {
-                    return Err(EffectFailure::MissingContext("Motion loop on this step"));
+                } else if !snapshot.automation.editor_captures.contains_key(&target) {
+                    return Err(EffectFailure::MissingContext(
+                        "Motion loop on this editor row",
+                    ));
                 }
                 Ok(())
             },
@@ -410,11 +426,11 @@ impl EffectExecutor {
                 if let Some(clip) = &clip {
                     snapshot
                         .automation
-                        .step_captures
+                        .editor_captures
                         .insert(target, clip.clone());
                 } else if action == MotionAction::Delete {
-                    snapshot.automation.step_captures.remove(&target);
-                } else if let Some(clip) = snapshot.automation.step_captures.get_mut(&target) {
+                    snapshot.automation.editor_captures.remove(&target);
+                } else if let Some(clip) = snapshot.automation.editor_captures.get_mut(&target) {
                     clip.enabled = action == MotionAction::Resume;
                     if clip.enabled {
                         clip.launch = next_bar_beat(beat);
@@ -424,12 +440,12 @@ impl EffectExecutor {
             },
         )?;
         self.show_message(format!(
-            "{} {} step · {}",
+            "{} {} editor row · {}",
             action.name(),
             target.control.id(),
             snapshot
                 .automation
-                .step_captures
+                .editor_captures
                 .get(&target)
                 .map_or("deleted", |clip| clip.status(beat))
         ));
@@ -941,31 +957,41 @@ impl EffectExecutor {
                 if selected == 0 {
                     let target = recipe::RecipeTarget::capture(address.id(), &current);
                     self.apply_motion_grab(duration, target, context.beat, context.beat)
-                } else if let Some(LfoSubRow::Step(step)) =
-                    lfo_submenu_rows(&current.automation, address).get(selected - 1)
-                {
-                    let target = StepMotionAddress {
+                } else {
+                    let field = match current.automation.active_kind() {
+                        Some(ModKind::Lfo) => match lfo_submenu_rows(&current.automation, address)
+                            .get(selected - 1)
+                        {
+                            Some(LfoSubRow::Field(field)) => Some(EditorMotionField::Lfo(*field)),
+                            Some(LfoSubRow::Step(step)) => Some(EditorMotionField::Step(*step)),
+                            None => None,
+                        },
+                        Some(ModKind::Envelope) => {
+                            env_field_at(selected).map(EditorMotionField::Envelope)
+                        }
+                        None => None,
+                    }
+                    .ok_or(EffectFailure::CaptureUnavailable)?;
+                    let target = EditorMotionAddress {
                         control: address,
                         lane_index: current.automation.active_lane_index().unwrap_or(0),
-                        target: *step,
+                        target: field,
                     };
-                    self.apply_step_motion(
+                    self.apply_editor_motion(
                         MotionAction::Grab(duration),
                         target,
                         None,
                         context.beat,
                         context.beat,
                     )
-                } else {
-                    Err(EffectFailure::CaptureUnavailable)
                 }
             }
-            InteractionEffect::StepMotion {
+            InteractionEffect::EditorMotion {
                 action,
                 target,
                 lane_guard,
                 end_beat_bits,
-            } => self.apply_step_motion(
+            } => self.apply_editor_motion(
                 action,
                 target,
                 lane_guard.as_deref().copied(),
@@ -1491,17 +1517,17 @@ mod tests {
             &mut FakeClipboard::default(),
         );
         assert!(result.is_ok(), "{result:?}");
-        let target = StepMotionAddress {
+        let target = EditorMotionAddress {
             control: address,
             lane_index: 0,
-            target: StepTarget::Value(0),
+            target: EditorMotionField::Step(StepTarget::Value(0)),
         };
         assert!(
             executor
                 .session
                 .load()
                 .automation
-                .step_captures
+                .editor_captures
                 .contains_key(&target)
         );
         assert_eq!(

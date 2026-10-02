@@ -171,7 +171,7 @@ pub(super) fn seed_for_id(id: &str) -> u32 {
     hash
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum LfoField {
     Amount,
     Interval,
@@ -180,6 +180,29 @@ pub(crate) enum LfoField {
 }
 
 impl LfoField {
+    pub(crate) fn motion_position(self, route: &LfoRoute) -> f32 {
+        self.scale().ratio(route.field_value(self))
+    }
+
+    pub(crate) fn apply_motion_position(self, route: &mut LfoRoute, position: f32) {
+        let value = if self == Self::Shape {
+            self.scale().value_at(position).unwrap_or(0.0).round()
+        } else {
+            self.spec().value_at_ratio(position)
+        };
+        match self {
+            Self::Amount => route.depth_ratio = value,
+            Self::Interval => {
+                route.cycle_beats = value;
+                route.pickup = None;
+            }
+            Self::Offset => {
+                route.phase_offset_beats = value;
+                route.pickup = None;
+            }
+            Self::Shape => route.write_shape(LfoShape::from_index(value)),
+        }
+    }
     pub(crate) const ALL: [LfoField; 4] = [Self::Amount, Self::Interval, Self::Offset, Self::Shape];
 
     /// The `FlippedUnits` sub-key for a field that carries a time base;

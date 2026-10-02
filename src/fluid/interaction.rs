@@ -396,7 +396,7 @@ pub(crate) struct PaletteMode {
     pub(crate) capture_beat_bits: u64,
     pub(crate) recipe_target: Option<super::recipe::RecipeTarget>,
     pub(crate) lane_target: Option<Box<super::LaneTarget>>,
-    pub(crate) step_motion_target: Option<Box<super::StepMotionAddress>>,
+    pub(crate) editor_motion_target: Option<Box<super::EditorMotionAddress>>,
     pub(crate) query: String,
     pub(crate) selected: usize,
     pub(crate) recent: Vec<&'static str>,
@@ -1195,9 +1195,9 @@ pub(crate) enum InteractionEffect {
         duration: super::MotionDuration,
         selected: usize,
     },
-    StepMotion {
+    EditorMotion {
         action: super::MotionAction,
-        target: super::StepMotionAddress,
+        target: super::EditorMotionAddress,
         lane_guard: Option<Box<super::LaneTarget>>,
         end_beat_bits: u64,
     },
@@ -2032,8 +2032,8 @@ fn push_numeric(buffer: &mut String, character: char) {
 /// already holds it.
 fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionMode {
     if matches!(entry, PaletteEntry::Operation(operation) if operation.is_mix())
-        || (palette.step_motion_target.is_some()
-            && matches!(entry, PaletteEntry::Operation(Operation::Motion(_))))
+        || (palette.editor_motion_target.is_some()
+            && matches!(entry, PaletteEntry::Operation(Operation::Motion(action)) if editor_motion_action(*action, palette)))
         || (palette.resume.is_some()
             && matches!(
                 entry,
@@ -2050,9 +2050,10 @@ fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> Interac
 
 fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEffect {
     if let (Some(target), PaletteEntry::Operation(Operation::Motion(action))) =
-        (palette.step_motion_target.as_deref().copied(), entry)
+        (palette.editor_motion_target.as_deref().copied(), entry)
+        && editor_motion_action(*action, palette)
     {
-        return InteractionEffect::StepMotion {
+        return InteractionEffect::EditorMotion {
             action: *action,
             target,
             lane_guard: palette.lane_target.clone(),
@@ -2094,6 +2095,15 @@ fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEf
             id: spec.id,
         },
     }
+}
+
+fn editor_motion_action(action: super::MotionAction, palette: &PaletteMode) -> bool {
+    matches!(action, super::MotionAction::Grab(_))
+        || palette
+            .query
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("motion ")
 }
 
 fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionEffect {
@@ -2667,13 +2677,13 @@ mod tests {
 
     #[test]
     fn palette_motion_on_step_row_targets_that_step_instead_of_the_parent_lane() {
-        let target = super::super::StepMotionAddress {
+        let target = super::super::EditorMotionAddress {
             control: super::super::ControlAddress::new("pad.level"),
             lane_index: 0,
-            target: super::super::StepTarget::Value(0),
+            target: super::super::EditorMotionField::Step(super::super::StepTarget::Value(0)),
         };
-        let palette = PaletteMode {
-            step_motion_target: Some(Box::new(target)),
+        let mut palette = PaletteMode {
+            editor_motion_target: Some(Box::new(target)),
             resume: Some(AutomationMode::Lfo {
                 depth: LfoDepth::Editor,
                 selected: 7,
@@ -2687,10 +2697,11 @@ mod tests {
             MotionAction::Resume,
             MotionAction::Delete,
         ] {
+            palette.query = Operation::Motion(action).spec().label.to_string();
             let entry = PaletteEntry::Operation(Operation::Motion(action));
             assert_eq!(
                 palette_confirm(&entry, &palette),
-                InteractionEffect::StepMotion {
+                InteractionEffect::EditorMotion {
                     action,
                     target,
                     lane_guard: None,
@@ -2702,6 +2713,17 @@ mod tests {
                 resume_mode(palette.resume)
             );
         }
+        palette.query = "bypass".to_string();
+        assert_eq!(
+            palette_confirm(
+                &PaletteEntry::Operation(Operation::Motion(MotionAction::Bypass)),
+                &palette
+            ),
+            InteractionEffect::Lane {
+                action: super::super::LaneAction::Bypass,
+                target: None
+            }
+        );
     }
 
     #[test]

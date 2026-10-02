@@ -225,8 +225,8 @@ struct KnobHistory {
     lost_before: Option<f64>,
 }
 
-struct StepHistory {
-    target: StepMotionAddress,
+struct EditorHistory {
+    target: EditorMotionAddress,
     initial: f32,
     events: VecDeque<(f64, f32)>,
     lost_before: Option<f64>,
@@ -235,7 +235,7 @@ struct StepHistory {
 #[derive(Default)]
 pub(crate) struct CaptureHistory {
     knobs: VecDeque<KnobHistory>,
-    steps: VecDeque<StepHistory>,
+    fields: VecDeque<EditorHistory>,
 }
 
 impl CaptureHistory {
@@ -294,67 +294,104 @@ impl CaptureHistory {
             let Some(before_route) = before.automation.route_at(control, lane_index) else {
                 continue;
             };
-            if route.shape != LfoShape::Steps || before_route.shape != LfoShape::Steps {
-                continue;
-            }
-            for step_target in [StepTarget::Count, StepTarget::Glide]
-                .into_iter()
-                .chain((0..MAX_LFO_STEPS).map(StepTarget::Value))
-            {
-                let old = step_target.motion_position(before_route);
-                let new = step_target.motion_position(route);
-                if old.to_bits() == new.to_bits() {
-                    continue;
-                }
-                let target = StepMotionAddress {
+            for field in LfoField::ALL {
+                let target = EditorMotionAddress {
                     control,
                     lane_index,
-                    target: step_target,
+                    target: EditorMotionField::Lfo(field),
                 };
-                let index = self.steps.iter().position(|step| step.target == target);
-                let mut step = index
-                    .and_then(|index| self.steps.remove(index))
-                    .unwrap_or_else(|| StepHistory {
-                        target,
-                        initial: old,
-                        events: VecDeque::new(),
-                        lost_before: None,
-                    });
-                while step
-                    .events
-                    .front()
-                    .is_some_and(|event| event.0 < beat - HISTORY_BEATS)
-                    || step.events.len() >= HISTORY_EVENTS
+                self.record_editor_change(
+                    target,
+                    field.motion_position(before_route),
+                    field.motion_position(route),
+                    beat,
+                );
+            }
+            if route.shape == LfoShape::Steps && before_route.shape == LfoShape::Steps {
+                for step in [StepTarget::Count, StepTarget::Glide]
+                    .into_iter()
+                    .chain((0..MAX_LFO_STEPS).map(StepTarget::Value))
                 {
-                    if let Some((at, value)) = step.events.pop_front() {
-                        step.initial = value;
-                        step.lost_before = Some(at);
-                    }
+                    let target = EditorMotionAddress {
+                        control,
+                        lane_index,
+                        target: EditorMotionField::Step(step),
+                    };
+                    self.record_editor_change(
+                        target,
+                        step.motion_position(before_route),
+                        step.motion_position(route),
+                        beat,
+                    );
                 }
-                step.events.push_back((beat, new));
-                self.steps.push_back(step);
-                while self.steps.len() > HISTORY_TARGETS {
-                    self.steps.pop_front();
-                }
+            }
+        }
+        for (control, lane_index, route) in after.automation.indexed_envelopes() {
+            let Some(before_route) = before.automation.envelope_at(control, lane_index) else {
+                continue;
+            };
+            for field in EnvField::ALL {
+                let target = EditorMotionAddress {
+                    control,
+                    lane_index,
+                    target: EditorMotionField::Envelope(field),
+                };
+                self.record_editor_change(
+                    target,
+                    field.motion_position(before_route),
+                    field.motion_position(route),
+                    beat,
+                );
             }
         }
     }
 
-    pub(crate) fn step_motion_clip(
+    fn record_editor_change(&mut self, target: EditorMotionAddress, old: f32, new: f32, beat: f64) {
+        if old.to_bits() == new.to_bits() {
+            return;
+        }
+        let index = self.fields.iter().position(|field| field.target == target);
+        let mut field = index
+            .and_then(|index| self.fields.remove(index))
+            .unwrap_or_else(|| EditorHistory {
+                target,
+                initial: old,
+                events: VecDeque::new(),
+                lost_before: None,
+            });
+        while field
+            .events
+            .front()
+            .is_some_and(|event| event.0 < beat - HISTORY_BEATS)
+            || field.events.len() >= HISTORY_EVENTS
+        {
+            if let Some((at, value)) = field.events.pop_front() {
+                field.initial = value;
+                field.lost_before = Some(at);
+            }
+        }
+        field.events.push_back((beat, new));
+        self.fields.push_back(field);
+        while self.fields.len() > HISTORY_TARGETS {
+            self.fields.pop_front();
+        }
+    }
+
+    pub(crate) fn editor_motion_clip(
         &self,
-        target: StepMotionAddress,
+        target: EditorMotionAddress,
         duration: MotionDuration,
         end: f64,
     ) -> Result<CaptureClip, CaptureHistoryError> {
         let step = self
-            .steps
+            .fields
             .iter()
             .find(|step| step.target == target)
             .ok_or(CaptureHistoryError::NoMovement)?;
         build_motion_clip(
             duration,
             end,
-            target.target == StepTarget::Count,
+            target.target.is_discrete(),
             step.initial,
             &step.events,
             step.lost_before,
@@ -549,17 +586,19 @@ pub(crate) fn suspend_changed_captures(
             clip.enabled = false;
         }
     }
-    if !after.automation.step_captures.is_empty() {
+    if !after.automation.editor_captures.is_empty() {
         let after_routes = after.automation.clone();
-        for (target, clip) in &mut after.automation.step_captures {
-            let changed = before
-                .automation
-                .route_at(target.control, target.lane_index)
-                .zip(after_routes.route_at(target.control, target.lane_index))
-                .is_none_or(|(old, new)| {
-                    target.target.motion_position(old).to_bits()
-                        != target.target.motion_position(new).to_bits()
-                });
+        for (target, clip) in &mut after.automation.editor_captures {
+            let position = |automation: &AutomationState| {
+                target
+                    .target
+                    .position(
+                        automation.route_at(target.control, target.lane_index),
+                        automation.envelope_at(target.control, target.lane_index),
+                    )
+                    .map(f32::to_bits)
+            };
+            let changed = position(&before.automation) != position(&after_routes);
             if changed {
                 clip.enabled = false;
             }
@@ -707,10 +746,10 @@ mod tests {
         route.step_glide = 0.0;
         route.depth_ratio = 1.0;
         route.steps[0] = 0.0;
-        let target = StepMotionAddress {
+        let target = EditorMotionAddress {
             control: address,
             lane_index: 0,
-            target: StepTarget::Value(0),
+            target: EditorMotionField::Step(StepTarget::Value(0)),
         };
         let mut history = CaptureHistory::default();
         let before = snapshot.clone();
@@ -728,7 +767,7 @@ mod tests {
             .set_step(StepTarget::Value(0), 100.0);
         history.record_changes(&before, &snapshot, 1.25);
         let mut clip = history
-            .step_motion_clip(target, MotionDuration::Beats4, 4.0)
+            .editor_motion_clip(target, MotionDuration::Beats4, 4.0)
             .unwrap();
         assert!(clip.events.is_empty());
         clip.rebase(4.0);
@@ -737,9 +776,9 @@ mod tests {
             automation: snapshot.automation,
             ..SongState::default()
         };
-        song.automation.step_captures.insert(target, clip.clone());
+        song.automation.editor_captures.insert(target, clip.clone());
         let restored = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-        assert_eq!(restored.automation.step_captures[&target], clip);
+        assert_eq!(restored.automation.editor_captures[&target], clip);
         let mut plan = AutomationPlan::default();
         plan.rebuild(&restored.automation);
         let mut before_edit = restored.controls.clone();
@@ -761,10 +800,10 @@ mod tests {
         let route = snapshot.automation.open_or_create(address);
         route.shape = LfoShape::Steps;
         route.step_count = 2;
-        let target = StepMotionAddress {
+        let target = EditorMotionAddress {
             control: address,
             lane_index: 0,
-            target: StepTarget::Count,
+            target: EditorMotionField::Step(StepTarget::Count),
         };
         let mut history = CaptureHistory::default();
         let before = snapshot.clone();
@@ -782,7 +821,7 @@ mod tests {
             .set_step(StepTarget::Count, 8.0);
         history.record_changes(&before, &snapshot, 1.25);
         let mut clip = history
-            .step_motion_clip(target, MotionDuration::Beats4, 4.0)
+            .editor_motion_clip(target, MotionDuration::Beats4, 4.0)
             .unwrap();
         assert_eq!(
             clip.events
@@ -794,18 +833,99 @@ mod tests {
         clip.rebase(4.0);
         for (beat, count) in [(0.25, 2), (0.75, 4), (1.5, 8), (4.0, 2)] {
             let mut route = *snapshot.automation.route(address).unwrap();
-            target
-                .target
-                .apply_motion_position(&mut route, clip.position(beat).unwrap());
+            let EditorMotionField::Step(step) = target.target else {
+                unreachable!()
+            };
+            step.apply_motion_position(&mut route, clip.position(beat).unwrap());
             assert_eq!(route.step_count, count, "beat {beat}");
         }
         let mut song = SongState {
             automation: snapshot.automation,
             ..SongState::default()
         };
-        song.automation.step_captures.insert(target, clip.clone());
+        song.automation.editor_captures.insert(target, clip.clone());
         let restored = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-        assert_eq!(restored.automation.step_captures[&target], clip);
+        assert_eq!(restored.automation.editor_captures[&target], clip);
+    }
+
+    #[test]
+    fn motion_on_lfo_shape_and_envelope_trigger_replays_enum_events_after_restore() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        let address = ControlAddress::new("pad.level");
+        snapshot.automation.open_or_create(address);
+        snapshot.automation.open_or_create_envelope(address);
+        let mut history = CaptureHistory::default();
+        let before = snapshot.clone();
+        snapshot
+            .automation
+            .route_mut(address)
+            .unwrap()
+            .set_field_at(LfoField::Shape, 4.0, 0.5);
+        snapshot
+            .automation
+            .envelope_mut(address)
+            .unwrap()
+            .set_field(EnvField::Trigger, 7.0);
+        history.record_changes(&before, &snapshot, 0.5);
+        let shape = EditorMotionAddress {
+            control: address,
+            lane_index: 0,
+            target: EditorMotionField::Lfo(LfoField::Shape),
+        };
+        let trigger = EditorMotionAddress {
+            control: address,
+            lane_index: 0,
+            target: EditorMotionField::Envelope(EnvField::Trigger),
+        };
+        let mut shape_clip = history
+            .editor_motion_clip(shape, MotionDuration::Beats4, 4.0)
+            .unwrap();
+        let mut trigger_clip = history
+            .editor_motion_clip(trigger, MotionDuration::Beats4, 4.0)
+            .unwrap();
+        assert_eq!(shape_clip.events.len(), 2);
+        assert_eq!(trigger_clip.events.len(), 2);
+        shape_clip.rebase(4.0);
+        trigger_clip.rebase(4.0);
+        let mut song = SongState {
+            automation: snapshot.automation,
+            ..SongState::default()
+        };
+        song.automation.editor_captures.insert(shape, shape_clip);
+        song.automation
+            .editor_captures
+            .insert(trigger, trigger_clip);
+        let restored = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        let mut lfo = *restored.automation.route_at(address, 0).unwrap();
+        LfoField::Shape.apply_motion_position(
+            &mut lfo,
+            restored.automation.editor_captures[&shape]
+                .position(0.25)
+                .unwrap(),
+        );
+        assert_eq!(lfo.shape, LfoShape::Sine);
+        LfoField::Shape.apply_motion_position(
+            &mut lfo,
+            restored.automation.editor_captures[&shape]
+                .position(0.75)
+                .unwrap(),
+        );
+        assert_eq!(lfo.shape, LfoShape::Square);
+        let mut env = *restored.automation.envelope_at(address, 0).unwrap();
+        EnvField::Trigger.apply_motion_position(
+            &mut env,
+            restored.automation.editor_captures[&trigger]
+                .position(0.25)
+                .unwrap(),
+        );
+        assert_eq!(env.trigger, EnvTrigger::EveryBeats(4.0));
+        EnvField::Trigger.apply_motion_position(
+            &mut env,
+            restored.automation.editor_captures[&trigger]
+                .position(0.75)
+                .unwrap(),
+        );
+        assert_eq!(env.trigger, EnvTrigger::Once);
     }
 
     fn change(

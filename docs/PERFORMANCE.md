@@ -148,14 +148,16 @@ palette keeps the same Motion Grab choices.
 
 Motion Grab also works on discrete controls: Lead pitch cells, Lead Steps,
 Pads Trigger (Hold/Stabs), and the other registry switches and choices.
-They replay each recorded value at its edit time. Open a Steps LFO editor
-on its count, glide, or a step value, then use `Space 1/2/4` to grab that
-row; the same Motion Grab choices are available through `/`. The editor
-stays open after a leader grab. A small `↻` on a step row means its Motion
-is active; `○` means bypassed. On a selected step row, `/Motion Bypass`,
-`/Motion Resume`, and `/Motion Delete` address that row's Motion. A direct
-edit bypasses its loop; Resume waits for the next bar while retaining loop
-phase. A saved song restores the step loop and its phase.
+They replay each recorded value at its edit time. In an LFO or envelope
+editor, select any field—including LFO shape, Steps count/glide/value, or
+envelope trigger—then use `Space 1/2/4` to grab that field; `/` offers the
+same Motion Grab choices. The editor stays open after a leader grab. A small
+`↻` on an editor row means its Motion is active; `○` means bypassed. On a
+selected row, `/Motion Bypass`, `/Motion Resume`, and `/Motion Delete` address
+that row's Motion. Bare `/bypass`, `/resume`, and `/delete` still address the
+open LFO or envelope lane. A direct edit bypasses its loop; Resume waits for the next
+bar while retaining loop phase. A saved song restores the editor-field loop
+and its phase.
 
 Volume is the layer's own Level row. Filter is the shared filter module's
 Cutoff, never its Amount: Amount is a detail-only wet/dry mix an added filter
