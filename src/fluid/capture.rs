@@ -14,6 +14,14 @@ const HISTORY_TARGETS: usize = 16;
 /// Two full phrases let the player keep the completed phrase through the next.
 const HISTORY_BEATS: f64 = CAPTURE_BEATS * 2.0;
 const HISTORY_EVENTS: usize = 4_096;
+const EVENT_TICKS_PER_BEAT: f64 = 256.0;
+pub(crate) const MAX_MOTION_EVENTS: usize = 128;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MotionEvent {
+    pub(crate) tick: u16,
+    pub(crate) position: u16,
+}
 
 /// A playable Motion phrase. Its compact eight-samples-per-beat resolution
 /// makes the duration part of the lane, rather than an accidental property of
@@ -83,9 +91,9 @@ impl std::fmt::Display for CaptureHistoryError {
             Self::PhrasePending { beats_remaining } => {
                 write!(f, "phrase recording; capture in {beats_remaining} beats")
             }
-            Self::NoMovement => write!(f, "no edits on this knob in the previous 16 beats"),
+            Self::NoMovement => write!(f, "no recent edits on this control"),
             Self::IncompleteHistory => {
-                write!(f, "capture history full; record a new 16-beat phrase")
+                write!(f, "Motion history full; record a new phrase")
             }
         }
     }
@@ -117,6 +125,8 @@ pub(crate) struct CaptureClip {
     /// The actual phrase length. Samples outside this phrase are unused.
     pub(crate) duration: MotionDuration,
     pub(crate) samples: [u8; CAPTURE_SAMPLES],
+    /// Empty for sampled movement; discrete controls retain exact changes.
+    pub(crate) events: Vec<MotionEvent>,
     /// Loop phase anchor and admission beat are distinct: resume keeps phase.
     pub(crate) origin: f64,
     pub(crate) launch: f64,
@@ -125,7 +135,10 @@ pub(crate) struct CaptureClip {
 
 impl CaptureClip {
     pub(crate) fn playback_spec(&self, mut spec: ControlSpec, beat: f64) -> ControlSpec {
-        if self.enabled && beat >= self.launch && spec.kind == ControlKind::Timing {
+        if self.enabled
+            && beat >= self.launch
+            && matches!(spec.kind, ControlKind::Timing | ControlKind::Discrete)
+        {
             // Played intervals may include 0.75 or 1.25, outside the LFO's
             // power-of-two ladder. Preserve the control's own editing grid.
             spec.lfo_snap = LfoSnap::Step;
@@ -138,9 +151,18 @@ impl CaptureClip {
             return None;
         }
         let sample_count = self.duration.samples();
-        let position = (beat - self.origin).rem_euclid(f64::from(self.duration.beats()))
-            * sample_count as f64
-            / f64::from(self.duration.beats());
+        let phase = (beat - self.origin).rem_euclid(f64::from(self.duration.beats()));
+        if !self.events.is_empty() {
+            let tick = (phase * EVENT_TICKS_PER_BEAT).floor() as u16;
+            let value = self
+                .events
+                .iter()
+                .rev()
+                .find(|event| event.tick <= tick)
+                .unwrap_or(&self.events[0]);
+            return Some(f32::from(value.position) / f32::from(u16::MAX));
+        }
+        let position = phase * sample_count as f64 / f64::from(self.duration.beats());
         let index = position.floor() as usize % sample_count;
         let a = f32::from(self.samples[index]);
         // A captured phrase holds its terminal value through its final sample.
@@ -173,7 +195,7 @@ impl CaptureClip {
 pub(crate) fn capture_eligible(spec: &ControlSpec) -> bool {
     matches!(
         spec.kind,
-        ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing
+        ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing | ControlKind::Discrete
     )
 }
 
@@ -197,6 +219,14 @@ pub(crate) fn nearest_bar_beat(beat: f64) -> f64 {
 
 struct KnobHistory {
     target: recipe::RecipeTarget,
+    kind: ControlKind,
+    initial: f32,
+    events: VecDeque<(f64, f32)>,
+    lost_before: Option<f64>,
+}
+
+struct StepHistory {
+    target: StepMotionAddress,
     initial: f32,
     events: VecDeque<(f64, f32)>,
     lost_before: Option<f64>,
@@ -205,6 +235,7 @@ struct KnobHistory {
 #[derive(Default)]
 pub(crate) struct CaptureHistory {
     knobs: VecDeque<KnobHistory>,
+    steps: VecDeque<StepHistory>,
 }
 
 impl CaptureHistory {
@@ -236,6 +267,7 @@ impl CaptureHistory {
                 .and_then(|index| self.knobs.remove(index))
                 .unwrap_or_else(|| KnobHistory {
                     target,
+                    kind: spec.contextual(&after.controls).kind,
                     initial: capture_ratio(spec, old, &before.controls),
                     events: VecDeque::new(),
                     lost_before: None,
@@ -258,6 +290,75 @@ impl CaptureHistory {
                 self.knobs.pop_front();
             }
         }
+        for (control, lane_index, route) in after.automation.indexed_routes() {
+            let Some(before_route) = before.automation.route_at(control, lane_index) else {
+                continue;
+            };
+            if route.shape != LfoShape::Steps || before_route.shape != LfoShape::Steps {
+                continue;
+            }
+            for step_target in [StepTarget::Count, StepTarget::Glide]
+                .into_iter()
+                .chain((0..MAX_LFO_STEPS).map(StepTarget::Value))
+            {
+                let old = step_target.motion_position(before_route);
+                let new = step_target.motion_position(route);
+                if old.to_bits() == new.to_bits() {
+                    continue;
+                }
+                let target = StepMotionAddress {
+                    control,
+                    lane_index,
+                    target: step_target,
+                };
+                let index = self.steps.iter().position(|step| step.target == target);
+                let mut step = index
+                    .and_then(|index| self.steps.remove(index))
+                    .unwrap_or_else(|| StepHistory {
+                        target,
+                        initial: old,
+                        events: VecDeque::new(),
+                        lost_before: None,
+                    });
+                while step
+                    .events
+                    .front()
+                    .is_some_and(|event| event.0 < beat - HISTORY_BEATS)
+                    || step.events.len() >= HISTORY_EVENTS
+                {
+                    if let Some((at, value)) = step.events.pop_front() {
+                        step.initial = value;
+                        step.lost_before = Some(at);
+                    }
+                }
+                step.events.push_back((beat, new));
+                self.steps.push_back(step);
+                while self.steps.len() > HISTORY_TARGETS {
+                    self.steps.pop_front();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn step_motion_clip(
+        &self,
+        target: StepMotionAddress,
+        duration: MotionDuration,
+        end: f64,
+    ) -> Result<CaptureClip, CaptureHistoryError> {
+        let step = self
+            .steps
+            .iter()
+            .find(|step| step.target == target)
+            .ok_or(CaptureHistoryError::NoMovement)?;
+        build_motion_clip(
+            duration,
+            end,
+            target.target == StepTarget::Count,
+            step.initial,
+            &step.events,
+            step.lost_before,
+        )
     }
 
     pub(crate) fn clip(
@@ -304,6 +405,12 @@ impl CaptureHistory {
                 },
             );
         }
+        if knob.kind == ControlKind::Discrete {
+            let mut clip = self.motion_clip(target, MotionDuration::Beats16, end, now)?;
+            clip.origin = next_bar_beat(now);
+            clip.launch = clip.origin;
+            return Ok(clip);
+        }
         let samples = std::array::from_fn(|index| {
             let beat = end - CAPTURE_BEATS + index as f64 * CAPTURE_BEATS / CAPTURE_SAMPLES as f64;
             let value = knob
@@ -318,6 +425,7 @@ impl CaptureHistory {
         Ok(CaptureClip {
             duration: MotionDuration::Beats16,
             samples,
+            events: Vec::new(),
             origin: launch,
             launch,
             enabled: true,
@@ -338,45 +446,97 @@ impl CaptureHistory {
         end: f64,
         _now: f64,
     ) -> Result<CaptureClip, CaptureHistoryError> {
-        let anchor = nearest_bar_beat(end);
-        let end = anchor;
-        let beats = f64::from(duration.beats());
         let knob = self
             .knobs
             .iter()
             .find(|knob| knob.target == target)
             .ok_or(CaptureHistoryError::NoMovement)?;
-        if knob.lost_before.is_some_and(|beat| beat >= end - beats) {
+        build_motion_clip(
+            duration,
+            end,
+            knob.kind == ControlKind::Discrete,
+            knob.initial,
+            &knob.events,
+            knob.lost_before,
+        )
+    }
+}
+
+/// Build either representation from the same musical window. Both registry
+/// controls and inline step rows use this path so phase and tail rules agree.
+fn build_motion_clip(
+    duration: MotionDuration,
+    requested_end: f64,
+    discrete: bool,
+    initial: f32,
+    changes: &VecDeque<(f64, f32)>,
+    lost_before: Option<f64>,
+) -> Result<CaptureClip, CaptureHistoryError> {
+    let end = nearest_bar_beat(requested_end);
+    let beats = f64::from(duration.beats());
+    let start = end - beats;
+    if lost_before.is_some_and(|beat| beat >= start) {
+        return Err(CaptureHistoryError::IncompleteHistory);
+    }
+    if !changes
+        .iter()
+        .any(|event| event.0 >= start && event.0 < end)
+    {
+        return Err(CaptureHistoryError::NoMovement);
+    }
+    let value_at = |beat: f64| {
+        changes
+            .iter()
+            .rev()
+            .find(|event| event.0 <= beat)
+            .map_or(initial, |event| event.1)
+    };
+    let events = if discrete {
+        let mut events = vec![MotionEvent {
+            tick: 0,
+            position: (value_at(start).clamp(0.0, 1.0) * f32::from(u16::MAX)).round() as u16,
+        }];
+        for &(at, value) in changes {
+            if at > start && at < end {
+                let tick = ((at - start) * EVENT_TICKS_PER_BEAT)
+                    .round()
+                    .min(beats * EVENT_TICKS_PER_BEAT - 1.0) as u16;
+                let position = (value.clamp(0.0, 1.0) * f32::from(u16::MAX)).round() as u16;
+                if let Some(last) = events.last_mut()
+                    && last.tick == tick
+                {
+                    last.position = position;
+                } else {
+                    events.push(MotionEvent { tick, position });
+                }
+            }
+        }
+        if events.len() > MAX_MOTION_EVENTS {
             return Err(CaptureHistoryError::IncompleteHistory);
         }
-        if !knob
-            .events
-            .iter()
-            .any(|event| event.0 >= end - beats && event.0 < end)
-        {
-            return Err(CaptureHistoryError::NoMovement);
-        }
-        let samples = std::array::from_fn(|index| {
+        events
+    } else {
+        Vec::new()
+    };
+    let samples = if discrete {
+        [0; CAPTURE_SAMPLES]
+    } else {
+        std::array::from_fn(|index| {
             if index >= duration.samples() {
                 return 0;
             }
-            let beat = end - beats + index as f64 / 8.0;
-            let value = knob
-                .events
-                .iter()
-                .rev()
-                .find(|event| event.0 <= beat)
-                .map_or(knob.initial, |event| event.1);
-            (value.clamp(0.0, 1.0) * 255.0).round() as u8
-        });
-        Ok(CaptureClip {
-            duration,
-            samples,
-            origin: anchor,
-            launch: anchor,
-            enabled: true,
+            let beat = start + index as f64 / 8.0;
+            (value_at(beat).clamp(0.0, 1.0) * 255.0).round() as u8
         })
-    }
+    };
+    Ok(CaptureClip {
+        duration,
+        samples,
+        events,
+        origin: end,
+        launch: end,
+        enabled: true,
+    })
 }
 
 pub(crate) fn suspend_changed_captures(
@@ -387,6 +547,22 @@ pub(crate) fn suspend_changed_captures(
         let spec = address.spec();
         if (spec.get)(&before.controls).to_bits() != (spec.get)(&after.controls).to_bits() {
             clip.enabled = false;
+        }
+    }
+    if !after.automation.step_captures.is_empty() {
+        let after_routes = after.automation.clone();
+        for (target, clip) in &mut after.automation.step_captures {
+            let changed = before
+                .automation
+                .route_at(target.control, target.lane_index)
+                .zip(after_routes.route_at(target.control, target.lane_index))
+                .is_none_or(|(old, new)| {
+                    target.target.motion_position(old).to_bits()
+                        != target.target.motion_position(new).to_bits()
+                });
+            if changed {
+                clip.enabled = false;
+            }
         }
     }
 }
@@ -404,6 +580,233 @@ pub(crate) fn suspend_capture(snapshot: &mut LiveSessionSnapshot, id: &'static s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fluid::song::SongCodeError;
+
+    #[test]
+    fn discrete_motion_replays_lead_pitch_and_pad_trigger_as_exact_events() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        let lead = recipe::RecipeTarget::capture("lead.step1", &snapshot).unwrap();
+        let trigger = recipe::RecipeTarget::capture("pad.trigger", &snapshot).unwrap();
+        let lead_initial = snapshot.controls.lead.steps[0];
+        let trigger_initial = snapshot.controls.pad.trigger;
+        let mut history = CaptureHistory::default();
+        let before = snapshot.clone();
+        snapshot.controls.lead.steps[0] = 5.0;
+        snapshot.controls.pad.trigger = 1.0 - trigger_initial;
+        history.record_changes(&before, &snapshot, 0.5);
+        let before = snapshot.clone();
+        snapshot.controls.lead.steps[0] = 8.0;
+        history.record_changes(&before, &snapshot, 1.25);
+
+        let lead_clip = history
+            .motion_clip(lead, MotionDuration::Beats4, 4.0, 4.0)
+            .unwrap();
+        let trigger_clip = history
+            .motion_clip(trigger, MotionDuration::Beats4, 4.0, 4.0)
+            .unwrap();
+        assert_eq!(
+            lead_clip
+                .events
+                .iter()
+                .map(|event| event.tick)
+                .collect::<Vec<_>>(),
+            vec![0, 128, 320]
+        );
+        assert_eq!(
+            trigger_clip
+                .events
+                .iter()
+                .map(|event| event.tick)
+                .collect::<Vec<_>>(),
+            vec![0, 128]
+        );
+        assert!(
+            (lead_clip.position(4.49).unwrap()
+                - capture_ratio(
+                    spec_by_id("lead.step1").unwrap(),
+                    lead_initial,
+                    &snapshot.controls
+                ))
+            .abs()
+                < 1.0 / f32::from(u16::MAX)
+        );
+        let mut automation = AutomationState::default();
+        automation
+            .captures
+            .insert(ControlAddress::new("lead.step1"), lead_clip);
+        automation
+            .captures
+            .insert(ControlAddress::new("pad.trigger"), trigger_clip);
+        let mut plan = AutomationPlan::default();
+        plan.rebuild(&automation);
+        for (beat, pitch, mode) in [
+            (4.25, lead_initial, trigger_initial),
+            (4.5, 5.0, 1.0 - trigger_initial),
+            (5.25, 8.0, 1.0 - trigger_initial),
+            (8.0, lead_initial, trigger_initial),
+        ] {
+            let mut controls = snapshot.controls.clone();
+            plan.apply(&mut controls, TimingContext::new(44_100.0, 120.0, beat));
+            assert_eq!(controls.lead.steps[0], pitch, "beat {beat}");
+            assert_eq!(controls.pad.trigger, mode, "beat {beat}");
+        }
+    }
+
+    #[test]
+    fn discrete_motion_song_code_restores_phase_and_rejects_sampled_switch_data() {
+        let mut song = SongState::default();
+        let address = ControlAddress::new("lead.step1");
+        let clip = CaptureClip {
+            duration: MotionDuration::Beats4,
+            samples: [0; CAPTURE_SAMPLES],
+            events: vec![
+                MotionEvent {
+                    tick: 0,
+                    position: 0,
+                },
+                MotionEvent {
+                    tick: 128,
+                    position: u16::MAX,
+                },
+            ],
+            origin: -1.0,
+            launch: 0.0,
+            enabled: true,
+        };
+        song.automation.captures.insert(address, clip.clone());
+        let code = encode_song_code(&song).unwrap();
+        let restored = decode_song_code(&code).unwrap();
+        assert_eq!(restored.automation.captures[&address], clip);
+        let mut controls = restored.controls.clone();
+        apply_automation(
+            &mut controls,
+            &restored.automation,
+            TimingContext::new(44_100.0, 120.0, 1.0),
+        );
+        assert_eq!(controls.lead.steps[0], LEAD_TONE_COUNT as f32);
+
+        song.automation
+            .captures
+            .get_mut(&address)
+            .unwrap()
+            .events
+            .clear();
+        assert_eq!(
+            encode_song_code(&song).err(),
+            Some(SongCodeError::InvalidCapture)
+        );
+    }
+
+    #[test]
+    fn motion_on_a_step_lfo_value_changes_the_played_rung_and_restores_from_song_code() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        let address = ControlAddress::new("pad.level");
+        let route = snapshot.automation.open_or_create(address);
+        route.shape = LfoShape::Steps;
+        route.step_count = 1;
+        route.step_glide = 0.0;
+        route.depth_ratio = 1.0;
+        route.steps[0] = 0.0;
+        let target = StepMotionAddress {
+            control: address,
+            lane_index: 0,
+            target: StepTarget::Value(0),
+        };
+        let mut history = CaptureHistory::default();
+        let before = snapshot.clone();
+        snapshot
+            .automation
+            .route_mut(address)
+            .unwrap()
+            .set_step(StepTarget::Value(0), 50.0);
+        history.record_changes(&before, &snapshot, 0.5);
+        let before = snapshot.clone();
+        snapshot
+            .automation
+            .route_mut(address)
+            .unwrap()
+            .set_step(StepTarget::Value(0), 100.0);
+        history.record_changes(&before, &snapshot, 1.25);
+        let mut clip = history
+            .step_motion_clip(target, MotionDuration::Beats4, 4.0)
+            .unwrap();
+        assert!(clip.events.is_empty());
+        clip.rebase(4.0);
+        let mut song = SongState {
+            controls: snapshot.controls,
+            automation: snapshot.automation,
+            ..SongState::default()
+        };
+        song.automation.step_captures.insert(target, clip.clone());
+        let restored = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(restored.automation.step_captures[&target], clip);
+        let mut plan = AutomationPlan::default();
+        plan.rebuild(&restored.automation);
+        let mut before_edit = restored.controls.clone();
+        plan.apply(&mut before_edit, TimingContext::new(44_100.0, 120.0, 0.25));
+        let mut after_edit = restored.controls.clone();
+        plan.apply(&mut after_edit, TimingContext::new(44_100.0, 120.0, 0.75));
+        assert!(
+            after_edit.pad.level > before_edit.pad.level,
+            "{} vs {}",
+            after_edit.pad.level,
+            before_edit.pad.level
+        );
+    }
+
+    #[test]
+    fn motion_on_step_lfo_count_replays_only_valid_whole_counts() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        let address = ControlAddress::new("pad.level");
+        let route = snapshot.automation.open_or_create(address);
+        route.shape = LfoShape::Steps;
+        route.step_count = 2;
+        let target = StepMotionAddress {
+            control: address,
+            lane_index: 0,
+            target: StepTarget::Count,
+        };
+        let mut history = CaptureHistory::default();
+        let before = snapshot.clone();
+        snapshot
+            .automation
+            .route_mut(address)
+            .unwrap()
+            .set_step(StepTarget::Count, 4.0);
+        history.record_changes(&before, &snapshot, 0.5);
+        let before = snapshot.clone();
+        snapshot
+            .automation
+            .route_mut(address)
+            .unwrap()
+            .set_step(StepTarget::Count, 8.0);
+        history.record_changes(&before, &snapshot, 1.25);
+        let mut clip = history
+            .step_motion_clip(target, MotionDuration::Beats4, 4.0)
+            .unwrap();
+        assert_eq!(
+            clip.events
+                .iter()
+                .map(|event| event.tick)
+                .collect::<Vec<_>>(),
+            vec![0, 128, 320]
+        );
+        clip.rebase(4.0);
+        for (beat, count) in [(0.25, 2), (0.75, 4), (1.5, 8), (4.0, 2)] {
+            let mut route = *snapshot.automation.route(address).unwrap();
+            target
+                .target
+                .apply_motion_position(&mut route, clip.position(beat).unwrap());
+            assert_eq!(route.step_count, count, "beat {beat}");
+        }
+        let mut song = SongState {
+            automation: snapshot.automation,
+            ..SongState::default()
+        };
+        song.automation.step_captures.insert(target, clip.clone());
+        let restored = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(restored.automation.step_captures[&target], clip);
+    }
 
     fn change(
         history: &mut CaptureHistory,
@@ -508,6 +911,7 @@ mod tests {
         let mut clip = CaptureClip {
             duration: MotionDuration::Beats16,
             samples: [0; CAPTURE_SAMPLES],
+            events: Vec::new(),
             origin: 20.0,
             launch: 20.0,
             enabled: true,
@@ -625,6 +1029,7 @@ mod tests {
             CaptureClip {
                 duration: MotionDuration::Beats16,
                 samples: [51; CAPTURE_SAMPLES],
+                events: Vec::new(),
                 origin: 0.0,
                 launch: 0.0,
                 enabled: true,
@@ -685,6 +1090,7 @@ mod tests {
                 CaptureClip {
                     duration: MotionDuration::Beats16,
                     samples: std::array::from_fn(|index| if index < 64 { 0 } else { 255 }),
+                    events: Vec::new(),
                     origin: 4.0,
                     launch: 4.0,
                     enabled,
@@ -754,6 +1160,7 @@ mod tests {
                             0
                         }
                     }),
+                    events: Vec::new(),
                     origin: -(index as f64) - 0.25,
                     launch: index as f64,
                     enabled: index != 2,

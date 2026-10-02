@@ -511,6 +511,9 @@ fn mode_surface<'a>(
             stage: JumpStage::ChooseLayer,
         }) => ModeSurface::Performance(PerformanceSurface::ChooseLayer),
         InteractionMode::Performance(PerformanceMode::Jump {
+            stage: JumpStage::AutomationRow { .. },
+        }) => ModeSurface::Performance(PerformanceSurface::ChooseLayer),
+        InteractionMode::Performance(PerformanceMode::Jump {
             stage: JumpStage::ChooseParameter { instrument },
         }) => ModeSurface::Performance(PerformanceSurface::ChooseParameter {
             instrument: *instrument,
@@ -990,6 +993,7 @@ mod tests {
             mode: InteractionMode::Palette(PaletteMode {
                 capture_beat_bits: 0,
                 recipe_target: None,
+                step_motion_target: None,
                 lane_target: None,
                 planned_tab: None,
                 query: "bass".to_string(),

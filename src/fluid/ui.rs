@@ -505,6 +505,16 @@ fn push_lfo_editor_rows(
                         Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
                     ));
                 }
+                if let Some(clip) = lfo_state.step_captures.get(&StepMotionAddress {
+                    control: address,
+                    lane_index: lfo_state.active_lane_index().unwrap_or(0),
+                    target,
+                }) {
+                    line.spans.push(Span::styled(
+                        if clip.enabled { " ↻" } else { " ○" },
+                        Style::default().fg(LIVE_AMBER),
+                    ));
+                }
                 rows.push(line);
             }
         }

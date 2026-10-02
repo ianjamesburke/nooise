@@ -219,7 +219,7 @@ impl LfoField {
 
 /// One editable target inside a `Steps` shape's inline submenu: the sequence
 /// length, the shared edge-glide, or one unipolar step value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum StepTarget {
     Count,
     Glide,
@@ -309,6 +309,14 @@ const STEP_FIELD_SPECS: &[FieldSpec<StepTarget>] = &[
 ];
 
 impl StepTarget {
+    pub(crate) fn motion_position(self, route: &LfoRoute) -> f32 {
+        self.spec().scale.ratio(route.step_value(self))
+    }
+
+    pub(crate) fn apply_motion_position(self, route: &mut LfoRoute, position: f32) {
+        route.write_step(self, self.spec().value_at_ratio(position));
+    }
+
     fn spec(self) -> &'static FieldSpec<StepTarget> {
         let key = match self {
             Self::Value(_) => Self::Value(0),

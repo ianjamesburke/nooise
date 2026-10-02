@@ -21,8 +21,8 @@ use super::{
     EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState,
     LfoRoute, LfoShape, MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
     MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES,
-    ModKind, ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, PlannedAction, Step, TAB_COUNT, Tab,
-    all_specs, parse_module_slot_id, spec_by_id,
+    ModKind, ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, PlannedAction, Step, StepMotionAddress,
+    StepTarget, TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -53,6 +53,7 @@ const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
 /// state; the swing value itself is refused as `RetiredControl`.
 const RETIRED_PAD_SWING_ROW: u8 = 1 << 1;
 const CAPTURE_RECORD: u8 = 8;
+const STEP_MOTION_RECORD: u8 = 12;
 const LANE_BYPASS_RECORD: u8 = 9;
 /// Beat offset that lets a saved Drunken wave resume its phrase position.
 const DRUNKEN_PHASE_RECORD: u8 = 10;
@@ -62,7 +63,7 @@ const PLANNED_ACTION_RECORD: u8 = 11;
 const PLANNED_MUTE_TAG: u8 = 0;
 /// Motion owns its true phrase length. The former fixed sixteen-beat capture
 /// payload is refused rather than reinterpreted as a shorter loop.
-const CAPTURE_WIRE_VERSION: u8 = 4;
+const CAPTURE_WIRE_VERSION: u8 = 5;
 const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
@@ -288,9 +289,11 @@ pub(crate) fn encode_song_code_at_epoch(
     if !bypass.is_empty() {
         write_record(LANE_BYPASS_RECORD, &bypass, &mut bytes)?;
     }
-    if !song.automation.captures.is_empty() {
+    if !song.automation.captures.is_empty() || !song.automation.step_captures.is_empty() {
         let mut captures = Vec::new();
-        if song.automation.captures.len() > super::MAX_CAPTURES {
+        if song.automation.captures.len() + song.automation.step_captures.len()
+            > super::MAX_CAPTURES
+        {
             return Err(SongCodeError::InvalidCapture);
         }
         captures.push(CAPTURE_WIRE_VERSION);
@@ -300,17 +303,35 @@ pub(crate) fn encode_song_code_at_epoch(
             if !super::capture_eligible(&address.spec().contextual(&song.controls)) {
                 return Err(SongCodeError::InvalidCapture);
             }
+            if (address.spec().contextual(&song.controls).kind == ControlKind::Discrete)
+                != !clip.events.is_empty()
+            {
+                return Err(SongCodeError::InvalidCapture);
+            }
             let id = song_id_index(address.id())
                 .ok_or(SongCodeError::UnregisteredControl(address.id()))?;
             captures.extend_from_slice(&id.to_le_bytes());
-            captures.push(motion_duration_tag(clip.duration));
-            captures.push(u8::from(clip.enabled));
-            captures.extend_from_slice(&clip.origin.to_le_bytes());
-            captures.extend_from_slice(&clip.launch.to_le_bytes());
-            captures.push(clip.duration.samples() as u8);
-            captures.extend_from_slice(&clip.samples[..clip.duration.samples()]);
+            write_motion_clip(clip, &mut captures);
         }
         write_record(CAPTURE_RECORD, &captures, &mut bytes)?;
+    }
+    if !song.automation.step_captures.is_empty() {
+        let mut steps = vec![1, song.automation.step_captures.len() as u8];
+        if song.automation.captures.len() + song.automation.step_captures.len()
+            > super::MAX_CAPTURES
+        {
+            return Err(SongCodeError::InvalidCapture);
+        }
+        for (target, clip) in &song.automation.step_captures {
+            validate_step_motion_target(*target, clip, &song.automation)?;
+            let id = song_id_index(target.control.id())
+                .ok_or(SongCodeError::UnregisteredControl(target.control.id()))?;
+            steps.extend_from_slice(&id.to_le_bytes());
+            steps.push(target.lane_index as u8);
+            steps.push(step_motion_tag(target.target));
+            write_motion_clip(clip, &mut steps);
+        }
+        write_record(STEP_MOTION_RECORD, &steps, &mut bytes)?;
     }
 
     if let Some(sequence) = &song.tonal_sequence {
@@ -399,6 +420,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut pad_rhythm_rows_record_seen = false;
     let mut drunken_phase_record_seen = false;
     let mut capture_record_seen = false;
+    let mut step_motion_record_seen = false;
     let mut planned_action_record_seen = false;
     let mut lane_bypass = None;
     let mut epoch = 0;
@@ -419,6 +441,13 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 }
                 capture_record_seen = true;
                 read_captures(payload, &mut song.automation)?;
+            }
+            STEP_MOTION_RECORD => {
+                if step_motion_record_seen {
+                    return Err(SongCodeError::InvalidCapture);
+                }
+                step_motion_record_seen = true;
+                read_step_motion(payload, &mut song.automation)?;
             }
             SNAPSHOT_RECORD => read_snapshot(payload, &mut song.controls)?,
             AUTOMATION_RECORD => read_automation(payload, &mut song.automation)?,
@@ -490,14 +519,22 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     if let Some(payload) = lane_bypass {
         read_lane_bypass(payload, &mut song)?;
     }
-    for address in song.automation.captures.keys() {
+    for (address, clip) in &song.automation.captures {
         if !super::capture_eligible(&address.spec().contextual(&song.controls))
+            || (address.spec().contextual(&song.controls).kind == ControlKind::Discrete)
+                != !clip.events.is_empty()
             || (parse_module_slot_id(address.id()).is_some()
                 && super::module_slot_row(address.id(), &song.controls)
                     .is_none_or(|(slot, _)| slot.kind().is_none()))
         {
             return Err(SongCodeError::InvalidCapture);
         }
+    }
+    if song.automation.captures.len() + song.automation.step_captures.len() > super::MAX_CAPTURES {
+        return Err(SongCodeError::InvalidCapture);
+    }
+    for (target, clip) in &song.automation.step_captures {
+        validate_step_motion_target(*target, clip, &song.automation)?;
     }
     Ok((song, epoch))
 }
@@ -674,6 +711,74 @@ fn validate_capture(clip: &super::CaptureClip) -> Result<(), SongCodeError> {
     {
         return Err(SongCodeError::InvalidCapture);
     }
+    if !clip.events.is_empty()
+        && (clip.events.len() > super::MAX_MOTION_EVENTS
+            || clip.events[0].tick != 0
+            || clip
+                .events
+                .iter()
+                .any(|event| usize::from(event.tick) >= usize::from(clip.duration.beats()) * 256)
+            || clip
+                .events
+                .windows(2)
+                .any(|pair| pair[0].tick >= pair[1].tick))
+    {
+        return Err(SongCodeError::InvalidCapture);
+    }
+    Ok(())
+}
+
+fn write_motion_clip(clip: &super::CaptureClip, bytes: &mut Vec<u8>) {
+    bytes.push(motion_duration_tag(clip.duration));
+    bytes.push(u8::from(clip.enabled));
+    bytes.extend_from_slice(&clip.origin.to_le_bytes());
+    bytes.extend_from_slice(&clip.launch.to_le_bytes());
+    if clip.events.is_empty() {
+        bytes.push(0);
+        bytes.push(clip.duration.samples() as u8);
+        bytes.extend_from_slice(&clip.samples[..clip.duration.samples()]);
+    } else {
+        bytes.push(1);
+        bytes.push(clip.events.len() as u8);
+        for event in &clip.events {
+            bytes.extend_from_slice(&event.tick.to_le_bytes());
+            bytes.extend_from_slice(&event.position.to_le_bytes());
+        }
+    }
+}
+
+fn step_motion_tag(target: StepTarget) -> u8 {
+    match target {
+        StepTarget::Count => 0,
+        StepTarget::Glide => 1,
+        StepTarget::Value(index) => (index + 2) as u8,
+    }
+}
+
+fn step_motion_from_tag(tag: u8) -> Option<StepTarget> {
+    match tag {
+        0 => Some(StepTarget::Count),
+        1 => Some(StepTarget::Glide),
+        2..=17 => Some(StepTarget::Value(usize::from(tag - 2))),
+        _ => None,
+    }
+}
+
+fn validate_step_motion_target(
+    target: StepMotionAddress,
+    clip: &super::CaptureClip,
+    automation: &AutomationState,
+) -> Result<(), SongCodeError> {
+    validate_capture(clip)?;
+    if target.lane_index >= MAX_AUTOMATION_LANES_PER_KIND
+        || matches!(target.target, StepTarget::Value(index) if index >= MAX_LFO_STEPS)
+        || (target.target == StepTarget::Count) != !clip.events.is_empty()
+        || automation
+            .route_at(target.control, target.lane_index)
+            .is_none()
+    {
+        return Err(SongCodeError::InvalidCapture);
+    }
     Ok(())
 }
 
@@ -706,6 +811,7 @@ mod capture_codec_tests {
         payload.push(1);
         payload.extend_from_slice(&0.0f64.to_le_bytes());
         payload.extend_from_slice(&0.0f64.to_le_bytes());
+        payload.push(0);
         payload.push(duration.samples() as u8);
         payload.extend_from_slice(&[128; super::super::CAPTURE_SAMPLES]);
         payload
@@ -770,6 +876,8 @@ mod capture_codec_tests {
         let mut old = payload("pad.level");
         old[0] = 3;
         assert_eq!(decode(&old).err(), Some(SongCodeError::InvalidCapture));
+        old[0] = 4;
+        assert_eq!(decode(&old).err(), Some(SongCodeError::InvalidCapture));
     }
 }
 
@@ -788,31 +896,7 @@ fn read_captures(payload: &[u8], automation: &mut AutomationState) -> Result<(),
         if !seen.insert(index) {
             return Err(SongCodeError::InvalidCapture);
         }
-        let duration =
-            motion_duration_from_tag(reader.u8()?).ok_or(SongCodeError::InvalidCapture)?;
-        let enabled = match reader.u8()? {
-            0 => false,
-            1 => true,
-            _ => return Err(SongCodeError::InvalidCapture),
-        };
-        let mut anchor = [0; 8];
-        anchor.copy_from_slice(reader.bytes(8)?);
-        let origin = f64::from_le_bytes(anchor);
-        anchor.copy_from_slice(reader.bytes(8)?);
-        let launch = f64::from_le_bytes(anchor);
-        if reader.u8()? as usize != duration.samples() {
-            return Err(SongCodeError::InvalidCapture);
-        }
-        let mut samples = [0; super::CAPTURE_SAMPLES];
-        samples[..duration.samples()].copy_from_slice(reader.bytes(duration.samples())?);
-        let clip = super::CaptureClip {
-            duration,
-            samples,
-            origin,
-            launch,
-            enabled,
-        };
-        validate_capture(&clip)?;
+        let clip = read_motion_clip(&mut reader)?;
         if let Some(id) = song_id_at(index) {
             if spec_by_id(id).is_none() {
                 return Err(SongCodeError::RetiredControl(id));
@@ -824,6 +908,83 @@ fn read_captures(payload: &[u8], automation: &mut AutomationState) -> Result<(),
         return Err(SongCodeError::InvalidCapture);
     }
     Ok(())
+}
+
+fn read_step_motion(payload: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
+    let mut reader = Reader::new(payload);
+    if reader.u8()? != 1 {
+        return Err(SongCodeError::InvalidCapture);
+    }
+    let count = reader.u8()? as usize;
+    if count == 0 || count > super::MAX_CAPTURES {
+        return Err(SongCodeError::InvalidCapture);
+    }
+    for _ in 0..count {
+        let id = song_id_at(reader.u16()?).ok_or(SongCodeError::InvalidCapture)?;
+        if spec_by_id(id).is_none() {
+            return Err(SongCodeError::RetiredControl(id));
+        }
+        let target = StepMotionAddress {
+            control: ControlAddress::new(id),
+            lane_index: usize::from(reader.u8()?),
+            target: step_motion_from_tag(reader.u8()?).ok_or(SongCodeError::InvalidCapture)?,
+        };
+        let clip = read_motion_clip(&mut reader)?;
+        if automation.step_captures.insert(target, clip).is_some() {
+            return Err(SongCodeError::InvalidCapture);
+        }
+    }
+    if !reader.is_empty() {
+        return Err(SongCodeError::InvalidCapture);
+    }
+    Ok(())
+}
+
+fn read_motion_clip(reader: &mut Reader<'_>) -> Result<super::CaptureClip, SongCodeError> {
+    let duration = motion_duration_from_tag(reader.u8()?).ok_or(SongCodeError::InvalidCapture)?;
+    let enabled = match reader.u8()? {
+        0 => false,
+        1 => true,
+        _ => return Err(SongCodeError::InvalidCapture),
+    };
+    let mut anchor = [0; 8];
+    anchor.copy_from_slice(reader.bytes(8)?);
+    let origin = f64::from_le_bytes(anchor);
+    anchor.copy_from_slice(reader.bytes(8)?);
+    let launch = f64::from_le_bytes(anchor);
+    let mut samples = [0; super::CAPTURE_SAMPLES];
+    let mut events = Vec::new();
+    match reader.u8()? {
+        0 => {
+            if reader.u8()? as usize != duration.samples() {
+                return Err(SongCodeError::InvalidCapture);
+            }
+            samples[..duration.samples()].copy_from_slice(reader.bytes(duration.samples())?);
+        }
+        1 => {
+            let count = reader.u8()? as usize;
+            if count == 0 || count > super::MAX_MOTION_EVENTS {
+                return Err(SongCodeError::InvalidCapture);
+            }
+            for _ in 0..count {
+                events.push(super::MotionEvent {
+                    tick: reader.u16()?,
+                    position: reader.u16()?,
+                });
+            }
+        }
+        _ => return Err(SongCodeError::InvalidCapture),
+    }
+    let clip = super::CaptureClip {
+        duration,
+        samples,
+        events,
+        origin,
+        launch,
+        enabled,
+    };
+    validate_capture(&clip)?;
+    Ok(clip)
 }
 
 /// Gesture record: `u8 entry_count`, then fixed-width entries of stable

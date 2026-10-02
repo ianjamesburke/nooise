@@ -623,6 +623,7 @@ fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
     match *code {
         // Enter stays inert while an automation editor owns the keyboard.
         PhysicalKey::Enter => None,
+        PhysicalKey::Character(' ') => Some(Intent::ActivatePerformance(PerformanceKind::Jump)),
         PhysicalKey::Character('r') => Some(Intent::RandomizeAutomationRow),
         _ => slider_binding(code),
     }

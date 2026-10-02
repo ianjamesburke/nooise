@@ -241,6 +241,23 @@ pub(crate) fn coordinate_production_action(
             .resume
             .and_then(|_| LaneTarget::capture(frame_session))
             .map(Box::new);
+        palette.step_motion_target = palette.resume.and_then(|mode| {
+            let address = frame_session.automation.active_address()?;
+            if frame_session.automation.active_kind()? != ModKind::Lfo {
+                return None;
+            }
+            let lane_index = frame_session.automation.active_lane_index()?;
+            let LfoSubRow::Step(target) = *lfo_submenu_rows(&frame_session.automation, address)
+                .get(mode.selected().checked_sub(1)?)?
+            else {
+                return None;
+            };
+            Some(Box::new(StepMotionAddress {
+                control: address,
+                lane_index,
+                target,
+            }))
+        });
     }
     model.seed_palette_recent(context.effects.recent().ids());
     let entered_modal_owner = matches!(before.mode, interaction::InteractionMode::Browsing)

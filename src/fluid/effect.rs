@@ -276,7 +276,8 @@ impl EffectExecutor {
                 return Err(EffectFailure::StaleRecipeTarget);
             }
             if action == CaptureAction::Capture {
-                if snapshot.automation.captures.len() >= MAX_CAPTURES
+                if snapshot.automation.captures.len() + snapshot.automation.step_captures.len()
+                    >= MAX_CAPTURES
                     && !snapshot.automation.captures.contains_key(&address)
                 {
                     return Err(EffectFailure::CaptureLimit);
@@ -341,7 +342,8 @@ impl EffectExecutor {
                 if !target.is_current(snapshot) {
                     return Err(EffectFailure::StaleRecipeTarget);
                 }
-                if snapshot.automation.captures.len() >= MAX_CAPTURES
+                if snapshot.automation.captures.len() + snapshot.automation.step_captures.len()
+                    >= MAX_CAPTURES
                     && !snapshot.automation.captures.contains_key(&address)
                 {
                     return Err(EffectFailure::CaptureLimit);
@@ -350,11 +352,87 @@ impl EffectExecutor {
             },
             |snapshot| {
                 snapshot.automation.captures.insert(address, clip.clone());
-                snapshot.automation.close_editor();
                 Ok(())
             },
         )?;
         self.show_message(format!("Motion Grab {} · queued", duration.beats()));
+        Ok(EffectAcknowledgement::Published {
+            generation: snapshot.generation,
+        })
+    }
+
+    fn apply_step_motion(
+        &mut self,
+        action: MotionAction,
+        target: StepMotionAddress,
+        lane_guard: Option<LaneTarget>,
+        end: f64,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let valid = |snapshot: &LiveSessionSnapshot| {
+            lane_guard.is_none_or(|guard| guard.is_current(snapshot))
+                && snapshot
+                    .automation
+                    .route_at(target.control, target.lane_index)
+                    .is_some_and(|route| route.shape == LfoShape::Steps)
+        };
+        if !valid(&self.session.load()) {
+            return Err(EffectFailure::CaptureUnavailable);
+        }
+        let clip = if let MotionAction::Grab(duration) = action {
+            Some(
+                self.capture_history
+                    .step_motion_clip(target, duration, end)
+                    .map_err(EffectFailure::CaptureHistory)?,
+            )
+        } else {
+            None
+        };
+        let snapshot = self.edit_session_checked(
+            target.control.id(),
+            |snapshot| {
+                if !valid(snapshot) {
+                    return Err(EffectFailure::CaptureUnavailable);
+                }
+                if clip.is_some() {
+                    if snapshot.automation.captures.len() + snapshot.automation.step_captures.len()
+                        >= MAX_CAPTURES
+                        && !snapshot.automation.step_captures.contains_key(&target)
+                    {
+                        return Err(EffectFailure::CaptureLimit);
+                    }
+                } else if !snapshot.automation.step_captures.contains_key(&target) {
+                    return Err(EffectFailure::MissingContext("Motion loop on this step"));
+                }
+                Ok(())
+            },
+            |snapshot| {
+                if let Some(clip) = &clip {
+                    snapshot
+                        .automation
+                        .step_captures
+                        .insert(target, clip.clone());
+                } else if action == MotionAction::Delete {
+                    snapshot.automation.step_captures.remove(&target);
+                } else if let Some(clip) = snapshot.automation.step_captures.get_mut(&target) {
+                    clip.enabled = action == MotionAction::Resume;
+                    if clip.enabled {
+                        clip.launch = next_bar_beat(beat);
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        self.show_message(format!(
+            "{} {} step · {}",
+            action.name(),
+            target.control.id(),
+            snapshot
+                .automation
+                .step_captures
+                .get(&target)
+                .map_or("deleted", |clip| clip.status(beat))
+        ));
         Ok(EffectAcknowledgement::Published {
             generation: snapshot.generation,
         })
@@ -854,6 +932,46 @@ impl EffectExecutor {
                 let target = recipe::RecipeTarget::capture(id, &self.session.load());
                 self.apply_motion_grab(duration, target, context.beat, context.beat)
             }
+            InteractionEffect::MotionGrabAutomationSelected { duration, selected } => {
+                let current = self.session.load();
+                let address = current
+                    .automation
+                    .active_address()
+                    .ok_or(EffectFailure::CaptureUnavailable)?;
+                if selected == 0 {
+                    let target = recipe::RecipeTarget::capture(address.id(), &current);
+                    self.apply_motion_grab(duration, target, context.beat, context.beat)
+                } else if let Some(LfoSubRow::Step(step)) =
+                    lfo_submenu_rows(&current.automation, address).get(selected - 1)
+                {
+                    let target = StepMotionAddress {
+                        control: address,
+                        lane_index: current.automation.active_lane_index().unwrap_or(0),
+                        target: *step,
+                    };
+                    self.apply_step_motion(
+                        MotionAction::Grab(duration),
+                        target,
+                        None,
+                        context.beat,
+                        context.beat,
+                    )
+                } else {
+                    Err(EffectFailure::CaptureUnavailable)
+                }
+            }
+            InteractionEffect::StepMotion {
+                action,
+                target,
+                lane_guard,
+                end_beat_bits,
+            } => self.apply_step_motion(
+                action,
+                target,
+                lane_guard.as_deref().copied(),
+                f64::from_bits(end_beat_bits),
+                context.beat,
+            ),
             InteractionEffect::AdjustSelected(delta) => {
                 let id = selected_control(context.selected_control)?;
                 self.execute(LiveEffect::EditControl {
@@ -1344,6 +1462,55 @@ mod tests {
     }
 
     #[test]
+    fn leader_grab_in_steps_editor_installs_motion_on_the_selected_step() {
+        let mut executor = executor();
+        let address = ControlAddress::new("pad.level");
+        executor.edit_session(None, |snapshot| {
+            let route = snapshot.automation.open_or_create(address);
+            route.shape = LfoShape::Steps;
+            route.step_count = 1;
+            route.steps[0] = 0.0;
+        });
+        executor.edit_beat = 0.5;
+        executor.edit_session(None, |snapshot| {
+            snapshot
+                .automation
+                .route_mut(address)
+                .unwrap()
+                .set_step(StepTarget::Value(0), 80.0);
+        });
+        let result = executor.execute_interaction_with_clipboard(
+            InteractionEffect::MotionGrabAutomationSelected {
+                duration: MotionDuration::Beats4,
+                selected: 7,
+            },
+            &InteractionExecutionContext {
+                selected_control: None,
+                beat: 4.0,
+            },
+            &mut FakeClipboard::default(),
+        );
+        assert!(result.is_ok(), "{result:?}");
+        let target = StepMotionAddress {
+            control: address,
+            lane_index: 0,
+            target: StepTarget::Value(0),
+        };
+        assert!(
+            executor
+                .session
+                .load()
+                .automation
+                .step_captures
+                .contains_key(&target)
+        );
+        assert_eq!(
+            executor.session.load().automation.active_address(),
+            Some(address)
+        );
+    }
+
+    #[test]
     fn capture_takeover_at_clamped_base_and_automation_edits_are_distinct() {
         let mut executor = executor();
         let address = ControlAddress::new("pad.level");
@@ -1354,6 +1521,7 @@ mod tests {
                 CaptureClip {
                     duration: MotionDuration::Beats16,
                     samples: [128; CAPTURE_SAMPLES],
+                    events: Vec::new(),
                     origin: 0.0,
                     launch: 0.0,
                     enabled: true,

@@ -396,6 +396,7 @@ pub(crate) struct PaletteMode {
     pub(crate) capture_beat_bits: u64,
     pub(crate) recipe_target: Option<super::recipe::RecipeTarget>,
     pub(crate) lane_target: Option<Box<super::LaneTarget>>,
+    pub(crate) step_motion_target: Option<Box<super::StepMotionAddress>>,
     pub(crate) query: String,
     pub(crate) selected: usize,
     pub(crate) recent: Vec<&'static str>,
@@ -684,6 +685,9 @@ pub(crate) enum JumpStage {
     ChooseLayer,
     ChooseParameter {
         instrument: PerformanceInstrument,
+    },
+    AutomationRow {
+        mode: AutomationMode,
     },
 }
 
@@ -1067,7 +1071,11 @@ impl Intent {
                 ModeKind::Lead,
                 ModeKind::Help,
             ],
-            Self::ActivatePerformance(_) => &[ModeKind::Browsing, ModeKind::Performance],
+            Self::ActivatePerformance(_) => &[
+                ModeKind::Browsing,
+                ModeKind::Automation,
+                ModeKind::Performance,
+            ],
             Self::SelectPerformanceInstrument { .. }
             | Self::JumpToParameter(_)
             | Self::PlanMute
@@ -1183,6 +1191,16 @@ pub(crate) enum InteractionEffect {
         end_beat_bits: u64,
     },
     MotionGrabSelected(super::MotionDuration),
+    MotionGrabAutomationSelected {
+        duration: super::MotionDuration,
+        selected: usize,
+    },
+    StepMotion {
+        action: super::MotionAction,
+        target: super::StepMotionAddress,
+        lane_guard: Option<Box<super::LaneTarget>>,
+        end_beat_bits: u64,
+    },
     Lane {
         action: super::LaneAction,
         target: Option<super::LaneTarget>,
@@ -1783,6 +1801,11 @@ fn update_automation(
             effects.push(InteractionEffect::CloseAutomationAll);
             *next_mode = Some(InteractionMode::Browsing);
         }
+        Intent::ActivatePerformance(_) => {
+            *next_mode = Some(InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::AutomationRow { mode: *automation },
+            }));
+        }
         Intent::OpenAutomationField => {
             if matches!(automation, AutomationMode::Lfo { .. }) {
                 *automation = AutomationMode::Lfo {
@@ -1911,7 +1934,14 @@ fn update_performance(
         return;
     }
     match intent {
-        Intent::Cancel => *next_mode = Some(InteractionMode::Browsing),
+        Intent::Cancel => {
+            *next_mode = Some(match *performance {
+                PerformanceMode::Jump {
+                    stage: JumpStage::AutomationRow { mode },
+                } => InteractionMode::Automation(mode),
+                _ => InteractionMode::Browsing,
+            })
+        }
         // Space while the leader is already pending leaves its stage alone.
         Intent::ActivatePerformance(_) => {}
         Intent::Save => effects.push(InteractionEffect::Save),
@@ -1934,7 +1964,7 @@ fn update_performance(
                 // No layer key: the page already open is the layer, so
                 // `Space k` reaches the filter on whatever is in front of
                 // you, on any page rather than only the four layer keys.
-                JumpStage::ChooseLayer => navigation.tab(),
+                JumpStage::ChooseLayer | JumpStage::AutomationRow { .. } => navigation.tab(),
                 JumpStage::ChooseParameter { instrument } => instrument.tab(),
             };
             let Some(effect) = jump_effect(tab, parameter) else {
@@ -1950,8 +1980,19 @@ fn update_performance(
             *next_mode = Some(InteractionMode::Browsing);
         }
         Intent::GrabMotion(duration) => {
-            effects.push(InteractionEffect::MotionGrabSelected(duration));
-            *next_mode = Some(InteractionMode::Browsing);
+            if let PerformanceMode::Jump {
+                stage: JumpStage::AutomationRow { mode },
+            } = *performance
+            {
+                effects.push(InteractionEffect::MotionGrabAutomationSelected {
+                    duration,
+                    selected: mode.selected(),
+                });
+                *next_mode = Some(InteractionMode::Automation(mode));
+            } else {
+                effects.push(InteractionEffect::MotionGrabSelected(duration));
+                *next_mode = Some(InteractionMode::Browsing);
+            }
         }
         _ => {}
     }
@@ -1991,6 +2032,8 @@ fn push_numeric(buffer: &mut String, character: char) {
 /// already holds it.
 fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionMode {
     if matches!(entry, PaletteEntry::Operation(operation) if operation.is_mix())
+        || (palette.step_motion_target.is_some()
+            && matches!(entry, PaletteEntry::Operation(Operation::Motion(_))))
         || (palette.resume.is_some()
             && matches!(
                 entry,
@@ -2006,6 +2049,16 @@ fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> Interac
 }
 
 fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEffect {
+    if let (Some(target), PaletteEntry::Operation(Operation::Motion(action))) =
+        (palette.step_motion_target.as_deref().copied(), entry)
+    {
+        return InteractionEffect::StepMotion {
+            action: *action,
+            target,
+            lane_guard: palette.lane_target.clone(),
+            end_beat_bits: palette.capture_beat_bits,
+        };
+    }
     if palette.resume.is_some()
         && let PaletteEntry::Operation(operation) = entry
         && let Some(action) = operation
@@ -2082,7 +2135,7 @@ fn page_for_tab(tab: Tab) -> Page {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fluid::MotionDuration;
+    use crate::fluid::{MotionAction, MotionDuration};
 
     fn update(model: InteractionModel, intent: Intent) -> Transition {
         model.update(SemanticAction::press(intent))
@@ -2582,6 +2635,73 @@ mod tests {
                 MotionDuration::Beats8
             )]
         );
+    }
+
+    #[test]
+    fn leader_motion_from_lfo_editor_keeps_the_step_row_selected() {
+        let editor = AutomationMode::Lfo {
+            depth: LfoDepth::Editor,
+            selected: 7,
+        };
+        let model = InteractionModel {
+            mode: InteractionMode::Automation(editor),
+            ..InteractionModel::default()
+        };
+        let opened = update(model, Intent::ActivatePerformance(PerformanceKind::Jump));
+        assert_eq!(
+            opened.model.mode,
+            InteractionMode::Performance(PerformanceMode::Jump {
+                stage: JumpStage::AutomationRow { mode: editor },
+            })
+        );
+        let grabbed = update(opened.model, Intent::GrabMotion(MotionDuration::Beats4));
+        assert_eq!(grabbed.model.mode, InteractionMode::Automation(editor));
+        assert_eq!(
+            grabbed.effects,
+            vec![InteractionEffect::MotionGrabAutomationSelected {
+                duration: MotionDuration::Beats4,
+                selected: 7,
+            }]
+        );
+    }
+
+    #[test]
+    fn palette_motion_on_step_row_targets_that_step_instead_of_the_parent_lane() {
+        let target = super::super::StepMotionAddress {
+            control: super::super::ControlAddress::new("pad.level"),
+            lane_index: 0,
+            target: super::super::StepTarget::Value(0),
+        };
+        let palette = PaletteMode {
+            step_motion_target: Some(Box::new(target)),
+            resume: Some(AutomationMode::Lfo {
+                depth: LfoDepth::Editor,
+                selected: 7,
+            }),
+            capture_beat_bits: 4.0f64.to_bits(),
+            ..PaletteMode::default()
+        };
+        for action in [
+            MotionAction::Grab(MotionDuration::Beats4),
+            MotionAction::Bypass,
+            MotionAction::Resume,
+            MotionAction::Delete,
+        ] {
+            let entry = PaletteEntry::Operation(Operation::Motion(action));
+            assert_eq!(
+                palette_confirm(&entry, &palette),
+                InteractionEffect::StepMotion {
+                    action,
+                    target,
+                    lane_guard: None,
+                    end_beat_bits: 4.0f64.to_bits(),
+                }
+            );
+            assert_eq!(
+                palette_after_confirm(&entry, &palette),
+                resume_mode(palette.resume)
+            );
+        }
     }
 
     #[test]

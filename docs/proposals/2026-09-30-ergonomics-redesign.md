@@ -115,9 +115,15 @@ Escape cancellation. Their effects, state, and persistence remain distinct.
 Capture is retired as a public concept. Motion is a peer lane type alongside
 LFO and envelope.
 
-A first Motion lane has one target, one duration, sampled position values,
-phase, enabled state, and a launch point. It keeps the current compact
-resolution of eight samples per beat:
+A Motion lane has one target, one duration, phase, enabled state, and a
+launch point. Gain, continuous, and timing controls use eight position
+samples per beat. Discrete controls use changes on a 1/256-beat grid,
+with an initial value and held tail. Inline Steps LFO rows are addressed
+by parent control, LFO lane, and step row (count, glide, or value); count
+uses discrete changes while glide and values use samples. A Lead pitch
+or Pads trigger choice never passes through an invalid intermediate state.
+
+Sampled phrase sizes are:
 
 | Duration | Samples |
 | --- | --- |
@@ -191,9 +197,11 @@ and MRU behavior retain their existing deliberate ordering.
 4. In progress: `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16` use
    their nearest bar downbeat as both history end and loop phase anchor.
    `Space 1`, `Space 2`, and `Space 4` are the fast paths for one, two, and
-   four bars. The Motion wire format now stores the real duration and only its
-   samples, refusing legacy Capture payloads rather than reinterpreting them.
-   The loop holds its terminal sample until its next boundary. Record and a
+   four bars. The Motion wire format stores the real duration and either its
+   active samples or timed events, refusing legacy Capture payloads rather
+   than reinterpreting them. Registry controls and Steps LFO count, glide,
+   and value rows can each carry a loop. The terminal value holds until its
+   next boundary. Record and a
    shared lane lifecycle still need to land together. Do not add overdub.
 5. Only after a second musical action needs it, consider a shared internal
    boundary-action type. State recall is a likely test once marks exist.

@@ -176,6 +176,14 @@ impl LiveSession {
                     module_slot_row(address.id(), &next.controls)
                         .is_some_and(|(after, _)| before.kind == after.kind)
                 });
+                next.automation.step_captures.retain(|target, _| {
+                    let Some((before, _)) = module_slot_row(target.control.id(), &current.controls)
+                    else {
+                        return true;
+                    };
+                    module_slot_row(target.control.id(), &next.controls)
+                        .is_some_and(|(after, _)| before.kind == after.kind)
+                });
             }
             if !current.automation.same_lanes(&next.automation) {
                 next.automation_revision = current.automation_revision.wrapping_add(1);

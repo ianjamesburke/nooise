@@ -8,7 +8,7 @@ use std::fmt;
 
 use super::widget::DialScale;
 use super::{
-    ControlSpec, Entry, FluidControls, LfoSnap, TAPER_STEPS_PER_SWEEP, TimingContext,
+    ControlKind, ControlSpec, Entry, FluidControls, LfoSnap, TAPER_STEPS_PER_SWEEP, TimingContext,
     beat_grid_adjust, beat_grid_snap, nearest_power_of_two, snap_step, spec_by_id,
 };
 
@@ -82,6 +82,13 @@ impl PartialOrd for ControlAddress {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct StepMotionAddress {
+    pub(crate) control: ControlAddress,
+    pub(crate) lane_index: usize,
+    pub(crate) target: StepTarget,
 }
 
 /// How one h/l press moves a continuous automation field.
@@ -304,6 +311,7 @@ struct AutomationStack {
 pub(crate) struct AutomationState {
     stacks: BTreeMap<ControlAddress, AutomationStack>,
     pub(crate) captures: BTreeMap<ControlAddress, super::CaptureClip>,
+    pub(crate) step_captures: BTreeMap<StepMotionAddress, super::CaptureClip>,
     open: Option<OpenEditor>,
 }
 
@@ -334,6 +342,10 @@ impl AutomationState {
             }
         }
         for clip in self.captures.values_mut() {
+            clip.origin = 0.0;
+            clip.launch = 0.0;
+        }
+        for clip in self.step_captures.values_mut() {
             clip.origin = 0.0;
             clip.launch = 0.0;
         }
@@ -464,6 +476,11 @@ impl AutomationState {
                 ModKind::Lfo | ModKind::Envelope => {}
             }
         }
+        if open.kind == ModKind::Lfo {
+            self.step_captures.retain(|target, _| {
+                target.control != open.address || target.lane_index < open.index
+            });
+        }
         self.remove_stack_if_empty(open.address);
     }
 
@@ -471,6 +488,8 @@ impl AutomationState {
     pub(crate) fn clear_control(&mut self, address: ControlAddress) {
         self.stacks.remove(&address);
         self.captures.remove(&address);
+        self.step_captures
+            .retain(|target, _| target.control != address);
         if self.open.is_some_and(|open| open.address == address) {
             self.open = None;
         }
@@ -536,6 +555,22 @@ impl AutomationState {
         self.stacks
             .iter()
             .flat_map(|(address, stack)| stack.lfos.iter().map(move |route| (*address, route)))
+    }
+
+    pub(crate) fn indexed_routes(
+        &self,
+    ) -> impl Iterator<Item = (ControlAddress, usize, &LfoRoute)> {
+        self.stacks.iter().flat_map(|(address, stack)| {
+            stack
+                .lfos
+                .iter()
+                .enumerate()
+                .map(move |(index, route)| (*address, index, route))
+        })
+    }
+
+    pub(crate) fn route_at(&self, address: ControlAddress, index: usize) -> Option<&LfoRoute> {
+        self.stacks.get(&address)?.lfos.get(index)
     }
 
     pub(crate) fn routes_for(&self, address: ControlAddress) -> impl Iterator<Item = &LfoRoute> {
@@ -612,6 +647,9 @@ impl AutomationState {
         for clip in snapshot.captures.values_mut() {
             clip.rebase(beat);
         }
+        for clip in snapshot.step_captures.values_mut() {
+            clip.rebase(beat);
+        }
         snapshot
     }
 
@@ -655,6 +693,11 @@ impl AutomationState {
                 to.captures.clone()
             } else {
                 from.captures.clone()
+            },
+            step_captures: if use_to {
+                to.step_captures.clone()
+            } else {
+                from.step_captures.clone()
             },
             ..AutomationState::default()
         };
@@ -708,6 +751,13 @@ impl AutomationState {
                 .iter()
                 .filter(|(address, _)| held(**address))
                 .map(|(address, clip)| (*address, clip.clone())),
+        );
+        self.step_captures.retain(|target, _| !held(target.control));
+        self.step_captures.extend(
+            from.step_captures
+                .iter()
+                .filter(|(target, _)| held(target.control))
+                .map(|(target, clip)| (*target, clip.clone())),
         );
     }
 }
@@ -801,6 +851,7 @@ struct PlannedRoute {
     lfos: Vec<LfoRoute>,
     envelopes: Vec<EnvelopeRoute>,
     capture: Option<super::CaptureClip>,
+    step_captures: Vec<(StepMotionAddress, super::CaptureClip)>,
     smoothed_delta: Option<f32>,
 }
 
@@ -823,6 +874,7 @@ impl PlannedRoute {
         self.lfos.is_empty()
             && self.envelopes.is_empty()
             && self.capture.is_none()
+            && self.step_captures.is_empty()
             && self
                 .smoothed_delta
                 .is_none_or(|delta| delta.abs() <= f32::EPSILON)
@@ -852,6 +904,12 @@ impl AutomationPlan {
                 lfos: automation.routes_for(address).copied().collect(),
                 envelopes: automation.envelopes_for(address).copied().collect(),
                 capture: automation.captures.get(&address).cloned(),
+                step_captures: automation
+                    .step_captures
+                    .iter()
+                    .filter(|(target, _)| target.control == address)
+                    .map(|(target, clip)| (*target, clip.clone()))
+                    .collect(),
                 smoothed_delta,
             });
         }
@@ -859,6 +917,7 @@ impl AutomationPlan {
             removed.lfos.clear();
             removed.envelopes.clear();
             removed.capture = None;
+            removed.step_captures.clear();
             self.routes.push(removed);
         }
     }
@@ -870,6 +929,13 @@ impl AutomationPlan {
             kick_offset_beats: controls.kick.offset_beats,
         };
         for planned in &mut self.routes {
+            for (target, clip) in &planned.step_captures {
+                if let Some(position) = clip.position(ctx.beat)
+                    && let Some(route) = planned.lfos.get_mut(target.lane_index)
+                {
+                    target.target.apply_motion_position(route, position);
+                }
+            }
             let mut spec = planned.spec.contextual(controls);
             if let Some(clip) = &planned.capture {
                 spec = clip.playback_spec(spec, ctx.beat);
@@ -884,7 +950,17 @@ impl AutomationPlan {
                 });
             let target_delta =
                 capture_delta + automation_delta(&planned.lfos, &planned.envelopes, ctx);
-            let delta = planned.next_delta(target_delta, timing.sample_rate);
+            let delta = if spec.kind == ControlKind::Discrete
+                && planned.capture.as_ref().is_some_and(|clip| {
+                    !clip.events.is_empty() && clip.enabled && ctx.beat >= clip.launch
+                }) {
+                // A switch or pattern cell changes exactly at its event, with
+                // no in-between values introduced by the audio de-clicker.
+                planned.smoothed_delta = Some(target_delta);
+                target_delta
+            } else {
+                planned.next_delta(target_delta, timing.sample_rate)
+            };
             let value = modulated_control_value_from_delta(&spec, base, delta);
             (spec.set)(controls, value);
         }
