@@ -969,7 +969,7 @@ mod tests {
             },
         );
         assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
-        assert!(frame.contains("CHORDS␠␠Gsus␠›␠Am"), "{frame}");
+        assert!(frame.contains("CHORDS␠␠Am11␠›␠Gsus"), "{frame}");
         assert!(frame.contains("Master"), "{frame}");
 
         session.controls.pad.progression = 4.0;

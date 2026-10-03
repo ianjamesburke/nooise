@@ -192,19 +192,9 @@ fn draw_harmony(
     );
 
     let slots: Vec<_> = window.slots().collect();
-    let start = slots
-        .iter()
-        .position(|&slot| slot == active_slot)
-        .unwrap_or(0);
     let mut spans = vec![Span::styled("CHORDS  ", Style::default().fg(DIM_TEXT))];
     let mut used = "CHORDS  ".len();
-    for (index, &slot) in slots
-        .iter()
-        .cycle()
-        .skip(start)
-        .take(slots.len())
-        .enumerate()
-    {
+    for (index, &slot) in slots.iter().enumerate() {
         let name = pad_chord_name(pad, window.progression, slot);
         let separator = if index == 0 { "" } else { " › " };
         let reserved = if index + 1 < slots.len() { 1 } else { 0 };
