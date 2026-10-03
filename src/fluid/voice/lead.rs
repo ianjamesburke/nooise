@@ -666,7 +666,7 @@ impl LeadEngine {
             self.voice = None;
         }
         // Applied to the output, not captured per note, so the fader reaches
-        // the note already sounding. Pre-smoothed by `GainSmoothers`.
+        // the note already sounding. Pre-smoothed by `ControlSmoothers`.
         let out = sample * c.level;
         (out, out)
     }

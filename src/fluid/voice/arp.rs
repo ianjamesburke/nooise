@@ -246,7 +246,7 @@ impl ArpEngine {
 
         // Applied to the summed voices, not captured per note, so the fader
         // reaches notes that are already sounding. Pre-smoothed by
-        // `GainSmoothers`.
+        // `ControlSmoothers`.
         let (dry_l, dry_r) =
             mix_and_retain(&mut self.voices, TonalVoice::next, TonalVoice::is_done);
         (dry_l * c.gain, dry_r * c.gain)
