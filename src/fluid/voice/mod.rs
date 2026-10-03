@@ -25,6 +25,13 @@ pub(crate) use tonal::*;
 // Shared voice utilities
 // ============================================================
 
+/// Pattern position comes from the transport, so editing a loop length never
+/// leaves a voice in a private phase. The slack covers swung grid hits.
+pub(crate) fn lane_step_at(beat: f64, rate_beats: f32, offset_beats: f32, count: usize) -> usize {
+    let position = (beat - offset_beats as f64) / rate_beats as f64 + 0.25;
+    (position.floor() as i64).rem_euclid(count.max(1) as i64) as usize
+}
+
 pub(crate) fn midi_to_hz(note: i32) -> f32 {
     440.0 * 2f32.powf((note as f32 - 69.0) / 12.0)
 }

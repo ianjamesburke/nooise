@@ -955,6 +955,29 @@ mod tests {
         render_model_with_session(interaction, &session)
     }
 
+    #[test]
+    fn harmony_header_stays_visible_on_the_hub_at_minimum_size() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        let frame = render_model_with_session_at(
+            &interaction,
+            &session,
+            TelemetryView {
+                beat: 4.0,
+                active_chord: 1,
+            },
+        );
+        assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
+        assert!(frame.contains("CHORDS␠␠Gsus␠›␠Am"), "{frame}");
+        assert!(frame.contains("Master"), "{frame}");
+
+        session.controls.pad.progression = 4.0;
+        let borrowed =
+            render_model_with_session_at(&interaction, &session, TelemetryView::default());
+        assert!(borrowed.contains("KEY␠␠A␠Phrygian"), "{borrowed}");
+    }
+
     fn render_mode(mode: InteractionMode) -> String {
         render_model(&InteractionModel {
             navigation: Navigation::default(),

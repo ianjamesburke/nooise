@@ -1520,7 +1520,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
         ),
         beat_interval!(
             "bass.interval_beats",
-            "Interval",
+            "Length",
             0.125,
             8.0,
             bass.interval_beats

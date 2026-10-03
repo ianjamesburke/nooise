@@ -223,27 +223,14 @@ pub(crate) fn lead_reach(
     }
 }
 
-/// A progression's scale: every pitch class the chords of its playing
-/// window touch, laid out ascending from the tonic (the lowest note of the
-/// progression's first chord, whatever the window's Offset, so the keys
-/// stay rooted in the key the page names). Derived rather than declared, so
-/// a custom progression and each built-in table each yield their own scale,
-/// and a chord change never moves a key.
-pub(crate) fn progression_scale(pad: &PadControls, progression: usize) -> LeadReach {
-    let tonic = pad_chord_tones(pad, progression, 0)[0];
-    let mut present = [false; 12];
-    for slot in ChordWindow::requested(pad).slots() {
-        for note in pad_chord_tones(pad, progression, slot) {
-            present[(note - tonic).rem_euclid(12) as usize] = true;
-        }
-    }
+/// Seven home-key notes, unchanged by chord-window edits or borrowed chords.
+pub(crate) fn progression_scale(_pad: &PadControls, progression: usize) -> LeadReach {
+    let (tonic, mode, _) = progression_home(progression);
     let mut notes = [0; LEAD_REACH_MAX];
-    let mut len = 0;
-    for (interval, _) in present.iter().enumerate().filter(|(_, hit)| **hit) {
-        notes[len] = tonic + interval as i32;
-        len += 1;
+    for (index, interval) in mode.intervals().into_iter().enumerate() {
+        notes[index] = tonic + interval;
     }
-    LeadReach { notes, len }
+    LeadReach { notes, len: 7 }
 }
 
 /// A step value (or a play-row key) as a 1-based tone; `None` is the rest
@@ -276,16 +263,6 @@ pub(crate) fn lead_page_reach(lead: &LeadControls, pad: &PadControls) -> LeadRea
 /// How many of the lane's steps play: `lead.steps` rounded and clamped.
 pub(crate) fn lead_live_step_count(step_count: f32) -> usize {
     (step_count.round() as i64).clamp(1, LEAD_STEP_COUNT as i64) as usize
-}
-
-/// The lane step a trigger on `beat` plays. Derived from the transport rather
-/// than counted, exactly like the LFO staircase, so a saved song resumes on
-/// the step the clock says and there is no position to persist. The quarter
-/// step of slack absorbs a swung hit (never later than half a step) and the
-/// grid's own epsilon.
-pub(crate) fn lead_step_at(beat: f64, rate_beats: f32, offset_beats: f32, count: usize) -> usize {
-    let position = (beat - offset_beats as f64) / rate_beats as f64 + 0.25;
-    (position.floor() as i64).rem_euclid(count.max(1) as i64) as usize
 }
 
 /// Harmonics in a lead recipe's additive stack.
@@ -616,7 +593,7 @@ impl LeadEngine {
             .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
         {
             let count = lead_live_step_count(c.step_count);
-            let lane_step = lead_step_at(timing.beat, rate_beats, c.offset_beats, count);
+            let lane_step = lane_step_at(timing.beat, rate_beats, c.offset_beats, count);
             // A silent layer plays nothing, so a Level of exactly 0 (the
             // default) never keeps a voice alive. A rest lets the current
             // note finish its decay untouched.

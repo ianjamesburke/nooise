@@ -353,8 +353,7 @@ impl PadEngine {
             {
                 // The lane travels with the grid: slot k of the shifted grid
                 // plays step k, so Offset rotates the pattern, not just the clock.
-                let slot = ((timing.beat - f64::from(c.offset_beats)) / 0.25 + 1e-6).floor() as i64;
-                let step = slot.rem_euclid(16) as usize;
+                let step = lane_step_at(timing.beat, 0.25, c.offset_beats, 16);
                 if c.steps[step] >= 0.5 {
                     self.trigger_stab(c, tune, timing);
                 }
@@ -830,10 +829,59 @@ pub(crate) struct Progression {
     /// and never take `CUSTOM_SONG_VALUE`.
     pub(crate) song_value: i8,
     pub(crate) mood: &'static str,
+    pub(crate) home_mode: HomeMode,
     pub(crate) chords: [Chord; CHORD_SLOT_COUNT],
     /// One Bass note per chord, authored independently of the voicing so
     /// the line can walk where the chord's lowest tone would not.
     pub(crate) bass: [i32; CHORD_SLOT_COUNT],
+}
+
+/// The home scale stays put when a chord borrows a note outside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HomeMode {
+    Major,
+    Minor,
+    Dorian,
+    Phrygian,
+    Mixolydian,
+}
+
+impl HomeMode {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Major => "major",
+            Self::Minor => "minor",
+            Self::Dorian => "Dorian",
+            Self::Phrygian => "Phrygian",
+            Self::Mixolydian => "Mixolydian",
+        }
+    }
+
+    pub(crate) fn intervals(self) -> [i32; 7] {
+        match self {
+            Self::Major => [0, 2, 4, 5, 7, 9, 11],
+            Self::Minor => [0, 2, 3, 5, 7, 8, 10],
+            Self::Dorian => [0, 2, 3, 5, 7, 9, 10],
+            Self::Phrygian => [0, 1, 3, 5, 7, 8, 10],
+            Self::Mixolydian => [0, 2, 4, 5, 7, 9, 10],
+        }
+    }
+}
+
+/// One source for the key shown in the header and used by Scale-following.
+pub(crate) fn progression_home(progression: usize) -> (i32, HomeMode, &'static str) {
+    match PROGRESSIONS.get(progression) {
+        Some(built_in) => {
+            let key = progression_key(built_in).trim_end_matches('m');
+            (built_in.chords[0].notes[0], built_in.home_mode, key)
+        }
+        None => (CUSTOM_TONIC, HomeMode::Minor, "A"),
+    }
+}
+
+pub(crate) fn progression_home_label(progression: usize) -> String {
+    let (_, mode, tonic) = progression_home(progression);
+    format!("{tonic} {}", mode.label())
 }
 
 /// Built-in progressions in dial order. With an 8 s release each chord rings
@@ -846,6 +894,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 0,
         mood: "Drift",
+        home_mode: HomeMode::Minor,
         chords: [
             chord("Am11", [45, 50, 55, 60]),
             chord("Gsus", [43, 50, 57, 60]),
@@ -863,6 +912,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 1,
         mood: "Tide",
+        home_mode: HomeMode::Minor,
         chords: [
             chord("Am11", [45, 50, 57, 60]),
             chord("Dm", [50, 53, 57, 62]),
@@ -878,6 +928,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 2,
         mood: "Velvet",
+        home_mode: HomeMode::Minor,
         chords: [
             chord("Am7", [45, 48, 52, 55]),
             chord("Fmaj7", [41, 45, 48, 52]),
@@ -893,6 +944,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 3,
         mood: "Ache",
+        home_mode: HomeMode::Minor,
         chords: [
             chord("Am", [45, 52, 57, 60]),
             chord("Fadd9", [41, 45, 48, 55]),
@@ -910,6 +962,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 4,
         mood: "Shadow",
+        home_mode: HomeMode::Phrygian,
         chords: [
             chord("Am", [45, 48, 52, 57]),
             chord("Bbmaj7", [46, 50, 53, 57]),
@@ -926,6 +979,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 5,
         mood: "Drone",
+        home_mode: HomeMode::Minor,
         chords: [
             chord("Em", [52, 55, 59, 64]),
             chord("E5/B", [47, 52, 59, 64]),
@@ -942,6 +996,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 6,
         mood: "Sunny",
+        home_mode: HomeMode::Major,
         chords: [
             chord("C", [48, 52, 55, 60]),
             chord("Gsus4", [55, 60, 62, 67]),
@@ -958,6 +1013,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 7,
         mood: "Lift",
+        home_mode: HomeMode::Major,
         chords: [
             chord("G", [55, 59, 62, 67]),
             chord("D", [50, 54, 57, 62]),
@@ -975,6 +1031,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 9,
         mood: "Dawn",
+        home_mode: HomeMode::Major,
         chords: [
             chord("Dmaj7", [50, 57, 61, 66]),
             chord("E/D", [50, 56, 59, 64]),
@@ -991,6 +1048,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 10,
         mood: "Rain",
+        home_mode: HomeMode::Dorian,
         chords: [
             chord("Dm9", [50, 53, 60, 64]),
             chord("G6", [43, 55, 59, 64]),
@@ -1008,6 +1066,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 11,
         mood: "Night",
+        home_mode: HomeMode::Minor,
         chords: [
             chord("F#m7", [54, 57, 61, 64]),
             chord("Dmaj7", [50, 57, 61, 66]),
@@ -1024,6 +1083,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 12,
         mood: "Glow",
+        home_mode: HomeMode::Major,
         chords: [
             chord("Ebmaj7", [51, 55, 58, 62]),
             chord("Abmaj7", [44, 55, 60, 63]),
@@ -1041,6 +1101,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 13,
         mood: "Float",
+        home_mode: HomeMode::Mixolydian,
         chords: [
             chord("Cadd9", [48, 55, 62, 64]),
             chord("Bb", [46, 58, 62, 65]),
@@ -1058,6 +1119,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 14,
         mood: "Deep",
+        home_mode: HomeMode::Minor,
         chords: [
             chord("Cm", [48, 55, 60, 63]),
             chord("Fm/C", [48, 56, 60, 65]),
@@ -1075,6 +1137,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
     Progression {
         song_value: 15,
         mood: "Hosking",
+        home_mode: HomeMode::Minor,
         chords: [
             chord("Fm7", [53, 56, 60, 63]),
             chord("Abmaj7/C", [48, 56, 60, 67]),
