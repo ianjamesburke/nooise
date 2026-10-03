@@ -6013,9 +6013,10 @@ fn hosking_progression_moves_from_a_gentle_opening_into_extensions() {
     assert_eq!(
         names,
         vec![
-            "Fm7", "Abmaj7/C", "Bbm7", "Db/F", "Fm9/Ab", "Ebadd9/G", "Bbadd9/D", "Fm11/C",
+            "Fm7", "Abmaj7/C", "Bbm7", "Db/F", "Fm9/Ab", "Ebadd9/G", "Bbadd9/D", "Dbmaj7",
         ]
     );
+    assert_eq!(hosking.bass[7], 49, "Dbmaj7 resolves on its Db root");
 }
 
 /// A song value is what a saved code means, so none may repeat or move:
