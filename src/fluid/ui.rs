@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use super::interaction::{LEAD_PLAY_KEYS, PARAMETERS};
+use super::interaction::{INSTRUMENTS, LEAD_PLAY_KEYS, PARAMETERS};
 use super::widget::{Dial, DialScale};
 use super::*;
 
@@ -209,9 +209,7 @@ fn draw_breadcrumb(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
 
 /// The control list: one row per control, each followed by whatever
 /// modulation it carries — an open editor's fields, the live lanes, a closed
-/// modulation chip. A pending Jump renders here too, as the page it is
-/// aiming at: the leader lives in the footer so the player watches the rows
-/// they are about to land on.
+/// modulation chip. The Space map overlays this area while its leader is open.
 fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
     let view = frame.view;
     let items = &view.items;
@@ -925,7 +923,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ],
     ));
     lines.extend(section(
-        "Jump (Space, then layer, then parameter)",
+        "Jump (Space, then one key)",
         &[
             &jump_layers[..4],
             &jump_layers[4..],
@@ -1000,23 +998,32 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
         ])
     };
     let lines = match surface {
-        PerformanceSurface::ChooseLayer => vec![
-            pair('a', "Pads", 'q', "Tonal"),
-            pair('s', "Perc", 'w', "Clap"),
-            pair('d', "Bass", 'e', "Arp"),
-            pair('f', "Kick", 'r', "Master"),
-            Line::from(vec![
-                Span::styled("j ", key_style),
+        PerformanceSurface::ChooseLayer => {
+            let mut lines: Vec<_> = INSTRUMENTS[..4]
+                .iter()
+                .zip(&INSTRUMENTS[4..])
+                .map(|(left, right)| {
+                    pair(
+                        left.key,
+                        left.instrument.name(),
+                        right.key,
+                        right.instrument.name(),
+                    )
+                })
+                .collect();
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} ", PARAMETERS[0].key), key_style),
                 Span::styled("Vol    ", label_style),
-                Span::styled("k ", key_style),
+                Span::styled(format!("{} ", PARAMETERS[1].key), key_style),
                 Span::styled("Filter ", label_style),
                 Span::styled("m ", key_style),
                 Span::styled("Mute ", label_style),
                 Span::styled("1/2/4 ", key_style),
                 Span::styled("Grab", label_style),
-            ]),
-            single("Esc", "Cancel"),
-        ],
+            ]));
+            lines.push(single("Esc", "Cancel"));
+            lines
+        }
         PerformanceSurface::ChooseParameter { instrument } => vec![
             Line::from(Span::styled(instrument.name().to_string(), label_style)),
             single(&PARAMETERS[0].key.to_string(), PARAMETERS[0].label),

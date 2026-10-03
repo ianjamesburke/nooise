@@ -1071,7 +1071,7 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         bass: [48, 48, 48, 48, 43, 51, 44, 43],
     },
     // F minor, inferred from Jay Hosking's "Crown": a consonant first half
-    // opens into the richer suspended colour of the second.
+    // opens into a warm major lift in the second.
     Progression {
         song_value: 15,
         mood: "Hosking",
@@ -1083,9 +1083,9 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
             chord("Fm9/Ab", [44, 51, 53, 55]),
             chord("Ebadd9/G", [55, 58, 63, 65]),
             chord("Bbadd9/D", [50, 53, 58, 60]),
-            chord("Fm11/C", [48, 53, 56, 58]),
+            chord("Dbmaj7", [49, 53, 56, 60]),
         ],
-        bass: [41, 48, 46, 53, 44, 55, 50, 48],
+        bass: [41, 48, 46, 53, 44, 55, 50, 49],
     },
 ];
 

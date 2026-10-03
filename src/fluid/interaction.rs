@@ -1919,9 +1919,9 @@ fn update_lead(
 }
 
 /// The Jump leader: `Space` plus a layer key restores that layer's cursor;
-/// `Space` plus a parameter key addresses the current layer. Each route
-/// returns to browsing without changing a value, so it needs no key releases
-/// or capability branch.
+/// a parameter key addresses the current layer, `m` plans a mute, and
+/// `1/2/4` grabs Motion. An editor-field grab returns to its editor; other
+/// completed routes return to browsing. Every route acts on a Press edge.
 fn update_performance(
     performance: &mut PerformanceMode,
     navigation: &mut Navigation,

@@ -1,6 +1,31 @@
 # Changelog
 
 Newest releases appear first.
+## [2.8.0] — 2026-10-03
+
+### Added
+- feat: add experimental chassis tap tempo
+- feat: add Hosking pad progression
+- feat: start the auto song loop with --from
+- feat: choose tempo glides and half-time morph landings
+
+### Fixed
+- fix: drop bass together with kick during morph transitions
+- fix: land kick and harmony together after outgoing phrases
+- fix: align auto morph transitions to musical phrases
+- fix: silence kick during auto morph crossings
+## [2.6.0] — 2026-09-30
+
+### Added
+- feat: shape drunken timing into per-layer waves
+- feat: add global swing and drunken timing modules
+
+### Fixed
+- fix: keep relocated modules present through morph crossings
+- fix: wait for next song downbeat to change Swing
+- fix: glide incoming Swing through morph crossings
+- fix: snap Swing amount on the morph downbeat and route every crossing rule through move_of
+- fix: swap a module slot whole when its kind changes across a morph leg
 ## [2.7.0] — 2026-09-30
 
 ### Added

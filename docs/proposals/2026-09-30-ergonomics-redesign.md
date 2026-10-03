@@ -1,7 +1,10 @@
 # Ergonomics redesign: operations, leader, and Motion
 
-Status: Draft. This proposal defines the next experiments. It changes no shipped
-input, automation, persistence, or song-code contract on its own.
+Status: Accepted and built in the ergonomics worktree for the operation catalog,
+Space map, remembered-row jumps, planned mute, and Motion Grab. Hands-on
+acceptance and official release are pending. Motion Record and a shared lane
+editor remain deferred. Runtime contracts live in `../PERFORMANCE.md` and
+`../adr/0001-unidirectional-interaction-architecture.md`.
 
 ## Decision
 
@@ -18,29 +21,21 @@ text palette.
 
 ## The operation registry
 
-Controls stay in the existing control registry. They own ranges, display,
-persistence, and pages. The new operation registry owns named things a player
-does: recipes, mix actions, lane actions, Motion actions, and future planned
-layer actions.
+Controls stay in the existing control registry, which owns ranges, display,
+persistence, and pages. `operation.rs` owns the closed `Operation` vocabulary
+for recipes, mix actions, Motion actions, and planned mute. Each operation
+supplies a label, aliases, and a short palette description. Ordinary
+LFO/envelope lane actions remain in their typed lifecycle catalog.
 
-An operation definition has:
+The palette lists operations alongside controls and modules. Opening it freezes
+the selected target and beat where needed; confirmation resolves a typed
+interaction effect, and the executor validates the target before publication.
+It never dispatches a string command.
 
-- a closed, non-serialized operation id;
-- label, aliases, and short palette description;
-- target kind: none, selected control, current layer, or named layer;
-- a typed command payload that resolves to existing typed interaction effects;
-- availability and target-validation rules;
-- an optional leader projection: route, display label, and context.
-
-The registry projects into two surfaces.
-
-- The palette lists every operation alongside controls and modules. Selection
-  still freezes the relevant target and beat where the current action needs
-  them. Execution continues to use typed effects. The executor never receives
-  a string command or an operation id to interpret.
-- The leader lists only bindings valid at the current step. It uses the same
-  labels and command data as the palette, then emits the same typed intent or
-  effect payload.
+The leader uses the existing instrument and parameter tables for navigation
+and emits typed mute or Motion intents for its action keys. A general catalog
+of leader projections is deferred until another action needs it. The current
+map and runtime share navigation bindings without requiring that abstraction.
 
 The palette remains a static deterministic list. Live topology or availability
 is checked when an operation is confirmed, as it is today. That protects the
@@ -56,11 +51,11 @@ remembered row and gives the keyboard back to Browsing. Escape cancels an
 unfinished sentence. A repeated Space is inert. Press and release capabilities
 do not change the grammar.
 
-The first code slice keeps every existing Jump result intact:
+The current map uses these routes:
 
 ```
 Space: a Pads  s Perc  d Bass  f Kick  q Tonal  w Clap  e Arp  r Master
-Current page: j level  k filter
+Current page: j level  k filter  m mute next bar  1/2/4 Grab 1/2/4 bars
 Esc cancel
 ```
 
@@ -132,25 +127,29 @@ Sampled phrase sizes are:
 | 8 beats | 64 |
 | 16 beats | 128 |
 
-The first palette choices are:
+The current palette choices are:
 
-- `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16`: copy the
-  finished interval ending now and launch its loop at the next bar.
-- `Motion Record 4`, `Motion Record 8`, and `Motion Record 16`: arm at
-  the next bar, record that exact interval, close, and start the loop.
-- `Bypass`, `Resume`, and `Delete`: operate on the selected lane,
-  including Motion.
+- `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16`: use the nearest bar
+  downbeat as the history end and loop anchor. A future anchor queues; a past
+  anchor joins its running phase.
+- `Motion Bypass`, `Motion Resume`, and `Motion Delete`: operate on the
+  selected control or editor field's Motion.
+- Bare `Bypass`, `Resume`, and `Delete`: operate on the open LFO/envelope
+  lane in an editor, or on the selected control's Motion in browsing.
 
-Record has visible lifecycle: `ARMED NEXT BAR`, `REC 8`, then `LOOP`.
+Deferred: `Motion Record 4/8/16` would arm at the next bar, record that
+interval, close, and start the loop. These operations are not yet offered.
+
+The proposed Record lifecycle is `ARMED NEXT BAR`, `REC 8`, then `LOOP`.
 Escape before or during recording cancels it. A completed record atomically
 replaces the old Motion on that knob.
 
 Turning a knob while a Motion loop plays bypasses the loop and gives the
-player the current value. It does not guess a new recording range or silently
-replace the loop. A player chooses Record to replace it. During an armed or
-recording Motion, those edits become the recorded movement.
+player the current value. Another Grab replaces the loop. In the deferred
+Record design, edits during an armed or recording Motion become the recorded
+movement instead.
 
-The first version allows one Motion per target and up to sixteen live Motion
+The current version allows one Motion per target and up to sixteen live Motion
 loops. It excludes overdub, relative/additive movement, and multiple
 Motion lanes on one knob. `Space 1`, `Space 2`, and `Space 4` are the fast
 paths for one-, two-, and four-bar Grab; the palette retains the explicit
@@ -158,10 +157,10 @@ Motion choices.
 
 ## State and persistence
 
-Completed and pending Motion belong in the aggregate live session with the
-other automation state. A save captures a pending record's target, duration,
-phase, held value, and events relative to its transport anchor. Loading resumes
-the audible lifecycle instead of dropping it.
+Completed loops and queued launches belong in the aggregate live session with
+the other automation state. A save captures target, duration, enabled state,
+phase, admission delay, and samples or events, rebased to song beat zero.
+Loading restores active, bypassed, and queued loops at their saved phase.
 
 The current fixed Capture record cannot be silently reinterpreted as Motion.
 A Motion format cut validates target, duration, sample count, phase, duplicate
@@ -169,9 +168,8 @@ targets, control eligibility, and range epochs. Old Capture payload semantics
 are refused. Built-in states are re-authored through the current encoder if
 they carry affected data.
 
-The coordinator's existing production tick is the one place that advances and
-closes an armed Motion. The executor does not depend on a later keypress to
-finish recording.
+Deferred Record must also persist armed and mid-record state. Its production
+tick must close the recording without waiting for another keypress.
 
 ## Contextual palette ranking
 
@@ -193,17 +191,19 @@ and MRU behavior retain their existing deliberate ordering.
 2. Done: Jump renders an immediate map from the existing layer and parameter
    tables. Its routes and typed effects are unchanged.
 3. Done: `Space m` and `/Mute next bar` arm the visible layer's mute at the
-   next bar. The small `m`, repeat-to-cancel behavior, production-tick commit,
-   and song-code rebasing make its target and cancellation visible.
-4. In progress: `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16` use
+   next bar. The small `m`, repeat-to-cancel behavior, and song-code rebasing
+   make its target and cancellation visible. The audio engine commits the
+   action at its downbeat after a click-free lead-in; the production tick is
+   the fallback when audio is absent.
+4. Done: `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16` use
    their nearest bar downbeat as both history end and loop phase anchor.
    `Space 1`, `Space 2`, and `Space 4` are the fast paths for one, two, and
    four bars. The Motion wire format stores the real duration and either its
    active samples or timed events, refusing legacy Capture payloads rather
    than reinterpreting them. Registry controls and every LFO/envelope editor
    field can each carry a loop. The terminal value holds until its
-   next boundary. Record and a
-   shared lane lifecycle still need to land together. Do not add overdub.
+   next boundary. Ordinary lane lifecycle actions remain separate from
+   explicit Motion actions. Record and a shared lane editor are deferred.
 5. Only after a second musical action needs it, consider a shared internal
    boundary-action type. State recall is a likely test once marks exist.
 
@@ -214,8 +214,7 @@ For the leader slice:
 1. Run every existing Space Jump sequence, including current-page shorthand,
    full-capability input, press-only input, Repeat, and Escape.
 2. Check the root and target maps at 46x11 and ordinary terminal sizes. The
-   map must name the current target and leave activity/footer information
-   visible.
+   map must name its routes and leave the stable footer visible.
 3. Confirm arrows and Tab work unchanged before Space and after completed or
    cancelled sequences.
 4. Run production replay, UI snapshots, format, Clippy, and the full test
@@ -223,15 +222,20 @@ For the leader slice:
 
 For Motion:
 
-1. Grab a moving knob over 4, 8, and 16 beats and confirm each loop starts on
-   the next bar with the right duration and phase.
-2. Arm, record, cancel, and close each duration without another keypress.
-3. Touch an active Motion and confirm bypass; touch during Record and confirm
-   recorded movement.
-4. Save and load an armed record, a mid-record state, a loop, and a bypassed
-   loop. Verify compact payload bounds and refused invalid or retired data.
-5. Render each lifecycle deterministically and check lane composition and
-   de-clicking.
+1. Grab a moving knob over 4, 8, and 16 beats before and after the nearest
+   downbeat. Confirm queued and immediate joins keep the right phase.
+2. Repeat on discrete controls and LFO/envelope fields, including Steps.
+   Confirm exact discrete events and the held terminal value.
+3. Touch an active Motion and confirm bypass. Resume on the next bar while
+   retaining phase. Bare lane actions must still address the open LFO or
+   envelope rather than its field's Motion.
+4. Save and load active, bypassed, and queued loops. Verify compact payload
+   bounds and refused invalid, retired, stale-range, or legacy data.
+5. Render loops and planned mute boundaries deterministically and check lane
+   composition and de-clicking.
+
+Deferred Record acceptance adds arm/record/cancel/close without a later
+keypress, edits during recording, and save/load of armed and mid-record state.
 
 ## Open decisions
 
@@ -239,5 +243,5 @@ For Motion:
   and off.
 - Whether a planned layer action lands on the next bar or, for selected
   actions, a chord boundary. The first planned mute tests next bar only.
-- Whether a later State Mark recall joins the leader as `Space 1` through
-  `Space 9`. Do not reserve its keys before state marks are playable.
+- State Mark recall needs a distinct prefix or an explicit palette operation.
+  `Space 1/2/4` already belong to Motion Grab; stint 0062 must preserve them.

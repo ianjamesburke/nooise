@@ -190,11 +190,15 @@ transparent 20 kHz cutoff, so arriving is silent and turning the cutoff down
 is the first audible move. A layer whose chain is full says so and stays
 put.
 
-The leader only ever moves a cursor except for `Space m`, which is a press-only
-boundary action and needs no key-release support. It renders a compact centered
+Layer and parameter routes move the cursor; `Space m` schedules mute and
+`Space 1/2/4` keeps Motion. Every route acts on a press and needs no
+key-release support. The leader renders a compact centered
 Jump menu: layers form a two-column list, current-page Volume, Filter, and
-Mute share a row, and `Esc Cancel` has the bottom row. The footer remains
+Mute share a row with Motion Grab, and `Esc Cancel` has the bottom row. The footer remains
 visible.
+
+Motion Record and a shared lane editor remain deferred. `Space 1/2/4` are
+assigned to Grab; any future state-mark recall needs a separate route.
 
 Lead play retains its own `i` entry and existing bindings.
 

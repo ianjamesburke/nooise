@@ -2687,11 +2687,12 @@ fn motion_grab_freezes_its_recent_window_and_keeps_navigation_on_both_terminals(
         );
         assert_eq!(delayed.model.navigation, Navigation::default());
         assert_eq!(delayed.model.mode, InteractionMode::Browsing);
+        assert_eq!(read_clip(&delayed)[&address].launch, 0.0);
         assert!(
             delayed
                 .frames
                 .iter()
-                .any(|frame| frame.text.contains("queued"))
+                .any(|frame| frame.text.contains("Motion Grab 16 · loop"))
         );
         delayed_trace.push(TraceEvent::Idle { after_ms: 4500 });
         delayed_trace.extend(recipe_keys("bypass"));
@@ -3455,8 +3456,6 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
     );
 }
 
-/// The leader depends on no terminal capability: it only ever moves a
-/// cursor, so a press-only terminal and a full one reach the same state.
 /// Shift+P stops and starts the clock from browsing and from an open editor on
 /// every terminal: it is a Press edge, so autorepeat cannot flutter it, and
 /// the stopped marker stays on the activity row whoever owns the keyboard.
@@ -3532,6 +3531,71 @@ fn performance_leader_is_capability_independent_and_idempotent() {
     );
     assert_eq!(save.effect_count("Save"), 1);
     assert_eq!(save.clipboard_writes, 1);
+}
+
+#[test]
+fn planned_mute_and_cancel_preserve_minimum_frame_navigation_on_both_terminals() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        let press = |code| key(0, code, InputPhase::Press);
+        let trace = vec![
+            TraceEvent::Resize {
+                after_ms: 0,
+                width: MIN_TERMINAL_WIDTH,
+                height: MIN_TERMINAL_HEIGHT,
+            },
+            press(FixtureKey::Character(' ')),
+            press(FixtureKey::Character('f')),
+            press(FixtureKey::Down),
+            press(FixtureKey::Character(' ')),
+            press(FixtureKey::Character('m')),
+            TraceEvent::Idle { after_ms: 40 },
+            press(FixtureKey::Character(' ')),
+            press(FixtureKey::Character('m')),
+            TraceEvent::Idle { after_ms: 40 },
+            press(FixtureKey::Character(' ')),
+            press(FixtureKey::Escape),
+            press(FixtureKey::Tab),
+            press(FixtureKey::Character(' ')),
+            press(FixtureKey::Character('f')),
+        ];
+        let result = replay(&trace, capabilities);
+        assert_eq!(result.effect_count("PlanMute(Kick)"), 2);
+        assert_eq!(result.effect_count("ToggleMute"), 0);
+        assert_eq!(result.session_generation, 2);
+        assert_eq!(result.final_owner(), Some("BROWSE"));
+        assert_eq!(
+            result.model.navigation,
+            Navigation::Standard {
+                page: super::interaction::StandardPage::Kick,
+                selected: 1,
+            }
+        );
+        assert!(
+            result
+                .frames
+                .iter()
+                .any(|frame| frame.text.contains("next bar"))
+        );
+        assert!(
+            result
+                .frames
+                .iter()
+                .any(|frame| frame.text.contains("cancel"))
+        );
+        let final_frame = result.frames.last().expect("the replay renders a frame");
+        let breadcrumb = final_frame
+            .text
+            .lines()
+            .find(|line| line.contains("Master › Kick"))
+            .expect("the Kick breadcrumb remains visible");
+        assert!(!breadcrumb.contains("Kick m"));
+        assert!(!breadcrumb.contains("Kick (M)"));
+        assert!(result.deferred_inputs.is_empty());
+        assert_eq!(post_replay_violation(&result), None);
+    }
 }
 
 /// The hub is the way into every layer: Enter opens the highlighted one,

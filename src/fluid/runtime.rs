@@ -681,12 +681,10 @@ fn palette_control_binding(code: &PhysicalKey) -> Option<Intent> {
 }
 
 /// The Jump leader's keyboard: Space re-arms it, `INSTRUMENTS` keys open a
-/// layer, and `PARAMETERS` keys address the page already open. The two key
-/// sets are disjoint, so neither stage has to resolve a collision.
-/// Arrival moves the cursor and nothing else, so every binding is a plain
-/// Press and no phase or terminal capability changes what a key means.
-/// Neither key set changes meaning between stages, so the binding does not
-/// read the mode at all.
+/// layer, `PARAMETERS` keys address the page already open, `m` plans a mute,
+/// and `1/2/4` grabs Motion. Every route uses Press, without a capability
+/// branch. The key sets are disjoint and retain their meanings at every
+/// stage, so the binding does not read the mode.
 fn performance_binding(code: &PhysicalKey) -> Option<Intent> {
     if let PhysicalKey::Character(' ') = *code {
         return Some(Intent::ActivatePerformance(PerformanceKind::Jump));

@@ -256,7 +256,7 @@ impl AutomationSurface<'_> {
 }
 
 /// How far a pending Jump has got. The leader renders this as an immediate
-/// map over the control rows while keeping the breadcrumb and footer visible.
+/// map over the control rows while keeping the stable footer visible.
 pub(crate) enum PerformanceSurface {
     ChooseLayer,
     ChooseParameter { instrument: PerformanceInstrument },
@@ -1294,9 +1294,10 @@ mod tests {
             &session(),
             TelemetryView::default(),
             260,
-            40,
+            70,
         );
         assert!(frame.contains("SHORTCUTS"), "{frame}");
+        assert!(frame.contains("Jump␠(Space,␠then␠one␠key)"), "{frame}");
         assert!(frame.contains("Gestures"), "{frame}");
         assert!(frame.contains("Esc:␠close"), "{frame}");
 

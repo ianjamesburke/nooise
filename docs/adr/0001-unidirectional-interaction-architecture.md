@@ -1,6 +1,6 @@
 # ADR 0001: Unidirectional interaction architecture
 
-- Status: Accepted; implemented, amended 2026-09-16 for normal-browsing gestures
+- Status: Accepted; implemented, amended 2026-10-03 for the Space map, planned mute, and Motion Grab
 - Date: 2026-07-29
 - Scope: terminal input, UI state transitions, live-session effects, and
   rendering
@@ -183,6 +183,13 @@ The production modules under `src/fluid/` follow these boundaries:
 - `effect.rs` executes effects and acknowledges results; `edit.rs` owns
   control and automation mutations.
 - `session.rs` owns aggregate publication and the shared audio clock.
+- `operation.rs` owns the closed palette operation catalog; commands resolve
+  to typed effects before reaching the executor.
+- `planned.rs` owns typed next-bar actions. The audio engine commits planned
+  mute at the downbeat; the production tick advances it only without audio.
+- `capture.rs` owns bounded manual history and Motion loops on registry
+  controls and automation editor fields; `song.rs` persists their phase and
+  queued admission alongside planned actions.
 - `view.rs` projects immutable render data; `ui.rs` draws it.
 - `gesture.rs` owns scalar performance envelopes; `engine.rs` and
   `engine/gesture_audio.rs` apply them through shared audio processors.
@@ -224,9 +231,12 @@ the runtime or effect executor.
    switch the live terminal loop, and remove raw-key mutation, independent
    modal flags, the unbounded drain, and the many-argument render interface.
 7. **Rebuild performance interaction.** Normal-browsing gestures replace the
-   persistent Deck workflow. Space is a leader that resolves an address and
-   returns to Browsing; performance editing belongs to the browse keys it
-   lands on, not to a mode of its own.
+   persistent Deck workflow. Space opens an immediate map. A layer key
+   restores its remembered row and returns to Browsing; `j`/`k` reach the
+   current page's Level/Filter. `m` plans or cancels next-bar mute, and
+   `1/2/4` grabs one-, two-, or four-bar Motion. An editor-field grab or
+   cancelled editor leader returns to that editor and row. All routes are
+   Press edges and work on press-only terminals.
 
 Audio DSP, audio routing, registry value semantics, automation math, and song
 serialization are outside this refactor. For unchanged seeds and session
@@ -272,6 +282,26 @@ emit adjustment intents. The runtime continues to complete frames no more than
 subsequent `Release` and Escape without starvation. Repeating any
 edge-triggered leader, save, quit, confirmation, or cancellation command emits
 no duplicate semantic action.
+
+### Planned mute and Motion Grab
+
+At 46x11, Space shows its layer routes, current-page actions, and cancellation
+while leaving the stable footer visible. Layer selection completes immediately;
+arrows and Tab resume, and returning to a layer restores its remembered row.
+
+`Space m` publishes a typed planned mute for the current layer. Repeating the
+sentence before the boundary cancels it. The audio gate leads into the target
+downbeat so its first onset has the new mute state. Saving rebases the remaining
+wait to song beat zero.
+
+`Space 1/2/4` and the corresponding palette operations capture 4/8/16 beats
+ending at the nearest bar. A future anchor queues; a past anchor joins at its
+running phase. Discrete events keep exact values and continuous curves hold
+their terminal value until the next loop. Field-targeted Motion returns to its
+LFO/envelope editor. Explicit Motion lifecycle operations target that field;
+bare `/bypass`, `/resume`, and `/delete` continue to target the open lane.
+Active, bypassed, and queued loops retain their phase through song save/load;
+legacy payloads are refused. Motion Record remains deferred.
 
 ### Capability fallback
 

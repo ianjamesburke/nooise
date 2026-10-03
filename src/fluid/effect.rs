@@ -355,7 +355,11 @@ impl EffectExecutor {
                 Ok(())
             },
         )?;
-        self.show_message(format!("Motion Grab {} · queued", duration.beats()));
+        self.show_message(format!(
+            "Motion Grab {} · {}",
+            duration.beats(),
+            clip.status(beat)
+        ));
         Ok(EffectAcknowledgement::Published {
             generation: snapshot.generation,
         })
@@ -1485,6 +1489,39 @@ mod tests {
 
     fn executor() -> EffectExecutor {
         executor_with(FluidControls::default())
+    }
+
+    #[test]
+    fn motion_grab_notice_distinguishes_queued_and_running_phase() {
+        let mut executor = executor();
+        executor
+            .execute_interaction(
+                InteractionEffect::CommitNumeric(20.0),
+                &InteractionExecutionContext {
+                    selected_control: Some("pad.level"),
+                    beat: 0.0,
+                },
+            )
+            .unwrap();
+        for (beat, status) in [(3.0, "queued"), (5.0, "loop")] {
+            executor
+                .execute_interaction(
+                    InteractionEffect::MotionGrabSelected(MotionDuration::Beats4),
+                    &InteractionExecutionContext {
+                        selected_control: Some("pad.level"),
+                        beat,
+                    },
+                )
+                .unwrap();
+            let snapshot = executor.session.load();
+            let clip = &snapshot.automation.captures[&ControlAddress::new("pad.level")];
+            assert_eq!(clip.launch, 4.0);
+            assert_eq!(clip.status(beat), status);
+            assert_eq!(
+                executor.message(),
+                Some(format!("Motion Grab 4 · {status}").as_str())
+            );
+        }
     }
 
     #[test]
