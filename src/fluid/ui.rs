@@ -186,7 +186,8 @@ fn draw_harmony(
                 key,
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
             ),
-        ])),
+        ]))
+        .alignment(Alignment::Center),
         key_area,
     );
 
@@ -228,7 +229,10 @@ fn draw_harmony(
         ));
         used += separator.chars().count() + name.chars().count();
     }
-    f.render_widget(Paragraph::new(Line::from(spans)), chords_area);
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
+        chords_area,
+    );
 }
 
 /// Frosted-glass scrim: darken the live fluid underneath instead of covering

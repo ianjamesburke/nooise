@@ -978,6 +978,36 @@ mod tests {
         assert!(borrowed.contains("KEY␠␠A␠Phrygian"), "{borrowed}");
     }
 
+    #[test]
+    fn harmony_header_is_centered() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        let frame = render_model_with_session_at_size(
+            &interaction,
+            &session,
+            TelemetryView::default(),
+            80,
+            11,
+        );
+        let key_line = frame.lines().find(|line| line.contains("KEY")).unwrap();
+        let chords_line = frame.lines().find(|line| line.contains("CHORDS")).unwrap();
+        assert_eq!(
+            key_line
+                .chars()
+                .position(|character| character == 'K')
+                .unwrap(),
+            (80 - "KEY  A minor".len()) / 2 - 1
+        );
+        assert_eq!(
+            chords_line
+                .chars()
+                .position(|character| character == 'C')
+                .unwrap(),
+            16
+        );
+    }
+
     fn render_mode(mode: InteractionMode) -> String {
         render_model(&InteractionModel {
             navigation: Navigation::default(),
