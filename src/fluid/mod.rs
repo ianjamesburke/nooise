@@ -53,6 +53,7 @@ mod module;
 mod operation;
 mod osc;
 mod palette;
+mod palette_search;
 mod planned;
 mod range_epoch;
 mod recipe;

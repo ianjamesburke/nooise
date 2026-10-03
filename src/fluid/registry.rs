@@ -22,27 +22,86 @@ pub(crate) enum Tab {
 pub(crate) const TAB_COUNT: usize = 9;
 
 /// One row per tab: (variant, display name, mute-target level id, control
-/// table) in discriminant order. `Tab::all`/`name`/`level_id`/`tab_specs`
+/// table, semantic scope aliases) in discriminant order. `Tab::all`/`name`/`level_id`/`tab_specs`
 /// all derive from indexing this single table by `self as usize`.
-const TAB_META: [(Tab, &str, Option<&str>, &[ControlSpec]); TAB_COUNT] = [
-    (Tab::Chords, "Pads", Some("pad.level"), CHORDS_CONTROLS),
-    (Tab::Perc, "Perc", Some("perc.level"), PERC_CONTROLS),
-    (Tab::Bass, "Bass", Some("bass.level"), BASS_CONTROLS),
-    (Tab::Kick, "Kick", Some("kick.level"), KICK_CONTROLS),
-    (Tab::Tonal, "Tonal", Some("tonal.level"), TONAL_CONTROLS),
-    (Tab::Clap, "Clap", Some("clap.level"), CLAP_CONTROLS),
-    (Tab::Arp, "Arp", Some("arp.gain"), ARP_CONTROLS),
-    (Tab::Lead, "Lead", Some("lead.level"), LEAD_CONTROLS),
-    (Tab::Master, "Master", Some("master.level"), MASTER_CONTROLS),
+type TabMetadata = (
+    Tab,
+    &'static str,
+    Option<&'static str>,
+    &'static [ControlSpec],
+    &'static [&'static str],
+);
+const TAB_META: [TabMetadata; TAB_COUNT] = [
+    (
+        Tab::Chords,
+        "Pads",
+        Some("pad.level"),
+        CHORDS_CONTROLS,
+        &["pad", "pads", "chords"],
+    ),
+    (
+        Tab::Perc,
+        "Perc",
+        Some("perc.level"),
+        PERC_CONTROLS,
+        &["perc"],
+    ),
+    (
+        Tab::Bass,
+        "Bass",
+        Some("bass.level"),
+        BASS_CONTROLS,
+        &["bass"],
+    ),
+    (
+        Tab::Kick,
+        "Kick",
+        Some("kick.level"),
+        KICK_CONTROLS,
+        &["kick"],
+    ),
+    (
+        Tab::Tonal,
+        "Tonal",
+        Some("tonal.level"),
+        TONAL_CONTROLS,
+        &["tonal"],
+    ),
+    (
+        Tab::Clap,
+        "Clap",
+        Some("clap.level"),
+        CLAP_CONTROLS,
+        &["clap"],
+    ),
+    (Tab::Arp, "Arp", Some("arp.gain"), ARP_CONTROLS, &["arp"]),
+    (
+        Tab::Lead,
+        "Lead",
+        Some("lead.level"),
+        LEAD_CONTROLS,
+        &["lead"],
+    ),
+    (
+        Tab::Master,
+        "Master",
+        Some("master.level"),
+        MASTER_CONTROLS,
+        &["master", "global"],
+    ),
 ];
 
 impl Tab {
     pub(crate) fn all() -> [Tab; TAB_COUNT] {
-        TAB_META.map(|(tab, _, _, _)| tab)
+        TAB_META.map(|(tab, _, _, _, _)| tab)
     }
 
     pub(crate) fn name(self) -> &'static str {
         TAB_META[self as usize].1
+    }
+
+    pub(crate) fn search_names(self) -> &'static [&'static str] {
+        TAB_META[self as usize].4
     }
 
     #[cfg(test)]
@@ -263,10 +322,26 @@ pub(crate) enum LfoSnap {
     Step,
 }
 
+/// Static search meaning, independent of the rendered label and value.
+#[derive(Clone, Copy)]
+pub(crate) struct ControlSearch {
+    pub(crate) name: &'static str,
+    pub(crate) group: Option<SearchGroup>,
+}
+
+/// A feature's members share a concept and declare exactly one default per scope.
+#[derive(Clone, Copy)]
+pub(crate) struct SearchGroup {
+    pub(crate) name: &'static str,
+    pub(crate) member: &'static str,
+    pub(crate) is_default: bool,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct ControlSpec {
     pub(crate) id: &'static str,
     pub(crate) label: &'static str,
+    pub(crate) search: ControlSearch,
     pub(crate) kind: ControlKind,
     pub(crate) min: f32,
     pub(crate) max: f32,
@@ -306,6 +381,10 @@ impl ControlSpec {
         Self {
             id,
             label,
+            search: ControlSearch {
+                name: label,
+                group: None,
+            },
             kind,
             min,
             max,
@@ -346,6 +425,20 @@ impl ControlSpec {
             set,
             display,
         )
+    }
+
+    pub(crate) const fn search_group(
+        mut self,
+        name: &'static str,
+        member: &'static str,
+        is_default: bool,
+    ) -> Self {
+        self.search.group = Some(SearchGroup {
+            name,
+            member,
+            is_default,
+        });
+        self
     }
 
     /// Resolve this row's label per render instead of using the static one.
@@ -1420,7 +1513,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
             }
         },
         |c| if c.pad.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
-    ),
+    ).search_group("midi", "out", true),
     ControlSpec::new(
         "pad.midi_in",
         "MIDI In",
@@ -1437,7 +1530,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
             }
         },
         |c| if c.pad.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
-    ),
+    ).search_group("midi", "in", false),
     ControlSpec::new(
         PAD_TRIGGER_ID,
         "Trigger",
@@ -1799,7 +1892,8 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
                 }
             },
             |c| if c.arp.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
-        ),
+        )
+        .search_group("midi", "in", false),
         ControlSpec::new(
             "arp.midi_out",
             "MIDI Out",
@@ -1816,14 +1910,16 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
                 }
             },
             |c| if c.arp.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
-        ),
+        )
+        .search_group("midi", "out", true),
         beat_interval!(
             "arp.midi_gate_beats",
             "MIDI Gate",
             0.125,
             2.0,
             arp.midi_gate_beats
-        ),
+        )
+        .search_group("midi", "gate", false),
         time_secs!("arp.attack", "Attack", 0.0, 1.0, 0.001, arp.attack),
         time_secs!("arp.decay", "Decay", TONAL_DECAY_MIN, 6.0, 0.001, arp.decay),
         ControlSpec::new(
@@ -1918,7 +2014,8 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
                 }
             },
             |c| if c.lead.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
-        ),
+        )
+        .search_group("midi", "in", false),
         ControlSpec::new(
             "lead.midi_out",
             "MIDI Out",
@@ -1935,14 +2032,16 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
                 }
             },
             |c| if c.lead.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
-        ),
+        )
+        .search_group("midi", "out", true),
         beat_interval!(
             "lead.midi_gate_beats",
             "MIDI Gate",
             0.125,
             2.0,
             lead.midi_gate_beats
-        ),
+        )
+        .search_group("midi", "gate", false),
         ControlSpec::new(
             LEAD_PATTERN_ID,
             "Pattern",

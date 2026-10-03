@@ -414,10 +414,7 @@ impl PaletteMode {
     /// entry, and staged edits. Kernel confirm and the renderer both resolve
     /// rows by index through this one projection, so they cannot desync.
     pub(crate) fn project(&self, tab: Tab) -> PaletteState {
-        let mut state = PaletteState::new(tab, &self.recent, self.module_scope);
-        for character in self.query.chars() {
-            state.push_char(character);
-        }
+        let mut state = PaletteState::resolve(tab, &self.recent, self.module_scope, &self.query);
         state.selected = self.selected.min(state.matches.len().saturating_sub(1));
         state.locked = self.locked.filter(|&index| state.contains_entry(index));
         if state.locked.is_some() {

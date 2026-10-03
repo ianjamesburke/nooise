@@ -173,15 +173,19 @@ tick must close the recording without waiting for another keypress.
 
 ## Contextual palette ranking
 
-When a query is the canonical name of a module available on the current page,
-that page's module outranks the same module elsewhere before fuzzy score is
-considered. On Master, typing `swing` therefore starts at `Global Swing ·
-Master · module`, not a Pads Swing entry whose shorter label happens to score
-better. The same rule makes a voice page reach that voice's Swing first.
+Palette matching now separates static semantic names, aliases, owning scopes,
+feature members, and defaults from display text and descriptions. Exact IDs
+and semantic names lead, followed by exact words, prefixes, and fuzzy matches.
+Comparable meaning prefers the current scope, declared default, spelling,
+recency, then stable identity. Complete layer qualifiers work in either order;
+partial names also compete with local semantic prefixes. Complete action
+aliases retain their action identity.
 
-This is a narrow scope preference, not a general instruction to put every
-current-page fuzzy match above a stronger result. Layer-name primary controls
-and MRU behavior retain their existing deliberate ordering.
+A bare layer reaches its Level, a bare MIDI concept reaches Out on the current
+eligible layer, and modules use their existing add-or-jump destination. An
+explicit member or layer overrides those defaults. Module-detail searches
+remain closed. Empty queries retain global MRU ordering. The source DOX owns
+catalog-authoring rules and the tested precedence.
 
 ## Implementation order
 

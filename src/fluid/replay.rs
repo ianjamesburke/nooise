@@ -2607,6 +2607,104 @@ fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
     );
 }
 
+#[test]
+fn palette_semantic_winners_render_and_confirm_on_both_terminals() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        for (tabs, query, visible, target) in [
+            (1, "midi", "pad.midi_out", "pad.midi_out"),
+            (7, "midi", "arp.midi_out", "arp.midi_out"),
+            (8, "midi", "lead.midi_out", "lead.midi_out"),
+            (8, "midi in", "lead.midi_in", "lead.midi_in"),
+            (
+                8,
+                "midi gate",
+                "lead.midi_gate_beats",
+                "lead.midi_gate_beats",
+            ),
+            (8, "arp midi", "arp.midi_out", "arp.midi_out"),
+            (8, "midi in arp", "arp.midi_in", "arp.midi_in"),
+            (8, "pad.midi_out", "pad.midi_out", "pad.midi_out"),
+            (3, "delay", "Delay · Bass", "bass.slot3.amount"),
+            (0, "swing", "Global Swing · Master", "master.slot3.amount"),
+            (8, "bass", "bass.level", "bass.level"),
+            (8, "mute kick", "Mute Kick", ""),
+        ] {
+            let configure = |mut harness: ReplayHarness| {
+                for id in ["pad.midi_in", "arp.midi_gate_beats", "pad.midi_out"] {
+                    let tab = tab_owning_control(id).unwrap();
+                    let index = tab_specs(tab)
+                        .iter()
+                        .position(|spec| spec.id == id)
+                        .unwrap();
+                    harness
+                        .executor
+                        .execute(LiveEffect::SelectControl { tab, index, id })
+                        .unwrap();
+                }
+                harness
+            };
+            let press = |code| key(0, code, InputPhase::Press);
+            let mut events = vec![TraceEvent::Resize {
+                after_ms: 0,
+                width: MIN_TERMINAL_WIDTH,
+                height: MIN_TERMINAL_HEIGHT,
+            }];
+            events.extend(std::iter::repeat_n(press(FixtureKey::Tab), tabs));
+            events.push(press(FixtureKey::Character('/')));
+            events.extend(
+                query
+                    .chars()
+                    .map(|character| press(FixtureKey::Character(character))),
+            );
+            events.push(TraceEvent::Idle { after_ms: 40 });
+            let searching = replay_with(&events, capabilities, configure);
+            let InteractionMode::Palette(mode) = &searching.model.mode else {
+                panic!("search stays in palette");
+            };
+            let projection = mode.project(searching.model.navigation.tab());
+            let entry = projection.entry(projection.matches[0].entry_index);
+            assert!(
+                entry.display_text().contains(visible),
+                "{query}: {}",
+                entry.display_text()
+            );
+            let rendered = &searching.frames.last().unwrap().text;
+            let selected = rendered
+                .lines()
+                .find(|line| line.contains("▸ "))
+                .expect("the selected result renders");
+            assert!(selected.contains(visible), "{query}: {selected}");
+            for autocomplete in [false, true] {
+                let mut confirming = events.clone();
+                if autocomplete {
+                    confirming.push(press(FixtureKey::Tab));
+                }
+                confirming.push(press(FixtureKey::Enter));
+                let confirmed = replay_with(&confirming, capabilities, configure);
+                assert_eq!(confirmed.final_owner(), Some("BROWSE"), "{query}");
+                if target.is_empty() {
+                    assert_eq!(confirmed.effect_count("ApplyMixAction(MuteKick)"), 1);
+                } else {
+                    assert_eq!(
+                        confirmed.recent_ids.first().copied(),
+                        Some(target),
+                        "{query} autocomplete={autocomplete}"
+                    );
+                    assert_eq!(
+                        confirmed.model.navigation.tab(),
+                        tab_owning_control(target).unwrap()
+                    );
+                }
+                assert!(confirmed.deferred_inputs.is_empty());
+                assert_eq!(post_replay_violation(&confirmed), None);
+            }
+        }
+    }
+}
+
 fn recipe_keys(query: &str) -> Vec<TraceEvent> {
     let mut events = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
     events.extend(

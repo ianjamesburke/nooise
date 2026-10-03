@@ -61,28 +61,34 @@ pub(crate) enum ModuleSlotField {
 pub(crate) struct EffectParameter {
     pub(crate) field: ModuleSlotField,
     pub(crate) label: &'static str,
+    pub(crate) search_name: &'static str,
 }
 
 const DELAY_PARAMETERS: &[EffectParameter] = &[
     EffectParameter {
         field: ModuleSlotField::Amount,
         label: "Amount",
+        search_name: "Amount",
     },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Left Time",
+        search_name: "Left Time",
     },
     EffectParameter {
         field: ModuleSlotField::RightTime,
         label: "Right Time",
+        search_name: "Right Time",
     },
     EffectParameter {
         field: ModuleSlotField::Feedback,
         label: "Feedback",
+        search_name: "Feedback",
     },
     EffectParameter {
         field: ModuleSlotField::Vintage,
         label: "Vintage",
+        search_name: "Vintage",
     },
 ];
 
@@ -90,14 +96,17 @@ const REVERB_PARAMETERS: &[EffectParameter] = &[
     EffectParameter {
         field: ModuleSlotField::Amount,
         label: "Amount",
+        search_name: "Amount",
     },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Size",
+        search_name: "Size",
     },
     EffectParameter {
         field: ModuleSlotField::Feedback,
         label: "Damping",
+        search_name: "Damping",
     },
 ];
 
@@ -105,22 +114,27 @@ const COMPRESSION_PARAMETERS: &[EffectParameter] = &[
     EffectParameter {
         field: ModuleSlotField::Amount,
         label: "Amount",
+        search_name: "Amount",
     },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Threshold",
+        search_name: "Threshold",
     },
     EffectParameter {
         field: ModuleSlotField::RightTime,
         label: "Ratio",
+        search_name: "Ratio",
     },
     EffectParameter {
         field: ModuleSlotField::Feedback,
         label: "Release",
+        search_name: "Release",
     },
     EffectParameter {
         field: ModuleSlotField::Vintage,
         label: "Makeup",
+        search_name: "Makeup",
     },
 ];
 
@@ -130,34 +144,41 @@ const FILTER_PARAMETERS: &[EffectParameter] = &[
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Cutoff",
+        search_name: "Cutoff",
     },
     EffectParameter {
         field: ModuleSlotField::RightTime,
         label: "Resonance",
+        search_name: "Resonance",
     },
     EffectParameter {
         field: ModuleSlotField::Feedback,
         label: "Type",
+        search_name: "Type",
     },
     EffectParameter {
         field: ModuleSlotField::Amount,
         label: "Amount",
+        search_name: "Amount",
     },
 ];
 
 const SINGLE_AMOUNT_PARAMETERS: &[EffectParameter] = &[EffectParameter {
     field: ModuleSlotField::Amount,
     label: "Amount",
+    search_name: "Amount",
 }];
 
 const TWO_KNOB_PARAMETERS: &[EffectParameter] = &[
     EffectParameter {
         field: ModuleSlotField::Amount,
         label: "Amount",
+        search_name: "Amount",
     },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Time",
+        search_name: "Time",
     },
 ];
 
@@ -165,10 +186,12 @@ const DRUNKEN_PARAMETERS: &[EffectParameter] = &[
     EffectParameter {
         field: ModuleSlotField::Amount,
         label: "Amount",
+        search_name: "Amount",
     },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Pace",
+        search_name: "Pace",
     },
 ];
 
@@ -208,6 +231,7 @@ pub(crate) struct ModuleKind {
     /// Stable, lowercase, used for fuzzy-find matching.
     pub(crate) id: &'static str,
     pub(crate) display_name: &'static str,
+    pub(crate) search_names: &'static [&'static str],
     pub(crate) domain: Domain,
     pub(crate) family: Family,
 }
@@ -221,54 +245,63 @@ pub(crate) struct ModuleKind {
 pub(crate) const MODULE_CATALOG: &[ModuleKind] = &[
     ModuleKind {
         id: "alcohol",
+        search_names: &["alcohol"],
         display_name: "Alcohol",
         domain: Domain::Pre,
         family: Family::SingleAmount,
     },
     ModuleKind {
         id: "swing",
+        search_names: &["swing"],
         display_name: "Swing",
         domain: Domain::Pre,
         family: Family::SingleAmount,
     },
     ModuleKind {
         id: "drive",
+        search_names: &["drive"],
         display_name: "Drive",
         domain: Domain::Post,
         family: Family::SingleAmount,
     },
     ModuleKind {
         id: "room",
+        search_names: &["room", "reverb"],
         display_name: "Reverb",
         domain: Domain::Post,
         family: Family::Reverb,
     },
     ModuleKind {
         id: "sidechain",
+        search_names: &["sidechain"],
         display_name: "Sidechain",
         domain: Domain::Post,
         family: Family::TwoKnob,
     },
     ModuleKind {
         id: "delay",
+        search_names: &["delay"],
         display_name: "Delay",
         domain: Domain::Post,
         family: Family::Delay,
     },
     ModuleKind {
         id: "compression",
+        search_names: &["compression"],
         display_name: "Compression",
         domain: Domain::Post,
         family: Family::Compression,
     },
     ModuleKind {
         id: "filter",
+        search_names: &["filter"],
         display_name: "Filter",
         domain: Domain::Post,
         family: Family::Filter,
     },
     ModuleKind {
         id: "drunken",
+        search_names: &["drunken"],
         display_name: "Drunken",
         domain: Domain::Pre,
         family: Family::Drunken,

@@ -12,6 +12,8 @@
 use super::module::{MODULE_CATALOG, chain_amount_slot, module_available_on, tab_has_module_chain};
 use super::*;
 
+use super::palette_search::{Query, SearchMetadata, SearchRank};
+
 /// What a palette row does when confirmed.
 ///
 /// Entries derive only from registry/catalog/recipe constants and scope: the
@@ -19,6 +21,7 @@ use super::*;
 /// confirm works by index, so anything that made the list depend on live
 /// controls could desync them and jump to the wrong control. Live state is
 /// resolved where it exists — in the adapter, and in the value column.
+#[derive(Clone)]
 pub(crate) enum PaletteEntry {
     Operation(Operation),
     /// Jump to a control at the tab that natively owns it.
@@ -41,6 +44,8 @@ pub(crate) enum PaletteEntry {
         spec: &'static ControlSpec,
         module_name: &'static str,
         parameter: &'static str,
+        search_parameter: &'static str,
+        catalog_index: usize,
     },
 }
 
@@ -78,6 +83,7 @@ impl PaletteEntry {
                 spec,
                 module_name,
                 parameter,
+                ..
             } => {
                 format!(
                     "{}.{}.{} · {}",
@@ -98,30 +104,6 @@ impl PaletteEntry {
             }
             _ => self.haystack(),
         }
-    }
-
-    fn match_query(&self, query: &str) -> Option<(i32, Vec<usize>)> {
-        if let Self::Operation(operation) = self
-            && operation
-                .spec()
-                .aliases
-                .iter()
-                .any(|alias| alias.eq_ignore_ascii_case(query))
-        {
-            // An exact alias wins over scattered matches. Highlight the name,
-            // never alias offsets that have no corresponding display text.
-            return Some((
-                i32::MAX,
-                (0..operation.spec().label.chars().count()).collect(),
-            ));
-        }
-        fuzzy_score(query, &self.haystack()).map(|(score, hits)| {
-            let display_len = self.display_text().chars().count();
-            (
-                score,
-                hits.into_iter().filter(|&hit| hit < display_len).collect(),
-            )
-        })
     }
 
     pub(crate) fn spec(&self) -> Option<&'static ControlSpec> {
@@ -240,11 +222,10 @@ mod global_groove_tests {
     }
 }
 
-/// One fuzzy candidate: which entry, how well it scored, and which characters
-/// of its haystack matched (for highlighting).
+/// One resolved candidate with deterministic semantic rank and display highlights.
 pub(crate) struct PaletteMatch {
     pub(crate) entry_index: usize,
-    pub(crate) score: i32,
+    rank: Option<SearchRank>,
     pub(crate) hits: Vec<usize>,
 }
 
@@ -289,13 +270,22 @@ impl PaletteState {
         recent: &[&'static str],
         module_scope: Option<ModuleScope>,
     ) -> Self {
+        Self::resolve(current_tab, recent, module_scope, "")
+    }
+
+    pub(crate) fn resolve(
+        current_tab: Tab,
+        recent: &[&'static str],
+        module_scope: Option<ModuleScope>,
+        query: &str,
+    ) -> Self {
         let mut state = Self {
             entries: module_scope.map_or_else(palette_entries, |scope| {
                 module_palette_entries(scope.tab, scope.slot, scope.catalog_index)
             }),
             current_tab,
             recent: recent.to_vec(),
-            query: String::new(),
+            query: query.to_string(),
             matches: Vec::new(),
             selected: 0,
             locked: None,
@@ -314,6 +304,7 @@ impl PaletteState {
         index < self.entries.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn push_char(&mut self, c: char) {
         if self.locked.is_some() {
             if c.is_ascii_digit() || c == '.' || c == '-' {
@@ -334,55 +325,28 @@ impl PaletteState {
             for entry_index in 0..self.entries.len() {
                 self.matches.push(PaletteMatch {
                     entry_index,
-                    score: 0,
+                    rank: None,
                     hits: Vec::new(),
                 });
             }
             self.sort_by_context();
         } else {
+            let query = Query::new(&self.query);
             for (entry_index, entry) in self.entries.iter().enumerate() {
-                if let Some((score, hits)) = entry.match_query(&self.query) {
+                let metadata = SearchMetadata::for_entry(entry);
+                if let Some(rank) = query.rank(&metadata, self.current_tab, &self.recent) {
+                    // Highlight display positions only after meaning has resolved.
+                    let hits = fuzzy_score(&self.query, &entry.display_text())
+                        .map_or_else(Vec::new, |(_, hits)| hits);
                     self.matches.push(PaletteMatch {
                         entry_index,
-                        score,
+                        rank: Some(rank),
                         hits,
                     });
                 }
             }
-            let entries = &self.entries;
-            let recent = &self.recent;
-            let current_tab = self.current_tab;
-            let query = self.query.as_str();
-            // The layer-primary boost outranks the fuzzy score deliberately.
-            // Score alone puts `pad.stereo_width` above `pad.level` for the
-            // query "pads", because its `s` follows the dot and collects a
-            // word-start bonus. Typing a bare layer name must reach that
-            // layer's level regardless.
-            let primary_key = |entry: usize| {
-                entries[entry]
-                    .id()
-                    .and_then(|id| layer_primary_rank(id, query))
-                    .unwrap_or(usize::MAX)
-            };
-            self.matches.sort_by(|left, right| {
-                primary_key(left.entry_index)
-                    .cmp(&primary_key(right.entry_index))
-                    .then_with(|| {
-                        matching_module_context_rank(entries, left.entry_index, query, current_tab)
-                            .cmp(&matching_module_context_rank(
-                                entries,
-                                right.entry_index,
-                                query,
-                                current_tab,
-                            ))
-                    })
-                    .then_with(|| right.score.cmp(&left.score))
-                    .then_with(|| {
-                        context_rank(entries, left.entry_index, current_tab, recent).cmp(
-                            &context_rank(entries, right.entry_index, current_tab, recent),
-                        )
-                    })
-            });
+            self.matches
+                .sort_by(|left, right| left.rank.cmp(&right.rank));
         }
         self.selected = 0;
     }
@@ -396,26 +360,6 @@ impl PaletteState {
     }
 }
 
-/// A canonical module query belongs first to the module on the page in front
-/// of the player. Fuzzy-score ordering alone makes "Swing" on Pads outrank
-/// "Global Swing · Master" because the latter's first match sits later in its
-/// label, even while Master is the active page.
-fn matching_module_context_rank(
-    entries: &[PaletteEntry],
-    entry: usize,
-    query: &str,
-    current_tab: Tab,
-) -> u8 {
-    match entries[entry] {
-        PaletteEntry::Module { tab, catalog_index }
-            if starts_with_ignore_case(MODULE_CATALOG[catalog_index].id, query) =>
-        {
-            if tab == current_tab { 0 } else { 1 }
-        }
-        _ => 2,
-    }
-}
-
 fn module_palette_entries(tab: Tab, slot: usize, catalog_index: usize) -> Vec<PaletteEntry> {
     MODULE_CATALOG[catalog_index]
         .parameters()
@@ -426,40 +370,12 @@ fn module_palette_entries(tab: Tab, slot: usize, catalog_index: usize) -> Vec<Pa
                 spec,
                 module_name: MODULE_CATALOG[catalog_index].display_name,
                 parameter: parameter.label,
+                search_parameter: parameter.search_name,
+                catalog_index,
             })
         })
         .chain(Operation::ALL.into_iter().map(PaletteEntry::Operation))
         .collect()
-}
-
-/// A layer's primary control outranks everything while the query is still
-/// just that layer's name, so typing `bass` always lands on Bass Level
-/// whatever the MRU holds. Matches the id namespace (`bass.`) and the tab
-/// name (`Bass`) alike, since `Tab::Chords` is spelled `Pads` but owns
-/// `pad.*`. Returns the tab's discriminant so ambiguous prefixes (`m` hits
-/// both Arp and Master) stay deterministically ordered.
-///
-/// The boost falls away on its own once the query grows past the namespace
-/// (`bass.d` is no longer a prefix of `bass`), handing ranking back to the
-/// fuzzy score.
-fn layer_primary_rank(id: &str, query: &str) -> Option<usize> {
-    if query.is_empty() {
-        return None;
-    }
-    Tab::all().iter().position(|&tab| {
-        tab.level_id() == Some(id) && {
-            let namespace = id.split('.').next().unwrap_or(id);
-            starts_with_ignore_case(namespace, query) || starts_with_ignore_case(tab.name(), query)
-        }
-    })
-}
-
-fn starts_with_ignore_case(haystack: &str, prefix: &str) -> bool {
-    haystack.len() >= prefix.len()
-        && haystack
-            .chars()
-            .zip(prefix.chars())
-            .all(|(h, p)| h.eq_ignore_ascii_case(&p))
 }
 
 /// Recent controls always win, independent of page. Page order only breaks
