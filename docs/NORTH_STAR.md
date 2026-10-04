@@ -54,9 +54,7 @@ That's the whole floor. Any control that requires more than that to *get started
 
 This isn't a ban on new features or new controls. It's about comfort: an advanced feature should sit inside the flow a beginner is already moving through, findable the way an Easter egg is findable — not signposted, not required to get started, but there to bump into.
 
-The chord progression control is the clearest existing example (`pad.progression` in `src/fluid/registry.rs`): built-in progressions named by key and mood ("Am · Drift"), and one step past the last one lands on "Custom," which opens a chord builder (`custom_chord_name`/`pad_chord_notes_with_slot` in `src/fluid/voice/pad.rs`, `ChordSlotControls` in `src/fluid/controls.rs`). A user turning the same knob they've always turned finds the advanced tool sitting at the end of it. Nobody needs to know custom progressions exist to enjoy the built-ins.
-
-**Idea (not yet built):** a small "↵" glyph on the right side of a control row whenever its current value can be drilled into — `pad.progression` would show it only when set to "Custom." Gives a curious user a visible hint that more exists without any docs or guessing that Enter does something.
+The chord progression control is the clearest existing example (`pad.progression` in `src/fluid/registry.rs`). Arrow keys choose a complete built-in progression or Custom. Enter opens its eight chords, and Enter on a chord opens the shared builder. Root, quality, extensions, bass and spacing describe the chord already playing. A first edit changes that slot; switching progressions keeps each one's edits. `/restore chord` returns it to the authored version. Beginners can keep choosing whole progressions while curious players go deeper on the same row.
 
 ## Aspirational: advanced ergonomics, vim-motions-for-music
 

@@ -17,6 +17,79 @@ use ratatui::buffer::Buffer;
 
 const SAMPLE_RATE: f32 = 48_000.0;
 
+/// Export real-engine audio evidence on request; never update golden fixtures.
+#[test]
+#[ignore = "exports deterministic chord sprint audio evidence"]
+fn chord_builder_audio_evidence() {
+    let destination = std::env::var("NOOISE_CHORD_EVIDENCE")
+        .expect("set NOOISE_CHORD_EVIDENCE to an output directory");
+    std::fs::create_dir_all(&destination).unwrap();
+    let sample_rate = 24_000.0;
+    let mut songs = decode_auto_states();
+    let builtin_count = songs.len();
+    let audition_moods = ["Ache", "Float"];
+    for mood in audition_moods {
+        let mut song = SongState::default();
+        song.controls.pad.progression =
+            PROGRESSIONS.iter().position(|p| p.mood == mood).unwrap() as f32;
+        song.controls.pad.attack_time = 0.5;
+        song.controls.pad.release_time = 2.0;
+        song.controls.tonal.level = 0.0;
+        songs.push(song);
+    }
+    let mut hashes = String::new();
+    for (index, mut song) in songs.into_iter().enumerate() {
+        song.controls.master.bpm = 180.0;
+        song.controls.pad.chord_bars = 1.0;
+        song.controls.pad.chord_count = 8.0;
+        song.controls.pad.chord_offset = 0.0;
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(&song));
+        let mut engine = FluidEngine::new(
+            sample_rate,
+            session,
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(551003);
+        let name = if index < builtin_count {
+            format!("song-{:02}", index + 1)
+        } else {
+            audition_moods[index - builtin_count].to_lowercase()
+        };
+        let mut wav = (index >= builtin_count).then(|| {
+            hound::WavWriter::create(
+                format!("{destination}/{name}.wav"),
+                hound::WavSpec {
+                    channels: 2,
+                    sample_rate: sample_rate as u32,
+                    bits_per_sample: 32,
+                    sample_format: hound::SampleFormat::Float,
+                },
+            )
+            .unwrap()
+        });
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for _ in 0..(sample_rate as usize * 22) {
+            let (left, right) = engine.next_stereo();
+            assert!(left.is_finite() && right.is_finite());
+            for sample in [left, right] {
+                hash = (hash ^ u64::from(sample.to_bits())).wrapping_mul(0x100000001b3);
+                if let Some(writer) = &mut wav {
+                    writer.write_sample(sample).unwrap();
+                }
+            }
+        }
+        if let Some(writer) = wav {
+            writer.finalize().unwrap();
+        }
+        hashes.push_str(&format!("{name} {hash:016x}\n"));
+    }
+    std::fs::write(format!("{destination}/pcm-hashes.txt"), hashes).unwrap();
+    std::fs::write(format!("{destination}/render-settings.txt"), format!(
+        "seed=551003\nsample_rate=24000\nseconds=22\nbpm=180\nchord_bars=1\nchord_count=8\nchord_offset=0\nbuiltin_songs={builtin_count}\nprofile=release required for baseline comparison\nhash=FNV-1a over stereo f32 sample bits\n"
+    )).unwrap();
+}
+
 fn live_session(controls: FluidControls, automation: AutomationState) -> LiveSession {
     let mut song = SongState::from_controls(controls);
     song.automation = automation;
@@ -122,7 +195,11 @@ fn progression_drill() -> ChordDrill {
 }
 
 fn slot_drill(slot: usize) -> ChordDrill {
-    ChordDrill::Slot { slot, return_to: 4 }
+    ChordDrill::Slot {
+        slot,
+        return_to: 4,
+        extension2: false,
+    }
 }
 
 /// Projects one coherent render generation and draws it to a fresh backend.
@@ -253,12 +330,12 @@ fn pad_chord_applies_master_tune_offset() {
 }
 
 #[test]
-fn pad_chord_converts_progression_d_last_chord() {
+fn pad_chord_converts_ache_last_chord_revoice() {
     let chord = pad_chord(3, 7, 0.0);
     assert_close(chord[0], 440.0 * 2f32.powf((43.0 - 69.0) / 12.0)); // G2
-    assert_close(chord[1], 440.0 * 2f32.powf((50.0 - 69.0) / 12.0)); // D3
-    assert_close(chord[2], 440.0 * 2f32.powf((55.0 - 69.0) / 12.0)); // G3
-    assert_close(chord[3], 440.0 * 2f32.powf((64.0 - 69.0) / 12.0)); // E4
+    assert_close(chord[1], 440.0 * 2f32.powf((52.0 - 69.0) / 12.0)); // E3
+    assert_close(chord[2], 440.0 * 2f32.powf((59.0 - 69.0) / 12.0)); // B3
+    assert_close(chord[3], 440.0 * 2f32.powf((62.0 - 69.0) / 12.0)); // D4
 }
 
 #[test]
@@ -280,8 +357,8 @@ fn assert_holds_a_tone(progression: &Progression, windows: &[(usize, usize)]) {
         for step in 0..count {
             let from = (offset + step) % CHORD_SLOT_COUNT;
             let to = (offset + (step + 1) % count) % CHORD_SLOT_COUNT;
-            let current = progression.chords[from].notes;
-            let next = progression.chords[to].notes;
+            let current = progression.chords[from].notes();
+            let next = progression.chords[to].notes();
             assert!(
                 current.iter().any(|note| next.contains(note)),
                 "{} · {}: chord {} -> {} shares no common tone",
@@ -3819,7 +3896,7 @@ fn tab_controls_classify_each_slider_kind() {
                 Gain, Timing, Timing, Discrete, Timing, Discrete, Discrete, Discrete, Discrete,
                 Gain, Gain, Gain,
             ];
-            kinds.extend(vec![Discrete; 40]);
+            kinds.extend(vec![Discrete; 64]);
             kinds.push(Gain); // pre-loaded shared Reverb
             kinds
         }),
@@ -4520,23 +4597,26 @@ fn chords_tab_controls_progression_lists_every_slot_root() {
         assert_eq!(
             rows.iter().map(|r| r.label.clone()).collect::<Vec<_>>(),
             (1..=8)
-                .map(|slot| format!("Chord {slot} Root"))
+                .map(|slot| format!("Chord {slot}"))
                 .collect::<Vec<_>>()
         );
     }
 }
 
 #[test]
-fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
+fn chords_tab_controls_slot_shows_the_shared_builder_fields() {
     let controls = FluidControls::default();
     let rows = chords_tab_controls(&controls, slot_drill(2));
     assert_eq!(
         rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
         vec![
-            "Chord 3 Accidental",
-            "Chord 3 Quality",
-            "Chord 3 Extension",
-            "Chord 3 Inversion"
+            "Root",
+            "Accidental",
+            "Quality",
+            "Extension",
+            "Bass",
+            "Voicing",
+            "Fifth"
         ]
     );
 }
@@ -4545,9 +4625,17 @@ fn chords_tab_controls_slot_shows_accidental_quality_extension_inversion() {
 fn chords_flat_index_maps_visible_rows_to_chords_controls_indices() {
     let controls = FluidControls::default();
     assert_eq!(chords_flat_index(ChordDrill::None, 4, &controls), 4);
-    assert_eq!(chords_flat_index(progression_drill(), 0, &controls), 34);
-    assert_eq!(chords_flat_index(progression_drill(), 2, &controls), 44);
-    assert_eq!(chords_flat_index(slot_drill(2), 0, &controls), 45);
+    for (drill, row, id) in [
+        (progression_drill(), 0, "pad.chord1_degree"),
+        (progression_drill(), 2, "pad.chord3_degree"),
+        (slot_drill(2), 0, "pad.chord3_degree"),
+        (slot_drill(2), 1, "pad.chord3_accidental"),
+    ] {
+        assert_eq!(
+            CHORDS_CONTROLS[chords_flat_index(drill, row, &controls)].id,
+            id
+        );
+    }
 }
 
 #[test]
@@ -4573,7 +4661,7 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
 
     let text = buffer_text(&buffer);
     assert!(text.contains("Pads › Chord 2"));
-    assert!(text.contains("BROWSE · Chord 2   Shift+R randomize set   Esc: back"));
+    assert!(text.contains("Esc back · /add extension · /restore chord"));
 }
 
 #[test]
@@ -4651,8 +4739,8 @@ fn render_badges_the_sounding_slot_inside_an_offset_window() {
     let text = render_progression(&controls, 5);
     assert_eq!(text.matches('♪').count(), 1);
     let badged = text.lines().find(|line| line.contains('♪')).unwrap();
-    assert!(badged.contains("Chord 6 Root"), "{badged}");
-    assert!(text.contains("Chord 1 Root"));
+    assert!(badged.contains("Chord 6"), "{badged}");
+    assert!(text.contains("Chord 1"));
 }
 
 /// The spacer under Progression names the window's chords in play order.
@@ -5380,6 +5468,7 @@ fn pad_chord_notes_with_slot_builds_notes_from_root_extension_and_inversion() {
         quality: 0.0,
         extension: 2.0,
         inversion: 1.0,
+        ..ChordSlotControls::default()
     };
 
     let notes = pad_chord_notes_with_slot(&slot);
@@ -5428,14 +5517,15 @@ fn chord_slot_quality_overrides_the_third_for_modal_interchange() {
     // The Quality row's display resolves the inherit position to what the
     // scale actually gives at this degree.
     let mut controls = FluidControls::default();
+    controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
     let display = spec_by_id("pad.chord1_quality")
         .expect("quality spec")
         .display;
-    assert_eq!(display(&controls), "scale (min)");
+    assert_eq!(display(&controls), "Scale min");
     controls.pad.chord_slots[0].degree = 2.0;
-    assert_eq!(display(&controls), "scale (maj)");
+    assert_eq!(display(&controls), "Scale maj");
     controls.pad.chord_slots[0].quality = 1.0;
-    assert_eq!(display(&controls), "maj");
+    assert_eq!(display(&controls), "Maj 3rd");
 }
 
 #[test]
@@ -5699,7 +5789,7 @@ fn pad_engine_opens_on_the_offset_chord() {
     };
     let pad = pad_engine(&controls);
     assert_eq!(pad.cursor.slot(), 4);
-    assert_eq!(pad.last_chord_notes, PROGRESSIONS[0].chords[4].notes);
+    assert_eq!(pad.last_chord_notes, PROGRESSIONS[0].chords[4].notes());
     assert_eq!(pad.telemetry.chord_slot.load(Ordering::Relaxed), 4);
 }
 
@@ -5944,7 +6034,7 @@ fn built_in_chord_names_match_their_voicings() {
             };
             let intervals = chord_suffix_intervals(&symbol[root_len..]);
             let voiced: Vec<i32> = chord
-                .notes
+                .notes()
                 .iter()
                 .map(|note| (note - root).rem_euclid(12))
                 .collect();
@@ -5955,7 +6045,7 @@ fn built_in_chord_names_match_their_voicings() {
                 chord.name
             );
             assert!(voiced.contains(&0), "{context}: root does not sound");
-            for (note, interval) in chord.notes.iter().zip(&voiced) {
+            for (note, interval) in chord.notes().iter().zip(&voiced) {
                 let in_bass = bass == Some(note.rem_euclid(12));
                 assert!(
                     intervals.contains(interval) || in_bass,
@@ -5970,7 +6060,7 @@ fn built_in_chord_names_match_their_voicings() {
                     );
                 }
             }
-            let lowest = chord.notes.iter().min().unwrap().rem_euclid(12);
+            let lowest = chord.notes().iter().min().unwrap().rem_euclid(12);
             assert_eq!(bass.unwrap_or(root), lowest, "{context}: wrong bass");
         }
     }
@@ -6055,6 +6145,7 @@ fn custom_chord_names_read_the_slot_fields() {
             quality,
             extension,
             inversion,
+            ..ChordSlotControls::default()
         })
     };
     // The default custom progression's roots walk around A minor.
@@ -6062,12 +6153,12 @@ fn custom_chord_names_read_the_slot_fields() {
     let names: Vec<_> = defaults.chord_slots.iter().map(custom_chord_name).collect();
     assert_eq!(names, vec!["Am", "G", "Am", "Bdim", "Am", "G", "C", "Em"]);
     assert_eq!(slot(0.0, 0.0, 1.0, 0.0, 0.0), "A");
-    assert_eq!(slot(0.0, 0.0, 0.0, 2.0, 0.0), "Am7");
-    assert_eq!(slot(1.0, 0.0, 0.0, 2.0, 0.0), "Bm7b5");
-    assert_eq!(slot(2.0, 0.0, 0.0, 2.0, 0.0), "Cmaj7");
-    assert_eq!(slot(2.0, 0.0, 0.0, 3.0, 0.0), "Cadd9");
+    assert_eq!(slot(0.0, 0.0, 0.0, 2.0, 0.0), "Amadd9");
+    assert_eq!(slot(1.0, 0.0, 0.0, 2.0, 0.0), "Bdimaddb9");
+    assert_eq!(slot(2.0, 0.0, 0.0, 2.0, 0.0), "Cadd9");
+    assert_eq!(slot(2.0, 0.0, 0.0, 3.0, 0.0), "Cadd11");
     assert_eq!(slot(-3.0, -1.0, 0.0, 0.0, 0.0), "Ebm");
-    assert_eq!(slot(2.0, 0.0, 0.0, 0.0, 1.0), "C/E");
+    assert_eq!(slot(2.0, 0.0, 0.0, 0.0, 1.0), "Cadd9/E");
 }
 
 #[test]
@@ -6085,10 +6176,12 @@ fn chord_drills_return_to_the_progression_row() {
     assert_eq!(
         chords_drill_for_index(slot_root, &controls),
         (
-            ChordDrill::Progression {
-                return_to: progression_row
+            ChordDrill::Slot {
+                slot: 2,
+                return_to: progression_row,
+                extension2: false,
             },
-            2
+            0
         )
     );
 }
@@ -8332,6 +8425,14 @@ const POSITION_STEP: f32 = 1.0 / 65_535.0;
 /// transport state that is not persisted and must not be.
 fn assert_song_states_agree(a: &SongState, b: &SongState, label: &str) {
     assert_eq!(
+        a.controls.pad.chord_slots, b.controls.pad.chord_slots,
+        "{label}: Custom chord bank"
+    );
+    assert_eq!(
+        a.controls.pad.chord_overrides, b.controls.pad.chord_overrides,
+        "{label}: all preset override banks"
+    );
+    assert_eq!(
         a.automation.captures, b.automation.captures,
         "{label}: captured loops"
     );
@@ -9125,4 +9226,402 @@ fn apply_ratio_lands_on_the_dial_evenly_for_every_scale() {
     assert_close(c.lead.steps[2], c.lead.steps[2].round());
     step.apply_ratio(1.0, &mut c);
     assert_close(c.lead.steps[2], 9.0);
+}
+
+/// Notes audited before the shared builder; only Ache 8 and Float 7 differ.
+const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 120] = [
+    [45, 50, 55, 60], // Drift 1
+    [43, 50, 57, 60], // Drift 2
+    [45, 52, 57, 60], // Drift 3
+    [47, 52, 55, 62], // Drift 4
+    [45, 52, 57, 64], // Drift 5
+    [43, 50, 55, 62], // Drift 6
+    [48, 55, 60, 64], // Drift 7
+    [55, 59, 64, 67], // Drift 8
+    [45, 50, 57, 60], // Tide 1
+    [50, 53, 57, 62], // Tide 2
+    [48, 55, 60, 64], // Tide 3
+    [43, 50, 55, 59], // Tide 4
+    [41, 48, 53, 57], // Tide 5
+    [52, 59, 64, 67], // Tide 6
+    [45, 52, 57, 60], // Tide 7
+    [43, 50, 55, 59], // Tide 8
+    [45, 48, 52, 55], // Velvet 1
+    [41, 45, 48, 52], // Velvet 2
+    [48, 52, 55, 59], // Velvet 3
+    [43, 47, 50, 53], // Velvet 4
+    [50, 53, 57, 60], // Velvet 5
+    [52, 55, 59, 62], // Velvet 6
+    [47, 50, 53, 57], // Velvet 7
+    [43, 50, 55, 59], // Velvet 8
+    [45, 52, 57, 60], // Ache 1
+    [41, 45, 48, 55], // Ache 2
+    [48, 55, 59, 62], // Ache 3
+    [43, 50, 53, 57], // Ache 4
+    [50, 57, 60, 64], // Ache 5
+    [52, 55, 59, 64], // Ache 6
+    [47, 53, 57, 64], // Ache 7
+    [43, 52, 59, 62], // Ache 8
+    [45, 48, 52, 57], // Shadow 1
+    [46, 50, 53, 57], // Shadow 2
+    [48, 53, 55, 60], // Shadow 3
+    [50, 53, 60, 62], // Shadow 4
+    [52, 59, 62, 64], // Shadow 5
+    [55, 59, 62, 64], // Shadow 6
+    [55, 58, 62, 65], // Shadow 7
+    [45, 52, 58, 62], // Shadow 8
+    [52, 55, 59, 64], // Drone 1
+    [47, 52, 59, 64], // Drone 2
+    [50, 59, 62, 67], // Drone 3
+    [45, 57, 62, 65], // Drone 4
+    [45, 52, 57, 64], // Drone 5
+    [52, 60, 64, 67], // Drone 6
+    [55, 60, 62, 65], // Drone 7
+    [52, 55, 59, 62], // Drone 8
+    [48, 52, 55, 60], // Sunny 1
+    [55, 60, 62, 67], // Sunny 2
+    [45, 57, 60, 64], // Sunny 3
+    [53, 57, 60, 65], // Sunny 4
+    [48, 52, 60, 65], // Sunny 5
+    [55, 60, 62, 67], // Sunny 6
+    [53, 57, 60, 65], // Sunny 7
+    [48, 55, 60, 64], // Sunny 8
+    [55, 59, 62, 67], // Lift 1
+    [50, 54, 57, 62], // Lift 2
+    [52, 55, 59, 62], // Lift 3
+    [48, 52, 55, 60], // Lift 4
+    [43, 55, 62, 67], // Lift 5
+    [50, 57, 62, 66], // Lift 6
+    [52, 59, 62, 64], // Lift 7
+    [48, 55, 60, 64], // Lift 8
+    [50, 57, 61, 66], // Dawn 1
+    [50, 56, 59, 64], // Dawn 2
+    [47, 57, 59, 62], // Dawn 3
+    [49, 57, 61, 64], // Dawn 4
+    [43, 57, 59, 66], // Dawn 5
+    [45, 57, 61, 66], // Dawn 6
+    [42, 57, 61, 64], // Dawn 7
+    [47, 57, 62, 66], // Dawn 8
+    [50, 53, 60, 64], // Rain 1
+    [43, 55, 59, 64], // Rain 2
+    [45, 55, 60, 64], // Rain 3
+    [48, 55, 59, 64], // Rain 4
+    [41, 57, 60, 64], // Rain 5
+    [52, 55, 59, 64], // Rain 6
+    [43, 55, 59, 62], // Rain 7
+    [45, 57, 62, 64], // Rain 8
+    [54, 57, 61, 64], // Night 1
+    [50, 57, 61, 66], // Night 2
+    [45, 57, 61, 64], // Night 3
+    [52, 57, 59, 64], // Night 4
+    [47, 57, 59, 62], // Night 5
+    [50, 54, 57, 64], // Night 6
+    [49, 57, 61, 64], // Night 7
+    [49, 56, 59, 64], // Night 8
+    [51, 55, 58, 62], // Glow 1
+    [44, 55, 60, 63], // Glow 2
+    [48, 55, 58, 63], // Glow 3
+    [46, 53, 58, 63], // Glow 4
+    [41, 56, 60, 63], // Glow 5
+    [44, 56, 59, 63], // Glow 6
+    [43, 55, 58, 63], // Glow 7
+    [46, 56, 58, 63], // Glow 8
+    [48, 55, 62, 64], // Float 1
+    [46, 58, 62, 65], // Float 2
+    [45, 57, 60, 65], // Float 3
+    [43, 58, 62, 65], // Float 4
+    [50, 57, 60, 65], // Float 5
+    [46, 57, 62, 65], // Float 6
+    [53, 57, 60, 65], // Float 7
+    [48, 55, 60, 65], // Float 8
+    [48, 55, 60, 63], // Deep 1
+    [48, 56, 60, 65], // Deep 2
+    [48, 56, 60, 63], // Deep 3
+    [48, 58, 62, 65], // Deep 4
+    [43, 58, 62, 65], // Deep 5
+    [51, 55, 58, 62], // Deep 6
+    [44, 55, 60, 63], // Deep 7
+    [43, 55, 60, 62], // Deep 8
+    [53, 56, 60, 63], // Hosking 1
+    [48, 56, 60, 67], // Hosking 2
+    [46, 53, 56, 61], // Hosking 3
+    [53, 56, 61, 65], // Hosking 4
+    [44, 51, 53, 55], // Hosking 5
+    [55, 58, 63, 65], // Hosking 6
+    [50, 53, 58, 60], // Hosking 7
+    [49, 53, 56, 60], // Hosking 8
+];
+
+#[test]
+fn every_authored_chord_is_the_audited_shared_builder_preset() {
+    assert_eq!(
+        PROGRESSIONS.len() * CHORD_SLOT_COUNT,
+        CHORD_BUILDER_SOURCE_NOTES.len()
+    );
+    for (index, chord) in PROGRESSIONS.iter().flat_map(|p| &p.chords).enumerate() {
+        assert!(chord.preset.is_valid());
+        assert_eq!(
+            chord.notes(),
+            CHORD_BUILDER_SOURCE_NOTES[index],
+            "catalog chord {index}"
+        );
+    }
+}
+
+#[test]
+fn shared_builder_preserves_every_legacy_custom_choice() {
+    let fixture = include_str!("fixtures/chord_legacy.txt");
+    assert_eq!(fixture.lines().count(), 2160);
+    for line in fixture.lines() {
+        let values: Vec<i32> = line
+            .split_whitespace()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let chord = ChordSlotControls {
+            degree: values[0] as f32,
+            accidental: values[1] as f32,
+            quality: values[2] as f32,
+            extension: values[3] as f32,
+            inversion: values[4] as f32,
+            ..ChordSlotControls::default()
+        };
+        assert_eq!(pad_chord_notes_with_slot(&chord), values[5..], "{line}");
+    }
+}
+
+#[test]
+fn editing_one_preset_slot_preserves_neighbors_custom_and_authored_bass() {
+    for progression in 0..PROGRESSIONS.len() {
+        for slot in 0..CHORD_SLOT_COUNT {
+            let mut controls = FluidControls::default();
+            controls.pad.progression = progression as f32;
+            let custom = controls.pad.chord_slots;
+            let before: Vec<_> = (0..CHORD_SLOT_COUNT)
+                .map(|s| pad_chord_tones(&controls.pad, progression, s))
+                .collect();
+            let bass = bass_root_note(progression, slot, &controls.pad);
+            let id = format!("pad.chord{}_extension", slot + 1);
+            spec_by_id(&id).unwrap().apply_value(9.0, &mut controls);
+            assert!(controls.pad.chord_is_edited(progression, slot));
+            assert_eq!(bass_root_note(progression, slot, &controls.pad), bass);
+            assert_eq!(controls.pad.chord_slots, custom);
+            for (other, notes) in before.iter().enumerate() {
+                if other != slot {
+                    assert_eq!(pad_chord_tones(&controls.pad, progression, other), *notes);
+                }
+            }
+            let next = (progression + 1) % PROGRESSIONS.len();
+            controls.pad.progression = next as f32;
+            assert!(!controls.pad.chord_is_edited(next, slot));
+            assert_eq!(
+                pad_chord_tones(&controls.pad, next, slot),
+                PROGRESSIONS[next].chords[slot].notes()
+            );
+            controls.pad.progression = progression as f32;
+            let before_root = pad_chord_root_note(controls.pad.chord_slot(progression, slot));
+            controls.pad.edit_chord_slot(slot).degree = 0.0;
+            let shift =
+                pad_chord_root_note(controls.pad.chord_slot(progression, slot)) - before_root;
+            assert_eq!(
+                bass_root_note(progression, slot, &controls.pad),
+                bass + shift
+            );
+            assert!(controls.pad.restore_chord_slot(progression, slot));
+            assert_eq!(
+                pad_chord_tones(&controls.pad, progression, slot),
+                before[slot]
+            );
+            assert_eq!(bass_root_note(progression, slot, &controls.pad), bass);
+        }
+    }
+}
+
+#[test]
+fn sparse_to_full_pad_output_preserves_its_saved_selection_for_all_builder_presets() {
+    let mut definitions: Vec<_> = PROGRESSIONS
+        .iter()
+        .flat_map(|p| p.chords.iter().map(|c| c.preset))
+        .collect();
+    definitions.push(ChordSlotControls {
+        extension: 4.0,
+        extension2: 6.0,
+        fifth: 2.0,
+        ..ChordSlotControls::default()
+    });
+    for chord in definitions {
+        let notes = pad_chord_notes_with_slot(&chord);
+        for count in 2..=5 {
+            let expected: Vec<_> = match count {
+                2 => vec![notes[0], notes[2]],
+                3 => notes[..3].to_vec(),
+                4 => notes.to_vec(),
+                _ => vec![notes[0], notes[1], notes[2], notes[3], notes[0] + 24],
+            };
+            let (voiced, len) = pad_voicing(notes, count);
+            assert_eq!(&voiced[..len], &expected);
+            assert_eq!(
+                pad_notes_with_count(notes, count, 0.0).active(),
+                expected.iter().map(|n| *n as u8).collect::<Vec<_>>()
+            );
+            let tones = pad_tones(0, notes, count, 0.0, SAMPLE_RATE, 0.1, 0.1);
+            assert_eq!(tones.len(), count);
+        }
+    }
+}
+
+#[test]
+fn perfect_fifth_makes_b_minor_without_an_enharmonic_root_workaround() {
+    let chord = ChordSlotControls {
+        degree: 1.0,
+        quality: -1.0,
+        fifth: 1.0,
+        ..ChordSlotControls::default()
+    };
+    assert_eq!(pad_chord_notes_with_slot(&chord), [47, 50, 54, 59]);
+    assert_eq!(custom_chord_name(&chord), "Bm");
+}
+
+#[test]
+fn a_sharp_eleventh_is_not_a_diminished_fifth_when_the_fifth_was_omitted() {
+    let chord = ChordSlotControls {
+        degree: -2.0,
+        quality: 1.0,
+        extension: 5.0,
+        extension2: 8.0,
+        ..ChordSlotControls::default()
+    };
+    assert_eq!(pad_chord_notes_with_slot(&chord), [41, 45, 52, 59]);
+    assert_eq!(custom_chord_name(&chord), "Fmaj7add#11");
+    assert_eq!(
+        custom_chord_name(&ChordSlotControls {
+            degree: 2.0,
+            inversion: 1.0,
+            ..ChordSlotControls::default()
+        }),
+        "Cadd9/E"
+    );
+}
+
+#[test]
+fn progression_automation_resolves_slot_fields_in_the_selected_bank_without_authoring_edits() {
+    let mut base = FluidControls::default();
+    base.pad.progression = 1.0;
+    base.pad.edit_chord_slot(0).extension2 = 8.0;
+    base.pad.progression = 0.0;
+    let mut song = SongState::from_controls(base.clone());
+    let progression = song
+        .automation
+        .open_or_create(ControlAddress::new("pad.progression"));
+    progression.depth_ratio = 1.0 / CUSTOM_PROGRESSION_INDEX as f32;
+    let extension = song
+        .automation
+        .open_or_create(ControlAddress::new("pad.chord1_extension"));
+    extension.depth_ratio = 1.0;
+    let mut effective = base.clone();
+    apply_automation(
+        &mut effective,
+        &song.automation,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.25),
+    );
+    assert_eq!(effective.pad.progression, 1.0);
+    assert_eq!(effective.pad.chord_slot(1, 0).extension, 9.0);
+    assert_eq!(effective.pad.chord_slot(1, 0).extension2, 8.0);
+    assert!(
+        Arc::ptr_eq(&effective.pad.chord_overrides, &base.pad.chord_overrides),
+        "audio edits must not copy the authored bank"
+    );
+    assert_eq!(
+        effective.pad.chord_overrides[0],
+        base.pad.chord_overrides[0]
+    );
+    assert_eq!(song.controls.pad.chord_overrides, base.pad.chord_overrides);
+    let restored = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+    assert_song_states_agree(&restored, &song, "chord automation roundtrip");
+    let mut replayed = restored.controls.clone();
+    let mut plan = AutomationPlan::default();
+    plan.rebuild(&restored.automation);
+    plan.apply(
+        &mut replayed,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.25),
+    );
+    assert_eq!(replayed.pad.chord_overrides, effective.pad.chord_overrides);
+    assert_eq!(
+        pad_chord_tones(&replayed.pad, 1, 0),
+        pad_chord_tones(&effective.pad, 1, 0)
+    );
+
+    // Removing progression automation keeps its audible release in the plan.
+    // That fading selector still resolves before the continuing slot route.
+    song.automation
+        .clear_control(ControlAddress::new("pad.progression"));
+    plan.rebuild(&song.automation);
+    let mut fading = base.clone();
+    plan.apply(
+        &mut fading,
+        TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.25),
+    );
+    assert_eq!(progression_index(fading.pad.progression), 1);
+    assert_eq!(fading.pad.chord_slot(1, 0).extension, 9.0);
+    assert!(Arc::ptr_eq(
+        &fading.pad.chord_overrides,
+        &base.pad.chord_overrides
+    ));
+    assert_eq!(fading.pad.chord_overrides[0], base.pad.chord_overrides[0]);
+    assert_eq!(
+        encode_song_code(&SongState::from_controls(fading)),
+        Err(super::song::SongCodeError::EvaluatedControls)
+    );
+    for sample in 1..32 {
+        let mut next = base.clone();
+        plan.apply(
+            &mut next,
+            TimingContext::new(
+                f64::from(SAMPLE_RATE),
+                120.0,
+                0.25 + f64::from(sample) / f64::from(SAMPLE_RATE),
+            ),
+        );
+        assert!(Arc::ptr_eq(
+            &next.pad.chord_overrides,
+            &base.pad.chord_overrides
+        ));
+        assert_eq!(next.pad.chord_slots, base.pad.chord_slots);
+    }
+    let mut restored_base = base.clone();
+    assert!(restored_base.pad.restore_chord_slot(1, 0));
+    assert!(!restored_base.pad.chord_is_edited(1, 0));
+    assert!(
+        base.pad.chord_is_edited(1, 0),
+        "restore must not mutate another owner's bank"
+    );
+    assert!(effective.pad.chord_is_edited(1, 0));
+}
+
+#[test]
+fn pad_cached_chord_revoices_for_every_builder_field_and_restore() {
+    for (field, value) in [
+        ("degree", 1.0),
+        ("accidental", 1.0),
+        ("quality", 1.0),
+        ("extension", 1.0),
+        ("extension2", 9.0),
+        ("inversion", 1.0),
+        ("voicing", 1.0),
+        ("fifth", 2.0),
+    ] {
+        let mut controls = FluidControls::default();
+        controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
+        let original = pad_chord_tones(&controls.pad, CUSTOM_PROGRESSION_INDEX, 0);
+        let mut engine = pad_engine(&controls.pad);
+        spec_by_id(&format!("pad.chord1_{field}"))
+            .unwrap()
+            .apply_value(value, &mut controls);
+        let expected = pad_chord_tones(&controls.pad, CUSTOM_PROGRESSION_INDEX, 0);
+        assert_ne!(expected, original, "fixture must change sound: {field}");
+        engine.next(&controls.pad, 0.0, timing(1, 120.0));
+        assert_eq!(engine.last_chord_notes, expected, "{field}");
+        controls.pad.restore_chord_slot(CUSTOM_PROGRESSION_INDEX, 0);
+        engine.next(&controls.pad, 0.0, timing(2, 120.0));
+        assert_eq!(engine.last_chord_notes, original, "restoring {field}");
+    }
 }

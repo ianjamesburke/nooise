@@ -31,6 +31,7 @@ pub(crate) enum EffectFailure {
     AutomationLaneLimit,
     StaleRecipeTarget,
     StaleLaneTarget,
+    StaleChordTarget,
     CaptureUnavailable,
     CaptureHistory(CaptureHistoryError),
     CaptureLimit,
@@ -58,6 +59,7 @@ impl fmt::Display for EffectFailure {
                 write!(f, "recipe target changed; reopen / on the desired knob")
             }
             Self::StaleLaneTarget => write!(f, "lane changed; reopen /"),
+            Self::StaleChordTarget => write!(f, "open / on the desired chord again"),
             Self::UnsupportedInteraction(effect) => {
                 write!(f, "unsupported interaction effect {effect:?}")
             }
@@ -931,6 +933,44 @@ impl EffectExecutor {
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         self.edit_beat = context.beat;
         match effect {
+            InteractionEffect::Chord { action, target } => {
+                let target = target.ok_or(EffectFailure::StaleChordTarget)?;
+                let check = |snapshot: &LiveSessionSnapshot| {
+                    target
+                        .resolve(&snapshot.controls)
+                        .ok_or(EffectFailure::StaleChordTarget)
+                        .map(|_| ())
+                };
+                check(&self.session.load())?;
+                let field = match action {
+                    operation::ChordAction::AddExtension => "extension2",
+                    operation::ChordAction::Restore => {
+                        self.edit_session_checked("pad.progression", check, |snapshot| {
+                            let progression = target
+                                .resolve(&snapshot.controls)
+                                .ok_or(EffectFailure::StaleChordTarget)?;
+                            snapshot
+                                .controls
+                                .pad
+                                .restore_chord_slot(progression, target.slot);
+                            Ok(())
+                        })?;
+                        self.show_message(format!("Chord {} restored", target.slot + 1));
+                        "degree"
+                    }
+                };
+                if self.session.load().automation.active_kind().is_some() {
+                    self.edit_navigation_automation(AutomationState::close_editor);
+                }
+                let spec =
+                    chord_slot_spec(target.slot, field).expect("captured chord field exists");
+                let index = spec_index(Tab::Chords, spec.id).expect("chord field is registered");
+                Ok(EffectAcknowledgement::ControlSelected {
+                    tab: Tab::Chords,
+                    index,
+                    id: spec.id,
+                })
+            }
             InteractionEffect::Lane { action, target } => self.apply_lane(action, target),
             InteractionEffect::Capture {
                 action,
@@ -1571,6 +1611,95 @@ mod tests {
             executor.session.load().automation.active_address(),
             Some(address)
         );
+    }
+
+    #[test]
+    fn chord_restore_keeps_lanes_and_other_banks_and_takes_over_motion() {
+        let mut executor = executor();
+        let address = ControlAddress::new("pad.chord1_degree");
+        executor.session.update(|snapshot| {
+            snapshot.controls.pad.progression = 2.0;
+            snapshot.controls.pad.edit_chord_slot(3).quality = 4.0;
+            snapshot.controls.pad.progression = 0.0;
+            snapshot.controls.pad.edit_chord_slot(1).degree = 5.0;
+            snapshot.controls.pad.edit_chord_slot(0).degree = 7.0;
+            snapshot.automation.open_or_create(address).depth_ratio = 0.37;
+            snapshot.automation.captures.insert(
+                address,
+                CaptureClip {
+                    duration: MotionDuration::Beats4,
+                    samples: [128; CAPTURE_SAMPLES],
+                    events: Vec::new(),
+                    origin: 0.0,
+                    launch: 0.0,
+                    enabled: true,
+                },
+            );
+        });
+        let before = executor.session.load();
+        let target = operation::ChordTarget::capture(address.id(), &before.controls).unwrap();
+        executor
+            .execute_interaction(
+                InteractionEffect::Chord {
+                    action: operation::ChordAction::Restore,
+                    target: Some(target),
+                },
+                &InteractionExecutionContext::default(),
+            )
+            .unwrap();
+        let after = executor.session.load();
+        assert!(!after.controls.pad.chord_is_edited(0, 0));
+        assert_eq!(
+            after.controls.pad.chord_slot(0, 1),
+            before.controls.pad.chord_slot(0, 1)
+        );
+        assert_eq!(
+            after.controls.pad.chord_slot(2, 3),
+            before.controls.pad.chord_slot(2, 3)
+        );
+        assert_eq!(
+            after.automation.route(address).unwrap(),
+            before.automation.route(address).unwrap()
+        );
+        assert!(!after.automation.captures[&address].enabled);
+    }
+
+    #[test]
+    fn chord_actions_refuse_changed_preset_or_slot_without_exiting_auto() {
+        for action in [
+            operation::ChordAction::AddExtension,
+            operation::ChordAction::Restore,
+        ] {
+            for change_preset in [false, true] {
+                let mut executor = executor();
+                let target = operation::ChordTarget::capture(
+                    "pad.chord1_degree",
+                    &executor.session.load().controls,
+                )
+                .unwrap();
+                executor.session.update(|snapshot| {
+                    if change_preset {
+                        snapshot.controls.pad.progression = 2.0;
+                    } else {
+                        snapshot.controls.pad.edit_chord_slot(0).degree = 7.0;
+                    }
+                });
+                executor.toggle_auto(0.0);
+                let before = executor.session.load();
+                assert_eq!(
+                    executor.execute_interaction(
+                        InteractionEffect::Chord {
+                            action,
+                            target: Some(target),
+                        },
+                        &InteractionExecutionContext::default()
+                    ),
+                    Err(EffectFailure::StaleChordTarget)
+                );
+                assert!(Arc::ptr_eq(&before, &executor.session.load()));
+                assert!(executor.auto.is_running());
+            }
+        }
     }
 
     #[test]

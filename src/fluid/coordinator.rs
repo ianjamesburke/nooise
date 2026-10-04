@@ -140,7 +140,6 @@ pub(crate) fn coordinate_production_event(
     }
     if action.intent == interaction::Intent::TouchSelected
         && frame.selected_control == Some("pad.progression")
-        && is_custom_progression(progression_index(frame.session.controls.pad.progression))
     {
         action.intent = interaction::Intent::EnterChordProgression;
     }
@@ -236,6 +235,9 @@ pub(crate) fn coordinate_production_action(
     {
         palette.recipe_target =
             selected_control.and_then(|id| recipe::RecipeTarget::capture(id, frame_session));
+        palette.chord_target = selected_control
+            .and_then(|id| operation::ChordTarget::capture(id, &frame_session.controls))
+            .map(Box::new);
         palette.capture_beat_bits = context.beat.to_bits();
         palette.lane_target = palette
             .resume

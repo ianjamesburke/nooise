@@ -188,6 +188,8 @@ pub(crate) enum ChordDrill {
     Slot {
         slot: usize,
         return_to: usize,
+        /// Live editor affordance; opening a field never authors a chord.
+        extension2: bool,
     },
 }
 
@@ -357,7 +359,9 @@ impl Navigation {
                     *selected = return_to;
                     *drill = ChordDrill::None;
                 }
-                ChordDrill::Slot { slot, return_to } => {
+                ChordDrill::Slot {
+                    slot, return_to, ..
+                } => {
                     *selected = slot;
                     *drill = ChordDrill::Progression { return_to };
                 }
@@ -407,6 +411,7 @@ pub(crate) struct PaletteMode {
     pub(crate) module_scope: Option<ModuleScope>,
     /// The layer a planned operation addresses, frozen when the palette opens.
     pub(crate) planned_tab: Option<Tab>,
+    pub(crate) chord_target: Option<Box<super::operation::ChordTarget>>,
 }
 
 impl PaletteMode {
@@ -1173,6 +1178,10 @@ pub(crate) enum InteractionEffect {
     },
     PaletteCommit(Vec<PaletteStagedEdit>),
     ApplyMixAction(super::mix_action::MixAction),
+    Chord {
+        action: super::operation::ChordAction,
+        target: Option<super::operation::ChordTarget>,
+    },
     ApplyRecipe {
         recipe: super::recipe::RecipeId,
         target: Option<super::recipe::RecipeTarget>,
@@ -1529,7 +1538,11 @@ fn update_browsing(
                 && let ChordDrill::Progression { return_to } = *drill
             {
                 *selected = 0;
-                *drill = ChordDrill::Slot { slot, return_to };
+                *drill = ChordDrill::Slot {
+                    slot,
+                    return_to,
+                    extension2: false,
+                };
             }
         }
         Intent::EnterLeadPattern => {
@@ -2121,6 +2134,10 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
             end_beat_bits: palette.capture_beat_bits,
         },
         Operation::Mix(action) => InteractionEffect::ApplyMixAction(action),
+        Operation::Chord(action) => InteractionEffect::Chord {
+            action,
+            target: palette.chord_target.as_deref().copied(),
+        },
         Operation::Recipe(recipe) => InteractionEffect::ApplyRecipe {
             recipe,
             target: palette.recipe_target,
@@ -2241,6 +2258,7 @@ mod tests {
             navigation: Navigation::Chords {
                 selected: 3,
                 drill: ChordDrill::Slot {
+                    extension2: false,
                     slot: 3,
                     return_to: 4,
                 },
@@ -2365,6 +2383,7 @@ mod tests {
             navigation: Navigation::Chords {
                 selected: 4,
                 drill: ChordDrill::Slot {
+                    extension2: false,
                     slot: 3,
                     return_to: 4,
                 },

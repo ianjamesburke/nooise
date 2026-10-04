@@ -15,13 +15,15 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = PAD_PROGRESSION_EXPANSION_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = CHORD_BUILDER_EPOCH;
+pub(crate) const CHORD_BUILDER_EPOCH: u16 = 6;
 pub(crate) const DRUNKEN_WAVE_EPOCH: u16 = 4;
 pub(crate) const PAD_PROGRESSION_EXPANSION_EPOCH: u16 = 5;
 
 /// Which dial a range change moved.
 #[derive(Clone, Copy)]
 enum RangeTarget {
+    ChordSlot,
     /// One registry control, by id.
     Control(&'static str),
     /// One field of any slot holding a module of this family.
@@ -79,11 +81,18 @@ const RANGE_CHANGES: &[RangeChange] = &[
         epoch: PAD_PROGRESSION_EXPANSION_EPOCH,
         target: RangeTarget::Control("pad.progression"),
     },
+    // Quality, Extension and Bass grew. Root/Accidental routes now affect
+    // builtin slots too; old Custom-only modulation must not gain a meaning.
+    RangeChange {
+        epoch: CHORD_BUILDER_EPOCH,
+        target: RangeTarget::ChordSlot,
+    },
 ];
 
 impl RangeChange {
     fn applies(&self, id: &str, controls: &FluidControls) -> bool {
         match self.target {
+            RangeTarget::ChordSlot => super::registry::parse_chord_slot_id(id).is_some(),
             RangeTarget::Control(target) => id == target,
             RangeTarget::ModuleField { family, field } => module_slot_row(id, controls)
                 .is_some_and(|(slot, slot_field)| {
@@ -208,6 +217,39 @@ mod tests {
             let loaded = decode_song_code(&code).unwrap();
             assert_eq!(loaded.controls.kick.voice_type, voice_type as f32);
         }
+    }
+
+    #[test]
+    fn old_chord_slot_modulation_is_refused_even_when_its_numeric_range_is_unchanged() {
+        for spec in all_specs()
+            .filter(|spec| super::super::registry::parse_chord_slot_id(spec.id).is_some())
+        {
+            let mut song = SongState::default();
+            song.automation
+                .open_or_create(ControlAddress::new(spec.id))
+                .depth_ratio = 0.25;
+            let stale = encode_song_code_at_epoch(&song, CHORD_BUILDER_EPOCH - 1).unwrap();
+            assert_eq!(
+                decode_song_code(&stale).err(),
+                Some(SongCodeError::StaleRange(spec.id)),
+                "{}",
+                spec.id
+            );
+            assert!(
+                decode_song_code(&encode_song_code(&song).unwrap()).is_ok(),
+                "{}",
+                spec.id
+            );
+        }
+        let mut song = SongState::default();
+        song.automation
+            .open_or_create_envelope(ControlAddress::new("pad.chord1_accidental"))
+            .amount = 0.5;
+        let stale = encode_song_code_at_epoch(&song, CHORD_BUILDER_EPOCH - 1).unwrap();
+        assert_eq!(
+            decode_song_code(&stale).err(),
+            Some(SongCodeError::StaleRange("pad.chord1_accidental"))
+        );
     }
 
     #[test]

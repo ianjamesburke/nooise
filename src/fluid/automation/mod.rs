@@ -978,9 +978,14 @@ impl AutomationPlan {
             removed.editor_captures.clear();
             self.routes.push(removed);
         }
+        // Chord fields resolve through the selected progression's bank. Its
+        // automation must select that bank before any field reads or writes.
+        self.routes
+            .sort_by_key(|route| route.address.id() != "pad.progression");
     }
 
     pub(crate) fn apply(&mut self, controls: &mut FluidControls, timing: TimingContext) {
+        controls.pad.begin_chord_evaluation();
         let ctx = ModContext {
             beat: timing.beat,
             kick_interval_beats: controls.kick.interval_beats,

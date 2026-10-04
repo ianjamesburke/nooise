@@ -15,7 +15,7 @@ use super::automation::{
     ControlAddress, LfoRoute, LfoShape, ModContext, modulated_control_value_full,
 };
 use super::module::{ModuleSlotField, module_kind_at};
-use super::registry::parse_module_slot_id;
+use super::registry::{parse_chord_slot_id, parse_module_slot_id};
 use super::{
     AutomationState, ControlKind, ControlSpec, FluidControls, GRID_BEAT_EPSILON, LEVEL_RAMP_MS,
     MASTER_BPM_MAX, MASTER_BPM_MIN, SongState, Tab, all_specs, decode_song_code, smoothstep,
@@ -792,6 +792,11 @@ impl MorphState {
 
         let mut next = from.clone();
         for (index, spec) in all_specs().enumerate() {
+            // Chord banks already came from the structural endpoint. Running
+            // effective setters would materialize untouched authored chords.
+            if parse_chord_slot_id(spec.id).is_some() {
+                continue;
+            }
             let from_v = (spec.get)(from);
             let to_v = (spec.get)(to);
 
@@ -1092,6 +1097,45 @@ mod tests {
             to.pad.chord_slots[0].degree
         );
         assert!(morph.automation_at(24.0).route(address).is_some());
+    }
+
+    #[test]
+    fn entire_harmony_bank_and_slot_lanes_land_atomically_without_seeding() {
+        let mut from = phrase_controls();
+        from.pad.progression = 0.0;
+        from.pad.edit_chord_slot(0).voicing = 2.0;
+        from.pad.progression = 2.0;
+        from.pad.edit_chord_slot(5).fifth = 2.0;
+        from.pad.progression = 0.0;
+        let mut to = from.clone();
+        to.pad.restore_chord_slot(0, 0);
+        to.pad.chord_slots[7].extension2 = 8.0;
+        to.pad.progression = 1.0;
+        to.pad.edit_chord_slot(3).extension = 5.0;
+        let address = ControlAddress::new("pad.chord4_extension");
+        let mut target = SongState::from_controls(to.clone());
+        target.automation.set_route(address, LfoRoute::default());
+        let morph = MorphState::new(vec![SongState::from_controls(from.clone()), target], 6);
+        for beat in [0.0, 15.9, 16.0, 20.0, 23.999, 24.0] {
+            let expected = if beat < 24.0 { &from } else { &to };
+            let actual = morph.controls_at(beat);
+            assert_eq!(
+                actual.pad.progression, expected.pad.progression,
+                "beat {beat}"
+            );
+            assert_eq!(
+                actual.pad.chord_overrides, expected.pad.chord_overrides,
+                "beat {beat}"
+            );
+            assert_eq!(
+                actual.pad.chord_slots, expected.pad.chord_slots,
+                "beat {beat}"
+            );
+            assert_eq!(
+                morph.automation_at(beat).route(address).is_some(),
+                beat >= 24.0
+            );
+        }
     }
 
     #[test]

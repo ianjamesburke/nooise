@@ -12,6 +12,51 @@ pub(crate) enum Operation {
     Mix(mix_action::MixAction),
     Recipe(recipe::RecipeId),
     PlannedMute,
+    Chord(ChordAction),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChordAction {
+    AddExtension,
+    Restore,
+}
+
+/// A palette action keeps its original preset and slot, and refuses a slot
+/// that changed while the palette was open (including an auto transition).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ChordTarget {
+    pub(crate) progression: i8,
+    pub(crate) slot: usize,
+    fields: [u32; 8],
+}
+
+impl ChordTarget {
+    pub(crate) fn capture(id: &str, controls: &FluidControls) -> Option<Self> {
+        let (slot, _) = parse_chord_slot_id(id)?;
+        let progression = progression_index(controls.pad.progression);
+        Some(Self {
+            progression: PROGRESSION_SONG_VALUES[progression],
+            slot,
+            fields: controls
+                .pad
+                .chord_slot(progression, slot)
+                .values()
+                .map(f32::to_bits),
+        })
+    }
+
+    pub(crate) fn resolve(self, controls: &FluidControls) -> Option<usize> {
+        let progression = progression_index(controls.pad.progression);
+        (PROGRESSION_SONG_VALUES[progression] == self.progression
+            && self.slot < CHORD_SLOT_COUNT
+            && controls
+                .pad
+                .chord_slot(progression, self.slot)
+                .values()
+                .map(f32::to_bits)
+                == self.fields)
+            .then_some(progression)
+    }
 }
 
 /// The display metadata belonging to one [`Operation`].
@@ -24,7 +69,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 17] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -40,6 +85,8 @@ impl Operation {
         Self::Recipe(recipe::RecipeId::Drift),
         Self::Recipe(recipe::RecipeId::Rise),
         Self::PlannedMute,
+        Self::Chord(ChordAction::AddExtension),
+        Self::Chord(ChordAction::Restore),
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -65,6 +112,18 @@ impl Operation {
                     description: recipe.description,
                 }
             }
+            Self::Chord(action) => OperationSpec {
+                operation: self,
+                label: match action {
+                    ChordAction::AddExtension => "Add extension",
+                    ChordAction::Restore => "Restore chord",
+                },
+                aliases: &[],
+                description: match action {
+                    ChordAction::AddExtension => "open the chord's second extension",
+                    ChordAction::Restore => "restore this chord's original voicing",
+                },
+            },
             Self::PlannedMute => OperationSpec {
                 operation: self,
                 label: "Mute next bar",
@@ -82,7 +141,7 @@ impl Operation {
                 MotionAction::Resume => Some(CaptureAction::Resume),
                 MotionAction::Delete => Some(CaptureAction::Delete),
             },
-            Self::Mix(_) | Self::Recipe(_) | Self::PlannedMute => None,
+            Self::Mix(_) | Self::Recipe(_) | Self::PlannedMute | Self::Chord(_) => None,
         }
     }
 

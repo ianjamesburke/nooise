@@ -61,7 +61,7 @@ pub(crate) struct PadMidiNotes {
 }
 
 impl PadMidiNotes {
-    fn active(&self) -> &[u8] {
+    pub(crate) fn active(&self) -> &[u8] {
         &self.notes[..self.count]
     }
 }

@@ -2,8 +2,10 @@
 //! structs it aggregates, each a plain field bag with a default. Meaning,
 //! range, and presentation all live in the registry, never here.
 
+use std::sync::Arc;
+
 use super::module::LayerModules;
-use super::voice::LeadPattern;
+use super::voice::{CUSTOM_PROGRESSION_INDEX, LeadPattern, PROGRESSIONS, progression_index};
 
 pub(crate) const MASTER_BPM_MIN: f32 = 30.0;
 pub(crate) const MASTER_BPM_MAX: f32 = 200.0;
@@ -57,23 +59,67 @@ impl Default for PercControls {
     }
 }
 
-/// One slot of a custom chord progression: `degree` is the chord root as a
-/// tonic-relative scale degree (diatonic steps, -7..7, spanning one octave in
-/// each direction); `accidental` nudges that root a semitone flat/sharp;
-/// `quality` overrides the chord's third for modal interchange (-1=force
-/// minor, 0=whatever the scale gives at this degree, +1=force major);
-/// `extension` picks how high the chord's top voice reaches above the triad
-/// (0=triad, 1/2/3=progressively richer diatonic extensions); `inversion`
-/// moves the lowest voice(s) up an octave. Only read when `PadControls`'s
-/// `progression` selects the custom slot (`voice::CUSTOM_PROGRESSION_INDEX`);
-/// otherwise inert.
-#[derive(Clone, Default)]
+/// One editable chord definition. Root keeps its original A-minor editor
+/// coordinates; quality chooses the third/suspension, fifth is independent,
+/// and two extensions share the source-tone priority. Defaults preserve the
+/// existing Custom sound. Registry specs own every field's allowed values.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct ChordSlotControls {
     pub(crate) degree: f32,
     pub(crate) accidental: f32,
     pub(crate) quality: f32,
     pub(crate) extension: f32,
     pub(crate) inversion: f32,
+    pub(crate) extension2: f32,
+    pub(crate) voicing: f32,
+    pub(crate) fifth: f32,
+}
+
+impl ChordSlotControls {
+    /// Compact authored/wire order: root, accidental, third, extensions,
+    /// bass, spread, fifth. All values are exact discrete choices.
+    pub(crate) const fn preset(values: [i8; 8]) -> Self {
+        Self {
+            degree: values[0] as f32,
+            accidental: values[1] as f32,
+            quality: values[2] as f32,
+            extension: values[3] as f32,
+            extension2: values[4] as f32,
+            inversion: values[5] as f32,
+            voicing: values[6] as f32,
+            fifth: values[7] as f32,
+        }
+    }
+
+    pub(crate) fn values(&self) -> [f32; 8] {
+        [
+            self.degree,
+            self.accidental,
+            self.quality,
+            self.extension,
+            self.extension2,
+            self.inversion,
+            self.voicing,
+            self.fifth,
+        ]
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        const IDS: [&str; 8] = [
+            "pad.chord1_degree",
+            "pad.chord1_accidental",
+            "pad.chord1_quality",
+            "pad.chord1_extension",
+            "pad.chord1_extension2",
+            "pad.chord1_inversion",
+            "pad.chord1_voicing",
+            "pad.chord1_fifth",
+        ];
+        self.values().into_iter().zip(IDS).all(|(value, id)| {
+            value.is_finite()
+                && super::registry::spec_by_id(id).is_some_and(|spec| spec.quantize(value) == value)
+        })
+    }
 }
 
 /// Default per-slot root degrees for a fresh custom progression: a stepwise
@@ -85,6 +131,17 @@ pub(crate) const DEFAULT_CHORD_SLOT_DEGREES: [f32; 8] = [0.0, -1.0, 0.0, 1.0, 0.
 /// `pad.chord_count`. Matches the built-ins' fixed 8-chord length.
 pub(crate) const CHORD_SLOT_COUNT: usize = 8;
 pub(crate) const PAD_RHYTHM_ROWS: u8 = 0b0000_1101;
+
+/// Audio-only scratch for the currently evaluated progression. Registry
+/// automation writes here so its shared authored bank never needs a copy.
+#[derive(Clone, Copy)]
+pub(crate) struct EvaluatedChords {
+    progression: usize,
+    slots: [Option<ChordSlotControls>; CHORD_SLOT_COUNT],
+}
+
+pub(crate) type ChordOverrideSlots =
+    [[Option<ChordSlotControls>; CHORD_SLOT_COUNT]; PROGRESSIONS.len()];
 
 #[derive(Clone)]
 pub(crate) struct PadControls {
@@ -107,6 +164,9 @@ pub(crate) struct PadControls {
     pub(crate) offset_beats: f32,
     pub(crate) steps: [f32; 16],
     pub(crate) chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
+    pub(crate) chord_overrides: Arc<ChordOverrideSlots>,
+    /// Rebuilt each audio evaluation; excluded from authored song state.
+    pub(crate) evaluated_chords: Option<EvaluatedChords>,
     pub(crate) stereo_width: f32,
     pub(crate) detune: f32,
     pub(crate) octave_mix: f32,
@@ -138,11 +198,90 @@ impl Default for PadControls {
                 degree: DEFAULT_CHORD_SLOT_DEGREES[slot],
                 ..ChordSlotControls::default()
             }),
+            chord_overrides: Arc::new([[None; CHORD_SLOT_COUNT]; PROGRESSIONS.len()]),
+            evaluated_chords: None,
             stereo_width: 0.8,
             detune: 0.5,
             octave_mix: 0.5,
             attack_time: 6.0,
             release_time: 8.0,
+        }
+    }
+}
+
+impl PadControls {
+    /// Resolve without materializing an override. Editor pitch coordinates
+    /// remain distinct from a progression's future explicit home key.
+    pub(crate) fn chord_slot(&self, progression: usize, slot: usize) -> &ChordSlotControls {
+        let slot = slot % CHORD_SLOT_COUNT;
+        if let Some(evaluated) = &self.evaluated_chords
+            && evaluated.progression == progression
+            && let Some(chord) = &evaluated.slots[slot]
+        {
+            return chord;
+        }
+        match PROGRESSIONS.get(progression) {
+            Some(authored) => self.chord_overrides[progression][slot]
+                .as_ref()
+                .unwrap_or(&authored.chords[slot].preset),
+            None => &self.chord_slots[slot],
+        }
+    }
+
+    /// Called before any audio automation setter. Resetting eight optional
+    /// slots is bounded; subsequent effective edits never mutate the Arc.
+    pub(crate) fn begin_chord_evaluation(&mut self) {
+        self.evaluated_chords = Some(EvaluatedChords {
+            progression: progression_index(self.progression),
+            slots: [None; CHORD_SLOT_COUNT],
+        });
+    }
+
+    pub(crate) fn edit_chord_slot(&mut self, slot: usize) -> &mut ChordSlotControls {
+        let progression = progression_index(self.progression);
+        let slot = slot % CHORD_SLOT_COUNT;
+        let Some(authored) = PROGRESSIONS.get(progression) else {
+            return &mut self.chord_slots[slot];
+        };
+        let preset =
+            self.chord_overrides[progression][slot].unwrap_or(authored.chords[slot].preset);
+        if let Some(evaluated) = &mut self.evaluated_chords {
+            if evaluated.progression != progression {
+                evaluated.progression = progression;
+                evaluated.slots = [None; CHORD_SLOT_COUNT];
+            }
+            evaluated.slots[slot].get_or_insert(preset)
+        } else {
+            // Only authored UI/codec controls take this path; audio plans
+            // enter evaluation before applying effective registry setters.
+            Arc::make_mut(&mut self.chord_overrides)[progression][slot].get_or_insert(preset)
+        }
+    }
+
+    pub(crate) fn chord_is_edited(&self, progression: usize, slot: usize) -> bool {
+        self.chord_overrides
+            .get(progression)
+            .is_some_and(|bank| bank[slot % CHORD_SLOT_COUNT].is_some())
+    }
+
+    pub(crate) fn restore_chord_slot(&mut self, progression: usize, slot: usize) -> bool {
+        if slot >= CHORD_SLOT_COUNT {
+            return false;
+        }
+        if progression < PROGRESSIONS.len() {
+            Arc::make_mut(&mut self.chord_overrides)[progression][slot]
+                .take()
+                .is_some()
+        } else if progression == CUSTOM_PROGRESSION_INDEX {
+            let restored = ChordSlotControls {
+                degree: DEFAULT_CHORD_SLOT_DEGREES[slot],
+                ..ChordSlotControls::default()
+            };
+            let changed = self.chord_slots[slot] != restored;
+            self.chord_slots[slot] = restored;
+            changed
+        } else {
+            false
         }
     }
 }

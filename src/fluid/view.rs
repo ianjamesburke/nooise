@@ -131,6 +131,7 @@ pub(crate) struct UiViewModel<'a> {
     /// Where the page sits under the hub: `Master`, `Master › Pads`, or
     /// `Master › Pads › Progression`, each muted crumb marked `(M)`.
     pub(crate) breadcrumb: String,
+    pub(crate) chord_title: Option<String>,
     pub(crate) cursor_visible: bool,
     pub(crate) help: HelpSurface,
     /// The gesture-activity row's text: a stopped-clock marker and/or a
@@ -332,6 +333,24 @@ impl<'a> UiViewModel<'a> {
             telemetry.active_chord as usize,
         );
 
+        let chord_title = match navigation.chord_drill {
+            ChordDrill::Slot { slot, .. } => {
+                let progression = progression_index(session.controls.pad.progression);
+                let status = if session.controls.pad.chord_is_edited(progression, slot) {
+                    "Edited"
+                } else if is_custom_progression(progression) {
+                    "Custom"
+                } else {
+                    "Built-in"
+                };
+                Some(format!(
+                    "{} · {status}",
+                    pad_chord_name(&session.controls.pad, progression, slot)
+                ))
+            }
+            _ => None,
+        };
+
         Self {
             owner,
             mode,
@@ -342,6 +361,7 @@ impl<'a> UiViewModel<'a> {
             fluid: presentation.fluid,
             flipped: presentation.flipped,
             breadcrumb,
+            chord_title,
             cursor_visible: presentation.cursor_visible,
             help,
             activity,
@@ -671,14 +691,12 @@ fn help_surface(
         (_, _, Some(_)) => {
             Some("BROWSE · Module detail   Shift+R randomize set   Esc: back".to_string())
         }
-        (Tab::Chords, ChordDrill::Progression { .. }, None) => Some(
-            "BROWSE · Progression   Shift+R randomize set   Enter: open chord   Esc: back"
-                .to_string(),
-        ),
-        (Tab::Chords, ChordDrill::Slot { slot, .. }, None) => Some(format!(
-            "BROWSE · Chord {}   Shift+R randomize set   Esc: back",
-            slot + 1
-        )),
+        (Tab::Chords, ChordDrill::Progression { .. }, None) => {
+            Some("Enter open · Esc back · Shift+R randomize".to_string())
+        }
+        (Tab::Chords, ChordDrill::Slot { .. }, None) => {
+            Some("Esc back · /add extension · /restore chord".to_string())
+        }
         (Tab::Lead, _, None) if navigation.lead_drill != LeadDrill::None => Some(
             "BROWSE · Pattern   r random   Shift+R randomize set   Enter: play   Esc: back"
                 .to_string(),
@@ -996,6 +1014,7 @@ mod tests {
                 editor_motion_target: None,
                 lane_target: None,
                 planned_tab: None,
+                chord_target: None,
                 query: "bass".to_string(),
                 selected: 1,
                 recent: vec!["master.bpm"],
@@ -1485,6 +1504,7 @@ mod tests {
                 Navigation::Chords {
                     selected: 0,
                     drill: ChordDrill::Slot {
+                        extension2: false,
                         slot: 7,
                         return_to: 0,
                     },

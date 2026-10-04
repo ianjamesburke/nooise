@@ -359,6 +359,7 @@ pub(crate) struct ControlSpec {
     pub(crate) get: GetFn,
     pub(crate) set: SetFn,
     pub(crate) display: DisplayFn,
+    stored: Option<(GetFn, SetFn)>,
     /// Overrides `label` per render. Only module-slot rows use it, so a slot
     /// names the module it holds instead of its index.
     pub(crate) label_of: Option<DisplayFn>,
@@ -399,6 +400,7 @@ impl ControlSpec {
             get,
             set,
             display,
+            stored: None,
             label_of: None,
         }
     }
@@ -439,6 +441,25 @@ impl ControlSpec {
             is_default,
         });
         self
+    }
+
+    /// Read/write the compact stored bank independently of the current editor context.
+    pub(crate) const fn stored_as(mut self, get: GetFn, set: SetFn) -> Self {
+        self.stored = Some((get, set));
+        self
+    }
+
+    pub(crate) fn stored_quantized_value(&self, c: &FluidControls) -> f32 {
+        let spec = self.contextual(c);
+        match spec.stored {
+            Some((get, _)) => spec.quantize(get(c)),
+            None => spec.quantized_value(c),
+        }
+    }
+
+    pub(crate) fn apply_stored_quantized_value(&self, value: f32, c: &mut FluidControls) {
+        let spec = self.contextual(c);
+        (spec.stored.map_or(spec.set, |(_, set)| set))(c, spec.quantize(value));
     }
 
     /// Resolve this row's label per render instead of using the static one.
@@ -1132,9 +1153,8 @@ macro_rules! module_slot_rows {
     };
 }
 
-/// One chord slot's four fields as `ControlSpec` rows (Root/Accidental/
-/// Extension/Inversion), appended to `CHORDS_CONTROLS` by `layer_controls!`.
-/// Slot numbers are 1-based in ids/labels, 0-based into `chord_slots`.
+/// Chord slots share one registry for authored presets and Custom. Reading
+/// resolves the effective slot; the first edit seeds only this preset slot.
 macro_rules! chord_slot_rows {
     ($slot:literal) => {
         [
@@ -1146,14 +1166,28 @@ macro_rules! chord_slot_rows {
                 7.0,
                 Step::Linear(1.0),
                 Entry::Round,
-                |c| c.pad.chord_slots[$slot - 1].degree,
-                |c, v| c.pad.chord_slots[$slot - 1].degree = v,
                 |c| {
-                    let slot = &c.pad.chord_slots[$slot - 1];
-                    format!("{:+.0}  {}", slot.degree, custom_chord_name(slot))
+                    c.pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1)
+                        .degree
+                },
+                |c, v| c.pad.edit_chord_slot($slot - 1).degree = v,
+                |c| {
+                    let slot = c
+                        .pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1);
+                    format!(
+                        "{} ({:+.0})",
+                        chord_pitch_name(pad_chord_root_note(slot)),
+                        slot.degree
+                    )
                 },
             )
-            .reset_at(0.0),
+            .reset_at(0.0)
+            .stored_as(
+                |c| c.pad.chord_slots[$slot - 1].degree,
+                |c, v| c.pad.chord_slots[$slot - 1].degree = v,
+            ),
             ControlSpec::new(
                 concat!("pad.chord", $slot, "_accidental"),
                 concat!("Chord ", $slot, " Accidental"),
@@ -1162,66 +1196,218 @@ macro_rules! chord_slot_rows {
                 1.0,
                 Step::Linear(1.0),
                 Entry::Round,
-                |c| c.pad.chord_slots[$slot - 1].accidental,
-                |c, v| c.pad.chord_slots[$slot - 1].accidental = v,
-                |c| match c.pad.chord_slots[$slot - 1].accidental.round() as i32 {
-                    -1 => "b".to_string(),
-                    1 => "#".to_string(),
-                    _ => "natural".to_string(),
+                |c| {
+                    c.pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1)
+                        .accidental
+                },
+                |c, v| c.pad.edit_chord_slot($slot - 1).accidental = v,
+                |c| {
+                    let slot = c
+                        .pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1);
+                    type_label(slot.accidental + 1.0, &["Flat", "Natural", "Sharp"]).into()
                 },
             )
-            .reset_at(0.0),
+            .reset_at(0.0)
+            .stored_as(
+                |c| c.pad.chord_slots[$slot - 1].accidental,
+                |c, v| c.pad.chord_slots[$slot - 1].accidental = v,
+            ),
             ControlSpec::new(
                 concat!("pad.chord", $slot, "_quality"),
                 concat!("Chord ", $slot, " Quality"),
                 ControlKind::Discrete,
                 -1.0,
-                1.0,
+                4.0,
                 Step::Linear(1.0),
                 Entry::Round,
-                |c| c.pad.chord_slots[$slot - 1].quality,
-                |c, v| c.pad.chord_slots[$slot - 1].quality = v,
                 |c| {
-                    let slot = &c.pad.chord_slots[$slot - 1];
-                    let sound = if pad_chord_slot_is_minor(slot) {
-                        "min"
-                    } else {
-                        "maj"
-                    };
+                    c.pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1)
+                        .quality
+                },
+                |c, v| c.pad.edit_chord_slot($slot - 1).quality = v,
+                |c| {
+                    let slot = c
+                        .pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1);
                     match slot.quality.round() as i32 {
-                        0 => format!("scale ({sound})"),
-                        _ => sound.to_string(),
+                        -1 => "Min 3rd".into(),
+                        1 => "Maj 3rd".into(),
+                        2 => "Sus2".into(),
+                        3 => "Sus4".into(),
+                        4 => "Power".into(),
+                        _ => {
+                            if pad_chord_slot_is_minor(slot) {
+                                "Scale min".into()
+                            } else {
+                                "Scale maj".into()
+                            }
+                        }
                     }
                 },
             )
-            .reset_at(0.0),
+            .reset_at(0.0)
+            .stored_as(
+                |c| c.pad.chord_slots[$slot - 1].quality,
+                |c, v| c.pad.chord_slots[$slot - 1].quality = v,
+            ),
             ControlSpec::new(
                 concat!("pad.chord", $slot, "_extension"),
                 concat!("Chord ", $slot, " Extension"),
                 ControlKind::Discrete,
                 0.0,
-                3.0,
+                9.0,
                 Step::Linear(1.0),
                 Entry::Round,
+                |c| {
+                    c.pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1)
+                        .extension
+                },
+                |c, v| c.pad.edit_chord_slot($slot - 1).extension = v,
+                |c| {
+                    let slot = c
+                        .pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1);
+                    chord_extension_label(slot.extension).into()
+                },
+            )
+            .reset_at(0.0)
+            .stored_as(
                 |c| c.pad.chord_slots[$slot - 1].extension,
                 |c, v| c.pad.chord_slots[$slot - 1].extension = v,
-                |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].extension),
             ),
             ControlSpec::new(
                 concat!("pad.chord", $slot, "_inversion"),
                 concat!("Chord ", $slot, " Inversion"),
                 ControlKind::Discrete,
                 0.0,
-                3.0,
+                7.0,
                 Step::Linear(1.0),
                 Entry::Round,
+                |c| {
+                    c.pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1)
+                        .inversion
+                },
+                |c, v| c.pad.edit_chord_slot($slot - 1).inversion = v,
+                |c| {
+                    let slot = c
+                        .pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1);
+                    type_label(
+                        slot.inversion,
+                        &[
+                            "Root", "First", "Second", "Third", "Over 2", "Over 4", "Over #4",
+                            "Over b7",
+                        ],
+                    )
+                    .into()
+                },
+            )
+            .reset_at(0.0)
+            .stored_as(
                 |c| c.pad.chord_slots[$slot - 1].inversion,
                 |c, v| c.pad.chord_slots[$slot - 1].inversion = v,
-                |c| format!("{:.0}", c.pad.chord_slots[$slot - 1].inversion),
+            ),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_extension2"),
+                concat!("Chord ", $slot, " Extension 2"),
+                ControlKind::Discrete,
+                0.0,
+                9.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| {
+                    c.pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1)
+                        .extension2
+                },
+                |c, v| c.pad.edit_chord_slot($slot - 1).extension2 = v,
+                |c| {
+                    let slot = c
+                        .pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1);
+                    chord_extension_label(slot.extension2).into()
+                },
             )
-            .reset_at(0.0),
+            .reset_at(0.0)
+            .stored_as(
+                |c| c.pad.chord_slots[$slot - 1].extension2,
+                |c, v| c.pad.chord_slots[$slot - 1].extension2 = v,
+            ),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_voicing"),
+                concat!("Chord ", $slot, " Voicing"),
+                ControlKind::Discrete,
+                0.0,
+                4.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| {
+                    c.pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1)
+                        .voicing
+                },
+                |c, v| c.pad.edit_chord_slot($slot - 1).voicing = v,
+                |c| {
+                    let slot = c
+                        .pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1);
+                    type_label(slot.voicing, &["Close", "Open", "Wide", "Drop 3", "Stack"]).into()
+                },
+            )
+            .reset_at(0.0)
+            .stored_as(
+                |c| c.pad.chord_slots[$slot - 1].voicing,
+                |c, v| c.pad.chord_slots[$slot - 1].voicing = v,
+            ),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_fifth"),
+                concat!("Chord ", $slot, " Fifth"),
+                ControlKind::Discrete,
+                0.0,
+                2.0,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| {
+                    c.pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1)
+                        .fifth
+                },
+                |c, v| c.pad.edit_chord_slot($slot - 1).fifth = v,
+                |c| {
+                    let slot = c
+                        .pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1);
+                    match slot.fifth.round() as i32 {
+                        1 => "Perfect".into(),
+                        2 => "Omit".into(),
+                        _ => {
+                            if chord_fifth_interval(slot) == Some(6) {
+                                "Scale b5".into()
+                            } else {
+                                "Scale 5".into()
+                            }
+                        }
+                    }
+                },
+            )
+            .reset_at(0.0)
+            .stored_as(
+                |c| c.pad.chord_slots[$slot - 1].fifth,
+                |c, v| c.pad.chord_slots[$slot - 1].fifth = v,
+            ),
         ]
     };
+}
+
+fn chord_extension_label(value: f32) -> &'static str {
+    [
+        "Off", "Scale 7", "Scale 9", "Scale 11", "b7", "maj7", "9", "11", "#11", "13",
+    ][wrapped_index(value, 10)]
 }
 
 /// One layer's whole `ControlSpec` table: its hand-written base rows, then
@@ -1250,6 +1436,9 @@ macro_rules! layer_controls {
                 chord_slot_rows!($chord)[2],
                 chord_slot_rows!($chord)[3],
                 chord_slot_rows!($chord)[4],
+                chord_slot_rows!($chord)[5],
+                chord_slot_rows!($chord)[6],
+                chord_slot_rows!($chord)[7],
             )*
             $(
                 module_slot_rows!($layer, $prefix, $slot)[0],
@@ -1368,8 +1557,6 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
         beat_offset!("perc.offset_beats", "Offset", 4.0, perc.offset_beats),
     ]
 );
-
-const CHORD_BASE_CONTROL_COUNT: usize = 34;
 
 pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
 pub(crate) const PAD_MIDI_TRIGGER_ID: &str = "pad.midi_trigger";
@@ -2520,23 +2707,33 @@ pub(crate) fn module_slot_spec(
     })
 }
 
-/// Parse `pad.chord<N>_<field>` into its 0-based chord slot and field index
-/// (root, accidental, quality, extension, inversion — `chord_slot_rows!`'s
-/// emission order). `None` for anything else, including module-slot ids
-/// (`.slotN.`, not `chordN_`), so it never misclassifies one as the other.
-fn parse_chord_slot_id(id: &str) -> Option<(usize, usize)> {
+/// Stable field names define both the editor ordering and palette inverse.
+pub(crate) const CHORD_FIELDS: [&str; 8] = [
+    "degree",
+    "accidental",
+    "quality",
+    "extension",
+    "extension2",
+    "inversion",
+    "voicing",
+    "fifth",
+];
+
+pub(crate) fn parse_chord_slot_id(id: &str) -> Option<(usize, usize)> {
     let rest = id.strip_prefix("pad.chord")?;
     let (num, field) = rest.split_once('_')?;
-    let field = match field {
-        "degree" => 0,
-        "accidental" => 1,
-        "quality" => 2,
-        "extension" => 3,
-        "inversion" => 4,
-        _ => return None,
-    };
+    let field = CHORD_FIELDS
+        .iter()
+        .position(|candidate| *candidate == field)?;
     let slot = num.parse::<usize>().ok()?.checked_sub(1)?;
-    Some((slot, field))
+    (slot < CHORD_SLOT_COUNT).then_some((slot, field))
+}
+
+pub(crate) fn chord_slot_spec(slot: usize, field: &str) -> Option<&'static ControlSpec> {
+    CHORDS_CONTROLS.iter().find(|spec| {
+        parse_chord_slot_id(spec.id)
+            .is_some_and(|(candidate, index)| candidate == slot && CHORD_FIELDS[index] == field)
+    })
 }
 
 /// Parse `<layer>.slot<N>.<field>` back to the slot it addresses. `None` for
@@ -2561,29 +2758,19 @@ pub(crate) fn module_slot_row<'a>(
     slots.get(index).map(|slot| (slot, field))
 }
 
-/// Chords-tab visible rows for the given drill level: the 14 root params
-/// plus any occupied module slots and added MIDI rows, all eight chord slots' Root list (in
-/// table order, so a slot outside the playing window can be written before
-/// Offset or Count reaches it), or one chord slot's
-/// Accidental/Quality/Extension/Inversion. Read-only view over
-/// `CHORDS_CONTROLS`'s fixed layout (16 root rows, then 16 Pad step rows
-/// and MIDI Trigger, then 8 chord slots x 5
-/// rows, then 8 module slots x 8 rows) — never reorders the underlying
-/// array. The Trigger drill shows only the 16 Pad steps; MIDI Trigger stays
-/// in the table for song-code compatibility but is not surfaced anywhere.
-/// `chords_drill_for_index` below is this projection's inverse and
-/// must stay consistent with it for every region.
+/// One projection for the root page, progression list and shared chord editor.
+/// Address fields by stable ID so appending a knob cannot change a navigation target.
 pub(crate) fn chords_tab_controls(
     c: &FluidControls,
     drill: interaction::ChordDrill,
 ) -> Vec<ControlItem> {
     match drill {
         interaction::ChordDrill::None => midi_rows_last(
-            CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
+            CHORDS_CONTROLS
                 .iter()
-                .chain(CHORDS_CONTROLS[CHORD_BASE_CONTROL_COUNT + CHORD_SLOT_COUNT * 5..].iter())
                 .filter(|spec| {
-                    pad_step_index(spec.id).is_none()
+                    parse_chord_slot_id(spec.id).is_none()
+                        && pad_step_index(spec.id).is_none()
                         && spec.id != PAD_MIDI_TRIGGER_ID
                         && midi_row_visible(spec.id, c)
                         && pad_rhythm_row_visible(spec.id, c)
@@ -2592,21 +2779,58 @@ pub(crate) fn chords_tab_controls(
                 .map(|spec| spec.item(c))
                 .collect(),
         ),
-        interaction::ChordDrill::Pattern { .. } => CHORDS_CONTROLS[..CHORD_BASE_CONTROL_COUNT]
+        interaction::ChordDrill::Pattern { .. } => CHORDS_CONTROLS
             .iter()
             .filter(|spec| pad_step_index(spec.id).is_some())
             .map(|spec| spec.item(c))
             .collect(),
         interaction::ChordDrill::Progression { .. } => (0..CHORD_SLOT_COUNT)
-            .map(|slot| CHORDS_CONTROLS[CHORD_BASE_CONTROL_COUNT + 5 * slot].item(c))
+            .map(|slot| {
+                let mut item = chord_slot_spec(slot, "degree")
+                    .expect("every slot has a root")
+                    .item(c);
+                let progression = progression_index(c.pad.progression);
+                item.label = format!("Chord {}", slot + 1);
+                let status = if c.pad.chord_is_edited(progression, slot) {
+                    "Edited"
+                } else if is_custom_progression(progression) {
+                    "Custom"
+                } else {
+                    "Built-in"
+                };
+                item.display = format!("{} · {status}", pad_chord_name(&c.pad, progression, slot));
+                item
+            })
             .collect(),
-        interaction::ChordDrill::Slot { slot, .. } => {
-            let base = CHORD_BASE_CONTROL_COUNT + 5 * slot;
-            [base + 1, base + 2, base + 3, base + 4]
-                .iter()
-                .map(|&i| CHORDS_CONTROLS[i].item(c))
-                .collect()
-        }
+        interaction::ChordDrill::Slot {
+            slot, extension2, ..
+        } => CHORD_FIELDS
+            .iter()
+            .filter(|field| {
+                **field != "extension2"
+                    || extension2
+                    || c.pad
+                        .chord_slot(progression_index(c.pad.progression), slot)
+                        .extension2
+                        != 0.0
+            })
+            .filter_map(|field| chord_slot_spec(slot, field))
+            .map(|spec| {
+                let mut item = spec.item(c);
+                item.label = spec
+                    .label
+                    .split_once(' ')
+                    .and_then(|(_, rest)| rest.split_once(' '))
+                    .map_or(spec.label, |(_, label)| label)
+                    .into();
+                if parse_chord_slot_id(spec.id)
+                    .is_some_and(|(_, field)| CHORD_FIELDS[field] == "inversion")
+                {
+                    item.label = "Bass".into();
+                }
+                item
+            })
+            .collect(),
     }
 }
 
@@ -2651,15 +2875,20 @@ pub(crate) fn chords_drill_for_index(
         return (interaction::ChordDrill::Pattern { return_to }, step);
     }
     if let Some((slot, field)) = parse_chord_slot_id(spec.id) {
-        let return_to = CHORDS_CONTROLS
+        let return_to = chords_tab_controls(c, interaction::ChordDrill::None)
             .iter()
-            .position(|spec| spec.id == "pad.progression")
-            .expect("CHORDS_CONTROLS holds pad.progression (chord_drills_return_to_the_progression_row)");
-        return if field == 0 {
-            (interaction::ChordDrill::Progression { return_to }, slot)
-        } else {
-            (interaction::ChordDrill::Slot { slot, return_to }, field - 1)
+            .position(|item| item.id == "pad.progression")
+            .expect("pad progression row");
+        let drill = interaction::ChordDrill::Slot {
+            slot,
+            return_to,
+            extension2: CHORD_FIELDS[field] == "extension2",
         };
+        let selected = chords_tab_controls(c, drill)
+            .iter()
+            .position(|item| item.id == spec.id)
+            .expect("chord field is visible");
+        return (drill, selected);
     }
     let selected = chords_tab_controls(c, interaction::ChordDrill::None)
         .iter()
@@ -2912,5 +3141,66 @@ mod module_slot_id_tests {
             }
         }
         assert!(module_slot_spec(Tab::Bass, MODULE_SLOTS, ModuleSlotField::Kind).is_none());
+    }
+}
+
+#[cfg(test)]
+mod chord_editor_tests {
+    use super::*;
+
+    #[test]
+    fn chord_editor_reads_presets_but_stores_the_independent_custom_bank() {
+        let mut controls = FluidControls::default();
+        controls.pad.progression = 0.0;
+        let spec = chord_slot_spec(0, "degree").unwrap();
+        controls.pad.chord_slots[0].degree = 6.0;
+        assert_eq!(
+            spec.quantized_value(&controls),
+            controls.pad.chord_slot(0, 0).degree
+        );
+        assert_eq!(spec.stored_quantized_value(&controls), 6.0);
+        spec.apply_stored_quantized_value(-6.0, &mut controls);
+        assert!(!controls.pad.chord_is_edited(0, 0));
+        assert_eq!(controls.pad.chord_slots[0].degree, -6.0);
+        spec.apply_value(2.0, &mut controls);
+        assert!(controls.pad.chord_is_edited(0, 0));
+        assert_eq!(controls.pad.chord_slot(0, 0).degree, 2.0);
+        assert_eq!(controls.pad.chord_slots[0].degree, -6.0);
+    }
+
+    #[test]
+    fn chord_editor_field_projection_and_palette_inverse_cover_every_preset() {
+        let mut controls = FluidControls::default();
+        for progression in 0..=CUSTOM_PROGRESSION_INDEX {
+            controls.pad.progression = progression as f32;
+            for slot in 0..CHORD_SLOT_COUNT {
+                for field in CHORD_FIELDS {
+                    let spec = chord_slot_spec(slot, field).unwrap();
+                    let flat = spec_index(Tab::Chords, spec.id).unwrap();
+                    let (drill, selected) = chords_drill_for_index(flat, &controls);
+                    let items = chords_tab_controls(&controls, drill);
+                    assert_eq!(items[selected].id, spec.id);
+                    assert!(
+                        matches!(drill, interaction::ChordDrill::Slot { slot: found, .. } if found == slot)
+                    );
+                    assert!(items.iter().all(|item| !item.label.starts_with("Chord")));
+                }
+                assert!(!controls.pad.chord_is_edited(progression, slot));
+            }
+        }
+    }
+
+    #[test]
+    fn chord_editor_discrete_readouts_fit_the_minimum_frame() {
+        let mut controls = FluidControls::default();
+        controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
+        for field in CHORD_FIELDS {
+            let spec = chord_slot_spec(0, field).unwrap();
+            for value in spec.min as i32..=spec.max as i32 {
+                spec.apply_value(value as f32, &mut controls);
+                let display = (spec.display)(&controls);
+                assert!(display.chars().count() <= 10, "{}: {display}", spec.id);
+            }
+        }
     }
 }

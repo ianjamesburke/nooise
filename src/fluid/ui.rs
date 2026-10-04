@@ -148,6 +148,18 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         bar_w: (inner.width as usize).saturating_sub(34).clamp(6, 80),
     };
 
+    if let Some(title) = &view.chord_title {
+        f.render_widget(
+            Paragraph::new(title.as_str())
+                .alignment(Alignment::Center)
+                .style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            layout[1],
+        );
+    }
     draw_breadcrumb(f, layout[2], view);
     draw_control_rows(f, layout[4], &frame);
     draw_activity(f, layout[5], view);
@@ -278,9 +290,17 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             BROWSE_PALETTE.style(parent_active)
         };
         let markers = slider_markers(item, address, editor_here, frame);
-        let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
-        spans.extend(slider_spans(item_ratio(item), markers, frame.bar_w, style));
-        spans.push(Span::styled(format!(" {display}"), style));
+        let mut spans = if in_chord_drill {
+            vec![Span::styled(
+                format!("{prefix}{:<8} {display}", item.label),
+                style,
+            )]
+        } else {
+            let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
+            spans.extend(slider_spans(item_ratio(item), markers, frame.bar_w, style));
+            spans.push(Span::styled(format!(" {display}"), style));
+            spans
+        };
         // Badge the chord slot the pad engine is currently sounding, so the
         // progression list shows which chord is live. Distinct from the cursor
         // ▶ so a row can be both selected and playing.

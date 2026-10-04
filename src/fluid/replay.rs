@@ -3528,6 +3528,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
             navigation: Navigation::Chords {
                 selected: 0,
                 drill: ChordDrill::Slot {
+                    extension2: false,
                     slot: 0,
                     return_to: 7,
                 },
@@ -4050,6 +4051,7 @@ fn escape_converges_from_every_owner_and_nested_depth() {
             navigation: Navigation::Chords {
                 selected: 2,
                 drill: ChordDrill::Slot {
+                    extension2: false,
                     slot: 1,
                     return_to: 0,
                 },
@@ -4621,4 +4623,286 @@ fn generated_trace(mut state: u64, length: usize) -> Vec<TraceEvent> {
         }
     }
     events
+}
+
+fn chord_builder_start(harness: ReplayHarness, progression: usize) -> ReplayHarness {
+    let controls = FluidControls::default();
+    let selected = chords_tab_controls(&controls, ChordDrill::None)
+        .iter()
+        .position(|item| item.id == "pad.progression")
+        .unwrap();
+    harness
+        .with_model(InteractionModel {
+            navigation: Navigation::Chords {
+                selected,
+                drill: ChordDrill::None,
+            },
+            ..InteractionModel::default()
+        })
+        .with_session_edit(|snapshot| snapshot.controls.pad.progression = progression as f32)
+}
+
+fn chord_builder_open() -> Vec<TraceEvent> {
+    vec![
+        TraceEvent::Resize {
+            after_ms: 0,
+            width: MIN_TERMINAL_WIDTH,
+            height: MIN_TERMINAL_HEIGHT,
+        },
+        key(0, FixtureKey::Enter, InputPhase::Press),
+        TraceEvent::Idle { after_ms: 40 },
+        key(0, FixtureKey::Enter, InputPhase::Press),
+        TraceEvent::Idle { after_ms: 40 },
+    ]
+}
+
+fn chord_builder_save(events: &mut Vec<TraceEvent>) {
+    events.push(modified_key(
+        0,
+        FixtureKey::Character('s'),
+        InputPhase::Press,
+        1 << 1,
+    ));
+}
+
+#[test]
+fn chord_builder_opens_every_progression_without_authoring_on_both_terminal_profiles() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        for progression in 0..=CUSTOM_PROGRESSION_INDEX {
+            let mut events = chord_builder_open();
+            chord_builder_save(&mut events);
+            let result = replay_with(&events, capabilities, |harness| {
+                chord_builder_start(harness, progression)
+            });
+            assert!(matches!(
+                result.model.navigation,
+                Navigation::Chords {
+                    selected: 0,
+                    drill: ChordDrill::Slot { slot: 0, .. }
+                }
+            ));
+            let song =
+                song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+            for slot in 0..CHORD_SLOT_COUNT {
+                assert!(!song.controls.pad.chord_is_edited(progression, slot));
+            }
+            assert!(
+                result
+                    .frames
+                    .iter()
+                    .any(|frame| frame.text.contains("Root"))
+            );
+            let name = pad_chord_name(&song.controls.pad, progression, 0);
+            assert!(result.frames.iter().any(|frame| frame.text.contains(&name)));
+            assert!(result.frames.iter().any(|frame| {
+                frame
+                    .text
+                    .contains("Esc back · /add extension · /restore chord")
+            }));
+            assert!(result.frames.iter().any(|frame| {
+                frame
+                    .text
+                    .contains("Enter open · Esc back · Shift+R randomize")
+            }));
+            let status = if is_custom_progression(progression) {
+                "Custom"
+            } else {
+                "Built-in"
+            };
+            assert!(
+                result
+                    .frames
+                    .iter()
+                    .any(|frame| frame.text.contains(status))
+            );
+            events.extend([
+                key(0, FixtureKey::Escape, InputPhase::Press),
+                key(0, FixtureKey::Escape, InputPhase::Press),
+                key(0, FixtureKey::Tab, InputPhase::Press),
+            ]);
+            let navigated = replay_with(&events, capabilities, |harness| {
+                chord_builder_start(harness, progression)
+            });
+            assert_eq!(navigated.model.navigation.tab(), Tab::Perc);
+        }
+    }
+}
+
+#[test]
+fn chord_builder_first_edit_add_extension_and_restore_are_local_and_replayable() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        let configure = |harness| {
+            chord_builder_start(harness, 1).with_session_edit(|snapshot| {
+                snapshot.controls.pad.progression = 2.0;
+                snapshot.controls.pad.edit_chord_slot(3).quality = 4.0;
+                snapshot.controls.pad.progression = 1.0;
+                snapshot.controls.pad.edit_chord_slot(2).accidental = 1.0;
+            })
+        };
+        let mut events = chord_builder_open();
+        events.push(key(0, FixtureKey::Right, InputPhase::Press));
+        events.push(TraceEvent::Idle { after_ms: 40 });
+        chord_builder_save(&mut events);
+        let edited = replay_with(&events, capabilities, configure);
+        let edited_song =
+            song::decode_song_code(edited.saved_automation_code.as_deref().unwrap()).unwrap();
+        assert!(edited_song.controls.pad.chord_is_edited(1, 0));
+        assert!(!edited_song.controls.pad.chord_is_edited(1, 1));
+        assert!(
+            edited
+                .frames
+                .iter()
+                .any(|frame| frame.text.contains("Edited"))
+        );
+
+        events.extend(recipe_keys("add extension"));
+        events.push(TraceEvent::Idle { after_ms: 40 });
+        chord_builder_save(&mut events);
+        let opened = replay_with(&events, capabilities, configure);
+        assert_eq!(
+            opened.session_generation, edited.session_generation,
+            "viewing Extension 2 must not author a chord"
+        );
+        assert!(matches!(
+            opened.model.navigation,
+            Navigation::Chords {
+                drill: ChordDrill::Slot {
+                    extension2: true,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(
+            opened
+                .frames
+                .iter()
+                .any(|frame| frame.text.contains("Extension 2"))
+        );
+        let opened_song =
+            song::decode_song_code(opened.saved_automation_code.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            opened_song.controls.pad.chord_slot(1, 0),
+            edited_song.controls.pad.chord_slot(1, 0)
+        );
+
+        events.push(key(0, FixtureKey::Right, InputPhase::Press));
+        chord_builder_save(&mut events);
+        let extended = replay_with(&events, capabilities, configure);
+        assert_eq!(extended.control("pad.chord1_extension2"), Some(1.0));
+        events.extend(recipe_keys("restore chord"));
+        events.push(TraceEvent::Idle { after_ms: 40 });
+        chord_builder_save(&mut events);
+        let restored = replay_with(&events, capabilities, configure);
+        let restored_song =
+            song::decode_song_code(restored.saved_automation_code.as_deref().unwrap()).unwrap();
+        assert!(!restored_song.controls.pad.chord_is_edited(1, 0));
+        assert_eq!(
+            restored_song.controls.pad.chord_slot(1, 2),
+            edited_song.controls.pad.chord_slot(1, 2)
+        );
+        assert_eq!(
+            restored_song.controls.pad.chord_slot(2, 3),
+            edited_song.controls.pad.chord_slot(2, 3)
+        );
+        assert!(
+            restored
+                .frames
+                .iter()
+                .any(|frame| frame.text.contains("Chord 1 restored"))
+        );
+        assert!(matches!(
+            restored.model.navigation,
+            Navigation::Chords {
+                selected: 0,
+                drill: ChordDrill::Slot {
+                    extension2: false,
+                    ..
+                }
+            }
+        ));
+    }
+}
+
+#[test]
+fn chord_builder_numeric_and_palette_batches_edit_the_same_effective_slot() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        let mut events = chord_builder_open();
+        events.extend([
+            key(0, FixtureKey::Character('2'), InputPhase::Press),
+            key(0, FixtureKey::Enter, InputPhase::Press),
+            key(0, FixtureKey::Character('/'), InputPhase::Press),
+        ]);
+        for (id, value) in [("pad.chord1_extension2", '8'), ("pad.chord1_voicing", '3')] {
+            events.extend(
+                id.chars()
+                    .map(|character| key(0, FixtureKey::Character(character), InputPhase::Press)),
+            );
+            events.extend([
+                key(0, FixtureKey::Tab, InputPhase::Press),
+                key(0, FixtureKey::Character(value), InputPhase::Press),
+                key(0, FixtureKey::Enter, InputPhase::Press),
+            ]);
+        }
+        events.push(key(0, FixtureKey::Enter, InputPhase::Press));
+        chord_builder_save(&mut events);
+        let result = replay_with(&events, capabilities, |harness| {
+            chord_builder_start(harness, 1)
+        });
+        assert_eq!(result.effect_count("PaletteCommit("), 1);
+        let song =
+            song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+        let slot = song.controls.pad.chord_slot(1, 0);
+        assert_eq!(
+            (slot.degree, slot.extension2, slot.voicing),
+            (2.0, 8.0, 3.0)
+        );
+        assert!(!song.controls.pad.chord_is_edited(1, 1));
+        assert_eq!(
+            song.controls.pad.chord_slots,
+            PadControls::default().chord_slots
+        );
+    }
+}
+
+#[test]
+fn chord_builder_actions_leave_lane_editors_without_removing_the_lane() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        for query in ["add extension", "restore chord"] {
+            let mut events = chord_builder_open();
+            events.extend([
+                key(0, FixtureKey::Character('f'), InputPhase::Press),
+                key(0, FixtureKey::Right, InputPhase::Press),
+            ]);
+            events.extend(recipe_keys(query));
+            chord_builder_save(&mut events);
+            let result = replay_with(&events, capabilities, |harness| {
+                chord_builder_start(harness, 1)
+            });
+            assert_eq!(result.model.mode, InteractionMode::Browsing);
+            assert_eq!(result.automation_kind, None);
+            let saved =
+                song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+            assert!(
+                saved
+                    .automation
+                    .route(ControlAddress::new("pad.chord1_degree"))
+                    .unwrap()
+                    .depth_ratio
+                    > 0.0
+            );
+        }
+    }
 }

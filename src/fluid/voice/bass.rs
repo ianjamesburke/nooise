@@ -4,11 +4,16 @@
 use super::*;
 
 /// Bass follows the same active progression slot as Pad/Arp. For Custom it
-/// reads that slot's root directly; built-ins keep their authored bass lines
-/// (`Progression::bass`).
+/// reads that slot's root directly. Built-ins retain their authored Bass
+/// register/pedal and transpose only by an edited Root/Accidental delta.
 pub(crate) fn bass_root_note(progression: usize, slot: usize, pad: &PadControls) -> i32 {
     match PROGRESSIONS.get(progression) {
-        Some(built_in) => built_in.bass[slot % CHORD_SLOT_COUNT],
+        Some(built_in) => {
+            let slot = slot % CHORD_SLOT_COUNT;
+            let shift = pad_chord_root_note(pad.chord_slot(progression, slot))
+                - pad_chord_root_note(&built_in.chords[slot].preset);
+            built_in.bass[slot] + shift
+        }
         None => pad_chord_root_note(&pad.chord_slots[slot]),
     }
 }

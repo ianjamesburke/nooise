@@ -26,6 +26,7 @@ pub(crate) struct PadEngine {
     pub(crate) cursor: ProgressionCursor,
     pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
+    last_chord_definition: ChordSlotControls,
     active_note_count: usize,
     /// The transport seen on the previous sample, so a stop releases the
     /// sounding chord once and a restart voices it once.
@@ -69,7 +70,8 @@ impl PadEngine {
     ) -> Self {
         let cursor = ProgressionCursor::new(c);
         let active_character = wrapped_index(c.voice_type, PAD_TYPES.len());
-        let initial_notes = pad_chord_tones(c, cursor.window.progression, cursor.slot());
+        let last_chord_definition = *c.chord_slot(cursor.window.progression, cursor.slot());
+        let initial_notes = pad_chord_notes_with_slot(&last_chord_definition);
         let note_count = pad_note_count(c.chord_notes);
         telemetry
             .chord_slot
@@ -89,6 +91,7 @@ impl PadEngine {
             cursor,
             active_character,
             last_chord_notes: initial_notes,
+            last_chord_definition,
             active_note_count: note_count,
             transport: Transport::Playing,
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
@@ -255,7 +258,13 @@ impl PadEngine {
 
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
         let advance = self.cursor.tick(c, timing);
-        let chord_notes = pad_chord_tones(c, self.cursor.window.progression, self.cursor.slot());
+        let definition = c.chord_slot(self.cursor.window.progression, self.cursor.slot());
+        let chord_notes = if *definition == self.last_chord_definition {
+            self.last_chord_notes
+        } else {
+            self.last_chord_definition = *definition;
+            pad_chord_notes_with_slot(definition)
+        };
         let note_count = pad_note_count(c.chord_notes);
         let chord_edited =
             chord_notes != self.last_chord_notes || note_count != self.active_note_count;
@@ -797,8 +806,10 @@ pub(crate) fn pad_note_count(value: f32) -> usize {
     (value.round() as i64).clamp(2, 5) as usize
 }
 
-/// Pad audio and MIDI use this same sparse-to-full voicing. Bass, Arp, and
-/// Lead keep following the underlying four chord tones.
+/// Preserve the saved positional output choices: 2 uses source 1+3, 3 the
+/// first three, 4 all four, and 5 adds source 1 two octaves up. This may omit
+/// extensions or thirds; it never recovers a fifth omitted by the builder.
+/// Bass, Arp and Lead keep following the underlying four source tones.
 pub(crate) fn pad_voicing(notes: [i32; 4], count: usize) -> ([i32; 5], usize) {
     let count = count.clamp(2, 5);
     let mut voiced = [notes[0], notes[1], notes[2], notes[3], notes[0] + 24];
@@ -808,18 +819,25 @@ pub(crate) fn pad_voicing(notes: [i32; 4], count: usize) -> ([i32; 5], usize) {
     (voiced, count)
 }
 
-/// One chord of a built-in progression: the symbol a listener reads and the
-/// four source tones Pad can thin or extend. The symbol is the voicing's only name, so the
-/// page can never show a chord other than the one sounding;
-/// `built_in_chord_names_match_their_voicings` holds every symbol to its
-/// notes.
+/// An authored shared-builder preset. The symbol anchors the progression's
+/// key label; the slot UI derives its actual name from the effective notes.
 pub(crate) struct Chord {
     pub(crate) name: &'static str,
-    pub(crate) notes: [i32; 4],
+    pub(crate) preset: ChordSlotControls,
 }
 
-const fn chord(name: &'static str, notes: [i32; 4]) -> Chord {
-    Chord { name, notes }
+const fn chord(name: &'static str, values: [i8; 8]) -> Chord {
+    Chord {
+        name,
+        preset: ChordSlotControls::preset(values),
+    }
+}
+
+impl Chord {
+    #[cfg(test)]
+    pub(crate) fn notes(&self) -> [i32; 4] {
+        pad_chord_notes_with_slot(&self.preset)
+    }
 }
 
 /// A built-in progression: eight chords, the Bass line under them, and the
@@ -847,14 +865,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 0,
         mood: "Drift",
         chords: [
-            chord("Am11", [45, 50, 55, 60]),
-            chord("Gsus", [43, 50, 57, 60]),
-            chord("Am", [45, 52, 57, 60]),
-            chord("Em7/B", [47, 52, 55, 62]),
-            chord("A5", [45, 52, 57, 64]),
-            chord("G5", [43, 50, 55, 62]),
-            chord("C", [48, 55, 60, 64]),
-            chord("Em/G", [55, 59, 64, 67]),
+            chord("Am11", [-7, 0, 0, 1, 3, 3, 1, 0]),
+            chord("Gsus", [-1, 0, 2, 3, 0, 0, 1, 0]),
+            chord("Am", [0, 0, 0, 0, 0, 0, 1, 0]),
+            chord("Em7/B", [-3, 0, 0, 1, 0, 2, 1, 0]),
+            chord("A5", [0, 0, 4, 0, 0, 0, 0, 0]),
+            chord("G5", [-1, 0, 4, 0, 0, 0, 0, 0]),
+            chord("C", [2, 0, 0, 0, 0, 0, 1, 0]),
+            chord("Em/G", [4, 0, 0, 0, 0, 1, 4, 0]),
         ],
         // Walks to G2 under the Em7/B instead of following its lowest tone,
         // giving the bass its own melodic movement.
@@ -864,14 +882,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 1,
         mood: "Tide",
         chords: [
-            chord("Am11", [45, 50, 57, 60]),
-            chord("Dm", [50, 53, 57, 62]),
-            chord("C", [48, 55, 60, 64]),
-            chord("G", [43, 50, 55, 59]),
-            chord("F", [41, 48, 53, 57]),
-            chord("Em", [52, 59, 64, 67]),
-            chord("Am", [45, 52, 57, 60]),
-            chord("G", [43, 50, 55, 59]),
+            chord("Am11", [-7, 0, 0, 3, 0, 2, 1, 2]),
+            chord("Dm", [3, 0, 0, 0, 0, 0, 0, 0]),
+            chord("C", [2, 0, 0, 0, 0, 0, 1, 0]),
+            chord("G", [-1, 0, 0, 0, 0, 0, 1, 0]),
+            chord("F", [-2, 0, 0, 0, 0, 0, 1, 0]),
+            chord("Em", [4, 0, 0, 0, 0, 0, 1, 0]),
+            chord("Am", [0, 0, 0, 0, 0, 0, 1, 0]),
+            chord("G", [-1, 0, 0, 0, 0, 0, 1, 0]),
         ],
         bass: [45, 50, 48, 43, 41, 52, 45, 43],
     },
@@ -879,14 +897,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 2,
         mood: "Velvet",
         chords: [
-            chord("Am7", [45, 48, 52, 55]),
-            chord("Fmaj7", [41, 45, 48, 52]),
-            chord("Cmaj7", [48, 52, 55, 59]),
-            chord("G7", [43, 47, 50, 53]),
-            chord("Dm7", [50, 53, 57, 60]),
-            chord("Em7", [52, 55, 59, 62]),
-            chord("Bm7b5", [47, 50, 53, 57]),
-            chord("G", [43, 50, 55, 59]),
+            chord("Am7", [0, 0, 0, 1, 0, 0, 0, 0]),
+            chord("Fmaj7", [-2, 0, 0, 1, 0, 0, 0, 0]),
+            chord("Cmaj7", [2, 0, 0, 1, 0, 0, 0, 0]),
+            chord("G7", [-1, 0, 0, 1, 0, 0, 0, 0]),
+            chord("Dm7", [3, 0, 0, 1, 0, 0, 0, 0]),
+            chord("Em7", [4, 0, 0, 1, 0, 0, 0, 0]),
+            chord("Bm7b5", [1, 0, 0, 1, 0, 0, 0, 0]),
+            chord("G", [-1, 0, 0, 0, 0, 0, 1, 0]),
         ],
         bass: [45, 41, 48, 43, 50, 52, 47, 43],
     },
@@ -894,14 +912,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 3,
         mood: "Ache",
         chords: [
-            chord("Am", [45, 52, 57, 60]),
-            chord("Fadd9", [41, 45, 48, 55]),
-            chord("G/C", [48, 55, 59, 62]),
-            chord("Dm/G", [43, 50, 53, 57]),
-            chord("Am/D", [50, 57, 60, 64]),
-            chord("Em", [52, 55, 59, 64]),
-            chord("Fmaj7/B", [47, 53, 57, 64]),
-            chord("Em7/G", [43, 50, 55, 64]),
+            chord("Am", [0, 0, 0, 0, 0, 0, 1, 0]),
+            chord("Fadd9", [-2, 0, 0, 2, 0, 0, 0, 0]),
+            chord("G/C", [-1, 0, 0, 0, 0, 5, 0, 0]),
+            chord("Dm/G", [-4, 0, 0, 0, 0, 5, 0, 0]),
+            chord("Am/D", [0, 0, 0, 0, 0, 5, 0, 0]),
+            chord("Em", [4, 0, 0, 0, 0, 0, 0, 0]),
+            chord("Fmaj7/B", [-2, 0, 0, 1, 0, 6, 0, 0]),
+            chord("Em7/G", [-3, 0, 0, 1, 0, 1, 3, 0]),
         ],
         bass: [45, 41, 48, 43, 50, 52, 47, 43],
     },
@@ -911,14 +929,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 4,
         mood: "Shadow",
         chords: [
-            chord("Am", [45, 48, 52, 57]),
-            chord("Bbmaj7", [46, 50, 53, 57]),
-            chord("Csus4", [48, 53, 55, 60]),
-            chord("Dm7", [50, 53, 60, 62]),
-            chord("E7sus", [52, 59, 62, 64]),
-            chord("G6", [55, 59, 62, 64]),
-            chord("Gm7", [55, 58, 62, 65]),
-            chord("Bbmaj7#11/A", [45, 52, 58, 62]),
+            chord("Am", [0, 0, 0, 0, 0, 0, 0, 0]),
+            chord("Bbmaj7", [0, 1, 1, 5, 0, 0, 0, 0]),
+            chord("Csus4", [2, 0, 3, 0, 0, 0, 0, 0]),
+            chord("Dm7", [3, 0, 0, 1, 0, 0, 0, 2]),
+            chord("E7sus", [4, 0, 4, 1, 0, 0, 0, 0]),
+            chord("G6", [-1, 0, 0, 9, 0, 3, 0, 0]),
+            chord("Gm7", [6, 0, -1, 1, 0, 0, 0, 0]),
+            chord("Bbmaj7#11/A", [-7, 1, 1, 5, 8, 2, 3, 0]),
         ],
         bass: [45, 46, 48, 50, 52, 43, 43, 45],
     },
@@ -927,14 +945,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 5,
         mood: "Drone",
         chords: [
-            chord("Em", [52, 55, 59, 64]),
-            chord("E5/B", [47, 52, 59, 64]),
-            chord("G/D", [50, 59, 62, 67]),
-            chord("Dm/A", [45, 57, 62, 65]),
-            chord("A5", [45, 52, 57, 64]),
-            chord("C/E", [52, 60, 64, 67]),
-            chord("G7sus", [55, 60, 62, 65]),
-            chord("Em7", [52, 55, 59, 62]),
+            chord("Em", [4, 0, 0, 0, 0, 0, 0, 0]),
+            chord("E5/B", [-3, 0, 4, 0, 0, 1, 4, 0]),
+            chord("G/D", [-1, 0, 0, 0, 0, 2, 1, 0]),
+            chord("Dm/A", [-4, 0, 0, 0, 0, 2, 2, 0]),
+            chord("A5", [0, 0, 4, 0, 0, 0, 0, 0]),
+            chord("C/E", [2, 0, 0, 0, 0, 1, 1, 0]),
+            chord("G7sus", [6, 0, 3, 1, 0, 0, 0, 0]),
+            chord("Em7", [4, 0, 0, 1, 0, 0, 0, 0]),
         ],
         bass: [52, 47, 50, 45, 45, 52, 43, 52],
     },
@@ -943,14 +961,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 6,
         mood: "Sunny",
         chords: [
-            chord("C", [48, 52, 55, 60]),
-            chord("Gsus4", [55, 60, 62, 67]),
-            chord("Am", [45, 57, 60, 64]),
-            chord("F", [53, 57, 60, 65]),
-            chord("Cadd4", [48, 52, 60, 65]),
-            chord("Gsus4", [55, 60, 62, 67]),
-            chord("F", [53, 57, 60, 65]),
-            chord("C", [48, 55, 60, 64]),
+            chord("C", [2, 0, 0, 0, 0, 0, 0, 0]),
+            chord("Gsus4", [6, 0, 3, 0, 0, 0, 0, 0]),
+            chord("Am", [0, 0, 0, 0, 0, 0, 2, 0]),
+            chord("F", [5, 0, 0, 0, 0, 0, 0, 0]),
+            chord("Cadd4", [2, 0, 0, 3, 0, 0, 0, 2]),
+            chord("Gsus4", [6, 0, 3, 0, 0, 0, 0, 0]),
+            chord("F", [5, 0, 0, 0, 0, 0, 0, 0]),
+            chord("C", [2, 0, 0, 0, 0, 0, 1, 0]),
         ],
         bass: [48, 55, 45, 53, 48, 55, 53, 48],
     },
@@ -959,14 +977,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 7,
         mood: "Lift",
         chords: [
-            chord("G", [55, 59, 62, 67]),
-            chord("D", [50, 54, 57, 62]),
-            chord("Em7", [52, 55, 59, 62]),
-            chord("C", [48, 52, 55, 60]),
-            chord("G5", [43, 55, 62, 67]),
-            chord("D", [50, 57, 62, 66]),
-            chord("E7sus", [52, 59, 62, 64]),
-            chord("C", [48, 55, 60, 64]),
+            chord("G", [6, 0, 0, 0, 0, 0, 0, 0]),
+            chord("D", [3, 0, 1, 0, 0, 0, 0, 0]),
+            chord("Em7", [4, 0, 0, 1, 0, 0, 0, 0]),
+            chord("C", [2, 0, 0, 0, 0, 0, 0, 0]),
+            chord("G5", [-1, 0, 4, 0, 0, 0, 2, 0]),
+            chord("D", [3, 0, 1, 0, 0, 0, 1, 0]),
+            chord("E7sus", [4, 0, 4, 1, 0, 0, 0, 0]),
+            chord("C", [2, 0, 0, 0, 0, 0, 1, 0]),
         ],
         bass: [43, 50, 52, 48, 43, 50, 52, 48],
     },
@@ -976,14 +994,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 9,
         mood: "Dawn",
         chords: [
-            chord("Dmaj7", [50, 57, 61, 66]),
-            chord("E/D", [50, 56, 59, 64]),
-            chord("Bm7", [47, 57, 59, 62]),
-            chord("A/C#", [49, 57, 61, 64]),
-            chord("Gmaj9", [43, 57, 59, 66]),
-            chord("A6", [45, 57, 61, 66]),
-            chord("F#m7", [42, 57, 61, 64]),
-            chord("Bm7", [47, 57, 62, 66]),
+            chord("Dmaj7", [3, 0, 1, 5, 0, 0, 1, 0]),
+            chord("E/D", [-3, 0, 1, 0, 0, 7, 0, 0]),
+            chord("Bm7", [1, 0, 0, 1, 0, 0, 1, 2]),
+            chord("A/C#", [0, 0, 1, 0, 0, 1, 1, 0]),
+            chord("Gmaj9", [-1, 0, 0, 2, 5, 0, 2, 0]),
+            chord("A6", [0, 0, 1, 9, 0, 0, 1, 2]),
+            chord("F#m7", [-1, -1, -1, 1, 0, 0, 2, 0]),
+            chord("Bm7", [1, 0, 0, 1, 0, 0, 3, 1]),
         ],
         bass: [50, 50, 47, 49, 43, 45, 42, 47],
     },
@@ -992,14 +1010,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 10,
         mood: "Rain",
         chords: [
-            chord("Dm9", [50, 53, 60, 64]),
-            chord("G6", [43, 55, 59, 64]),
-            chord("Am7", [45, 55, 60, 64]),
-            chord("Cmaj7", [48, 55, 59, 64]),
-            chord("Fmaj7", [41, 57, 60, 64]),
-            chord("Em", [52, 55, 59, 64]),
-            chord("G", [43, 55, 59, 62]),
-            chord("Asus", [45, 57, 62, 64]),
+            chord("Dm9", [3, 0, 0, 1, 2, 0, 0, 0]),
+            chord("G6", [-1, 0, 0, 9, 0, 0, 1, 2]),
+            chord("Am7", [0, 0, 0, 1, 0, 0, 3, 0]),
+            chord("Cmaj7", [2, 0, 0, 1, 0, 0, 1, 0]),
+            chord("Fmaj7", [-2, 0, 0, 1, 0, 0, 2, 0]),
+            chord("Em", [4, 0, 0, 0, 0, 0, 0, 0]),
+            chord("G", [-1, 0, 0, 0, 0, 0, 2, 0]),
+            chord("Asus", [0, 0, 3, 0, 0, 0, 2, 0]),
         ],
         bass: [50, 43, 45, 48, 41, 52, 43, 45],
     },
@@ -1009,14 +1027,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 11,
         mood: "Night",
         chords: [
-            chord("F#m7", [54, 57, 61, 64]),
-            chord("Dmaj7", [50, 57, 61, 66]),
-            chord("A", [45, 57, 61, 64]),
-            chord("Esus4", [52, 57, 59, 64]),
-            chord("Bm7", [47, 57, 59, 62]),
-            chord("Dadd9", [50, 54, 57, 64]),
-            chord("A/C#", [49, 57, 61, 64]),
-            chord("C#m7", [49, 56, 59, 64]),
+            chord("F#m7", [5, 1, -1, 4, 0, 0, 0, 0]),
+            chord("Dmaj7", [3, 0, 1, 5, 0, 0, 1, 0]),
+            chord("A", [0, 0, 1, 0, 0, 0, 2, 0]),
+            chord("Esus4", [4, 0, 3, 0, 0, 0, 0, 0]),
+            chord("Bm7", [1, 0, 0, 1, 0, 0, 1, 2]),
+            chord("Dadd9", [3, 0, 1, 2, 0, 0, 0, 0]),
+            chord("A/C#", [0, 0, 1, 0, 0, 1, 1, 0]),
+            chord("C#m7", [2, 1, -1, 4, 0, 0, 1, 0]),
         ],
         bass: [42, 50, 45, 52, 47, 50, 49, 49],
     },
@@ -1025,14 +1043,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 12,
         mood: "Glow",
         chords: [
-            chord("Ebmaj7", [51, 55, 58, 62]),
-            chord("Abmaj7", [44, 55, 60, 63]),
-            chord("Cm7", [48, 55, 58, 63]),
-            chord("Bbsus4", [46, 53, 58, 63]),
-            chord("Fm7", [41, 56, 60, 63]),
-            chord("Abm", [44, 56, 59, 63]),
-            chord("Eb/G", [43, 55, 58, 63]),
-            chord("Bb7sus", [46, 56, 58, 63]),
+            chord("Ebmaj7", [3, 1, 1, 5, 0, 0, 0, 0]),
+            chord("Abmaj7", [0, -1, 1, 5, 0, 0, 3, 0]),
+            chord("Cm7", [2, 0, -1, 4, 0, 0, 1, 0]),
+            chord("Bbsus4", [0, 1, 3, 0, 0, 0, 1, 0]),
+            chord("Fm7", [-2, 0, -1, 4, 0, 0, 2, 0]),
+            chord("Abm", [0, -1, 0, 0, 0, 0, 2, 0]),
+            chord("Eb/G", [-3, -1, 1, 0, 0, 1, 2, 0]),
+            chord("Bb7sus", [0, 1, 3, 1, 0, 0, 1, 2]),
         ],
         bass: [51, 44, 48, 46, 41, 44, 43, 46],
     },
@@ -1042,14 +1060,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 13,
         mood: "Float",
         chords: [
-            chord("Cadd9", [48, 55, 62, 64]),
-            chord("Bb", [46, 58, 62, 65]),
-            chord("F/A", [45, 57, 60, 65]),
-            chord("Gm7", [43, 58, 62, 65]),
-            chord("Dm7", [50, 57, 60, 65]),
-            chord("Bbmaj7", [46, 57, 62, 65]),
-            chord("F", [41, 57, 60, 65]),
-            chord("Csus4", [48, 55, 60, 65]),
+            chord("Cadd9", [2, 0, 0, 2, 0, 0, 1, 0]),
+            chord("Bb", [0, 1, 1, 0, 0, 0, 2, 0]),
+            chord("F/A", [-2, 0, 0, 0, 0, 1, 2, 0]),
+            chord("Gm7", [-1, 0, -1, 1, 0, 0, 2, 0]),
+            chord("Dm7", [3, 0, 0, 1, 0, 0, 1, 0]),
+            chord("Bbmaj7", [0, 1, 1, 5, 0, 0, 3, 0]),
+            chord("F", [5, 0, 0, 0, 0, 0, 0, 0]),
+            chord("Csus4", [2, 0, 3, 0, 0, 0, 1, 0]),
         ],
         bass: [48, 46, 45, 43, 50, 46, 41, 48],
     },
@@ -1059,14 +1077,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 14,
         mood: "Deep",
         chords: [
-            chord("Cm", [48, 55, 60, 63]),
-            chord("Fm/C", [48, 56, 60, 65]),
-            chord("Ab/C", [48, 56, 60, 63]),
-            chord("Bb/C", [48, 58, 62, 65]),
-            chord("Gm7", [43, 58, 62, 65]),
-            chord("Ebmaj7", [51, 55, 58, 62]),
-            chord("Abmaj7", [44, 55, 60, 63]),
-            chord("Gsus4", [43, 55, 60, 62]),
+            chord("Cm", [2, 0, -1, 0, 0, 0, 1, 0]),
+            chord("Fm/C", [-2, 0, -1, 0, 0, 2, 1, 0]),
+            chord("Ab/C", [0, -1, 1, 0, 0, 1, 1, 0]),
+            chord("Bb/C", [0, 1, 1, 0, 0, 4, 0, 0]),
+            chord("Gm7", [-1, 0, -1, 1, 0, 0, 2, 0]),
+            chord("Ebmaj7", [3, 1, 1, 5, 0, 0, 0, 0]),
+            chord("Abmaj7", [0, -1, 1, 5, 0, 0, 3, 0]),
+            chord("Gsus4", [-1, 0, 3, 0, 0, 0, 2, 0]),
         ],
         bass: [48, 48, 48, 48, 43, 51, 44, 43],
     },
@@ -1076,14 +1094,14 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
         song_value: 15,
         mood: "Hosking",
         chords: [
-            chord("Fm7", [53, 56, 60, 63]),
-            chord("Abmaj7/C", [48, 56, 60, 67]),
-            chord("Bbm7", [46, 53, 56, 61]),
-            chord("Db/F", [53, 56, 61, 65]),
-            chord("Fm9/Ab", [44, 51, 53, 55]),
-            chord("Ebadd9/G", [55, 58, 63, 65]),
-            chord("Bbadd9/D", [50, 53, 58, 60]),
-            chord("Dbmaj7", [49, 53, 56, 60]),
+            chord("Fm7", [5, 0, -1, 4, 0, 0, 0, 0]),
+            chord("Abmaj7/C", [0, -1, 1, 5, 0, 1, 1, 2]),
+            chord("Bbm7", [0, 1, 0, 1, 0, 0, 1, 0]),
+            chord("Db/F", [2, 1, 0, 0, 0, 1, 4, 0]),
+            chord("Fm9/Ab", [-2, 0, -1, 2, 4, 1, 0, 0]),
+            chord("Ebadd9/G", [3, 1, 1, 2, 0, 1, 0, 0]),
+            chord("Bbadd9/D", [0, 1, 1, 2, 0, 1, 0, 0]),
+            chord("Dbmaj7", [2, 1, 0, 1, 0, 0, 0, 0]),
         ],
         bass: [41, 48, 46, 53, 44, 55, 50, 49],
     },
@@ -1107,11 +1125,10 @@ pub(crate) const PROGRESSION_SONG_VALUES: [i8; CUSTOM_PROGRESSION_INDEX + 1] = {
     values
 };
 
-/// A built-in chord's raw MIDI notes (pre-`midi_to_hz`/tune), for voices —
-/// like Arp — that build their own note list rather than four fixed
-/// frequencies.
+/// Resolve an authored preset for catalog regression tests.
+#[cfg(test)]
 pub(crate) fn pad_chord_midi(progression: usize, slot: usize) -> [i32; 4] {
-    PROGRESSIONS[progression % PROGRESSIONS.len()].chords[slot % CHORD_SLOT_COUNT].notes
+    PROGRESSIONS[progression % PROGRESSIONS.len()].chords[slot % CHORD_SLOT_COUNT].notes()
 }
 
 /// The key a built-in progression is heard in: its first chord's root, with
@@ -1142,9 +1159,9 @@ pub(crate) fn progression_label(progression: usize) -> String {
 // ============================================================
 // Chord window and the shared progression cursor
 //
-// "Custom" is one more progression choice, built from user-authored chord
-// slots instead of a fixed table. `progression_index`/`pad_chord_tones` are
-// the single chord-source path shared by Pad, Bass, Arp, and Lead: every
+// "Custom" is one more progression choice with its own authored chord bank.
+// Built-ins resolve the same builder through authored presets and overrides.
+// `progression_index`/`pad_chord_tones` are the single chord-source path shared by Pad, Bass, Arp, and Lead: every
 // voice resolves "what chord is playing at this slot" through here so a
 // custom progression drives all of them identically.
 // ============================================================
@@ -1329,178 +1346,10 @@ impl ProgressionFollower {
 /// The shared chord-source entry point: the four notes at one table slot of
 /// a progression, built-in or Custom.
 pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, slot: usize) -> [i32; 4] {
-    if is_custom_progression(progression) {
-        pad_chord_notes_with_slot(&c.chord_slots[slot])
-    } else {
-        pad_chord_midi(progression, slot)
-    }
+    pad_chord_notes_with_slot(c.chord_slot(progression, slot))
 }
 
-/// The name of the chord at one table slot, built-in or Custom.
+/// The displayed identity follows the same resolved chord as every voice.
 pub(crate) fn pad_chord_name(c: &PadControls, progression: usize, slot: usize) -> String {
-    match PROGRESSIONS.get(progression) {
-        Some(built_in) => built_in.chords[slot % CHORD_SLOT_COUNT].name.to_string(),
-        None => custom_chord_name(&c.chord_slots[slot]),
-    }
-}
-
-/// A custom chord slot's four voiced tones: root (tonic-relative diatonic
-/// degree + accidental), then third/fifth (diatonic, with the third
-/// overridable by `quality` for modal interchange), then a top voice chosen
-/// by `extension`, finally reshuffled by `inversion` and de-duplicated
-/// upward so inversions/accidentals never collide two voices onto one note.
-pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
-    let root = slot_root(slot);
-    let accidental = slot.accidental.round().clamp(-1.0, 1.0) as i32;
-    let extension = slot.extension.round().clamp(0.0, 3.0) as i32;
-    let inversion = slot.inversion.round().clamp(0.0, 3.0) as i32;
-    let third = slot_third(slot, root);
-    let top = match extension {
-        1 => shift_diatonic(root, 6),
-        2 => shift_diatonic(root, 8),
-        3 => shift_diatonic(root, 10),
-        _ => root + 12,
-    };
-    let mut notes = [root, third, shift_diatonic(root, 4), top];
-    apply_inversion(&mut notes, inversion);
-    if accidental != 0 {
-        notes = notes.map(|note| note + accidental);
-    }
-    dedupe_upwards(&mut notes);
-    notes
-}
-
-/// A custom chord slot's root note alone (root + accidental, before
-/// extension/inversion reshuffle) — what Bass follows instead of the pad's
-/// full voicing.
-pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
-    slot_root(slot) + slot.accidental.round().clamp(-1.0, 1.0) as i32
-}
-
-/// Whether a slot's resolved third is minor — honors a forced `quality`,
-/// otherwise reports what the diatonic scale gives at this degree. Drives the
-/// Quality row's "scale (min)"-style display so the inherit position still
-/// tells the user what they're hearing.
-pub(crate) fn pad_chord_slot_is_minor(slot: &ChordSlotControls) -> bool {
-    let root = slot_root(slot);
-    slot_third(slot, root) - root == 3
-}
-
-/// A2, matching `PROGRESSIONS`' shared tonal center: the note a custom
-/// slot's `degree` counts from.
-const CUSTOM_TONIC: i32 = 45;
-
-/// A custom slot's root before its accidental: the tonic shifted by the
-/// slot's diatonic degree.
-fn slot_root(slot: &ChordSlotControls) -> i32 {
-    shift_diatonic(CUSTOM_TONIC, slot.degree.round().clamp(-7.0, 7.0) as i32)
-}
-
-/// A custom slot's third: forced minor/major by `quality`, otherwise the
-/// diatonic third above `root`.
-fn slot_third(slot: &ChordSlotControls, root: i32) -> i32 {
-    match slot.quality.round().clamp(-1.0, 1.0) as i32 {
-        -1 => root + 3,
-        1 => root + 4,
-        _ => shift_diatonic(root, 2),
-    }
-}
-
-/// Move `note` by `steps` positions on the diatonic major scale (not raw
-/// semitones), preserving octave-crossing correctly in either direction.
-fn shift_diatonic(note: i32, steps: i32) -> i32 {
-    const SCALE: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
-    let octave = note.div_euclid(12);
-    let pitch = note.rem_euclid(12);
-    let degree = SCALE
-        .iter()
-        .position(|&pc| pc == pitch)
-        .map(|index| octave * 7 + index as i32)
-        .unwrap_or_else(|| octave * 7);
-    let shifted = degree + steps;
-    let shifted_octave = shifted.div_euclid(7);
-    let shifted_degree = shifted.rem_euclid(7) as usize;
-    shifted_octave * 12 + SCALE[shifted_degree]
-}
-
-/// Move the lowest voice(s) up an octave `inversion` times, re-sorting after
-/// each move so successive inversions keep stacking correctly.
-fn apply_inversion(notes: &mut [i32; 4], inversion: i32) {
-    notes.sort_unstable();
-    for _ in 0..inversion {
-        notes[0] += 12;
-        notes.sort_unstable();
-    }
-}
-
-/// Nudge any voice that lands on or below the one before it up by diatonic
-/// steps until the chord is strictly ascending — accidentals or inversions
-/// can otherwise stack two voices onto the same (or a crossed) pitch.
-fn dedupe_upwards(notes: &mut [i32; 4]) {
-    notes.sort_unstable();
-    for i in 1..notes.len() {
-        while notes[i] <= notes[i - 1] {
-            notes[i] = shift_diatonic(notes[i], 1);
-        }
-    }
-}
-
-/// A Custom chord slot's name, read off the same fields that voice it:
-/// root (degree plus accidental), the third `slot_third` resolves, the
-/// extension's top voice, and the inversion's bass as a slash.
-pub(crate) fn custom_chord_name(slot: &ChordSlotControls) -> String {
-    const NATURALS: [&str; 12] = ["C", "", "D", "", "E", "F", "", "G", "", "A", "", "B"];
-    let natural = slot_root(slot);
-    let accidental = slot.accidental.round().clamp(-1.0, 1.0) as i32;
-    let minor = slot_third(slot, natural) - natural == 3;
-    let flat_five = shift_diatonic(natural, 4) - natural == 6;
-    let minor_seventh = shift_diatonic(natural, 6) - natural == 10;
-    let body = match (slot.extension.round().clamp(0.0, 3.0) as i32, minor) {
-        (1, true) => "m6",
-        (1, false) => "6",
-        (2, true) if minor_seventh && flat_five => "m7b5",
-        (2, true) if minor_seventh => "m7",
-        (2, true) => "mmaj7",
-        (2, false) if minor_seventh => "7",
-        (2, false) => "maj7",
-        (3, true) => "madd9",
-        (3, false) => "add9",
-        (_, true) if flat_five => "dim",
-        (_, true) => "m",
-        (_, false) => "",
-    };
-    // `dim` and `m7b5` already say the fifth is flat; nothing else does.
-    let flat_five_suffix = if flat_five && !matches!(body, "dim" | "m7b5") {
-        "b5"
-    } else {
-        ""
-    };
-    let root_name = format!(
-        "{}{}",
-        NATURALS[natural.rem_euclid(12) as usize],
-        match accidental {
-            -1 => "b",
-            1 => "#",
-            _ => "",
-        }
-    );
-    let bass = pad_chord_notes_with_slot(slot)[0];
-    let slash = if (bass - natural - accidental).rem_euclid(12) == 0 {
-        String::new()
-    } else {
-        format!("/{}", pitch_class_name(bass, accidental > 0))
-    };
-    format!("{root_name}{body}{flat_five_suffix}{slash}")
-}
-
-/// A note's pitch-class name, spelled with sharps or flats.
-fn pitch_class_name(note: i32, sharps: bool) -> &'static str {
-    const FLATS: [&str; 12] = [
-        "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
-    ];
-    const SHARPS: [&str; 12] = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    let pitch = note.rem_euclid(12) as usize;
-    if sharps { SHARPS[pitch] } else { FLATS[pitch] }
+    custom_chord_name(c.chord_slot(progression, slot))
 }

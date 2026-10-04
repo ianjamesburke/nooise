@@ -126,6 +126,7 @@ impl PaletteEntry {
                 Operation::Mix(_) => operation.spec().description.to_string(),
                 Operation::Recipe(_) => "add lane".to_string(),
                 Operation::PlannedMute => "visible layer".to_string(),
+                Operation::Chord(_) => "selected chord".to_string(),
             },
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => {
                 if super::midi_row_bit(spec.id).is_some_and(|bit| c.midi_rows & bit == 0)

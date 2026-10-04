@@ -62,6 +62,8 @@ const DRUNKEN_PHASE_RECORD: u8 = 10;
 const PLANNED_ACTION_RECORD: u8 = 11;
 /// Addressed Motion on LFO, envelope, and inline Steps editor fields.
 const EDITOR_MOTION_RECORD: u8 = 12;
+const CHORD_OVERRIDES_RECORD: u8 = 13;
+const CHORD_OVERRIDES_VERSION: u8 = 1;
 const PLANNED_MUTE_TAG: u8 = 0;
 /// Motion owns its true phrase length. The former fixed sixteen-beat capture
 /// payload is refused rather than reinterpreted as a shorter loop.
@@ -142,6 +144,8 @@ pub(crate) enum SongCodeError {
     InvalidPadRhythmRows(u8),
     DuplicatePadRhythmRowsRecord,
     InvalidCapture,
+    InvalidChordOverrides,
+    EvaluatedControls,
     InvalidLaneBypass,
     InvalidDrunkenPhase,
     StaleDrunken,
@@ -175,6 +179,11 @@ impl fmt::Display for SongCodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPlannedAction => write!(f, "song code has an invalid planned action"),
+            Self::EvaluatedControls => write!(
+                f,
+                "cannot save temporary audio controls as an authored song"
+            ),
+            Self::InvalidChordOverrides => write!(f, "song code contains invalid chord overrides"),
             Self::InvalidCapture => write!(f, "song code has invalid Motion data"),
             Self::InvalidLaneBypass => write!(f, "song code has invalid lane bypass data"),
             Self::MissingPrefix => write!(f, "song code must start with {CODE_PREFIX}"),
@@ -269,6 +278,9 @@ pub(crate) fn encode_song_code_at_epoch(
     song: &SongState,
     epoch: u16,
 ) -> Result<String, SongCodeError> {
+    if song.controls.pad.evaluated_chords.is_some() {
+        return Err(SongCodeError::EvaluatedControls);
+    }
     let mut bytes = Vec::new();
     bytes.extend_from_slice(MAGIC);
     bytes.push(CONTAINER_VERSION);
@@ -277,6 +289,19 @@ pub(crate) fn encode_song_code_at_epoch(
     let mut snapshot = Vec::new();
     write_snapshot(&song.controls, &mut snapshot)?;
     write_record(SNAPSHOT_RECORD, &snapshot, &mut bytes)?;
+
+    if song
+        .controls
+        .pad
+        .chord_overrides
+        .iter()
+        .flatten()
+        .any(Option::is_some)
+    {
+        let mut overrides = Vec::new();
+        write_chord_overrides(&song.controls.pad, &mut overrides)?;
+        write_record(CHORD_OVERRIDES_RECORD, &overrides, &mut bytes)?;
+    }
 
     if automation_has_content(&song.automation) {
         let mut automation = Vec::new();
@@ -426,12 +451,20 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut planned_action_record_seen = false;
     let mut lane_bypass = None;
     let mut epoch = 0;
+    let mut chord_overrides_seen = false;
 
     while !reader.is_empty() {
         let record_type = reader.u8()?;
         let len = reader.u32()? as usize;
         let payload = reader.bytes(len)?;
         match record_type {
+            CHORD_OVERRIDES_RECORD => {
+                if chord_overrides_seen {
+                    return Err(SongCodeError::InvalidChordOverrides);
+                }
+                chord_overrides_seen = true;
+                read_chord_overrides(payload, &mut song.controls.pad)?;
+            }
             LANE_BYPASS_RECORD => {
                 if lane_bypass.replace(payload).is_some() {
                     return Err(SongCodeError::InvalidLaneBypass);
@@ -540,6 +573,245 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
         validate_editor_motion_target(*target, clip, &song.automation)?;
     }
     Ok((song, epoch))
+}
+
+/// Sparse override banks are independent of the selected progression and
+/// Custom snapshot fields. Keys store permanent song identities, never dial
+/// indexes. Eight signed bytes hold an entire chosen chord.
+fn write_chord_overrides(pad: &super::PadControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
+    out.push(CHORD_OVERRIDES_VERSION);
+    out.push(
+        u8::try_from(
+            pad.chord_overrides
+                .iter()
+                .flatten()
+                .filter(|slot| slot.is_some())
+                .count(),
+        )
+        .map_err(|_| SongCodeError::TooLarge)?,
+    );
+    for (progression, bank) in pad.chord_overrides.iter().enumerate() {
+        for (slot, chord) in bank.iter().enumerate() {
+            let Some(chord) = chord else {
+                continue;
+            };
+            if !chord.is_valid() {
+                return Err(SongCodeError::InvalidChordOverrides);
+            }
+            out.push(super::PROGRESSIONS[progression].song_value as u8);
+            out.push(slot as u8);
+            out.extend(chord.values().map(|value| value as i8 as u8));
+        }
+    }
+    Ok(())
+}
+
+fn read_chord_overrides(bytes: &[u8], pad: &mut super::PadControls) -> Result<(), SongCodeError> {
+    let mut reader = Reader::new(bytes);
+    if reader.u8()? != CHORD_OVERRIDES_VERSION {
+        return Err(SongCodeError::InvalidChordOverrides);
+    }
+    let count = usize::from(reader.u8()?);
+    if count == 0 || count > super::PROGRESSIONS.len() * super::CHORD_SLOT_COUNT {
+        return Err(SongCodeError::InvalidChordOverrides);
+    }
+    for _ in 0..count {
+        let identity = reader.i8()?;
+        let progression = super::PROGRESSIONS
+            .iter()
+            .position(|p| p.song_value == identity)
+            .ok_or(SongCodeError::InvalidChordOverrides)?;
+        let slot = usize::from(reader.u8()?);
+        let mut values = [0; 8];
+        for value in &mut values {
+            *value = reader.i8()?;
+        }
+        let chord = super::ChordSlotControls::preset(values);
+        if slot >= super::CHORD_SLOT_COUNT
+            || !chord.is_valid()
+            || pad.chord_overrides[progression][slot].is_some()
+        {
+            return Err(SongCodeError::InvalidChordOverrides);
+        }
+        std::sync::Arc::make_mut(&mut pad.chord_overrides)[progression][slot] = Some(chord);
+    }
+    if !reader.is_empty() {
+        return Err(SongCodeError::InvalidChordOverrides);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod chord_override_codec_tests {
+    use super::*;
+
+    fn authored_edits() -> SongState {
+        let mut song = SongState::default();
+        song.controls.pad.chord_slots[2].degree = -5.0;
+        song.controls.pad.chord_slots[2].extension2 = 9.0;
+        for progression in [0, 5, 14] {
+            song.controls.pad.progression = progression as f32;
+            song.controls.pad.edit_chord_slot(3).voicing = 4.0;
+        }
+        song.controls.pad.progression = 2.0;
+        song
+    }
+
+    #[test]
+    fn inactive_overrides_and_custom_storage_survive_snapshot_record_reordering() {
+        let song = authored_edits();
+        let mut snapshot = Vec::new();
+        write_snapshot(&song.controls, &mut snapshot).unwrap();
+        // Reverse actual encoded control entries, including progression. Raw
+        // Custom access must make reconstruction independent of this order.
+        let mut reader = Reader::new(&snapshot);
+        let count = reader.u16().unwrap();
+        let mut entries = Vec::new();
+        for _ in 0..count {
+            entries.push((
+                reader.u16().unwrap(),
+                EncodedValue::read(&mut reader).unwrap(),
+            ));
+        }
+        let mut reversed = count.to_le_bytes().to_vec();
+        for (index, value) in entries.into_iter().rev() {
+            reversed.extend_from_slice(&index.to_le_bytes());
+            value.write(&mut reversed);
+        }
+        let mut overrides = Vec::new();
+        write_chord_overrides(&song.controls.pad, &mut overrides).unwrap();
+        let epoch = CURRENT_RANGE_EPOCH.to_le_bytes();
+        for records in [
+            vec![
+                (RANGE_EPOCH_RECORD, epoch.as_slice()),
+                (SNAPSHOT_RECORD, reversed.as_slice()),
+                (CHORD_OVERRIDES_RECORD, overrides.as_slice()),
+            ],
+            vec![
+                (CHORD_OVERRIDES_RECORD, overrides.as_slice()),
+                (SNAPSHOT_RECORD, reversed.as_slice()),
+                (RANGE_EPOCH_RECORD, epoch.as_slice()),
+            ],
+        ] {
+            let loaded = decode_song_code(&code_from_records(CONTAINER_VERSION, &records)).unwrap();
+            assert_eq!(
+                loaded.controls.pad.chord_slots,
+                song.controls.pad.chord_slots
+            );
+            assert_eq!(
+                loaded.controls.pad.chord_overrides,
+                song.controls.pad.chord_overrides
+            );
+            assert_eq!(
+                loaded.controls.pad.progression,
+                song.controls.pad.progression
+            );
+        }
+    }
+
+    #[test]
+    fn merely_saving_a_builtin_never_materializes_an_override() {
+        let source = SongState::default();
+        let loaded = decode_song_code(&encode_song_code(&source).unwrap()).unwrap();
+        assert!(
+            loaded
+                .controls
+                .pad
+                .chord_overrides
+                .iter()
+                .flatten()
+                .all(Option::is_none)
+        );
+        assert_eq!(
+            loaded.controls.pad.chord_slots,
+            source.controls.pad.chord_slots
+        );
+    }
+
+    #[test]
+    fn malformed_override_records_are_refused_without_partial_song_loading() {
+        let mut bytes = Vec::new();
+        write_chord_overrides(&authored_edits().controls.pad, &mut bytes).unwrap();
+        let decode = |payload: &[u8]| {
+            decode_song_code(&code_from_records(
+                CONTAINER_VERSION,
+                &[(CHORD_OVERRIDES_RECORD, payload)],
+            ))
+        };
+        for length in 0..bytes.len() {
+            assert!(decode(&bytes[..length]).is_err(), "truncation {length}");
+        }
+        for (offset, value) in [
+            (0, 2),
+            (1, 0),
+            (1, 255),
+            (2, 8),
+            (2, 255),
+            (3, 8),
+            (4, 127),
+            (5, 2),
+            (6, 5),
+            (7, 10),
+            (8, 10),
+            (9, 8),
+            (10, 5),
+            (11, 3),
+        ] {
+            let mut invalid = bytes.clone();
+            invalid[offset] = value;
+            assert!(decode(&invalid).is_err(), "offset {offset} value {value}");
+        }
+        let mut duplicate_key = bytes.clone();
+        duplicate_key[12] = duplicate_key[2];
+        duplicate_key[13] = duplicate_key[3];
+        assert!(decode(&duplicate_key).is_err());
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(decode(&trailing).is_err());
+        assert!(
+            decode_song_code(&code_from_records(
+                CONTAINER_VERSION,
+                &[
+                    (CHORD_OVERRIDES_RECORD, &bytes),
+                    (CHORD_OVERRIDES_RECORD, &bytes)
+                ]
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn invalid_authored_override_values_cannot_be_encoded() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5, 5.0] {
+            let mut song = authored_edits();
+            song.controls.pad.progression = 0.0;
+            song.controls.pad.edit_chord_slot(3).voicing = value;
+            assert_eq!(
+                encode_song_code(&song),
+                Err(SongCodeError::InvalidChordOverrides)
+            );
+        }
+    }
+
+    #[test]
+    fn a_fully_edited_preset_remains_a_compact_song_code() {
+        let mut song = SongState::default();
+        for slot in 0..super::super::CHORD_SLOT_COUNT {
+            let chord = song.controls.pad.edit_chord_slot(slot);
+            chord.extension2 = 8.0;
+            chord.voicing = 4.0;
+        }
+        let code = encode_song_code(&song).unwrap();
+        assert!(code.len() < 500, "{} characters", code.len());
+        assert_eq!(
+            decode_song_code(&code)
+                .unwrap()
+                .controls
+                .pad
+                .chord_overrides,
+            song.controls.pad.chord_overrides
+        );
+    }
 }
 
 fn read_lane_bypass(payload: &[u8], song: &mut SongState) -> Result<(), SongCodeError> {
@@ -1450,8 +1722,8 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
         // Both encodes map through the live session's contextual view (spec is
         // already contextual to `controls`, and `contextual` is idempotent) so
         // the baseline prune compares positions on one mapping.
-        let value = EncodedValue::encode(&spec, spec.quantized_value(controls), controls);
-        let default = EncodedValue::encode(&spec, spec.quantized_value(&defaults), controls);
+        let value = EncodedValue::encode(&spec, spec.stored_quantized_value(controls), controls);
+        let default = EncodedValue::encode(&spec, spec.stored_quantized_value(&defaults), controls);
         if value == default {
             continue;
         }
@@ -1494,7 +1766,7 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
             }
             if let Some(spec) = control_at(index) {
                 let spec = spec.contextual(controls);
-                spec.apply_quantized_value(value.resolve(&spec)?, controls);
+                spec.apply_stored_quantized_value(value.resolve(&spec)?, controls);
             } else if !structural {
                 reject_retired_control(index)?;
             }
