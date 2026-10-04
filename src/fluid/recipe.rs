@@ -143,6 +143,27 @@ impl RecipeTarget {
 }
 
 impl Recipe {
+    fn lfo_route(&self) -> LfoRoute {
+        match self.lane {
+            RecipeLane::Lfo {
+                shape,
+                beats,
+                depth,
+                seed,
+            } => LfoRoute {
+                cycle_beats: beats,
+                depth_ratio: depth,
+                shape,
+                seed,
+                ..LfoRoute::default()
+            },
+        }
+    }
+
+    fn keeps_one_authored_lane(&self) -> bool {
+        self.id == RecipeId::Tremolo
+    }
+
     pub(crate) fn check(
         &self,
         snapshot: &LiveSessionSnapshot,
@@ -152,9 +173,16 @@ impl Recipe {
             return Err(EffectFailure::StaleRecipeTarget);
         }
         let address = ControlAddress::new(target.id);
-        let count = match self.lane {
-            RecipeLane::Lfo { .. } => snapshot.automation.routes_for(address).count(),
-        };
+        let route = self.lfo_route();
+        if self.keeps_one_authored_lane()
+            && snapshot
+                .automation
+                .routes_for(address)
+                .any(|lane| *lane == route)
+        {
+            return Ok(());
+        }
+        let count = snapshot.automation.routes_for(address).count();
         if count >= MAX_AUTOMATION_LANES_PER_KIND {
             return Err(EffectFailure::AutomationLaneLimit);
         }
@@ -174,22 +202,16 @@ impl Recipe {
             spec.apply_ratio((ratio - 0.25).max(0.0), &mut snapshot.controls);
         }
         match self.lane {
-            RecipeLane::Lfo {
-                shape,
-                beats,
-                depth,
-                seed,
-            } => {
-                snapshot.automation.add_route(
-                    address,
-                    LfoRoute {
-                        cycle_beats: beats,
-                        depth_ratio: depth,
-                        shape,
-                        seed,
-                        ..LfoRoute::default()
-                    },
-                );
+            RecipeLane::Lfo { .. } => {
+                let route = self.lfo_route();
+                let duplicate = self.keeps_one_authored_lane()
+                    && snapshot
+                        .automation
+                        .routes_for(address)
+                        .any(|lane| *lane == route);
+                if !duplicate {
+                    snapshot.automation.add_route(address, route);
+                }
             }
         }
         snapshot.automation.close_editor();
