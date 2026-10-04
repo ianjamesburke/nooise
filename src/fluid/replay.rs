@@ -3197,6 +3197,32 @@ fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
 }
 
 #[test]
+fn repeated_tremolo_palette_recipe_keeps_one_authored_lfo() {
+    let mut events = recipe_keys("tremolo");
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    events.extend(recipe_keys("tremolo"));
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    events.push(modified_key(
+        0,
+        FixtureKey::Character('s'),
+        InputPhase::Press,
+        1 << 1,
+    ));
+
+    let result = replay(&events, TerminalCapabilities::full());
+    assert_eq!(result.effect_count("ApplyRecipe"), 2);
+    let saved = song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+    let mut lanes = saved
+        .automation
+        .routes_for(ControlAddress::new("pad.level"));
+    let lane = lanes.next().unwrap();
+    assert_eq!(lane.shape, LfoShape::Sine);
+    assert_eq!(lane.cycle_beats, 0.5);
+    assert!((lane.depth_ratio - 0.25).abs() < 0.0001);
+    assert!(lanes.next().is_none());
+}
+
+#[test]
 fn recipe_alias_renders_cleanly_and_tab_completes_its_name() {
     let mut events = recipe_keys("sc");
     events.pop();

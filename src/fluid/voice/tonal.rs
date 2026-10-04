@@ -442,7 +442,7 @@ impl TonalEngine {
         // Level is applied here, to the summed voices, rather than captured
         // into each note at trigger time: a note that has already started
         // must still answer the fader. `c.level` arrives pre-smoothed from
-        // `GainSmoothers`, so this stays click-free.
+        // `ControlSmoothers`, so this stays click-free.
         //
         // It scales the low cut's *output*, never its input. The cut is a
         // high pass, so feeding it an abruptly silenced signal discharges its

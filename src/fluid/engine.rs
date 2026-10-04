@@ -1,7 +1,7 @@
 //! `FluidEngine`: the voice mixer that the audio callback pulls frames from.
 //!
 //! Owns the tempo clock and its `TimingContext`, the grid triggers voices fire
-//! on, registry-derived gain smoothing, the per-layer and master module effect
+//! on, registry-derived control smoothing, the per-layer and master module effect
 //! banks, and the master bus.
 
 use crate::midi::{MidiClockFollower, MidiSink};
@@ -289,6 +289,82 @@ mod module_fx_tests {
         TimingContext::new(TEST_SAMPLE_RATE as f64, 120.0, 0.0)
     }
 
+    #[test]
+    fn manual_compressor_edits_do_not_jump_the_audio_output() {
+        for tab in [Tab::Chords, Tab::Master] {
+            for (field, from, to) in [
+                (ModuleSlotField::Time, -8.0, -40.0),
+                (ModuleSlotField::RightTime, 1.0, 8.0),
+                (ModuleSlotField::Vintage, 0.0, 12.0),
+            ] {
+                let mut controls = FluidControls::default();
+                let slots = controls.modules.for_tab_mut(tab).unwrap();
+                slots.fill(ModuleSlot::default());
+                slots[0] = preset_slot("compression", 1.0);
+                slots[0].time = -20.0;
+                slots[0].right_time = 8.0;
+                slots[0].vintage = 0.0;
+                let spec = module_slot_spec(tab, 0, field).unwrap();
+                (spec.set)(&mut controls, from);
+                let mut smoothers = ControlSmoothers::new(&controls);
+                let mut bank = ModuleFxBank::new(TEST_SAMPLE_RATE);
+                let input = (0.8, -0.4);
+                let mut previous = (0.0_f32, 0.0_f32);
+                for _ in 0..4_800 {
+                    previous =
+                        bank.process(tab, controls.modules.for_tab(tab).unwrap(), input, timing());
+                }
+                let before = previous;
+                (spec.set)(&mut controls, to);
+                // Reference the immediate DSP result to prove the edit is
+                // audible and that the ramp actually removes its jump.
+                let mut reference = ModuleFxBank::new(TEST_SAMPLE_RATE);
+                let mut after = before;
+                for _ in 0..4_800 {
+                    after = reference.process(
+                        tab,
+                        controls.modules.for_tab(tab).unwrap(),
+                        input,
+                        timing(),
+                    );
+                }
+                let raw_jump = (after.0 - before.0).abs();
+                assert!(
+                    raw_jump > 0.1,
+                    "edit must exercise a substantial gain change"
+                );
+                smoothers.set_targets(&controls, TEST_SAMPLE_RATE);
+                let mut largest_jump = 0.0_f32;
+                let frames = (LEVEL_RAMP_MS * 0.001 * TEST_SAMPLE_RATE).round() as usize;
+                for _ in 0..frames {
+                    let effective = smoothers.next_controls(&controls);
+                    let output = bank.process(
+                        tab,
+                        effective.modules.for_tab(tab).unwrap(),
+                        input,
+                        timing(),
+                    );
+                    largest_jump = largest_jump.max((output.0 - previous.0).abs());
+                    assert!(
+                        (output.1 + output.0 * 0.5).abs() < 1e-6,
+                        "stereo image changed"
+                    );
+                    previous = output;
+                }
+                assert!(
+                    largest_jump < raw_jump * 0.01,
+                    "{}: largest sample jump {largest_jump}, unsmoothed {raw_jump}",
+                    spec.id
+                );
+                assert!(
+                    (previous.0 - after.0).abs() < 1e-5,
+                    "{} never reached its target",
+                    spec.id
+                );
+            }
+        }
+    }
+
     /// Feeds silence for up to `frames` frames and returns the first non-zero
     /// output, or `None` when the chain stays silent for the whole span.
     fn first_nonzero_after_silence(
@@ -513,7 +589,7 @@ pub(crate) struct FluidEngine {
     midi_clock: Option<MidiClockFollower>,
     midi_input: Option<crate::midi::MidiInputSource>,
     midi_input_enabled: [bool; 3],
-    pub(crate) gain_smoothers: GainSmoothers,
+    pub(crate) control_smoothers: ControlSmoothers,
     mute_gates: OutputGates,
     muted: MuteState,
     /// The UI publishes planned actions ahead of time; audio owns their exact
@@ -579,7 +655,7 @@ impl FluidEngine {
             midi_clock: None,
             midi_input: None,
             midi_input_enabled: [false; 3],
-            gain_smoothers: GainSmoothers::new(&snapshot),
+            control_smoothers: ControlSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
             muted: live.muted,
             planned: live.planned,
@@ -766,7 +842,7 @@ impl StereoEngine for FluidEngine {
             self.gesture_snapshot = session.gestures.clone();
             self.drunken_phase_beat = session.drunken_phase_beat;
             self.transport = session.transport;
-            self.gain_smoothers
+            self.control_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);
             if morph_boundary
                 && morph_source
@@ -776,9 +852,9 @@ impl StereoEngine for FluidEngine {
             {
                 // Restore both dropped layers for the first landing note.
                 // Kick also captures Level when the hit is constructed.
-                self.gain_smoothers
+                self.control_smoothers
                     .settle("kick.level", self.snapshot.kick.level);
-                self.gain_smoothers
+                self.control_smoothers
                     .settle("bass.level", self.snapshot.bass.level);
             }
             self.planned = session.planned;
@@ -795,7 +871,7 @@ impl StereoEngine for FluidEngine {
         }
 
         let fade = startup_fade(self.current_sample, self.sample_rate);
-        let mut effective = self.gain_smoothers.next_controls(&self.snapshot);
+        let mut effective = self.control_smoothers.next_controls(&self.snapshot);
         let morph = self.morph.load();
         let active_morph = morph.as_ref().as_ref();
         if let Some(morph) = active_morph {
@@ -1251,10 +1327,11 @@ impl OutputGates {
     }
 }
 
-pub(crate) struct GainSmoother {
+pub(crate) struct ControlSmoother {
     pub(crate) spec: &'static ControlSpec,
     pub(crate) ramp: EasedRamp,
     slot_kind: Option<f32>,
+    slot_filter_type: Option<f32>,
     /// True while the smoother is settled AND its target equals the snapshot
     /// value bit-for-bit, so `next_controls` can skip the per-sample write
     /// (which would be a no-op). Recomputed every `set_targets` call; stays
@@ -1263,7 +1340,7 @@ pub(crate) struct GainSmoother {
     pub(crate) idle: bool,
 }
 
-impl GainSmoother {
+impl ControlSmoother {
     /// A smoother on the first registry gain control, for tests that exercise
     /// the ramp itself rather than which control it drives.
     #[cfg(test)]
@@ -1279,6 +1356,7 @@ impl GainSmoother {
             spec,
             ramp: EasedRamp::settled(value),
             slot_kind: None,
+            slot_filter_type: None,
             idle: false,
         }
     }
@@ -1295,39 +1373,66 @@ impl GainSmoother {
     }
 }
 
-pub(crate) struct GainSmoothers {
-    pub(crate) smoothers: Vec<GainSmoother>,
+// A Filter Type edit mirrors Cutoff. Keep that pair atomic instead of
+// sweeping through the old cutoff under the new response.
+fn filter_type_for_slot(slot: &ModuleSlot) -> Option<f32> {
+    slot.kind()
+        .filter(|kind| kind.family == Family::Filter)
+        .map(|_| slot.feedback)
 }
 
-impl GainSmoothers {
+pub(crate) struct ControlSmoothers {
+    pub(crate) smoothers: Vec<ControlSmoother>,
+    active: Vec<usize>,
+}
+
+impl ControlSmoothers {
     pub(crate) fn new(c: &FluidControls) -> Self {
         let mut seen = BTreeSet::new();
-        let smoothers = all_specs()
+        let smoothers: Vec<_> = all_specs()
             .filter(|spec| spec.kind.smooths_audio())
             .filter(|spec| seen.insert(spec.id))
             .map(|spec| {
-                let mut smoother = GainSmoother::for_spec(spec, (spec.get)(c));
-                smoother.slot_kind = module_slot_row(spec.id, c).map(|(slot, _)| slot.kind);
+                let mut smoother = ControlSmoother::for_spec(spec, (spec.get)(c));
+                let slot = module_slot_row(spec.id, c).map(|(slot, _)| slot);
+                smoother.slot_kind = slot.map(|slot| slot.kind);
+                smoother.slot_filter_type = slot.and_then(filter_type_for_slot);
                 smoother
             })
             .collect();
-        Self { smoothers }
+        Self {
+            active: Vec::with_capacity(smoothers.len()),
+            smoothers,
+        }
     }
 
     pub(crate) fn set_targets(&mut self, c: &FluidControls, sample_rate: f32) {
         let ramp_samples = (LEVEL_RAMP_MS * 0.001 * sample_rate).round() as u32;
-        for smoother in &mut self.smoothers {
+        self.active.clear();
+        for (index, smoother) in self.smoothers.iter_mut().enumerate() {
             let snapshot_value = (smoother.spec.get)(c);
-            let slot_kind = module_slot_row(smoother.spec.id, c).map(|(slot, _)| slot.kind);
-            if slot_kind != smoother.slot_kind || is_swing_amount_row(smoother.spec.id, c) {
-                // A slot's amount belongs to its module. Swing also changes
-                // timing, so its authored downbeat must not gain-ramp late.
+            let slot = module_slot_row(smoother.spec.id, c).map(|(slot, _)| slot);
+            let slot_kind = slot.map(|slot| slot.kind);
+            let slot_filter_type = slot.and_then(filter_type_for_slot);
+            if slot_kind != smoother.slot_kind
+                || slot_filter_type != smoother.slot_filter_type
+                || (snapshot_value != smoother.ramp.target
+                    && (!smoother.spec.contextual(c).kind.smooths_audio()
+                        || is_swing_amount_row(smoother.spec.id, c)))
+            {
+                // Slot fields change meaning with the module. Timing and
+                // discrete values (including Swing) must arrive immediately;
+                // Delay owns its tap crossfade instead of gliding its time.
                 smoother.ramp = EasedRamp::settled(snapshot_value);
                 smoother.slot_kind = slot_kind;
+                smoother.slot_filter_type = slot_filter_type;
             }
             smoother.set_target(snapshot_value, ramp_samples);
             smoother.idle =
                 smoother.ramp.samples_remaining == 0 && smoother.ramp.target == snapshot_value;
+            if !smoother.idle {
+                self.active.push(index);
+            }
         }
     }
 
@@ -1340,7 +1445,10 @@ impl GainSmoothers {
 
     pub(crate) fn next_controls(&mut self, c: &FluidControls) -> FluidControls {
         let mut next = c.clone();
-        for smoother in &mut self.smoothers {
+        // Most knobs are stationary. The control-rate pass prepares this
+        // bounded list, so audio visits only ramps that need a sample write.
+        for &index in &self.active {
+            let smoother = &mut self.smoothers[index];
             if smoother.idle {
                 continue;
             }

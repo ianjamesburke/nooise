@@ -174,7 +174,7 @@ pub(crate) enum ControlKind {
 
 impl ControlKind {
     pub(crate) fn smooths_audio(self) -> bool {
-        matches!(self, Self::Gain)
+        matches!(self, Self::Gain | Self::Continuous)
     }
 }
 

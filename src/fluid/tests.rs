@@ -4368,14 +4368,14 @@ fn song_code_is_a_direct_cargo_run_argument() {
 #[test]
 fn control_kind_smoothing_policy_is_explicit() {
     assert!(ControlKind::Gain.smooths_audio());
-    assert!(!ControlKind::Continuous.smooths_audio());
+    assert!(ControlKind::Continuous.smooths_audio());
     assert!(!ControlKind::Timing.smooths_audio());
     assert!(!ControlKind::Discrete.smooths_audio());
 }
 
 #[test]
 fn gain_smoother_reaches_target_over_ramp() {
-    let mut smoother = GainSmoother::new(0.0);
+    let mut smoother = ControlSmoother::new(0.0);
     smoother.set_target(1.0, 10);
 
     assert_near(smoother.next(), 0.028);
@@ -4391,7 +4391,7 @@ fn gain_smoother_reaches_target_over_ramp() {
 }
 
 #[test]
-fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
+fn control_smoothers_ramp_live_gain_controls_without_timing_changes() {
     let mut controls = FluidControls::default();
     controls.pad.level = 0.0;
     controls.modules.pad[0].amount = 0.0;
@@ -4403,7 +4403,7 @@ fn gain_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.modules.master[0].amount = 0.0;
     controls.modules.bass[1].amount = 0.0;
 
-    let mut smoothers = GainSmoothers::new(&controls);
+    let mut smoothers = ControlSmoothers::new(&controls);
     controls.pad.level = 1.0;
     controls.modules.pad[0].amount = 1.0;
     controls.kick.click = 0.2;
@@ -4435,7 +4435,7 @@ fn module_amount_smoother_does_not_carry_an_old_module_into_swing() {
     before.modules.perc[0] = preset_slot("filter", 1.0);
     let mut onset = before.clone();
     onset.modules.perc[0] = preset_slot("swing", 0.0);
-    let mut smoothers = GainSmoothers::new(&before);
+    let mut smoothers = ControlSmoothers::new(&before);
     smoothers.set_targets(&onset, SAMPLE_RATE);
     let mut effective = smoothers.next_controls(&onset);
     resolve_module_chain(&mut effective);
@@ -4448,7 +4448,7 @@ fn swing_amount_does_not_ramp_after_a_song_boundary() {
     before.modules.perc[0] = preset_slot("swing", 0.1);
     let mut after = before.clone();
     after.modules.perc[0].amount = 0.6;
-    let mut smoothers = GainSmoothers::new(&before);
+    let mut smoothers = ControlSmoothers::new(&before);
     smoothers.set_targets(&after, SAMPLE_RATE);
     let mut effective = smoothers.next_controls(&after);
     resolve_module_chain(&mut effective);
@@ -4456,11 +4456,11 @@ fn swing_amount_does_not_ramp_after_a_song_boundary() {
 }
 
 #[test]
-fn gain_smoothers_cover_every_unique_gain_spec() {
+fn control_smoothers_cover_every_unique_gain_and_continuous_spec() {
     let controls = FluidControls::default();
-    let smoothers = GainSmoothers::new(&controls);
+    let smoothers = ControlSmoothers::new(&controls);
     let expected: std::collections::BTreeSet<_> = all_specs()
-        .filter(|spec| spec.kind == ControlKind::Gain)
+        .filter(|spec| matches!(spec.kind, ControlKind::Gain | ControlKind::Continuous))
         .map(|spec| spec.id)
         .collect();
     let actual: std::collections::BTreeSet<_> = smoothers
@@ -4470,6 +4470,99 @@ fn gain_smoothers_cover_every_unique_gain_spec() {
         .collect();
 
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn control_smoothers_ramp_effect_knobs_on_every_layer_and_slot() {
+    use ModuleSlotField::{RightTime, Time, Vintage};
+    for tab in Tab::all() {
+        for slot in 0..MODULE_SLOTS {
+            for (module, field, from, to) in [
+                ("compression", Time, -8.0, -40.0),
+                ("compression", RightTime, 1.0, 8.0),
+                ("compression", Vintage, 0.0, 12.0),
+                ("filter", Time, 20_000.0, 20.0),
+                ("filter", RightTime, 0.0, 1.0),
+                ("room", Time, 0.0, 1.0),
+            ] {
+                let mut controls = FluidControls::default();
+                controls.modules.for_tab_mut(tab).unwrap()[slot] = preset_slot(module, 1.0);
+                let spec = module_slot_spec(tab, slot, field).unwrap();
+                (spec.set)(&mut controls, from);
+                let mut smoothers = ControlSmoothers::new(&controls);
+                assert_eq!((spec.get)(&smoothers.next_controls(&controls)), from);
+                (spec.set)(&mut controls, to);
+                // 1 kHz gives exactly 30 frames for the existing 30 ms ramp.
+                smoothers.set_targets(&controls, 1_000.0);
+                let mut previous = from;
+                for frame in 1..=30 {
+                    let current = (spec.get)(&smoothers.next_controls(&controls));
+                    assert!(
+                        current >= from.min(to) && current <= from.max(to),
+                        "{}",
+                        spec.id
+                    );
+                    assert!(
+                        (current - previous).abs() <= (to - from).abs() * 0.051,
+                        "{} jumped on frame {frame}: {previous} -> {current}",
+                        spec.id
+                    );
+                    previous = current;
+                }
+                assert_eq!(previous, to, "{} did not settle", spec.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn control_smoothers_keep_delay_clocks_and_filter_type_changes_immediate() {
+    let mut controls = FluidControls::default();
+    controls.modules.master[0] = preset_slot("delay", 1.0);
+    controls.modules.master[1] = preset_slot("filter", 1.0);
+    let mut smoothers = ControlSmoothers::new(&controls);
+    controls.modules.master[0].time = 4.0;
+    switch_delay_clock(&mut controls.modules.master[0], true, 120.0);
+    controls.modules.master[0].right_time = 275.0;
+    switch_filter_type(&mut controls.modules.master[1], 1.0);
+    smoothers.set_targets(&controls, SAMPLE_RATE);
+    let effective = smoothers.next_controls(&controls);
+    assert_eq!(effective.modules.master[0].time, 4.0);
+    assert_eq!(effective.modules.master[0].right_time, 275.0);
+    assert_eq!(
+        effective.modules.master[0].right_clock,
+        controls.modules.master[0].right_clock
+    );
+    assert_eq!(
+        effective.modules.master[1].feedback,
+        controls.modules.master[1].feedback
+    );
+    assert_eq!(
+        effective.modules.master[1].time,
+        controls.modules.master[1].time
+    );
+}
+
+#[test]
+fn control_smoothers_settle_new_module_units_even_during_a_ramp() {
+    let mut controls = FluidControls::default();
+    controls.modules.master[0] = preset_slot("filter", 1.0);
+    let mut smoothers = ControlSmoothers::new(&controls);
+    controls.modules.master[0].time = 20.0;
+    smoothers.set_targets(&controls, SAMPLE_RATE);
+    smoothers.next_controls(&controls);
+    controls.modules.master[0] = preset_slot("compression", 1.0);
+    smoothers.set_targets(&controls, SAMPLE_RATE);
+    let effective = smoothers.next_controls(&controls);
+    for parameter in controls.modules.master[0].kind().unwrap().parameters() {
+        let spec = module_slot_spec(Tab::Master, 0, parameter.field).unwrap();
+        assert_eq!((spec.get)(&effective), (spec.get)(&controls), "{}", spec.id);
+    }
+    // The replacement must still respond smoothly to its next edit.
+    controls.modules.master[0].time = -40.0;
+    smoothers.set_targets(&controls, SAMPLE_RATE);
+    let next = smoothers.next_controls(&controls).modules.master[0].time;
+    assert!(next < effective.modules.master[0].time && next > -40.0);
 }
 
 #[test]
