@@ -26,3 +26,6 @@ Feature designs that can be discussed before changing runtime behavior.
 - Check relative links and the parent Child DOX Index after editing.
 
 ## Child DOX Index
+
+- `2026-10-04-ai-lead.md` — agreed direction for a personal AI Lead, its MIDI
+  corpus, model path, runtime limits, and listening evaluation
