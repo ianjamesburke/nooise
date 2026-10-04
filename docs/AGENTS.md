@@ -6,7 +6,7 @@ Durable product direction and architecture decisions.
 
 ## Ownership
 
-- `NORTH_STAR.md` owns product vision and feature-evaluation commandments.
+- `NORTH_STAR.md` owns product vision and feature-evaluation commandments, including the ban on bundled samples and allowance for live audio processing.
 - `PERFORMANCE.md` owns hub navigation, normal-mode gestures, the clock
   stop, and the Jump leader, phase contracts, and manual audio smoke.
 - `adr/` owns accepted architecture decisions. See `adr/AGENTS.md`.

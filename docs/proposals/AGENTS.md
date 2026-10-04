@@ -27,5 +27,7 @@ Feature designs that can be discussed before changing runtime behavior.
 
 ## Child DOX Index
 
+- `2026-10-04-live-audio-textures.md` owns the agreed direction and proposed milestones for audio-input tracks, resonant objects, granular effects, and bowed textures; runtime design remains open.
+
 - `2026-10-04-ai-lead.md` — agreed direction for a personal AI Lead, its MIDI
   corpus, model path, runtime limits, and listening evaluation

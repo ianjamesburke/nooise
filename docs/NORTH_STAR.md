@@ -16,6 +16,8 @@ Before adding any control or feature, weigh it against every commandment below:
 
 5. **Does another layer already have it as a module?** A capability shared across layers (Swing, Drive, Filter, Room, Delay, Compression) is one module in the catalog, added through `/` the same way on every layer it fits. Never give one layer a private control for it: the palette then shows one layer's version as a plain row next to everyone else's module, and it reads as a bug. A layer the module does not fit is excluded in `module_available_on` for a sound reason, not a UI one. Pads' private Swing row was retired onto the module for exactly this; `no_layer_duplicates_an_available_module_as_a_bespoke_control` enforces it.
 
+6. **Does it stay free of bundled samples?** nooise generates instrument sounds through synthesis, physical models, and waveform manipulation; it does not bundle sample libraries or recorded instrument assets. Live audio from microphones or synths may be processed, including granular effects using temporary rolling audio buffers, without requiring a recording saved to disk.
+
 **Retirement, not migration.** When a control goes away, its saved values go away with it. Codes that carry a retired control are refused with a message naming it (`SongCodeError::RetiredControl`), never loaded with the value silently dropped to a default. Built-in songs are re-authored through the current encoder instead; nooise carries no translation layer between old and new control names.
 
 If a proposed control fails #3 — it's there to let the user manually correct something that should already sound right — don't ship the control. Fix the balance instead.
