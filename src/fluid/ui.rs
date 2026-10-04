@@ -110,10 +110,10 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // 0 top pad
-            Constraint::Length(1), // 1 pad
+            Constraint::Length(1), // 0 home key
+            Constraint::Length(1), // 1 sounding chord and upcoming window
             Constraint::Length(1), // 2 breadcrumb
-            Constraint::Length(1), // 3 pad
+            Constraint::Length(1), // 3 chord editor title or padding
             Constraint::Min(0),    // 4 control rows
             Constraint::Length(1), // 5 gesture activity row (blank when idle)
             Constraint::Length(1), // 6 footer: exits/mode help/notices
@@ -148,6 +148,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         bar_w: (inner.width as usize).saturating_sub(34).clamp(6, 80),
     };
 
+    draw_harmony(f, layout[0], layout[1], &controls.pad, frame.active_slot);
     if let Some(title) = &view.chord_title {
         f.render_widget(
             Paragraph::new(title.as_str())
@@ -157,7 +158,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-            layout[1],
+            layout[3],
         );
     }
     draw_breadcrumb(f, layout[2], view);
@@ -181,6 +182,62 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     if let ModeSurface::Performance(surface) = &view.mode {
         draw_leader(f, inner, surface);
     }
+}
+
+/// Keep harmony in view even when a layer's control list scrolls.
+fn draw_harmony(
+    f: &mut Frame,
+    key_area: Rect,
+    chords_area: Rect,
+    pad: &PadControls,
+    active_slot: usize,
+) {
+    let window = ChordWindow::requested(pad);
+    let key = progression_home_label(window.progression);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("KEY  ", Style::default().fg(DIM_TEXT)),
+            Span::styled(
+                key,
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .alignment(Alignment::Center),
+        key_area,
+    );
+
+    let slots: Vec<_> = window.slots().collect();
+    let mut spans = vec![Span::styled("CHORDS  ", Style::default().fg(DIM_TEXT))];
+    let mut used = "CHORDS  ".len();
+    for (index, &slot) in slots.iter().enumerate() {
+        let name = pad_chord_name(pad, window.progression, slot);
+        let separator = if index == 0 { "" } else { " › " };
+        let reserved = if index + 1 < slots.len() { 1 } else { 0 };
+        if used + separator.chars().count() + name.chars().count() + reserved
+            > usize::from(chords_area.width)
+        {
+            if used < usize::from(chords_area.width) {
+                spans.push(Span::styled("…", Style::default().fg(DIM_TEXT)));
+            }
+            break;
+        }
+        if !separator.is_empty() {
+            spans.push(Span::styled(separator, Style::default().fg(DIM_TEXT)));
+        }
+        spans.push(Span::styled(
+            name.clone(),
+            if slot == active_slot {
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(DIM_TEXT)
+            },
+        ));
+        used += separator.chars().count() + name.chars().count();
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
+        chords_area,
+    );
 }
 
 /// Frosted-glass scrim: darken the live fluid underneath instead of covering
@@ -319,7 +376,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 view.navigation.lead_drill,
                 interaction::LeadDrill::Pattern { .. }
             )
-            && i == lead_step_at(
+            && i == lane_step_at(
                 beat,
                 frame.controls().lead.rate_beats,
                 frame.controls().lead.offset_beats,

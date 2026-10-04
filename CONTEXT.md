@@ -52,6 +52,9 @@
 
 ## Music glossary
 
+- **Home key:** The progression's tonic and mode. Lead's Scale reads its seven
+  notes even when a sounding chord borrows a note outside them. Built-in
+  progressions declare a mode; Custom currently has an A-minor home.
 - **Progression:** eight chords the Pad, Bass, Arp, and Lead all follow. A
   built-in one is named by key and mood ("Am · Drift"); Custom is built from
   eight user-authored chord slots.

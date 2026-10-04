@@ -20,6 +20,8 @@ Before adding any control or feature, weigh it against every commandment below:
 
 6. **Is the computer keyboard still the best-supported way to play?** Every musical capability must have a complete, discoverable keyboard path. Optimize ordinary browsing and searchable `/` operations first, preserving the arrows-and-Tab onboarding floor. External gear is optional and uses the same validated musical operations. A plain launch must remain playable without configuring a rig.
 
+7. **Does it stay free of bundled samples?** nooise generates instrument sounds through synthesis, physical models, and waveform manipulation; it does not bundle sample libraries or recorded instrument assets. Live audio from microphones or synths may be processed, including granular effects using temporary rolling audio buffers, without requiring a recording saved to disk.
+
 **Retirement, not migration.** When a control goes away, its saved values go away with it. Codes that carry a retired control are refused with a message naming it (`SongCodeError::RetiredControl`), never loaded with the value silently dropped to a default. Built-in songs are re-authored through the current encoder instead; nooise carries no translation layer between old and new control names.
 
 If a proposed control fails #3 — it's there to let the user manually correct something that should already sound right — don't ship the control. Fix the balance instead.

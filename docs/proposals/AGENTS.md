@@ -12,6 +12,7 @@ Feature designs that can be discussed before changing runtime behavior.
 - `2026-10-03-shared-chord-builder.md` records the shared preset/editor contract, voice-count policy, persistence boundaries and two revoice audition cases.
 - `2026-10-04-ai-lead.md` — agreed direction for a personal AI Lead, its MIDI
   corpus, model path, runtime limits, and listening evaluation
+- `2026-10-04-live-audio-textures.md` owns the agreed direction and proposed milestones for audio-input tracks, resonant objects, granular effects, and bowed textures; runtime design remains open.
 - Product rules remain in `../NORTH_STAR.md`; accepted architecture belongs in `../adr/`; shipped performance behavior belongs in `../PERFORMANCE.md`.
 
 ## Local Contracts

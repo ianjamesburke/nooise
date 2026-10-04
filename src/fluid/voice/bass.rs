@@ -67,7 +67,6 @@ pub(crate) struct BassEngine {
     pub(crate) sample_rate: f32,
     pub(crate) progression: ProgressionFollower,
     pub(crate) step_trigger: GridTrigger,
-    pub(crate) rhythm_step: usize,
     pub(crate) voice: Option<BassVoice>,
     pub(crate) fading_voice: Option<BassVoice>,
     pub(crate) fade_samples_remaining: u32,
@@ -83,7 +82,6 @@ impl BassEngine {
             sample_rate,
             progression: ProgressionFollower::new(),
             step_trigger: GridTrigger::new(),
-            rhythm_step: BASS_RHYTHMS[0].len() - 1,
             voice: None,
             fading_voice: None,
             fade_samples_remaining: 0,
@@ -108,10 +106,9 @@ impl BassEngine {
             .step_trigger
             .pop_swung(timing, BASS_STEP_BEATS, c.offset_beats, c.swing)
         {
-            self.rhythm_step = (self.rhythm_step + 1) % loop_len;
+            let rhythm_step = lane_step_at(timing.beat, BASS_STEP_BEATS, c.offset_beats, loop_len);
             let rhythm = (c.rhythm.round() as usize) % BASS_RHYTHMS.len();
-            let hit = self.rhythm_step < BASS_RHYTHMS[rhythm].len()
-                && BASS_RHYTHMS[rhythm][self.rhythm_step];
+            let hit = rhythm_step < BASS_RHYTHMS[rhythm].len() && BASS_RHYTHMS[rhythm][rhythm_step];
             if hit {
                 let note = bass_root_note(progression, slot, pad) + (c.octave.round() as i32) * 12;
                 let hz = note_hz(note, tune);

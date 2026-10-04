@@ -1013,6 +1013,85 @@ mod tests {
         render_model_with_session(interaction, &session)
     }
 
+    #[test]
+    fn harmony_header_stays_visible_on_the_hub_at_minimum_size() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        let frame = render_model_with_session_at(
+            &interaction,
+            &session,
+            TelemetryView {
+                beat: 4.0,
+                active_chord: 1,
+            },
+        );
+        assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
+        assert!(frame.contains("CHORDS␠␠Am7add11␠›␠Gsus2add11"), "{frame}");
+        assert!(frame.contains("Master"), "{frame}");
+
+        session.controls.pad.progression = 4.0;
+        let borrowed =
+            render_model_with_session_at(&interaction, &session, TelemetryView::default());
+        assert!(borrowed.contains("KEY␠␠A␠Phrygian"), "{borrowed}");
+    }
+
+    #[test]
+    fn chord_editor_keeps_its_title_and_the_harmony_header_at_minimum_size() {
+        let interaction = InteractionModel {
+            navigation: Navigation::Chords {
+                selected: 0,
+                drill: ChordDrill::Slot {
+                    extension2: false,
+                    slot: 0,
+                    return_to: 0,
+                },
+            },
+            ..InteractionModel::default()
+        };
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        let frame = render_model_with_session(&interaction, &session);
+        for expected in [
+            "KEY␠␠A␠minor",
+            "CHORDS␠␠Am7add11",
+            "Am7add11␠·␠Built-in",
+            "Root",
+        ] {
+            assert!(frame.contains(expected), "missing {expected}: {frame}");
+        }
+    }
+
+    #[test]
+    fn harmony_header_is_centered() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        let frame = render_model_with_session_at_size(
+            &interaction,
+            &session,
+            TelemetryView::default(),
+            80,
+            11,
+        );
+        let key_line = frame.lines().find(|line| line.contains("KEY")).unwrap();
+        let chords_line = frame.lines().find(|line| line.contains("CHORDS")).unwrap();
+        assert_eq!(
+            key_line
+                .chars()
+                .position(|character| character == 'K')
+                .unwrap(),
+            (80 - "KEY  A minor".len()) / 2 - 1
+        );
+        assert_eq!(
+            chords_line
+                .chars()
+                .position(|character| character == 'C')
+                .unwrap(),
+            18
+        );
+    }
+
     fn render_mode(mode: InteractionMode) -> String {
         render_model(&InteractionModel {
             navigation: Navigation::default(),

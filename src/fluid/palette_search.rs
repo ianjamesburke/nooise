@@ -542,8 +542,10 @@ mod tests {
         let entries = palette_entries();
         for (tab, query, expected) in [
             (Tab::Master, "c", "module:master:compression"),
-            (Tab::Bass, "l", "control:bass.level"),
-            (Tab::Bass, "le", "control:bass.level"),
+            (Tab::Bass, "l", "control:bass.interval_beats"),
+            (Tab::Bass, "le", "control:bass.interval_beats"),
+            (Tab::Bass, "lev", "control:bass.level"),
+            (Tab::Bass, "length", "control:bass.interval_beats"),
             (Tab::Master, "bas", "control:bass.level"),
             (Tab::Lead, "ar midi", "control:arp.midi_out"),
         ] {

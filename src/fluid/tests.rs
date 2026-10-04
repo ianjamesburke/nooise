@@ -5001,7 +5001,7 @@ fn bass_engine_follows_pad_chord_root_across_advances() {
     }
 
     assert_ne!(bass.progression.cursor.map(|cursor| cursor.step), Some(0));
-    assert!(bass.rhythm_step < BASS_RHYTHMS[0].len());
+    assert!(bass.step_trigger.next_hit.is_some());
 }
 
 #[test]
@@ -5227,6 +5227,47 @@ fn bass_interval_crops_phrase_instead_of_stretching_it() {
     let cropped = hits_within(1, 8);
     assert!(cropped.len() < full.len());
     assert!(cropped.iter().all(|s| full.contains(s)));
+}
+
+#[test]
+fn bass_pattern_returns_to_kick_phase_after_length_edit() {
+    let sample_rate = SAMPLE_RATE;
+    let mut bass = BassEngine::new(sample_rate);
+    let pad = PadControls::default();
+    let mut controls = BassControls {
+        interval_beats: 4.0,
+        rhythm: 0.0,
+        attack_time: 0.001,
+        decay_time: 0.01,
+        ..BassControls::default()
+    };
+    let mut onsets = Vec::new();
+    let mut previous_level = 0.0;
+    for sample in 0..(sample_rate as u64 * 2) {
+        let beat = timing(sample, 120.0).beat;
+        controls.interval_beats = if (1.0..2.0).contains(&beat) {
+            0.75
+        } else {
+            4.0
+        };
+        bass.next(&controls, &pad, 0.0, timing(sample, 120.0));
+        let level = match bass.voice.as_ref() {
+            Some(BassVoice::Sub(voice)) => voice.core.envelope.level(),
+            _ => 0.0,
+        };
+        if level > 0.01 && previous_level <= 0.01 {
+            onsets.push(beat);
+        }
+        previous_level = level;
+    }
+    assert!(
+        onsets.iter().any(|&beat| (beat - 2.0).abs() < 1e-3),
+        "{onsets:?}"
+    );
+    assert!(
+        !onsets.iter().any(|&beat| (beat - 2.5).abs() < 1e-3),
+        "{onsets:?}"
+    );
 }
 
 #[test]
@@ -8758,24 +8799,41 @@ fn lead_defaults_are_silent_and_carry_a_drive_module() {
 fn lead_step_is_derived_from_the_transport_and_wraps_at_the_live_count() {
     // Straight eighths from beat 0: step n at beat n/2.
     for step in 0..8 {
-        assert_eq!(lead_step_at(step as f64 * 0.5, 0.5, 0.0, 8), step);
+        assert_eq!(lane_step_at(step as f64 * 0.5, 0.5, 0.0, 8), step);
     }
     assert_eq!(
-        lead_step_at(4.0, 0.5, 0.0, 8),
+        lane_step_at(4.0, 0.5, 0.0, 8),
         0,
         "wraps after the live count"
     );
     assert_eq!(
-        lead_step_at(4.0, 0.5, 0.0, 3),
+        lane_step_at(4.0, 0.5, 0.0, 3),
         2,
         "wraps at a shorter live count"
     );
     // A swung hit lands late by less than half a step and still reads as its
     // own step; the grid epsilon just before the beat does too.
-    assert_eq!(lead_step_at(1.5 + 0.15, 0.5, 0.0, 8), 3);
-    assert_eq!(lead_step_at(1.5 - 1e-6, 0.5, 0.0, 8), 3);
+    assert_eq!(lane_step_at(1.5 + 0.15, 0.5, 0.0, 8), 3);
+    assert_eq!(lane_step_at(1.5 - 1e-6, 0.5, 0.0, 8), 3);
     // Offset shifts the lane along the beat with it.
-    assert_eq!(lead_step_at(1.0, 0.5, 1.0, 8), 0);
+    assert_eq!(lane_step_at(1.0, 0.5, 1.0, 8), 0);
+}
+
+#[test]
+fn shared_lane_position_keeps_pad_stabs_on_the_same_steps() {
+    for offset in [0.0, 0.125, 1.0] {
+        for swing in [0.0, 1.0] {
+            let hits = run_grid(8.0, |trigger, timing| {
+                trigger.pop_swung(timing, 0.25, offset, swing)
+            });
+            assert!(!hits.is_empty());
+            for beat in hits {
+                let old_step = (((beat - f64::from(offset)) / 0.25 + 1e-6).floor() as i64)
+                    .rem_euclid(16) as usize;
+                assert_eq!(lane_step_at(beat, 0.25, offset, 16), old_step);
+            }
+        }
+    }
 }
 
 #[test]
@@ -9029,20 +9087,20 @@ fn lead_tones_reach_the_chord_an_octave_up_and_the_root_two_up() {
 }
 
 #[test]
-fn lead_scale_follow_walks_the_progression_scale_from_its_tonic() {
+fn lead_scale_follow_walks_the_home_key_despite_borrowed_chords() {
     let pad = PadControls::default();
-    // Progression A touches A B C D E G: A minor without the F.
+    // Progression A omits F from its chords, but Lead still gets all of A minor.
     let scale = progression_scale(&pad, 0);
     let notes: Vec<_> = (1..=scale.len())
         .map(|tone| scale.note(tone, 0.0))
         .collect();
-    assert_eq!(notes, [45, 47, 48, 50, 52, 55]);
+    assert_eq!(notes, [45, 47, 48, 50, 52, 53, 55]);
     assert_eq!(
-        scale.note(7, 0.0),
+        scale.note(8, 0.0),
         57,
         "the seventh tone wraps to A an octave up"
     );
-    assert_eq!(scale.label(7), "1'");
+    assert_eq!(scale.label(8), "1'");
     // The scale ignores which chord is sounding: only the follow moves it.
     assert_eq!(
         lead_reach(LeadFollow::Scale, &pad, 0, 3),
@@ -9052,10 +9110,15 @@ fn lead_scale_follow_walks_the_progression_scale_from_its_tonic() {
         lead_reach(LeadFollow::Chord, &pad, 0, 3),
         lead_reach(LeadFollow::Chord, &pad, 0, 6)
     );
-    // Progression E: A phrygian (A Bb C D E F G) plus the G6's B natural.
-    assert_eq!(progression_scale(&pad, 4).len(), 8);
-    // A custom progression derives its scale from its own slots: one
-    // default slot is a triad, three pitch classes.
+    // Progression E borrows B natural; its home scale remains A Phrygian.
+    let phrygian = progression_scale(&pad, 4);
+    assert_eq!(
+        (1..=phrygian.len())
+            .map(|tone| phrygian.note(tone, 0.0))
+            .collect::<Vec<_>>(),
+        [45, 46, 48, 50, 52, 53, 55]
+    );
+    // Custom stays in A minor when the selected window has only one triad.
     let custom = PadControls {
         progression: CUSTOM_PROGRESSION_INDEX as f32,
         chord_count: 1.0,
@@ -9063,7 +9126,7 @@ fn lead_scale_follow_walks_the_progression_scale_from_its_tonic() {
     };
     assert_eq!(
         progression_scale(&custom, CUSTOM_PROGRESSION_INDEX).len(),
-        3
+        7
     );
     assert_eq!(LeadFollow::from_value(1.0), LeadFollow::Scale);
     assert_eq!(LeadFollow::from_value(0.4), LeadFollow::Chord);

@@ -6,7 +6,7 @@ Durable product direction and architecture decisions.
 
 ## Ownership
 
-- `NORTH_STAR.md` owns product vision, the computer keyboard's priority, optional external-gear boundaries, and the distinction between song snapshots, performance documents, and rig configuration.
+- `NORTH_STAR.md` owns product vision, the computer keyboard's priority, optional external-gear boundaries, song snapshots versus performance documents and rig configuration, and the ban on bundled samples with allowance for live audio processing.
 - `PERFORMANCE.md` owns hub navigation, normal-mode gestures, the clock
   stop, and the Jump leader, phase contracts, and manual audio smoke.
 - `adr/` owns accepted architecture decisions. See `adr/AGENTS.md`.
