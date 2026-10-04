@@ -2780,8 +2780,8 @@ fn motion_grab_freezes_its_recent_window_and_keeps_navigation_on_both_terminals(
         };
         let address = ControlAddress::new("pad.level");
         assert_eq!(
-            read_clip(&immediate)[&address].samples,
-            read_clip(&delayed)[&address].samples
+            read_clip(&immediate)[&address].data,
+            read_clip(&delayed)[&address].data
         );
         assert_eq!(delayed.model.navigation, Navigation::default());
         assert_eq!(delayed.model.mode, InteractionMode::Browsing);
@@ -2831,6 +2831,202 @@ fn motion_grab_freezes_its_recent_window_and_keeps_navigation_on_both_terminals(
         let deleted = replay_with(&delayed_trace, capabilities, configure);
         assert!(read_clip(&deleted).is_empty());
         assert_ne!(deleted.model.navigation, Navigation::default());
+    }
+}
+
+#[test]
+fn motion_four_and_eight_bar_leaders_keep_base_edits_phase_and_lifecycle() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        for (key_char, duration) in [
+            ('4', MotionDuration::Beats16),
+            ('8', MotionDuration::Beats32),
+        ] {
+            let press = |code| key(0, code, InputPhase::Press);
+            let save = || modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
+            let configure =
+                |harness: ReplayHarness| harness.with_pad_capture_history().at_beat(8.0);
+            let address = ControlAddress::new("pad.level");
+            let saved = |result: &ReplayResult| {
+                decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap()
+            };
+            let mut events = vec![
+                TraceEvent::Resize {
+                    after_ms: 0,
+                    width: MIN_TERMINAL_WIDTH,
+                    height: MIN_TERMINAL_HEIGHT,
+                },
+                press(FixtureKey::Character(' ')),
+                TraceEvent::Idle { after_ms: 40 },
+                press(FixtureKey::Character(key_char)),
+                TraceEvent::Idle { after_ms: 40 },
+                save(),
+            ];
+            let grabbed = replay_with(&events, capabilities, configure);
+            assert!(
+                grabbed
+                    .frames
+                    .iter()
+                    .any(|frame| frame.text.contains("1/2/4/8 Grab")),
+                "{:?}",
+                grabbed.frames
+            );
+            assert!(
+                grabbed
+                    .frames
+                    .iter()
+                    .any(|frame| frame.activity.contains("shifts with base"))
+            );
+            let original = saved(&grabbed);
+            let original_clip = &original.automation.captures[&address];
+            assert_eq!(original_clip.duration, duration);
+            assert!(original_clip.is_relative() && original_clip.enabled);
+            events.extend([press(FixtureKey::Right), save()]);
+            let edited = replay_with(&events, capabilities, configure);
+            let edited_song = saved(&edited);
+            assert!(edited_song.controls.pad.level > original.controls.pad.level);
+            let edited_clip = &edited_song.automation.captures[&address];
+            assert!(edited_clip.enabled);
+            assert_eq!(edited_clip.data, original_clip.data);
+            assert_eq!(edited_clip.duration, original_clip.duration);
+            // Save rebases to its event clock; the added key takes 1 ms.
+            assert!((edited_clip.origin - original_clip.origin).abs() < 0.01);
+            assert_eq!(edited.model.mode, InteractionMode::Browsing);
+            assert_eq!(edited.model.navigation, Navigation::default());
+            // Numeric entry moves the base by a larger amount without taking over.
+            events.extend([
+                press(FixtureKey::Character('7')),
+                press(FixtureKey::Character('0')),
+                press(FixtureKey::Enter),
+                save(),
+            ]);
+            let numeric = replay_with(&events, capabilities, configure);
+            let numeric_song = saved(&numeric);
+            assert!((numeric_song.controls.pad.level - 0.7).abs() < 0.001);
+            let numeric_clip = &numeric_song.automation.captures[&address];
+            assert!(numeric_clip.enabled);
+            assert_eq!(numeric_clip.data, original_clip.data);
+            assert!((numeric_clip.origin - original_clip.origin).abs() < 0.02);
+            for (command, enabled) in [("motion bypass", false), ("motion resume", true)] {
+                events.extend(recipe_keys(command));
+                events.push(save());
+                let result = replay_with(&events, capabilities, configure);
+                let song = saved(&result);
+                let clip = &song.automation.captures[&address];
+                assert_eq!(clip.enabled, enabled);
+                assert_eq!(clip.data, original_clip.data);
+                assert!((clip.origin - original_clip.origin).abs() < 0.1);
+                assert_eq!(clip.duration, duration);
+            }
+            events.extend(recipe_keys("motion delete"));
+            events.extend([save(), press(FixtureKey::Down), press(FixtureKey::Tab)]);
+            let deleted = replay_with(&events, capabilities, configure);
+            assert!(saved(&deleted).automation.captures.is_empty());
+            assert_ne!(deleted.model.navigation, Navigation::default());
+            assert_eq!(deleted.model.mode, InteractionMode::Browsing);
+            assert!(deleted.deferred_inputs.is_empty());
+            // The searchable operation reaches the identical duration without a leader.
+            let mut palette = recipe_keys(&format!("grab {} bars", duration.beats() / 4));
+            palette.push(save());
+            let result = replay_with(&palette, capabilities, configure);
+            assert_eq!(
+                saved(&result).automation.captures[&address].duration,
+                duration
+            );
+        }
+    }
+}
+
+#[test]
+fn motion_choices_and_editor_fields_show_their_distinct_manual_edit_policy() {
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        let press = |code| key(0, code, InputPhase::Press);
+        let save = || modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
+        for field in [LfoField::Amount, LfoField::Shape] {
+            let configure = |harness: ReplayHarness| {
+                harness.with_session_edit(|session| {
+                    session
+                        .automation
+                        .open_or_create(ControlAddress::new("pad.level"));
+                })
+            };
+            let mut events = vec![
+                TraceEvent::Resize {
+                    after_ms: 0,
+                    width: MIN_TERMINAL_WIDTH,
+                    height: MIN_TERMINAL_HEIGHT,
+                },
+                press(FixtureKey::Character('f')),
+            ];
+            if field == LfoField::Shape {
+                events.extend(std::iter::repeat_n(press(FixtureKey::Down), 3));
+            }
+            events.extend([
+                press(FixtureKey::Right),
+                TraceEvent::Idle { after_ms: 4_000 },
+                press(FixtureKey::Character(' ')),
+                press(FixtureKey::Character('8')),
+                TraceEvent::Idle { after_ms: 40 },
+                save(),
+            ]);
+            let grabbed = replay_with(&events, capabilities, configure);
+            let song = decode_song_code(grabbed.saved_automation_code.as_deref().unwrap()).unwrap();
+            let label = if field == LfoField::Amount {
+                "amount"
+            } else {
+                "shape"
+            };
+            assert!(
+                grabbed.frames.iter().any(|frame| frame
+                    .text
+                    .lines()
+                    .any(|line| line.contains('▶') && line.contains(label))),
+                "the selected {label} row must be visible at 46x11"
+            );
+            let target = EditorMotionAddress {
+                control: ControlAddress::new("pad.level"),
+                lane_index: 0,
+                target: EditorMotionField::Lfo(field),
+            };
+            let original = &song.automation.editor_captures[&target];
+            assert_eq!(original.duration, MotionDuration::Beats32);
+            assert_eq!(original.is_relative(), field == LfoField::Amount);
+            let wording = if field == LfoField::Amount {
+                "shifts with base"
+            } else {
+                "edit bypasses"
+            };
+            assert!(
+                grabbed
+                    .frames
+                    .iter()
+                    .any(|frame| frame.activity.contains(wording)),
+                "{field:?}: {:?}",
+                grabbed.frames.last()
+            );
+            events.extend([press(FixtureKey::Right), save()]);
+            let edited = replay_with(&events, capabilities, configure);
+            let song = decode_song_code(edited.saved_automation_code.as_deref().unwrap()).unwrap();
+            let clip = &song.automation.editor_captures[&target];
+            assert_eq!(clip.enabled, field == LfoField::Amount);
+            assert_eq!(clip.data, original.data);
+            assert!((clip.origin - original.origin).abs() < 0.01);
+            assert_eq!(edited.final_owner(), Some("LFO"));
+            events.extend([
+                press(FixtureKey::Escape),
+                press(FixtureKey::Down),
+                press(FixtureKey::Tab),
+            ]);
+            assert_eq!(
+                replay_with(&events, capabilities, configure).final_owner(),
+                Some("BROWSE")
+            );
+        }
     }
 }
 

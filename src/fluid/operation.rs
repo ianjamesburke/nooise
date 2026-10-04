@@ -69,10 +69,11 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
+        Self::Motion(MotionAction::Grab(MotionDuration::Beats32)),
         Self::Motion(MotionAction::Bypass),
         Self::Motion(MotionAction::Resume),
         Self::Motion(MotionAction::Delete),
@@ -94,7 +95,21 @@ impl Operation {
             Self::Motion(action) => OperationSpec {
                 operation: self,
                 label: action.name(),
-                aliases: &[],
+                aliases: match action {
+                    MotionAction::Grab(MotionDuration::Beats4) => {
+                        &["grab 1 bar", "motion grab 1 bar"]
+                    }
+                    MotionAction::Grab(MotionDuration::Beats8) => {
+                        &["grab 2 bars", "motion grab 2 bars"]
+                    }
+                    MotionAction::Grab(MotionDuration::Beats16) => {
+                        &["grab 4 bars", "motion grab 4 bars"]
+                    }
+                    MotionAction::Grab(MotionDuration::Beats32) => {
+                        &["grab 8 bars", "motion grab 8 bars"]
+                    }
+                    _ => &[],
+                },
                 description: action.description(),
             },
             Self::Mix(action) => OperationSpec {

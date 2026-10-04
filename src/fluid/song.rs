@@ -29,8 +29,8 @@ use super::{
 const MAGIC: &[u8; 4] = b"NOOI";
 /// Control ids are interned as `SONG_ID_TABLE` indexes and continuous values
 /// are quantized to a u16 taper position. The container version is the
-/// format's version axis. Capture alone versions its playback-period payload;
-/// other record payloads carry no version byte of their own.
+/// format's version axis. Motion and chord override records also version
+/// their payloads when their musical interpretation changes.
 /// The one other axis is the dial-range epoch (`range_epoch.rs`), which dates
 /// what a stored modulation depth means rather than how bytes are laid out. Version 1 (length-
 /// prefixed ids, f32 values, its own nested automation payload versions) is
@@ -65,9 +65,10 @@ const EDITOR_MOTION_RECORD: u8 = 12;
 const CHORD_OVERRIDES_RECORD: u8 = 13;
 const CHORD_OVERRIDES_VERSION: u8 = 1;
 const PLANNED_MUTE_TAG: u8 = 0;
-/// Motion owns its true phrase length. The former fixed sixteen-beat capture
-/// payload is refused rather than reinterpreted as a shorter loop.
-const CAPTURE_WIRE_VERSION: u8 = 5;
+/// Relative Motion has an explicit reference; previous absolute sampled
+/// payloads are refused rather than given a different musical meaning.
+const CAPTURE_WIRE_VERSION: u8 = 6;
+const EDITOR_MOTION_WIRE_VERSION: u8 = 3;
 const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
@@ -144,6 +145,7 @@ pub(crate) enum SongCodeError {
     InvalidPadRhythmRows(u8),
     DuplicatePadRhythmRowsRecord,
     InvalidCapture,
+    UnsupportedMotionVersion(u8),
     InvalidChordOverrides,
     EvaluatedControls,
     InvalidLaneBypass,
@@ -185,6 +187,10 @@ impl fmt::Display for SongCodeError {
             ),
             Self::InvalidChordOverrides => write!(f, "song code contains invalid chord overrides"),
             Self::InvalidCapture => write!(f, "song code has invalid Motion data"),
+            Self::UnsupportedMotionVersion(version) => write!(
+                f,
+                "Motion format {version} is unsupported; re-record its loops in this version"
+            ),
             Self::InvalidLaneBypass => write!(f, "song code has invalid lane bypass data"),
             Self::MissingPrefix => write!(f, "song code must start with {CODE_PREFIX}"),
             Self::InvalidBase64 => write!(f, "song code is not valid base64url"),
@@ -331,7 +337,7 @@ pub(crate) fn encode_song_code_at_epoch(
                 return Err(SongCodeError::InvalidCapture);
             }
             if (address.spec().contextual(&song.controls).kind == ControlKind::Discrete)
-                != !clip.events.is_empty()
+                == clip.is_relative()
             {
                 return Err(SongCodeError::InvalidCapture);
             }
@@ -343,7 +349,10 @@ pub(crate) fn encode_song_code_at_epoch(
         write_record(CAPTURE_RECORD, &captures, &mut bytes)?;
     }
     if !song.automation.editor_captures.is_empty() {
-        let mut fields = vec![2, song.automation.editor_captures.len() as u8];
+        let mut fields = vec![
+            EDITOR_MOTION_WIRE_VERSION,
+            song.automation.editor_captures.len() as u8,
+        ];
         if song.automation.captures.len() + song.automation.editor_captures.len()
             > super::MAX_CAPTURES
         {
@@ -557,7 +566,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     for (address, clip) in &song.automation.captures {
         if !super::capture_eligible(&address.spec().contextual(&song.controls))
             || (address.spec().contextual(&song.controls).kind == ControlKind::Discrete)
-                != !clip.events.is_empty()
+                == clip.is_relative()
             || (parse_module_slot_id(address.id()).is_some()
                 && super::module_slot_row(address.id(), &song.controls)
                     .is_none_or(|(slot, _)| slot.kind().is_none()))
@@ -986,17 +995,14 @@ fn validate_capture(clip: &super::CaptureClip) -> Result<(), SongCodeError> {
     {
         return Err(SongCodeError::InvalidCapture);
     }
-    if !clip.events.is_empty()
-        && (clip.events.len() > super::MAX_MOTION_EVENTS
-            || clip.events[0].tick != 0
-            || clip
-                .events
+    if let super::MotionData::Absolute { events } = &clip.data
+        && (events.is_empty()
+            || events.len() > super::MAX_MOTION_EVENTS
+            || events[0].tick != 0
+            || events
                 .iter()
                 .any(|event| usize::from(event.tick) >= usize::from(clip.duration.beats()) * 256)
-            || clip
-                .events
-                .windows(2)
-                .any(|pair| pair[0].tick >= pair[1].tick))
+            || events.windows(2).any(|pair| pair[0].tick >= pair[1].tick))
     {
         return Err(SongCodeError::InvalidCapture);
     }
@@ -1008,16 +1014,20 @@ fn write_motion_clip(clip: &super::CaptureClip, bytes: &mut Vec<u8>) {
     bytes.push(u8::from(clip.enabled));
     bytes.extend_from_slice(&clip.origin.to_le_bytes());
     bytes.extend_from_slice(&clip.launch.to_le_bytes());
-    if clip.events.is_empty() {
-        bytes.push(0);
-        bytes.push(clip.duration.samples() as u8);
-        bytes.extend_from_slice(&clip.samples[..clip.duration.samples()]);
-    } else {
-        bytes.push(1);
-        bytes.push(clip.events.len() as u8);
-        for event in &clip.events {
-            bytes.extend_from_slice(&event.tick.to_le_bytes());
-            bytes.extend_from_slice(&event.position.to_le_bytes());
+    match &clip.data {
+        super::MotionData::Relative { reference, samples } => {
+            bytes.push(0);
+            bytes.extend_from_slice(&reference.to_le_bytes());
+            bytes.push(clip.duration.samples() as u8);
+            bytes.extend_from_slice(&samples[..clip.duration.samples()]);
+        }
+        super::MotionData::Absolute { events } => {
+            bytes.push(1);
+            bytes.push(events.len() as u8);
+            for event in events {
+                bytes.extend_from_slice(&event.tick.to_le_bytes());
+                bytes.extend_from_slice(&event.position.to_le_bytes());
+            }
         }
     }
 }
@@ -1065,7 +1075,7 @@ fn validate_editor_motion_target(
     validate_capture(clip)?;
     if target.lane_index >= MAX_AUTOMATION_LANES_PER_KIND
         || matches!(target.target, EditorMotionField::Step(StepTarget::Value(index)) if index >= MAX_LFO_STEPS)
-        || target.target.is_discrete() != !clip.events.is_empty()
+        || target.target.is_discrete() == clip.is_relative()
         || match target.target.kind() {
             ModKind::Lfo => automation
                 .route_at(target.control, target.lane_index)
@@ -1085,6 +1095,7 @@ fn motion_duration_tag(duration: super::MotionDuration) -> u8 {
         super::MotionDuration::Beats4 => 0,
         super::MotionDuration::Beats8 => 1,
         super::MotionDuration::Beats16 => 2,
+        super::MotionDuration::Beats32 => 3,
     }
 }
 
@@ -1093,6 +1104,7 @@ fn motion_duration_from_tag(tag: u8) -> Option<super::MotionDuration> {
         0 => Some(super::MotionDuration::Beats4),
         1 => Some(super::MotionDuration::Beats8),
         2 => Some(super::MotionDuration::Beats16),
+        3 => Some(super::MotionDuration::Beats32),
         _ => None,
     }
 }
@@ -1110,6 +1122,7 @@ mod capture_codec_tests {
         payload.extend_from_slice(&0.0f64.to_le_bytes());
         payload.extend_from_slice(&0.0f64.to_le_bytes());
         payload.push(0);
+        payload.extend_from_slice(&0u16.to_le_bytes());
         payload.push(duration.samples() as u8);
         payload.extend_from_slice(&[128; super::super::CAPTURE_SAMPLES]);
         payload
@@ -1130,7 +1143,7 @@ mod capture_codec_tests {
         let original = payload("pad.level");
         assert!(decode(&original).is_ok());
         let mut invalid = original.clone();
-        invalid[4] = 3;
+        invalid[4] = 4;
         assert_eq!(decode(&invalid).err(), Some(SongCodeError::InvalidCapture));
         invalid = original.clone();
         invalid[5] = 2;
@@ -1172,17 +1185,42 @@ mod capture_codec_tests {
     #[test]
     fn legacy_capture_records_refuse_instead_of_changing_duration() {
         let mut old = payload("pad.level");
-        old[0] = 3;
-        assert_eq!(decode(&old).err(), Some(SongCodeError::InvalidCapture));
-        old[0] = 4;
-        assert_eq!(decode(&old).err(), Some(SongCodeError::InvalidCapture));
+        for version in [3, 4, 5] {
+            old[0] = version;
+            assert_eq!(
+                decode(&old).err(),
+                Some(SongCodeError::UnsupportedMotionVersion(version))
+            );
+        }
+        for version in [1, 2] {
+            let code =
+                code_from_records(CONTAINER_VERSION, &[(EDITOR_MOTION_RECORD, &[version, 0])]);
+            assert_eq!(
+                decode_song_code(&code).err(),
+                Some(SongCodeError::UnsupportedMotionVersion(version))
+            );
+        }
+    }
+
+    #[test]
+    fn relative_motion_records_reject_bad_representation_and_trailing_data() {
+        let original = payload("pad.level");
+        for (offset, value) in [(22, 7), (25, 0), (25, 129)] {
+            let mut bytes = original.clone();
+            bytes[offset] = value;
+            assert_eq!(decode(&bytes).err(), Some(SongCodeError::InvalidCapture));
+        }
+        let mut bytes = original;
+        bytes.push(0);
+        assert_eq!(decode(&bytes).err(), Some(SongCodeError::InvalidCapture));
     }
 }
 
 fn read_captures(payload: &[u8], automation: &mut AutomationState) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(payload);
-    if reader.u8()? != CAPTURE_WIRE_VERSION {
-        return Err(SongCodeError::InvalidCapture);
+    let version = reader.u8()?;
+    if version != CAPTURE_WIRE_VERSION {
+        return Err(SongCodeError::UnsupportedMotionVersion(version));
     }
     let count = reader.u8()? as usize;
     if count > super::MAX_CAPTURES {
@@ -1213,8 +1251,9 @@ fn read_editor_motion(
     automation: &mut AutomationState,
 ) -> Result<(), SongCodeError> {
     let mut reader = Reader::new(payload);
-    if reader.u8()? != 2 {
-        return Err(SongCodeError::InvalidCapture);
+    let version = reader.u8()?;
+    if version != EDITOR_MOTION_WIRE_VERSION {
+        return Err(SongCodeError::UnsupportedMotionVersion(version));
     }
     let count = reader.u8()? as usize;
     if count == 0 || count > super::MAX_CAPTURES {
@@ -1253,33 +1292,35 @@ fn read_motion_clip(reader: &mut Reader<'_>) -> Result<super::CaptureClip, SongC
     let origin = f64::from_le_bytes(anchor);
     anchor.copy_from_slice(reader.bytes(8)?);
     let launch = f64::from_le_bytes(anchor);
-    let mut samples = [0; super::CAPTURE_SAMPLES];
-    let mut events = Vec::new();
-    match reader.u8()? {
+    let data = match reader.u8()? {
         0 => {
+            let reference = reader.u16()?;
             if reader.u8()? as usize != duration.samples() {
                 return Err(SongCodeError::InvalidCapture);
             }
+            let mut samples = [0; super::CAPTURE_SAMPLES];
             samples[..duration.samples()].copy_from_slice(reader.bytes(duration.samples())?);
+            super::MotionData::Relative { reference, samples }
         }
         1 => {
             let count = reader.u8()? as usize;
             if count == 0 || count > super::MAX_MOTION_EVENTS {
                 return Err(SongCodeError::InvalidCapture);
             }
+            let mut events = Vec::with_capacity(count);
             for _ in 0..count {
                 events.push(super::MotionEvent {
                     tick: reader.u16()?,
                     position: reader.u16()?,
                 });
             }
+            super::MotionData::Absolute { events }
         }
         _ => return Err(SongCodeError::InvalidCapture),
-    }
+    };
     let clip = super::CaptureClip {
         duration,
-        samples,
-        events,
+        data,
         origin,
         launch,
         enabled,

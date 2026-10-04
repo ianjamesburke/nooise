@@ -248,6 +248,41 @@ impl AutomationSurface<'_> {
         }
     }
 
+    fn motion_target(&self) -> Option<EditorMotionAddress> {
+        let (control, lane_index, target) = match self {
+            Self::Lfo {
+                selected,
+                address,
+                lane_index,
+                state,
+                ..
+            } => {
+                let target =
+                    match lfo_submenu_rows(state, *address).get(selected.checked_sub(1)?)? {
+                        LfoSubRow::Field(field) => EditorMotionField::Lfo(*field),
+                        LfoSubRow::Step(step) => EditorMotionField::Step(*step),
+                    };
+                (*address, *lane_index, target)
+            }
+            Self::Envelope {
+                selected,
+                address,
+                lane_index,
+                ..
+            } => (
+                *address,
+                *lane_index,
+                EditorMotionField::Envelope(env_field_at(*selected)?),
+            ),
+            Self::Unavailable { .. } => return None,
+        };
+        Some(EditorMotionAddress {
+            control,
+            lane_index,
+            target,
+        })
+    }
+
     pub(crate) fn active_address(&self) -> Option<ControlAddress> {
         match self {
             Self::Lfo { address, .. } | Self::Envelope { address, .. } => Some(*address),
@@ -297,12 +332,23 @@ impl<'a> UiViewModel<'a> {
         let gestures = gesture_activities(session, presentation.gesture_now_seconds);
         let holding_gesture = !gestures.is_empty();
         let stopped = session.transport == Transport::Stopped;
-        let capture = items.get(navigation.selected).and_then(|item| {
-            session
-                .automation
-                .captures
-                .get(&ControlAddress::new(item.id))
-        });
+        let editor = match &mode {
+            ModeSurface::Automation(surface) => Some(surface),
+            ModeSurface::Numeric { resume, .. } => resume.as_ref(),
+            _ => None,
+        };
+        let capture = if let Some(editor) = editor.filter(|editor| editor.selected() > 0) {
+            editor
+                .motion_target()
+                .and_then(|target| session.automation.editor_captures.get(&target))
+        } else {
+            items.get(navigation.selected).and_then(|item| {
+                session
+                    .automation
+                    .captures
+                    .get(&ControlAddress::new(item.id))
+            })
+        };
         let activity_live = holding_gesture || stopped || capture.is_some();
         let activity = match (stopped, holding_gesture) {
             // Stopped leads the row in every owner, so silence is never
@@ -311,9 +357,14 @@ impl<'a> UiViewModel<'a> {
             (true, false) => "■ STOPPED · Shift+P play".to_string(),
             (false, true) => gesture_activity_line(&gestures),
             (false, false) if capture.is_some() => format!(
-                "↻ {} beats · {} · / bypass resume delete",
+                "↻ {} beats · {} · {}",
                 capture.map_or(0, |clip| clip.duration.beats()),
-                capture.map_or("", |clip| clip.status(telemetry.beat))
+                capture.map_or("", |clip| clip.status(telemetry.beat)),
+                capture.map_or("", |clip| if clip.is_relative() {
+                    "shifts with base"
+                } else {
+                    "edit bypasses"
+                })
             ),
             (false, false) if presentation.gesture_holds_available => gesture_idle_hint(),
             (false, false) => String::new(),
@@ -1221,7 +1272,7 @@ mod tests {
             "j\u{2420}Vol",
             "k\u{2420}Filter",
             "m\u{2420}Mute",
-            "1/2/4\u{2420}Grab",
+            "1/2/4/8\u{2420}Grab",
             "Esc\u{2420}\u{2420}Cancel",
         ] {
             assert!(rendered.contains(text), "missing {text:?}:\n{rendered}");

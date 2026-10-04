@@ -294,11 +294,14 @@ sentence before the boundary cancels it. The audio gate leads into the target
 downbeat so its first onset has the new mute state. Saving rebases the remaining
 wait to song beat zero.
 
-`Space 1/2/4` and the corresponding palette operations capture 4/8/16 beats
+`Space 1/2/4/8` and the corresponding palette operations capture 4/8/16/32 beats
 ending at the nearest bar. A future anchor queues; a past anchor joins at its
-running phase. Discrete events keep exact values and continuous curves hold
-their terminal value until the next loop. Field-targeted Motion returns to its
-LFO/envelope editor. Explicit Motion lifecycle operations target that field;
+running phase. Numeric curves offset the current authored base; direct edits
+keep their phase and enabled state. All Motion/LFO/envelope contributions sum
+before one clamp/snap/de-click pass, and UI markers use the same effective
+lanes. Recorded choices retain absolute values and bypass on manual edits.
+Both kinds hold their terminal value until the next loop. Field-targeted Motion
+returns to its LFO/envelope editor, with the selected field kept in view. Explicit Motion lifecycle operations target that field;
 bare `/bypass`, `/resume`, and `/delete` continue to target the open lane.
 Active, bypassed, and queued loops retain their phase through song save/load;
 legacy payloads are refused. Motion Record remains deferred.

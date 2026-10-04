@@ -119,6 +119,7 @@ impl RecipeId {
 pub(crate) struct RecipeTarget {
     pub(crate) id: &'static str,
     module_topology_revision: Option<u64>,
+    chord_progression: Option<i8>,
 }
 
 impl RecipeTarget {
@@ -134,6 +135,9 @@ impl RecipeTarget {
         Some(Self {
             id,
             module_topology_revision,
+            chord_progression: parse_chord_slot_id(id).map(|_| {
+                PROGRESSION_SONG_VALUES[progression_index(snapshot.controls.pad.progression)]
+            }),
         })
     }
 

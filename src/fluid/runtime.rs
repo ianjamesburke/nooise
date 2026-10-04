@@ -682,7 +682,7 @@ fn palette_control_binding(code: &PhysicalKey) -> Option<Intent> {
 
 /// The Jump leader's keyboard: Space re-arms it, `INSTRUMENTS` keys open a
 /// layer, `PARAMETERS` keys address the page already open, `m` plans a mute,
-/// and `1/2/4` grabs Motion. Every route uses Press, without a capability
+/// and `1/2/4/8` grabs Motion. Every route uses Press, without a capability
 /// branch. The key sets are disjoint and retain their meanings at every
 /// stage, so the binding does not read the mode.
 fn performance_binding(code: &PhysicalKey) -> Option<Intent> {
@@ -701,6 +701,7 @@ fn performance_binding(code: &PhysicalKey) -> Option<Intent> {
             '1' => Some(Intent::GrabMotion(super::MotionDuration::Beats4)),
             '2' => Some(Intent::GrabMotion(super::MotionDuration::Beats8)),
             '4' => Some(Intent::GrabMotion(super::MotionDuration::Beats16)),
+            '8' => Some(Intent::GrabMotion(super::MotionDuration::Beats32)),
             _ => None,
         })
         .or_else(|| {
@@ -720,6 +721,7 @@ mod motion_leader_tests {
             ('1', MotionDuration::Beats4),
             ('2', MotionDuration::Beats8),
             ('4', MotionDuration::Beats16),
+            ('8', MotionDuration::Beats32),
         ] {
             assert_eq!(
                 performance_binding(&PhysicalKey::Character(key)),

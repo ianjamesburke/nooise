@@ -111,8 +111,10 @@ Capture is retired as a public concept. Motion is a peer lane type alongside
 LFO and envelope.
 
 A Motion lane has one target, one duration, phase, enabled state, and a
-launch point. Gain, continuous, and timing controls use eight position
-samples per beat. Discrete controls use changes on a 1/256-beat grid,
+launch point. Gain, continuous, and timing controls save movement relative
+to the authored base at publication. Four-, eight-, and sixteen-beat loops
+use eight position samples per beat; thirty-two-beat loops use four, keeping
+the same 128-sample ceiling. Discrete controls use changes on a 1/256-beat grid,
 with an initial value and held tail. LFO and envelope editor fields are
 addressed by parent control, lane family, index, and field; Steps count,
 glide, and values use the same path. Shape, trigger, and count use discrete
@@ -126,11 +128,12 @@ Sampled phrase sizes are:
 | 4 beats | 32 |
 | 8 beats | 64 |
 | 16 beats | 128 |
+| 32 beats | 128 |
 
 The current palette choices are:
 
-- `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16`: use the nearest bar
-  downbeat as the history end and loop anchor. A future anchor queues; a past
+- `Motion Grab 4`, `Motion Grab 8`, `Motion Grab 16`, and `Motion Grab 32`:
+  use the nearest bar downbeat as the history end and loop anchor. A future anchor queues; a past
   anchor joins its running phase.
 - `Motion Bypass`, `Motion Resume`, and `Motion Delete`: operate on the
   selected control or editor field's Motion.
@@ -144,28 +147,35 @@ The proposed Record lifecycle is `ARMED NEXT BAR`, `REC 8`, then `LOOP`.
 Escape before or during recording cancels it. A completed record atomically
 replaces the old Motion on that knob.
 
-Turning a knob while a Motion loop plays bypasses the loop and gives the
-player the current value. Another Grab replaces the loop. In the deferred
-Record design, edits during an armed or recording Motion become the recorded
-movement instead.
+Turning a numeric knob while Motion plays changes its base without bypassing
+or restarting the loop. Playback adds the saved movement to that base, then
+adds the LFO/envelope contributions before one clamp/snap/de-click pass. The
+activity row says `shifts with base`. Numeric editor fields follow the same
+rule from their authored values, without accumulating prior playback output.
+Recorded choices remain absolute: their activity says `edit bypasses`, and a
+manual edit bypasses the loop. Another Grab replaces either kind of loop.
+In the deferred Record design, edits during an armed or recording Motion
+become the recorded movement instead.
 
 The current version allows one Motion per target and up to sixteen live Motion
-loops. It excludes overdub, relative/additive movement, and multiple
-Motion lanes on one knob. `Space 1`, `Space 2`, and `Space 4` are the fast
-paths for one-, two-, and four-bar Grab; the palette retains the explicit
-Motion choices.
+loops. It excludes overdub and multiple Motion lanes on one knob. `Space 1`,
+`Space 2`, `Space 4`, and `Space 8` are the fast paths for one-, two-, four-,
+and eight-bar Grab. The palette retains explicit Motion choices and aliases
+such as `grab 8 bars`.
 
 ## State and persistence
 
 Completed loops and queued launches belong in the aggregate live session with
 the other automation state. A save captures target, duration, enabled state,
-phase, admission delay, and samples or events, rebased to song beat zero.
+phase, admission delay, and relative samples plus their reference or absolute
+events, rebased to song beat zero.
 Loading restores active, bypassed, and queued loops at their saved phase.
 
-The current fixed Capture record cannot be silently reinterpreted as Motion.
-A Motion format cut validates target, duration, sample count, phase, duplicate
-targets, control eligibility, and range epochs. Old Capture payload semantics
-are refused. Built-in states are re-authored through the current encoder if
+Registry Motion payload version 6 and editor Motion version 3 validate target,
+duration, representation, reference, sample/event bounds, phase, duplicate
+targets, control eligibility, and range epochs. Older Motion/Capture semantics
+are refused; absolute curves are never silently reinterpreted as relative.
+Built-in states are re-authored through the current encoder if
 they carry affected data.
 
 Deferred Record must also persist armed and mid-record state. Its production
@@ -199,13 +209,13 @@ catalog-authoring rules and the tested precedence.
    make its target and cancellation visible. The audio engine commits the
    action at its downbeat after a click-free lead-in; the production tick is
    the fallback when audio is absent.
-4. Done: `Motion Grab 4`, `Motion Grab 8`, and `Motion Grab 16` use
+4. Done: `Motion Grab 4`, `Motion Grab 8`, `Motion Grab 16`, and `Motion Grab 32` use
    their nearest bar downbeat as both history end and loop phase anchor.
-   `Space 1`, `Space 2`, and `Space 4` are the fast paths for one, two, and
-   four bars. The Motion wire format stores the real duration and either its
-   active samples or timed events, refusing legacy Capture payloads rather
-   than reinterpreting them. Registry controls and every LFO/envelope editor
-   field can each carry a loop. The terminal value holds until its
+   `Space 1`, `Space 2`, `Space 4`, and `Space 8` are the fast paths for one, two,
+   four, and eight bars. The Motion wire format stores the real duration and
+   either relative samples plus a reference or absolute timed events,
+   refusing legacy payloads rather than reinterpreting them. Registry controls
+   and every LFO/envelope editor field can each carry a loop. The terminal value holds until its
    next boundary. Ordinary lane lifecycle actions remain separate from
    explicit Motion actions. Record and a shared lane editor are deferred.
 5. Only after a second musical action needs it, consider a shared internal
@@ -230,7 +240,8 @@ For Motion:
    downbeat. Confirm queued and immediate joins keep the right phase.
 2. Repeat on discrete controls and LFO/envelope fields, including Steps.
    Confirm exact discrete events and the held terminal value.
-3. Touch an active Motion and confirm bypass. Resume on the next bar while
+3. Edit a numeric base and confirm Motion keeps its phase and shifts with it.
+   Edit a recorded choice and confirm bypass. Resume on the next bar while
    retaining phase. Bare lane actions must still address the open LFO or
    envelope rather than its field's Motion.
 4. Save and load active, bypassed, and queued loops. Verify compact payload
@@ -248,4 +259,4 @@ keypress, edits during recording, and save/load of armed and mid-record state.
 - Whether a planned layer action lands on the next bar or, for selected
   actions, a chord boundary. The first planned mute tests next bar only.
 - State Mark recall needs a distinct prefix or an explicit palette operation.
-  `Space 1/2/4` already belong to Motion Grab; stint 0062 must preserve them.
+  `Space 1/2/4/8` already belong to Motion Grab; stint 0062 must preserve them.

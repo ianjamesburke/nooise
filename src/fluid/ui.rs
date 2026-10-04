@@ -352,6 +352,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         }
         rows.push(Line::from(spans));
 
+        let effective = automation.effective_lanes(address, beat);
         let lfo_count = automation.routes_for(address).count();
         for (lane_index, route) in automation.routes_for(address).enumerate() {
             let lane_open = lfo_open_here && automation.active_lane_index() == Some(lane_index);
@@ -364,7 +365,17 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 else {
                     unreachable!("LFO editor flag requires LFO surface");
                 };
-                push_lfo_editor_rows(&mut rows, lfo_state, route, address, frame);
+                if active && frame.lfo_selected > 0 {
+                    selected_line = rows.len() + frame.lfo_selected - 1;
+                }
+                push_lfo_editor_rows(
+                    &mut rows,
+                    lfo_state,
+                    route,
+                    &effective.lfos()[lane_index],
+                    address,
+                    frame,
+                );
             }
             let label = format!(
                 "LFO {}/{}{}",
@@ -373,7 +384,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 if route.enabled { "" } else { " bypassed" }
             );
             rows.push(lfo_lane_line_with_label(
-                route,
+                &effective.lfos()[lane_index],
                 beat,
                 frame.bar_w,
                 lane_open,
@@ -386,6 +397,9 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             let lane_open = env_open_here && automation.active_lane_index() == Some(lane_index);
             if lane_open {
                 for (fi, field) in EnvField::ALL.iter().enumerate() {
+                    if active && frame.lfo_selected == fi + 1 {
+                        selected_line = rows.len();
+                    }
                     // A zero decay keeps its native display rather than a
                     // flipped 0 ms.
                     let value_display = field
@@ -401,6 +415,20 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                         &frame.numeric,
                         frame.bar_w,
                         ENV_PALETTE,
+                        automation
+                            .editor_motion_position(
+                                EditorMotionAddress {
+                                    control: address,
+                                    lane_index,
+                                    target: EditorMotionField::Envelope(*field),
+                                },
+                                beat,
+                            )
+                            .map(|_| {
+                                field
+                                    .scale()
+                                    .ratio(effective.envelopes()[lane_index].field_value(*field))
+                            }),
                     );
                     add_editor_motion_badge(
                         &mut line,
@@ -421,7 +449,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 if route.enabled { "" } else { " bypassed" }
             );
             rows.push(env_lane_line_with_label(
-                route,
+                &effective.envelopes()[lane_index],
                 frame.mod_ctx,
                 frame.bar_w,
                 lane_open,
@@ -489,6 +517,7 @@ fn push_lfo_editor_rows(
     rows: &mut Vec<Line<'static>>,
     lfo_state: &AutomationState,
     route: &LfoRoute,
+    effective_route: &LfoRoute,
     address: ControlAddress,
     frame: &PanelFrame<'_, '_>,
 ) {
@@ -511,6 +540,16 @@ fn push_lfo_editor_rows(
                     &frame.numeric,
                     frame.bar_w,
                     LFO_PALETTE,
+                    lfo_state
+                        .editor_motion_position(
+                            EditorMotionAddress {
+                                control: address,
+                                lane_index: lfo_state.active_lane_index().unwrap_or(0),
+                                target: EditorMotionField::Lfo(field),
+                            },
+                            frame.mod_ctx.beat,
+                        )
+                        .map(|_| field.scale().ratio(effective_route.field_value(field))),
                 );
                 add_editor_motion_badge(
                     &mut line,
@@ -535,8 +574,20 @@ fn push_lfo_editor_rows(
                     &frame.numeric,
                     frame.bar_w,
                     LFO_PALETTE,
+                    lfo_state
+                        .editor_motion_position(
+                            EditorMotionAddress {
+                                control: address,
+                                lane_index: lfo_state.active_lane_index().unwrap_or(0),
+                                target: EditorMotionField::Step(target),
+                            },
+                            frame.mod_ctx.beat,
+                        )
+                        .map(|_| {
+                            LfoRoute::step_scale(target).ratio(effective_route.step_value(target))
+                        }),
                 );
-                if matches!(target, StepTarget::Value(step) if route.active_step_at(frame.view.telemetry.beat) == Some(step))
+                if matches!(target, StepTarget::Value(step) if effective_route.active_step_at(frame.view.telemetry.beat) == Some(step))
                 {
                     line.spans.push(Span::styled(
                         " ♪",
@@ -591,10 +642,10 @@ fn slider_markers(
         spec = clip.playback_spec(spec, mod_ctx.beat);
     }
     let capture_delta = automation.capture_delta(address, item.value, controls, mod_ctx.beat);
-    let base = modulated_control_value_from_delta(&spec, item.value, capture_delta);
     let ratio_of = |value: f32| spec.ratio(value, controls);
-    let lfos = automation.lfo_lanes(address);
-    let envelopes = automation.envelope_lanes(address);
+    let effective = automation.effective_lanes(address, mod_ctx.beat);
+    let lfos = effective.lfos();
+    let envelopes = effective.envelopes();
     let has_lfo = lfos
         .iter()
         .any(|route| route.enabled && route.depth_ratio > f32::EPSILON);
@@ -602,26 +653,22 @@ fn slider_markers(
         .iter()
         .any(|route| route.enabled && route.amount.abs() > f32::EPSILON);
     let marker = |l: &[LfoRoute], e: &[EnvelopeRoute]| {
-        ratio_of(modulated_control_value_full(&spec, l, e, base, mod_ctx))
+        ratio_of(modulated_control_value_from_delta(
+            &spec,
+            item.value,
+            capture_delta + automation_delta(l, e, mod_ctx),
+        ))
     };
     // While an editor is open on this control, faintly shade the full reach of
     // every active source (its full throw, not just the live instant) so
     // turning a depth/amount knob previews how far it can push the effective
     // value.
-    let mod_range = spec.max - spec.min;
     let shadow = editor_here.then(|| {
-        let mut lo = base;
-        let mut hi = base;
         let lfo_depth: f32 = lfos
             .iter()
             .filter(|route| route.enabled)
             .map(|route| route.depth_ratio.clamp(0.0, 1.0))
             .sum();
-        if lfo_depth > f32::EPSILON {
-            let swing = mod_range * lfo_depth;
-            lo = lo.min(base - swing);
-            hi = hi.max(base + swing);
-        }
         let envelope_min: f32 = envelopes
             .iter()
             .filter(|route| route.enabled)
@@ -632,11 +679,16 @@ fn slider_markers(
             .filter(|route| route.enabled)
             .map(|route| route.amount.clamp(0.0, 1.0))
             .sum();
-        lo = lo.min(base + mod_range * envelope_min);
-        hi = hi.max(base + mod_range * envelope_max);
+        let edge = |delta| {
+            ratio_of(modulated_control_value_from_delta(
+                &spec,
+                item.value,
+                capture_delta + delta,
+            ))
+        };
         (
-            ratio_of(lo.clamp(spec.min, spec.max)),
-            ratio_of(hi.clamp(spec.min, spec.max)),
+            edge(-lfo_depth + envelope_min),
+            edge(lfo_depth + envelope_max),
         )
     });
     SliderMarkers {
@@ -952,7 +1004,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("k", "filter"),
                 ("m", "mute next bar"),
                 ("Space j/k", "this page"),
-                ("Space 1/2/4", "grab 1/2/4 bars"),
+                ("Space 1/2/4/8", "grab 1/2/4/8 bars"),
             ],
         ],
     ));
@@ -1033,12 +1085,12 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
                 .collect();
             lines.push(Line::from(vec![
                 Span::styled(format!("{} ", PARAMETERS[0].key), key_style),
-                Span::styled("Vol    ", label_style),
+                Span::styled("Vol  ", label_style),
                 Span::styled(format!("{} ", PARAMETERS[1].key), key_style),
                 Span::styled("Filter ", label_style),
                 Span::styled("m ", key_style),
                 Span::styled("Mute ", label_style),
-                Span::styled("1/2/4 ", key_style),
+                Span::styled("1/2/4/8 ", key_style),
                 Span::styled("Grab", label_style),
             ]));
             lines.push(single("Esc", "Cancel"));
@@ -1049,7 +1101,7 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
             single(&PARAMETERS[0].key.to_string(), PARAMETERS[0].label),
             single(&PARAMETERS[1].key.to_string(), PARAMETERS[1].label),
             single("m", "Mute next bar"),
-            single("1/2/4", "Grab 1/2/4 bars"),
+            single("1/2/4/8", " Grab 1/2/4/8 bars"),
             single("Esc", "Cancel"),
         ],
     };
@@ -1122,6 +1174,7 @@ fn field_line(
     numeric: &NumericDisplay<'_>,
     bar_w: usize,
     palette: FieldPalette,
+    motion_position: Option<f32>,
 ) -> Line<'static> {
     let style = palette.style(active);
     let prefix = if active { "▶ " } else { "  " };
@@ -1129,7 +1182,10 @@ fn field_line(
     let mut spans = vec![Span::styled(format!("{prefix}  {label:<13} "), style)];
     spans.extend(slider_spans(
         dial.ratio(),
-        SliderMarkers::default(),
+        SliderMarkers {
+            effective: motion_position,
+            ..SliderMarkers::default()
+        },
         bar_w,
         style,
     ));
@@ -1375,5 +1431,175 @@ mod row_scroll_tests {
         // Never past the end of the list.
         assert_eq!(row_scroll(39, 40, 10), 30);
         assert_eq!(row_scroll(39, 40, 0), 39);
+    }
+}
+
+#[cfg(test)]
+mod motion_render_tests {
+    use super::*;
+
+    fn with_frame(session: &LiveSessionSnapshot, check: impl FnOnce(&PanelFrame<'_, '_>)) {
+        let model = interaction::InteractionModel {
+            mode: interaction::InteractionMode::Automation(interaction::AutomationMode::Lfo {
+                depth: interaction::LfoDepth::Editor,
+                selected: 1,
+            }),
+            ..interaction::InteractionModel::default()
+        };
+        let fluid = RippleField::new();
+        let flipped = FlippedUnits::new();
+        let view = UiViewModel::project(ViewProjection {
+            interaction: &model,
+            session,
+            telemetry: TelemetryView {
+                beat: 3.0,
+                ..TelemetryView::default()
+            },
+            presentation: ViewPresentation {
+                fluid: &fluid,
+                flipped: &flipped,
+                cursor_visible: true,
+                notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
+            },
+        });
+        let ModeSurface::Automation(surface) = &view.mode else {
+            panic!("LFO editor")
+        };
+        check(&PanelFrame {
+            view: &view,
+            automation: Some(surface),
+            lfo_selected: 1,
+            numeric: NumericDisplay {
+                entry: None,
+                cursor_visible: true,
+            },
+            mod_ctx: ModContext {
+                beat: 3.0,
+                kick_interval_beats: 1.0,
+                kick_offset_beats: 0.0,
+            },
+            active_slot: 0,
+            bar_w: 12,
+        });
+    }
+
+    fn relative(sample: u8, reference: u16) -> CaptureClip {
+        CaptureClip {
+            duration: MotionDuration::Beats32,
+            data: MotionData::Relative {
+                reference,
+                samples: [sample; CAPTURE_SAMPLES],
+            },
+            origin: 0.0,
+            launch: 0.0,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn motion_marker_sums_unclamped_base_and_effective_editor_lanes() {
+        let address = ControlAddress::new("pad.level");
+        let mut session = LiveSessionSnapshot::from_controls(FluidControls::default());
+        session.controls.pad.level = 0.9;
+        session.automation.open_or_create(address);
+        let route = session.automation.route_mut(address).unwrap();
+        route.shape = LfoShape::Sine;
+        route.cycle_beats = 4.0;
+        route.phase_offset_beats = 0.0;
+        route.depth_ratio = 0.8;
+        session
+            .automation
+            .captures
+            .insert(address, relative(204, 13_107));
+        with_frame(&session, |frame| {
+            let marker = slider_markers(&frame.view.items[0], address, true, frame);
+            // 0.9 base + (0.8 saved - 0.2 reference) - 0.8 LFO = 0.7.
+            // Clamping Motion first would incorrectly show 0.2.
+            assert!((marker.effective.unwrap() - 0.7).abs() < 0.0001);
+        });
+        session.automation.editor_captures.insert(
+            EditorMotionAddress {
+                control: address,
+                lane_index: 0,
+                target: EditorMotionField::Lfo(LfoField::Amount),
+            },
+            relative(51, 26_214), // depth moves down 0.2 from its authored 0.8.
+        );
+        with_frame(&session, |frame| {
+            let marker = slider_markers(&frame.view.items[0], address, true, frame);
+            assert!((marker.effective.unwrap() - 0.9).abs() < 0.0001);
+        });
+        assert_eq!(session.automation.route(address).unwrap().depth_ratio, 0.8);
+    }
+
+    #[test]
+    fn steps_playhead_tracks_motion_count_while_editor_values_remain_authored() {
+        let address = ControlAddress::new("pad.level");
+        let mut session = LiveSessionSnapshot::from_controls(FluidControls::default());
+        session.automation.open_or_create(address);
+        let route = session.automation.route_mut(address).unwrap();
+        route.shape = LfoShape::Steps;
+        route.cycle_beats = 1.0;
+        route.step_count = 4;
+        session.automation.editor_captures.insert(
+            EditorMotionAddress {
+                control: address,
+                lane_index: 0,
+                target: EditorMotionField::Step(StepTarget::Count),
+            },
+            CaptureClip {
+                duration: MotionDuration::Beats32,
+                data: MotionData::Absolute {
+                    events: vec![MotionEvent {
+                        tick: 0,
+                        position: 4_369,
+                    }],
+                },
+                origin: 0.0,
+                launch: 0.0,
+                enabled: true,
+            },
+        );
+        with_frame(&session, |frame| {
+            let state = &session.automation;
+            let effective = state.effective_lanes(address, 3.0);
+            assert_eq!(effective.lfos()[0].active_step_count(), 2);
+            let mut rows = Vec::new();
+            push_lfo_editor_rows(
+                &mut rows,
+                state,
+                state.route(address).unwrap(),
+                &effective.lfos()[0],
+                address,
+                frame,
+            );
+            let lines: Vec<String> = rows
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect()
+                })
+                .collect();
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("step 2") && line.contains('♪')),
+                "{lines:?}"
+            );
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.contains("step 4") && line.contains('♪'))
+            );
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("steps") && line.contains(" 4"))
+            );
+        });
     }
 }

@@ -128,6 +128,45 @@ pub(crate) struct EditorMotionAddress {
     pub(crate) target: EditorMotionField,
 }
 
+impl EditorMotionAddress {
+    fn apply_position(self, lfos: &mut [LfoRoute], envelopes: &mut [EnvelopeRoute], position: f32) {
+        match self.target {
+            EditorMotionField::Lfo(field) => {
+                if let Some(route) = lfos.get_mut(self.lane_index) {
+                    field.apply_motion_position(route, position);
+                }
+            }
+            EditorMotionField::Envelope(field) => {
+                if let Some(route) = envelopes.get_mut(self.lane_index) {
+                    field.apply_motion_position(route, position);
+                }
+            }
+            EditorMotionField::Step(step) => {
+                if let Some(route) = lfos.get_mut(self.lane_index) {
+                    step.apply_motion_position(route, position);
+                }
+            }
+        }
+    }
+}
+
+/// Bounded presentation copy of a control's lanes after editor Motion.
+pub(crate) struct EffectiveLanes {
+    lfos: [LfoRoute; MAX_AUTOMATION_LANES_PER_KIND],
+    envelopes: [EnvelopeRoute; MAX_AUTOMATION_LANES_PER_KIND],
+    lfo_count: usize,
+    envelope_count: usize,
+}
+
+impl EffectiveLanes {
+    pub(crate) fn lfos(&self) -> &[LfoRoute] {
+        &self.lfos[..self.lfo_count]
+    }
+    pub(crate) fn envelopes(&self) -> &[EnvelopeRoute] {
+        &self.envelopes[..self.envelope_count]
+    }
+}
+
 /// How one h/l press moves a continuous automation field.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Stepping {
@@ -718,12 +757,50 @@ impl AutomationState {
         beat: f64,
     ) -> f32 {
         let spec = address.spec();
-        self.captures
-            .get(&address)
-            .and_then(|clip| clip.position(beat))
-            .map_or(0.0, |position| {
-                position - super::capture_ratio(spec, base, controls)
-            })
+        self.captures.get(&address).map_or(0.0, |clip| {
+            clip.delta(super::capture_ratio(spec, base, controls), beat)
+        })
+    }
+
+    pub(crate) fn editor_motion_position(
+        &self,
+        target: EditorMotionAddress,
+        beat: f64,
+    ) -> Option<f32> {
+        let base = target.target.position(
+            self.route_at(target.control, target.lane_index),
+            self.envelope_at(target.control, target.lane_index),
+        )?;
+        self.editor_captures
+            .get(&target)?
+            .position_from_base(base, beat)
+    }
+
+    pub(crate) fn effective_lanes(&self, address: ControlAddress, beat: f64) -> EffectiveLanes {
+        let lfos = self.lfo_lanes(address);
+        let envelopes = self.envelope_lanes(address);
+        let mut result = EffectiveLanes {
+            lfos: [LfoRoute::default(); MAX_AUTOMATION_LANES_PER_KIND],
+            envelopes: [EnvelopeRoute::default(); MAX_AUTOMATION_LANES_PER_KIND],
+            lfo_count: lfos.len(),
+            envelope_count: envelopes.len(),
+        };
+        result.lfos[..lfos.len()].copy_from_slice(lfos);
+        result.envelopes[..envelopes.len()].copy_from_slice(envelopes);
+        for target in self
+            .editor_captures
+            .keys()
+            .filter(|target| target.control == address)
+        {
+            if let Some(position) = self.editor_motion_position(*target, beat) {
+                target.apply_position(
+                    &mut result.lfos[..lfos.len()],
+                    &mut result.envelopes[..envelopes.len()],
+                    position,
+                );
+            }
+        }
+        result
     }
 
     /// Morphed automation state for a leg transition between `from` and `to`,
@@ -835,10 +912,8 @@ fn morph_lane_family<T>(
     }
 }
 
-/// The effective value the engine plays for a modulated control: base plus
-/// LFO plus envelope, summed, clamped to range, then snapped per the control's
-/// `LfoSnap`. The UI's modulation marker must go through this too so it shows
-/// what is heard.
+/// Test convenience wrapper for the shared lane sum and final dial projection.
+#[cfg(test)]
 pub(crate) fn modulated_control_value_full(
     spec: &ControlSpec,
     lfos: &[LfoRoute],
@@ -855,7 +930,11 @@ pub(crate) fn modulated_control_value_full(
     modulated_control_value_from_delta(spec, base, delta)
 }
 
-fn automation_delta(lfos: &[LfoRoute], envelopes: &[EnvelopeRoute], ctx: ModContext) -> f32 {
+pub(crate) fn automation_delta(
+    lfos: &[LfoRoute],
+    envelopes: &[EnvelopeRoute],
+    ctx: ModContext,
+) -> f32 {
     let lfo_delta: f32 = lfos
         .iter()
         .filter(|route| route.enabled && route.depth_ratio > f32::EPSILON)
@@ -909,8 +988,16 @@ struct PlannedRoute {
     lfos: Vec<LfoRoute>,
     envelopes: Vec<EnvelopeRoute>,
     capture: Option<super::CaptureClip>,
-    editor_captures: Vec<(EditorMotionAddress, super::CaptureClip)>,
+    editor_captures: Vec<PlannedEditorMotion>,
     smoothed_delta: Option<f32>,
+}
+
+struct PlannedEditorMotion {
+    target: EditorMotionAddress,
+    clip: super::CaptureClip,
+    /// Authored position, cached at publication rather than read from the
+    /// route that the previous audio sample already modulated.
+    base_position: f32,
 }
 
 pub(crate) const AUTOMATION_DECLICK_MS: f64 = 3.0;
@@ -966,7 +1053,16 @@ impl AutomationPlan {
                     .editor_captures
                     .iter()
                     .filter(|(target, _)| target.control == address)
-                    .map(|(target, clip)| (*target, clip.clone()))
+                    .filter_map(|(target, clip)| {
+                        Some(PlannedEditorMotion {
+                            target: *target,
+                            clip: clip.clone(),
+                            base_position: target.target.position(
+                                automation.route_at(target.control, target.lane_index),
+                                automation.envelope_at(target.control, target.lane_index),
+                            )?,
+                        })
+                    })
                     .collect(),
                 smoothed_delta,
             });
@@ -992,25 +1088,16 @@ impl AutomationPlan {
             kick_offset_beats: controls.kick.offset_beats,
         };
         for planned in &mut self.routes {
-            for (target, clip) in &planned.editor_captures {
-                if let Some(position) = clip.position(ctx.beat) {
-                    match target.target {
-                        EditorMotionField::Lfo(field) => {
-                            if let Some(route) = planned.lfos.get_mut(target.lane_index) {
-                                field.apply_motion_position(route, position);
-                            }
-                        }
-                        EditorMotionField::Envelope(field) => {
-                            if let Some(route) = planned.envelopes.get_mut(target.lane_index) {
-                                field.apply_motion_position(route, position);
-                            }
-                        }
-                        EditorMotionField::Step(step) => {
-                            if let Some(route) = planned.lfos.get_mut(target.lane_index) {
-                                step.apply_motion_position(route, position);
-                            }
-                        }
-                    }
+            for motion in &planned.editor_captures {
+                if let Some(position) = motion
+                    .clip
+                    .position_from_base(motion.base_position, ctx.beat)
+                {
+                    motion.target.apply_position(
+                        &mut planned.lfos,
+                        &mut planned.envelopes,
+                        position,
+                    );
                 }
             }
             let mut spec = planned.spec.contextual(controls);
@@ -1018,18 +1105,14 @@ impl AutomationPlan {
                 spec = clip.playback_spec(spec, ctx.beat);
             }
             let base = (spec.get)(controls);
-            let capture_delta = planned
-                .capture
-                .as_ref()
-                .and_then(|clip| clip.position(ctx.beat))
-                .map_or(0.0, |position| {
-                    position - super::capture_ratio(&spec, base, controls)
-                });
+            let capture_delta = planned.capture.as_ref().map_or(0.0, |clip| {
+                clip.delta(super::capture_ratio(&spec, base, controls), ctx.beat)
+            });
             let target_delta =
                 capture_delta + automation_delta(&planned.lfos, &planned.envelopes, ctx);
             let delta = if spec.kind == ControlKind::Discrete
                 && planned.capture.as_ref().is_some_and(|clip| {
-                    !clip.events.is_empty() && clip.enabled && ctx.beat >= clip.launch
+                    !clip.is_relative() && clip.enabled && ctx.beat >= clip.launch
                 }) {
                 // A switch or pattern cell changes exactly at its event, with
                 // no in-between values introduced by the audio de-clicker.

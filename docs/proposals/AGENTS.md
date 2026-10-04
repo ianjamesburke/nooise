@@ -8,7 +8,7 @@ Feature designs that can be discussed before changing runtime behavior.
 
 - Dated proposal files own each feature's scope, interaction, tradeoffs, and acceptance criteria.
 - `2026-09-16-live-gestures.md` records the implemented worktree design and hands-on acceptance criteria for temporary effects in normal browsing and replacing Deck.
-- `2026-09-30-ergonomics-redesign.md` records the accepted operation catalog, Space map, planned mute, and Motion Grab worktree behavior, with Motion Record and shared lane editing deferred.
+- `2026-09-30-ergonomics-redesign.md` records the accepted operation catalog, Space map, planned mute, and Motion Grab worktree behavior (relative numeric loops and absolute choices through eight bars), with Motion Record and shared lane editing deferred.
 - `2026-10-03-shared-chord-builder.md` records the shared preset/editor contract, voice-count policy, persistence boundaries and two revoice audition cases.
 - `2026-10-04-ai-lead.md` — agreed direction for a personal AI Lead, its MIDI
   corpus, model path, runtime limits, and listening evaluation

@@ -44,10 +44,13 @@ impl fmt::Display for EffectFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CaptureUnavailable => {
-                write!(f, "select a level, continuous, or timing knob to capture")
+                write!(f, "select a knob or automation field for Motion")
             }
             Self::CaptureHistory(error) => write!(f, "{error}"),
-            Self::CaptureLimit => write!(f, "four captured loops already kept; delete one first"),
+            Self::CaptureLimit => write!(
+                f,
+                "{MAX_CAPTURES} Motion loops already kept; delete one first"
+            ),
             Self::UnknownControl(id) => write!(f, "no control named {id}"),
             Self::SongEncode(error) => write!(f, "{error}"),
             Self::Clipboard(error) => write!(f, "{error}"),
@@ -292,7 +295,14 @@ impl EffectExecutor {
         let snapshot = self.edit_session_checked(target.id, check, |snapshot| {
             check(snapshot)?;
             if let Some(clip) = &clip {
-                snapshot.automation.captures.insert(address, clip.clone());
+                let mut clip = clip.clone();
+                let spec = address.spec();
+                clip.set_reference(capture_ratio(
+                    spec,
+                    (spec.get)(&snapshot.controls),
+                    &snapshot.controls,
+                ));
+                snapshot.automation.captures.insert(address, clip);
             } else if action == CaptureAction::Delete {
                 snapshot.automation.captures.remove(&address);
             } else if let Some(clip) = snapshot.automation.captures.get_mut(&address) {
@@ -353,7 +363,14 @@ impl EffectExecutor {
                 Ok(())
             },
             |snapshot| {
-                snapshot.automation.captures.insert(address, clip.clone());
+                let mut clip = clip.clone();
+                let spec = address.spec();
+                clip.set_reference(capture_ratio(
+                    spec,
+                    (spec.get)(&snapshot.controls),
+                    &snapshot.controls,
+                ));
+                snapshot.automation.captures.insert(address, clip);
                 Ok(())
             },
         )?;
@@ -430,10 +447,20 @@ impl EffectExecutor {
             },
             |snapshot| {
                 if let Some(clip) = &clip {
-                    snapshot
-                        .automation
-                        .editor_captures
-                        .insert(target, clip.clone());
+                    let mut clip = clip.clone();
+                    let base = target
+                        .target
+                        .position(
+                            snapshot
+                                .automation
+                                .route_at(target.control, target.lane_index),
+                            snapshot
+                                .automation
+                                .envelope_at(target.control, target.lane_index),
+                        )
+                        .ok_or(EffectFailure::CaptureUnavailable)?;
+                    clip.set_reference(base);
+                    snapshot.automation.editor_captures.insert(target, clip);
                 } else if action == MotionAction::Delete {
                     snapshot.automation.editor_captures.remove(&target);
                 } else if let Some(clip) = snapshot.automation.editor_captures.get_mut(&target) {
@@ -1628,8 +1655,12 @@ mod tests {
                 address,
                 CaptureClip {
                     duration: MotionDuration::Beats4,
-                    samples: [128; CAPTURE_SAMPLES],
-                    events: Vec::new(),
+                    data: MotionData::Absolute {
+                        events: vec![MotionEvent {
+                            tick: 0,
+                            position: 32768,
+                        }],
+                    },
                     origin: 0.0,
                     launch: 0.0,
                     enabled: true,
@@ -1703,7 +1734,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_takeover_at_clamped_base_and_automation_edits_are_distinct() {
+    fn relative_motion_survives_clamped_base_and_automation_edits() {
         let mut executor = executor();
         let address = ControlAddress::new("pad.level");
         executor.session.update(|snapshot| {
@@ -1712,8 +1743,10 @@ mod tests {
                 address,
                 CaptureClip {
                     duration: MotionDuration::Beats16,
-                    samples: [128; CAPTURE_SAMPLES],
-                    events: Vec::new(),
+                    data: MotionData::Relative {
+                        reference: 0,
+                        samples: [128; CAPTURE_SAMPLES],
+                    },
                     origin: 0.0,
                     launch: 0.0,
                     enabled: true,
@@ -1730,8 +1763,116 @@ mod tests {
                 edit: ControlEdit::Delta(1.0),
             })
             .unwrap();
-        assert!(!executor.session.load().automation.captures[&address].enabled);
+        assert!(executor.session.load().automation.captures[&address].enabled);
         assert_eq!(executor.session.load().controls.pad.level, 1.0);
+    }
+
+    #[test]
+    fn relative_motion_publication_base_lifecycle_and_restore_preserve_the_phrase() {
+        for duration in [MotionDuration::Beats16, MotionDuration::Beats32] {
+            let mut executor = executor();
+            let address = ControlAddress::new("pad.level");
+            let edit = |executor: &mut EffectExecutor, value, beat| {
+                executor
+                    .execute_interaction(
+                        InteractionEffect::CommitNumeric(value),
+                        &InteractionExecutionContext {
+                            selected_control: Some(address.id()),
+                            beat,
+                        },
+                    )
+                    .unwrap();
+            };
+            edit(&mut executor, 40.0, 0.0);
+            edit(&mut executor, 50.0, 8.0);
+            let end = f64::from(duration.beats());
+            let target = recipe::RecipeTarget::capture(address.id(), &executor.session.load());
+            executor
+                .apply_motion_grab(duration, target, end, end)
+                .unwrap();
+            let original = executor.session.load().automation.captures[&address].clone();
+            assert!((original.position_from_base(0.5, end).unwrap() - 0.4).abs() < 0.003);
+            edit(&mut executor, 70.0, end + 1.0);
+            let shifted = executor.session.load().automation.captures[&address].clone();
+            assert_eq!(shifted, original);
+            assert!((shifted.position_from_base(0.7, end + 1.0).unwrap() - 0.6).abs() < 0.003);
+            executor
+                .apply_capture(CaptureAction::Bypass, target, end, end + 1.0)
+                .unwrap();
+            let bypassed = executor.session.load();
+            assert_eq!(bypassed.controls.pad.level, 0.7);
+            assert_eq!(
+                bypassed.automation.captures[&address].position(end + 2.0),
+                None
+            );
+            executor
+                .apply_capture(CaptureAction::Resume, target, end, end + 2.0)
+                .unwrap();
+            let snapshot = executor.session.load();
+            let resumed = &snapshot.automation.captures[&address];
+            assert_eq!(resumed.origin, original.origin);
+            assert_eq!(resumed.launch, end + 4.0);
+            assert_eq!(resumed.data, original.data);
+            let song = SongState {
+                controls: snapshot.controls.clone(),
+                automation: snapshot.automation.snapshot_at(end + 2.0),
+                ..SongState::default()
+            };
+            let restored = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+            let clip = &restored.automation.captures[&address];
+            assert_eq!(clip.data, original.data);
+            assert_eq!(clip.launch, 2.0);
+            for elapsed in [0.0, 2.0, 3.5, 32.0] {
+                assert_eq!(
+                    clip.position(elapsed),
+                    resumed.position(end + 2.0 + elapsed)
+                );
+            }
+            let mut restarted = restored.automation;
+            restarted.restart();
+            assert_eq!(restarted.captures[&address].data, original.data);
+            assert_eq!(restarted.captures[&address].origin, 0.0);
+            assert_eq!(restarted.captures[&address].launch, 0.0);
+            // Confirmation uses the current authored base, even when the
+            // frozen history window ended before this latest manual edit.
+            executor
+                .apply_motion_grab(duration, target, end, end + 3.0)
+                .unwrap();
+            let recaptured = &executor.session.load().automation.captures[&address];
+            assert_ne!(recaptured.data, original.data);
+            assert!((recaptured.position_from_base(0.7, end).unwrap() - 0.4).abs() < 0.003);
+        }
+    }
+
+    #[test]
+    fn discrete_motion_yields_to_a_direct_choice_edit() {
+        let mut executor = executor();
+        let address = ControlAddress::new("pad.type");
+        executor.session.update(|snapshot| {
+            snapshot.automation.captures.insert(
+                address,
+                CaptureClip {
+                    duration: MotionDuration::Beats32,
+                    data: MotionData::Absolute {
+                        events: vec![MotionEvent {
+                            tick: 0,
+                            position: 0,
+                        }],
+                    },
+                    origin: 0.0,
+                    launch: 0.0,
+                    enabled: true,
+                },
+            );
+        });
+        executor
+            .execute(LiveEffect::EditControl {
+                id: address.id(),
+                edit: ControlEdit::Delta(1.0),
+            })
+            .unwrap();
+        assert!(!executor.session.load().automation.captures[&address].enabled);
+        assert_eq!(executor.session.load().controls.pad.voice_type, 1.0);
     }
 
     #[test]

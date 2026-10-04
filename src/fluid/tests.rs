@@ -2934,8 +2934,10 @@ fn transport_restart_restarts_captured_loops_and_live_auto_from_beat_zero() {
         address,
         CaptureClip {
             duration: MotionDuration::Beats16,
-            samples: [127; CAPTURE_SAMPLES],
-            events: Vec::new(),
+            data: MotionData::Relative {
+                reference: 0,
+                samples: [127; CAPTURE_SAMPLES],
+            },
             origin: 100.0,
             launch: 100.0,
             enabled: true,

@@ -158,28 +158,39 @@ already muted or audible. Repeating
 the saved session state, rebased to the next song's beat zero. Escape leaves a
 pending leader; Space while it is pending is inert.
 
-`Space 1`, `Space 2`, and `Space 4` grab Motion from the selected knob: the
-last one, two, or four bars. A grab belongs to its nearest bar downbeat. When
+`Space 1`, `Space 2`, `Space 4`, and `Space 8` grab Motion from the selected knob: the
+last one, two, four, or eight bars. A grab belongs to its nearest bar downbeat. When
 that downbeat is ahead, the current value holds until it arrives and the loop
 starts there. When it has passed, the loop joins immediately at the phase it
 would already have reached from that downbeat. Its last value holds
-through the remainder of its real one-, two-, or four-bar phrase. The
+through the remainder of its real one-, two-, four-, or eight-bar phrase. The
 following downbeat starts the next pass; continuous movement uses the
 existing de-clicker and discrete choices switch at their recorded times. The
-palette keeps the same Motion Grab choices.
+palette keeps the same Motion Grab choices: 4, 8, 16, or 32 beats. Searching
+`grab 4 bars` or `grab 8 bars` also reaches the matching duration.
+
+Numeric Motion shifts with the knob's base: turning a captured Level, Cutoff,
+or Interval keeps the loop running at the same phase around the new value.
+The activity row says `shifts with base`. Motion and the other lanes add before
+one clamp to the dial's bounds. Grab again to replace the movement; explicit
+Bypass, Resume, and Delete keep their lifecycle roles.
 
 Motion Grab also works on discrete controls: Lead pitch cells, Lead Steps,
 Pads Trigger (Hold/Stabs), and the other registry switches and choices.
 They replay each recorded value at its edit time. In an LFO or envelope
 editor, select any field—including LFO shape, Steps count/glide/value, or
-envelope trigger—then use `Space 1/2/4` to grab that field; `/` offers the
+envelope trigger—then use `Space 1/2/4/8` to grab that field; `/` offers the
 same Motion Grab choices. The editor stays open after a leader grab. A small
 `↻` on an editor row means its Motion is active; `○` means bypassed. On a
 selected row, `/Motion Bypass`, `/Motion Resume`, and `/Motion Delete` address
 that row's Motion. Bare `/bypass`, `/resume`, and `/delete` still address the
-open LFO or envelope lane. A direct edit bypasses its loop; Resume waits for the next
-bar while retaining loop phase. A saved song restores the editor-field loop
-and its phase.
+open LFO or envelope lane. Numeric editor fields also shift with their base;
+choices such as Shape, Trigger, and Steps count replay their recorded values.
+For these choices the activity row says `edit bypasses`: a manual edit bypasses
+the loop and takes over. Resume waits for the next bar while retaining loop
+phase. A saved song restores either kind of loop and its phase. Editor sliders
+show the authored base plus a bright marker for the value currently playing.
+The selected editor field stays in view at the minimum 46x11 frame.
 
 Volume is the layer's own Level row. Filter is the shared filter module's
 Cutoff, never its Amount: Amount is a detail-only wet/dry mix an added filter
@@ -191,13 +202,13 @@ is the first audible move. A layer whose chain is full says so and stays
 put.
 
 Layer and parameter routes move the cursor; `Space m` schedules mute and
-`Space 1/2/4` keeps Motion. Every route acts on a press and needs no
+`Space 1/2/4/8` keeps Motion. Every route acts on a press and needs no
 key-release support. The leader renders a compact centered
 Jump menu: layers form a two-column list, current-page Volume, Filter, and
 Mute share a row with Motion Grab, and `Esc Cancel` has the bottom row. The footer remains
 visible.
 
-Motion Record and a shared lane editor remain deferred. `Space 1/2/4` are
+Motion Record and a shared lane editor remain deferred. `Space 1/2/4/8` are
 assigned to Grab; any future state-mark recall needs a separate route.
 
 Lead play retains its own `i` entry and existing bindings.
