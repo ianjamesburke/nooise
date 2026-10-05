@@ -4,6 +4,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -176,16 +177,49 @@ impl MidiOutputManager {
 
 pub(crate) fn list_ports() -> Result<(), Box<dyn Error>> {
     let input = MidiInput::new("nooise MIDI input discovery")?;
-    println!("Input:");
-    for port in input.ports() {
-        println!("  {}", input.port_name(&port)?);
-    }
+    let inputs = input
+        .ports()
+        .iter()
+        .map(|port| input.port_name(port))
+        .collect::<Result<Vec<_>, _>>()?;
     let output = MidiOutput::new("nooise MIDI discovery")?;
-    println!("Output:");
-    for port in output.ports() {
-        println!("  {}", output.port_name(&port)?);
-    }
+    let outputs = output
+        .ports()
+        .iter()
+        .map(|port| output.port_name(port))
+        .collect::<Result<Vec<_>, _>>()?;
+    print!(
+        "{}",
+        format_ports(&inputs, &outputs, std::io::stdout().is_terminal())
+    );
     Ok(())
+}
+
+/// Two headed sections with the flag each name feeds, so a listing is
+/// copy-pasteable into a launch command.
+fn format_ports(inputs: &[String], outputs: &[String], color: bool) -> String {
+    let (head, dim, reset) = if color {
+        ("\x1b[1;32m", "\x1b[2m", "\x1b[0m")
+    } else {
+        ("", "", "")
+    };
+    let mut out = String::new();
+    for (title, flag, names) in [
+        ("Inputs", "--midi-in", inputs),
+        ("Outputs", "--midi-out", outputs),
+    ] {
+        out.push_str(&format!(
+            "{head}{title}{reset} {dim}(exact names for {flag}){reset}\n"
+        ));
+        if names.is_empty() {
+            out.push_str(&format!("  {dim}none found{reset}\n"));
+        }
+        for name in names {
+            out.push_str(&format!("  {name}\n"));
+        }
+        out.push('\n');
+    }
+    out
 }
 
 #[derive(Clone)]
