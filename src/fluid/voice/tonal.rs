@@ -1,5 +1,5 @@
-//! The Tonal voice: melodic steps over a pentatonic scale, with an
-//! evolving phrase and per-step randomness.
+//! The Tonal voice: evolving A-minor phrase degrees sounded in the selected
+//! progression's home scale, with per-step randomness.
 
 use super::*;
 
@@ -55,6 +55,7 @@ pub(crate) const TONAL_CYCLE_BEATS_MAX: f32 = 16.0;
 pub(crate) const TONAL_MAX_LOOP_STEPS: usize = 64;
 pub(crate) const TONAL_MAX_EVOLVE_NOTES: usize = 4;
 pub(crate) const TONAL_SCALE_MIDI: [i32; 10] = [45, 48, 50, 52, 55, 57, 60, 62, 64, 67];
+const TONAL_REFERENCE_TONIC: i32 = 45;
 pub(crate) const TONAL_PIANO_HARMONIC_COUNT: usize = 16;
 pub(crate) const TONAL_PIANO_PROFILE_COUNT: usize = 9;
 pub(crate) const TONAL_PIANO_A_KEYFRAMES: [PianoKeyframe; 3] = [
@@ -389,6 +390,7 @@ impl TonalEngine {
     pub(crate) fn next(
         &mut self,
         c: &TonalControls,
+        pad: &PadControls,
         tune: f32,
         timing: TimingContext,
     ) -> (f32, f32) {
@@ -409,11 +411,13 @@ impl TonalEngine {
             self.step_index = tonal_cycle_step(timing.beat, c.step_interval_beats, c.rate_beats)
                 % loop_len
                 + tonal_offset_step(c.offset_beats, c.rate_beats);
-            let note = if self.rng.gen_range(0.0f32..1.0) < c.randomness {
+            let phrase_note = if self.rng.gen_range(0.0f32..1.0) < c.randomness {
                 TONAL_SCALE_MIDI[self.rng.gen_range(0..TONAL_SCALE_MIDI.len())]
             } else {
                 self.evolved_phrase[self.step_index % self.evolved_phrase.len()]
-            } + (c.octave.round() as i32) * 12;
+            };
+            let progression = ChordWindow::requested(pad).progression;
+            let note = tonal_home_note(phrase_note, progression) + (c.octave.round() as i32) * 12;
             let hz = note_hz(note, tune);
             let pan = self.rng.gen_range(-0.5f32..0.5);
             // A silent layer still triggers nothing: skipping keeps a Level
@@ -524,6 +528,24 @@ fn evolve_random(seed: u64, evolution_count: u64, draw: u64) -> u64 {
 
 pub(crate) fn tonal_phrase(phrase: usize) -> &'static [i32] {
     TONAL_PHRASES[phrase % TONAL_PHRASES.len()]
+}
+
+/// Interpret stored phrase notes as A-minor degrees. Keeping that compact
+/// source material untouched lets a chosen evolution follow a new home when
+/// the progression changes, without changing the song-code record.
+pub(crate) fn tonal_home_note(source_note: i32, progression: usize) -> i32 {
+    let (tonic, mode, _) = progression_home(progression);
+    let relative = source_note - TONAL_REFERENCE_TONIC;
+    let octave = relative.div_euclid(12);
+    let pitch = relative.rem_euclid(12);
+    let reference = HomeMode::Minor.intervals();
+    let degree = reference
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, interval)| interval.abs_diff(pitch))
+        .map(|(index, _)| index)
+        .unwrap();
+    tonic + octave * 12 + mode.intervals()[degree]
 }
 
 pub(crate) fn tonal_loop_len(cycle_beats: f32, rate_beats: f32) -> usize {

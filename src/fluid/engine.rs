@@ -954,8 +954,12 @@ impl StereoEngine for FluidEngine {
         let tonal = self.module_fx.process(
             Tab::Tonal,
             &effective.modules.tonal,
-            self.tonal
-                .next(&effective.tonal, tune, timing.with_groove_seed(4)),
+            self.tonal.next(
+                &effective.tonal,
+                &effective.pad,
+                tune,
+                timing.with_groove_seed(4),
+            ),
             timing,
         );
         let (ton_l, ton_r) = gate_stereo(tonal, mute_gains[Tab::Tonal as usize]);

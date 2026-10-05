@@ -400,6 +400,93 @@ fn tonal_phrase_a_keeps_existing_zero_randomness_melody() {
 }
 
 #[test]
+fn tonal_phrases_and_random_pool_follow_every_progression_home() {
+    let sources = TONAL_PHRASES
+        .iter()
+        .flat_map(|phrase| phrase.iter())
+        .chain(TONAL_SCALE_MIDI.iter());
+    for progression in 0..=CUSTOM_PROGRESSION_INDEX {
+        let (tonic, mode, _) = progression_home(progression);
+        let scale = mode.intervals();
+        for source in sources.clone() {
+            let note = tonal_home_note(*source, progression);
+            assert!(
+                scale.contains(&(note - tonic).rem_euclid(12)),
+                "progression {progression}: source {source} sounded {note} outside {mode:?}"
+            );
+        }
+    }
+    // The default home keeps the complete old phrase, including its lower G.
+    for phrase in TONAL_PHRASES {
+        assert_eq!(
+            phrase
+                .iter()
+                .map(|note| tonal_home_note(*note, 0))
+                .collect::<Vec<_>>(),
+            phrase
+        );
+    }
+    // Degree transfer keeps the opening phrase's order and rhythmic identity.
+    let sunny = PROGRESSIONS.iter().position(|p| p.mood == "Sunny").unwrap();
+    assert_eq!(
+        tonal_phrase(0)
+            .iter()
+            .map(|note| tonal_home_note(*note, sunny))
+            .collect::<Vec<_>>(),
+        [48, 53, 59, 52, 55, 60, 53, 59]
+    );
+}
+
+#[test]
+fn tonal_random_hits_stay_in_home_scale_through_borrowed_chords() {
+    for progression in 0..PROGRESSIONS.len() {
+        let (tonic, mode, _) = progression_home(progression);
+        let mut pad = PadControls {
+            progression: progression as f32,
+            chord_bars: 0.25,
+            ..PadControls::default()
+        };
+        pad.chord_count = 8.0;
+        let telemetry = Arc::new(FluidTelemetry::default());
+        let mut tonal = TonalEngine::new_with_live_state(SAMPLE_RATE, None, telemetry.clone());
+        tonal.rng = StdRng::seed_from_u64(20261005);
+        let controls = TonalControls {
+            level: 1.0,
+            rate_beats: 1.0,
+            randomness: 1.0,
+            ..TonalControls::default()
+        };
+        for beat in 0..32 {
+            tonal.next(&controls, &pad, 0.0, timing(beat * 24_000, 120.0));
+            let hit = &telemetry.hits[MusicalHit::Tonal as usize];
+            assert_eq!(hit.pulse.load(Ordering::Acquire), beat + 1);
+            let pitch = (f32::from_bits(hit.pitch_class_bits.load(Ordering::Relaxed)) * 12.0)
+                .round() as i32;
+            assert!(
+                mode.intervals().contains(&(pitch - tonic).rem_euclid(12)),
+                "progression {progression}, beat {beat}: pitch class {pitch}"
+            );
+        }
+    }
+    let borrowed = PROGRESSIONS.iter().enumerate().any(|(progression, _)| {
+        let pad = PadControls {
+            progression: progression as f32,
+            ..PadControls::default()
+        };
+        let (tonic, mode, _) = progression_home(progression);
+        (0..CHORD_SLOT_COUNT).any(|slot| {
+            pad_chord_tones(&pad, progression, slot)
+                .iter()
+                .any(|note| !mode.intervals().contains(&(note - tonic).rem_euclid(12)))
+        })
+    });
+    assert!(
+        borrowed,
+        "test must include a borrowed chord outside its home scale"
+    );
+}
+
+#[test]
 fn tonal_note_applies_master_tune_offset() {
     let flat = note_hz(45, 0.0);
     assert_close(note_hz(45, 12.0), flat * 2.0);
@@ -549,6 +636,7 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
 
         let _ = tonal.next(
             &controls,
+            &PadControls::default(),
             0.0,
             TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
         );
@@ -624,6 +712,7 @@ fn tonal_offset_moves_the_phrase_window_without_delaying_triggers() {
 
     let _ = tonal.next(
         &controls,
+        &PadControls::default(),
         0.0,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
     );
@@ -631,6 +720,7 @@ fn tonal_offset_moves_the_phrase_window_without_delaying_triggers() {
 
     let _ = tonal.next(
         &controls,
+        &PadControls::default(),
         0.0,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.0),
     );
@@ -638,6 +728,7 @@ fn tonal_offset_moves_the_phrase_window_without_delaying_triggers() {
 
     let _ = tonal.next(
         &controls,
+        &PadControls::default(),
         0.0,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 2.0),
     );
@@ -665,6 +756,7 @@ fn tonal_level_ducks_notes_that_are_already_sounding() {
         beat += 4.0 / f64::from(SAMPLE_RATE);
         let (l, r) = tonal.next(
             &controls,
+            &PadControls::default(),
             0.0,
             TimingContext::new(f64::from(SAMPLE_RATE), 120.0, beat),
         );
@@ -684,6 +776,7 @@ fn tonal_level_ducks_notes_that_are_already_sounding() {
         beat += 4.0 / f64::from(SAMPLE_RATE);
         let (l, r) = tonal.next(
             &controls,
+            &PadControls::default(),
             0.0,
             TimingContext::new(f64::from(SAMPLE_RATE), 120.0, beat),
         );
@@ -707,6 +800,7 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
 
     let _ = tonal.next(
         &controls,
+        &PadControls::default(),
         0.0,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
     );
@@ -714,6 +808,7 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
 
     let _ = tonal.next(
         &controls,
+        &PadControls::default(),
         0.0,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
     );
@@ -721,6 +816,7 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
 
     let _ = tonal.next(
         &controls,
+        &PadControls::default(),
         0.0,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.0),
     );
@@ -764,10 +860,20 @@ fn tonal_sequence_snapshot_resumes_the_next_evolution() {
         evolution_seed: 42,
         evolution_count: 7,
     };
-    let session = live_session(FluidControls::default(), AutomationState::default());
-    session.update(|live| live.tonal_sequence = snapshot.clone());
+    let mut controls = FluidControls::default();
+    controls.tonal.phrase = 2.0;
+    controls.pad.progression = PROGRESSIONS.iter().position(|p| p.mood == "Float").unwrap() as f32;
+    let song = SongState {
+        tonal_sequence: Some(snapshot.clone()),
+        ..SongState::from_controls(controls.clone())
+    };
+    let code = song::encode_song_code(&song).unwrap();
+    assert!(code.len() < 2_000);
+    let loaded = song::decode_song_code(&code).unwrap();
+    assert_eq!(loaded.tonal_sequence, Some(snapshot.clone()));
+    let session = LiveSession::new(LiveSessionSnapshot::from_song(&loaded));
     let mut resumed = TonalEngine::new_with_session_state(SAMPLE_RATE, Some(session.clone()));
-    let uninterrupted_session = live_session(FluidControls::default(), AutomationState::default());
+    let uninterrupted_session = live_session(controls, AutomationState::default());
     uninterrupted_session.update(|live| live.tonal_sequence = snapshot.clone());
     let mut uninterrupted =
         TonalEngine::new_with_session_state(SAMPLE_RATE, Some(uninterrupted_session));
@@ -777,6 +883,125 @@ fn tonal_sequence_snapshot_resumes_the_next_evolution() {
 
     assert_eq!(resumed.evolved_phrase, uninterrupted.evolved_phrase);
     assert_eq!(session.load().tonal_sequence.evolution_count, 8);
+    let progression = ChordWindow::requested(&loaded.controls.pad).progression;
+    assert_eq!(
+        resumed
+            .evolved_phrase
+            .iter()
+            .map(|note| tonal_home_note(*note, progression))
+            .collect::<Vec<_>>(),
+        uninterrupted
+            .evolved_phrase
+            .iter()
+            .map(|note| tonal_home_note(*note, progression))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn tonal_home_scale_render_repeats_from_one_seed_and_saved_evolution() {
+    let render = |progression: usize| {
+        let mut controls = FluidControls::default();
+        controls.pad.progression = progression as f32;
+        controls.tonal.level = 0.8;
+        controls.tonal.randomness = 0.6;
+        controls.tonal.evolve_rate = 1.0;
+        controls.tonal.rate_beats = 0.125;
+        controls.tonal.step_interval_beats = 0.5;
+        let song = SongState {
+            tonal_sequence: Some(TonalSequenceState {
+                phrase: 0,
+                notes: tonal_phrase(0).to_vec(),
+                evolution_seed: 75,
+                evolution_count: 3,
+            }),
+            ..SongState::from_controls(controls)
+        };
+        let mut engine = FluidEngine::new(
+            SAMPLE_RATE,
+            LiveSession::new(LiveSessionSnapshot::from_song(&song)),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(20261005);
+        (0..12_000)
+            .map(|_| {
+                let (left, right) = engine.next_stereo();
+                (left.to_bits(), right.to_bits())
+            })
+            .collect::<Vec<_>>()
+    };
+    let modes = ["Sunny", "Shadow", "Rain", "Float", "Ache"];
+    for mood in modes {
+        let progression = PROGRESSIONS.iter().position(|p| p.mood == mood).unwrap();
+        assert_eq!(
+            render(progression),
+            render(progression),
+            "{mood} changed PCM on replay"
+        );
+    }
+    let sunny = PROGRESSIONS.iter().position(|p| p.mood == "Sunny").unwrap();
+    let shadow = PROGRESSIONS
+        .iter()
+        .position(|p| p.mood == "Shadow")
+        .unwrap();
+    assert_ne!(render(sunny), render(shadow));
+}
+
+/// Exports complete eight-chord passes for the musical listening gate.
+#[test]
+#[ignore = "exports Tonal home-scale audition WAVs"]
+fn tonal_home_scale_audio_evidence() {
+    let destination = std::env::var("NOOISE_TONAL_EVIDENCE")
+        .expect("set NOOISE_TONAL_EVIDENCE to an output directory");
+    std::fs::create_dir_all(&destination).unwrap();
+    let sample_rate = 24_000.0;
+    for mood in ["Ache", "Sunny", "Shadow", "Float"] {
+        let progression = PROGRESSIONS.iter().position(|p| p.mood == mood).unwrap();
+        let mut controls = FluidControls::default();
+        controls.master.bpm = 180.0;
+        controls.pad.progression = progression as f32;
+        controls.pad.chord_bars = 0.5;
+        controls.tonal.level = 0.75;
+        controls.tonal.randomness = 0.25;
+        controls.tonal.evolve_rate = 0.4;
+        controls.tonal.rate_beats = 0.5;
+        controls.tonal.step_interval_beats = 4.0;
+        let song = SongState {
+            tonal_sequence: Some(TonalSequenceState {
+                phrase: 0,
+                notes: tonal_phrase(0).to_vec(),
+                evolution_seed: 75,
+                evolution_count: 0,
+            }),
+            ..SongState::from_controls(controls)
+        };
+        let mut engine = FluidEngine::new(
+            sample_rate,
+            LiveSession::new(LiveSessionSnapshot::from_song(&song)),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(20261005);
+        let path = format!("{destination}/tonal-{}.wav", mood.to_lowercase());
+        let mut wav = hound::WavWriter::create(
+            path,
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: sample_rate as u32,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+        )
+        .unwrap();
+        for _ in 0..(sample_rate as usize * 12) {
+            let (left, right) = engine.next_stereo();
+            assert!(left.is_finite() && right.is_finite());
+            wav.write_sample(left).unwrap();
+            wav.write_sample(right).unwrap();
+        }
+        wav.finalize().unwrap();
+    }
 }
 
 #[test]
