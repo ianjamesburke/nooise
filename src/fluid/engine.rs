@@ -1862,6 +1862,35 @@ mod grid_swing_tests {
     }
 
     #[test]
+    fn kick_drunken_half_weight_probe() {
+        let mut timing = TimingContext::new(48_000.0, 120.0, 0.0);
+        timing.groove_seed = 3;
+        timing.drunken_amount = 1.0;
+        let full = GridSpec::new_grooved(0.5, 0.0, 0.0, timing);
+        timing.drunken_amount = 0.5;
+        let half = GridSpec::new_grooved(0.5, 0.0, 0.0, timing);
+        let mut sum_ms = [0.0; 2];
+        let mut max_ms = [0.0_f64; 2];
+        for slot in 0..32 {
+            let straight = slot as f64 * 0.5;
+            for (index, grid) in [full, half].into_iter().enumerate() {
+                let lag_ms = (grid.swung_beat(slot) - straight) * 500.0;
+                sum_ms[index] += lag_ms;
+                max_ms[index] = max_ms[index].max(lag_ms);
+            }
+        }
+        assert!((sum_ms[0] - 2.0 * sum_ms[1]).abs() < 1e-9);
+        assert!((max_ms[0] - 2.0 * max_ms[1]).abs() < 1e-9);
+        println!(
+            "Kick Drunken at 120 BPM, 0.5-beat grid, 32 hits: full mean/max {:.2}/{:.2} ms; half mean/max {:.2}/{:.2} ms",
+            sum_ms[0] / 32.0,
+            max_ms[0],
+            sum_ms[1] / 32.0,
+            max_ms[1]
+        );
+    }
+
+    #[test]
     fn tempo_glide_keeps_the_same_drunken_grid_schedule() {
         let mut timing = TimingContext::new(48_000.0, 100.0, 0.0);
         timing.drunken_amount = 1.0;

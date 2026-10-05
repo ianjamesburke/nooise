@@ -710,7 +710,10 @@ pub(crate) fn resolve_module_chain(c: &mut super::FluidControls) {
     };
     c.pad.swing = swing_for(&c.modules.pad);
     c.perc.swing = swing_for(&c.modules.perc);
-    c.kick.swing = swing_for(&c.modules.kick);
+    // Master Swing leaves the kick foundation straight. A local Kick Swing
+    // remains an explicit choice, including when its amount is zero.
+    c.kick.swing = chain_amount_slot(&c.modules.kick, "swing")
+        .map_or(0.0, |index| c.modules.kick[index].amount);
     c.tonal.swing = swing_for(&c.modules.tonal);
     c.arp.swing = swing_for(&c.modules.arp);
     c.lead.swing = swing_for(&c.modules.lead);
@@ -803,7 +806,81 @@ mod tests {
         assert_eq!(controls.perc.swing, 0.0);
         controls.modules.kick[3] = ModuleSlot::default();
         resolve_module_chain(&mut controls);
-        assert_eq!(controls.kick.swing, 0.6);
+        assert_eq!(controls.kick.swing, 0.0);
+    }
+
+    /// The resolved values must reach the same trigger scheduler the voices
+    /// call, for both offset kicks and faster kick grids.
+    #[test]
+    fn master_swing_keeps_kick_hits_straight_but_swings_other_voices() {
+        use super::super::{GridTrigger, TimingContext};
+
+        fn hits(interval: f32, offset: f32, swing: f32, count: usize) -> Vec<f64> {
+            let mut trigger = GridTrigger::new();
+            let mut hits = Vec::new();
+            for tick in 0..20_000 {
+                let beat = tick as f64 / 1_000.0;
+                if trigger.pop_swung(
+                    TimingContext::new(2_000.0, 120.0, beat),
+                    interval,
+                    offset,
+                    swing,
+                ) {
+                    hits.push(beat);
+                    if hits.len() == count {
+                        break;
+                    }
+                }
+            }
+            assert_eq!(hits.len(), count);
+            hits
+        }
+
+        for global in [0.0, 1.0] {
+            let mut controls = super::super::FluidControls::default();
+            controls.modules.master[2] = preset_slot("swing", global);
+            resolve_module_chain(&mut controls);
+            assert_eq!(controls.kick.swing, 0.0);
+            assert_eq!(controls.perc.swing, global);
+
+            for (interval, offset) in [(0.125, 0.0), (0.5, 0.125), (1.0, 0.0), (2.0, 0.25)] {
+                let actual = hits(interval, offset, controls.kick.swing, 6);
+                let expected: Vec<_> = (0..6)
+                    .map(|slot| f64::from(offset) + slot as f64 * f64::from(interval))
+                    .collect();
+                assert_eq!(
+                    actual, expected,
+                    "Kick interval={interval} offset={offset} global={global}"
+                );
+            }
+            let expected_perc = if global == 0.0 {
+                vec![0.0, 0.25, 0.5, 0.75]
+            } else {
+                vec![0.0, 0.375, 0.5, 0.875]
+            };
+            assert_eq!(hits(0.25, 0.0, controls.perc.swing, 4), expected_perc);
+        }
+
+        let mut controls = super::super::FluidControls::default();
+        controls.modules.master[2] = preset_slot("swing", 1.0);
+        controls.modules.kick[3] = preset_slot("swing", 0.0);
+        resolve_module_chain(&mut controls);
+        assert_eq!(
+            hits(0.5, 0.0, controls.kick.swing, 4),
+            vec![0.0, 0.5, 1.0, 1.5]
+        );
+        controls.modules.kick[3].amount = 1.0;
+        resolve_module_chain(&mut controls);
+        assert_eq!(
+            hits(0.5, 0.0, controls.kick.swing, 4),
+            vec![0.0, 0.75, 1.0, 1.75]
+        );
+        controls.modules.master[2].amount = 0.0;
+        resolve_module_chain(&mut controls);
+        assert_eq!(
+            hits(0.5, 0.0, controls.kick.swing, 4),
+            vec![0.0, 0.75, 1.0, 1.75]
+        );
     }
 
     /// A detail drill opens on the knob its collapsed row showed, so the
