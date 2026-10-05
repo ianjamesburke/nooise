@@ -1333,6 +1333,130 @@ fn morph_phrase_boundaries_reach_every_chord_follower_on_the_same_sample() {
 }
 
 #[test]
+fn built_in_nine_thirteen_lands_chord_bank_tempo_and_midi_on_one_sample() {
+    let states = decode_auto_states();
+    let mut from = states[8].clone();
+    let mut to = states[12].clone();
+    for state in [&mut from, &mut to] {
+        // Observe the authored harmony through the ordinary sustained Pad path.
+        state.controls.pad.trigger = 0.0;
+        state.controls.pad.midi_in = 0.0;
+        state.controls.pad.midi_out = 1.0;
+    }
+    let endpoints = [from.clone(), to.clone()];
+    let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
+        vec![from.clone(), to.clone()],
+        vec![9, 13],
+        64,
+    ))));
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut engine = FluidEngine::new(
+        8_000.0,
+        live_session(from.controls, from.automation),
+        Arc::clone(&morph),
+        Arc::new(FluidTelemetry::default()),
+    )
+    .with_midi(sink);
+    engine.reseed(5);
+
+    let mut previous_song = 9;
+    let mut landings = 0;
+    let mut completed_windows = 0;
+    let mut landing_window: Option<(f64, f32, u64)> = None;
+    for sample in 0..2_400_000 {
+        let beat = engine.tempo.beat;
+        let (left, right) = engine.next_stereo();
+        let chord_events: Vec<_> = receiver
+            .try_iter()
+            .filter_map(|message| match message {
+                MidiMessage::PadChord(notes) => Some(notes),
+                _ => None,
+            })
+            .collect();
+        let song = morph
+            .load()
+            .as_ref()
+            .as_ref()
+            .unwrap()
+            .position_at(beat)
+            .playing
+            .unwrap();
+        if let Some((start, peak, hash)) = &mut landing_window {
+            assert!(
+                chord_events.is_empty(),
+                "duplicate Pad MIDI hit at beat {beat}"
+            );
+            *peak = peak.max(left.abs()).max(right.abs());
+            for value in [left, right] {
+                *hash = (*hash ^ u64::from(value.to_bits())).wrapping_mul(0x100000001b3);
+            }
+            if beat >= *start + 0.1 {
+                assert!(*peak > 0.0001, "landing audio silent at beat {start}");
+                eprintln!("landing PCM 0.1 beat peak={peak:.6} hash={hash:016x}");
+                landing_window = None;
+                completed_windows += 1;
+                if completed_windows == 2 {
+                    break;
+                }
+            }
+        }
+        if song == previous_song {
+            continue;
+        }
+        let destination = if song == 13 {
+            &endpoints[1]
+        } else {
+            &endpoints[0]
+        };
+        let pad = &destination.controls.pad;
+        let first_slot = ChordWindow::requested(pad).offset;
+        let expected_notes = pad_chord_tones(pad, pad.progression as usize, first_slot);
+        let expected_midi = pad_notes_with_count(
+            expected_notes,
+            pad_note_count(pad.chord_notes),
+            destination.controls.master.tune,
+        );
+        assert_eq!(
+            engine.snapshot.pad.chord_slots, pad.chord_slots,
+            "beat {beat}"
+        );
+        assert_eq!(
+            engine.snapshot.pad.chord_overrides, pad.chord_overrides,
+            "beat {beat}"
+        );
+        assert_eq!(
+            engine.snapshot.pad.progression, pad.progression,
+            "beat {beat}"
+        );
+        assert_eq!(engine.pad.cursor.slot(), first_slot, "beat {beat}");
+        assert_eq!(engine.pad.last_chord_notes, expected_notes, "beat {beat}");
+        assert_eq!(
+            engine.snapshot.master.bpm, destination.controls.master.bpm,
+            "beat {beat}"
+        );
+        assert_eq!(
+            engine.tempo.bpm as f32, destination.controls.master.bpm,
+            "beat {beat}"
+        );
+        assert_eq!(
+            chord_events,
+            [expected_midi],
+            "one destination MIDI hit at beat {beat}"
+        );
+        eprintln!(
+            "{previous_song}->{song} landing beat={beat:.6} sample={sample} bpm={} slot={first_slot} midi={:?}",
+            engine.tempo.bpm,
+            expected_midi.active()
+        );
+        previous_song = song;
+        landings += 1;
+        landing_window = Some((beat, left.abs().max(right.abs()), 0xcbf2_9ce4_8422_2325));
+    }
+    assert_eq!(landings, 2, "both directions must land within the trace");
+    assert_eq!(completed_windows, 2, "both first-hit windows must complete");
+}
+
+#[test]
 fn live_morph_uses_the_audio_phrase_anchor_after_a_progression_edit() {
     let mut controls = FluidControls::default();
     controls.master.bpm = 120.0;
