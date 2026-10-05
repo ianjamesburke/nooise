@@ -1345,7 +1345,7 @@ fn built_in_nine_thirteen_lands_chord_bank_tempo_and_midi_on_one_sample() {
     }
     let endpoints = [from.clone(), to.clone()];
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
-        vec![from.clone(), to.clone()],
+        vec![from.clone(), to],
         vec![9, 13],
         64,
     ))));
@@ -8159,7 +8159,7 @@ fn auto_lfo_amount_transition_renders_deterministically_and_audibly() {
         };
         let to = SongState {
             automation: to_automation,
-            ..SongState::from_controls(controls.clone())
+            ..SongState::from_controls(controls)
         };
         let session = LiveSession::new(LiveSessionSnapshot::from_song(&from));
         let morph = if with_morph {
