@@ -1,6 +1,6 @@
 # nooise stabilization sprint — implementation brief (2026-10-05)
 
-Status: active nine-step sequence, authorized by Ian on October 5. Based on root `main` at `f28f95d` and the stabilization intake. Recheck heads and dirty paths at assignment time. Existing microphone worktree is active and remains separate. The October 3 sprint is integrated; hands-on approval and release remain gated by 0075 and 0073.
+Status: implementation slices 1–8 are integrated in `worktrees/temp-stabilization-sprint` through `dad9f26`; step 9's automated gate passed October 5. Ian's musical and live terminal audition remains open under 0075, with the versioned release under 0073. The [integration gate](2026-10-05-stabilization-gate.md) owns measured results and the runnable audition path. Root `main` remains the reference at `f28f95d`; microphone exploration remains separate.
 
 ## Execution contract
 
