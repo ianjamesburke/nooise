@@ -85,7 +85,7 @@ struct Cli {
     /// and only works on Macs exposing the undocumented SPU accelerometer.
     #[arg(long, global = true)]
     chassis_tap: bool,
-    /// Mirror live telemetry (beat, chord, kick hits) as OSC over UDP for an
+    /// Mirror live telemetry (beat, chord, phrase, kick hits) as OSC over UDP for an
     /// external visualizer. Bare `--osc` targets 127.0.0.1:9000, foorm's
     /// default listen address; give ADDR to send elsewhere.
     #[arg(
