@@ -298,6 +298,32 @@ pub(crate) fn coordinate_production_action(
         match &result {
             Ok(EffectAcknowledgement::ControlSelected { tab, index, .. }) => {
                 let current_session = context.effects.session().load();
+                if matches!(
+                    effect,
+                    interaction::InteractionEffect::PlaceFilterCutoff { .. }
+                ) {
+                    let spec = tab_specs(*tab)
+                        .get(*index)
+                        .expect("filter cutoff is registered");
+                    let (_, slot, _) =
+                        parse_module_slot_id(spec.id).expect("filter cutoff has a slot");
+                    let amount = module_slot_spec(*tab, slot, ModuleSlotField::Amount)
+                        .expect("filter has an Amount row");
+                    let amount_index =
+                        spec_index(*tab, amount.id).expect("filter Amount is registered");
+                    model.select_control(*tab, amount_index, &current_session.controls);
+                    let return_to = model.navigation.selected();
+                    model.navigation = interaction::Navigation::Module {
+                        tab: *tab,
+                        slot,
+                        catalog_index: module_catalog_index(interaction::FILTER_MODULE_ID),
+                        selected: 1,
+                        return_to,
+                    };
+                    model.mode = interaction::InteractionMode::Browsing;
+                    effect_records.push(ProductionEffectRecord { effect, result });
+                    continue;
+                }
                 // Landing on a module row never opens its detail: a
                 // palette-added effect stays on the page it was added to,
                 // and Enter is the one way into a drill.
@@ -333,6 +359,13 @@ pub(crate) fn coordinate_production_action(
                     model.select_control(*tab, *index, &current_session.controls);
                 }
                 model.mode = interaction::InteractionMode::Browsing;
+            }
+            Ok(EffectAcknowledgement::Published { .. })
+                if matches!(effect, interaction::InteractionEffect::ApplyRecipe { .. }) =>
+            {
+                model.mode = interaction::InteractionMode::Automation(
+                    interaction::AutomationMode::new(interaction::AutomationKind::Lfo),
+                );
             }
             Err(error) => {
                 let prefix = if effect == interaction::InteractionEffect::Save {

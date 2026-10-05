@@ -2474,7 +2474,7 @@ pub(crate) fn lead_drill_for_index(
 
 /// The control id for a tab's slot's collapsed row — whichever field the
 /// loaded module's family collapses to (`ModuleKind::collapsed_field`),
-/// amount for most families, cutoff for Filter. Compile-time strings, so
+/// Amount for every family, including Filter. Compile-time strings, so
 /// this is a lookup rather than a format. `None` for a tab with no chain,
 /// an empty slot, or a slot index out of range.
 pub(crate) fn module_slot_collapsed_id(

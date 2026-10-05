@@ -3890,7 +3890,7 @@ fn a_loaded_slot_row_is_labelled_with_its_module() {
     let mut controls = FluidControls::default();
     let row = tab_controls(Tab::Kick, &controls)
         .into_iter()
-        .find(|item| item.id == "kick.slot1.time")
+        .find(|item| item.id == "kick.slot1.amount")
         .expect("kick slot 1 ships pre-loaded with Filter");
     // The `›` marks a module whose row Enter drills into; Drive has none.
     assert_eq!(row.label, "Filter ›");
@@ -4030,7 +4030,7 @@ fn effect_families_project_complete_coherent_detail_rows() {
         labels(3),
         ["Amount", "Threshold", "Ratio", "Release", "Makeup"]
     );
-    assert_eq!(labels(4), ["Cutoff", "Resonance", "Type", "Amount"]);
+    assert_eq!(labels(4), ["Amount", "Cutoff", "Resonance", "Type"]);
 }
 
 #[test]
@@ -4156,7 +4156,7 @@ fn tab_controls_classify_each_slider_kind() {
                 Gain, Gain,
             ],
         ),
-        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Continuous]),
+        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Gain]),
         (Tab::Chords, {
             // 12 visible base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
@@ -4171,14 +4171,13 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Bass,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Continuous,
-                Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain, Gain,
             ],
         ),
         (
             Tab::Kick,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Continuous, Gain, Continuous, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Continuous, Gain, Gain, Gain,
             ],
         ),
         (
@@ -4190,9 +4189,7 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (
             Tab::Clap,
-            vec![
-                Gain, Timing, Timing, Timing, Discrete, Timing, Gain, Continuous,
-            ],
+            vec![Gain, Timing, Timing, Timing, Discrete, Timing, Gain, Gain],
         ),
         (
             Tab::Arp,
@@ -7709,7 +7706,7 @@ fn silent_lfo_and_envelope_render_the_same_as_no_automation() {
 }
 
 #[test]
-fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
+fn palette_recipes_render_like_authored_lanes_and_start_sample_identical() {
     let address = ControlAddress::new("master.level");
     for recipe in recipe::RECIPES {
         let id = recipe.id;
@@ -7728,14 +7725,14 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                     recipe::RecipeId::Sway => (LfoShape::Sine, 8.0, 0),
                     recipe::RecipeId::Tremolo => (LfoShape::Sine, 0.5, 0),
                     recipe::RecipeId::Pulse => (LfoShape::Square, 1.0, 0),
-                    recipe::RecipeId::Drift => (LfoShape::RandomDrift, 16.0, 0x4452_4946),
+                    recipe::RecipeId::Drift => (LfoShape::RandomDrift, 4.0, 0x4452_4946),
                     recipe::RecipeId::Rise => (LfoShape::RampUp, 8.0, 0),
                     recipe::RecipeId::Sidechain => unreachable!(),
                 };
                 authored.add_route(
                     address,
                     LfoRoute {
-                        depth_ratio: 0.25,
+                        depth_ratio: 0.0,
                         cycle_beats,
                         shape,
                         seed,
@@ -7747,7 +7744,7 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                 authored.add_route(
                     address,
                     LfoRoute {
-                        depth_ratio: 0.25,
+                        depth_ratio: 0.0,
                         cycle_beats: 1.0,
                         shape: LfoShape::RampUp,
                         ..LfoRoute::default()
@@ -7755,7 +7752,7 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                 );
             }
         }
-        let mut recipe_engine = engine_for(snapshot.controls.clone(), snapshot.automation);
+        let mut recipe_engine = engine_for(snapshot.controls.clone(), snapshot.automation.clone());
         let mut authored_engine = engine_for(snapshot.controls.clone(), authored);
         let mut dry_engine = engine_for(snapshot.controls, AutomationState::default());
         for engine in [&mut recipe_engine, &mut authored_engine, &mut dry_engine] {
@@ -7771,6 +7768,7 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                 "{id:?}, sample {sample}"
             );
             let dry = dry_engine.next_stereo();
+            assert_eq!(actual, dry, "{id:?} changed sample {sample} at Amount 0%");
             if sample >= SAMPLE_RATE as usize * 2 {
                 difference_energy +=
                     f64::from((actual.0 - dry.0).powi(2) + (actual.1 - dry.1).powi(2));
@@ -7778,10 +7776,102 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
             }
         }
         assert!(dry_energy > 1.0, "fixture must contain music");
-        assert!(
-            difference_energy / dry_energy > 0.001,
-            "{id:?} must audibly change settled output"
+        assert_eq!(difference_energy, 0.0);
+    }
+}
+
+#[test]
+fn raised_recipe_amount_changes_settled_audio() {
+    let address = ControlAddress::new("master.level");
+    let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+    let target = recipe::RecipeTarget::capture(address.id(), &snapshot).unwrap();
+    recipe::RecipeId::Sway
+        .recipe()
+        .apply(&mut snapshot, target)
+        .unwrap();
+    let mut dry = engine_for(snapshot.controls.clone(), AutomationState::default());
+    snapshot.automation.route_mut(address).unwrap().depth_ratio = 0.25;
+    let mut wet = engine_for(snapshot.controls, snapshot.automation);
+    dry.reseed(42);
+    wet.reseed(42);
+    let mut difference = 0.0f64;
+    for sample in 0..SAMPLE_RATE as usize * 5 {
+        let a = dry.next_stereo();
+        let b = wet.next_stereo();
+        if sample >= SAMPLE_RATE as usize * 2 {
+            difference += f64::from((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2));
+        }
+    }
+    assert!(
+        difference > 1.0,
+        "Amount must bring an audible LFO into the mix"
+    );
+}
+
+#[test]
+fn recipe_insertion_keeps_base_existing_lanes_and_other_layers() {
+    for recipe in recipe::RECIPES {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        let target = recipe::RecipeTarget::capture("pad.level", &snapshot).unwrap();
+        let address = ControlAddress::new(target.id);
+        snapshot.automation.add_route(
+            address,
+            LfoRoute {
+                depth_ratio: 0.2,
+                cycle_beats: 3.0,
+                ..LfoRoute::default()
+            },
         );
+        let controls = snapshot.controls.clone();
+        let existing = *snapshot.automation.route(address).unwrap();
+        recipe.apply(&mut snapshot, target).unwrap();
+        for spec in all_specs() {
+            assert_eq!(
+                (spec.get)(&snapshot.controls).to_bits(),
+                (spec.get)(&controls).to_bits(),
+                "{:?} changed {}",
+                recipe.id,
+                spec.id
+            );
+        }
+        assert_eq!(
+            *snapshot.automation.routes_for(address).next().unwrap(),
+            existing
+        );
+        assert_eq!(snapshot.automation.routes_for(address).count(), 2);
+        assert_eq!(snapshot.automation.active_lane_index(), Some(1));
+        assert_eq!(snapshot.automation.route(address).unwrap().depth_ratio, 0.0);
+    }
+}
+
+#[test]
+fn inserted_catalog_modules_are_sample_identical_at_zero_amount() {
+    for kind in MODULE_CATALOG
+        .iter()
+        .filter(|kind| module_available_on(**kind, Tab::Bass))
+    {
+        let controls = FluidControls::default();
+        let mut inserted = controls.clone();
+        let slot = inserted
+            .modules
+            .bass
+            .iter()
+            .position(ModuleSlot::is_empty)
+            .unwrap();
+        inserted.modules.bass[slot] = preset_slot(kind.id, 0.0);
+        assert_eq!(inserted.modules.bass[slot].amount, 0.0, "{}", kind.id);
+        let mut dry = engine_for(controls, AutomationState::default());
+        let mut with_module = engine_for(inserted, AutomationState::default());
+        dry.reseed(42);
+        with_module.reseed(42);
+        for sample in 0..SAMPLE_RATE as usize {
+            assert_eq!(
+                dry.next_stereo(),
+                with_module.next_stereo(),
+                "{} at sample {sample}",
+                kind.id
+            );
+        }
     }
 }
 

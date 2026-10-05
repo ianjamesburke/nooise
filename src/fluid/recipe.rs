@@ -34,35 +34,35 @@ pub(crate) const RECIPES: &[Recipe] = &[
         id: RecipeId::Sway,
         name: "Sway",
         aliases: &[],
-        description: "slow sine, 8 beats, 25%",
+        description: "slow sine, 8 beats, starts silent",
         lane: RecipeLane::Lfo {
             shape: LfoShape::Sine,
             seed: 0,
             beats: 8.0,
-            depth: 0.25,
+            depth: 0.0,
         },
     },
     Recipe {
         id: RecipeId::Tremolo,
         name: "Tremolo",
         aliases: &[],
-        description: "fast sine, 1/2 beat, 25%",
+        description: "fast sine, 1/2 beat, starts silent",
         lane: RecipeLane::Lfo {
             shape: LfoShape::Sine,
             seed: 0,
             beats: 0.5,
-            depth: 0.25,
+            depth: 0.0,
         },
     },
     Recipe {
         id: RecipeId::Sidechain,
         name: "Sidechain",
         aliases: &["sc"],
-        description: "beat ramp duck, 1 beat, 50%",
+        description: "beat ramp duck, 1 beat, starts silent",
         lane: RecipeLane::Lfo {
             shape: LfoShape::RampUp,
             beats: 1.0,
-            depth: 0.25,
+            depth: 0.0,
             seed: 0,
         },
     },
@@ -70,11 +70,11 @@ pub(crate) const RECIPES: &[Recipe] = &[
         id: RecipeId::Pulse,
         name: "Pulse",
         aliases: &[],
-        description: "square, 1 beat, 25%",
+        description: "square, 1 beat, starts silent",
         lane: RecipeLane::Lfo {
             shape: LfoShape::Square,
             beats: 1.0,
-            depth: 0.25,
+            depth: 0.0,
             seed: 0,
         },
     },
@@ -82,11 +82,11 @@ pub(crate) const RECIPES: &[Recipe] = &[
         id: RecipeId::Drift,
         name: "Drift",
         aliases: &[],
-        description: "slow random drift, 16 beats, 25%",
+        description: "random drift, 4 beats, starts silent",
         lane: RecipeLane::Lfo {
             shape: LfoShape::RandomDrift,
-            beats: 16.0,
-            depth: 0.25,
+            beats: 4.0,
+            depth: 0.0,
             seed: 0x4452_4946,
         },
     },
@@ -94,11 +94,11 @@ pub(crate) const RECIPES: &[Recipe] = &[
         id: RecipeId::Rise,
         name: "Rise",
         aliases: &[],
-        description: "ramp up, 8 beats, 25%",
+        description: "ramp up, 8 beats, starts silent",
         lane: RecipeLane::Lfo {
             shape: LfoShape::RampUp,
             beats: 8.0,
-            depth: 0.25,
+            depth: 0.0,
             seed: 0,
         },
     },
@@ -168,6 +168,17 @@ impl Recipe {
         self.id == RecipeId::Tremolo
     }
 
+    fn authored_lane_matches(&self, lane: &LfoRoute, route: &LfoRoute) -> bool {
+        self.keeps_one_authored_lane()
+            && lane.shape == route.shape
+            && (lane.cycle_beats - route.cycle_beats).abs() < 0.0001
+            && lane.phase_offset_beats == route.phase_offset_beats
+            && lane.seed == route.seed
+            && lane.steps == route.steps
+            && lane.step_count == route.step_count
+            && lane.step_glide == route.step_glide
+    }
+
     pub(crate) fn check(
         &self,
         snapshot: &LiveSessionSnapshot,
@@ -178,11 +189,10 @@ impl Recipe {
         }
         let address = ControlAddress::new(target.id);
         let route = self.lfo_route();
-        if self.keeps_one_authored_lane()
-            && snapshot
-                .automation
-                .routes_for(address)
-                .any(|lane| *lane == route)
+        if snapshot
+            .automation
+            .routes_for(address)
+            .any(|lane| self.authored_lane_matches(lane, &route))
         {
             return Ok(());
         }
@@ -200,25 +210,21 @@ impl Recipe {
     ) -> Result<(), EffectFailure> {
         self.check(snapshot, target)?;
         let address = ControlAddress::new(target.id);
-        if self.id == RecipeId::Sidechain {
-            let spec = spec_by_id(target.id).ok_or(EffectFailure::StaleRecipeTarget)?;
-            let ratio = spec.ratio((spec.get)(&snapshot.controls), &snapshot.controls);
-            spec.apply_ratio((ratio - 0.25).max(0.0), &mut snapshot.controls);
-        }
         match self.lane {
             RecipeLane::Lfo { .. } => {
                 let route = self.lfo_route();
-                let duplicate = self.keeps_one_authored_lane()
-                    && snapshot
-                        .automation
-                        .routes_for(address)
-                        .any(|lane| *lane == route);
-                if !duplicate {
+                let existing = snapshot
+                    .automation
+                    .routes_for(address)
+                    .position(|lane| self.authored_lane_matches(lane, &route));
+                if existing.is_none() {
                     snapshot.automation.add_route(address, route);
                 }
+                let index =
+                    existing.unwrap_or_else(|| snapshot.automation.routes_for(address).count() - 1);
+                snapshot.automation.open_route(address, index);
             }
         }
-        snapshot.automation.close_editor();
         Ok(())
     }
 }
@@ -243,7 +249,7 @@ mod tests {
             match recipe.lane {
                 RecipeLane::Lfo { beats, depth, .. } => {
                     assert!((MIN_LFO_CYCLE_BEATS..=MAX_LFO_CYCLE_BEATS).contains(&beats));
-                    assert!(depth > 0.0 && depth <= 1.0);
+                    assert_eq!(depth, 0.0);
                 }
             }
         }
@@ -320,7 +326,7 @@ mod tests {
             ));
             assert_eq!(
                 entry.display_text(),
-                "Sidechain · beat ramp duck, 1 beat, 50%"
+                "Sidechain · beat ramp duck, 1 beat, starts silent"
             );
             assert!(found.hits.iter().all(|&index| index < "Sidechain".len()));
         }
@@ -353,12 +359,12 @@ mod tests {
             )
         };
         assert_eq!(route.shape, LfoShape::RampUp);
-        assert_eq!(value(0.0), 0.25);
-        assert_eq!(value(0.25), 0.375);
-        assert_eq!(value(0.5), 0.5);
-        assert_eq!(value(0.75), 0.625);
-        assert_eq!(value(1.0), 0.25);
-        assert_eq!(snapshot.controls.pad.level, 0.5);
+        assert_eq!(value(0.0), 0.75);
+        assert_eq!(snapshot.controls.pad.level, 0.75);
+        let mut raised = *route;
+        raised.depth_ratio = 0.25;
+        assert!(modulated_control_value_full(spec, &[raised], &[], 0.75, context(0.0)) < 0.75);
+        assert!(modulated_control_value_full(spec, &[raised], &[], 0.75, context(0.75)) > 0.75);
         assert!(snapshot.automation.envelope(address).is_none());
     }
 }

@@ -477,6 +477,15 @@ impl AutomationState {
         true
     }
 
+    pub(crate) fn open_route(&mut self, address: ControlAddress, index: usize) {
+        assert!(index < self.routes_for(address).count());
+        self.open = Some(OpenEditor {
+            address,
+            kind: ModKind::Lfo,
+            index,
+        });
+    }
+
     pub(crate) fn add_envelope(&mut self, address: ControlAddress, route: EnvelopeRoute) -> bool {
         let stack = self.stacks.entry(address).or_default();
         if stack.envelopes.len() >= MAX_AUTOMATION_LANES_PER_KIND {

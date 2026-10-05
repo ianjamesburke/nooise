@@ -3363,14 +3363,20 @@ fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
             ));
             let result = replay_with(&events, capabilities, ReplayHarness::with_auto_running);
             assert_eq!(result.model.navigation, Navigation::default());
-            assert_eq!(result.model.mode, InteractionMode::Browsing);
+            assert_eq!(
+                result.model.mode,
+                InteractionMode::Automation(AutomationMode::new(AutomationKind::Lfo))
+            );
+            assert_eq!(result.automation_kind.as_deref(), Some("Lfo"));
+            assert_eq!(result.automation_address, Some("pad.level"));
             assert!(!result.auto_running);
             assert_eq!(result.effect_count("ApplyRecipe"), 1);
-            assert!(result.frames.iter().any(|frame| {
-                frame
-                    .help
-                    .contains(&format!("{} added to pad.level", id.recipe().name))
-            }));
+            assert!(
+                result
+                    .frames
+                    .iter()
+                    .any(|frame| frame.text.contains("amount") && frame.text.contains("0%"))
+            );
             let saved =
                 song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
             let address = ControlAddress::new("pad.level");
@@ -3390,6 +3396,68 @@ fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
             }
         }
     }
+}
+
+#[test]
+fn recipe_amount_is_focused_and_arrows_raise_it_at_minimum_frame() {
+    let mut events = vec![TraceEvent::Resize {
+        after_ms: 0,
+        width: MIN_TERMINAL_WIDTH,
+        height: MIN_TERMINAL_HEIGHT,
+    }];
+    events.extend(recipe_keys("sway"));
+    events.push(TraceEvent::Idle { after_ms: 40 });
+    let inserted = replay(&events, TerminalCapabilities::full());
+    assert_eq!(
+        inserted.model.mode,
+        InteractionMode::Automation(AutomationMode::new(AutomationKind::Lfo))
+    );
+    assert!(
+        inserted
+            .frames
+            .iter()
+            .any(|frame| frame.text.contains("amount") && frame.text.contains("0%"))
+    );
+    events.push(key(0, FixtureKey::Right, InputPhase::Press));
+    events.push(modified_key(
+        0,
+        FixtureKey::Character('s'),
+        InputPhase::Press,
+        1 << 1,
+    ));
+    let raised = replay(&events, TerminalCapabilities::full());
+    let saved = song::decode_song_code(raised.saved_automation_code.as_deref().unwrap()).unwrap();
+    assert!(
+        saved
+            .automation
+            .route(ControlAddress::new("pad.level"))
+            .unwrap()
+            .depth_ratio
+            > 0.0
+    );
+}
+
+#[test]
+fn palette_filter_insertion_focuses_dry_amount_and_reuses_the_slot() {
+    let mut events = vec![key(0, FixtureKey::Tab, InputPhase::Press)];
+    events.extend(recipe_keys("filter"));
+    let inserted = replay(&events, TerminalCapabilities::full());
+    assert!(matches!(
+        inserted.model.navigation,
+        Navigation::Chords { .. }
+    ));
+    assert_eq!(inserted.model.mode, InteractionMode::Browsing);
+    assert_eq!(inserted.control("pad.slot2.amount"), Some(0.0));
+    assert!(
+        inserted
+            .frames
+            .iter()
+            .any(|frame| frame.text.contains("Filter") && frame.text.contains("0%"))
+    );
+    events.extend(recipe_keys("filter"));
+    let repeated = replay(&events, TerminalCapabilities::full());
+    assert_eq!(repeated.control("pad.slot2.amount"), Some(0.0));
+    assert_eq!(repeated.control("pad.slot3.kind"), Some(0.0));
 }
 
 #[test]
@@ -3414,8 +3482,32 @@ fn repeated_tremolo_palette_recipe_keeps_one_authored_lfo() {
     let lane = lanes.next().unwrap();
     assert_eq!(lane.shape, LfoShape::Sine);
     assert_eq!(lane.cycle_beats, 0.5);
-    assert!((lane.depth_ratio - 0.25).abs() < 0.0001);
+    assert_eq!(lane.depth_ratio, 0.0);
     assert!(lanes.next().is_none());
+}
+
+#[test]
+fn repeated_tremolo_reopens_the_raised_amount_without_adding_a_lane() {
+    let mut events = recipe_keys("tremolo");
+    events.push(key(0, FixtureKey::Right, InputPhase::Press));
+    events.extend(recipe_keys("tremolo"));
+    events.push(modified_key(
+        0,
+        FixtureKey::Character('s'),
+        InputPhase::Press,
+        1 << 1,
+    ));
+    let result = replay(&events, TerminalCapabilities::full());
+    let saved = song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+    let mut lanes = saved
+        .automation
+        .routes_for(ControlAddress::new("pad.level"));
+    assert!(lanes.next().unwrap().depth_ratio > 0.0);
+    assert!(lanes.next().is_none());
+    assert_eq!(
+        result.model.mode,
+        InteractionMode::Automation(AutomationMode::new(AutomationKind::Lfo))
+    );
 }
 
 #[test]
@@ -3472,10 +3564,10 @@ fn scoped_palette_recipe_targets_the_original_module_control() {
     assert_eq!(saved.automation.routes().count(), 1);
     let lane = saved
         .automation
-        .route(ControlAddress::new("bass.slot1.time"))
+        .route(ControlAddress::new("bass.slot1.amount"))
         .unwrap();
     assert!(
-        lane.depth_ratio > 0.25,
+        lane.depth_ratio > 0.0,
         "ordinary editor adjusts recipe depth"
     );
 }
@@ -3596,6 +3688,7 @@ fn switching_a_filter_to_high_pass_mirrors_its_cutoff() {
     events.extend([
         key(0, FixtureKey::Enter, InputPhase::Press),
         key(0, FixtureKey::Enter, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
         key(0, FixtureKey::Down, InputPhase::Press),
         key(0, FixtureKey::Down, InputPhase::Press),
         key(0, FixtureKey::Right, InputPhase::Press),
@@ -4015,6 +4108,15 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
         TerminalCapabilities::full(),
     );
     assert_eq!(filter.model.mode, InteractionMode::Browsing);
+    assert!(matches!(
+        filter.model.navigation,
+        Navigation::Module {
+            tab: Tab::Bass,
+            slot: 0,
+            selected: 1,
+            ..
+        }
+    ));
     assert_eq!(
         filter.recent_ids,
         ["bass.slot1.time"],

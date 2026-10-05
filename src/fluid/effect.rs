@@ -832,6 +832,7 @@ impl EffectExecutor {
         &mut self,
         tab: Tab,
         catalog_index: usize,
+        focus: Option<ModuleSlotField>,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         let kind = MODULE_CATALOG
             .get(catalog_index)
@@ -877,8 +878,11 @@ impl EffectExecutor {
                 slot
             }
         };
-        let id = module_slot_collapsed_id(tab, slot, &self.session.load().controls)
-            .ok_or(EffectFailure::MissingContext("module slot control"))?;
+        let id = match focus {
+            Some(field) => module_slot_spec(tab, slot, field).map(|spec| spec.id),
+            None => module_slot_collapsed_id(tab, slot, &self.session.load().controls),
+        }
+        .ok_or(EffectFailure::MissingContext("module slot control"))?;
         let index = spec_index(tab, id).ok_or(EffectFailure::UnknownControl(id))?;
         self.recent.touch(id);
         self.execute(LiveEffect::SelectControl { tab, index, id })
@@ -1089,8 +1093,13 @@ impl EffectExecutor {
             // Needs only the session, so the generic bridge can resolve it;
             // the production path adds closing the open editor first.
             InteractionEffect::PlaceModule { tab, catalog_index } => {
-                self.place_module(tab, catalog_index)
+                self.place_module(tab, catalog_index, None)
             }
+            InteractionEffect::PlaceFilterCutoff { tab } => self.place_module(
+                tab,
+                module_catalog_index(interaction::FILTER_MODULE_ID),
+                Some(ModuleSlotField::Time),
+            ),
             InteractionEffect::PaletteCommit(edits) => {
                 let edits = staged_edits(edits);
                 if edits.is_empty() {
@@ -1474,7 +1483,18 @@ impl EffectExecutor {
             }
             InteractionEffect::PlaceModule { tab, catalog_index } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
-                self.place_module(tab, catalog_index)
+                self.place_module(tab, catalog_index, None)
+            }
+            InteractionEffect::PlaceFilterCutoff { tab } => {
+                self.edit_navigation_automation(AutomationState::close_editor);
+                self.execute_interaction_with_clipboard(
+                    InteractionEffect::PlaceFilterCutoff { tab },
+                    &InteractionExecutionContext {
+                        selected_control: context.selected_control,
+                        beat: context.beat,
+                    },
+                    clipboard,
+                )
             }
             other => self.execute_interaction_with_clipboard(
                 other,

@@ -482,7 +482,7 @@ pub(crate) enum AutomationMode {
 }
 
 impl AutomationMode {
-    fn new(kind: AutomationKind) -> Self {
+    pub(crate) fn new(kind: AutomationKind) -> Self {
         match kind {
             AutomationKind::Lfo => Self::Lfo {
                 depth: LfoDepth::Editor,
@@ -1217,6 +1217,10 @@ pub(crate) enum InteractionEffect {
     PlaceModule {
         tab: Tab,
         catalog_index: usize,
+    },
+    /// Jump's direct filter shortcut keeps Cutoff as its destination.
+    PlaceFilterCutoff {
+        tab: Tab,
     },
     AutomationConfirm(AutomationKind),
     AddAutomation(AutomationKind),
@@ -2021,10 +2025,7 @@ fn jump_effect(tab: Tab, parameter: PerformanceParameter) -> Option<InteractionE
             let index = super::spec_index(tab, id)?;
             Some(InteractionEffect::JumpToControl { tab, index, id })
         }
-        PerformanceParameter::Filter => Some(InteractionEffect::PlaceModule {
-            tab,
-            catalog_index: super::module_catalog_index(FILTER_MODULE_ID),
-        }),
+        PerformanceParameter::Filter => Some(InteractionEffect::PlaceFilterCutoff { tab }),
     }
 }
 

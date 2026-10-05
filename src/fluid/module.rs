@@ -138,9 +138,13 @@ const COMPRESSION_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
-/// Cutoff leads because it is the collapsed row; the wet/dry Amount a
-/// filter rarely needs sits last.
+/// Amount leads because a newly added Filter starts as exact dry passthrough.
 const FILTER_PARAMETERS: &[EffectParameter] = &[
+    EffectParameter {
+        field: ModuleSlotField::Amount,
+        label: "Amount",
+        search_name: "Amount",
+    },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Cutoff",
@@ -155,11 +159,6 @@ const FILTER_PARAMETERS: &[EffectParameter] = &[
         field: ModuleSlotField::Feedback,
         label: "Type",
         search_name: "Type",
-    },
-    EffectParameter {
-        field: ModuleSlotField::Amount,
-        label: "Amount",
-        search_name: "Amount",
     },
 ];
 
@@ -209,9 +208,8 @@ impl ModuleKind {
     }
 
     /// The field a loaded slot collapses to when not drilled into. Every
-    /// family collapses to its wet/dry `Amount` except Filter, whose most
-    /// useful single knob is `Cutoff` (`Time`) — its `Amount` mix is a
-    /// detail-only control, defaulted fully wet in [`preset_slot`].
+    /// family collapses to its wet/dry `Amount`, so insertion focuses the
+    /// field that brings the effect into the sound.
     /// Whether Enter on the collapsed row opens a detail drill: every family
     /// with more than the one knob its collapsed row already shows.
     pub(crate) fn has_detail(self) -> bool {
@@ -219,10 +217,7 @@ impl ModuleKind {
     }
 
     pub(crate) fn collapsed_field(self) -> ModuleSlotField {
-        match self.family {
-            Family::Filter => ModuleSlotField::Time,
-            _ => ModuleSlotField::Amount,
-        }
+        ModuleSlotField::Amount
     }
 }
 
@@ -538,13 +533,8 @@ pub(crate) fn preset_slot(id: &str, amount: f32) -> ModuleSlot {
             slot.vintage = 2.0;
         }
         "filter" => {
-            // Amount (wet/dry mix) is detail-only, so it can't carry the
-            // "added modules start inert" contract other families use — it
-            // always sets fully wet, overriding the caller's `amount`.
-            // Cutoff is the collapsed row instead, and starts maxed out
-            // (audibly transparent low-pass); turning it down is the first
-            // audible move, same as another module's amount starting at 0%.
-            slot.amount = 1.0;
+            // Keep factory callers' chosen amount. Palette insertion passes
+            // zero for exact dry passthrough; preloaded filters remain wet.
             slot.time = FILTER_CUTOFF_MAX_HZ;
             slot.right_time = 0.0;
             slot.feedback = 0.0;
@@ -913,6 +903,7 @@ mod tests {
     #[test]
     fn an_added_filter_starts_at_the_top_of_its_dial() {
         assert_eq!(preset_slot("filter", 0.0).time, FILTER_CUTOFF_MAX_HZ);
+        assert_eq!(preset_slot("filter", 0.0).amount, 0.0);
     }
 
     #[test]

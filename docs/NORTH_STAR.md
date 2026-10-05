@@ -22,7 +22,7 @@ Before adding any control or feature, weigh it against every commandment below:
 
 7. **Does it stay free of bundled samples?** nooise generates instrument sounds through synthesis, physical models, and waveform manipulation; it does not bundle sample libraries or recorded instrument assets. Live audio from microphones or synths may be processed, including granular effects using temporary rolling audio buffers, without requiring a recording saved to disk.
 
-8. **Does adding an effect preserve the sound until its amount is moved?** New effect modules and modulation recipes start in a passthrough state, with Amount at zero where applicable. Inserting a recipe must not alter the target's base value. Focus the new recipe's Amount so the player can bring it in immediately. `/drift` uses a four-beat cycle and starts at zero Amount. Current recipe defaults still need to adopt this rule.
+8. **Does adding an effect preserve the sound until its amount is moved?** New effect modules and modulation recipes start at Amount 0% and leave the current sound unchanged. Insertion does not change a knob's base value or existing automation. Focus the new Amount so arrows can bring the effect in immediately. `/drift` starts silent with a four-beat cycle.
 
 **Retirement, not migration.** When a control goes away, its saved values go away with it. Codes that carry a retired control are refused with a message naming it (`SongCodeError::RetiredControl`), never loaded with the value silently dropped to a default. Built-in songs are re-authored through the current encoder instead; nooise carries no translation layer between old and new control names.
 

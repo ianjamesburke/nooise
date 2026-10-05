@@ -192,13 +192,13 @@ phase. A saved song restores either kind of loop and its phase. Editor sliders
 show the authored base plus a bright marker for the value currently playing.
 The selected editor field stays in view at the minimum 46x11 frame.
 
-Volume is the layer's own Level row. Filter is the shared filter module's
-Cutoff, never its Amount: Amount is a detail-only wet/dry mix an added filter
-pins fully wet, so Cutoff is the single knob the leader lands on and `h`/`l` sweep.
+Volume is the layer's own Level row. `Space k` opens the shared Filter detail
+on Cutoff. A newly added Filter starts at Amount 0%, so raise Amount to hear
+subsequent Cutoff sweeps. Palette-added Filters focus Amount directly.
 Bass, Kick, Perc and Clap ship with a filter in slot 1, so `k` lands on the cutoff
 already in play. Pads gets one added into its first free slot at a
-transparent 20 kHz cutoff, so arriving is silent and turning the cutoff down
-is the first audible move. A layer whose chain is full says so and stays
+transparent 20 kHz cutoff and Amount 0%, so arriving is silent. Raise Amount
+in its detail before sweeping Cutoff. A layer whose chain is full says so and stays
 put.
 
 Layer and parameter routes move the cursor; `Space m` schedules mute and
@@ -235,7 +235,8 @@ Lead play retains its own `i` entry and existing bindings.
    remembered Bass row in Browse with nothing changed, and `h`/`j`/`k`/`l`
    work at once. From Bass press Space, `j`: the cursor reaches Bass Level.
    Press Space, `a`, then Space, `k`: a filter appears on the Pads chain,
-   inaudible, cursor on its Cutoff row, and `h` sweeps it down. Repeat on
+   inaudible, cursor on its Cutoff row. Raise Amount in the detail, then `h`
+   sweeps Cutoff down. Repeat on
    Bass and confirm `k` reaches the filter already in slot 1 without
    resetting its cutoff or adding a second one. Press Space, `r`, then
    Space, `j` and confirm it reaches Master Level. Repeat the direct layer
