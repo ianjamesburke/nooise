@@ -4310,7 +4310,10 @@ fn tab_controls_classify_each_slider_kind() {
                 Gain, Gain,
             ],
         ),
-        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Timing, Continuous]),
+        (
+            Tab::Perc,
+            vec![Gain, Timing, Timing, Timing, Timing, Continuous],
+        ),
         (Tab::Chords, {
             // 12 visible base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
