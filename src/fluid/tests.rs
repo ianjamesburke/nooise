@@ -3691,7 +3691,7 @@ fn apply_reset_moves_selected_control_to_floor() {
     spec_by_id("master.tone")
         .unwrap()
         .apply_reset(&mut controls);
-    assert_close(controls.master.tone, -1.0);
+    assert_close(controls.master.tone, 0.0);
 
     controls.pad.chord_bars = 16.0;
     apply_reset(Tab::Chords, 4, &mut controls);

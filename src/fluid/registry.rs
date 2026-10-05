@@ -1505,7 +1505,8 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
                     "flat".to_string()
                 }
             },
-        ),
+        )
+        .reset_at(0.0),
         ControlSpec::new(
             "master.tune",
             "Tune",
@@ -1976,7 +1977,8 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| c.tonal.octave,
             |c, v| c.tonal.octave = v,
             |c| format!("{:.0}", c.tonal.octave),
-        ),
+        )
+        .reset_at(0.0),
         ControlSpec::new(
             "tonal.phrase",
             "Phrase",

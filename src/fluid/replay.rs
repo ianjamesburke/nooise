@@ -3635,6 +3635,23 @@ fn production_tick_commits_pending_palette_edits_at_the_bar() {
 }
 
 #[test]
+fn shift_h_resets_master_tone_to_neutral_through_production_replay() {
+    let mut events =
+        std::iter::repeat_n(key(0, FixtureKey::Down, InputPhase::Press), 10).collect::<Vec<_>>();
+    events.extend([
+        key(0, FixtureKey::Right, InputPhase::Press),
+        modified_key(0, FixtureKey::Character('H'), InputPhase::Press, 1),
+    ]);
+    let result = replay_with(&events, TerminalCapabilities::full(), |harness| {
+        harness.with_session_edit(|snapshot| snapshot.controls.master.tone = 0.5)
+    });
+
+    assert_eq!(result.control("master.tone"), Some(0.0));
+    assert_eq!(result.session_generation, 3);
+    assert_eq!(result.effect_count("ResetSelected"), 1);
+}
+
+#[test]
 fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
     let staged = InteractionModel {
         mode: InteractionMode::Palette(PaletteMode {
