@@ -353,8 +353,13 @@ impl TonalEngine {
         sample_rate: f32,
         session_state: Option<LiveSession>,
     ) -> Self {
+        let state = session_state
+            .as_ref()
+            .map(|session| session.load().tonal_sequence.clone())
+            .unwrap_or_else(|| TonalSequenceState::from_phrase(0));
         Self::new_with_live_state(
             sample_rate,
+            state,
             session_state,
             Arc::new(FluidTelemetry::default()),
         )
@@ -362,13 +367,10 @@ impl TonalEngine {
 
     pub(crate) fn new_with_live_state(
         sample_rate: f32,
+        state: TonalSequenceState,
         session_state: Option<LiveSession>,
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
-        let state = session_state
-            .as_ref()
-            .map(|state| state.load().tonal_sequence.clone())
-            .unwrap_or_else(|| TonalSequenceState::from_phrase(0));
         Self {
             sample_rate,
             step_trigger: GridTrigger::new(),
@@ -390,7 +392,7 @@ impl TonalEngine {
     pub(crate) fn next(
         &mut self,
         c: &TonalControls,
-        pad: &PadControls,
+        progression: usize,
         tune: f32,
         timing: TimingContext,
     ) -> (f32, f32) {
@@ -416,7 +418,6 @@ impl TonalEngine {
             } else {
                 self.evolved_phrase[self.step_index % self.evolved_phrase.len()]
             };
-            let progression = ChordWindow::requested(pad).progression;
             let note = tonal_home_note(phrase_note, progression) + (c.octave.round() as i32) * 12;
             let hz = note_hz(note, tune);
             let pan = self.rng.gen_range(-0.5f32..0.5);

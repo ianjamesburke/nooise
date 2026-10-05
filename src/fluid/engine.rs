@@ -669,6 +669,7 @@ impl FluidEngine {
             kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
             tonal: TonalEngine::new_with_live_state(
                 sample_rate,
+                live.tonal_sequence.clone(),
                 publish_tonal_session_state.then(|| session.clone()),
                 Arc::clone(&telemetry),
             ),
@@ -956,7 +957,7 @@ impl StereoEngine for FluidEngine {
             &effective.modules.tonal,
             self.tonal.next(
                 &effective.tonal,
-                &effective.pad,
+                self.pad.cursor.window.progression,
                 tune,
                 timing.with_groove_seed(4),
             ),
