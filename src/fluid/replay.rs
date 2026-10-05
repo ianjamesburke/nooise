@@ -2484,6 +2484,15 @@ fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor
         set.control("bass.level"),
         Some(FluidControls::default().bass.level)
     );
+    let set_again = replay(
+        &[plain(FixtureKey::Enter), shift(FixtureKey::Character('R'))],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(
+        set.control("pad.level"),
+        set_again.control("pad.level"),
+        "replaying the same seeded scope roll reproduces its value"
+    );
 
     let lfo_set = replay(
         &[

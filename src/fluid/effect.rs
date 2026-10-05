@@ -1309,8 +1309,14 @@ impl EffectExecutor {
                 let id = selected_control(context.selected_control)?;
                 let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext("control"))?;
                 let ratio = self.rng.r#gen::<f32>();
+                let initial = self.session.load();
+                let mut candidate = initial.controls.clone();
+                spec.apply_randomized_ratio(ratio, &mut candidate);
+                if (spec.get)(&candidate) == (spec.get)(&initial.controls) {
+                    return Ok(EffectAcknowledgement::NoChange);
+                }
                 let snapshot = self.edit_session(Some(spec.id), |snapshot| {
-                    spec.apply_ratio(ratio, &mut snapshot.controls);
+                    spec.apply_randomized_ratio(ratio, &mut snapshot.controls);
                 });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
@@ -1318,6 +1324,28 @@ impl EffectExecutor {
             }
             InteractionEffect::RandomizeScope => {
                 let mut rng = self.rng.clone();
+                let mut control_rolls = None;
+                if !context.randomizes_automation {
+                    let initial = self.session.load();
+                    let mut candidate = initial.controls.clone();
+                    let mut rolls = Vec::new();
+                    for id in context.visible_control_ids {
+                        if let Some(spec) = spec_by_id(id) {
+                            let ratio = rng.r#gen();
+                            spec.apply_randomized_ratio(ratio, &mut candidate);
+                            rolls.push((spec.id, ratio));
+                        }
+                    }
+                    let changed = rolls.iter().any(|(id, _)| {
+                        let spec = spec_by_id(id).expect("scope controls were validated");
+                        (spec.get)(&candidate) != (spec.get)(&initial.controls)
+                    });
+                    if !changed {
+                        self.rng = rng;
+                        return Ok(EffectAcknowledgement::NoChange);
+                    }
+                    control_rolls = Some(rolls);
+                }
                 let snapshot = self.edit_session(None, |snapshot| {
                     if context.randomizes_automation {
                         match snapshot.automation.active_kind() {
@@ -1347,10 +1375,13 @@ impl EffectExecutor {
                             None => {}
                         }
                     } else {
-                        for id in context.visible_control_ids {
-                            if let Some(spec) = spec_by_id(id) {
-                                spec.apply_ratio(rng.r#gen(), &mut snapshot.controls);
-                            }
+                        for (id, ratio) in control_rolls
+                            .as_ref()
+                            .expect("control scope was precomputed")
+                        {
+                            spec_by_id(id)
+                                .expect("scope controls were validated")
+                                .apply_randomized_ratio(*ratio, &mut snapshot.controls);
                         }
                     }
                 });

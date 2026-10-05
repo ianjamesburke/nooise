@@ -757,6 +757,35 @@ impl ControlSpec {
         (spec.set)(c, value);
     }
 
+    /// Randomize across the live dial while excluding its current value. If
+    /// quantization lands on the current rung, step to an adjacent legal
+    /// setting so controls with alternatives always change.
+    pub(crate) fn apply_randomized_ratio(&self, ratio: f32, c: &mut FluidControls) {
+        let spec = self.contextual(c);
+        let current = (spec.get)(c);
+        let mut scratch = c.clone();
+        spec.apply_ratio(ratio, &mut scratch);
+        let candidate = (spec.get)(&scratch);
+        if candidate != current {
+            (spec.set)(c, candidate);
+            return;
+        }
+
+        // A random draw can quantize back to the current rung. Try each
+        // adjacent legal setting; a singleton naturally remains unchanged.
+        spec.apply_delta(1.0, &mut scratch);
+        let next = (spec.get)(&scratch);
+        if next != current {
+            (spec.set)(c, next);
+            return;
+        }
+        spec.apply_delta(-1.0, &mut scratch);
+        let previous = (spec.get)(&scratch);
+        if previous != current {
+            (spec.set)(c, previous);
+        }
+    }
+
     /// Every value one arrow press can reach from the floor, ascending. Only
     /// meaningful for the ladder steps; a linear row would be its whole grid.
     fn rungs(&self, c: &FluidControls) -> Vec<f32> {
@@ -3108,6 +3137,74 @@ mod scale_tests {
             );
         }
         assert!(checked > 0, "no continuous tapered rows in the registry");
+    }
+
+    #[test]
+    fn randomizing_from_the_current_position_always_changes_when_another_value_exists() {
+        let controls = FluidControls::default();
+        let mut checked = 0;
+        for spec in all_specs() {
+            let contextual = spec.contextual(&controls);
+            let current = (contextual.get)(&controls);
+            let mut above = controls.clone();
+            contextual.apply_delta(1.0, &mut above);
+            let mut below = controls.clone();
+            contextual.apply_delta(-1.0, &mut below);
+            let has_alternative =
+                (contextual.get)(&above) != current || (contextual.get)(&below) != current;
+
+            let mut randomized = controls.clone();
+            contextual
+                .apply_randomized_ratio(contextual.ratio(current, &controls), &mut randomized);
+            let result = (contextual.get)(&randomized);
+            if has_alternative {
+                checked += 1;
+                assert_ne!(result, current, "{} stayed at its current value", spec.id);
+            } else {
+                assert_eq!(result, current, "{} is a singleton", spec.id);
+            }
+            assert!(
+                result >= contextual.min && result <= contextual.max,
+                "{} randomized outside its live range: {result}",
+                spec.id
+            );
+            assert!(
+                (contextual.quantize(result) - result).abs() < 1e-6,
+                "{} randomized off its declared grid",
+                spec.id
+            );
+        }
+        assert!(checked > 0, "no controls with multiple legal values");
+    }
+
+    #[test]
+    fn symmetric_controls_reset_to_their_neutral_midpoint() {
+        let centered = all_specs()
+            .filter(|spec| (spec.min + spec.max).abs() < 1e-6)
+            .collect::<Vec<_>>();
+        assert!(!centered.is_empty(), "no centered controls in the registry");
+        for spec in centered {
+            assert_eq!(spec.reset, 0.0, "{} should reset to neutral", spec.id);
+        }
+    }
+
+    #[test]
+    fn singleton_control_randomization_is_a_noop() {
+        let singleton = ControlSpec::new(
+            "master.tone.singleton-test",
+            "Singleton",
+            ControlKind::Discrete,
+            0.0,
+            0.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |controls| controls.master.tone,
+            |controls, value| controls.master.tone = value,
+            |controls| format!("{}", controls.master.tone),
+        );
+        let mut controls = FluidControls::default();
+        singleton.apply_randomized_ratio(0.7, &mut controls);
+        assert_eq!(controls.master.tone, 0.0);
     }
 }
 
