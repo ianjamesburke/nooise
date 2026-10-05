@@ -22,6 +22,8 @@ Before adding any control or feature, weigh it against every commandment below:
 
 7. **Does it stay free of bundled samples?** nooise generates instrument sounds through synthesis, physical models, and waveform manipulation; it does not bundle sample libraries or recorded instrument assets. Live audio from microphones or synths may be processed, including granular effects using temporary rolling audio buffers, without requiring a recording saved to disk.
 
+8. **Does adding an effect preserve the sound until its amount is moved?** New effect modules and modulation recipes start in a passthrough state, with Amount at zero where applicable. Inserting a recipe must not alter the target's base value. Focus the new recipe's Amount so the player can bring it in immediately. `/drift` uses a four-beat cycle and starts at zero Amount. Current recipe defaults still need to adopt this rule.
+
 **Retirement, not migration.** When a control goes away, its saved values go away with it. Codes that carry a retired control are refused with a message naming it (`SongCodeError::RetiredControl`), never loaded with the value silently dropped to a default. Built-in songs are re-authored through the current encoder instead; nooise carries no translation layer between old and new control names.
 
 If a proposed control fails #3 — it's there to let the user manually correct something that should already sound right — don't ship the control. Fix the balance instead.
@@ -30,7 +32,7 @@ If a proposed control fails #3 — it's there to let the user manually correct s
 
 ## External gear and persistence
 
-The priority is the computer keyboard workflow, shared musical behavior and persistence, then optional device adapters. APC40 experiments are deferred. MIDI, OSC and Ableton Link may extend the same instrument; incoming controls must use the same registry validation and session publication rules as keyboard edits. Physical devices must not become prerequisites for editing or playing a song.
+The priority is the computer keyboard workflow, shared musical behavior and persistence, then optional device adapters. Stabilize existing features before the next hardware sprint; APC40 support is wanted soon afterward, while microphone input is actively being explored separately. MIDI, OSC and Ableton Link may extend the same instrument; incoming controls must use the same registry validation and session publication rules as keyboard edits. Physical devices must not become prerequisites for editing or playing a song.
 
 | Musical state | Launch or rig configuration |
 | --- | --- |
