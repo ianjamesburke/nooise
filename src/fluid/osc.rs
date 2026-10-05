@@ -14,7 +14,7 @@
 //!   mix (post effects, mute, and mix weight), for `<voice>` in `VOICES`
 //! - `/nooise/chord` `i32 f32 f32` — the progression table slot (0..8) the
 //!   pad is sounding plus the attack and release seconds of the layer it
-//!   voiced, sent on change
+//!   voiced, sent on each chord publication (including opening/restart)
 //! - `/nooise/voice/kick` `f32` — legacy one-message-per-kick hit carrying
 //!   `kick.level` (0 = inaudible)
 //! - `/nooise/hit/<source>` `f32 f32` — one message per Beat, Pad, Perc, Kick,
@@ -22,6 +22,11 @@
 //!   class (C = 0, B = 11/12); unpitched voices send -1 for pitch class
 //! - `/nooise/chord/change` `i32 f32` — pad progression table slot (0..8)
 //!   and its root pitch class, sent beside the existing `/nooise/chord` feed
+//! - `/nooise/phrase/reset` — no arguments; starts a new Pad phrase epoch on
+//!   initial play, transport restart, progression switch, and morph landing
+//! - `/nooise/phrase` `i32 i32 i32` — zero-based phrase cycle since reset,
+//!   zero-based chord index in the sounding Pad window, and chord count. Sent
+//!   at each Pad chord boundary, after any reset in the same bundle
 //! - `/nooise/gesture/<gesture>` `f32` — that live gesture's amount over the
 //!   Master bus (0..1), sent whenever it changes, for `<gesture>` in
 //!   `GESTURES`; a visual can rise and return with it. `thin` is retired
@@ -61,6 +66,8 @@ fn gesture_addr(kind: GestureKind) -> String {
 }
 pub(crate) const ADDR_CHORD: &str = "/nooise/chord";
 pub(crate) const ADDR_CHORD_CHANGE: &str = "/nooise/chord/change";
+pub(crate) const ADDR_PHRASE_RESET: &str = "/nooise/phrase/reset";
+pub(crate) const ADDR_PHRASE: &str = "/nooise/phrase";
 pub(crate) const ADDR_KICK: &str = "/nooise/voice/kick";
 /// Names in `MusicalHit::ALL` order. They are part of the OSC contract.
 pub(crate) const HIT_NAMES: [&str; MUSICAL_HIT_COUNT] =
@@ -118,10 +125,16 @@ impl Drop for OscEmitter {
 struct Mirrored {
     kick: u64,
     kick_level: f32,
-    chord: u64,
+    chord_pulse: u64,
+    chord_slot: u64,
     chord_attack: f32,
     chord_release: f32,
     chord_root_pitch_class: f32,
+    phrase_pulse: u64,
+    phrase_index: u64,
+    phrase_chord_index: u64,
+    phrase_chord_count: u64,
+    phrase_reset: bool,
     beat_bits: u64,
     level_bits: [u32; TAB_COUNT],
     gesture_bits: [u32; GESTURE_COUNT],
@@ -135,11 +148,15 @@ impl Mirrored {
         // Acquire pairs with the Release in `publish_kick`/`publish_chord`:
         // once the counter is seen, the values stored before it are too.
         let kick = telemetry.kick_pulse.load(Ordering::Acquire);
-        let chord = telemetry.chord_slot.load(Ordering::Acquire);
+        // Pad publishes its chord before its phrase. Read the phrase counter
+        // first so a new phrase cannot be mirrored ahead of that chord.
+        let phrase_pulse = telemetry.phrase_pulse.load(Ordering::Acquire);
+        let chord_pulse = telemetry.chord_pulse.load(Ordering::Acquire);
         Self {
             kick,
             kick_level: f32::from_bits(telemetry.kick_level_bits.load(Ordering::Relaxed)),
-            chord,
+            chord_pulse,
+            chord_slot: telemetry.chord_slot.load(Ordering::Relaxed),
             chord_attack: f32::from_bits(telemetry.chord_attack_bits.load(Ordering::Relaxed)),
             chord_release: f32::from_bits(telemetry.chord_release_bits.load(Ordering::Relaxed)),
             chord_root_pitch_class: f32::from_bits(
@@ -147,6 +164,11 @@ impl Mirrored {
                     .chord_root_pitch_class_bits
                     .load(Ordering::Relaxed),
             ),
+            phrase_pulse,
+            phrase_index: telemetry.phrase_index.load(Ordering::Relaxed),
+            phrase_chord_index: telemetry.phrase_chord_index.load(Ordering::Relaxed),
+            phrase_chord_count: telemetry.phrase_chord_count.load(Ordering::Relaxed),
+            phrase_reset: telemetry.phrase_reset.load(Ordering::Relaxed),
             beat_bits: telemetry.beat_bits.load(Ordering::Relaxed),
             level_bits: std::array::from_fn(|i| telemetry.level_bits[i].load(Ordering::Relaxed)),
             gesture_bits: std::array::from_fn(|i| {
@@ -195,11 +217,11 @@ impl Mirrored {
                 ));
             }
         }
-        if now.chord != self.chord {
+        if now.chord_pulse != self.chord_pulse {
             out.push(message(
                 ADDR_CHORD,
                 vec![
-                    OscType::Int(now.chord as i32),
+                    OscType::Int(now.chord_slot as i32),
                     OscType::Float(now.chord_attack),
                     OscType::Float(now.chord_release),
                 ],
@@ -207,8 +229,21 @@ impl Mirrored {
             out.push(message(
                 ADDR_CHORD_CHANGE,
                 vec![
-                    OscType::Int(now.chord as i32),
+                    OscType::Int(now.chord_slot as i32),
                     OscType::Float(now.chord_root_pitch_class),
+                ],
+            ));
+        }
+        if now.phrase_pulse != self.phrase_pulse {
+            if now.phrase_reset {
+                out.push(message(ADDR_PHRASE_RESET, vec![]));
+            }
+            out.push(message(
+                ADDR_PHRASE,
+                vec![
+                    OscType::Int(now.phrase_index.min(i32::MAX as u64) as i32),
+                    OscType::Int(now.phrase_chord_index as i32),
+                    OscType::Int(now.phrase_chord_count as i32),
                 ],
             ));
         }
@@ -323,6 +358,157 @@ mod tests {
             vec![OscType::Float(0.75), OscType::Float(-1.0)]
         );
         assert!(mirrored.diff(&telemetry).is_empty());
+    }
+
+    #[test]
+    fn pad_cursor_phrase_events_follow_window_restart_and_morph_landing() {
+        use crate::fluid::PadEngine;
+        use crate::fluid::controls::PadControls;
+        use crate::fluid::engine::TimingContext;
+
+        let controls = PadControls {
+            chord_bars: 0.25,
+            chord_count: 2.0,
+            chord_offset: 3.0,
+            ..PadControls::default()
+        };
+        let telemetry = Arc::new(FluidTelemetry::default());
+        let mut pad = PadEngine::new(48_000.0, &controls, 0.0, Arc::clone(&telemetry));
+        let mut mirrored = Mirrored::from(&telemetry);
+        fn tick(
+            pad: &mut PadEngine,
+            controls: &PadControls,
+            telemetry: &FluidTelemetry,
+            mirrored: &mut Mirrored,
+            beat: f64,
+            morph_start: Option<f64>,
+        ) -> Vec<OscMessage> {
+            let mut timing = TimingContext::new(48_000.0, 120.0, beat);
+            timing.morph_phrase_start = morph_start;
+            pad.next(controls, 0.0, timing);
+            mirrored.diff(telemetry)
+        }
+        let tick_at = |pad: &mut PadEngine, mirrored: &mut Mirrored, beat, morph_start| {
+            tick(pad, &controls, &telemetry, mirrored, beat, morph_start)
+        };
+        let start = tick_at(&mut pad, &mut mirrored, 0.0, None);
+        assert_eq!(
+            start.iter().map(|m| m.addr.as_str()).collect::<Vec<_>>(),
+            [
+                ADDR_CHORD,
+                ADDR_CHORD_CHANGE,
+                ADDR_PHRASE_RESET,
+                ADDR_PHRASE
+            ]
+        );
+        assert_eq!(
+            start[3].args,
+            vec![OscType::Int(0), OscType::Int(0), OscType::Int(2)]
+        );
+        assert!(tick_at(&mut pad, &mut mirrored, 0.5, None).is_empty());
+        let second = tick_at(&mut pad, &mut mirrored, 1.0, None);
+        assert_eq!(
+            second.iter().find(|m| m.addr == ADDR_PHRASE).unwrap().args,
+            vec![OscType::Int(0), OscType::Int(1), OscType::Int(2)]
+        );
+        let wrapped = tick_at(&mut pad, &mut mirrored, 2.0, None);
+        assert_eq!(
+            wrapped.iter().find(|m| m.addr == ADDR_PHRASE).unwrap().args,
+            vec![OscType::Int(1), OscType::Int(0), OscType::Int(2)]
+        );
+        assert!(!wrapped.iter().any(|m| m.addr == ADDR_PHRASE_RESET));
+
+        let mut stopped = TimingContext::new(48_000.0, 120.0, 2.0);
+        stopped.transport = crate::fluid::engine::Transport::Stopped;
+        pad.next(&controls, 0.0, stopped);
+        assert!(mirrored.diff(&telemetry).is_empty());
+        pad.restart_sequence(&controls);
+        let restart = tick_at(&mut pad, &mut mirrored, 0.0, None);
+        assert!(restart.iter().any(|m| m.addr == ADDR_CHORD));
+        assert_eq!(
+            restart
+                .iter()
+                .filter(|m| m.addr == ADDR_PHRASE_RESET)
+                .count(),
+            1
+        );
+        assert_eq!(
+            restart.iter().find(|m| m.addr == ADDR_PHRASE).unwrap().args,
+            vec![OscType::Int(0), OscType::Int(0), OscType::Int(2)]
+        );
+
+        let landed = tick_at(&mut pad, &mut mirrored, 4.0, Some(4.0));
+        assert_eq!(
+            landed
+                .iter()
+                .filter(|m| m.addr == ADDR_PHRASE_RESET)
+                .count(),
+            1
+        );
+        assert_eq!(
+            landed.iter().find(|m| m.addr == ADDR_PHRASE).unwrap().args,
+            vec![OscType::Int(0), OscType::Int(0), OscType::Int(2)]
+        );
+
+        let mut new_progression = controls.clone();
+        new_progression.progression += 1.0;
+        let switched = tick(
+            &mut pad,
+            &new_progression,
+            &telemetry,
+            &mut mirrored,
+            5.0,
+            None,
+        );
+        assert_eq!(
+            switched
+                .iter()
+                .filter(|m| m.addr == ADDR_PHRASE_RESET)
+                .count(),
+            1
+        );
+        assert_eq!(
+            switched
+                .iter()
+                .find(|m| m.addr == ADDR_PHRASE)
+                .unwrap()
+                .args,
+            vec![OscType::Int(0), OscType::Int(0), OscType::Int(2)]
+        );
+    }
+
+    #[test]
+    fn phrase_reset_and_position_arrive_in_order_over_udp() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let telemetry = Arc::new(FluidTelemetry::default());
+        let emitter =
+            OscEmitter::spawn(receiver.local_addr().unwrap(), Arc::clone(&telemetry)).unwrap();
+        telemetry.publish_chord(3, 0.0, 0.1, 1.0);
+        telemetry.publish_phrase(0, 0, 2, true);
+        let mut buf = [0u8; 4096];
+        let mut messages = Vec::new();
+        while !messages.iter().any(|m: &OscMessage| m.addr == ADDR_PHRASE) {
+            let (len, _) = receiver.recv_from(&mut buf).unwrap();
+            let (_, packet) = decoder::decode_udp(&buf[..len]).unwrap();
+            messages.extend(messages_in(packet));
+        }
+        assert_eq!(
+            messages.iter().map(|m| m.addr.as_str()).collect::<Vec<_>>(),
+            [
+                ADDR_CHORD,
+                ADDR_CHORD_CHANGE,
+                ADDR_PHRASE_RESET,
+                ADDR_PHRASE
+            ]
+        );
+        assert_eq!(
+            messages[3].args,
+            vec![OscType::Int(0), OscType::Int(0), OscType::Int(2)]
+        );
+        drop(emitter);
     }
 
     #[test]
@@ -501,7 +687,7 @@ mod tests {
                     .set_read_timeout(Some(Duration::from_millis(1)))
                     .unwrap();
             }
-            if [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK]
+            if [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK, ADDR_PHRASE]
                 .iter()
                 .all(|a| seen.contains_key(*a))
             {
@@ -509,7 +695,7 @@ mod tests {
             }
         }
         drop(emitter);
-        for addr in [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK] {
+        for addr in [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK, ADDR_PHRASE] {
             assert!(
                 seen.get(addr).copied().unwrap_or(0) > 0,
                 "no {addr}: {seen:?}"

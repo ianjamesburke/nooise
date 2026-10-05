@@ -184,6 +184,13 @@ impl Default for HitTelemetry {
 /// for OSC.
 pub(crate) struct FluidTelemetry {
     pub(crate) chord_slot: AtomicU64,
+    pub(crate) chord_pulse: AtomicU64,
+    /// Phrase payload is stored before this Release counter advances.
+    pub(crate) phrase_pulse: AtomicU64,
+    pub(crate) phrase_index: AtomicU64,
+    pub(crate) phrase_chord_index: AtomicU64,
+    pub(crate) phrase_chord_count: AtomicU64,
+    pub(crate) phrase_reset: AtomicBool,
     pub(crate) kick_pulse: AtomicU64,
     /// Engine beat position as `f64::to_bits`, for beat-synced UI animation.
     pub(crate) beat_bits: AtomicU64,
@@ -211,6 +218,12 @@ impl Default for FluidTelemetry {
     fn default() -> Self {
         Self {
             chord_slot: AtomicU64::new(0),
+            chord_pulse: AtomicU64::new(0),
+            phrase_pulse: AtomicU64::new(0),
+            phrase_index: AtomicU64::new(0),
+            phrase_chord_index: AtomicU64::new(0),
+            phrase_chord_count: AtomicU64::new(0),
+            phrase_reset: AtomicBool::new(false),
             kick_pulse: AtomicU64::new(0),
             beat_bits: AtomicU64::new(0.0f64.to_bits()),
             kick_level_bits: AtomicU32::new(0.0f32.to_bits()),
@@ -268,6 +281,17 @@ impl FluidTelemetry {
         self.chord_root_pitch_class_bits
             .store(root_pitch_class.to_bits(), Ordering::Relaxed);
         self.chord_slot.store(slot, Ordering::Release);
+        self.chord_pulse.fetch_add(1, Ordering::Release);
+    }
+
+    pub(crate) fn publish_phrase(&self, index: u64, chord_index: usize, count: usize, reset: bool) {
+        self.phrase_index.store(index, Ordering::Relaxed);
+        self.phrase_chord_index
+            .store(chord_index as u64, Ordering::Relaxed);
+        self.phrase_chord_count
+            .store(count as u64, Ordering::Relaxed);
+        self.phrase_reset.store(reset, Ordering::Relaxed);
+        self.phrase_pulse.fetch_add(1, Ordering::Release);
     }
 
     pub(crate) fn publish_level(&self, tab: Tab, rms: f32) {

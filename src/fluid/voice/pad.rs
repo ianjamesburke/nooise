@@ -31,6 +31,10 @@ pub(crate) struct PadEngine {
     /// The transport seen on the previous sample, so a stop releases the
     /// sounding chord once and a restart voices it once.
     transport: Transport,
+    /// Zero-based completed Pad-window cycles since start, restart, or a new
+    /// progression/morph landing. Only the sounding cursor advances this.
+    phrase_index: u64,
+    phrase_sent: bool,
     pub(crate) width_lfo: DriftingLfo,
     pub(crate) air: WhiteNoise,
     pub(crate) rng: StdRng,
@@ -94,6 +98,8 @@ impl PadEngine {
             last_chord_definition,
             active_note_count: note_count,
             transport: Transport::Playing,
+            phrase_index: 0,
+            phrase_sent: false,
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
             air: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
@@ -252,12 +258,25 @@ impl PadEngine {
             layer.release();
         }
         self.cursor = ProgressionCursor::new(c);
+        self.phrase_index = 0;
+        self.phrase_sent = false;
         self.stab_trigger = GridTrigger::new();
         self.transport = Transport::Stopped;
     }
 
     pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
+        let old_progression = self.cursor.window.progression;
+        let old_morph_start = self.cursor.morph_phrase_start;
         let advance = self.cursor.tick(c, timing);
+        let phrase_reset = !self.phrase_sent
+            || (timing.morph_phrase_start.is_some()
+                && timing.morph_phrase_start != old_morph_start)
+            || (advance && self.cursor.window.progression != old_progression);
+        if phrase_reset {
+            self.phrase_index = 0;
+        } else if advance && self.cursor.step == 0 {
+            self.phrase_index = self.phrase_index.saturating_add(1);
+        }
         let definition = c.chord_slot(self.cursor.window.progression, self.cursor.slot());
         let chord_notes = if *definition == self.last_chord_definition {
             self.last_chord_notes
@@ -330,6 +349,7 @@ impl PadEngine {
             }
         }
 
+        let mut chord_published = false;
         if stabbing {
             self.midi_initial_pending = false;
             if playing && (advance || chord_edited) {
@@ -339,6 +359,7 @@ impl PadEngine {
                     0.01,
                     0.08,
                 );
+                chord_published = true;
             }
             if chord_edited
                 && (self.active_stab_until_beat.is_some()
@@ -379,6 +400,7 @@ impl PadEngine {
                 c.attack_time,
                 c.release_time,
             );
+            chord_published = true;
             self.telemetry
                 .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
             self.send_midi(MidiMessage::PadChord(pad_notes_with_count(
@@ -408,6 +430,25 @@ impl PadEngine {
                 tune,
             )));
             self.midi_initial_pending = false;
+        }
+
+        if playing && !self.phrase_sent && !chord_published {
+            self.telemetry.publish_chord(
+                self.cursor.slot() as u64,
+                pitch_class(chord_notes[0]),
+                if stabbing { 0.01 } else { c.attack_time },
+                if stabbing { 0.08 } else { c.release_time },
+            );
+        }
+
+        if playing && (!self.phrase_sent || advance) {
+            self.telemetry.publish_phrase(
+                self.phrase_index,
+                self.cursor.step,
+                self.cursor.window.count,
+                phrase_reset,
+            );
+            self.phrase_sent = true;
         }
 
         let width = c.stereo_width

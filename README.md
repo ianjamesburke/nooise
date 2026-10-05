@@ -75,12 +75,18 @@ stop, and the Jump leader.
 nooise --osc
 ```
 
-Mirrors the beat, chord changes, every voice's level, every musical hit, and
+Mirrors the beat, chord changes, Pad phrase position, every voice's level, every musical hit, and
 every held gesture as OSC over UDP to
 `127.0.0.1:9000`, where [foorm](https://github.com/ianjamesburke/foorm)
 listens by default. `--osc=ADDR` sends elsewhere, such as TouchDesigner's
 OSC In CHOP. Off unless asked for. See `src/fluid/osc.rs` for the address
 vocabulary.
+
+At each Pad chord boundary, `/nooise/phrase` sends three integers: the
+zero-based phrase cycle since the last reset, the zero-based chord position
+within the sounding chord window, and that window's chord count. An empty
+`/nooise/phrase/reset` arrives first on initial play, clock restart, a new
+progression, or an auto-morph landing. Both messages are opt-in with `--osc`.
 
 List the exact input and output port names, then choose one device for both
 directions or name them separately:
