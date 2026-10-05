@@ -878,6 +878,12 @@ impl EffectExecutor {
                 slot
             }
         };
+        // A newly inserted Filter is dry. Focus its hidden Amount in the
+        // detail so the first arrow makes the sweep audible. Existing
+        // Filters use their collapsed Cutoff like every browsing row.
+        let focus = focus.or_else(|| {
+            (existing.is_none() && kind.family == Family::Filter).then_some(ModuleSlotField::Amount)
+        });
         let id = match focus {
             Some(field) => module_slot_spec(tab, slot, field).map(|spec| spec.id),
             None => module_slot_collapsed_id(tab, slot, &self.session.load().controls),

@@ -193,8 +193,9 @@ show the authored base plus a bright marker for the value currently playing.
 The selected editor field stays in view at the minimum 46x11 frame.
 
 Volume is the layer's own Level row. `Space k` opens the shared Filter detail
-on Cutoff. A newly added Filter starts at Amount 0%, so raise Amount to hear
-subsequent Cutoff sweeps. Palette-added Filters focus Amount directly.
+on Cutoff. The collapsed Filter row also controls Cutoff on every layer.
+A newly added Filter starts at Amount 0% and opens its detail on Amount, so
+the first right arrow brings in the filter before a Cutoff sweep.
 Bass, Kick, Perc and Clap ship with a filter in slot 1, so `k` lands on the cutoff
 already in play. Pads gets one added into its first free slot at a
 transparent 20 kHz cutoff and Amount 0%, so arriving is silent. Raise Amount

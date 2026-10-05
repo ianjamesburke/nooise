@@ -138,17 +138,18 @@ const COMPRESSION_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
-/// Amount leads because a newly added Filter starts as exact dry passthrough.
+/// Cutoff leads because it is the Filter's ordinary browsing control. A
+/// palette-added Filter opens this detail on Amount so its dry mix can rise.
 const FILTER_PARAMETERS: &[EffectParameter] = &[
-    EffectParameter {
-        field: ModuleSlotField::Amount,
-        label: "Amount",
-        search_name: "Amount",
-    },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Cutoff",
         search_name: "Cutoff",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Amount,
+        label: "Amount",
+        search_name: "Amount",
     },
     EffectParameter {
         field: ModuleSlotField::RightTime,
@@ -207,9 +208,6 @@ impl ModuleKind {
         }
     }
 
-    /// The field a loaded slot collapses to when not drilled into. Every
-    /// family collapses to its wet/dry `Amount`, so insertion focuses the
-    /// field that brings the effect into the sound.
     /// Whether Enter on the collapsed row opens a detail drill: every family
     /// with more than the one knob its collapsed row already shows.
     pub(crate) fn has_detail(self) -> bool {
@@ -217,7 +215,11 @@ impl ModuleKind {
     }
 
     pub(crate) fn collapsed_field(self) -> ModuleSlotField {
-        ModuleSlotField::Amount
+        if self.family == Family::Filter {
+            ModuleSlotField::Time
+        } else {
+            ModuleSlotField::Amount
+        }
     }
 }
 

@@ -4015,7 +4015,7 @@ fn a_loaded_slot_row_is_labelled_with_its_module() {
     let mut controls = FluidControls::default();
     let row = tab_controls(Tab::Kick, &controls)
         .into_iter()
-        .find(|item| item.id == "kick.slot1.amount")
+        .find(|item| item.id == "kick.slot1.time")
         .expect("kick slot 1 ships pre-loaded with Filter");
     // The `›` marks a module whose row Enter drills into; Drive has none.
     assert_eq!(row.label, "Filter ›");
@@ -4032,6 +4032,35 @@ fn a_loaded_slot_row_is_labelled_with_its_module() {
         .find(|item| item.id == "tonal.slot1.amount")
         .expect("an explicitly added zero-amount Swing remains visible");
     assert_eq!(row.label, "Swing");
+}
+
+#[test]
+fn every_layer_filter_collapses_to_cutoff_without_changing_its_mix() {
+    let mut controls = FluidControls::default();
+    for tab in Tab::all() {
+        let slots = controls
+            .modules
+            .for_tab_mut(tab)
+            .expect("every tab has modules");
+        slots[0] = preset_slot("filter", 0.37);
+        let amount = slots[0].amount;
+        let cutoff = slots[0].time;
+        let row_id = module_slot_spec(tab, 0, ModuleSlotField::Time)
+            .expect("every tab registers a slot cutoff")
+            .id;
+        let amount_id = module_slot_spec(tab, 0, ModuleSlotField::Amount)
+            .expect("every tab registers a slot amount")
+            .id;
+        let rows = tab_controls(tab, &controls);
+        assert!(
+            rows.iter()
+                .any(|row| row.id == row_id && row.label == "Filter ›"),
+            "{tab:?}"
+        );
+        assert!(!rows.iter().any(|row| row.id == amount_id), "{tab:?}");
+        assert_eq!(controls.modules.for_tab(tab).unwrap()[0].amount, amount);
+        assert_eq!(controls.modules.for_tab(tab).unwrap()[0].time, cutoff);
+    }
 }
 
 /// The retired ids keep their `SONG_ID_TABLE` slots forever, but nothing may
@@ -4155,7 +4184,7 @@ fn effect_families_project_complete_coherent_detail_rows() {
         labels(3),
         ["Amount", "Threshold", "Ratio", "Release", "Makeup"]
     );
-    assert_eq!(labels(4), ["Amount", "Cutoff", "Resonance", "Type"]);
+    assert_eq!(labels(4), ["Cutoff", "Amount", "Resonance", "Type"]);
 }
 
 #[test]
@@ -4281,7 +4310,7 @@ fn tab_controls_classify_each_slider_kind() {
                 Gain, Gain,
             ],
         ),
-        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Timing, Gain]),
+        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Timing, Continuous]),
         (Tab::Chords, {
             // 12 visible base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
@@ -4296,13 +4325,14 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Bass,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Gain, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Continuous,
+                Gain,
             ],
         ),
         (
             Tab::Kick,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Continuous, Gain, Gain, Gain,
+                Gain, Timing, Timing, Discrete, Timing, Timing, Continuous, Gain, Continuous, Gain,
             ],
         ),
         (
@@ -4314,7 +4344,9 @@ fn tab_controls_classify_each_slider_kind() {
         ),
         (
             Tab::Clap,
-            vec![Gain, Timing, Timing, Timing, Discrete, Timing, Gain, Gain],
+            vec![
+                Gain, Timing, Timing, Timing, Discrete, Timing, Gain, Continuous,
+            ],
         ),
         (
             Tab::Arp,

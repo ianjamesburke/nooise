@@ -3448,25 +3448,87 @@ fn recipe_amount_is_focused_and_arrows_raise_it_at_minimum_frame() {
 
 #[test]
 fn palette_filter_insertion_focuses_dry_amount_and_reuses_the_slot() {
-    let mut events = vec![key(0, FixtureKey::Tab, InputPhase::Press)];
+    let mut events = vec![
+        TraceEvent::Resize {
+            after_ms: 0,
+            width: MIN_TERMINAL_WIDTH,
+            height: MIN_TERMINAL_HEIGHT,
+        },
+        key(0, FixtureKey::Tab, InputPhase::Press),
+    ];
     events.extend(recipe_keys("filter"));
     let inserted = replay(&events, TerminalCapabilities::full());
     assert!(matches!(
         inserted.model.navigation,
-        Navigation::Chords { .. }
+        Navigation::Module {
+            tab: Tab::Chords,
+            slot: 1,
+            selected: 1,
+            ..
+        }
     ));
     assert_eq!(inserted.model.mode, InteractionMode::Browsing);
     assert_eq!(inserted.control("pad.slot2.amount"), Some(0.0));
+    assert_eq!(inserted.recent_ids, ["pad.slot2.amount"]);
     assert!(
         inserted
             .frames
             .iter()
             .any(|frame| frame.text.contains("Filter") && frame.text.contains("0%"))
     );
+    events.push(key(0, FixtureKey::Right, InputPhase::Press));
+    let raised = replay(&events, TerminalCapabilities::full());
+    assert!(raised.control("pad.slot2.amount").unwrap() > 0.0);
+    events.push(key(0, FixtureKey::Escape, InputPhase::Press));
+    let collapsed = replay(&events, TerminalCapabilities::full());
+    assert_eq!(collapsed.model.mode, InteractionMode::Browsing);
+    assert!(matches!(
+        collapsed.model.navigation,
+        Navigation::Chords { .. }
+    ));
+    let cutoff = collapsed.control("pad.slot2.time").unwrap();
+    let amount = collapsed.control("pad.slot2.amount");
+    events.push(key(0, FixtureKey::Left, InputPhase::Press));
+    let swept = replay(&events, TerminalCapabilities::full());
+    assert!(swept.control("pad.slot2.time").unwrap() < cutoff);
+    assert_eq!(swept.control("pad.slot2.amount"), amount);
     events.extend(recipe_keys("filter"));
     let repeated = replay(&events, TerminalCapabilities::full());
-    assert_eq!(repeated.control("pad.slot2.amount"), Some(0.0));
+    assert_eq!(
+        repeated.control("pad.slot2.amount"),
+        raised.control("pad.slot2.amount")
+    );
     assert_eq!(repeated.control("pad.slot3.kind"), Some(0.0));
+    assert!(matches!(
+        repeated.model.navigation,
+        Navigation::Chords { .. }
+    ));
+}
+
+#[test]
+fn jump_filter_on_a_new_layer_opens_cutoff_then_reaches_amount() {
+    let mut events = vec![key(0, FixtureKey::Tab, InputPhase::Press)];
+    events.extend([
+        key(0, FixtureKey::Character(' '), InputPhase::Press),
+        key(0, FixtureKey::Character('k'), InputPhase::Press),
+    ]);
+    let opened = replay(&events, TerminalCapabilities::full());
+    assert!(matches!(
+        opened.model.navigation,
+        Navigation::Module {
+            tab: Tab::Chords,
+            slot: 1,
+            selected: 0,
+            ..
+        }
+    ));
+    assert_eq!(opened.control("pad.slot2.amount"), Some(0.0));
+    assert_eq!(opened.control("pad.slot2.time"), Some(FILTER_CUTOFF_MAX_HZ));
+    events.push(key(0, FixtureKey::Down, InputPhase::Press));
+    events.push(key(0, FixtureKey::Right, InputPhase::Press));
+    let raised = replay(&events, TerminalCapabilities::full());
+    assert!(raised.control("pad.slot2.amount").unwrap() > 0.0);
+    assert_eq!(raised.control("pad.slot2.time"), Some(FILTER_CUTOFF_MAX_HZ));
 }
 
 #[test]
@@ -3562,7 +3624,7 @@ fn scoped_palette_recipe_targets_the_original_module_control() {
             tab: Tab::Bass,
             slot: 0,
             catalog_index: module_catalog_index("filter"),
-            selected: 0,
+            selected: 1,
             return_to: 0,
         },
         ..InteractionModel::default()
@@ -4122,7 +4184,7 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
         Navigation::Module {
             tab: Tab::Bass,
             slot: 0,
-            selected: 1,
+            selected: 0,
             ..
         }
     ));

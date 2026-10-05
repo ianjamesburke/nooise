@@ -296,37 +296,55 @@ pub(crate) fn coordinate_production_action(
     let mut effect_records = Vec::new();
     for (effect, result) in emitted.into_iter().zip(results) {
         match &result {
-            Ok(EffectAcknowledgement::ControlSelected { tab, index, .. }) => {
+            Ok(EffectAcknowledgement::ControlSelected { tab, index, id }) => {
                 let current_session = context.effects.session().load();
-                if matches!(
-                    effect,
-                    interaction::InteractionEffect::PlaceFilterCutoff { .. }
-                ) {
-                    let spec = tab_specs(*tab)
-                        .get(*index)
-                        .expect("filter cutoff is registered");
-                    let (_, slot, _) =
-                        parse_module_slot_id(spec.id).expect("filter cutoff has a slot");
-                    let amount = module_slot_spec(*tab, slot, ModuleSlotField::Amount)
-                        .expect("filter has an Amount row");
-                    let amount_index =
-                        spec_index(*tab, amount.id).expect("filter Amount is registered");
-                    model.select_control(*tab, amount_index, &current_session.controls);
+                let filter_detail_field = match effect {
+                    interaction::InteractionEffect::PlaceFilterCutoff { .. } => {
+                        Some(ModuleSlotField::Time)
+                    }
+                    interaction::InteractionEffect::PlaceModule { .. }
+                        if parse_module_slot_id(id)
+                            .is_some_and(|(_, _, field)| field == ModuleSlotField::Amount) =>
+                    {
+                        Some(ModuleSlotField::Amount)
+                    }
+                    _ => None,
+                };
+                if let Some(field) = filter_detail_field
+                    && let Some((_, slot, _)) = parse_module_slot_id(id)
+                    && current_session
+                        .controls
+                        .modules
+                        .for_tab(*tab)
+                        .and_then(|slots| slots.get(slot))
+                        .and_then(ModuleSlot::kind)
+                        .is_some_and(|kind| kind.family == Family::Filter)
+                {
+                    let cutoff = module_slot_spec(*tab, slot, ModuleSlotField::Time)
+                        .expect("filter Cutoff is registered");
+                    let cutoff_index =
+                        spec_index(*tab, cutoff.id).expect("filter Cutoff has a tab index");
+                    model.select_control(*tab, cutoff_index, &current_session.controls);
                     let return_to = model.navigation.selected();
+                    let catalog_index = module_catalog_index(interaction::FILTER_MODULE_ID);
+                    let selected = MODULE_CATALOG[catalog_index]
+                        .parameters()
+                        .iter()
+                        .position(|parameter| parameter.field == field)
+                        .expect("filter detail contains its focused field");
                     model.navigation = interaction::Navigation::Module {
                         tab: *tab,
                         slot,
-                        catalog_index: module_catalog_index(interaction::FILTER_MODULE_ID),
-                        selected: 1,
+                        catalog_index,
+                        selected,
                         return_to,
                     };
                     model.mode = interaction::InteractionMode::Browsing;
                     effect_records.push(ProductionEffectRecord { effect, result });
                     continue;
                 }
-                // Landing on a module row never opens its detail: a
-                // palette-added effect stays on the page it was added to,
-                // and Enter is the one way into a drill.
+                // Other palette-added effects stay on the page they were
+                // added to; Enter opens their detail.
                 if let interaction::Navigation::Module {
                     tab: scoped_tab,
                     slot,
