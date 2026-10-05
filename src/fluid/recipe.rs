@@ -60,7 +60,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
         aliases: &["sc"],
         description: "beat ramp duck, 1 beat, starts silent",
         lane: RecipeLane::Lfo {
-            shape: LfoShape::RampUp,
+            shape: LfoShape::Duck,
             beats: 1.0,
             depth: 0.0,
             seed: 0,
@@ -358,13 +358,23 @@ mod tests {
                 context(beat),
             )
         };
-        assert_eq!(route.shape, LfoShape::RampUp);
+        assert_eq!(route.shape, LfoShape::Duck);
         assert_eq!(value(0.0), 0.75);
         assert_eq!(snapshot.controls.pad.level, 0.75);
         let mut raised = *route;
         raised.depth_ratio = 0.25;
+        for step in 0..=100 {
+            let value = modulated_control_value_full(
+                spec,
+                &[raised],
+                &[],
+                0.75,
+                context(step as f64 / 100.0),
+            );
+            assert!(value <= 0.75, "duck overshot at step {step}: {value}");
+        }
         assert!(modulated_control_value_full(spec, &[raised], &[], 0.75, context(0.0)) < 0.75);
-        assert!(modulated_control_value_full(spec, &[raised], &[], 0.75, context(0.75)) > 0.75);
+        assert!(modulated_control_value_full(spec, &[raised], &[], 0.75, context(0.75)) < 0.75);
         assert!(snapshot.automation.envelope(address).is_none());
     }
 }

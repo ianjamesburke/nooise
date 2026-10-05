@@ -1973,13 +1973,13 @@ fn discrete_fields_clamp_at_their_ends_instead_of_wrapping() {
     }
     assert_eq!(
         route.shape,
-        LfoShape::Steps,
+        LfoShape::Duck,
         "shape must stop at the last entry"
     );
     route.set_field_at(LfoField::Shape, 99.0, 0.0);
     assert_eq!(
         route.shape,
-        LfoShape::Steps,
+        LfoShape::Duck,
         "numeric entry clamps, not wraps"
     );
 
@@ -7097,6 +7097,14 @@ fn lfo_shapes_match_reference_curves() {
     assert_near(down.wave_at(0.5), 0.0);
     assert_near(down.wave_at(0.75), -0.5);
 
+    let duck = lfo_shape(LfoShape::Duck);
+    assert_near(duck.wave_at(0.0), -1.0);
+    assert_near(duck.wave_at(0.5), -0.5);
+    assert_near(duck.wave_at(0.75), -0.25);
+    for step in 0..=100 {
+        assert!((-1.0..=0.0).contains(&duck.wave_at(step as f64 / 100.0)));
+    }
+
     let square = lfo_shape(LfoShape::Square);
     assert!(square.wave_at(0.25) > 0.99, "square high near +1");
     assert!(square.wave_at(0.75) < -0.99, "square low near -1");
@@ -7108,7 +7116,7 @@ fn ramp_shapes_are_continuous_across_the_wrap() {
     // applied directly to a live-read control (e.g. level or cutoff). Every
     // other shape is continuous at the cycle boundary; ramps must be too.
     let eps = 1e-4;
-    for shape in [LfoShape::RampUp, LfoShape::RampDown] {
+    for shape in [LfoShape::RampUp, LfoShape::RampDown, LfoShape::Duck] {
         let route = lfo_shape(shape);
         let before = route.wave_at(1.0 - eps);
         let after = route.wave_at(1.0 + eps);
@@ -7746,7 +7754,7 @@ fn palette_recipes_render_like_authored_lanes_and_start_sample_identical() {
                     LfoRoute {
                         depth_ratio: 0.0,
                         cycle_beats: 1.0,
-                        shape: LfoShape::RampUp,
+                        shape: LfoShape::Duck,
                         ..LfoRoute::default()
                     },
                 );
@@ -7805,6 +7813,62 @@ fn raised_recipe_amount_changes_settled_audio() {
     assert!(
         difference > 1.0,
         "Amount must bring an audible LFO into the mix"
+    );
+}
+
+#[test]
+fn sidechain_stays_silent_through_song_code_then_ducks_when_raised() {
+    let address = ControlAddress::new("master.level");
+    let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+    snapshot.controls.master.level = 0.75;
+    let target = recipe::RecipeTarget::capture(address.id(), &snapshot).unwrap();
+    recipe::RecipeId::Sidechain
+        .recipe()
+        .apply(&mut snapshot, target)
+        .unwrap();
+    let original = SongState {
+        controls: snapshot.controls,
+        automation: snapshot.automation,
+        ..SongState::default()
+    };
+    let mut loaded = song::decode_song_code(&song::encode_song_code(&original).unwrap()).unwrap();
+    let route = loaded.automation.route(address).unwrap();
+    assert_eq!(route.shape, LfoShape::Duck);
+    assert_eq!(route.depth_ratio, 0.0);
+    assert!((loaded.controls.master.level - 0.75).abs() <= 0.01);
+
+    let mut dry = engine_for(loaded.controls.clone(), AutomationState::default());
+    let mut silent = engine_for(loaded.controls.clone(), loaded.automation.clone());
+    dry.reseed(42);
+    silent.reseed(42);
+    for sample in 0..SAMPLE_RATE as usize * 2 {
+        assert_eq!(
+            dry.next_stereo(),
+            silent.next_stereo(),
+            "silent Sidechain changed sample {sample}"
+        );
+    }
+
+    loaded.automation.route_mut(address).unwrap().depth_ratio = 0.25;
+    let raised = song::decode_song_code(&song::encode_song_code(&loaded).unwrap()).unwrap();
+    let route = raised.automation.route(address).unwrap();
+    assert_eq!(route.shape, LfoShape::Duck);
+    assert!((route.depth_ratio - 0.25).abs() < 0.0001);
+    let mut dry = engine_for(raised.controls.clone(), AutomationState::default());
+    let mut ducked = engine_for(raised.controls, raised.automation);
+    dry.reseed(42);
+    ducked.reseed(42);
+    let mut difference = 0.0f64;
+    for sample in 0..SAMPLE_RATE as usize * 3 {
+        let a = dry.next_stereo();
+        let b = ducked.next_stereo();
+        if sample >= SAMPLE_RATE as usize {
+            difference += f64::from((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2));
+        }
+    }
+    assert!(
+        difference > 1.0,
+        "raised Sidechain must change settled audio"
     );
 }
 

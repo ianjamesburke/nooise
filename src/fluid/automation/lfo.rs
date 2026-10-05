@@ -66,10 +66,12 @@ pub(crate) enum LfoShape {
     /// User-drawn staircase: a per-cycle sequence of `step_count` unipolar
     /// values on `LfoRoute`, edited in the Shape row's inline step submenu.
     Steps,
+    /// A one-beat dip that recovers to the authored base without overshooting.
+    Duck,
 }
 
 impl LfoShape {
-    pub(crate) const ALL: [LfoShape; 8] = [
+    pub(crate) const ALL: [LfoShape; 9] = [
         Self::Sine,
         Self::Triangle,
         Self::RampUp,
@@ -78,6 +80,7 @@ impl LfoShape {
         Self::RandomDrift,
         Self::SampleHold,
         Self::Steps,
+        Self::Duck,
     ];
 
     pub(crate) fn label(self) -> &'static str {
@@ -90,6 +93,7 @@ impl LfoShape {
             Self::RandomDrift => "random drift",
             Self::SampleHold => "sample & hold",
             Self::Steps => "steps",
+            Self::Duck => "duck",
         }
     }
 
@@ -152,6 +156,7 @@ fn periodic_shape_value(shape: LfoShape, phase: f32) -> f32 {
             }
         }
         LfoShape::RampUp => ease_ramp_wrap(phase, 2.0 * phase - 1.0, -1.0),
+        LfoShape::Duck => (ease_ramp_wrap(phase, 2.0 * phase - 1.0, -1.0) - 1.0) * 0.5,
         LfoShape::RampDown => ease_ramp_wrap(phase, 1.0 - 2.0 * phase, 1.0),
         LfoShape::Square => (SQUARE_SMOOTH * (TAU * phase).sin()).tanh(),
         // Random and Steps shapes are route-dependent: evaluated from seed or

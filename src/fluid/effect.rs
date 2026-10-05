@@ -2644,9 +2644,8 @@ mod tests {
             );
         };
 
-        // LFO fields. Shape is last in `LfoField::ALL` and its ceiling is
-        // `Steps` (also last in `LfoShape::ALL`), so maxing it cannot shift
-        // the rows this loop already visited.
+        // Shape is last in `LfoField::ALL`, so maxing it cannot shift the
+        // rows this loop already visited.
         let mut lfo_executor = executor();
         lfo_executor.edit_session(None, |snapshot| {
             snapshot.automation.open_or_create(address);
@@ -2664,7 +2663,11 @@ mod tests {
             );
         }
 
-        // Steps staircase, now reachable because Shape maxed into `Steps`.
+        // Enter Steps explicitly; the Shape ceiling is Duck.
+        lfo_executor.edit_session(None, |snapshot| {
+            snapshot.automation.route_mut(address).unwrap().shape = LfoShape::Steps;
+        });
+        // Steps staircase rows are now reachable.
         for target in [StepTarget::Count, StepTarget::Glide, StepTarget::Value(0)] {
             let row = {
                 let session = lfo_executor.session().load();

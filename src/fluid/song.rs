@@ -73,7 +73,7 @@ const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
 /// directions of this one table.
-const LFO_SHAPE_TAGS: [(LfoShape, u8); 8] = [
+const LFO_SHAPE_TAGS: [(LfoShape, u8); 9] = [
     (LfoShape::Sine, 0),
     (LfoShape::Triangle, 1),
     (LfoShape::RampUp, 2),
@@ -82,6 +82,7 @@ const LFO_SHAPE_TAGS: [(LfoShape, u8); 8] = [
     (LfoShape::RandomDrift, 5),
     (LfoShape::SampleHold, 6),
     (LfoShape::Steps, 7),
+    (LfoShape::Duck, 8),
 ];
 const ENV_TRIGGER_EVERY_BEATS: u8 = 0;
 const ENV_TRIGGER_ON_KICK: u8 = 1;
@@ -2537,6 +2538,9 @@ mod tag_tests {
 
     #[test]
     fn lfo_shape_tags_cover_every_shape() {
+        assert_eq!(shape_tag(LfoShape::RampUp), 2);
+        assert_eq!(shape_tag(LfoShape::Steps), 7);
+        assert_eq!(shape_tag(LfoShape::Duck), 8);
         let mut tags = BTreeSet::new();
         for shape in LfoShape::ALL {
             let tag = shape_tag(shape);
