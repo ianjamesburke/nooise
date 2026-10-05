@@ -970,7 +970,7 @@ impl MorphWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::super::module::preset_slot;
+    use super::super::module::{module_kind_value, preset_slot};
     use super::*;
 
     #[test]
@@ -1864,6 +1864,158 @@ mod tests {
             writer.tick(&morph, 0.5).is_some(),
             "a full 1/8 note later, a new write is due"
         );
+    }
+
+    #[test]
+    fn writer_glides_lfo_amount_and_effective_value_through_landing() {
+        let address = ControlAddress::new("master.level");
+        let spec = address.spec();
+        let cases = [
+            ("matched", Some((0.0, true)), Some((0.5, true))),
+            ("entering", None, Some((0.5, true))),
+            ("leaving", Some((0.5, true)), None),
+            ("bypassed", Some((0.0, false)), Some((0.5, false))),
+        ];
+
+        for (name, from_route, to_route) in cases {
+            let route = |state: Option<(f32, bool)>| {
+                state.map(|(depth_ratio, enabled)| LfoRoute {
+                    depth_ratio,
+                    enabled,
+                    cycle_beats: 8.0,
+                    shape: LfoShape::Sine,
+                    ..LfoRoute::default()
+                })
+            };
+            let mut from_automation = AutomationState::default();
+            if let Some(route) = route(from_route) {
+                from_automation.set_route(address, route);
+            }
+            let mut to_automation = AutomationState::default();
+            if let Some(route) = route(to_route) {
+                to_automation.set_route(address, route);
+            }
+            let mut from_controls = phrase_controls();
+            let mut to_controls = phrase_controls();
+            from_controls.master.level = 0.6;
+            to_controls.master.level = 0.6;
+            let morph = MorphState::new(
+                vec![
+                    SongState {
+                        automation: from_automation,
+                        ..SongState::from_controls(from_controls)
+                    },
+                    SongState {
+                        automation: to_automation,
+                        ..SongState::from_controls(to_controls)
+                    },
+                ],
+                6,
+            );
+            let from_depth = from_route.map_or(0.0, |(depth, _)| depth);
+            let to_depth = to_route.map_or(0.0, |(depth, _)| depth);
+            let enabled = from_route.or(to_route).is_some_and(|(_, enabled)| enabled);
+            let mut writer = MorphWriter::default();
+            let mut previous_effective: Option<f32> = None;
+
+            // Six bars round to 24 beats: hold through beat 16, cross over
+            // eight beats, then begin the next leg exactly at landing beat 24.
+            for tick in 0..=48 {
+                let beat = f64::from(tick) * MORPH_TICK_BEATS;
+                let (controls, automation) = writer
+                    .tick(&morph, beat)
+                    .unwrap_or_else(|| panic!("{name}: missing writer tick at beat {beat}"));
+                let lanes = automation.lfo_lanes(address);
+                let amount = lanes.first().map_or(0.0, |lane| lane.depth_ratio);
+                let expected_amount = if beat < 16.0 {
+                    from_depth
+                } else if beat < 24.0 {
+                    let fraction = ((beat - 16.0) / 8.0) as f32;
+                    from_depth + (to_depth - from_depth) * fraction
+                } else {
+                    to_depth
+                };
+                assert!(
+                    (amount - expected_amount).abs() < 1e-5,
+                    "{name}: Amount at beat {beat} was {amount}, expected {expected_amount}"
+                );
+
+                let effective = modulated_control_value_full(
+                    &spec.contextual(&controls),
+                    lanes,
+                    &[],
+                    controls.master.level,
+                    ModContext::lfo_only(beat),
+                );
+                let expected_effective = if enabled {
+                    (0.6 + amount * lanes.first().map_or(0.0, |lane| lane.wave_at(beat)))
+                        .clamp(0.0, 1.0)
+                } else {
+                    0.6
+                };
+                assert!(
+                    (effective - expected_effective).abs() < 1e-5,
+                    "{name}: effective Master Level at beat {beat} was {effective}, expected {expected_effective}"
+                );
+                if let Some(previous) = previous_effective {
+                    assert!(
+                        (effective - previous).abs() < 0.25,
+                        "{name}: effective Master Level stepped by {} at beat {beat}",
+                        (effective - previous).abs()
+                    );
+                }
+                previous_effective = Some(effective);
+            }
+        }
+    }
+
+    #[test]
+    fn writer_holds_lfo_amount_with_a_module_moving_between_slots() {
+        let source_address = ControlAddress::new("master.slot1.amount");
+        let target_address = ControlAddress::new("master.slot2.amount");
+        let mut from_controls = phrase_controls();
+        from_controls.modules.master[0] = preset_slot("room", 0.4);
+        from_controls.modules.master[1] = super::super::module::ModuleSlot::default();
+        let mut to_controls = phrase_controls();
+        to_controls.modules.master[0] = super::super::module::ModuleSlot::default();
+        to_controls.modules.master[1] = preset_slot("room", 0.7);
+
+        let mut from_automation = AutomationState::default();
+        from_automation.set_route(source_address, lfo_route(0.2));
+        let mut to_automation = AutomationState::default();
+        to_automation.set_route(target_address, lfo_route(0.8));
+        let morph = MorphState::new(
+            vec![
+                SongState {
+                    automation: from_automation,
+                    ..SongState::from_controls(from_controls)
+                },
+                SongState {
+                    automation: to_automation,
+                    ..SongState::from_controls(to_controls)
+                },
+            ],
+            6,
+        );
+        let mut writer = MorphWriter::default();
+
+        for tick in 0..=48 {
+            let beat = f64::from(tick) * MORPH_TICK_BEATS;
+            let (controls, automation) = writer
+                .tick(&morph, beat)
+                .unwrap_or_else(|| panic!("missing writer tick at beat {beat}"));
+            if beat < 24.0 {
+                assert_eq!(controls.modules.master[0].kind, module_kind_value("room"));
+                assert_eq!(controls.modules.master[1].kind, 0.0);
+                assert_eq!(automation.route(source_address).unwrap().depth_ratio, 0.2);
+                assert!(automation.route(target_address).is_none());
+            } else {
+                assert_eq!(controls.modules.master[0].kind, 0.0);
+                assert_eq!(controls.modules.master[1].kind, module_kind_value("room"));
+                assert!(automation.route(source_address).is_none());
+                assert_eq!(automation.route(target_address).unwrap().depth_ratio, 0.8);
+            }
+        }
     }
 
     fn lfo_route(depth_ratio: f32) -> LfoRoute {

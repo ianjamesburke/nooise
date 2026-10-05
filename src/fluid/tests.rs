@@ -8118,6 +8118,95 @@ fn morph_preserves_lane_ordinals_through_zero_amount() {
 }
 
 #[test]
+fn auto_lfo_amount_transition_renders_deterministically_and_audibly() {
+    let address = ControlAddress::new("master.level");
+    let render = |with_morph: bool| {
+        let mut controls = FluidControls::default();
+        controls.master.bpm = 240.0;
+        controls.master.level = 0.7;
+        controls.pad.level = 0.6;
+        controls.tonal.level = 0.0;
+        controls.perc.level = 0.0;
+        controls.kick.level = 0.0;
+        controls.bass.level = 0.0;
+        controls.clap.level = 0.0;
+        controls.arp.gain = 0.0;
+        controls.lead.level = 0.0;
+
+        let mut from_automation = AutomationState::default();
+        from_automation.set_route(
+            address,
+            LfoRoute {
+                depth_ratio: 0.0,
+                cycle_beats: 8.0,
+                shape: LfoShape::Sine,
+                ..LfoRoute::default()
+            },
+        );
+        let mut to_automation = AutomationState::default();
+        to_automation.set_route(
+            address,
+            LfoRoute {
+                depth_ratio: 0.6,
+                cycle_beats: 8.0,
+                shape: LfoShape::Sine,
+                ..LfoRoute::default()
+            },
+        );
+        let from = SongState {
+            automation: from_automation,
+            ..SongState::from_controls(controls.clone())
+        };
+        let to = SongState {
+            automation: to_automation,
+            ..SongState::from_controls(controls.clone())
+        };
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(&from));
+        let morph = if with_morph {
+            Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
+                vec![from, to],
+                6,
+            ))))
+        } else {
+            no_morph()
+        };
+        let mut engine = FluidEngine::new(
+            24_000.0,
+            session,
+            morph,
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(0x4c46_4f41);
+        (0..(25 * 6_000))
+            .map(|_| engine.next_stereo())
+            .collect::<Vec<_>>()
+    };
+
+    let dry = render(false);
+    let morphed = render(true);
+    let morphed_repeat = render(true);
+    assert_eq!(morphed, morphed_repeat, "seeded morph render must repeat");
+
+    // Amount is zero through beat 16, so both renders must be bit-identical
+    // before the crossing begins.
+    assert_eq!(&morphed[..16 * 6_000], &dry[..16 * 6_000]);
+
+    let (start, end) = (18 * 6_000, 23 * 6_000);
+    let mut difference_energy = 0.0f64;
+    let mut dry_energy = 0.0f64;
+    for (&(left, right), &(dry_left, dry_right)) in morphed[start..end].iter().zip(&dry[start..end])
+    {
+        difference_energy += f64::from((left - dry_left).powi(2) + (right - dry_right).powi(2));
+        dry_energy += f64::from(dry_left.powi(2) + dry_right.powi(2));
+    }
+    assert!(dry_energy > 1.0, "fixture must contain audible Pad output");
+    assert!(
+        difference_energy / dry_energy > 0.001,
+        "gliding LFO Amount must alter rendered output during the crossing"
+    );
+}
+
+#[test]
 fn lfo_and_envelope_coexist_on_one_control() {
     let mut automation = AutomationState::default();
     let address = ControlAddress::new("pad.slot1.amount");
