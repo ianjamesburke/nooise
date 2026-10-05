@@ -41,6 +41,7 @@ impl Default for MasterControls {
 #[derive(Clone)]
 pub(crate) struct PercControls {
     pub(crate) level: f32,
+    pub(crate) attack_ms: f32,
     pub(crate) decay_ms: f32,
     pub(crate) interval_beats: f32,
     pub(crate) offset_beats: f32,
@@ -51,6 +52,7 @@ impl Default for PercControls {
     fn default() -> Self {
         Self {
             level: 0.0,
+            attack_ms: 0.0,
             decay_ms: 200.0,
             interval_beats: 0.25,
             offset_beats: 0.0,

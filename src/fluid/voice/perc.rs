@@ -44,8 +44,12 @@ impl PercEngine {
             .trigger
             .pop_swung(timing, c.interval_beats, c.offset_beats, c.swing)
         {
-            self.hits
-                .push(NoiseHit::new(c.level, c.decay_ms, self.sample_rate));
+            self.hits.push(NoiseHit::new(
+                c.level,
+                c.attack_ms,
+                c.decay_ms,
+                self.sample_rate,
+            ));
             self.telemetry
                 .publish_hit(MusicalHit::Perc, c.level, NO_PITCH_CLASS);
         }
@@ -57,22 +61,35 @@ impl PercEngine {
 
 pub(crate) struct NoiseHit {
     pub(crate) noise: WhiteNoise,
+    pub(crate) attack_samples_remaining: u64,
+    pub(crate) attack_total_samples: u64,
     pub(crate) samples_remaining: u64,
     pub(crate) total_samples: u64,
     pub(crate) level: f32,
 }
 
 impl NoiseHit {
-    pub(crate) fn new(level: f32, decay_ms: f32, sample_rate: f32) -> Self {
+    pub(crate) fn new(level: f32, attack_ms: f32, decay_ms: f32, sample_rate: f32) -> Self {
+        let attack_total = (attack_ms * 0.001 * sample_rate).round() as u64;
         let total = (decay_ms * 0.001 * sample_rate).round() as u64;
         Self {
             noise: WhiteNoise::new(),
+            attack_samples_remaining: attack_total,
+            attack_total_samples: attack_total,
             samples_remaining: total,
             total_samples: total,
             level,
         }
     }
     pub(crate) fn next<R: Rng>(&mut self, rng: &mut R) -> f32 {
+        if self.attack_samples_remaining > 0 {
+            // The first hit sample is already audible, and the last reaches
+            // peak before the existing decay begins.
+            let gain = (self.attack_total_samples - self.attack_samples_remaining + 1) as f32
+                / self.attack_total_samples as f32;
+            self.attack_samples_remaining -= 1;
+            return self.noise.next(rng) * gain * self.level * OUTPUT_TRIM;
+        }
         if self.samples_remaining == 0 {
             return 0.0;
         }
@@ -81,6 +98,6 @@ impl NoiseHit {
         self.noise.next(rng) * gain * self.level * OUTPUT_TRIM
     }
     pub(crate) fn is_done(&self) -> bool {
-        self.samples_remaining == 0
+        self.attack_samples_remaining == 0 && self.samples_remaining == 0
     }
 }

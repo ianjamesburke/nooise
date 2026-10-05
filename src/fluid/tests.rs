@@ -3768,6 +3768,7 @@ fn defaults_match_current_mix() {
     assert_close(controls.modules.master[1].time, -8.0);
 
     assert_close(controls.perc.decay_ms, 200.0);
+    assert_close(controls.perc.attack_ms, 0.0);
     assert_eq!(controls.modules.perc[0].kind().unwrap().id, "filter");
     assert_close(controls.modules.perc[0].time, 8_000.0);
     assert_close(controls.perc.interval_beats, 0.25);
@@ -4280,7 +4281,7 @@ fn tab_controls_classify_each_slider_kind() {
                 Gain, Gain,
             ],
         ),
-        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Gain]),
+        (Tab::Perc, vec![Gain, Timing, Timing, Timing, Timing, Gain]),
         (Tab::Chords, {
             // 12 visible base rows, then 8 slots x 5 discrete rows
             // (degree/accidental/quality/extension/inversion).
@@ -4585,6 +4586,9 @@ fn song_code_round_trips_control_values() {
     let decoded = round_trip(|c| c.arp.offset_beats = 1.5);
     assert_close_named(decoded.arp.offset_beats, 1.5, "arp.offset_beats");
 
+    let decoded = round_trip(|c| c.perc.attack_ms = 375.0);
+    assert_quantized_named(decoded.perc.attack_ms, 375.0, "perc.attack_ms");
+
     let decoded = round_trip(|c| {
         c.tonal.attack = 0.2;
         c.tonal.decay = 1.5;
@@ -4627,6 +4631,7 @@ fn song_code_decodes_missing_controls_as_defaults() {
     );
     assert_close_named(decoded.tonal.attack, default.tonal.attack, "tonal.attack");
     assert_close_named(decoded.tonal.decay, default.tonal.decay, "tonal.decay");
+    assert_close_named(decoded.perc.attack_ms, 0.0, "perc.attack_ms");
     assert_close_named(decoded.pad.level, default.pad.level, "pad.level");
 }
 
@@ -5732,6 +5737,65 @@ fn perc_continuous_mode_pushes_no_hits() {
 }
 
 #[test]
+fn perc_attack_adds_a_rise_before_the_full_decay() {
+    let mut hit = NoiseHit::new(1.0, 4.0, 3.0, 1000.0);
+    let mut rng = StdRng::seed_from_u64(17);
+    let mut reference_rng = StdRng::seed_from_u64(17);
+    let mut reference_noise = WhiteNoise::new();
+    let gains = [0.25, 0.5, 0.75, 1.0, 1.0, 2.0 / 3.0, 1.0 / 3.0];
+
+    for (index, gain) in gains.into_iter().enumerate() {
+        assert!(!hit.is_done(), "hit ended early at sample {index}");
+        let expected = reference_noise.next(&mut reference_rng) * gain * (0.5 / 3.0);
+        let actual = hit.next(&mut rng);
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "wrong gain at sample {index}"
+        );
+    }
+    assert!(hit.is_done());
+    assert_eq!(hit.next(&mut rng), 0.0);
+}
+
+#[test]
+fn perc_zero_attack_preserves_the_previous_decay_pcm() {
+    let mut hit = NoiseHit::new(0.75, 0.0, 4.0, 1000.0);
+    let mut rng = StdRng::seed_from_u64(19);
+    let mut reference_rng = StdRng::seed_from_u64(19);
+    let mut reference_noise = WhiteNoise::new();
+
+    for remaining in (1..=4).rev() {
+        let expected = reference_noise.next(&mut reference_rng)
+            * (remaining as f32 / 4.0)
+            * 0.75
+            * (0.5 / 3.0);
+        assert_eq!(hit.next(&mut rng).to_bits(), expected.to_bits());
+    }
+    assert!(hit.is_done());
+
+    // Sub-sample attacks and zero durations cannot divide by zero.
+    let mut tiny = NoiseHit::new(1.0, 0.4, 0.0, 1000.0);
+    assert_eq!(tiny.next(&mut rng), 0.0);
+    assert!(tiny.is_done());
+}
+
+#[test]
+fn perc_attack_keeps_overlapping_hits_alive() {
+    let controls = PercControls {
+        level: 1.0,
+        attack_ms: 200.0,
+        decay_ms: 20.0,
+        ..Default::default()
+    };
+    let mut engine = PercEngine::new(1000.0);
+    for sample in 0..140 {
+        let beat = sample as f64 * 120.0 / (60.0 * 1000.0);
+        engine.next(&controls, TimingContext::new(1000.0, 120.0, beat));
+    }
+    assert!(engine.hits.len() >= 2, "new hits must not cut rising hits");
+}
+
+#[test]
 fn perc_continuous_mode_has_no_periodic_rms_dips() {
     let controls = PercControls {
         level: 1.0,
@@ -5774,16 +5838,39 @@ fn perc_continuous_mode_has_no_periodic_rms_dips() {
 }
 
 #[test]
-fn perc_tab_controls_include_interval_and_offset() {
+fn perc_tab_controls_include_attack_interval_and_offset() {
     let controls = FluidControls::default();
     let rows = tab_controls(Tab::Perc, &controls);
-    assert_eq!(rows.len(), 5);
-    assert_eq!(rows[2].label, "Interval");
-    assert_close(rows[2].min, 0.125);
-    assert_close(rows[2].max, 4.25);
-    assert_eq!(rows[3].label, "Offset");
-    assert_close(rows[3].min, 0.0);
-    assert_close(rows[3].max, 4.0);
+    assert_eq!(rows.len(), 6);
+    assert_eq!(rows[1].label, "Attack");
+    assert_eq!(rows[1].display, "0 ms");
+    assert_close(rows[1].min, 0.0);
+    assert_close(rows[1].max, 1000.0);
+    assert_eq!(rows[3].label, "Interval");
+    assert_close(rows[3].min, 0.125);
+    assert_close(rows[3].max, 4.25);
+    assert_eq!(rows[4].label, "Offset");
+    assert_close(rows[4].min, 0.0);
+    assert_close(rows[4].max, 4.0);
+}
+
+#[test]
+fn perc_attack_is_browsable_and_resets_to_the_neutral_onset() {
+    let mut controls = FluidControls::default();
+    assert_eq!(tab_controls(Tab::Perc, &controls)[1].id, "perc.attack_ms");
+    apply_delta(Tab::Perc, 1, 1.0, &mut controls);
+    assert!(
+        (2.0..5.0).contains(&controls.perc.attack_ms),
+        "first arrow should make an audible change from zero"
+    );
+    for _ in 1..48 {
+        apply_delta(Tab::Perc, 1, 1.0, &mut controls);
+    }
+    assert!(controls.perc.attack_ms > 990.0);
+    apply_value(Tab::Perc, 1, 250.0, &mut controls);
+    assert_close(controls.perc.attack_ms, 250.0);
+    apply_reset(Tab::Perc, 1, &mut controls);
+    assert_close(controls.perc.attack_ms, 0.0);
 }
 
 #[test]
@@ -5791,37 +5878,37 @@ fn perc_interval_displays_continuous_at_top() {
     let mut controls = FluidControls::default();
     controls.perc.interval_beats = 4.25;
     let rows = tab_controls(Tab::Perc, &controls);
-    assert_eq!(rows[2].display, "Continuous");
+    assert_eq!(rows[3].display, "Continuous");
 }
 
 #[test]
 fn perc_interval_and_offset_adjust_and_clamp() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Perc, 2, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 0.5);
 
     controls.perc.interval_beats = 0.25;
-    apply_delta(Tab::Perc, 2, -1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, -1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 0.125);
-    apply_delta(Tab::Perc, 2, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 0.25);
 
     controls.perc.interval_beats = 4.25;
-    apply_delta(Tab::Perc, 2, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
     assert_close(controls.perc.interval_beats, 4.25);
 
-    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 4, 1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 0.125);
 
     controls.perc.offset_beats = 4.0;
-    apply_delta(Tab::Perc, 3, 1.0, &mut controls);
+    apply_delta(Tab::Perc, 4, 1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 4.0);
 
-    apply_reset(Tab::Perc, 2, &mut controls);
+    apply_reset(Tab::Perc, 3, &mut controls);
     assert_close(controls.perc.interval_beats, 0.125);
 
-    apply_reset(Tab::Perc, 3, &mut controls);
+    apply_reset(Tab::Perc, 4, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 }
 
@@ -5831,19 +5918,19 @@ fn offset_grid_keeps_true_zero_reachable_below_the_floor() {
     // minimum is the 0.125 floor itself): 0 must survive as an extra rung
     // below the floor, with sixteenths taking over above it.
     let mut controls = FluidControls::default();
-    apply_value(Tab::Perc, 3, 0.03, &mut controls);
+    apply_value(Tab::Perc, 4, 0.03, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 
-    apply_value(Tab::Perc, 3, 0.09, &mut controls);
+    apply_value(Tab::Perc, 4, 0.09, &mut controls);
     assert_close(controls.perc.offset_beats, 0.125);
 
-    apply_value(Tab::Perc, 3, 0.3, &mut controls);
+    apply_value(Tab::Perc, 4, 0.3, &mut controls);
     assert_close(controls.perc.offset_beats, 0.25);
 
     controls.perc.offset_beats = 0.125;
-    apply_delta(Tab::Perc, 3, -1.0, &mut controls);
+    apply_delta(Tab::Perc, 4, -1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
-    apply_delta(Tab::Perc, 3, -1.0, &mut controls);
+    apply_delta(Tab::Perc, 4, -1.0, &mut controls);
     assert_close(controls.perc.offset_beats, 0.0);
 }
 

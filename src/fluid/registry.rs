@@ -1563,6 +1563,22 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     "perc",
     [
         gain_pct!("perc.level", "Level", perc.level),
+        ControlSpec::new(
+            "perc.attack_ms",
+            "Attack",
+            ControlKind::Timing,
+            0.0,
+            1000.0,
+            Step::Linear(1.0),
+            Entry::Free,
+            |c| c.perc.attack_ms,
+            |c, v| c.perc.attack_ms = v,
+            |c| secs(c.perc.attack_ms / 1000.0),
+        )
+        // A gentler curve than TIME_TAPER makes the first position step
+        // audible even though this dial needs a genuine zero default.
+        .taper(Taper::Exp(1.5))
+        .in_ms(),
         time_ms!("perc.decay_ms", "Decay", 20.0, 2000.0, 1.0, perc.decay_ms),
         ControlSpec::new(
             "perc.interval_beats",
