@@ -908,6 +908,13 @@ impl StereoEngine for FluidEngine {
         timing.drunken_amount = effective.master.drunken_amount;
         timing.drunken_pace = effective.master.drunken_pace;
         timing.drunken_phase_beat = self.drunken_phase_beat;
+        // A local slot owns its layer's grid timing, including at Amount 0.
+        // Without one, Master remains the global fallback. The session's
+        // saved wave phase belongs to every per-layer timing copy.
+        let layer_timing = |slots: &[ModuleSlot; MODULE_SLOTS]| {
+            let (amount, pace) = drunken_for(slots, timing.drunken_amount, timing.drunken_pace);
+            timing.with_drunken(amount, pace)
+        };
         effective.keep_midi_directions_exclusive();
         self.sync_midi_input_switches(&effective);
         // Suppress only effective output routing; authored switches, input,
@@ -930,8 +937,11 @@ impl StereoEngine for FluidEngine {
         let pad = self.module_fx.process(
             Tab::Chords,
             &effective.modules.pad,
-            self.pad
-                .next(&effective.pad, tune, timing.with_groove_seed(1)),
+            self.pad.next(
+                &effective.pad,
+                tune,
+                layer_timing(&effective.modules.pad).with_groove_seed(1),
+            ),
             timing,
         );
         let (pad_l, pad_r) = gate_stereo(pad, mute_gains[Tab::Chords as usize]);
@@ -939,7 +949,10 @@ impl StereoEngine for FluidEngine {
             Tab::Perc,
             &effective.modules.perc,
             {
-                let perc = self.perc.next(&effective.perc, timing.with_groove_seed(2));
+                let perc = self.perc.next(
+                    &effective.perc,
+                    layer_timing(&effective.modules.perc).with_groove_seed(2),
+                );
                 (perc, perc)
             },
             timing,
@@ -948,7 +961,10 @@ impl StereoEngine for FluidEngine {
         let kick = self.module_fx.process(
             Tab::Kick,
             &effective.modules.kick,
-            self.kick.next(&effective.kick, timing.with_groove_seed(3)),
+            self.kick.next(
+                &effective.kick,
+                layer_timing(&effective.modules.kick).with_groove_seed(3),
+            ),
             timing,
         );
         let (kick_l, kick_r) = gate_stereo(kick, mute_gains[Tab::Kick as usize] * drop_gain);
@@ -959,7 +975,7 @@ impl StereoEngine for FluidEngine {
                 &effective.tonal,
                 self.pad.cursor.window.progression,
                 tune,
-                timing.with_groove_seed(4),
+                layer_timing(&effective.modules.tonal).with_groove_seed(4),
             ),
             timing,
         );
@@ -967,7 +983,10 @@ impl StereoEngine for FluidEngine {
         let clap = self.module_fx.process(
             Tab::Clap,
             &effective.modules.clap,
-            self.clap.next(&effective.clap, timing.with_groove_seed(5)),
+            self.clap.next(
+                &effective.clap,
+                layer_timing(&effective.modules.clap).with_groove_seed(5),
+            ),
             timing,
         );
         let (clap_l, clap_r) = gate_stereo(clap, mute_gains[Tab::Clap as usize]);
@@ -978,7 +997,7 @@ impl StereoEngine for FluidEngine {
                 &effective.bass,
                 &effective.pad,
                 tune,
-                timing.with_groove_seed(6),
+                layer_timing(&effective.modules.bass).with_groove_seed(6),
             ),
             timing,
         );
@@ -990,7 +1009,7 @@ impl StereoEngine for FluidEngine {
                 &effective.arp,
                 &effective.pad,
                 tune,
-                timing.with_groove_seed(7),
+                layer_timing(&effective.modules.arp).with_groove_seed(7),
             ),
             timing,
         );
@@ -1002,7 +1021,7 @@ impl StereoEngine for FluidEngine {
                 &effective.lead,
                 &effective.pad,
                 tune,
-                timing.with_groove_seed(8),
+                layer_timing(&effective.modules.lead).with_groove_seed(8),
             ),
             timing,
         );
@@ -1560,6 +1579,14 @@ impl TimingContext {
         self
     }
 
+    /// Replaces the pre-trigger Drunken values for one layer while preserving
+    /// the shared transport and saved wave phase.
+    pub(crate) fn with_drunken(mut self, amount: f32, pace: f32) -> Self {
+        self.drunken_amount = amount;
+        self.drunken_pace = pace;
+        self
+    }
+
     /// Tests that predict a voice's step spacing compute it from the same
     /// transport the engine plays; production voices advance sample by sample
     /// and never need the conversion.
@@ -1744,6 +1771,16 @@ mod grid_swing_tests {
         assert_eq!(grid.hit_at_or_after(0.1).beat, 0.5);
         assert_eq!(grid.hit_at_or_after(0.5).beat, 0.5);
         assert_eq!(grid.hit_at_or_after(0.6).beat, 1.0);
+    }
+
+    #[test]
+    fn a_zero_layer_drunken_matches_the_default_grid() {
+        let default = TimingContext::new(48_000.0, 120.0, 0.0);
+        let zeroed = default.with_drunken(0.0, 7.0);
+        assert_eq!(
+            GridSpec::new_grooved(0.25, 0.0, 0.0, default),
+            GridSpec::new_grooved(0.25, 0.0, 0.0, zeroed)
+        );
     }
 
     #[test]

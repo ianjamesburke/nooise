@@ -221,6 +221,19 @@ mod global_groove_tests {
                 if MODULE_CATALOG[*catalog_index].id == "swing"
         ));
     }
+
+    #[test]
+    fn layer_drunken_outranks_the_master_module() {
+        let mut palette = PaletteState::new(Tab::Perc, &[], None);
+        for character in "drunken".chars() {
+            palette.push_char(character);
+        }
+        assert!(matches!(
+            palette.entry(palette.matches[0].entry_index),
+            PaletteEntry::Module { tab: Tab::Perc, catalog_index }
+                if MODULE_CATALOG[*catalog_index].id == "drunken"
+        ));
+    }
 }
 
 /// One resolved candidate with deterministic semantic rank and display highlights.

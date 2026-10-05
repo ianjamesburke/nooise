@@ -2670,6 +2670,8 @@ mod song_value_tests {
         song.controls.modules.master[2] = super::super::module::preset_slot("swing", 0.6);
         song.controls.modules.master[3] = super::super::module::preset_slot("drunken", 0.5);
         song.controls.modules.master[3].time = 10.0;
+        song.controls.modules.perc[4] = super::super::module::preset_slot("drunken", 0.25);
+        song.controls.modules.perc[4].time = 9.0;
         song.drunken_phase_beat = 13.75;
         let code = encode_song_code(&song).unwrap();
         let mut decoded = decode_song_code(&code).unwrap();
@@ -2677,6 +2679,10 @@ mod song_value_tests {
         assert!((decoded.controls.master.swing - 0.6).abs() < 0.001);
         assert_eq!(decoded.controls.master.drunken_amount, 0.5);
         assert_eq!(decoded.controls.master.drunken_pace, 10.0);
+        assert_eq!(
+            super::super::module::local_drunken(&decoded.controls.modules.perc),
+            Some((0.25, 9.0))
+        );
         assert_eq!(decoded.drunken_phase_beat, 13.75);
         assert!((decoded.controls.pad.swing - 0.6).abs() < 0.001);
         assert!(code.len() < 2_000);

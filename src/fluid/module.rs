@@ -662,7 +662,7 @@ pub(crate) fn tab_has_module_chain(_tab: super::Tab) -> bool {
 pub(crate) fn module_available_on(kind: ModuleKind, tab: super::Tab) -> bool {
     match kind.id {
         "swing" => tab_has_module_chain(tab),
-        "drunken" => matches!(tab, super::Tab::Master),
+        "drunken" => tab_has_module_chain(tab),
         "drive" | "room" | "delay" | "compression" | "filter" => tab_has_module_chain(tab),
         _ => false,
     }
@@ -687,6 +687,24 @@ pub(crate) fn chain_amount_slot(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) ->
     slots
         .iter()
         .position(|slot| slot.kind().is_some_and(|kind| kind.id == id))
+}
+
+/// The authored Drunken values loaded on one layer, if any. The engine owns
+/// the choice between these local values and the Master values, then copies
+/// that result into the layer's `TimingContext` before its pre-trigger grid
+/// runs.
+pub(crate) fn local_drunken(slots: &[ModuleSlot; MODULE_SLOTS]) -> Option<(f32, f32)> {
+    chain_amount_slot(slots, "drunken").map(|index| (slots[index].amount, slots[index].time))
+}
+
+/// Master Drunken fills a layer only while the layer has no Drunken slot of
+/// its own. A present local slot wins even when its Amount is zero.
+pub(crate) fn drunken_for(
+    slots: &[ModuleSlot; MODULE_SLOTS],
+    master_amount: f32,
+    master_pace: f32,
+) -> (f32, f32) {
+    local_drunken(slots).unwrap_or((master_amount, master_pace))
 }
 
 /// Resolve pre-synthesis module values into the grid fields the voices read.
@@ -767,7 +785,7 @@ mod tests {
                         tab_has_module_chain(tab)
                     }
                     "swing" => tab_has_module_chain(tab),
-                    "drunken" => matches!(tab, super::super::Tab::Master),
+                    "drunken" => tab_has_module_chain(tab),
                     "alcohol" | "sidechain" => false,
                     other => panic!("catalog entry {other} needs an availability contract"),
                 };
@@ -799,6 +817,26 @@ mod tests {
         controls.modules.kick[3] = ModuleSlot::default();
         resolve_module_chain(&mut controls);
         assert_eq!(controls.kick.swing, 0.0);
+    }
+
+    #[test]
+    fn local_drunken_exposes_its_own_amount_and_pace() {
+        let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
+        assert_eq!(local_drunken(&slots), None);
+
+        slots[4] = preset_slot("drunken", 0.6);
+        slots[4].time = 11.0;
+        assert_eq!(local_drunken(&slots), Some((0.6, 11.0)));
+    }
+
+    #[test]
+    fn local_drunken_overrides_master_including_at_zero_amount() {
+        let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
+        assert_eq!(drunken_for(&slots, 0.8, 10.0), (0.8, 10.0));
+
+        slots[4] = preset_slot("drunken", 0.0);
+        slots[4].time = 5.0;
+        assert_eq!(drunken_for(&slots, 0.8, 10.0), (0.0, 5.0));
     }
 
     /// The resolved values must reach the same trigger scheduler the voices

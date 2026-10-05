@@ -397,7 +397,7 @@ mod tests {
             ("kick mute", "operation:Mix(MuteKick)"),
             ("sc", "operation:Recipe(Sidechain)"),
             ("global swing", "module:master:swing"),
-            ("drunken", "module:master:drunken"),
+            ("drunken", "module:lead:drunken"),
         ] {
             assert_eq!(
                 winner(&entries, Tab::Lead, ADVERSE, query),

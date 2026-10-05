@@ -4009,6 +4009,40 @@ fn master_drunken_delays_audible_perc_deterministically() {
     assert_eq!(first_sound(&drunk), first_sound(&again));
 }
 
+#[test]
+fn local_drunken_delays_its_layer_deterministically() {
+    let perc_only = || {
+        let mut controls = FluidControls::default();
+        controls.pad.level = 0.0;
+        controls.perc.level = 1.0;
+        controls.perc.interval_beats = 0.25;
+        controls
+    };
+    let render =
+        |controls| render_seconds(&mut engine_for(controls, AutomationState::default()), 0.5);
+
+    let straight = render(perc_only());
+
+    let mut master = perc_only();
+    master.modules.master[2] = preset_slot("drunken", 0.75);
+    master.modules.master[2].time = 9.0;
+    let master_render = render(master.clone());
+
+    let mut local = perc_only();
+    local.modules.perc[2] = preset_slot("drunken", 0.75);
+    local.modules.perc[2].time = 9.0;
+    let local_render = render(local.clone());
+    assert_ne!(local_render, straight);
+    let first_sound = |frames: &[(f32, f32)]| {
+        frames
+            .iter()
+            .position(|(left, right)| left.abs() + right.abs() > 1e-10)
+            .expect("Perc should sound")
+    };
+    assert_eq!(first_sound(&local_render), first_sound(&render(local)));
+    assert_ne!(master_render, straight);
+}
+
 /// A loaded slot must read as the module it holds, not as its index.
 #[test]
 fn a_loaded_slot_row_is_labelled_with_its_module() {
