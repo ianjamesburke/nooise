@@ -162,10 +162,10 @@ impl LiveSession {
                     .for_tab(tab)
                     .zip(next.controls.modules.for_tab(tab))
                     .is_some_and(|(before, after)| {
-                        before
-                            .iter()
-                            .zip(after)
-                            .any(|(before, after)| before.kind.to_bits() != after.kind.to_bits())
+                        before.iter().zip(after).any(|(before, after)| {
+                            before.kind.to_bits() != after.kind.to_bits()
+                                || before.delay_filter.is_some() != after.delay_filter.is_some()
+                        })
                     })
             }) {
                 next.module_topology_revision = current.module_topology_revision.wrapping_add(1);
@@ -184,6 +184,30 @@ impl LiveSession {
                     module_slot_row(target.control.id(), &next.controls)
                         .is_some_and(|(after, _)| before.kind == after.kind)
                 });
+                for tab in Tab::all() {
+                    let Some((before, after)) = current
+                        .controls
+                        .modules
+                        .for_tab(tab)
+                        .zip(next.controls.modules.for_tab(tab))
+                    else {
+                        continue;
+                    };
+                    for (slot, (before, after)) in before.iter().zip(after).enumerate() {
+                        if before.delay_filter.is_some() && after.delay_filter.is_none() {
+                            for field in [
+                                ModuleSlotField::DelayFilterAmount,
+                                ModuleSlotField::DelayFilterCutoff,
+                                ModuleSlotField::DelayFilterResonance,
+                                ModuleSlotField::DelayFilterType,
+                            ] {
+                                if let Some(spec) = module_slot_spec(tab, slot, field) {
+                                    next.automation.clear_control(ControlAddress::new(spec.id));
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if !current.automation.same_lanes(&next.automation) {
                 next.automation_revision = current.automation_revision.wrapping_add(1);
@@ -223,6 +247,31 @@ mod tests {
         session.update(|snapshot| snapshot.controls.modules.bass[0] = ModuleSlot::default());
         session.update(|snapshot| snapshot.controls.modules.bass[0] = preset_slot("filter", 1.0));
         assert_eq!(session.load().module_topology_revision, 2);
+    }
+
+    #[test]
+    fn replacing_delay_clears_its_child_filter_automation() {
+        let mut controls = FluidControls::default();
+        controls.modules.clap[1] = preset_slot("delay", 0.5);
+        controls.modules.clap[1].delay_filter = Some(DelayWetFilter::default());
+        let id = module_slot_spec(Tab::Clap, 1, ModuleSlotField::DelayFilterCutoff)
+            .expect("Delay child Cutoff is registered")
+            .id;
+        let mut snapshot = LiveSessionSnapshot::from_controls(controls);
+        snapshot
+            .automation
+            .add_route(ControlAddress::new(id), LfoRoute::default());
+        let session = LiveSession::new(snapshot);
+
+        session.update(|snapshot| snapshot.controls.modules.clap[1] = preset_slot("drive", 0.2));
+
+        assert!(
+            session
+                .load()
+                .automation
+                .route(ControlAddress::new(id))
+                .is_none()
+        );
     }
 
     use super::*;

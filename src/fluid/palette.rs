@@ -9,7 +9,10 @@
 //! space over them, exactly one entry per unique control id at its native
 //! (deepest) editing surface.
 
-use super::module::{MODULE_CATALOG, chain_amount_slot, module_available_on, tab_has_module_chain};
+use super::module::{
+    MODULE_CATALOG, chain_amount_slot, delay_filter_parameters, module_available_on,
+    tab_has_module_chain,
+};
 use super::*;
 
 use super::palette_search::{Query, SearchMetadata, SearchRank};
@@ -375,14 +378,20 @@ impl PaletteState {
 }
 
 fn module_palette_entries(tab: Tab, slot: usize, catalog_index: usize) -> Vec<PaletteEntry> {
-    MODULE_CATALOG[catalog_index]
-        .parameters()
+    let kind = MODULE_CATALOG[catalog_index];
+    kind.parameters()
         .iter()
+        .chain(
+            (kind.family == Family::Delay)
+                .then_some(delay_filter_parameters())
+                .into_iter()
+                .flatten(),
+        )
         .filter_map(|parameter| {
             module_slot_spec(tab, slot, parameter.field).map(|spec| PaletteEntry::ModuleControl {
                 tab,
                 spec,
-                module_name: MODULE_CATALOG[catalog_index].display_name,
+                module_name: kind.display_name,
                 parameter: parameter.label,
                 search_parameter: parameter.search_name,
                 catalog_index,

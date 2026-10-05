@@ -161,6 +161,15 @@ pub(crate) fn coordinate_production_event(
             catalog_index: module.kind.round() as usize - 1,
         };
     }
+    if action.intent == interaction::Intent::TouchSelected
+        && let interaction::Navigation::Module { tab, slot, .. } = model.navigation
+        && let Some(id) = frame.selected_control
+        && parse_module_slot_id(id).is_some_and(|(_, selected_slot, field)| {
+            selected_slot == slot && field == ModuleSlotField::DelayFilterPresent
+        })
+    {
+        action.intent = interaction::Intent::AddDelayWetFilter { tab, slot };
+    }
     // On the Lead page Enter on the Steps row opens the lane; anywhere else
     // that is not a module drill it opens play mode, since the page is the
     // instrument and there is nothing else to touch.
@@ -357,7 +366,20 @@ pub(crate) fn coordinate_production_action(
                     if let Some((_, spec_slot, field)) = parse_module_slot_id(spec.id)
                         && spec_slot == *slot
                     {
-                        if let Some(kind) = frame_session
+                        if matches!(
+                            field,
+                            ModuleSlotField::DelayFilterPresent
+                                | ModuleSlotField::DelayFilterAmount
+                                | ModuleSlotField::DelayFilterCutoff
+                                | ModuleSlotField::DelayFilterResonance
+                                | ModuleSlotField::DelayFilterType
+                        ) {
+                            *selected =
+                                module_detail_controls(*tab, *slot, &current_session.controls)
+                                    .iter()
+                                    .position(|item| item.id == spec.id)
+                                    .unwrap_or(*selected);
+                        } else if let Some(kind) = current_session
                             .controls
                             .modules
                             .for_tab(*tab)
