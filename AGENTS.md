@@ -100,7 +100,7 @@ All feature work lands in a worktree, never in the root checkout. The root check
 
 ## Ownership
 
-- Root: crate manifest (`Cargo.toml`), README, GOTCHAS.md, `.wtp.yml` (worktree defaults and post-create hooks), this DOX rail.
+- Root: crate manifest (`Cargo.toml`), README, GOTCHAS.md, `.wtp.yml` (worktree defaults and post-create hooks), this DOX rail, and `STATE.md` for current stabilization progress, evidence, stint coverage, and remaining acceptance.
 - `CONTEXT.md`: concise shared domain vocabulary; interaction terms are defined here.
 - `scripts/`: release, render-benchmark, and auto-state authoring helpers. `chassis_tap_probe.swift` is a macOS-only IOKit diagnostic for the Apple Silicon chassis accelerometer. The opt-in `--chassis-tap` live feature uses the same sensor directly from `src/fluid/chassis_tap.rs`.
 - `src/`: all engine, UI, and control code. See `src/AGENTS.md`. Built-in auto-morph song codes (the ordered `n1_…` cycle) live in `src/fluid/auto.rs`'s `AUTO_STATES` array, all container v2 — test-enforced, since only the current container version decodes. Use `just add-morph <code>` to append one. It requires a clean target file, rejects duplicates, restores the file after failed checks, and commits only the new state; never hand-paste codes into the array. `src/fluid/song_ids.rs` keeps the legacy and Delay-child id blocks frozen; append future song-control ids only in its documented post-child block.
