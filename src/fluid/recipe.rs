@@ -26,6 +26,7 @@ pub(crate) enum RecipeLane {
         beats: f32,
         depth: f32,
         seed: u32,
+        ramp: RampParams,
     },
 }
 
@@ -40,6 +41,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             seed: 0,
             beats: 8.0,
             depth: 0.0,
+            ramp: RampParams::DEFAULT,
         },
     },
     Recipe {
@@ -52,6 +54,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             seed: 0,
             beats: 0.5,
             depth: 0.0,
+            ramp: RampParams::DEFAULT,
         },
     },
     Recipe {
@@ -60,10 +63,14 @@ pub(crate) const RECIPES: &[Recipe] = &[
         aliases: &["sc"],
         description: "beat ramp duck, 1 beat, starts silent",
         lane: RecipeLane::Lfo {
-            shape: LfoShape::Duck,
+            shape: LfoShape::Ramp,
             beats: 1.0,
             depth: 0.0,
             seed: 0,
+            ramp: RampParams {
+                anchor: -1.0,
+                ..RampParams::DEFAULT
+            },
         },
     },
     Recipe {
@@ -76,6 +83,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             beats: 1.0,
             depth: 0.0,
             seed: 0,
+            ramp: RampParams::DEFAULT,
         },
     },
     Recipe {
@@ -88,6 +96,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             beats: 4.0,
             depth: 0.0,
             seed: 0x4452_4946,
+            ramp: RampParams::DEFAULT,
         },
     },
     Recipe {
@@ -96,10 +105,14 @@ pub(crate) const RECIPES: &[Recipe] = &[
         aliases: &[],
         description: "ramp up, 8 beats, starts silent",
         lane: RecipeLane::Lfo {
-            shape: LfoShape::RampUp,
+            shape: LfoShape::Ramp,
             beats: 8.0,
             depth: 0.0,
             seed: 0,
+            ramp: RampParams {
+                anchor: 1.0,
+                ..RampParams::DEFAULT
+            },
         },
     },
 ];
@@ -154,11 +167,13 @@ impl Recipe {
                 beats,
                 depth,
                 seed,
+                ramp,
             } => LfoRoute {
                 cycle_beats: beats,
                 depth_ratio: depth,
                 shape,
                 seed,
+                ramp,
                 ..LfoRoute::default()
             },
         }
@@ -358,7 +373,8 @@ mod tests {
                 context(beat),
             )
         };
-        assert_eq!(route.shape, LfoShape::Duck);
+        assert_eq!(route.shape, LfoShape::Ramp);
+        assert_eq!(route.ramp.anchor, -1.0);
         assert_eq!(value(0.0), 0.75);
         assert_eq!(snapshot.controls.pad.level, 0.75);
         let mut raised = *route;

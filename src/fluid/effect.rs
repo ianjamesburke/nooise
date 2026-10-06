@@ -2700,7 +2700,7 @@ mod tests {
             );
         }
 
-        // Enter Steps explicitly; the Shape ceiling is Duck.
+        // Enter Steps explicitly; the Shape ceiling is Steps.
         lfo_executor.edit_session(None, |snapshot| {
             snapshot.automation.route_mut(address).unwrap().shape = LfoShape::Steps;
         });

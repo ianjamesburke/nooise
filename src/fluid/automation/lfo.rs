@@ -43,11 +43,16 @@ const SQUARE_SMOOTH: f32 = 6.0;
 
 /// Fraction of a ramp's cycle, right before it wraps, eased toward the next
 /// cycle's start value instead of jumping there in a single sample. Every
-/// other shape is continuous at the wrap already (sine and triangle by
-/// construction, square via SQUARE_SMOOTH); a bare ramp is a sawtooth with a
-/// full-swing discontinuity every cycle, which clicks when applied straight
-/// to a live-read control like level or cutoff.
+/// other shape is continuous at the wrap already (sine by construction,
+/// square via SQUARE_SMOOTH); a ramp at either skew extreme is a sawtooth
+/// with a full-swing discontinuity every cycle, which clicks when applied
+/// straight to a live-read control like level or cutoff.
 const RAMP_WRAP_EASE: f32 = 0.02;
+/// Exponent base of the ramp's curve dial: curve `c` bends each segment by
+/// `t^(RAMP_CURVE_BASE^c)`, so -1 is a fast-then-slow log bend, 0 is straight
+/// and +1 is a slow-then-fast exp bend.
+const RAMP_CURVE_BASE: f32 = 4.0;
+const RAMP_STEP: f32 = 0.05;
 const PICKUP_SCAN_STEP_BEATS: f64 = 1.0 / 256.0;
 const PICKUP_CROSSING_EPSILON: f32 = 1e-4;
 // ============================================================
@@ -57,43 +62,37 @@ const PICKUP_CROSSING_EPSILON: f32 = 1e-4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LfoShape {
     Sine,
-    Triangle,
-    RampUp,
-    RampDown,
+    /// One shape for every sawtooth and triangle: `RampParams` sets how the
+    /// cycle splits between rising and falling (skew), how each side bends
+    /// (curve), and whether the ramp lifts above its base or ducks below it
+    /// (anchor).
+    Ramp,
     Square,
     RandomDrift,
     SampleHold,
     /// User-drawn staircase: a per-cycle sequence of `step_count` unipolar
     /// values on `LfoRoute`, edited in the Shape row's inline step submenu.
     Steps,
-    /// A one-beat dip that recovers to the authored base without overshooting.
-    Duck,
 }
 
 impl LfoShape {
-    pub(crate) const ALL: [LfoShape; 9] = [
+    pub(crate) const ALL: [LfoShape; 6] = [
         Self::Sine,
-        Self::Triangle,
-        Self::RampUp,
-        Self::RampDown,
+        Self::Ramp,
         Self::Square,
         Self::RandomDrift,
         Self::SampleHold,
         Self::Steps,
-        Self::Duck,
     ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Sine => "sine",
-            Self::Triangle => "triangle",
-            Self::RampUp => "ramp up",
-            Self::RampDown => "ramp down",
+            Self::Ramp => "ramp",
             Self::Square => "square",
             Self::RandomDrift => "random drift",
             Self::SampleHold => "sample & hold",
             Self::Steps => "steps",
-            Self::Duck => "duck",
         }
     }
 
@@ -129,6 +128,48 @@ fn seeded_unit(seed: u32, index: i64) -> f32 {
     unit * 2.0 - 1.0
 }
 
+/// The `Ramp` shape's three sub-knobs. Stored on every route (inert for other
+/// shapes) the way the Steps staircase is, so switching shape never loses them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RampParams {
+    /// -1..1: log (fast then slow) through straight to exp (slow then fast).
+    pub(crate) curve: f32,
+    /// 0..1: fraction of the cycle spent rising. 1 is a ramp up, 0 a ramp
+    /// down, 0.5 a triangle.
+    pub(crate) skew: f32,
+    /// -1..1: where the ramp's travel sits against the base value. 0 centres
+    /// it, +1 lifts it from the base upward, -1 ducks it from below up to the
+    /// base.
+    pub(crate) anchor: f32,
+}
+
+impl RampParams {
+    pub(crate) const DEFAULT: Self = Self {
+        curve: 0.0,
+        skew: 1.0,
+        anchor: 0.0,
+    };
+
+    /// Unipolar 0..1 travel at a phase in 0..1, before anchoring.
+    fn level(self, phase: f32) -> f32 {
+        let skew = self.skew.clamp(0.0, 1.0);
+        let power = RAMP_CURVE_BASE.powf(self.curve.clamp(-1.0, 1.0));
+        let progress = if phase < skew {
+            phase / skew
+        } else {
+            1.0 - ((phase - skew) / (1.0 - skew).max(f32::EPSILON)).min(1.0)
+        };
+        progress.powf(power)
+    }
+
+    /// Value in `(anchor - 1) / 2 .. (anchor + 1) / 2` at a phase in 0..1,
+    /// with the wrap eased.
+    fn wave(self, phase: f32) -> f32 {
+        ease_ramp_wrap(phase, self.level(phase), self.level(0.0)) - 0.5
+            + 0.5 * self.anchor.clamp(-1.0, 1.0)
+    }
+}
+
 /// Blends a ramp's raw value toward `next_cycle_start` over the last
 /// `RAMP_WRAP_EASE` fraction of the cycle, so the value at phase 1 (== the
 /// next cycle's phase 0) is reached smoothly instead of jumping there.
@@ -139,30 +180,6 @@ fn ease_ramp_wrap(phase: f32, raw: f32, next_cycle_start: f32) -> f32 {
     }
     let t = smoothstep((phase - window_start) / RAMP_WRAP_EASE);
     raw + (next_cycle_start - raw) * t
-}
-
-/// Periodic shape value in -1..1 for a phase in 0..1. Random shapes return 0
-/// here; they are evaluated from absolute beat position in `wave_at`.
-fn periodic_shape_value(shape: LfoShape, phase: f32) -> f32 {
-    match shape {
-        LfoShape::Sine => (TAU * phase).sin(),
-        LfoShape::Triangle => {
-            if phase < 0.25 {
-                4.0 * phase
-            } else if phase < 0.75 {
-                1.0 - 4.0 * (phase - 0.25)
-            } else {
-                -1.0 + 4.0 * (phase - 0.75)
-            }
-        }
-        LfoShape::RampUp => ease_ramp_wrap(phase, 2.0 * phase - 1.0, -1.0),
-        LfoShape::Duck => (ease_ramp_wrap(phase, 2.0 * phase - 1.0, -1.0) - 1.0) * 0.5,
-        LfoShape::RampDown => ease_ramp_wrap(phase, 1.0 - 2.0 * phase, 1.0),
-        LfoShape::Square => (SQUARE_SMOOTH * (TAU * phase).sin()).tanh(),
-        // Random and Steps shapes are route-dependent: evaluated from seed or
-        // the custom step array in `wave_at`/`step_value_at`, not from phase alone.
-        LfoShape::RandomDrift | LfoShape::SampleHold | LfoShape::Steps => 0.0,
-    }
 }
 
 /// Deterministic FNV-1a hash so each control's random modulator starts from an
@@ -182,6 +199,11 @@ pub(crate) enum LfoField {
     Interval,
     Offset,
     Shape,
+    /// Ramp sub-knobs, listed after Shape only while the shape is `Ramp`
+    /// (see `LfoField::RAMP`).
+    Curve,
+    Skew,
+    Anchor,
 }
 
 impl LfoField {
@@ -206,9 +228,11 @@ impl LfoField {
                 route.pickup = None;
             }
             Self::Shape => route.write_shape(LfoShape::from_index(value)),
+            Self::Curve | Self::Skew | Self::Anchor => route.write_ramp_field(self, value),
         }
     }
     pub(crate) const ALL: [LfoField; 4] = [Self::Amount, Self::Interval, Self::Offset, Self::Shape];
+    pub(crate) const RAMP: [LfoField; 3] = [Self::Curve, Self::Skew, Self::Anchor];
 
     /// The `FlippedUnits` sub-key for a field that carries a time base;
     /// `None` for amount and shape, which cannot be unit-flipped.
@@ -216,7 +240,7 @@ impl LfoField {
         match self {
             Self::Interval => Some("lfo.interval"),
             Self::Offset => Some("lfo.offset"),
-            Self::Amount | Self::Shape => None,
+            Self::Amount | Self::Shape | Self::Curve | Self::Skew | Self::Anchor => None,
         }
     }
 
@@ -290,6 +314,39 @@ const LFO_FIELD_SPECS: &[FieldSpec<LfoField>] = &[
         stepping: Stepping::BeatGrid,
         entry: Entry::Snap,
         reset: 0.0,
+    },
+    FieldSpec {
+        field: LfoField::Curve,
+        label: "curve",
+        min: -1.0,
+        max: 1.0,
+        step: RAMP_STEP,
+        scale: DialScale::linear(-1.0, 1.0),
+        stepping: Stepping::Linear,
+        entry: Entry::Free,
+        reset: RampParams::DEFAULT.curve,
+    },
+    FieldSpec {
+        field: LfoField::Skew,
+        label: "skew",
+        min: 0.0,
+        max: 1.0,
+        step: RAMP_STEP,
+        scale: DialScale::linear(0.0, 1.0),
+        stepping: Stepping::Linear,
+        entry: Entry::Percent,
+        reset: RampParams::DEFAULT.skew,
+    },
+    FieldSpec {
+        field: LfoField::Anchor,
+        label: "anchor",
+        min: -1.0,
+        max: 1.0,
+        step: RAMP_STEP,
+        scale: DialScale::linear(-1.0, 1.0),
+        stepping: Stepping::Linear,
+        entry: Entry::Free,
+        reset: RampParams::DEFAULT.anchor,
     },
 ];
 
@@ -382,6 +439,8 @@ pub(crate) struct LfoRoute {
     /// Edge-glide fraction (0..1): how much of each step window eases in from
     /// the previous step's value instead of holding flat. See `step_value_at`.
     pub(crate) step_glide: f32,
+    /// Sub-knobs of `LfoShape::Ramp`; inert for every other shape.
+    pub(crate) ramp: RampParams,
     /// Transient handoff after a live rate edit. The old globally anchored
     /// clock keeps playing until it next crosses the new clock, then the new
     /// rate takes over without rewriting the user's offset.
@@ -400,6 +459,7 @@ impl Default for LfoRoute {
             steps: DEFAULT_LFO_STEPS,
             step_count: DEFAULT_LFO_STEP_COUNT,
             step_glide: DEFAULT_LFO_STEP_GLIDE,
+            ramp: RampParams::DEFAULT,
             pickup: None,
         }
     }
@@ -453,7 +513,18 @@ impl LfoRoute {
                 let count = self.active_step_count();
                 self.step_value_at(index.rem_euclid(count as i64) as usize, phase)
             }
-            shape => periodic_shape_value(shape, phase),
+            _ => self.periodic_value(phase),
+        }
+    }
+
+    /// Periodic shape value in -1..1 for a phase in 0..1. Random and Steps
+    /// shapes are route-dependent and evaluated in `wave_at`, so they return 0.
+    fn periodic_value(&self, phase: f32) -> f32 {
+        match self.shape {
+            LfoShape::Sine => (TAU * phase).sin(),
+            LfoShape::Ramp => self.ramp.wave(phase),
+            LfoShape::Square => (SQUARE_SMOOTH * (TAU * phase).sin()).tanh(),
+            LfoShape::RandomDrift | LfoShape::SampleHold | LfoShape::Steps => 0.0,
         }
     }
 
@@ -503,7 +574,7 @@ impl LfoRoute {
                 let step_index = (scaled.floor() as usize).min(count - 1);
                 self.step_value_at(step_index, scaled - step_index as f32)
             }
-            _ => periodic_shape_value(self.shape, phase),
+            _ => self.periodic_value(phase),
         }
     }
 
@@ -597,11 +668,14 @@ impl LfoRoute {
             ^ 0x5DEE_CE66;
     }
 
-    /// Randomize every field the LFO editor owns. The Steps configuration is
-    /// included because it is part of the same route, even when another shape
+    /// Randomize every field the LFO editor owns. The Ramp and Steps
+    /// configurations are included because it is part of the same route, even when another shape
     /// currently hides it.
     pub(crate) fn randomize(&mut self, rng: &mut impl rand::Rng, beat: f64) {
         for field in LfoField::ALL {
+            self.randomize_field_at(field, rng.r#gen(), beat);
+        }
+        for field in LfoField::RAMP {
             self.randomize_field_at(field, rng.r#gen(), beat);
         }
         self.seed = rng.r#gen();
@@ -692,6 +766,19 @@ impl LfoRoute {
                 self.pickup = None;
             }
             LfoField::Shape => {}
+            LfoField::Curve | LfoField::Skew | LfoField::Anchor => {
+                self.write_ramp_field(field, value)
+            }
+        }
+    }
+
+    fn write_ramp_field(&mut self, field: LfoField, value: f32) {
+        self.pickup = None;
+        match field {
+            LfoField::Curve => self.ramp.curve = value,
+            LfoField::Skew => self.ramp.skew = value,
+            LfoField::Anchor => self.ramp.anchor = value,
+            LfoField::Amount | LfoField::Interval | LfoField::Offset | LfoField::Shape => {}
         }
     }
 
@@ -707,6 +794,9 @@ impl LfoRoute {
             LfoField::Amount => self.depth_ratio,
             LfoField::Interval => self.cycle_beats,
             LfoField::Offset => self.phase_offset_beats,
+            LfoField::Curve => self.ramp.curve,
+            LfoField::Skew => self.ramp.skew,
+            LfoField::Anchor => self.ramp.anchor,
         }
     }
 
@@ -716,6 +806,9 @@ impl LfoRoute {
             LfoField::Amount => pct(self.depth_ratio),
             LfoField::Interval => beats2(self.cycle_beats),
             LfoField::Offset => beats2(self.phase_offset_beats),
+            LfoField::Curve => format!("{:+.0}%", self.ramp.curve * 100.0),
+            LfoField::Skew => pct(self.ramp.skew),
+            LfoField::Anchor => format!("{:+.0}%", self.ramp.anchor * 100.0),
         }
     }
 
