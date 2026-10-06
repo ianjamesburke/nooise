@@ -7569,9 +7569,11 @@ fn step_edits_clamp_count_glide_and_values() {
         route.adjust_step(StepTarget::Count, -1.0);
     }
     assert_eq!(route.active_step_count(), 1);
-    // Step values are unipolar percent entry, clamped to 0..1.
+    // Step values are signed percent entry, clamped to -1..1.
     route.set_step(StepTarget::Value(0), -250.0);
-    assert_near(route.steps[0], 0.0);
+    assert_near(route.steps[0], -1.0);
+    route.set_step(StepTarget::Value(0), -50.0);
+    assert_near(route.steps[0], -0.5);
     route.set_step(StepTarget::Value(0), 250.0);
     assert_near(route.steps[0], 1.0);
     route.set_step(StepTarget::Value(0), 50.0);
@@ -7588,6 +7590,8 @@ fn step_edits_clamp_count_glide_and_values() {
 fn randomize_rolls_span_the_whole_dial() {
     let mut route = lfo_shape(LfoShape::Steps);
     route.randomize_step(StepTarget::Value(0), 0.0);
+    assert_near(route.steps[0], -1.0);
+    route.randomize_step(StepTarget::Value(0), 0.5);
     assert_near(route.steps[0], 0.0);
     route.randomize_step(StepTarget::Value(0), 1.0);
     assert_near(route.steps[0], 1.0);
@@ -7642,11 +7646,9 @@ fn song_code_round_trips_steps_shape() {
     }
 }
 
-/// Steps are unipolar. A code whose Steps lane carries a negative step has
-/// no equivalent now, so it is refused by name rather than loaded with the
-/// step silently floored at zero.
+/// A negative step survives the song code within u16 quantisation.
 #[test]
-fn a_code_with_a_negative_lfo_step_is_refused() {
+fn a_negative_lfo_step_round_trips_through_the_song_code() {
     let mut automation = AutomationState::default();
     let mut route = lfo_shape(LfoShape::Steps);
     route.steps[0] = -0.5;
@@ -7656,10 +7658,12 @@ fn a_code_with_a_negative_lfo_step_is_refused() {
         ..SongState::from_controls(FluidControls::default())
     };
     let code = song::encode_song_code(&song).unwrap();
-    assert_eq!(
-        song::decode_song_code(&code).err(),
-        Some(song::SongCodeError::NegativeLfoStep("master.level"))
-    );
+    let got = song::decode_song_code(&code).unwrap();
+    let lane = got
+        .automation
+        .route(ControlAddress::new("master.level"))
+        .unwrap();
+    assert_quantized(lane.steps[0], -0.5);
 }
 
 #[test]

@@ -155,9 +155,6 @@ pub(crate) enum SongCodeError {
     /// The code sets a control this build retired. Its value has nowhere to
     /// go, so the code is refused rather than loaded with that value missing.
     RetiredControl(&'static str),
-    /// An LFO Steps lane on this control carries a negative step. Steps are
-    /// unipolar now; the value has no equivalent, so the code is refused.
-    NegativeLfoStep(&'static str),
     /// The code is from an older dial-range epoch and modulates a dial whose
     /// range has changed since, so its depths would sweep the wrong span.
     /// Like a retired control, it is refused rather than reinterpreted.
@@ -247,11 +244,6 @@ impl fmt::Display for SongCodeError {
                 f,
                 "song code sets {id}, a control this build no longer has; the code predates the \
                  change that retired it and can no longer be loaded"
-            ),
-            Self::NegativeLfoStep(id) => write!(
-                f,
-                "song code gives the LFO on {id} a negative step; steps now run 0 to 100% and \
-                 the code can no longer be loaded"
             ),
             Self::StaleRange(id) => write!(
                 f,
@@ -1930,11 +1922,6 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         let mut route = build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed);
         if let Some(ramp) = ramp {
             route.ramp = ramp;
-        }
-        if let Some((_, _, values)) = steps
-            && values.iter().any(|value| *value < 0.0)
-        {
-            return Err(SongCodeError::NegativeLfoStep(spec.id));
         }
         if let Some((step_count, step_glide, values)) = steps {
             route.step_count = step_count.clamp(1, MAX_LFO_STEPS as u8);

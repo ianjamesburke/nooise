@@ -1540,7 +1540,7 @@ mod tests {
             let mut controls = FluidControls::default();
             controls.pad.level = 0.0;
             plan.apply(&mut controls, timing);
-            assert!((controls.pad.level - 0.36).abs() < 0.0001);
+            assert!((controls.pad.level - 0.48).abs() < 0.0001);
         }
         automation.route_mut(address).unwrap().depth_ratio = 0.6;
         plan.rebuild(&automation);
@@ -1551,11 +1551,11 @@ mod tests {
         }
         let lanes = automation.effective_lanes(address, timing.beat);
         assert!((lanes.lfos()[0].depth_ratio - 0.8).abs() < 0.0001);
-        assert!((lanes.lfos()[0].steps[0] - 0.6).abs() < 0.0001);
+        assert!((lanes.lfos()[0].steps[0] - 0.8).abs() < 0.0001);
         let mut controls = FluidControls::default();
         controls.pad.level = 0.0;
         plan.apply(&mut controls, timing);
-        assert!((controls.pad.level - 0.48).abs() < 0.0001);
+        assert!((controls.pad.level - 0.64).abs() < 0.0001);
         for queued in [false, true] {
             for clip in automation.editor_captures.values_mut() {
                 clip.enabled = queued;
