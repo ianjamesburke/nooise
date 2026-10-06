@@ -1,6 +1,6 @@
 # Stabilization integration gate — October 5, 2026
 
-Status: the worktree now includes the later slices through `56a67b9`. Its combined test, formatter, and diff checks pass; the combined automated gate remains **pending** for build and Clippy results. Ian's musical and live terminal audition is also **pending**. Root `main` remains the October 3 reference at `f28f95d`. This is a listening handoff, not release approval.
+Status: the worktree includes the later slices through `56a67b9`, and its combined automated gate passes. Ian's musical and live terminal audition is **pending**. Root `main` remains the October 3 reference at `f28f95d`. This is a listening handoff, not release approval.
 
 ## Later integrated slices
 
@@ -15,10 +15,11 @@ Status: the worktree now includes the later slices through `56a67b9`. Its combin
 | --- | --- |
 | `RUSTC_WRAPPER= cargo test --locked` | Pass on `56a67b9`: 876 passed, 6 ignored, 0 failed. |
 | `cargo fmt --check`; `git diff --check` | Pass on `56a67b9`. |
-| `RUSTC_WRAPPER= cargo build --locked`; `RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings` | Pending. |
-| Production keyboard replay, seeded render, song-code, and OSC checks | Pending for the four later slices. |
+| `RUSTC_WRAPPER= cargo build --locked`; `RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings` | Pass on `56a67b9`. |
+| Seeded audio | Two combined seed-42 2-second WAVs are byte-identical and match the October 3 baseline: SHA-256 `a8995df35255429d324c623f6cc4f69eb98fdd913a7961ccbfeb5b83c9919830`; 44.1 kHz, 88,200 frames. |
+| Production keyboard replay, song-code, and OSC | Covered by the passing full suite. No new standalone replay, song-code, OSC, manual keyboard, terminal, or OSC-consumer run was made for these later slices. |
 
-Do not treat the earlier evidence as coverage for the pending checks.
+The full suite is automated evidence. It does not replace the pending musical and live terminal audition.
 
 ## Earlier check evidence, before the later slices
 
