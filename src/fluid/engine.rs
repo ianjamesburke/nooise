@@ -25,29 +25,16 @@ const STARTUP_FADE_SECONDS: f32 = 2.0;
 /// Stateful post-synthesis Delay instances, addressed by the stable
 /// `(layer, slot)` storage identity rather than a catalog name.
 enum SlotFx {
-    Delay {
-        line: StereoDelay,
-        wet_filter: Option<StereoFilter>,
-        wet_filter_params: DelayWetFilter,
-        retiring_wet_filter: Option<Outgoing<DelayWetFilterFx>>,
-    },
+    Delay(StereoDelay),
     Reverb(Freeverb),
     Compression(StereoCompressor),
     Filter(StereoFilter),
 }
 
-/// The one bounded child processor that can retire while its Delay keeps
-/// ringing. It carries the last authored parameters so removing the child
-/// crossfades its coloured wet tail back to unfiltered wet without a click.
-struct DelayWetFilterFx {
-    filter: StereoFilter,
-    params: DelayWetFilter,
-}
-
 impl SlotFx {
     fn family(&self) -> Family {
         match self {
-            Self::Delay { .. } => Family::Delay,
+            Self::Delay(_) => Family::Delay,
             Self::Reverb(_) => Family::Reverb,
             Self::Compression(_) => Family::Compression,
             Self::Filter(_) => Family::Filter,
@@ -109,12 +96,7 @@ impl ModuleFxBank {
         sample_rate: f32,
     ) -> (f32, f32) {
         match fx {
-            SlotFx::Delay {
-                line,
-                wet_filter,
-                wet_filter_params,
-                retiring_wet_filter,
-            } => {
+            SlotFx::Delay(line) => {
                 let left = delay_time_ms(
                     slot.time,
                     DelayClock::from_value(slot.clock),
@@ -129,51 +111,16 @@ impl ModuleFxBank {
                     ((ms * timing.sample_rate as f32 / 1_000.0).round() as usize)
                         .clamp(1, max_delay_samples)
                 };
-                let params = DelayParams {
-                    left_delay_samples: samples(left),
-                    right_delay_samples: samples(right),
-                    feedback: slot.feedback,
-                    amount: slot.amount,
-                    vintage: slot.vintage,
-                    sample_rate: timing.sample_rate as f32,
-                };
-                // Preserve the former plain Delay path exactly when no child
-                // owns filter history or retirement work.
-                if slot.delay_filter.is_none()
-                    && wet_filter.is_none()
-                    && retiring_wet_filter.is_none()
-                {
-                    return line.process(sample, params);
-                }
-                let wet = line.process_wet(sample, params);
-                let wet = if let Some(filter) = slot.delay_filter {
-                    *wet_filter_params = filter;
-                    let current = wet_filter.get_or_insert_default().process(
-                        wet,
-                        FilterParams {
-                            sample_rate,
-                            cutoff_hz: filter.cutoff,
-                            resonance: filter.resonance,
-                            filter_type: FilterType::from_value(filter.filter_type),
-                            amount: filter.amount,
-                        },
-                    );
-                    Self::mix_retiring_delay_filter(wet, current, retiring_wet_filter, sample_rate)
-                } else {
-                    if let Some(filter) = wet_filter.take() {
-                        *retiring_wet_filter = Some(Outgoing::start(
-                            DelayWetFilterFx {
-                                filter,
-                                params: *wet_filter_params,
-                            },
-                            LEVEL_RAMP_MS * 0.001 * sample_rate,
-                        ));
-                    }
-                    Self::mix_retiring_delay_filter(wet, wet, retiring_wet_filter, sample_rate)
-                };
-                (
-                    sample.0 + wet.0 * slot.amount.clamp(0.0, 1.0),
-                    sample.1 + wet.1 * slot.amount.clamp(0.0, 1.0),
+                line.process(
+                    sample,
+                    DelayParams {
+                        left_delay_samples: samples(left),
+                        right_delay_samples: samples(right),
+                        feedback: slot.feedback,
+                        amount: slot.amount,
+                        vintage: slot.vintage,
+                        sample_rate: timing.sample_rate as f32,
+                    },
                 )
             }
             SlotFx::Reverb(reverb) => {
@@ -219,32 +166,6 @@ impl ModuleFxBank {
                 },
             ),
         }
-    }
-
-    fn mix_retiring_delay_filter(
-        wet: (f32, f32),
-        current: (f32, f32),
-        retiring: &mut Option<Outgoing<DelayWetFilterFx>>,
-        sample_rate: f32,
-    ) -> (f32, f32) {
-        let Some(outgoing) = retiring.as_mut() else {
-            return current;
-        };
-        let filtered = outgoing.inner.filter.process(
-            wet,
-            FilterParams {
-                sample_rate,
-                cutoff_hz: outgoing.inner.params.cutoff,
-                resonance: outgoing.inner.params.resonance,
-                filter_type: FilterType::from_value(outgoing.inner.params.filter_type),
-                amount: outgoing.inner.params.amount,
-            },
-        );
-        let weight = outgoing.advance();
-        if outgoing.is_done() {
-            *retiring = None;
-        }
-        mix_stereo(current, filtered, weight)
     }
 
     /// Moves a loaded processor into retirement when its slot no longer asks
@@ -326,12 +247,7 @@ impl ModuleFxBank {
                 Family::Delay | Family::Reverb | Family::Compression | Family::Filter => {
                     if processor.is_none() {
                         *processor = Some(match kind.family {
-                            Family::Delay => SlotFx::Delay {
-                                line: StereoDelay::new(max_delay_samples),
-                                wet_filter: None,
-                                wet_filter_params: DelayWetFilter::default(),
-                                retiring_wet_filter: None,
-                            },
+                            Family::Delay => SlotFx::Delay(StereoDelay::new(max_delay_samples)),
                             Family::Reverb => SlotFx::Reverb(Freeverb::new(sample_rate)),
                             Family::Filter => SlotFx::Filter(StereoFilter::default()),
                             _ => SlotFx::Compression(StereoCompressor::new(0.0)),
@@ -593,79 +509,6 @@ mod module_fx_tests {
         let output = bank.process(Tab::Clap, &slots, (0.4, -0.2), timing);
 
         assert_eq!(output, (0.4, -0.2));
-    }
-
-    #[test]
-    fn zero_amount_delay_child_is_an_exact_wet_bypass() {
-        let timing = TimingContext::new(44_100.0, 120.0, 0.0);
-        let mut plain = ModuleFxBank::new(44_100.0);
-        let mut child = ModuleFxBank::new(44_100.0);
-        let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
-        slots[0] = preset_slot("delay", 0.8);
-        slots[0].clock = DelayClock::Free.value();
-        slots[0].right_clock = DelayClock::Free.value();
-        slots[0].time = 10.0;
-        slots[0].right_time = 10.0;
-        slots[0].delay_filter = Some(DelayWetFilter::default());
-
-        let mut plain_slots = slots;
-        plain_slots[0].delay_filter = None;
-        for sample in [(0.4, -0.2), (0.0, 0.0), (0.2, 0.1)] {
-            assert_eq!(
-                child.process(Tab::Clap, &slots, sample, timing),
-                plain.process(Tab::Clap, &plain_slots, sample, timing)
-            );
-        }
-    }
-
-    #[test]
-    fn removing_a_delay_child_fades_its_wet_colour_before_bypass() {
-        let timing = TimingContext::new(TEST_SAMPLE_RATE as f64, 120.0, 0.0);
-        let mut filtered = ModuleFxBank::new(TEST_SAMPLE_RATE);
-        let mut plain = ModuleFxBank::new(TEST_SAMPLE_RATE);
-        let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
-        slots[0] = preset_slot("delay", 1.0);
-        slots[0].clock = DelayClock::Free.value();
-        slots[0].right_clock = DelayClock::Free.value();
-        slots[0].time = 10.0;
-        slots[0].right_time = 10.0;
-        slots[0].feedback = 0.8;
-        slots[0].delay_filter = Some(DelayWetFilter {
-            amount: 1.0,
-            cutoff: 300.0,
-            resonance: 0.2,
-            filter_type: 0.0,
-        });
-        let mut plain_slots = slots;
-        plain_slots[0].delay_filter = None;
-        for index in 0..1_000 {
-            let input = if index % 2 == 0 {
-                (0.5, 0.5)
-            } else {
-                (-0.5, -0.5)
-            };
-            filtered.process(Tab::Clap, &slots, input, timing);
-            plain.process(Tab::Clap, &plain_slots, input, timing);
-        }
-
-        slots[0].delay_filter = None;
-        let first_filtered = filtered.process(Tab::Clap, &slots, (0.0, 0.0), timing);
-        let first_plain = plain.process(Tab::Clap, &plain_slots, (0.0, 0.0), timing);
-        assert_ne!(
-            first_filtered, first_plain,
-            "child colour was cut in one sample"
-        );
-
-        let ramp = (LEVEL_RAMP_MS * 0.001 * TEST_SAMPLE_RATE) as usize;
-        for _ in 0..ramp + 2 {
-            filtered.process(Tab::Clap, &slots, (0.0, 0.0), timing);
-            plain.process(Tab::Clap, &plain_slots, (0.0, 0.0), timing);
-        }
-        assert_eq!(
-            filtered.process(Tab::Clap, &slots, (0.0, 0.0), timing),
-            plain.process(Tab::Clap, &plain_slots, (0.0, 0.0), timing),
-            "retired child did not finish bypassing"
-        );
     }
 
     #[test]

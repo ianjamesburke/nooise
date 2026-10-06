@@ -3844,18 +3844,6 @@ fn apply_max_moves_selected_control_to_the_top_of_its_range() {
 #[test]
 fn both_range_extremes_land_in_range_for_every_control() {
     for spec in all_specs() {
-        if parse_module_slot_id(spec.id).is_some_and(|(_, _, field)| {
-            matches!(
-                field,
-                ModuleSlotField::DelayFilterPresent
-                    | ModuleSlotField::DelayFilterAmount
-                    | ModuleSlotField::DelayFilterCutoff
-                    | ModuleSlotField::DelayFilterResonance
-                    | ModuleSlotField::DelayFilterType
-            )
-        }) {
-            continue;
-        }
         let mut controls = FluidControls::default();
         spec.apply_max(&mut controls);
         let contextual = spec.contextual(&controls);
@@ -4223,14 +4211,7 @@ fn effect_families_project_complete_coherent_detail_rows() {
     };
     assert_eq!(
         labels(1),
-        [
-            "Amount",
-            "Left Time",
-            "Right Time",
-            "Feedback",
-            "Vintage",
-            "Filter",
-        ]
+        ["Amount", "Left Time", "Right Time", "Feedback", "Vintage"]
     );
     assert_eq!(labels(2), ["Amount", "Size", "Damping"]);
     assert_eq!(
@@ -4461,19 +4442,6 @@ fn control_registry_specs_are_internally_consistent() {
             }
             if let Step::Linear(step) = spec.step {
                 assert!(step > 0.0, "{ctx}: step must be positive");
-            }
-
-            if parse_module_slot_id(spec.id).is_some_and(|(_, _, field)| {
-                matches!(
-                    field,
-                    ModuleSlotField::DelayFilterPresent
-                        | ModuleSlotField::DelayFilterAmount
-                        | ModuleSlotField::DelayFilterCutoff
-                        | ModuleSlotField::DelayFilterResonance
-                        | ModuleSlotField::DelayFilterType
-                )
-            }) {
-                continue;
             }
 
             // get/set must address the same field.

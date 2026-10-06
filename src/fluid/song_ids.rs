@@ -12,9 +12,7 @@
 //!
 //! `song_ids_cover_every_registry_control` fails the build if a registry
 //! control is missing here, so a new control can never become unsaveable.
-/// Historic ids, frozen before Delay gained its wet-only Filter child. Never
-/// append here: doing so would renumber the child block below.
-const LEGACY_SONG_ID_TABLE: &[&str] = &[
+const SONG_ID_TABLE: &[&str] = &[
     "pad.level",
     "pad.attack_time",
     "pad.release_time",
@@ -800,45 +798,11 @@ const LEGACY_SONG_ID_TABLE: &[&str] = &[
     "perc.attack_ms",
 ];
 
-/// One bounded child family appended after the historic flat table. The
-/// generated spelling is still a fixed, append-only id sequence; writing it
-/// this way prevents 360 mechanically identical lines from obscuring the
-/// five meaningful child fields.
-macro_rules! delay_filter_song_ids {
-    ($($layer:literal),* $(,)?) => {
-        [$(
-            concat!($layer, ".slot1.delay_filter_present"), concat!($layer, ".slot1.delay_filter_amount"), concat!($layer, ".slot1.delay_filter_cutoff"), concat!($layer, ".slot1.delay_filter_resonance"), concat!($layer, ".slot1.delay_filter_type"),
-            concat!($layer, ".slot2.delay_filter_present"), concat!($layer, ".slot2.delay_filter_amount"), concat!($layer, ".slot2.delay_filter_cutoff"), concat!($layer, ".slot2.delay_filter_resonance"), concat!($layer, ".slot2.delay_filter_type"),
-            concat!($layer, ".slot3.delay_filter_present"), concat!($layer, ".slot3.delay_filter_amount"), concat!($layer, ".slot3.delay_filter_cutoff"), concat!($layer, ".slot3.delay_filter_resonance"), concat!($layer, ".slot3.delay_filter_type"),
-            concat!($layer, ".slot4.delay_filter_present"), concat!($layer, ".slot4.delay_filter_amount"), concat!($layer, ".slot4.delay_filter_cutoff"), concat!($layer, ".slot4.delay_filter_resonance"), concat!($layer, ".slot4.delay_filter_type"),
-            concat!($layer, ".slot5.delay_filter_present"), concat!($layer, ".slot5.delay_filter_amount"), concat!($layer, ".slot5.delay_filter_cutoff"), concat!($layer, ".slot5.delay_filter_resonance"), concat!($layer, ".slot5.delay_filter_type"),
-            concat!($layer, ".slot6.delay_filter_present"), concat!($layer, ".slot6.delay_filter_amount"), concat!($layer, ".slot6.delay_filter_cutoff"), concat!($layer, ".slot6.delay_filter_resonance"), concat!($layer, ".slot6.delay_filter_type"),
-            concat!($layer, ".slot7.delay_filter_present"), concat!($layer, ".slot7.delay_filter_amount"), concat!($layer, ".slot7.delay_filter_cutoff"), concat!($layer, ".slot7.delay_filter_resonance"), concat!($layer, ".slot7.delay_filter_type"),
-            concat!($layer, ".slot8.delay_filter_present"), concat!($layer, ".slot8.delay_filter_amount"), concat!($layer, ".slot8.delay_filter_cutoff"), concat!($layer, ".slot8.delay_filter_resonance"), concat!($layer, ".slot8.delay_filter_type"),
-        )*]
-    };
-}
-
-const DELAY_FILTER_SONG_IDS: &[&str] = &delay_filter_song_ids!(
-    "pad", "perc", "bass", "kick", "tonal", "clap", "arp", "lead", "master",
-);
-
-/// Append future flat control ids here, after every Delay-child id. Keeping
-/// this distinct from `LEGACY_SONG_ID_TABLE` makes an accidental renumbering
-/// of existing wet-filter song codes mechanically visible in review.
-const POST_DELAY_FILTER_SONG_IDS: &[&str] = &[];
-
-fn all_song_ids() -> impl Iterator<Item = &'static &'static str> {
-    LEGACY_SONG_ID_TABLE
-        .iter()
-        .chain(DELAY_FILTER_SONG_IDS)
-        .chain(POST_DELAY_FILTER_SONG_IDS)
-}
-
 /// Index of `id` in the song-code id table, or `None` if the control has
 /// never been assigned one.
 pub(crate) fn song_id_index(id: &str) -> Option<u16> {
-    all_song_ids()
+    SONG_ID_TABLE
+        .iter()
         .position(|entry| *entry == id)
         .map(|index| index as u16)
 }
@@ -846,7 +810,7 @@ pub(crate) fn song_id_index(id: &str) -> Option<u16> {
 /// The control id at `index`, or `None` if a code names a slot this build
 /// does not know about.
 pub(crate) fn song_id_at(index: u16) -> Option<&'static str> {
-    all_song_ids().nth(index as usize).copied()
+    SONG_ID_TABLE.get(index as usize).copied()
 }
 
 #[cfg(test)]
@@ -863,32 +827,25 @@ mod tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "append these control ids to POST_DELAY_FILTER_SONG_IDS so they can be saved: {missing:?}"
+            "append these control ids to SONG_ID_TABLE so they can be saved: {missing:?}"
         );
     }
 
     #[test]
     fn song_id_table_has_no_duplicates() {
         let mut seen = BTreeSet::new();
-        for id in all_song_ids() {
+        for id in SONG_ID_TABLE {
             assert!(seen.insert(*id), "duplicate song id table entry: {id}");
         }
     }
 
     #[test]
     fn song_id_index_and_lookup_are_inverses() {
-        for (index, id) in all_song_ids().enumerate() {
+        for (index, id) in SONG_ID_TABLE.iter().enumerate() {
             let index = index as u16;
             assert_eq!(song_id_index(id), Some(index));
             assert_eq!(song_id_at(index), Some(*id));
         }
-        assert_eq!(
-            song_id_at(
-                (LEGACY_SONG_ID_TABLE.len()
-                    + DELAY_FILTER_SONG_IDS.len()
-                    + POST_DELAY_FILTER_SONG_IDS.len()) as u16
-            ),
-            None
-        );
+        assert_eq!(song_id_at(SONG_ID_TABLE.len() as u16), None);
     }
 }

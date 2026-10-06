@@ -21,7 +21,6 @@ The stabilization implementation is integrated in this worktree. It includes:
 - Perc has a saved Attack control.
 - Collapsed Filter rows browse Cutoff.
 - A layer's Drunken module overrides Master Drunken, including at local Amount 0%.
-- A Delay can own one wet-only Filter. Adding it keeps the player on Delay detail with `Filter ›` Cutoff selected; the child starts at 100% Amount. Enter opens the child controls and Escape returns to Delay.
 
 ## Automated evidence
 

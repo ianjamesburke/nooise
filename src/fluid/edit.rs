@@ -257,13 +257,10 @@ fn active_field(automation: &AutomationState, lfo_selected: usize) -> ActiveFiel
 }
 
 pub(crate) fn automation_kind_is_supported(
-    selected_control: Option<&str>,
+    _selected_control: Option<&str>,
     kind: interaction::AutomationKind,
 ) -> bool {
-    !selected_control.is_some_and(|id| {
-        parse_module_slot_id(id)
-            .is_some_and(|(_, _, field)| field == ModuleSlotField::DelayFilterPresent)
-    }) && matches!(
+    matches!(
         kind,
         interaction::AutomationKind::Lfo | interaction::AutomationKind::Envelope
     )

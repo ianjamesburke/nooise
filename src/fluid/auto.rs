@@ -15,7 +15,7 @@ use super::automation::{
     ControlAddress, LfoRoute, LfoShape, ModContext, modulated_control_value_full,
 };
 use super::module::{ModuleSlotField, module_kind_at};
-use super::registry::{module_slot_row, parse_chord_slot_id, parse_module_slot_id};
+use super::registry::{parse_chord_slot_id, parse_module_slot_id};
 use super::{
     AutomationState, ControlKind, ControlSpec, FluidControls, GRID_BEAT_EPSILON, LEVEL_RAMP_MS,
     MASTER_BPM_MAX, MASTER_BPM_MIN, SongState, Tab, all_specs, decode_song_code, smoothstep,
@@ -397,10 +397,7 @@ fn swapped_slots(from: &FluidControls, to: &FluidControls) -> Vec<(&'static str,
         };
         let identity = matches!(
             field,
-            ModuleSlotField::Kind
-                | ModuleSlotField::Clock
-                | ModuleSlotField::RightClock
-                | ModuleSlotField::DelayFilterPresent
+            ModuleSlotField::Kind | ModuleSlotField::Clock | ModuleSlotField::RightClock
         );
         if identity && (spec.get)(from) != (spec.get)(to) && !swapped.contains(&(layer, slot)) {
             swapped.push((layer, slot));
@@ -836,20 +833,7 @@ impl MorphState {
                 }
             };
 
-            let inactive_delay_child =
-                parse_module_slot_id(spec.id).is_some_and(|(_, _, field)| {
-                    matches!(
-                        field,
-                        ModuleSlotField::DelayFilterAmount
-                            | ModuleSlotField::DelayFilterCutoff
-                            | ModuleSlotField::DelayFilterResonance
-                            | ModuleSlotField::DelayFilterType
-                    ) && module_slot_row(spec.id, &next)
-                        .is_some_and(|(slot, _)| slot.delay_filter.is_none())
-                });
-            if !inactive_delay_child {
-                (spec.set)(&mut next, value);
-            }
+            (spec.set)(&mut next, value);
         }
         next
     }
@@ -988,44 +972,6 @@ impl MorphWriter {
 mod tests {
     use super::super::module::{module_kind_value, preset_slot};
     use super::*;
-
-    #[test]
-    fn delay_filter_presence_and_fields_snap_together_in_both_directions() {
-        let mut absent = phrase_controls();
-        absent.modules.clap[1] = preset_slot("delay", 0.5);
-        let mut present = absent.clone();
-        present.modules.clap[1].delay_filter = Some(super::super::module::DelayWetFilter {
-            amount: 0.7,
-            cutoff: 1_100.0,
-            resonance: 0.4,
-            filter_type: 2.0,
-        });
-
-        for (from, to, expected_before, expected_after) in [
-            (&absent, &present, false, true),
-            (&present, &absent, true, false),
-        ] {
-            let morph = MorphState::new(
-                vec![
-                    SongState::from_controls(from.clone()),
-                    SongState::from_controls(to.clone()),
-                ],
-                64,
-            );
-            let boundary = morph.leg_transition_start_beat(0);
-            assert_eq!(
-                morph.controls_at((boundary - 0.01).max(0.0)).modules.clap[1]
-                    .delay_filter
-                    .is_some(),
-                expected_before
-            );
-            let landed = morph.controls_at(boundary + 0.01).modules.clap[1].delay_filter;
-            assert_eq!(landed.is_some(), expected_after);
-            if expected_after {
-                assert_eq!(landed, present.modules.clap[1].delay_filter);
-            }
-        }
-    }
 
     #[test]
     fn auto_from_last_song_wraps_and_keeps_original_labels() {

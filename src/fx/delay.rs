@@ -85,16 +85,6 @@ impl StereoDelay {
     }
 
     pub(crate) fn process(&mut self, input: (f32, f32), params: DelayParams) -> (f32, f32) {
-        let amount = params.amount.clamp(0.0, 1.0);
-        let wet = self.process_wet(input, params);
-        (input.0 + wet.0 * amount, input.1 + wet.1 * amount)
-    }
-
-    /// Advance the line and return only its coloured delayed signal. The
-    /// feedback write remains unfiltered; a Delay-owned Filter can therefore
-    /// shape the emitted wet signal without ever touching dry input or the
-    /// feedback loop.
-    pub(crate) fn process_wet(&mut self, input: (f32, f32), params: DelayParams) -> (f32, f32) {
         let vintage = params.vintage.clamp(0.0, 1.0);
         self.left_tap.retarget(params.left_delay_samples as f32);
         self.right_tap.retarget(params.right_delay_samples as f32);
@@ -142,7 +132,10 @@ impl StereoDelay {
                 (sample * drive).tanh() / drive
             }
         };
-        (color(delayed_left), color(delayed_right))
+        (
+            input.0 + color(delayed_left) * params.amount.clamp(0.0, 1.0),
+            input.1 + color(delayed_right) * params.amount.clamp(0.0, 1.0),
+        )
     }
 
     /// Clear at most `samples` stored samples without allocating. Callers can

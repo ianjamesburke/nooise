@@ -918,11 +918,6 @@ pub(crate) enum Intent {
         slot: usize,
         catalog_index: usize,
     },
-    /// Insert Delay's one wet-only Filter child from its local detail scope.
-    AddDelayWetFilter {
-        tab: Tab,
-        slot: usize,
-    },
     BeginNumeric(char),
     TypeCharacter(char),
     Backspace,
@@ -1035,7 +1030,6 @@ impl Intent {
             | Self::EnterChordSlot(_)
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
-            | Self::AddDelayWetFilter { .. }
             | Self::EnterLeadPlay
             | Self::RandomizeSelected => &[ModeKind::Browsing],
             Self::RandomizeScope => &[ModeKind::Browsing, ModeKind::Automation],
@@ -1110,7 +1104,6 @@ impl Intent {
             | Self::EnterChordSlot(_)
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
-            | Self::AddDelayWetFilter { .. }
             | Self::BeginNumeric(_)
             | Self::PaletteAutocomplete
             | Self::Confirm
@@ -1228,12 +1221,6 @@ pub(crate) enum InteractionEffect {
     /// Jump's direct filter shortcut keeps Cutoff as its destination.
     PlaceFilterCutoff {
         tab: Tab,
-    },
-    /// Add or focus Delay's bounded wet-only Filter child.
-    PlaceDelayWetFilter {
-        tab: Tab,
-        slot: usize,
-        field: super::ModuleSlotField,
     },
     AutomationConfirm(AutomationKind),
     AddAutomation(AutomationKind),
@@ -1582,13 +1569,6 @@ fn update_browsing(
                 selected: 0,
                 return_to,
             };
-        }
-        Intent::AddDelayWetFilter { tab, slot } => {
-            effects.push(InteractionEffect::PlaceDelayWetFilter {
-                tab,
-                slot,
-                field: super::ModuleSlotField::DelayFilterAmount,
-            });
         }
         Intent::BeginNumeric(character) => {
             let mut entry = NumericEntry::default();
@@ -2117,37 +2097,14 @@ fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEf
             tab: *tab,
             catalog_index: *catalog_index,
         },
-        PaletteEntry::ModuleControl { tab, spec, .. } => {
-            if let Some((_, slot, field)) = super::parse_module_slot_id(spec.id)
-                && matches!(
-                    field,
-                    super::ModuleSlotField::DelayFilterPresent
-                        | super::ModuleSlotField::DelayFilterAmount
-                        | super::ModuleSlotField::DelayFilterCutoff
-                        | super::ModuleSlotField::DelayFilterResonance
-                        | super::ModuleSlotField::DelayFilterType
-                )
-            {
-                InteractionEffect::PlaceDelayWetFilter {
-                    tab: *tab,
-                    slot,
-                    field: if field == super::ModuleSlotField::DelayFilterPresent {
-                        super::ModuleSlotField::DelayFilterAmount
-                    } else {
-                        field
-                    },
-                }
-            } else {
-                InteractionEffect::JumpToControl {
-                    tab: *tab,
-                    index: super::tab_specs(*tab)
-                        .iter()
-                        .position(|candidate| candidate.id == spec.id)
-                        .expect("scoped module entry uses its owning tab spec"),
-                    id: spec.id,
-                }
-            }
-        }
+        PaletteEntry::ModuleControl { tab, spec, .. } => InteractionEffect::JumpToControl {
+            tab: *tab,
+            index: super::tab_specs(*tab)
+                .iter()
+                .position(|candidate| candidate.id == spec.id)
+                .expect("scoped module entry uses its owning tab spec"),
+            id: spec.id,
+        },
     }
 }
 

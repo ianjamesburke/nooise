@@ -18,12 +18,12 @@ use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
     AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO,
-    EditorMotionAddress, EditorMotionField, EnvField, EnvTrigger, EnvelopeRoute, Family,
-    FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState, LfoField, LfoRoute,
-    LfoShape, MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS,
-    MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES,
-    ModKind, ModuleSlot, ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, PlannedAction, Step,
-    StepTarget, TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
+    EditorMotionAddress, EditorMotionField, EnvField, EnvTrigger, EnvelopeRoute, FluidControls,
+    GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState, LfoField, LfoRoute, LfoShape,
+    MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
+    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField,
+    MuteState, PAD_RHYTHM_ROWS, PlannedAction, Step, StepTarget, TAB_COUNT, Tab, all_specs,
+    parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -820,93 +820,6 @@ mod chord_override_codec_tests {
                 .pad
                 .chord_overrides,
             song.controls.pad.chord_overrides
-        );
-    }
-}
-
-#[cfg(test)]
-mod delay_wet_filter_codec_tests {
-    use super::*;
-    use crate::fluid::module::{DelayWetFilter, preset_slot};
-
-    fn delay_song() -> SongState {
-        let mut song = SongState::default();
-        song.controls.modules.clap[1] = preset_slot("delay", 0.6);
-        song
-    }
-
-    #[test]
-    fn absent_child_keeps_a_plain_delay_snapshot_free_of_child_ids() {
-        let song = delay_song();
-        let snapshot = snapshot_payload(&song.controls);
-        let mut reader = Reader::new(&snapshot);
-        for _ in 0..reader.u16().unwrap() {
-            let id = song_id_at(reader.u16().unwrap()).unwrap();
-            assert!(
-                !id.contains("delay_filter"),
-                "plain Delay wrote child state: {id}"
-            );
-            EncodedValue::read(&mut reader).unwrap();
-        }
-        let code = encode_song_code(&song).unwrap();
-        assert_eq!(
-            encode_song_code(&decode_song_code(&code).unwrap()).unwrap(),
-            code
-        );
-    }
-
-    #[test]
-    fn inserted_dry_child_writes_only_presence_and_round_trips() {
-        let mut song = delay_song();
-        song.controls.modules.clap[1].delay_filter = Some(DelayWetFilter::default());
-        let snapshot = snapshot_payload(&song.controls);
-        let mut reader = Reader::new(&snapshot);
-        let mut child_ids = Vec::new();
-        for _ in 0..reader.u16().unwrap() {
-            let id = song_id_at(reader.u16().unwrap()).unwrap();
-            if id.contains("delay_filter") {
-                child_ids.push(id);
-            }
-            EncodedValue::read(&mut reader).unwrap();
-        }
-        assert_eq!(child_ids, ["clap.slot2.delay_filter_present"]);
-        let code = encode_song_code(&song).unwrap();
-        let reencoded = encode_song_code(&decode_song_code(&code).unwrap()).unwrap();
-        assert_eq!(reencoded, code);
-    }
-
-    #[test]
-    fn child_values_survive_snapshot_entries_before_presence() {
-        let mut song = delay_song();
-        song.controls.modules.clap[1].delay_filter = Some(DelayWetFilter {
-            amount: 0.7,
-            cutoff: 1_250.0,
-            resonance: 0.4,
-            filter_type: 2.0,
-        });
-        let mut snapshot = snapshot_payload(&song.controls);
-        let mut expected = FluidControls::default();
-        read_snapshot(&snapshot, &mut expected).unwrap();
-        let mut reader = Reader::new(&snapshot);
-        let count = reader.u16().unwrap();
-        let mut entries = Vec::new();
-        for _ in 0..count {
-            entries.push((
-                reader.u16().unwrap(),
-                EncodedValue::read(&mut reader).unwrap(),
-            ));
-        }
-        entries.reverse();
-        snapshot = count.to_le_bytes().to_vec();
-        for (id, value) in entries {
-            snapshot.extend_from_slice(&id.to_le_bytes());
-            value.write(&mut snapshot);
-        }
-        let mut controls = FluidControls::default();
-        read_snapshot(&snapshot, &mut controls).unwrap();
-        assert_eq!(
-            controls.modules.clap[1].delay_filter,
-            expected.modules.clap[1].delay_filter
         );
     }
 }
@@ -1848,42 +1761,11 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
         // Slot fields borrow their units from the loaded module. Encode the
         // value and prune baseline through that same semantic view.
         let spec = spec.contextual(controls);
-        let delay_filter_field = parse_module_slot_id(spec.id)
-            .and_then(|(_, _, field)| {
-                matches!(
-                    field,
-                    ModuleSlotField::DelayFilterPresent
-                        | ModuleSlotField::DelayFilterAmount
-                        | ModuleSlotField::DelayFilterCutoff
-                        | ModuleSlotField::DelayFilterResonance
-                        | ModuleSlotField::DelayFilterType
-                )
-                .then_some(field)
-            })
-            .filter(|_| {
-                super::module_slot_row(spec.id, controls).is_some_and(|(slot, _)| {
-                    slot.kind().is_some_and(|kind| kind.family == Family::Delay)
-                })
-            });
-        if let Some(field) = delay_filter_field
-            && field != ModuleSlotField::DelayFilterPresent
-            && super::module_slot_row(spec.id, controls)
-                .is_some_and(|(slot, _)| slot.delay_filter.is_none())
-        {
-            continue;
-        }
         // Both encodes map through the live session's contextual view (spec is
         // already contextual to `controls`, and `contextual` is idempotent) so
         // the baseline prune compares positions on one mapping.
         let value = EncodedValue::encode(&spec, spec.stored_quantized_value(controls), controls);
-        let default = EncodedValue::encode(
-            &spec,
-            delay_filter_field.map_or_else(
-                || spec.stored_quantized_value(&defaults),
-                ModuleSlot::delay_filter_default_value,
-            ),
-            controls,
-        );
+        let default = EncodedValue::encode(&spec, spec.stored_quantized_value(&defaults), controls);
         if value == default {
             continue;
         }
@@ -1910,24 +1792,24 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
     }
 
     // A slot's kind and Delay clock modes define the units of its remaining
-    // fields. Resolve those before child presence, then decode parameters.
-    // Each pass is independent of record order, so a child value can precede
-    // its presence record in a future or hand-authored snapshot.
-    for phase in 0..3 {
+    // fields. Resolve those structural values first regardless of registry or
+    // song-id order, then decode the parameters through the established unit.
+    for structural in [true, false] {
         for &(index, value) in &entries {
             let id = song_id_at(index).unwrap_or_default();
-            let entry_phase = parse_module_slot_id(id).map_or(2, |(_, _, field)| match field {
-                ModuleSlotField::Kind | ModuleSlotField::Clock | ModuleSlotField::RightClock => 0,
-                ModuleSlotField::DelayFilterPresent => 1,
-                _ => 2,
+            let is_structural = parse_module_slot_id(id).is_some_and(|(_, _, field)| {
+                matches!(
+                    field,
+                    ModuleSlotField::Kind | ModuleSlotField::Clock | ModuleSlotField::RightClock
+                )
             });
-            if entry_phase != phase {
+            if is_structural != structural {
                 continue;
             }
             if let Some(spec) = control_at(index) {
                 let spec = spec.contextual(controls);
                 spec.apply_stored_quantized_value(value.resolve(&spec)?, controls);
-            } else {
+            } else if !structural {
                 reject_retired_control(index)?;
             }
         }

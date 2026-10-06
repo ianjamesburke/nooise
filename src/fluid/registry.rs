@@ -1045,13 +1045,7 @@ macro_rules! module_slot_rows {
                 Step::Linear(1.0),
                 Entry::Round,
                 |c| c.modules.$layer[$slot - 1].kind,
-                |c, v| {
-                    let slot = &mut c.modules.$layer[$slot - 1];
-                    slot.kind = v;
-                    if !slot.kind().is_some_and(|kind| kind.family == Family::Delay) {
-                        slot.delay_filter = None;
-                    }
-                },
+                |c, v| c.modules.$layer[$slot - 1].kind = v,
                 |c| module_kind_label(c.modules.$layer[$slot - 1].kind),
             )
             .reset_at(MODULE_EMPTY),
@@ -1184,130 +1178,6 @@ macro_rules! module_slot_rows {
                 },
             )
             .reset_at(DelayClock::Sync.value()),
-            // Delay's optional Filter child is still slot-addressed for
-            // persistence, but only `module_detail_controls` projects it.
-            // Presence is a real stored bit so an inserted, dry Filter
-            // survives a save/load round-trip.
-            ControlSpec::new(
-                concat!($prefix, ".slot", $slot, ".delay_filter_present"),
-                concat!("Slot ", $slot, " Delay Filter"),
-                ControlKind::Discrete,
-                0.0,
-                1.0,
-                Step::Linear(1.0),
-                Entry::Round,
-                |c| {
-                    c.modules.$layer[$slot - 1]
-                        .delay_filter_value(ModuleSlotField::DelayFilterPresent)
-                },
-                |c, v| {
-                    c.modules.$layer[$slot - 1]
-                        .set_delay_filter_value(ModuleSlotField::DelayFilterPresent, v)
-                },
-                |c| {
-                    if c.modules.$layer[$slot - 1].delay_filter.is_some() {
-                        "Filter".to_string()
-                    } else {
-                        "Add Filter".to_string()
-                    }
-                },
-            )
-            .reset_at(0.0),
-            ControlSpec::new(
-                concat!($prefix, ".slot", $slot, ".delay_filter_amount"),
-                concat!("Slot ", $slot, " Delay Filter Amount"),
-                ControlKind::Gain,
-                0.0,
-                1.0,
-                Step::Linear(0.01),
-                Entry::Percent,
-                |c| {
-                    c.modules.$layer[$slot - 1]
-                        .delay_filter_value(ModuleSlotField::DelayFilterAmount)
-                },
-                |c, v| {
-                    c.modules.$layer[$slot - 1]
-                        .set_delay_filter_value(ModuleSlotField::DelayFilterAmount, v)
-                },
-                |c| {
-                    pct(c.modules.$layer[$slot - 1]
-                        .delay_filter_value(ModuleSlotField::DelayFilterAmount))
-                },
-            )
-            .reset_at(0.0),
-            ControlSpec::new(
-                concat!($prefix, ".slot", $slot, ".delay_filter_cutoff"),
-                concat!("Slot ", $slot, " Delay Filter Cutoff"),
-                ControlKind::Continuous,
-                FILTER_CUTOFF_MIN_HZ,
-                FILTER_CUTOFF_MAX_HZ,
-                Step::Linear(1.0),
-                Entry::Free,
-                |c| {
-                    c.modules.$layer[$slot - 1]
-                        .delay_filter_value(ModuleSlotField::DelayFilterCutoff)
-                },
-                |c, v| {
-                    c.modules.$layer[$slot - 1]
-                        .set_delay_filter_value(ModuleSlotField::DelayFilterCutoff, v)
-                },
-                |c| {
-                    format!(
-                        "{:.0} Hz",
-                        c.modules.$layer[$slot - 1]
-                            .delay_filter_value(ModuleSlotField::DelayFilterCutoff)
-                    )
-                },
-            )
-            .taper(Taper::Log2)
-            .reset_at(FILTER_CUTOFF_MAX_HZ),
-            ControlSpec::new(
-                concat!($prefix, ".slot", $slot, ".delay_filter_resonance"),
-                concat!("Slot ", $slot, " Delay Filter Resonance"),
-                ControlKind::Gain,
-                0.0,
-                1.0,
-                Step::Linear(0.01),
-                Entry::Percent,
-                |c| {
-                    c.modules.$layer[$slot - 1]
-                        .delay_filter_value(ModuleSlotField::DelayFilterResonance)
-                },
-                |c, v| {
-                    c.modules.$layer[$slot - 1]
-                        .set_delay_filter_value(ModuleSlotField::DelayFilterResonance, v)
-                },
-                |c| {
-                    pct(c.modules.$layer[$slot - 1]
-                        .delay_filter_value(ModuleSlotField::DelayFilterResonance))
-                },
-            )
-            .reset_at(0.0),
-            ControlSpec::new(
-                concat!($prefix, ".slot", $slot, ".delay_filter_type"),
-                concat!("Slot ", $slot, " Delay Filter Type"),
-                ControlKind::Discrete,
-                0.0,
-                2.0,
-                Step::Linear(1.0),
-                Entry::Round,
-                |c| {
-                    c.modules.$layer[$slot - 1].delay_filter_value(ModuleSlotField::DelayFilterType)
-                },
-                |c, v| {
-                    c.modules.$layer[$slot - 1]
-                        .set_delay_filter_value(ModuleSlotField::DelayFilterType, v)
-                },
-                |c| {
-                    FilterType::from_value(
-                        c.modules.$layer[$slot - 1]
-                            .delay_filter_value(ModuleSlotField::DelayFilterType),
-                    )
-                    .label()
-                    .to_string()
-                },
-            )
-            .reset_at(0.0),
         ]
     };
 }
@@ -1608,11 +1478,6 @@ macro_rules! layer_controls {
                 module_slot_rows!($layer, $prefix, $slot)[5],
                 module_slot_rows!($layer, $prefix, $slot)[6],
                 module_slot_rows!($layer, $prefix, $slot)[7],
-                module_slot_rows!($layer, $prefix, $slot)[8],
-                module_slot_rows!($layer, $prefix, $slot)[9],
-                module_slot_rows!($layer, $prefix, $slot)[10],
-                module_slot_rows!($layer, $prefix, $slot)[11],
-                module_slot_rows!($layer, $prefix, $slot)[12],
             )*
         ]
     };
@@ -2742,17 +2607,6 @@ pub(crate) fn module_detail_controls(
                 }
             }
         }
-        for parameter in delay_filter_parameters() {
-            let is_present = parameter.field == ModuleSlotField::DelayFilterPresent;
-            if !is_present && module_slot.delay_filter.is_none() {
-                continue;
-            }
-            if let Some(spec) = module_slot_spec(tab, slot, parameter.field) {
-                let mut item = spec.item(controls);
-                item.label = parameter.label.to_string();
-                items.push(item);
-            }
-        }
     }
     if kind.family == Family::Reverb {
         for item in &mut items {
@@ -2845,12 +2699,7 @@ pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {
         | ModuleSlotField::Clock
         | ModuleSlotField::RightClock
         | ModuleSlotField::Feedback
-        | ModuleSlotField::Vintage
-        | ModuleSlotField::DelayFilterPresent
-        | ModuleSlotField::DelayFilterAmount
-        | ModuleSlotField::DelayFilterCutoff
-        | ModuleSlotField::DelayFilterResonance
-        | ModuleSlotField::DelayFilterType => false,
+        | ModuleSlotField::Vintage => false,
     }
 }
 
@@ -2858,7 +2707,7 @@ pub(crate) fn module_slot_row_visible(id: &str, c: &FluidControls) -> bool {
 /// order (`module_slot_field_ids_follow_discriminant_order` enforces it).
 /// `module_slot_rows!` spells the ids; `ModuleSlotField::from_id` reads
 /// them back through this table.
-const MODULE_SLOT_FIELD_IDS: [(ModuleSlotField, &str); 13] = [
+const MODULE_SLOT_FIELD_IDS: [(ModuleSlotField, &str); 8] = [
     (ModuleSlotField::Kind, "kind"),
     (ModuleSlotField::Amount, "amount"),
     (ModuleSlotField::Time, "time"),
@@ -2867,14 +2716,6 @@ const MODULE_SLOT_FIELD_IDS: [(ModuleSlotField, &str); 13] = [
     (ModuleSlotField::RightClock, "right_clock"),
     (ModuleSlotField::Feedback, "feedback"),
     (ModuleSlotField::Vintage, "vintage"),
-    (ModuleSlotField::DelayFilterPresent, "delay_filter_present"),
-    (ModuleSlotField::DelayFilterAmount, "delay_filter_amount"),
-    (ModuleSlotField::DelayFilterCutoff, "delay_filter_cutoff"),
-    (
-        ModuleSlotField::DelayFilterResonance,
-        "delay_filter_resonance",
-    ),
-    (ModuleSlotField::DelayFilterType, "delay_filter_type"),
 ];
 
 impl ModuleSlotField {
@@ -3319,18 +3160,6 @@ mod scale_tests {
         let controls = FluidControls::default();
         let mut checked = 0;
         for spec in all_specs() {
-            if parse_module_slot_id(spec.id).is_some_and(|(_, _, field)| {
-                matches!(
-                    field,
-                    ModuleSlotField::DelayFilterPresent
-                        | ModuleSlotField::DelayFilterAmount
-                        | ModuleSlotField::DelayFilterCutoff
-                        | ModuleSlotField::DelayFilterResonance
-                        | ModuleSlotField::DelayFilterType
-                )
-            }) {
-                continue;
-            }
             let contextual = spec.contextual(&controls);
             let current = (contextual.get)(&controls);
             let mut above = controls.clone();

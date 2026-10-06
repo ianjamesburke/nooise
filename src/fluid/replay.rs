@@ -3506,46 +3506,6 @@ fn palette_filter_insertion_focuses_dry_amount_and_reuses_the_slot() {
 }
 
 #[test]
-fn delay_detail_palette_adds_a_wet_only_filter_and_focuses_its_amount() {
-    let mut events = vec![
-        key(0, FixtureKey::Tab, InputPhase::Press),
-        key(0, FixtureKey::Tab, InputPhase::Press),
-        key(0, FixtureKey::Tab, InputPhase::Press),
-    ];
-    events.extend(recipe_keys("delay"));
-    // The Delay palette entry lands on its collapsed Amount row. Open its
-    // ordinary detail, then use the scoped palette to place its child.
-    events.push(key(0, FixtureKey::Enter, InputPhase::Press));
-    events.extend(recipe_keys("filter"));
-
-    let inserted = replay(&events, TerminalCapabilities::full());
-    assert_eq!(
-        inserted.control("bass.slot3.delay_filter_present"),
-        Some(1.0)
-    );
-    assert_eq!(
-        inserted.control("bass.slot3.delay_filter_amount"),
-        Some(0.0)
-    );
-    assert_eq!(
-        inserted.recent_ids.first().copied(),
-        Some("bass.slot3.delay_filter_amount")
-    );
-    assert!(matches!(
-        inserted.model.navigation,
-        Navigation::Module {
-            tab: Tab::Bass,
-            slot: 2,
-            ..
-        }
-    ));
-
-    events.push(key(0, FixtureKey::Right, InputPhase::Press));
-    let raised = replay(&events, TerminalCapabilities::full());
-    assert!(raised.control("bass.slot3.delay_filter_amount").unwrap() > 0.0);
-}
-
-#[test]
 fn jump_filter_on_a_new_layer_opens_cutoff_then_reaches_amount() {
     let mut events = vec![key(0, FixtureKey::Tab, InputPhase::Press)];
     events.extend([

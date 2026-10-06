@@ -126,19 +126,8 @@ impl RecipeTarget {
     pub(crate) fn capture(id: &'static str, snapshot: &LiveSessionSnapshot) -> Option<Self> {
         spec_by_id(id)?;
         let module_topology_revision = if parse_module_slot_id(id).is_some() {
-            let (module, field) = module_slot_row(id, &snapshot.controls)?;
+            let (module, _) = module_slot_row(id, &snapshot.controls)?;
             module.kind()?;
-            if matches!(
-                field,
-                ModuleSlotField::DelayFilterPresent
-                    | ModuleSlotField::DelayFilterAmount
-                    | ModuleSlotField::DelayFilterCutoff
-                    | ModuleSlotField::DelayFilterResonance
-                    | ModuleSlotField::DelayFilterType
-            ) && module.delay_filter.is_none()
-            {
-                return None;
-            }
             Some(snapshot.module_topology_revision)
         } else {
             None

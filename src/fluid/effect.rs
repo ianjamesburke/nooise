@@ -894,48 +894,6 @@ impl EffectExecutor {
         self.execute(LiveEffect::SelectControl { tab, index, id })
     }
 
-    /// Add Delay's one local wet-only Filter, or focus an existing child's
-    /// field. The parent slot must still be Delay at publication time.
-    fn place_delay_wet_filter(
-        &mut self,
-        tab: Tab,
-        slot: usize,
-        field: ModuleSlotField,
-    ) -> Result<EffectAcknowledgement, EffectFailure> {
-        let _snapshot = self.edit_session_checked(
-            module_slot_spec(tab, slot, ModuleSlotField::DelayFilterPresent)
-                .ok_or(EffectFailure::MissingContext("Delay filter slot"))?
-                .id,
-            |snapshot| {
-                snapshot
-                    .controls
-                    .modules
-                    .for_tab(tab)
-                    .and_then(|slots| slots.get(slot))
-                    .and_then(ModuleSlot::kind)
-                    .is_some_and(|kind| kind.family == Family::Delay)
-                    .then_some(())
-                    .ok_or(EffectFailure::MissingContext("Delay slot"))
-            },
-            |snapshot| {
-                let delay = snapshot
-                    .controls
-                    .modules
-                    .for_tab_mut(tab)
-                    .and_then(|slots| slots.get_mut(slot))
-                    .ok_or(EffectFailure::MissingContext("Delay slot"))?;
-                delay.delay_filter.get_or_insert_default();
-                Ok(())
-            },
-        )?;
-        let id = module_slot_spec(tab, slot, field)
-            .ok_or(EffectFailure::MissingContext("Delay filter control"))?
-            .id;
-        let index = spec_index(tab, id).ok_or(EffectFailure::UnknownControl(id))?;
-        self.recent.touch(id);
-        self.execute(LiveEffect::SelectControl { tab, index, id })
-    }
-
     /// Mute is a session overlay, so automation and auto morph keep driving
     /// the authored level while the engine gates the final layer output.
     pub(crate) fn toggle_mute(&mut self, tab: Tab) {
@@ -1148,9 +1106,6 @@ impl EffectExecutor {
                 module_catalog_index(interaction::FILTER_MODULE_ID),
                 Some(ModuleSlotField::Time),
             ),
-            InteractionEffect::PlaceDelayWetFilter { tab, slot, field } => {
-                self.place_delay_wet_filter(tab, slot, field)
-            }
             InteractionEffect::PaletteCommit(edits) => {
                 let edits = staged_edits(edits);
                 if edits.is_empty() {
@@ -1577,10 +1532,6 @@ impl EffectExecutor {
                     },
                     clipboard,
                 )
-            }
-            InteractionEffect::PlaceDelayWetFilter { tab, slot, field } => {
-                self.edit_navigation_automation(AutomationState::close_editor);
-                self.place_delay_wet_filter(tab, slot, field)
             }
             other => self.execute_interaction_with_clipboard(
                 other,

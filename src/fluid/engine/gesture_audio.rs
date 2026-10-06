@@ -47,12 +47,7 @@ impl GestureFx {
             lift: SlotFx::Filter(StereoFilter::default()),
             bloom: SlotFx::Reverb(Freeverb::new(sample_rate)),
             bloom_send_filter: StereoFilter::default(),
-            echo: SlotFx::Delay {
-                line: StereoDelay::new(max_delay_samples),
-                wet_filter: None,
-                wet_filter_params: DelayWetFilter::default(),
-                retiring_wet_filter: None,
-            },
+            echo: SlotFx::Delay(StereoDelay::new(max_delay_samples)),
             submerge_active: false,
             lift_active: false,
             bloom_has_history: false,
@@ -227,8 +222,8 @@ impl GestureFx {
     }
 
     fn clear_echo(&mut self) {
-        if let SlotFx::Delay { line, .. } = &mut self.echo
-            && line.clear_chunk(
+        if let SlotFx::Delay(delay) = &mut self.echo
+            && delay.clear_chunk(
                 &mut self.echo_clear_cursor,
                 PROCESSOR_CLEAR_SAMPLES_PER_FRAME,
             )

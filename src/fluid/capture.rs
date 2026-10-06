@@ -257,15 +257,10 @@ impl CaptureClip {
 }
 
 pub(crate) fn capture_eligible(spec: &ControlSpec) -> bool {
-    !parse_module_slot_id(spec.id)
-        .is_some_and(|(_, _, field)| field == ModuleSlotField::DelayFilterPresent)
-        && matches!(
-            spec.kind,
-            ControlKind::Gain
-                | ControlKind::Continuous
-                | ControlKind::Timing
-                | ControlKind::Discrete
-        )
+    matches!(
+        spec.kind,
+        ControlKind::Gain | ControlKind::Continuous | ControlKind::Timing | ControlKind::Discrete
+    )
 }
 
 pub(crate) fn capture_ratio(spec: &ControlSpec, value: f32, controls: &FluidControls) -> f32 {

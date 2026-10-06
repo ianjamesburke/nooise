@@ -55,12 +55,6 @@ pub(crate) enum ModuleSlotField {
     RightClock,
     Feedback,
     Vintage,
-    /// Presence bit for Delay's one bounded wet-only Filter child.
-    DelayFilterPresent,
-    DelayFilterAmount,
-    DelayFilterCutoff,
-    DelayFilterResonance,
-    DelayFilterType,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,41 +162,6 @@ const FILTER_PARAMETERS: &[EffectParameter] = &[
         search_name: "Type",
     },
 ];
-
-/// The fixed child surface projected within a Delay detail. The first row is
-/// the persisted presence bit; the remaining rows belong only to its wet
-/// signal and never become another layer-level Filter.
-const DELAY_FILTER_PARAMETERS: &[EffectParameter] = &[
-    EffectParameter {
-        field: ModuleSlotField::DelayFilterPresent,
-        label: "Filter",
-        search_name: "Add Filter",
-    },
-    EffectParameter {
-        field: ModuleSlotField::DelayFilterAmount,
-        label: "Filter Amount",
-        search_name: "Filter Amount",
-    },
-    EffectParameter {
-        field: ModuleSlotField::DelayFilterCutoff,
-        label: "Filter Cutoff",
-        search_name: "Filter Cutoff",
-    },
-    EffectParameter {
-        field: ModuleSlotField::DelayFilterResonance,
-        label: "Filter Resonance",
-        search_name: "Filter Resonance",
-    },
-    EffectParameter {
-        field: ModuleSlotField::DelayFilterType,
-        label: "Filter Type",
-        search_name: "Filter Type",
-    },
-];
-
-pub(crate) fn delay_filter_parameters() -> &'static [EffectParameter] {
-    DELAY_FILTER_PARAMETERS
-}
 
 const SINGLE_AMOUNT_PARAMETERS: &[EffectParameter] = &[EffectParameter {
     field: ModuleSlotField::Amount,
@@ -439,27 +398,6 @@ impl DelayClock {
 pub(crate) const FILTER_CUTOFF_MIN_HZ: f32 = 20.0;
 pub(crate) const FILTER_CUTOFF_MAX_HZ: f32 = 20_000.0;
 
-/// One optional Filter owned by a Delay slot. This is deliberately not a
-/// second module chain: its only scope is the Delay's delayed wet signal.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct DelayWetFilter {
-    pub(crate) amount: f32,
-    pub(crate) cutoff: f32,
-    pub(crate) resonance: f32,
-    pub(crate) filter_type: f32,
-}
-
-impl Default for DelayWetFilter {
-    fn default() -> Self {
-        Self {
-            amount: 0.0,
-            cutoff: FILTER_CUTOFF_MAX_HZ,
-            resonance: 0.0,
-            filter_type: 0.0,
-        }
-    }
-}
-
 /// Where Perc, Bass, and Kick's factory Filters sit. Their default sound was
 /// voiced there, and a saved song that never touched one carries no cutoff
 /// at all, so moving this would re-voice every such song.
@@ -542,9 +480,6 @@ pub(crate) struct ModuleSlot {
     pub(crate) right_clock: f32,
     pub(crate) feedback: f32,
     pub(crate) vintage: f32,
-    /// Present only for a Delay's bounded wet-only Filter child. `None` keeps
-    /// old and plain Delay song-code snapshots byte-identical.
-    pub(crate) delay_filter: Option<DelayWetFilter>,
 }
 
 impl ModuleSlot {
@@ -554,66 +489,6 @@ impl ModuleSlot {
 
     pub(crate) fn kind(&self) -> Option<&'static ModuleKind> {
         module_kind_at(self.kind)
-    }
-
-    pub(crate) fn delay_filter_value(&self, field: ModuleSlotField) -> f32 {
-        if !self.kind().is_some_and(|kind| kind.family == Family::Delay) {
-            return 0.0;
-        }
-        let filter = self.delay_filter.unwrap_or_default();
-        match field {
-            ModuleSlotField::DelayFilterPresent => {
-                if self.delay_filter.is_some() {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
-            ModuleSlotField::DelayFilterAmount => filter.amount,
-            ModuleSlotField::DelayFilterCutoff => filter.cutoff,
-            ModuleSlotField::DelayFilterResonance => filter.resonance,
-            ModuleSlotField::DelayFilterType => filter.filter_type,
-            _ => 0.0,
-        }
-    }
-
-    pub(crate) fn delay_filter_default_value(field: ModuleSlotField) -> f32 {
-        let filter = DelayWetFilter::default();
-        match field {
-            ModuleSlotField::DelayFilterAmount => filter.amount,
-            ModuleSlotField::DelayFilterCutoff => filter.cutoff,
-            ModuleSlotField::DelayFilterResonance => filter.resonance,
-            ModuleSlotField::DelayFilterType => filter.filter_type,
-            _ => 0.0,
-        }
-    }
-
-    pub(crate) fn set_delay_filter_value(&mut self, field: ModuleSlotField, value: f32) {
-        if !self.kind().is_some_and(|kind| kind.family == Family::Delay) {
-            return;
-        }
-        match field {
-            ModuleSlotField::DelayFilterPresent => {
-                if value >= 0.5 {
-                    self.delay_filter.get_or_insert_default();
-                } else {
-                    self.delay_filter = None;
-                }
-            }
-            ModuleSlotField::DelayFilterAmount => {
-                self.delay_filter.get_or_insert_default().amount = value;
-            }
-            ModuleSlotField::DelayFilterCutoff => {
-                self.delay_filter.get_or_insert_default().cutoff = value;
-            }
-            ModuleSlotField::DelayFilterResonance => {
-                self.delay_filter.get_or_insert_default().resonance = value;
-            }
-            ModuleSlotField::DelayFilterType => {
-                self.delay_filter.get_or_insert_default().filter_type = value;
-            }
-            _ => {}
-        }
     }
 }
 
@@ -866,17 +741,6 @@ mod tests {
         assert!(slot.is_empty());
         assert_eq!(slot.kind, MODULE_EMPTY);
         assert_eq!(module_kind_label(slot.kind), "empty");
-    }
-
-    #[test]
-    fn delay_filter_values_materialize_only_on_a_delay_parent() {
-        let mut slot = preset_slot("delay", 0.5);
-        slot.set_delay_filter_value(ModuleSlotField::DelayFilterCutoff, 1_200.0);
-        assert_eq!(slot.delay_filter.unwrap().cutoff, 1_200.0);
-
-        let mut not_delay = ModuleSlot::default();
-        not_delay.set_delay_filter_value(ModuleSlotField::DelayFilterCutoff, 1_200.0);
-        assert!(not_delay.delay_filter.is_none());
     }
 
     #[test]
