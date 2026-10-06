@@ -1853,7 +1853,7 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
         if route.shape == LfoShape::Ramp {
             out.extend_from_slice(&bipolar_to_u16(route.ramp.curve).to_le_bytes());
             out.extend_from_slice(&unit_to_u16(route.ramp.skew).to_le_bytes());
-            out.extend_from_slice(&unit_to_u16(route.ramp.anchor).to_le_bytes());
+            out.extend_from_slice(&bipolar_to_u16(route.ramp.anchor).to_le_bytes());
         }
         if route.shape == LfoShape::Steps {
             out.push(route.step_count);
@@ -1905,7 +1905,7 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
             Some(RampParams {
                 curve: u16_to_bipolar(reader.u16()?),
                 skew: u16_to_unit(reader.u16()?),
-                anchor: u16_to_unit(reader.u16()?),
+                anchor: u16_to_bipolar(reader.u16()?),
             })
         } else {
             None

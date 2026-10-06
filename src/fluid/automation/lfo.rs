@@ -137,8 +137,9 @@ pub(crate) struct RampParams {
     /// 0..1: fraction of the cycle spent rising. 1 is a ramp up, 0 a ramp
     /// down, 0.5 a triangle.
     pub(crate) skew: f32,
-    /// 0..1: where the ramp's travel sits against the base value. 0 lifts it
-    /// from the base up, 1 ducks it from below up to the base, 0.5 centres it.
+    /// -1..1: where the ramp's travel sits against the base value. 0 centres
+    /// it, +1 lifts it from the base upward, -1 ducks it from below up to the
+    /// base.
     pub(crate) anchor: f32,
 }
 
@@ -146,7 +147,7 @@ impl RampParams {
     pub(crate) const DEFAULT: Self = Self {
         curve: 0.0,
         skew: 1.0,
-        anchor: 0.5,
+        anchor: 0.0,
     };
 
     /// Unipolar 0..1 travel at a phase in 0..1, before anchoring.
@@ -161,9 +162,11 @@ impl RampParams {
         progress.powf(power)
     }
 
-    /// Value in `-anchor..1-anchor` at a phase in 0..1, with the wrap eased.
+    /// Value in `(anchor - 1) / 2 .. (anchor + 1) / 2` at a phase in 0..1,
+    /// with the wrap eased.
     fn wave(self, phase: f32) -> f32 {
-        ease_ramp_wrap(phase, self.level(phase), self.level(0.0)) - self.anchor.clamp(0.0, 1.0)
+        ease_ramp_wrap(phase, self.level(phase), self.level(0.0)) - 0.5
+            + 0.5 * self.anchor.clamp(-1.0, 1.0)
     }
 }
 
@@ -337,12 +340,12 @@ const LFO_FIELD_SPECS: &[FieldSpec<LfoField>] = &[
     FieldSpec {
         field: LfoField::Anchor,
         label: "anchor",
-        min: 0.0,
+        min: -1.0,
         max: 1.0,
         step: RAMP_STEP,
-        scale: DialScale::linear(0.0, 1.0),
+        scale: DialScale::linear(-1.0, 1.0),
         stepping: Stepping::Linear,
-        entry: Entry::Percent,
+        entry: Entry::Free,
         reset: RampParams::DEFAULT.anchor,
     },
 ];
@@ -805,7 +808,7 @@ impl LfoRoute {
             LfoField::Offset => beats2(self.phase_offset_beats),
             LfoField::Curve => format!("{:+.0}%", self.ramp.curve * 100.0),
             LfoField::Skew => pct(self.ramp.skew),
-            LfoField::Anchor => pct(self.ramp.anchor),
+            LfoField::Anchor => format!("{:+.0}%", self.ramp.anchor * 100.0),
         }
     }
 

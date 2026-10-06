@@ -68,7 +68,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             depth: 0.5,
             seed: 0,
             ramp: RampParams {
-                anchor: 1.0,
+                anchor: -1.0,
                 ..RampParams::DEFAULT
             },
         },
@@ -110,7 +110,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             depth: 0.25,
             seed: 0,
             ramp: RampParams {
-                anchor: 0.0,
+                anchor: 1.0,
                 ..RampParams::DEFAULT
             },
         },

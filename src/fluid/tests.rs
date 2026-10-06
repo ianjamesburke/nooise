@@ -6818,7 +6818,7 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
 #[test]
 fn lfo_shapes_match_reference_curves() {
     // cycle_beats == 1.0 means beat value equals phase in 0..1.
-    // A ramp's travel is 0..1 placed by anchor; the default anchor centres it.
+    // A ramp's travel is 0..1 placed by anchor; the default anchor (0) centres it.
     let up = lfo_shape(LfoShape::Ramp);
     assert_near(up.wave_at(0.0), -0.5);
     assert_near(up.wave_at(0.5), 0.0);
@@ -6845,10 +6845,10 @@ fn lfo_shapes_match_reference_curves() {
 #[test]
 fn ramp_anchor_places_the_travel_against_the_base() {
     let mut ramp = lfo_shape(LfoShape::Ramp);
-    ramp.ramp.anchor = 0.0;
+    ramp.ramp.anchor = 1.0;
     assert_near(ramp.wave_at(0.0), 0.0);
     assert_near(ramp.wave_at(0.5), 0.5);
-    ramp.ramp.anchor = 1.0;
+    ramp.ramp.anchor = -1.0;
     assert_near(ramp.wave_at(0.0), -1.0);
     assert_near(ramp.wave_at(0.5), -0.5);
 }
@@ -6856,7 +6856,7 @@ fn ramp_anchor_places_the_travel_against_the_base() {
 #[test]
 fn ramp_curve_bends_both_sides_of_the_cycle() {
     let mut ramp = lfo_shape(LfoShape::Ramp);
-    ramp.ramp.anchor = 0.0;
+    ramp.ramp.anchor = 1.0;
     ramp.ramp.curve = -1.0;
     assert_near(ramp.wave_at(0.5), 0.5_f32.powf(0.25));
     ramp.ramp.curve = 1.0;
@@ -7499,7 +7499,7 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                         shape,
                         seed,
                         ramp: RampParams {
-                            anchor: 0.0,
+                            anchor: 1.0,
                             ..RampParams::DEFAULT
                         },
                         ..LfoRoute::default()
@@ -7514,7 +7514,7 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                         cycle_beats: 1.0,
                         shape: LfoShape::Ramp,
                         ramp: RampParams {
-                            anchor: 1.0,
+                            anchor: -1.0,
                             ..RampParams::DEFAULT
                         },
                         ..LfoRoute::default()
@@ -7740,7 +7740,7 @@ fn song_code_round_trips_ramp_sub_knobs() {
             ramp: RampParams {
                 curve: -0.5,
                 skew: 0.25,
-                anchor: 1.0,
+                anchor: -1.0,
             },
             ..LfoRoute::default()
         },
@@ -7754,7 +7754,7 @@ fn song_code_round_trips_ramp_sub_knobs() {
     let ramp = decoded.automation.route(address).unwrap().ramp;
     assert!((ramp.curve + 0.5).abs() < 0.001);
     assert!((ramp.skew - 0.25).abs() < 0.001);
-    assert_eq!(ramp.anchor, 1.0);
+    assert_eq!(ramp.anchor, -1.0);
 }
 
 #[test]
