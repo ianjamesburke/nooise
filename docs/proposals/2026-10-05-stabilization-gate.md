@@ -1,23 +1,24 @@
 # Stabilization integration gate — October 5, 2026
 
-Status: the worktree includes the later slices through `56a67b9`, and its combined automated gate passes. Ian's musical and live terminal audition is **pending**. Root `main` remains the October 3 reference at `f28f95d`. This is a listening handoff, not release approval.
+Status: the worktree includes the later slices through `2956aca`, and its combined automated gate passes. Ian's musical and live terminal audition is **pending**. Root `main` remains the October 3 reference at `f28f95d`. This is a listening handoff, not release approval.
 
 ## Later integrated slices
 
 - `2b25494` adds Perc Attack: a saved 0–1000 ms Attack row before Decay. It starts at 0 ms, preserves the prior onset at that setting, and rises into the existing decay when raised.
 - `0e4627d` and formatting follow-up `c3ee76e` make a Filter's collapsed browsing row control Cutoff. A newly added Filter still opens on dry Amount so its first right arrow makes it audible.
 - `5d0b0bf` adds layer-level Drunken. A layer's Drunken slot overrides Master Drunken, including when its local Amount is 0%; the slot and shared wave phase save in the song code.
-- `56a67b9` adds one optional Filter child inside a Delay detail. It processes only Delay's wet signal, begins fully wet, stays on a selected Filter/Cutoff row after insertion, and opens Amount, Resonance, and Type with Enter. It persists when added and fades its colour out when removed while the Delay tail continues.
+- `56a67b9` adds one optional Filter child inside a Delay detail. It processes only Delay's wet signal, persists when added, and fades its colour out when removed while the Delay tail continues.
+- `9858ecb`, integrated by `2956aca`, corrects the child interaction: it begins fully wet, stays on a selected Filter/Cutoff row in Delay detail after insertion or scoped `/filter`, and opens Cutoff, Amount, Resonance, and Type only with Enter.
 
 ## Combined gate progress
 
 | Check | Result |
 | --- | --- |
-| `RUSTC_WRAPPER= cargo test --locked` | Pass on `56a67b9`: 876 passed, 6 ignored, 0 failed. |
-| `cargo fmt --check`; `git diff --check` | Pass on `56a67b9`. |
-| `RUSTC_WRAPPER= cargo build --locked`; `RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings` | Pass on `56a67b9`. |
+| `RUSTC_WRAPPER= cargo test --locked --quiet` | Pass on `2956aca`: 876 passed, 6 ignored, 0 failed. |
+| `cargo fmt --check`; `git diff --check`; clean status | Pass on `2956aca`. |
+| `RUSTC_WRAPPER= cargo build --locked`; `RUSTC_WRAPPER= cargo clippy --all-targets --locked -- -D warnings` | Pass on `9858ecb` before integration; `2956aca` adds no code beyond that verified fix. |
 | Seeded audio | Two combined seed-42 2-second WAVs are byte-identical and match the October 3 baseline: SHA-256 `a8995df35255429d324c623f6cc4f69eb98fdd913a7961ccbfeb5b83c9919830`; 44.1 kHz, 88,200 frames. |
-| Production keyboard replay, song-code, and OSC | Covered by the passing full suite. No new standalone replay, song-code, OSC, manual keyboard, terminal, or OSC-consumer run was made for these later slices. |
+| Production keyboard replay, song-code, and OSC | Covered by the passing `2956aca` full suite. No new standalone replay, song-code, OSC, manual keyboard, terminal, or OSC-consumer run was made for these later slices. |
 
 The full suite is automated evidence. It does not replace the pending musical and live terminal audition.
 
