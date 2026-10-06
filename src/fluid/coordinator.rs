@@ -162,13 +162,39 @@ pub(crate) fn coordinate_production_event(
         };
     }
     if action.intent == interaction::Intent::TouchSelected
-        && let interaction::Navigation::Module { tab, slot, .. } = model.navigation
+        && let interaction::Navigation::Module {
+            tab,
+            slot,
+            drill: interaction::ModuleDrill::None,
+            ..
+        } = model.navigation
         && let Some(id) = frame.selected_control
         && parse_module_slot_id(id).is_some_and(|(_, selected_slot, field)| {
             selected_slot == slot && field == ModuleSlotField::DelayFilterPresent
         })
     {
         action.intent = interaction::Intent::AddDelayWetFilter { tab, slot };
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && let interaction::Navigation::Module {
+            tab,
+            slot,
+            drill: interaction::ModuleDrill::None,
+            ..
+        } = model.navigation
+        && let Some(id) = frame.selected_control
+        && parse_module_slot_id(id).is_some_and(|(_, selected_slot, field)| {
+            selected_slot == slot && field == ModuleSlotField::DelayFilterCutoff
+        })
+        && frame
+            .session
+            .controls
+            .modules
+            .for_tab(tab)
+            .and_then(|slots| slots.get(slot))
+            .is_some_and(|module| module.delay_filter.is_some())
+    {
+        action.intent = interaction::Intent::EnterDelayFilterDetail { tab, slot };
     }
     // On the Lead page Enter on the Steps row opens the lane; anywhere else
     // that is not a module drill it opens play mode, since the page is the
@@ -347,6 +373,7 @@ pub(crate) fn coordinate_production_action(
                         catalog_index,
                         selected,
                         return_to,
+                        drill: interaction::ModuleDrill::None,
                     };
                     model.mode = interaction::InteractionMode::Browsing;
                     effect_records.push(ProductionEffectRecord { effect, result });
@@ -374,11 +401,15 @@ pub(crate) fn coordinate_production_action(
                                 | ModuleSlotField::DelayFilterResonance
                                 | ModuleSlotField::DelayFilterType
                         ) {
-                            *selected =
-                                module_detail_controls(*tab, *slot, &current_session.controls)
-                                    .iter()
-                                    .position(|item| item.id == spec.id)
-                                    .unwrap_or(*selected);
+                            *selected = module_detail_controls(
+                                *tab,
+                                *slot,
+                                &current_session.controls,
+                                false,
+                            )
+                            .iter()
+                            .position(|item| item.id == spec.id)
+                            .unwrap_or(*selected);
                         } else if let Some(kind) = current_session
                             .controls
                             .modules

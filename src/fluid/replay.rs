@@ -3506,7 +3506,7 @@ fn palette_filter_insertion_focuses_dry_amount_and_reuses_the_slot() {
 }
 
 #[test]
-fn delay_detail_palette_adds_a_wet_only_filter_and_focuses_its_amount() {
+fn delay_detail_filter_stays_on_cutoff_and_enters_its_supporting_controls() {
     let mut events = vec![
         key(0, FixtureKey::Tab, InputPhase::Press),
         key(0, FixtureKey::Tab, InputPhase::Press),
@@ -3525,24 +3525,76 @@ fn delay_detail_palette_adds_a_wet_only_filter_and_focuses_its_amount() {
     );
     assert_eq!(
         inserted.control("bass.slot3.delay_filter_amount"),
-        Some(0.0)
+        Some(1.0)
     );
     assert_eq!(
         inserted.recent_ids.first().copied(),
-        Some("bass.slot3.delay_filter_amount")
+        Some("bass.slot3.delay_filter_cutoff")
     );
     assert!(matches!(
         inserted.model.navigation,
         Navigation::Module {
             tab: Tab::Bass,
             slot: 2,
+            drill: interaction::ModuleDrill::None,
             ..
         }
     ));
+    assert!(
+        inserted
+            .frames
+            .iter()
+            .any(|frame| frame.text.contains("Filter ›") && frame.text.contains("20000 Hz"))
+    );
 
+    events.push(key(0, FixtureKey::Left, InputPhase::Press));
+    let swept = replay(&events, TerminalCapabilities::full());
+    let cutoff = swept.control("bass.slot3.delay_filter_cutoff").unwrap();
+    assert!(cutoff < FILTER_CUTOFF_MAX_HZ);
+    assert_eq!(swept.control("bass.slot3.delay_filter_amount"), Some(1.0));
     events.push(key(0, FixtureKey::Right, InputPhase::Press));
-    let raised = replay(&events, TerminalCapabilities::full());
-    assert!(raised.control("bass.slot3.delay_filter_amount").unwrap() > 0.0);
+    let restored = replay(&events, TerminalCapabilities::full());
+    assert!(
+        restored.control("bass.slot3.delay_filter_cutoff").unwrap() > cutoff,
+        "the parent Filter row edits Cutoff"
+    );
+    assert_eq!(
+        restored.control("bass.slot3.delay_filter_amount"),
+        Some(1.0)
+    );
+
+    events.push(key(0, FixtureKey::Enter, InputPhase::Press));
+    let opened = replay(&events, TerminalCapabilities::full());
+    assert!(matches!(
+        opened.model.navigation,
+        Navigation::Module {
+            drill: interaction::ModuleDrill::DelayFilter { .. },
+            ..
+        }
+    ));
+    assert!(opened.frames.iter().any(|frame| {
+        frame.text.contains("Cutoff")
+            && frame.text.contains("Amount")
+            && frame.text.contains("Resonance")
+            && frame.text.contains("Type")
+    }));
+
+    events.push(key(0, FixtureKey::Down, InputPhase::Press));
+    events.push(key(0, FixtureKey::Left, InputPhase::Press));
+    let adjusted = replay(&events, TerminalCapabilities::full());
+    assert!(adjusted.control("bass.slot3.delay_filter_amount").unwrap() < 1.0);
+
+    events.push(key(0, FixtureKey::Escape, InputPhase::Press));
+    let returned = replay(&events, TerminalCapabilities::full());
+    assert!(matches!(
+        returned.model.navigation,
+        Navigation::Module {
+            tab: Tab::Bass,
+            slot: 2,
+            drill: interaction::ModuleDrill::None,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -3666,6 +3718,7 @@ fn scoped_palette_recipe_targets_the_original_module_control() {
             catalog_index: module_catalog_index("filter"),
             selected: 1,
             return_to: 0,
+            drill: interaction::ModuleDrill::None,
         },
         ..InteractionModel::default()
     };
@@ -3723,6 +3776,7 @@ fn palette_recipe_refuses_delete_and_readd_of_the_same_module() {
                 catalog_index: module_catalog_index("filter"),
                 selected: 0,
                 return_to: 0,
+                drill: interaction::ModuleDrill::None,
             },
             ..InteractionModel::default()
         });

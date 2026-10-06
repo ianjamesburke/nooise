@@ -3808,6 +3808,22 @@ fn apply_reset_moves_selected_control_to_floor() {
         .apply_reset(&mut controls);
     assert_close(controls.modules.master[0].amount, 0.0);
 
+    controls.modules.master[0] = preset_slot("drive", 0.8);
+    spec_by_id("master.slot1.kind")
+        .unwrap()
+        .apply_reset(&mut controls);
+    assert!(controls.modules.master[0].is_empty());
+
+    controls.modules.clap[1] = preset_slot("delay", 0.5);
+    controls.modules.clap[1].delay_filter = Some(DelayWetFilter {
+        amount: 0.35,
+        ..DelayWetFilter::default()
+    });
+    spec_by_id("clap.slot2.delay_filter_amount")
+        .unwrap()
+        .apply_reset(&mut controls);
+    assert_close(controls.modules.clap[1].delay_filter.unwrap().amount, 1.0);
+
     controls.master.bpm = 120.0;
     apply_reset(Tab::Master, 8, &mut controls);
     assert_close(controls.master.bpm, 30.0);
@@ -3981,7 +3997,7 @@ fn drunken_drill_exposes_percent_amount_and_trigger_pace() {
     assert_eq!(spec.item(&controls).display, "37%");
     let pace = spec_by_id("master.slot3.time").unwrap();
     assert_eq!(controls.modules.master[2].time, 7.0);
-    let drill = module_detail_controls(Tab::Master, 2, &controls);
+    let drill = module_detail_controls(Tab::Master, 2, &controls, false);
     assert_eq!(
         drill
             .iter()
@@ -4215,29 +4231,39 @@ fn effect_families_project_complete_coherent_detail_rows() {
     controls.modules.clap[3] = preset_slot("compression", 0.5);
     controls.modules.clap[4] = preset_slot("filter", 0.5);
 
-    let labels = |slot| {
-        module_detail_controls(Tab::Clap, slot, &controls)
+    let labels = |controls: &FluidControls, slot| {
+        module_detail_controls(Tab::Clap, slot, controls, false)
             .into_iter()
             .map(|item| item.label)
             .collect::<Vec<_>>()
     };
     assert_eq!(
-        labels(1),
+        labels(&controls, 1),
         [
             "Amount",
             "Left Time",
             "Right Time",
             "Feedback",
             "Vintage",
-            "Filter",
+            "Add Filter",
         ]
     );
-    assert_eq!(labels(2), ["Amount", "Size", "Damping"]);
+    controls.modules.clap[1].delay_filter = Some(DelayWetFilter::default());
+    assert_eq!(labels(&controls, 1).last(), Some(&"Filter ›".to_string()));
+    let detail_labels = module_detail_controls(Tab::Clap, 1, &controls, true)
+        .into_iter()
+        .map(|item| item.label)
+        .collect::<Vec<_>>();
+    assert_eq!(detail_labels, ["Cutoff", "Amount", "Resonance", "Type"]);
+    assert_eq!(labels(&controls, 2), ["Amount", "Size", "Damping"]);
     assert_eq!(
-        labels(3),
+        labels(&controls, 3),
         ["Amount", "Threshold", "Ratio", "Release", "Makeup"]
     );
-    assert_eq!(labels(4), ["Cutoff", "Amount", "Resonance", "Type"]);
+    assert_eq!(
+        labels(&controls, 4),
+        ["Cutoff", "Amount", "Resonance", "Type"]
+    );
 }
 
 #[test]
@@ -4288,7 +4314,7 @@ fn master_compression_uses_the_shared_module_detail_shape() {
     assert!(root_labels.iter().any(|label| label == "Compression ›"));
     assert!(!root_labels.iter().any(|label| label == "Comp Release"));
 
-    let labels: Vec<_> = module_detail_controls(Tab::Master, 1, &controls)
+    let labels: Vec<_> = module_detail_controls(Tab::Master, 1, &controls, false)
         .into_iter()
         .map(|item| item.label)
         .collect();

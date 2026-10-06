@@ -169,9 +169,9 @@ const FILTER_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
-/// The fixed child surface projected within a Delay detail. The first row is
-/// the persisted presence bit; the remaining rows belong only to its wet
-/// signal and never become another layer-level Filter.
+/// The persisted child fields exposed to Delay's scoped palette. The Delay
+/// page projects either Add Filter or the child's collapsed Cutoff row; its
+/// supporting controls live in the explicit Filter drill.
 const DELAY_FILTER_PARAMETERS: &[EffectParameter] = &[
     EffectParameter {
         field: ModuleSlotField::DelayFilterPresent,
@@ -179,29 +179,33 @@ const DELAY_FILTER_PARAMETERS: &[EffectParameter] = &[
         search_name: "Add Filter",
     },
     EffectParameter {
-        field: ModuleSlotField::DelayFilterAmount,
-        label: "Filter Amount",
-        search_name: "Filter Amount",
-    },
-    EffectParameter {
         field: ModuleSlotField::DelayFilterCutoff,
-        label: "Filter Cutoff",
+        label: "Cutoff",
         search_name: "Filter Cutoff",
     },
     EffectParameter {
+        field: ModuleSlotField::DelayFilterAmount,
+        label: "Amount",
+        search_name: "Filter Amount",
+    },
+    EffectParameter {
         field: ModuleSlotField::DelayFilterResonance,
-        label: "Filter Resonance",
+        label: "Resonance",
         search_name: "Filter Resonance",
     },
     EffectParameter {
         field: ModuleSlotField::DelayFilterType,
-        label: "Filter Type",
+        label: "Type",
         search_name: "Filter Type",
     },
 ];
 
 pub(crate) fn delay_filter_parameters() -> &'static [EffectParameter] {
     DELAY_FILTER_PARAMETERS
+}
+
+pub(crate) fn delay_filter_detail_parameters() -> &'static [EffectParameter] {
+    &DELAY_FILTER_PARAMETERS[1..]
 }
 
 const SINGLE_AMOUNT_PARAMETERS: &[EffectParameter] = &[EffectParameter {
@@ -452,7 +456,7 @@ pub(crate) struct DelayWetFilter {
 impl Default for DelayWetFilter {
     fn default() -> Self {
         Self {
-            amount: 0.0,
+            amount: 1.0,
             cutoff: FILTER_CUTOFF_MAX_HZ,
             resonance: 0.0,
             filter_type: 0.0,
