@@ -1186,8 +1186,8 @@ macro_rules! module_slot_rows {
             .reset_at(DelayClock::Sync.value()),
             // Delay's optional Filter child is still slot-addressed for
             // persistence, but only `module_detail_controls` projects it.
-            // Presence is a real stored bit so an inserted child Filter
-            // survives a save/load round-trip even at its defaults.
+            // Presence is a real stored bit so an inserted, dry Filter
+            // survives a save/load round-trip.
             ControlSpec::new(
                 concat!($prefix, ".slot", $slot, ".delay_filter_present"),
                 concat!("Slot ", $slot, " Delay Filter"),
@@ -1234,7 +1234,7 @@ macro_rules! module_slot_rows {
                         .delay_filter_value(ModuleSlotField::DelayFilterAmount))
                 },
             )
-            .reset_at(1.0),
+            .reset_at(0.0),
             ControlSpec::new(
                 concat!($prefix, ".slot", $slot, ".delay_filter_cutoff"),
                 concat!("Slot ", $slot, " Delay Filter Cutoff"),
@@ -2686,7 +2686,6 @@ pub(crate) fn module_detail_controls(
     tab: Tab,
     slot: usize,
     controls: &FluidControls,
-    delay_filter_detail: bool,
 ) -> Vec<ControlItem> {
     let Some(module_slot) = controls
         .modules
@@ -2698,77 +2697,59 @@ pub(crate) fn module_detail_controls(
     let Some(kind) = module_slot.kind() else {
         return Vec::new();
     };
-    let mut items = if kind.family == Family::Delay && delay_filter_detail {
-        Vec::new()
-    } else {
-        kind.parameters()
-            .iter()
-            .filter_map(|parameter| {
-                module_slot_spec(tab, slot, parameter.field).map(|spec| {
-                    let mut item = spec.item(controls);
-                    item.label = parameter.label.to_string();
-                    item
-                })
+    let mut items = kind
+        .parameters()
+        .iter()
+        .filter_map(|parameter| {
+            module_slot_spec(tab, slot, parameter.field).map(|spec| {
+                let mut item = spec.item(controls);
+                item.label = parameter.label.to_string();
+                item
             })
-            .collect::<Vec<_>>()
-    };
+        })
+        .collect::<Vec<_>>();
     let field_of = |id: &str| parse_module_slot_id(id).map(|(_, _, field)| field);
     if kind.family == Family::Delay {
-        if !delay_filter_detail {
-            for item in &mut items {
-                let field = field_of(item.id);
-                if field == Some(ModuleSlotField::Feedback) {
-                    item.max = 0.95;
-                }
-                if matches!(
-                    field,
-                    Some(ModuleSlotField::Time | ModuleSlotField::RightTime)
-                ) {
-                    let clock = if field == Some(ModuleSlotField::RightTime) {
-                        DelayClock::from_value(module_slot.right_clock)
-                    } else {
-                        DelayClock::from_value(module_slot.clock)
-                    };
-                    match clock {
-                        DelayClock::Sync => {
-                            item.kind = ControlKind::Timing;
-                            item.min = DELAY_SYNC_MIN_BEATS;
-                            item.max = DELAY_SYNC_MAX_BEATS;
-                            item.step = Step::BeatGrid;
-                            item.display = beats2(item.value);
-                        }
-                        DelayClock::Free => {
-                            item.kind = ControlKind::Timing;
-                            item.min = DELAY_FREE_MIN_MS;
-                            item.max = DELAY_FREE_MAX_MS;
-                            item.step = Step::Linear(10.0);
-                            item.display = secs(item.value / 1000.0);
-                        }
+        for item in &mut items {
+            let field = field_of(item.id);
+            if field == Some(ModuleSlotField::Feedback) {
+                item.max = 0.95;
+            }
+            if matches!(
+                field,
+                Some(ModuleSlotField::Time | ModuleSlotField::RightTime)
+            ) {
+                let clock = if field == Some(ModuleSlotField::RightTime) {
+                    DelayClock::from_value(module_slot.right_clock)
+                } else {
+                    DelayClock::from_value(module_slot.clock)
+                };
+                match clock {
+                    DelayClock::Sync => {
+                        item.kind = ControlKind::Timing;
+                        item.min = DELAY_SYNC_MIN_BEATS;
+                        item.max = DELAY_SYNC_MAX_BEATS;
+                        item.step = Step::BeatGrid;
+                        item.display = beats2(item.value);
+                    }
+                    DelayClock::Free => {
+                        item.kind = ControlKind::Timing;
+                        item.min = DELAY_FREE_MIN_MS;
+                        item.max = DELAY_FREE_MAX_MS;
+                        item.step = Step::Linear(10.0);
+                        item.display = secs(item.value / 1000.0);
                     }
                 }
             }
         }
-        if delay_filter_detail {
-            for parameter in delay_filter_detail_parameters() {
-                if let Some(spec) = module_slot_spec(tab, slot, parameter.field) {
-                    let mut item = spec.item(controls);
-                    item.label = parameter.label.to_string();
-                    items.push(item);
-                }
+        for parameter in delay_filter_parameters() {
+            let is_present = parameter.field == ModuleSlotField::DelayFilterPresent;
+            if !is_present && module_slot.delay_filter.is_none() {
+                continue;
             }
-        } else {
-            let field = if module_slot.delay_filter.is_some() {
-                ModuleSlotField::DelayFilterCutoff
-            } else {
-                ModuleSlotField::DelayFilterPresent
-            };
-            if let Some(spec) = module_slot_spec(tab, slot, field) {
+            if let Some(spec) = module_slot_spec(tab, slot, parameter.field) {
                 let mut item = spec.item(controls);
-                item.label = if module_slot.delay_filter.is_some() {
-                    "Filter ›".to_string()
-                } else {
-                    "Add Filter".to_string()
-                };
+                item.label = parameter.label.to_string();
                 items.push(item);
             }
         }

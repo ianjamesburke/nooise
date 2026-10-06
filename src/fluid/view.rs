@@ -3,7 +3,6 @@
 //! This is the only place that combines interaction ownership, one coherent
 //! live-session generation, telemetry, and presentation-only UI state.
 
-use super::interaction::ModuleDrill;
 use super::*;
 use crate::fluid::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, JumpStage,
@@ -88,7 +87,6 @@ pub(crate) struct NavigationView {
     pub(crate) chord_drill: ChordDrill,
     pub(crate) lead_drill: LeadDrill,
     pub(crate) module_slot: Option<usize>,
-    pub(crate) delay_filter_detail: bool,
     pub(crate) selected: usize,
 }
 
@@ -310,12 +308,7 @@ impl<'a> UiViewModel<'a> {
         } = projection;
         let navigation = navigation_view(interaction.navigation);
         let items = match navigation.module_slot {
-            Some(slot) => module_detail_controls(
-                navigation.tab,
-                slot,
-                &session.controls,
-                navigation.delay_filter_detail,
-            ),
+            Some(slot) => module_detail_controls(navigation.tab, slot, &session.controls),
             None => match navigation.tab {
                 Tab::Chords => chords_tab_controls(&session.controls, navigation.chord_drill),
                 Tab::Lead => lead_tab_controls(&session.controls, navigation.lead_drill),
@@ -476,12 +469,11 @@ fn breadcrumb(
             .modules
             .for_tab(tab)
             .and_then(|slots| slots[slot].kind());
-        let module = module.map_or("Module", |kind| kind.display_name);
-        Some(if navigation.delay_filter_detail {
-            format!("{module} › Filter")
-        } else {
-            module.to_string()
-        })
+        Some(
+            module
+                .map_or("Module", |kind| kind.display_name)
+                .to_string(),
+        )
     } else {
         match (navigation.chord_drill, navigation.lead_drill) {
             (ChordDrill::Pattern { .. }, _) => Some("Trigger".to_string()),
@@ -667,16 +659,12 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
         chord_drill: ChordDrill::None,
         lead_drill: LeadDrill::None,
         module_slot: None,
-        delay_filter_detail: false,
         selected: navigation.selected(),
     };
     match navigation {
         Navigation::Chords { drill, .. } => view.chord_drill = drill,
         Navigation::Lead { drill, .. } => view.lead_drill = drill,
-        Navigation::Module { slot, drill, .. } => {
-            view.module_slot = Some(slot);
-            view.delay_filter_detail = matches!(drill, ModuleDrill::DelayFilter { .. });
-        }
+        Navigation::Module { slot, .. } => view.module_slot = Some(slot),
         Navigation::Standard { .. } | Navigation::Hub { .. } => {}
     }
     view
@@ -1660,7 +1648,6 @@ mod tests {
                     catalog_index: module_catalog_index("compression"),
                     selected: 0,
                     return_to: 0,
-                    drill: ModuleDrill::None,
                 },
                 "Master␠(M)␠›␠Tonal␠(M)␠›␠Compression",
             ),

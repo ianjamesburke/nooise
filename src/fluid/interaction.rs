@@ -253,19 +253,6 @@ pub(crate) enum Navigation {
         catalog_index: usize,
         selected: usize,
         return_to: usize,
-        drill: ModuleDrill,
-    },
-}
-
-/// A nested surface owned by a module detail. Delay's wet-only Filter keeps
-/// its primary Cutoff knob on the Delay page; its supporting controls open
-/// only after the player explicitly enters this drill.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ModuleDrill {
-    #[default]
-    None,
-    DelayFilter {
-        return_to: usize,
     },
 }
 
@@ -339,15 +326,7 @@ impl Navigation {
                 drill: LeadDrill::Pattern { return_to },
                 ..
             }
-            | Self::Module {
-                return_to,
-                drill: ModuleDrill::None,
-                ..
-            } => return_to,
-            Self::Module {
-                drill: ModuleDrill::DelayFilter { return_to },
-                ..
-            } => return_to,
+            | Self::Module { return_to, .. } => return_to,
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }
             | Self::Lead { selected, .. }
@@ -399,26 +378,6 @@ impl Navigation {
                 }
                 LeadDrill::None => *self = to_hub,
             },
-            Self::Module {
-                tab,
-                slot,
-                catalog_index,
-                return_to,
-                drill:
-                    ModuleDrill::DelayFilter {
-                        return_to: filter_return_to,
-                    },
-                ..
-            } => {
-                *self = Self::Module {
-                    tab: *tab,
-                    slot: *slot,
-                    catalog_index: *catalog_index,
-                    selected: *filter_return_to,
-                    return_to: *return_to,
-                    drill: ModuleDrill::None,
-                };
-            }
             Self::Module { tab, return_to, .. } => {
                 let mut parent = Self::for_page(page_for_tab(*tab));
                 *parent.selected_mut() = *return_to;
@@ -964,11 +923,6 @@ pub(crate) enum Intent {
         tab: Tab,
         slot: usize,
     },
-    /// Open Delay's child Filter controls after its Cutoff row is selected.
-    EnterDelayFilterDetail {
-        tab: Tab,
-        slot: usize,
-    },
     BeginNumeric(char),
     TypeCharacter(char),
     Backspace,
@@ -1082,7 +1036,6 @@ impl Intent {
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
             | Self::AddDelayWetFilter { .. }
-            | Self::EnterDelayFilterDetail { .. }
             | Self::EnterLeadPlay
             | Self::RandomizeSelected => &[ModeKind::Browsing],
             Self::RandomizeScope => &[ModeKind::Browsing, ModeKind::Automation],
@@ -1158,7 +1111,6 @@ impl Intent {
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
             | Self::AddDelayWetFilter { .. }
-            | Self::EnterDelayFilterDetail { .. }
             | Self::BeginNumeric(_)
             | Self::PaletteAutocomplete
             | Self::Confirm
@@ -1629,33 +1581,14 @@ fn update_browsing(
                 catalog_index,
                 selected: 0,
                 return_to,
-                drill: ModuleDrill::None,
             };
         }
         Intent::AddDelayWetFilter { tab, slot } => {
             effects.push(InteractionEffect::PlaceDelayWetFilter {
                 tab,
                 slot,
-                field: super::ModuleSlotField::DelayFilterCutoff,
+                field: super::ModuleSlotField::DelayFilterAmount,
             });
-        }
-        Intent::EnterDelayFilterDetail { tab, slot } => {
-            if let Navigation::Module {
-                tab: current_tab,
-                slot: current_slot,
-                selected,
-                drill,
-                ..
-            } = navigation
-                && *current_tab == tab
-                && *current_slot == slot
-                && *drill == ModuleDrill::None
-            {
-                *drill = ModuleDrill::DelayFilter {
-                    return_to: *selected,
-                };
-                *selected = 0;
-            }
         }
         Intent::BeginNumeric(character) => {
             let mut entry = NumericEntry::default();
@@ -2198,10 +2131,11 @@ fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEf
                 InteractionEffect::PlaceDelayWetFilter {
                     tab: *tab,
                     slot,
-                    // Scoped `/filter` adds the child but leaves the player
-                    // on Delay's primary Filter/Cutoff row. The nested
-                    // surface remains an explicit Enter away.
-                    field: super::ModuleSlotField::DelayFilterCutoff,
+                    field: if field == super::ModuleSlotField::DelayFilterPresent {
+                        super::ModuleSlotField::DelayFilterAmount
+                    } else {
+                        field
+                    },
                 }
             } else {
                 InteractionEffect::JumpToControl {
@@ -2541,7 +2475,6 @@ mod tests {
                 catalog_index: 5,
                 selected: 0,
                 return_to: 6,
-                drill: ModuleDrill::None,
             }
         );
         assert_eq!(
@@ -2645,7 +2578,6 @@ mod tests {
                 catalog_index: 3,
                 selected: 2,
                 return_to: 13,
-                drill: ModuleDrill::None,
             },
             ..InteractionModel::default()
         };

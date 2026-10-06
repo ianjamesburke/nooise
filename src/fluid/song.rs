@@ -856,7 +856,7 @@ mod delay_wet_filter_codec_tests {
     }
 
     #[test]
-    fn inserted_fully_wet_child_writes_only_presence_and_round_trips() {
+    fn inserted_dry_child_writes_only_presence_and_round_trips() {
         let mut song = delay_song();
         song.controls.modules.clap[1].delay_filter = Some(DelayWetFilter::default());
         let snapshot = snapshot_payload(&song.controls);
