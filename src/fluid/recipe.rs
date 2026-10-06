@@ -26,6 +26,7 @@ pub(crate) enum RecipeLane {
         beats: f32,
         depth: f32,
         seed: u32,
+        ramp: RampParams,
     },
 }
 
@@ -40,6 +41,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             seed: 0,
             beats: 8.0,
             depth: 0.25,
+            ramp: RampParams::DEFAULT,
         },
     },
     Recipe {
@@ -52,6 +54,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             seed: 0,
             beats: 0.5,
             depth: 0.25,
+            ramp: RampParams::DEFAULT,
         },
     },
     Recipe {
@@ -60,10 +63,14 @@ pub(crate) const RECIPES: &[Recipe] = &[
         aliases: &["sc"],
         description: "beat ramp duck, 1 beat, 50%",
         lane: RecipeLane::Lfo {
-            shape: LfoShape::RampUp,
+            shape: LfoShape::Ramp,
             beats: 1.0,
-            depth: 0.25,
+            depth: 0.5,
             seed: 0,
+            ramp: RampParams {
+                anchor: 1.0,
+                ..RampParams::DEFAULT
+            },
         },
     },
     Recipe {
@@ -76,6 +83,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             beats: 1.0,
             depth: 0.25,
             seed: 0,
+            ramp: RampParams::DEFAULT,
         },
     },
     Recipe {
@@ -88,6 +96,7 @@ pub(crate) const RECIPES: &[Recipe] = &[
             beats: 16.0,
             depth: 0.25,
             seed: 0x4452_4946,
+            ramp: RampParams::DEFAULT,
         },
     },
     Recipe {
@@ -96,10 +105,14 @@ pub(crate) const RECIPES: &[Recipe] = &[
         aliases: &[],
         description: "ramp up, 8 beats, 25%",
         lane: RecipeLane::Lfo {
-            shape: LfoShape::RampUp,
+            shape: LfoShape::Ramp,
             beats: 8.0,
             depth: 0.25,
             seed: 0,
+            ramp: RampParams {
+                anchor: 0.0,
+                ..RampParams::DEFAULT
+            },
         },
     },
 ];
@@ -154,11 +167,13 @@ impl Recipe {
                 beats,
                 depth,
                 seed,
+                ramp,
             } => LfoRoute {
                 cycle_beats: beats,
                 depth_ratio: depth,
                 shape,
                 seed,
+                ramp,
                 ..LfoRoute::default()
             },
         }
@@ -200,11 +215,6 @@ impl Recipe {
     ) -> Result<(), EffectFailure> {
         self.check(snapshot, target)?;
         let address = ControlAddress::new(target.id);
-        if self.id == RecipeId::Sidechain {
-            let spec = spec_by_id(target.id).ok_or(EffectFailure::StaleRecipeTarget)?;
-            let ratio = spec.ratio((spec.get)(&snapshot.controls), &snapshot.controls);
-            spec.apply_ratio((ratio - 0.25).max(0.0), &mut snapshot.controls);
-        }
         match self.lane {
             RecipeLane::Lfo { .. } => {
                 let route = self.lfo_route();
@@ -352,13 +362,13 @@ mod tests {
                 context(beat),
             )
         };
-        assert_eq!(route.shape, LfoShape::RampUp);
+        assert_eq!(route.shape, LfoShape::Ramp);
         assert_eq!(value(0.0), 0.25);
         assert_eq!(value(0.25), 0.375);
         assert_eq!(value(0.5), 0.5);
         assert_eq!(value(0.75), 0.625);
         assert_eq!(value(1.0), 0.25);
-        assert_eq!(snapshot.controls.pad.level, 0.5);
+        assert_eq!(snapshot.controls.pad.level, 0.75);
         assert!(snapshot.automation.envelope(address).is_none());
     }
 }

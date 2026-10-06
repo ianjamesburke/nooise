@@ -117,6 +117,7 @@ pub(crate) enum LfoSubRow {
     /// A row of the Steps shape's inline step editor: sequence length, edge
     /// glide, or one step value. Present only while the shape is `Steps`,
     /// listed right after the Shape field (which is last in `LfoField::ALL`).
+    /// A `Ramp` shape lists `LfoField::RAMP` as ordinary `Field` rows there.
     Step(StepTarget),
 }
 
@@ -127,6 +128,10 @@ pub(crate) fn lfo_submenu_rows(
     let mut rows = Vec::with_capacity(LfoField::ALL.len());
     for field in LfoField::ALL {
         rows.push(LfoSubRow::Field(field));
+    }
+    let shape = automation.route(address).map(|route| route.shape);
+    if shape == Some(LfoShape::Ramp) {
+        rows.extend(LfoField::RAMP.map(LfoSubRow::Field));
     }
     if let Some(route) = automation.route(address)
         && route.shape == LfoShape::Steps

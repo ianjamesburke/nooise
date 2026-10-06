@@ -6818,25 +6818,49 @@ fn render_fluid_draws_envelope_submenu_and_lane() {
 #[test]
 fn lfo_shapes_match_reference_curves() {
     // cycle_beats == 1.0 means beat value equals phase in 0..1.
-    let tri = lfo_shape(LfoShape::Triangle);
-    assert_near(tri.wave_at(0.0), 0.0);
-    assert_near(tri.wave_at(0.25), 1.0);
-    assert_near(tri.wave_at(0.5), 0.0);
-    assert_near(tri.wave_at(0.75), -1.0);
-
-    let up = lfo_shape(LfoShape::RampUp);
-    assert_near(up.wave_at(0.0), -1.0);
+    // A ramp's travel is 0..1 placed by anchor; the default anchor centres it.
+    let up = lfo_shape(LfoShape::Ramp);
+    assert_near(up.wave_at(0.0), -0.5);
     assert_near(up.wave_at(0.5), 0.0);
-    assert_near(up.wave_at(0.75), 0.5);
+    assert_near(up.wave_at(0.75), 0.25);
 
-    let down = lfo_shape(LfoShape::RampDown);
-    assert_near(down.wave_at(0.0), 1.0);
+    let mut tri = lfo_shape(LfoShape::Ramp);
+    tri.ramp.skew = 0.5;
+    assert_near(tri.wave_at(0.0), -0.5);
+    assert_near(tri.wave_at(0.25), 0.0);
+    assert_near(tri.wave_at(0.5), 0.5);
+    assert_near(tri.wave_at(0.75), 0.0);
+
+    let mut down = lfo_shape(LfoShape::Ramp);
+    down.ramp.skew = 0.0;
+    assert_near(down.wave_at(0.0), 0.5);
     assert_near(down.wave_at(0.5), 0.0);
-    assert_near(down.wave_at(0.75), -0.5);
+    assert_near(down.wave_at(0.75), -0.25);
 
     let square = lfo_shape(LfoShape::Square);
     assert!(square.wave_at(0.25) > 0.99, "square high near +1");
     assert!(square.wave_at(0.75) < -0.99, "square low near -1");
+}
+
+#[test]
+fn ramp_anchor_places_the_travel_against_the_base() {
+    let mut ramp = lfo_shape(LfoShape::Ramp);
+    ramp.ramp.anchor = 0.0;
+    assert_near(ramp.wave_at(0.0), 0.0);
+    assert_near(ramp.wave_at(0.5), 0.5);
+    ramp.ramp.anchor = 1.0;
+    assert_near(ramp.wave_at(0.0), -1.0);
+    assert_near(ramp.wave_at(0.5), -0.5);
+}
+
+#[test]
+fn ramp_curve_bends_both_sides_of_the_cycle() {
+    let mut ramp = lfo_shape(LfoShape::Ramp);
+    ramp.ramp.anchor = 0.0;
+    ramp.ramp.curve = -1.0;
+    assert_near(ramp.wave_at(0.5), 0.5_f32.powf(0.25));
+    ramp.ramp.curve = 1.0;
+    assert_near(ramp.wave_at(0.5), 0.5_f32.powf(4.0));
 }
 
 #[test]
@@ -6845,13 +6869,14 @@ fn ramp_shapes_are_continuous_across_the_wrap() {
     // applied directly to a live-read control (e.g. level or cutoff). Every
     // other shape is continuous at the cycle boundary; ramps must be too.
     let eps = 1e-4;
-    for shape in [LfoShape::RampUp, LfoShape::RampDown] {
-        let route = lfo_shape(shape);
+    for skew in [0.0, 0.5, 1.0] {
+        let mut route = lfo_shape(LfoShape::Ramp);
+        route.ramp.skew = skew;
         let before = route.wave_at(1.0 - eps);
         let after = route.wave_at(1.0 + eps);
         assert!(
             (after - before).abs() < 0.1,
-            "{shape:?} jumps {} across the wrap",
+            "ramp skew {skew} jumps {} across the wrap",
             (after - before).abs()
         );
     }
@@ -7463,7 +7488,7 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                     recipe::RecipeId::Tremolo => (LfoShape::Sine, 0.5, 0),
                     recipe::RecipeId::Pulse => (LfoShape::Square, 1.0, 0),
                     recipe::RecipeId::Drift => (LfoShape::RandomDrift, 16.0, 0x4452_4946),
-                    recipe::RecipeId::Rise => (LfoShape::RampUp, 8.0, 0),
+                    recipe::RecipeId::Rise => (LfoShape::Ramp, 8.0, 0),
                     recipe::RecipeId::Sidechain => unreachable!(),
                 };
                 authored.add_route(
@@ -7473,6 +7498,10 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                         cycle_beats,
                         shape,
                         seed,
+                        ramp: RampParams {
+                            anchor: 0.0,
+                            ..RampParams::DEFAULT
+                        },
                         ..LfoRoute::default()
                     },
                 );
@@ -7481,9 +7510,13 @@ fn palette_recipes_render_like_authored_lanes_and_change_settled_audio() {
                 authored.add_route(
                     address,
                     LfoRoute {
-                        depth_ratio: 0.25,
+                        depth_ratio: 0.5,
                         cycle_beats: 1.0,
-                        shape: LfoShape::RampUp,
+                        shape: LfoShape::Ramp,
+                        ramp: RampParams {
+                            anchor: 1.0,
+                            ..RampParams::DEFAULT
+                        },
                         ..LfoRoute::default()
                     },
                 );
@@ -7697,6 +7730,34 @@ fn automation_plan_declicks_an_envelope_retrigger() {
 }
 
 #[test]
+fn song_code_round_trips_ramp_sub_knobs() {
+    let address = ControlAddress::new("master.level");
+    let mut automation = AutomationState::default();
+    automation.set_route(
+        address,
+        LfoRoute {
+            shape: LfoShape::Ramp,
+            ramp: RampParams {
+                curve: -0.5,
+                skew: 0.25,
+                anchor: 1.0,
+            },
+            ..LfoRoute::default()
+        },
+    );
+    let song = SongState {
+        automation,
+        ..SongState::from_controls(FluidControls::default())
+    };
+
+    let decoded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
+    let ramp = decoded.automation.route(address).unwrap().ramp;
+    assert!((ramp.curve + 0.5).abs() < 0.001);
+    assert!((ramp.skew - 0.25).abs() < 0.001);
+    assert_eq!(ramp.anchor, 1.0);
+}
+
+#[test]
 fn song_code_round_trips_stacked_lfo_lanes() {
     let address = ControlAddress::new("master.level");
     let mut automation = AutomationState::default();
@@ -7711,7 +7772,7 @@ fn song_code_round_trips_stacked_lfo_lanes() {
         address,
         LfoRoute {
             depth_ratio: 0.4,
-            shape: LfoShape::Triangle,
+            shape: LfoShape::Ramp,
             ..LfoRoute::default()
         },
     ));

@@ -388,7 +388,11 @@ impl CaptureHistory {
             let Some(before_route) = before.automation.route_at(control, lane_index) else {
                 continue;
             };
-            for field in LfoField::ALL {
+            let ramp = route.shape == LfoShape::Ramp && before_route.shape == LfoShape::Ramp;
+            for field in LfoField::ALL
+                .into_iter()
+                .chain(ramp.then_some(LfoField::RAMP).into_iter().flatten())
+            {
                 let target = EditorMotionAddress {
                     control,
                     lane_index,
@@ -974,7 +978,7 @@ mod tests {
             .automation
             .route_mut(address)
             .unwrap()
-            .set_field_at(LfoField::Shape, 4.0, 0.5);
+            .set_field_at(LfoField::Shape, 2.0, 0.5);
         snapshot
             .automation
             .envelope_mut(address)
@@ -1785,7 +1789,7 @@ mod tests {
             );
             let before = snapshot.clone();
             snapshot.automation.route_mut(control).unwrap().depth_ratio = 0.6;
-            snapshot.automation.route_mut(control).unwrap().shape = LfoShape::Triangle;
+            snapshot.automation.route_mut(control).unwrap().shape = LfoShape::Ramp;
             history.record_changes(&before, &snapshot, 3.0);
             assert!(
                 history

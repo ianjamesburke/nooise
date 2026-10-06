@@ -3380,12 +3380,14 @@ fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
                     beats,
                     depth,
                     seed,
+                    ramp,
                 } => {
                     let lane = saved.automation.route(address).unwrap();
                     assert_eq!(lane.cycle_beats, beats);
                     assert!((lane.depth_ratio - depth).abs() < 0.0001);
                     assert_eq!(lane.shape, shape);
                     assert_eq!(lane.seed, seed);
+                    assert_eq!(lane.ramp, ramp);
                 }
             }
         }

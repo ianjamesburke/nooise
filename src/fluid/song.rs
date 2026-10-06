@@ -22,8 +22,8 @@ use super::{
     GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState, LfoField, LfoRoute, LfoShape,
     MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
     MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField,
-    MuteState, PAD_RHYTHM_ROWS, PlannedAction, Step, StepTarget, TAB_COUNT, Tab, all_specs,
-    parse_module_slot_id, spec_by_id,
+    MuteState, PAD_RHYTHM_ROWS, PlannedAction, RampParams, Step, StepTarget, TAB_COUNT, Tab,
+    all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -73,16 +73,17 @@ const GESTURE_HELD_FLAG: u8 = 1 << 0;
 /// Wire tag for each LFO shape. Append-only: a tag is part of every saved
 /// code that carries the shape. `shape_tag`/`shape_from_tag` are the two
 /// directions of this one table.
-const LFO_SHAPE_TAGS: [(LfoShape, u8); 8] = [
+const LFO_SHAPE_TAGS: [(LfoShape, u8); 6] = [
     (LfoShape::Sine, 0),
-    (LfoShape::Triangle, 1),
-    (LfoShape::RampUp, 2),
-    (LfoShape::RampDown, 3),
     (LfoShape::Square, 4),
     (LfoShape::RandomDrift, 5),
     (LfoShape::SampleHold, 6),
     (LfoShape::Steps, 7),
+    (LfoShape::Ramp, 8),
 ];
+/// Triangle, ramp up and ramp down folded into `Ramp`. Their tags are never
+/// reused; a code naming one is refused rather than loaded as another shape.
+const RETIRED_LFO_SHAPE_TAGS: [u8; 3] = [1, 2, 3];
 const ENV_TRIGGER_EVERY_BEATS: u8 = 0;
 const ENV_TRIGGER_ON_KICK: u8 = 1;
 const ENV_TRIGGER_ONCE: u8 = 2;
@@ -1045,6 +1046,9 @@ fn editor_motion_tag(target: EditorMotionField) -> u8 {
         EditorMotionField::Envelope(EnvField::Attack) => 23,
         EditorMotionField::Envelope(EnvField::Decay) => 24,
         EditorMotionField::Envelope(EnvField::Trigger) => 25,
+        EditorMotionField::Lfo(LfoField::Curve) => 26,
+        EditorMotionField::Lfo(LfoField::Skew) => 27,
+        EditorMotionField::Lfo(LfoField::Anchor) => 28,
     }
 }
 
@@ -1063,6 +1067,9 @@ fn editor_motion_from_tag(tag: u8) -> Option<EditorMotionField> {
         23 => Some(EditorMotionField::Envelope(EnvField::Attack)),
         24 => Some(EditorMotionField::Envelope(EnvField::Decay)),
         25 => Some(EditorMotionField::Envelope(EnvField::Trigger)),
+        26 => Some(EditorMotionField::Lfo(LfoField::Curve)),
+        27 => Some(EditorMotionField::Lfo(LfoField::Skew)),
+        28 => Some(EditorMotionField::Lfo(LfoField::Anchor)),
         _ => None,
     }
 }
@@ -1843,6 +1850,11 @@ fn write_automation(automation: &AutomationState, out: &mut Vec<u8>) -> Result<(
         out.push(shape_tag(route.shape));
         out.extend_from_slice(&route.phase_offset_beats.to_le_bytes());
         out.extend_from_slice(&route.seed.to_le_bytes());
+        if route.shape == LfoShape::Ramp {
+            out.extend_from_slice(&bipolar_to_u16(route.ramp.curve).to_le_bytes());
+            out.extend_from_slice(&unit_to_u16(route.ramp.skew).to_le_bytes());
+            out.extend_from_slice(&unit_to_u16(route.ramp.anchor).to_le_bytes());
+        }
         if route.shape == LfoShape::Steps {
             out.push(route.step_count);
             out.extend_from_slice(&unit_to_u16(route.step_glide).to_le_bytes());
@@ -1884,8 +1896,20 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         let phase_offset_beats = reader.f32()?;
         let seed = reader.u32()?;
 
-        // Read the staircase before resolving the id and shape, so a route
-        // this build cannot place is still skipped in byte-aligned whole.
+        if RETIRED_LFO_SHAPE_TAGS.contains(&shape_byte) {
+            return Err(SongCodeError::RetiredControl("triangle/ramp lfo shape"));
+        }
+        // Read the ramp and staircase before resolving the id and shape, so a
+        // route this build cannot place is still skipped in byte-aligned whole.
+        let ramp = if shape_from_tag(shape_byte) == Some(LfoShape::Ramp) {
+            Some(RampParams {
+                curve: u16_to_bipolar(reader.u16()?),
+                skew: u16_to_unit(reader.u16()?),
+                anchor: u16_to_unit(reader.u16()?),
+            })
+        } else {
+            None
+        };
         let steps = if shape_from_tag(shape_byte) == Some(LfoShape::Steps) {
             let step_count = reader.u8()?;
             let step_glide = u16_to_unit(reader.u16()?);
@@ -1904,6 +1928,9 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
             continue;
         };
         let mut route = build_lfo_route(cycle_beats, depth_ratio, shape, phase_offset_beats, seed);
+        if let Some(ramp) = ramp {
+            route.ramp = ramp;
+        }
         if let Some((_, _, values)) = steps
             && values.iter().any(|value| *value < 0.0)
         {
@@ -2492,6 +2519,26 @@ mod retired_control_tests {
             decode_song_code(&code_setting("pad.reverb_mix")).err(),
             Some(SongCodeError::RetiredControl("pad.reverb_mix"))
         );
+    }
+
+    /// Triangle, ramp up and ramp down became `Ramp`; a saved lane naming one
+    /// is refused rather than loaded as some other shape.
+    #[test]
+    fn a_lane_with_a_retired_lfo_shape_is_refused() {
+        let mut automation = AutomationState::default();
+        automation.add_route(ControlAddress::new("master.level"), LfoRoute::default());
+        let mut lanes = Vec::new();
+        write_automation(&automation, &mut lanes).unwrap();
+        // count u16, control u16, cycle f32, depth u16, then the shape tag.
+        let shape_at = 2 + 2 + 4 + 2;
+        for tag in RETIRED_LFO_SHAPE_TAGS {
+            lanes[shape_at] = tag;
+            let code = code_from_records(CONTAINER_VERSION, &[(AUTOMATION_RECORD, &lanes)]);
+            assert_eq!(
+                decode_song_code(&code).err(),
+                Some(SongCodeError::RetiredControl("triangle/ramp lfo shape"))
+            );
+        }
     }
 
     #[test]
