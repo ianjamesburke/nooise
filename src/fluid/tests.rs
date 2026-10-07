@@ -7,8 +7,8 @@ use super::interaction::ChordDrill;
 use super::song_ids::song_id_index;
 use super::*;
 use crate::midi::{
-    MidiConfig, MidiEndpoint, MidiInputEvent, MidiInputSource, MidiMessage, MidiSink, pad_notes,
-    pad_notes_with_count, tuned_note,
+    MidiInputEvent, MidiInputSource, MidiMessage, MidiSink, pad_notes, pad_notes_with_count,
+    tuned_note,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -1057,7 +1057,7 @@ fn pad_defaults_use_progression_a_and_sixteen_beat_chords() {
 fn fresh_start_chooses_only_builtin_progressions_and_tonal_phrases() {
     let mut rng = StdRng::seed_from_u64(42);
     for _ in 0..64 {
-        let song = randomized_start_song(&mut rng, false);
+        let song = randomized_start_song(&mut rng);
         assert!((song.controls.pad.progression as usize) < PROGRESSIONS.len());
         assert!((song.controls.tonal.phrase as usize) < TONAL_PHRASES.len());
     }
@@ -1066,11 +1066,11 @@ fn fresh_start_chooses_only_builtin_progressions_and_tonal_phrases() {
 #[test]
 fn fresh_start_varies_both_musical_selections_between_launches() {
     let mut rng = StdRng::seed_from_u64(42);
-    let first = randomized_start_song(&mut rng, false).controls;
+    let first = randomized_start_song(&mut rng).controls;
     let mut progression_varied = false;
     let mut phrase_varied = false;
     for _ in 0..16 {
-        let next = randomized_start_song(&mut rng, false).controls;
+        let next = randomized_start_song(&mut rng).controls;
         progression_varied |= next.pad.progression != first.pad.progression;
         phrase_varied |= next.tonal.phrase != first.tonal.phrase;
     }
@@ -1080,52 +1080,9 @@ fn fresh_start_varies_both_musical_selections_between_launches() {
 }
 
 #[test]
-fn fresh_start_musical_selections_are_independent_of_midi_routing() {
-    let mut normal_rng = StdRng::seed_from_u64(42);
-    let mut midi_rng = StdRng::seed_from_u64(42);
-    for _ in 0..16 {
-        let normal = randomized_start_song(&mut normal_rng, false);
-        let midi = randomized_start_song(&mut midi_rng, true);
-        assert_eq!(
-            normal.controls.pad.progression,
-            midi.controls.pad.progression
-        );
-        assert_eq!(normal.controls.tonal.phrase, midi.controls.tonal.phrase);
-    }
-}
-
-#[test]
-fn midi_output_fresh_start_mutes_pad_audio_without_disabling_pad_midi() {
-    let mut rng = StdRng::seed_from_u64(42);
-    let normal = randomized_start_song(&mut rng, false);
-    let mut midi = randomized_start_song(&mut rng, true);
-    apply_live_start(
-        &mut midi,
-        MidiConfig {
-            input: None,
-            output: Some(MidiEndpoint {
-                name: "Take5",
-                channel: 1,
-            }),
-        },
-        false,
-    );
-
-    assert!(normal.controls.pad.level > 0.0);
-    assert_eq!(midi.controls.pad.level, 0.0);
-    assert_eq!(midi.controls.pad.midi_in, 0.0);
-    assert_eq!(midi.controls.pad.midi_out, 1.0);
-    assert_eq!(midi.controls.midi_rows & PAD_MIDI_OUT_ROW, PAD_MIDI_OUT_ROW);
-    assert_eq!(normal.controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS);
-    assert_eq!(midi.controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS);
-    assert_eq!(midi.controls.arp.midi_out, 0.0);
-    assert_eq!(midi.controls.lead.midi_out, 0.0);
-}
-
-#[test]
 fn no_argument_start_hides_pad_rhythm_rows_without_showing_midi() {
     let mut rng = StdRng::seed_from_u64(42);
-    let song = randomized_start_song(&mut rng, false);
+    let song = randomized_start_song(&mut rng);
     let ids: Vec<_> = chords_tab_controls(&song.controls, ChordDrill::None)
         .iter()
         .map(|item| item.id)
@@ -1144,103 +1101,11 @@ fn no_argument_start_hides_pad_rhythm_rows_without_showing_midi() {
 }
 
 #[test]
-fn duplex_midi_start_selects_pad_out_and_zero_level_even_for_an_authored_song() {
-    let mut song = SongState::default();
-    song.controls.pad.level = 0.8;
-    song.controls.pad.midi_out = 1.0;
-    apply_live_start(
-        &mut song,
-        MidiConfig {
-            input: Some(MidiEndpoint {
-                name: "Take5",
-                channel: 1,
-            }),
-            output: Some(MidiEndpoint {
-                name: "Take5",
-                channel: 1,
-            }),
-        },
-        false,
-    );
-    assert_eq!(song.controls.pad.level, 0.0);
-    assert_eq!(song.controls.pad.midi_in, 0.0);
-    assert_eq!(song.controls.pad.midi_out, 1.0);
-    assert_eq!(song.controls.midi_rows & PAD_MIDI_OUT_ROW, PAD_MIDI_OUT_ROW);
-    assert_eq!(song.controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS);
-    let ids: Vec<_> = chords_tab_controls(&song.controls, ChordDrill::None)
-        .iter()
-        .map(|item| item.id)
-        .collect();
-    assert!(ids.contains(&"pad.midi_out"));
-    assert!(!ids.contains(&"pad.midi_in"));
-    for hidden in ["pad.trigger", "pad.gate_beats"] {
-        assert!(!ids.contains(&hidden), "{hidden} should stay tucked away");
-    }
-}
-
-#[test]
-fn input_only_midi_start_selects_pad_in_and_zero_level() {
-    let mut song = SongState::default();
-    apply_live_start(
-        &mut song,
-        MidiConfig {
-            input: Some(MidiEndpoint {
-                name: "Keyboard",
-                channel: 1,
-            }),
-            output: None,
-        },
-        false,
-    );
-    assert_eq!(song.controls.pad.level, 0.0);
-    assert_eq!(song.controls.pad.midi_in, 1.0);
-    assert_eq!(song.controls.pad.midi_out, 0.0);
-    assert_eq!(song.controls.midi_rows & PAD_MIDI_IN_ROW, PAD_MIDI_IN_ROW);
-    assert!(
-        chords_tab_controls(&song.controls, ChordDrill::None)
-            .iter()
-            .any(|item| item.id == "pad.midi_in")
-    );
-}
-
-#[test]
-fn duplex_midi_start_keeps_auto_endpoints_at_zero_pad_level_and_output_on() {
-    let midi = MidiConfig {
-        input: Some(MidiEndpoint {
-            name: "Take5",
-            channel: 1,
-        }),
-        output: Some(MidiEndpoint {
-            name: "Take5",
-            channel: 1,
-        }),
-    };
-    let mut states = vec![SongState::default(), SongState::default()];
-    states[1].controls.pad.level = 0.9;
-    apply_live_start_to_states(&mut states, midi, false);
-    let morph = MorphState::new(states, 4);
-    assert_eq!(morph.controls_at(0.0).pad.level, 0.0);
-    assert_eq!(morph.controls_at(16.0).pad.level, 0.0);
-    assert_eq!(morph.controls_at(32.0).pad.level, 0.0);
-    assert_eq!(morph.controls_at(0.0).pad.midi_in, 0.0);
-    assert_eq!(morph.controls_at(0.0).pad.midi_out, 1.0);
-    assert_eq!(morph.controls_at(32.0).pad.midi_out, 1.0);
-    assert_eq!(
-        morph.controls_at(0.0).midi_rows & PAD_MIDI_OUT_ROW,
-        PAD_MIDI_OUT_ROW
-    );
-    assert_eq!(
-        morph.controls_at(32.0).midi_rows & PAD_MIDI_OUT_ROW,
-        PAD_MIDI_OUT_ROW
-    );
-}
-
-#[test]
 fn start_muted_zeros_master_level_across_morph_endpoints() {
     let mut states = vec![SongState::default(), SongState::default()];
     states[0].controls.master.level = 0.3;
     states[1].controls.master.level = 0.9;
-    apply_live_start_to_states(&mut states, MidiConfig::default(), true);
+    apply_live_start_to_states(&mut states, true);
 
     let morph = MorphState::new(states, 4);
     assert_eq!(morph.controls_at(0.0).master.level, 0.0);

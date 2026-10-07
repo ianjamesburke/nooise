@@ -336,7 +336,7 @@ pub(crate) fn run(
 ) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
     run_with_song_state(
-        randomized_start_song(&mut rng, midi.input.is_some() || midi.output.is_some()),
+        randomized_start_song(&mut rng),
         osc,
         midi,
         start_muted,
@@ -344,37 +344,22 @@ pub(crate) fn run(
     )
 }
 
-fn randomized_start_song(rng: &mut impl Rng, midi_connected: bool) -> SongState {
+fn randomized_start_song(rng: &mut impl Rng) -> SongState {
     let mut controls = FluidControls::default();
     controls.pad.progression = rng.gen_range(0..PROGRESSIONS.len()) as f32;
     controls.tonal.phrase = rng.gen_range(0..TONAL_PHRASES.len()) as f32;
-    if midi_connected {
-        controls.pad.level = 0.0;
-    }
     SongState::from_controls(controls)
 }
 
-fn apply_live_start(song: &mut SongState, midi: MidiConfig<'_>, start_muted: bool) {
+fn apply_live_start(song: &mut SongState, start_muted: bool) {
     if start_muted {
         song.controls.master.level = 0.0;
     }
-    if midi.input.is_some() || midi.output.is_some() {
-        song.controls.pad.level = 0.0;
-    }
-    if midi.output.is_some() {
-        song.controls.pad.midi_in = 0.0;
-        song.controls.pad.midi_out = 1.0;
-        song.controls.midi_rows |= PAD_MIDI_OUT_ROW;
-    } else if midi.input.is_some() {
-        song.controls.pad.midi_in = 1.0;
-        song.controls.pad.midi_out = 0.0;
-        song.controls.midi_rows |= PAD_MIDI_IN_ROW;
-    }
 }
 
-fn apply_live_start_to_states(states: &mut [SongState], midi: MidiConfig<'_>, start_muted: bool) {
+fn apply_live_start_to_states(states: &mut [SongState], start_muted: bool) {
     for state in states {
-        apply_live_start(state, midi, start_muted);
+        apply_live_start(state, start_muted);
     }
 }
 
@@ -416,7 +401,7 @@ pub(crate) fn run_auto(
 ) -> Result<(), Box<dyn Error>> {
     let numbers = auto_song_numbers(from)?;
     let mut states = decode_auto_states();
-    apply_live_start_to_states(&mut states, midi, start_muted);
+    apply_live_start_to_states(&mut states, start_muted);
     let initial_song = states[from - 1].clone();
     let chosen = numbers
         .iter()
@@ -469,7 +454,7 @@ pub(crate) fn run_songs(
             }
         }
     }
-    apply_live_start_to_states(&mut chosen, midi, start_muted);
+    apply_live_start_to_states(&mut chosen, start_muted);
     let initial_song = chosen[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
         chosen.clone(),
@@ -504,8 +489,8 @@ fn run_interactive(
     midi: MidiConfig<'_>,
     options: LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
-    apply_live_start(&mut initial_song, midi, options.start_muted);
-    apply_live_start_to_states(&mut auto_states, midi, options.start_muted);
+    apply_live_start(&mut initial_song, options.start_muted);
+    apply_live_start_to_states(&mut auto_states, options.start_muted);
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
     let chassis_tap = options
         .chassis_tap
