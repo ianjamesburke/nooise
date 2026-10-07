@@ -714,6 +714,7 @@ impl ReplayHarness {
                     capabilities: self.capabilities,
                     beat: self.clock.now().as_secs_f64(),
                     active_chord: 0,
+                    chord_span: ChordSpan::default(),
                 },
             )
             .expect("pending commit has no fallible effects");
@@ -841,6 +842,7 @@ impl ReplayHarness {
             telemetry: TelemetryView {
                 beat: self.clock.now().as_secs_f64(),
                 active_chord: 0,
+                chord_span: ChordSpan::default(),
             },
             presentation: ViewPresentation {
                 fluid: &self.fluid,
@@ -3277,6 +3279,7 @@ fn stale_lane_palette_target_shows_failure_without_touching_replacement() {
             capabilities: harness.capabilities,
             beat: 0.0,
             active_chord: 0,
+            chord_span: ChordSpan::default(),
         },
     )
     .unwrap();
@@ -3705,6 +3708,7 @@ fn palette_recipe_refuses_delete_and_readd_of_the_same_module() {
             capabilities: harness.capabilities,
             beat: 0.0,
             active_chord: 0,
+            chord_span: ChordSpan::default(),
         },
     )
     .unwrap();
@@ -3847,6 +3851,7 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
             capabilities: harness.capabilities,
             beat: 0.0,
             active_chord: 0,
+            chord_span: ChordSpan::default(),
         },
     )
     .expect("staging turn");
@@ -3876,6 +3881,7 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
             capabilities: harness.capabilities,
             beat: 4.0,
             active_chord: 0,
+            chord_span: ChordSpan::default(),
         },
     )
     .expect("due turn");
@@ -4405,6 +4411,7 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
                 capabilities: harness.capabilities,
                 beat: 0.0,
                 active_chord: 0,
+                chord_span: ChordSpan::default(),
             };
             let action = SemanticAction { phase, intent };
             let frame = production_frame(&mut harness.model, &context);

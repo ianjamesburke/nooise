@@ -75,6 +75,7 @@ impl GesturePlayer {
                 capabilities: self.capabilities,
                 beat: self.engine.tempo.beat,
                 active_chord: 0,
+                chord_span: ChordSpan::default(),
             },
         );
         assert!(!step.quit);

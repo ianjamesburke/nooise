@@ -283,7 +283,11 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
     let view = UiViewModel::project(ViewProjection {
         interaction: &interaction,
         session: &session,
-        telemetry: TelemetryView { beat, active_chord },
+        telemetry: TelemetryView {
+            beat,
+            active_chord,
+            chord_span: ChordSpan::default(),
+        },
         presentation: ViewPresentation {
             fluid,
             flipped: &flipped,
@@ -10597,5 +10601,30 @@ fn pad_cached_chord_revoices_for_every_builder_field_and_restore() {
         controls.pad.restore_chord_slot(CUSTOM_PROGRESSION_INDEX, 0);
         engine.next(&controls.pad, 0.0, timing(2, 120.0));
         assert_eq!(engine.last_chord_notes, original, "restoring {field}");
+    }
+}
+
+#[cfg(test)]
+mod chord_span_startup_tests {
+    use super::*;
+
+    #[test]
+    fn first_chord_span_is_published_before_the_first_chord_boundary() {
+        let song = SongState::from_controls(FluidControls::default());
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(&song));
+        let telemetry = Arc::new(FluidTelemetry::default());
+        let mut engine = FluidEngine::new(48_000.0, session, no_morph(), Arc::clone(&telemetry));
+        assert_eq!(telemetry.chord_span().length_beats, 0.0);
+        for _ in 0..4_800 {
+            engine.next_stereo();
+        }
+        assert!(telemetry.beat() < 1.0, "still inside the first chord");
+        assert_eq!(
+            telemetry.chord_span(),
+            ChordSpan {
+                start_beat: 0.0,
+                length_beats: 16.0,
+            }
+        );
     }
 }

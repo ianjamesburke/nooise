@@ -107,19 +107,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let inner = block.inner(panel);
     f.render_widget(block, panel);
 
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // 0 home key
-            Constraint::Length(1), // 1 sounding chord and upcoming window
-            Constraint::Length(1), // 2 breadcrumb
-            Constraint::Length(1), // 3 chord editor title or padding
-            Constraint::Min(0),    // 4 control rows
-            Constraint::Length(1), // 5 gesture activity row (blank when idle)
-            Constraint::Length(1), // 6 footer: exits/mode help/notices
-        ])
-        .split(inner);
-
+    let header = HeaderRows::split(inner);
     let automation = match &view.mode {
         ModeSurface::Automation(surface) => Some(surface),
         ModeSurface::Numeric { resume, .. } => resume.as_ref(),
@@ -148,7 +136,13 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         bar_w: (inner.width as usize).saturating_sub(34).clamp(6, 80),
     };
 
-    draw_harmony(f, layout[0], layout[1], &controls.pad, frame.active_slot);
+    draw_harmony(
+        f,
+        header.key,
+        header.chords,
+        &controls.pad,
+        frame.active_slot,
+    );
     if let Some(title) = &view.chord_title {
         f.render_widget(
             Paragraph::new(title.as_str())
@@ -158,13 +152,19 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-            layout[3],
+            header.ribbon,
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(chord_ribbon(view.telemetry.beat, view.telemetry.chord_span))
+                .alignment(Alignment::Center),
+            header.ribbon,
         );
     }
-    draw_breadcrumb(f, layout[2], view);
-    draw_control_rows(f, layout[4], &frame);
-    draw_activity(f, layout[5], view);
-    draw_footer(f, layout[6], view);
+    draw_breadcrumb(f, header.breadcrumb, view);
+    draw_control_rows(f, header.controls, &frame);
+    draw_activity(f, header.activity, view);
+    draw_footer(f, header.footer, view);
 
     if let ModeSurface::Palette(palette) = &view.mode {
         draw_palette(
@@ -182,6 +182,106 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     if let ModeSurface::Performance(surface) = &view.mode {
         draw_leader(f, inner, surface);
     }
+}
+
+/// Inner height from which the header gets blank rows between its groups.
+/// Below it the header packs tight so a small terminal keeps its control rows.
+const HEADER_ROOMY_HEIGHT: u16 = 18;
+
+/// The panel's vertical bands: home key, sounding chords, then the beat
+/// ribbon (or chord editor title), the layer breadcrumb, the control rows,
+/// the gesture activity row, and the footer. A roomy terminal separates the
+/// harmony, ribbon, and breadcrumb groups with blank rows.
+struct HeaderRows {
+    key: Rect,
+    chords: Rect,
+    ribbon: Rect,
+    breadcrumb: Rect,
+    controls: Rect,
+    activity: Rect,
+    footer: Rect,
+}
+
+impl HeaderRows {
+    fn split(inner: Rect) -> Self {
+        let gap = |height: u16| {
+            Constraint::Length(u16::from(inner.height >= HEADER_ROOMY_HEIGHT) * height)
+        };
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // 0 home key
+                Constraint::Length(1), // 1 sounding chord and upcoming window
+                gap(1),                // 2 breathing room
+                Constraint::Length(1), // 3 beat ribbon or chord editor title
+                gap(1),                // 4 breathing room
+                Constraint::Length(1), // 5 layer breadcrumb
+                gap(1),                // 6 breathing room
+                Constraint::Min(0),    // 7 control rows
+                Constraint::Length(1), // 8 gesture activity row (blank when idle)
+                Constraint::Length(1), // 9 footer: exits/mode help/notices
+            ])
+            .split(inner);
+        Self {
+            key: rows[0],
+            chords: rows[1],
+            ribbon: rows[3],
+            breadcrumb: rows[5],
+            controls: rows[7],
+            activity: rows[8],
+            footer: rows[9],
+        }
+    }
+}
+
+/// Longest stretch drawn at once: four measures, the old ribbon's width.
+const RIBBON_PAGE_BEATS: usize = 16;
+const RIBBON_MEASURE_BEATS: usize = 4;
+
+/// The sounding chord as measures of four beats, one block per beat: dots
+/// ahead, a full block as each beat arrives. A four-beat chord is one measure,
+/// eight is two, sixteen is four. Chords longer than one page show the page
+/// the playhead is on. Driven only by the audio beat clock and the chord span.
+fn chord_ribbon(beat: f64, span: ChordSpan) -> Line<'static> {
+    let length = if span.length_beats.is_finite() && span.length_beats > 0.0 {
+        f64::from(span.length_beats)
+    } else {
+        RIBBON_MEASURE_BEATS as f64
+    };
+    let elapsed = if beat.is_finite() && span.start_beat.is_finite() {
+        (beat - span.start_beat).clamp(0.0, length)
+    } else {
+        0.0
+    };
+    let played = elapsed.floor() as usize;
+    let page_start = if elapsed >= length {
+        0
+    } else {
+        played / RIBBON_PAGE_BEATS * RIBBON_PAGE_BEATS
+    };
+    let total = length.ceil() as usize;
+    let cells = (total - page_start).min(RIBBON_PAGE_BEATS);
+    let done = Style::default().fg(Color::Rgb(125, 153, 167));
+    let live = Style::default()
+        .fg(EMPHASIS_YELLOW)
+        .add_modifier(Modifier::BOLD);
+    let ahead = Style::default().fg(DIM_TEXT);
+    let mut spans = Vec::with_capacity(cells + cells / RIBBON_MEASURE_BEATS);
+    for cell in 0..cells {
+        if cell > 0 && cell % RIBBON_MEASURE_BEATS == 0 {
+            spans.push(Span::styled(" │ ", Style::default().fg(BORDER)));
+        }
+        let index = page_start + cell;
+        let (symbol, style) = if index < played {
+            ("█ ", done)
+        } else if index == played && elapsed < length {
+            ("█ ", live)
+        } else {
+            ("· ", ahead)
+        };
+        spans.push(Span::styled(symbol, style));
+    }
+    Line::from(spans)
 }
 
 /// Keep harmony in view even when a layer's control list scrolls.
@@ -1469,6 +1569,68 @@ fn slider_spans(
 
 pub(crate) fn item_ratio(item: &ControlItem) -> f32 {
     control_dial(item).ratio()
+}
+
+#[cfg(test)]
+mod chord_ribbon_tests {
+    use super::*;
+
+    fn span(start_beat: f64, length_beats: f32) -> ChordSpan {
+        ChordSpan {
+            start_beat,
+            length_beats,
+        }
+    }
+
+    fn text(beat: f64, span: ChordSpan) -> String {
+        chord_ribbon(beat, span).to_string()
+    }
+
+    #[test]
+    fn four_beat_chord_is_one_measure_with_a_block_per_beat() {
+        let chord = span(8.0, 4.0);
+        assert_eq!(text(8.0, chord), "█ · · · ");
+        assert_eq!(text(9.5, chord), "█ █ · · ");
+        assert_eq!(text(11.999, chord), "█ █ █ █ ");
+    }
+
+    #[test]
+    fn measures_match_the_chord_length() {
+        assert_eq!(text(0.0, span(0.0, 8.0)), "█ · · ·  │ · · · · ");
+        assert_eq!(text(5.0, span(0.0, 8.0)), "█ █ █ █  │ █ █ · · ");
+        assert_eq!(chord_ribbon(0.0, span(0.0, 16.0)).width(), 41);
+        assert_eq!(text(0.0, span(0.0, 16.0)).matches('│').count(), 3);
+    }
+
+    #[test]
+    fn only_the_current_beat_is_amber_and_past_beats_dim() {
+        let ribbon = chord_ribbon(6.0, span(0.0, 8.0));
+        let amber: Vec<_> = ribbon
+            .spans
+            .iter()
+            .filter(|s| s.style.fg == Some(EMPHASIS_YELLOW))
+            .collect();
+        assert_eq!(amber.len(), 1);
+        assert_eq!(amber[0].content, "█ ");
+        assert_ne!(ribbon.spans[0].style.fg, Some(EMPHASIS_YELLOW));
+    }
+
+    #[test]
+    fn chords_beyond_one_page_follow_the_playhead_page() {
+        let chord = span(0.0, 32.0);
+        assert_eq!(chord_ribbon(0.0, chord).width(), 41);
+        assert!(text(17.0, chord).starts_with("█ █ · · "));
+        assert_eq!(chord_ribbon(0.0, span(0.0, 20.0)).width(), 41);
+        assert_eq!(chord_ribbon(17.0, span(0.0, 20.0)).width(), 8);
+    }
+
+    #[test]
+    fn invalid_or_early_input_reads_as_an_unplayed_chord() {
+        assert_eq!(text(-3.0, span(8.0, 4.0)), "█ · · · ");
+        assert_eq!(text(f64::NAN, span(8.0, 4.0)), "█ · · · ");
+        assert_eq!(text(f64::INFINITY, span(0.0, 4.0)), "█ · · · ");
+        assert_eq!(text(0.0, span(f64::INFINITY, 4.0)), "█ · · · ");
+    }
 }
 
 #[cfg(test)]

@@ -24,6 +24,8 @@ pub(crate) struct PadEngine {
     pub(crate) layers: Vec<PadLayer>,
     input_voices: Vec<PadInputVoice>,
     pub(crate) cursor: ProgressionCursor,
+    /// Last span handed to telemetry, so the atomics are written on change only.
+    published_span: Option<ChordSpan>,
     pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
     last_chord_definition: ChordSlotControls,
@@ -96,6 +98,7 @@ impl PadEngine {
             active_character,
             last_chord_notes: initial_notes,
             last_chord_definition,
+            published_span: None,
             active_note_count: note_count,
             transport: Transport::Playing,
             phrase_index: 0,
@@ -276,6 +279,13 @@ impl PadEngine {
             self.phrase_index = 0;
         } else if advance && self.cursor.step == 0 {
             self.phrase_index = self.phrase_index.saturating_add(1);
+        }
+        // Ahead of any chord onset, so the span is known from the first
+        // frame and a consumer holds it when the chord arrives.
+        let span = self.cursor.chord_span();
+        if self.published_span != Some(span) {
+            self.telemetry.publish_chord_span(span);
+            self.published_span = Some(span);
         }
         let definition = c.chord_slot(self.cursor.window.progression, self.cursor.slot());
         let chord_notes = if *definition == self.last_chord_definition {
@@ -1370,6 +1380,16 @@ impl ProgressionCursor {
     /// The table slot sounding now.
     pub(crate) fn slot(&self) -> usize {
         self.window.slot(self.step)
+    }
+
+    /// The sounding chord's start beat and length. Before the first tick
+    /// the chord has not begun, so it reads as one chord from beat zero.
+    pub(crate) fn chord_span(&self) -> ChordSpan {
+        let length = GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats;
+        ChordSpan {
+            start_beat: self.next_chord_beat.map_or(0.0, |next| next - length),
+            length_beats: length as f32,
+        }
     }
 
     /// Start of the sounding phrase, for a live auto toggle after chord edits.

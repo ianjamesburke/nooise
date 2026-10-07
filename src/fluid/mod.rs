@@ -9,7 +9,7 @@ use std::error::Error;
 use std::f32::consts::TAU;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -178,6 +178,14 @@ impl Default for HitTelemetry {
     }
 }
 
+/// Where the sounding chord sits on the transport: the beat it began on and
+/// how many beats it holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ChordSpan {
+    pub(crate) start_beat: f64,
+    pub(crate) length_beats: f32,
+}
+
 /// Lock-free channel from the engine to visual consumers. The audio thread
 /// only ever stores; readers only ever load. `kick_pulse` remains the
 /// visualizer's dedicated ripple counter; `hits` mirrors every musical onset
@@ -204,6 +212,13 @@ pub(crate) struct FluidTelemetry {
     pub(crate) chord_release_bits: AtomicU32,
     /// Root pitch class of the latest chord onset (`f32::to_bits`).
     pub(crate) chord_root_pitch_class_bits: AtomicU32,
+    /// Transport beat the sounding chord began on (`f64::to_bits`) and its
+    /// length in beats (`f32::to_bits`). Written by `publish_chord_span` under
+    /// the `chord_span_seq` seqlock so a reader never sees one field of a
+    /// span with the other from its neighbour.
+    chord_span_seq: AtomicU64,
+    chord_start_beat_bits: AtomicU64,
+    chord_length_beats_bits: AtomicU32,
     /// Per-`Tab` output RMS over the latest `LEVEL_BLOCK` frames
     /// (`f32::to_bits`), each voice as it enters the mix (post effects, mute,
     /// and mix weight) and `Tab::Master` as the final output: what is actually
@@ -231,6 +246,9 @@ impl Default for FluidTelemetry {
             chord_attack_bits: AtomicU32::new(0.0f32.to_bits()),
             chord_release_bits: AtomicU32::new(0.0f32.to_bits()),
             chord_root_pitch_class_bits: AtomicU32::new(0.0f32.to_bits()),
+            chord_span_seq: AtomicU64::new(0),
+            chord_start_beat_bits: AtomicU64::new(0.0f64.to_bits()),
+            chord_length_beats_bits: AtomicU32::new(0.0f32.to_bits()),
             level_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             gesture_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
         }
@@ -292,6 +310,38 @@ impl FluidTelemetry {
             .store(count as u64, Ordering::Relaxed);
         self.phrase_reset.store(reset, Ordering::Relaxed);
         self.phrase_pulse.fetch_add(1, Ordering::Release);
+    }
+
+    /// Single writer (the pad engine's audio thread). Odd `chord_span_seq`
+    /// marks a write in progress.
+    pub(crate) fn publish_chord_span(&self, span: ChordSpan) {
+        let seq = self.chord_span_seq.load(Ordering::Relaxed);
+        self.chord_span_seq.store(seq + 1, Ordering::Relaxed);
+        fence(Ordering::Release);
+        self.chord_start_beat_bits
+            .store(span.start_beat.to_bits(), Ordering::Relaxed);
+        self.chord_length_beats_bits
+            .store(span.length_beats.to_bits(), Ordering::Relaxed);
+        self.chord_span_seq.store(seq + 2, Ordering::Release);
+    }
+
+    /// Latest published span; length 0 until the pad engine first publishes.
+    pub(crate) fn chord_span(&self) -> ChordSpan {
+        loop {
+            let before = self.chord_span_seq.load(Ordering::Acquire);
+            if before % 2 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let span = ChordSpan {
+                start_beat: f64::from_bits(self.chord_start_beat_bits.load(Ordering::Relaxed)),
+                length_beats: f32::from_bits(self.chord_length_beats_bits.load(Ordering::Relaxed)),
+            };
+            fence(Ordering::Acquire);
+            if self.chord_span_seq.load(Ordering::Relaxed) == before {
+                return span;
+            }
+        }
     }
 
     pub(crate) fn publish_level(&self, tab: Tab, rms: f32) {

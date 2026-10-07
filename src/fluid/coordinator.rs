@@ -54,6 +54,7 @@ pub(crate) struct ProductionCoordinatorContext<'a> {
     pub(crate) capabilities: runtime::TerminalCapabilities,
     pub(crate) beat: f64,
     pub(crate) active_chord: u64,
+    pub(crate) chord_span: ChordSpan,
 }
 
 pub(crate) fn coordinate_production_tick(
@@ -87,6 +88,7 @@ pub(crate) fn production_frame(
         telemetry: TelemetryView {
             beat: context.beat,
             active_chord: context.active_chord,
+            chord_span: context.chord_span,
         },
         presentation: ViewPresentation {
             fluid: context.fluid,
@@ -505,6 +507,7 @@ pub(crate) fn production_ui_loop(
                 capabilities: terminal.capabilities(),
                 beat: telemetry.beat(),
                 active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
+                chord_span: telemetry.chord_span(),
             },
         )
         .expect("pending commit has no fallible effects");
@@ -563,6 +566,7 @@ pub(crate) fn production_ui_loop(
                 telemetry: TelemetryView {
                     beat,
                     active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
+                    chord_span: telemetry.chord_span(),
                 },
                 presentation: ViewPresentation {
                     fluid: &fluid,

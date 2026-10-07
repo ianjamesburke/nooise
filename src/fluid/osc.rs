@@ -27,6 +27,11 @@
 //! - `/nooise/phrase` `i32 i32 i32` — zero-based phrase cycle since reset,
 //!   zero-based chord index in the sounding Pad window, and chord count. Sent
 //!   at each Pad chord boundary, after any reset in the same bundle
+//! - `/nooise/chord/span` `f32 f32` — transport beat the sounding chord began
+//!   on and its length in beats, sent whenever either changes (ahead of the
+//!   chord messages it accompanies, so a consumer holds the span when the
+//!   chord arrives). Chord progress is `/nooise/beat` minus the start beat,
+//!   over the length; this also covers a one-chord loop that repeats a slot
 //! - `/nooise/gesture/<gesture>` `f32` — that live gesture's amount over the
 //!   Master bus (0..1), sent whenever it changes, for `<gesture>` in
 //!   `GESTURES`; a visual can rise and return with it. `thin` is retired
@@ -43,7 +48,7 @@ use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, encoder};
 
 use super::gesture::{GESTURE_COUNT, GestureKind};
 use super::registry::{TAB_COUNT, Tab};
-use super::{FluidTelemetry, MUSICAL_HIT_COUNT, MusicalHit};
+use super::{ChordSpan, FluidTelemetry, MUSICAL_HIT_COUNT, MusicalHit};
 
 pub(crate) const ADDR_BEAT: &str = "/nooise/beat";
 pub(crate) const ADDR_LEVEL: &str = "/nooise/level";
@@ -68,6 +73,7 @@ pub(crate) const ADDR_CHORD: &str = "/nooise/chord";
 pub(crate) const ADDR_CHORD_CHANGE: &str = "/nooise/chord/change";
 pub(crate) const ADDR_PHRASE_RESET: &str = "/nooise/phrase/reset";
 pub(crate) const ADDR_PHRASE: &str = "/nooise/phrase";
+pub(crate) const ADDR_CHORD_SPAN: &str = "/nooise/chord/span";
 pub(crate) const ADDR_KICK: &str = "/nooise/voice/kick";
 /// Names in `MusicalHit::ALL` order. They are part of the OSC contract.
 pub(crate) const HIT_NAMES: [&str; MUSICAL_HIT_COUNT] =
@@ -135,6 +141,7 @@ struct Mirrored {
     phrase_chord_index: u64,
     phrase_chord_count: u64,
     phrase_reset: bool,
+    chord_span: ChordSpan,
     beat_bits: u64,
     level_bits: [u32; TAB_COUNT],
     gesture_bits: [u32; GESTURE_COUNT],
@@ -169,6 +176,7 @@ impl Mirrored {
             phrase_chord_index: telemetry.phrase_chord_index.load(Ordering::Relaxed),
             phrase_chord_count: telemetry.phrase_chord_count.load(Ordering::Relaxed),
             phrase_reset: telemetry.phrase_reset.load(Ordering::Relaxed),
+            chord_span: telemetry.chord_span(),
             beat_bits: telemetry.beat_bits.load(Ordering::Relaxed),
             level_bits: std::array::from_fn(|i| telemetry.level_bits[i].load(Ordering::Relaxed)),
             gesture_bits: std::array::from_fn(|i| {
@@ -216,6 +224,15 @@ impl Mirrored {
                     vec![OscType::Float(f32::from_bits(*new))],
                 ));
             }
+        }
+        if now.chord_span != self.chord_span {
+            out.push(message(
+                ADDR_CHORD_SPAN,
+                vec![
+                    OscType::Float(now.chord_span.start_beat as f32),
+                    OscType::Float(now.chord_span.length_beats),
+                ],
+            ));
         }
         if now.chord_pulse != self.chord_pulse {
             out.push(message(
@@ -318,6 +335,10 @@ mod tests {
         telemetry.publish_kick(0.25);
         telemetry.publish_kick(0.5);
         telemetry.publish_kick(0.75);
+        telemetry.publish_chord_span(ChordSpan {
+            start_beat: 8.0,
+            length_beats: 16.0,
+        });
         telemetry.publish_chord(2, 0.25, 6.0, 8.0);
         telemetry.publish_beat(4.5);
         telemetry.publish_level(Tab::Bass, 0.05);
@@ -332,6 +353,7 @@ mod tests {
                 "/nooise/voice/bass/level",
                 ADDR_LEVEL,
                 "/nooise/gesture/echo",
+                ADDR_CHORD_SPAN,
                 ADDR_CHORD,
                 ADDR_CHORD_CHANGE,
                 ADDR_KICK,
@@ -346,15 +368,16 @@ mod tests {
         assert_eq!(out[1].args, vec![OscType::Float(0.05)]);
         assert_eq!(out[2].args, vec![OscType::Float(0.1)]);
         assert_eq!(out[3].args, vec![OscType::Float(0.6)]);
+        assert_eq!(out[4].args, vec![OscType::Float(8.0), OscType::Float(16.0)]);
         assert_eq!(
-            out[4].args,
+            out[5].args,
             vec![OscType::Int(2), OscType::Float(6.0), OscType::Float(8.0)]
         );
-        assert_eq!(out[5].args, vec![OscType::Int(2), OscType::Float(0.25)]);
+        assert_eq!(out[6].args, vec![OscType::Int(2), OscType::Float(0.25)]);
         // Hits inside one poll share the latest level.
-        assert_eq!(out[6].args, vec![OscType::Float(0.75)]);
+        assert_eq!(out[7].args, vec![OscType::Float(0.75)]);
         assert_eq!(
-            out[9].args,
+            out[10].args,
             vec![OscType::Float(0.75), OscType::Float(-1.0)]
         );
         assert!(mirrored.diff(&telemetry).is_empty());
@@ -671,6 +694,7 @@ mod tests {
         let session = LiveSession::new(LiveSessionSnapshot::from_song(&song));
         let mut engine = FluidEngine::new(48_000.0, session, no_morph(), telemetry);
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+        let mut span_args = Vec::new();
         let mut buf = [0u8; 4096];
         // Render in slices so the emitter's poll cadence interleaves with
         // playback the way it does live; stop as soon as both arrive.
@@ -681,13 +705,16 @@ mod tests {
             while let Ok((len, _)) = receiver.recv_from(&mut buf) {
                 let (_, packet) = decoder::decode_udp(&buf[..len]).unwrap();
                 for m in messages_in(packet) {
+                    if m.addr == ADDR_CHORD_SPAN {
+                        span_args = m.args.clone();
+                    }
                     *seen.entry(m.addr).or_default() += 1;
                 }
                 receiver
                     .set_read_timeout(Some(Duration::from_millis(1)))
                     .unwrap();
             }
-            if [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK, ADDR_PHRASE]
+            if [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK, ADDR_PHRASE, ADDR_CHORD_SPAN]
                 .iter()
                 .all(|a| seen.contains_key(*a))
             {
@@ -695,11 +722,13 @@ mod tests {
             }
         }
         drop(emitter);
-        for addr in [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK, ADDR_PHRASE] {
+        for addr in [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK, ADDR_PHRASE, ADDR_CHORD_SPAN] {
             assert!(
                 seen.get(addr).copied().unwrap_or(0) > 0,
                 "no {addr}: {seen:?}"
             );
         }
+        // Default chord length: 4 bars of 4 beats.
+        assert_eq!(span_args[1], OscType::Float(16.0));
     }
 }

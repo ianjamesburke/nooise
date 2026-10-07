@@ -94,6 +94,7 @@ pub(crate) struct NavigationView {
 pub(crate) struct TelemetryView {
     pub(crate) beat: f64,
     pub(crate) active_chord: u64,
+    pub(crate) chord_span: ChordSpan,
 }
 
 /// Presentation-only state: never read by the engine, never persisted, and
@@ -1024,6 +1025,7 @@ mod tests {
             TelemetryView {
                 beat: 4.0,
                 active_chord: 1,
+                chord_span: ChordSpan::default(),
             },
         );
         assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
@@ -1098,6 +1100,38 @@ mod tests {
             mode,
             ..InteractionModel::default()
         })
+    }
+
+    #[test]
+    fn chord_ribbon_keeps_the_minimum_terminal_control_space() {
+        let model = InteractionModel::default();
+        let snapshot = session();
+        for (width, height) in [(46, 11), (80, 24), (120, 32)] {
+            let frame = render_model_with_session_at_size(
+                &model,
+                &snapshot,
+                TelemetryView {
+                    beat: 10.5,
+                    chord_span: ChordSpan {
+                        start_beat: 8.0,
+                        length_beats: 8.0,
+                    },
+                    ..TelemetryView::default()
+                },
+                width,
+                height,
+            );
+            assert!(frame.contains("█␠█␠█␠·␠␠│␠·␠·␠·␠·"), "{frame}");
+            assert!(frame.contains("Pads"), "{frame}");
+            let row = |needle: &str| frame.lines().position(|line| line.contains(needle));
+            assert!(row("█␠█␠█␠·").unwrap() < row("Master").unwrap(), "{frame}");
+            assert_eq!(frame.lines().count(), usize::from(height));
+            assert!(
+                frame
+                    .lines()
+                    .all(|line| line.chars().count() == usize::from(width))
+            );
+        }
     }
 
     #[test]
@@ -1498,6 +1532,7 @@ mod tests {
             TelemetryView {
                 beat: 1.0,
                 active_chord: 0,
+                chord_span: ChordSpan::default(),
             },
             120,
             24,
@@ -1531,6 +1566,7 @@ mod tests {
             TelemetryView {
                 beat: 1.0,
                 active_chord: 0,
+                chord_span: ChordSpan::default(),
             },
             120,
             24,
@@ -1662,6 +1698,7 @@ mod tests {
                 TelemetryView {
                     beat: 0.0,
                     active_chord: 7,
+                    chord_span: ChordSpan::default(),
                 },
             );
             assert!(frame.contains(crumb), "{frame}");
