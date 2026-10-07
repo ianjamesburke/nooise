@@ -725,6 +725,7 @@ impl FluidEngine {
         self.pad.set_midi(sink.clone());
         self.arp.set_midi(sink.clone());
         self.lead.set_midi(sink.clone());
+        self.bass.set_midi(sink.clone());
         self.midi_clock = Some(MidiClockFollower::new(sink));
         self
     }
@@ -754,6 +755,10 @@ impl FluidEngine {
                 if controls.lead.midi_in >= 0.5 {
                     self.lead
                         .midi_note_on(note, &controls.lead, controls.master.tune);
+                }
+                if bass_midi_mode(controls.bass.midi) == BassMidi::In {
+                    self.bass
+                        .midi_note_on(note, &controls.bass, controls.master.tune);
                 }
             }
             NoteOff(note) => {
@@ -928,6 +933,11 @@ impl StereoEngine for FluidEngine {
         }
         if master_muted || self.muted[Tab::Lead as usize] {
             effective.lead.midi_out = 0.0;
+        }
+        if (master_muted || self.muted[Tab::Bass as usize])
+            && bass_midi_mode(effective.bass.midi) == BassMidi::Out
+        {
+            effective.bass.midi = 0.0;
         }
         let mute_gains = self.mute_gates.next();
         let now_seconds = self.current_sample as f64 / self.sample_rate as f64;

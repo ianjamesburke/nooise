@@ -2337,6 +2337,7 @@ fn midi_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop()
             MidiMessage::PadOff,
             MidiMessage::ArpOff,
             MidiMessage::LeadOff,
+            MidiMessage::BassOff,
             MidiMessage::Stop
         ]
     );
@@ -5437,6 +5438,98 @@ fn bass_controls_adjust_and_clamp() {
 
     apply_reset(Tab::Bass, 2, &mut controls);
     assert_close(controls.bass.decay_time, 0.005);
+}
+
+/// Run a Bass engine for `seconds` at 120 BPM, returning what reached MIDI.
+fn run_bass_midi(
+    bass: &mut BassEngine,
+    controls: &BassControls,
+    receiver: &std::sync::mpsc::Receiver<MidiMessage>,
+    seconds: f32,
+) -> Vec<MidiMessage> {
+    let pad = PadControls::default();
+    let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
+    for _ in 0..(SAMPLE_RATE * seconds) as usize {
+        let timing = clock.tick(120.0, Transport::Playing);
+        bass.next(controls, &pad, 0.0, timing);
+    }
+    receiver.try_iter().collect()
+}
+
+#[test]
+fn bass_midi_out_sends_each_hit_and_releases_it_after_the_decay() {
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut bass = BassEngine::new(SAMPLE_RATE);
+    bass.set_midi(sink);
+    let controls = BassControls {
+        midi: 2.0,
+        decay_time: 0.1,
+        interval_beats: 1.0,
+        ..BassControls::default()
+    };
+    let root = bass_root_note(0, 0, &PadControls::default()) + (controls.octave as i32) * 12;
+    let sent = run_bass_midi(&mut bass, &controls, &receiver, 0.4);
+    assert_eq!(sent[0], MidiMessage::BassNote(root as u8));
+    assert_eq!(sent[1], MidiMessage::BassOff);
+}
+
+#[test]
+fn bass_midi_off_and_in_never_send_notes() {
+    for mode in [0.0, 1.0] {
+        let (sink, receiver) = MidiSink::test_channel();
+        let mut bass = BassEngine::new(SAMPLE_RATE);
+        bass.set_midi(sink);
+        let controls = BassControls {
+            midi: mode,
+            ..BassControls::default()
+        };
+        assert!(run_bass_midi(&mut bass, &controls, &receiver, 1.0).is_empty());
+    }
+}
+
+#[test]
+fn bass_midi_in_replaces_the_rhythm_and_plays_received_notes() {
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut bass = BassEngine::new(SAMPLE_RATE);
+    bass.set_midi(sink);
+    let controls = BassControls {
+        midi: 1.0,
+        ..BassControls::default()
+    };
+    run_bass_midi(&mut bass, &controls, &receiver, 1.0);
+    assert!(bass.voice.is_none(), "the pattern is silent while In is on");
+    bass.midi_note_on(45, &controls, 0.0);
+    assert!(bass.voice.is_some());
+    assert!(receiver.try_iter().next().is_none(), "input is not echoed");
+}
+
+#[test]
+fn bass_midi_out_releases_when_switched_away_from_out() {
+    let (sink, receiver) = MidiSink::test_channel();
+    let mut bass = BassEngine::new(SAMPLE_RATE);
+    bass.set_midi(sink);
+    let mut controls = BassControls {
+        midi: 2.0,
+        decay_time: 5.0,
+        interval_beats: 1.0,
+        ..BassControls::default()
+    };
+    run_bass_midi(&mut bass, &controls, &receiver, 0.1);
+    controls.midi = 0.0;
+    let sent = run_bass_midi(&mut bass, &controls, &receiver, 0.01);
+    assert_eq!(sent, [MidiMessage::BassOff]);
+}
+
+#[test]
+fn bass_midi_mode_round_trips_through_a_song_code() {
+    let mut controls = FluidControls::default();
+    controls.bass.midi = 2.0;
+    controls.midi_rows |= BASS_MIDI_ROW;
+    let song = SongState::from_controls(controls);
+    let code = song::encode_song_code(&song).unwrap();
+    let got = song::decode_song_code(&code).unwrap();
+    assert_eq!(got.controls.bass.midi, 2.0);
+    assert_eq!(got.controls.midi_rows & BASS_MIDI_ROW, BASS_MIDI_ROW);
 }
 
 #[test]

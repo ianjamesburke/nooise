@@ -21,9 +21,9 @@ use super::{
     EditorMotionAddress, EditorMotionField, EnvField, EnvTrigger, EnvelopeRoute, FluidControls,
     GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState, LfoField, LfoRoute, LfoShape,
     MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
-    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField,
-    MuteState, PAD_RHYTHM_ROWS, PlannedAction, RampParams, Step, StepTarget, TAB_COUNT, Tab,
-    all_specs, parse_module_slot_id, spec_by_id,
+    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIDI_ROW_BITS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind,
+    ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, PlannedAction, RampParams, Step, StepTarget,
+    TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -505,7 +505,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 midi_rows_record_seen = true;
                 let mut rows = Reader::new(payload);
                 let bits = rows.u8()?;
-                if !rows.is_empty() || bits & !0b00_111111 != 0 {
+                if !rows.is_empty() || bits & !MIDI_ROW_BITS != 0 {
                     return Err(SongCodeError::InvalidMidiRows(bits));
                 }
                 song.controls.midi_rows = bits;
@@ -2068,10 +2068,10 @@ mod midi_rows_record_tests {
 
     #[test]
     fn rejects_unknown_row_bits() {
-        let code = code_from_records(CONTAINER_VERSION, &[(MIDI_ROWS_RECORD, &[0b0100_0000])]);
+        let code = code_from_records(CONTAINER_VERSION, &[(MIDI_ROWS_RECORD, &[0b1000_0000])]);
         assert_eq!(
             decode_song_code(&code).err(),
-            Some(SongCodeError::InvalidMidiRows(0b0100_0000))
+            Some(SongCodeError::InvalidMidiRows(0b1000_0000))
         );
     }
 

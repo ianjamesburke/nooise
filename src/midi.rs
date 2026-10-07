@@ -17,6 +17,7 @@ const CLOCKS_PER_BEAT: f64 = 24.0;
 const PAD_VELOCITY: u8 = 100;
 const ARP_VELOCITY: u8 = 100;
 const LEAD_VELOCITY: u8 = 100;
+const BASS_VELOCITY: u8 = 100;
 const INPUT_DRAIN_LIMIT: usize = 128;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,6 +52,8 @@ pub(crate) enum MidiMessage {
     ArpOff,
     LeadNote(u8),
     LeadOff,
+    BassNote(u8),
+    BassOff,
     Shutdown,
 }
 
@@ -333,6 +336,7 @@ struct ActiveNotes {
     pad: Option<PadMidiNotes>,
     arp: Option<u8>,
     lead: Option<u8>,
+    bass: Option<u8>,
 }
 
 impl ActiveNotes {
@@ -340,6 +344,7 @@ impl ActiveNotes {
         self.pad.is_some_and(|notes| notes.active().contains(&note))
             || self.arp == Some(note)
             || self.lead == Some(note)
+            || self.bass == Some(note)
     }
 }
 
@@ -380,6 +385,14 @@ fn dispatch_on_channel<E>(
             active.lead = Some(note);
         }
         MidiMessage::LeadOff => release_lead(active, channel, send)?,
+        MidiMessage::BassNote(note) => {
+            release_bass(active, channel, send)?;
+            if !active.contains(note) {
+                send(&[0x90 | channel, note, BASS_VELOCITY])?;
+            }
+            active.bass = Some(note);
+        }
+        MidiMessage::BassOff => release_bass(active, channel, send)?,
         MidiMessage::Shutdown => {
             release_all(active, channel, send)?;
             send(&[0xb0 | channel, 123, 0])?;
@@ -431,6 +444,19 @@ fn release_lead<E>(
     Ok(())
 }
 
+fn release_bass<E>(
+    active: &mut ActiveNotes,
+    channel: u8,
+    send: &mut impl FnMut(&[u8]) -> Result<(), E>,
+) -> Result<(), E> {
+    if let Some(note) = active.bass.take()
+        && !active.contains(note)
+    {
+        send(&[0x80 | channel, note, 0])?;
+    }
+    Ok(())
+}
+
 fn release_all<E>(
     active: &mut ActiveNotes,
     channel: u8,
@@ -438,7 +464,8 @@ fn release_all<E>(
 ) -> Result<(), E> {
     release_pad(active, channel, send)?;
     release_arp(active, channel, send)?;
-    release_lead(active, channel, send)
+    release_lead(active, channel, send)?;
+    release_bass(active, channel, send)
 }
 
 #[cfg(test)]
@@ -477,6 +504,7 @@ impl MidiClockFollower {
                     self.sink.send(MidiMessage::PadOff);
                     self.sink.send(MidiMessage::ArpOff);
                     self.sink.send(MidiMessage::LeadOff);
+                    self.sink.send(MidiMessage::BassOff);
                     self.sink.send(MidiMessage::Stop);
                 }
             }
@@ -495,6 +523,7 @@ impl MidiClockFollower {
         self.sink.send(MidiMessage::PadOff);
         self.sink.send(MidiMessage::ArpOff);
         self.sink.send(MidiMessage::LeadOff);
+        self.sink.send(MidiMessage::BassOff);
         self.last_transport = None;
         self.next_clock = 0;
     }
@@ -505,6 +534,7 @@ impl Drop for MidiClockFollower {
         self.sink.send(MidiMessage::PadOff);
         self.sink.send(MidiMessage::ArpOff);
         self.sink.send(MidiMessage::LeadOff);
+        self.sink.send(MidiMessage::BassOff);
         self.sink.send(MidiMessage::Stop);
     }
 }
@@ -556,6 +586,7 @@ mod tests {
                 MidiMessage::PadOff,
                 MidiMessage::ArpOff,
                 MidiMessage::LeadOff,
+                MidiMessage::BassOff,
                 MidiMessage::Stop,
                 MidiMessage::Continue,
             ]

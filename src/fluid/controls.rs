@@ -412,6 +412,7 @@ pub(crate) struct BassControls {
     pub(crate) attack_time: f32,
     pub(crate) decay_time: f32, // also used as the cutoff curve when a hit retriggers mid-decay
     pub(crate) swing: f32,      // derived from the optional Swing module
+    pub(crate) midi: f32,       // index into BASS_MIDI_MODES; 0=Off, 1=In, 2=Out
 }
 
 impl Default for BassControls {
@@ -426,6 +427,7 @@ impl Default for BassControls {
             decay_time: 0.3,
             attack_time: 0.01,
             swing: 0.0,
+            midi: 0.0,
         }
     }
 }

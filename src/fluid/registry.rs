@@ -429,6 +429,13 @@ impl ControlSpec {
         )
     }
 
+    /// Name this control is searched by when its rendered label would
+    /// otherwise be an exact match for a concept shared across layers.
+    pub(crate) const fn search_name(mut self, name: &'static str) -> Self {
+        self.search.name = name;
+        self
+    }
+
     pub(crate) const fn search_group(
         mut self,
         name: &'static str,
@@ -1876,6 +1883,20 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.bass.octave = v,
             |c| format!("{:.0}", c.bass.octave),
         ),
+        ControlSpec::new(
+            "bass.midi_mode",
+            "MIDI",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&BASS_MIDI_MODES),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.bass.midi,
+            |c, v| c.bass.midi = v,
+            |c| bass_midi_mode(c.bass.midi).label().to_string(),
+        )
+        .search_name("bass midi mode")
+        .search_group("midi", "mode", true),
     ]
 );
 
@@ -2411,6 +2432,9 @@ pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
 
 pub(crate) const PAD_MIDI_IN_ROW: u8 = 1 << 0;
 pub(crate) const PAD_MIDI_OUT_ROW: u8 = 1 << 1;
+pub(crate) const BASS_MIDI_ROW: u8 = 1 << 6;
+/// Every assigned `midi_rows` bit; a song code naming any other is refused.
+pub(crate) const MIDI_ROW_BITS: u8 = 0b0111_1111;
 
 /// Optional MIDI rows retain their place after being added even when Off.
 /// Gate rows belong to their track's MIDI Out control.
@@ -2422,6 +2446,7 @@ pub(crate) fn midi_row_bit(id: &str) -> Option<u8> {
         "arp.midi_out" | "arp.midi_gate_beats" => Some(1 << 3),
         "lead.midi_in" => Some(1 << 4),
         "lead.midi_out" | "lead.midi_gate_beats" => Some(1 << 5),
+        "bass.midi_mode" => Some(BASS_MIDI_ROW),
         _ => None,
     }
 }
@@ -2467,7 +2492,7 @@ pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
 fn midi_rows_last(mut rows: Vec<ControlItem>) -> Vec<ControlItem> {
     rows.sort_by_key(|item| match item.id {
         "arp.midi_gate_beats" | "lead.midi_gate_beats" => 1,
-        "pad.midi_in" | "arp.midi_in" | "lead.midi_in" => 2,
+        "pad.midi_in" | "arp.midi_in" | "lead.midi_in" | "bass.midi_mode" => 2,
         "pad.midi_out" | "arp.midi_out" | "lead.midi_out" => 3,
         _ => 0,
     });

@@ -407,8 +407,8 @@ mod tests {
         }
         assert_eq!(
             winner(&entries, Tab::Bass, &["arp.midi_out"], "midi"),
-            "control:arp.midi_out",
-            "unavailable local concepts retain remote destinations"
+            "control:bass.midi_mode",
+            "a layer's own MIDI control beats other layers' destinations"
         );
     }
 
