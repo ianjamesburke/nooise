@@ -418,6 +418,7 @@ mod tests {
         assert_eq!(
             start.iter().map(|m| m.addr.as_str()).collect::<Vec<_>>(),
             [
+                ADDR_CHORD_SPAN,
                 ADDR_CHORD,
                 ADDR_CHORD_CHANGE,
                 ADDR_PHRASE_RESET,
@@ -425,7 +426,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            start[3].args,
+            start[4].args,
             vec![OscType::Int(0), OscType::Int(0), OscType::Int(2)]
         );
         assert!(tick_at(&mut pad, &mut mirrored, 0.5, None).is_empty());
@@ -714,15 +715,27 @@ mod tests {
                     .set_read_timeout(Some(Duration::from_millis(1)))
                     .unwrap();
             }
-            if [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK, ADDR_PHRASE, ADDR_CHORD_SPAN]
-                .iter()
-                .all(|a| seen.contains_key(*a))
+            if [
+                ADDR_BEAT,
+                ADDR_LEVEL,
+                ADDR_KICK,
+                ADDR_PHRASE,
+                ADDR_CHORD_SPAN,
+            ]
+            .iter()
+            .all(|a| seen.contains_key(*a))
             {
                 break;
             }
         }
         drop(emitter);
-        for addr in [ADDR_BEAT, ADDR_LEVEL, ADDR_KICK, ADDR_PHRASE, ADDR_CHORD_SPAN] {
+        for addr in [
+            ADDR_BEAT,
+            ADDR_LEVEL,
+            ADDR_KICK,
+            ADDR_PHRASE,
+            ADDR_CHORD_SPAN,
+        ] {
             assert!(
                 seen.get(addr).copied().unwrap_or(0) > 0,
                 "no {addr}: {seen:?}"
