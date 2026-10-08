@@ -287,6 +287,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
             beat,
             active_chord,
             chord_span: ChordSpan::default(),
+            ..TelemetryView::default()
         },
         presentation: ViewPresentation {
             fluid,

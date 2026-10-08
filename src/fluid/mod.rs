@@ -227,6 +227,11 @@ pub(crate) struct FluidTelemetry {
     /// Per-`GestureKind` Master-bus amount (`f32::to_bits`), published each
     /// `LEVEL_BLOCK` frames so a consumer can mirror a held gesture.
     pub(crate) gesture_bits: [AtomicU32; GESTURE_COUNT],
+    /// Per module slot (`module_layer_index(tab) * MODULE_SLOTS + slot`),
+    /// the compressor's displayed gain reduction in non-negative dB
+    /// (`f32::to_bits`), published each `LEVEL_BLOCK` frames. 0 for a slot
+    /// without a compressor.
+    gain_reduction_bits: [AtomicU32; MODULE_SLOT_TOTAL],
 }
 
 impl Default for FluidTelemetry {
@@ -251,6 +256,7 @@ impl Default for FluidTelemetry {
             chord_length_beats_bits: AtomicU32::new(0.0f32.to_bits()),
             level_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             gesture_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            gain_reduction_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
         }
     }
 }
@@ -350,6 +356,18 @@ impl FluidTelemetry {
 
     pub(crate) fn publish_gesture(&self, kind: GestureKind, amount: f32) {
         self.gesture_bits[kind as usize].store(amount.to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn publish_gain_reduction(&self, slot_index: usize, db: f32) {
+        self.gain_reduction_bits[slot_index].store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Every slot's latest gain reduction in dB, indexed like
+    /// `gain_reduction_bits`.
+    pub(crate) fn gain_reduction(&self) -> [f32; MODULE_SLOT_TOTAL] {
+        std::array::from_fn(|index| {
+            f32::from_bits(self.gain_reduction_bits[index].load(Ordering::Relaxed))
+        })
     }
 
     #[cfg(test)]

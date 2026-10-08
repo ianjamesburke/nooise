@@ -8,7 +8,7 @@ Shared DSP effects consumed by voice engines in `fluid.rs`.
 
 - `lfo.rs` — drifting/periodic LFO generators.
 - `panner.rs` — stereo pan helper.
-- `compression.rs` — shared stateful stereo compressor used by every layer and Master slot chain.
+- `compression.rs` — shared stateful stereo compressor used by every layer and Master slot chain. `gain()` reports the detector's linear gain from the latest sample (before makeup and the Amount blend) for the gain-reduction meter.
 - `crossfade.rs` — insert-style dry/wet `mix`/`mix_stereo` (`dry + (wet - dry) * amount`, so amount 0 is an exact dry pass) and `Outgoing<T>`, the fade-out holder a replaced processor or pad character stage keeps running in until its weight reaches zero.
 - `delay.rs` — stereo feedback delay whose read taps never glide: a delay-time change crossfades to a new fixed tap position over a fixed window instead of sliding the old one (so tempo-synced retargeting never pitch-bends), plus wet-only level-compensated Vintage colour, end-weighted pitch motion, true dry bypass, and allocation-free incremental buffer clearing for retired temporary processors.
 - `drive.rs` — shared stateless stereo saturation with exact zero-amount bypass.

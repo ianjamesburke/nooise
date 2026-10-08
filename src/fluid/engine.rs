@@ -22,6 +22,11 @@ use gesture_audio::GestureAudioBank;
 
 const STARTUP_FADE_SECONDS: f32 = 2.0;
 
+/// Time for a compressor's displayed gain reduction to fall to 1/e once the
+/// compressor lets go: slow enough to read at UI frame rate, fast enough that
+/// the meter follows each kick.
+const GAIN_REDUCTION_RELEASE_SECONDS: f32 = 0.3;
+
 /// Stateful post-synthesis Delay instances, addressed by the stable
 /// `(layer, slot)` storage identity rather than a catalog name.
 enum SlotFx {
@@ -57,13 +62,21 @@ struct RetiredFx {
 }
 
 struct ModuleFxBank {
-    slots: [Option<SlotFx>; MODULE_LAYERS * MODULE_SLOTS],
-    retiring: [Option<Outgoing<RetiredFx>>; MODULE_LAYERS * MODULE_SLOTS],
+    slots: [Option<SlotFx>; MODULE_SLOT_TOTAL],
+    retiring: [Option<Outgoing<RetiredFx>>; MODULE_SLOT_TOTAL],
     /// Each slot's field values from the last frame it was loaded. A retiring
     /// processor keeps running on these, not on the live slot: by the time a
     /// removal is noticed the live slot has already been cleared, and its
     /// zeroed Amount would silence the very tail being faded out.
-    last_loaded: [ModuleSlot; MODULE_LAYERS * MODULE_SLOTS],
+    last_loaded: [ModuleSlot; MODULE_SLOT_TOTAL],
+    /// Lowest linear gain each slot's compressor applied since the last
+    /// meter publish; 1.0 for a slot that reduced nothing or holds no
+    /// compressor.
+    gain_floor: [f32; MODULE_SLOT_TOTAL],
+    /// Each slot's displayed gain reduction in dB: instant attack, then an
+    /// exponential release, so a meter read once per UI frame neither
+    /// flickers nor misses a transient.
+    gain_reduction_db: [f32; MODULE_SLOT_TOTAL],
     max_delay_samples: usize,
     sample_rate: f32,
     retire_fade_samples: f32,
@@ -74,7 +87,9 @@ impl ModuleFxBank {
         Self {
             slots: std::array::from_fn(|_| None),
             retiring: std::array::from_fn(|_| None),
-            last_loaded: [ModuleSlot::default(); MODULE_LAYERS * MODULE_SLOTS],
+            last_loaded: [ModuleSlot::default(); MODULE_SLOT_TOTAL],
+            gain_floor: [1.0; MODULE_SLOT_TOTAL],
+            gain_reduction_db: [0.0; MODULE_SLOT_TOTAL],
             max_delay_samples: (sample_rate * (DELAY_FREE_MAX_MS / 1_000.0)).ceil() as usize,
             sample_rate,
             // The same window every other click-free level change in the
@@ -215,6 +230,28 @@ impl ModuleFxBank {
         mix_stereo(sample, wet, weight)
     }
 
+    /// Fold the block's deepest compressor gain into each slot's meter and
+    /// publish it. A retiring compressor is not metered: its slot already
+    /// shows whatever replaced it.
+    fn publish_gain_reduction(&mut self, telemetry: &FluidTelemetry, block_seconds: f32) {
+        let release = (-block_seconds / GAIN_REDUCTION_RELEASE_SECONDS).exp();
+        for (index, (floor, shown)) in self
+            .gain_floor
+            .iter_mut()
+            .zip(&mut self.gain_reduction_db)
+            .enumerate()
+        {
+            let reduction = if *floor < 1.0 {
+                -20.0 * floor.log10()
+            } else {
+                0.0
+            };
+            *shown = reduction.max(*shown * release);
+            *floor = 1.0;
+            telemetry.publish_gain_reduction(index, *shown);
+        }
+    }
+
     fn process(
         &mut self,
         tab: Tab,
@@ -264,6 +301,9 @@ impl ModuleFxBank {
                         max_delay_samples,
                         sample_rate,
                     );
+                    if let SlotFx::Compression(compressor) = fx {
+                        self.gain_floor[index] = self.gain_floor[index].min(compressor.gain());
+                    }
                 }
                 // Stateless shaping families hold no tail, so they have
                 // nothing to retire and are simply absent when unloaded.
@@ -559,6 +599,46 @@ mod module_fx_tests {
                 tab.name()
             );
         }
+    }
+
+    #[test]
+    fn a_compressing_slot_publishes_its_gain_reduction_and_releases_it() {
+        let telemetry = FluidTelemetry::default();
+        let mut bank = ModuleFxBank::new(TEST_SAMPLE_RATE);
+        let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
+        slots[2] = preset_slot("compression", 1.0);
+        slots[2].time = -20.0;
+        slots[2].right_time = 4.0;
+        let index = module_layer_index(Tab::Bass).unwrap() * MODULE_SLOTS + 2;
+        let block = LEVEL_BLOCK as f32 / TEST_SAMPLE_RATE;
+        for _ in 0..4 {
+            for _ in 0..LEVEL_BLOCK {
+                bank.process(Tab::Bass, &slots, (0.9, -0.9), timing());
+            }
+            bank.publish_gain_reduction(&telemetry, block);
+        }
+        // A 0.9 peak sits 19 dB over a -20 dB threshold; 4:1 keeps a quarter.
+        let loud = telemetry.gain_reduction()[index];
+        assert!((loud - 19.08 * 0.75).abs() < 0.5, "{loud}");
+        assert!(
+            telemetry
+                .gain_reduction()
+                .iter()
+                .enumerate()
+                .all(|(other, db)| other == index || *db == 0.0)
+        );
+
+        for _ in 0..LEVEL_BLOCK {
+            bank.process(Tab::Bass, &slots, (0.0, 0.0), timing());
+        }
+        bank.publish_gain_reduction(&telemetry, block);
+        let releasing = telemetry.gain_reduction()[index];
+        assert!(releasing > 0.0 && releasing < loud, "{releasing}");
+        // Five seconds of silence is over sixteen release time constants.
+        for _ in 0..(5.0 / block) as usize {
+            bank.publish_gain_reduction(&telemetry, block);
+        }
+        assert!(telemetry.gain_reduction()[index] < 0.01);
     }
 
     #[test]
@@ -1102,6 +1182,8 @@ impl StereoEngine for FluidEngine {
             {
                 self.telemetry.publish_gesture(kind, amount);
             }
+            self.module_fx
+                .publish_gain_reduction(&self.telemetry, LEVEL_BLOCK as f32 / self.sample_rate);
         }
         out
     }

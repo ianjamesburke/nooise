@@ -507,6 +507,9 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 Style::default().fg(LIVE_AMBER),
             ));
         }
+        if let Some(meter) = gain_reduction_meter(item, frame) {
+            spans.extend(meter);
+        }
         rows.push(Line::from(spans));
 
         let effective = automation.effective_lanes(address, beat);
@@ -1365,6 +1368,47 @@ pub(crate) fn control_dial(item: &ControlItem) -> Dial {
 }
 
 const LANE_WAVE: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+
+/// Horizontal eighth blocks, emptiest first, for meters that fill rightward.
+const METER_EIGHTHS: [char; 8] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
+/// A compressor meter's cells and the reduction that fills all of them. Sized
+/// to fit after the Amount display at the 46-column minimum frame.
+const GAIN_REDUCTION_CELLS: usize = 4;
+const GAIN_REDUCTION_FULL_DB: f32 = 20.0;
+
+/// The live gain-reduction chip after an active Compression module's Amount
+/// row: on the layer page's collapsed row and atop the module's detail.
+/// Silent compressors (Amount 0) show nothing.
+fn gain_reduction_meter(
+    item: &ControlItem,
+    frame: &PanelFrame<'_, '_>,
+) -> Option<Vec<Span<'static>>> {
+    let (prefix, slot, field) = parse_module_slot_id(item.id)?;
+    if field != ModuleSlotField::Amount {
+        return None;
+    }
+    let tab = module_layer_tab(prefix)?;
+    let module = frame.controls().modules.for_tab(tab)?.get(slot)?;
+    if module.kind()?.family != Family::Compression || module.amount <= 0.0 {
+        return None;
+    }
+    let db = frame.view.telemetry.gain_reduction_db[module_layer_index(tab)? * MODULE_SLOTS + slot];
+    let eighths = ((db / GAIN_REDUCTION_FULL_DB).clamp(0.0, 1.0)
+        * (GAIN_REDUCTION_CELLS * 8) as f32)
+        .round() as usize;
+    let mut filled = "█".repeat(eighths / 8);
+    if !eighths.is_multiple_of(8) {
+        filled.push(METER_EIGHTHS[eighths % 8 - 1]);
+    }
+    let empty = "░".repeat(GAIN_REDUCTION_CELLS - filled.chars().count());
+    let dim = Style::default().fg(DIM_TEXT);
+    Some(vec![
+        Span::styled(" ▼", dim),
+        Span::styled(filled, Style::default().fg(LIVE_AMBER)),
+        Span::styled(empty, dim),
+        Span::styled(format!(" {db:.0}dB"), dim),
+    ])
+}
 
 /// How many random cycles the lane scopes so sample & hold / random drift read
 /// as an actual scrolling trajectory rather than a single flat step.

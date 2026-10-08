@@ -2815,19 +2815,25 @@ pub(crate) fn module_slot_row<'a>(
     c: &'a FluidControls,
 ) -> Option<(&'a ModuleSlot, ModuleSlotField)> {
     let (layer, index, field) = parse_module_slot_id(id)?;
-    let slots: &[ModuleSlot; MODULE_SLOTS] = match layer {
-        "pad" => &c.modules.pad,
-        "perc" => &c.modules.perc,
-        "bass" => &c.modules.bass,
-        "kick" => &c.modules.kick,
-        "tonal" => &c.modules.tonal,
-        "clap" => &c.modules.clap,
-        "arp" => &c.modules.arp,
-        "lead" => &c.modules.lead,
-        "master" => &c.modules.master,
-        _ => return None,
-    };
+    let slots = c.modules.for_tab(module_layer_tab(layer)?)?;
     slots.get(index).map(|slot| (slot, field))
+}
+
+/// The tab whose module chain a slot-row id prefix (`pad` in
+/// `pad.slot1.amount`) addresses.
+pub(crate) fn module_layer_tab(prefix: &str) -> Option<Tab> {
+    Some(match prefix {
+        "pad" => Tab::Chords,
+        "perc" => Tab::Perc,
+        "bass" => Tab::Bass,
+        "kick" => Tab::Kick,
+        "tonal" => Tab::Tonal,
+        "clap" => Tab::Clap,
+        "arp" => Tab::Arp,
+        "lead" => Tab::Lead,
+        "master" => Tab::Master,
+        _ => return None,
+    })
 }
 
 /// One projection for the root page, progression list and shared chord editor.

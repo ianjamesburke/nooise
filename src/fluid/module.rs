@@ -15,6 +15,9 @@ use crate::fx::filter::FilterType;
 /// table; removing any is impossible, so this starts deliberately small.
 pub(crate) const MODULE_SLOTS: usize = 8;
 pub(crate) const MODULE_LAYERS: usize = 9;
+/// Every slot on every layer: the size of anything indexed by
+/// `module_layer_index(tab) * MODULE_SLOTS + slot`.
+pub(crate) const MODULE_SLOT_TOTAL: usize = MODULE_LAYERS * MODULE_SLOTS;
 
 /// Where a module runs. Taken from the loaded module, never from the slot
 /// index, so all slots stay interchangeable and the UI shows one flat chain.

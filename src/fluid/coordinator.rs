@@ -89,6 +89,7 @@ pub(crate) fn production_frame(
             beat: context.beat,
             active_chord: context.active_chord,
             chord_span: context.chord_span,
+            ..TelemetryView::default()
         },
         presentation: ViewPresentation {
             fluid: context.fluid,
@@ -567,6 +568,7 @@ pub(crate) fn production_ui_loop(
                     beat,
                     active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
                     chord_span: telemetry.chord_span(),
+                    gain_reduction_db: telemetry.gain_reduction(),
                 },
                 presentation: ViewPresentation {
                     fluid: &fluid,

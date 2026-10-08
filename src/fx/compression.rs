@@ -4,13 +4,22 @@ use super::crossfade::mix_stereo;
 
 pub(crate) struct StereoCompressor {
     envelope: f32,
+    /// The detector's linear gain from the latest sample, before makeup and
+    /// the Amount blend: what a hardware gain-reduction meter shows.
+    gain: f32,
 }
 
 impl StereoCompressor {
     pub(crate) fn new(envelope: f32) -> Self {
         Self {
             envelope: envelope.max(0.0),
+            gain: 1.0,
         }
+    }
+
+    /// Linear gain applied by the latest `process` call; 1.0 is no reduction.
+    pub(crate) fn gain(&self) -> f32 {
+        self.gain
     }
 
     pub(crate) fn process(&mut self, sample: (f32, f32), params: CompressorParams) -> (f32, f32) {
@@ -29,6 +38,7 @@ impl StereoCompressor {
         } else {
             1.0
         };
+        self.gain = gain_reduction;
         let makeup = 10_f32.powf(params.makeup_db / 20.0);
         let amount = params.amount.clamp(0.0, 1.0);
         let wet = (

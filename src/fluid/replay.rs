@@ -843,6 +843,7 @@ impl ReplayHarness {
                 beat: self.clock.now().as_secs_f64(),
                 active_chord: 0,
                 chord_span: ChordSpan::default(),
+                ..TelemetryView::default()
             },
             presentation: ViewPresentation {
                 fluid: &self.fluid,

@@ -90,11 +90,26 @@ pub(crate) struct NavigationView {
     pub(crate) selected: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TelemetryView {
     pub(crate) beat: f64,
     pub(crate) active_chord: u64,
     pub(crate) chord_span: ChordSpan,
+    /// Each module slot's compressor gain reduction in dB, indexed by
+    /// `module_layer_index(tab) * MODULE_SLOTS + slot`.
+    pub(crate) gain_reduction_db: [f32; MODULE_SLOT_TOTAL],
+}
+
+// Hand-written: std derives `Default` for arrays only up to length 32.
+impl Default for TelemetryView {
+    fn default() -> Self {
+        Self {
+            beat: 0.0,
+            active_chord: 0,
+            chord_span: ChordSpan::default(),
+            gain_reduction_db: [0.0; MODULE_SLOT_TOTAL],
+        }
+    }
 }
 
 /// Presentation-only state: never read by the engine, never persisted, and
@@ -1026,6 +1041,7 @@ mod tests {
                 beat: 4.0,
                 active_chord: 1,
                 chord_span: ChordSpan::default(),
+                ..TelemetryView::default()
             },
         );
         assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
@@ -1132,6 +1148,55 @@ mod tests {
                     .all(|line| line.chars().count() == usize::from(width))
             );
         }
+    }
+
+    #[test]
+    fn an_active_compressor_meters_its_gain_reduction_at_the_minimum_frame() {
+        let snapshot = session();
+        let fluid = RippleField::new();
+        let flipped = FlippedUnits::new();
+        let hub = |selected| InteractionModel {
+            navigation: Navigation::Hub { selected },
+            ..InteractionModel::default()
+        };
+        let probe = hub(0);
+        let row = UiViewModel::project(ViewProjection {
+            interaction: &probe,
+            session: &snapshot,
+            telemetry: TelemetryView::default(),
+            presentation: ViewPresentation {
+                fluid: &fluid,
+                flipped: &flipped,
+                cursor_visible: true,
+                notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
+            },
+        })
+        .items
+        .iter()
+        .position(|item| item.id == "master.slot2.amount")
+        .expect("the factory Master chain holds Compression in slot 2");
+        let mut telemetry = TelemetryView::default();
+        telemetry.gain_reduction_db[module_layer_index(Tab::Master).unwrap() * MODULE_SLOTS + 1] =
+            10.0;
+        let frame = render_model_with_session_at(&hub(row), &snapshot, telemetry);
+        let line = frame
+            .lines()
+            .find(|line| line.contains("Compression"))
+            .expect("selected Compression row is on screen");
+        assert!(line.contains("▼██░░␠10dB"), "{frame}");
+        assert!(
+            frame
+                .lines()
+                .all(|line| line.chars().count() == usize::from(MIN_TERMINAL_WIDTH)),
+            "{frame}"
+        );
+
+        let mut silent = snapshot.clone();
+        silent.controls.modules.master[1].amount = 0.0;
+        let frame = render_model_with_session_at(&hub(row), &silent, telemetry);
+        assert!(!frame.contains('▼'), "{frame}");
     }
 
     #[test]
@@ -1533,6 +1598,7 @@ mod tests {
                 beat: 1.0,
                 active_chord: 0,
                 chord_span: ChordSpan::default(),
+                ..TelemetryView::default()
             },
             120,
             24,
@@ -1567,6 +1633,7 @@ mod tests {
                 beat: 1.0,
                 active_chord: 0,
                 chord_span: ChordSpan::default(),
+                ..TelemetryView::default()
             },
             120,
             24,
@@ -1699,6 +1766,7 @@ mod tests {
                     beat: 0.0,
                     active_chord: 7,
                     chord_span: ChordSpan::default(),
+                    ..TelemetryView::default()
                 },
             );
             assert!(frame.contains(crumb), "{frame}");
