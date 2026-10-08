@@ -96,7 +96,8 @@ impl DriveType {
         }
     }
 
-    fn adaa(self, u: f64, previous: f64) -> f64 {
+    /// The curve at `u` with first-order ADAA against the previous input.
+    pub(crate) fn adaa(self, u: f64, previous: f64) -> f64 {
         let step = u - previous;
         if step.abs() < ADAA_MIN_STEP {
             self.shape(0.5 * (u + previous))

@@ -1,8 +1,11 @@
 //! The Bass voice: a monophonic line following the Pad's progression, in
-//! three characters over one shared trigger and pitch path.
+//! six characters over one shared trigger and pitch path.
 
 use super::*;
+use crate::fx::drive::DriveType;
 use crate::midi::{MidiMessage, MidiSink, tuned_note};
+use crate::synth::filter::SvfLowpass;
+use crate::synth::oscillator::PolyBlepSaw;
 
 /// Bass follows the same active progression slot as Pad/Arp. For Custom it
 /// reads that slot's root directly. Built-ins retain their authored Bass
@@ -156,6 +159,7 @@ impl BassEngine {
             hz,
             c.attack_time,
             c.decay_time,
+            c.punch,
             self.sample_rate,
         ));
     }
@@ -242,11 +246,16 @@ impl BassEngine {
 /// `bass.type` selects the voice character used for every new bass note.
 /// Index 0 (`Sub`) is the legacy voice, unchanged and the default; switching
 /// type never touches the shared trigger/rhythm, pitch, or reseed paths in
-/// `BassEngine::next` above.
+/// `BassEngine::next` above. FM, Fold and Acid each sweep their brightness
+/// with the note, so the onset carries mid and high content and the tail
+/// settles toward the fundamental.
 pub(crate) enum BassVoice {
     Sub(SubBassVoice),
     Saw(SawBassVoice),
     Pluck(PluckBassVoice),
+    Fm(FmBassVoice),
+    Fold(FoldBassVoice),
+    Acid(AcidBassVoice),
 }
 
 impl BassVoice {
@@ -255,17 +264,52 @@ impl BassVoice {
         hz: f32,
         attack_time: f32,
         decay_time: f32,
+        punch: f32,
         sample_rate: f32,
     ) -> Self {
-        match voice_type {
+        let mut voice = match voice_type {
             0 => Self::Sub(SubBassVoice::new(hz, attack_time, decay_time, sample_rate)),
             1 => Self::Saw(SawBassVoice::new(hz, attack_time, decay_time, sample_rate)),
-            _ => Self::Pluck(PluckBassVoice::new(
+            2 => Self::Pluck(PluckBassVoice::new(
                 hz,
                 attack_time,
                 decay_time,
                 sample_rate,
             )),
+            3 => Self::Fm(FmBassVoice::new(
+                hz,
+                attack_time,
+                decay_time,
+                punch,
+                sample_rate,
+            )),
+            4 => Self::Fold(FoldBassVoice::new(
+                hz,
+                attack_time,
+                decay_time,
+                punch,
+                sample_rate,
+            )),
+            _ => Self::Acid(AcidBassVoice::new(
+                hz,
+                attack_time,
+                decay_time,
+                punch,
+                sample_rate,
+            )),
+        };
+        voice.core_mut().sweep = PunchSweep::new(punch, sample_rate);
+        voice
+    }
+
+    fn core_mut(&mut self) -> &mut BassVoiceCore {
+        match self {
+            Self::Sub(voice) => &mut voice.core,
+            Self::Saw(voice) => &mut voice.core,
+            Self::Pluck(voice) => &mut voice.core,
+            Self::Fm(voice) => &mut voice.core,
+            Self::Fold(voice) => &mut voice.core,
+            Self::Acid(voice) => &mut voice.core,
         }
     }
 
@@ -274,6 +318,9 @@ impl BassVoice {
             Self::Sub(voice) => voice.next(),
             Self::Saw(voice) => voice.next(),
             Self::Pluck(voice) => voice.next(),
+            Self::Fm(voice) => voice.next(),
+            Self::Fold(voice) => voice.next(),
+            Self::Acid(voice) => voice.next(),
         }
     }
 
@@ -282,7 +329,38 @@ impl BassVoice {
             Self::Sub(voice) => voice.is_done(),
             Self::Saw(voice) => voice.is_done(),
             Self::Pluck(voice) => voice.is_done(),
+            Self::Fm(voice) => voice.is_done(),
+            Self::Fold(voice) => voice.is_done(),
+            Self::Acid(voice) => voice.is_done(),
         }
+    }
+}
+
+/// At 100% Punch a note starts this many semitones above its pitch...
+const PUNCH_MAX_SEMITONES: f32 = 12.0;
+/// ...and falls back with this time constant: short enough to read as the
+/// note's thump rather than a slide.
+const PUNCH_SWEEP_SECONDS: f32 = 0.012;
+
+/// Punch's onset pitch drop, shared by every character. Absent at Punch 0,
+/// so a voice without Punch keeps its unscaled oscillator path bit-for-bit.
+pub(crate) struct PunchSweep {
+    semitones: f32,
+    decay: f32,
+}
+
+impl PunchSweep {
+    fn new(punch: f32, sample_rate: f32) -> Option<Self> {
+        (punch > 0.0).then(|| Self {
+            semitones: punch.min(1.0) * PUNCH_MAX_SEMITONES,
+            decay: (-1.0 / (PUNCH_SWEEP_SECONDS * sample_rate)).exp(),
+        })
+    }
+
+    fn next_ratio(&mut self) -> f32 {
+        let ratio = (self.semitones / 12.0).exp2();
+        self.semitones *= self.decay;
+        ratio
     }
 }
 
@@ -294,18 +372,65 @@ impl BassVoice {
 /// module chain so every layer uses the same processor.
 pub(crate) struct BassVoiceCore {
     pub(crate) envelope: Adsr,
+    pub(crate) sweep: Option<PunchSweep>,
 }
 
 impl BassVoiceCore {
     pub(crate) fn new(attack_time: f32, decay_time: f32, sample_rate: f32) -> Self {
         Self {
             envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
+            sweep: None,
         }
+    }
+
+    /// This sample's Punch pitch ratio, or `None` without Punch.
+    fn pitch_ratio(&mut self) -> Option<f32> {
+        self.sweep.as_mut().map(PunchSweep::next_ratio)
     }
 
     pub(crate) fn is_done(&self) -> bool {
         self.envelope.is_done()
     }
+}
+
+/// One sine sample under an optional Punch ratio. Without one it is the
+/// plain `next`, which keeps Punch-free notes bit-for-bit.
+fn swept(osc: &mut SineOscillator, ratio: Option<f32>) -> f32 {
+    match ratio {
+        Some(ratio) => osc.next_scaled(ratio),
+        None => osc.next(),
+    }
+}
+
+/// A per-note brightness envelope: starts at `start` and falls toward
+/// `floor` with time constant `seconds`, captured at note start like the
+/// amplitude envelope.
+struct Brightness {
+    excess: f32,
+    floor: f32,
+    decay: f32,
+}
+
+impl Brightness {
+    fn new(start: f32, floor: f32, seconds: f32, sample_rate: f32) -> Self {
+        Self {
+            excess: start - floor,
+            floor,
+            decay: (-1.0 / (seconds * sample_rate).max(1.0)).exp(),
+        }
+    }
+
+    fn next(&mut self) -> f32 {
+        let value = self.floor + self.excess;
+        self.excess *= self.decay;
+        value
+    }
+}
+
+/// How long a character's brightness takes to settle, as a share of the
+/// note's Decay, bounded so very short or long notes keep an audible sweep.
+fn brightness_seconds(decay_time: f32, share: f32, min: f32, max: f32) -> f32 {
+    (decay_time * share).clamp(min, max)
 }
 
 /// Type 0 (default): a single sine oscillator through the shared
@@ -325,7 +450,8 @@ impl SubBassVoice {
     }
 
     pub(crate) fn next(&mut self) -> f32 {
-        self.osc.next() * self.core.envelope.next()
+        let ratio = self.core.pitch_ratio();
+        swept(&mut self.osc, ratio) * self.core.envelope.next()
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -367,9 +493,10 @@ impl SawBassVoice {
     }
 
     pub(crate) fn next(&mut self) -> f32 {
+        let ratio = self.core.pitch_ratio();
         let mut raw = 0.0f32;
         for (osc, gain) in self.oscillators.iter_mut().zip(BASS_SAW_HARMONIC_GAINS) {
-            raw += osc.next() * gain;
+            raw += swept(osc, ratio) * gain;
         }
         raw * BASS_SAW_OUTPUT_GAIN * self.core.envelope.next()
     }
@@ -419,18 +546,180 @@ impl PluckBassVoice {
     }
 
     pub(crate) fn next(&mut self) -> f32 {
-        let body = self.osc.next() * self.core.envelope.next();
+        let ratio = self.core.pitch_ratio();
+        let body = swept(&mut self.osc, ratio) * self.core.envelope.next();
 
         let transient = if self.transient_samples_remaining > 0 {
             let elapsed = self.transient_total_samples - self.transient_samples_remaining as f32;
             let gain = (-elapsed / self.transient_total_samples * 5.0).exp();
             self.transient_samples_remaining -= 1;
-            self.transient_osc.next() * gain
+            swept(&mut self.transient_osc, ratio) * gain
         } else {
             0.0
         };
 
         (body + transient * BASS_PLUCK_TRANSIENT_MIX) * BASS_PLUCK_OUTPUT_GAIN
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.core.is_done()
+    }
+}
+
+/// FM's onset modulation index, and how much 100% Punch multiplies it.
+const BASS_FM_ONSET_INDEX: f32 = 16.0;
+const BASS_FM_PUNCH_BOOST: f32 = 2.0;
+/// A steady low-index pair under the decaying one keeps some odd-harmonic
+/// body after the onset has collapsed toward the fundamental.
+const BASS_FM_BODY_INDEX: f32 = 0.8;
+const BASS_FM_OUTPUT_GAIN: f32 = 1.45;
+
+/// Type 3: two-operator FM. A 1:1 pair whose index starts high and decays
+/// gives a bright, saw-like attack that collapses to a sine; a 1:2 pair at a
+/// steady low index keeps a hollow body under it.
+pub(crate) struct FmBassVoice {
+    pub(crate) stack: FmStack,
+    pub(crate) hz: f32,
+    pub(crate) core: BassVoiceCore,
+}
+
+impl FmBassVoice {
+    pub(crate) fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        punch: f32,
+        sample_rate: f32,
+    ) -> Self {
+        let onset_index = BASS_FM_ONSET_INDEX * (1.0 + punch * BASS_FM_PUNCH_BOOST);
+        let index_seconds = brightness_seconds(decay_time, 0.2, 0.015, 0.15);
+        Self {
+            stack: FmStack::new(sample_rate)
+                .with_pair(
+                    FmPair::new(1.0, 1.0, onset_index)
+                        .with_index_decay(index_seconds * sample_rate)
+                        .with_level(0.5),
+                )
+                .with_pair(FmPair::new(2.0, 1.0, BASS_FM_BODY_INDEX).with_level(0.5)),
+            hz,
+            core: BassVoiceCore::new(attack_time, decay_time, sample_rate),
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> f32 {
+        let hz = self.hz * self.core.pitch_ratio().unwrap_or(1.0);
+        self.stack.next(hz) * BASS_FM_OUTPUT_GAIN * self.core.envelope.next()
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.core.is_done()
+    }
+}
+
+/// Fold's onset drive into the wavefolder, and how much 100% Punch adds.
+const BASS_FOLD_ONSET_GAIN: f32 = 7.0;
+const BASS_FOLD_PUNCH_BOOST: f32 = 1.0;
+const BASS_FOLD_OUTPUT_GAIN: f32 = 1.05;
+
+/// Type 4: a sine driven into the shared Drive module's triangle wavefolder
+/// (antialiased the same way), with the drive decaying back to unity: the
+/// onset folds into a growl of upper harmonics and the tail is a clean sine,
+/// because a unit sine never reaches a fold point.
+pub(crate) struct FoldBassVoice {
+    pub(crate) osc: SineOscillator,
+    fold_gain: Brightness,
+    previous: Option<f64>,
+    pub(crate) core: BassVoiceCore,
+}
+
+impl FoldBassVoice {
+    pub(crate) fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        punch: f32,
+        sample_rate: f32,
+    ) -> Self {
+        Self {
+            osc: SineOscillator::new(hz, sample_rate),
+            fold_gain: Brightness::new(
+                BASS_FOLD_ONSET_GAIN * (1.0 + punch * BASS_FOLD_PUNCH_BOOST),
+                1.0,
+                brightness_seconds(decay_time, 0.3, 0.02, 0.3),
+                sample_rate,
+            ),
+            previous: None,
+            core: BassVoiceCore::new(attack_time, decay_time, sample_rate),
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> f32 {
+        let ratio = self.core.pitch_ratio();
+        let sine = swept(&mut self.osc, ratio);
+        let u = f64::from(sine * self.fold_gain.next());
+        let previous = self.previous.replace(u).unwrap_or(u);
+        DriveType::Fold.adaa(u, previous) as f32 * BASS_FOLD_OUTPUT_GAIN * self.core.envelope.next()
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.core.is_done()
+    }
+}
+
+/// Acid's filter: cutoff as a multiple of the note, from `BASE` plus an
+/// envelope that starts `DEPTH` higher (more with Punch) and decays.
+const BASS_ACID_CUTOFF_BASE: f32 = 2.0;
+const BASS_ACID_CUTOFF_DEPTH: f32 = 24.0;
+const BASS_ACID_PUNCH_BOOST: f32 = 1.5;
+/// 1/Q of the filter: low enough for the resonant squelch the sweep is for.
+const BASS_ACID_RESONANCE: f32 = 0.5;
+const BASS_ACID_OUTPUT_GAIN: f32 = 0.8;
+
+/// Type 5: subtractive. A band-limited saw through a resonant lowpass whose
+/// cutoff sweeps down with every note, the classic acid-line snap.
+pub(crate) struct AcidBassVoice {
+    saw: PolyBlepSaw,
+    filter: SvfLowpass,
+    cutoff: Brightness,
+    hz: f32,
+    sample_rate: f32,
+    pub(crate) core: BassVoiceCore,
+}
+
+impl AcidBassVoice {
+    pub(crate) fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        punch: f32,
+        sample_rate: f32,
+    ) -> Self {
+        Self {
+            saw: PolyBlepSaw::new(sample_rate),
+            filter: SvfLowpass::default(),
+            cutoff: Brightness::new(
+                BASS_ACID_CUTOFF_BASE
+                    + BASS_ACID_CUTOFF_DEPTH * (1.0 + punch * BASS_ACID_PUNCH_BOOST),
+                BASS_ACID_CUTOFF_BASE,
+                brightness_seconds(decay_time, 0.35, 0.03, 0.4),
+                sample_rate,
+            ),
+            hz,
+            sample_rate,
+            core: BassVoiceCore::new(attack_time, decay_time, sample_rate),
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> f32 {
+        let hz = self.hz * self.core.pitch_ratio().unwrap_or(1.0);
+        let saw = self.saw.next(hz);
+        let filtered = self.filter.next(
+            saw,
+            hz * self.cutoff.next(),
+            BASS_ACID_RESONANCE,
+            self.sample_rate,
+        );
+        filtered * BASS_ACID_OUTPUT_GAIN * self.core.envelope.next()
     }
 
     pub(crate) fn is_done(&self) -> bool {

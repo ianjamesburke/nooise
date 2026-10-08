@@ -15,7 +15,8 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = CHORD_BUILDER_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = BASS_TYPE_EXPANSION_EPOCH;
+pub(crate) const BASS_TYPE_EXPANSION_EPOCH: u16 = 7;
 pub(crate) const CHORD_BUILDER_EPOCH: u16 = 6;
 pub(crate) const DRUNKEN_WAVE_EPOCH: u16 = 4;
 pub(crate) const PAD_PROGRESSION_EXPANSION_EPOCH: u16 = 5;
@@ -86,6 +87,12 @@ const RANGE_CHANGES: &[RangeChange] = &[
     RangeChange {
         epoch: CHORD_BUILDER_EPOCH,
         target: RangeTarget::ChordSlot,
+    },
+    // Bass Type gained FM, Fold and Acid after Pluck. A saved sweep's depth
+    // would cover a different set of characters on the wider dial.
+    RangeChange {
+        epoch: BASS_TYPE_EXPANSION_EPOCH,
+        target: RangeTarget::Control("bass.type"),
     },
 ];
 

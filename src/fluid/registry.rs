@@ -1868,6 +1868,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.bass.voice_type = v,
             |c| type_label(c.bass.voice_type, BASS_TYPES).to_string(),
         ),
+        gain_pct!("bass.punch", "Punch", bass.punch),
         beat_interval!(
             "bass.interval_beats",
             "Length",
@@ -1920,7 +1921,9 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
 /// The character choices behind each voice-type control, in stored-value
 /// order. A control's `max` is `last_index_of` its own table, so a table and
 /// its slider range can never disagree.
-pub(crate) const BASS_TYPES: &[&str] = &["Sub", "Saw", "Pluck"];
+/// Dial order. Append-only: song codes store `bass.type` as this index, and
+/// growing it needs a `RANGE_CHANGES` epoch.
+pub(crate) const BASS_TYPES: &[&str] = &["Sub", "Saw", "Pluck", "FM", "Fold", "Acid"];
 pub(crate) const PAD_TYPES: &[&str] = &["Warm", "Dark", "Glass", "Choir", "Hollow", "Tape"];
 pub(crate) const KICK_TYPES: &[&str] = &["Sub", "Warm", "Wood", "Felt", "909", "Deep", "Dust"];
 pub(crate) const TONAL_SYNTH_TYPES: &[&str] = &[

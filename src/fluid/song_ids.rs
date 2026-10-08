@@ -797,6 +797,7 @@ const SONG_ID_TABLE: &[&str] = &[
     "pad.chord8_fifth",
     "perc.attack_ms",
     "bass.midi_mode",
+    "bass.punch",
 ];
 
 /// Index of `id` in the song-code id table, or `None` if the control has

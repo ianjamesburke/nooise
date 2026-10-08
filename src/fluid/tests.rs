@@ -4262,8 +4262,8 @@ fn tab_controls_classify_each_slider_kind() {
         (
             Tab::Bass,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Discrete, Discrete, Continuous,
-                Gain,
+                Gain, Timing, Timing, Discrete, Gain, Timing, Timing, Discrete, Discrete,
+                Continuous, Gain,
             ],
         ),
         (
@@ -5297,9 +5297,17 @@ fn bass_tab_shows_type_and_rhythm_rows_with_letter_display() {
     let rows = tab_controls(Tab::Bass, &controls);
     assert_eq!(rows[3].id, "bass.type");
     assert_eq!(rows[3].label, "Type");
-    assert_eq!(rows[6].label, "Rhythm");
+    assert_eq!((rows[4].id, rows[4].display.as_str()), ("bass.punch", "0%"));
+    assert_eq!(rows[7].label, "Rhythm");
 
-    for (voice_type, display) in [(0.0, "Sub"), (1.0, "Saw"), (2.0, "Pluck")] {
+    for (voice_type, display) in [
+        (0.0, "Sub"),
+        (1.0, "Saw"),
+        (2.0, "Pluck"),
+        (3.0, "FM"),
+        (4.0, "Fold"),
+        (5.0, "Acid"),
+    ] {
         controls.bass.voice_type = voice_type;
         let rows = tab_controls(Tab::Bass, &controls);
         assert_eq!(rows[3].display, display, "bass.type {voice_type}");
@@ -5308,7 +5316,7 @@ fn bass_tab_shows_type_and_rhythm_rows_with_letter_display() {
     for (rhythm, display) in [(0.0, "A"), (3.0, "D")] {
         controls.bass.rhythm = rhythm;
         let rows = tab_controls(Tab::Bass, &controls);
-        assert_eq!(rows[6].display, display, "bass.rhythm {rhythm}");
+        assert_eq!(rows[7].display, display, "bass.rhythm {rhythm}");
     }
 }
 
@@ -5316,16 +5324,16 @@ fn bass_tab_shows_type_and_rhythm_rows_with_letter_display() {
 fn bass_controls_adjust_and_clamp() {
     let mut controls = FluidControls::default();
 
-    apply_delta(Tab::Bass, 6, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 7, 1.0, &mut controls);
     assert_close(controls.bass.rhythm, 1.0);
 
     controls.bass.rhythm = 3.0;
-    apply_delta(Tab::Bass, 6, 1.0, &mut controls);
+    apply_delta(Tab::Bass, 7, 1.0, &mut controls);
     assert_close(controls.bass.rhythm, 3.0);
 
     controls.bass.octave = -1.0;
-    apply_delta(Tab::Bass, 7, -1.0, &mut controls);
-    apply_delta(Tab::Bass, 7, -1.0, &mut controls);
+    apply_delta(Tab::Bass, 8, -1.0, &mut controls);
+    apply_delta(Tab::Bass, 8, -1.0, &mut controls);
     assert_close(controls.bass.octave, -3.0);
 
     apply_reset(Tab::Bass, 0, &mut controls);
@@ -5489,7 +5497,7 @@ fn bass_engine_is_monophonic_and_hard_cuts_on_retrigger() {
 #[test]
 fn bass_voice_decays_to_silence_without_sustaining() {
     let sample_rate = 48_000.0;
-    let mut voice = BassVoice::new(0, 110.0, 0.005, 0.05, sample_rate);
+    let mut voice = BassVoice::new(0, 110.0, 0.005, 0.05, 0.0, sample_rate);
 
     // Well past attack+decay (0.055s); a sustaining envelope would still
     // be holding at ~0.85 gain here, an AD envelope has decayed to ~0.
@@ -5503,7 +5511,7 @@ fn bass_voice_decays_to_silence_without_sustaining() {
 #[test]
 fn bass_type_zero_matches_legacy_sub_voice_exactly() {
     let sample_rate = 48_000.0;
-    let mut dispatched = BassVoice::new(0, 110.0, 0.01, 0.05, sample_rate);
+    let mut dispatched = BassVoice::new(0, 110.0, 0.01, 0.05, 0.0, sample_rate);
     let mut legacy = SubBassVoice::new(110.0, 0.01, 0.05, sample_rate);
 
     for _ in 0..(sample_rate * 0.3) as usize {
@@ -5578,19 +5586,143 @@ fn bass_types_produce_differing_but_comparably_balanced_audio() {
     let sample_rate = 48_000.0;
     let samples = (sample_rate * 0.4) as usize;
 
-    let types: Vec<SoundVariant> = [(0usize, "sub"), (1, "saw"), (2, "pluck")]
-        .into_iter()
-        .map(|(voice_type, name)| {
-            let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, sample_rate);
-            let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
-                let s = voice.next();
-                (s, s)
-            });
-            (name, step)
-        })
-        .collect();
+    let types: Vec<SoundVariant> = [
+        (0usize, "sub"),
+        (1, "saw"),
+        (2, "pluck"),
+        (3, "fm"),
+        (4, "fold"),
+        (5, "acid"),
+    ]
+    .into_iter()
+    .map(|(voice_type, name)| {
+        let mut voice = BassVoice::new(voice_type, 110.0, 0.01, 0.3, 0.0, sample_rate);
+        let step: Box<dyn FnMut() -> (f32, f32)> = Box::new(move || {
+            let s = voice.next();
+            (s, s)
+        });
+        (name, step)
+    })
+    .collect();
 
     assert_types_differ_but_balanced("bass", samples, types);
+}
+
+/// One note of a Bass type, `seconds` long.
+fn bass_note(voice_type: usize, hz: f32, punch: f32, seconds: f32) -> Vec<f32> {
+    let sample_rate = 48_000.0;
+    let mut voice = BassVoice::new(voice_type, hz, 0.01, 0.3, punch, sample_rate);
+    (0..(sample_rate * seconds) as usize)
+        .map(|_| voice.next())
+        .collect()
+}
+
+/// Mean squared slope over mean squared level: proportional to the mean
+/// squared frequency of the signal, so it rises with brightness.
+fn brightness(samples: &[f32]) -> f32 {
+    let slope: f32 = samples
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).powi(2))
+        .sum();
+    let level: f32 = samples.iter().map(|s| s * s).sum();
+    slope / level
+}
+
+/// Headroom ceiling for a Bass note at `bass.level` 1.0: the resonant Acid
+/// filter is the loudest peak, with room left for its trim to move.
+const MAX_BASS_PEAK: f32 = 1.6;
+
+#[test]
+fn no_bass_type_exceeds_the_headroom_budget() {
+    for (voice_type, name) in BASS_TYPES.iter().enumerate() {
+        for hz in [41.2, 55.0, 82.41, 130.81] {
+            for punch in [0.0, 1.0] {
+                let peak = bass_note(voice_type, hz, punch, 0.3)
+                    .into_iter()
+                    .fold(0.0f32, |peak, s| peak.max(s.abs()));
+                assert!(
+                    peak <= MAX_BASS_PEAK,
+                    "{name} at {hz} Hz, punch {punch}: peak {peak:.2}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn bright_bass_types_open_on_the_onset_and_settle_toward_the_fundamental() {
+    for (voice_type, name) in [(3, "FM"), (4, "Fold"), (5, "Acid")] {
+        let note = bass_note(voice_type, 55.0, 0.0, 0.3);
+        let onset = brightness(&note[..960]);
+        let tail = brightness(&note[7_200..12_000]);
+        assert!(onset > tail * 4.0, "{name}: onset {onset} vs tail {tail}");
+    }
+}
+
+#[test]
+fn punch_adds_impact_to_every_bass_type() {
+    for (voice_type, name) in BASS_TYPES.iter().enumerate() {
+        let plain = bass_note(voice_type, 55.0, 0.0, 0.3);
+        let punched = bass_note(voice_type, 55.0, 1.0, 0.3);
+        // Over the first 20 ms the octave drop alone raises Sub's mean
+        // squared frequency by about half.
+        assert!(
+            brightness(&punched[..960]) > brightness(&plain[..960]) * 1.25,
+            "{name}: Punch did not brighten the onset"
+        );
+        // On the sine characters Punch is only the pitch drop, which has
+        // settled five time constants in, while even Pluck's shortened
+        // envelope still sounds. FM, Fold and Acid also start brighter, so
+        // their tails stay brighter for longer by design.
+        if voice_type > 2 {
+            continue;
+        }
+        let tail = |samples: &[f32]| brightness(&samples[2_880..5_280]);
+        assert!(
+            (tail(&punched) / tail(&plain)).max(tail(&plain) / tail(&punched)) < 4.0,
+            "{name}: Punch changed the tail"
+        );
+    }
+}
+
+/// Renders a short line through every Bass type, without and with full
+/// Punch, to `$NOOISE_AUDITION_DIR/bass-<type>-punch<0|100>.wav` for listening:
+/// `NOOISE_AUDITION_DIR=/tmp/bass cargo test --release bass_type_audition -- --ignored`.
+#[test]
+#[ignore]
+fn bass_type_audition() {
+    let dir = std::env::var("NOOISE_AUDITION_DIR")
+        .expect("set NOOISE_AUDITION_DIR to the directory the WAVs go in");
+    let sample_rate = 48_000.0;
+    let notes = [55.0, 55.0, 82.41, 73.42, 55.0, 65.41, 49.0, 55.0];
+    let step = (sample_rate * 0.25) as usize;
+    for (voice_type, name) in BASS_TYPES.iter().enumerate() {
+        for punch in [0.0, 1.0] {
+            let path = format!(
+                "{dir}/bass-{}-punch{}.wav",
+                name.to_lowercase(),
+                (punch * 100.0) as u32
+            );
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: sample_rate as u32,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&path, spec).expect("create audition WAV");
+            for hz in notes {
+                let mut voice = BassVoice::new(voice_type, hz, 0.01, 0.3, punch, sample_rate);
+                for _ in 0..step {
+                    // Half scale: a raw peak up to 2.0 still lands unclipped.
+                    let sample = (voice.next() * 0.5).clamp(-1.0, 1.0);
+                    writer
+                        .write_sample((sample * f32::from(i16::MAX)) as i16)
+                        .expect("write audition sample");
+                }
+            }
+            writer.finalize().expect("finish audition WAV");
+        }
+    }
 }
 
 #[test]
