@@ -46,6 +46,8 @@ pub(crate) enum Family {
     Compression,
     /// Stereo filter with cutoff, resonance, and response type controls.
     Filter,
+    /// Saturation with a character curve, bias, and dry blend behind Amount.
+    Drive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,6 +168,32 @@ const FILTER_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
+/// Every field defaults to 0 and 0 is the original Drive (Soft, unbiased,
+/// fully wet), so a code saved before these rows existed decodes unchanged.
+/// That is why the blend is stored as Dry rather than Mix.
+const DRIVE_PARAMETERS: &[EffectParameter] = &[
+    EffectParameter {
+        field: ModuleSlotField::Amount,
+        label: "Amount",
+        search_name: "Amount",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Feedback,
+        label: "Type",
+        search_name: "Type",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Time,
+        label: "Bias",
+        search_name: "Bias",
+    },
+    EffectParameter {
+        field: ModuleSlotField::RightTime,
+        label: "Dry",
+        search_name: "Dry",
+    },
+];
+
 const SINGLE_AMOUNT_PARAMETERS: &[EffectParameter] = &[EffectParameter {
     field: ModuleSlotField::Amount,
     label: "Amount",
@@ -208,6 +236,7 @@ impl ModuleKind {
             Family::Reverb => REVERB_PARAMETERS,
             Family::Compression => COMPRESSION_PARAMETERS,
             Family::Filter => FILTER_PARAMETERS,
+            Family::Drive => DRIVE_PARAMETERS,
         }
     }
 
@@ -259,10 +288,10 @@ pub(crate) const MODULE_CATALOG: &[ModuleKind] = &[
     },
     ModuleKind {
         id: "drive",
-        search_names: &["drive"],
+        search_names: &["drive", "distortion", "saturation"],
         display_name: "Drive",
         domain: Domain::Post,
-        family: Family::SingleAmount,
+        family: Family::Drive,
     },
     ModuleKind {
         id: "room",

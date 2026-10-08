@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use crate::fx::compression::{CompressorParams, StereoCompressor};
 use crate::fx::crossfade::{Outgoing, mix_stereo};
 use crate::fx::delay::{DelayParams, StereoDelay};
-use crate::fx::drive;
+use crate::fx::drive::{DriveParams, DriveType, StereoDrive};
 use crate::fx::filter::{FilterParams, FilterType, StereoFilter};
 use crate::fx::reverb::{Freeverb, ReverbParams};
 
@@ -34,6 +34,7 @@ enum SlotFx {
     Reverb(Freeverb),
     Compression(StereoCompressor),
     Filter(StereoFilter),
+    Drive(StereoDrive),
 }
 
 impl SlotFx {
@@ -43,6 +44,7 @@ impl SlotFx {
             Self::Reverb(_) => Family::Reverb,
             Self::Compression(_) => Family::Compression,
             Self::Filter(_) => Family::Filter,
+            Self::Drive(_) => Family::Drive,
         }
     }
 }
@@ -180,6 +182,15 @@ impl ModuleFxBank {
                     amount: slot.amount,
                 },
             ),
+            SlotFx::Drive(drive) => drive.process(
+                sample,
+                DriveParams {
+                    amount: slot.amount,
+                    drive_type: DriveType::from_value(slot.feedback),
+                    bias: slot.time,
+                    dry: slot.right_time,
+                },
+            ),
         }
     }
 
@@ -281,12 +292,17 @@ impl ModuleFxBank {
                 continue;
             }
             match kind.family {
-                Family::Delay | Family::Reverb | Family::Compression | Family::Filter => {
+                Family::Delay
+                | Family::Reverb
+                | Family::Compression
+                | Family::Filter
+                | Family::Drive => {
                     if processor.is_none() {
                         *processor = Some(match kind.family {
                             Family::Delay => SlotFx::Delay(StereoDelay::new(max_delay_samples)),
                             Family::Reverb => SlotFx::Reverb(Freeverb::new(sample_rate)),
                             Family::Filter => SlotFx::Filter(StereoFilter::default()),
+                            Family::Drive => SlotFx::Drive(StereoDrive::new(sample_rate)),
                             _ => SlotFx::Compression(StereoCompressor::new(0.0)),
                         });
                     }
@@ -305,14 +321,8 @@ impl ModuleFxBank {
                         self.gain_floor[index] = self.gain_floor[index].min(compressor.gain());
                     }
                 }
-                // Stateless shaping families hold no tail, so they have
-                // nothing to retire and are simply absent when unloaded.
-                Family::SingleAmount => {
-                    if kind.id == "drive" {
-                        sample = drive::process(sample, slot.amount);
-                    }
-                }
-                Family::TwoKnob | Family::Drunken => {}
+                // Pre-trigger and DSP-less families shape nothing here.
+                Family::SingleAmount | Family::TwoKnob | Family::Drunken => {}
             }
         }
         sample

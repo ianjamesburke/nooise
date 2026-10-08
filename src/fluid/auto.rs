@@ -1428,6 +1428,29 @@ mod tests {
         }
     }
 
+    /// Drive's Type, Bias and Dry reuse slot fields an amount-only Drive
+    /// ignored. A built-in Drive carrying leftovers there would change sound.
+    #[test]
+    fn every_built_in_drive_keeps_the_original_curve() {
+        for (index, state) in decode_auto_states().iter().enumerate() {
+            for tab in Tab::all() {
+                let slots = state.controls.modules.for_tab(tab).unwrap();
+                for slot in slots
+                    .iter()
+                    .filter(|slot| slot.kind().is_some_and(|kind| kind.id == "drive"))
+                {
+                    assert_eq!(
+                        (slot.time, slot.right_time, slot.feedback),
+                        (0.0, 0.0, 0.0),
+                        "auto state {} {} Drive",
+                        index + 1,
+                        tab.name()
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn leg_math_two_states_wraps_forever() {
         let morph = MorphState::new(

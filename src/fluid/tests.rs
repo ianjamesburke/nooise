@@ -3922,14 +3922,14 @@ fn a_loaded_slot_row_is_labelled_with_its_module() {
         .into_iter()
         .find(|item| item.id == "kick.slot1.time")
         .expect("kick slot 1 ships pre-loaded with Filter");
-    // The `›` marks a module whose row Enter drills into; Drive has none.
+    // The `›` marks a module whose row Enter drills into; Swing has none.
     assert_eq!(row.label, "Filter ›");
 
     let row = tab_controls(Tab::Kick, &controls)
         .into_iter()
         .find(|item| item.id == "kick.slot2.amount")
         .expect("kick slot 2 ships pre-loaded with Drive");
-    assert_eq!(row.label, "Drive");
+    assert_eq!(row.label, "Drive ›");
 
     controls.modules.tonal[0] = preset_slot("swing", 0.0);
     let row = tab_controls(Tab::Tonal, &controls)
@@ -4180,6 +4180,35 @@ fn module_slots_round_trip_through_a_song_code() {
     assert_near(decoded.controls.modules.kick[2].vintage, 0.4);
     assert_eq!(decoded.controls.modules.arp[7].kind, 1.0);
     assert_eq!(decoded.controls.modules.pad[0].kind().unwrap().id, "room");
+}
+
+#[test]
+fn drive_detail_rows_round_trip_and_project_their_labels() {
+    let decoded = round_trip(|c| {
+        c.modules.bass[1].feedback = 2.0;
+        c.modules.bass[1].time = 0.4;
+        c.modules.bass[1].right_time = 0.25;
+    });
+    let drive = decoded.modules.bass[1];
+    assert_eq!(drive.kind().unwrap().id, "drive");
+    assert_eq!(drive.feedback, 2.0);
+    assert_close_named(drive.time, 0.4, "bass Drive Bias");
+    assert_close_named(drive.right_time, 0.25, "bass Drive Dry");
+
+    let rows = module_detail_controls(Tab::Bass, 1, &decoded);
+    let shown: Vec<_> = rows
+        .iter()
+        .map(|row| (row.label.as_str(), row.display.as_str()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("Amount", "15%"),
+            ("Type", "Fold"),
+            ("Bias", "40%"),
+            ("Dry", "25%")
+        ]
+    );
 }
 
 /// Adding fixed slot controls must not make a plain song any bigger. Container

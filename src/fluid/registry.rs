@@ -4,6 +4,7 @@
 
 use super::widget::DialScale;
 use super::*;
+use crate::fx::drive::{DRIVE_TYPES, DriveType};
 use crate::fx::filter::FilterType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -642,6 +643,22 @@ impl ControlSpec {
                 spec.max = 2.0;
                 spec.step = Step::Linear(1.0);
                 spec.entry = Entry::Round;
+                spec.reset = 0.0;
+            }
+            (Family::Drive, ModuleSlotField::Feedback) => {
+                spec.kind = ControlKind::Discrete;
+                spec.min = 0.0;
+                spec.max = (DRIVE_TYPES.len() - 1) as f32;
+                spec.step = Step::Linear(1.0);
+                spec.entry = Entry::Round;
+                spec.reset = 0.0;
+            }
+            (Family::Drive, ModuleSlotField::Time | ModuleSlotField::RightTime) => {
+                spec.kind = ControlKind::Continuous;
+                spec.min = 0.0;
+                spec.max = 1.0;
+                spec.step = Step::Linear(0.01);
+                spec.entry = Entry::Percent;
                 spec.reset = 0.0;
             }
             _ => {}
@@ -2659,6 +2676,17 @@ pub(crate) fn module_detail_controls(
                 Some(ModuleSlotField::Feedback) => format!("{:.0} ms", item.value),
                 Some(ModuleSlotField::Vintage) => format!("{:.1} dB", item.value),
                 _ => item.display.clone(),
+            };
+        }
+    }
+    if kind.family == Family::Drive {
+        for item in &mut items {
+            item.display = match field_of(item.id) {
+                Some(ModuleSlotField::Feedback) => {
+                    DriveType::from_value(item.value).label().to_string()
+                }
+                Some(_) => pct(item.value),
+                None => item.display.clone(),
             };
         }
     }
