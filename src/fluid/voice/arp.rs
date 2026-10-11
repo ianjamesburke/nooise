@@ -148,13 +148,14 @@ impl ArpEngine {
         &mut self,
         c: &ArpControls,
         pad: &PadControls,
-        tune: f32,
+        key: MasterKey,
         timing: TimingContext,
     ) -> (f32, f32) {
         // `pad_chord_tones` is the same chord-source path Pad and Bass
         // resolve through, so a custom progression drives all three
         // identically.
         let (progression, slot) = self.progression.follow(pad, timing);
+        let tune = key.shift(progression) as f32;
         let midi_enabled = c.midi_out >= 0.5 && self.midi.is_some();
         if self.midi_active_until_beat.is_some()
             && (!midi_enabled

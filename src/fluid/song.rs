@@ -1616,8 +1616,8 @@ impl EncodedValue {
     }
 
     /// Smallest exactly-lossless spelling of a whole number: one byte through
-    /// `i8` (which covers every discrete row — the widest is `master.tune` at
-    /// -12..12 — and the low power-of-two/beat-grid rungs), two through `i16`,
+    /// `i8` (which covers every discrete row and the low power-of-two/beat-grid
+    /// rungs), two through `i16`,
     /// four as a raw `f32` for anything fractional. The value is absolute, not
     /// relative to `spec.min`, so a later build that retunes a control's range
     /// cannot silently reinterpret a code written today.
@@ -2526,6 +2526,16 @@ mod retired_control_tests {
                 Some(SongCodeError::RetiredControl("triangle/ramp lfo shape"))
             );
         }
+    }
+
+    /// Master Key replaced Tune outright: a saved semitone offset has no key
+    /// to land on, so the code is refused instead of loaded in the wrong key.
+    #[test]
+    fn a_code_setting_the_retired_master_tune_is_refused() {
+        assert_eq!(
+            decode_song_code(&code_setting("master.tune")).err(),
+            Some(SongCodeError::RetiredControl("master.tune"))
+        );
     }
 
     #[test]

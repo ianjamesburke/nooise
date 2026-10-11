@@ -5117,7 +5117,7 @@ fn chord_builder_opens_every_progression_without_authoring_on_both_terminal_prof
                     .iter()
                     .any(|frame| frame.text.contains("Root"))
             );
-            let name = pad_chord_name(&song.controls.pad, progression, 0, ChordNames::Letters);
+            let name = pad_chord_name(&song.controls.pad, progression, 0, ChordLabels::default());
             assert!(result.frames.iter().any(|frame| frame.text.contains(&name)));
             assert!(result.frames.iter().any(|frame| {
                 frame

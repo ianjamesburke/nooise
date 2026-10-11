@@ -204,12 +204,14 @@ pub(crate) fn chord_pitch_name(note: i32) -> &'static str {
 
 /// Name the four source notes, including tones introduced by Close's
 /// inversion/doubling rule. Output-count thinning does not rename harmony.
-pub(crate) fn custom_chord_name(slot: &ChordSlotControls) -> String {
+/// The chord's letter name with every pitch moved by `shift` semitones, the
+/// Master Key's shift for its progression.
+pub(crate) fn custom_chord_name(slot: &ChordSlotControls, shift: i32) -> String {
     let parts = chord_name_parts(slot);
-    let mut name = format!("{}{}", chord_pitch_name(parts.root), parts.body);
+    let mut name = format!("{}{}", chord_pitch_name(parts.root + shift), parts.body);
     if let Some(bass) = parts.bass {
         name.push('/');
-        name.push_str(chord_pitch_name(bass));
+        name.push_str(chord_pitch_name(bass + shift));
     }
     name
 }
@@ -310,6 +312,15 @@ pub(crate) enum ChordNames {
     #[default]
     Letters,
     Roman,
+}
+
+/// Everything a chord's on-screen name depends on: letters or Roman, and the
+/// Master Key letters are written in (Roman reads against the home key, so
+/// the key never changes it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ChordLabels {
+    pub(crate) names: ChordNames,
+    pub(crate) key: MasterKey,
 }
 
 /// A chord as a Roman numeral against a home key: the root's degree in the

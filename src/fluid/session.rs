@@ -40,6 +40,15 @@ pub(crate) struct LiveSessionSnapshot {
 }
 
 impl LiveSessionSnapshot {
+    /// How this generation writes chord names: its display choice and the
+    /// Master Key that letters are written in.
+    pub(crate) fn chord_labels(&self) -> ChordLabels {
+        ChordLabels {
+            names: self.chord_names,
+            key: MasterKey::from_control(self.controls.master.key),
+        }
+    }
+
     pub(crate) fn from_song(song: &SongState) -> Self {
         Self {
             generation: 0,

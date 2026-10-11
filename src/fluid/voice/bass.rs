@@ -175,10 +175,11 @@ impl BassEngine {
         &mut self,
         c: &BassControls,
         pad: &PadControls,
-        tune: f32,
+        key: MasterKey,
         timing: TimingContext,
     ) -> (f32, f32) {
         let (progression, slot) = self.progression.follow(pad, timing);
+        let tune = key.shift(progression) as f32;
         let mode = bass_midi_mode(c.midi);
         if mode != BassMidi::Out || timing.transport != self.transport {
             self.release_midi();

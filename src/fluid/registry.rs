@@ -1561,23 +1561,18 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(0.0),
         ControlSpec::new(
-            "master.tune",
-            "Tune",
+            "master.key",
+            "Key",
             ControlKind::Discrete,
-            -12.0,
-            12.0,
+            0.0,
+            MasterKey::DIAL_MAX,
             Step::Linear(1.0),
             Entry::Round,
-            |c| c.master.tune,
-            |c, v| c.master.tune = v,
-            |c| {
-                if c.master.tune.abs() < 0.05 {
-                    "0 st".to_string()
-                } else {
-                    format!("{:+.0} st", c.master.tune)
-                }
-            },
+            |c| c.master.key,
+            |c, v| c.master.key = v,
+            |c| MasterKey::from_control(c.master.key).label().to_string(),
         )
+        .search_name("master key transpose tune")
         .reset_at(0.0),
     ]
 );
@@ -1739,7 +1734,10 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         Entry::Round,
         |c| c.pad.progression,
         |c, v| c.pad.progression = v,
-        |c| progression_label(progression_index(c.pad.progression)),
+        |c| progression_label(
+            progression_index(c.pad.progression),
+            MasterKey::from_control(c.master.key)
+        ),
     )
     .song_values(&PROGRESSION_SONG_VALUES),
     ControlSpec::new(
@@ -2868,14 +2866,13 @@ pub(crate) fn module_layer_tab(prefix: &str) -> Option<Tab> {
 }
 
 /// One projection for the root page, progression list and shared chord editor.
-/// Address fields by stable ID so appending a knob cannot change a navigation target.
 /// A progression-drill row's value: the chord's name and whether it is the
 /// authored one. The registry draws it in letters; the view redraws it for the
 /// session's chord naming.
 pub(crate) fn progression_slot_display(
     pad: &PadControls,
     slot: usize,
-    names: ChordNames,
+    labels: ChordLabels,
 ) -> String {
     let progression = progression_index(pad.progression);
     let status = if pad.chord_is_edited(progression, slot) {
@@ -2887,10 +2884,11 @@ pub(crate) fn progression_slot_display(
     };
     format!(
         "{} · {status}",
-        pad_chord_name(pad, progression, slot, names)
+        pad_chord_name(pad, progression, slot, labels)
     )
 }
 
+/// Address fields by stable ID so appending a knob cannot change a navigation target.
 pub(crate) fn chords_tab_controls(
     c: &FluidControls,
     drill: interaction::ChordDrill,
@@ -2921,7 +2919,14 @@ pub(crate) fn chords_tab_controls(
                     .expect("every slot has a root")
                     .item(c);
                 item.label = format!("Chord {}", slot + 1);
-                item.display = progression_slot_display(&c.pad, slot, ChordNames::Letters);
+                item.display = progression_slot_display(
+                    &c.pad,
+                    slot,
+                    ChordLabels {
+                        names: ChordNames::Letters,
+                        key: MasterKey::from_control(c.master.key),
+                    },
+                );
                 item
             })
             .collect(),

@@ -36,7 +36,7 @@ The priority is the computer keyboard workflow, shared musical behavior and pers
 
 | Musical state | Launch or rig configuration |
 | --- | --- |
-| Chords, notes, sound, Master Tune, rhythm, automation, mutes, and chosen evolving state | MIDI ports/channels, per-layer MIDI In/Out, Pad MIDI triggering, MIDI output gate settings, MIDI row visibility, OSC destinations, Link participation, and device mappings |
+| Chords, notes, sound, Master Key, rhythm, automation, mutes, and chosen evolving state | MIDI ports/channels, per-layer MIDI In/Out, Pad MIDI triggering, MIDI output gate settings, MIDI row visibility, OSC destinations, Link participation, and device mappings |
 
 Recorded musical notes or actions may belong to a future session document even when they originated on a MIDI keyboard. The originating port does not become necessary to replay them internally.
 

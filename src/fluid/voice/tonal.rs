@@ -393,9 +393,10 @@ impl TonalEngine {
         &mut self,
         c: &TonalControls,
         progression: usize,
-        tune: f32,
+        key: MasterKey,
         timing: TimingContext,
     ) -> (f32, f32) {
+        let tune = key.shift(progression) as f32;
         let phrase = wrapped_index(c.phrase, TONAL_PHRASES.len());
         self.sync_phrase(phrase);
 

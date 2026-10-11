@@ -62,19 +62,20 @@ struct PadInputVoice {
 }
 
 impl PadEngine {
-    /// `tune` is `master.tune` at construction. It must be passed in rather
+    /// `key` is `master.key` at construction. It must be passed in rather
     /// than assumed neutral: the opening chord is voiced here and holds for a
     /// whole `chord_bars` (~12 s at defaults, its release bleeding into the
-    /// next chord), so a session started from a song code with a non-zero
-    /// tune would play its first chord at concert pitch while Bass, Tonal and
-    /// Arp — which read tune per note — are all transposed.
+    /// next chord), so a session started from a song code with a chosen key
+    /// would play its first chord in its authored key while Bass, Tonal and
+    /// Arp — which resolve the key per note — are all in the chosen one.
     pub(crate) fn new(
         sample_rate: f32,
         c: &PadControls,
-        tune: f32,
+        key: MasterKey,
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
         let cursor = ProgressionCursor::new(c);
+        let tune = key.shift(cursor.window.progression) as f32;
         let active_character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let last_chord_definition = *c.chord_slot(cursor.window.progression, cursor.slot());
         let initial_notes = pad_chord_notes_with_slot(&last_chord_definition);
@@ -267,10 +268,16 @@ impl PadEngine {
         self.transport = Transport::Stopped;
     }
 
-    pub(crate) fn next(&mut self, c: &PadControls, tune: f32, timing: TimingContext) -> (f32, f32) {
+    pub(crate) fn next(
+        &mut self,
+        c: &PadControls,
+        key: MasterKey,
+        timing: TimingContext,
+    ) -> (f32, f32) {
         let old_progression = self.cursor.window.progression;
         let old_morph_start = self.cursor.morph_phrase_start;
         let advance = self.cursor.tick(c, timing);
+        let tune = key.shift(self.cursor.window.progression) as f32;
         let phrase_reset = !self.phrase_sent
             || (timing.morph_phrase_start.is_some()
                 && timing.morph_phrase_start != old_morph_start)
@@ -956,8 +963,27 @@ pub(crate) fn progression_home(progression: usize) -> (i32, HomeMode, &'static s
     }
 }
 
-pub(crate) fn progression_home_label(progression: usize) -> String {
+/// Each progression's home tonic as a pitch class, built once: voices ask on
+/// every note, and `progression_home` voices a chord to answer. `FluidEngine`
+/// builds the table before audio starts, so the callback never initialises it.
+pub(crate) fn progression_tonic_pitch_class(progression: usize) -> i32 {
+    static TONICS: std::sync::OnceLock<[i32; CUSTOM_PROGRESSION_INDEX + 1]> =
+        std::sync::OnceLock::new();
+    TONICS.get_or_init(|| {
+        std::array::from_fn(|progression| progression_home(progression).0.rem_euclid(12))
+    })[progression.min(CUSTOM_PROGRESSION_INDEX)]
+}
+
+/// The key a progression sounds in under the Master Key: its authored home,
+/// or the chosen pitch class with the same mode ("C minor").
+pub(crate) fn progression_home_label(progression: usize, key: MasterKey) -> String {
     let (_, mode, tonic) = progression_home(progression);
+    let tonic = match key {
+        MasterKey::Home => tonic,
+        MasterKey::Pitch(_) => {
+            chord_pitch_name(progression_tonic_pitch_class(progression) + key.shift(progression))
+        }
+    };
     format!("{tonic} {}", mode.label())
 }
 
@@ -1343,10 +1369,23 @@ pub(crate) fn progression_key(progression: &Progression) -> &'static str {
 }
 
 /// `pad.progression`'s label: key and mood for a built-in ("Am · Drift"),
-/// or "Custom".
-pub(crate) fn progression_label(progression: usize) -> String {
+/// or "Custom". The key is the Master Key's when one is chosen ("Cm · Drift").
+pub(crate) fn progression_label(progression: usize, key: MasterKey) -> String {
     match PROGRESSIONS.get(progression) {
-        Some(built_in) => format!("{} · {}", progression_key(built_in), built_in.mood),
+        Some(built_in) => {
+            let authored = progression_key(built_in);
+            let key = match key {
+                MasterKey::Home => authored.to_string(),
+                MasterKey::Pitch(_) => format!(
+                    "{}{}",
+                    chord_pitch_name(
+                        progression_tonic_pitch_class(progression) + key.shift(progression)
+                    ),
+                    if authored.ends_with('m') { "m" } else { "" }
+                ),
+            };
+            format!("{key} · {}", built_in.mood)
+        }
         None => "Custom".to_string(),
     }
 }
@@ -1560,11 +1599,11 @@ pub(crate) fn pad_chord_name(
     c: &PadControls,
     progression: usize,
     slot: usize,
-    names: ChordNames,
+    labels: ChordLabels,
 ) -> String {
     let chord = c.chord_slot(progression, slot);
-    match names {
-        ChordNames::Letters => custom_chord_name(chord),
+    match labels.names {
+        ChordNames::Letters => custom_chord_name(chord, labels.key.shift(progression)),
         ChordNames::Roman => {
             let (tonic, mode, _) = progression_home(progression);
             roman_chord_name(chord, tonic, mode)

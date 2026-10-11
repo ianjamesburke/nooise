@@ -317,6 +317,7 @@ fn emit_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fluid::MasterKey;
     use rosc::decoder;
 
     fn messages_in(packet: OscPacket) -> Vec<OscMessage> {
@@ -396,7 +397,7 @@ mod tests {
             ..PadControls::default()
         };
         let telemetry = Arc::new(FluidTelemetry::default());
-        let mut pad = PadEngine::new(48_000.0, &controls, 0.0, Arc::clone(&telemetry));
+        let mut pad = PadEngine::new(48_000.0, &controls, MasterKey::Home, Arc::clone(&telemetry));
         let mut mirrored = Mirrored::from(&telemetry);
         fn tick(
             pad: &mut PadEngine,
@@ -408,7 +409,7 @@ mod tests {
         ) -> Vec<OscMessage> {
             let mut timing = TimingContext::new(48_000.0, 120.0, beat);
             timing.morph_phrase_start = morph_start;
-            pad.next(controls, 0.0, timing);
+            pad.next(controls, MasterKey::Home, timing);
             mirrored.diff(telemetry)
         }
         let tick_at = |pad: &mut PadEngine, mirrored: &mut Mirrored, beat, morph_start| {
@@ -444,7 +445,7 @@ mod tests {
 
         let mut stopped = TimingContext::new(48_000.0, 120.0, 2.0);
         stopped.transport = crate::fluid::engine::Transport::Stopped;
-        pad.next(&controls, 0.0, stopped);
+        pad.next(&controls, MasterKey::Home, stopped);
         assert!(mirrored.diff(&telemetry).is_empty());
         pad.restart_sequence(&controls);
         let restart = tick_at(&mut pad, &mut mirrored, 0.0, None);

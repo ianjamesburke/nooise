@@ -566,11 +566,12 @@ impl LeadEngine {
         &mut self,
         c: &LeadControls,
         pad: &PadControls,
-        tune: f32,
+        key: MasterKey,
         timing: TimingContext,
     ) -> (f32, f32) {
         // The same chord-source path Pad, Bass, and Arp resolve through.
         let (progression, slot) = self.progression.follow(pad, timing);
+        let tune = key.shift(progression) as f32;
         let midi_enabled = c.midi_out >= 0.5 && self.midi.is_some();
         if !midi_enabled || timing.transport != self.transport {
             self.release_midi();

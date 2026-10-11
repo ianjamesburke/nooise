@@ -142,7 +142,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         header.chords,
         &controls.pad,
         frame.active_slot,
-        view.session.chord_names,
+        view.session.chord_labels(),
     );
     if let Some(title) = &view.chord_title {
         f.render_widget(
@@ -292,10 +292,10 @@ fn draw_harmony(
     chords_area: Rect,
     pad: &PadControls,
     active_slot: usize,
-    names: ChordNames,
+    labels: ChordLabels,
 ) {
     let window = ChordWindow::requested(pad);
-    let key = progression_home_label(window.progression);
+    let key = progression_home_label(window.progression, labels.key);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("KEY  ", Style::default().fg(DIM_TEXT)),
@@ -312,7 +312,7 @@ fn draw_harmony(
     let mut spans = vec![Span::styled("CHORDS  ", Style::default().fg(DIM_TEXT))];
     let mut used = "CHORDS  ".len();
     for (index, &slot) in slots.iter().enumerate() {
-        let name = pad_chord_name(pad, window.progression, slot, names);
+        let name = pad_chord_name(pad, window.progression, slot, labels);
         let separator = if index == 0 { "" } else { " › " };
         let reserved = if index + 1 < slots.len() { 1 } else { 0 };
         if used + separator.chars().count() + name.chars().count() + reserved
@@ -628,7 +628,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                     chord_window_line(
                         &frame.controls().pad,
                         frame.active_slot,
-                        view.session.chord_names,
+                        view.session.chord_labels(),
                     )
                 } else {
                     Line::from("")
@@ -642,14 +642,14 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
 
 /// The chords of the playing window by name, in play order, indented to the
 /// slider column, with the one sounding now in amber.
-fn chord_window_line(pad: &PadControls, active_slot: usize, names: ChordNames) -> Line<'static> {
+fn chord_window_line(pad: &PadControls, active_slot: usize, labels: ChordLabels) -> Line<'static> {
     let window = ChordWindow::requested(pad);
     let mut spans = vec![Span::raw(" ".repeat(18))];
     for (step, slot) in window.slots().enumerate() {
         if step > 0 {
             spans.push(Span::raw("  "));
         }
-        let name = pad_chord_name(pad, window.progression, slot, names);
+        let name = pad_chord_name(pad, window.progression, slot, labels);
         spans.push(if slot == active_slot {
             Span::styled(
                 name,

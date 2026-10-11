@@ -333,7 +333,7 @@ impl<'a> UiViewModel<'a> {
                             item.display = progression_slot_display(
                                 &session.controls.pad,
                                 slot,
-                                session.chord_names,
+                                session.chord_labels(),
                             );
                         }
                     }
@@ -428,7 +428,7 @@ impl<'a> UiViewModel<'a> {
                         &session.controls.pad,
                         progression,
                         slot,
-                        session.chord_names
+                        session.chord_labels()
                     )
                 ))
             }
@@ -1069,6 +1069,17 @@ mod tests {
         let borrowed =
             render_model_with_session_at(&interaction, &session, TelemetryView::default());
         assert!(borrowed.contains("KEY␠␠A␠Phrygian"), "{borrowed}");
+    }
+
+    #[test]
+    fn master_key_names_the_key_in_the_harmony_header() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        session.controls.master.key = 1.0;
+        let frame = render_model_with_session(&interaction, &session);
+        assert!(frame.contains("KEY␠␠C␠minor"), "{frame}");
+        assert!(frame.contains("CHORDS␠␠Cm7add11"), "{frame}");
     }
 
     #[test]

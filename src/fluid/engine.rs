@@ -732,6 +732,8 @@ impl FluidEngine {
         telemetry: Arc<FluidTelemetry>,
         publish_tonal_session_state: bool,
     ) -> Self {
+        // Build the progression-tonic table here, off the audio callback.
+        progression_tonic_pitch_class(0);
         let live = session.load();
         let snapshot = live.controls.clone();
         let plan_source = Arc::new(live.automation.clone());
@@ -752,7 +754,7 @@ impl FluidEngine {
             pad: PadEngine::new(
                 sample_rate,
                 &snapshot.pad,
-                snapshot.master.tune,
+                MasterKey::from_control(snapshot.master.key),
                 Arc::clone(&telemetry),
             ),
             perc: PercEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
@@ -838,22 +840,22 @@ impl FluidEngine {
         timing: TimingContext,
     ) {
         use crate::midi::MidiInputEvent::{NoteOff, NoteOn};
+        // Played notes follow the key of the progression sounding now.
+        let tune = MasterKey::from_control(controls.master.key)
+            .shift(self.pad.cursor.window.progression) as f32;
         match event {
             NoteOn(note) => {
                 if controls.pad.midi_in >= 0.5 {
-                    self.pad
-                        .midi_note_on(note, &controls.pad, controls.master.tune, timing);
+                    self.pad.midi_note_on(note, &controls.pad, tune, timing);
                 }
                 if controls.arp.midi_in >= 0.5 {
                     self.arp.midi_note_on(note);
                 }
                 if controls.lead.midi_in >= 0.5 {
-                    self.lead
-                        .midi_note_on(note, &controls.lead, controls.master.tune);
+                    self.lead.midi_note_on(note, &controls.lead, tune);
                 }
                 if bass_midi_mode(controls.bass.midi) == BassMidi::In {
-                    self.bass
-                        .midi_note_on(note, &controls.bass, controls.master.tune);
+                    self.bass.midi_note_on(note, &controls.bass, tune);
                 }
             }
             NoteOff(note) => {
@@ -1052,14 +1054,14 @@ impl StereoEngine for FluidEngine {
         let mute_gains = self.mute_gates.next();
         let now_seconds = self.current_sample as f64 / self.sample_rate as f64;
 
-        let tune = effective.master.tune;
+        let key = MasterKey::from_control(effective.master.key);
         self.pad.set_midi_suppressed(effective.pad.midi_out < 0.5);
         let pad = self.module_fx.process(
             Tab::Chords,
             &effective.modules.pad,
             self.pad.next(
                 &effective.pad,
-                tune,
+                key,
                 layer_timing(&effective.modules.pad).with_groove_seed(1),
             ),
             timing,
@@ -1094,7 +1096,7 @@ impl StereoEngine for FluidEngine {
             self.tonal.next(
                 &effective.tonal,
                 self.pad.cursor.window.progression,
-                tune,
+                key,
                 layer_timing(&effective.modules.tonal).with_groove_seed(4),
             ),
             timing,
@@ -1116,7 +1118,7 @@ impl StereoEngine for FluidEngine {
             self.bass.next(
                 &effective.bass,
                 &effective.pad,
-                tune,
+                key,
                 layer_timing(&effective.modules.bass).with_groove_seed(6),
             ),
             timing,
@@ -1128,7 +1130,7 @@ impl StereoEngine for FluidEngine {
             self.arp.next(
                 &effective.arp,
                 &effective.pad,
-                tune,
+                key,
                 layer_timing(&effective.modules.arp).with_groove_seed(7),
             ),
             timing,
@@ -1140,7 +1142,7 @@ impl StereoEngine for FluidEngine {
             self.lead.next(
                 &effective.lead,
                 &effective.pad,
-                tune,
+                key,
                 layer_timing(&effective.modules.lead).with_groove_seed(8),
             ),
             timing,

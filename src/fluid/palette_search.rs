@@ -453,6 +453,20 @@ mod tests {
         }
     }
 
+    /// Tune was renamed Key; a player who still types the old word, or the
+    /// plain word "transpose", lands on it.
+    #[test]
+    fn the_master_key_is_found_by_key_tune_and_transpose() {
+        let entries = palette_entries();
+        for query in ["key", "tune", "transpose"] {
+            assert_eq!(
+                winner(&entries, Tab::Chords, &[], query),
+                "control:master.key",
+                "{query}"
+            );
+        }
+    }
+
     #[test]
     fn palette_semantics_ignore_control_labels_and_operation_descriptions() {
         let mut entries = palette_entries();
