@@ -6971,6 +6971,85 @@ fn custom_chord_names_read_the_slot_fields() {
 }
 
 #[test]
+fn roman_chord_names_read_the_home_key() {
+    let pad = PadControls::default();
+    let custom: Vec<_> = (0..CHORD_SLOT_COUNT)
+        .map(|slot| pad_chord_name(&pad, CUSTOM_PROGRESSION_INDEX, slot, ChordNames::Roman))
+        .collect();
+    assert_eq!(
+        custom,
+        vec!["i", "VII", "i", "ii°", "i", "VII", "III", "v"],
+        "Custom's home is A minor"
+    );
+    let slot = |degree: f32, accidental: f32, quality: f32, extension: f32, inversion: f32| {
+        roman_chord_name(
+            &ChordSlotControls {
+                degree,
+                accidental,
+                quality,
+                extension,
+                inversion,
+                ..ChordSlotControls::default()
+            },
+            45,
+            HomeMode::Minor,
+        )
+    };
+    assert_eq!(slot(0.0, 0.0, 1.0, 0.0, 0.0), "I");
+    assert_eq!(slot(0.0, 0.0, 0.0, 2.0, 0.0), "iadd9");
+    assert_eq!(slot(2.0, 0.0, 0.0, 0.0, 1.0), "IIIadd9/5");
+    assert_eq!(scale_degree(1, HomeMode::Minor), ("b", 1), "a flat second");
+    assert_eq!(
+        scale_degree(1, HomeMode::Phrygian),
+        ("", 1),
+        "diatonic in Phrygian"
+    );
+    assert_eq!(scale_degree(6, HomeMode::Major), ("b", 4));
+    assert_eq!(
+        scale_degree(10, HomeMode::Major),
+        ("b", 6),
+        "a flat seventh"
+    );
+    assert_eq!(
+        scale_degree(11, HomeMode::Minor),
+        ("#", 6),
+        "nothing is flat of the tonic"
+    );
+}
+
+#[test]
+fn roman_chords_without_a_third_take_the_modes_own_case() {
+    let pad = PadControls::default();
+    let drone = PROGRESSIONS
+        .iter()
+        .position(|progression| progression.mood == "Drone")
+        .expect("the Drone progression exists");
+    let romans: Vec<_> = (0..CHORD_SLOT_COUNT)
+        .map(|slot| pad_chord_name(&pad, drone, slot, ChordNames::Roman))
+        .collect();
+    assert_eq!(romans[0], "i", "Em in E minor");
+    assert_eq!(romans[1], "i5/5", "a power chord on the tonic stays minor");
+    assert_eq!(romans[4], "iv5", "A5 in E minor is the mode's minor fourth");
+}
+
+/// The first chord of every built-in names its own key, so it reads as the
+/// tonic whichever mode the progression declares.
+#[test]
+fn every_built_in_progression_opens_on_its_tonic() {
+    let pad = PadControls::default();
+    for (index, progression) in PROGRESSIONS.iter().enumerate() {
+        let name = pad_chord_name(&pad, index, 0, ChordNames::Roman);
+        assert!(
+            name.starts_with('I') || name.starts_with('i'),
+            "{} · {}: chord 1 reads {name}",
+            progression_key(progression),
+            progression.mood
+        );
+        assert!(!name.starts_with("II") && !name.starts_with("III"));
+    }
+}
+
+#[test]
 fn chord_drills_return_to_the_progression_row() {
     let controls = FluidControls::default();
     let root = chords_tab_controls(&controls, ChordDrill::None);

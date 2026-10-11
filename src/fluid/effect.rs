@@ -1160,6 +1160,19 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
+            InteractionEffect::SetChordNames(names) => {
+                let snapshot = self.session.update(|snapshot| snapshot.chord_names = names);
+                self.show_message(
+                    match names {
+                        ChordNames::Letters => "Chords as letters",
+                        ChordNames::Roman => "Chords as Roman numerals",
+                    }
+                    .to_string(),
+                );
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::ApplyRecipe { recipe, target } => {
                 let target = target.ok_or(EffectFailure::StaleRecipeTarget)?;
                 let recipe = recipe.recipe();
@@ -2121,6 +2134,33 @@ mod tests {
         executor.toggle_mute(Tab::Perc);
         assert_eq!(executor.session().load().controls.perc.level, 0.65);
         assert!(!executor.session().load().muted[Tab::Perc as usize]);
+    }
+
+    #[test]
+    fn chord_names_are_a_live_display_choice_that_edits_no_control() {
+        let mut executor = executor();
+        let before = executor.session().load();
+        for (names, notice) in [
+            (ChordNames::Roman, "Chords as Roman numerals"),
+            (ChordNames::Letters, "Chords as letters"),
+        ] {
+            executor
+                .execute_interaction(
+                    InteractionEffect::SetChordNames(names),
+                    &InteractionExecutionContext {
+                        selected_control: None,
+                        beat: 0.0,
+                    },
+                )
+                .unwrap();
+            let after = executor.session().load();
+            assert_eq!(after.chord_names, names);
+            assert_eq!(executor.message(), Some(notice));
+            assert_eq!(
+                after.controls.pad.progression.to_bits(),
+                before.controls.pad.progression.to_bits()
+            );
+        }
     }
 
     #[test]

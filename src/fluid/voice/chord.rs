@@ -205,6 +205,24 @@ pub(crate) fn chord_pitch_name(note: i32) -> &'static str {
 /// Name the four source notes, including tones introduced by Close's
 /// inversion/doubling rule. Output-count thinning does not rename harmony.
 pub(crate) fn custom_chord_name(slot: &ChordSlotControls) -> String {
+    let parts = chord_name_parts(slot);
+    let mut name = format!("{}{}", chord_pitch_name(parts.root), parts.body);
+    if let Some(bass) = parts.bass {
+        name.push('/');
+        name.push_str(chord_pitch_name(bass));
+    }
+    name
+}
+
+/// What a chord's letter and Roman names share: the root, the quality body
+/// after it ("m7", "maj7", "sus4"), and the bass note when it is not the root.
+struct ChordNameParts {
+    root: i32,
+    body: String,
+    bass: Option<i32>,
+}
+
+fn chord_name_parts(slot: &ChordSlotControls) -> ChordNameParts {
     let root = pad_chord_root_note(slot);
     let notes = pad_chord_notes_with_slot(slot);
     let has = |interval| {
@@ -278,10 +296,90 @@ pub(crate) fn custom_chord_name(slot: &ChordSlotControls) -> String {
     if diminished && !matches!(third, "m") {
         body.push_str("b5");
     }
-    let mut name = format!("{}{body}", chord_pitch_name(root));
-    if (notes[0] - root).rem_euclid(12) != 0 {
+    ChordNameParts {
+        root,
+        body,
+        bass: ((notes[0] - root).rem_euclid(12) != 0).then_some(notes[0]),
+    }
+}
+
+/// How chords are written on screen. Presentation only: it never reaches the
+/// engine or a song code.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ChordNames {
+    #[default]
+    Letters,
+    Roman,
+}
+
+/// A chord as a Roman numeral against a home key: the root's degree in the
+/// home mode, flat or sharp when the root sits outside that mode, upper case
+/// for a major chord and lower case for a minor or diminished one. A chord
+/// with no third (power, suspended) takes the case of the home mode's own
+/// triad on that degree. A slash bass is its degree in the same mode ("I/3").
+pub(crate) fn roman_chord_name(slot: &ChordSlotControls, tonic: i32, mode: HomeMode) -> String {
+    let parts = chord_name_parts(slot);
+    let (accidental, degree) = scale_degree(parts.root - tonic, mode);
+    let diminished = parts.body.starts_with("dim");
+    // A chord with no third takes the case of the mode's own triad there.
+    let minor = if parts.body.starts_with('5') || parts.body.starts_with("sus") {
+        accidental.is_empty() && {
+            let steps = mode.intervals();
+            (steps[(degree + 2) % 7] - steps[degree]).rem_euclid(12) == 3
+        }
+    } else {
+        parts.body.starts_with('m') && !parts.body.starts_with("maj")
+    };
+    let numeral = ROMAN_NUMERALS[degree];
+    let mut name = accidental.to_string();
+    if minor || diminished {
+        name.push_str(&numeral.to_lowercase());
+    } else {
+        name.push_str(numeral);
+    }
+    if diminished {
+        name.push('°');
+        name.push_str(&parts.body["dim".len()..]);
+    } else {
+        name.push_str(
+            parts
+                .body
+                .strip_prefix('m')
+                .filter(|_| minor && !parts.body.starts_with("maj"))
+                .unwrap_or(&parts.body),
+        );
+    }
+    if let Some(bass) = parts.bass {
+        let (accidental, degree) = scale_degree(bass - tonic, mode);
         name.push('/');
-        name.push_str(chord_pitch_name(notes[0]));
+        name.push_str(accidental);
+        name.push_str(&(degree + 1).to_string());
     }
     name
+}
+
+const ROMAN_NUMERALS: [&str; 7] = ["I", "II", "III", "IV", "V", "VI", "VII"];
+
+/// The mode degree (0-based) an interval above the tonic falls on, with the
+/// accidental that reaches it: none inside the mode, otherwise a flat on the
+/// degree above or a sharp on the degree below. Nothing is flat of the tonic,
+/// so a leading tone is a sharp seventh.
+pub(crate) fn scale_degree(interval: i32, mode: HomeMode) -> (&'static str, usize) {
+    let interval = interval.rem_euclid(12);
+    let intervals = mode.intervals();
+    if let Some(degree) = intervals.iter().position(|&step| step == interval) {
+        return ("", degree);
+    }
+    if let Some(degree) = intervals
+        .iter()
+        .position(|&step| step == (interval + 1) % 12)
+        .filter(|&degree| degree != 0)
+    {
+        return ("b", degree);
+    }
+    let degree = intervals
+        .iter()
+        .position(|&step| step == (interval + 11) % 12)
+        .expect("a seven-note mode leaves no gap wider than a whole tone");
+    ("#", degree)
 }

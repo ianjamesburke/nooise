@@ -1555,6 +1555,19 @@ pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, slot: usize) 
 }
 
 /// The displayed identity follows the same resolved chord as every voice.
-pub(crate) fn pad_chord_name(c: &PadControls, progression: usize, slot: usize) -> String {
-    custom_chord_name(c.chord_slot(progression, slot))
+/// Roman names read against the progression's own home key.
+pub(crate) fn pad_chord_name(
+    c: &PadControls,
+    progression: usize,
+    slot: usize,
+    names: ChordNames,
+) -> String {
+    let chord = c.chord_slot(progression, slot);
+    match names {
+        ChordNames::Letters => custom_chord_name(chord),
+        ChordNames::Roman => {
+            let (tonic, mode, _) = progression_home(progression);
+            roman_chord_name(chord, tonic, mode)
+        }
+    }
 }

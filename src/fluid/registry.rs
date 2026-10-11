@@ -2869,6 +2869,28 @@ pub(crate) fn module_layer_tab(prefix: &str) -> Option<Tab> {
 
 /// One projection for the root page, progression list and shared chord editor.
 /// Address fields by stable ID so appending a knob cannot change a navigation target.
+/// A progression-drill row's value: the chord's name and whether it is the
+/// authored one. The registry draws it in letters; the view redraws it for the
+/// session's chord naming.
+pub(crate) fn progression_slot_display(
+    pad: &PadControls,
+    slot: usize,
+    names: ChordNames,
+) -> String {
+    let progression = progression_index(pad.progression);
+    let status = if pad.chord_is_edited(progression, slot) {
+        "Edited"
+    } else if is_custom_progression(progression) {
+        "Custom"
+    } else {
+        "Built-in"
+    };
+    format!(
+        "{} · {status}",
+        pad_chord_name(pad, progression, slot, names)
+    )
+}
+
 pub(crate) fn chords_tab_controls(
     c: &FluidControls,
     drill: interaction::ChordDrill,
@@ -2898,16 +2920,8 @@ pub(crate) fn chords_tab_controls(
                 let mut item = chord_slot_spec(slot, "degree")
                     .expect("every slot has a root")
                     .item(c);
-                let progression = progression_index(c.pad.progression);
                 item.label = format!("Chord {}", slot + 1);
-                let status = if c.pad.chord_is_edited(progression, slot) {
-                    "Edited"
-                } else if is_custom_progression(progression) {
-                    "Custom"
-                } else {
-                    "Built-in"
-                };
-                item.display = format!("{} · {status}", pad_chord_name(&c.pad, progression, slot));
+                item.display = progression_slot_display(&c.pad, slot, ChordNames::Letters);
                 item
             })
             .collect(),

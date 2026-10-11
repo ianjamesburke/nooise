@@ -34,6 +34,9 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) transport: Transport,
     /// Counts explicit restarts, including stop/play between audio reads.
     pub(crate) transport_restart: u64,
+    /// How chords are written on screen. Live-only: a display choice, never
+    /// read by the audio thread or written to a song code.
+    pub(crate) chord_names: ChordNames,
 }
 
 impl LiveSessionSnapshot {
@@ -51,6 +54,7 @@ impl LiveSessionSnapshot {
             drunken_phase_beat: song.drunken_phase_beat,
             transport: Transport::Playing,
             transport_restart: 0,
+            chord_names: ChordNames::default(),
             tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
                 TonalSequenceState::from_phrase(wrapped_index(
                     song.controls.tonal.phrase,
@@ -79,6 +83,7 @@ impl LiveSessionSnapshot {
             drunken_phase_beat: 0.0,
             transport: Transport::Playing,
             transport_restart: 0,
+            chord_names: ChordNames::default(),
         }
     }
 }

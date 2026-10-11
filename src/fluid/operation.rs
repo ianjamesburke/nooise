@@ -13,6 +13,7 @@ pub(crate) enum Operation {
     Recipe(recipe::RecipeId),
     PlannedMute,
     Chord(ChordAction),
+    ChordNames(ChordNames),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +70,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 20] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -88,6 +89,8 @@ impl Operation {
         Self::PlannedMute,
         Self::Chord(ChordAction::AddExtension),
         Self::Chord(ChordAction::Restore),
+        Self::ChordNames(ChordNames::Roman),
+        Self::ChordNames(ChordNames::Letters),
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -139,6 +142,18 @@ impl Operation {
                     ChordAction::Restore => "restore this chord's original voicing",
                 },
             },
+            Self::ChordNames(ChordNames::Roman) => OperationSpec {
+                operation: self,
+                label: "Roman chords",
+                aliases: &["roman", "numerals", "roman numerals"],
+                description: "write chords as Roman numerals in the home key",
+            },
+            Self::ChordNames(ChordNames::Letters) => OperationSpec {
+                operation: self,
+                label: "Letter chords",
+                aliases: &["letters", "chord letters", "chord names"],
+                description: "write chords as letter names",
+            },
             Self::PlannedMute => OperationSpec {
                 operation: self,
                 label: "Mute next bar",
@@ -156,7 +171,11 @@ impl Operation {
                 MotionAction::Resume => Some(CaptureAction::Resume),
                 MotionAction::Delete => Some(CaptureAction::Delete),
             },
-            Self::Mix(_) | Self::Recipe(_) | Self::PlannedMute | Self::Chord(_) => None,
+            Self::Mix(_)
+            | Self::Recipe(_)
+            | Self::PlannedMute
+            | Self::Chord(_)
+            | Self::ChordNames(_) => None,
         }
     }
 

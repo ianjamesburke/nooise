@@ -1178,6 +1178,7 @@ pub(crate) enum InteractionEffect {
     },
     PaletteCommit(Vec<PaletteStagedEdit>),
     ApplyMixAction(super::mix_action::MixAction),
+    SetChordNames(super::ChordNames),
     Chord {
         action: super::operation::ChordAction,
         target: Option<super::operation::ChordTarget>,
@@ -2135,6 +2136,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
             end_beat_bits: palette.capture_beat_bits,
         },
         Operation::Mix(action) => InteractionEffect::ApplyMixAction(action),
+        Operation::ChordNames(names) => InteractionEffect::SetChordNames(names),
         Operation::Chord(action) => InteractionEffect::Chord {
             action,
             target: palette.chord_target.as_deref().copied(),

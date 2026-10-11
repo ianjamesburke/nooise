@@ -326,7 +326,19 @@ impl<'a> UiViewModel<'a> {
         let items = match navigation.module_slot {
             Some(slot) => module_detail_controls(navigation.tab, slot, &session.controls),
             None => match navigation.tab {
-                Tab::Chords => chords_tab_controls(&session.controls, navigation.chord_drill),
+                Tab::Chords => {
+                    let mut items = chords_tab_controls(&session.controls, navigation.chord_drill);
+                    if matches!(navigation.chord_drill, ChordDrill::Progression { .. }) {
+                        for (slot, item) in items.iter_mut().enumerate() {
+                            item.display = progression_slot_display(
+                                &session.controls.pad,
+                                slot,
+                                session.chord_names,
+                            );
+                        }
+                    }
+                    items
+                }
                 Tab::Lead => lead_tab_controls(&session.controls, navigation.lead_drill),
                 Tab::Master => hub_controls(
                     &session.controls,
@@ -412,7 +424,12 @@ impl<'a> UiViewModel<'a> {
                 };
                 Some(format!(
                     "{} · {status}",
-                    pad_chord_name(&session.controls.pad, progression, slot)
+                    pad_chord_name(
+                        &session.controls.pad,
+                        progression,
+                        slot,
+                        session.chord_names
+                    )
                 ))
             }
             _ => None,
@@ -1052,6 +1069,18 @@ mod tests {
         let borrowed =
             render_model_with_session_at(&interaction, &session, TelemetryView::default());
         assert!(borrowed.contains("KEY␠␠A␠Phrygian"), "{borrowed}");
+    }
+
+    #[test]
+    fn roman_chords_replace_the_letters_in_the_harmony_header() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        session.chord_names = ChordNames::Roman;
+        let frame = render_model_with_session(&interaction, &session);
+        assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
+        assert!(frame.contains("CHORDS␠␠i7add11␠›␠VIIsus2add11"), "{frame}");
+        assert!(!frame.contains("Am7add11"), "{frame}");
     }
 
     #[test]
