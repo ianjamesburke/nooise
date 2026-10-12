@@ -781,33 +781,12 @@ impl ControlSpec {
         (spec.set)(c, value);
     }
 
-    /// Randomize across the live dial while excluding its current value. If
-    /// quantization lands on the current rung, step to an adjacent legal
-    /// setting so controls with alternatives always change.
+    /// Randomize across the live dial. A draw can land back on the current
+    /// value; callers that need to know whether anything actually changed
+    /// compare before and after themselves (see `RandomizeSelected` and
+    /// `RandomizeScope`).
     pub(crate) fn apply_randomized_ratio(&self, ratio: f32, c: &mut FluidControls) {
-        let spec = self.contextual(c);
-        let current = (spec.get)(c);
-        let mut scratch = c.clone();
-        spec.apply_ratio(ratio, &mut scratch);
-        let candidate = (spec.get)(&scratch);
-        if candidate != current {
-            (spec.set)(c, candidate);
-            return;
-        }
-
-        // A random draw can quantize back to the current rung. Try each
-        // adjacent legal setting; a singleton naturally remains unchanged.
-        spec.apply_delta(1.0, &mut scratch);
-        let next = (spec.get)(&scratch);
-        if next != current {
-            (spec.set)(c, next);
-            return;
-        }
-        spec.apply_delta(-1.0, &mut scratch);
-        let previous = (spec.get)(&scratch);
-        if previous != current {
-            (spec.set)(c, previous);
-        }
+        self.apply_ratio(ratio, c);
     }
 
     /// Every value one arrow press can reach from the floor, ascending. Only
@@ -3237,41 +3216,26 @@ mod scale_tests {
     }
 
     #[test]
-    fn randomizing_from_the_current_position_always_changes_when_another_value_exists() {
+    fn randomized_ratio_lands_on_a_quantized_value_within_range() {
         let controls = FluidControls::default();
-        let mut checked = 0;
         for spec in all_specs() {
             let contextual = spec.contextual(&controls);
-            let current = (contextual.get)(&controls);
-            let mut above = controls.clone();
-            contextual.apply_delta(1.0, &mut above);
-            let mut below = controls.clone();
-            contextual.apply_delta(-1.0, &mut below);
-            let has_alternative =
-                (contextual.get)(&above) != current || (contextual.get)(&below) != current;
-
-            let mut randomized = controls.clone();
-            contextual
-                .apply_randomized_ratio(contextual.ratio(current, &controls), &mut randomized);
-            let result = (contextual.get)(&randomized);
-            if has_alternative {
-                checked += 1;
-                assert_ne!(result, current, "{} stayed at its current value", spec.id);
-            } else {
-                assert_eq!(result, current, "{} is a singleton", spec.id);
+            for ratio in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let mut randomized = controls.clone();
+                contextual.apply_randomized_ratio(ratio, &mut randomized);
+                let result = (contextual.get)(&randomized);
+                assert!(
+                    result >= contextual.min && result <= contextual.max,
+                    "{} randomized outside its live range: {result}",
+                    spec.id
+                );
+                assert!(
+                    (contextual.quantize(result) - result).abs() < 1e-6,
+                    "{} randomized off its declared grid",
+                    spec.id
+                );
             }
-            assert!(
-                result >= contextual.min && result <= contextual.max,
-                "{} randomized outside its live range: {result}",
-                spec.id
-            );
-            assert!(
-                (contextual.quantize(result) - result).abs() < 1e-6,
-                "{} randomized off its declared grid",
-                spec.id
-            );
         }
-        assert!(checked > 0, "no controls with multiple legal values");
     }
 
     #[test]
