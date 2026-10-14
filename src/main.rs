@@ -1,6 +1,7 @@
 //! Binary entry point: CLI parsing for `run`/`version`/`update`/`render`/`auto`
 //! and a bare song code, then handoff to the matching `fluid` entry.
 
+use clap::builder::styling::{AnsiColor, Styles};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::error::Error;
 use std::net::SocketAddr;
@@ -57,10 +58,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Matches Plexi's help: bold green headings, bold cyan literals.
+const HELP_STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Green.on_default().bold())
+    .usage(AnsiColor::Green.on_default().bold())
+    .literal(AnsiColor::Cyan.on_default().bold())
+    .placeholder(AnsiColor::Cyan.on_default());
+
 #[derive(Debug, Parser)]
 #[command(
     version,
     about,
+    styles = HELP_STYLES,
     after_help = "Play a song: nooise <SONG>, where a song is a built-in number \
                   (nooise 9), several of them (nooise 9,10,11), or a shared code \
                   (nooise n1_...)."
