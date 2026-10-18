@@ -19,6 +19,9 @@ use cpal::{BufferSize, SampleFormat, Stream, StreamConfig, SupportedBufferSize};
 const LIVE_BUFFER_FRAMES: u32 = 256;
 
 pub(crate) trait StereoEngine: Send + 'static {
+    /// Called once per output buffer before its first frame, with how long
+    /// the buffer waits between this callback and the speaker.
+    fn begin_buffer(&mut self, _output_latency: Duration) {}
     fn next_stereo(&mut self) -> (f32, f32);
 }
 
@@ -248,7 +251,14 @@ where
     device
         .build_output_stream(
             config,
-            move |data: &mut [T], _| {
+            move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+                let timestamp = info.timestamp();
+                engine.begin_buffer(
+                    timestamp
+                        .playback
+                        .duration_since(&timestamp.callback)
+                        .unwrap_or_default(),
+                );
                 for frame in data.chunks_mut(channels) {
                     let (left, right) = engine.next_stereo();
                     write_frame(frame, convert(left), convert(right));

@@ -30,30 +30,35 @@ fn main() -> Result<(), Box<dyn Error>> {
         if cli.start_muted {
             return Err("-M/--start-muted only applies to live playback".into());
         }
+        if cli.link {
+            return Err("--link only applies to live playback".into());
+        }
+    }
+    if cli.link && !cfg!(feature = "link") {
+        return Err(format!(
+            "--link needs Ableton Link support, which this build left out; \
+             reinstall with `{}` (needs CMake and libclang)",
+            LINK_INSTALL
+        )
+        .into());
     }
     let midi = cli.midi_config();
+    let options = cli.live_options();
     let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
     match cli.command {
         None => match cli.song.as_deref() {
             None => match cli.from {
-                Some(from) => {
-                    fluid::run_auto(bars, from, cli.osc, midi, cli.start_muted, cli.chassis_tap)
-                }
-                None => fluid::run(cli.osc, midi, cli.start_muted, cli.chassis_tap),
+                Some(from) => fluid::run_auto(bars, from, cli.osc, midi, options),
+                None => fluid::run(cli.osc, midi, options),
             },
-            Some(song) => play_song(song, bars, cli.osc, midi, cli.start_muted, cli.chassis_tap),
+            Some(song) => play_song(song, bars, cli.osc, midi, options),
         },
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::MidiPorts) => midi::list_ports(),
         Some(CliCommand::Render(args)) => render(args),
-        Some(CliCommand::Auto) => fluid::run_auto(
-            bars,
-            cli.from.unwrap_or(1),
-            cli.osc,
-            midi,
-            cli.start_muted,
-            cli.chassis_tap,
-        ),
+        Some(CliCommand::Auto) => {
+            fluid::run_auto(bars, cli.from.unwrap_or(1), cli.osc, midi, options)
+        }
     }
 }
 
@@ -112,6 +117,11 @@ struct Cli {
     /// Output MIDI channel (1-16, default 1).
     #[arg(long, global = true, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=16))]
     midi_out_channel: u8,
+    /// Join the Ableton Link session on the local network: shared tempo,
+    /// bar phase, and start/stop with Live and other Link apps. Needs a
+    /// build with `--features link`.
+    #[arg(long, global = true)]
+    link: bool,
 }
 
 impl Cli {
@@ -130,6 +140,15 @@ impl Cli {
             })?;
         }
         Ok(())
+    }
+
+    fn live_options(&self) -> fluid::LiveStartOptions {
+        fluid::LiveStartOptions {
+            start_muted: self.start_muted,
+            chassis_tap: self.chassis_tap,
+            #[cfg(feature = "link")]
+            link: self.link,
+        }
     }
 
     fn midi_config(&self) -> midi::MidiConfig<'_> {
@@ -192,12 +211,11 @@ fn play_song(
     bars: u32,
     osc: Option<SocketAddr>,
     midi: midi::MidiConfig<'_>,
-    start_muted: bool,
-    chassis_tap: bool,
+    options: fluid::LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
     if song.starts_with(fluid::CODE_PREFIX) {
         let state = fluid::decode_song_code(song).map_err(|error| error.to_string())?;
-        return fluid::run_with_song_state(state, osc, midi, start_muted, chassis_tap);
+        return fluid::run_with_song_state(state, osc, midi, options);
     }
     let numbers = song
         .split(',')
@@ -207,7 +225,7 @@ fn play_song(
                 .map_err(|_| format!("{part:?} is neither a song number nor an n1_ code").into())
         })
         .collect::<Result<Vec<usize>, Box<dyn Error>>>()?;
-    fluid::run_songs(&numbers, bars, osc, midi, start_muted, chassis_tap)
+    fluid::run_songs(&numbers, bars, osc, midi, options)
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {
@@ -231,15 +249,23 @@ fn update_nooise() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn cargo_install_args(version: &str) -> [&str; 6] {
-    [
+const LINK_INSTALL: &str = "cargo install nooise --locked --features link";
+
+/// An update keeps the features this build has, so `nooise update` never
+/// drops Link from a Link build.
+fn cargo_install_args(version: &str) -> Vec<&str> {
+    let mut args = vec![
         "install",
         "nooise",
         "--locked",
         "--version",
         version,
         "--force",
-    ]
+    ];
+    if cfg!(feature = "link") {
+        args.extend(["--features", "link"]);
+    }
+    args
 }
 
 #[cfg(test)]
@@ -300,6 +326,20 @@ mod tests {
         assert_eq!(cli.osc, None);
         assert_eq!(cli.midi_out, None);
         assert!(!cli.start_muted);
+        assert!(!cli.link);
+    }
+
+    #[test]
+    fn link_is_a_global_live_flag() {
+        for args in [
+            &["--link"][..],
+            &["9", "--link"],
+            &["--link", "9"],
+            &["auto", "--link"],
+        ] {
+            assert!(parse(args).unwrap().link, "{args:?}");
+        }
+        assert_eq!(parse(&["--link", "9"]).unwrap().song.as_deref(), Some("9"));
     }
 
     #[test]
@@ -435,18 +475,19 @@ mod tests {
     }
 
     #[test]
-    fn updater_installs_exact_latest_version() {
-        assert_eq!(
-            cargo_install_args("1.2.3"),
-            [
-                "install",
-                "nooise",
-                "--locked",
-                "--version",
-                "1.2.3",
-                "--force"
-            ]
-        );
+    fn updater_installs_exact_latest_version_with_this_builds_features() {
+        let mut expected = vec![
+            "install",
+            "nooise",
+            "--locked",
+            "--version",
+            "1.2.3",
+            "--force",
+        ];
+        if cfg!(feature = "link") {
+            expected.extend(["--features", "link"]);
+        }
+        assert_eq!(cargo_install_args("1.2.3"), expected);
     }
 
     #[test]

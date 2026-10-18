@@ -450,14 +450,27 @@ pub(crate) fn coordinate_production_turn(
     Ok(ProductionTurn { steps, quit })
 }
 
+/// The opt-in outside sources a live UI loop drains each turn. Each is
+/// launch configuration, never song state.
+pub(crate) struct LiveAdapters {
+    pub(crate) chassis_tap: Option<ChassisTapReceiver>,
+    #[cfg(feature = "link")]
+    pub(crate) link: Option<LinkFollower>,
+}
+
 pub(crate) fn production_ui_loop(
     terminal: &mut runtime::TerminalSession,
     session: UiSession,
     telemetry: Arc<FluidTelemetry>,
     updates: UpdateNotice,
     auto: AutoControls,
-    chassis_tap: Option<ChassisTapReceiver>,
+    adapters: LiveAdapters,
 ) -> Result<(), Box<dyn Error>> {
+    let LiveAdapters {
+        chassis_tap,
+        #[cfg(feature = "link")]
+        link,
+    } = adapters;
     let mut model = interaction::InteractionModel::default();
     let mut effects = EffectExecutor::new(session.live, auto);
     let mut source = runtime::CrosstermEventSource::new(terminal.capabilities());
@@ -518,6 +531,10 @@ pub(crate) fn production_ui_loop(
         }
 
         if tick_due {
+            #[cfg(feature = "link")]
+            if let Some(link) = &link {
+                link.follow_peers(&mut effects);
+            }
             effects.expire_message(SAVE_MESSAGE_TTL);
             let dt = now.saturating_sub(last_tick).as_secs_f32().min(0.05);
             fluid.tick(dt, &telemetry);
