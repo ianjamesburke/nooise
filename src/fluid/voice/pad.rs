@@ -1334,7 +1334,8 @@ pub(crate) const PROGRESSIONS: [Progression; 21] = [
         bass: [41, 45, 50, 46, 43, 48, 41, 46],
     },
     // G minor ember: the minor chords fall through Eb and Cm to a suspended
-    // D, then a borrowed D major (its F#) glows once before the loop turns.
+    // D, then an Fadd9 leans into a borrowed D major (its F#) before the
+    // loop turns.
     Progression {
         song_value: 21,
         mood: "Ember",
@@ -1346,10 +1347,10 @@ pub(crate) const PROGRESSIONS: [Progression; 21] = [
             chord("D7sus", [3, 0, 3, 4, 0, 0, 0, 0]),
             chord("Bbmaj7", [1, -1, 1, 5, 0, 0, 1, 1]),
             chord("Ebadd9", [-4, 1, 1, 6, 0, 0, 1, 0]),
-            chord("Cm9", [-5, 0, -1, 4, 6, 0, 0, 0]),
+            chord("Fadd9", [5, 0, 1, 6, 0, 0, 0, 0]),
             chord("D7", [3, 0, 1, 4, 0, 0, 1, 0]),
         ],
-        bass: [43, 51, 48, 50, 46, 51, 48, 50],
+        bass: [43, 51, 48, 50, 46, 51, 53, 50],
     },
 ];
 
