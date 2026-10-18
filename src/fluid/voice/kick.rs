@@ -22,6 +22,22 @@ impl KickEngine {
         }
     }
 
+    pub(crate) fn trigger_hit(&mut self, c: &KickControls, velocity: f32) {
+        let vel = velocity.clamp(0.0, 1.0);
+        if vel <= 0.0 {
+            return;
+        }
+        let mut hit_controls = c.clone();
+        hit_controls.level = (c.level * vel).clamp(0.0, 1.0);
+        self.voices.push(KickVoice::new(
+            wrapped_index(hit_controls.voice_type, KICK_TYPES.len()),
+            &hit_controls,
+            self.sample_rate,
+            &mut self.rng,
+        ));
+        self.telemetry.publish_kick(hit_controls.level);
+    }
+
     pub(crate) fn next(&mut self, c: &KickControls, timing: TimingContext) -> (f32, f32) {
         if self
             .trigger

@@ -4,9 +4,9 @@
 //! on, registry-derived control smoothing, the per-layer and master module effect
 //! banks, and the master bus.
 
-use crate::midi::{MidiClockFollower, MidiSink};
 use std::collections::BTreeSet;
 
+use crate::fluid::osc::{OscVoiceCommand, OscVoiceSink, OscVoiceSource};
 use crate::fx::compression::{CompressorParams, StereoCompressor};
 use crate::fx::crossfade::{Outgoing, mix_stereo};
 use crate::fx::delay::{DelayParams, StereoDelay};
@@ -26,6 +26,8 @@ const STARTUP_FADE_SECONDS: f32 = 2.0;
 /// compressor lets go: slow enough to read at UI frame rate, fast enough that
 /// the meter follows each kick.
 const GAIN_REDUCTION_RELEASE_SECONDS: f32 = 0.3;
+/// Time for a voice or Master RMS meter to fall to 1/e after a peak.
+const LEVEL_METER_RELEASE_SECONDS: f32 = 0.25;
 
 /// Stateful post-synthesis Delay instances, addressed by the stable
 /// `(layer, slot)` storage identity rather than a catalog name.
@@ -676,9 +678,7 @@ pub(crate) struct FluidEngine {
     pub(crate) sample_rate: f32,
     pub(crate) tempo: TempoClock,
     beat_trigger: GridTrigger,
-    midi_clock: Option<MidiClockFollower>,
-    midi_input: Option<crate::midi::MidiInputSource>,
-    midi_input_enabled: [bool; 3],
+    osc_input: Option<OscVoiceSource>,
     pub(crate) control_smoothers: ControlSmoothers,
     mute_gates: OutputGates,
     muted: MuteState,
@@ -704,6 +704,8 @@ pub(crate) struct FluidEngine {
     pub(crate) telemetry: Arc<FluidTelemetry>,
     /// Per-`Tab` sum of squared output samples since the last `LEVEL_BLOCK`.
     level_acc: [f32; TAB_COUNT],
+    /// Per-`Tab` displayed RMS level with instant attack and exponential release.
+    level_meter: [f32; TAB_COUNT],
     pub(crate) snapshot: FluidControls,
     gesture_snapshot: GestureState,
     drunken_phase_beat: f64,
@@ -744,9 +746,7 @@ impl FluidEngine {
             sample_rate,
             tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
             beat_trigger: GridTrigger::new(),
-            midi_clock: None,
-            midi_input: None,
-            midi_input_enabled: [false; 3],
+            osc_input: None,
             control_smoothers: ControlSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
             muted: live.muted,
@@ -777,6 +777,7 @@ impl FluidEngine {
             morph_writer: MorphWriter::default(),
             telemetry,
             level_acc: [0.0; TAB_COUNT],
+            level_meter: [0.0; TAB_COUNT],
             snapshot,
             gesture_snapshot: live.gestures.clone(),
             drunken_phase_beat: live.drunken_phase_beat,
@@ -808,17 +809,13 @@ impl FluidEngine {
         self.arp.ping_pong_dir = 1;
         self.lead.progression = ProgressionFollower::new();
         self.lead.step_trigger = GridTrigger::new();
-        if let Some(clock) = &mut self.midi_clock {
-            clock.restart();
-        }
     }
 
-    pub(crate) fn with_midi(mut self, sink: MidiSink) -> Self {
-        self.pad.set_midi(sink.clone());
-        self.arp.set_midi(sink.clone());
-        self.lead.set_midi(sink.clone());
-        self.bass.set_midi(sink.clone());
-        self.midi_clock = Some(MidiClockFollower::new(sink));
+    pub(crate) fn with_osc_voice(mut self, sink: OscVoiceSink) -> Self {
+        self.pad.set_osc(sink.clone());
+        self.arp.set_osc(sink.clone());
+        self.lead.set_osc(sink.clone());
+        self.bass.set_osc(sink);
         self
     }
 
@@ -827,66 +824,54 @@ impl FluidEngine {
         self.tempo.link = Some(clock);
         self
     }
-    pub(crate) fn with_midi_input(mut self, source: crate::midi::MidiInputSource) -> Self {
-        self.pad.set_midi_input_attached();
-        self.midi_input = Some(source);
+
+    pub(crate) fn with_osc_input(mut self, source: OscVoiceSource) -> Self {
+        self.osc_input = Some(source);
         self
     }
 
-    fn route_midi_input(
-        &mut self,
-        event: crate::midi::MidiInputEvent,
-        controls: &FluidControls,
-        timing: TimingContext,
-    ) {
-        use crate::midi::MidiInputEvent::{NoteOff, NoteOn};
+    fn route_osc_input(&mut self, cmd: OscVoiceCommand, controls: &FluidControls) {
         // Played notes follow the key of the progression sounding now.
         let tune = MasterKey::from_control(controls.master.key)
             .shift(self.pad.cursor.window.progression) as f32;
-        match event {
-            NoteOn(note) => {
-                if controls.pad.midi_in >= 0.5 {
-                    self.pad.midi_note_on(note, &controls.pad, tune, timing);
-                }
-                if controls.arp.midi_in >= 0.5 {
-                    self.arp.midi_note_on(note);
-                }
-                if controls.lead.midi_in >= 0.5 {
-                    self.lead.midi_note_on(note, &controls.lead, tune);
-                }
-                if bass_midi_mode(controls.bass.midi) == BassMidi::In {
-                    self.bass.midi_note_on(note, &controls.bass, tune);
-                }
+        match cmd {
+            OscVoiceCommand::PadNoteOn(note) => {
+                self.pad.osc_note_on(note, &controls.pad, tune);
             }
-            NoteOff(note) => {
-                self.pad.midi_note_off(note);
-                self.arp.midi_note_off(note);
-                self.lead.midi_note_off(note);
+            OscVoiceCommand::PadNoteOff(note) => {
+                self.pad.osc_note_off(note);
             }
-            crate::midi::MidiInputEvent::AllNotesOff => {
+            OscVoiceCommand::PadNotes(notes) => {
+                self.pad.set_osc_notes(&notes, &controls.pad, tune);
+            }
+            OscVoiceCommand::ArpNoteOn(note) => {
+                self.arp.osc_note_on(note);
+            }
+            OscVoiceCommand::ArpNoteOff(note) => {
+                self.arp.osc_note_off(note);
+            }
+            OscVoiceCommand::ArpNotes(notes) => {
+                self.arp.set_osc_notes(&notes);
+            }
+            OscVoiceCommand::LeadNoteOn(note) => {
+                self.lead.osc_note_on(note, &controls.lead, tune);
+            }
+            OscVoiceCommand::LeadNoteOff(note) => {
+                self.lead.osc_note_off(note);
+            }
+            OscVoiceCommand::BassNoteOn(note) => {
+                self.bass.osc_note_on(note, &controls.bass, tune);
+            }
+            OscVoiceCommand::KickTrigger(velocity) => {
+                self.kick.trigger_hit(&controls.kick, velocity);
+            }
+            OscVoiceCommand::AllNotesOff => {
                 self.pad.release_input();
                 self.arp.release_input();
                 self.lead.release_input();
+                self.bass.release_input();
             }
         }
-    }
-
-    fn sync_midi_input_switches(&mut self, controls: &FluidControls) {
-        let enabled = [
-            controls.pad.midi_in >= 0.5,
-            controls.arp.midi_in >= 0.5,
-            controls.lead.midi_in >= 0.5,
-        ];
-        if self.midi_input_enabled[0] && !enabled[0] {
-            self.pad.release_input();
-        }
-        if self.midi_input_enabled[1] && !enabled[1] {
-            self.arp.release_input();
-        }
-        if self.midi_input_enabled[2] && !enabled[2] {
-            self.lead.release_input();
-        }
-        self.midi_input_enabled = enabled;
     }
 }
 
@@ -1000,9 +985,6 @@ impl StereoEngine for FluidEngine {
         }
         let mut timing = self.tempo.tick(effective.master.bpm, self.transport);
         self.advance_planned_mute(timing);
-        if let Some(clock) = &mut self.midi_clock {
-            clock.tick(timing);
-        }
         if self.beat_trigger.pop_swung(timing, 1.0, 0.0, 0.0) {
             self.telemetry
                 .publish_hit(MusicalHit::Beat, 1.0, NO_PITCH_CLASS);
@@ -1032,30 +1014,27 @@ impl StereoEngine for FluidEngine {
             let (amount, pace) = drunken_for(slots, timing.drunken_amount, timing.drunken_pace);
             timing.with_drunken(amount, pace)
         };
-        effective.keep_midi_directions_exclusive();
-        self.sync_midi_input_switches(&effective);
-        // Suppress only effective output routing; authored switches, input,
-        // transport, and the source-owned Note Off paths stay intact.
-        let master_muted = self.muted[Tab::Master as usize];
-        if master_muted || self.muted[Tab::Chords as usize] {
-            effective.pad.midi_out = 0.0;
-        }
-        if master_muted || self.muted[Tab::Arp as usize] {
-            effective.arp.midi_out = 0.0;
-        }
-        if master_muted || self.muted[Tab::Lead as usize] {
-            effective.lead.midi_out = 0.0;
-        }
-        if (master_muted || self.muted[Tab::Bass as usize])
-            && bass_midi_mode(effective.bass.midi) == BassMidi::Out
+        if self.current_sample.is_multiple_of(128)
+            && let Some(source) = self.osc_input.clone()
         {
-            effective.bass.midi = 0.0;
+            while let Some(cmd) = source.try_recv() {
+                self.route_osc_input(cmd, &effective);
+            }
         }
+        // Suppress only effective OSC voice output when a layer or Master is muted.
+        let master_muted = self.muted[Tab::Master as usize];
+        self.pad
+            .set_osc_suppressed(master_muted || self.muted[Tab::Chords as usize]);
+        self.arp
+            .set_osc_suppressed(master_muted || self.muted[Tab::Arp as usize]);
+        self.lead
+            .set_osc_suppressed(master_muted || self.muted[Tab::Lead as usize]);
+        self.bass
+            .set_osc_suppressed(master_muted || self.muted[Tab::Bass as usize]);
         let mute_gains = self.mute_gates.next();
         let now_seconds = self.current_sample as f64 / self.sample_rate as f64;
 
         let key = MasterKey::from_control(effective.master.key);
-        self.pad.set_midi_suppressed(effective.pad.midi_out < 0.5);
         let pad = self.module_fx.process(
             Tab::Chords,
             &effective.modules.pad,
@@ -1148,16 +1127,6 @@ impl StereoEngine for FluidEngine {
             timing,
         );
         let (lead_l, lead_r) = gate_stereo(lead, mute_gains[Tab::Lead as usize]);
-        if self.current_sample.is_multiple_of(128)
-            && let Some(source) = self.midi_input.clone()
-        {
-            let overflowed = source.drain(|event| self.route_midi_input(event, &effective, timing));
-            if overflowed {
-                self.pad.release_input();
-                self.arp.release_input();
-                self.lead.release_input();
-            }
-        }
         self.current_sample += 1;
 
         let voices_l = VoiceMix {
@@ -1203,9 +1172,16 @@ impl StereoEngine for FluidEngine {
         );
         self.level_acc[Tab::Master as usize] += out.0 * out.0 + out.1 * out.1;
         if self.current_sample.is_multiple_of(LEVEL_BLOCK) {
-            for (tab, acc) in Tab::all().into_iter().zip(&mut self.level_acc) {
-                self.telemetry
-                    .publish_level(tab, (*acc / (2 * LEVEL_BLOCK) as f32).sqrt());
+            let block_seconds = LEVEL_BLOCK as f32 / self.sample_rate;
+            let level_release = (-block_seconds / LEVEL_METER_RELEASE_SECONDS).exp();
+            for ((tab, acc), shown) in Tab::all()
+                .into_iter()
+                .zip(&mut self.level_acc)
+                .zip(&mut self.level_meter)
+            {
+                let rms = (*acc / (2 * LEVEL_BLOCK) as f32).sqrt();
+                *shown = rms.max(*shown * level_release);
+                self.telemetry.publish_level(tab, *shown);
                 *acc = 0.0;
             }
             for (kind, amount) in GestureKind::ALL
@@ -1215,7 +1191,7 @@ impl StereoEngine for FluidEngine {
                 self.telemetry.publish_gesture(kind, amount);
             }
             self.module_fx
-                .publish_gain_reduction(&self.telemetry, LEVEL_BLOCK as f32 / self.sample_rate);
+                .publish_gain_reduction(&self.telemetry, block_seconds);
         }
         out
     }

@@ -327,15 +327,6 @@ pub(crate) enum LfoSnap {
 #[derive(Clone, Copy)]
 pub(crate) struct ControlSearch {
     pub(crate) name: &'static str,
-    pub(crate) group: Option<SearchGroup>,
-}
-
-/// A feature's members share a concept and declare exactly one default per scope.
-#[derive(Clone, Copy)]
-pub(crate) struct SearchGroup {
-    pub(crate) name: &'static str,
-    pub(crate) member: &'static str,
-    pub(crate) is_default: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -383,10 +374,7 @@ impl ControlSpec {
         Self {
             id,
             label,
-            search: ControlSearch {
-                name: label,
-                group: None,
-            },
+            search: ControlSearch { name: label },
             kind,
             min,
             max,
@@ -434,20 +422,6 @@ impl ControlSpec {
     /// otherwise be an exact match for a concept shared across layers.
     pub(crate) const fn search_name(mut self, name: &'static str) -> Self {
         self.search.name = name;
-        self
-    }
-
-    pub(crate) const fn search_group(
-        mut self,
-        name: &'static str,
-        member: &'static str,
-        is_default: bool,
-    ) -> Self {
-        self.search.group = Some(SearchGroup {
-            name,
-            member,
-            is_default,
-        });
         self
     }
 
@@ -1603,7 +1577,6 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
 );
 
 pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
-pub(crate) const PAD_MIDI_TRIGGER_ID: &str = "pad.midi_trigger";
 
 pub(crate) fn pad_step_index(id: &str) -> Option<usize> {
     let step: usize = id.strip_prefix("pad.step")?.parse().ok()?;
@@ -1732,40 +1705,6 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c| format!("{:.0}", c.pad.chord_notes),
     ),
     ControlSpec::new(
-        "pad.midi_out",
-        "MIDI Out",
-        ControlKind::Discrete,
-        0.0,
-        1.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.pad.midi_out,
-        |c, v| {
-            c.pad.midi_out = v;
-            if v >= 0.5 {
-                c.pad.midi_in = 0.0;
-            }
-        },
-        |c| if c.pad.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
-    ).search_group("midi", "out", true),
-    ControlSpec::new(
-        "pad.midi_in",
-        "MIDI In",
-        ControlKind::Discrete,
-        0.0,
-        1.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.pad.midi_in,
-        |c, v| {
-            c.pad.midi_in = v;
-            if v >= 0.5 {
-                c.pad.midi_out = 0.0;
-            }
-        },
-        |c| if c.pad.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
-    ).search_group("midi", "in", false),
-    ControlSpec::new(
         PAD_TRIGGER_ID,
         "Trigger",
         ControlKind::Discrete,
@@ -1798,18 +1737,6 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
     pad_step_row!(14),
     pad_step_row!(15),
     pad_step_row!(16),
-    ControlSpec::new(
-        PAD_MIDI_TRIGGER_ID,
-        "MIDI Trigger",
-        ControlKind::Discrete,
-        0.0,
-        1.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.pad.midi_trigger,
-        |c, v| c.pad.midi_trigger = v,
-        |c| if c.pad.midi_trigger >= 0.5 { "On" } else { "Off" }.to_string(),
-    ),
 ]);
 
 pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
@@ -1878,20 +1805,6 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.bass.octave = v,
             |c| format!("{:.0}", c.bass.octave),
         ),
-        ControlSpec::new(
-            "bass.midi_mode",
-            "MIDI",
-            ControlKind::Discrete,
-            0.0,
-            last_index_of(&BASS_MIDI_MODES),
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.bass.midi,
-            |c, v| c.bass.midi = v,
-            |c| bass_midi_mode(c.bass.midi).label().to_string(),
-        )
-        .search_name("bass midi mode")
-        .search_group("midi", "mode", true),
     ]
 );
 
@@ -2128,50 +2041,6 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
     "arp",
     [
         gain_pct!("arp.gain", "Level", arp.gain),
-        ControlSpec::new(
-            "arp.midi_in",
-            "MIDI In",
-            ControlKind::Discrete,
-            0.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.arp.midi_in,
-            |c, v| {
-                c.arp.midi_in = v;
-                if v >= 0.5 {
-                    c.arp.midi_out = 0.0;
-                }
-            },
-            |c| if c.arp.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
-        )
-        .search_group("midi", "in", false),
-        ControlSpec::new(
-            "arp.midi_out",
-            "MIDI Out",
-            ControlKind::Discrete,
-            0.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.arp.midi_out,
-            |c, v| {
-                c.arp.midi_out = v;
-                if v >= 0.5 {
-                    c.arp.midi_in = 0.0;
-                }
-            },
-            |c| if c.arp.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
-        )
-        .search_group("midi", "out", true),
-        beat_interval!(
-            "arp.midi_gate_beats",
-            "MIDI Gate",
-            0.125,
-            2.0,
-            arp.midi_gate_beats
-        )
-        .search_group("midi", "gate", false),
         time_secs!("arp.attack", "Attack", 0.0, 1.0, 0.001, arp.attack),
         time_secs!("arp.decay", "Decay", TONAL_DECAY_MIN, 6.0, 0.001, arp.decay),
         ControlSpec::new(
@@ -2250,50 +2119,6 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
     "lead",
     [
         gain_pct!("lead.level", "Level", lead.level),
-        ControlSpec::new(
-            "lead.midi_in",
-            "MIDI In",
-            ControlKind::Discrete,
-            0.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.lead.midi_in,
-            |c, v| {
-                c.lead.midi_in = v;
-                if v >= 0.5 {
-                    c.lead.midi_out = 0.0;
-                }
-            },
-            |c| if c.lead.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
-        )
-        .search_group("midi", "in", false),
-        ControlSpec::new(
-            "lead.midi_out",
-            "MIDI Out",
-            ControlKind::Discrete,
-            0.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.lead.midi_out,
-            |c, v| {
-                c.lead.midi_out = v;
-                if v >= 0.5 {
-                    c.lead.midi_in = 0.0;
-                }
-            },
-            |c| if c.lead.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
-        )
-        .search_group("midi", "out", true),
-        beat_interval!(
-            "lead.midi_gate_beats",
-            "MIDI Gate",
-            0.125,
-            2.0,
-            lead.midi_gate_beats
-        )
-        .search_group("midi", "gate", false),
         ControlSpec::new(
             LEAD_PATTERN_ID,
             "Pattern",
@@ -2427,27 +2252,6 @@ pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
     all_specs().find(|spec| spec.id == id)
 }
 
-pub(crate) const PAD_MIDI_IN_ROW: u8 = 1 << 0;
-pub(crate) const PAD_MIDI_OUT_ROW: u8 = 1 << 1;
-pub(crate) const BASS_MIDI_ROW: u8 = 1 << 6;
-/// Every assigned `midi_rows` bit; a song code naming any other is refused.
-pub(crate) const MIDI_ROW_BITS: u8 = 0b0111_1111;
-
-/// Optional MIDI rows retain their place after being added even when Off.
-/// Gate rows belong to their track's MIDI Out control.
-pub(crate) fn midi_row_bit(id: &str) -> Option<u8> {
-    match id {
-        "pad.midi_in" => Some(PAD_MIDI_IN_ROW),
-        "pad.midi_out" => Some(PAD_MIDI_OUT_ROW),
-        "arp.midi_in" => Some(1 << 2),
-        "arp.midi_out" | "arp.midi_gate_beats" => Some(1 << 3),
-        "lead.midi_in" => Some(1 << 4),
-        "lead.midi_out" | "lead.midi_gate_beats" => Some(1 << 5),
-        "bass.midi_mode" => Some(BASS_MIDI_ROW),
-        _ => None,
-    }
-}
-
 /// The Pad rhythm controls tucked out of the root page until added through `/`.
 pub(crate) fn pad_rhythm_row_bit(id: &str) -> Option<u8> {
     match id {
@@ -2458,42 +2262,23 @@ pub(crate) fn pad_rhythm_row_bit(id: &str) -> Option<u8> {
     }
 }
 
-fn midi_row_visible(id: &str, c: &FluidControls) -> bool {
-    midi_row_bit(id).is_none_or(|bit| c.midi_rows & bit != 0)
-}
-
 fn pad_rhythm_row_visible(id: &str, c: &FluidControls) -> bool {
     pad_rhythm_row_bit(id).is_none_or(|bit| c.hidden_pad_rhythm_rows & bit == 0)
 }
 
-/// A tab's root rows: every spec except page-local step rows, unloaded
-/// module-slot rows, and MIDI rows that have not been added through `/`.
+/// A tab's root rows: every spec except page-local step rows and unloaded
+/// module-slot rows.
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
-    let rows = tab_specs(tab)
+    tab_specs(tab)
         .iter()
         .filter(|spec| {
             module_slot_row_visible(spec.id, c)
-                && midi_row_visible(spec.id, c)
                 && pad_rhythm_row_visible(spec.id, c)
                 && lead_step_index(spec.id).is_none()
                 && pad_step_index(spec.id).is_none()
-                && spec.id != PAD_MIDI_TRIGGER_ID
         })
         .map(|spec| spec.item(c))
-        .collect();
-    midi_rows_last(rows)
-}
-
-/// Keep MIDI setup below the instrument and loaded-module controls without
-/// moving stable registry addresses used by song codes and palette jumps.
-fn midi_rows_last(mut rows: Vec<ControlItem>) -> Vec<ControlItem> {
-    rows.sort_by_key(|item| match item.id {
-        "arp.midi_gate_beats" | "lead.midi_gate_beats" => 1,
-        "pad.midi_in" | "arp.midi_in" | "lead.midi_in" | "bass.midi_mode" => 2,
-        "pad.midi_out" | "arp.midi_out" | "lead.midi_out" => 3,
-        _ => 0,
-    });
-    rows
+        .collect()
 }
 
 /// Lead-tab visible rows for the given drill level: the root page, or the
@@ -2873,20 +2658,16 @@ pub(crate) fn chords_tab_controls(
     drill: interaction::ChordDrill,
 ) -> Vec<ControlItem> {
     match drill {
-        interaction::ChordDrill::None => midi_rows_last(
-            CHORDS_CONTROLS
-                .iter()
-                .filter(|spec| {
-                    parse_chord_slot_id(spec.id).is_none()
-                        && pad_step_index(spec.id).is_none()
-                        && spec.id != PAD_MIDI_TRIGGER_ID
-                        && midi_row_visible(spec.id, c)
-                        && pad_rhythm_row_visible(spec.id, c)
-                        && module_slot_row_visible(spec.id, c)
-                })
-                .map(|spec| spec.item(c))
-                .collect(),
-        ),
+        interaction::ChordDrill::None => CHORDS_CONTROLS
+            .iter()
+            .filter(|spec| {
+                parse_chord_slot_id(spec.id).is_none()
+                    && pad_step_index(spec.id).is_none()
+                    && pad_rhythm_row_visible(spec.id, c)
+                    && module_slot_row_visible(spec.id, c)
+            })
+            .map(|spec| spec.item(c))
+            .collect(),
         interaction::ChordDrill::Pattern { .. } => CHORDS_CONTROLS
             .iter()
             .filter(|spec| pad_step_index(spec.id).is_some())

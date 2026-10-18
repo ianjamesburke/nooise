@@ -132,6 +132,7 @@ pub(crate) const DEFAULT_CHORD_SLOT_DEGREES: [f32; 8] = [0.0, -1.0, 0.0, 1.0, 0.
 /// Number of custom chord slots (`PadControls::chord_slots`), and the max of
 /// `pad.chord_count`. Matches the built-ins' fixed 8-chord length.
 pub(crate) const CHORD_SLOT_COUNT: usize = 8;
+pub(crate) const PAD_STEP_COUNT: usize = 16;
 pub(crate) const PAD_RHYTHM_ROWS: u8 = 0b0000_1101;
 
 /// Audio-only scratch for the currently evaluated progression. Registry
@@ -155,16 +156,12 @@ pub(crate) struct PadControls {
     pub(crate) chord_offset: f32,
     pub(crate) progression: f32,
     pub(crate) chord_notes: f32,
-    pub(crate) midi_in: f32,
-    pub(crate) midi_out: f32,
-    /// In Stabs mode, 0 reads the step lane and 1 fires on MIDI Note On.
-    pub(crate) midi_trigger: f32,
     pub(crate) trigger: f32,
     pub(crate) swing: f32,
     pub(crate) gate_beats: f32,
     /// Beats the Stabs step lane is shifted; 0 keeps the lane on the grid.
     pub(crate) offset_beats: f32,
-    pub(crate) steps: [f32; 16],
+    pub(crate) steps: [f32; PAD_STEP_COUNT],
     pub(crate) chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
     pub(crate) chord_overrides: Arc<ChordOverrideSlots>,
     /// Rebuilt each audio evaluation; excluded from authored song state.
@@ -186,9 +183,6 @@ impl Default for PadControls {
             chord_offset: 0.0,
             progression: 0.0,
             chord_notes: 4.0,
-            midi_in: 0.0,
-            midi_out: 1.0,
-            midi_trigger: 0.0,
             trigger: 0.0,
             swing: 0.0,
             gate_beats: 0.5,
@@ -284,23 +278,6 @@ impl PadControls {
             changed
         } else {
             false
-        }
-    }
-}
-
-impl FluidControls {
-    /// A morph or modulation can cross two saved direction switches at once.
-    /// In takes priority for that transient; direct edits turn the other side
-    /// off in the registry setter instead.
-    pub(crate) fn keep_midi_directions_exclusive(&mut self) {
-        if self.pad.midi_in >= 0.5 {
-            self.pad.midi_out = 0.0;
-        }
-        if self.arp.midi_in >= 0.5 {
-            self.arp.midi_out = 0.0;
-        }
-        if self.lead.midi_in >= 0.5 {
-            self.lead.midi_out = 0.0;
         }
     }
 }
@@ -413,7 +390,6 @@ pub(crate) struct BassControls {
     pub(crate) attack_time: f32,
     pub(crate) decay_time: f32, // also used as the cutoff curve when a hit retriggers mid-decay
     pub(crate) swing: f32,      // derived from the optional Swing module
-    pub(crate) midi: f32,       // index into BASS_MIDI_MODES; 0=Off, 1=In, 2=Out
 }
 
 impl Default for BassControls {
@@ -429,7 +405,6 @@ impl Default for BassControls {
             decay_time: 0.3,
             attack_time: 0.01,
             swing: 0.0,
-            midi: 0.0,
         }
     }
 }
@@ -437,9 +412,6 @@ impl Default for BassControls {
 #[derive(Clone)]
 pub(crate) struct ArpControls {
     pub(crate) gain: f32,
-    pub(crate) midi_in: f32,
-    pub(crate) midi_out: f32,
-    pub(crate) midi_gate_beats: f32,
     pub(crate) voice_type: f32, // same Sine/piano-profile set as tonal.synth_type
     pub(crate) rate_beats: f32,
     pub(crate) offset_beats: f32,
@@ -456,9 +428,6 @@ impl Default for ArpControls {
             // Silent by default: a new voice must never change the sound of
             // existing songs or a fresh startup.
             gain: 0.0,
-            midi_in: 0.0,
-            midi_out: 0.0,
-            midi_gate_beats: 0.5,
             // 6 => the "Pluck" piano profile, matching the arp's former
             // fixed synth character byte-for-byte.
             voice_type: 6.0,
@@ -490,9 +459,6 @@ pub(crate) const DEFAULT_LEAD_STEPS: [f32; LEAD_STEP_COUNT] = [
 #[derive(Clone)]
 pub(crate) struct LeadControls {
     pub(crate) level: f32,
-    pub(crate) midi_in: f32,
-    pub(crate) midi_out: f32,
-    pub(crate) midi_gate_beats: f32,
     pub(crate) attack: f32,
     pub(crate) decay: f32,
     pub(crate) glide: f32,      // seconds for a pitch change to settle
@@ -513,9 +479,6 @@ impl Default for LeadControls {
             // Silent by default: a new voice must never change the sound of
             // existing songs or a fresh startup.
             level: 0.0,
-            midi_in: 0.0,
-            midi_out: 0.0,
-            midi_gate_beats: 0.5,
             attack: 0.02,
             decay: 0.5,
             // Settled within a 32nd at 82 BPM: audible as a slide between
@@ -547,9 +510,6 @@ pub(crate) struct FluidControls {
     pub(crate) bass: BassControls,
     pub(crate) arp: ArpControls,
     pub(crate) lead: LeadControls,
-    /// Which optional MIDI rows have been added through the control palette.
-    /// Bits are assigned by `midi_row_bit` and saved separately from values.
-    pub(crate) midi_rows: u8,
     /// Pad Trigger, Gate, and Offset rows hidden until selected through `/`.
     pub(crate) hidden_pad_rhythm_rows: u8,
     /// Per-layer module chains, including the factory presets defined by
@@ -569,7 +529,6 @@ impl Default for FluidControls {
             bass: BassControls::default(),
             arp: ArpControls::default(),
             lead: LeadControls::default(),
-            midi_rows: 0,
             hidden_pad_rhythm_rows: PAD_RHYTHM_ROWS,
             modules: LayerModules::default(),
         }

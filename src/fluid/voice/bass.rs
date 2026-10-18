@@ -2,8 +2,8 @@
 //! six characters over one shared trigger and pitch path.
 
 use super::*;
+use crate::fluid::osc::{OscVoiceEvent, OscVoiceSink, tuned_note};
 use crate::fx::drive::DriveType;
-use crate::midi::{MidiMessage, MidiSink, tuned_note};
 use crate::synth::filter::SvfLowpass;
 use crate::synth::oscillator::PolyBlepSaw;
 
@@ -67,38 +67,6 @@ pub(crate) const BASS_STEP_BEATS: f32 = 0.25;
 /// consecutive bass hits never audibly overlap.
 const BASS_MONO_FADE_SECONDS: f32 = 0.003;
 
-/// Which way the Bass talks to external MIDI. One control, so In and Out can
-/// never both be on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BassMidi {
-    /// Audio only.
-    Off,
-    /// Received notes play the Bass voice in place of its rhythm pattern.
-    In,
-    /// Each rhythm hit also sends its note to the MIDI output.
-    Out,
-}
-
-pub(crate) const BASS_MIDI_MODES: [BassMidi; 3] = [BassMidi::Off, BassMidi::In, BassMidi::Out];
-
-impl BassMidi {
-    pub(crate) fn from_value(value: f32) -> Self {
-        BASS_MIDI_MODES[(value.round() as i64).clamp(0, BASS_MIDI_MODES.len() as i64 - 1) as usize]
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Off => "Off",
-            Self::In => "In",
-            Self::Out => "Out",
-        }
-    }
-}
-
-pub(crate) fn bass_midi_mode(value: f32) -> BassMidi {
-    BassMidi::from_value(value)
-}
-
 pub(crate) struct BassEngine {
     pub(crate) sample_rate: f32,
     pub(crate) progression: ProgressionFollower,
@@ -110,11 +78,15 @@ pub(crate) struct BassEngine {
     /// Bass voices are mono and always centered; the constant-power center
     /// gain pair is computed once here instead of per voice-sample.
     pub(crate) center_gains: (f32, f32),
-    midi: Option<MidiSink>,
-    /// The note this engine has sounding on the MIDI output, and the beat
+    osc: Option<OscVoiceSink>,
+    osc_suppressed: bool,
+    /// The note this engine has sounding on the OSC output, and the beat
     /// its gate closes.
-    midi_active: bool,
-    midi_release_beat: f64,
+    osc_active: bool,
+    osc_release_beat: f64,
+    /// Whether inbound OSC bass notes are driving the Bass voice in place of
+    /// its internal rhythm pattern.
+    osc_input_active: bool,
     transport: Transport,
 }
 
@@ -129,23 +101,36 @@ impl BassEngine {
             fade_samples_remaining: 0,
             fade_total_samples: (sample_rate * BASS_MONO_FADE_SECONDS).max(1.0) as u32,
             center_gains: StereoPanner::gains(0.0),
-            midi: None,
-            midi_active: false,
-            midi_release_beat: 0.0,
+            osc: None,
+            osc_suppressed: false,
+            osc_active: false,
+            osc_release_beat: 0.0,
+            osc_input_active: false,
             transport: Transport::Stopped,
         }
     }
 
-    pub(crate) fn set_midi(&mut self, sink: MidiSink) {
-        self.midi = Some(sink);
+    pub(crate) fn set_osc(&mut self, sink: OscVoiceSink) {
+        self.osc = Some(sink);
     }
 
-    fn release_midi(&mut self) {
-        if self.midi_active {
-            if let Some(sink) = &self.midi {
-                sink.send(MidiMessage::BassOff);
+    pub(crate) fn set_osc_suppressed(&mut self, suppressed: bool) {
+        if suppressed && !self.osc_suppressed {
+            self.release_osc();
+        }
+        self.osc_suppressed = suppressed;
+    }
+
+    pub(crate) fn release_input(&mut self) {
+        self.osc_input_active = false;
+    }
+
+    fn release_osc(&mut self) {
+        if self.osc_active {
+            if let Some(sink) = &self.osc {
+                sink.send(OscVoiceEvent::BassOff);
             }
-            self.midi_active = false;
+            self.osc_active = false;
         }
     }
 
@@ -164,10 +149,11 @@ impl BassEngine {
         ));
     }
 
-    /// MIDI input plays the Bass voice at the received pitch. It is never
-    /// echoed to MIDI output, and the voice decays on its own, so a Note Off
-    /// needs no handling.
-    pub(crate) fn midi_note_on(&mut self, note: u8, c: &BassControls, tune: f32) {
+    /// Inbound OSC input plays the Bass voice at the received pitch in place of
+    /// the internal rhythm pattern. It is never echoed to OSC output, and the
+    /// voice decays on its own, so a Note Off needs no handling.
+    pub(crate) fn osc_note_on(&mut self, note: u8, c: &BassControls, tune: f32) {
+        self.osc_input_active = true;
         self.start_note(note_hz(i32::from(note), tune), c);
     }
 
@@ -180,13 +166,12 @@ impl BassEngine {
     ) -> (f32, f32) {
         let (progression, slot) = self.progression.follow(pad, timing);
         let tune = key.shift(progression) as f32;
-        let mode = bass_midi_mode(c.midi);
-        if mode != BassMidi::Out || timing.transport != self.transport {
-            self.release_midi();
+        if self.osc_suppressed || timing.transport != self.transport {
+            self.release_osc();
         }
         self.transport = timing.transport;
-        if self.midi_active && timing.beat >= self.midi_release_beat {
-            self.release_midi();
+        if self.osc_active && timing.beat >= self.osc_release_beat {
+            self.release_osc();
         }
 
         let loop_len = (c.interval_beats / BASS_STEP_BEATS)
@@ -199,21 +184,24 @@ impl BassEngine {
             let rhythm_step = lane_step_at(timing.beat, BASS_STEP_BEATS, c.offset_beats, loop_len);
             let rhythm = (c.rhythm.round() as usize) % BASS_RHYTHMS.len();
             let hit = rhythm_step < BASS_RHYTHMS[rhythm].len() && BASS_RHYTHMS[rhythm][rhythm_step];
-            // With MIDI In on, played notes replace the rhythm pattern.
-            if hit && mode != BassMidi::In {
+            // When inbound OSC notes are driving Bass, played notes replace the rhythm pattern.
+            if hit && !self.osc_input_active {
                 let note = bass_root_note(progression, slot, pad) + (c.octave.round() as i32) * 12;
                 // Hard-cut: whatever was sounding hands off to the fade-out
                 // slot (replacing any prior fade in progress) and the new
                 // note starts clean and immediately, not layered on top.
                 self.start_note(note_hz(note, tune), c);
-                if mode == BassMidi::Out
-                    && let Some(sink) = &self.midi
+                if !self.osc_suppressed
+                    && let Some(sink) = &self.osc
                 {
-                    sink.send(MidiMessage::BassNote(tuned_note(note, tune)));
-                    self.midi_active = true;
+                    let decay_beats = (f64::from(c.decay_time) * timing.bpm / 60.0) as f32;
+                    sink.send(OscVoiceEvent::BassNote {
+                        note: tuned_note(note, tune),
+                        decay_beats,
+                    });
+                    self.osc_active = true;
                     // The gate follows the audio life of the note.
-                    self.midi_release_beat =
-                        timing.beat + f64::from(c.decay_time) * timing.bpm / 60.0;
+                    self.osc_release_beat = timing.beat + f64::from(decay_beats);
                 }
             }
         }

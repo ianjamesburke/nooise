@@ -23,18 +23,12 @@ impl SearchMetadata {
                 if let Some((_, field)) = spec.id.split_once('.') {
                     names.push(field.to_string());
                 }
-                if let Some(group) = spec.search.group {
-                    names.push(format!("{} {}", group.name, group.member));
-                }
                 Self {
                     identity: format!("control:{}", spec.id),
                     stable_id: Some(spec.id),
                     scope: Some(*tab),
                     names,
-                    group: spec
-                        .search
-                        .group
-                        .map(|group| (vec![group.name.to_string()], group.is_default)),
+                    group: None,
                     scope_default: tab.level_id() == Some(spec.id),
                 }
             }
@@ -331,10 +325,10 @@ mod tests {
     }
 
     const ADVERSE: &[&str] = &[
-        "pad.midi_in",
-        "arp.midi_gate_beats",
-        "pad.midi_out",
-        "lead.midi_in",
+        "pad.attack_time",
+        "arp.rate_beats",
+        "pad.release_time",
+        "lead.attack",
         "bass.decay_time",
         "master.bpm",
     ];
@@ -368,28 +362,10 @@ mod tests {
                 }
             }
         }
-        for tab in [Tab::Chords, Tab::Arp, Tab::Lead] {
-            let namespace = tab.search_names()[0];
-            for query in ["mi", "mid", "midi", "MIDI", "midi out", "midi_out"] {
-                assert_eq!(
-                    winner(&entries, tab, ADVERSE, query),
-                    format!("control:{namespace}.midi_out"),
-                    "{tab:?} {query}"
-                );
-            }
-            for (query, member) in [("midi in", "in"), ("in midi", "in"), ("midi out", "out")] {
-                assert_eq!(
-                    winner(&entries, tab, ADVERSE, query),
-                    format!("control:{namespace}.midi_{member}")
-                );
-            }
-        }
         for (query, expected) in [
-            ("midi gate", "control:lead.midi_gate_beats"),
-            ("arp midi", "control:arp.midi_out"),
-            ("arp midi in", "control:arp.midi_in"),
-            ("midi in arp", "control:arp.midi_in"),
-            ("pad.midi_out", "control:pad.midi_out"),
+            ("arp rate", "control:arp.rate_beats"),
+            ("rate arp", "control:arp.rate_beats"),
+            ("pad.release_time", "control:pad.release_time"),
             ("bass", "control:bass.level"),
             ("bas", "control:bass.level"),
             ("bass.d", "control:bass.decay_time"),
@@ -406,9 +382,9 @@ mod tests {
             );
         }
         assert_eq!(
-            winner(&entries, Tab::Bass, &["arp.midi_out"], "midi"),
-            "control:bass.midi_mode",
-            "a layer's own MIDI control beats other layers' destinations"
+            winner(&entries, Tab::Bass, &["arp.decay"], "decay"),
+            "control:bass.decay_time",
+            "a layer's own control beats other layers' controls"
         );
     }
 
@@ -416,8 +392,8 @@ mod tests {
     fn palette_catalog_order_and_unrelated_entries_cannot_change_meaning() {
         let mut entries = palette_entries();
         let cases = [
-            (Tab::Lead, "midi"),
-            (Tab::Lead, "midi in arp"),
+            (Tab::Lead, "glide"),
+            (Tab::Lead, "rate arp"),
             (Tab::Bass, "delay"),
             (Tab::Master, "swing"),
             (Tab::Lead, "bass"),
@@ -436,10 +412,7 @@ mod tests {
         }
         let mut extra = *spec_by_id("pad.level").unwrap();
         extra.id = "pad.unrelated";
-        extra.search = ControlSearch {
-            name: "Unrelated",
-            group: None,
-        };
+        extra.search = ControlSearch { name: "Unrelated" };
         entries.insert(
             0,
             PaletteEntry::Control {
@@ -470,7 +443,7 @@ mod tests {
     #[test]
     fn palette_semantics_ignore_control_labels_and_operation_descriptions() {
         let mut entries = palette_entries();
-        let before = winner(&entries, Tab::Lead, ADVERSE, "midi");
+        let before = winner(&entries, Tab::Lead, ADVERSE, "glide");
         for entry in &mut entries {
             if let PaletteEntry::Control { spec, .. } = entry {
                 let mut edited = **spec;
@@ -478,7 +451,7 @@ mod tests {
                 *spec = Box::leak(Box::new(edited));
             }
         }
-        assert_eq!(winner(&entries, Tab::Lead, ADVERSE, "midi"), before);
+        assert_eq!(winner(&entries, Tab::Lead, ADVERSE, "glide"), before);
         // Description-only words never enter the search metadata at all.
         let operation = PaletteEntry::Operation(Operation::PlannedMute);
         assert!(operation.display_text().contains("visible"));
@@ -492,31 +465,6 @@ mod tests {
     #[test]
     fn palette_catalog_defaults_and_exact_operation_aliases_are_unambiguous() {
         let entries = palette_entries();
-        for tab in Tab::all() {
-            let mut groups = std::collections::BTreeMap::<&str, Vec<&ControlSpec>>::new();
-            for entry in &entries {
-                if let PaletteEntry::Control {
-                    tab: owner, spec, ..
-                } = entry
-                    && *owner == tab
-                    && let Some(group) = spec.search.group
-                {
-                    assert!(!group.name.is_empty() && !group.member.is_empty());
-                    groups.entry(group.name).or_default().push(spec);
-                }
-            }
-            for (name, members) in groups {
-                let defaults: Vec<_> = members
-                    .iter()
-                    .filter(|spec| spec.search.group.unwrap().is_default)
-                    .collect();
-                assert_eq!(defaults.len(), 1, "{tab:?} {name}");
-                assert_eq!(
-                    winner(&entries, tab, ADVERSE, name),
-                    format!("control:{}", defaults[0].id)
-                );
-            }
-        }
         let mut names = std::collections::BTreeMap::new();
         for operation in Operation::ALL {
             let spec = operation.spec();
@@ -561,7 +509,7 @@ mod tests {
             (Tab::Bass, "lev", "control:bass.level"),
             (Tab::Bass, "length", "control:bass.interval_beats"),
             (Tab::Master, "bas", "control:bass.level"),
-            (Tab::Lead, "ar midi", "control:arp.midi_out"),
+            (Tab::Lead, "ar rate", "control:arp.rate_beats"),
         ] {
             assert_eq!(
                 winner(&entries, tab, ADVERSE, query),
@@ -620,7 +568,7 @@ mod tests {
                         format!("control:{id}")
                     );
                 }
-                let remote = PaletteState::resolve(tab, &[], Some(scope), "lead midi");
+                let remote = PaletteState::resolve(tab, &[], Some(scope), "lead glide");
                 assert!(
                     remote.matches.iter().all(|hit| matches!(
                         remote.entry(hit.entry_index),
@@ -665,7 +613,7 @@ mod tests {
                 );
             }
         }
-        let long_query = Query::new(&"midi ".repeat(10_000));
+        let long_query = Query::new(&"glide ".repeat(10_000));
         assert!(
             long_query
                 .rank(&SearchMetadata::for_entry(&entries[0]), Tab::Bass, &[])

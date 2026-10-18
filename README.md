@@ -86,14 +86,19 @@ stop, and the Jump leader.
 
 ```sh
 nooise --osc
+nooise --osc --osc-in
 ```
 
-Mirrors the beat, chord changes, Pad phrase position, every voice's level, every musical hit, and
-every held gesture as OSC over UDP to
-`127.0.0.1:9000`, where [foorm](https://github.com/ianjamesburke/foorm)
-listens by default. `--osc=ADDR` sends elsewhere, such as TouchDesigner's
-OSC In CHOP. Off unless asked for. See `src/fluid/osc.rs` for the address
-vocabulary.
+`--osc` mirrors the beat, chord changes, Pad phrase position, every voice's
+level, every musical hit, voiced Pad/Arp/Lead/Bass notes, and live UI/layer
+state as OSC over UDP to `127.0.0.1:9000`, where
+[foorm](https://github.com/ianjamesburke/foorm) listens by default.
+`--osc=ADDR` sends elsewhere, such as TouchDesigner's OSC In CHOP or an
+external controller/MIDI bridge. `--osc-in` (default `127.0.0.1:9001`, or
+`--osc-in=ADDR`) listens for inbound `/nooise/cmd/*` OSC messages to drive
+controls, navigation, mutes, performance gestures, transport, Motion Grab, and
+voice notes. Both are off unless asked for. See `src/fluid/osc.rs` for the
+address vocabulary.
 
 At each Pad chord boundary, `/nooise/phrase` sends three integers: the
 zero-based phrase cycle since the last reset, the zero-based chord position
@@ -113,63 +118,18 @@ moves the dial. `Shift+P` starts and stops every app with start/stop sync on;
 a start waits for the next shared bar. Launching nooise never starts anyone
 else's transport. While auto morph runs, its tempo changes lead the session.
 
-List the exact input and output port names, then choose one device for both
-directions or name them separately:
-
-```sh
-nooise midi-ports
-nooise --midi Take5
-nooise --midi-in Keyboard --midi-out Take5
-nooise --midi-out Take5
-```
-
-Input and output each default to channel 1. Use `--midi-in-channel N` and
-`--midi-out-channel N` to choose different channels (1–16). `--midi Take5`
-opens both directions; either directional flag overrides its side. With Pad
-MIDI Out on, nooise sends the Pad's current
-2–5-note chord at startup and on chord changes, plus 24 MIDI clock pulses per
-beat and the transport's Start, Stop, and Continue messages. The Pad chord
-releases when another chord starts or the clock stops. MIDI output runs
-alongside nooise audio. With `--midi` or `--midi-out`, Pad starts with MIDI Out
-on and visible, MIDI In off, and Level at 0%, including when loading a song. `--midi`
-still opens the input port for tracks whose MIDI In switch you turn on. An
-input-only `--midi-in` launch starts Pad with MIDI In on and visible, MIDI Out off, and
-Level at 0%; raise Pad Level to hear your keyboard through its sound. The
-other tracks keep their saved MIDI switches. Pad Trigger and Gate are
-hidden by default with or without MIDI. Find either row with `/` to add it.
-Set the receiving synth to follow USB MIDI clock if you want its own timed
-features to sync.
-
 Add `pad.trigger` with `/`, then change Trigger from Hold to Stabs for a 16-step chord rhythm.
 Enter on Trigger opens the Hit/Rest steps. Up/Down selects, Left/Right changes,
 and Esc returns to the Pads page. Each step is a sixteenth note. Add the Swing
 module to Pads with `/` to delay the offbeat steps. Stabs follow the Pad's Attack
 and Release, use the current progression, and send the same chord hits to audio
-and MIDI. Gate sets how many beats each hit stays held, from 0.125 to
+and OSC. Gate sets how many beats each hit stays held, from 0.125 to
 2, with a 0.5-beat default. The next hit retriggers the chord even if Gate has
-not elapsed. MIDI Note Off starts the external synth's own release envelope;
-nooise does not change its ADSR. Hold restores the normal sustained Pad.
-
-Other MIDI switches stay hidden from the Pads, Arp, and Lead pages until you
-add one with `/`: find `pad.midi_in`, `arp.midi_out`, or another track's switch
-and press Enter. The switch then stays at the bottom of that page even when Off;
-Arp and Lead also show MIDI Gate when their Out switch is added. Adding a
-switch does not change its On/Off value. A track can use only one direction at a time: turning In on
-turns Out off, and vice versa. Pad defaults to Out; Arp and Lead default Off.
-Ordinary Pad MIDI In plays incoming pitches with the Pad sound. With a
-connected input, Hold-mode Pad audio follows your keyboard. Held Arp input
-notes replace its Pad-chord note source until released. Lead input notes play
-its sound at their incoming pitch. MIDI input never echoes notes to output.
-More than one track can send MIDI, sharing the chosen output channel and the
-synth's available voices. MIDI Out never mutes nooise audio.
-Arp and Lead play through MIDI even with their audio Level at zero. Their MIDI
-Gate rows set the held length of step notes from 0.125 to 2 beats (default 0.5);
-a held Lead play key stays on until released.
+not elapsed. Hold restores the normal sustained Pad.
 
 Pads' Chord Notes row sets how many notes each Pad chord plays in both audio
-and MIDI. Two keeps the root and fifth; three plays the triad; four keeps the
-original voicing; five adds a high root. The default is four. For a Take 5
-patch with a long release, try two or three to leave voices for the next chord.
+and OSC. Two keeps the root and fifth; three plays the triad; four keeps the
+original voicing; five adds a high root. The default is four.
 Arp, Bass, and Lead still follow the original chord tones.
 
 ```sh

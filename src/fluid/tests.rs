@@ -4,12 +4,12 @@
 //! recorded raw events rather than semantic calls.
 
 use super::interaction::ChordDrill;
-use super::song_ids::song_id_index;
-use super::*;
-use crate::midi::{
-    MidiInputEvent, MidiInputSource, MidiMessage, MidiSink, pad_notes, pad_notes_with_count,
+use super::osc::{
+    OscVoiceCommand, OscVoiceEvent, OscVoiceSink, OscVoiceSource, pad_notes, pad_notes_with_count,
     tuned_note,
 };
+use super::song_ids::song_id_index;
+use super::*;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ratatui::backend::TestBackend;
@@ -1280,8 +1280,6 @@ fn built_in_nine_thirteen_lands_chord_bank_tempo_and_midi_on_one_sample() {
     for state in [&mut from, &mut to] {
         // Observe the authored harmony through the ordinary sustained Pad path.
         state.controls.pad.trigger = 0.0;
-        state.controls.pad.midi_in = 0.0;
-        state.controls.pad.midi_out = 1.0;
     }
     let endpoints = [from.clone(), to.clone()];
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
@@ -1289,14 +1287,14 @@ fn built_in_nine_thirteen_lands_chord_bank_tempo_and_midi_on_one_sample() {
         vec![9, 13],
         64,
     ))));
-    let (sink, receiver) = MidiSink::test_channel();
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut engine = FluidEngine::new(
         8_000.0,
         live_session(from.controls, from.automation),
         Arc::clone(&morph),
         Arc::new(FluidTelemetry::default()),
     )
-    .with_midi(sink);
+    .with_osc_voice(sink);
     engine.reseed(5);
 
     let mut previous_song = 9;
@@ -1309,7 +1307,7 @@ fn built_in_nine_thirteen_lands_chord_bank_tempo_and_midi_on_one_sample() {
         let chord_events: Vec<_> = receiver
             .try_iter()
             .filter_map(|message| match message {
-                MidiMessage::PadChord(notes) => Some(notes),
+                OscVoiceEvent::PadChord(notes) => Some(notes),
                 _ => None,
             })
             .collect();
@@ -1387,7 +1385,7 @@ fn built_in_nine_thirteen_lands_chord_bank_tempo_and_midi_on_one_sample() {
         eprintln!(
             "{previous_song}->{song} landing beat={beat:.6} sample={sample} bpm={} slot={first_slot} midi={:?}",
             engine.tempo.bpm,
-            expected_midi.active()
+            expected_midi.as_slice()
         );
         previous_song = song;
         landings += 1;
@@ -1641,79 +1639,15 @@ fn morph_percentage_phase_silences_kick_and_bass_including_automation_and_tails(
 }
 
 #[test]
-fn turning_on_one_midi_direction_turns_off_the_other_on_each_track() {
-    let mut controls = FluidControls::default();
-    for (input, output) in [
-        ("pad.midi_in", "pad.midi_out"),
-        ("arp.midi_in", "arp.midi_out"),
-        ("lead.midi_in", "lead.midi_out"),
-    ] {
-        let input = spec_by_id(input).unwrap();
-        let output = spec_by_id(output).unwrap();
-        input.apply_value(1.0, &mut controls);
-        assert_eq!((input.get)(&controls), 1.0);
-        assert_eq!((output.get)(&controls), 0.0);
-        output.apply_value(1.0, &mut controls);
-        assert_eq!((input.get)(&controls), 0.0);
-        assert_eq!((output.get)(&controls), 1.0);
-    }
-}
-
-#[test]
-fn effective_midi_directions_never_run_both_sides_of_a_track() {
-    let mut controls = FluidControls::default();
-    controls.pad.midi_in = 1.0;
-    controls.arp.midi_in = 1.0;
-    controls.arp.midi_out = 1.0;
-    controls.lead.midi_in = 1.0;
-    controls.lead.midi_out = 1.0;
-    controls.keep_midi_directions_exclusive();
-    assert_eq!(controls.pad.midi_out, 0.0);
-    assert_eq!(controls.arp.midi_out, 0.0);
-    assert_eq!(controls.lead.midi_out, 0.0);
-}
-
-#[test]
-fn midi_controls_finish_their_instrument_pages() {
-    let mut controls = FluidControls::default();
-    for tab in [Tab::Chords, Tab::Arp, Tab::Lead] {
+fn instrument_pages_never_expose_retired_midi_controls() {
+    let controls = FluidControls::default();
+    for tab in Tab::all() {
         assert!(
             tab_controls(tab, &controls)
                 .iter()
-                .all(|item| !item.id.contains(".midi_"))
+                .all(|item| !item.id.contains("midi"))
         );
     }
-    controls.midi_rows = 0b00_111111;
-    let pad = chords_tab_controls(&controls, ChordDrill::None);
-    let arp = tab_controls(Tab::Arp, &controls);
-    let lead = lead_tab_controls(&controls, interaction::LeadDrill::None);
-
-    assert_eq!(pad[pad.len() - 2].id, "pad.midi_in");
-    assert_eq!(pad.last().unwrap().id, "pad.midi_out");
-    assert_eq!(arp[arp.len() - 3].id, "arp.midi_gate_beats");
-    assert_eq!(arp[arp.len() - 2].id, "arp.midi_in");
-    assert_eq!(arp.last().unwrap().id, "arp.midi_out");
-    assert_eq!(lead[lead.len() - 3].id, "lead.midi_gate_beats");
-    assert_eq!(lead[lead.len() - 2].id, "lead.midi_in");
-    assert_eq!(lead.last().unwrap().id, "lead.midi_out");
-}
-
-#[test]
-fn midi_input_switches_and_pad_trigger_source_survive_song_codes() {
-    let mut song = SongState::default();
-    song.controls.pad.midi_in = 0.0;
-    song.controls.pad.midi_trigger = 1.0;
-    song.controls.arp.midi_in = 1.0;
-    song.controls.lead.midi_in = 1.0;
-    song.controls.midi_rows = 0b00_010101;
-    song.controls.hidden_pad_rhythm_rows = 0b0000_0101;
-    let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-    assert_eq!(decoded.controls.pad.midi_in, 0.0);
-    assert_eq!(decoded.controls.pad.midi_trigger, 1.0);
-    assert_eq!(decoded.controls.arp.midi_in, 1.0);
-    assert_eq!(decoded.controls.lead.midi_in, 1.0);
-    assert_eq!(decoded.controls.midi_rows, 0b00_010101);
-    assert_eq!(decoded.controls.hidden_pad_rhythm_rows, 0b0000_0101);
 }
 
 #[test]
@@ -2245,79 +2179,70 @@ fn render_seconds(engine: &mut FluidEngine, seconds: f32) -> Vec<(f32, f32)> {
 }
 
 #[test]
-fn midi_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop() {
+fn osc_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop() {
     let mut controls = FluidControls::default();
     controls.pad.level = 0.0;
     // D is five semitones above Am's tonic.
     controls.master.key = 3.0;
     let expected = pad_notes(pad_chord_tones(&controls.pad, 0, 0), 5.0);
     let session = live_session(controls, AutomationState::default());
-    let (sink, receiver) = MidiSink::test_channel();
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut engine = FluidEngine::new(
         SAMPLE_RATE,
         session.clone(),
         no_morph(),
         Arc::new(FluidTelemetry::default()),
     )
-    .with_midi(sink);
+    .with_osc_voice(sink);
     engine.next_stereo();
-    assert_eq!(
-        receiver.try_iter().collect::<Vec<_>>(),
-        [
-            MidiMessage::Start,
-            MidiMessage::Clock,
-            MidiMessage::PadChord(expected),
-        ]
+    assert!(
+        receiver
+            .try_iter()
+            .any(|event| event == OscVoiceEvent::PadChord(expected))
     );
     session.update(|snapshot| snapshot.transport = Transport::Stopped);
     for _ in 0..128 {
         engine.next_stereo();
     }
-    assert_eq!(
-        receiver.try_iter().collect::<Vec<_>>(),
-        [
-            MidiMessage::PadOff,
-            MidiMessage::ArpOff,
-            MidiMessage::LeadOff,
-            MidiMessage::BassOff,
-            MidiMessage::Stop
-        ]
-    );
+    let stopped_events: Vec<_> = receiver.try_iter().collect();
+    assert!(stopped_events.contains(&OscVoiceEvent::PadOff));
+    assert!(stopped_events.contains(&OscVoiceEvent::ArpOff));
+    assert!(stopped_events.contains(&OscVoiceEvent::BassOff));
     session.update(|snapshot| snapshot.transport = Transport::Playing);
     for _ in 0..128 {
         engine.next_stereo();
     }
-    assert_eq!(
-        receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::Continue, MidiMessage::PadChord(expected)]
+    assert!(
+        receiver
+            .try_iter()
+            .any(|event| event == OscVoiceEvent::PadChord(expected))
     );
 }
 
 #[test]
-fn pad_midi_input_plays_its_sound_at_the_received_pitch_without_echo() {
+fn pad_osc_input_plays_its_sound_at_the_received_pitch_without_echo() {
     let mut controls = FluidControls::default();
     controls.pad.trigger = 1.0;
     controls.pad.steps.fill(0.0);
     controls.pad.attack_time = 0.01;
     controls.pad.level = 1.0;
-    controls.pad.midi_in = 1.0;
     let session = live_session(controls, AutomationState::default());
-    let (source, sender) = MidiInputSource::test_channel();
-    let (sink, receiver) = MidiSink::test_channel();
+    let (source, sender) = OscVoiceSource::test_channel();
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut engine = FluidEngine::new(
         SAMPLE_RATE,
         session,
         no_morph(),
         Arc::new(FluidTelemetry::default()),
     )
-    .with_midi(sink)
-    .with_midi_input(source);
+    .with_osc_voice(sink)
+    .with_osc_input(source);
     engine.reseed(42);
     let baseline: f32 = render_seconds(&mut engine, 0.1)
         .iter()
         .map(|(left, right)| left.abs() + right.abs())
         .sum();
-    sender.send(MidiInputEvent::NoteOn(60)).unwrap();
+    sender.send(OscVoiceCommand::PadNoteOn(60)).unwrap();
     let played: f32 = render_seconds(&mut engine, 0.1)
         .iter()
         .map(|(left, right)| left.abs() + right.abs())
@@ -2326,136 +2251,59 @@ fn pad_midi_input_plays_its_sound_at_the_received_pitch_without_echo() {
     assert!(
         receiver
             .try_iter()
-            .all(|message| !matches!(message, MidiMessage::PadChord(_)))
+            .all(|message| !matches!(message, OscVoiceEvent::PadChord(_)))
     );
 }
 
 #[test]
-fn connected_pad_keyboard_owns_hold_audio_without_stopping_the_progression() {
+fn connected_pad_osc_input_owns_hold_audio_without_stopping_the_progression() {
     let controls = PadControls {
         attack_time: 0.01,
-        midi_in: 1.0,
+        release_time: 0.05,
         ..PadControls::default()
     };
     let mut normal = pad_engine(&controls);
     let mut keyboard = pad_engine(&controls);
-    keyboard.set_midi_input_attached();
     let timing = TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0);
     for _ in 0..2400 {
         normal.next(&controls, MasterKey::Home, timing);
         keyboard.next(&controls, MasterKey::Home, timing);
     }
-    let mut normal_level = 0.0;
-    let mut keyboard_idle_level = 0.0;
-    for _ in 0..4800 {
-        normal_level += normal.next(&controls, MasterKey::Home, timing).0.abs();
-        keyboard_idle_level += keyboard.next(&controls, MasterKey::Home, timing).0.abs();
-    }
-    assert!(normal_level > keyboard_idle_level * 100.0);
-    keyboard.midi_note_on(60, &controls, 0.0, timing);
+    keyboard.osc_note_on(60, &controls, 0.0);
     let mut keyboard_played_level = 0.0;
     for _ in 0..4800 {
+        normal.next(&controls, MasterKey::Home, timing);
         keyboard_played_level += keyboard.next(&controls, MasterKey::Home, timing).0.abs();
+    }
+    keyboard.osc_note_off(60);
+    for _ in 0..24_000 {
+        normal.next(&controls, MasterKey::Home, timing);
+        keyboard.next(&controls, MasterKey::Home, timing);
+    }
+    let mut keyboard_idle_level = 0.0;
+    for _ in 0..4800 {
+        keyboard_idle_level += keyboard.next(&controls, MasterKey::Home, timing).0.abs();
     }
     assert!(keyboard_played_level > keyboard_idle_level * 100.0);
     assert_eq!(keyboard.cursor.slot(), normal.cursor.slot());
 }
 
 #[test]
-fn pad_midi_trigger_replaces_step_hits_with_the_current_chord() {
+fn arp_osc_input_becomes_its_note_source_and_lead_input_does_not_echo() {
     let mut controls = FluidControls::default();
-    controls.pad.trigger = 1.0;
-    controls.pad.midi_trigger = 1.0;
-    controls.pad.steps.fill(1.0);
-    controls.pad.midi_in = 1.0;
-    let session = live_session(controls, AutomationState::default());
-    let (source, sender) = MidiInputSource::test_channel();
-    let (sink, receiver) = MidiSink::test_channel();
-    let telemetry = Arc::new(FluidTelemetry::default());
-    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), Arc::clone(&telemetry))
-        .with_midi(sink)
-        .with_midi_input(source);
-    render_seconds(&mut engine, 0.4);
-    assert_eq!(
-        telemetry.hits[MusicalHit::Pad as usize]
-            .pulse
-            .load(Ordering::Relaxed),
-        0
-    );
-    assert!(
-        receiver
-            .try_iter()
-            .all(|message| !matches!(message, MidiMessage::PadChord(_)))
-    );
-
-    sender.send(MidiInputEvent::NoteOn(48)).unwrap();
-    sender.send(MidiInputEvent::NoteOn(52)).unwrap();
-    sender.send(MidiInputEvent::NoteOn(55)).unwrap();
-    render_seconds(&mut engine, 0.01);
-    assert_eq!(
-        telemetry.hits[MusicalHit::Pad as usize]
-            .pulse
-            .load(Ordering::Relaxed),
-        1
-    );
-    assert!(
-        receiver
-            .try_iter()
-            .all(|message| !matches!(message, MidiMessage::PadChord(_)))
-    );
-}
-
-#[test]
-fn midi_triggered_pad_chord_can_play_and_release_while_transport_is_stopped() {
-    let controls = PadControls {
-        trigger: 1.0,
-        midi_trigger: 1.0,
-        gate_beats: 0.125,
-        ..PadControls::default()
-    };
-    let mut pad = pad_engine(&controls);
-    let (sink, receiver) = MidiSink::test_channel();
-    pad.set_midi(sink);
-    let mut timing = TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0);
-    timing.transport = Transport::Stopped;
-    pad.next(&controls, MasterKey::Home, timing);
-    receiver.try_iter().for_each(drop);
-    pad.midi_note_on(60, &controls, 0.0, timing);
-    assert!(
-        receiver
-            .try_iter()
-            .any(|message| matches!(message, MidiMessage::PadChord(_)))
-    );
-    for _ in 0..(SAMPLE_RATE * 0.1) as usize {
-        pad.next(&controls, MasterKey::Home, timing);
-    }
-    assert!(
-        receiver
-            .try_iter()
-            .any(|message| message == MidiMessage::PadOff)
-    );
-}
-
-#[test]
-fn arp_midi_input_becomes_its_note_source_and_lead_input_does_not_echo() {
-    let mut controls = FluidControls::default();
-    controls.pad.midi_out = 0.0;
-    controls.arp.midi_in = 1.0;
-    controls.arp.midi_out = 0.0;
     controls.arp.gain = 1.0;
     controls.arp.rate_beats = 0.125;
-    controls.lead.midi_in = 1.0;
-    controls.lead.midi_out = 0.0;
     controls.lead.pattern = 0.0;
     controls.lead.level = 1.0;
     let session = live_session(controls, AutomationState::default());
-    let (source, sender) = MidiInputSource::test_channel();
-    let (sink, receiver) = MidiSink::test_channel();
+    let (source, sender) = OscVoiceSource::test_channel();
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let telemetry = Arc::new(FluidTelemetry::default());
     let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), Arc::clone(&telemetry))
-        .with_midi(sink)
-        .with_midi_input(source);
-    sender.send(MidiInputEvent::NoteOn(72)).unwrap();
+        .with_osc_voice(sink)
+        .with_osc_input(source);
+    sender.send(OscVoiceCommand::ArpNoteOn(72)).unwrap();
+    sender.send(OscVoiceCommand::LeadNoteOn(72)).unwrap();
     render_seconds(&mut engine, 0.2);
     assert!(engine.lead.voice.is_some());
     let messages = receiver.try_iter().collect::<Vec<_>>();
@@ -2470,27 +2318,28 @@ fn arp_midi_input_becomes_its_note_source_and_lead_input_does_not_echo() {
     assert!(
         !messages
             .iter()
-            .any(|message| matches!(message, MidiMessage::ArpNote(_)))
+            .any(|message| matches!(message, OscVoiceEvent::ArpNote { .. }))
     );
     assert!(
         !messages
             .iter()
-            .any(|message| matches!(message, MidiMessage::LeadNote(_)))
+            .any(|message| matches!(message, OscVoiceEvent::LeadNote { .. }))
     );
-    sender.send(MidiInputEvent::NoteOff(72)).unwrap();
+    sender.send(OscVoiceCommand::ArpNoteOff(72)).unwrap();
+    sender.send(OscVoiceCommand::LeadNoteOff(72)).unwrap();
     render_seconds(&mut engine, 0.01);
 }
 
 #[test]
-fn pad_chord_note_count_changes_audio_and_midi_voicing_live() {
+fn pad_chord_note_count_changes_audio_and_osc_voicing_live() {
     let mut controls = PadControls {
         chord_notes: 2.0,
         level: 0.0,
         ..PadControls::default()
     };
     let mut pad = pad_engine(&controls);
-    let (sink, receiver) = MidiSink::test_channel();
-    pad.set_midi(sink);
+    let (sink, receiver) = OscVoiceSink::test_channel();
+    pad.set_osc(sink);
     pad.next(
         &controls,
         MasterKey::Home,
@@ -2500,7 +2349,7 @@ fn pad_chord_note_count_changes_audio_and_midi_voicing_live() {
     assert_eq!(pad.layers.last().unwrap().tones.len(), 2);
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::PadChord(two)]
+        [OscVoiceEvent::PadChord(two)]
     );
 
     controls.chord_notes = 5.0;
@@ -2513,7 +2362,7 @@ fn pad_chord_note_count_changes_audio_and_midi_voicing_live() {
     assert_eq!(pad.layers.last().unwrap().tones.len(), 5);
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::PadChord(five)]
+        [OscVoiceEvent::PadChord(five)]
     );
 }
 
@@ -2529,20 +2378,18 @@ fn two_note_pad_voicing_changes_the_rendered_chord() {
 }
 
 #[test]
-fn arp_midi_plays_at_zero_audio_level_and_releases_at_its_gate() {
+fn arp_osc_plays_at_zero_audio_level_and_releases_at_its_gate() {
     let controls = ArpControls {
         gain: 0.0,
-        midi_out: 1.0,
         rate_beats: 1.0,
-        midi_gate_beats: 0.5,
         ..ArpControls::default()
     };
     let pad = PadControls::default();
-    let (sink, receiver) = MidiSink::test_channel();
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut arp = ArpEngine::new(SAMPLE_RATE);
-    arp.set_midi(sink);
+    arp.set_osc(sink);
     let first_note = tuned_note(pad_chord_tones(&pad, 0, 0)[0], 5.0);
-    for beat in [0.0, 0.25, 0.5] {
+    for beat in [0.0, 0.5, 1.0] {
         let audio = arp.next(
             &controls,
             &pad,
@@ -2551,26 +2398,26 @@ fn arp_midi_plays_at_zero_audio_level_and_releases_at_its_gate() {
         );
         assert_eq!(audio, (0.0, 0.0));
     }
-    assert_eq!(
-        receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::ArpNote(first_note), MidiMessage::ArpOff]
-    );
+    let events: Vec<_> = receiver.try_iter().collect();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        OscVoiceEvent::ArpNote { note, .. } if *note == first_note
+    )));
+    assert!(events.contains(&OscVoiceEvent::ArpOff));
 }
 
 #[test]
-fn arp_midi_uses_the_swung_note_grid() {
+fn arp_osc_uses_the_swung_note_grid() {
     let controls = ArpControls {
         gain: 0.0,
-        midi_out: 1.0,
         rate_beats: 0.5,
-        midi_gate_beats: 0.5,
         swing: 1.0,
         ..ArpControls::default()
     };
     let pad = PadControls::default();
-    let (sink, receiver) = MidiSink::test_channel();
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut arp = ArpEngine::new(SAMPLE_RATE);
-    arp.set_midi(sink);
+    arp.set_osc(sink);
     for beat in [0.0, 0.5] {
         arp.next(
             &controls,
@@ -2580,121 +2427,112 @@ fn arp_midi_uses_the_swung_note_grid() {
         );
     }
     let before_offbeat = receiver.try_iter().collect::<Vec<_>>();
-    assert_eq!(
-        before_offbeat,
-        [
-            MidiMessage::ArpNote(tuned_note(pad_chord_tones(&pad, 0, 0)[0], 0.0)),
-            MidiMessage::ArpOff,
-        ]
-    );
+    let expected_first = tuned_note(pad_chord_tones(&pad, 0, 0)[0], 0.0);
+    assert!(before_offbeat.iter().any(|e| matches!(
+        e,
+        OscVoiceEvent::ArpNote { note, .. } if *note == expected_first
+    )));
     arp.next(
         &controls,
         &pad,
         MasterKey::Home,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.75),
     );
-    assert!(matches!(
-        receiver.try_iter().collect::<Vec<_>>().as_slice(),
-        [MidiMessage::ArpNote(_)]
-    ));
+    assert!(
+        receiver
+            .try_iter()
+            .any(|e| matches!(e, OscVoiceEvent::ArpNote { .. }))
+    );
 }
 
 #[test]
-fn saved_kick_only_mutes_suppress_opening_midi_notes() {
+fn saved_kick_only_mutes_suppress_opening_osc_notes() {
     let mut song = SongState::default();
-    song.controls.arp.midi_out = 1.0;
-    song.controls.lead.midi_out = 1.0;
     mix_action::MixAction::KickOnly.apply(&mut song.muted);
     let loaded = song::decode_song_code(&song::encode_song_code(&song).unwrap()).unwrap();
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&loaded));
-    let (sink, receiver) = MidiSink::test_channel();
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut engine = FluidEngine::new(
         SAMPLE_RATE,
         session,
         no_morph(),
         Arc::new(FluidTelemetry::default()),
     )
-    .with_midi(sink);
+    .with_osc_voice(sink);
     for _ in 0..24_000 {
         engine.next_stereo();
     }
     let events: Vec<_> = receiver.try_iter().collect();
-    assert!(events.contains(&MidiMessage::Start));
-    assert!(events.contains(&MidiMessage::Clock));
     assert!(!events.iter().any(|event| matches!(
         event,
-        MidiMessage::PadChord(_) | MidiMessage::ArpNote(_) | MidiMessage::LeadNote(_)
+        OscVoiceEvent::PadChord(_) | OscVoiceEvent::ArpNote { .. } | OscVoiceEvent::LeadNote { .. }
     )));
 }
 
 #[test]
-fn track_and_master_mutes_release_midi_sources_without_stopping_clock() {
+fn track_and_master_mutes_release_osc_sources() {
     for tab in [Tab::Chords, Tab::Arp, Tab::Lead, Tab::Master] {
         let mut controls = FluidControls::default();
         controls.master.bpm = 120.0;
-        controls.arp.midi_out = 1.0;
-        controls.lead.midi_out = 1.0;
         controls.lead.steps = [1.0; 16];
         let session = live_session(controls, AutomationState::default());
-        let (sink, receiver) = MidiSink::test_channel();
+        let (sink, receiver) = OscVoiceSink::test_channel();
         let mut engine = FluidEngine::new(
             SAMPLE_RATE,
             session.clone(),
             no_morph(),
             Arc::new(FluidTelemetry::default()),
         )
-        .with_midi(sink);
+        .with_osc_voice(sink);
         engine.next_stereo();
         let opening: Vec<_> = receiver.try_iter().collect();
         assert!(
             opening
                 .iter()
-                .any(|e| matches!(e, MidiMessage::PadChord(_)))
+                .any(|e| matches!(e, OscVoiceEvent::PadChord(_)))
         );
-        assert!(opening.iter().any(|e| matches!(e, MidiMessage::ArpNote(_))));
         assert!(
             opening
                 .iter()
-                .any(|e| matches!(e, MidiMessage::LeadNote(_)))
+                .any(|e| matches!(e, OscVoiceEvent::ArpNote { .. }))
+        );
+        assert!(
+            opening
+                .iter()
+                .any(|e| matches!(e, OscVoiceEvent::LeadNote { .. }))
         );
         session.update(|snapshot| snapshot.muted[tab as usize] = true);
         for _ in 0..128 {
             engine.next_stereo();
         }
         let released: Vec<_> = receiver.try_iter().collect();
-        for (source, off) in [
-            (Tab::Chords, MidiMessage::PadOff),
-            (Tab::Arp, MidiMessage::ArpOff),
-            (Tab::Lead, MidiMessage::LeadOff),
-        ] {
-            assert_eq!(
-                released.contains(&off),
-                tab == source || tab == Tab::Master,
-                "{tab:?}: {released:?}"
-            );
-        }
+        assert_eq!(
+            released.contains(&OscVoiceEvent::PadOff),
+            tab == Tab::Chords || tab == Tab::Master,
+            "{tab:?}: {released:?}"
+        );
+        assert_eq!(
+            released.contains(&OscVoiceEvent::ArpOff),
+            tab == Tab::Arp || tab == Tab::Master,
+            "{tab:?}: {released:?}"
+        );
+        assert_eq!(
+            released
+                .iter()
+                .any(|e| matches!(e, OscVoiceEvent::LeadOff(_))),
+            tab == Tab::Lead || tab == Tab::Master,
+            "{tab:?}: {released:?}"
+        );
         for _ in 0..48_000 {
             engine.next_stereo();
         }
         let muted: Vec<_> = receiver.try_iter().collect();
-        assert_eq!(
-            muted.iter().filter(|e| **e == MidiMessage::Clock).count(),
-            48
-        );
         assert!(!muted.iter().any(|e| match e {
-            MidiMessage::PadChord(_) => matches!(tab, Tab::Chords | Tab::Master),
-            MidiMessage::ArpNote(_) => matches!(tab, Tab::Arp | Tab::Master),
-            MidiMessage::LeadNote(_) => matches!(tab, Tab::Lead | Tab::Master),
-            MidiMessage::Stop
-            | MidiMessage::Start
-            | MidiMessage::Continue
-            | MidiMessage::Shutdown => true,
+            OscVoiceEvent::PadChord(_) => matches!(tab, Tab::Chords | Tab::Master),
+            OscVoiceEvent::ArpNote { .. } => matches!(tab, Tab::Arp | Tab::Master),
+            OscVoiceEvent::LeadNote { .. } => matches!(tab, Tab::Lead | Tab::Master),
             _ => false,
         }));
-        let snapshot = session.load();
-        assert_eq!(snapshot.controls.pad.midi_out, 1.0);
-        assert_eq!(snapshot.controls.arp.midi_out, 1.0);
-        assert_eq!(snapshot.controls.lead.midi_out, 1.0);
         session.update(|snapshot| snapshot.muted[tab as usize] = false);
         for _ in 0..48_000 {
             engine.next_stereo();
@@ -2704,14 +2542,18 @@ fn track_and_master_mutes_release_midi_sources_without_stopping_clock() {
             assert!(
                 resumed
                     .iter()
-                    .any(|e| matches!(e, MidiMessage::PadChord(_)))
+                    .any(|e| matches!(e, OscVoiceEvent::PadChord(_)))
             );
         }
-        assert!(resumed.iter().any(|e| matches!(e, MidiMessage::ArpNote(_))));
         assert!(
             resumed
                 .iter()
-                .any(|e| matches!(e, MidiMessage::LeadNote(_)))
+                .any(|e| matches!(e, OscVoiceEvent::ArpNote { .. }))
+        );
+        assert!(
+            resumed
+                .iter()
+                .any(|e| matches!(e, OscVoiceEvent::LeadNote { .. }))
         );
     }
 }
@@ -2757,58 +2599,17 @@ fn kick_only_render_matches_independently_muted_reference() {
 }
 
 #[test]
-fn pad_and_arp_midi_out_switches_are_independent() {
-    let mut controls = FluidControls::default();
-    controls.arp.midi_out = 1.0;
-    controls.arp.gain = 0.0;
-    let session = live_session(controls, AutomationState::default());
-    let (sink, receiver) = MidiSink::test_channel();
-    let mut engine = FluidEngine::new(
-        SAMPLE_RATE,
-        session.clone(),
-        no_morph(),
-        Arc::new(FluidTelemetry::default()),
-    )
-    .with_midi(sink);
-    engine.next_stereo();
-    let initial: Vec<_> = receiver
-        .try_iter()
-        .filter(|event| matches!(event, MidiMessage::ArpNote(_) | MidiMessage::PadChord(_)))
-        .collect();
-    assert!(matches!(
-        initial.as_slice(),
-        [MidiMessage::PadChord(_), MidiMessage::ArpNote(_)]
-    ));
-    session.update(|snapshot| snapshot.controls.pad.midi_out = 0.0);
-    for _ in 0..128 {
-        engine.next_stereo();
-    }
-    let restored: Vec<_> = receiver
-        .try_iter()
-        .filter(|event| {
-            matches!(
-                event,
-                MidiMessage::PadOff | MidiMessage::ArpOff | MidiMessage::PadChord(_)
-            )
-        })
-        .collect();
-    assert_eq!(restored, [MidiMessage::PadOff]);
-}
-
-#[test]
-fn lead_lane_midi_plays_at_zero_audio_level_and_releases_at_gate() {
+fn lead_lane_osc_plays_at_zero_audio_level_and_releases_at_gate() {
     let controls = LeadControls {
         level: 0.0,
-        midi_out: 1.0,
-        midi_gate_beats: 0.5,
         rate_beats: 4.0,
         ..LeadControls::default()
     };
     let pad = PadControls::default();
-    let (sink, receiver) = MidiSink::test_channel();
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut lead = LeadEngine::new(100.0);
-    lead.set_midi(sink);
-    for sample in 0..26 {
+    lead.set_osc(sink);
+    for sample in 0..200 {
         let beat = sample as f64 * 0.02;
         assert_eq!(
             lead.next(
@@ -2821,23 +2622,24 @@ fn lead_lane_midi_plays_at_zero_audio_level_and_releases_at_gate() {
         );
     }
     let first_note = tuned_note(pad_chord_tones(&pad, 0, 0)[0], 0.0);
-    assert_eq!(
-        receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::LeadNote(first_note), MidiMessage::LeadOff]
-    );
+    let events: Vec<_> = receiver.try_iter().collect();
+    assert!(events.iter().any(|e| matches!(
+        e,
+        OscVoiceEvent::LeadNote { note, .. } if *note == first_note
+    )));
+    assert!(events.contains(&OscVoiceEvent::LeadOff(first_note)));
 }
 
 #[test]
-fn lead_play_key_midi_holds_until_release_even_at_zero_audio_level() {
+fn lead_play_key_osc_holds_until_release_even_at_zero_audio_level() {
     let controls = LeadControls {
         level: 0.0,
-        midi_out: 1.0,
         ..LeadControls::default()
     };
     let pad = PadControls::default();
-    let (sink, receiver) = MidiSink::test_channel();
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut lead = LeadEngine::new(100.0);
-    lead.set_midi(sink);
+    lead.set_osc(sink);
     lead.observe(LeadPlayState {
         presses: 1,
         tone: 1,
@@ -2851,7 +2653,7 @@ fn lead_play_key_midi_holds_until_release_even_at_zero_audio_level() {
     );
     assert!(matches!(
         receiver.try_iter().collect::<Vec<_>>().as_slice(),
-        [MidiMessage::LeadNote(_)]
+        [OscVoiceEvent::LeadNote { .. }]
     ));
     lead.observe(LeadPlayState {
         presses: 1,
@@ -2864,10 +2666,10 @@ fn lead_play_key_midi_holds_until_release_even_at_zero_audio_level() {
         MasterKey::Home,
         TimingContext::new(100.0, 120.0, 0.02),
     );
-    assert_eq!(
-        receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::LeadOff]
-    );
+    assert!(matches!(
+        receiver.try_iter().collect::<Vec<_>>().as_slice(),
+        [OscVoiceEvent::LeadOff(_)]
+    ));
 }
 
 #[test]
@@ -2879,8 +2681,8 @@ fn pad_stabs_send_only_selected_steps_and_release_between_hits() {
         ..PadControls::default()
     };
     let mut pad = pad_engine(&controls);
-    let (sink, receiver) = MidiSink::test_channel();
-    pad.set_midi(sink);
+    let (sink, receiver) = OscVoiceSink::test_channel();
+    pad.set_osc(sink);
     for beat in [0.0, 0.125, 0.25, 0.5, 0.75, 1.0] {
         pad.next(
             &controls,
@@ -2891,21 +2693,21 @@ fn pad_stabs_send_only_selected_steps_and_release_between_hits() {
     let notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
     let events: Vec<_> = receiver
         .try_iter()
-        .filter(|event| matches!(event, MidiMessage::PadChord(_) | MidiMessage::PadOff))
+        .filter(|event| matches!(event, OscVoiceEvent::PadChord(_) | OscVoiceEvent::PadOff))
         .collect();
     assert_eq!(
         events,
         [
-            MidiMessage::PadOff,
-            MidiMessage::PadChord(notes),
-            MidiMessage::PadOff,
-            MidiMessage::PadChord(notes)
+            OscVoiceEvent::PadOff,
+            OscVoiceEvent::PadChord(notes),
+            OscVoiceEvent::PadOff,
+            OscVoiceEvent::PadChord(notes)
         ]
     );
 }
 
 #[test]
-fn pad_gate_holds_midi_until_its_selected_beat_length() {
+fn pad_gate_holds_osc_until_its_selected_beat_length() {
     let controls = PadControls {
         trigger: 1.0,
         steps: [
@@ -2914,8 +2716,8 @@ fn pad_gate_holds_midi_until_its_selected_beat_length() {
         ..PadControls::default()
     };
     let mut pad = pad_engine(&controls);
-    let (sink, receiver) = MidiSink::test_channel();
-    pad.set_midi(sink);
+    let (sink, receiver) = OscVoiceSink::test_channel();
+    pad.set_osc(sink);
     for beat in [0.0, 0.125, 0.25, 0.375] {
         pad.next(
             &controls,
@@ -2926,11 +2728,11 @@ fn pad_gate_holds_midi_until_its_selected_beat_length() {
     assert_eq!(
         receiver
             .try_iter()
-            .filter(|event| matches!(event, MidiMessage::PadChord(_) | MidiMessage::PadOff))
+            .filter(|event| matches!(event, OscVoiceEvent::PadChord(_) | OscVoiceEvent::PadOff))
             .collect::<Vec<_>>(),
         [
-            MidiMessage::PadOff,
-            MidiMessage::PadChord(pad_notes(pad_chord_tones(&controls, 0, 0), 0.0))
+            OscVoiceEvent::PadOff,
+            OscVoiceEvent::PadChord(pad_notes(pad_chord_tones(&controls, 0, 0), 0.0))
         ]
     );
     pad.next(
@@ -2940,7 +2742,7 @@ fn pad_gate_holds_midi_until_its_selected_beat_length() {
     );
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::PadOff]
+        [OscVoiceEvent::PadOff]
     );
 }
 
@@ -2955,8 +2757,8 @@ fn pad_gate_retriggers_on_an_adjacent_hit_even_when_set_longer() {
         ..PadControls::default()
     };
     let mut pad = pad_engine(&controls);
-    let (sink, receiver) = MidiSink::test_channel();
-    pad.set_midi(sink);
+    let (sink, receiver) = OscVoiceSink::test_channel();
+    pad.set_osc(sink);
     pad.next(
         &controls,
         MasterKey::Home,
@@ -2971,7 +2773,7 @@ fn pad_gate_retriggers_on_an_adjacent_hit_even_when_set_longer() {
     let notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::PadOff, MidiMessage::PadChord(notes)]
+        [OscVoiceEvent::PadOff, OscVoiceEvent::PadChord(notes)]
     );
 }
 
@@ -2986,8 +2788,8 @@ fn pad_stab_swing_delays_the_offbeat_hit() {
         ..PadControls::default()
     };
     let mut pad = pad_engine(&controls);
-    let (sink, receiver) = MidiSink::test_channel();
-    pad.set_midi(sink);
+    let (sink, receiver) = OscVoiceSink::test_channel();
+    pad.set_osc(sink);
     for beat in [0.0, 0.25] {
         pad.next(
             &controls,
@@ -2998,7 +2800,7 @@ fn pad_stab_swing_delays_the_offbeat_hit() {
     assert!(
         !receiver
             .try_iter()
-            .any(|event| matches!(event, MidiMessage::PadChord(_)))
+            .any(|event| matches!(event, OscVoiceEvent::PadChord(_)))
     );
     pad.next(
         &controls,
@@ -3008,7 +2810,7 @@ fn pad_stab_swing_delays_the_offbeat_hit() {
     assert!(
         receiver
             .try_iter()
-            .any(|event| matches!(event, MidiMessage::PadChord(_)))
+            .any(|event| matches!(event, OscVoiceEvent::PadChord(_)))
     );
 }
 
@@ -3023,12 +2825,12 @@ fn pad_stab_offset_rotates_the_step_lane_with_the_grid() {
         ..PadControls::default()
     };
     let mut pad = pad_engine(&controls);
-    let (sink, receiver) = MidiSink::test_channel();
-    pad.set_midi(sink);
-    let chord_fired = |receiver: &std::sync::mpsc::Receiver<MidiMessage>| {
+    let (sink, receiver) = OscVoiceSink::test_channel();
+    pad.set_osc(sink);
+    let chord_fired = |receiver: &std::sync::mpsc::Receiver<OscVoiceEvent>| {
         receiver
             .try_iter()
-            .any(|event| matches!(event, MidiMessage::PadChord(_)))
+            .any(|event| matches!(event, OscVoiceEvent::PadChord(_)))
     };
     for beat in [0.0, 0.25] {
         pad.next(
@@ -3047,14 +2849,14 @@ fn pad_stab_offset_rotates_the_step_lane_with_the_grid() {
 }
 
 #[test]
-fn pad_stab_stop_releases_midi_before_its_gate_ends() {
+fn pad_stab_stop_releases_osc_before_its_gate_ends() {
     let controls = PadControls {
         trigger: 1.0,
         ..PadControls::default()
     };
     let mut pad = pad_engine(&controls);
-    let (sink, receiver) = MidiSink::test_channel();
-    pad.set_midi(sink);
+    let (sink, receiver) = OscVoiceSink::test_channel();
+    pad.set_osc(sink);
     pad.next(
         &controls,
         MasterKey::Home,
@@ -3066,7 +2868,7 @@ fn pad_stab_stop_releases_midi_before_its_gate_ends() {
     pad.next(&controls, MasterKey::Home, stopped);
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::PadOff]
+        [OscVoiceEvent::PadOff]
     );
 }
 
@@ -3077,8 +2879,8 @@ fn pad_switching_back_to_hold_revoices_current_chord() {
         ..PadControls::default()
     };
     let mut pad = pad_engine(&controls);
-    let (sink, receiver) = MidiSink::test_channel();
-    pad.set_midi(sink);
+    let (sink, receiver) = OscVoiceSink::test_channel();
+    pad.set_osc(sink);
     pad.next(
         &controls,
         MasterKey::Home,
@@ -3094,7 +2896,7 @@ fn pad_switching_back_to_hold_revoices_current_chord() {
     let notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
-        [MidiMessage::PadOff, MidiMessage::PadChord(notes)]
+        [OscVoiceEvent::PadOff, OscVoiceEvent::PadChord(notes)]
     );
 }
 
@@ -3230,11 +3032,10 @@ fn stopping_the_clock_lets_tails_ring_out_and_starting_it_restarts_the_song() {
 }
 
 #[test]
-fn quick_stop_play_restarts_all_sequences_and_midi_on_the_opening_chord() {
+fn quick_stop_play_restarts_all_sequences_on_the_opening_chord() {
     let mut controls = FluidControls::default();
     controls.pad.chord_bars = 0.25;
     controls.pad.chord_offset = 2.0;
-    controls.arp.midi_out = 1.0;
     controls.arp.rate_beats = 0.5;
     let session = live_session(controls, AutomationState::default());
     let mut effects = EffectExecutor::new(
@@ -3242,9 +3043,9 @@ fn quick_stop_play_restarts_all_sequences_and_midi_on_the_opening_chord() {
         AutoControls::new(no_morph(), decode_auto_states(), DEFAULT_AUTO_BARS),
     );
     let telemetry = Arc::new(FluidTelemetry::default());
-    let (sink, messages) = MidiSink::test_channel();
-    let mut engine =
-        FluidEngine::new(SAMPLE_RATE, session, no_morph(), Arc::clone(&telemetry)).with_midi(sink);
+    let (sink, messages) = OscVoiceSink::test_channel();
+    let mut engine = FluidEngine::new(SAMPLE_RATE, session, no_morph(), Arc::clone(&telemetry))
+        .with_osc_voice(sink);
     render_seconds(&mut engine, 2.5);
     assert_ne!(engine.pad.cursor.slot(), 2);
     messages.try_iter().for_each(drop);
@@ -3260,13 +3061,10 @@ fn quick_stop_play_restarts_all_sequences_and_midi_on_the_opening_chord() {
     assert_eq!(engine.bass.progression.cursor.as_ref().unwrap().slot(), 2);
     assert_eq!(engine.lead.progression.cursor.as_ref().unwrap().slot(), 2);
     let messages: Vec<_> = messages.try_iter().collect();
-    assert!(messages.contains(&MidiMessage::Start));
-    assert!(messages.contains(&MidiMessage::Clock));
-    assert!(!messages.contains(&MidiMessage::Continue));
     assert!(
         messages
             .iter()
-            .any(|message| matches!(message, MidiMessage::ArpNote(_)))
+            .any(|message| matches!(message, OscVoiceEvent::ArpNote { .. }))
     );
 }
 
@@ -4174,7 +3972,7 @@ fn effect_families_project_complete_coherent_detail_rows() {
     assert_eq!(labels(2), ["Amount", "Size", "Damping"]);
     assert_eq!(
         labels(3),
-        ["Amount", "Threshold", "Ratio", "Release", "Makeup"]
+        ["Threshold", "Amount", "Ratio", "Release", "Makeup"]
     );
     assert_eq!(labels(4), ["Cutoff", "Amount", "Resonance", "Type"]);
 }
@@ -4233,7 +4031,7 @@ fn master_compression_uses_the_shared_module_detail_shape() {
         .collect();
     assert_eq!(
         labels,
-        ["Amount", "Threshold", "Ratio", "Release", "Makeup"]
+        ["Threshold", "Amount", "Ratio", "Release", "Makeup"]
     );
 }
 
@@ -4328,7 +4126,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Master,
             vec![
                 Gain, Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Continuous, Discrete,
-                Gain, Gain,
+                Gain, Continuous,
             ],
         ),
         (
@@ -5207,42 +5005,6 @@ fn render_fluid_shows_chords_drill_breadcrumb_and_footer() {
     assert!(text.contains("Esc back · /add extension · /restore chord"));
 }
 
-#[test]
-fn midi_trigger_renders_step_lane_dimmed() {
-    let mut controls = FluidControls::default();
-    controls.pad.midi_trigger = 1.0;
-    let fluid = RippleField::new();
-    let automation = AutomationState::default();
-    let buffer = render_to_buffer(RenderTest {
-        size: (120, 40),
-        tab: Tab::Chords,
-        cursor: 0,
-        submenu: 0,
-        beat: 0.0,
-        fluid: &fluid,
-        automation: &automation,
-        controls: &controls,
-        footer: None,
-        drill: ChordDrill::Pattern { return_to: 9 },
-        active_chord: 0,
-        mute: &[false; TAB_COUNT],
-    });
-    let width = usize::from(buffer.area.width);
-    let (row_index, column) = buffer
-        .content
-        .chunks(width)
-        .enumerate()
-        .find_map(|(row_index, cells)| {
-            let line: String = cells.iter().map(ratatui::buffer::Cell::symbol).collect();
-            line.find("Step 1").map(|column| (row_index, column))
-        })
-        .unwrap();
-    assert_eq!(
-        buffer.content[row_index * width + column].fg,
-        ratatui::style::Color::Rgb(120, 128, 145)
-    );
-}
-
 fn render_progression(controls: &FluidControls, active_chord: u64) -> String {
     let fluid = RippleField::new();
     let automation = AutomationState::default();
@@ -5434,13 +5196,13 @@ fn bass_controls_adjust_and_clamp() {
     assert_close(controls.bass.decay_time, 0.005);
 }
 
-/// Run a Bass engine for `seconds` at 120 BPM, returning what reached MIDI.
-fn run_bass_midi(
+/// Run a Bass engine for `seconds` at 120 BPM, returning what reached OSC.
+fn run_bass_osc(
     bass: &mut BassEngine,
     controls: &BassControls,
-    receiver: &std::sync::mpsc::Receiver<MidiMessage>,
+    receiver: &std::sync::mpsc::Receiver<OscVoiceEvent>,
     seconds: f32,
-) -> Vec<MidiMessage> {
+) -> Vec<OscVoiceEvent> {
     let pad = PadControls::default();
     let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
     for _ in 0..(SAMPLE_RATE * seconds) as usize {
@@ -5451,79 +5213,33 @@ fn run_bass_midi(
 }
 
 #[test]
-fn bass_midi_out_sends_each_hit_and_releases_it_after_the_decay() {
-    let (sink, receiver) = MidiSink::test_channel();
+fn bass_osc_out_sends_each_hit_and_releases_it_after_the_decay() {
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut bass = BassEngine::new(SAMPLE_RATE);
-    bass.set_midi(sink);
+    bass.set_osc(sink);
     let controls = BassControls {
-        midi: 2.0,
         decay_time: 0.1,
         interval_beats: 1.0,
         ..BassControls::default()
     };
     let root = bass_root_note(0, 0, &PadControls::default()) + (controls.octave as i32) * 12;
-    let sent = run_bass_midi(&mut bass, &controls, &receiver, 0.4);
-    assert_eq!(sent[0], MidiMessage::BassNote(root as u8));
-    assert_eq!(sent[1], MidiMessage::BassOff);
+    let sent = run_bass_osc(&mut bass, &controls, &receiver, 0.4);
+    assert!(matches!(
+        sent[0],
+        OscVoiceEvent::BassNote { note, .. } if note == root as u8
+    ));
+    assert_eq!(sent[1], OscVoiceEvent::BassOff);
 }
 
 #[test]
-fn bass_midi_off_and_in_never_send_notes() {
-    for mode in [0.0, 1.0] {
-        let (sink, receiver) = MidiSink::test_channel();
-        let mut bass = BassEngine::new(SAMPLE_RATE);
-        bass.set_midi(sink);
-        let controls = BassControls {
-            midi: mode,
-            ..BassControls::default()
-        };
-        assert!(run_bass_midi(&mut bass, &controls, &receiver, 1.0).is_empty());
-    }
-}
-
-#[test]
-fn bass_midi_in_replaces_the_rhythm_and_plays_received_notes() {
-    let (sink, receiver) = MidiSink::test_channel();
+fn bass_osc_in_plays_received_notes_without_echoing_to_osc_out() {
+    let (sink, receiver) = OscVoiceSink::test_channel();
     let mut bass = BassEngine::new(SAMPLE_RATE);
-    bass.set_midi(sink);
-    let controls = BassControls {
-        midi: 1.0,
-        ..BassControls::default()
-    };
-    run_bass_midi(&mut bass, &controls, &receiver, 1.0);
-    assert!(bass.voice.is_none(), "the pattern is silent while In is on");
-    bass.midi_note_on(45, &controls, 0.0);
+    bass.set_osc(sink);
+    let controls = BassControls::default();
+    bass.osc_note_on(45, &controls, 0.0);
     assert!(bass.voice.is_some());
     assert!(receiver.try_iter().next().is_none(), "input is not echoed");
-}
-
-#[test]
-fn bass_midi_out_releases_when_switched_away_from_out() {
-    let (sink, receiver) = MidiSink::test_channel();
-    let mut bass = BassEngine::new(SAMPLE_RATE);
-    bass.set_midi(sink);
-    let mut controls = BassControls {
-        midi: 2.0,
-        decay_time: 5.0,
-        interval_beats: 1.0,
-        ..BassControls::default()
-    };
-    run_bass_midi(&mut bass, &controls, &receiver, 0.1);
-    controls.midi = 0.0;
-    let sent = run_bass_midi(&mut bass, &controls, &receiver, 0.01);
-    assert_eq!(sent, [MidiMessage::BassOff]);
-}
-
-#[test]
-fn bass_midi_mode_round_trips_through_a_song_code() {
-    let mut controls = FluidControls::default();
-    controls.bass.midi = 2.0;
-    controls.midi_rows |= BASS_MIDI_ROW;
-    let song = SongState::from_controls(controls);
-    let code = song::encode_song_code(&song).unwrap();
-    let got = song::decode_song_code(&code).unwrap();
-    assert_eq!(got.controls.bass.midi, 2.0);
-    assert_eq!(got.controls.midi_rows & BASS_MIDI_ROW, BASS_MIDI_ROW);
 }
 
 #[test]
@@ -9549,29 +9265,6 @@ fn palette_layer_boost_matches_tab_name_and_id_namespace_alike() {
 }
 
 #[test]
-fn palette_finds_midi_switches_after_the_page_reordering() {
-    for (tab, id) in [
-        (Tab::Chords, "pad.midi_in"),
-        (Tab::Chords, "pad.midi_out"),
-        (Tab::Arp, "arp.midi_in"),
-        (Tab::Arp, "arp.midi_out"),
-        (Tab::Lead, "lead.midi_in"),
-        (Tab::Lead, "lead.midi_out"),
-    ] {
-        assert_eq!(palette_top_hit(tab, &[], id), id);
-    }
-}
-
-#[test]
-fn palette_never_offers_the_unsurfaced_midi_trigger() {
-    assert!(
-        palette_entries()
-            .iter()
-            .all(|entry| entry.id() != Some(PAD_MIDI_TRIGGER_ID))
-    );
-}
-
-#[test]
 fn palette_layer_boost_releases_once_the_query_outgrows_the_namespace() {
     // "bass.d" is no longer a prefix of "bass", so the fuzzy score governs
     // again and the specific control the user is spelling out wins.
@@ -9596,20 +9289,14 @@ fn chords_drill_for_index_inverts_chords_flat_index() {
     // position depends on which slots are occupied — see the dedicated
     // module-slot regression test below).
     let controls = FluidControls {
-        midi_rows: 0b00_111111,
         hidden_pad_rhythm_rows: 0,
         ..FluidControls::default()
     };
-    for (flat, spec) in CHORDS_CONTROLS
+    for (flat, _spec) in CHORDS_CONTROLS
         .iter()
         .enumerate()
-        .take(10 + CHORD_SLOT_COUNT * 5)
+        .take(7 + CHORD_SLOT_COUNT * 5)
     {
-        // MIDI Trigger's slot is kept only for song-code compatibility and is
-        // no longer surfaced by any drill, so it has no inverse to check.
-        if spec.id == PAD_MIDI_TRIGGER_ID {
-            continue;
-        }
         let (drill, row) = chords_drill_for_index(flat, &controls);
         assert_eq!(chords_flat_index(drill, row, &controls), flat);
     }
@@ -10852,7 +10539,7 @@ fn sparse_to_full_pad_output_preserves_its_saved_selection_for_all_builder_prese
             let (voiced, len) = pad_voicing(notes, count);
             assert_eq!(&voiced[..len], &expected);
             assert_eq!(
-                pad_notes_with_count(notes, count, 0.0).active(),
+                pad_notes_with_count(notes, count, 0.0).as_slice(),
                 expected.iter().map(|n| *n as u8).collect::<Vec<_>>()
             );
             let tones = pad_tones(0, notes, count, 0.0, SAMPLE_RATE, 0.1, 0.1);

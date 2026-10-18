@@ -115,16 +115,18 @@ const REVERB_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
+/// Threshold leads because it is the Compressor's ordinary browsing control. A
+/// palette-added Compression opens this detail on Amount so its dry mix can rise.
 const COMPRESSION_PARAMETERS: &[EffectParameter] = &[
-    EffectParameter {
-        field: ModuleSlotField::Amount,
-        label: "Amount",
-        search_name: "Amount",
-    },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Threshold",
         search_name: "Threshold",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Amount,
+        label: "Amount",
+        search_name: "Amount",
     },
     EffectParameter {
         field: ModuleSlotField::RightTime,
@@ -247,7 +249,7 @@ impl ModuleKind {
     }
 
     pub(crate) fn collapsed_field(self) -> ModuleSlotField {
-        if self.family == Family::Filter {
+        if matches!(self.family, Family::Filter | Family::Compression) {
             ModuleSlotField::Time
         } else {
             ModuleSlotField::Amount

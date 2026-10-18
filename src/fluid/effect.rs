@@ -125,6 +125,7 @@ pub(crate) enum EffectAcknowledgement {
 pub(crate) enum ControlEdit {
     Delta(f32),
     Value(f32),
+    Ratio(f32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -613,6 +614,9 @@ impl EffectExecutor {
                         ControlEdit::Value(value) => {
                             spec.apply_value(value, &mut snapshot.controls)
                         }
+                        ControlEdit::Ratio(ratio) => {
+                            spec.apply_ratio(ratio, &mut snapshot.controls)
+                        }
                     }
                 });
                 Ok(EffectAcknowledgement::Published {
@@ -622,12 +626,6 @@ impl EffectExecutor {
             LiveEffect::SelectControl { tab, index, id } => {
                 if spec_by_id(id).is_none() {
                     return Err(EffectFailure::UnknownControl(id));
-                }
-                if let Some(bit) = midi_row_bit(id)
-                    && self.session.load().controls.midi_rows & bit == 0
-                {
-                    self.session
-                        .update(|snapshot| snapshot.controls.midi_rows |= bit);
                 }
                 if let Some(bit) = pad_rhythm_row_bit(id)
                     && self.session.load().controls.hidden_pad_rhythm_rows & bit != 0
@@ -662,9 +660,6 @@ impl EffectExecutor {
                             spec_by_id(edit.id)
                                 .expect("validated staged control")
                                 .apply_value(edit.value, &mut snapshot.controls);
-                            if let Some(bit) = midi_row_bit(edit.id) {
-                                snapshot.controls.midi_rows |= bit;
-                            }
                             if let Some(bit) = pad_rhythm_row_bit(edit.id) {
                                 snapshot.controls.hidden_pad_rhythm_rows &= !bit;
                             }
@@ -878,11 +873,13 @@ impl EffectExecutor {
                 slot
             }
         };
-        // A newly inserted Filter is dry. Focus its hidden Amount in the
-        // detail so the first arrow makes the sweep audible. Existing
-        // Filters use their collapsed Cutoff like every browsing row.
+        // A newly inserted Filter or Compression is dry. Focus its hidden
+        // Amount in the detail so the first arrow makes it audible. Existing
+        // slots use their collapsed Time row (Cutoff/Threshold) like every
+        // browsing row.
         let focus = focus.or_else(|| {
-            (existing.is_none() && kind.family == Family::Filter).then_some(ModuleSlotField::Amount)
+            (existing.is_none() && matches!(kind.family, Family::Filter | Family::Compression))
+                .then_some(ModuleSlotField::Amount)
         });
         let id = match focus {
             Some(field) => module_slot_spec(tab, slot, field).map(|spec| spec.id),
@@ -903,7 +900,18 @@ impl EffectExecutor {
             .update(|snapshot| snapshot.muted[tab as usize] = !snapshot.muted[tab as usize]);
     }
 
-    fn plan_mute(&mut self, tab: Tab, beat: f64) -> Result<EffectAcknowledgement, EffectFailure> {
+    pub(crate) fn set_mute(&mut self, tab: Tab, muted: bool) {
+        let Some(id) = tab.level_id() else { return };
+        self.recent.touch(id);
+        self.session
+            .update(|snapshot| snapshot.muted[tab as usize] = muted);
+    }
+
+    pub(crate) fn plan_mute(
+        &mut self,
+        tab: Tab,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
         let target_beat = next_bar_beat(beat);
         let snapshot = self.session.update(|snapshot| {
             snapshot.planned = match snapshot.planned {
@@ -933,7 +941,7 @@ impl EffectExecutor {
     }
 
     /// Play from beat zero; from Playing this is a restart.
-    fn start_transport(&mut self) {
+    pub(crate) fn start_transport(&mut self) {
         self.session.update(|snapshot| {
             snapshot.transport = Transport::Playing;
             snapshot.transport_restart = snapshot.transport_restart.wrapping_add(1);
@@ -953,7 +961,7 @@ impl EffectExecutor {
         }
     }
 
-    fn stop_transport(&mut self) {
+    pub(crate) fn stop_transport(&mut self) {
         self.session
             .update(|snapshot| snapshot.transport = Transport::Stopped);
     }
@@ -2058,7 +2066,7 @@ mod tests {
                 .automation
                 .open_or_create(ControlAddress::new("pad.level"))
                 .depth_ratio = 0.3;
-            snapshot.controls.arp.midi_out = 1.0;
+            snapshot.controls.arp.octaves = 2.0;
         });
         executor.toggle_auto(0.0);
         let before = executor.session.load();
@@ -3067,35 +3075,18 @@ mod tests {
     }
 
     #[test]
-    fn selecting_midi_from_palette_adds_its_row_without_turning_it_on() {
+    fn apply_control_edit_ratio_maps_unit_interval_to_control_range() {
         let mut executor = executor();
-        let index = spec_index(Tab::Arp, "arp.midi_out").unwrap();
-        assert!(
-            tab_controls(Tab::Arp, &executor.session.load().controls)
-                .iter()
-                .all(|item| item.id != "arp.midi_out")
-        );
-
-        executor
-            .execute(LiveEffect::SelectControl {
-                tab: Tab::Arp,
-                index,
-                id: "arp.midi_out",
+        let ack = executor
+            .execute(LiveEffect::EditControl {
+                id: "master.bpm",
+                edit: ControlEdit::Ratio(0.5),
             })
             .unwrap();
-
-        let controls = &executor.session.load().controls;
-        assert_eq!(controls.arp.midi_out, 0.0);
-        assert!(
-            tab_controls(Tab::Arp, controls)
-                .iter()
-                .any(|item| item.id == "arp.midi_out")
-        );
-        assert!(
-            tab_controls(Tab::Arp, controls)
-                .iter()
-                .any(|item| item.id == "arp.midi_gate_beats")
-        );
+        assert!(matches!(ack, EffectAcknowledgement::Published { .. }));
+        let spec = spec_by_id("master.bpm").unwrap();
+        let value = executor.session.load().controls.master.bpm;
+        assert!((value - (spec.min + (spec.max - spec.min) * 0.5).round()).abs() < 1e-4);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! chord tones, or the progression's scale, from a step lane on its own grid.
 
 use super::*;
-use crate::midi::{MidiMessage, MidiSink, tuned_note};
+use crate::fluid::osc::{OscVoiceEvent, OscVoiceSink, tuned_note};
 
 pub(crate) const LEAD_RATE_BEATS_MIN: f32 = 0.125;
 pub(crate) const LEAD_RATE_BEATS_MAX: f32 = 4.0;
@@ -448,10 +448,11 @@ pub(crate) struct LeadEngine {
     held_seen: bool,
     pending_press: Option<(usize, bool)>,
     pending_release: bool,
-    midi: Option<MidiSink>,
-    midi_active: bool,
-    midi_held: bool,
-    midi_gate_remaining_beats: Option<f64>,
+    osc: OscVoiceSink,
+    osc_suppressed: bool,
+    osc_active_note: Option<u8>,
+    osc_held: bool,
+    osc_gate_remaining_beats: Option<f64>,
     input_note: Option<u8>,
     transport: Transport,
 }
@@ -474,27 +475,35 @@ impl LeadEngine {
             held_seen: play.held,
             pending_press: None,
             pending_release: false,
-            midi: None,
-            midi_active: false,
-            midi_held: false,
-            midi_gate_remaining_beats: None,
+            osc: OscVoiceSink::default(),
+            osc_suppressed: false,
+            osc_active_note: None,
+            osc_held: false,
+            osc_gate_remaining_beats: None,
             input_note: None,
             transport: Transport::Playing,
         }
     }
 
-    pub(crate) fn set_midi(&mut self, sink: MidiSink) {
-        self.midi = Some(sink);
+    pub(crate) fn set_osc(&mut self, sink: OscVoiceSink) {
+        self.osc = sink;
     }
 
-    /// MIDI input plays the Lead's sound at the received pitch. It does not
-    /// call `play_midi`, so the input is never echoed to MIDI output.
-    pub(crate) fn midi_note_on(&mut self, note: u8, c: &LeadControls, tune: f32) {
+    pub(crate) fn set_osc_suppressed(&mut self, suppressed: bool) {
+        if suppressed {
+            self.release_osc();
+        }
+        self.osc_suppressed = suppressed;
+    }
+
+    /// Inbound OSC notes play the Lead's sound at the received pitch without
+    /// echoing back to outbound OSC.
+    pub(crate) fn osc_note_on(&mut self, note: u8, c: &LeadControls, tune: f32) {
         self.input_note = Some(note);
         self.play(i32::from(note), tune, c, true);
     }
 
-    pub(crate) fn midi_note_off(&mut self, note: u8) {
+    pub(crate) fn osc_note_off(&mut self, note: u8) {
         if self.input_note == Some(note) {
             self.input_note = None;
             self.release();
@@ -507,23 +516,24 @@ impl LeadEngine {
         }
     }
 
-    fn release_midi(&mut self) {
-        if self.midi_active {
-            if let Some(sink) = &self.midi {
-                sink.send(MidiMessage::LeadOff);
-            }
-            self.midi_active = false;
-            self.midi_held = false;
-            self.midi_gate_remaining_beats = None;
+    fn release_osc(&mut self) {
+        if let Some(note) = self.osc_active_note.take() {
+            self.osc.send(OscVoiceEvent::LeadOff(note));
+            self.osc_held = false;
+            self.osc_gate_remaining_beats = None;
         }
     }
 
-    fn play_midi(&mut self, note: i32, tune: f32, gate_beats: f32, hold: bool) {
-        if let Some(sink) = &self.midi {
-            sink.send(MidiMessage::LeadNote(tuned_note(note, tune)));
-            self.midi_active = true;
-            self.midi_held = hold;
-            self.midi_gate_remaining_beats = (!hold).then_some(f64::from(gate_beats));
+    fn play_osc(&mut self, note: i32, tune: f32, gate_beats: f32, hold: bool) {
+        if !self.osc_suppressed && self.osc.is_attached() {
+            let tuned = tuned_note(note, tune);
+            self.osc.send(OscVoiceEvent::LeadNote {
+                note: tuned,
+                gate_beats,
+            });
+            self.osc_active_note = Some(tuned);
+            self.osc_held = hold;
+            self.osc_gate_remaining_beats = (!hold).then_some(f64::from(gate_beats));
         }
     }
 
@@ -572,23 +582,24 @@ impl LeadEngine {
         // The same chord-source path Pad, Bass, and Arp resolve through.
         let (progression, slot) = self.progression.follow(pad, timing);
         let tune = key.shift(progression) as f32;
-        let midi_enabled = c.midi_out >= 0.5 && self.midi.is_some();
-        if !midi_enabled || timing.transport != self.transport {
-            self.release_midi();
+        let osc_enabled = !self.osc_suppressed && self.osc.is_attached();
+        if !osc_enabled || timing.transport != self.transport {
+            self.release_osc();
         }
         self.transport = timing.transport;
-        if let Some(remaining) = &mut self.midi_gate_remaining_beats {
+        if let Some(remaining) = &mut self.osc_gate_remaining_beats {
             *remaining -= timing.bpm / (60.0 * timing.sample_rate);
             if *remaining <= 0.0 {
-                self.release_midi();
+                self.release_osc();
             }
         }
         let released = std::mem::take(&mut self.pending_release);
-        if released && self.midi_held {
-            self.release_midi();
+        if released && self.osc_held {
+            self.release_osc();
         }
 
         let rate_beats = c.rate_beats.clamp(LEAD_RATE_BEATS_MIN, LEAD_RATE_BEATS_MAX);
+        let gate_beats = rate_beats.min(0.5);
         if self
             .step_trigger
             .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
@@ -601,7 +612,7 @@ impl LeadEngine {
             // The lane yields to a held key: the player owns the voice
             // until the key comes up. An Off pattern is the solo position:
             // the trigger still ticks so Play resumes on the clock's step.
-            if (c.level != 0.0 || midi_enabled)
+            if (c.level != 0.0 || osc_enabled)
                 && LeadPattern::from_value(c.pattern) != LeadPattern::Off
                 && !self.held_seen
                 && self.input_note.is_none()
@@ -612,15 +623,15 @@ impl LeadEngine {
                 if c.level != 0.0 {
                     self.play(note, tune, c, false);
                 }
-                if midi_enabled {
-                    self.play_midi(note, tune, c.midi_gate_beats, false);
+                if osc_enabled {
+                    self.play_osc(note, tune, gate_beats, false);
                 }
             }
         }
         // A played key sounds the moment the engine sees it, on top of (and
         // sliding from) whatever the lane is doing.
         if let Some((pressed, hold)) = self.pending_press.take()
-            && (c.level != 0.0 || midi_enabled)
+            && (c.level != 0.0 || osc_enabled)
             && let Some(tone) = lead_step_tone(pressed as f32)
         {
             let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
@@ -628,8 +639,8 @@ impl LeadEngine {
             if c.level != 0.0 {
                 self.play(note, tune, c, hold);
             }
-            if midi_enabled {
-                self.play_midi(note, tune, c.midi_gate_beats, hold);
+            if osc_enabled {
+                self.play_osc(note, tune, gate_beats, hold);
             }
         }
         if released && self.input_note.is_none() {

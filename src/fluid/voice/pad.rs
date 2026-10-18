@@ -1,13 +1,13 @@
 //! The Pad voice: sustained chords or sixteenth-note stabs from the chord
 //! source Bass and Arp both follow.
 
+use crate::fluid::osc::{OscVoiceEvent, OscVoiceSink, pad_notes_with_count};
 use crate::fx::crossfade::{Outgoing, mix};
-use crate::midi::{MidiMessage, MidiSink, pad_notes_with_count};
 
 use super::*;
 
 pub(crate) const MAX_PAD_LAYERS: usize = 4;
-const MAX_MIDI_PAD_VOICES: usize = 16;
+const MAX_OSC_PAD_VOICES: usize = 16;
 /// How long a `pad.type` change takes to crossfade from the outgoing
 /// character stage to the incoming one, inside each already-sounding tone.
 ///
@@ -41,18 +41,16 @@ pub(crate) struct PadEngine {
     pub(crate) air: WhiteNoise,
     pub(crate) rng: StdRng,
     pub(crate) telemetry: Arc<FluidTelemetry>,
-    midi: Option<MidiSink>,
-    midi_input_attached: bool,
+    osc: OscVoiceSink,
     internal_audio: EasedRamp,
-    midi_suppressed: bool,
-    midi_initial_pending: bool,
+    osc_input_active: bool,
+    osc_suppressed: bool,
+    osc_initial_pending: bool,
     stab_trigger: GridTrigger,
     active_stab_until_beat: Option<f64>,
     active_stab_until_sample: Option<u64>,
     sample_clock: u64,
-    last_midi_trigger_sample: Option<u64>,
     stabbing: bool,
-    midi_triggering: bool,
 }
 
 struct PadInputVoice {
@@ -94,7 +92,7 @@ impl PadEngine {
                 c.attack_time,
                 c.release_time,
             )],
-            input_voices: Vec::with_capacity(MAX_MIDI_PAD_VOICES),
+            input_voices: Vec::with_capacity(MAX_OSC_PAD_VOICES),
             cursor,
             active_character,
             last_chord_notes: initial_notes,
@@ -108,49 +106,39 @@ impl PadEngine {
             air: WhiteNoise::new(),
             rng: StdRng::from_entropy(),
             telemetry,
-            midi: None,
-            midi_input_attached: false,
+            osc: OscVoiceSink::default(),
             internal_audio: EasedRamp::settled(1.0),
-            midi_suppressed: false,
-            midi_initial_pending: false,
+            osc_input_active: false,
+            osc_suppressed: false,
+            osc_initial_pending: false,
             stab_trigger: GridTrigger::new(),
             active_stab_until_beat: None,
             active_stab_until_sample: None,
             sample_clock: 0,
-            last_midi_trigger_sample: None,
             stabbing: false,
-            midi_triggering: false,
         }
     }
 
-    pub(crate) fn set_midi(&mut self, sink: MidiSink) {
-        self.midi = Some(sink);
-        self.midi_initial_pending = true;
+    pub(crate) fn set_osc(&mut self, sink: OscVoiceSink) {
+        self.osc_initial_pending = sink.is_attached();
+        self.osc = sink;
     }
 
-    pub(crate) fn set_midi_input_attached(&mut self) {
-        self.midi_input_attached = true;
-    }
-
-    pub(crate) fn set_midi_suppressed(&mut self, suppressed: bool) {
-        if self.midi_suppressed != suppressed {
+    pub(crate) fn set_osc_suppressed(&mut self, suppressed: bool) {
+        if self.osc_suppressed != suppressed {
             if suppressed {
-                if let Some(sink) = &self.midi {
-                    sink.send(MidiMessage::PadOff);
-                }
-                self.midi_initial_pending = false;
+                self.osc.send(OscVoiceEvent::PadOff);
+                self.osc_initial_pending = false;
             } else {
-                self.midi_initial_pending = true;
+                self.osc_initial_pending = self.osc.is_attached();
             }
-            self.midi_suppressed = suppressed;
+            self.osc_suppressed = suppressed;
         }
     }
 
-    fn send_midi(&self, message: MidiMessage) {
-        if !self.midi_suppressed
-            && let Some(sink) = &self.midi
-        {
-            sink.send(message);
+    fn send_osc(&self, event: OscVoiceEvent) {
+        if !self.osc_suppressed {
+            self.osc.send(event);
         }
     }
 
@@ -161,23 +149,21 @@ impl PadEngine {
             for layer in &mut self.layers {
                 layer.release();
             }
-            self.send_midi(MidiMessage::PadOff);
+            self.send_osc(OscVoiceEvent::PadOff);
         }
     }
 
     pub(crate) fn release_input(&mut self) {
+        self.osc_input_active = false;
         for voice in &mut self.input_voices {
             if voice.held {
                 voice.held = false;
                 voice.tone.release();
             }
         }
-        if self.midi_triggering {
-            self.release_stab();
-        }
     }
 
-    pub(crate) fn midi_note_off(&mut self, note: u8) {
+    pub(crate) fn osc_note_off(&mut self, note: u8) {
         for voice in &mut self.input_voices {
             if voice.note == note && voice.held {
                 voice.held = false;
@@ -186,26 +172,10 @@ impl PadEngine {
         }
     }
 
-    pub(crate) fn midi_note_on(
-        &mut self,
-        note: u8,
-        c: &PadControls,
-        tune: f32,
-        timing: TimingContext,
-    ) {
-        if self.stabbing && self.midi_triggering {
-            let coalesce_samples = (self.sample_rate * 0.01).round() as u64;
-            if self.last_midi_trigger_sample.is_some_and(|previous| {
-                self.sample_clock.saturating_sub(previous) < coalesce_samples
-            }) {
-                return;
-            }
-            self.last_midi_trigger_sample = Some(self.sample_clock);
-            self.trigger_stab(c, tune, timing);
-            return;
-        }
-        self.midi_note_off(note);
-        if self.input_voices.len() >= MAX_MIDI_PAD_VOICES {
+    pub(crate) fn osc_note_on(&mut self, note: u8, c: &PadControls, tune: f32) {
+        self.osc_input_active = true;
+        self.osc_note_off(note);
+        if self.input_voices.len() >= MAX_OSC_PAD_VOICES {
             self.input_voices.remove(0);
         }
         self.input_voices.push(PadInputVoice {
@@ -223,12 +193,37 @@ impl PadEngine {
         });
     }
 
+    pub(crate) fn set_osc_notes(&mut self, notes: &[u8], c: &PadControls, tune: f32) {
+        self.osc_input_active = true;
+        if notes.is_empty() {
+            for voice in &mut self.input_voices {
+                if voice.held {
+                    voice.held = false;
+                    voice.tone.release();
+                }
+            }
+            return;
+        }
+        for voice in &mut self.input_voices {
+            if voice.held && !notes.contains(&voice.note) {
+                voice.held = false;
+                voice.tone.release();
+            }
+        }
+        for &note in notes {
+            let already_held = self.input_voices.iter().any(|v| v.held && v.note == note);
+            if !already_held {
+                self.osc_note_on(note, c, tune);
+            }
+        }
+    }
+
     fn trigger_stab(&mut self, c: &PadControls, tune: f32, timing: TimingContext) {
         self.release_stab();
         let chord_notes = self.last_chord_notes;
         self.telemetry
             .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
-        self.send_midi(MidiMessage::PadChord(pad_notes_with_count(
+        self.send_osc(OscVoiceEvent::PadChord(pad_notes_with_count(
             chord_notes,
             self.active_note_count,
             tune,
@@ -334,11 +329,8 @@ impl PadEngine {
         self.transport = timing.transport;
         let playing = timing.transport == Transport::Playing;
         let stabbing = c.trigger >= 0.5;
-        let midi_triggering = stabbing && c.midi_trigger >= 0.5;
         let mode_changed = stabbing != self.stabbing;
-        let source_changed = midi_triggering != self.midi_triggering;
         self.stabbing = stabbing;
-        self.midi_triggering = midi_triggering;
         if mode_changed {
             if stabbing {
                 self.layers.clear();
@@ -350,25 +342,23 @@ impl PadEngine {
             }
             self.active_stab_until_beat = None;
             self.active_stab_until_sample = None;
-            self.send_midi(MidiMessage::PadOff);
-        }
-        if source_changed {
-            self.release_input();
-            self.release_stab();
-        }
-        if mode_changed || source_changed {
-            self.last_midi_trigger_sample = None;
+            self.send_osc(OscVoiceEvent::PadOff);
         }
         if transport_changed && !playing {
+            let had_stab =
+                self.active_stab_until_beat.is_some() || self.active_stab_until_sample.is_some();
             self.release_stab();
             for layer in &mut self.layers {
                 layer.release();
+            }
+            if !had_stab && !stabbing {
+                self.send_osc(OscVoiceEvent::PadOff);
             }
         }
 
         let mut chord_published = false;
         if stabbing {
-            self.midi_initial_pending = false;
+            self.osc_initial_pending = false;
             if playing && (advance || chord_edited) {
                 self.telemetry.publish_chord(
                     self.cursor.slot() as u64,
@@ -396,7 +386,6 @@ impl PadEngine {
             if self
                 .stab_trigger
                 .pop_swung(timing, 0.25, c.offset_beats, c.swing)
-                && !midi_triggering
             {
                 // The lane travels with the grid: slot k of the shifted grid
                 // plays step k, so Offset rotates the pattern, not just the clock.
@@ -420,12 +409,12 @@ impl PadEngine {
             chord_published = true;
             self.telemetry
                 .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
-            self.send_midi(MidiMessage::PadChord(pad_notes_with_count(
+            self.send_osc(OscVoiceEvent::PadChord(pad_notes_with_count(
                 chord_notes,
                 note_count,
                 tune,
             )));
-            self.midi_initial_pending = false;
+            self.osc_initial_pending = false;
             if self.layers.len() >= MAX_PAD_LAYERS {
                 let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                 self.layers.drain(0..remove_count);
@@ -440,13 +429,13 @@ impl PadEngine {
                 c.release_time,
             ));
         }
-        if !stabbing && playing && self.midi_initial_pending {
-            self.send_midi(MidiMessage::PadChord(pad_notes_with_count(
+        if !stabbing && playing && self.osc_initial_pending {
+            self.send_osc(OscVoiceEvent::PadChord(pad_notes_with_count(
                 chord_notes,
                 note_count,
                 tune,
             )));
-            self.midi_initial_pending = false;
+            self.osc_initial_pending = false;
         }
 
         if playing && !self.phrase_sent && !chord_published {
@@ -492,10 +481,10 @@ impl PadEngine {
         // `pad.level` at 100% should reach close to full scale on its own,
         // leaving final safety margin to the master bus's soft-clip/compressor.
         const OUTPUT_TRIM: f32 = 0.95;
-        // A connected keyboard owns Hold-mode Pad audio while MIDI In is on.
-        // The progression still advances and can drive MIDI Out; Stabs remain
-        // an explicit rhythm/chord-trigger surface.
-        let internal_target = if self.midi_input_attached && c.midi_in >= 0.5 && !stabbing {
+        // Once external Pad notes arrive, external input owns Hold-mode Pad
+        // audio while the progression cursor and chord feed continue advancing
+        // underneath.
+        let internal_target = if self.osc_input_active && !stabbing {
             0.0
         } else {
             1.0

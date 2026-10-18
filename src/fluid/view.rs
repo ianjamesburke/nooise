@@ -95,6 +95,8 @@ pub(crate) struct TelemetryView {
     pub(crate) beat: f64,
     pub(crate) active_chord: u64,
     pub(crate) chord_span: ChordSpan,
+    /// Each tab's output RMS, indexed by `Tab` discriminant.
+    pub(crate) levels: [f32; TAB_COUNT],
     /// Each module slot's compressor gain reduction in dB, indexed by
     /// `module_layer_index(tab) * MODULE_SLOTS + slot`.
     pub(crate) gain_reduction_db: [f32; MODULE_SLOT_TOTAL],
@@ -107,6 +109,7 @@ impl Default for TelemetryView {
             beat: 0.0,
             active_chord: 0,
             chord_span: ChordSpan::default(),
+            levels: [0.0; TAB_COUNT],
             gain_reduction_db: [0.0; MODULE_SLOT_TOTAL],
         }
     }
@@ -1215,7 +1218,7 @@ mod tests {
         })
         .items
         .iter()
-        .position(|item| item.id == "master.slot2.amount")
+        .position(|item| item.id == "master.slot2.time")
         .expect("the factory Master chain holds Compression in slot 2");
         let mut telemetry = TelemetryView::default();
         telemetry.gain_reduction_db[module_layer_index(Tab::Master).unwrap() * MODULE_SLOTS + 1] =
@@ -1225,7 +1228,7 @@ mod tests {
             .lines()
             .find(|line| line.contains("Compression"))
             .expect("selected Compression row is on screen");
-        assert!(line.contains("▼██░░␠10dB"), "{frame}");
+        assert!(line.contains('▀'), "{frame}");
         assert!(
             frame
                 .lines()
@@ -1236,7 +1239,11 @@ mod tests {
         let mut silent = snapshot.clone();
         silent.controls.modules.master[1].amount = 0.0;
         let frame = render_model_with_session_at(&hub(row), &silent, telemetry);
-        assert!(!frame.contains('▼'), "{frame}");
+        let silent_line = frame
+            .lines()
+            .find(|line| line.contains("Compression"))
+            .expect("selected Compression row is on screen");
+        assert!(!silent_line.contains('▀'), "{frame}");
     }
 
     #[test]

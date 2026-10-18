@@ -315,26 +315,26 @@ pub(crate) fn coordinate_production_action(
                 };
                 if let Some(field) = filter_detail_field
                     && let Some((_, slot, _)) = parse_module_slot_id(id)
-                    && current_session
+                    && let Some(kind) = current_session
                         .controls
                         .modules
                         .for_tab(*tab)
                         .and_then(|slots| slots.get(slot))
                         .and_then(ModuleSlot::kind)
-                        .is_some_and(|kind| kind.family == Family::Filter)
+                        .filter(|kind| matches!(kind.family, Family::Filter | Family::Compression))
                 {
-                    let cutoff = module_slot_spec(*tab, slot, ModuleSlotField::Time)
-                        .expect("filter Cutoff is registered");
-                    let cutoff_index =
-                        spec_index(*tab, cutoff.id).expect("filter Cutoff has a tab index");
-                    model.select_control(*tab, cutoff_index, &current_session.controls);
+                    let collapsed = module_slot_spec(*tab, slot, ModuleSlotField::Time)
+                        .expect("collapsed Time control is registered");
+                    let collapsed_index = spec_index(*tab, collapsed.id)
+                        .expect("collapsed Time control has a tab index");
+                    model.select_control(*tab, collapsed_index, &current_session.controls);
                     let return_to = model.navigation.selected();
-                    let catalog_index = module_catalog_index(interaction::FILTER_MODULE_ID);
+                    let catalog_index = module_catalog_index(kind.id);
                     let selected = MODULE_CATALOG[catalog_index]
                         .parameters()
                         .iter()
                         .position(|parameter| parameter.field == field)
-                        .expect("filter detail contains its focused field");
+                        .expect("module detail contains its focused field");
                     model.navigation = interaction::Navigation::Module {
                         tab: *tab,
                         slot,
@@ -450,12 +450,245 @@ pub(crate) fn coordinate_production_turn(
     Ok(ProductionTurn { steps, quit })
 }
 
+pub(crate) fn apply_osc_ui_command(
+    cmd: osc::OscUiCommand,
+    model: &mut interaction::InteractionModel,
+    context: &mut ProductionCoordinatorContext<'_>,
+) {
+    use osc::{OscTransportCmd, OscUiCommand};
+    match cmd {
+        OscUiCommand::ControlValue { id, value } => {
+            if let Some(spec) = spec_by_id(&id) {
+                let _ = context.effects.execute(LiveEffect::EditControl {
+                    id: spec.id,
+                    edit: ControlEdit::Value(value),
+                });
+            }
+        }
+        OscUiCommand::ControlRatio { id, ratio } => {
+            if let Some(spec) = spec_by_id(&id) {
+                let _ = context.effects.execute(LiveEffect::EditControl {
+                    id: spec.id,
+                    edit: ControlEdit::Ratio(ratio),
+                });
+            }
+        }
+        OscUiCommand::ControlDelta { id, steps } => {
+            if let Some(spec) = spec_by_id(&id) {
+                let _ = context.effects.execute(LiveEffect::EditControl {
+                    id: spec.id,
+                    edit: ControlEdit::Delta(steps),
+                });
+            }
+        }
+        OscUiCommand::MuteSet { tab, muted } => {
+            context.effects.set_mute(tab, muted);
+        }
+        OscUiCommand::MuteToggle(tab) => {
+            context.effects.toggle_mute(tab);
+        }
+        OscUiCommand::MutePlan(tab) => {
+            let _ = context.effects.plan_mute(tab, context.beat);
+        }
+        OscUiCommand::Transport(OscTransportCmd::Play) => {
+            context.effects.start_transport();
+        }
+        OscUiCommand::Transport(OscTransportCmd::Stop) => {
+            context.effects.stop_transport();
+        }
+        OscUiCommand::Transport(OscTransportCmd::Toggle) => {
+            context.effects.toggle_transport();
+        }
+        OscUiCommand::AutoToggle => {
+            context.effects.toggle_auto(context.beat);
+        }
+        OscUiCommand::Gesture { kind, active } => {
+            let now_seconds = context.effects.session().audio_seconds();
+            context.effects.session().update(|snapshot| {
+                if active {
+                    snapshot.gestures.press(kind, now_seconds);
+                } else {
+                    snapshot.gestures.release(kind, now_seconds);
+                }
+            });
+        }
+        OscUiCommand::GestureReleaseAll => {
+            let now_seconds = context.effects.session().audio_seconds();
+            context.effects.session().update(|snapshot| {
+                snapshot.gestures.release_all(now_seconds);
+            });
+        }
+        OscUiCommand::MotionGrab(length_beats) => {
+            let duration = match length_beats {
+                4 => super::MotionDuration::Beats4,
+                8 => super::MotionDuration::Beats8,
+                16 => super::MotionDuration::Beats16,
+                32 => super::MotionDuration::Beats32,
+                _ => return,
+            };
+            let frame = production_frame(model, context);
+            let mut exec_ctx = ProductionInteractionContext {
+                selected_control: frame.selected_control,
+                visible_control_ids: &frame.visible_control_ids,
+                randomizes_automation: frame.randomizes_automation,
+                tab: frame.tab,
+                selected: frame.selected,
+                automation_selected: model.automation_selected(),
+                beat: context.beat,
+                flipped: context.flipped,
+            };
+            let effect = if matches!(model.mode, interaction::InteractionMode::Automation(_)) {
+                interaction::InteractionEffect::MotionGrabAutomationSelected {
+                    duration,
+                    selected: model.automation_selected(),
+                }
+            } else {
+                interaction::InteractionEffect::MotionGrabSelected(duration)
+            };
+            let _ = context
+                .effects
+                .execute_production_interactions_with_clipboard(
+                    [effect],
+                    &mut exec_ctx,
+                    context.clipboard,
+                );
+        }
+        OscUiCommand::NavLayer(tab) => {
+            model.mode = interaction::InteractionMode::Browsing;
+            let frame = production_frame(model, context);
+            let _ = coordinate_production_action(
+                model,
+                interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent: interaction::Intent::EnterLayer(tab),
+                },
+                &frame,
+                context,
+            );
+        }
+        OscUiCommand::NavRow(row) => {
+            *model.navigation.selected_mut() = row;
+            let frame = production_frame(model, context);
+            model.clamp_navigation_selection(frame.item_count);
+        }
+        OscUiCommand::NavMove(delta) => {
+            let frame = production_frame(model, context);
+            let _ = coordinate_production_action(
+                model,
+                interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent: interaction::Intent::MoveSelection(delta as isize),
+                },
+                &frame,
+                context,
+            );
+        }
+        OscUiCommand::NavPage(delta) => {
+            if delta == 0 {
+                return;
+            }
+            let direction = if delta > 0 {
+                interaction::PageDirection::Next
+            } else {
+                interaction::PageDirection::Previous
+            };
+            let steps = delta.unsigned_abs();
+            for _ in 0..steps {
+                let frame = production_frame(model, context);
+                let _ = coordinate_production_action(
+                    model,
+                    interaction::SemanticAction {
+                        phase: interaction::InputPhase::Press,
+                        intent: interaction::Intent::ChangePage(direction),
+                    },
+                    &frame,
+                    context,
+                );
+            }
+        }
+        OscUiCommand::NavTouch => {
+            let frame = production_frame(model, context);
+            let mut intent = interaction::Intent::TouchSelected;
+            if frame.selected_control == Some("pad.progression") {
+                intent = interaction::Intent::EnterChordProgression;
+            } else if frame.selected_control == Some(PAD_TRIGGER_ID) {
+                intent = interaction::Intent::EnterPadPattern;
+            } else if let Some(id) = frame.selected_control
+                && let Some((slot, module)) =
+                    module_slot_at_collapsed_id(frame.tab, id, &frame.session.controls)
+                && let Some(kind) = module.kind()
+                && kind.has_detail()
+            {
+                intent = interaction::Intent::EnterModuleDetail {
+                    tab: frame.tab,
+                    slot,
+                    catalog_index: module.kind.round() as usize - 1,
+                };
+            } else if frame.tab == Tab::Lead {
+                intent = if frame.selected_control == Some(LEAD_STEPS_ID) {
+                    interaction::Intent::EnterLeadPattern
+                } else {
+                    interaction::Intent::EnterLeadPlay
+                };
+            }
+            let _ = coordinate_production_action(
+                model,
+                interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent,
+                },
+                &frame,
+                context,
+            );
+        }
+        OscUiCommand::NavCancel => {
+            let frame = production_frame(model, context);
+            let intent = if matches!(model.mode, interaction::InteractionMode::Browsing)
+                && frame.session.gestures.has_held()
+            {
+                interaction::Intent::ReleaseAllGestures
+            } else {
+                interaction::Intent::Cancel
+            };
+            let _ = coordinate_production_action(
+                model,
+                interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent,
+                },
+                &frame,
+                context,
+            );
+        }
+        OscUiCommand::NavAdjust { steps } => {
+            if steps == 0 {
+                return;
+            }
+            let dir = if steps > 0 { 1 } else { -1 };
+            for _ in 0..steps.unsigned_abs() {
+                let frame = production_frame(model, context);
+                let _ = coordinate_production_action(
+                    model,
+                    interaction::SemanticAction {
+                        phase: interaction::InputPhase::Press,
+                        intent: interaction::Intent::AdjustSelected(dir),
+                    },
+                    &frame,
+                    context,
+                );
+            }
+        }
+    }
+}
+
 /// The opt-in outside sources a live UI loop drains each turn. Each is
 /// launch configuration, never song state.
 pub(crate) struct LiveAdapters {
     pub(crate) chassis_tap: Option<ChassisTapReceiver>,
     #[cfg(feature = "link")]
     pub(crate) link: Option<LinkFollower>,
+    pub(crate) osc_rx: Option<osc::OscReceiver>,
+    pub(crate) osc_ui_state: Option<osc::SharedOscUiState>,
 }
 
 pub(crate) fn production_ui_loop(
@@ -470,6 +703,8 @@ pub(crate) fn production_ui_loop(
         chassis_tap,
         #[cfg(feature = "link")]
         link,
+        osc_rx,
+        osc_ui_state,
     } = adapters;
     let mut model = interaction::InteractionModel::default();
     let mut effects = EffectExecutor::new(session.live, auto);
@@ -500,6 +735,25 @@ pub(crate) fn production_ui_loop(
                     edit: ControlEdit::Value(bpm),
                 })?;
                 effects.show_message(format!("● TAP {count} · {bpm:.0} BPM"));
+                scheduler.request_frame();
+            }
+        }
+        if let Some(receiver) = &osc_rx {
+            let osc_cmds = receiver.drain_ui();
+            if !osc_cmds.is_empty() {
+                let mut ctx = ProductionCoordinatorContext {
+                    effects: &mut effects,
+                    fluid: &fluid,
+                    flipped: &mut flipped,
+                    clipboard: &mut clipboard,
+                    capabilities: terminal.capabilities(),
+                    beat: telemetry.beat(),
+                    active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
+                    chord_span: telemetry.chord_span(),
+                };
+                for cmd in osc_cmds {
+                    apply_osc_ui_command(cmd, &mut model, &mut ctx);
+                }
                 scheduler.request_frame();
             }
         }
@@ -547,6 +801,7 @@ pub(crate) fn production_ui_loop(
             let frame_session = effects.session().load();
             let gesture_now_seconds = effects.session().audio_seconds();
             let beat = telemetry.beat();
+            let active_chord = telemetry.chord_slot.load(Ordering::Relaxed);
             let pending_message = frame_session
                 .planned
                 .map(|action| {
@@ -561,7 +816,8 @@ pub(crate) fn production_ui_loop(
                         format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
                     })
                 });
-            let auto_message = effects.auto_position(beat).map(|position| {
+            let auto_pos = effects.auto_position(beat);
+            let auto_message = auto_pos.map(|position| {
                 let name =
                     |id: Option<usize>| id.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
                 // Naming the pair through the hold would announce a morph that
@@ -583,8 +839,9 @@ pub(crate) fn production_ui_loop(
                 session: &frame_session,
                 telemetry: TelemetryView {
                     beat,
-                    active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
+                    active_chord,
                     chord_span: telemetry.chord_span(),
+                    levels: telemetry.levels(),
                     gain_reduction_db: telemetry.gain_reduction(),
                 },
                 presentation: ViewPresentation {
@@ -602,6 +859,16 @@ pub(crate) fn production_ui_loop(
                     gesture_holds_available: terminal.capabilities().supports_holds(),
                 },
             });
+            if let Some(osc_ui) = &osc_ui_state {
+                osc_ui.store(Arc::new(Some(osc::OscUiSnapshot::capture(
+                    &model,
+                    &frame_session,
+                    &view,
+                    beat,
+                    active_chord,
+                    auto_pos.is_some(),
+                ))));
+            }
             let item_count = view.items.len();
             terminal.terminal_mut().draw(|frame| render(frame, &view))?;
             drop(view);

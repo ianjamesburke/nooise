@@ -21,9 +21,9 @@ use super::{
     EditorMotionAddress, EditorMotionField, EnvField, EnvTrigger, EnvelopeRoute, FluidControls,
     GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState, LfoField, LfoRoute, LfoShape,
     MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
-    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIDI_ROW_BITS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind,
-    ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, PlannedAction, RampParams, Step, StepTarget,
-    TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
+    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField,
+    MuteState, PAD_RHYTHM_ROWS, PlannedAction, RampParams, Step, StepTarget, TAB_COUNT, Tab,
+    all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -46,9 +46,9 @@ const MUTE_RECORD: u8 = 3;
 const GESTURE_RECORD: u8 = 4;
 /// `u16` dial-range epoch the code was written under. Absent means epoch 0.
 const RANGE_EPOCH_RECORD: u8 = 5;
-/// Optional MIDI-row visibility; one bit per Pad, Arp, and Lead In/Out row.
+/// Retired MIDI-row visibility record; any code carrying it is refused.
 const MIDI_ROWS_RECORD: u8 = 6;
-/// Pad rhythm rows hidden during MIDI startup and restored with a song.
+/// Pad rhythm rows hidden by default and restored with a song.
 const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
 /// Visibility bit of the retired `pad.swing` row. Visibility is not audible
 /// state; the swing value itself is refused as `RetiredControl`.
@@ -141,8 +141,6 @@ pub(crate) enum SongCodeError {
         kind: u8,
     },
     DuplicateGestureRecord,
-    InvalidMidiRows(u8),
-    DuplicateMidiRowsRecord,
     InvalidPadRhythmRows(u8),
     DuplicatePadRhythmRowsRecord,
     InvalidCapture,
@@ -225,10 +223,6 @@ impl fmt::Display for SongCodeError {
                 "song code repeats gesture kind {kind} on target {target}"
             ),
             Self::DuplicateGestureRecord => write!(f, "song code repeats the gesture record"),
-            Self::InvalidMidiRows(rows) => {
-                write!(f, "song code has unknown MIDI row bits {rows:#04x}")
-            }
-            Self::DuplicateMidiRowsRecord => write!(f, "song code repeats the MIDI rows record"),
             Self::InvalidPadRhythmRows(rows) => {
                 write!(f, "song code has unknown Pad rhythm row bits {rows:#04x}")
             }
@@ -376,9 +370,6 @@ pub(crate) fn encode_song_code_at_epoch(
         write_planned_action(action, &mut planned);
         write_record(PLANNED_ACTION_RECORD, &planned, &mut bytes)?;
     }
-    if song.controls.midi_rows != 0 {
-        write_record(MIDI_ROWS_RECORD, &[song.controls.midi_rows], &mut bytes)?;
-    }
     if song.controls.hidden_pad_rhythm_rows != PAD_RHYTHM_ROWS {
         write_record(
             PAD_RHYTHM_ROWS_RECORD,
@@ -445,7 +436,6 @@ fn decode_song_code_at_any_epoch(code: &str) -> Result<(SongState, u16), SongCod
 fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeError> {
     let mut song = SongState::default();
     let mut gesture_record_seen = false;
-    let mut midi_rows_record_seen = false;
     let mut pad_rhythm_rows_record_seen = false;
     let mut drunken_phase_record_seen = false;
     let mut capture_record_seen = false;
@@ -499,16 +489,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
             }
             RANGE_EPOCH_RECORD => epoch = Reader::new(payload).u16()?,
             MIDI_ROWS_RECORD => {
-                if midi_rows_record_seen {
-                    return Err(SongCodeError::DuplicateMidiRowsRecord);
-                }
-                midi_rows_record_seen = true;
-                let mut rows = Reader::new(payload);
-                let bits = rows.u8()?;
-                if !rows.is_empty() || bits & !MIDI_ROW_BITS != 0 {
-                    return Err(SongCodeError::InvalidMidiRows(bits));
-                }
-                song.controls.midi_rows = bits;
+                return Err(SongCodeError::RetiredControl("midi routing"));
             }
             PAD_RHYTHM_ROWS_RECORD => {
                 if pad_rhythm_rows_record_seen {
@@ -2067,23 +2048,11 @@ mod midi_rows_record_tests {
     use super::*;
 
     #[test]
-    fn rejects_unknown_row_bits() {
-        let code = code_from_records(CONTAINER_VERSION, &[(MIDI_ROWS_RECORD, &[0b1000_0000])]);
+    fn refuses_the_retired_midi_rows_record() {
+        let code = code_from_records(CONTAINER_VERSION, &[(MIDI_ROWS_RECORD, &[1])]);
         assert_eq!(
             decode_song_code(&code).err(),
-            Some(SongCodeError::InvalidMidiRows(0b1000_0000))
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_row_records() {
-        let code = code_from_records(
-            CONTAINER_VERSION,
-            &[(MIDI_ROWS_RECORD, &[1]), (MIDI_ROWS_RECORD, &[2])],
-        );
-        assert_eq!(
-            decode_song_code(&code).err(),
-            Some(SongCodeError::DuplicateMidiRowsRecord)
+            Some(SongCodeError::RetiredControl("midi routing"))
         );
     }
 }
@@ -2562,6 +2531,27 @@ mod retired_control_tests {
         );
     }
 
+    #[test]
+    fn a_code_setting_a_retired_midi_control_is_refused() {
+        for id in [
+            "pad.midi_in",
+            "pad.midi_out",
+            "pad.midi_trigger",
+            "arp.midi_in",
+            "arp.midi_out",
+            "arp.midi_gate_beats",
+            "lead.midi_in",
+            "lead.midi_out",
+            "lead.midi_gate_beats",
+            "bass.midi_mode",
+        ] {
+            assert_eq!(
+                decode_song_code(&code_setting(id)).err(),
+                Some(SongCodeError::RetiredControl(id))
+            );
+        }
+    }
+
     /// The same skip that makes a retired id fatal must not catch an id from
     /// a newer build: that index is past the table's end, not inside it.
     #[test]
@@ -2739,28 +2729,6 @@ mod song_value_tests {
                 Err(SongCodeError::StaleDrunken)
             ));
         }
-    }
-
-    #[test]
-    fn arp_midi_mode_and_gate_round_trip() {
-        let mut song = SongState::default();
-        song.controls.arp.midi_out = 1.0;
-        song.controls.arp.midi_gate_beats = 1.0;
-        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-        assert_eq!(decoded.controls.arp.midi_out, 1.0);
-        assert_eq!(decoded.controls.arp.midi_gate_beats, 1.0);
-    }
-
-    #[test]
-    fn pad_and_lead_midi_controls_round_trip() {
-        let mut song = SongState::default();
-        song.controls.pad.midi_out = 0.0;
-        song.controls.lead.midi_out = 1.0;
-        song.controls.lead.midi_gate_beats = 1.5;
-        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-        assert_eq!(decoded.controls.pad.midi_out, 0.0);
-        assert_eq!(decoded.controls.lead.midi_out, 1.0);
-        assert_eq!(decoded.controls.lead.midi_gate_beats, 1.5);
     }
 
     #[test]

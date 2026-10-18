@@ -430,19 +430,11 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             );
         // The Root list shows all eight slots; the ones the window does not
         // play recede so Count and Offset read at a glance.
-        let midi_disables_step = view.navigation.tab == Tab::Chords
-            && matches!(
-                view.navigation.chord_drill,
-                interaction::ChordDrill::Pattern { .. }
-            )
-            && frame.controls().pad.midi_trigger >= 0.5
-            && pad_step_index(item.id).is_some();
-        let style = if midi_disables_step
-            || in_chord_drill
-                && !parent_active
-                && !ChordWindow::requested(&frame.controls().pad)
-                    .slots()
-                    .any(|slot| slot == i)
+        let style = if in_chord_drill
+            && !parent_active
+            && !ChordWindow::requested(&frame.controls().pad)
+                .slots()
+                .any(|slot| slot == i)
         {
             Style::default().fg(DIM_TEXT)
         } else {
@@ -456,7 +448,13 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             )]
         } else {
             let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
-            spans.extend(slider_spans(item_ratio(item), markers, frame.bar_w, style));
+            spans.extend(slider_spans(
+                item_ratio(item),
+                markers,
+                live_meter(item, frame),
+                frame.bar_w,
+                style,
+            ));
             spans.push(Span::styled(format!(" {display}"), style));
             spans
         };
@@ -495,7 +493,6 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 view.navigation.chord_drill,
                 interaction::ChordDrill::Pattern { .. }
             )
-            && frame.controls().pad.midi_trigger < 0.5
             && i == ((beat / 0.25).floor() as usize % 16);
         if pad_step_playing {
             spans.push(Span::styled(
@@ -508,9 +505,6 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 format!(" ↻ {}", clip.status(beat)),
                 Style::default().fg(LIVE_AMBER),
             ));
-        }
-        if let Some(meter) = gain_reduction_meter(item, frame) {
-            spans.extend(meter);
         }
         rows.push(Line::from(spans));
 
@@ -1352,6 +1346,7 @@ fn field_line(
             effective: motion_position,
             ..SliderMarkers::default()
         },
+        None,
         bar_w,
         style,
     ));
@@ -1375,22 +1370,37 @@ pub(crate) fn control_dial(item: &ControlItem) -> Dial {
 
 const LANE_WAVE: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
-/// Horizontal eighth blocks, emptiest first, for meters that fill rightward.
-const METER_EIGHTHS: [char; 8] = ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
-/// A compressor meter's cells and the reduction that fills all of them. Sized
-/// to fit after the Amount display at the 46-column minimum frame.
-const GAIN_REDUCTION_CELLS: usize = 4;
-const GAIN_REDUCTION_FULL_DB: f32 = 20.0;
+/// Gain reduction in dB that fills the full width of a Compression Amount knob.
+const GAIN_REDUCTION_FULL_DB: f32 = 12.0;
+const METER_TRACK_DIM: Color = Color::Rgb(55, 60, 72);
 
-/// The live gain-reduction chip after an active Compression module's Amount
-/// row: on the layer page's collapsed row and atop the module's detail.
-/// Silent compressors (Amount 0) show nothing.
-fn gain_reduction_meter(
-    item: &ControlItem,
-    frame: &PanelFrame<'_, '_>,
-) -> Option<Vec<Span<'static>>> {
+#[derive(Clone, Copy)]
+enum LiveMeter {
+    /// Perceptual output level (`0.0..=1.0`, left-to-right) for a `Level` row.
+    Level { ratio: f32 },
+    /// Gain reduction (`0.0..=1.0`, right-to-left) for an active `Compression` `Amount` row.
+    GainReduction { ratio: f32 },
+}
+
+/// Resolves the live meter overlay for a control row: voice/Master `Level`
+/// rows meter their output RMS left-to-right, and active `Compression`
+/// `Threshold` rows (`amount > 0`) meter gain reduction right-to-left.
+fn live_meter(item: &ControlItem, frame: &PanelFrame<'_, '_>) -> Option<LiveMeter> {
+    if let Some(tab) = Tab::all()
+        .into_iter()
+        .find(|tab| tab.level_id() == Some(item.id))
+    {
+        let rms = frame.view.telemetry.levels[tab as usize];
+        let ratio = if rms <= 1e-4 {
+            0.0
+        } else {
+            let db = 20.0 * (rms * 2.5).max(1e-5).log10();
+            ((db + 42.0) / 42.0).clamp(0.0, 1.0)
+        };
+        return Some(LiveMeter::Level { ratio });
+    }
     let (prefix, slot, field) = parse_module_slot_id(item.id)?;
-    if field != ModuleSlotField::Amount {
+    if field != ModuleSlotField::Time {
         return None;
     }
     let tab = module_layer_tab(prefix)?;
@@ -1399,21 +1409,8 @@ fn gain_reduction_meter(
         return None;
     }
     let db = frame.view.telemetry.gain_reduction_db[module_layer_index(tab)? * MODULE_SLOTS + slot];
-    let eighths = ((db / GAIN_REDUCTION_FULL_DB).clamp(0.0, 1.0)
-        * (GAIN_REDUCTION_CELLS * 8) as f32)
-        .round() as usize;
-    let mut filled = "█".repeat(eighths / 8);
-    if !eighths.is_multiple_of(8) {
-        filled.push(METER_EIGHTHS[eighths % 8 - 1]);
-    }
-    let empty = "░".repeat(GAIN_REDUCTION_CELLS - filled.chars().count());
-    let dim = Style::default().fg(DIM_TEXT);
-    Some(vec![
-        Span::styled(" ▼", dim),
-        Span::styled(filled, Style::default().fg(LIVE_AMBER)),
-        Span::styled(empty, dim),
-        Span::styled(format!(" {db:.0}dB"), dim),
-    ])
+    let ratio = (db / GAIN_REDUCTION_FULL_DB).clamp(0.0, 1.0);
+    Some(LiveMeter::GainReduction { ratio })
 }
 
 /// How many random cycles the lane scopes so sample & hold / random drift read
@@ -1572,12 +1569,12 @@ const EFFECTIVE_MARKER_COLOR: Color = Color::Rgb(235, 245, 255);
 const SHADOW_COLOR: Color = Color::Rgb(95, 100, 115);
 
 /// Slider bar spans with ghost diamonds per modulation source, a faint reach
-/// band, and one bright diamond at the effective value. Precedence: the
-/// effective marker wins overlaps, then ghosts, then the actual filled bar,
-/// then the shadow band, then empty track.
+/// band, one bright diamond at the effective value, and an optional split
+/// half-block live meter (`▄` / `▀`) in the upper half of metered rows.
 fn slider_spans(
     ratio: f32,
     markers: SliderMarkers,
+    meter: Option<LiveMeter>,
     width: usize,
     style: Style,
 ) -> Vec<Span<'static>> {
@@ -1595,6 +1592,17 @@ fn slider_spans(
         let hi = cell(Some(hi)).unwrap_or(0);
         lo.min(hi)..=lo.max(hi)
     });
+    let meter_active = |i: usize| match meter {
+        Some(LiveMeter::Level { ratio }) => {
+            let cells = (ratio.clamp(0.0, 1.0) * width as f32).round() as usize;
+            i < cells
+        }
+        Some(LiveMeter::GainReduction { ratio }) => {
+            let cells = (ratio.clamp(0.0, 1.0) * width as f32).round() as usize;
+            i >= width.saturating_sub(cells)
+        }
+        None => false,
+    };
     (0..width)
         .map(|i| {
             if Some(i) == effective {
@@ -1606,6 +1614,26 @@ fn slider_spans(
                 )
             } else if let Some((_, color)) = ghosts.iter().find(|(pos, _)| *pos == Some(i)) {
                 Span::styled("◇", Style::default().fg(*color))
+            } else if meter.is_some() {
+                let top_on = meter_active(i);
+                let bottom_fg = if i < filled {
+                    style.fg.unwrap_or(BROWSE_PALETTE.idle)
+                } else if shadow_range.as_ref().is_some_and(|r| r.contains(&i)) {
+                    SHADOW_COLOR
+                } else {
+                    METER_TRACK_DIM
+                };
+                if i < filled {
+                    let mut cell_style = style.fg(bottom_fg);
+                    if top_on {
+                        cell_style = cell_style.bg(LIVE_AMBER);
+                    }
+                    Span::styled("▄", cell_style)
+                } else if top_on {
+                    Span::styled("▀", Style::default().fg(LIVE_AMBER).bg(bottom_fg))
+                } else {
+                    Span::styled("▄", Style::default().fg(bottom_fg))
+                }
             } else if i < filled {
                 Span::styled("█", style)
             } else if shadow_range.as_ref().is_some_and(|r| r.contains(&i)) {

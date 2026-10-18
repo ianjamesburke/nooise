@@ -302,7 +302,7 @@ impl Navigation {
         }
     }
 
-    fn selected_mut(&mut self) -> &mut usize {
+    pub(crate) fn selected_mut(&mut self) -> &mut usize {
         match self {
             Self::Chords { selected, .. }
             | Self::Standard { selected, .. }

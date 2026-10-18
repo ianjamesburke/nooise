@@ -2626,38 +2626,12 @@ fn palette_semantic_winners_render_and_confirm_on_both_terminals() {
         TerminalCapabilities::default(),
     ] {
         for (tabs, query, visible, target) in [
-            (1, "midi", "pad.midi_out", "pad.midi_out"),
-            (7, "midi", "arp.midi_out", "arp.midi_out"),
-            (8, "midi", "lead.midi_out", "lead.midi_out"),
-            (8, "midi in", "lead.midi_in", "lead.midi_in"),
-            (
-                8,
-                "midi gate",
-                "lead.midi_gate_beats",
-                "lead.midi_gate_beats",
-            ),
-            (8, "arp midi", "arp.midi_out", "arp.midi_out"),
-            (8, "midi in arp", "arp.midi_in", "arp.midi_in"),
-            (8, "pad.midi_out", "pad.midi_out", "pad.midi_out"),
             (3, "delay", "Delay · Bass", "bass.slot3.amount"),
             (0, "swing", "Global Swing · Master", "master.slot3.amount"),
             (8, "bass", "bass.level", "bass.level"),
             (8, "mute kick", "Mute Kick", ""),
         ] {
-            let configure = |mut harness: ReplayHarness| {
-                for id in ["pad.midi_in", "arp.midi_gate_beats", "pad.midi_out"] {
-                    let tab = tab_owning_control(id).unwrap();
-                    let index = tab_specs(tab)
-                        .iter()
-                        .position(|spec| spec.id == id)
-                        .unwrap();
-                    harness
-                        .executor
-                        .execute(LiveEffect::SelectControl { tab, index, id })
-                        .unwrap();
-                }
-                harness
-            };
+            let configure = |harness: ReplayHarness| harness;
             let press = |code| key(0, code, InputPhase::Press);
             let mut events = vec![TraceEvent::Resize {
                 after_ms: 0,
@@ -3054,8 +3028,8 @@ fn mute_kick_palette_action_preserves_other_mutes_and_saves_them() {
                     .with_session_edit(|snapshot| {
                         snapshot.muted[Tab::Bass as usize] = true;
                         snapshot.muted[Tab::Master as usize] = true;
-                        snapshot.controls.arp.midi_out = 1.0;
-                        snapshot.controls.lead.midi_out = 1.0;
+                        snapshot.controls.arp.voice_type = 1.0;
+                        snapshot.controls.lead.voice_type = 1.0;
                     })
                     .with_auto_running()
             };
@@ -3109,8 +3083,8 @@ fn kick_only_palette_action_preserves_auto_navigation_and_saved_controls() {
                     .with_session_edit(|snapshot| {
                         snapshot.muted[Tab::Kick as usize] = true;
                         snapshot.muted[Tab::Master as usize] = true;
-                        snapshot.controls.arp.midi_out = 1.0;
-                        snapshot.controls.lead.midi_out = 1.0;
+                        snapshot.controls.arp.voice_type = 1.0;
+                        snapshot.controls.lead.voice_type = 1.0;
                     })
                     .with_auto_running()
             };
@@ -3146,8 +3120,8 @@ fn kick_only_palette_action_preserves_auto_navigation_and_saved_controls() {
                     !matches!(tab, Tab::Kick | Tab::Master)
                 );
             }
-            assert_eq!(saved.controls.arp.midi_out, 1.0);
-            assert_eq!(saved.controls.lead.midi_out, 1.0);
+            assert_eq!(saved.controls.arp.voice_type, 1.0);
+            assert_eq!(saved.controls.lead.voice_type, 1.0);
         }
     }
 }
