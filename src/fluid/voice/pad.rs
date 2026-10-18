@@ -967,7 +967,7 @@ pub(crate) fn progression_home_label(progression: usize) -> String {
 /// loop back and within each half's own loop (chords 4 → 1 and 8 → 5), so a
 /// Chord Count of 4 at Offset 0 or 4 is a complete progression in its own
 /// right (`voice_led_progressions_hold_a_tone_through_every_window`).
-pub(crate) const PROGRESSIONS: [Progression; 15] = [
+pub(crate) const PROGRESSIONS: [Progression; 19] = [
     Progression {
         song_value: 0,
         mood: "Drift",
@@ -1226,6 +1226,79 @@ pub(crate) const PROGRESSIONS: [Progression; 15] = [
             chord("Dbmaj7", [2, 1, 0, 1, 0, 0, 0, 0]),
         ],
         bass: [41, 48, 46, 53, 44, 55, 50, 49],
+    },
+    // E dorian i9-IV9 vamp, the second half climbing the mode's own scale
+    // chords back to the IV. D and F# ride on top of every chord.
+    Progression {
+        song_value: 16,
+        mood: "Funk1",
+        home_mode: HomeMode::Dorian,
+        chords: [
+            chord("Em9", [4, 0, -1, 4, 6, 0, 1, 0]),
+            chord("A9/C#", [0, 0, 1, 4, 6, 1, 3, 0]),
+            chord("Em9", [4, 0, -1, 4, 6, 0, 1, 0]),
+            chord("A13", [0, 0, 1, 4, 9, 0, 2, 0]),
+            chord("Em9/G", [-3, 0, -1, 4, 6, 1, 2, 0]),
+            chord("F#m7/A", [-2, 1, -1, 4, 0, 1, 2, 1]),
+            chord("Gmaj7/B", [-1, 0, 1, 5, 0, 1, 2, 1]),
+            chord("A13", [0, 0, 1, 4, 9, 0, 2, 0]),
+        ],
+        bass: [40, 45, 52, 45, 40, 42, 43, 45],
+    },
+    // D mixolydian one-chord groove: the D9 slides up a half step to Eb13
+    // and back, its C held as the shared tone, with the bVII9 and IV13 as
+    // the only other colours.
+    Progression {
+        song_value: 17,
+        mood: "Funk2",
+        home_mode: HomeMode::Mixolydian,
+        chords: [
+            chord("D9", [3, 0, 1, 4, 6, 0, 0, 0]),
+            chord("Eb13/Db", [-4, 1, 1, 4, 9, 2, 1, 0]),
+            chord("D9", [3, 0, 1, 4, 6, 0, 0, 0]),
+            chord("C9", [2, 0, 1, 4, 6, 0, 1, 0]),
+            chord("G13/B", [-1, 0, 1, 4, 9, 1, 1, 0]),
+            chord("C9", [2, 0, 1, 4, 6, 0, 1, 0]),
+            chord("D9", [3, 0, 1, 4, 6, 0, 0, 0]),
+            chord("Eb13/Db", [-4, 1, 1, 4, 9, 2, 1, 0]),
+        ],
+        bass: [50, 51, 50, 48, 43, 48, 50, 51],
+    },
+    // G mixolydian I7-IV9 vamp, then a blues turn through the bVII9 and the
+    // borrowed bIII13 (Bb13). D sits on top of nearly every voicing.
+    Progression {
+        song_value: 18,
+        mood: "Funk3",
+        home_mode: HomeMode::Mixolydian,
+        chords: [
+            chord("G7", [6, 0, 1, 4, 0, 0, 1, 1]),
+            chord("C9", [2, 0, 1, 4, 6, 0, 2, 0]),
+            chord("G7/B", [-1, 0, 1, 4, 0, 1, 2, 1]),
+            chord("C9", [2, 0, 1, 4, 6, 0, 2, 0]),
+            chord("G13/B", [-1, 0, 1, 4, 9, 1, 2, 0]),
+            chord("F9/A", [-2, 0, 1, 4, 6, 1, 2, 0]),
+            chord("Bb13", [0, 1, 1, 4, 9, 0, 2, 0]),
+            chord("C9", [2, 0, 1, 4, 6, 0, 2, 0]),
+        ],
+        bass: [43, 48, 55, 48, 43, 41, 46, 48],
+    },
+    // A dorian i9-ii7 vamp over an A pedal, then the bIII-IV9 lift whose
+    // F# is the mode's raised sixth.
+    Progression {
+        song_value: 19,
+        mood: "Funk4",
+        home_mode: HomeMode::Dorian,
+        chords: [
+            chord("Am9", [0, 0, -1, 4, 6, 0, 1, 0]),
+            chord("Bm7/A", [-6, 0, -1, 4, 0, 3, 3, 1]),
+            chord("Am9", [0, 0, -1, 4, 6, 0, 1, 0]),
+            chord("Bm7/A", [-6, 0, -1, 4, 0, 3, 3, 1]),
+            chord("Cmaj7", [2, 0, 1, 5, 0, 0, 1, 1]),
+            chord("D9", [3, 0, 1, 4, 6, 0, 0, 0]),
+            chord("Am7", [0, 0, -1, 4, 0, 0, 3, 1]),
+            chord("G6/B", [-1, 0, 1, 9, 0, 1, 1, 1]),
+        ],
+        bass: [45, 47, 45, 47, 48, 50, 45, 43],
     },
 ];
 

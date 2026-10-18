@@ -15,7 +15,8 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = BASS_TYPE_EXPANSION_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = FUNK_PROGRESSION_EPOCH;
+pub(crate) const FUNK_PROGRESSION_EPOCH: u16 = 8;
 pub(crate) const BASS_TYPE_EXPANSION_EPOCH: u16 = 7;
 pub(crate) const CHORD_BUILDER_EPOCH: u16 = 6;
 pub(crate) const DRUNKEN_WAVE_EPOCH: u16 = 4;
@@ -94,6 +95,11 @@ const RANGE_CHANGES: &[RangeChange] = &[
         epoch: BASS_TYPE_EXPANSION_EPOCH,
         target: RangeTarget::Control("bass.type"),
     },
+    // Progression gained Funk1-Funk4 before Custom.
+    RangeChange {
+        epoch: FUNK_PROGRESSION_EPOCH,
+        target: RangeTarget::Control("pad.progression"),
+    },
 ];
 
 impl RangeChange {
@@ -168,8 +174,8 @@ mod tests {
         }
     }
 
-    /// A sweep on the Progression dial written before Hosking extended it
-    /// would walk a different sequence now, so it is refused; the same song
+    /// A sweep on the Progression dial written before it last grew would
+    /// walk a different sequence now, so it is refused; the same song
     /// written today loads.
     #[test]
     fn an_old_code_sweeping_the_progression_dial_is_refused() {
@@ -177,7 +183,7 @@ mod tests {
         song.automation
             .open_or_create(ControlAddress::new("pad.progression"))
             .depth_ratio = 0.5;
-        let stale = encode_song_code_at_epoch(&song, DRUNKEN_WAVE_EPOCH).unwrap();
+        let stale = encode_song_code_at_epoch(&song, FUNK_PROGRESSION_EPOCH - 1).unwrap();
         assert_eq!(
             decode_song_code(&stale).err(),
             Some(SongCodeError::StaleRange("pad.progression"))

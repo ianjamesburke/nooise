@@ -6784,6 +6784,8 @@ fn chord_suffix_intervals(suffix: &str) -> &'static [i32] {
         "sus" => &[0, 2, 5, 7],
         "6" => &[0, 4, 7, 9],
         "7" => &[0, 4, 7, 10],
+        "9" => &[0, 2, 4, 7, 10],
+        "13" => &[0, 2, 4, 7, 9, 10],
         "m7" => &[0, 3, 7, 10],
         "maj7" => &[0, 4, 7, 11],
         "m7b5" => &[0, 3, 6, 10],
@@ -6892,6 +6894,10 @@ fn progression_labels_pair_key_and_mood() {
             "C · Float",
             "Cm · Deep",
             "Fm · Hosking",
+            "Em · Funk1",
+            "D · Funk2",
+            "G · Funk3",
+            "Am · Funk4",
             "Custom",
         ]
     );
@@ -10369,7 +10375,8 @@ fn apply_ratio_lands_on_the_dial_evenly_for_every_scale() {
 }
 
 /// Notes audited before the shared builder; only Ache 8 and Float 7 differ.
-const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 120] = [
+/// Funk1-Funk4 were authored on the shared builder and pinned as heard.
+const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 152] = [
     [45, 50, 55, 60], // Drift 1
     [43, 50, 57, 60], // Drift 2
     [45, 52, 57, 60], // Drift 3
@@ -10490,6 +10497,38 @@ const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 120] = [
     [55, 58, 63, 65], // Hosking 6
     [50, 53, 58, 60], // Hosking 7
     [49, 53, 56, 60], // Hosking 8
+    [52, 62, 66, 67], // Funk1 1
+    [49, 59, 67, 69], // Funk1 2
+    [52, 62, 66, 67], // Funk1 3
+    [45, 61, 66, 67], // Funk1 4
+    [43, 62, 64, 66], // Funk1 5
+    [45, 61, 64, 66], // Funk1 6
+    [47, 62, 66, 67], // Funk1 7
+    [45, 61, 66, 67], // Funk1 8
+    [50, 54, 60, 64], // Funk2 1
+    [49, 55, 60, 63], // Funk2 2
+    [50, 54, 60, 64], // Funk2 3
+    [48, 58, 62, 64], // Funk2 4
+    [47, 55, 64, 65], // Funk2 5
+    [48, 58, 62, 64], // Funk2 6
+    [50, 54, 60, 64], // Funk2 7
+    [49, 55, 60, 63], // Funk2 8
+    [55, 62, 65, 71], // Funk3 1
+    [48, 62, 64, 70], // Funk3 2
+    [47, 62, 65, 67], // Funk3 3
+    [48, 62, 64, 70], // Funk3 4
+    [47, 64, 65, 67], // Funk3 5
+    [45, 63, 65, 67], // Funk3 6
+    [46, 62, 67, 68], // Funk3 7
+    [48, 62, 64, 70], // Funk3 8
+    [45, 55, 59, 60], // Funk4 1
+    [45, 54, 59, 62], // Funk4 2
+    [45, 55, 59, 60], // Funk4 3
+    [45, 54, 59, 62], // Funk4 4
+    [48, 55, 59, 64], // Funk4 5
+    [50, 54, 60, 64], // Funk4 6
+    [45, 55, 60, 64], // Funk4 7
+    [47, 55, 62, 64], // Funk4 8
 ];
 
 #[test]
