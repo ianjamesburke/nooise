@@ -982,7 +982,7 @@ pub(crate) fn progression_home_label(progression: usize, key: MasterKey) -> Stri
 /// loop back and within each half's own loop (chords 4 → 1 and 8 → 5), so a
 /// Chord Count of 4 at Offset 0 or 4 is a complete progression in its own
 /// right (`voice_led_progressions_hold_a_tone_through_every_window`).
-pub(crate) const PROGRESSIONS: [Progression; 19] = [
+pub(crate) const PROGRESSIONS: [Progression; 21] = [
     Progression {
         song_value: 0,
         mood: "Drift",
@@ -1314,6 +1314,42 @@ pub(crate) const PROGRESSIONS: [Progression; 19] = [
             chord("G6/B", [-1, 0, 1, 9, 0, 1, 1, 1]),
         ],
         bass: [45, 47, 45, 47, 48, 50, 45, 43],
+    },
+    // F major harvest: the maj7 / m7 chords of the vi-ii-IV family drift
+    // down a third at a time, and a suspended C hangs before the F returns.
+    Progression {
+        song_value: 20,
+        mood: "Harvest",
+        home_mode: HomeMode::Major,
+        chords: [
+            chord("Fmaj7", [5, 0, 1, 5, 0, 0, 1, 0]),
+            chord("Am7", [0, 0, -1, 4, 0, 0, 1, 0]),
+            chord("Dm9", [3, 0, -1, 4, 6, 0, 0, 0]),
+            chord("Bbmaj7", [1, -1, 1, 5, 0, 0, 1, 1]),
+            chord("Gm7", [6, 0, -1, 4, 0, 0, 1, 0]),
+            chord("C7sus", [2, 0, 3, 4, 0, 0, 0, 0]),
+            chord("Fadd9", [5, 0, 1, 6, 0, 0, 0, 0]),
+            chord("Bbadd9", [1, -1, 1, 6, 0, 0, 1, 1]),
+        ],
+        bass: [41, 45, 50, 46, 43, 48, 41, 46],
+    },
+    // G minor ember: the minor chords fall through Eb and Cm to a suspended
+    // D, then a borrowed D major (its F#) glows once before the loop turns.
+    Progression {
+        song_value: 21,
+        mood: "Ember",
+        home_mode: HomeMode::Minor,
+        chords: [
+            chord("Gm9", [-1, 0, -1, 4, 6, 0, 0, 0]),
+            chord("Ebmaj7", [-4, 1, 1, 5, 0, 0, 1, 0]),
+            chord("Cm7", [2, 0, -1, 4, 0, 0, 1, 0]),
+            chord("D7sus", [3, 0, 3, 4, 0, 0, 0, 0]),
+            chord("Bbmaj7", [1, -1, 1, 5, 0, 0, 1, 1]),
+            chord("Ebadd9", [-4, 1, 1, 6, 0, 0, 1, 0]),
+            chord("Cm9", [-5, 0, -1, 4, 6, 0, 0, 0]),
+            chord("D7", [3, 0, 1, 4, 0, 0, 1, 0]),
+        ],
+        bass: [43, 51, 48, 50, 46, 51, 48, 50],
     },
 ];
 

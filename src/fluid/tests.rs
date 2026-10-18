@@ -6721,6 +6721,8 @@ fn progression_labels_pair_key_and_mood() {
             "D · Funk2",
             "G · Funk3",
             "Am · Funk4",
+            "F · Harvest",
+            "Gm · Ember",
             "Custom",
         ]
     );
@@ -10275,8 +10277,9 @@ fn apply_ratio_lands_on_the_dial_evenly_for_every_scale() {
 }
 
 /// Notes audited before the shared builder; only Ache 8 and Float 7 differ.
-/// Funk1-Funk4 were authored on the shared builder and pinned as heard.
-const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 152] = [
+/// Funk1-Funk4, Harvest and Ember were authored on the shared builder and
+/// pinned as heard.
+const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 168] = [
     [45, 50, 55, 60], // Drift 1
     [43, 50, 57, 60], // Drift 2
     [45, 52, 57, 60], // Drift 3
@@ -10429,6 +10432,22 @@ const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 152] = [
     [50, 54, 60, 64], // Funk4 6
     [45, 55, 60, 64], // Funk4 7
     [47, 55, 62, 64], // Funk4 8
+    [53, 60, 64, 69], // Harvest 1
+    [45, 52, 55, 60], // Harvest 2
+    [50, 53, 60, 64], // Harvest 3
+    [46, 53, 57, 62], // Harvest 4
+    [55, 62, 65, 70], // Harvest 5
+    [48, 53, 55, 58], // Harvest 6
+    [53, 57, 60, 67], // Harvest 7
+    [46, 53, 60, 62], // Harvest 8
+    [43, 46, 53, 57], // Ember 1
+    [39, 46, 50, 55], // Ember 2
+    [48, 55, 58, 63], // Ember 3
+    [50, 55, 57, 60], // Ember 4
+    [46, 53, 57, 62], // Ember 5
+    [39, 46, 53, 55], // Ember 6
+    [36, 39, 46, 50], // Ember 7
+    [50, 57, 60, 66], // Ember 8
 ];
 
 #[test]

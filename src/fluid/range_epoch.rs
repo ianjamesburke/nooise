@@ -15,7 +15,8 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = FUNK_PROGRESSION_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = FALL_PROGRESSION_EPOCH;
+pub(crate) const FALL_PROGRESSION_EPOCH: u16 = 9;
 pub(crate) const FUNK_PROGRESSION_EPOCH: u16 = 8;
 pub(crate) const BASS_TYPE_EXPANSION_EPOCH: u16 = 7;
 pub(crate) const CHORD_BUILDER_EPOCH: u16 = 6;
@@ -98,6 +99,11 @@ const RANGE_CHANGES: &[RangeChange] = &[
     // Progression gained Funk1-Funk4 before Custom.
     RangeChange {
         epoch: FUNK_PROGRESSION_EPOCH,
+        target: RangeTarget::Control("pad.progression"),
+    },
+    // Progression gained Harvest and Ember before Custom.
+    RangeChange {
+        epoch: FALL_PROGRESSION_EPOCH,
         target: RangeTarget::Control("pad.progression"),
     },
 ];
@@ -183,7 +189,7 @@ mod tests {
         song.automation
             .open_or_create(ControlAddress::new("pad.progression"))
             .depth_ratio = 0.5;
-        let stale = encode_song_code_at_epoch(&song, FUNK_PROGRESSION_EPOCH - 1).unwrap();
+        let stale = encode_song_code_at_epoch(&song, FALL_PROGRESSION_EPOCH - 1).unwrap();
         assert_eq!(
             decode_song_code(&stale).err(),
             Some(SongCodeError::StaleRange("pad.progression"))
