@@ -7,7 +7,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, Stream, StreamConfig, SupportedBufferSize};
@@ -43,6 +43,7 @@ struct RoutingState {
     requested: OutputSelection,
     revision: u64,
     devices: Result<Vec<String>, AudioStartError>,
+    refresh_requested: bool,
     status: Option<Result<String, AudioStartError>>,
     notice: Option<Result<String, AudioStartError>>,
 }
@@ -53,6 +54,7 @@ impl OutputRouting {
             requested: selection,
             revision: 0,
             devices: Ok(Vec::new()),
+            refresh_requested: false,
             status: None,
             notice: None,
         })))
@@ -62,8 +64,14 @@ impl OutputRouting {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).devices = devices;
     }
 
+    fn take_refresh_request(&self) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut state.refresh_requested)
+    }
+
     pub(crate) fn choices(&self) -> Result<Vec<OutputSelection>, AudioStartError> {
-        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.refresh_requested = true;
         let mut choices = vec![OutputSelection::SystemDefault];
         choices.extend(
             state
@@ -277,8 +285,14 @@ fn run_audio_thread<E: StereoEngine>(
     stop: Arc<AtomicBool>,
     init_tx: mpsc::Sender<Result<(), AudioStartError>>,
 ) {
+    let mut device_changes = match DeviceChanges::new() {
+        Ok(changes) => changes,
+        Err(error) => {
+            let _ = init_tx.send(Err(error));
+            return;
+        }
+    };
     routing.update_devices(output_device_names());
-    let mut catalog_refreshed = Instant::now();
     let needs_rebuild = Arc::new(AtomicBool::new(false));
     let active = Arc::new(AtomicU64::new(0));
     let mut generation = 1;
@@ -310,7 +324,9 @@ fn run_audio_thread<E: StereoEngine>(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        if catalog_refreshed.elapsed() >= Duration::from_secs(1) {
+        let changed = device_changes.changed();
+        let refresh = routing.take_refresh_request();
+        if changed || refresh {
             let devices = output_device_names();
             // Some backends stop callbacks on unplug without an error callback.
             // An explicit selection must reconnect to that device, never default.
@@ -320,10 +336,10 @@ fn run_audio_thread<E: StereoEngine>(
                 retry = true;
             }
             routing.update_devices(devices);
-            catalog_refreshed = Instant::now();
         }
         let (requested, requested_revision) = routing.requested();
-        let default_changed = requested == OutputSelection::SystemDefault
+        let default_changed = (changed || refresh)
+            && requested == OutputSelection::SystemDefault
             && default_device_name().as_deref() != Some(running.device_name.as_str());
         let errored = needs_rebuild.swap(false, Ordering::Relaxed);
         if requested == selection
@@ -560,6 +576,29 @@ mod routing_tests {
     use std::cell::Cell;
 
     #[test]
+    fn picker_refresh_requests_are_coalesced_and_preserve_frozen_choices() {
+        let routing = OutputRouting::new(OutputSelection::SystemDefault);
+        routing.update_devices(Ok(vec!["First".into()]));
+        assert!(!routing.take_refresh_request());
+        let frozen = routing.choices().unwrap();
+        routing.choices().unwrap();
+        assert!(routing.take_refresh_request());
+        assert!(!routing.take_refresh_request());
+        routing.update_devices(Ok(vec!["Second".into()]));
+        assert_eq!(
+            frozen,
+            vec![
+                OutputSelection::SystemDefault,
+                OutputSelection::Device("First".into())
+            ]
+        );
+        assert_eq!(
+            routing.choices().unwrap()[1],
+            OutputSelection::Device("Second".into())
+        );
+    }
+
+    #[test]
     fn explicit_names_never_fall_back_or_pick_an_ambiguous_device() {
         let names = vec!["Speakers".into(), "BlackHole 2ch".into(), "Speakers".into()];
         assert_eq!(unique_device_index(&names, "BlackHole 2ch"), Ok(1));
@@ -658,5 +697,132 @@ mod routing_tests {
         assert_eq!(routing.requested().1, 2);
         routing.report(2, Ok("Output: Speakers".into()));
         assert_eq!(routing.take_notice(), Some(Ok("Output: Speakers".into())));
+    }
+}
+
+/// Notification-only CoreAudio adapter. No callback queries or allocates.
+#[cfg(target_os = "macos")]
+mod device_notifications {
+    use super::*;
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct Address {
+        selector: u32,
+        scope: u32,
+        element: u32,
+    }
+    const SYSTEM: u32 = 1;
+    const ADDRESSES: [Address; 2] = [
+        Address {
+            selector: u32::from_be_bytes(*b"dev#"),
+            scope: u32::from_be_bytes(*b"glob"),
+            element: 0,
+        },
+        Address {
+            selector: u32::from_be_bytes(*b"dOut"),
+            scope: u32::from_be_bytes(*b"glob"),
+            element: 0,
+        },
+    ];
+    static REVISION: AtomicU64 = AtomicU64::new(0);
+    type Listener = unsafe extern "C" fn(u32, u32, *const Address, *mut c_void) -> i32;
+    #[link(name = "CoreAudio", kind = "framework")]
+    unsafe extern "C" {
+        fn AudioObjectAddPropertyListener(
+            object: u32,
+            address: *const Address,
+            listener: Listener,
+            data: *mut c_void,
+        ) -> i32;
+        fn AudioObjectRemovePropertyListener(
+            object: u32,
+            address: *const Address,
+            listener: Listener,
+            data: *mut c_void,
+        ) -> i32;
+    }
+    unsafe extern "C" fn notify(_: u32, _: u32, _: *const Address, _: *mut c_void) -> i32 {
+        REVISION.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+    pub(super) struct DeviceChanges {
+        registered: usize,
+        revision: u64,
+    }
+    impl DeviceChanges {
+        pub(super) fn new() -> Result<Self, AudioStartError> {
+            let mut changes = Self {
+                registered: 0,
+                revision: REVISION.load(Ordering::Relaxed),
+            };
+            for address in &ADDRESSES {
+                // Static callback and addresses; no client data is dereferenced.
+                let status = unsafe {
+                    AudioObjectAddPropertyListener(SYSTEM, address, notify, std::ptr::null_mut())
+                };
+                if status != 0 {
+                    return Err(AudioStartError::Backend(format!(
+                        "CoreAudio device notifications: {status}"
+                    )));
+                }
+                changes.registered += 1;
+            }
+            Ok(changes)
+        }
+        pub(super) fn changed(&mut self) -> bool {
+            let revision = REVISION.load(Ordering::Relaxed);
+            let changed = revision != self.revision;
+            self.revision = revision;
+            changed
+        }
+    }
+    impl Drop for DeviceChanges {
+        fn drop(&mut self) {
+            for address in &ADDRESSES[..self.registered] {
+                // Same registration identity; late callbacks only touch a static atomic.
+                unsafe {
+                    AudioObjectRemovePropertyListener(
+                        SYSTEM,
+                        address,
+                        notify,
+                        std::ptr::null_mut(),
+                    );
+                }
+            }
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn notifications_invalidate_once_without_backend_queries() {
+            let mut changes = DeviceChanges {
+                registered: 0,
+                revision: REVISION.load(Ordering::Relaxed),
+            };
+            assert!(!changes.changed());
+            // The callback ignores arguments and touches only static storage.
+            unsafe {
+                notify(SYSTEM, 0, std::ptr::null(), std::ptr::null_mut());
+            }
+            assert!(changes.changed());
+            assert!(!changes.changed());
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+use device_notifications::DeviceChanges;
+
+/// Other backends refresh on picker requests and recover through stream errors.
+#[cfg(not(target_os = "macos"))]
+struct DeviceChanges;
+#[cfg(not(target_os = "macos"))]
+impl DeviceChanges {
+    fn new() -> Result<Self, AudioStartError> {
+        Ok(Self)
+    }
+    fn changed(&mut self) -> bool {
+        false
     }
 }
