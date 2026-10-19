@@ -317,8 +317,15 @@ pub(crate) enum PerformanceSurface {
     ChooseParameter { instrument: PerformanceInstrument },
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PROJECTION_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<'a> UiViewModel<'a> {
     pub(crate) fn project(projection: ViewProjection<'a>) -> Self {
+        #[cfg(test)]
+        PROJECTION_COUNT.set(PROJECTION_COUNT.get() + 1);
         let ViewProjection {
             interaction,
             session,
@@ -689,6 +696,30 @@ fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> Aut
     }
 }
 
+/// The same ordered rows used by rendering, without any display formatting.
+pub(crate) fn navigation_control_ids(
+    navigation: Navigation,
+    controls: &FluidControls,
+) -> Vec<&'static str> {
+    let navigation = navigation_view(navigation);
+    if let Some(slot) = navigation.module_slot {
+        return module_row_specs(navigation.tab, slot, controls)
+            .map(|(spec, _)| spec.id)
+            .collect();
+    }
+    match navigation.tab {
+        Tab::Chords => {
+            let mut ids = Vec::new();
+            visit_chord_row_specs(controls, navigation.chord_drill, |spec| ids.push(spec.id));
+            ids
+        }
+        Tab::Lead => lead_row_specs(controls, navigation.lead_drill)
+            .map(|spec| spec.id)
+            .collect(),
+        tab => tab_row_specs(tab, controls).map(|spec| spec.id).collect(),
+    }
+}
+
 fn navigation_view(navigation: Navigation) -> NavigationView {
     let mut view = NavigationView {
         tab: navigation.tab(),
@@ -973,6 +1004,145 @@ mod tests {
 
     fn session() -> LiveSessionSnapshot {
         LiveSessionSnapshot::from_controls(FluidControls::default())
+    }
+
+    fn assert_navigation_rows(session: &LiveSessionSnapshot, navigation: Navigation) {
+        let interaction = InteractionModel {
+            navigation,
+            ..InteractionModel::default()
+        };
+        let fluid = RippleField::new();
+        let flipped = FlippedUnits::new();
+        let before = PROJECTION_COUNT.get();
+        let ids = navigation_control_ids(navigation, &session.controls);
+        assert_eq!(PROJECTION_COUNT.get(), before);
+        let view = UiViewModel::project(ViewProjection {
+            interaction: &interaction,
+            session,
+            telemetry: TelemetryView::default(),
+            presentation: ViewPresentation {
+                fluid: &fluid,
+                flipped: &flipped,
+                cursor_visible: true,
+                notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
+            },
+        });
+        assert_eq!(
+            ids,
+            view.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+            "{navigation:?}"
+        );
+        assert_eq!(
+            ids.get(navigation.selected().min(ids.len().saturating_sub(1))),
+            view.items
+                .get(view.navigation.selected)
+                .map(|item| &item.id)
+        );
+    }
+
+    #[test]
+    fn lightweight_navigation_matches_rendered_rows_across_scopes() {
+        let mut session = session();
+        for hidden in [0, u8::MAX] {
+            session.controls.hidden_pad_rhythm_rows = hidden;
+            for page in [
+                Page::Chords,
+                Page::Perc,
+                Page::Bass,
+                Page::Kick,
+                Page::Tonal,
+                Page::Clap,
+                Page::Arp,
+                Page::Lead,
+                Page::Master,
+            ] {
+                let mut navigation = Navigation::for_page(page);
+                *navigation.selected_mut() = usize::MAX;
+                assert_navigation_rows(&session, navigation);
+            }
+        }
+        for drill in [
+            ChordDrill::None,
+            ChordDrill::Pattern { return_to: 0 },
+            ChordDrill::Progression { return_to: 0 },
+        ] {
+            assert_navigation_rows(
+                &session,
+                Navigation::Chords {
+                    selected: usize::MAX,
+                    drill,
+                },
+            );
+        }
+        for slot in 0..CHORD_SLOT_COUNT {
+            for extension2 in [false, true] {
+                assert_navigation_rows(
+                    &session,
+                    Navigation::Chords {
+                        selected: usize::MAX,
+                        drill: ChordDrill::Slot {
+                            slot,
+                            extension2,
+                            return_to: 0,
+                        },
+                    },
+                );
+            }
+        }
+        for count in [1.0, 8.0, 16.0] {
+            session.controls.lead.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Lead {
+                    selected: usize::MAX,
+                    drill: LeadDrill::Pattern { return_to: 0 },
+                },
+            );
+        }
+        for tab in Tab::all() {
+            for slot in 0..MODULE_SLOTS {
+                for (catalog_index, kind) in MODULE_CATALOG.iter().enumerate() {
+                    session.controls.modules.for_tab_mut(tab).unwrap()[slot] =
+                        preset_slot(kind.id, 0.5);
+                    assert_navigation_rows(
+                        &session,
+                        Navigation::Module {
+                            tab,
+                            slot,
+                            catalog_index,
+                            selected: usize::MAX,
+                            return_to: 0,
+                        },
+                    );
+                }
+                session.controls.modules.for_tab_mut(tab).unwrap()[slot] = ModuleSlot::default();
+                assert_navigation_rows(
+                    &session,
+                    Navigation::Module {
+                        tab,
+                        slot,
+                        catalog_index: 0,
+                        selected: usize::MAX,
+                        return_to: 0,
+                    },
+                );
+            }
+            assert!(
+                navigation_control_ids(
+                    Navigation::Module {
+                        tab,
+                        slot: usize::MAX,
+                        catalog_index: 0,
+                        selected: usize::MAX,
+                        return_to: 0,
+                    },
+                    &session.controls,
+                )
+                .is_empty()
+            );
+        }
     }
 
     fn snapshot_symbols(buffer: &Buffer) -> String {
