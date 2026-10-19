@@ -74,7 +74,6 @@ impl PanelFrame<'_, '_> {
 
 pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let area = f.area();
-    f.render_widget(FluidWidget { fluid: view.fluid }, area);
 
     // centered control overlay
     let pw = ((area.width as f32 * 0.62) as u16)
@@ -93,6 +92,14 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let py = area.y + (area.height.saturating_sub(ph)) / 2;
     let panel = Rect::new(px, py, pw, ph);
 
+    f.render_widget(
+        FluidWidget {
+            fluid: view.fluid,
+            panel,
+            stopped: view.session.transport == Transport::Stopped,
+        },
+        area,
+    );
     draw_scrim(f, panel);
 
     // Borders only (transparent fill) so the scrim shows through.
