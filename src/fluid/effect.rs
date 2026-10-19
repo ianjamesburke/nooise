@@ -772,17 +772,51 @@ impl EffectExecutor {
     pub(crate) fn edit_session(
         &mut self,
         recent_id: Option<&'static str>,
+        edit: impl FnMut(&mut LiveSessionSnapshot),
+    ) -> Arc<LiveSessionSnapshot> {
+        self.edit_session_scoped(recent_id, None, edit)
+    }
+
+    /// Registry row edits may also update coupled chord/module fields. Those
+    /// retain full history discovery; ordinary scalar rows use the direct path.
+    pub(crate) fn edit_control_session(
+        &mut self,
+        spec: &'static ControlSpec,
+        edit: impl FnMut(&mut LiveSessionSnapshot),
+    ) -> Arc<LiveSessionSnapshot> {
+        let coupled_module = parse_module_slot_id(spec.id).is_some_and(|(_, _, field)| {
+            matches!(
+                field,
+                ModuleSlotField::Kind
+                    | ModuleSlotField::Feedback
+                    | ModuleSlotField::Clock
+                    | ModuleSlotField::RightClock
+            )
+        });
+        let single = (!coupled_module
+            && parse_chord_slot_id(spec.id).is_none()
+            && spec.id != "pad.progression")
+            .then_some(spec);
+        self.edit_session_scoped(Some(spec.id), single, edit)
+    }
+
+    fn edit_session_scoped(
+        &mut self,
+        recent_id: Option<&'static str>,
+        single_control: Option<&'static ControlSpec>,
         mut edit: impl FnMut(&mut LiveSessionSnapshot),
     ) -> Arc<LiveSessionSnapshot> {
         self.auto.exit();
-        let mut before = self.session.load();
-        let snapshot = self.session.update(|snapshot| {
-            before = Arc::new(snapshot.clone());
-            edit(snapshot);
-            suspend_changed_captures(&before, snapshot);
-        });
+        let (before, snapshot) = self
+            .session
+            .transact_with_before::<std::convert::Infallible>(|before, snapshot| {
+                edit(snapshot);
+                suspend_changed_captures(before, snapshot);
+                Ok(())
+            })
+            .expect("infallible live-session transaction");
         self.capture_history
-            .record_changes(&before, &snapshot, self.edit_beat);
+            .record_changes(&before, &snapshot, self.edit_beat, single_control);
         if let Some(id) = recent_id {
             self.recent.touch(id);
         }
@@ -808,15 +842,13 @@ impl EffectExecutor {
     ) -> Result<Arc<LiveSessionSnapshot>, EffectFailure> {
         check(&self.session.load())?;
         self.auto.exit();
-        let mut before = self.session.load();
-        let snapshot = self.session.transact(|snapshot| {
-            before = Arc::new(snapshot.clone());
+        let (before, snapshot) = self.session.transact_with_before(|before, snapshot| {
             edit(snapshot)?;
-            suspend_changed_captures(&before, snapshot);
+            suspend_changed_captures(before, snapshot);
             Ok(())
         })?;
         self.capture_history
-            .record_changes(&before, &snapshot, self.edit_beat);
+            .record_changes(&before, &snapshot, self.edit_beat, None);
         self.recent.touch(recent_id);
         Ok(snapshot)
     }
@@ -1417,7 +1449,7 @@ impl EffectExecutor {
                 if (spec.get)(&candidate) == (spec.get)(&initial.controls) {
                     return Ok(EffectAcknowledgement::NoChange);
                 }
-                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                let snapshot = self.edit_control_session(spec, |snapshot| {
                     spec.apply_randomized_ratio(ratio, &mut snapshot.controls);
                 });
                 Ok(EffectAcknowledgement::Published {
@@ -1541,7 +1573,7 @@ impl EffectExecutor {
             }
             InteractionEffect::LeadNudge { id, delta } => {
                 let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext(id))?;
-                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                let snapshot = self.edit_control_session(spec, |snapshot| {
                     spec.apply_delta(f32::from(delta), &mut snapshot.controls);
                 });
                 Ok(EffectAcknowledgement::Published {
@@ -1551,7 +1583,7 @@ impl EffectExecutor {
             InteractionEffect::LeadPattern => {
                 let spec = spec_by_id(LEAD_PATTERN_ID)
                     .ok_or(EffectFailure::MissingContext(LEAD_PATTERN_ID))?;
-                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                let snapshot = self.edit_control_session(spec, |snapshot| {
                     let next = LeadPattern::from_value(snapshot.controls.lead.pattern).toggled();
                     spec.apply_value(next.value(), &mut snapshot.controls);
                 });

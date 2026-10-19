@@ -348,9 +348,16 @@ fn with_active_field(
         return;
     }
     let recent_id = recent_id(automation, tab, selected);
-    effects.edit_session(recent_id, |snapshot| {
+    let edit = |snapshot: &mut LiveSessionSnapshot| {
         apply_field_op(snapshot, active, tab, selected, beat, op);
-    });
+    };
+    if matches!(active, ActiveField::Control)
+        && let Some(spec) = selected.and_then(|index| tab_specs(tab).get(index))
+    {
+        effects.edit_control_session(spec, edit);
+    } else {
+        effects.edit_session(recent_id, edit);
+    }
 }
 
 fn apply_field_op(
