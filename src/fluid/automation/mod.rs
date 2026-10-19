@@ -999,6 +999,7 @@ struct PlannedRoute {
     capture: Option<super::CaptureClip>,
     editor_captures: Vec<PlannedEditorMotion>,
     smoothed_delta: Option<f32>,
+    base_value: f32,
 }
 
 struct PlannedEditorMotion {
@@ -1012,14 +1013,12 @@ struct PlannedEditorMotion {
 pub(crate) const AUTOMATION_DECLICK_MS: f64 = 3.0;
 
 impl PlannedRoute {
-    fn next_delta(&mut self, target: f32, sample_rate: f64) -> f32 {
+    fn next_delta(&mut self, target: f32, coefficient: f32) -> f32 {
         let Some(current) = self.smoothed_delta else {
             self.smoothed_delta = Some(target);
             return target;
         };
-        let smoothing_samples = (AUTOMATION_DECLICK_MS * 0.001 * sample_rate).max(1.0);
-        let coefficient = 1.0 - (-1.0 / smoothing_samples).exp();
-        let next = current + (target - current) * coefficient as f32;
+        let next = current + (target - current) * coefficient;
         self.smoothed_delta = Some(next);
         next
     }
@@ -1036,11 +1035,13 @@ impl PlannedRoute {
 }
 
 /// Allocation-free application plan for an `AutomationState`. The engine
-/// rebuilds it only when the published automation Arc changes (a UI edit),
+/// rebuilds it only when the retained live-session Arc changes,
 /// so the per-sample audio hot path never touches the allocator.
 #[derive(Default)]
 pub(crate) struct AutomationPlan {
     routes: Vec<PlannedRoute>,
+    sample_rate: f64,
+    coefficient: f32,
 }
 
 impl AutomationPlan {
@@ -1074,6 +1075,7 @@ impl AutomationPlan {
                     })
                     .collect(),
                 smoothed_delta,
+                base_value: 0.0,
             });
         }
         for mut removed in previous {
@@ -1090,6 +1092,11 @@ impl AutomationPlan {
     }
 
     pub(crate) fn apply(&mut self, controls: &mut FluidControls, timing: TimingContext) {
+        if self.sample_rate != timing.sample_rate {
+            self.sample_rate = timing.sample_rate;
+            let samples = (AUTOMATION_DECLICK_MS * 0.001 * timing.sample_rate).max(1.0);
+            self.coefficient = (1.0 - (-1.0 / samples).exp()) as f32;
+        }
         controls.pad.begin_chord_evaluation();
         let ctx = ModContext {
             beat: timing.beat,
@@ -1114,6 +1121,7 @@ impl AutomationPlan {
                 spec = clip.playback_spec(spec, ctx.beat);
             }
             let base = (spec.get)(controls);
+            planned.base_value = base;
             let capture_delta = planned.capture.as_ref().map_or(0.0, |clip| {
                 clip.delta(super::capture_ratio(&spec, base, controls), ctx.beat)
             });
@@ -1128,11 +1136,20 @@ impl AutomationPlan {
                 planned.smoothed_delta = Some(target_delta);
                 target_delta
             } else {
-                planned.next_delta(target_delta, timing.sample_rate)
+                planned.next_delta(target_delta, self.coefficient)
             };
             let value = modulated_control_value_from_delta(&spec, base, delta);
             (spec.set)(controls, value);
         }
+    }
+
+    /// Undo only this sample's writes, in reverse dependency order. Keeping
+    /// the working controls avoids copying authored banks and Arc ownership.
+    pub(crate) fn restore(&mut self, controls: &mut FluidControls) {
+        for route in self.routes.iter().rev() {
+            (route.spec.set)(controls, route.base_value);
+        }
+        controls.pad.evaluated_chords = None;
         self.routes.retain(|route| !route.is_finished_fading());
     }
 }
@@ -1147,4 +1164,89 @@ pub(crate) fn apply_automation(
     let mut plan = AutomationPlan::default();
     plan.rebuild(automation);
     plan.apply(controls, timing);
+}
+
+#[cfg(test)]
+mod hot_path_tests {
+    use super::*;
+    use crate::fluid::{SongState, all_specs, decode_auto_states};
+    use std::sync::Arc;
+
+    #[test]
+    fn reusable_controls_match_fresh_copies_across_songs_and_route_removal() {
+        let mut songs = decode_auto_states();
+        for progression in [0.0, crate::fluid::CUSTOM_PROGRESSION_INDEX as f32] {
+            let mut song = SongState::from_controls(FluidControls::default());
+            song.controls.pad.progression = progression;
+            for id in [
+                "pad.chord1_degree",
+                "pad.chord1_extension",
+                "lead.step1",
+                "master.slot1.kind",
+            ] {
+                song.automation
+                    .open_or_create(ControlAddress::new(id))
+                    .depth_ratio = 0.5;
+            }
+            songs.push(song.clone());
+            song.automation
+                .open_or_create(ControlAddress::new("pad.progression"))
+                .depth_ratio = 0.5;
+            songs.push(song);
+        }
+        for song in songs {
+            let base = song.controls;
+            let mut reused = base.clone();
+            let mut reused_plan = AutomationPlan::default();
+            let mut fresh_plan = AutomationPlan::default();
+            reused_plan.rebuild(&song.automation);
+            fresh_plan.rebuild(&song.automation);
+            for sample in 0..300 {
+                if sample == 150 {
+                    reused_plan.rebuild(&AutomationState::default());
+                    fresh_plan.rebuild(&AutomationState::default());
+                }
+                let timing = TimingContext {
+                    sample_rate: 48000.0,
+                    beat: sample as f64 / 73.0,
+                    ..TimingContext::new(48000.0, 120.0, 0.0)
+                };
+                let mut fresh = base.clone();
+                fresh_plan.apply(&mut fresh, timing);
+                reused_plan.apply(&mut reused, timing);
+                for spec in all_specs() {
+                    assert_eq!(
+                        (spec.get)(&reused),
+                        (spec.get)(&fresh),
+                        "{} sample {sample}",
+                        spec.id
+                    );
+                }
+                reused_plan.restore(&mut reused);
+                fresh_plan.restore(&mut fresh);
+                assert!(Arc::ptr_eq(
+                    &base.pad.chord_overrides,
+                    &reused.pad.chord_overrides
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn declick_coefficient_tracks_sample_rate_exactly() {
+        let mut plan = AutomationPlan::default();
+        let mut controls = FluidControls::default();
+        for sample_rate in [44100.0, 48000.0, 96000.0, 48000.0] {
+            plan.apply(
+                &mut controls,
+                TimingContext {
+                    sample_rate,
+                    ..TimingContext::new(48000.0, 120.0, 0.0)
+                },
+            );
+            let expected =
+                (1.0 - (-1.0 / (AUTOMATION_DECLICK_MS * 0.001 * sample_rate)).exp()) as f32;
+            assert_eq!(plan.coefficient, expected);
+        }
+    }
 }
