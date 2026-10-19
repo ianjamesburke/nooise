@@ -708,13 +708,10 @@ impl ReplayHarness {
                 turn.tick_due,
                 &mut ProductionCoordinatorContext {
                     effects: &mut self.executor,
-                    fluid: &self.fluid,
                     flipped: &mut self.flipped,
                     clipboard: &mut self.clipboard,
                     capabilities: self.capabilities,
                     beat: self.clock.now().as_secs_f64(),
-                    active_chord: 0,
-                    chord_span: ChordSpan::default(),
                 },
             )
             .expect("pending commit has no fallible effects");
@@ -3248,13 +3245,10 @@ fn stale_lane_palette_target_shows_failure_without_touching_replacement() {
         false,
         &mut ProductionCoordinatorContext {
             effects: &mut harness.executor,
-            fluid: &harness.fluid,
             flipped: &mut harness.flipped,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 0.0,
-            active_chord: 0,
-            chord_span: ChordSpan::default(),
         },
     )
     .unwrap();
@@ -3677,13 +3671,10 @@ fn palette_recipe_refuses_delete_and_readd_of_the_same_module() {
         false,
         &mut ProductionCoordinatorContext {
             effects: &mut harness.executor,
-            fluid: &harness.fluid,
             flipped: &mut harness.flipped,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 0.0,
-            active_chord: 0,
-            chord_span: ChordSpan::default(),
         },
     )
     .unwrap();
@@ -3820,13 +3811,10 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
         false,
         &mut ProductionCoordinatorContext {
             effects: &mut harness.executor,
-            fluid: &harness.fluid,
             flipped: &mut harness.flipped,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 0.0,
-            active_chord: 0,
-            chord_span: ChordSpan::default(),
         },
     )
     .expect("staging turn");
@@ -3850,13 +3838,10 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
         true,
         &mut ProductionCoordinatorContext {
             effects: &mut harness.executor,
-            fluid: &harness.fluid,
             flipped: &mut harness.flipped,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 4.0,
-            active_chord: 0,
-            chord_span: ChordSpan::default(),
         },
     )
     .expect("due turn");
@@ -4377,13 +4362,10 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
             let mut harness = ReplayHarness::new(TerminalCapabilities::full());
             let mut context = ProductionCoordinatorContext {
                 effects: &mut harness.executor,
-                fluid: &harness.fluid,
                 flipped: &mut harness.flipped,
                 clipboard: &mut harness.clipboard,
                 capabilities: harness.capabilities,
                 beat: 0.0,
-                active_chord: 0,
-                chord_span: ChordSpan::default(),
             };
             let action = SemanticAction { phase, intent };
             let frame = production_frame(&mut harness.model, &context);
@@ -5298,4 +5280,38 @@ fn chord_builder_actions_leave_lane_editors_without_removing_the_lane() {
             );
         }
     }
+}
+
+#[test]
+fn event_and_osc_navigation_do_not_project_render_views() {
+    let mut harness = ReplayHarness::new(TerminalCapabilities::full());
+    let mut context = ProductionCoordinatorContext {
+        effects: &mut harness.executor,
+        flipped: &mut harness.flipped,
+        clipboard: &mut harness.clipboard,
+        capabilities: harness.capabilities,
+        beat: 0.0,
+    };
+    let before = view::PROJECTION_COUNT.get();
+    for _ in 0..32 {
+        coordinator::coordinate_production_event(
+            &mut harness.model,
+            &TransportEvent::key(PhysicalKey::Down, Modifiers::default(), InputPhase::Press),
+            &mut context,
+        );
+    }
+    for command in [
+        osc::OscUiCommand::NavLayer(Tab::Lead),
+        osc::OscUiCommand::NavRow(usize::MAX),
+        osc::OscUiCommand::NavMove(-3),
+        osc::OscUiCommand::NavPage(12),
+        osc::OscUiCommand::NavPage(-12),
+    ] {
+        coordinator::apply_osc_ui_command(command, &mut harness.model, &mut context);
+    }
+    let frame = production_frame(&mut harness.model, &context);
+    assert!(frame.selected_control.is_some());
+    assert!(frame.selected.is_some());
+    assert!(harness.model.navigation.selected() < frame.item_count);
+    assert_eq!(view::PROJECTION_COUNT.get(), before);
 }

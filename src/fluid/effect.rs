@@ -2189,18 +2189,14 @@ mod tests {
     fn production_palette_opens_a_frozen_output_picker_and_cancels_without_routing() {
         use super::interaction::{Intent, InteractionMode, InteractionModel, SemanticAction};
         fn dispatch(executor: &mut EffectExecutor, model: &mut InteractionModel, intent: Intent) {
-            let fluid = RippleField::new();
             let mut flipped = FlippedUnits::default();
             let mut clipboard = FakeClipboard::default();
             let mut context = ProductionCoordinatorContext {
                 effects: executor,
-                fluid: &fluid,
                 flipped: &mut flipped,
                 clipboard: &mut clipboard,
                 capabilities: runtime::TerminalCapabilities::full(),
                 beat: 0.0,
-                active_chord: 0,
-                chord_span: ChordSpan::default(),
             };
             let frame = production_frame(model, &context);
             coordinate_production_action(

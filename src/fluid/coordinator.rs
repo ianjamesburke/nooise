@@ -48,13 +48,10 @@ pub(crate) struct ProductionTurn {
 
 pub(crate) struct ProductionCoordinatorContext<'a> {
     pub(crate) effects: &'a mut EffectExecutor,
-    pub(crate) fluid: &'a RippleField,
     pub(crate) flipped: &'a mut FlippedUnits,
     pub(crate) clipboard: &'a mut dyn Clipboard,
     pub(crate) capabilities: runtime::TerminalCapabilities,
     pub(crate) beat: f64,
-    pub(crate) active_chord: u64,
-    pub(crate) chord_span: ChordSpan,
 }
 
 pub(crate) fn coordinate_production_tick(
@@ -65,8 +62,7 @@ pub(crate) fn coordinate_production_tick(
     effects.execute(LiveEffect::CommitPending { beat })
 }
 
-/// What the pre-event view projection settled before any action ran: the
-/// session snapshot the frame was drawn from and the selection it resolved.
+/// One pre-action session snapshot and its lightweight navigation selection.
 pub(crate) struct ProductionFrame {
     pub(crate) session: Arc<LiveSessionSnapshot>,
     pub(crate) item_count: usize,
@@ -82,32 +78,16 @@ pub(crate) fn production_frame(
     context: &ProductionCoordinatorContext<'_>,
 ) -> ProductionFrame {
     let session = context.effects.session().load();
-    let gesture_now_seconds = context.effects.session().audio_seconds();
-    let view = UiViewModel::project(ViewProjection {
-        interaction: model,
-        session: &session,
-        telemetry: TelemetryView {
-            beat: context.beat,
-            active_chord: context.active_chord,
-            chord_span: context.chord_span,
-            ..TelemetryView::default()
-        },
-        presentation: ViewPresentation {
-            fluid: context.fluid,
-            flipped: context.flipped,
-            cursor_visible: true,
-            notices: ViewNotices::default(),
-            gesture_now_seconds,
-            gesture_holds_available: context.capabilities.supports_holds(),
-        },
-    });
-    let item_count = view.items.len();
-    let selected_control = view.items.get(view.navigation.selected).map(|item| item.id);
-    let visible_control_ids = view.items.iter().map(|item| item.id).collect();
+    let visible_control_ids = view::navigation_control_ids(model.navigation, &session.controls);
+    let item_count = visible_control_ids.len();
+    let selected_row = model
+        .navigation
+        .selected()
+        .min(item_count.saturating_sub(1));
+    let selected_control = visible_control_ids.get(selected_row).copied();
     let randomizes_automation = matches!(model.mode, interaction::InteractionMode::Automation(_));
-    let selected = selected_control.and_then(|id| spec_index(view.navigation.tab, id));
-    let tab = view.navigation.tab;
-    drop(view);
+    let tab = model.navigation.tab();
+    let selected = selected_control.and_then(|id| spec_index(tab, id));
     model.clamp_navigation_selection(item_count);
     ProductionFrame {
         session,
@@ -756,13 +736,10 @@ pub(crate) fn production_ui_loop(
             if !osc_cmds.is_empty() {
                 let mut ctx = ProductionCoordinatorContext {
                     effects: &mut effects,
-                    fluid: &fluid,
                     flipped: &mut flipped,
                     clipboard: &mut clipboard,
                     capabilities: terminal.capabilities(),
                     beat: telemetry.beat(),
-                    active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
-                    chord_span: telemetry.chord_span(),
                 };
                 for cmd in osc_cmds {
                     apply_osc_ui_command(cmd, &mut model, &mut ctx);
@@ -782,13 +759,10 @@ pub(crate) fn production_ui_loop(
             tick_due,
             &mut ProductionCoordinatorContext {
                 effects: &mut effects,
-                fluid: &fluid,
                 flipped: &mut flipped,
                 clipboard: &mut clipboard,
                 capabilities: terminal.capabilities(),
                 beat: telemetry.beat(),
-                active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
-                chord_span: telemetry.chord_span(),
             },
         )
         .expect("pending commit has no fallible effects");

@@ -2269,16 +2269,23 @@ fn pad_rhythm_row_visible(id: &str, c: &FluidControls) -> bool {
 /// A tab's root rows: every spec except page-local step rows and unloaded
 /// module-slot rows.
 pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
+    tab_row_specs(tab, c).map(|spec| spec.item(c)).collect()
+}
+
+fn root_row_visible(id: &str, c: &FluidControls) -> bool {
+    module_slot_row_visible(id, c)
+        && pad_rhythm_row_visible(id, c)
+        && lead_step_index(id).is_none()
+        && pad_step_index(id).is_none()
+}
+
+pub(crate) fn tab_row_specs(
+    tab: Tab,
+    c: &FluidControls,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
     tab_specs(tab)
         .iter()
-        .filter(|spec| {
-            module_slot_row_visible(spec.id, c)
-                && pad_rhythm_row_visible(spec.id, c)
-                && lead_step_index(spec.id).is_none()
-                && pad_step_index(spec.id).is_none()
-        })
-        .map(|spec| spec.item(c))
-        .collect()
+        .filter(|spec| root_row_visible(spec.id, c))
 }
 
 /// Lead-tab visible rows for the given drill level: the root page, or the
@@ -2288,17 +2295,18 @@ pub(crate) fn lead_tab_controls(
     c: &FluidControls,
     drill: interaction::LeadDrill,
 ) -> Vec<ControlItem> {
-    match drill {
-        interaction::LeadDrill::None => tab_controls(Tab::Lead, c),
-        interaction::LeadDrill::Pattern { .. } => LEAD_CONTROLS
-            .iter()
-            .filter(|spec| {
-                lead_step_index(spec.id)
-                    .is_some_and(|step| step < lead_live_step_count(c.lead.step_count))
-            })
-            .map(|spec| spec.item(c))
-            .collect(),
-    }
+    lead_row_specs(c, drill).map(|spec| spec.item(c)).collect()
+}
+
+pub(crate) fn lead_row_specs(
+    c: &FluidControls,
+    drill: interaction::LeadDrill,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(Tab::Lead).iter().filter(move |spec| match drill {
+        interaction::LeadDrill::None => root_row_visible(spec.id, c),
+        interaction::LeadDrill::Pattern { .. } => lead_step_index(spec.id)
+            .is_some_and(|step| step < lead_live_step_count(c.lead.step_count)),
+    })
 }
 
 /// Inverse of `lead_tab_controls`: the drill level + visible row that shows
@@ -2351,6 +2359,23 @@ pub(crate) fn module_slot_at_collapsed_id<'a>(
     })
 }
 
+pub(crate) fn module_row_specs(
+    tab: Tab,
+    slot: usize,
+    controls: &FluidControls,
+) -> impl Iterator<Item = (&'static ControlSpec, &'static str)> {
+    controls
+        .modules
+        .for_tab(tab)
+        .and_then(|slots| slots.get(slot))
+        .and_then(ModuleSlot::kind)
+        .into_iter()
+        .flat_map(|kind| kind.parameters())
+        .filter_map(move |parameter| {
+            module_slot_spec(tab, slot, parameter.field).map(|spec| (spec, parameter.label))
+        })
+}
+
 /// The rows projected inside a loaded module's detail scope. The backing
 /// registry ids stay slot-addressed and therefore persist independently of
 /// whichever catalog module currently occupies the slot.
@@ -2369,15 +2394,11 @@ pub(crate) fn module_detail_controls(
     let Some(kind) = module_slot.kind() else {
         return Vec::new();
     };
-    let mut items = kind
-        .parameters()
-        .iter()
-        .filter_map(|parameter| {
-            module_slot_spec(tab, slot, parameter.field).map(|spec| {
-                let mut item = spec.item(controls);
-                item.label = parameter.label.to_string();
-                item
-            })
+    let mut items = module_row_specs(tab, slot, controls)
+        .map(|(spec, label)| {
+            let mut item = spec.item(controls);
+            item.label = label.to_string();
+            item
         })
         .collect::<Vec<_>>();
     let field_of = |id: &str| parse_module_slot_id(id).map(|(_, _, field)| field);
@@ -2652,44 +2673,28 @@ pub(crate) fn progression_slot_display(
     )
 }
 
-/// Address fields by stable ID so appending a knob cannot change a navigation target.
-pub(crate) fn chords_tab_controls(
+/// Visit chord rows in display order without constructing display values.
+pub(crate) fn visit_chord_row_specs(
     c: &FluidControls,
     drill: interaction::ChordDrill,
-) -> Vec<ControlItem> {
+    mut visit: impl FnMut(&'static ControlSpec),
+) {
     match drill {
         interaction::ChordDrill::None => CHORDS_CONTROLS
             .iter()
-            .filter(|spec| {
-                parse_chord_slot_id(spec.id).is_none()
-                    && pad_step_index(spec.id).is_none()
-                    && pad_rhythm_row_visible(spec.id, c)
-                    && module_slot_row_visible(spec.id, c)
-            })
-            .map(|spec| spec.item(c))
-            .collect(),
+            .filter(|spec| parse_chord_slot_id(spec.id).is_none() && root_row_visible(spec.id, c))
+            .for_each(visit),
         interaction::ChordDrill::Pattern { .. } => CHORDS_CONTROLS
             .iter()
             .filter(|spec| pad_step_index(spec.id).is_some())
-            .map(|spec| spec.item(c))
-            .collect(),
-        interaction::ChordDrill::Progression { .. } => (0..CHORD_SLOT_COUNT)
-            .map(|slot| {
-                let mut item = chord_slot_spec(slot, "degree")
-                    .expect("every slot has a root")
-                    .item(c);
-                item.label = format!("Chord {}", slot + 1);
-                item.display = progression_slot_display(
-                    &c.pad,
-                    slot,
-                    ChordLabels {
-                        names: ChordNames::Letters,
-                        key: MasterKey::from_control(c.master.key),
-                    },
-                );
-                item
-            })
-            .collect(),
+            .for_each(visit),
+        interaction::ChordDrill::Progression { .. } => {
+            for slot in 0..CHORD_SLOT_COUNT {
+                if let Some(spec) = chord_slot_spec(slot, "degree") {
+                    visit(spec);
+                }
+            }
+        }
         interaction::ChordDrill::Slot {
             slot, extension2, ..
         } => CHORD_FIELDS
@@ -2703,8 +2708,32 @@ pub(crate) fn chords_tab_controls(
                         != 0.0
             })
             .filter_map(|field| chord_slot_spec(slot, field))
-            .map(|spec| {
-                let mut item = spec.item(c);
+            .for_each(visit),
+    }
+}
+
+/// Address fields by stable ID so appending a knob cannot change a navigation target.
+pub(crate) fn chords_tab_controls(
+    c: &FluidControls,
+    drill: interaction::ChordDrill,
+) -> Vec<ControlItem> {
+    let mut items = Vec::new();
+    visit_chord_row_specs(c, drill, |spec| {
+        let mut item = spec.item(c);
+        match drill {
+            interaction::ChordDrill::Progression { .. } => {
+                let slot = items.len();
+                item.label = format!("Chord {}", slot + 1);
+                item.display = progression_slot_display(
+                    &c.pad,
+                    slot,
+                    ChordLabels {
+                        names: ChordNames::Letters,
+                        key: MasterKey::from_control(c.master.key),
+                    },
+                );
+            }
+            interaction::ChordDrill::Slot { .. } => {
                 item.label = spec
                     .label
                     .split_once(' ')
@@ -2716,10 +2745,12 @@ pub(crate) fn chords_tab_controls(
                 {
                     item.label = "Bass".into();
                 }
-                item
-            })
-            .collect(),
-    }
+            }
+            interaction::ChordDrill::None | interaction::ChordDrill::Pattern { .. } => {}
+        }
+        items.push(item);
+    });
+    items
 }
 
 /// Maps a visible Pad row back to its registry index for projection tests.
