@@ -18,6 +18,14 @@ pub(crate) struct SearchMetadata {
 impl SearchMetadata {
     pub(crate) fn for_entry(entry: &PaletteEntry) -> Self {
         match entry {
+            PaletteEntry::OutputDevice(selection) => Self {
+                identity: format!("output:{selection:?}"),
+                stable_id: None,
+                scope: None,
+                names: vec![selection.to_string(), format!("output device {selection}")],
+                group: None,
+                scope_default: false,
+            },
             PaletteEntry::Control { tab, spec, .. } => {
                 let mut names = vec![spec.search.name.to_string()];
                 if let Some((_, field)) = spec.id.split_once('.') {

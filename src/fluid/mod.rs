@@ -395,8 +395,9 @@ impl FluidTelemetry {
 const APP_ID: &str = "nooise";
 
 /// Launch-only choices for a live session: none of them is song state.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct LiveStartOptions {
+    pub(crate) output: audio::OutputSelection,
     /// `-M`: open with Master Level at 0%.
     pub(crate) start_muted: bool,
     /// `--chassis-tap`: derive BPM from taps on the MacBook chassis.
@@ -533,6 +534,7 @@ fn run_interactive(
     osc: Option<SocketAddr>,
     options: LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
+    let output_routing = audio::OutputRouting::new(options.output);
     apply_live_start(&mut initial_song, options.start_muted);
     apply_live_start_to_states(&mut auto_states, options.start_muted);
     #[cfg(feature = "link")]
@@ -581,7 +583,7 @@ fn run_interactive(
     #[cfg(feature = "link")]
     let link_for_engine = link.clone();
 
-    let _audio_output = audio::start_stream(APP_ID, move |sr| {
+    let _audio_output = audio::start_stream(APP_ID, output_routing.clone(), move |sr| {
         let engine = FluidEngine::new_with_tonal_session_state(
             sr,
             session_for_engine.clone(),
@@ -614,6 +616,7 @@ fn run_interactive(
         updates,
         AutoControls::new(morph, auto_states, auto_bars),
         LiveAdapters {
+            output_routing,
             chassis_tap,
             #[cfg(feature = "link")]
             link: link.as_deref().map(LinkSession::follower),

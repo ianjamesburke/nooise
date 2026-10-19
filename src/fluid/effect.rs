@@ -21,6 +21,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 pub(crate) enum EffectFailure {
     /// The effect named a control id no registry spec claims.
     UnknownControl(&'static str),
+    AudioRouting(audio::AudioStartError),
     /// The song state could not be encoded, so there was nothing to copy.
     SongEncode(SongCodeError),
     /// The clipboard refused the write.
@@ -51,6 +52,7 @@ impl fmt::Display for EffectFailure {
                 f,
                 "{MAX_CAPTURES} Motion loops already kept; delete one first"
             ),
+            Self::AudioRouting(error) => write!(f, "{error}"),
             Self::UnknownControl(id) => write!(f, "no control named {id}"),
             Self::SongEncode(error) => write!(f, "{error}"),
             Self::Clipboard(error) => write!(f, "{error}"),
@@ -111,6 +113,7 @@ pub(crate) enum EffectAcknowledgement {
         count: usize,
     },
     Message(String),
+    OutputDevices(Vec<audio::OutputSelection>),
     ControlSelected {
         tab: Tab,
         index: usize,
@@ -180,7 +183,7 @@ pub(crate) struct ProductionInteractionContext<'a> {
     pub(crate) visible_control_ids: &'a [&'static str],
     pub(crate) randomizes_automation: bool,
     pub(crate) tab: Tab,
-    pub(crate) selected: usize,
+    pub(crate) selected: Option<usize>,
     pub(crate) automation_selected: usize,
     pub(crate) beat: f64,
     pub(crate) flipped: &'a mut FlippedUnits,
@@ -208,6 +211,7 @@ impl Clipboard for SystemClipboard {
 /// user-audible edits delegate to one `LiveSession` transaction; UI-only
 /// consequences are acknowledged only after publication succeeds.
 pub(crate) struct EffectExecutor {
+    output_routing: Option<audio::OutputRouting>,
     session: LiveSession,
     auto: AutoControls,
     recent: RecentControls,
@@ -236,6 +240,7 @@ impl EffectExecutor {
 
     pub(crate) fn seeded(session: LiveSession, auto: AutoControls, seed: u64) -> Self {
         Self {
+            output_routing: None,
             session,
             auto,
             recent: RecentControls::default(),
@@ -245,6 +250,24 @@ impl EffectExecutor {
             phrase: LeadPhraseBuffer::default(),
             capture_history: CaptureHistory::default(),
             edit_beat: 0.0,
+        }
+    }
+
+    pub(crate) fn with_output_routing(mut self, routing: audio::OutputRouting) -> Self {
+        self.output_routing = Some(routing);
+        self
+    }
+
+    pub(crate) fn poll_output_routing(&mut self) {
+        if let Some(notice) = self
+            .output_routing
+            .as_ref()
+            .and_then(audio::OutputRouting::take_notice)
+        {
+            match notice {
+                Ok(message) => self.show_message(message),
+                Err(error) => self.show_failure(format!("Output switch failed: {error}")),
+            }
         }
     }
 
@@ -1168,6 +1191,24 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
+            InteractionEffect::ChooseOutputDevice => {
+                let routing = self
+                    .output_routing
+                    .as_ref()
+                    .ok_or(EffectFailure::MissingContext("live output routing"))?;
+                Ok(EffectAcknowledgement::OutputDevices(
+                    routing.choices().map_err(EffectFailure::AudioRouting)?,
+                ))
+            }
+            InteractionEffect::SetOutputDevice(selection) => {
+                let routing = self
+                    .output_routing
+                    .as_ref()
+                    .ok_or(EffectFailure::MissingContext("live output routing"))?;
+                routing.request(selection.clone());
+                self.show_message(format!("Switching output to {selection}…"));
+                Ok(EffectAcknowledgement::NoChange)
+            }
             InteractionEffect::SetChordNames(names) => {
                 let snapshot = self.session.update(|snapshot| snapshot.chord_names = names);
                 self.show_message(
@@ -1458,7 +1499,7 @@ impl EffectExecutor {
             InteractionEffect::TouchSelected => {
                 let id = selected_control(context.selected_control)?;
                 let tab = context.tab;
-                let index = spec_index(tab, id).unwrap_or(context.selected);
+                let index = spec_index(tab, id).ok_or(EffectFailure::UnknownControl(id))?;
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
             InteractionEffect::PaletteCommitAtBar(edits) => {
@@ -2145,6 +2186,150 @@ mod tests {
     }
 
     #[test]
+    fn production_palette_opens_a_frozen_output_picker_and_cancels_without_routing() {
+        use super::interaction::{Intent, InteractionMode, InteractionModel, SemanticAction};
+        fn dispatch(executor: &mut EffectExecutor, model: &mut InteractionModel, intent: Intent) {
+            let fluid = RippleField::new();
+            let mut flipped = FlippedUnits::default();
+            let mut clipboard = FakeClipboard::default();
+            let mut context = ProductionCoordinatorContext {
+                effects: executor,
+                fluid: &fluid,
+                flipped: &mut flipped,
+                clipboard: &mut clipboard,
+                capabilities: runtime::TerminalCapabilities::full(),
+                beat: 0.0,
+                active_chord: 0,
+                chord_span: ChordSpan::default(),
+            };
+            let frame = production_frame(model, &context);
+            coordinate_production_action(
+                model,
+                SemanticAction::press(intent),
+                &frame,
+                &mut context,
+            )
+            .unwrap();
+        }
+        let routing = audio::OutputRouting::new(audio::OutputSelection::SystemDefault);
+        routing.update_devices(Ok(vec!["BlackHole 2ch".into()]));
+        let mut executor = executor().with_output_routing(routing.clone());
+        executor.toggle_auto(0.0);
+        let before = executor.session.load();
+        let mut model = InteractionModel::default();
+        dispatch(&mut executor, &mut model, Intent::OpenPalette);
+        for character in "output".chars() {
+            dispatch(&mut executor, &mut model, Intent::TypeCharacter(character));
+        }
+        dispatch(&mut executor, &mut model, Intent::Confirm);
+        assert!(
+            matches!(&model.mode, InteractionMode::Palette(palette) if palette.output_choices.is_some())
+        );
+        routing.update_devices(Ok(vec!["Different Device".into()]));
+        for character in "BlackHole".chars() {
+            dispatch(&mut executor, &mut model, Intent::TypeCharacter(character));
+        }
+        dispatch(&mut executor, &mut model, Intent::Confirm);
+        assert_eq!(
+            routing.requested().0,
+            audio::OutputSelection::Device("BlackHole 2ch".into())
+        );
+        assert!(matches!(model.mode, InteractionMode::Browsing));
+        assert!(Arc::ptr_eq(&before, &executor.session.load()));
+        assert!(executor.auto.is_running());
+        let request = routing.requested();
+        dispatch(&mut executor, &mut model, Intent::OpenPalette);
+        for character in "device".chars() {
+            dispatch(&mut executor, &mut model, Intent::TypeCharacter(character));
+        }
+        dispatch(&mut executor, &mut model, Intent::Confirm);
+        dispatch(&mut executor, &mut model, Intent::Cancel);
+        assert_eq!(routing.requested(), request);
+    }
+
+    #[test]
+    fn output_routing_never_edits_song_auto_or_motion() {
+        let routing = audio::OutputRouting::new(audio::OutputSelection::SystemDefault);
+        routing.update_devices(Ok(vec!["BlackHole 2ch".into()]));
+        let mut executor = executor().with_output_routing(routing.clone());
+        executor.toggle_auto(0.0);
+        let before = executor.session.load();
+        let mut clipboard = FakeClipboard::default();
+        executor
+            .execute_with_clipboard(LiveEffect::CopySong, &mut clipboard)
+            .unwrap();
+        let code = clipboard.value.clone();
+        let recent = executor.recent.ids().to_vec();
+        assert_eq!(
+            executor
+                .execute_interaction(
+                    InteractionEffect::ChooseOutputDevice,
+                    &InteractionExecutionContext::default()
+                )
+                .unwrap(),
+            EffectAcknowledgement::OutputDevices(vec![
+                audio::OutputSelection::SystemDefault,
+                audio::OutputSelection::Device("BlackHole 2ch".into())
+            ])
+        );
+        for selection in [
+            audio::OutputSelection::Device("BlackHole 2ch".into()),
+            audio::OutputSelection::SystemDefault,
+        ] {
+            executor
+                .execute_interaction(
+                    InteractionEffect::SetOutputDevice(selection.clone()),
+                    &InteractionExecutionContext::default(),
+                )
+                .unwrap();
+            assert_eq!(routing.requested().0, selection);
+            assert!(Arc::ptr_eq(&before, &executor.session.load()));
+            assert!(executor.auto.is_running());
+            assert_eq!(executor.recent.ids(), recent);
+            executor
+                .execute_with_clipboard(LiveEffect::CopySong, &mut clipboard)
+                .unwrap();
+            assert_eq!(clipboard.value, code);
+        }
+        assert!(spec_by_id("master.output_device").is_none());
+        assert!(all_specs().all(|spec| spec.id != "master.output_device"));
+    }
+
+    #[test]
+    fn unresolved_control_selection_cannot_edit_slot_one_or_stop_auto() {
+        let mut executor = executor();
+        executor.toggle_auto(0.0);
+        let before = executor.session.load();
+        let mut flipped = FlippedUnits::default();
+        let mut context = ProductionInteractionContext {
+            selected_control: Some("master.output_device"),
+            visible_control_ids: &["master.output_device"],
+            randomizes_automation: false,
+            tab: Tab::Master,
+            selected: spec_index(Tab::Master, "master.output_device"),
+            automation_selected: 0,
+            beat: 0.0,
+            flipped: &mut flipped,
+        };
+        assert_eq!(tab_specs(Tab::Master)[12].id, "master.slot1.kind");
+        for effect in [
+            InteractionEffect::AdjustSelected(1),
+            InteractionEffect::CommitNumeric(2.0),
+            InteractionEffect::ResetSelected,
+            InteractionEffect::MaxSelected,
+            InteractionEffect::ToggleUnits,
+        ] {
+            executor.execute_production_interactions_with_clipboard(
+                [effect],
+                &mut context,
+                &mut FakeClipboard::default(),
+            );
+            assert!(Arc::ptr_eq(&before, &executor.session.load()));
+            assert!(executor.auto.is_running());
+        }
+    }
+
+    #[test]
     fn chord_names_are_a_live_display_choice_that_edits_no_control() {
         let mut executor = executor();
         let before = executor.session().load();
@@ -2530,7 +2715,7 @@ mod tests {
             visible_control_ids: &[],
             randomizes_automation: false,
             tab: Tab::Kick,
-            selected,
+            selected: Some(selected),
             automation_selected: 0,
             beat: 0.0,
             flipped: &mut flipped,
@@ -2594,7 +2779,7 @@ mod tests {
                 visible_control_ids: &[],
                 randomizes_automation: true,
                 tab: Tab::Chords,
-                selected: 0,
+                selected: Some(0),
                 automation_selected,
                 beat: 0.0,
                 flipped: &mut flipped,
@@ -2655,7 +2840,7 @@ mod tests {
                 visible_control_ids: &[],
                 randomizes_automation: true,
                 tab: Tab::Chords,
-                selected: 0,
+                selected: Some(0),
                 automation_selected,
                 beat: 0.0,
                 flipped: &mut flipped,
@@ -2751,7 +2936,7 @@ mod tests {
                 visible_control_ids: &[],
                 randomizes_automation: true,
                 tab: Tab::Chords,
-                selected: 0,
+                selected: Some(0),
                 automation_selected,
                 beat: 0.0,
                 flipped: &mut flipped,
@@ -2843,7 +3028,7 @@ mod tests {
             visible_control_ids: &[],
             randomizes_automation: true,
             tab: Tab::Chords,
-            selected: 0,
+            selected: Some(0),
             automation_selected: 0,
             beat: 0.0,
             flipped: &mut flipped,
@@ -2981,7 +3166,7 @@ mod tests {
                 visible_control_ids: &[],
                 randomizes_automation: false,
                 tab: Tab::Lead,
-                selected: 0,
+                selected: Some(0),
                 automation_selected: 0,
                 beat,
                 flipped: &mut flipped,

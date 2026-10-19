@@ -48,11 +48,19 @@ pub(crate) fn snap_after_unit_flip(
     automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
-    selected: usize,
+    selected: impl Into<Option<usize>>,
     now_flipped: bool,
     beat: f64,
 ) {
+    let selected = selected.into();
     let active = active_field(automation, lfo_selected);
+    if matches!(active, ActiveField::Control)
+        && selected
+            .and_then(|index| tab_specs(tab).get(index))
+            .is_none()
+    {
+        return;
+    }
     let recent_id = recent_id(automation, tab, selected);
     effects.edit_session(recent_id, |snapshot| match active {
         // LFO rate accepts exact typed beat values, so an exact ms-authored
@@ -76,6 +84,9 @@ pub(crate) fn snap_after_unit_flip(
             }
         }
         ActiveField::Control => {
+            let Some(selected) = selected else {
+                return;
+            };
             let Some(spec) = tab_specs(tab).get(selected) else {
                 return;
             };
@@ -103,11 +114,19 @@ pub(crate) fn snap_after_unit_flip(
 /// The flip key qualifier for a modulator time field, None for unit-less ones.
 /// The control an edit counts as touching for the palette's MRU: the open
 /// modulator's parent control when an editor is open, else the cursor row.
-fn recent_id(automation: &AutomationState, tab: Tab, selected: usize) -> Option<&'static str> {
+fn recent_id(
+    automation: &AutomationState,
+    tab: Tab,
+    selected: Option<usize>,
+) -> Option<&'static str> {
     automation
         .active_address()
         .map(ControlAddress::id)
-        .or_else(|| tab_specs(tab).get(selected).map(|spec| spec.id))
+        .or_else(|| {
+            selected
+                .and_then(|index| tab_specs(tab).get(index))
+                .map(|spec| spec.id)
+        })
 }
 
 /// One selectable row inside an open LFO editor.
@@ -316,11 +335,18 @@ fn with_active_field(
     automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
-    selected: usize,
+    selected: Option<usize>,
     beat: f64,
     op: FieldOp<'_>,
 ) {
     let active = active_field(automation, lfo_selected);
+    if matches!(active, ActiveField::Control)
+        && selected
+            .and_then(|index| tab_specs(tab).get(index))
+            .is_none()
+    {
+        return;
+    }
     let recent_id = recent_id(automation, tab, selected);
     effects.edit_session(recent_id, |snapshot| {
         apply_field_op(snapshot, active, tab, selected, beat, op);
@@ -331,7 +357,7 @@ fn apply_field_op(
     snapshot: &mut LiveSessionSnapshot,
     active: ActiveField,
     tab: Tab,
-    selected: usize,
+    selected: Option<usize>,
     beat: f64,
     op: FieldOp<'_>,
 ) {
@@ -407,6 +433,9 @@ fn apply_field_op(
             }
         }
         ActiveField::Control => {
+            let Some(selected) = selected else {
+                return;
+            };
             let filter_type =
                 tab_specs(tab).get(selected).and_then(|spec| {
                     match module_slot_field(tab, spec, &snapshot.controls, Family::Filter)? {
@@ -555,11 +584,12 @@ pub(crate) fn adjust_lfo_or_control(
     automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
-    selected: usize,
+    selected: impl Into<Option<usize>>,
     dir: f32,
     beat: f64,
     flipped: &FlippedUnits,
 ) {
+    let selected = selected.into();
     with_active_field(
         effects,
         automation,
@@ -576,9 +606,10 @@ pub(crate) fn reset_lfo_or_control(
     automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
-    selected: usize,
+    selected: impl Into<Option<usize>>,
     beat: f64,
 ) {
+    let selected = selected.into();
     with_active_field(
         effects,
         automation,
@@ -598,9 +629,10 @@ pub(crate) fn max_lfo_or_control(
     automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
-    selected: usize,
+    selected: impl Into<Option<usize>>,
     beat: f64,
 ) {
+    let selected = selected.into();
     with_active_field(
         effects,
         automation,
@@ -618,11 +650,12 @@ pub(crate) fn set_modulator_or_control(
     automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
-    selected: usize,
+    selected: impl Into<Option<usize>>,
     value: f32,
     beat: f64,
     flipped: &FlippedUnits,
 ) {
+    let selected = selected.into();
     with_active_field(
         effects,
         automation,
@@ -640,11 +673,12 @@ pub(crate) fn toggle_units_effect(
     flipped: &mut FlippedUnits,
     lfo_selected: usize,
     tab: Tab,
-    selected: usize,
+    selected: impl Into<Option<usize>>,
     beat: f64,
 ) {
+    let selected = selected.into();
     if matches!(active_field(automation, lfo_selected), ActiveField::Control)
-        && let Some(spec) = tab_specs(tab).get(selected)
+        && let Some(spec) = selected.and_then(|index| tab_specs(tab).get(index))
         && let Some((slot, field @ (ModuleSlotField::Time | ModuleSlotField::RightTime))) =
             module_slot_field(tab, spec, &effects.session().load().controls, Family::Delay)
     {
@@ -666,8 +700,8 @@ pub(crate) fn toggle_units_effect(
             .time_key()
             .map(|key| unit_key(address.id(), Some(key))),
         ActiveField::LfoStep(..) => None,
-        ActiveField::Control => tab_specs(tab)
-            .get(selected)
+        ActiveField::Control => selected
+            .and_then(|index| tab_specs(tab).get(index))
             .filter(|spec| spec.time_base != TimeBase::None)
             .map(|spec| unit_key(spec.id, None)),
     };
@@ -719,10 +753,11 @@ pub(crate) fn randomize_lfo_or_control(
     automation: &AutomationState,
     lfo_selected: usize,
     tab: Tab,
-    selected: usize,
+    selected: impl Into<Option<usize>>,
     ratio: f32,
     beat: f64,
 ) {
+    let selected = selected.into();
     with_active_field(
         effects,
         automation,

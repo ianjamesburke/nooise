@@ -397,6 +397,7 @@ pub(crate) struct NumericEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PaletteMode {
+    pub(crate) output_choices: Option<Vec<crate::audio::OutputSelection>>,
     pub(crate) capture_beat_bits: u64,
     pub(crate) recipe_target: Option<super::recipe::RecipeTarget>,
     pub(crate) lane_target: Option<Box<super::LaneTarget>>,
@@ -419,7 +420,10 @@ impl PaletteMode {
     /// entry, and staged edits. Kernel confirm and the renderer both resolve
     /// rows by index through this one projection, so they cannot desync.
     pub(crate) fn project(&self, tab: Tab) -> PaletteState {
-        let mut state = PaletteState::resolve(tab, &self.recent, self.module_scope, &self.query);
+        let mut state = match &self.output_choices {
+            Some(choices) => PaletteState::output_devices(tab, choices, &self.query),
+            None => PaletteState::resolve(tab, &self.recent, self.module_scope, &self.query),
+        };
         state.selected = self.selected.min(state.matches.len().saturating_sub(1));
         state.locked = self.locked.filter(|&index| state.contains_entry(index));
         if state.locked.is_some() {
@@ -728,7 +732,7 @@ pub(crate) enum InteractionMode {
     #[default]
     Browsing,
     Numeric(NumericEntry),
-    Palette(PaletteMode),
+    Palette(Box<PaletteMode>),
     Automation(AutomationMode),
     Performance(PerformanceMode),
     Lead(LeadPlay),
@@ -1179,6 +1183,8 @@ pub(crate) enum InteractionEffect {
     PaletteCommit(Vec<PaletteStagedEdit>),
     ApplyMixAction(super::mix_action::MixAction),
     SetChordNames(super::ChordNames),
+    ChooseOutputDevice,
+    SetOutputDevice(crate::audio::OutputSelection),
     Chord {
         action: super::operation::ChordAction,
         target: Option<super::operation::ChordTarget>,
@@ -1347,10 +1353,8 @@ impl InteractionModel {
             InteractionMode::Automation(mode) => mode.selected(),
             InteractionMode::Numeric(NumericEntry {
                 resume: Some(mode), ..
-            })
-            | InteractionMode::Palette(PaletteMode {
-                resume: Some(mode), ..
             }) => mode.selected(),
+            InteractionMode::Palette(palette) => palette.resume.map_or(0, |mode| mode.selected()),
             _ => 0,
         }
     }
@@ -1577,7 +1581,7 @@ fn update_browsing(
             *next_mode = Some(InteractionMode::Numeric(entry));
         }
         Intent::OpenPalette => {
-            *next_mode = Some(InteractionMode::Palette(PaletteMode {
+            *next_mode = Some(InteractionMode::Palette(Box::new(PaletteMode {
                 planned_tab: Some(navigation.mute_target()),
                 module_scope: match navigation {
                     Navigation::Module {
@@ -1593,7 +1597,7 @@ fn update_browsing(
                     _ => None,
                 },
                 ..PaletteMode::default()
-            }));
+            })));
         }
         Intent::OpenHelp => {
             *next_mode = Some(InteractionMode::Help);
@@ -1694,7 +1698,7 @@ fn update_palette(
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
 ) {
-    let entries = PaletteState::new(tab_for_page(page), &[], palette.module_scope);
+    let entries = palette.project(tab_for_page(page));
     if palette
         .locked
         .is_some_and(|index| !entries.contains_entry(index))
@@ -1742,6 +1746,10 @@ fn update_palette(
             {
                 if let PaletteEntry::Operation(operation) = state.entry(found.entry_index) {
                     palette.query = operation.spec().label.to_string();
+                    palette.selected = 0;
+                } else if let PaletteEntry::OutputDevice(selection) = state.entry(found.entry_index)
+                {
+                    palette.query = selection.to_string();
                     palette.selected = 0;
                 } else {
                     palette.locked = Some(found.entry_index);
@@ -1875,12 +1883,12 @@ fn update_automation(
             *next_mode = Some(InteractionMode::Numeric(entry));
         }
         Intent::OpenPalette => {
-            *next_mode = Some(InteractionMode::Palette(PaletteMode {
+            *next_mode = Some(InteractionMode::Palette(Box::new(PaletteMode {
                 recent: Vec::new(),
                 resume: Some(*automation),
                 planned_tab: Some(navigation.mute_target()),
                 ..PaletteMode::default()
-            }));
+            })));
         }
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
@@ -2043,7 +2051,10 @@ fn push_numeric(buffer: &mut String, character: char) {
 /// in the adapter, which is the only place that can see whether the layer
 /// already holds it.
 fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionMode {
-    if matches!(entry, PaletteEntry::Operation(operation) if operation.is_mix())
+    if matches!(
+        entry,
+        PaletteEntry::OutputDevice(_) | PaletteEntry::Operation(Operation::OutputDevice)
+    ) || matches!(entry, PaletteEntry::Operation(operation) if operation.is_mix())
         || (palette.editor_motion_target.is_some()
             && matches!(entry, PaletteEntry::Operation(Operation::Motion(action)) if editor_motion_action(*action, palette)))
         || (palette.resume.is_some()
@@ -2084,6 +2095,9 @@ fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEf
         };
     }
     match entry {
+        PaletteEntry::OutputDevice(selection) => {
+            InteractionEffect::SetOutputDevice(selection.clone())
+        }
         PaletteEntry::Operation(operation) => operation_effect(*operation, palette),
         PaletteEntry::Control {
             tab,
@@ -2137,6 +2151,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         },
         Operation::Mix(action) => InteractionEffect::ApplyMixAction(action),
         Operation::ChordNames(names) => InteractionEffect::SetChordNames(names),
+        Operation::OutputDevice => InteractionEffect::ChooseOutputDevice,
         Operation::Chord(action) => InteractionEffect::Chord {
             action,
             target: palette.chord_target.as_deref().copied(),
@@ -2171,6 +2186,49 @@ mod tests {
     /// Page and tab lookups index `LAYERS` directly, so a row out of
     /// discriminant order would silently translate a page to another layer's
     /// tab.
+    #[test]
+    fn output_picker_projects_and_confirms_the_same_frozen_device() {
+        for query in ["output", "device"] {
+            let palette = PaletteMode {
+                query: query.into(),
+                ..Default::default()
+            };
+            let projected = palette.project(Tab::Master);
+            assert!(projected.matches.iter().any(|hit| matches!(
+                projected.entry(hit.entry_index),
+                PaletteEntry::Operation(Operation::OutputDevice)
+            )));
+        }
+        let selection = crate::audio::OutputSelection::Device("BlackHole 2ch".into());
+        let palette = PaletteMode {
+            output_choices: Some(vec![
+                crate::audio::OutputSelection::SystemDefault,
+                selection.clone(),
+            ]),
+            query: "BlackHole".into(),
+            ..Default::default()
+        };
+        let projected = palette.project(Tab::Master);
+        assert_eq!(projected.matches.len(), 1);
+        assert_eq!(
+            projected
+                .entry(projected.matches[0].entry_index)
+                .display_text(),
+            "Output Device: BlackHole 2ch"
+        );
+        let model = InteractionModel {
+            mode: InteractionMode::Palette(Box::new(palette)),
+            ..Default::default()
+        };
+        let transition = model.update(SemanticAction::press(Intent::Confirm));
+        assert!(
+            transition
+                .effects
+                .contains(&InteractionEffect::SetOutputDevice(selection))
+        );
+        assert!(matches!(transition.model.mode, InteractionMode::Browsing));
+    }
+
     #[test]
     fn every_layer_row_sits_at_its_page_and_tab_discriminant() {
         for (index, layer) in LAYERS.iter().enumerate() {
@@ -2221,7 +2279,7 @@ mod tests {
                 InteractionMode::Browsing,
             ),
             (
-                InteractionMode::Palette(PaletteMode::default()),
+                InteractionMode::Palette(Box::default()),
                 InteractionMode::Browsing,
             ),
             (
@@ -2909,11 +2967,11 @@ mod tests {
                 Intent::ActivatePerformance(PerformanceKind::Jump),
             ),
             (
-                InteractionMode::Palette(PaletteMode::default()),
+                InteractionMode::Palette(Box::default()),
                 Intent::BeginNumeric('1'),
             ),
             (
-                InteractionMode::Palette(PaletteMode::default()),
+                InteractionMode::Palette(Box::default()),
                 Intent::OpenAutomation(AutomationKind::Lfo),
             ),
             (
@@ -2961,7 +3019,7 @@ mod tests {
                 page: StandardPage::Bass,
                 selected: 0,
             },
-            mode: InteractionMode::Palette(palette),
+            mode: InteractionMode::Palette(Box::new(palette)),
             ..InteractionModel::default()
         }
     }

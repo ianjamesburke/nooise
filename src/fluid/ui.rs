@@ -1013,7 +1013,11 @@ fn draw_palette(
         )));
     }
     lines.push(Line::from(Span::styled(
-        "\u{21e5} complete   type value   \u{21b5} stage/jump   \u{21b5}\u{21b5} commit   ^B on bar   Esc cancel",
+        if pal.is_output_picker() {
+            "↑↓ choose   Tab complete   Enter switch   Esc cancel"
+        } else {
+            "\u{21e5} complete   type value   \u{21b5} stage/jump   \u{21b5}\u{21b5} commit   ^B on bar   Esc cancel"
+        },
         Style::default().fg(DIM_TEXT),
     )));
     f.render_widget(Paragraph::new(lines), inner);

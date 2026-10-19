@@ -61,6 +61,7 @@ pub(crate) fn coordinate_production_tick(
     effects: &mut EffectExecutor,
     beat: f64,
 ) -> Result<EffectAcknowledgement, EffectFailure> {
+    effects.poll_output_routing();
     effects.execute(LiveEffect::CommitPending { beat })
 }
 
@@ -73,7 +74,7 @@ pub(crate) struct ProductionFrame {
     pub(crate) visible_control_ids: Vec<&'static str>,
     pub(crate) randomizes_automation: bool,
     pub(crate) tab: Tab,
-    pub(crate) selected: usize,
+    pub(crate) selected: Option<usize>,
 }
 
 pub(crate) fn production_frame(
@@ -104,9 +105,7 @@ pub(crate) fn production_frame(
     let selected_control = view.items.get(view.navigation.selected).map(|item| item.id);
     let visible_control_ids = view.items.iter().map(|item| item.id).collect();
     let randomizes_automation = matches!(model.mode, interaction::InteractionMode::Automation(_));
-    let selected = selected_control
-        .and_then(|id| spec_index(view.navigation.tab, id))
-        .unwrap_or(view.navigation.selected);
+    let selected = selected_control.and_then(|id| spec_index(view.navigation.tab, id));
     let tab = view.navigation.tab;
     drop(view);
     model.clamp_navigation_selection(item_count);
@@ -299,6 +298,18 @@ pub(crate) fn coordinate_production_action(
     let mut effect_records = Vec::new();
     for (effect, result) in emitted.into_iter().zip(results) {
         match &result {
+            Ok(EffectAcknowledgement::OutputDevices(choices)) => {
+                let resume = match &before.mode {
+                    interaction::InteractionMode::Palette(palette) => palette.resume,
+                    _ => None,
+                };
+                model.mode =
+                    interaction::InteractionMode::Palette(Box::new(interaction::PaletteMode {
+                        output_choices: Some(choices.clone()),
+                        resume,
+                        ..Default::default()
+                    }));
+            }
             Ok(EffectAcknowledgement::ControlSelected { tab, index, id }) => {
                 let current_session = context.effects.session().load();
                 let filter_detail_field = match effect {
@@ -684,6 +695,7 @@ pub(crate) fn apply_osc_ui_command(
 /// The opt-in outside sources a live UI loop drains each turn. Each is
 /// launch configuration, never song state.
 pub(crate) struct LiveAdapters {
+    pub(crate) output_routing: audio::OutputRouting,
     pub(crate) chassis_tap: Option<ChassisTapReceiver>,
     #[cfg(feature = "link")]
     pub(crate) link: Option<LinkFollower>,
@@ -700,6 +712,7 @@ pub(crate) fn production_ui_loop(
     adapters: LiveAdapters,
 ) -> Result<(), Box<dyn Error>> {
     let LiveAdapters {
+        output_routing,
         chassis_tap,
         #[cfg(feature = "link")]
         link,
@@ -707,7 +720,7 @@ pub(crate) fn production_ui_loop(
         osc_ui_state,
     } = adapters;
     let mut model = interaction::InteractionModel::default();
-    let mut effects = EffectExecutor::new(session.live, auto);
+    let mut effects = EffectExecutor::new(session.live, auto).with_output_routing(output_routing);
     let mut source = runtime::CrosstermEventSource::new(terminal.capabilities());
     let clock = runtime::MonotonicClock::start();
     let mut scheduler = runtime::Scheduler::new(

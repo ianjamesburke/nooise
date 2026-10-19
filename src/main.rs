@@ -14,9 +14,16 @@ mod fx;
 mod synth;
 mod update_check;
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-    if let Err(error) = cli.validate_from() {
+    if let Err(error) = cli.validate_from().and_then(|()| cli.validate_output()) {
         error.exit();
     }
     if matches!(
@@ -40,6 +47,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             LINK_INSTALL
         )
         .into());
+    }
+    if cli.audio_devices {
+        println!("System Default (omit --output-device)");
+        for name in audio::output_device_names()? {
+            println!("{name}");
+        }
+        return Ok(());
     }
     let options = cli.live_options();
     let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
@@ -71,6 +85,17 @@ struct Cli {
     /// A song to play: a built-in number (9), several of them (9,10,11), or a
     /// shared `n1_` code.
     song: Option<String>,
+    /// Select an output device by its exact name; otherwise follow the system default.
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        conflicts_with = "audio_devices"
+    )]
+    output_device: Option<String>,
+    /// List current output devices and exit without starting playback.
+    #[arg(long, global = true, conflicts_with = "from")]
+    audio_devices: bool,
     /// Approximate bars per song plus transition, rounded to whole phrases. Defaults to 64.
     #[arg(long, global = true)]
     bars: Option<u32>,
@@ -133,8 +158,33 @@ impl Cli {
         Ok(())
     }
 
+    fn validate_output(&self) -> Result<(), clap::Error> {
+        let message = if self.audio_devices && (self.song.is_some() || self.command.is_some()) {
+            Some("--audio-devices lists outputs; use it without a song or subcommand")
+        } else if self.output_device.is_some()
+            && matches!(
+                self.command,
+                Some(CliCommand::Render(_) | CliCommand::Update)
+            )
+        {
+            Some("--output-device only applies to live playback")
+        } else {
+            None
+        };
+        match message {
+            Some(message) => {
+                Err(Self::command().error(clap::error::ErrorKind::ArgumentConflict, message))
+            }
+            None => Ok(()),
+        }
+    }
+
     fn live_options(&self) -> fluid::LiveStartOptions {
         fluid::LiveStartOptions {
+            output: self.output_device.clone().map_or(
+                audio::OutputSelection::SystemDefault,
+                audio::OutputSelection::Device,
+            ),
             start_muted: self.start_muted,
             chassis_tap: self.chassis_tap,
             osc_in: self.osc_in,
@@ -284,6 +334,45 @@ mod tests {
         for args in [&["--from"][..], &["--from", "nope"], &["--from", "-1"]] {
             assert!(parse(args).is_err());
         }
+    }
+
+    #[test]
+    fn output_device_is_live_launch_configuration_and_listing_does_not_need_a_song() {
+        for args in [
+            &["--output-device", "BlackHole 2ch", "9"][..],
+            &["9", "--output-device", "BlackHole 2ch"],
+            &["auto", "--output-device", "BlackHole 2ch"],
+        ] {
+            assert_eq!(
+                parse(args).unwrap().live_options().output,
+                crate::audio::OutputSelection::Device("BlackHole 2ch".into())
+            );
+        }
+        assert_eq!(
+            parse(&[]).unwrap().live_options().output,
+            crate::audio::OutputSelection::SystemDefault
+        );
+        assert!(parse(&["--audio-devices"]).unwrap().audio_devices);
+        assert!(parse(&["--output-device"]).is_err());
+        assert!(
+            parse(&["render", "--output-device", "Speakers"])
+                .unwrap()
+                .validate_output()
+                .is_err()
+        );
+        assert!(
+            parse(&["--audio-devices", "9"])
+                .unwrap()
+                .validate_output()
+                .is_err()
+        );
+        assert!(
+            parse(&["auto", "--audio-devices"])
+                .unwrap()
+                .validate_output()
+                .is_err()
+        );
+        assert!(parse(&["--audio-devices", "--output-device", "Speakers"]).is_err());
     }
 
     #[test]

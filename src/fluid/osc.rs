@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
@@ -29,7 +29,7 @@ use super::controls::{FluidControls, LEAD_STEP_COUNT, PAD_STEP_COUNT};
 use super::gesture::{GESTURE_COUNT, GestureKind};
 use super::interaction::{InteractionMode, InteractionModel};
 use super::planned::PlannedAction;
-use super::registry::{ControlKind, TAB_COUNT, Tab, spec_by_id};
+use super::registry::{ControlKind, TAB_COUNT, Tab, module_slot_collapsed_id, spec_by_id};
 use super::session::LiveSessionSnapshot;
 use super::view::UiViewModel;
 use super::voice::{
@@ -43,9 +43,9 @@ pub(crate) const ADDR_LEVEL: &str = "/nooise/level";
 pub(crate) const VOICES: [&str; TAB_COUNT - 1] = [
     "pad", "perc", "bass", "kick", "tonal", "clap", "arp", "lead",
 ];
-/// Layer names in `Tab::all()` order, including `"master"`.
+/// Layer names in `Tab::all()` order, including `"master"` at index 8.
 pub(crate) const LAYERS: [&str; TAB_COUNT] = [
-    "master", "pad", "perc", "bass", "kick", "tonal", "clap", "arp", "lead",
+    "pad", "perc", "bass", "kick", "tonal", "clap", "arp", "lead", "master",
 ];
 
 pub(crate) fn layer_name(tab: Tab) -> &'static str {
@@ -348,13 +348,15 @@ fn first_module_summary(tab: Tab, controls: &FluidControls) -> (String, f32, boo
     let Some(slots) = controls.modules.for_tab(tab) else {
         return (String::new(), 0.0, false);
     };
-    for slot in slots {
-        if let Some(kind) = slot.kind() {
-            return (
-                kind.display_name.to_string(),
-                slot.amount.clamp(0.0, 1.0),
-                false,
-            );
+    for (slot_idx, slot) in slots.iter().enumerate() {
+        if slot.kind().is_some()
+            && let Some(id) = module_slot_collapsed_id(tab, slot_idx, controls)
+            && let Some(spec) = spec_by_id(id)
+        {
+            let contextual = spec.contextual(controls);
+            let value = (spec.get)(controls);
+            let is_discrete = matches!(contextual.kind, ControlKind::Discrete);
+            return (id.to_string(), contextual.scale().ratio(value), is_discrete);
         }
     }
     (String::new(), 0.0, false)
@@ -1108,7 +1110,12 @@ fn emit_loop(
     stop: &AtomicBool,
 ) {
     let mut last_ui: Option<OscUiSnapshot> = None;
+    let mut last_full_ui = Instant::now();
     while !stop.load(Ordering::Relaxed) {
+        if last_full_ui.elapsed() >= Duration::from_millis(500) {
+            last_ui = None;
+            last_full_ui = Instant::now();
+        }
         let mut messages = mirrored.diff(telemetry);
         if let Some(rx) = voice_rx {
             for event in rx.try_iter() {

@@ -849,7 +849,11 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         KeyboardOwner::Browsing => unreachable!("browsing help is resolved separately"),
         KeyboardOwner::Numeric => "NUMERIC · type value   Enter: apply   Esc: cancel".to_string(),
         KeyboardOwner::Palette => {
-            "PALETTE · type to find   Tab: complete   Enter: stage   Esc: cancel".to_string()
+            if matches!(mode, ModeSurface::Palette(palette) if palette.state.is_output_picker()) {
+                "OUTPUT · type to find   Enter: switch   Esc: cancel".to_string()
+            } else {
+                "PALETTE · type to find   Tab: complete   Enter: stage   Esc: cancel".to_string()
+            }
         }
         KeyboardOwner::Lfo | KeyboardOwner::Envelope => match mode {
             ModeSurface::Automation(surface) => automation_owner_help(surface),
@@ -1284,7 +1288,8 @@ mod tests {
     fn palette_owner_projects_complete_mode_local_render_state() {
         let model = InteractionModel {
             navigation: Navigation::default(),
-            mode: InteractionMode::Palette(PaletteMode {
+            mode: InteractionMode::Palette(Box::new(PaletteMode {
+                output_choices: None,
                 capture_beat_bits: 0,
                 recipe_target: None,
                 editor_motion_target: None,
@@ -1302,7 +1307,7 @@ mod tests {
                 }],
                 resume: None,
                 module_scope: None,
-            }),
+            })),
             ..InteractionModel::default()
         };
         let transition = model.update(SemanticAction::press(Intent::TypeCharacter('5')));
@@ -1356,12 +1361,12 @@ mod tests {
 
     #[test]
     fn projection_and_render_sanitize_arbitrary_mode_indices() {
-        let invalid_palette = InteractionMode::Palette(PaletteMode {
+        let invalid_palette = InteractionMode::Palette(Box::new(PaletteMode {
             query: "bass".to_string(),
             locked: Some(usize::MAX),
             value_buffer: "42".to_string(),
             ..PaletteMode::default()
-        });
+        }));
         let session = session();
         let ModeSurface::Palette(palette) = mode_surface(
             &invalid_palette,

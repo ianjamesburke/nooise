@@ -2135,13 +2135,13 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
     assert!(result.effects.is_empty(), "{name}");
 
     let staged = InteractionModel {
-        mode: InteractionMode::Palette(PaletteMode {
+        mode: InteractionMode::Palette(Box::new(PaletteMode {
             staged: vec![PaletteStagedEdit {
                 id: "master.bpm",
                 value_bits: 91.0f32.to_bits(),
             }],
             ..PaletteMode::default()
-        }),
+        })),
         ..InteractionModel::default()
     };
     let immediate = replay_from_model(
@@ -2555,7 +2555,7 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
     );
     assert!(matches!(
         shifted_palette.model.mode,
-        InteractionMode::Palette(PaletteMode { ref query, .. }) if query == "B"
+        InteractionMode::Palette(ref palette) if palette.query == "B"
     ));
 
     let failed = replay_with(
@@ -3757,13 +3757,13 @@ fn switching_a_filter_to_high_pass_mirrors_its_cutoff() {
 #[test]
 fn production_tick_commits_pending_palette_edits_at_the_bar() {
     let staged = InteractionModel {
-        mode: InteractionMode::Palette(PaletteMode {
+        mode: InteractionMode::Palette(Box::new(PaletteMode {
             staged: vec![PaletteStagedEdit {
                 id: "master.bpm",
                 value_bits: 91.0f32.to_bits(),
             }],
             ..PaletteMode::default()
-        }),
+        })),
         ..InteractionModel::default()
     };
     let result = replay_from_model(
@@ -3799,13 +3799,13 @@ fn shift_h_resets_master_tone_to_neutral_through_production_replay() {
 #[test]
 fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
     let staged = InteractionModel {
-        mode: InteractionMode::Palette(PaletteMode {
+        mode: InteractionMode::Palette(Box::new(PaletteMode {
             staged: vec![PaletteStagedEdit {
                 id: "pad.level",
                 value_bits: 50.0f32.to_bits(),
             }],
             ..PaletteMode::default()
-        }),
+        })),
         ..InteractionModel::default()
     };
     let mut harness = ReplayHarness::new(TerminalCapabilities::full()).with_model(staged);
@@ -4283,7 +4283,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
 
     let palette = replay_from_model(
         InteractionModel {
-            mode: InteractionMode::Palette(PaletteMode::default()),
+            mode: InteractionMode::Palette(Box::default()),
             ..InteractionModel::default()
         },
         &repeated(FixtureKey::Tab),
@@ -4291,10 +4291,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
     );
     assert!(matches!(
         palette.model.mode,
-        InteractionMode::Palette(PaletteMode {
-            locked: Some(_),
-            ..
-        })
+        InteractionMode::Palette(ref palette) if palette.locked.is_some()
     ));
 
     let performance = replay_from_model(
@@ -4422,7 +4419,7 @@ fn escape_converges_from_every_owner_and_nested_depth() {
             ..InteractionModel::default()
         },
         InteractionModel {
-            mode: InteractionMode::Palette(PaletteMode::default()),
+            mode: InteractionMode::Palette(Box::default()),
             ..InteractionModel::default()
         },
         InteractionModel {
@@ -4844,7 +4841,7 @@ fn ddmin_retains_the_exact_edge_transition_record() {
                     intent: Intent::Save,
                 },
                 before: InteractionModel {
-                    mode: InteractionMode::Palette(PaletteMode::default()),
+                    mode: InteractionMode::Palette(Box::default()),
                     ..InteractionModel::default()
                 },
                 after: InteractionModel {
