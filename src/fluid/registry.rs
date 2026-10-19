@@ -2249,7 +2249,16 @@ pub(crate) fn all_specs() -> impl Iterator<Item = &'static ControlSpec> {
 }
 
 pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
-    all_specs().find(|spec| spec.id == id)
+    static BY_ID: std::sync::LazyLock<
+        std::collections::HashMap<&'static str, &'static ControlSpec>,
+    > = std::sync::LazyLock::new(|| {
+        let mut specs = std::collections::HashMap::new();
+        for spec in all_specs() {
+            specs.entry(spec.id).or_insert(spec);
+        }
+        specs
+    });
+    BY_ID.get(id).copied()
 }
 
 /// The Pad rhythm controls tucked out of the root page until added through `/`.

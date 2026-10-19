@@ -324,6 +324,7 @@ impl CaptureHistory {
         before: &LiveSessionSnapshot,
         after: &LiveSessionSnapshot,
         beat: f64,
+        single_control: Option<&'static ControlSpec>,
     ) {
         // An ordinal can name another lane after structural edits. Clear the
         // affected family's history rather than replaying its former owner.
@@ -336,13 +337,22 @@ impl CaptureHistory {
             )
         });
         let mut seen = std::collections::BTreeSet::new();
-        for spec in all_specs().filter(|spec| capture_eligible(&spec.contextual(&after.controls))) {
+        // take(0) never advances the registry for a known scalar edit.
+        let specs =
+            single_control
+                .into_iter()
+                .chain(all_specs().take(if single_control.is_some() {
+                    0
+                } else {
+                    usize::MAX
+                }));
+        for spec in specs.filter(|spec| capture_eligible(&spec.contextual(&after.controls))) {
             let old = (spec.get)(&before.controls);
             let new = (spec.get)(&after.controls);
             if old.to_bits() == new.to_bits() {
                 continue;
             }
-            if !seen.insert(spec.id) {
+            if single_control.is_none() && !seen.insert(spec.id) {
                 continue;
             }
             let Some(target) = recipe::RecipeTarget::capture(spec.id, after) else {
@@ -704,24 +714,9 @@ pub(crate) fn suspend_changed_captures(
             clip.enabled = false;
         }
     }
-    if !after.automation.editor_captures.is_empty() {
-        let after_routes = after.automation.clone();
-        for (target, clip) in &mut after.automation.editor_captures {
-            let position = |automation: &AutomationState| {
-                target
-                    .target
-                    .position(
-                        automation.route_at(target.control, target.lane_index),
-                        automation.envelope_at(target.control, target.lane_index),
-                    )
-                    .map(f32::to_bits)
-            };
-            let changed = position(&before.automation) != position(&after_routes);
-            if changed && !clip.is_relative() {
-                clip.enabled = false;
-            }
-        }
-    }
+    after
+        .automation
+        .suspend_changed_editor_captures(&before.automation);
 }
 
 pub(crate) fn suspend_capture(snapshot: &mut LiveSessionSnapshot, id: &'static str) {
@@ -741,6 +736,110 @@ mod tests {
     use crate::fluid::song::SongCodeError;
 
     #[test]
+    fn editor_capture_suspension_preserves_relative_and_unchanged_clips() {
+        let mut before = LiveSessionSnapshot::from_controls(FluidControls::default());
+        let address = ControlAddress::new("pad.level");
+        before.automation.open_or_create(address);
+        let shape = EditorMotionAddress {
+            control: address,
+            lane_index: 0,
+            target: EditorMotionField::Lfo(LfoField::Shape),
+        };
+        let amount = EditorMotionAddress {
+            target: EditorMotionField::Lfo(LfoField::Amount),
+            ..shape
+        };
+        let clip = CaptureClip {
+            duration: MotionDuration::Beats4,
+            data: MotionData::Absolute {
+                events: vec![MotionEvent {
+                    tick: 0,
+                    position: 0,
+                }],
+            },
+            origin: 0.0,
+            launch: 0.0,
+            enabled: true,
+        };
+        before
+            .automation
+            .editor_captures
+            .insert(shape, clip.clone());
+        before.automation.editor_captures.insert(
+            amount,
+            CaptureClip {
+                data: MotionData::Relative {
+                    reference: 0,
+                    samples: [0; CAPTURE_SAMPLES],
+                },
+                ..clip
+            },
+        );
+        let mut after = before.clone();
+        suspend_changed_captures(&before, &mut after);
+        assert!(after.automation.editor_captures[&shape].enabled);
+        after.automation.route_mut(address).unwrap().shape = LfoShape::Square;
+        after.automation.route_mut(address).unwrap().depth_ratio = 0.5;
+        suspend_changed_captures(&before, &mut after);
+        assert!(!after.automation.editor_captures[&shape].enabled);
+        assert!(after.automation.editor_captures[&amount].enabled);
+    }
+
+    #[test]
+    fn direct_history_matches_bulk_discovery_for_scalar_edits() {
+        for id in [
+            "pad.level",
+            "lead.step1",
+            "master.bpm",
+            "lead.steps",
+            "bass.slot1.time",
+        ] {
+            let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+            let spec = spec_by_id(id).unwrap();
+            let mut direct = CaptureHistory::default();
+            let mut bulk = CaptureHistory::default();
+            for (beat, ratio) in [(0.5, 0.1), (1.0, 0.9), (1.5, 0.9), (2.0, 0.3)] {
+                let before = snapshot.clone();
+                spec.apply_ratio(ratio, &mut snapshot.controls);
+                direct.record_changes(&before, &snapshot, beat, Some(spec));
+                bulk.record_changes(&before, &snapshot, beat, None);
+            }
+            let target = recipe::RecipeTarget::capture(id, &snapshot).unwrap();
+            assert_eq!(
+                direct.clip(target, 16.0, 16.0),
+                bulk.clip(target, 16.0, 16.0),
+                "{id}"
+            );
+            assert_eq!(direct.knobs.len(), bulk.knobs.len());
+            assert_eq!(
+                direct.knobs.front().unwrap().events,
+                bulk.knobs.front().unwrap().events
+            );
+            assert!(
+                direct
+                    .knobs
+                    .front()
+                    .unwrap()
+                    .events
+                    .iter()
+                    .all(|event| event.0 != 1.5)
+            );
+        }
+    }
+
+    #[test]
+    fn direct_history_only_visits_the_supplied_control() {
+        let before = LiveSessionSnapshot::from_controls(FluidControls::default());
+        let mut after = before.clone();
+        after.controls.pad.level = 0.123;
+        after.controls.master.bpm = 99.0;
+        let mut history = CaptureHistory::default();
+        history.record_changes(&before, &after, 1.0, spec_by_id("pad.level"));
+        assert_eq!(history.knobs.len(), 1);
+        assert_eq!(history.knobs[0].target.id, "pad.level");
+    }
+
+    #[test]
     fn discrete_motion_replays_lead_pitch_and_pad_trigger_as_exact_events() {
         let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
         let lead = recipe::RecipeTarget::capture("lead.step1", &snapshot).unwrap();
@@ -751,10 +850,10 @@ mod tests {
         let before = snapshot.clone();
         snapshot.controls.lead.steps[0] = 5.0;
         snapshot.controls.pad.trigger = 1.0 - trigger_initial;
-        history.record_changes(&before, &snapshot, 0.5);
+        history.record_changes(&before, &snapshot, 0.5, None);
         let before = snapshot.clone();
         snapshot.controls.lead.steps[0] = 8.0;
-        history.record_changes(&before, &snapshot, 1.25);
+        history.record_changes(&before, &snapshot, 1.25, None);
 
         let lead_clip = history
             .motion_clip(lead, MotionDuration::Beats4, 4.0, 4.0)
@@ -876,14 +975,14 @@ mod tests {
             .route_mut(address)
             .unwrap()
             .set_step(StepTarget::Value(0), 50.0);
-        history.record_changes(&before, &snapshot, 0.5);
+        history.record_changes(&before, &snapshot, 0.5, None);
         let before = snapshot.clone();
         snapshot
             .automation
             .route_mut(address)
             .unwrap()
             .set_step(StepTarget::Value(0), 100.0);
-        history.record_changes(&before, &snapshot, 1.25);
+        history.record_changes(&before, &snapshot, 1.25, None);
         let mut clip = history
             .editor_motion_clip(target, MotionDuration::Beats4, 4.0)
             .unwrap();
@@ -930,14 +1029,14 @@ mod tests {
             .route_mut(address)
             .unwrap()
             .set_step(StepTarget::Count, 4.0);
-        history.record_changes(&before, &snapshot, 0.5);
+        history.record_changes(&before, &snapshot, 0.5, None);
         let before = snapshot.clone();
         snapshot
             .automation
             .route_mut(address)
             .unwrap()
             .set_step(StepTarget::Count, 8.0);
-        history.record_changes(&before, &snapshot, 1.25);
+        history.record_changes(&before, &snapshot, 1.25, None);
         let mut clip = history
             .editor_motion_clip(target, MotionDuration::Beats4, 4.0)
             .unwrap();
@@ -984,7 +1083,7 @@ mod tests {
             .envelope_mut(address)
             .unwrap()
             .set_field(EnvField::Trigger, 7.0);
-        history.record_changes(&before, &snapshot, 0.5);
+        history.record_changes(&before, &snapshot, 0.5, None);
         let shape = EditorMotionAddress {
             control: address,
             lane_index: 0,
@@ -1054,7 +1153,7 @@ mod tests {
     ) {
         let before = snapshot.clone();
         snapshot.controls.pad.level = value;
-        history.record_changes(&before, snapshot, beat);
+        history.record_changes(&before, snapshot, beat, None);
     }
 
     #[test]
@@ -1213,7 +1312,7 @@ mod tests {
             let before = snapshot.clone();
             spec.apply_delta(1.0, &mut snapshot.controls);
             let expected = (spec.get)(&snapshot.controls);
-            history.record_changes(&before, &snapshot, 1.0);
+            history.record_changes(&before, &snapshot, 1.0, None);
             let mut clip = history.clip(target, 16.0, 16.0).unwrap();
             clip.rebase(16.0);
             let mut song = SongState::from_controls(snapshot.controls.clone());
@@ -1583,7 +1682,7 @@ mod tests {
         let mut history = CaptureHistory::default();
         let before = snapshot.clone();
         spec.apply_delta(1.0, &mut snapshot.controls);
-        history.record_changes(&before, &snapshot, 1.0);
+        history.record_changes(&before, &snapshot, 1.0, None);
         let before = snapshot.clone();
         snapshot.automation.captures.insert(
             ControlAddress::new(id),
@@ -1603,7 +1702,7 @@ mod tests {
         snapshot.controls.pad.progression = 1.0;
         suspend_changed_captures(&before, &mut snapshot);
         assert!(snapshot.automation.captures[&ControlAddress::new(id)].enabled);
-        history.record_changes(&before, &snapshot, 2.0);
+        history.record_changes(&before, &snapshot, 2.0, None);
         let b = recipe::RecipeTarget::capture(id, &snapshot).unwrap();
         assert!(!a.is_current(&snapshot));
         assert_eq!(
@@ -1612,7 +1711,7 @@ mod tests {
         );
         let before = snapshot.clone();
         spec.apply_value(2.0, &mut snapshot.controls);
-        history.record_changes(&before, &snapshot, 3.0);
+        history.record_changes(&before, &snapshot, 3.0, None);
         let clip = history
             .motion_clip(b, MotionDuration::Beats4, 4.0, 4.0)
             .unwrap();
@@ -1765,7 +1864,7 @@ mod tests {
             let mut history = CaptureHistory::default();
             let before = snapshot.clone();
             snapshot.automation.route_mut(control).unwrap().depth_ratio = 0.4;
-            history.record_changes(&before, &snapshot, 1.0);
+            history.record_changes(&before, &snapshot, 1.0, None);
             assert!(
                 history
                     .editor_motion_clip(target, MotionDuration::Beats4, 4.0)
@@ -1777,11 +1876,11 @@ mod tests {
             } else {
                 snapshot.automation.clear_control(control);
             }
-            history.record_changes(&before, &snapshot, 2.0);
+            history.record_changes(&before, &snapshot, 2.0, None);
             if !replace_module {
                 let before = snapshot.clone();
                 snapshot.automation.open_or_create(control);
-                history.record_changes(&before, &snapshot, 2.5);
+                history.record_changes(&before, &snapshot, 2.5, None);
             }
             assert_eq!(
                 history.editor_motion_clip(target, MotionDuration::Beats4, 4.0),
@@ -1790,7 +1889,7 @@ mod tests {
             let before = snapshot.clone();
             snapshot.automation.route_mut(control).unwrap().depth_ratio = 0.6;
             snapshot.automation.route_mut(control).unwrap().shape = LfoShape::Ramp;
-            history.record_changes(&before, &snapshot, 3.0);
+            history.record_changes(&before, &snapshot, 3.0, None);
             assert!(
                 history
                     .editor_motion_clip(target, MotionDuration::Beats4, 4.0)

@@ -392,6 +392,35 @@ pub(crate) struct AutomationState {
 }
 
 impl AutomationState {
+    /// Split immutable lane storage from mutable clips without cloning routes.
+    pub(crate) fn suspend_changed_editor_captures(&mut self, before: &Self) {
+        let Self {
+            stacks,
+            editor_captures,
+            ..
+        } = self;
+        for (target, clip) in editor_captures {
+            let stack = stacks.get(&target.control);
+            let old = target
+                .target
+                .position(
+                    before.route_at(target.control, target.lane_index),
+                    before.envelope_at(target.control, target.lane_index),
+                )
+                .map(f32::to_bits);
+            let new = target
+                .target
+                .position(
+                    stack.and_then(|stack| stack.lfos.get(target.lane_index)),
+                    stack.and_then(|stack| stack.envelopes.get(target.lane_index)),
+                )
+                .map(f32::to_bits);
+            if old != new && !clip.is_relative() {
+                clip.enabled = false;
+            }
+        }
+    }
+
     pub(crate) fn same_lanes(&self, other: &Self) -> bool {
         self.stacks.len() == other.stacks.len()
             && self.stacks.iter().all(|(address, stack)| {
