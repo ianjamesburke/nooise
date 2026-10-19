@@ -49,6 +49,8 @@ All engine, terminal UI, and live-control code for the nooise binary.
 
 ## Local Contracts
 
+- `visualizer.rs` precomputes separable wave factors per row/column and culls ripple tails outside three Gaussian widths. The panel keeps the moving base tint but skips hidden ripple and glyph work. Only background RGB is quantized to four-code buckets. `RippleField` memoizes presentation cells by area, panel, transport, hue and field time; stopped backgrounds refresh at most 10 Hz, while simulation ticks and foreground/input scheduling retain their normal cadence. Resize and transport changes invalidate the cache immediately. No musical state is cached or persisted here.
+
 - `/output` and `/device` resolve `Operation::OutputDevice` through `EffectExecutor` into a device picker. `PaletteMode::output_choices` freezes the catalog for both rendering and confirmation; refreshes cannot change a selected row's identity. Enter requests the named output or System Default; Escape cancels. Routing bypasses `edit_session`, preserving auto, Motion history, MRU, navigation, and song codes. Catalog lookup never runs on the UI thread. Production and tests use the same picker path.
 - Visible row positions are never control-table positions. `ProductionFrame::selected` is an optional index resolved by stable ID; unresolved IDs stay `None`. `edit.rs` refuses unresolved base-control edits before any session publication or auto exit; automation editor fields retain their own address resolution.
 
