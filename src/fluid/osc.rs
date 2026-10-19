@@ -27,7 +27,7 @@ use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder}
 
 use super::controls::{FluidControls, LEAD_STEP_COUNT, PAD_STEP_COUNT};
 use super::gesture::{GESTURE_COUNT, GestureKind};
-use super::interaction::{InteractionMode, InteractionModel};
+use super::interaction::{InteractionMode, InteractionModel, Navigation};
 use super::planned::PlannedAction;
 use super::registry::{ControlKind, TAB_COUNT, Tab, module_slot_collapsed_id, spec_by_id};
 use super::session::LiveSessionSnapshot;
@@ -40,6 +40,7 @@ use super::{ChordSpan, FluidTelemetry, MUSICAL_HIT_COUNT, MusicalHit, Transport}
 pub(crate) const ADDR_BEAT: &str = "/nooise/beat";
 pub(crate) const ADDR_LEVEL: &str = "/nooise/level";
 /// Voice names in `Tab` order, minus `Tab::Master` (which is `ADDR_LEVEL`).
+#[cfg(test)]
 pub(crate) const VOICES: [&str; TAB_COUNT - 1] = [
     "pad", "perc", "bass", "kick", "tonal", "clap", "arp", "lead",
 ];
@@ -80,18 +81,33 @@ pub(crate) fn parse_layer_name(name: &str) -> Option<Tab> {
     }
 }
 
-fn level_addr(tab: Tab) -> String {
-    match tab {
-        Tab::Master => ADDR_LEVEL.to_string(),
-        voice => format!("/nooise/voice/{}/level", VOICES[voice as usize]),
-    }
+fn level_addr(tab: Tab) -> &'static str {
+    const ADDRESSES: [&str; TAB_COUNT] = [
+        "/nooise/voice/pad/level",
+        "/nooise/voice/perc/level",
+        "/nooise/voice/bass/level",
+        "/nooise/voice/kick/level",
+        "/nooise/voice/tonal/level",
+        "/nooise/voice/clap/level",
+        "/nooise/voice/arp/level",
+        "/nooise/voice/lead/level",
+        ADDR_LEVEL,
+    ];
+    ADDRESSES[tab as usize]
 }
 
 /// Gesture names in `GestureKind::ALL` order.
+#[cfg(test)]
 pub(crate) const GESTURES: [&str; GESTURE_COUNT] = ["bloom", "submerge", "echo", "lift"];
 
-fn gesture_addr(kind: GestureKind) -> String {
-    format!("/nooise/gesture/{}", GESTURES[kind as usize])
+fn gesture_addr(kind: GestureKind) -> &'static str {
+    const ADDRESSES: [&str; GESTURE_COUNT] = [
+        "/nooise/gesture/bloom",
+        "/nooise/gesture/submerge",
+        "/nooise/gesture/echo",
+        "/nooise/gesture/lift",
+    ];
+    ADDRESSES[kind as usize]
 }
 
 pub(crate) fn parse_gesture_name(name: &str) -> Option<GestureKind> {
@@ -129,16 +145,37 @@ pub(crate) const ADDR_STATE_PAGE_ROWS: &str = "/nooise/state/page_rows";
 pub(crate) const ADDR_STATE_PAD_WINDOW: &str = "/nooise/state/pad_window";
 pub(crate) const ADDR_STATE_STEPS: &str = "/nooise/state/steps";
 
-fn state_layer_addr(tab: Tab) -> String {
-    format!("/nooise/state/layer/{}", layer_name(tab))
+fn state_layer_addr(tab: Tab) -> &'static str {
+    const ADDRESSES: [&str; TAB_COUNT] = [
+        "/nooise/state/layer/pad",
+        "/nooise/state/layer/perc",
+        "/nooise/state/layer/bass",
+        "/nooise/state/layer/kick",
+        "/nooise/state/layer/tonal",
+        "/nooise/state/layer/clap",
+        "/nooise/state/layer/arp",
+        "/nooise/state/layer/lead",
+        "/nooise/state/layer/master",
+    ];
+    ADDRESSES[tab as usize]
 }
 
 /// Names in `MusicalHit::ALL` order. They are part of the OSC contract.
+#[cfg(test)]
 pub(crate) const HIT_NAMES: [&str; MUSICAL_HIT_COUNT] =
     ["beat", "pad", "perc", "kick", "tonal", "clap", "arp"];
 
-fn hit_addr(hit: MusicalHit) -> String {
-    format!("/nooise/hit/{}", HIT_NAMES[hit as usize])
+fn hit_addr(hit: MusicalHit) -> &'static str {
+    const ADDRESSES: [&str; MUSICAL_HIT_COUNT] = [
+        "/nooise/hit/beat",
+        "/nooise/hit/pad",
+        "/nooise/hit/perc",
+        "/nooise/hit/kick",
+        "/nooise/hit/tonal",
+        "/nooise/hit/clap",
+        "/nooise/hit/arp",
+    ];
+    ADDRESSES[hit as usize]
 }
 
 /// How often the emitter samples telemetry and state.
@@ -278,7 +315,6 @@ pub(crate) struct OscCursorState {
 pub(crate) struct OscLayerState {
     pub(crate) level_ratio: f32,
     pub(crate) muted: bool,
-    pub(crate) planned_mute_beats: f32,
     pub(crate) first_module_label: String,
     pub(crate) first_module_ratio: f32,
     pub(crate) first_module_discrete: bool,
@@ -298,7 +334,6 @@ pub(crate) struct OscPadWindowState {
     pub(crate) progression_index: usize,
     pub(crate) chord_count: usize,
     pub(crate) chord_offset: usize,
-    pub(crate) active_slot: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,12 +350,77 @@ pub(crate) struct OscUiSnapshot {
     pub(crate) page_rows: Vec<OscPageRow>,
     pub(crate) pad_window: OscPadWindowState,
     pub(crate) steps: OscStepsState,
+    planned: Option<PlannedAction>,
 }
 
 pub(crate) type SharedOscUiState = Arc<ArcSwap<Option<OscUiSnapshot>>>;
 
 pub(crate) fn new_shared_osc_ui_state() -> SharedOscUiState {
     Arc::new(ArcSwap::from_pointee(None))
+}
+
+/// Retains the publication key, allocating only after an input changes.
+#[derive(Default)]
+pub(crate) struct OscUiPublisher {
+    key: Option<OscUiKey>,
+}
+
+struct OscUiKey {
+    navigation: Navigation,
+    mode: InteractionMode,
+    generation: u64,
+    auto_active: bool,
+}
+
+impl OscUiPublisher {
+    pub(crate) fn publish(
+        &mut self,
+        shared: &SharedOscUiState,
+        model: &InteractionModel,
+        session: &LiveSessionSnapshot,
+        view: &UiViewModel,
+        auto_active: bool,
+    ) {
+        if self.key.as_ref().is_some_and(|key| {
+            key.navigation == model.navigation
+                && key.mode == model.mode
+                && key.generation == session.generation
+                && key.auto_active == auto_active
+        }) {
+            return;
+        }
+        shared.store(Arc::new(Some(OscUiSnapshot::capture(
+            model,
+            session,
+            view,
+            auto_active,
+        ))));
+        self.key = Some(OscUiKey {
+            navigation: model.navigation,
+            mode: model.mode.clone(),
+            generation: session.generation,
+            auto_active,
+        });
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct UiPlayback {
+    planned_beats: [f32; TAB_COUNT],
+    active_slot: usize,
+}
+
+impl UiPlayback {
+    fn at(snapshot: &OscUiSnapshot, beat: f64, active_chord: u64) -> Self {
+        let mut planned_beats = [0.0; TAB_COUNT];
+        if let Some(PlannedAction::Mute { tab, target_beat }) = snapshot.planned {
+            planned_beats[tab as usize] = (target_beat - beat).max(0.0) as f32;
+        }
+        Self {
+            planned_beats,
+            active_slot: active_chord as usize % 8,
+        }
+    }
 }
 
 fn layer_level_ratio(tab: Tab, controls: &FluidControls) -> f32 {
@@ -353,8 +453,6 @@ impl OscUiSnapshot {
         model: &InteractionModel,
         session: &LiveSessionSnapshot,
         view: &UiViewModel,
-        beat: f64,
-        active_chord: u64,
         auto_active: bool,
     ) -> Self {
         let cursor = OscCursorState {
@@ -366,19 +464,11 @@ impl OscUiSnapshot {
         };
         let layers = std::array::from_fn(|index| {
             let tab = Tab::all()[index];
-            let planned_mute_beats = match session.planned {
-                Some(PlannedAction::Mute {
-                    tab: planned_tab,
-                    target_beat,
-                }) if planned_tab == tab => (target_beat - beat).max(0.0) as f32,
-                _ => 0.0,
-            };
             let (first_module_label, first_module_ratio, first_module_discrete) =
                 first_module_summary(tab, &session.controls);
             OscLayerState {
                 level_ratio: layer_level_ratio(tab, &session.controls),
                 muted: session.muted[index],
-                planned_mute_beats,
                 first_module_label,
                 first_module_ratio,
                 first_module_discrete,
@@ -409,7 +499,6 @@ impl OscUiSnapshot {
             progression_index: progression_index(session.controls.pad.progression),
             chord_count: window.count,
             chord_offset: window.offset,
-            active_slot: (active_chord as usize) % 8,
         };
         let pad_steps = std::array::from_fn(|i| u8::from(session.controls.pad.steps[i] >= 0.5));
         let lead_step_count = lead_live_step_count(session.controls.lead.step_count);
@@ -421,6 +510,7 @@ impl OscUiSnapshot {
             layers,
             page_rows,
             pad_window,
+            planned: session.planned,
             steps: OscStepsState {
                 pad_steps,
                 lead_step_count,
@@ -429,7 +519,12 @@ impl OscUiSnapshot {
         }
     }
 
-    pub(crate) fn diff_messages(&self, previous: Option<&Self>) -> Vec<OscMessage> {
+    fn diff_at(
+        &self,
+        previous: Option<&Self>,
+        playback: UiPlayback,
+        old: Option<UiPlayback>,
+    ) -> Vec<OscMessage> {
         let mut out = Vec::new();
         if previous.map(|p| &p.cursor) != Some(&self.cursor) {
             out.push(message(
@@ -445,13 +540,15 @@ impl OscUiSnapshot {
         }
         for (index, tab) in Tab::all().into_iter().enumerate() {
             let layer = &self.layers[index];
-            if previous.map(|p| &p.layers[index]) != Some(layer) {
+            if previous.map(|p| &p.layers[index]) != Some(layer)
+                || old.map(|p| p.planned_beats[index]) != Some(playback.planned_beats[index])
+            {
                 out.push(message(
-                    &state_layer_addr(tab),
+                    state_layer_addr(tab),
                     vec![
                         OscType::Float(layer.level_ratio),
                         OscType::Int(i32::from(layer.muted)),
-                        OscType::Float(layer.planned_mute_beats),
+                        OscType::Float(playback.planned_beats[index]),
                         OscType::String(layer.first_module_label.clone()),
                         OscType::Float(layer.first_module_ratio),
                         OscType::Int(i32::from(layer.first_module_discrete)),
@@ -470,14 +567,16 @@ impl OscUiSnapshot {
             }
             out.push(message(ADDR_STATE_PAGE_ROWS, args));
         }
-        if previous.map(|p| &p.pad_window) != Some(&self.pad_window) {
+        if previous.map(|p| &p.pad_window) != Some(&self.pad_window)
+            || old.map(|p| p.active_slot) != Some(playback.active_slot)
+        {
             out.push(message(
                 ADDR_STATE_PAD_WINDOW,
                 vec![
                     OscType::Int(self.pad_window.progression_index as i32),
                     OscType::Int(self.pad_window.chord_count as i32),
                     OscType::Int(self.pad_window.chord_offset as i32),
-                    OscType::Int(self.pad_window.active_slot as i32),
+                    OscType::Int(playback.active_slot as i32),
                 ],
             ));
         }
@@ -1004,7 +1103,7 @@ impl Mirrored {
         {
             if new != old {
                 out.push(message(
-                    &level_addr(tab),
+                    level_addr(tab),
                     vec![OscType::Float(f32::from_bits(*new))],
                 ));
             }
@@ -1015,7 +1114,7 @@ impl Mirrored {
         {
             if new != old {
                 out.push(message(
-                    &gesture_addr(kind),
+                    gesture_addr(kind),
                     vec![OscType::Float(f32::from_bits(*new))],
                 ));
             }
@@ -1066,7 +1165,7 @@ impl Mirrored {
             let index = hit as usize;
             for _ in self.hit_pulses[index]..now.hit_pulses[index] {
                 out.push(message(
-                    &hit_addr(hit),
+                    hit_addr(hit),
                     vec![
                         OscType::Float(f32::from_bits(now.hit_level_bits[index])),
                         OscType::Float(f32::from_bits(now.hit_pitch_class_bits[index])),
@@ -1095,11 +1194,12 @@ fn emit_loop(
     mut mirrored: Mirrored,
     stop: &AtomicBool,
 ) {
-    let mut last_ui: Option<OscUiSnapshot> = None;
+    let mut last_ui: Option<Arc<Option<OscUiSnapshot>>> = None;
+    let mut last_playback = None;
     let mut last_full_ui = Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        if last_full_ui.elapsed() >= Duration::from_millis(500) {
-            last_ui = None;
+        let full = last_full_ui.elapsed() >= Duration::from_millis(500);
+        if full {
             last_full_ui = Instant::now();
         }
         let mut messages = mirrored.diff(telemetry);
@@ -1108,13 +1208,31 @@ fn emit_loop(
                 messages.push(event.into_message());
             }
         }
-        if let Some(shared) = ui_state
-            && let Some(current) = shared.load().as_ref()
-        {
-            let state_msgs = current.diff_messages(last_ui.as_ref());
-            if !state_msgs.is_empty() {
-                messages.extend(state_msgs);
-                last_ui = Some(current.clone());
+        if let Some(shared) = ui_state {
+            let current = shared.load_full();
+            if let Some(snapshot) = current.as_ref() {
+                let playback = UiPlayback::at(
+                    snapshot,
+                    telemetry.beat(),
+                    telemetry.chord_slot.load(Ordering::Relaxed),
+                );
+                let changed = last_ui
+                    .as_ref()
+                    .is_none_or(|last| !Arc::ptr_eq(last, &current));
+                if full || changed || last_playback != Some(playback) {
+                    let previous = if full {
+                        None
+                    } else {
+                        last_ui.as_ref().and_then(|last| last.as_ref().as_ref())
+                    };
+                    messages.extend(snapshot.diff_at(
+                        previous,
+                        playback,
+                        if full { None } else { last_playback },
+                    ));
+                    last_playback = Some(playback);
+                    last_ui = Some(current);
+                }
             }
         }
         if !messages.is_empty() {
@@ -1133,6 +1251,125 @@ fn emit_loop(
 
 #[cfg(test)]
 mod tests {
+    fn publish_ui(
+        publisher: &mut OscUiPublisher,
+        shared: &SharedOscUiState,
+        model: &InteractionModel,
+        session: &LiveSessionSnapshot,
+    ) {
+        use crate::fluid::*;
+        let fluid = RippleField::new();
+        let flipped = FlippedUnits::new();
+        let view = UiViewModel::project(ViewProjection {
+            interaction: model,
+            session,
+            telemetry: TelemetryView::default(),
+            presentation: ViewPresentation {
+                fluid: &fluid,
+                flipped: &flipped,
+                cursor_visible: true,
+                notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
+            },
+        });
+        publisher.publish(shared, model, session, &view, false);
+    }
+
+    #[test]
+    fn ui_publication_reuses_arc_until_navigation_mode_or_generation_changes() {
+        let shared = new_shared_osc_ui_state();
+        let mut publisher = OscUiPublisher::default();
+        let mut model = InteractionModel::default();
+        let mut session = LiveSessionSnapshot::from_controls(FluidControls::default());
+        publish_ui(&mut publisher, &shared, &model, &session);
+        let mut previous = shared.load_full();
+        for _ in 0..100 {
+            publish_ui(&mut publisher, &shared, &model, &session);
+            assert!(Arc::ptr_eq(&previous, &shared.load_full()));
+        }
+        model.navigation = Navigation::Chords {
+            selected: 0,
+            drill: super::super::interaction::ChordDrill::None,
+        };
+        publish_ui(&mut publisher, &shared, &model, &session);
+        assert!(!Arc::ptr_eq(&previous, &shared.load_full()));
+        previous = shared.load_full();
+        model.mode = InteractionMode::Help;
+        publish_ui(&mut publisher, &shared, &model, &session);
+        assert!(!Arc::ptr_eq(&previous, &shared.load_full()));
+        previous = shared.load_full();
+        session.generation += 1;
+        session.muted[Tab::Kick as usize] = true;
+        publish_ui(&mut publisher, &shared, &model, &session);
+        assert!(!Arc::ptr_eq(&previous, &shared.load_full()));
+        assert!(shared.load().as_ref().as_ref().unwrap().layers[Tab::Kick as usize].muted);
+    }
+
+    #[test]
+    fn cached_ui_keeps_countdown_and_chord_live_without_republishing() {
+        let shared = new_shared_osc_ui_state();
+        let mut publisher = OscUiPublisher::default();
+        let model = InteractionModel::default();
+        let mut session = LiveSessionSnapshot::from_controls(FluidControls::default());
+        session.planned = Some(PlannedAction::Mute {
+            tab: Tab::Kick,
+            target_beat: 8.0,
+        });
+        publish_ui(&mut publisher, &shared, &model, &session);
+        let published = shared.load_full();
+        let snapshot = published.as_ref().as_ref().unwrap();
+        let before = UiPlayback::at(snapshot, 4.0, 0);
+        let after = UiPlayback::at(snapshot, 5.0, 2);
+        let messages = snapshot.diff_at(Some(snapshot), after, Some(before));
+        assert_eq!(messages.len(), 2);
+        let layer = messages
+            .iter()
+            .find(|m| m.addr == state_layer_addr(Tab::Kick))
+            .unwrap();
+        assert_eq!(layer.args[2], OscType::Float(3.0));
+        let window = messages
+            .iter()
+            .find(|m| m.addr == ADDR_STATE_PAD_WINDOW)
+            .unwrap();
+        assert_eq!(window.args[3], OscType::Int(2));
+        assert!(
+            snapshot
+                .diff_at(Some(snapshot), after, Some(after))
+                .is_empty()
+        );
+        assert!(!snapshot.diff_at(None, after, None).is_empty());
+        assert!(Arc::ptr_eq(&published, &shared.load_full()));
+    }
+
+    #[test]
+    fn static_addresses_preserve_wire_names() {
+        for (index, tab) in Tab::all().into_iter().enumerate() {
+            assert_eq!(
+                state_layer_addr(tab),
+                format!("/nooise/state/layer/{}", LAYERS[index])
+            );
+            if tab != Tab::Master {
+                assert_eq!(
+                    level_addr(tab),
+                    format!("/nooise/voice/{}/level", VOICES[index])
+                );
+            }
+        }
+        for kind in GestureKind::ALL {
+            assert_eq!(
+                gesture_addr(kind),
+                format!("/nooise/gesture/{}", GESTURES[kind as usize])
+            );
+        }
+        for hit in MusicalHit::ALL {
+            assert_eq!(
+                hit_addr(hit),
+                format!("/nooise/hit/{}", HIT_NAMES[hit as usize])
+            );
+        }
+    }
+
     #[test]
     fn every_osc_layer_reports_its_registered_level() {
         let mut controls = FluidControls::default();
@@ -1407,7 +1644,7 @@ mod tests {
     /// list, and a retired one leaves it without its name being reused.
     #[test]
     fn gesture_addresses_are_the_published_contract() {
-        let addrs: Vec<String> = GestureKind::ALL.into_iter().map(gesture_addr).collect();
+        let addrs: Vec<&str> = GestureKind::ALL.into_iter().map(gesture_addr).collect();
         assert_eq!(
             addrs,
             [

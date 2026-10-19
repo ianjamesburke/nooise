@@ -704,6 +704,7 @@ pub(crate) fn production_ui_loop(
     let mut last_tick = runtime::Clock::now(&clock);
     let mut quit = false;
     let mut tap_tempo = TapTempo::default();
+    let mut osc_publisher = osc::OscUiPublisher::default();
 
     while !quit {
         let turn = scheduler.collect_turn(&mut source, &clock)?;
@@ -837,14 +838,7 @@ pub(crate) fn production_ui_loop(
                 },
             });
             if let Some(osc_ui) = &osc_ui_state {
-                osc_ui.store(Arc::new(Some(osc::OscUiSnapshot::capture(
-                    &model,
-                    &frame_session,
-                    &view,
-                    beat,
-                    active_chord,
-                    auto_pos.is_some(),
-                ))));
+                osc_publisher.publish(osc_ui, &model, &frame_session, &view, auto_pos.is_some());
             }
             let item_count = view.items.len();
             terminal.terminal_mut().draw(|frame| render(frame, &view))?;
