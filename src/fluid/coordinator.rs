@@ -106,14 +106,55 @@ pub(crate) fn coordinate_production_event(
     context: &mut ProductionCoordinatorContext<'_>,
 ) -> ProductionStep {
     let frame = production_frame(model, context);
-    let mapping = runtime::map_input(&model.mode, model.navigation, event, context.capabilities);
-    let runtime::InputMapping::Action(mut action) = mapping else {
+    let mapping = runtime::map_input(&model.mode, event, context.capabilities);
+    let runtime::InputMapping::Action(action) = mapping else {
         return ProductionStep {
             mapping,
             actions: Vec::new(),
             quit: false,
         };
     };
+
+    let repeat_count = match event {
+        runtime::TransportEvent::Key { repeat_count, .. } => repeat_count.max(&1),
+        _ => &1,
+    };
+    let mut actions = Vec::new();
+    let mut quit = false;
+    for _ in 0..*repeat_count {
+        let Some(record) = coordinate_production_action(model, action, &frame, context) else {
+            break;
+        };
+        quit = record.requested_quit();
+        actions.push(record);
+        if quit {
+            break;
+        }
+    }
+    ProductionStep {
+        mapping,
+        actions,
+        quit,
+    }
+}
+
+/// Resolve navigation-dependent Touch/Cancel identically for every input source.
+fn upgrade_navigation_action(
+    model: &interaction::InteractionModel,
+    mut action: interaction::SemanticAction,
+    frame: &ProductionFrame,
+) -> interaction::SemanticAction {
+    if action.intent == interaction::Intent::TouchSelected {
+        action.intent = match model.navigation {
+            interaction::Navigation::Chords {
+                selected,
+                drill: interaction::ChordDrill::Progression { .. },
+            } => interaction::Intent::EnterChordSlot(selected),
+            interaction::Navigation::Hub { selected } => interaction::hub_layer(selected)
+                .map_or(action.intent, interaction::Intent::EnterLayer),
+            _ => action.intent,
+        };
+    }
     if action.intent == interaction::Intent::Cancel
         && matches!(model.mode, interaction::InteractionMode::Browsing)
         && frame.session.gestures.has_held()
@@ -154,27 +195,7 @@ pub(crate) fn coordinate_production_event(
         };
     }
 
-    let repeat_count = match event {
-        runtime::TransportEvent::Key { repeat_count, .. } => repeat_count.max(&1),
-        _ => &1,
-    };
-    let mut actions = Vec::new();
-    let mut quit = false;
-    for _ in 0..*repeat_count {
-        let Some(record) = coordinate_production_action(model, action, &frame, context) else {
-            break;
-        };
-        quit = record.requested_quit();
-        actions.push(record);
-        if quit {
-            break;
-        }
-    }
-    ProductionStep {
-        mapping,
-        actions,
-        quit,
-    }
+    action
 }
 
 /// Runs one semantic action through the kernel and the effect executor
@@ -187,6 +208,7 @@ pub(crate) fn coordinate_production_action(
     frame: &ProductionFrame,
     context: &mut ProductionCoordinatorContext<'_>,
 ) -> Option<ProductionActionRecord> {
+    let action = upgrade_navigation_action(model, action, frame);
     let frame_session = &frame.session;
     let selected_control = frame.selected_control;
     let tab = frame.tab;
@@ -493,21 +515,26 @@ pub(crate) fn apply_osc_ui_command(
         OscUiCommand::AutoToggle => {
             context.effects.toggle_auto(context.beat);
         }
-        OscUiCommand::Gesture { kind, active } => {
-            let now_seconds = context.effects.session().audio_seconds();
-            context.effects.session().update(|snapshot| {
-                if active {
-                    snapshot.gestures.press(kind, now_seconds);
-                } else {
-                    snapshot.gestures.release(kind, now_seconds);
-                }
-            });
-        }
-        OscUiCommand::GestureReleaseAll => {
-            let now_seconds = context.effects.session().audio_seconds();
-            context.effects.session().update(|snapshot| {
-                snapshot.gestures.release_all(now_seconds);
-            });
+        OscUiCommand::Gesture { .. } | OscUiCommand::GestureReleaseAll => {
+            let action = match cmd {
+                OscUiCommand::Gesture { kind, active: true } => interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent: interaction::Intent::StartGesture(kind),
+                },
+                OscUiCommand::Gesture {
+                    kind,
+                    active: false,
+                } => interaction::SemanticAction {
+                    phase: interaction::InputPhase::Release,
+                    intent: interaction::Intent::ReleaseGesture(kind),
+                },
+                _ => interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent: interaction::Intent::ReleaseAllGestures,
+                },
+            };
+            let frame = production_frame(model, context);
+            let _ = coordinate_production_action(model, action, &frame, context);
         }
         OscUiCommand::MotionGrab(length_beats) => {
             let duration = match length_beats {
@@ -597,47 +624,10 @@ pub(crate) fn apply_osc_ui_command(
                 );
             }
         }
-        OscUiCommand::NavTouch => {
+        OscUiCommand::NavTouch | OscUiCommand::NavCancel => {
             let frame = production_frame(model, context);
-            let mut intent = interaction::Intent::TouchSelected;
-            if frame.selected_control == Some("pad.progression") {
-                intent = interaction::Intent::EnterChordProgression;
-            } else if frame.selected_control == Some(PAD_TRIGGER_ID) {
-                intent = interaction::Intent::EnterPadPattern;
-            } else if let Some(id) = frame.selected_control
-                && let Some((slot, module)) =
-                    module_slot_at_collapsed_id(frame.tab, id, &frame.session.controls)
-                && let Some(kind) = module.kind()
-                && kind.has_detail()
-            {
-                intent = interaction::Intent::EnterModuleDetail {
-                    tab: frame.tab,
-                    slot,
-                    catalog_index: module.kind.round() as usize - 1,
-                };
-            } else if frame.tab == Tab::Lead {
-                intent = if frame.selected_control == Some(LEAD_STEPS_ID) {
-                    interaction::Intent::EnterLeadPattern
-                } else {
-                    interaction::Intent::EnterLeadPlay
-                };
-            }
-            let _ = coordinate_production_action(
-                model,
-                interaction::SemanticAction {
-                    phase: interaction::InputPhase::Press,
-                    intent,
-                },
-                &frame,
-                context,
-            );
-        }
-        OscUiCommand::NavCancel => {
-            let frame = production_frame(model, context);
-            let intent = if matches!(model.mode, interaction::InteractionMode::Browsing)
-                && frame.session.gestures.has_held()
-            {
-                interaction::Intent::ReleaseAllGestures
+            let intent = if matches!(cmd, OscUiCommand::NavTouch) {
+                interaction::Intent::TouchSelected
             } else {
                 interaction::Intent::Cancel
             };

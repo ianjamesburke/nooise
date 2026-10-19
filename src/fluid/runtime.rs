@@ -23,9 +23,8 @@ use ratatui::backend::CrosstermBackend;
 
 use super::GestureKind;
 use super::interaction::{
-    AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge,
-    Navigation, PageDirection, PerformanceInstrument, PerformanceKind, PerformanceParameter,
-    SemanticAction, hub_layer,
+    AutomationKind, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge, PageDirection,
+    PerformanceInstrument, PerformanceKind, PerformanceParameter, SemanticAction,
 };
 
 /// Target spacing between drawn frames.
@@ -441,7 +440,6 @@ pub(crate) enum InputMapping {
 /// actions; staged behavior names its missing owner instead of disappearing.
 pub(crate) fn map_input(
     mode: &InteractionMode,
-    navigation: Navigation,
     event: &TransportEvent,
     capabilities: TerminalCapabilities,
 ) -> InputMapping {
@@ -518,7 +516,7 @@ pub(crate) fn map_input(
     let intent = match mode {
         InteractionMode::Browsing => {
             if unmodified {
-                browsing_binding(&key.code, navigation)
+                browsing_binding(&key.code)
             } else if shifted {
                 shifted_binding(&key.code)
             } else {
@@ -597,7 +595,7 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
     })
 }
 
-fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent> {
+fn browsing_binding(code: &PhysicalKey) -> Option<Intent> {
     Some(match *code {
         // `r` rolls the selected control's own dial; inside an automation
         // editor the same key reseeds the open random lane instead.
@@ -605,16 +603,7 @@ fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent
         PhysicalKey::Character('i') => Intent::EnterLeadPlay,
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Jump),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
-        PhysicalKey::Enter => match navigation {
-            Navigation::Chords {
-                selected,
-                drill: ChordDrill::Progression { .. },
-            } => Intent::EnterChordSlot(selected),
-            Navigation::Hub { selected } => {
-                hub_layer(selected).map_or(Intent::TouchSelected, Intent::EnterLayer)
-            }
-            _ => Intent::TouchSelected,
-        },
+        PhysicalKey::Enter => Intent::TouchSelected,
         _ => return slider_binding(code),
     })
 }
@@ -1692,7 +1681,6 @@ mod tests {
         let map = |modifiers| {
             map_input(
                 &InteractionMode::Browsing,
-                Navigation::default(),
                 &TransportEvent::key(PhysicalKey::Character('p'), modifiers, InputPhase::Press),
                 TerminalCapabilities::full(),
             )
@@ -1718,7 +1706,6 @@ mod tests {
         assert_eq!(
             map_input(
                 &InteractionMode::Browsing,
-                Navigation::default(),
                 &event,
                 TerminalCapabilities::full()
             ),
@@ -1743,7 +1730,6 @@ mod tests {
         assert_eq!(
             map_input(
                 &InteractionMode::Browsing,
-                Navigation::default(),
                 &event,
                 TerminalCapabilities::full()
             ),
@@ -1761,7 +1747,6 @@ mod tests {
         assert_eq!(
             map_input(
                 &InteractionMode::Browsing,
-                Navigation::default(),
                 &plain_slash,
                 TerminalCapabilities::full()
             ),
@@ -1797,12 +1782,7 @@ mod tests {
             let event =
                 TransportEvent::key(PhysicalKey::Character('a'), Modifiers::default(), phase);
             assert_eq!(
-                map_input(
-                    &model,
-                    Navigation::default(),
-                    &event,
-                    TerminalCapabilities::full()
-                ),
+                map_input(&model, &event, TerminalCapabilities::full()),
                 expected
             );
         }
@@ -1818,7 +1798,6 @@ mod tests {
         assert!(matches!(
             map_input(
                 &InteractionMode::Browsing,
-                Navigation::default(),
                 &ctrl_s,
                 TerminalCapabilities::default()
             ),
@@ -1830,7 +1809,6 @@ mod tests {
         assert!(matches!(
             map_input(
                 &InteractionMode::Numeric(Default::default()),
-                Navigation::default(),
                 &ctrl_s,
                 TerminalCapabilities::default()
             ),
@@ -1845,7 +1823,6 @@ mod tests {
         assert!(matches!(
             map_input(
                 &InteractionMode::Browsing,
-                Navigation::default(),
                 &opener,
                 TerminalCapabilities::default()
             ),
@@ -1860,7 +1837,6 @@ mod tests {
         assert!(matches!(
             map_input(
                 &InteractionMode::Browsing,
-                Navigation::default(),
                 &back_tab,
                 TerminalCapabilities::default()
             ),
@@ -1924,7 +1900,6 @@ mod tests {
             assert!(matches!(
                 map_input(
                     &browsing,
-                    Navigation::default(),
                     &input,
                     TerminalCapabilities::default()
                 ),
@@ -1937,7 +1912,6 @@ mod tests {
         assert_eq!(
             map_input(
                 &browsing,
-                Navigation::default(),
                 &event(PhysicalKey::Character('q'), Modifiers::default()),
                 TerminalCapabilities::default(),
             ),
@@ -1948,7 +1922,6 @@ mod tests {
         assert_eq!(
             map_input(
                 &browsing,
-                Navigation::default(),
                 &event(code, Modifiers::default()),
                 TerminalCapabilities::default()
             ),
@@ -1957,7 +1930,6 @@ mod tests {
         assert_eq!(
             map_input(
                 &browsing,
-                Navigation::default(),
                 &event(PhysicalKey::Character('i'), Modifiers::default()),
                 TerminalCapabilities::default()
             ),
@@ -1974,7 +1946,6 @@ mod tests {
             assert_eq!(
                 map_input(
                     &lead,
-                    Navigation::default(),
                     &event(code, Modifiers::default()),
                     TerminalCapabilities::default(),
                 ),
@@ -1996,7 +1967,6 @@ mod tests {
             assert!(matches!(
                 map_input(
                     &automation,
-                    Navigation::default(),
                     &event(code, Modifiers::default()),
                     TerminalCapabilities::default()
                 ),
@@ -2019,7 +1989,6 @@ mod tests {
             assert!(matches!(
                 map_input(
                     &browsing,
-                    Navigation::default(),
                     &event(PhysicalKey::Character(code), Modifiers::default()),
                     TerminalCapabilities::default()
                 ),
@@ -2039,7 +2008,6 @@ mod tests {
             assert_eq!(
                 map_input(
                     &automation,
-                    Navigation::default(),
                     &event(PhysicalKey::Character(code), Modifiers::SHIFT),
                     TerminalCapabilities::default(),
                 ),

@@ -323,22 +323,8 @@ pub(crate) fn new_shared_osc_ui_state() -> SharedOscUiState {
     Arc::new(ArcSwap::from_pointee(None))
 }
 
-fn layer_level_id(tab: Tab) -> &'static str {
-    match tab {
-        Tab::Master => "master.level",
-        Tab::Chords => "pad.level",
-        Tab::Perc => "perc.level",
-        Tab::Bass => "bass.level",
-        Tab::Kick => "kick.level",
-        Tab::Tonal => "tonal.gain",
-        Tab::Clap => "clap.level",
-        Tab::Arp => "arp.gain",
-        Tab::Lead => "lead.level",
-    }
-}
-
 fn layer_level_ratio(tab: Tab, controls: &FluidControls) -> f32 {
-    let Some(spec) = spec_by_id(layer_level_id(tab)) else {
+    let Some(spec) = tab.level_id().and_then(spec_by_id) else {
         return 0.0;
     };
     spec.ratio((spec.get)(controls), controls)
@@ -1147,6 +1133,18 @@ fn emit_loop(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_osc_layer_reports_its_registered_level() {
+        let mut controls = FluidControls::default();
+        for tab in Tab::all() {
+            let spec = spec_by_id(tab.level_id().unwrap()).unwrap();
+            (spec.set)(&mut controls, spec.max);
+            assert_eq!(layer_level_ratio(tab, &controls), 1.0, "{tab:?}");
+            (spec.set)(&mut controls, spec.min);
+            assert_eq!(layer_level_ratio(tab, &controls), 0.0, "{tab:?}");
+        }
+    }
+
     use super::*;
     use crate::fluid::MasterKey;
 

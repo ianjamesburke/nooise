@@ -5315,3 +5315,107 @@ fn event_and_osc_navigation_do_not_project_render_views() {
     assert!(harness.model.navigation.selected() < frame.item_count);
     assert_eq!(view::PROJECTION_COUNT.get(), before);
 }
+
+fn apply_test_osc(harness: &mut ReplayHarness, command: osc::OscUiCommand) {
+    let mut context = ProductionCoordinatorContext {
+        effects: &mut harness.executor,
+        flipped: &mut harness.flipped,
+        clipboard: &mut harness.clipboard,
+        capabilities: harness.capabilities,
+        beat: 0.0,
+    };
+    coordinator::apply_osc_ui_command(command, &mut harness.model, &mut context);
+}
+
+#[test]
+fn osc_touch_cancel_matches_keyboard_on_every_visible_navigation_row() {
+    let controls = FluidControls::default();
+    let mut navigations = vec![Navigation::Hub { selected: 0 }];
+    for tab in Tab::all() {
+        let mut model = InteractionModel::default();
+        model.select_control(tab, 0, &controls);
+        navigations.push(model.navigation);
+    }
+    navigations.push(Navigation::Chords {
+        selected: 0,
+        drill: ChordDrill::Progression { return_to: 7 },
+    });
+    for navigation in navigations {
+        for row in 0..view::navigation_control_ids(navigation, &controls).len() {
+            let mut model = InteractionModel {
+                navigation,
+                ..InteractionModel::default()
+            };
+            *model.navigation.selected_mut() = row;
+            let mut osc =
+                ReplayHarness::new(TerminalCapabilities::full()).with_model(model.clone());
+            apply_test_osc(&mut osc, osc::OscUiCommand::NavTouch);
+            let keyboard = replay_from_model(
+                model.clone(),
+                &[key(0, FixtureKey::Enter, InputPhase::Press)],
+                TerminalCapabilities::full(),
+            );
+            assert_eq!(osc.model, keyboard.model, "touch {navigation:?} row {row}");
+            if matches!(navigation, Navigation::Hub { .. }) && row < interaction::LAYER_COUNT {
+                assert_ne!(osc.model.navigation, model.navigation);
+            }
+            if matches!(
+                navigation,
+                Navigation::Chords {
+                    drill: ChordDrill::Progression { .. },
+                    ..
+                }
+            ) {
+                assert!(
+                    matches!(osc.model.navigation, Navigation::Chords { drill: ChordDrill::Slot { slot, .. }, .. } if slot == row)
+                );
+            }
+            apply_test_osc(&mut osc, osc::OscUiCommand::NavCancel);
+            let keyboard = replay_from_model(
+                model,
+                &[
+                    key(0, FixtureKey::Enter, InputPhase::Press),
+                    key(0, FixtureKey::Escape, InputPhase::Press),
+                ],
+                TerminalCapabilities::full(),
+            );
+            assert_eq!(osc.model, keyboard.model, "cancel {navigation:?} row {row}");
+        }
+    }
+}
+
+#[test]
+fn osc_gestures_obey_kernel_latches_modes_and_cancel() {
+    let mut harness = ReplayHarness::new(TerminalCapabilities::full());
+    for kind in GestureKind::ALL {
+        let press = || osc::OscUiCommand::Gesture { kind, active: true };
+        let release = || osc::OscUiCommand::Gesture {
+            kind,
+            active: false,
+        };
+        apply_test_osc(&mut harness, press());
+        assert!(harness.executor.session().load().gestures.has_held());
+        let generation = harness.executor.session().load().generation;
+        apply_test_osc(&mut harness, press());
+        assert_eq!(harness.executor.session().load().generation, generation);
+        apply_test_osc(&mut harness, release());
+        assert!(!harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, press());
+        let navigation = harness.model.navigation;
+        apply_test_osc(&mut harness, osc::OscUiCommand::NavCancel);
+        assert_eq!(harness.model.navigation, navigation);
+        assert!(!harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, press());
+        assert!(!harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, release());
+        apply_test_osc(&mut harness, press());
+        assert!(harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, osc::OscUiCommand::GestureReleaseAll);
+        assert!(!harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, release());
+        harness.model.mode = InteractionMode::Help;
+        apply_test_osc(&mut harness, press());
+        assert!(!harness.executor.session().load().gestures.has_held());
+        harness.model.mode = InteractionMode::Browsing;
+    }
+}
