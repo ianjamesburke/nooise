@@ -1,19 +1,23 @@
 //! The Bass voice: a monophonic line following the Pad's progression, in
-//! three characters over one shared trigger and pitch path.
+//! six characters over one shared trigger and pitch path.
 
 use super::*;
-use crate::midi::{MidiMessage, MidiSink, tuned_note};
+use crate::fluid::osc::{OscVoiceEvent, OscVoiceSink, tuned_note};
+use crate::fx::drive::DriveType;
+use crate::synth::filter::SvfLowpass;
+use crate::synth::oscillator::PolyBlepSaw;
 
 /// Bass follows the same active progression slot as Pad/Arp. For Custom it
 /// reads that slot's root directly. Built-ins retain their authored Bass
 /// register/pedal and transpose only by an edited Root/Accidental delta.
 pub(crate) fn bass_root_note(progression: usize, slot: usize, pad: &PadControls) -> i32 {
+    let slot = slot % CHORD_SLOT_COUNT;
     match PROGRESSIONS.get(progression) {
         Some(built_in) => {
-            let slot = slot % CHORD_SLOT_COUNT;
+            let built_in_slot = slot % BUILTIN_PROGRESSION_CHORDS;
             let shift = pad_chord_root_note(pad.chord_slot(progression, slot))
-                - pad_chord_root_note(&built_in.chords[slot].preset);
-            built_in.bass[slot] + shift
+                - pad_chord_root_note(&built_in.chords[built_in_slot].preset);
+            built_in.bass[built_in_slot] + shift
         }
         None => pad_chord_root_note(&pad.chord_slots[slot]),
     }
@@ -49,11 +53,71 @@ pub(crate) const BASS_RHYTHMS: [[bool; 16]; 4] = [
     ],
 ];
 
-/// Fixed duration of one rhythm-pattern step (a 16th note). Step timing never
-/// changes; `interval_beats` instead crops how many steps of the 16-step
-/// phrase play before looping back to step 0 (or extends the loop with
-/// trailing silence, for a "gap" feel).
-pub(crate) const BASS_STEP_BEATS: f32 = 0.25;
+pub(crate) fn bass_live_step_count(step_count: f32) -> usize {
+    (step_count.round() as i64).clamp(1, BASS_STEP_COUNT as i64) as usize
+}
+
+pub(crate) fn bass_pattern_label(value: f32) -> &'static str {
+    BASS_PATTERNS[wrapped_index(value, BASS_PATTERNS.len())]
+}
+
+pub(crate) fn bass_authored_steps(c: &BassControls) -> [f32; BASS_STEP_COUNT] {
+    let rhythm = (c.rhythm.round() as isize).clamp(0, CUSTOM_BASS_RHYTHM_INDEX as isize) as usize;
+    if rhythm < BASS_RHYTHM_PRESET_COUNT {
+        bass_rhythm_steps(rhythm)
+    } else {
+        c.steps
+    }
+}
+
+pub(crate) fn bass_page_reach(bass: &BassControls, pad: &PadControls) -> LeadReach {
+    let window = ChordWindow::requested(pad);
+    lead_reach(
+        LeadFollow::from_value(bass.follow),
+        pad,
+        window.progression,
+        window.slot(0),
+    )
+}
+
+pub(crate) fn bass_step_note(
+    tone: usize,
+    follow: LeadFollow,
+    progression: usize,
+    slot: usize,
+    pad: &PadControls,
+    octave: f32,
+) -> i32 {
+    let octave_shift = (octave.round() as i32) * 12;
+    match follow {
+        LeadFollow::Chord => {
+            let root = bass_root_note(progression, slot, pad);
+            if tone <= 1 {
+                root + octave_shift
+            } else {
+                let reach = lead_reach(LeadFollow::Chord, pad, progression, slot);
+                let semitones_above_first = reach.note(tone, 0.0) - reach.note(1, 0.0);
+                root + semitones_above_first + octave_shift
+            }
+        }
+        LeadFollow::Scale => {
+            let reach = progression_scale(pad, progression);
+            reach.note(tone, octave) - 12
+        }
+    }
+}
+
+pub(crate) fn consecutive_ties_after(steps: &[f32], start_step: usize, live_len: usize) -> usize {
+    let len = live_len.min(steps.len());
+    if len <= 1 {
+        return 0;
+    }
+    let mut ties = 0usize;
+    while ties + 1 < len && lead_step_is_tie(steps[(start_step + 1 + ties) % len]) {
+        ties += 1;
+    }
+    ties
+}
 
 /// Bass is monophonic: a rhythm-grid hit hard-cuts whatever is currently
 /// sounding and starts the new note fresh, regardless of `decay_time`. The
@@ -63,38 +127,6 @@ pub(crate) const BASS_STEP_BEATS: f32 = 0.25;
 /// voice: it is silent well before the next 16th-note step can land, so
 /// consecutive bass hits never audibly overlap.
 const BASS_MONO_FADE_SECONDS: f32 = 0.003;
-
-/// Which way the Bass talks to external MIDI. One control, so In and Out can
-/// never both be on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BassMidi {
-    /// Audio only.
-    Off,
-    /// Received notes play the Bass voice in place of its rhythm pattern.
-    In,
-    /// Each rhythm hit also sends its note to the MIDI output.
-    Out,
-}
-
-pub(crate) const BASS_MIDI_MODES: [BassMidi; 3] = [BassMidi::Off, BassMidi::In, BassMidi::Out];
-
-impl BassMidi {
-    pub(crate) fn from_value(value: f32) -> Self {
-        BASS_MIDI_MODES[(value.round() as i64).clamp(0, BASS_MIDI_MODES.len() as i64 - 1) as usize]
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Off => "Off",
-            Self::In => "In",
-            Self::Out => "Out",
-        }
-    }
-}
-
-pub(crate) fn bass_midi_mode(value: f32) -> BassMidi {
-    BassMidi::from_value(value)
-}
 
 pub(crate) struct BassEngine {
     pub(crate) sample_rate: f32,
@@ -107,16 +139,36 @@ pub(crate) struct BassEngine {
     /// Bass voices are mono and always centered; the constant-power center
     /// gain pair is computed once here instead of per voice-sample.
     pub(crate) center_gains: (f32, f32),
-    midi: Option<MidiSink>,
-    /// The note this engine has sounding on the MIDI output, and the beat
+    osc: Option<OscVoiceSink>,
+    osc_suppressed: bool,
+    /// The note this engine has sounding on the OSC output, and the beat
     /// its gate closes.
-    midi_active: bool,
-    midi_release_beat: f64,
+    osc_active: bool,
+    osc_release_beat: f64,
+    /// Whether inbound OSC bass notes are driving the Bass voice in place of
+    /// its internal rhythm pattern.
+    osc_input_active: bool,
     transport: Transport,
+    pub(crate) last_cycle: Option<u64>,
+    pub(crate) active_steps_source: [f32; BASS_STEP_COUNT],
+    pub(crate) evolved_steps: [f32; BASS_STEP_COUNT],
+    pub(crate) evolution_seed: u64,
+    pub(crate) evolution_count: u64,
+    pub(crate) session_state: Option<LiveSession>,
 }
 
 impl BassEngine {
+    #[cfg(test)]
     pub(crate) fn new(sample_rate: f32) -> Self {
+        Self::new_with_live_state(sample_rate, None)
+    }
+
+    pub(crate) fn new_with_live_state(
+        sample_rate: f32,
+        session_state: Option<LiveSession>,
+    ) -> Self {
+        let mut rng = StdRng::from_entropy();
+        let evolution_seed = rng.r#gen();
         Self {
             sample_rate,
             progression: ProgressionFollower::new(),
@@ -126,44 +178,115 @@ impl BassEngine {
             fade_samples_remaining: 0,
             fade_total_samples: (sample_rate * BASS_MONO_FADE_SECONDS).max(1.0) as u32,
             center_gains: StereoPanner::gains(0.0),
-            midi: None,
-            midi_active: false,
-            midi_release_beat: 0.0,
+            osc: None,
+            osc_suppressed: false,
+            osc_active: false,
+            osc_release_beat: 0.0,
+            osc_input_active: false,
             transport: Transport::Stopped,
+            last_cycle: None,
+            active_steps_source: DEFAULT_BASS_STEPS,
+            evolved_steps: DEFAULT_BASS_STEPS,
+            evolution_seed,
+            evolution_count: 0,
+            session_state,
         }
     }
 
-    pub(crate) fn set_midi(&mut self, sink: MidiSink) {
-        self.midi = Some(sink);
+    fn evolve_steps(&mut self, live_len: usize, evolve_rate: f32, cycle: u64) {
+        let live_len = live_len.clamp(1, BASS_STEP_COUNT);
+        let max_tone = LEAD_TONE_COUNT as i32;
+        let mutations = ((evolve_rate.clamp(0.0, 1.0) * 3.0).ceil() as usize).max(1);
+        let seed = self
+            .evolution_seed
+            .wrapping_add(
+                self.evolution_count
+                    .wrapping_add(1)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            )
+            .wrapping_add(cycle.rotate_left(17));
+        let mut evo_rng = StdRng::seed_from_u64(seed);
+        for _ in 0..mutations {
+            let idx = evo_rng.gen_range(0..live_len);
+            let current = (self.evolved_steps[idx].round() as i32).clamp(-1, max_tone);
+            let next = if current <= 0 {
+                if evo_rng.gen_bool(0.55) {
+                    1
+                } else {
+                    evo_rng.gen_range(1..=max_tone)
+                }
+            } else if idx > 0 && evo_rng.gen_bool(0.12) {
+                -1
+            } else if evo_rng.gen_bool(0.20) {
+                0
+            } else {
+                let delta = if evo_rng.gen_bool(0.5) { 1 } else { -1 };
+                (current + delta).clamp(1, max_tone)
+            };
+            self.evolved_steps[idx] = next as f32;
+        }
+        if self.evolved_steps[0] < 0.0 {
+            self.evolved_steps[0] = 1.0;
+        }
+        self.evolution_count = self.evolution_count.saturating_add(1);
+        if let Some(session_state) = &self.session_state {
+            let steps = self.evolved_steps;
+            session_state.update(|snapshot| {
+                snapshot.controls.bass.steps = steps;
+                snapshot.controls.bass.rhythm = CUSTOM_BASS_RHYTHM_INDEX as f32;
+            });
+        }
     }
 
-    fn release_midi(&mut self) {
-        if self.midi_active {
-            if let Some(sink) = &self.midi {
-                sink.send(MidiMessage::BassOff);
+    pub(crate) fn set_osc(&mut self, sink: OscVoiceSink) {
+        self.osc = Some(sink);
+    }
+
+    pub(crate) fn set_osc_suppressed(&mut self, suppressed: bool) {
+        if suppressed && !self.osc_suppressed {
+            self.release_osc();
+        }
+        self.osc_suppressed = suppressed;
+    }
+
+    pub(crate) fn release_input(&mut self) {
+        self.osc_input_active = false;
+    }
+
+    fn release_osc(&mut self) {
+        if self.osc_active {
+            if let Some(sink) = &self.osc {
+                sink.send(OscVoiceEvent::BassOff);
             }
-            self.midi_active = false;
+            self.osc_active = false;
         }
     }
 
     /// Start a note now, handing whatever was sounding to the click-guard
     /// fade-out slot.
     fn start_note(&mut self, hz: f32, c: &BassControls) {
+        self.start_note_with_hold(hz, 0.0, c);
+    }
+
+    fn start_note_with_hold(&mut self, hz: f32, hold_seconds: f32, c: &BassControls) {
         self.fading_voice = self.voice.take();
         self.fade_samples_remaining = self.fade_total_samples;
-        self.voice = Some(BassVoice::new(
+        self.voice = Some(BassVoice::new_with_hold(
             wrapped_index(c.voice_type, BASS_TYPES.len()),
             hz,
             c.attack_time,
             c.decay_time,
+            hold_seconds,
+            c.punch,
             self.sample_rate,
         ));
     }
 
-    /// MIDI input plays the Bass voice at the received pitch. It is never
-    /// echoed to MIDI output, and the voice decays on its own, so a Note Off
-    /// needs no handling.
-    pub(crate) fn midi_note_on(&mut self, note: u8, c: &BassControls, tune: f32) {
+    /// Inbound OSC input plays the Bass voice at the received pitch in place of
+    /// the internal rhythm pattern. It is never echoed to OSC output, and the
+    /// voice decays on its own, so a Note Off needs no handling.
+    pub(crate) fn osc_note_on(&mut self, note: u8, c: &BassControls, tune: f32) {
+        self.osc_input_active = true;
         self.start_note(note_hz(i32::from(note), tune), c);
     }
 
@@ -171,44 +294,71 @@ impl BassEngine {
         &mut self,
         c: &BassControls,
         pad: &PadControls,
-        tune: f32,
+        key: MasterKey,
         timing: TimingContext,
     ) -> (f32, f32) {
         let (progression, slot) = self.progression.follow(pad, timing);
-        let mode = bass_midi_mode(c.midi);
-        if mode != BassMidi::Out || timing.transport != self.transport {
-            self.release_midi();
+        let tune = key.shift(progression) as f32;
+        if self.osc_suppressed || timing.transport != self.transport {
+            self.release_osc();
         }
         self.transport = timing.transport;
-        if self.midi_active && timing.beat >= self.midi_release_beat {
-            self.release_midi();
+        if self.osc_active && timing.beat >= self.osc_release_beat {
+            self.release_osc();
         }
 
-        let loop_len = (c.interval_beats / BASS_STEP_BEATS)
-            .round()
-            .clamp(1.0, 32.0) as usize;
+        let rate_beats = c.interval_beats.clamp(0.125, 4.0);
+        let live_steps = bass_live_step_count(c.step_count);
         if self
             .step_trigger
-            .pop_swung(timing, BASS_STEP_BEATS, c.offset_beats, c.swing)
+            .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
         {
-            let rhythm_step = lane_step_at(timing.beat, BASS_STEP_BEATS, c.offset_beats, loop_len);
-            let rhythm = (c.rhythm.round() as usize) % BASS_RHYTHMS.len();
-            let hit = rhythm_step < BASS_RHYTHMS[rhythm].len() && BASS_RHYTHMS[rhythm][rhythm_step];
-            // With MIDI In on, played notes replace the rhythm pattern.
-            if hit && mode != BassMidi::In {
-                let note = bass_root_note(progression, slot, pad) + (c.octave.round() as i32) * 12;
+            let authored = bass_authored_steps(c);
+            let is_custom = (c.rhythm.round() as usize) >= CUSTOM_BASS_RHYTHM_INDEX;
+            if is_custom && c.steps == self.evolved_steps {
+                self.active_steps_source = c.steps;
+            } else if authored != self.active_steps_source {
+                self.active_steps_source = authored;
+                self.evolved_steps = authored;
+                self.last_cycle = None;
+            }
+            let cycle_beats = (rate_beats * live_steps as f32).max(0.125);
+            let cycle = (timing.beat.max(0.0) / f64::from(cycle_beats)).floor() as u64;
+            if self.last_cycle.is_some_and(|last| cycle > last) && c.evolve_rate > 0.0 {
+                self.evolve_steps(live_steps, c.evolve_rate, cycle);
+            }
+            self.last_cycle = Some(cycle);
+
+            let rhythm_step = lane_step_at(timing.beat, rate_beats, c.offset_beats, live_steps);
+            // When inbound OSC notes are driving Bass, played notes replace the rhythm pattern.
+            if !self.osc_input_active
+                && let Some(tone) = lead_step_tone(self.evolved_steps[rhythm_step])
+            {
+                let follow = LeadFollow::from_value(c.follow);
+                let note = bass_step_note(tone, follow, progression, slot, pad, c.octave);
+                let ties = consecutive_ties_after(&self.evolved_steps, rhythm_step, live_steps);
+                let hold_beats = ties as f32 * rate_beats;
+                let hold_seconds = if ties > 0 {
+                    (f64::from(hold_beats) * 60.0 / timing.bpm.max(1.0)) as f32
+                } else {
+                    0.0
+                };
                 // Hard-cut: whatever was sounding hands off to the fade-out
                 // slot (replacing any prior fade in progress) and the new
                 // note starts clean and immediately, not layered on top.
-                self.start_note(note_hz(note, tune), c);
-                if mode == BassMidi::Out
-                    && let Some(sink) = &self.midi
+                self.start_note_with_hold(note_hz(note, tune), hold_seconds, c);
+                if !self.osc_suppressed
+                    && let Some(sink) = &self.osc
                 {
-                    sink.send(MidiMessage::BassNote(tuned_note(note, tune)));
-                    self.midi_active = true;
+                    let decay_beats =
+                        hold_beats + (f64::from(c.decay_time) * timing.bpm / 60.0) as f32;
+                    sink.send(OscVoiceEvent::BassNote {
+                        note: tuned_note(note, tune),
+                        decay_beats,
+                    });
+                    self.osc_active = true;
                     // The gate follows the audio life of the note.
-                    self.midi_release_beat =
-                        timing.beat + f64::from(c.decay_time) * timing.bpm / 60.0;
+                    self.osc_release_beat = timing.beat + f64::from(decay_beats);
                 }
             }
         }
@@ -242,30 +392,97 @@ impl BassEngine {
 /// `bass.type` selects the voice character used for every new bass note.
 /// Index 0 (`Sub`) is the legacy voice, unchanged and the default; switching
 /// type never touches the shared trigger/rhythm, pitch, or reseed paths in
-/// `BassEngine::next` above.
+/// `BassEngine::next` above. FM, Fold and Acid each sweep their brightness
+/// with the note, so the onset carries mid and high content and the tail
+/// settles toward the fundamental.
 pub(crate) enum BassVoice {
     Sub(SubBassVoice),
     Saw(SawBassVoice),
     Pluck(PluckBassVoice),
+    Fm(FmBassVoice),
+    Fold(FoldBassVoice),
+    Acid(AcidBassVoice),
 }
 
 impl BassVoice {
+    #[cfg(test)]
     pub(crate) fn new(
         voice_type: usize,
         hz: f32,
         attack_time: f32,
         decay_time: f32,
+        punch: f32,
         sample_rate: f32,
     ) -> Self {
-        match voice_type {
+        Self::new_with_hold(
+            voice_type,
+            hz,
+            attack_time,
+            decay_time,
+            0.0,
+            punch,
+            sample_rate,
+        )
+    }
+
+    pub(crate) fn new_with_hold(
+        voice_type: usize,
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        hold_seconds: f32,
+        punch: f32,
+        sample_rate: f32,
+    ) -> Self {
+        let mut voice = match voice_type {
             0 => Self::Sub(SubBassVoice::new(hz, attack_time, decay_time, sample_rate)),
             1 => Self::Saw(SawBassVoice::new(hz, attack_time, decay_time, sample_rate)),
-            _ => Self::Pluck(PluckBassVoice::new(
+            2 => Self::Pluck(PluckBassVoice::new(
                 hz,
                 attack_time,
                 decay_time,
                 sample_rate,
             )),
+            3 => Self::Fm(FmBassVoice::new(
+                hz,
+                attack_time,
+                decay_time,
+                punch,
+                sample_rate,
+            )),
+            4 => Self::Fold(FoldBassVoice::new(
+                hz,
+                attack_time,
+                decay_time,
+                punch,
+                sample_rate,
+            )),
+            _ => Self::Acid(AcidBassVoice::new(
+                hz,
+                attack_time,
+                decay_time,
+                punch,
+                sample_rate,
+            )),
+        };
+        if hold_seconds > 0.0 {
+            voice
+                .core_mut()
+                .envelope
+                .set_hold(hold_seconds, sample_rate);
+        }
+        voice.core_mut().sweep = PunchSweep::new(punch, sample_rate);
+        voice
+    }
+
+    fn core_mut(&mut self) -> &mut BassVoiceCore {
+        match self {
+            Self::Sub(voice) => &mut voice.core,
+            Self::Saw(voice) => &mut voice.core,
+            Self::Pluck(voice) => &mut voice.core,
+            Self::Fm(voice) => &mut voice.core,
+            Self::Fold(voice) => &mut voice.core,
+            Self::Acid(voice) => &mut voice.core,
         }
     }
 
@@ -274,6 +491,9 @@ impl BassVoice {
             Self::Sub(voice) => voice.next(),
             Self::Saw(voice) => voice.next(),
             Self::Pluck(voice) => voice.next(),
+            Self::Fm(voice) => voice.next(),
+            Self::Fold(voice) => voice.next(),
+            Self::Acid(voice) => voice.next(),
         }
     }
 
@@ -282,7 +502,38 @@ impl BassVoice {
             Self::Sub(voice) => voice.is_done(),
             Self::Saw(voice) => voice.is_done(),
             Self::Pluck(voice) => voice.is_done(),
+            Self::Fm(voice) => voice.is_done(),
+            Self::Fold(voice) => voice.is_done(),
+            Self::Acid(voice) => voice.is_done(),
         }
+    }
+}
+
+/// At 100% Punch a note starts this many semitones above its pitch...
+const PUNCH_MAX_SEMITONES: f32 = 12.0;
+/// ...and falls back with this time constant: short enough to read as the
+/// note's thump rather than a slide.
+const PUNCH_SWEEP_SECONDS: f32 = 0.012;
+
+/// Punch's onset pitch drop, shared by every character. Absent at Punch 0,
+/// so a voice without Punch keeps its unscaled oscillator path bit-for-bit.
+pub(crate) struct PunchSweep {
+    semitones: f32,
+    decay: f32,
+}
+
+impl PunchSweep {
+    fn new(punch: f32, sample_rate: f32) -> Option<Self> {
+        (punch > 0.0).then(|| Self {
+            semitones: punch.min(1.0) * PUNCH_MAX_SEMITONES,
+            decay: (-1.0 / (PUNCH_SWEEP_SECONDS * sample_rate)).exp(),
+        })
+    }
+
+    fn next_ratio(&mut self) -> f32 {
+        let ratio = (self.semitones / 12.0).exp2();
+        self.semitones *= self.decay;
+        ratio
     }
 }
 
@@ -294,18 +545,65 @@ impl BassVoice {
 /// module chain so every layer uses the same processor.
 pub(crate) struct BassVoiceCore {
     pub(crate) envelope: Adsr,
+    pub(crate) sweep: Option<PunchSweep>,
 }
 
 impl BassVoiceCore {
     pub(crate) fn new(attack_time: f32, decay_time: f32, sample_rate: f32) -> Self {
         Self {
             envelope: Adsr::new(attack_time, decay_time, 0.0, decay_time, sample_rate),
+            sweep: None,
         }
+    }
+
+    /// This sample's Punch pitch ratio, or `None` without Punch.
+    fn pitch_ratio(&mut self) -> Option<f32> {
+        self.sweep.as_mut().map(PunchSweep::next_ratio)
     }
 
     pub(crate) fn is_done(&self) -> bool {
         self.envelope.is_done()
     }
+}
+
+/// One sine sample under an optional Punch ratio. Without one it is the
+/// plain `next`, which keeps Punch-free notes bit-for-bit.
+fn swept(osc: &mut SineOscillator, ratio: Option<f32>) -> f32 {
+    match ratio {
+        Some(ratio) => osc.next_scaled(ratio),
+        None => osc.next(),
+    }
+}
+
+/// A per-note brightness envelope: starts at `start` and falls toward
+/// `floor` with time constant `seconds`, captured at note start like the
+/// amplitude envelope.
+struct Brightness {
+    excess: f32,
+    floor: f32,
+    decay: f32,
+}
+
+impl Brightness {
+    fn new(start: f32, floor: f32, seconds: f32, sample_rate: f32) -> Self {
+        Self {
+            excess: start - floor,
+            floor,
+            decay: (-1.0 / (seconds * sample_rate).max(1.0)).exp(),
+        }
+    }
+
+    fn next(&mut self) -> f32 {
+        let value = self.floor + self.excess;
+        self.excess *= self.decay;
+        value
+    }
+}
+
+/// How long a character's brightness takes to settle, as a share of the
+/// note's Decay, bounded so very short or long notes keep an audible sweep.
+fn brightness_seconds(decay_time: f32, share: f32, min: f32, max: f32) -> f32 {
+    (decay_time * share).clamp(min, max)
 }
 
 /// Type 0 (default): a single sine oscillator through the shared
@@ -325,7 +623,8 @@ impl SubBassVoice {
     }
 
     pub(crate) fn next(&mut self) -> f32 {
-        self.osc.next() * self.core.envelope.next()
+        let ratio = self.core.pitch_ratio();
+        swept(&mut self.osc, ratio) * self.core.envelope.next()
     }
 
     pub(crate) fn is_done(&self) -> bool {
@@ -367,9 +666,10 @@ impl SawBassVoice {
     }
 
     pub(crate) fn next(&mut self) -> f32 {
+        let ratio = self.core.pitch_ratio();
         let mut raw = 0.0f32;
         for (osc, gain) in self.oscillators.iter_mut().zip(BASS_SAW_HARMONIC_GAINS) {
-            raw += osc.next() * gain;
+            raw += swept(osc, ratio) * gain;
         }
         raw * BASS_SAW_OUTPUT_GAIN * self.core.envelope.next()
     }
@@ -419,18 +719,180 @@ impl PluckBassVoice {
     }
 
     pub(crate) fn next(&mut self) -> f32 {
-        let body = self.osc.next() * self.core.envelope.next();
+        let ratio = self.core.pitch_ratio();
+        let body = swept(&mut self.osc, ratio) * self.core.envelope.next();
 
         let transient = if self.transient_samples_remaining > 0 {
             let elapsed = self.transient_total_samples - self.transient_samples_remaining as f32;
             let gain = (-elapsed / self.transient_total_samples * 5.0).exp();
             self.transient_samples_remaining -= 1;
-            self.transient_osc.next() * gain
+            swept(&mut self.transient_osc, ratio) * gain
         } else {
             0.0
         };
 
         (body + transient * BASS_PLUCK_TRANSIENT_MIX) * BASS_PLUCK_OUTPUT_GAIN
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.core.is_done()
+    }
+}
+
+/// FM's onset modulation index, and how much 100% Punch multiplies it.
+const BASS_FM_ONSET_INDEX: f32 = 16.0;
+const BASS_FM_PUNCH_BOOST: f32 = 2.0;
+/// A steady low-index pair under the decaying one keeps some odd-harmonic
+/// body after the onset has collapsed toward the fundamental.
+const BASS_FM_BODY_INDEX: f32 = 0.8;
+const BASS_FM_OUTPUT_GAIN: f32 = 1.45;
+
+/// Type 3: two-operator FM. A 1:1 pair whose index starts high and decays
+/// gives a bright, saw-like attack that collapses to a sine; a 1:2 pair at a
+/// steady low index keeps a hollow body under it.
+pub(crate) struct FmBassVoice {
+    pub(crate) stack: FmStack,
+    pub(crate) hz: f32,
+    pub(crate) core: BassVoiceCore,
+}
+
+impl FmBassVoice {
+    pub(crate) fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        punch: f32,
+        sample_rate: f32,
+    ) -> Self {
+        let onset_index = BASS_FM_ONSET_INDEX * (1.0 + punch * BASS_FM_PUNCH_BOOST);
+        let index_seconds = brightness_seconds(decay_time, 0.2, 0.015, 0.15);
+        Self {
+            stack: FmStack::new(sample_rate)
+                .with_pair(
+                    FmPair::new(1.0, 1.0, onset_index)
+                        .with_index_decay(index_seconds * sample_rate)
+                        .with_level(0.5),
+                )
+                .with_pair(FmPair::new(2.0, 1.0, BASS_FM_BODY_INDEX).with_level(0.5)),
+            hz,
+            core: BassVoiceCore::new(attack_time, decay_time, sample_rate),
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> f32 {
+        let hz = self.hz * self.core.pitch_ratio().unwrap_or(1.0);
+        self.stack.next(hz) * BASS_FM_OUTPUT_GAIN * self.core.envelope.next()
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.core.is_done()
+    }
+}
+
+/// Fold's onset drive into the wavefolder, and how much 100% Punch adds.
+const BASS_FOLD_ONSET_GAIN: f32 = 7.0;
+const BASS_FOLD_PUNCH_BOOST: f32 = 1.0;
+const BASS_FOLD_OUTPUT_GAIN: f32 = 1.05;
+
+/// Type 4: a sine driven into the shared Drive module's triangle wavefolder
+/// (antialiased the same way), with the drive decaying back to unity: the
+/// onset folds into a growl of upper harmonics and the tail is a clean sine,
+/// because a unit sine never reaches a fold point.
+pub(crate) struct FoldBassVoice {
+    pub(crate) osc: SineOscillator,
+    fold_gain: Brightness,
+    previous: Option<f64>,
+    pub(crate) core: BassVoiceCore,
+}
+
+impl FoldBassVoice {
+    pub(crate) fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        punch: f32,
+        sample_rate: f32,
+    ) -> Self {
+        Self {
+            osc: SineOscillator::new(hz, sample_rate),
+            fold_gain: Brightness::new(
+                BASS_FOLD_ONSET_GAIN * (1.0 + punch * BASS_FOLD_PUNCH_BOOST),
+                1.0,
+                brightness_seconds(decay_time, 0.3, 0.02, 0.3),
+                sample_rate,
+            ),
+            previous: None,
+            core: BassVoiceCore::new(attack_time, decay_time, sample_rate),
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> f32 {
+        let ratio = self.core.pitch_ratio();
+        let sine = swept(&mut self.osc, ratio);
+        let u = f64::from(sine * self.fold_gain.next());
+        let previous = self.previous.replace(u).unwrap_or(u);
+        DriveType::Fold.adaa(u, previous) as f32 * BASS_FOLD_OUTPUT_GAIN * self.core.envelope.next()
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.core.is_done()
+    }
+}
+
+/// Acid's filter: cutoff as a multiple of the note, from `BASE` plus an
+/// envelope that starts `DEPTH` higher (more with Punch) and decays.
+const BASS_ACID_CUTOFF_BASE: f32 = 2.0;
+const BASS_ACID_CUTOFF_DEPTH: f32 = 24.0;
+const BASS_ACID_PUNCH_BOOST: f32 = 1.5;
+/// 1/Q of the filter: low enough for the resonant squelch the sweep is for.
+const BASS_ACID_RESONANCE: f32 = 0.5;
+const BASS_ACID_OUTPUT_GAIN: f32 = 0.8;
+
+/// Type 5: subtractive. A band-limited saw through a resonant lowpass whose
+/// cutoff sweeps down with every note, the classic acid-line snap.
+pub(crate) struct AcidBassVoice {
+    saw: PolyBlepSaw,
+    filter: SvfLowpass,
+    cutoff: Brightness,
+    hz: f32,
+    sample_rate: f32,
+    pub(crate) core: BassVoiceCore,
+}
+
+impl AcidBassVoice {
+    pub(crate) fn new(
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        punch: f32,
+        sample_rate: f32,
+    ) -> Self {
+        Self {
+            saw: PolyBlepSaw::new(sample_rate),
+            filter: SvfLowpass::default(),
+            cutoff: Brightness::new(
+                BASS_ACID_CUTOFF_BASE
+                    + BASS_ACID_CUTOFF_DEPTH * (1.0 + punch * BASS_ACID_PUNCH_BOOST),
+                BASS_ACID_CUTOFF_BASE,
+                brightness_seconds(decay_time, 0.35, 0.03, 0.4),
+                sample_rate,
+            ),
+            hz,
+            sample_rate,
+            core: BassVoiceCore::new(attack_time, decay_time, sample_rate),
+        }
+    }
+
+    pub(crate) fn next(&mut self) -> f32 {
+        let hz = self.hz * self.core.pitch_ratio().unwrap_or(1.0);
+        let saw = self.saw.next(hz);
+        let filtered = self.filter.next(
+            saw,
+            hz * self.cutoff.next(),
+            BASS_ACID_RESONANCE,
+            self.sample_rate,
+        );
+        filtered * BASS_ACID_OUTPUT_GAIN * self.core.envelope.next()
     }
 
     pub(crate) fn is_done(&self) -> bool {

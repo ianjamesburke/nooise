@@ -15,7 +15,11 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = CHORD_BUILDER_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = SEQUENCER_UNIFICATION_EPOCH;
+pub(crate) const SEQUENCER_UNIFICATION_EPOCH: u16 = 10;
+pub(crate) const FALL_PROGRESSION_EPOCH: u16 = 9;
+pub(crate) const FUNK_PROGRESSION_EPOCH: u16 = 8;
+pub(crate) const BASS_TYPE_EXPANSION_EPOCH: u16 = 7;
 pub(crate) const CHORD_BUILDER_EPOCH: u16 = 6;
 pub(crate) const DRUNKEN_WAVE_EPOCH: u16 = 4;
 pub(crate) const PAD_PROGRESSION_EXPANSION_EPOCH: u16 = 5;
@@ -86,6 +90,138 @@ const RANGE_CHANGES: &[RangeChange] = &[
     RangeChange {
         epoch: CHORD_BUILDER_EPOCH,
         target: RangeTarget::ChordSlot,
+    },
+    // Bass Type gained FM, Fold and Acid after Pluck. A saved sweep's depth
+    // would cover a different set of characters on the wider dial.
+    RangeChange {
+        epoch: BASS_TYPE_EXPANSION_EPOCH,
+        target: RangeTarget::Control("bass.type"),
+    },
+    // Progression gained Funk1-Funk4 before Custom.
+    RangeChange {
+        epoch: FUNK_PROGRESSION_EPOCH,
+        target: RangeTarget::Control("pad.progression"),
+    },
+    // Progression gained Harvest and Ember before Custom.
+    RangeChange {
+        epoch: FALL_PROGRESSION_EPOCH,
+        target: RangeTarget::Control("pad.progression"),
+    },
+    // Unified 16-step sequencer: chord slots gained Rest and Tie below -7;
+    // pad.chord_bars widened down to 0.0625 bars; pad.chord_count and
+    // pad.chord_offset widened to 16 steps; tonal.phrase gained Custom;
+    // lead.step1..16 gained Tie (-1.0).
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::ChordSlot,
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("pad.chord_bars"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("pad.chord_count"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("pad.chord_offset"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("tonal.phrase"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("arp.pattern"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("bass.rhythm"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("perc.interval_beats"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("bass.interval_beats"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("clap.interval_beats"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("clap.offset_beats"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.pattern"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step1"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step2"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step3"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step4"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step5"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step6"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step7"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step8"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step9"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step10"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step11"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step12"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step13"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step14"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step15"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.step16"),
     },
 ];
 
@@ -161,8 +297,8 @@ mod tests {
         }
     }
 
-    /// A sweep on the Progression dial written before Hosking extended it
-    /// would walk a different sequence now, so it is refused; the same song
+    /// A sweep on the Progression dial written before it last grew would
+    /// walk a different sequence now, so it is refused; the same song
     /// written today loads.
     #[test]
     fn an_old_code_sweeping_the_progression_dial_is_refused() {
@@ -170,7 +306,7 @@ mod tests {
         song.automation
             .open_or_create(ControlAddress::new("pad.progression"))
             .depth_ratio = 0.5;
-        let stale = encode_song_code_at_epoch(&song, DRUNKEN_WAVE_EPOCH).unwrap();
+        let stale = encode_song_code_at_epoch(&song, FALL_PROGRESSION_EPOCH - 1).unwrap();
         assert_eq!(
             decode_song_code(&stale).err(),
             Some(SongCodeError::StaleRange("pad.progression"))
@@ -179,11 +315,16 @@ mod tests {
     }
 
     /// No built-in song sweeps the Progression dial, so none needed
-    /// re-authoring when it grew.
+    /// re-authoring when it grew. Songs 9, 10, 16, and 17 carry `bass.rhythm`
+    /// LFOs that changed at `SEQUENCER_UNIFICATION_EPOCH` and were rescaled there.
     #[test]
     fn no_built_in_song_modulates_the_progression() {
-        for song in decode_auto_states() {
-            assert_eq!(stale_modulation(&song, 1), None);
+        for (index, song) in decode_auto_states().into_iter().enumerate() {
+            assert_ne!(
+                stale_modulation(&song, 1),
+                Some("pad.progression"),
+                "song {index} modulates pad.progression"
+            );
         }
     }
 
@@ -203,8 +344,35 @@ mod tests {
 
     #[test]
     fn built_in_songs_do_not_sweep_the_kick_type_dial() {
-        for song in decode_auto_states() {
-            assert_eq!(stale_modulation(&song, 2), None);
+        for (index, song) in decode_auto_states().into_iter().enumerate() {
+            assert_ne!(
+                stale_modulation(&song, 2),
+                Some("kick.type"),
+                "song {index} modulates kick.type"
+            );
+            assert_eq!(stale_modulation(&song, SEQUENCER_UNIFICATION_EPOCH), None);
+        }
+    }
+
+    #[test]
+    fn built_in_bass_rhythm_sweeps_keep_their_rhythm_span() {
+        let states = decode_auto_states();
+        let address = ControlAddress::new("bass.rhythm");
+        for (index, expected_depth) in [
+            (8, 0.23 * 3.0 / 4.0),
+            (9, 0.23 * 3.0 / 4.0),
+            (15, 0.0),
+            (16, 0.0),
+        ] {
+            let route = states[index]
+                .automation
+                .route(address)
+                .expect("song carries bass.rhythm LFO");
+            assert!(
+                (route.depth_ratio - expected_depth).abs() < 1e-4,
+                "song {index} unexpected rescaled depth {}",
+                route.depth_ratio
+            );
         }
     }
 
@@ -261,7 +429,7 @@ mod tests {
         assert!(
             RANGE_CHANGES
                 .windows(2)
-                .all(|pair| pair[1].epoch == pair[0].epoch + 1),
+                .all(|pair| pair[1].epoch == pair[0].epoch || pair[1].epoch == pair[0].epoch + 1),
             "epochs are consecutive and append-only"
         );
     }

@@ -710,13 +710,10 @@ impl ReplayHarness {
                 turn.tick_due,
                 &mut ProductionCoordinatorContext {
                     effects: &mut self.executor,
-                    fluid: &self.fluid,
                     flipped: &mut self.flipped,
                     clipboard: &mut self.clipboard,
                     capabilities: self.capabilities,
                     beat: self.clock.now().as_secs_f64(),
-                    active_chord: 0,
-                    chord_span: ChordSpan::default(),
                 },
             )
             .expect("pending commit has no fallible effects");
@@ -845,6 +842,7 @@ impl ReplayHarness {
                 beat: self.clock.now().as_secs_f64(),
                 active_chord: 0,
                 chord_span: ChordSpan::default(),
+                ..TelemetryView::default()
             },
             presentation: ViewPresentation {
                 fluid: &self.fluid,
@@ -2176,13 +2174,13 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
     assert!(result.effects.is_empty(), "{name}");
 
     let staged = InteractionModel {
-        mode: InteractionMode::Palette(PaletteMode {
+        mode: InteractionMode::Palette(Box::new(PaletteMode {
             staged: vec![PaletteStagedEdit {
                 id: "master.bpm",
                 value_bits: 91.0f32.to_bits(),
             }],
             ..PaletteMode::default()
-        }),
+        })),
         ..InteractionModel::default()
     };
     let immediate = replay_from_model(
@@ -2393,7 +2391,10 @@ fn space_toggles_the_lead_lane_and_c_keeps_the_phrase() {
     ]);
     let kept = replay(&trace, TerminalCapabilities::full());
     assert_eq!(kept.effect_count("LeadCapture"), 2);
-    assert_eq!(kept.control("lead.pattern"), Some(1.0));
+    assert_eq!(
+        kept.control("lead.pattern"),
+        Some(CUSTOM_LEAD_PATTERN_INDEX as f32)
+    );
     assert_eq!(kept.control("lead.steps"), Some(4.0));
     assert!(kept.deferred_inputs.is_empty());
 }
@@ -2425,19 +2426,23 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     let plain = |code| key(0, code, InputPhase::Press);
     // Shift+Tab from the hub enters Lead, the last layer.
     let mut trace = vec![modified_key(0, FixtureKey::BackTab, InputPhase::Press, 1)];
-    trace.extend(std::iter::repeat_n(plain(FixtureKey::Down), 10));
+    trace.push(plain(FixtureKey::Down));
     trace.push(plain(FixtureKey::Enter));
     let opened = replay(&trace, TerminalCapabilities::full());
     assert_eq!(
         opened.model.navigation,
         Navigation::Lead {
             selected: 0,
-            drill: LeadDrill::Pattern { return_to: 10 },
+            drill: LeadDrill::Pattern { return_to: 1 },
         }
     );
     assert_eq!(opened.model.mode, InteractionMode::Browsing);
 
-    trace.extend([plain(FixtureKey::Down), plain(FixtureKey::Character('u'))]);
+    trace.extend(std::iter::repeat_n(
+        plain(FixtureKey::Down),
+        LEAD_SEQUENCE_HEADER_IDS.len() + 1,
+    ));
+    trace.push(plain(FixtureKey::Character('u')));
     let rolled = replay(&trace, TerminalCapabilities::full());
     assert_eq!(rolled.effect_count("RandomizeSelected"), 1);
     assert_eq!(rolled.session_generation, 1, "the roll edits step 2");
@@ -2448,8 +2453,8 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     assert_eq!(
         played.model.navigation,
         Navigation::Lead {
-            selected: 1,
-            drill: LeadDrill::Pattern { return_to: 10 },
+            selected: LEAD_SEQUENCE_HEADER_IDS.len() + 1,
+            drill: LeadDrill::Pattern { return_to: 1 },
         },
         "Esc leaves play mode but stays in the lane"
     );
@@ -2459,7 +2464,7 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     assert_eq!(
         back.model.navigation,
         Navigation::Lead {
-            selected: 10,
+            selected: 1,
             drill: LeadDrill::None,
         }
     );
@@ -2584,7 +2589,7 @@ fn production_coordinator_preserves_modifier_palette_and_save_failure_parity() {
     );
     assert!(matches!(
         shifted_palette.model.mode,
-        InteractionMode::Palette(PaletteMode { ref query, .. }) if query == "B"
+        InteractionMode::Palette(ref palette) if palette.query == "B"
     ));
 
     let failed = replay_with(
@@ -2641,9 +2646,9 @@ fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
         .expect("the added delay has a row");
     assert_eq!(
         result.model.navigation,
-        Navigation::Standard {
-            page: super::interaction::StandardPage::Bass,
+        Navigation::Bass {
             selected: row,
+            drill: super::interaction::BassDrill::None,
         }
     );
 }
@@ -2655,38 +2660,12 @@ fn palette_semantic_winners_render_and_confirm_on_both_terminals() {
         TerminalCapabilities::default(),
     ] {
         for (tabs, query, visible, target) in [
-            (1, "midi", "pad.midi_out", "pad.midi_out"),
-            (7, "midi", "arp.midi_out", "arp.midi_out"),
-            (8, "midi", "lead.midi_out", "lead.midi_out"),
-            (8, "midi in", "lead.midi_in", "lead.midi_in"),
-            (
-                8,
-                "midi gate",
-                "lead.midi_gate_beats",
-                "lead.midi_gate_beats",
-            ),
-            (8, "arp midi", "arp.midi_out", "arp.midi_out"),
-            (8, "midi in arp", "arp.midi_in", "arp.midi_in"),
-            (8, "pad.midi_out", "pad.midi_out", "pad.midi_out"),
             (3, "delay", "Delay · Bass", "bass.slot3.amount"),
             (0, "swing", "Global Swing · Master", "master.slot3.amount"),
             (8, "bass", "bass.level", "bass.level"),
             (8, "mute kick", "Mute Kick", ""),
         ] {
-            let configure = |mut harness: ReplayHarness| {
-                for id in ["pad.midi_in", "arp.midi_gate_beats", "pad.midi_out"] {
-                    let tab = tab_owning_control(id).unwrap();
-                    let index = tab_specs(tab)
-                        .iter()
-                        .position(|spec| spec.id == id)
-                        .unwrap();
-                    harness
-                        .executor
-                        .execute(LiveEffect::SelectControl { tab, index, id })
-                        .unwrap();
-                }
-                harness
-            };
+            let configure = |harness: ReplayHarness| harness;
             let press = |code| key(0, code, InputPhase::Press);
             let mut events = vec![TraceEvent::Resize {
                 after_ms: 0,
@@ -3083,8 +3062,8 @@ fn mute_kick_palette_action_preserves_other_mutes_and_saves_them() {
                     .with_session_edit(|snapshot| {
                         snapshot.muted[Tab::Bass as usize] = true;
                         snapshot.muted[Tab::Master as usize] = true;
-                        snapshot.controls.arp.midi_out = 1.0;
-                        snapshot.controls.lead.midi_out = 1.0;
+                        snapshot.controls.arp.voice_type = 1.0;
+                        snapshot.controls.lead.voice_type = 1.0;
                     })
                     .with_auto_running()
             };
@@ -3138,8 +3117,8 @@ fn kick_only_palette_action_preserves_auto_navigation_and_saved_controls() {
                     .with_session_edit(|snapshot| {
                         snapshot.muted[Tab::Kick as usize] = true;
                         snapshot.muted[Tab::Master as usize] = true;
-                        snapshot.controls.arp.midi_out = 1.0;
-                        snapshot.controls.lead.midi_out = 1.0;
+                        snapshot.controls.arp.voice_type = 1.0;
+                        snapshot.controls.lead.voice_type = 1.0;
                     })
                     .with_auto_running()
             };
@@ -3175,8 +3154,8 @@ fn kick_only_palette_action_preserves_auto_navigation_and_saved_controls() {
                     !matches!(tab, Tab::Kick | Tab::Master)
                 );
             }
-            assert_eq!(saved.controls.arp.midi_out, 1.0);
-            assert_eq!(saved.controls.lead.midi_out, 1.0);
+            assert_eq!(saved.controls.arp.voice_type, 1.0);
+            assert_eq!(saved.controls.lead.voice_type, 1.0);
         }
     }
 }
@@ -3302,13 +3281,10 @@ fn stale_lane_palette_target_shows_failure_without_touching_replacement() {
         false,
         &mut ProductionCoordinatorContext {
             effects: &mut harness.executor,
-            fluid: &harness.fluid,
             flipped: &mut harness.flipped,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 0.0,
-            active_chord: 0,
-            chord_span: ChordSpan::default(),
         },
     )
     .unwrap();
@@ -3731,13 +3707,10 @@ fn palette_recipe_refuses_delete_and_readd_of_the_same_module() {
         false,
         &mut ProductionCoordinatorContext {
             effects: &mut harness.executor,
-            fluid: &harness.fluid,
             flipped: &mut harness.flipped,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 0.0,
-            active_chord: 0,
-            chord_span: ChordSpan::default(),
         },
     )
     .unwrap();
@@ -3811,13 +3784,13 @@ fn switching_a_filter_to_high_pass_mirrors_its_cutoff() {
 #[test]
 fn production_tick_commits_pending_palette_edits_at_the_bar() {
     let staged = InteractionModel {
-        mode: InteractionMode::Palette(PaletteMode {
+        mode: InteractionMode::Palette(Box::new(PaletteMode {
             staged: vec![PaletteStagedEdit {
                 id: "master.bpm",
                 value_bits: 91.0f32.to_bits(),
             }],
             ..PaletteMode::default()
-        }),
+        })),
         ..InteractionModel::default()
     };
     let result = replay_from_model(
@@ -3853,13 +3826,13 @@ fn shift_h_resets_master_tone_to_neutral_through_production_replay() {
 #[test]
 fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
     let staged = InteractionModel {
-        mode: InteractionMode::Palette(PaletteMode {
+        mode: InteractionMode::Palette(Box::new(PaletteMode {
             staged: vec![PaletteStagedEdit {
                 id: "pad.level",
                 value_bits: 50.0f32.to_bits(),
             }],
             ..PaletteMode::default()
-        }),
+        })),
         ..InteractionModel::default()
     };
     let mut harness = ReplayHarness::new(TerminalCapabilities::full()).with_model(staged);
@@ -3874,13 +3847,10 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
         false,
         &mut ProductionCoordinatorContext {
             effects: &mut harness.executor,
-            fluid: &harness.fluid,
             flipped: &mut harness.flipped,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 0.0,
-            active_chord: 0,
-            chord_span: ChordSpan::default(),
         },
     )
     .expect("staging turn");
@@ -3904,13 +3874,10 @@ fn scheduler_due_tick_precedes_events_in_the_same_production_turn() {
         true,
         &mut ProductionCoordinatorContext {
             effects: &mut harness.executor,
-            fluid: &harness.fluid,
             flipped: &mut harness.flipped,
             clipboard: &mut harness.clipboard,
             capabilities: harness.capabilities,
             beat: 4.0,
-            active_chord: 0,
-            chord_span: ChordSpan::default(),
         },
     )
     .expect("due turn");
@@ -3947,6 +3914,11 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
     let custom = replay_with(
         &[
             key(0, FixtureKey::Enter, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
             key(0, FixtureKey::Enter, InputPhase::Press),
         ],
         TerminalCapabilities::full(),
@@ -3954,7 +3926,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
             harness
                 .with_model(InteractionModel {
                     navigation: Navigation::Chords {
-                        selected: 7,
+                        selected: 4,
                         drill: ChordDrill::None,
                     },
                     ..InteractionModel::default()
@@ -3970,7 +3942,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
                 drill: ChordDrill::Slot {
                     extension2: false,
                     slot: 0,
-                    return_to: 7,
+                    return_to: 4,
                 },
             },
             ..InteractionModel::default()
@@ -3982,7 +3954,15 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
             .iter()
             .map(|record| record.action.intent)
             .collect::<Vec<_>>(),
-        vec![Intent::EnterChordProgression, Intent::EnterChordSlot(0)]
+        vec![
+            Intent::EnterChordProgression,
+            Intent::MoveSelection(1),
+            Intent::MoveSelection(1),
+            Intent::MoveSelection(1),
+            Intent::MoveSelection(1),
+            Intent::MoveSelection(1),
+            Intent::EnterChordSlot(0)
+        ]
     );
     assert!(custom.effects.is_empty());
     assert_eq!(custom.session_generation, 1);
@@ -4107,9 +4087,9 @@ fn planned_mute_and_cancel_preserve_minimum_frame_navigation_on_both_terminals()
         assert_eq!(result.final_owner(), Some("BROWSE"));
         assert_eq!(
             result.model.navigation,
-            Navigation::Standard {
-                page: super::interaction::StandardPage::Kick,
+            Navigation::Kick {
                 selected: 1,
+                drill: super::interaction::KickDrill::None,
             }
         );
         assert!(
@@ -4176,9 +4156,9 @@ fn enter_tab_and_esc_move_between_the_hub_and_its_layers() {
     );
     assert_eq!(
         resumed.model.navigation,
-        Navigation::Standard {
-            page: super::interaction::StandardPage::Bass,
+        Navigation::Bass {
             selected: 1,
+            drill: super::interaction::BassDrill::None,
         }
     );
 }
@@ -4337,7 +4317,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
 
     let palette = replay_from_model(
         InteractionModel {
-            mode: InteractionMode::Palette(PaletteMode::default()),
+            mode: InteractionMode::Palette(Box::default()),
             ..InteractionModel::default()
         },
         &repeated(FixtureKey::Tab),
@@ -4345,10 +4325,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
     );
     assert!(matches!(
         palette.model.mode,
-        InteractionMode::Palette(PaletteMode {
-            locked: Some(_),
-            ..
-        })
+        InteractionMode::Palette(ref palette) if palette.locked.is_some()
     ));
 
     let performance = replay_from_model(
@@ -4366,7 +4343,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
     let drill = replay_from_model(
         InteractionModel {
             navigation: Navigation::Chords {
-                selected: 2,
+                selected: PAD_SEQUENCE_HEADER_IDS.len() + 2,
                 drill: ChordDrill::Progression { return_to: 0 },
             },
             mode: InteractionMode::Browsing,
@@ -4434,13 +4411,10 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
             let mut harness = ReplayHarness::new(TerminalCapabilities::full());
             let mut context = ProductionCoordinatorContext {
                 effects: &mut harness.executor,
-                fluid: &harness.fluid,
                 flipped: &mut harness.flipped,
                 clipboard: &mut harness.clipboard,
                 capabilities: harness.capabilities,
                 beat: 0.0,
-                active_chord: 0,
-                chord_span: ChordSpan::default(),
             };
             let action = SemanticAction { phase, intent };
             let frame = production_frame(&mut harness.model, &context);
@@ -4476,7 +4450,7 @@ fn escape_converges_from_every_owner_and_nested_depth() {
             ..InteractionModel::default()
         },
         InteractionModel {
-            mode: InteractionMode::Palette(PaletteMode::default()),
+            mode: InteractionMode::Palette(Box::default()),
             ..InteractionModel::default()
         },
         InteractionModel {
@@ -4528,7 +4502,6 @@ fn escape_converges_from_every_owner_and_nested_depth() {
                     drill: ChordDrill::None,
                     ..
                 } | Navigation::Hub { .. }
-                    | Navigation::Standard { .. }
             ),
             "Escape left a navigation drill open: {:?}",
             result.model
@@ -4898,7 +4871,7 @@ fn ddmin_retains_the_exact_edge_transition_record() {
                     intent: Intent::Save,
                 },
                 before: InteractionModel {
-                    mode: InteractionMode::Palette(PaletteMode::default()),
+                    mode: InteractionMode::Palette(Box::default()),
                     ..InteractionModel::default()
                 },
                 after: InteractionModel {
@@ -5101,6 +5074,11 @@ fn chord_builder_open() -> Vec<TraceEvent> {
         },
         key(0, FixtureKey::Enter, InputPhase::Press),
         TraceEvent::Idle { after_ms: 40 },
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
         key(0, FixtureKey::Enter, InputPhase::Press),
         TraceEvent::Idle { after_ms: 40 },
     ]
@@ -5145,7 +5123,7 @@ fn chord_builder_opens_every_progression_without_authoring_on_both_terminal_prof
                     .iter()
                     .any(|frame| frame.text.contains("Root"))
             );
-            let name = pad_chord_name(&song.controls.pad, progression, 0);
+            let name = pad_chord_name(&song.controls.pad, progression, 0, ChordLabels::default());
             assert!(result.frames.iter().any(|frame| frame.text.contains(&name)));
             assert!(result.frames.iter().any(|frame| {
                 frame
@@ -5611,4 +5589,143 @@ fn vamp_on_a_arms_for_next_bar_holds_chord_indefinitely_and_releases_on_next_bar
         song::decode_song_code(released_after_bar.saved_automation_code.as_deref().unwrap())
             .unwrap();
     assert_eq!(saved_ended.vamp, None);
+}
+
+#[test]
+fn event_and_osc_navigation_do_not_project_render_views() {
+    let mut harness = ReplayHarness::new(TerminalCapabilities::full());
+    let mut context = ProductionCoordinatorContext {
+        effects: &mut harness.executor,
+        flipped: &mut harness.flipped,
+        clipboard: &mut harness.clipboard,
+        capabilities: harness.capabilities,
+        beat: 0.0,
+    };
+    let before = view::PROJECTION_COUNT.get();
+    for _ in 0..32 {
+        coordinator::coordinate_production_event(
+            &mut harness.model,
+            &TransportEvent::key(PhysicalKey::Down, Modifiers::default(), InputPhase::Press),
+            &mut context,
+        );
+    }
+    for command in [
+        osc::OscUiCommand::NavLayer(Tab::Lead),
+        osc::OscUiCommand::NavRow(usize::MAX),
+        osc::OscUiCommand::NavMove(-3),
+        osc::OscUiCommand::NavPage(12),
+        osc::OscUiCommand::NavPage(-12),
+    ] {
+        coordinator::apply_osc_ui_command(command, &mut harness.model, &mut context);
+    }
+    let frame = production_frame(&mut harness.model, &context);
+    assert!(frame.selected_control.is_some());
+    assert!(frame.selected.is_some());
+    assert!(harness.model.navigation.selected() < frame.item_count);
+    assert_eq!(view::PROJECTION_COUNT.get(), before);
+}
+
+fn apply_test_osc(harness: &mut ReplayHarness, command: osc::OscUiCommand) {
+    let mut context = ProductionCoordinatorContext {
+        effects: &mut harness.executor,
+        flipped: &mut harness.flipped,
+        clipboard: &mut harness.clipboard,
+        capabilities: harness.capabilities,
+        beat: 0.0,
+    };
+    coordinator::apply_osc_ui_command(command, &mut harness.model, &mut context);
+}
+
+#[test]
+fn osc_touch_cancel_matches_keyboard_on_every_visible_navigation_row() {
+    let controls = FluidControls::default();
+    let mut navigations = vec![Navigation::Hub { selected: 0 }];
+    for tab in Tab::all() {
+        let mut model = InteractionModel::default();
+        model.select_control(tab, 0, &controls);
+        navigations.push(model.navigation);
+    }
+    navigations.push(Navigation::Chords {
+        selected: 0,
+        drill: ChordDrill::Progression { return_to: 4 },
+    });
+    for navigation in navigations {
+        for row in 0..view::navigation_control_ids(navigation, &controls).len() {
+            let mut model = InteractionModel {
+                navigation,
+                ..InteractionModel::default()
+            };
+            *model.navigation.selected_mut() = row;
+            let mut osc =
+                ReplayHarness::new(TerminalCapabilities::full()).with_model(model.clone());
+            apply_test_osc(&mut osc, osc::OscUiCommand::NavTouch);
+            let keyboard = replay_from_model(
+                model.clone(),
+                &[key(0, FixtureKey::Enter, InputPhase::Press)],
+                TerminalCapabilities::full(),
+            );
+            assert_eq!(osc.model, keyboard.model, "touch {navigation:?} row {row}");
+            if matches!(navigation, Navigation::Hub { .. }) && row < interaction::LAYER_COUNT {
+                assert_ne!(osc.model.navigation, model.navigation);
+            }
+            if matches!(
+                navigation,
+                Navigation::Chords {
+                    drill: ChordDrill::Progression { .. },
+                    ..
+                }
+            ) && row >= PAD_SEQUENCE_HEADER_IDS.len()
+            {
+                assert!(
+                    matches!(osc.model.navigation, Navigation::Chords { drill: ChordDrill::Slot { slot, .. }, .. } if slot == row - PAD_SEQUENCE_HEADER_IDS.len())
+                );
+            }
+            apply_test_osc(&mut osc, osc::OscUiCommand::NavCancel);
+            let keyboard = replay_from_model(
+                model,
+                &[
+                    key(0, FixtureKey::Enter, InputPhase::Press),
+                    key(0, FixtureKey::Escape, InputPhase::Press),
+                ],
+                TerminalCapabilities::full(),
+            );
+            assert_eq!(osc.model, keyboard.model, "cancel {navigation:?} row {row}");
+        }
+    }
+}
+
+#[test]
+fn osc_gestures_obey_kernel_latches_modes_and_cancel() {
+    let mut harness = ReplayHarness::new(TerminalCapabilities::full());
+    for kind in GestureKind::ALL {
+        let press = || osc::OscUiCommand::Gesture { kind, active: true };
+        let release = || osc::OscUiCommand::Gesture {
+            kind,
+            active: false,
+        };
+        apply_test_osc(&mut harness, press());
+        assert!(harness.executor.session().load().gestures.has_held());
+        let generation = harness.executor.session().load().generation;
+        apply_test_osc(&mut harness, press());
+        assert_eq!(harness.executor.session().load().generation, generation);
+        apply_test_osc(&mut harness, release());
+        assert!(!harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, press());
+        let navigation = harness.model.navigation;
+        // A held gesture survives Cancel, as with the keyboard's Esc.
+        apply_test_osc(&mut harness, osc::OscUiCommand::NavCancel);
+        assert_eq!(harness.model.navigation, navigation);
+        assert!(harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, release());
+        assert!(!harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, press());
+        assert!(harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, osc::OscUiCommand::GestureReleaseAll);
+        assert!(!harness.executor.session().load().gestures.has_held());
+        apply_test_osc(&mut harness, release());
+        harness.model.mode = InteractionMode::Help;
+        apply_test_osc(&mut harness, press());
+        assert!(!harness.executor.session().load().gestures.has_held());
+        harness.model.mode = InteractionMode::Browsing;
+    }
 }

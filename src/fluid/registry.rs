@@ -4,6 +4,7 @@
 
 use super::widget::DialScale;
 use super::*;
+use crate::fx::drive::{DRIVE_TYPES, DriveType};
 use crate::fx::filter::FilterType;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,15 +327,6 @@ pub(crate) enum LfoSnap {
 #[derive(Clone, Copy)]
 pub(crate) struct ControlSearch {
     pub(crate) name: &'static str,
-    pub(crate) group: Option<SearchGroup>,
-}
-
-/// A feature's members share a concept and declare exactly one default per scope.
-#[derive(Clone, Copy)]
-pub(crate) struct SearchGroup {
-    pub(crate) name: &'static str,
-    pub(crate) member: &'static str,
-    pub(crate) is_default: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -382,10 +374,7 @@ impl ControlSpec {
         Self {
             id,
             label,
-            search: ControlSearch {
-                name: label,
-                group: None,
-            },
+            search: ControlSearch { name: label },
             kind,
             min,
             max,
@@ -433,20 +422,6 @@ impl ControlSpec {
     /// otherwise be an exact match for a concept shared across layers.
     pub(crate) const fn search_name(mut self, name: &'static str) -> Self {
         self.search.name = name;
-        self
-    }
-
-    pub(crate) const fn search_group(
-        mut self,
-        name: &'static str,
-        member: &'static str,
-        is_default: bool,
-    ) -> Self {
-        self.search.group = Some(SearchGroup {
-            name,
-            member,
-            is_default,
-        });
         self
     }
 
@@ -644,6 +619,22 @@ impl ControlSpec {
                 spec.entry = Entry::Round;
                 spec.reset = 0.0;
             }
+            (Family::Drive, ModuleSlotField::Feedback) => {
+                spec.kind = ControlKind::Discrete;
+                spec.min = 0.0;
+                spec.max = (DRIVE_TYPES.len() - 1) as f32;
+                spec.step = Step::Linear(1.0);
+                spec.entry = Entry::Round;
+                spec.reset = 0.0;
+            }
+            (Family::Drive, ModuleSlotField::Time | ModuleSlotField::RightTime) => {
+                spec.kind = ControlKind::Continuous;
+                spec.min = 0.0;
+                spec.max = 1.0;
+                spec.step = Step::Linear(0.01);
+                spec.entry = Entry::Percent;
+                spec.reset = 0.0;
+            }
             _ => {}
         }
         spec
@@ -764,33 +755,12 @@ impl ControlSpec {
         (spec.set)(c, value);
     }
 
-    /// Randomize across the live dial while excluding its current value. If
-    /// quantization lands on the current rung, step to an adjacent legal
-    /// setting so controls with alternatives always change.
+    /// Randomize across the live dial. A draw can land back on the current
+    /// value; callers that need to know whether anything actually changed
+    /// compare before and after themselves (see `RandomizeSelected` and
+    /// `RandomizeScope`).
     pub(crate) fn apply_randomized_ratio(&self, ratio: f32, c: &mut FluidControls) {
-        let spec = self.contextual(c);
-        let current = (spec.get)(c);
-        let mut scratch = c.clone();
-        spec.apply_ratio(ratio, &mut scratch);
-        let candidate = (spec.get)(&scratch);
-        if candidate != current {
-            (spec.set)(c, candidate);
-            return;
-        }
-
-        // A random draw can quantize back to the current rung. Try each
-        // adjacent legal setting; a singleton naturally remains unchanged.
-        spec.apply_delta(1.0, &mut scratch);
-        let next = (spec.get)(&scratch);
-        if next != current {
-            (spec.set)(c, next);
-            return;
-        }
-        spec.apply_delta(-1.0, &mut scratch);
-        let previous = (spec.get)(&scratch);
-        if previous != current {
-            (spec.set)(c, previous);
-        }
+        self.apply_ratio(ratio, c);
     }
 
     /// Every value one arrow press can reach from the floor, ascending. Only
@@ -1198,7 +1168,7 @@ macro_rules! chord_slot_rows {
                 concat!("pad.chord", $slot, "_degree"),
                 concat!("Chord ", $slot, " Root"),
                 ControlKind::Discrete,
-                -7.0,
+                ChordSlotControls::REST_DEGREE,
                 7.0,
                 Step::Linear(1.0),
                 Entry::Round,
@@ -1212,11 +1182,17 @@ macro_rules! chord_slot_rows {
                     let slot = c
                         .pad
                         .chord_slot(progression_index(c.pad.progression), $slot - 1);
-                    format!(
-                        "{} ({:+.0})",
-                        chord_pitch_name(pad_chord_root_note(slot)),
-                        slot.degree
-                    )
+                    if slot.is_rest() {
+                        "Rest".to_string()
+                    } else if slot.is_tie() {
+                        "Tie".to_string()
+                    } else {
+                        format!(
+                            "{} ({:+.0})",
+                            chord_pitch_name(pad_chord_root_note(slot)),
+                            slot.degree
+                        )
+                    }
                 },
             )
             .reset_at(0.0)
@@ -1447,7 +1423,7 @@ fn chord_extension_label(value: f32) -> &'static str {
 }
 
 /// One layer's whole `ControlSpec` table: its hand-written base rows, then
-/// the pad's eight chord slots (Pads only), then the eight module slots.
+/// the pad's sixteen chord slots (Pads only), then the eight module slots.
 /// The tail rows are identical for every layer, so each table names only what
 /// is specific to it.
 macro_rules! layer_controls {
@@ -1459,7 +1435,7 @@ macro_rules! layer_controls {
             @rows $layer,
             $prefix,
             [$($base),*],
-            [1, 2, 3, 4, 5, 6, 7, 8],
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
             [1, 2, 3, 4, 5, 6, 7, 8]
         )
     };
@@ -1492,7 +1468,7 @@ macro_rules! layer_controls {
 
 /// `layer_controls!` enumerates its slots literally.
 const _: () = assert!(MODULE_SLOTS == 8);
-const _: () = assert!(CHORD_SLOT_COUNT == 8);
+const _: () = assert!(CHORD_SLOT_COUNT == 16);
 
 pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
     master,
@@ -1544,26 +1520,51 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(0.0),
         ControlSpec::new(
-            "master.tune",
-            "Tune",
+            "master.key",
+            "Key",
             ControlKind::Discrete,
-            -12.0,
-            12.0,
+            0.0,
+            MasterKey::DIAL_MAX,
             Step::Linear(1.0),
             Entry::Round,
-            |c| c.master.tune,
-            |c, v| c.master.tune = v,
-            |c| {
-                if c.master.tune.abs() < 0.05 {
-                    "0 st".to_string()
-                } else {
-                    format!("{:+.0} st", c.master.tune)
-                }
-            },
+            |c| c.master.key,
+            |c, v| c.master.key = v,
+            |c| MasterKey::from_control(c.master.key).label().to_string(),
         )
+        .search_name("master key transpose tune")
         .reset_at(0.0),
     ]
 );
+
+macro_rules! perc_step_row {
+    ($step:literal) => {
+        ControlSpec::new(
+            concat!("perc.step", $step),
+            concat!("Step ", $step),
+            ControlKind::Discrete,
+            -1.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.perc.steps[$step - 1],
+            |c, v| {
+                if (c.perc.steps[$step - 1] - v).abs() > f32::EPSILON {
+                    c.perc.steps[$step - 1] = v;
+                    c.perc.pattern = CUSTOM_PERC_PATTERN_INDEX as f32;
+                }
+            },
+            |c| perc_step_label(c.perc.steps[$step - 1]).to_string(),
+        )
+        .reset_at(0.0)
+        .stored_as(
+            |c| c.perc.steps[$step - 1],
+            |c, v| c.perc.steps[$step - 1] = v,
+        )
+    };
+}
+
+/// `PERC_CONTROLS` enumerates its steps literally.
+const _: () = assert!(PERC_STEP_COUNT == 16);
 
 pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     perc,
@@ -1588,60 +1589,69 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
         .in_ms(),
         time_ms!("perc.decay_ms", "Decay", 20.0, 2000.0, 1.0, perc.decay_ms),
         ControlSpec::new(
-            "perc.interval_beats",
-            "Interval",
-            ControlKind::Timing,
-            0.125,
-            4.25,
-            Step::BeatGrid,
-            Entry::Snap,
-            |c| c.perc.interval_beats,
-            |c, v| c.perc.interval_beats = v,
-            |c| {
-                if c.perc.interval_beats >= 4.25 {
-                    "Continuous".to_string()
-                } else {
-                    beats2(c.perc.interval_beats)
-                }
-            },
-        )
-        .lfo_snap(LfoSnap::PowerOfTwo)
-        .in_beats(),
-        beat_offset!("perc.offset_beats", "Offset", 4.0, perc.offset_beats),
-    ]
-);
-
-pub(crate) const PAD_TRIGGER_ID: &str = "pad.trigger";
-pub(crate) const PAD_MIDI_TRIGGER_ID: &str = "pad.midi_trigger";
-
-pub(crate) fn pad_step_index(id: &str) -> Option<usize> {
-    let step: usize = id.strip_prefix("pad.step")?.parse().ok()?;
-    (1..=16).contains(&step).then(|| step - 1)
-}
-
-macro_rules! pad_step_row {
-    ($step:literal) => {
-        ControlSpec::new(
-            concat!("pad.step", $step),
-            concat!("Step ", $step),
+            PERC_PATTERN_ID,
+            "Pattern",
             ControlKind::Discrete,
             0.0,
-            1.0,
+            CUSTOM_PERC_PATTERN_INDEX as f32,
             Step::Linear(1.0),
             Entry::Round,
-            |c| c.pad.steps[$step - 1],
-            |c, v| c.pad.steps[$step - 1] = v,
-            |c| {
-                if c.pad.steps[$step - 1] >= 0.5 {
-                    "Hit"
-                } else {
-                    "Rest"
-                }
-                .to_string()
-            },
+            |c| c.perc.pattern,
+            |c, v| c.perc.apply_pattern_preset(v),
+            |c| perc_pattern_label(c.perc.pattern).to_string(),
+        ),
+        beat_interval!(
+            "perc.interval_beats",
+            "Rate",
+            0.125,
+            4.0,
+            perc.interval_beats
         )
-    };
-}
+        .search_name("Rate Interval"),
+        ControlSpec::new(
+            PERC_STEPS_ID,
+            "Steps",
+            ControlKind::Discrete,
+            1.0,
+            PERC_STEP_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.perc.step_count,
+            |c, v| c.perc.step_count = v,
+            |c| format!("{:.0}", c.perc.step_count),
+        )
+        .reset_at(8.0),
+        beat_offset!("perc.offset_beats", "Offset", 4.0, perc.offset_beats),
+        ControlSpec::new(
+            "perc.evolve_rate",
+            "Evolve",
+            ControlKind::Continuous,
+            0.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Percent,
+            |c| c.perc.evolve_rate,
+            |c, v| c.perc.evolve_rate = v,
+            |c| pct(c.perc.evolve_rate),
+        ),
+        perc_step_row!(1),
+        perc_step_row!(2),
+        perc_step_row!(3),
+        perc_step_row!(4),
+        perc_step_row!(5),
+        perc_step_row!(6),
+        perc_step_row!(7),
+        perc_step_row!(8),
+        perc_step_row!(9),
+        perc_step_row!(10),
+        perc_step_row!(11),
+        perc_step_row!(12),
+        perc_step_row!(13),
+        perc_step_row!(14),
+        perc_step_row!(15),
+        perc_step_row!(16),
+    ]
+);
 
 pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, "pad", [
     gain_pct!("pad.level", "Level", pad.level),
@@ -1674,45 +1684,6 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c| type_label(c.pad.voice_type, PAD_TYPES).to_string(),
     ),
     ControlSpec::new(
-        "pad.chord_bars",
-        "Chord Length",
-        ControlKind::Timing,
-        1.0,
-        64.0,
-        Step::PowerOfTwo,
-        Entry::BeatsAsBars,
-        |c| c.pad.chord_bars,
-        |c, v| c.pad.chord_bars = v,
-        |c| format!("{:.0} beats", c.pad.chord_bars * 4.0),
-    )
-    .taper(Taper::Log2)
-    .lfo_snap(LfoSnap::Step),
-    ControlSpec::new(
-        "pad.chord_count",
-        "Chord Count",
-        ControlKind::Discrete,
-        1.0,
-        CHORD_SLOT_COUNT as f32,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.pad.chord_count,
-        |c, v| c.pad.chord_count = v,
-        |c| format!("{:.0}", c.pad.chord_count),
-    )
-    .reset_at(CHORD_SLOT_COUNT as f32),
-    ControlSpec::new(
-        "pad.chord_offset",
-        "Chord Offset",
-        ControlKind::Discrete,
-        0.0,
-        (CHORD_SLOT_COUNT - 1) as f32,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.pad.chord_offset,
-        |c, v| c.pad.chord_offset = v,
-        |c| format!("{:.0}", c.pad.chord_offset),
-    ),
-    ControlSpec::new(
         "pad.progression",
         "Progression",
         ControlKind::Discrete,
@@ -1722,9 +1693,73 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         Entry::Round,
         |c| c.pad.progression,
         |c, v| c.pad.progression = v,
-        |c| progression_label(progression_index(c.pad.progression)),
+        |c| progression_label(
+            progression_index(c.pad.progression),
+            MasterKey::from_control(c.master.key)
+        ),
     )
     .song_values(&PROGRESSION_SONG_VALUES),
+    ControlSpec::new(
+        "pad.chord_bars",
+        "Rate",
+        ControlKind::Timing,
+        0.0625,
+        64.0,
+        Step::PowerOfTwo,
+        Entry::BeatsAsBars,
+        |c| c.pad.chord_bars,
+        |c, v| c.pad.chord_bars = v,
+        |c| {
+            let beats = c.pad.chord_bars * 4.0;
+            if beats < 1.0 {
+                format!("{beats:.2} beats")
+            } else {
+                format!("{beats:.0} beats")
+            }
+        },
+    )
+    .search_name("Chord Length Rate")
+    .taper(Taper::Log2)
+    .lfo_snap(LfoSnap::Step),
+    ControlSpec::new(
+        "pad.chord_count",
+        "Steps",
+        ControlKind::Discrete,
+        1.0,
+        CHORD_SLOT_COUNT as f32,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.chord_count,
+        |c, v| c.pad.chord_count = v,
+        |c| format!("{:.0}", c.pad.chord_count),
+    )
+    .search_name("Chord Count Steps")
+    .reset_at(DEFAULT_CHORD_COUNT as f32),
+    ControlSpec::new(
+        "pad.chord_offset",
+        "Offset",
+        ControlKind::Discrete,
+        0.0,
+        (CHORD_SLOT_COUNT - 1) as f32,
+        Step::Linear(1.0),
+        Entry::Round,
+        |c| c.pad.chord_offset,
+        |c, v| c.pad.chord_offset = v,
+        |c| format!("{:.0}", c.pad.chord_offset),
+    )
+    .search_name("Chord Offset"),
+    ControlSpec::new(
+        "pad.evolve_rate",
+        "Evolve",
+        ControlKind::Continuous,
+        0.0,
+        1.0,
+        Step::Linear(0.05),
+        Entry::Percent,
+        |c| c.pad.evolve_rate,
+        |c, v| c.pad.evolve_rate = v,
+        |c| pct(c.pad.evolve_rate),
+    ),
     ControlSpec::new(
         "pad.chord_notes",
         "Chord Notes",
@@ -1737,86 +1772,40 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c, v| c.pad.chord_notes = v,
         |c| format!("{:.0}", c.pad.chord_notes),
     ),
-    ControlSpec::new(
-        "pad.midi_out",
-        "MIDI Out",
-        ControlKind::Discrete,
-        0.0,
-        1.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.pad.midi_out,
-        |c, v| {
-            c.pad.midi_out = v;
-            if v >= 0.5 {
-                c.pad.midi_in = 0.0;
-            }
-        },
-        |c| if c.pad.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
-    ).search_group("midi", "out", true),
-    ControlSpec::new(
-        "pad.midi_in",
-        "MIDI In",
-        ControlKind::Discrete,
-        0.0,
-        1.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.pad.midi_in,
-        |c, v| {
-            c.pad.midi_in = v;
-            if v >= 0.5 {
-                c.pad.midi_out = 0.0;
-            }
-        },
-        |c| if c.pad.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
-    ).search_group("midi", "in", false),
-    ControlSpec::new(
-        PAD_TRIGGER_ID,
-        "Trigger",
-        ControlKind::Discrete,
-        0.0,
-        1.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.pad.trigger,
-        |c, v| c.pad.trigger = v,
-        |c| if c.pad.trigger >= 0.5 { "Stabs" } else { "Hold" }.to_string(),
-    ),
-    beat_interval!("pad.gate_beats", "Gate", 0.125, 2.0, pad.gate_beats),
-    beat_offset!("pad.offset_beats", "Offset", 4.0, pad.offset_beats),
     gain_pct!("pad.stereo_width", "Stereo Width", pad.stereo_width),
     gain_pct!("pad.detune", "Detune", pad.detune),
     gain_pct!("pad.octave_mix", "Octave Mix", pad.octave_mix),
-    pad_step_row!(1),
-    pad_step_row!(2),
-    pad_step_row!(3),
-    pad_step_row!(4),
-    pad_step_row!(5),
-    pad_step_row!(6),
-    pad_step_row!(7),
-    pad_step_row!(8),
-    pad_step_row!(9),
-    pad_step_row!(10),
-    pad_step_row!(11),
-    pad_step_row!(12),
-    pad_step_row!(13),
-    pad_step_row!(14),
-    pad_step_row!(15),
-    pad_step_row!(16),
-    ControlSpec::new(
-        PAD_MIDI_TRIGGER_ID,
-        "MIDI Trigger",
-        ControlKind::Discrete,
-        0.0,
-        1.0,
-        Step::Linear(1.0),
-        Entry::Round,
-        |c| c.pad.midi_trigger,
-        |c, v| c.pad.midi_trigger = v,
-        |c| if c.pad.midi_trigger >= 0.5 { "On" } else { "Off" }.to_string(),
-    ),
 ]);
+
+macro_rules! bass_step_row {
+    ($step:literal) => {
+        ControlSpec::new(
+            concat!("bass.step", $step),
+            concat!("Step ", $step),
+            ControlKind::Discrete,
+            LEAD_STEP_TIE,
+            LEAD_TONE_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.bass.steps[$step - 1],
+            |c, v| {
+                if (c.bass.steps[$step - 1] - v).abs() > f32::EPSILON {
+                    c.bass.steps[$step - 1] = v;
+                    c.bass.rhythm = CUSTOM_BASS_RHYTHM_INDEX as f32;
+                }
+            },
+            |c| lead_step_label(c.bass.steps[$step - 1], &bass_page_reach(&c.bass, &c.pad)),
+        )
+        .reset_at(0.0)
+        .stored_as(
+            |c| c.bass.steps[$step - 1],
+            |c, v| c.bass.steps[$step - 1] = v,
+        )
+    };
+}
+
+/// `BASS_CONTROLS` enumerates its steps literally.
+const _: () = assert!(BASS_STEP_COUNT == 16);
 
 pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
     bass,
@@ -1851,25 +1840,31 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.bass.voice_type = v,
             |c| type_label(c.bass.voice_type, BASS_TYPES).to_string(),
         ),
-        beat_interval!(
-            "bass.interval_beats",
-            "Length",
-            0.125,
-            8.0,
-            bass.interval_beats
-        ),
-        beat_offset!("bass.offset_beats", "Offset", 4.0, bass.offset_beats),
+        gain_pct!("bass.punch", "Punch", bass.punch),
         ControlSpec::new(
-            "bass.rhythm",
-            "Rhythm",
+            BASS_RHYTHM_ID,
+            "Pattern",
             ControlKind::Discrete,
             0.0,
-            last_index_of(&BASS_RHYTHMS),
+            CUSTOM_BASS_RHYTHM_INDEX as f32,
             Step::Linear(1.0),
             Entry::Round,
             |c| c.bass.rhythm,
-            |c, v| c.bass.rhythm = v,
-            |c| letter_label(wrapped_index(c.bass.rhythm, BASS_RHYTHMS.len())),
+            |c, v| c.bass.apply_rhythm_preset(v),
+            |c| bass_pattern_label(c.bass.rhythm).to_string(),
+        )
+        .search_name("Pattern Rhythm"),
+        ControlSpec::new(
+            "bass.follow",
+            "Follow",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_FOLLOWS),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.bass.follow,
+            |c, v| c.bass.follow = v,
+            |c| LeadFollow::from_value(c.bass.follow).label().to_string(),
         ),
         ControlSpec::new(
             "bass.octave",
@@ -1883,27 +1878,65 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.bass.octave = v,
             |c| format!("{:.0}", c.bass.octave),
         ),
+        beat_interval!(
+            "bass.interval_beats",
+            "Rate",
+            0.125,
+            4.0,
+            bass.interval_beats
+        )
+        .search_name("Rate Length Interval"),
         ControlSpec::new(
-            "bass.midi_mode",
-            "MIDI",
+            BASS_STEPS_ID,
+            "Steps",
             ControlKind::Discrete,
-            0.0,
-            last_index_of(&BASS_MIDI_MODES),
+            1.0,
+            BASS_STEP_COUNT as f32,
             Step::Linear(1.0),
             Entry::Round,
-            |c| c.bass.midi,
-            |c, v| c.bass.midi = v,
-            |c| bass_midi_mode(c.bass.midi).label().to_string(),
+            |c| c.bass.step_count,
+            |c, v| c.bass.step_count = v,
+            |c| format!("{:.0}", c.bass.step_count),
         )
-        .search_name("bass midi mode")
-        .search_group("midi", "mode", true),
+        .reset_at(BASS_STEP_COUNT as f32),
+        beat_offset!("bass.offset_beats", "Offset", 4.0, bass.offset_beats),
+        ControlSpec::new(
+            "bass.evolve_rate",
+            "Evolve",
+            ControlKind::Continuous,
+            0.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Percent,
+            |c| c.bass.evolve_rate,
+            |c, v| c.bass.evolve_rate = v,
+            |c| pct(c.bass.evolve_rate),
+        ),
+        bass_step_row!(1),
+        bass_step_row!(2),
+        bass_step_row!(3),
+        bass_step_row!(4),
+        bass_step_row!(5),
+        bass_step_row!(6),
+        bass_step_row!(7),
+        bass_step_row!(8),
+        bass_step_row!(9),
+        bass_step_row!(10),
+        bass_step_row!(11),
+        bass_step_row!(12),
+        bass_step_row!(13),
+        bass_step_row!(14),
+        bass_step_row!(15),
+        bass_step_row!(16),
     ]
 );
 
 /// The character choices behind each voice-type control, in stored-value
 /// order. A control's `max` is `last_index_of` its own table, so a table and
 /// its slider range can never disagree.
-pub(crate) const BASS_TYPES: &[&str] = &["Sub", "Saw", "Pluck"];
+/// Dial order. Append-only: song codes store `bass.type` as this index, and
+/// growing it needs a `RANGE_CHANGES` epoch.
+pub(crate) const BASS_TYPES: &[&str] = &["Sub", "Saw", "Pluck", "FM", "Fold", "Acid"];
 pub(crate) const PAD_TYPES: &[&str] = &["Warm", "Dark", "Glass", "Choir", "Hollow", "Tape"];
 pub(crate) const KICK_TYPES: &[&str] = &["Sub", "Warm", "Wood", "Felt", "909", "Deep", "Dust"];
 pub(crate) const TONAL_SYNTH_TYPES: &[&str] = &[
@@ -1940,6 +1973,35 @@ fn letter_label(index: usize) -> String {
     char::from(b'A' + index as u8).to_string()
 }
 
+macro_rules! kick_step_row {
+    ($step:literal) => {
+        ControlSpec::new(
+            concat!("kick.step", $step),
+            concat!("Step ", $step),
+            ControlKind::Discrete,
+            0.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.kick.steps[$step - 1],
+            |c, v| {
+                if (c.kick.steps[$step - 1] - v).abs() > f32::EPSILON {
+                    c.kick.steps[$step - 1] = v;
+                    c.kick.pattern = CUSTOM_KICK_PATTERN_INDEX as f32;
+                }
+            },
+            |c| kick_step_label(c.kick.steps[$step - 1]).to_string(),
+        )
+        .stored_as(
+            |c| c.kick.steps[$step - 1],
+            |c, v| c.kick.steps[$step - 1] = v,
+        )
+    };
+}
+
+/// `KICK_CONTROLS` enumerates its steps literally.
+const _: () = assert!(KICK_STEP_COUNT == 16);
+
 pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
     kick,
     "kick",
@@ -1973,14 +2035,6 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.kick.voice_type = v,
             |c| type_label(c.kick.voice_type, KICK_TYPES).to_string(),
         ),
-        beat_interval!(
-            "kick.interval_beats",
-            "Interval",
-            0.125,
-            4.0,
-            kick.interval_beats
-        ),
-        beat_offset!("kick.offset_beats", "Offset", 4.0, kick.offset_beats),
         ControlSpec::new(
             "kick.start_freq",
             "Start Freq",
@@ -2003,8 +2057,105 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| pct(c.kick.click / 0.2),
         )
         .with_step(0.01),
+        ControlSpec::new(
+            KICK_PATTERN_ID,
+            "Pattern",
+            ControlKind::Discrete,
+            0.0,
+            CUSTOM_KICK_PATTERN_INDEX as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.kick.pattern,
+            |c, v| c.kick.apply_pattern_preset(v),
+            |c| kick_pattern_label(c.kick.pattern).to_string(),
+        ),
+        beat_interval!(
+            "kick.interval_beats",
+            "Rate",
+            0.125,
+            4.0,
+            kick.interval_beats
+        )
+        .search_name("Rate Interval"),
+        ControlSpec::new(
+            KICK_STEPS_ID,
+            "Steps",
+            ControlKind::Discrete,
+            1.0,
+            KICK_STEP_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.kick.step_count,
+            |c, v| c.kick.step_count = v,
+            |c| format!("{:.0}", c.kick.step_count),
+        )
+        .reset_at(8.0),
+        beat_offset!("kick.offset_beats", "Offset", 4.0, kick.offset_beats),
+        ControlSpec::new(
+            "kick.evolve_rate",
+            "Evolve",
+            ControlKind::Continuous,
+            0.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Percent,
+            |c| c.kick.evolve_rate,
+            |c, v| c.kick.evolve_rate = v,
+            |c| pct(c.kick.evolve_rate),
+        ),
+        kick_step_row!(1),
+        kick_step_row!(2),
+        kick_step_row!(3),
+        kick_step_row!(4),
+        kick_step_row!(5),
+        kick_step_row!(6),
+        kick_step_row!(7),
+        kick_step_row!(8),
+        kick_step_row!(9),
+        kick_step_row!(10),
+        kick_step_row!(11),
+        kick_step_row!(12),
+        kick_step_row!(13),
+        kick_step_row!(14),
+        kick_step_row!(15),
+        kick_step_row!(16),
     ]
 );
+
+macro_rules! tonal_step_row {
+    ($step:literal) => {
+        ControlSpec::new(
+            concat!("tonal.step", $step),
+            concat!("Step ", $step),
+            ControlKind::Discrete,
+            LEAD_STEP_TIE,
+            LEAD_TONE_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.tonal.steps[$step - 1],
+            |c, v| {
+                if (c.tonal.steps[$step - 1] - v).abs() > f32::EPSILON {
+                    c.tonal.steps[$step - 1] = v;
+                    c.tonal.phrase = CUSTOM_TONAL_PHRASE_INDEX as f32;
+                }
+            },
+            |c| {
+                lead_step_label(
+                    c.tonal.steps[$step - 1],
+                    &tonal_page_reach(&c.tonal, &c.pad),
+                )
+            },
+        )
+        .reset_at(0.0)
+        .stored_as(
+            |c| c.tonal.steps[$step - 1],
+            |c, v| c.tonal.steps[$step - 1] = v,
+        )
+    };
+}
+
+/// `TONAL_CONTROLS` enumerates its steps literally.
+const _: () = assert!(TONAL_STEP_COUNT == 16);
 
 pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
     tonal,
@@ -2033,6 +2184,42 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| type_label(c.tonal.synth_type, TONAL_SYNTH_TYPES).to_string(),
         ),
         ControlSpec::new(
+            TONAL_PHRASE_ID,
+            "Phrase",
+            ControlKind::Discrete,
+            0.0,
+            CUSTOM_TONAL_PHRASE_INDEX as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.tonal.phrase,
+            |c, v| c.tonal.apply_phrase_preset(v),
+            |c| {
+                let index =
+                    c.tonal
+                        .phrase
+                        .round()
+                        .clamp(0.0, CUSTOM_TONAL_PHRASE_INDEX as f32) as usize;
+                if index >= CUSTOM_TONAL_PHRASE_INDEX {
+                    "Custom".to_string()
+                } else {
+                    letter_label(index)
+                }
+            },
+        ),
+        ControlSpec::new(
+            "tonal.follow",
+            "Follow",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_FOLLOWS),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.tonal.follow,
+            |c, v| c.tonal.follow = v,
+            |c| LeadFollow::from_value(c.tonal.follow).label().to_string(),
+        )
+        .reset_at(LeadFollow::Scale.value()),
+        ControlSpec::new(
             "tonal.octave",
             "Octave",
             ControlKind::Discrete,
@@ -2045,18 +2232,6 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| format!("{:.0}", c.tonal.octave),
         )
         .reset_at(0.0),
-        ControlSpec::new(
-            "tonal.phrase",
-            "Phrase",
-            ControlKind::Discrete,
-            0.0,
-            last_index_of(&TONAL_PHRASES),
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.tonal.phrase,
-            |c, v| c.tonal.phrase = v,
-            |c| letter_label(wrapped_index(c.tonal.phrase, TONAL_PHRASES.len())),
-        ),
         beat_interval!(
             "tonal.rate_beats",
             "Rate",
@@ -2064,15 +2239,20 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             TONAL_RATE_BEATS_MAX,
             tonal.rate_beats
         ),
-        beat_interval!(
-            "tonal.step_interval_beats",
-            "Cycle",
-            TONAL_CYCLE_BEATS_MIN,
-            TONAL_CYCLE_BEATS_MAX,
-            tonal.step_interval_beats
-        ),
+        ControlSpec::new(
+            TONAL_STEPS_ID,
+            "Steps",
+            ControlKind::Discrete,
+            1.0,
+            TONAL_STEP_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.tonal.step_count,
+            |c, v| c.tonal.step_count = v,
+            |c| format!("{:.0}", c.tonal.step_count),
+        )
+        .reset_at(8.0),
         beat_offset!("tonal.offset_beats", "Offset", 4.0, tonal.offset_beats),
-        gain_pct!("tonal.randomness", "Randomness", tonal.randomness),
         ControlSpec::new(
             "tonal.evolve_rate",
             "Evolve",
@@ -2085,8 +2265,53 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.tonal.evolve_rate = v,
             |c| pct(c.tonal.evolve_rate),
         ),
+        tonal_step_row!(1),
+        tonal_step_row!(2),
+        tonal_step_row!(3),
+        tonal_step_row!(4),
+        tonal_step_row!(5),
+        tonal_step_row!(6),
+        tonal_step_row!(7),
+        tonal_step_row!(8),
+        tonal_step_row!(9),
+        tonal_step_row!(10),
+        tonal_step_row!(11),
+        tonal_step_row!(12),
+        tonal_step_row!(13),
+        tonal_step_row!(14),
+        tonal_step_row!(15),
+        tonal_step_row!(16),
     ]
 );
+
+macro_rules! clap_step_row {
+    ($step:literal) => {
+        ControlSpec::new(
+            concat!("clap.step", $step),
+            concat!("Step ", $step),
+            ControlKind::Discrete,
+            0.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.clap.steps[$step - 1],
+            |c, v| {
+                if (c.clap.steps[$step - 1] - v).abs() > f32::EPSILON {
+                    c.clap.steps[$step - 1] = v;
+                    c.clap.pattern = CUSTOM_CLAP_PATTERN_INDEX as f32;
+                }
+            },
+            |c| clap_step_label(c.clap.steps[$step - 1]).to_string(),
+        )
+        .stored_as(
+            |c| c.clap.steps[$step - 1],
+            |c, v| c.clap.steps[$step - 1] = v,
+        )
+    };
+}
+
+/// `CLAP_CONTROLS` enumerates its steps literally.
+const _: () = assert!(CLAP_STEP_COUNT == 16);
 
 pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
     clap,
@@ -2094,14 +2319,52 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
     [
         gain_pct!("clap.level", "Level", clap.level),
         time_ms!("clap.decay_ms", "Decay", 10.0, 200.0, 1.0, clap.decay_ms),
+        ControlSpec::new(
+            CLAP_PATTERN_ID,
+            "Pattern",
+            ControlKind::Discrete,
+            0.0,
+            CUSTOM_CLAP_PATTERN_INDEX as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.clap.pattern,
+            |c, v| c.clap.apply_pattern_preset(v),
+            |c| clap_pattern_label(c.clap.pattern).to_string(),
+        ),
         beat_interval!(
             "clap.interval_beats",
-            "Interval",
-            0.5,
-            8.0,
+            "Rate",
+            0.125,
+            4.0,
             clap.interval_beats
+        )
+        .search_name("Rate Interval"),
+        ControlSpec::new(
+            CLAP_STEPS_ID,
+            "Steps",
+            ControlKind::Discrete,
+            1.0,
+            CLAP_STEP_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.clap.step_count,
+            |c, v| c.clap.step_count = v,
+            |c| format!("{:.0}", c.clap.step_count),
+        )
+        .reset_at(8.0),
+        beat_offset!("clap.offset_beats", "Offset", 4.0, clap.offset_beats),
+        ControlSpec::new(
+            "clap.evolve_rate",
+            "Evolve",
+            ControlKind::Continuous,
+            0.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Percent,
+            |c| c.clap.evolve_rate,
+            |c, v| c.clap.evolve_rate = v,
+            |c| pct(c.clap.evolve_rate),
         ),
-        beat_offset!("clap.offset_beats", "Offset", 8.0, clap.offset_beats),
         ControlSpec::new(
             "clap.slap_count",
             "Slap Count",
@@ -2123,58 +2386,60 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
             clap.slap_spread_ms
         ),
         gain_pct!("clap.body", "Body", clap.body),
+        clap_step_row!(1),
+        clap_step_row!(2),
+        clap_step_row!(3),
+        clap_step_row!(4),
+        clap_step_row!(5),
+        clap_step_row!(6),
+        clap_step_row!(7),
+        clap_step_row!(8),
+        clap_step_row!(9),
+        clap_step_row!(10),
+        clap_step_row!(11),
+        clap_step_row!(12),
+        clap_step_row!(13),
+        clap_step_row!(14),
+        clap_step_row!(15),
+        clap_step_row!(16),
     ]
 );
+
+macro_rules! arp_step_row {
+    ($step:literal) => {
+        ControlSpec::new(
+            concat!("arp.step", $step),
+            concat!("Step ", $step),
+            ControlKind::Discrete,
+            LEAD_STEP_TIE,
+            ARP_TONE_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.arp.steps[$step - 1],
+            |c, v| {
+                if (c.arp.steps[$step - 1] - v).abs() > f32::EPSILON {
+                    c.arp.steps[$step - 1] = v;
+                    c.arp.pattern = CUSTOM_ARP_PATTERN_INDEX as f32;
+                }
+            },
+            |c| arp_step_label(c.arp.steps[$step - 1]).to_string(),
+        )
+        .reset_at(0.0)
+        .stored_as(
+            |c| c.arp.steps[$step - 1],
+            |c, v| c.arp.steps[$step - 1] = v,
+        )
+    };
+}
+
+/// `ARP_CONTROLS` enumerates its steps literally.
+const _: () = assert!(ARP_STEP_COUNT == 16);
 
 pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
     arp,
     "arp",
     [
         gain_pct!("arp.gain", "Level", arp.gain),
-        ControlSpec::new(
-            "arp.midi_in",
-            "MIDI In",
-            ControlKind::Discrete,
-            0.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.arp.midi_in,
-            |c, v| {
-                c.arp.midi_in = v;
-                if v >= 0.5 {
-                    c.arp.midi_out = 0.0;
-                }
-            },
-            |c| if c.arp.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
-        )
-        .search_group("midi", "in", false),
-        ControlSpec::new(
-            "arp.midi_out",
-            "MIDI Out",
-            ControlKind::Discrete,
-            0.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.arp.midi_out,
-            |c, v| {
-                c.arp.midi_out = v;
-                if v >= 0.5 {
-                    c.arp.midi_in = 0.0;
-                }
-            },
-            |c| if c.arp.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
-        )
-        .search_group("midi", "out", true),
-        beat_interval!(
-            "arp.midi_gate_beats",
-            "MIDI Gate",
-            0.125,
-            2.0,
-            arp.midi_gate_beats
-        )
-        .search_group("midi", "gate", false),
         time_secs!("arp.attack", "Attack", 0.0, 1.0, 0.001, arp.attack),
         time_secs!("arp.decay", "Decay", TONAL_DECAY_MIN, 6.0, 0.001, arp.decay),
         ControlSpec::new(
@@ -2189,25 +2454,29 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.arp.voice_type = v,
             |c| type_label(c.arp.voice_type, TONAL_SYNTH_TYPES).to_string(),
         ),
-        beat_interval!(
-            "arp.rate_beats",
-            "Rate",
-            ARP_RATE_BEATS_MIN,
-            ARP_RATE_BEATS_MAX,
-            arp.rate_beats
-        ),
-        beat_offset!("arp.offset_beats", "Offset", 4.0, arp.offset_beats),
         ControlSpec::new(
-            "arp.pattern",
+            ARP_PATTERN_ID,
             "Pattern",
             ControlKind::Discrete,
             0.0,
-            3.0,
+            CUSTOM_ARP_PATTERN_INDEX as f32,
             Step::Linear(1.0),
             Entry::Round,
             |c| c.arp.pattern,
-            |c, v| c.arp.pattern = v,
+            |c, v| c.arp.apply_pattern_preset(v),
             |c| arp_pattern_label(c.arp.pattern).to_string(),
+        ),
+        ControlSpec::new(
+            "arp.follow",
+            "Follow",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_FOLLOWS),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.arp.follow,
+            |c, v| c.arp.follow = v,
+            |c| LeadFollow::from_value(c.arp.follow).label().to_string(),
         ),
         ControlSpec::new(
             "arp.octaves",
@@ -2218,13 +2487,62 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
             Step::Linear(1.0),
             Entry::Round,
             |c| c.arp.octaves,
-            |c, v| c.arp.octaves = v,
+            |c, v| c.arp.apply_octaves(v),
             |c| format!("{:.0}", c.arp.octaves),
         ),
+        beat_interval!(
+            "arp.rate_beats",
+            "Rate",
+            ARP_RATE_BEATS_MIN,
+            ARP_RATE_BEATS_MAX,
+            arp.rate_beats
+        ),
+        ControlSpec::new(
+            ARP_STEPS_ID,
+            "Steps",
+            ControlKind::Discrete,
+            1.0,
+            ARP_STEP_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.arp.step_count,
+            |c, v| c.arp.step_count = v,
+            |c| format!("{:.0}", c.arp.step_count),
+        )
+        .reset_at(8.0),
+        beat_offset!("arp.offset_beats", "Offset", 4.0, arp.offset_beats),
+        ControlSpec::new(
+            "arp.evolve_rate",
+            "Evolve",
+            ControlKind::Continuous,
+            0.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Percent,
+            |c| c.arp.evolve_rate,
+            |c, v| c.arp.evolve_rate = v,
+            |c| pct(c.arp.evolve_rate),
+        ),
+        arp_step_row!(1),
+        arp_step_row!(2),
+        arp_step_row!(3),
+        arp_step_row!(4),
+        arp_step_row!(5),
+        arp_step_row!(6),
+        arp_step_row!(7),
+        arp_step_row!(8),
+        arp_step_row!(9),
+        arp_step_row!(10),
+        arp_step_row!(11),
+        arp_step_row!(12),
+        arp_step_row!(13),
+        arp_step_row!(14),
+        arp_step_row!(15),
+        arp_step_row!(16),
     ]
 );
 
-/// One Lead pattern step: a rest or one of the `LEAD_TONE_COUNT` tones,
+/// One Lead pattern step: a tie, a rest, or one of the `LEAD_TONE_COUNT` tones,
 /// read against the song's reach. Step numbers are 1-based in ids
 /// and labels, 0-based into `LeadControls::steps`. Reached only through
 /// `LEAD_CONTROLS`, which lists every step.
@@ -2234,13 +2552,23 @@ macro_rules! lead_step_row {
             concat!("lead.step", $step),
             concat!("Step ", $step),
             ControlKind::Discrete,
-            0.0,
+            LEAD_STEP_TIE,
             LEAD_TONE_COUNT as f32,
             Step::Linear(1.0),
             Entry::Round,
             |c| c.lead.steps[$step - 1],
-            |c, v| c.lead.steps[$step - 1] = v,
+            |c, v| {
+                if (c.lead.steps[$step - 1] - v).abs() > f32::EPSILON {
+                    c.lead.steps[$step - 1] = v;
+                    c.lead.pattern = CUSTOM_LEAD_PATTERN_INDEX as f32;
+                }
+            },
             |c| lead_step_label(c.lead.steps[$step - 1], &lead_page_reach(&c.lead, &c.pad)),
+        )
+        .reset_at(0.0)
+        .stored_as(
+            |c| c.lead.steps[$step - 1],
+            |c, v| c.lead.steps[$step - 1] = v,
         )
     };
 }
@@ -2254,50 +2582,6 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
     [
         gain_pct!("lead.level", "Level", lead.level),
         ControlSpec::new(
-            "lead.midi_in",
-            "MIDI In",
-            ControlKind::Discrete,
-            0.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.lead.midi_in,
-            |c, v| {
-                c.lead.midi_in = v;
-                if v >= 0.5 {
-                    c.lead.midi_out = 0.0;
-                }
-            },
-            |c| if c.lead.midi_in >= 0.5 { "On" } else { "Off" }.to_string(),
-        )
-        .search_group("midi", "in", false),
-        ControlSpec::new(
-            "lead.midi_out",
-            "MIDI Out",
-            ControlKind::Discrete,
-            0.0,
-            1.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.lead.midi_out,
-            |c, v| {
-                c.lead.midi_out = v;
-                if v >= 0.5 {
-                    c.lead.midi_in = 0.0;
-                }
-            },
-            |c| if c.lead.midi_out >= 0.5 { "On" } else { "Off" }.to_string(),
-        )
-        .search_group("midi", "out", true),
-        beat_interval!(
-            "lead.midi_gate_beats",
-            "MIDI Gate",
-            0.125,
-            2.0,
-            lead.midi_gate_beats
-        )
-        .search_group("midi", "gate", false),
-        ControlSpec::new(
             LEAD_PATTERN_ID,
             "Pattern",
             ControlKind::Discrete,
@@ -2306,10 +2590,10 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             Step::Linear(1.0),
             Entry::Round,
             |c| c.lead.pattern,
-            |c, v| c.lead.pattern = v,
+            |c, v| c.lead.apply_pattern_preset(v),
             |c| LeadPattern::from_value(c.lead.pattern).label().to_string(),
         )
-        .reset_at(LeadPattern::Play.value()),
+        .reset_at(LeadPattern::Steady.value()),
         time_secs!("lead.attack", "Attack", 0.001, 1.0, 0.001, lead.attack),
         time_secs!(
             "lead.decay",
@@ -2333,6 +2617,18 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| lead_type_label(c.lead.voice_type).to_string(),
         ),
         ControlSpec::new(
+            "lead.follow",
+            "Follow",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_FOLLOWS),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.follow,
+            |c, v| c.lead.follow = v,
+            |c| LeadFollow::from_value(c.lead.follow).label().to_string(),
+        ),
+        ControlSpec::new(
             "lead.octave",
             "Octave",
             ControlKind::Discrete,
@@ -2345,18 +2641,6 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| format!("{:+.0}", c.lead.octave),
         )
         .reset_at(0.0),
-        ControlSpec::new(
-            "lead.follow",
-            "Follow",
-            ControlKind::Discrete,
-            0.0,
-            last_index_of(&LEAD_FOLLOWS),
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.lead.follow,
-            |c, v| c.lead.follow = v,
-            |c| LeadFollow::from_value(c.lead.follow).label().to_string(),
-        ),
         beat_interval!(
             "lead.rate_beats",
             "Rate",
@@ -2364,7 +2648,6 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             LEAD_RATE_BEATS_MAX,
             lead.rate_beats
         ),
-        beat_offset!("lead.offset_beats", "Offset", 4.0, lead.offset_beats),
         ControlSpec::new(
             LEAD_STEPS_ID,
             "Steps",
@@ -2378,6 +2661,19 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| format!("{:.0}", c.lead.step_count),
         )
         .reset_at(8.0),
+        beat_offset!("lead.offset_beats", "Offset", 4.0, lead.offset_beats),
+        ControlSpec::new(
+            "lead.evolve_rate",
+            "Evolve",
+            ControlKind::Continuous,
+            0.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Percent,
+            |c| c.lead.evolve_rate,
+            |c, v| c.lead.evolve_rate = v,
+            |c| pct(c.lead.evolve_rate),
+        ),
         lead_step_row!(1),
         lead_step_row!(2),
         lead_step_row!(3),
@@ -2427,101 +2723,567 @@ pub(crate) fn all_specs() -> impl Iterator<Item = &'static ControlSpec> {
 }
 
 pub(crate) fn spec_by_id(id: &str) -> Option<&'static ControlSpec> {
-    all_specs().find(|spec| spec.id == id)
-}
-
-pub(crate) const PAD_MIDI_IN_ROW: u8 = 1 << 0;
-pub(crate) const PAD_MIDI_OUT_ROW: u8 = 1 << 1;
-pub(crate) const BASS_MIDI_ROW: u8 = 1 << 6;
-/// Every assigned `midi_rows` bit; a song code naming any other is refused.
-pub(crate) const MIDI_ROW_BITS: u8 = 0b0111_1111;
-
-/// Optional MIDI rows retain their place after being added even when Off.
-/// Gate rows belong to their track's MIDI Out control.
-pub(crate) fn midi_row_bit(id: &str) -> Option<u8> {
-    match id {
-        "pad.midi_in" => Some(PAD_MIDI_IN_ROW),
-        "pad.midi_out" => Some(PAD_MIDI_OUT_ROW),
-        "arp.midi_in" => Some(1 << 2),
-        "arp.midi_out" | "arp.midi_gate_beats" => Some(1 << 3),
-        "lead.midi_in" => Some(1 << 4),
-        "lead.midi_out" | "lead.midi_gate_beats" => Some(1 << 5),
-        "bass.midi_mode" => Some(BASS_MIDI_ROW),
-        _ => None,
-    }
-}
-
-/// The Pad rhythm controls tucked out of the root page until added through `/`.
-pub(crate) fn pad_rhythm_row_bit(id: &str) -> Option<u8> {
-    match id {
-        "pad.trigger" => Some(1 << 0),
-        "pad.gate_beats" => Some(1 << 2),
-        "pad.offset_beats" => Some(1 << 3),
-        _ => None,
-    }
-}
-
-fn midi_row_visible(id: &str, c: &FluidControls) -> bool {
-    midi_row_bit(id).is_none_or(|bit| c.midi_rows & bit != 0)
-}
-
-fn pad_rhythm_row_visible(id: &str, c: &FluidControls) -> bool {
-    pad_rhythm_row_bit(id).is_none_or(|bit| c.hidden_pad_rhythm_rows & bit == 0)
-}
-
-/// A tab's root rows: every spec except page-local step rows, unloaded
-/// module-slot rows, and MIDI rows that have not been added through `/`.
-pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
-    let rows = tab_specs(tab)
-        .iter()
-        .filter(|spec| {
-            module_slot_row_visible(spec.id, c)
-                && midi_row_visible(spec.id, c)
-                && pad_rhythm_row_visible(spec.id, c)
-                && lead_step_index(spec.id).is_none()
-                && pad_step_index(spec.id).is_none()
-                && spec.id != PAD_MIDI_TRIGGER_ID
-        })
-        .map(|spec| spec.item(c))
-        .collect();
-    midi_rows_last(rows)
-}
-
-/// Keep MIDI setup below the instrument and loaded-module controls without
-/// moving stable registry addresses used by song codes and palette jumps.
-fn midi_rows_last(mut rows: Vec<ControlItem>) -> Vec<ControlItem> {
-    rows.sort_by_key(|item| match item.id {
-        "arp.midi_gate_beats" | "lead.midi_gate_beats" => 1,
-        "pad.midi_in" | "arp.midi_in" | "lead.midi_in" | "bass.midi_mode" => 2,
-        "pad.midi_out" | "arp.midi_out" | "lead.midi_out" => 3,
-        _ => 0,
+    static BY_ID: std::sync::LazyLock<
+        std::collections::HashMap<&'static str, &'static ControlSpec>,
+    > = std::sync::LazyLock::new(|| {
+        let mut specs = std::collections::HashMap::new();
+        for spec in all_specs() {
+            specs.entry(spec.id).or_insert(spec);
+        }
+        specs
     });
-    rows
+    BY_ID.get(id).copied()
+}
+
+pub(crate) const PAD_SEQUENCE_HEADER_IDS: [&str; 5] = [
+    "pad.progression",
+    "pad.chord_bars",
+    "pad.chord_count",
+    "pad.chord_offset",
+    "pad.evolve_rate",
+];
+
+pub(crate) const PERC_PATTERN_ID: &str = "perc.pattern";
+pub(crate) const PERC_STEPS_ID: &str = "perc.steps";
+pub(crate) const PERC_SEQUENCE_HEADER_IDS: [&str; 5] = [
+    PERC_PATTERN_ID,
+    "perc.interval_beats",
+    PERC_STEPS_ID,
+    "perc.offset_beats",
+    "perc.evolve_rate",
+];
+
+pub(crate) const BASS_RHYTHM_ID: &str = "bass.rhythm";
+pub(crate) const BASS_STEPS_ID: &str = "bass.steps";
+pub(crate) const BASS_SEQUENCE_HEADER_IDS: [&str; 7] = [
+    BASS_RHYTHM_ID,
+    "bass.follow",
+    "bass.octave",
+    "bass.interval_beats",
+    BASS_STEPS_ID,
+    "bass.offset_beats",
+    "bass.evolve_rate",
+];
+
+pub(crate) const KICK_PATTERN_ID: &str = "kick.pattern";
+pub(crate) const KICK_STEPS_ID: &str = "kick.steps";
+pub(crate) const KICK_SEQUENCE_HEADER_IDS: [&str; 5] = [
+    KICK_PATTERN_ID,
+    "kick.interval_beats",
+    KICK_STEPS_ID,
+    "kick.offset_beats",
+    "kick.evolve_rate",
+];
+
+pub(crate) const TONAL_PHRASE_ID: &str = "tonal.phrase";
+pub(crate) const TONAL_STEPS_ID: &str = "tonal.steps";
+pub(crate) const TONAL_SEQUENCE_HEADER_IDS: [&str; 7] = [
+    TONAL_PHRASE_ID,
+    "tonal.follow",
+    "tonal.octave",
+    "tonal.rate_beats",
+    TONAL_STEPS_ID,
+    "tonal.offset_beats",
+    "tonal.evolve_rate",
+];
+
+pub(crate) const CLAP_PATTERN_ID: &str = "clap.pattern";
+pub(crate) const CLAP_STEPS_ID: &str = "clap.steps";
+pub(crate) const CLAP_SEQUENCE_HEADER_IDS: [&str; 5] = [
+    CLAP_PATTERN_ID,
+    "clap.interval_beats",
+    CLAP_STEPS_ID,
+    "clap.offset_beats",
+    "clap.evolve_rate",
+];
+
+pub(crate) const ARP_PATTERN_ID: &str = "arp.pattern";
+pub(crate) const ARP_STEPS_ID: &str = "arp.steps";
+pub(crate) const ARP_SEQUENCE_HEADER_IDS: [&str; 7] = [
+    ARP_PATTERN_ID,
+    "arp.follow",
+    "arp.octaves",
+    "arp.rate_beats",
+    ARP_STEPS_ID,
+    "arp.offset_beats",
+    "arp.evolve_rate",
+];
+
+pub(crate) const LEAD_SEQUENCE_HEADER_IDS: [&str; 7] = [
+    LEAD_PATTERN_ID,
+    "lead.follow",
+    "lead.octave",
+    "lead.rate_beats",
+    LEAD_STEPS_ID,
+    "lead.offset_beats",
+    "lead.evolve_rate",
+];
+
+/// Parse `perc.step<N>` back to its 0-based step, `None` for any other id.
+pub(crate) fn perc_step_index(id: &str) -> Option<usize> {
+    let number = id.strip_prefix("perc.step")?;
+    let step: usize = number.parse().ok()?;
+    (1..=PERC_STEP_COUNT).contains(&step).then(|| step - 1)
+}
+
+/// Parse `bass.step<N>` back to its 0-based step, `None` for any other id.
+pub(crate) fn bass_step_index(id: &str) -> Option<usize> {
+    let number = id.strip_prefix("bass.step")?;
+    let step: usize = number.parse().ok()?;
+    (1..=BASS_STEP_COUNT).contains(&step).then(|| step - 1)
+}
+
+/// Parse `kick.step<N>` back to its 0-based step, `None` for any other id.
+pub(crate) fn kick_step_index(id: &str) -> Option<usize> {
+    let number = id.strip_prefix("kick.step")?;
+    let step: usize = number.parse().ok()?;
+    (1..=KICK_STEP_COUNT).contains(&step).then(|| step - 1)
+}
+
+/// Parse `tonal.step<N>` back to its 0-based step, `None` for any other id.
+pub(crate) fn tonal_step_index(id: &str) -> Option<usize> {
+    let number = id.strip_prefix("tonal.step")?;
+    let step: usize = number.parse().ok()?;
+    (1..=TONAL_STEP_COUNT).contains(&step).then(|| step - 1)
+}
+
+/// Parse `clap.step<N>` back to its 0-based step, `None` for any other id.
+pub(crate) fn clap_step_index(id: &str) -> Option<usize> {
+    let number = id.strip_prefix("clap.step")?;
+    let step: usize = number.parse().ok()?;
+    (1..=CLAP_STEP_COUNT).contains(&step).then(|| step - 1)
+}
+
+/// Parse `arp.step<N>` back to its 0-based step, `None` for any other id.
+pub(crate) fn arp_step_index(id: &str) -> Option<usize> {
+    let number = id.strip_prefix("arp.step")?;
+    let step: usize = number.parse().ok()?;
+    (1..=ARP_STEP_COUNT).contains(&step).then(|| step - 1)
+}
+
+fn sequence_drill_only_row(id: &str) -> bool {
+    (id != "pad.progression" && PAD_SEQUENCE_HEADER_IDS.contains(&id))
+        || (id != PERC_PATTERN_ID && PERC_SEQUENCE_HEADER_IDS.contains(&id))
+        || (id != BASS_RHYTHM_ID && BASS_SEQUENCE_HEADER_IDS.contains(&id))
+        || (id != KICK_PATTERN_ID && KICK_SEQUENCE_HEADER_IDS.contains(&id))
+        || (id != TONAL_PHRASE_ID && TONAL_SEQUENCE_HEADER_IDS.contains(&id))
+        || (id != CLAP_PATTERN_ID && CLAP_SEQUENCE_HEADER_IDS.contains(&id))
+        || (id != ARP_PATTERN_ID && ARP_SEQUENCE_HEADER_IDS.contains(&id))
+        || (id != LEAD_PATTERN_ID && LEAD_SEQUENCE_HEADER_IDS.contains(&id))
+        || perc_step_index(id).is_some()
+        || bass_step_index(id).is_some()
+        || kick_step_index(id).is_some()
+        || tonal_step_index(id).is_some()
+        || clap_step_index(id).is_some()
+        || arp_step_index(id).is_some()
+        || lead_step_index(id).is_some()
+}
+
+/// A tab's root rows: every spec except page-local sequence rows and unloaded
+/// module-slot rows.
+pub(crate) fn tab_controls(tab: Tab, c: &FluidControls) -> Vec<ControlItem> {
+    tab_row_specs(tab, c).map(|spec| spec.item(c)).collect()
+}
+
+fn root_row_visible(id: &str, c: &FluidControls) -> bool {
+    module_slot_row_visible(id, c) && !sequence_drill_only_row(id)
+}
+
+pub(crate) fn tab_row_specs(
+    tab: Tab,
+    c: &FluidControls,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(tab)
+        .iter()
+        .filter(|spec| root_row_visible(spec.id, c))
+}
+
+/// Perc-tab visible rows for the given drill level: the root page, or the
+/// unified sequence drill (header controls + live steps).
+pub(crate) fn perc_tab_controls(
+    c: &FluidControls,
+    drill: interaction::PercDrill,
+) -> Vec<ControlItem> {
+    perc_row_specs(c, drill)
+        .map(|spec| {
+            let mut item = spec.item(c);
+            if drill == interaction::PercDrill::None && item.id == PERC_PATTERN_ID {
+                item.label = "Pattern ›".into();
+            }
+            item
+        })
+        .collect()
+}
+
+pub(crate) fn perc_row_specs(
+    c: &FluidControls,
+    drill: interaction::PercDrill,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(Tab::Perc).iter().filter(move |spec| match drill {
+        interaction::PercDrill::None => root_row_visible(spec.id, c),
+        interaction::PercDrill::Pattern { .. } => {
+            PERC_SEQUENCE_HEADER_IDS.contains(&spec.id)
+                || perc_step_index(spec.id)
+                    .is_some_and(|step| step < perc_live_step_count(c.perc.step_count))
+        }
+    })
+}
+
+pub(crate) fn perc_drill_for_index(
+    flat: usize,
+    c: &FluidControls,
+) -> (interaction::PercDrill, usize) {
+    let Some(spec) = PERC_CONTROLS.get(flat) else {
+        return (interaction::PercDrill::None, 0);
+    };
+    let root = perc_tab_controls(c, interaction::PercDrill::None);
+    let root_row = |id: &str| root.iter().position(|item| item.id == id).unwrap_or(0);
+    if (spec.id != PERC_PATTERN_ID && PERC_SEQUENCE_HEADER_IDS.contains(&spec.id))
+        || perc_step_index(spec.id).is_some()
+    {
+        let drill = interaction::PercDrill::Pattern {
+            return_to: root_row(PERC_PATTERN_ID),
+        };
+        let selected = perc_row_specs(c, drill)
+            .position(|candidate| candidate.id == spec.id)
+            .unwrap_or_else(|| {
+                perc_step_index(spec.id)
+                    .map(|step| PERC_SEQUENCE_HEADER_IDS.len() + step)
+                    .unwrap_or(0)
+            });
+        return (drill, selected);
+    }
+    (interaction::PercDrill::None, root_row(spec.id))
+}
+
+/// Bass-tab visible rows for the given drill level: the root page, or the
+/// unified sequence drill (header controls + live steps).
+pub(crate) fn bass_tab_controls(
+    c: &FluidControls,
+    drill: interaction::BassDrill,
+) -> Vec<ControlItem> {
+    bass_row_specs(c, drill)
+        .map(|spec| {
+            let mut item = spec.item(c);
+            if drill == interaction::BassDrill::None && item.id == BASS_RHYTHM_ID {
+                item.label = "Pattern ›".into();
+            }
+            item
+        })
+        .collect()
+}
+
+pub(crate) fn bass_row_specs(
+    c: &FluidControls,
+    drill: interaction::BassDrill,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(Tab::Bass).iter().filter(move |spec| match drill {
+        interaction::BassDrill::None => root_row_visible(spec.id, c),
+        interaction::BassDrill::Pattern { .. } => {
+            BASS_SEQUENCE_HEADER_IDS.contains(&spec.id)
+                || bass_step_index(spec.id)
+                    .is_some_and(|step| step < bass_live_step_count(c.bass.step_count))
+        }
+    })
+}
+
+pub(crate) fn bass_drill_for_index(
+    flat: usize,
+    c: &FluidControls,
+) -> (interaction::BassDrill, usize) {
+    let Some(spec) = BASS_CONTROLS.get(flat) else {
+        return (interaction::BassDrill::None, 0);
+    };
+    let root = bass_tab_controls(c, interaction::BassDrill::None);
+    let root_row = |id: &str| root.iter().position(|item| item.id == id).unwrap_or(0);
+    if (spec.id != BASS_RHYTHM_ID && BASS_SEQUENCE_HEADER_IDS.contains(&spec.id))
+        || bass_step_index(spec.id).is_some()
+    {
+        let drill = interaction::BassDrill::Pattern {
+            return_to: root_row(BASS_RHYTHM_ID),
+        };
+        let selected = bass_row_specs(c, drill)
+            .position(|candidate| candidate.id == spec.id)
+            .unwrap_or_else(|| {
+                bass_step_index(spec.id)
+                    .map(|step| BASS_SEQUENCE_HEADER_IDS.len() + step)
+                    .unwrap_or(0)
+            });
+        return (drill, selected);
+    }
+    (interaction::BassDrill::None, root_row(spec.id))
+}
+
+/// Kick-tab visible rows for the given drill level: the root page, or the
+/// unified sequence drill (header controls + live steps).
+pub(crate) fn kick_tab_controls(
+    c: &FluidControls,
+    drill: interaction::KickDrill,
+) -> Vec<ControlItem> {
+    kick_row_specs(c, drill)
+        .map(|spec| {
+            let mut item = spec.item(c);
+            if drill == interaction::KickDrill::None && item.id == KICK_PATTERN_ID {
+                item.label = "Pattern ›".into();
+            }
+            item
+        })
+        .collect()
+}
+
+pub(crate) fn kick_row_specs(
+    c: &FluidControls,
+    drill: interaction::KickDrill,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(Tab::Kick).iter().filter(move |spec| match drill {
+        interaction::KickDrill::None => root_row_visible(spec.id, c),
+        interaction::KickDrill::Pattern { .. } => {
+            KICK_SEQUENCE_HEADER_IDS.contains(&spec.id)
+                || kick_step_index(spec.id)
+                    .is_some_and(|step| step < kick_live_step_count(c.kick.step_count))
+        }
+    })
+}
+
+pub(crate) fn kick_drill_for_index(
+    flat: usize,
+    c: &FluidControls,
+) -> (interaction::KickDrill, usize) {
+    let Some(spec) = KICK_CONTROLS.get(flat) else {
+        return (interaction::KickDrill::None, 0);
+    };
+    let root = kick_tab_controls(c, interaction::KickDrill::None);
+    let root_row = |id: &str| root.iter().position(|item| item.id == id).unwrap_or(0);
+    if (spec.id != KICK_PATTERN_ID && KICK_SEQUENCE_HEADER_IDS.contains(&spec.id))
+        || kick_step_index(spec.id).is_some()
+    {
+        let drill = interaction::KickDrill::Pattern {
+            return_to: root_row(KICK_PATTERN_ID),
+        };
+        let selected = kick_row_specs(c, drill)
+            .position(|candidate| candidate.id == spec.id)
+            .unwrap_or_else(|| {
+                kick_step_index(spec.id)
+                    .map(|step| KICK_SEQUENCE_HEADER_IDS.len() + step)
+                    .unwrap_or(0)
+            });
+        return (drill, selected);
+    }
+    (interaction::KickDrill::None, root_row(spec.id))
+}
+
+/// Tonal-tab visible rows for the given drill level: the root page, or the
+/// unified sequence drill (header controls + live steps).
+pub(crate) fn tonal_tab_controls(
+    c: &FluidControls,
+    drill: interaction::TonalDrill,
+) -> Vec<ControlItem> {
+    tonal_row_specs(c, drill)
+        .map(|spec| {
+            let mut item = spec.item(c);
+            if drill == interaction::TonalDrill::None && item.id == TONAL_PHRASE_ID {
+                item.label = "Phrase ›".into();
+            }
+            item
+        })
+        .collect()
+}
+
+pub(crate) fn tonal_row_specs(
+    c: &FluidControls,
+    drill: interaction::TonalDrill,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(Tab::Tonal)
+        .iter()
+        .filter(move |spec| match drill {
+            interaction::TonalDrill::None => root_row_visible(spec.id, c),
+            interaction::TonalDrill::Pattern { .. } => {
+                TONAL_SEQUENCE_HEADER_IDS.contains(&spec.id)
+                    || tonal_step_index(spec.id)
+                        .is_some_and(|step| step < tonal_live_step_count(c.tonal.step_count))
+            }
+        })
+}
+
+/// Inverse of `tonal_tab_controls`: the drill level + visible row that shows
+/// a real `TONAL_CONTROLS` index, so a palette jump lands on the right row.
+pub(crate) fn tonal_drill_for_index(
+    flat: usize,
+    c: &FluidControls,
+) -> (interaction::TonalDrill, usize) {
+    let Some(spec) = TONAL_CONTROLS.get(flat) else {
+        return (interaction::TonalDrill::None, 0);
+    };
+    let root = tonal_tab_controls(c, interaction::TonalDrill::None);
+    let root_row = |id: &str| root.iter().position(|item| item.id == id).unwrap_or(0);
+    if (spec.id != TONAL_PHRASE_ID && TONAL_SEQUENCE_HEADER_IDS.contains(&spec.id))
+        || tonal_step_index(spec.id).is_some()
+    {
+        let drill = interaction::TonalDrill::Pattern {
+            return_to: root_row(TONAL_PHRASE_ID),
+        };
+        let selected = tonal_row_specs(c, drill)
+            .position(|candidate| candidate.id == spec.id)
+            .unwrap_or_else(|| {
+                tonal_step_index(spec.id)
+                    .map(|step| TONAL_SEQUENCE_HEADER_IDS.len() + step)
+                    .unwrap_or(0)
+            });
+        return (drill, selected);
+    }
+    (interaction::TonalDrill::None, root_row(spec.id))
+}
+
+/// Clap-tab visible rows for the given drill level: the root page, or the
+/// unified sequence drill (header controls + live steps).
+pub(crate) fn clap_tab_controls(
+    c: &FluidControls,
+    drill: interaction::ClapDrill,
+) -> Vec<ControlItem> {
+    clap_row_specs(c, drill)
+        .map(|spec| {
+            let mut item = spec.item(c);
+            if drill == interaction::ClapDrill::None && item.id == CLAP_PATTERN_ID {
+                item.label = "Pattern ›".into();
+            }
+            item
+        })
+        .collect()
+}
+
+pub(crate) fn clap_row_specs(
+    c: &FluidControls,
+    drill: interaction::ClapDrill,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(Tab::Clap).iter().filter(move |spec| match drill {
+        interaction::ClapDrill::None => root_row_visible(spec.id, c),
+        interaction::ClapDrill::Pattern { .. } => {
+            CLAP_SEQUENCE_HEADER_IDS.contains(&spec.id)
+                || clap_step_index(spec.id)
+                    .is_some_and(|step| step < clap_live_step_count(c.clap.step_count))
+        }
+    })
+}
+
+pub(crate) fn clap_drill_for_index(
+    flat: usize,
+    c: &FluidControls,
+) -> (interaction::ClapDrill, usize) {
+    let Some(spec) = CLAP_CONTROLS.get(flat) else {
+        return (interaction::ClapDrill::None, 0);
+    };
+    let root = clap_tab_controls(c, interaction::ClapDrill::None);
+    let root_row = |id: &str| root.iter().position(|item| item.id == id).unwrap_or(0);
+    if (spec.id != CLAP_PATTERN_ID && CLAP_SEQUENCE_HEADER_IDS.contains(&spec.id))
+        || clap_step_index(spec.id).is_some()
+    {
+        let drill = interaction::ClapDrill::Pattern {
+            return_to: root_row(CLAP_PATTERN_ID),
+        };
+        let selected = clap_row_specs(c, drill)
+            .position(|candidate| candidate.id == spec.id)
+            .unwrap_or_else(|| {
+                clap_step_index(spec.id)
+                    .map(|step| CLAP_SEQUENCE_HEADER_IDS.len() + step)
+                    .unwrap_or(0)
+            });
+        return (drill, selected);
+    }
+    (interaction::ClapDrill::None, root_row(spec.id))
+}
+
+/// Arp-tab visible rows for the given drill level: the root page, or the
+/// unified sequence drill (header controls + live steps).
+pub(crate) fn arp_tab_controls(
+    c: &FluidControls,
+    drill: interaction::ArpDrill,
+) -> Vec<ControlItem> {
+    arp_row_specs(c, drill)
+        .map(|spec| {
+            let mut item = spec.item(c);
+            if drill == interaction::ArpDrill::None && item.id == ARP_PATTERN_ID {
+                item.label = "Pattern ›".into();
+            }
+            item
+        })
+        .collect()
+}
+
+pub(crate) fn arp_row_specs(
+    c: &FluidControls,
+    drill: interaction::ArpDrill,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(Tab::Arp).iter().filter(move |spec| match drill {
+        interaction::ArpDrill::None => root_row_visible(spec.id, c),
+        interaction::ArpDrill::Pattern { .. } => {
+            ARP_SEQUENCE_HEADER_IDS.contains(&spec.id)
+                || arp_step_index(spec.id)
+                    .is_some_and(|step| step < arp_live_step_count(c.arp.step_count))
+        }
+    })
+}
+
+pub(crate) fn arp_drill_for_index(
+    flat: usize,
+    c: &FluidControls,
+) -> (interaction::ArpDrill, usize) {
+    let Some(spec) = ARP_CONTROLS.get(flat) else {
+        return (interaction::ArpDrill::None, 0);
+    };
+    let root = arp_tab_controls(c, interaction::ArpDrill::None);
+    let root_row = |id: &str| root.iter().position(|item| item.id == id).unwrap_or(0);
+    if (spec.id != ARP_PATTERN_ID && ARP_SEQUENCE_HEADER_IDS.contains(&spec.id))
+        || arp_step_index(spec.id).is_some()
+    {
+        let drill = interaction::ArpDrill::Pattern {
+            return_to: root_row(ARP_PATTERN_ID),
+        };
+        let selected = arp_row_specs(c, drill)
+            .position(|candidate| candidate.id == spec.id)
+            .unwrap_or_else(|| {
+                arp_step_index(spec.id)
+                    .map(|step| ARP_SEQUENCE_HEADER_IDS.len() + step)
+                    .unwrap_or(0)
+            });
+        return (drill, selected);
+    }
+    (interaction::ArpDrill::None, root_row(spec.id))
 }
 
 /// Lead-tab visible rows for the given drill level: the root page, or the
-/// live steps of the lane. `lead_drill_for_index` is this projection's
-/// inverse and must stay consistent with it.
+/// unified sequence drill (header controls + live steps). `lead_drill_for_index`
+/// is this projection's inverse and must stay consistent with it.
 pub(crate) fn lead_tab_controls(
     c: &FluidControls,
     drill: interaction::LeadDrill,
 ) -> Vec<ControlItem> {
-    match drill {
-        interaction::LeadDrill::None => tab_controls(Tab::Lead, c),
-        interaction::LeadDrill::Pattern { .. } => LEAD_CONTROLS
-            .iter()
-            .filter(|spec| {
-                lead_step_index(spec.id)
+    lead_row_specs(c, drill)
+        .map(|spec| {
+            let mut item = spec.item(c);
+            if drill == interaction::LeadDrill::None && item.id == LEAD_PATTERN_ID {
+                item.label = "Pattern ›".into();
+            }
+            item
+        })
+        .collect()
+}
+
+pub(crate) fn lead_row_specs(
+    c: &FluidControls,
+    drill: interaction::LeadDrill,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(Tab::Lead).iter().filter(move |spec| match drill {
+        interaction::LeadDrill::None => root_row_visible(spec.id, c),
+        interaction::LeadDrill::Pattern { .. } => {
+            LEAD_SEQUENCE_HEADER_IDS.contains(&spec.id)
+                || lead_step_index(spec.id)
                     .is_some_and(|step| step < lead_live_step_count(c.lead.step_count))
-            })
-            .map(|spec| spec.item(c))
-            .collect(),
-    }
+        }
+    })
 }
 
 /// Inverse of `lead_tab_controls`: the drill level + visible row that shows
-/// a real `LEAD_CONTROLS` index, so a palette jump lands on the right row. A
-/// step row opens the pattern drill with its Esc return set to the Steps row.
+/// a real `LEAD_CONTROLS` index, so a palette jump lands on the right row.
 pub(crate) fn lead_drill_for_index(
     flat: usize,
     c: &FluidControls,
@@ -2531,15 +3293,22 @@ pub(crate) fn lead_drill_for_index(
     };
     let root = lead_tab_controls(c, interaction::LeadDrill::None);
     let root_row = |id: &str| root.iter().position(|item| item.id == id).unwrap_or(0);
-    match lead_step_index(spec.id) {
-        Some(step) => (
-            interaction::LeadDrill::Pattern {
-                return_to: root_row(LEAD_STEPS_ID),
-            },
-            step,
-        ),
-        None => (interaction::LeadDrill::None, root_row(spec.id)),
+    if (spec.id != LEAD_PATTERN_ID && LEAD_SEQUENCE_HEADER_IDS.contains(&spec.id))
+        || lead_step_index(spec.id).is_some()
+    {
+        let drill = interaction::LeadDrill::Pattern {
+            return_to: root_row(LEAD_PATTERN_ID),
+        };
+        let selected = lead_row_specs(c, drill)
+            .position(|candidate| candidate.id == spec.id)
+            .unwrap_or_else(|| {
+                lead_step_index(spec.id)
+                    .map(|step| LEAD_SEQUENCE_HEADER_IDS.len() + step)
+                    .unwrap_or(0)
+            });
+        return (drill, selected);
     }
+    (interaction::LeadDrill::None, root_row(spec.id))
 }
 
 /// The control id for a tab's slot's collapsed row — whichever field the
@@ -2569,6 +3338,23 @@ pub(crate) fn module_slot_at_collapsed_id<'a>(
     })
 }
 
+pub(crate) fn module_row_specs(
+    tab: Tab,
+    slot: usize,
+    controls: &FluidControls,
+) -> impl Iterator<Item = (&'static ControlSpec, &'static str)> {
+    controls
+        .modules
+        .for_tab(tab)
+        .and_then(|slots| slots.get(slot))
+        .and_then(ModuleSlot::kind)
+        .into_iter()
+        .flat_map(|kind| kind.parameters())
+        .filter_map(move |parameter| {
+            module_slot_spec(tab, slot, parameter.field).map(|spec| (spec, parameter.label))
+        })
+}
+
 /// The rows projected inside a loaded module's detail scope. The backing
 /// registry ids stay slot-addressed and therefore persist independently of
 /// whichever catalog module currently occupies the slot.
@@ -2587,15 +3373,11 @@ pub(crate) fn module_detail_controls(
     let Some(kind) = module_slot.kind() else {
         return Vec::new();
     };
-    let mut items = kind
-        .parameters()
-        .iter()
-        .filter_map(|parameter| {
-            module_slot_spec(tab, slot, parameter.field).map(|spec| {
-                let mut item = spec.item(controls);
-                item.label = parameter.label.to_string();
-                item
-            })
+    let mut items = module_row_specs(tab, slot, controls)
+        .map(|(spec, label)| {
+            let mut item = spec.item(controls);
+            item.label = label.to_string();
+            item
         })
         .collect::<Vec<_>>();
     let field_of = |id: &str| parse_module_slot_id(id).map(|(_, _, field)| field);
@@ -2659,6 +3441,17 @@ pub(crate) fn module_detail_controls(
                 Some(ModuleSlotField::Feedback) => format!("{:.0} ms", item.value),
                 Some(ModuleSlotField::Vintage) => format!("{:.1} dB", item.value),
                 _ => item.display.clone(),
+            };
+        }
+    }
+    if kind.family == Family::Drive {
+        for item in &mut items {
+            item.display = match field_of(item.id) {
+                Some(ModuleSlotField::Feedback) => {
+                    DriveType::from_value(item.value).label().to_string()
+                }
+                Some(_) => pct(item.value),
+                None => item.display.clone(),
             };
         }
     }
@@ -2815,65 +3608,82 @@ pub(crate) fn module_slot_row<'a>(
     c: &'a FluidControls,
 ) -> Option<(&'a ModuleSlot, ModuleSlotField)> {
     let (layer, index, field) = parse_module_slot_id(id)?;
-    let slots: &[ModuleSlot; MODULE_SLOTS] = match layer {
-        "pad" => &c.modules.pad,
-        "perc" => &c.modules.perc,
-        "bass" => &c.modules.bass,
-        "kick" => &c.modules.kick,
-        "tonal" => &c.modules.tonal,
-        "clap" => &c.modules.clap,
-        "arp" => &c.modules.arp,
-        "lead" => &c.modules.lead,
-        "master" => &c.modules.master,
-        _ => return None,
-    };
+    let slots = c.modules.for_tab(module_layer_tab(layer)?)?;
     slots.get(index).map(|slot| (slot, field))
 }
 
+/// The tab whose module chain a slot-row id prefix (`pad` in
+/// `pad.slot1.amount`) addresses.
+pub(crate) fn module_layer_tab(prefix: &str) -> Option<Tab> {
+    Some(match prefix {
+        "pad" => Tab::Chords,
+        "perc" => Tab::Perc,
+        "bass" => Tab::Bass,
+        "kick" => Tab::Kick,
+        "tonal" => Tab::Tonal,
+        "clap" => Tab::Clap,
+        "arp" => Tab::Arp,
+        "lead" => Tab::Lead,
+        "master" => Tab::Master,
+        _ => return None,
+    })
+}
+
 /// One projection for the root page, progression list and shared chord editor.
-/// Address fields by stable ID so appending a knob cannot change a navigation target.
-pub(crate) fn chords_tab_controls(
+/// A progression-drill row's value: the chord's name and whether it is the
+/// authored one. The registry draws it in letters; the view redraws it for the
+/// session's chord naming.
+pub(crate) fn progression_slot_display(
+    pad: &PadControls,
+    slot: usize,
+    labels: ChordLabels,
+) -> String {
+    let progression = progression_index(pad.progression);
+    let chord = pad.chord_slot(progression, slot);
+    if chord.is_rest() {
+        return "Rest".to_string();
+    }
+    if chord.is_tie() {
+        return "Tie".to_string();
+    }
+    let status = if pad.chord_is_edited(progression, slot) {
+        "Edited"
+    } else if is_custom_progression(progression) {
+        "Custom"
+    } else {
+        "Built-in"
+    };
+    format!(
+        "{} · {status}",
+        pad_chord_name(pad, progression, slot, labels)
+    )
+}
+
+/// Visit chord rows in display order without constructing display values.
+pub(crate) fn visit_chord_row_specs(
     c: &FluidControls,
     drill: interaction::ChordDrill,
-) -> Vec<ControlItem> {
+    mut visit: impl FnMut(&'static ControlSpec),
+) {
     match drill {
-        interaction::ChordDrill::None => midi_rows_last(
-            CHORDS_CONTROLS
-                .iter()
-                .filter(|spec| {
-                    parse_chord_slot_id(spec.id).is_none()
-                        && pad_step_index(spec.id).is_none()
-                        && spec.id != PAD_MIDI_TRIGGER_ID
-                        && midi_row_visible(spec.id, c)
-                        && pad_rhythm_row_visible(spec.id, c)
-                        && module_slot_row_visible(spec.id, c)
-                })
-                .map(|spec| spec.item(c))
-                .collect(),
-        ),
-        interaction::ChordDrill::Pattern { .. } => CHORDS_CONTROLS
+        interaction::ChordDrill::None => CHORDS_CONTROLS
             .iter()
-            .filter(|spec| pad_step_index(spec.id).is_some())
-            .map(|spec| spec.item(c))
-            .collect(),
-        interaction::ChordDrill::Progression { .. } => (0..CHORD_SLOT_COUNT)
-            .map(|slot| {
-                let mut item = chord_slot_spec(slot, "degree")
-                    .expect("every slot has a root")
-                    .item(c);
-                let progression = progression_index(c.pad.progression);
-                item.label = format!("Chord {}", slot + 1);
-                let status = if c.pad.chord_is_edited(progression, slot) {
-                    "Edited"
-                } else if is_custom_progression(progression) {
-                    "Custom"
-                } else {
-                    "Built-in"
-                };
-                item.display = format!("{} · {status}", pad_chord_name(&c.pad, progression, slot));
-                item
-            })
-            .collect(),
+            .filter(|spec| parse_chord_slot_id(spec.id).is_none() && root_row_visible(spec.id, c))
+            .for_each(visit),
+        interaction::ChordDrill::Progression { .. } => {
+            for spec in CHORDS_CONTROLS
+                .iter()
+                .filter(|spec| PAD_SEQUENCE_HEADER_IDS.contains(&spec.id))
+            {
+                visit(spec);
+            }
+            let live_count = ChordWindow::requested(&c.pad).count;
+            for slot in 0..live_count {
+                if let Some(spec) = chord_slot_spec(slot, "degree") {
+                    visit(spec);
+                }
+            }
+        }
         interaction::ChordDrill::Slot {
             slot, extension2, ..
         } => CHORD_FIELDS
@@ -2887,8 +3697,38 @@ pub(crate) fn chords_tab_controls(
                         != 0.0
             })
             .filter_map(|field| chord_slot_spec(slot, field))
-            .map(|spec| {
-                let mut item = spec.item(c);
+            .for_each(visit),
+    }
+}
+
+/// Address fields by stable ID so appending a knob cannot change a navigation target.
+pub(crate) fn chords_tab_controls(
+    c: &FluidControls,
+    drill: interaction::ChordDrill,
+) -> Vec<ControlItem> {
+    let mut items = Vec::new();
+    visit_chord_row_specs(c, drill, |spec| {
+        let mut item = spec.item(c);
+        match drill {
+            interaction::ChordDrill::None => {
+                if item.id == "pad.progression" {
+                    item.label = "Progression ›".into();
+                }
+            }
+            interaction::ChordDrill::Progression { .. } => {
+                if let Some((slot, _)) = parse_chord_slot_id(spec.id) {
+                    item.label = format!("Step {}", slot + 1);
+                    item.display = progression_slot_display(
+                        &c.pad,
+                        slot,
+                        ChordLabels {
+                            names: ChordNames::Letters,
+                            key: MasterKey::from_control(c.master.key),
+                        },
+                    );
+                }
+            }
+            interaction::ChordDrill::Slot { .. } => {
                 item.label = spec
                     .label
                     .split_once(' ')
@@ -2900,10 +3740,11 @@ pub(crate) fn chords_tab_controls(
                 {
                     item.label = "Bass".into();
                 }
-                item
-            })
-            .collect(),
-    }
+            }
+        }
+        items.push(item);
+    });
+    items
 }
 
 /// Maps a visible Pad row back to its registry index for projection tests.
@@ -2939,21 +3780,25 @@ pub(crate) fn chords_drill_for_index(
     let Some(spec) = CHORDS_CONTROLS.get(flat) else {
         return (interaction::ChordDrill::None, 0);
     };
-    if let Some(step) = pad_step_index(spec.id) {
-        let return_to = chords_tab_controls(c, interaction::ChordDrill::None)
+    let root = chords_tab_controls(c, interaction::ChordDrill::None);
+    let progression_return = root
+        .iter()
+        .position(|item| item.id == "pad.progression")
+        .expect("pad progression row");
+    if spec.id != "pad.progression" && PAD_SEQUENCE_HEADER_IDS.contains(&spec.id) {
+        let drill = interaction::ChordDrill::Progression {
+            return_to: progression_return,
+        };
+        let selected = chords_tab_controls(c, drill)
             .iter()
-            .position(|item| item.id == PAD_TRIGGER_ID)
+            .position(|item| item.id == spec.id)
             .unwrap_or(0);
-        return (interaction::ChordDrill::Pattern { return_to }, step);
+        return (drill, selected);
     }
     if let Some((slot, field)) = parse_chord_slot_id(spec.id) {
-        let return_to = chords_tab_controls(c, interaction::ChordDrill::None)
-            .iter()
-            .position(|item| item.id == "pad.progression")
-            .expect("pad progression row");
         let drill = interaction::ChordDrill::Slot {
             slot,
-            return_to,
+            return_to: progression_return,
             extension2: CHORD_FIELDS[field] == "extension2",
         };
         let selected = chords_tab_controls(c, drill)
@@ -2962,10 +3807,7 @@ pub(crate) fn chords_drill_for_index(
             .expect("chord field is visible");
         return (drill, selected);
     }
-    let selected = chords_tab_controls(c, interaction::ChordDrill::None)
-        .iter()
-        .position(|item| item.id == spec.id)
-        .unwrap_or(0);
+    let selected = root.iter().position(|item| item.id == spec.id).unwrap_or(0);
     (interaction::ChordDrill::None, selected)
 }
 
@@ -3181,41 +4023,26 @@ mod scale_tests {
     }
 
     #[test]
-    fn randomizing_from_the_current_position_always_changes_when_another_value_exists() {
+    fn randomized_ratio_lands_on_a_quantized_value_within_range() {
         let controls = FluidControls::default();
-        let mut checked = 0;
         for spec in all_specs() {
             let contextual = spec.contextual(&controls);
-            let current = (contextual.get)(&controls);
-            let mut above = controls.clone();
-            contextual.apply_delta(1.0, &mut above);
-            let mut below = controls.clone();
-            contextual.apply_delta(-1.0, &mut below);
-            let has_alternative =
-                (contextual.get)(&above) != current || (contextual.get)(&below) != current;
-
-            let mut randomized = controls.clone();
-            contextual
-                .apply_randomized_ratio(contextual.ratio(current, &controls), &mut randomized);
-            let result = (contextual.get)(&randomized);
-            if has_alternative {
-                checked += 1;
-                assert_ne!(result, current, "{} stayed at its current value", spec.id);
-            } else {
-                assert_eq!(result, current, "{} is a singleton", spec.id);
+            for ratio in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                let mut randomized = controls.clone();
+                contextual.apply_randomized_ratio(ratio, &mut randomized);
+                let result = (contextual.get)(&randomized);
+                assert!(
+                    result >= contextual.min && result <= contextual.max,
+                    "{} randomized outside its live range: {result}",
+                    spec.id
+                );
+                assert!(
+                    (contextual.quantize(result) - result).abs() < 1e-6,
+                    "{} randomized off its declared grid",
+                    spec.id
+                );
             }
-            assert!(
-                result >= contextual.min && result <= contextual.max,
-                "{} randomized outside its live range: {result}",
-                spec.id
-            );
-            assert!(
-                (contextual.quantize(result) - result).abs() < 1e-6,
-                "{} randomized off its declared grid",
-                spec.id
-            );
         }
-        assert!(checked > 0, "no controls with multiple legal values");
     }
 
     #[test]

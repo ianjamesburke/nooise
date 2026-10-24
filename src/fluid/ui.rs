@@ -74,7 +74,6 @@ impl PanelFrame<'_, '_> {
 
 pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let area = f.area();
-    f.render_widget(FluidWidget { fluid: view.fluid }, area);
 
     // centered control overlay
     let pw = ((area.width as f32 * 0.62) as u16)
@@ -93,6 +92,14 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     let py = area.y + (area.height.saturating_sub(ph)) / 2;
     let panel = Rect::new(px, py, pw, ph);
 
+    f.render_widget(
+        FluidWidget {
+            fluid: view.fluid,
+            panel,
+            stopped: view.session.transport == Transport::Stopped,
+        },
+        area,
+    );
     draw_scrim(f, panel);
 
     // Borders only (transparent fill) so the scrim shows through.
@@ -149,6 +156,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         &controls.pad,
         frame.active_slot,
         active_vamp.is_some(),
+        view.session.chord_labels(),
     );
     if let Some(title) = &view.chord_title {
         f.render_widget(
@@ -309,9 +317,10 @@ fn draw_harmony(
     pad: &PadControls,
     active_slot: usize,
     vamp_active: bool,
+    labels: ChordLabels,
 ) {
     let window = ChordWindow::requested(pad);
-    let key = progression_home_label(window.progression);
+    let key = progression_home_label(window.progression, labels.key);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("KEY  ", Style::default().fg(DIM_TEXT)),
@@ -332,7 +341,7 @@ fn draw_harmony(
     let mut spans = vec![Span::styled("CHORDS  ", Style::default().fg(DIM_TEXT))];
     let mut used = "CHORDS  ".len();
     for (index, &slot) in slots.iter().enumerate() {
-        let name = pad_chord_name(pad, window.progression, slot);
+        let name = pad_chord_name(pad, window.progression, slot, labels);
         let separator = if index == 0 { "" } else { " › " };
         let reserved = if index + 1 < slots.len() { 1 } else { 0 };
         if used + separator.chars().count() + name.chars().count() + reserved
@@ -443,81 +452,178 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
         } else {
             flip_display(address.spec().time_base, item.value, bpm).unwrap_or(display)
         };
-        let in_chord_drill = view.navigation.tab == Tab::Chords
+        let chord_slot_row = (view.navigation.tab == Tab::Chords
             && matches!(
                 view.navigation.chord_drill,
                 interaction::ChordDrill::Progression { .. }
-            );
-        // The Root list shows all eight slots; the ones the window does not
-        // play recede so Count and Offset read at a glance.
-        let midi_disables_step = view.navigation.tab == Tab::Chords
-            && matches!(
-                view.navigation.chord_drill,
-                interaction::ChordDrill::Pattern { .. }
-            )
-            && frame.controls().pad.midi_trigger >= 0.5
-            && pad_step_index(item.id).is_some();
-        let style = if midi_disables_step
-            || in_chord_drill
-                && !parent_active
-                && !ChordWindow::requested(&frame.controls().pad)
-                    .slots()
-                    .any(|slot| slot == i)
+            ))
+        .then(|| parse_chord_slot_id(item.id).map(|(slot, _)| slot))
+        .flatten();
+        // The sequence step list dims slots the window does not play so
+        // Steps and Offset read at a glance.
+        let style = if let Some(slot) = chord_slot_row
+            && !parent_active
+            && !ChordWindow::requested(&frame.controls().pad)
+                .slots()
+                .any(|window_slot| window_slot == slot)
         {
             Style::default().fg(DIM_TEXT)
         } else {
             BROWSE_PALETTE.style(parent_active)
         };
         let markers = slider_markers(item, address, editor_here, frame);
-        let mut spans = if in_chord_drill {
+        let mut spans = if chord_slot_row.is_some() {
             vec![Span::styled(
                 format!("{prefix}{:<8} {display}", item.label),
                 style,
             )]
         } else {
             let mut spans = vec![Span::styled(format!("{prefix}{:<15} ", item.label), style)];
-            spans.extend(slider_spans(item_ratio(item), markers, frame.bar_w, style));
+            spans.extend(slider_spans(
+                item_ratio(item),
+                markers,
+                live_meter(item, frame),
+                frame.bar_w,
+                style,
+            ));
             spans.push(Span::styled(format!(" {display}"), style));
             spans
         };
         // Badge the chord slot the pad engine is currently sounding, so the
-        // progression list shows which chord is live. Distinct from the cursor
+        // sequence list shows which chord is live. Distinct from the cursor
         // ▶ so a row can be both selected and playing.
-        let chord_playing = in_chord_drill && i == frame.active_slot;
+        let chord_playing = chord_slot_row == Some(frame.active_slot);
         if chord_playing {
             spans.push(Span::styled(
                 " ♪",
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
             ));
         }
-        // The Lead lane has the same transport-derived playhead treatment as
-        // Chords: the badge marks what is playing, independently of the ▶
-        // selection cursor.
+        // The Lead and Tonal lanes have the same transport-derived playhead
+        // treatment as Chords: the badge marks what is playing, independently
+        // of the ▶ selection cursor.
+        let perc_step_playing = view.navigation.tab == Tab::Perc
+            && matches!(
+                view.navigation.perc_drill,
+                interaction::PercDrill::Pattern { .. }
+            )
+            && (frame.controls().perc.pattern.round() as usize) != CONTINUOUS_PERC_PATTERN_INDEX
+            && perc_step_index(item.id)
+                == Some(lane_step_at(
+                    beat,
+                    frame.controls().perc.interval_beats.max(0.125),
+                    frame.controls().perc.offset_beats,
+                    perc_live_step_count(frame.controls().perc.step_count),
+                ));
+        if perc_step_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
+        let bass_step_playing = view.navigation.tab == Tab::Bass
+            && matches!(
+                view.navigation.bass_drill,
+                interaction::BassDrill::Pattern { .. }
+            )
+            && bass_step_index(item.id)
+                == Some(lane_step_at(
+                    beat,
+                    frame.controls().bass.interval_beats.max(0.125),
+                    frame.controls().bass.offset_beats,
+                    bass_live_step_count(frame.controls().bass.step_count),
+                ));
+        if bass_step_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
+        let kick_step_playing = view.navigation.tab == Tab::Kick
+            && matches!(
+                view.navigation.kick_drill,
+                interaction::KickDrill::Pattern { .. }
+            )
+            && kick_step_index(item.id)
+                == Some(lane_step_at(
+                    beat,
+                    frame.controls().kick.interval_beats.max(0.125),
+                    frame.controls().kick.offset_beats,
+                    kick_live_step_count(frame.controls().kick.step_count),
+                ));
+        if kick_step_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
+        let clap_step_playing = view.navigation.tab == Tab::Clap
+            && matches!(
+                view.navigation.clap_drill,
+                interaction::ClapDrill::Pattern { .. }
+            )
+            && clap_step_index(item.id)
+                == Some(lane_step_at(
+                    beat,
+                    frame.controls().clap.interval_beats.max(0.125),
+                    frame.controls().clap.offset_beats,
+                    clap_live_step_count(frame.controls().clap.step_count),
+                ));
+        if clap_step_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
         let lead_step_playing = view.navigation.tab == Tab::Lead
             && matches!(
                 view.navigation.lead_drill,
                 interaction::LeadDrill::Pattern { .. }
             )
-            && i == lane_step_at(
-                beat,
-                frame.controls().lead.rate_beats,
-                frame.controls().lead.offset_beats,
-                lead_live_step_count(frame.controls().lead.step_count),
-            );
+            && lead_step_index(item.id)
+                == Some(lane_step_at(
+                    beat,
+                    frame.controls().lead.rate_beats,
+                    frame.controls().lead.offset_beats,
+                    lead_live_step_count(frame.controls().lead.step_count),
+                ));
         if lead_step_playing {
             spans.push(Span::styled(
                 " ♪",
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
             ));
         }
-        let pad_step_playing = view.navigation.tab == Tab::Chords
+        let tonal_step_playing = view.navigation.tab == Tab::Tonal
             && matches!(
-                view.navigation.chord_drill,
-                interaction::ChordDrill::Pattern { .. }
+                view.navigation.tonal_drill,
+                interaction::TonalDrill::Pattern { .. }
             )
-            && frame.controls().pad.midi_trigger < 0.5
-            && i == ((beat / 0.25).floor() as usize % 16);
-        if pad_step_playing {
+            && tonal_step_index(item.id)
+                == Some(lane_step_at(
+                    beat,
+                    frame.controls().tonal.rate_beats,
+                    frame.controls().tonal.offset_beats,
+                    tonal_live_step_count(frame.controls().tonal.step_count),
+                ));
+        if tonal_step_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
+        let arp_step_playing = view.navigation.tab == Tab::Arp
+            && matches!(
+                view.navigation.arp_drill,
+                interaction::ArpDrill::Pattern { .. }
+            )
+            && arp_step_index(item.id)
+                == Some(lane_step_at(
+                    beat,
+                    frame.controls().arp.rate_beats,
+                    frame.controls().arp.offset_beats,
+                    arp_live_step_count(frame.controls().arp.step_count),
+                ));
+        if arp_step_playing {
             spans.push(Span::styled(
                 " ♪",
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
@@ -636,43 +742,11 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             ));
         }
         if i + 1 < items.len() {
-            // The spacer under Progression names the window's chords, so the
-            // row that picks a progression also shows what it plays.
-            rows.push(
-                if item.id == "pad.progression"
-                    && view.navigation.chord_drill == interaction::ChordDrill::None
-                {
-                    chord_window_line(&frame.controls().pad, frame.active_slot)
-                } else {
-                    Line::from("")
-                },
-            );
+            rows.push(Line::from(""));
         }
     }
     let scroll = row_scroll(selected_line, rows.len(), area.height);
     f.render_widget(Paragraph::new(rows).scroll((scroll, 0)), area);
-}
-
-/// The chords of the playing window by name, in play order, indented to the
-/// slider column, with the one sounding now in amber.
-fn chord_window_line(pad: &PadControls, active_slot: usize) -> Line<'static> {
-    let window = ChordWindow::requested(pad);
-    let mut spans = vec![Span::raw(" ".repeat(18))];
-    for (step, slot) in window.slots().enumerate() {
-        if step > 0 {
-            spans.push(Span::raw("  "));
-        }
-        let name = pad_chord_name(pad, window.progression, slot);
-        spans.push(if slot == active_slot {
-            Span::styled(
-                name,
-                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled(name, Style::default().fg(DIM_TEXT))
-        });
-    }
-    Line::from(spans)
 }
 
 /// Lines to drop from the top so the selected row stays on screen. A row on
@@ -1032,7 +1106,11 @@ fn draw_palette(
         )));
     }
     lines.push(Line::from(Span::styled(
-        "\u{21e5} complete   type value   \u{21b5} stage/jump   \u{21b5}\u{21b5} commit   ^B on bar   Esc cancel",
+        if pal.is_output_picker() {
+            "↑↓ choose   Tab complete   Enter switch   Esc cancel"
+        } else {
+            "\u{21e5} complete   type value   \u{21b5} stage/jump   \u{21b5}\u{21b5} commit   ^B on bar   Esc cancel"
+        },
         Style::default().fg(DIM_TEXT),
     )));
     f.render_widget(Paragraph::new(lines), inner);
@@ -1372,6 +1450,7 @@ fn field_line(
             effective: motion_position,
             ..SliderMarkers::default()
         },
+        None,
         bar_w,
         style,
     ));
@@ -1394,6 +1473,49 @@ pub(crate) fn control_dial(item: &ControlItem) -> Dial {
 }
 
 const LANE_WAVE: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+
+/// Gain reduction in dB that fills the full width of a Compression Amount knob.
+const GAIN_REDUCTION_FULL_DB: f32 = 12.0;
+const METER_TRACK_DIM: Color = Color::Rgb(55, 60, 72);
+
+#[derive(Clone, Copy)]
+enum LiveMeter {
+    /// Perceptual output level (`0.0..=1.0`, left-to-right) for a `Level` row.
+    Level { ratio: f32 },
+    /// Gain reduction (`0.0..=1.0`, right-to-left) for an active `Compression` `Amount` row.
+    GainReduction { ratio: f32 },
+}
+
+/// Resolves the live meter overlay for a control row: voice/Master `Level`
+/// rows meter their output RMS left-to-right, and active `Compression`
+/// `Threshold` rows (`amount > 0`) meter gain reduction right-to-left.
+fn live_meter(item: &ControlItem, frame: &PanelFrame<'_, '_>) -> Option<LiveMeter> {
+    if let Some(tab) = Tab::all()
+        .into_iter()
+        .find(|tab| tab.level_id() == Some(item.id))
+    {
+        let rms = frame.view.telemetry.levels[tab as usize];
+        let ratio = if rms <= 1e-4 {
+            0.0
+        } else {
+            let db = 20.0 * (rms * 2.5).max(1e-5).log10();
+            ((db + 42.0) / 42.0).clamp(0.0, 1.0)
+        };
+        return Some(LiveMeter::Level { ratio });
+    }
+    let (prefix, slot, field) = parse_module_slot_id(item.id)?;
+    if field != ModuleSlotField::Time {
+        return None;
+    }
+    let tab = module_layer_tab(prefix)?;
+    let module = frame.controls().modules.for_tab(tab)?.get(slot)?;
+    if module.kind()?.family != Family::Compression || module.amount <= 0.0 {
+        return None;
+    }
+    let db = frame.view.telemetry.gain_reduction_db[module_layer_index(tab)? * MODULE_SLOTS + slot];
+    let ratio = (db / GAIN_REDUCTION_FULL_DB).clamp(0.0, 1.0);
+    Some(LiveMeter::GainReduction { ratio })
+}
 
 /// How many random cycles the lane scopes so sample & hold / random drift read
 /// as an actual scrolling trajectory rather than a single flat step.
@@ -1551,12 +1673,12 @@ const EFFECTIVE_MARKER_COLOR: Color = Color::Rgb(235, 245, 255);
 const SHADOW_COLOR: Color = Color::Rgb(95, 100, 115);
 
 /// Slider bar spans with ghost diamonds per modulation source, a faint reach
-/// band, and one bright diamond at the effective value. Precedence: the
-/// effective marker wins overlaps, then ghosts, then the actual filled bar,
-/// then the shadow band, then empty track.
+/// band, one bright diamond at the effective value, and an optional split
+/// half-block live meter (`▄` / `▀`) in the upper half of metered rows.
 fn slider_spans(
     ratio: f32,
     markers: SliderMarkers,
+    meter: Option<LiveMeter>,
     width: usize,
     style: Style,
 ) -> Vec<Span<'static>> {
@@ -1574,6 +1696,17 @@ fn slider_spans(
         let hi = cell(Some(hi)).unwrap_or(0);
         lo.min(hi)..=lo.max(hi)
     });
+    let meter_active = |i: usize| match meter {
+        Some(LiveMeter::Level { ratio }) => {
+            let cells = (ratio.clamp(0.0, 1.0) * width as f32).round() as usize;
+            i < cells
+        }
+        Some(LiveMeter::GainReduction { ratio }) => {
+            let cells = (ratio.clamp(0.0, 1.0) * width as f32).round() as usize;
+            i >= width.saturating_sub(cells)
+        }
+        None => false,
+    };
     (0..width)
         .map(|i| {
             if Some(i) == effective {
@@ -1585,6 +1718,26 @@ fn slider_spans(
                 )
             } else if let Some((_, color)) = ghosts.iter().find(|(pos, _)| *pos == Some(i)) {
                 Span::styled("◇", Style::default().fg(*color))
+            } else if meter.is_some() {
+                let top_on = meter_active(i);
+                let bottom_fg = if i < filled {
+                    style.fg.unwrap_or(BROWSE_PALETTE.idle)
+                } else if shadow_range.as_ref().is_some_and(|r| r.contains(&i)) {
+                    SHADOW_COLOR
+                } else {
+                    METER_TRACK_DIM
+                };
+                if i < filled {
+                    let mut cell_style = style.fg(bottom_fg);
+                    if top_on {
+                        cell_style = cell_style.bg(LIVE_AMBER);
+                    }
+                    Span::styled("▄", cell_style)
+                } else if top_on {
+                    Span::styled("▀", Style::default().fg(LIVE_AMBER).bg(bottom_fg))
+                } else {
+                    Span::styled("▄", Style::default().fg(bottom_fg))
+                }
             } else if i < filled {
                 Span::styled("█", style)
             } else if shadow_range.as_ref().is_some_and(|r| r.contains(&i)) {

@@ -15,6 +15,9 @@ use crate::fx::filter::FilterType;
 /// table; removing any is impossible, so this starts deliberately small.
 pub(crate) const MODULE_SLOTS: usize = 8;
 pub(crate) const MODULE_LAYERS: usize = 9;
+/// Every slot on every layer: the size of anything indexed by
+/// `module_layer_index(tab) * MODULE_SLOTS + slot`.
+pub(crate) const MODULE_SLOT_TOTAL: usize = MODULE_LAYERS * MODULE_SLOTS;
 
 /// Where a module runs. Taken from the loaded module, never from the slot
 /// index, so all slots stay interchangeable and the UI shows one flat chain.
@@ -43,6 +46,8 @@ pub(crate) enum Family {
     Compression,
     /// Stereo filter with cutoff, resonance, and response type controls.
     Filter,
+    /// Saturation with a character curve, bias, and dry blend behind Amount.
+    Drive,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,16 +115,18 @@ const REVERB_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
+/// Threshold leads because it is the Compressor's ordinary browsing control. A
+/// palette-added Compression opens this detail on Amount so its dry mix can rise.
 const COMPRESSION_PARAMETERS: &[EffectParameter] = &[
-    EffectParameter {
-        field: ModuleSlotField::Amount,
-        label: "Amount",
-        search_name: "Amount",
-    },
     EffectParameter {
         field: ModuleSlotField::Time,
         label: "Threshold",
         search_name: "Threshold",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Amount,
+        label: "Amount",
+        search_name: "Amount",
     },
     EffectParameter {
         field: ModuleSlotField::RightTime,
@@ -160,6 +167,32 @@ const FILTER_PARAMETERS: &[EffectParameter] = &[
         field: ModuleSlotField::Feedback,
         label: "Type",
         search_name: "Type",
+    },
+];
+
+/// Every field defaults to 0 and 0 is the original Drive (Soft, unbiased,
+/// fully wet), so a code saved before these rows existed decodes unchanged.
+/// That is why the blend is stored as Dry rather than Mix.
+const DRIVE_PARAMETERS: &[EffectParameter] = &[
+    EffectParameter {
+        field: ModuleSlotField::Amount,
+        label: "Amount",
+        search_name: "Amount",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Feedback,
+        label: "Type",
+        search_name: "Type",
+    },
+    EffectParameter {
+        field: ModuleSlotField::Time,
+        label: "Bias",
+        search_name: "Bias",
+    },
+    EffectParameter {
+        field: ModuleSlotField::RightTime,
+        label: "Dry",
+        search_name: "Dry",
     },
 ];
 
@@ -205,6 +238,7 @@ impl ModuleKind {
             Family::Reverb => REVERB_PARAMETERS,
             Family::Compression => COMPRESSION_PARAMETERS,
             Family::Filter => FILTER_PARAMETERS,
+            Family::Drive => DRIVE_PARAMETERS,
         }
     }
 
@@ -215,7 +249,7 @@ impl ModuleKind {
     }
 
     pub(crate) fn collapsed_field(self) -> ModuleSlotField {
-        if self.family == Family::Filter {
+        if matches!(self.family, Family::Filter | Family::Compression) {
             ModuleSlotField::Time
         } else {
             ModuleSlotField::Amount
@@ -256,10 +290,10 @@ pub(crate) const MODULE_CATALOG: &[ModuleKind] = &[
     },
     ModuleKind {
         id: "drive",
-        search_names: &["drive"],
+        search_names: &["drive", "distortion", "saturation"],
         display_name: "Drive",
         domain: Domain::Post,
-        family: Family::SingleAmount,
+        family: Family::Drive,
     },
     ModuleKind {
         id: "room",
@@ -549,6 +583,7 @@ pub(crate) fn preset_slot(id: &str, amount: f32) -> ModuleSlot {
 
 /// Amount of the first slot holding `id`, or zero when the chain has none.
 /// The single read path for an effect that used to be a bespoke field.
+#[cfg(test)]
 pub(crate) fn chain_amount(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) -> f32 {
     chain_amount_slot(slots, id).map_or(0.0, |index| slots[index].amount)
 }
@@ -693,12 +728,14 @@ pub(crate) fn chain_amount_slot(slots: &[ModuleSlot; MODULE_SLOTS], id: &str) ->
 /// the choice between these local values and the Master values, then copies
 /// that result into the layer's `TimingContext` before its pre-trigger grid
 /// runs.
+#[cfg(test)]
 pub(crate) fn local_drunken(slots: &[ModuleSlot; MODULE_SLOTS]) -> Option<(f32, f32)> {
     chain_amount_slot(slots, "drunken").map(|index| (slots[index].amount, slots[index].time))
 }
 
 /// Master Drunken fills a layer only while the layer has no Drunken slot of
 /// its own. A present local slot wins even when its Amount is zero.
+#[cfg(test)]
 pub(crate) fn drunken_for(
     slots: &[ModuleSlot; MODULE_SLOTS],
     master_amount: f32,
@@ -710,6 +747,7 @@ pub(crate) fn drunken_for(
 /// Resolve pre-synthesis module values into the grid fields the voices read.
 /// Post-synthesis effects execute directly through `ModuleFxBank` instead of
 /// being copied back into bespoke voice controls.
+#[cfg(test)]
 pub(crate) fn resolve_module_chain(c: &mut super::FluidControls) {
     c.master.swing = chain_amount(&c.modules.master, "swing");
     c.master.drunken_amount = chain_amount(&c.modules.master, "drunken");
@@ -731,9 +769,140 @@ pub(crate) fn resolve_module_chain(c: &mut super::FluidControls) {
     c.bass.swing = swing_for(&c.modules.bass);
 }
 
+/// Slot identities are stable between topology edits. Cache their timing
+/// roles, but read amounts every sample so automation remains sample-accurate.
+#[derive(Default)]
+pub(crate) struct ModuleTimingPlan {
+    layers: [TimingSlots; super::TAB_COUNT],
+}
+
+#[derive(Default)]
+struct TimingSlots {
+    kinds: [u32; MODULE_SLOTS],
+    swing: Option<usize>,
+    drunken: Option<usize>,
+}
+
+impl ModuleTimingPlan {
+    pub(crate) fn resolve(&mut self, c: &mut super::FluidControls) {
+        for tab in super::Tab::all() {
+            if let Some(slots) = c.modules.for_tab(tab) {
+                let cached = &mut self.layers[tab as usize];
+                let kinds = slots.map(|slot| slot.kind.to_bits());
+                if cached.kinds != kinds {
+                    cached.kinds = kinds;
+                    cached.swing = chain_amount_slot(slots, "swing");
+                    cached.drunken = chain_amount_slot(slots, "drunken");
+                }
+            }
+        }
+        let master = &self.layers[super::Tab::Master as usize];
+        c.master.swing = master.swing.map_or(0.0, |i| c.modules.master[i].amount);
+        (c.master.drunken_amount, c.master.drunken_pace) =
+            self.drunken(super::Tab::Master, &c.modules, 0.0, 7.0);
+        let swing = |tab, slots: &[ModuleSlot; MODULE_SLOTS]| {
+            self.layers[tab as usize]
+                .swing
+                .map_or(c.master.swing, |i| slots[i].amount)
+        };
+        c.pad.swing = swing(super::Tab::Chords, &c.modules.pad);
+        c.perc.swing = swing(super::Tab::Perc, &c.modules.perc);
+        c.kick.swing = self.layers[super::Tab::Kick as usize]
+            .swing
+            .map_or(0.0, |i| c.modules.kick[i].amount);
+        c.tonal.swing = swing(super::Tab::Tonal, &c.modules.tonal);
+        c.arp.swing = swing(super::Tab::Arp, &c.modules.arp);
+        c.lead.swing = swing(super::Tab::Lead, &c.modules.lead);
+        c.clap.swing = swing(super::Tab::Clap, &c.modules.clap);
+        c.bass.swing = swing(super::Tab::Bass, &c.modules.bass);
+    }
+
+    pub(crate) fn drunken(
+        &self,
+        tab: super::Tab,
+        modules: &LayerModules,
+        master_amount: f32,
+        master_pace: f32,
+    ) -> (f32, f32) {
+        self.layers[tab as usize]
+            .drunken
+            .and_then(|i| {
+                modules
+                    .for_tab(tab)
+                    .map(|slots| (slots[i].amount, slots[i].time))
+            })
+            .unwrap_or((master_amount, master_pace))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_timing_matches_scans_after_topology_and_amount_changes() {
+        let mut controls = super::super::FluidControls::default();
+        let mut plan = ModuleTimingPlan::default();
+        for tick in 0..200 {
+            for tab in super::super::Tab::all() {
+                let slots = controls.modules.for_tab_mut(tab).unwrap();
+                let slot = (tick + tab as usize) % MODULE_SLOTS;
+                slots[slot] = match tick % 4 {
+                    0 => preset_slot("swing", 0.0),
+                    1 => preset_slot("drunken", 0.7),
+                    2 => preset_slot("filter", 1.0),
+                    _ => ModuleSlot::default(),
+                };
+                slots[(slot + 1) % MODULE_SLOTS].amount = tick as f32 / 200.0;
+            }
+            let mut reference = controls.clone();
+            resolve_module_chain(&mut reference);
+            plan.resolve(&mut controls);
+            assert_eq!(controls.master.swing, reference.master.swing);
+            assert_eq!(
+                controls.master.drunken_amount,
+                reference.master.drunken_amount
+            );
+            assert_eq!(controls.master.drunken_pace, reference.master.drunken_pace);
+            assert_eq!(
+                [
+                    controls.pad.swing,
+                    controls.perc.swing,
+                    controls.kick.swing,
+                    controls.tonal.swing,
+                    controls.arp.swing,
+                    controls.lead.swing,
+                    controls.clap.swing,
+                    controls.bass.swing
+                ],
+                [
+                    reference.pad.swing,
+                    reference.perc.swing,
+                    reference.kick.swing,
+                    reference.tonal.swing,
+                    reference.arp.swing,
+                    reference.lead.swing,
+                    reference.clap.swing,
+                    reference.bass.swing
+                ]
+            );
+            for tab in super::super::Tab::all() {
+                assert_eq!(
+                    plan.drunken(
+                        tab,
+                        &controls.modules,
+                        controls.master.drunken_amount,
+                        controls.master.drunken_pace
+                    ),
+                    drunken_for(
+                        controls.modules.for_tab(tab).unwrap(),
+                        reference.master.drunken_amount,
+                        reference.master.drunken_pace
+                    )
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_default_slot_is_empty_and_therefore_inert() {

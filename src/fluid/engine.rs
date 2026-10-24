@@ -4,13 +4,13 @@
 //! on, registry-derived control smoothing, the per-layer and master module effect
 //! banks, and the master bus.
 
-use crate::midi::{MidiClockFollower, MidiSink};
 use std::collections::BTreeSet;
 
+use crate::fluid::osc::{OscVoiceCommand, OscVoiceSink, OscVoiceSource};
 use crate::fx::compression::{CompressorParams, StereoCompressor};
 use crate::fx::crossfade::{Outgoing, mix_stereo};
 use crate::fx::delay::{DelayParams, StereoDelay};
-use crate::fx::drive;
+use crate::fx::drive::{DriveParams, DriveType, StereoDrive};
 use crate::fx::filter::{FilterParams, FilterType, StereoFilter};
 use crate::fx::reverb::{Freeverb, ReverbParams};
 
@@ -22,6 +22,13 @@ use gesture_audio::GestureAudioBank;
 
 const STARTUP_FADE_SECONDS: f32 = 2.0;
 
+/// Time for a compressor's displayed gain reduction to fall to 1/e once the
+/// compressor lets go: slow enough to read at UI frame rate, fast enough that
+/// the meter follows each kick.
+const GAIN_REDUCTION_RELEASE_SECONDS: f32 = 0.3;
+/// Time for a voice or Master RMS meter to fall to 1/e after a peak.
+const LEVEL_METER_RELEASE_SECONDS: f32 = 0.25;
+
 /// Stateful post-synthesis Delay instances, addressed by the stable
 /// `(layer, slot)` storage identity rather than a catalog name.
 enum SlotFx {
@@ -29,6 +36,7 @@ enum SlotFx {
     Reverb(Freeverb),
     Compression(StereoCompressor),
     Filter(StereoFilter),
+    Drive(StereoDrive),
 }
 
 impl SlotFx {
@@ -38,6 +46,7 @@ impl SlotFx {
             Self::Reverb(_) => Family::Reverb,
             Self::Compression(_) => Family::Compression,
             Self::Filter(_) => Family::Filter,
+            Self::Drive(_) => Family::Drive,
         }
     }
 }
@@ -57,13 +66,21 @@ struct RetiredFx {
 }
 
 struct ModuleFxBank {
-    slots: [Option<SlotFx>; MODULE_LAYERS * MODULE_SLOTS],
-    retiring: [Option<Outgoing<RetiredFx>>; MODULE_LAYERS * MODULE_SLOTS],
+    slots: [Option<SlotFx>; MODULE_SLOT_TOTAL],
+    retiring: [Option<Outgoing<RetiredFx>>; MODULE_SLOT_TOTAL],
     /// Each slot's field values from the last frame it was loaded. A retiring
     /// processor keeps running on these, not on the live slot: by the time a
     /// removal is noticed the live slot has already been cleared, and its
     /// zeroed Amount would silence the very tail being faded out.
-    last_loaded: [ModuleSlot; MODULE_LAYERS * MODULE_SLOTS],
+    last_loaded: [ModuleSlot; MODULE_SLOT_TOTAL],
+    /// Lowest linear gain each slot's compressor applied since the last
+    /// meter publish; 1.0 for a slot that reduced nothing or holds no
+    /// compressor.
+    gain_floor: [f32; MODULE_SLOT_TOTAL],
+    /// Each slot's displayed gain reduction in dB: instant attack, then an
+    /// exponential release, so a meter read once per UI frame neither
+    /// flickers nor misses a transient.
+    gain_reduction_db: [f32; MODULE_SLOT_TOTAL],
     max_delay_samples: usize,
     sample_rate: f32,
     retire_fade_samples: f32,
@@ -74,7 +91,9 @@ impl ModuleFxBank {
         Self {
             slots: std::array::from_fn(|_| None),
             retiring: std::array::from_fn(|_| None),
-            last_loaded: [ModuleSlot::default(); MODULE_LAYERS * MODULE_SLOTS],
+            last_loaded: [ModuleSlot::default(); MODULE_SLOT_TOTAL],
+            gain_floor: [1.0; MODULE_SLOT_TOTAL],
+            gain_reduction_db: [0.0; MODULE_SLOT_TOTAL],
             max_delay_samples: (sample_rate * (DELAY_FREE_MAX_MS / 1_000.0)).ceil() as usize,
             sample_rate,
             // The same window every other click-free level change in the
@@ -165,6 +184,15 @@ impl ModuleFxBank {
                     amount: slot.amount,
                 },
             ),
+            SlotFx::Drive(drive) => drive.process(
+                sample,
+                DriveParams {
+                    amount: slot.amount,
+                    drive_type: DriveType::from_value(slot.feedback),
+                    bias: slot.time,
+                    dry: slot.right_time,
+                },
+            ),
         }
     }
 
@@ -215,6 +243,28 @@ impl ModuleFxBank {
         mix_stereo(sample, wet, weight)
     }
 
+    /// Fold the block's deepest compressor gain into each slot's meter and
+    /// publish it. A retiring compressor is not metered: its slot already
+    /// shows whatever replaced it.
+    fn publish_gain_reduction(&mut self, telemetry: &FluidTelemetry, block_seconds: f32) {
+        let release = (-block_seconds / GAIN_REDUCTION_RELEASE_SECONDS).exp();
+        for (index, (floor, shown)) in self
+            .gain_floor
+            .iter_mut()
+            .zip(&mut self.gain_reduction_db)
+            .enumerate()
+        {
+            let reduction = if *floor < 1.0 {
+                -20.0 * floor.log10()
+            } else {
+                0.0
+            };
+            *shown = reduction.max(*shown * release);
+            *floor = 1.0;
+            telemetry.publish_gain_reduction(index, *shown);
+        }
+    }
+
     fn process(
         &mut self,
         tab: Tab,
@@ -244,12 +294,17 @@ impl ModuleFxBank {
                 continue;
             }
             match kind.family {
-                Family::Delay | Family::Reverb | Family::Compression | Family::Filter => {
+                Family::Delay
+                | Family::Reverb
+                | Family::Compression
+                | Family::Filter
+                | Family::Drive => {
                     if processor.is_none() {
                         *processor = Some(match kind.family {
                             Family::Delay => SlotFx::Delay(StereoDelay::new(max_delay_samples)),
                             Family::Reverb => SlotFx::Reverb(Freeverb::new(sample_rate)),
                             Family::Filter => SlotFx::Filter(StereoFilter::default()),
+                            Family::Drive => SlotFx::Drive(StereoDrive::new(sample_rate)),
                             _ => SlotFx::Compression(StereoCompressor::new(0.0)),
                         });
                     }
@@ -264,15 +319,12 @@ impl ModuleFxBank {
                         max_delay_samples,
                         sample_rate,
                     );
-                }
-                // Stateless shaping families hold no tail, so they have
-                // nothing to retire and are simply absent when unloaded.
-                Family::SingleAmount => {
-                    if kind.id == "drive" {
-                        sample = drive::process(sample, slot.amount);
+                    if let SlotFx::Compression(compressor) = fx {
+                        self.gain_floor[index] = self.gain_floor[index].min(compressor.gain());
                     }
                 }
-                Family::TwoKnob | Family::Drunken => {}
+                // Pre-trigger and DSP-less families shape nothing here.
+                Family::SingleAmount | Family::TwoKnob | Family::Drunken => {}
             }
         }
         sample
@@ -562,6 +614,46 @@ mod module_fx_tests {
     }
 
     #[test]
+    fn a_compressing_slot_publishes_its_gain_reduction_and_releases_it() {
+        let telemetry = FluidTelemetry::default();
+        let mut bank = ModuleFxBank::new(TEST_SAMPLE_RATE);
+        let mut slots = [ModuleSlot::default(); MODULE_SLOTS];
+        slots[2] = preset_slot("compression", 1.0);
+        slots[2].time = -20.0;
+        slots[2].right_time = 4.0;
+        let index = module_layer_index(Tab::Bass).unwrap() * MODULE_SLOTS + 2;
+        let block = LEVEL_BLOCK as f32 / TEST_SAMPLE_RATE;
+        for _ in 0..4 {
+            for _ in 0..LEVEL_BLOCK {
+                bank.process(Tab::Bass, &slots, (0.9, -0.9), timing());
+            }
+            bank.publish_gain_reduction(&telemetry, block);
+        }
+        // A 0.9 peak sits 19 dB over a -20 dB threshold; 4:1 keeps a quarter.
+        let loud = telemetry.gain_reduction()[index];
+        assert!((loud - 19.08 * 0.75).abs() < 0.5, "{loud}");
+        assert!(
+            telemetry
+                .gain_reduction()
+                .iter()
+                .enumerate()
+                .all(|(other, db)| other == index || *db == 0.0)
+        );
+
+        for _ in 0..LEVEL_BLOCK {
+            bank.process(Tab::Bass, &slots, (0.0, 0.0), timing());
+        }
+        bank.publish_gain_reduction(&telemetry, block);
+        let releasing = telemetry.gain_reduction()[index];
+        assert!(releasing > 0.0 && releasing < loud, "{releasing}");
+        // Five seconds of silence is over sixteen release time constants.
+        for _ in 0..(5.0 / block) as usize {
+            bank.publish_gain_reduction(&telemetry, block);
+        }
+        assert!(telemetry.gain_reduction()[index] < 0.01);
+    }
+
+    #[test]
     fn zero_amount_is_an_exact_dry_bypass_for_every_post_family() {
         let timing = TimingContext::new(44_100.0, 120.0, 0.0);
         for kind in ["drive", "room", "delay", "compression"] {
@@ -586,9 +678,7 @@ pub(crate) struct FluidEngine {
     pub(crate) sample_rate: f32,
     pub(crate) tempo: TempoClock,
     beat_trigger: GridTrigger,
-    midi_clock: Option<MidiClockFollower>,
-    midi_input: Option<crate::midi::MidiInputSource>,
-    midi_input_enabled: [bool; 3],
+    osc_input: Option<OscVoiceSource>,
     pub(crate) control_smoothers: ControlSmoothers,
     mute_gates: OutputGates,
     muted: MuteState,
@@ -619,15 +709,20 @@ pub(crate) struct FluidEngine {
     pub(crate) telemetry: Arc<FluidTelemetry>,
     /// Per-`Tab` sum of squared output samples since the last `LEVEL_BLOCK`.
     level_acc: [f32; TAB_COUNT],
+    /// Per-`Tab` displayed RMS level with instant attack and exponential release.
+    level_meter: [f32; TAB_COUNT],
     pub(crate) snapshot: FluidControls,
     gesture_snapshot: GestureState,
     drunken_phase_beat: f64,
     transport: Transport,
     transport_restart: u64,
     /// Allocation-free per-sample plan, rebuilt only when aggregate
-    /// automation differs from the last planned state.
+    /// session identity changes, without comparing or cloning automation maps.
     plan: AutomationPlan,
-    plan_source: Arc<AutomationState>,
+    plan_source: Arc<LiveSessionSnapshot>,
+    effective: FluidControls,
+    authored_muted: MuteState,
+    module_timing: ModuleTimingPlan,
 }
 
 impl FluidEngine {
@@ -647,6 +742,8 @@ impl FluidEngine {
         telemetry: Arc<FluidTelemetry>,
         publish_tonal_session_state: bool,
     ) -> Self {
+        // Build the progression-tonic table here, off the audio callback.
+        progression_tonic_pitch_class(0);
         let live = session.load();
         let snapshot = live.controls.clone();
         let vamp_active = live.vamp.is_some_and(|vamp| vamp.is_active(0.0));
@@ -655,17 +752,15 @@ impl FluidEngine {
             initial_pad.chord_count = 1.0;
             initial_pad.chord_offset = f32::from(vamp.slot);
         }
-        let plan_source = Arc::new(live.automation.clone());
+        let plan_source = Arc::clone(&live);
         let mut plan = AutomationPlan::default();
-        plan.rebuild(&plan_source);
+        plan.rebuild(&plan_source.automation);
         Self {
             current_sample: 0,
             sample_rate,
             tempo: TempoClock::new(sample_rate, snapshot.master.bpm),
             beat_trigger: GridTrigger::new(),
-            midi_clock: None,
-            midi_input: None,
-            midi_input_enabled: [false; 3],
+            osc_input: None,
             control_smoothers: ControlSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
             muted: live.muted,
@@ -675,24 +770,48 @@ impl FluidEngine {
             vamp_active,
             vamp_landed_beat: None,
             vamp_landed_at: None,
-            pad: PadEngine::new(
+            pad: PadEngine::new_with_live_state(
                 sample_rate,
                 &initial_pad,
-                snapshot.master.tune,
+                MasterKey::from_control(snapshot.master.key),
+                publish_tonal_session_state.then(|| session.clone()),
                 Arc::clone(&telemetry),
             ),
-            perc: PercEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
-            kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
+            perc: PercEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+                Arc::clone(&telemetry),
+            ),
+            kick: KickEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+                Arc::clone(&telemetry),
+            ),
             tonal: TonalEngine::new_with_live_state(
                 sample_rate,
                 live.tonal_sequence.clone(),
                 publish_tonal_session_state.then(|| session.clone()),
                 Arc::clone(&telemetry),
             ),
-            clap: ClapEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
-            bass: BassEngine::new(sample_rate),
-            arp: ArpEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
-            lead: LeadEngine::with_play_state(sample_rate, live.lead_play),
+            clap: ClapEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+                Arc::clone(&telemetry),
+            ),
+            bass: BassEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+            ),
+            arp: ArpEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+                Arc::clone(&telemetry),
+            ),
+            lead: LeadEngine::new_with_live_state(
+                sample_rate,
+                live.lead_play,
+                publish_tonal_session_state.then(|| session.clone()),
+            ),
             module_fx: ModuleFxBank::new(sample_rate),
             gesture_audio: GestureAudioBank::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
@@ -701,6 +820,10 @@ impl FluidEngine {
             morph_writer: MorphWriter::default(),
             telemetry,
             level_acc: [0.0; TAB_COUNT],
+            level_meter: [0.0; TAB_COUNT],
+            authored_muted: live.muted,
+            effective: snapshot.clone(),
+            module_timing: ModuleTimingPlan::default(),
             snapshot,
             gesture_snapshot: live.gestures.clone(),
             drunken_phase_beat: live.drunken_phase_beat,
@@ -713,7 +836,7 @@ impl FluidEngine {
 
     /// Rewind musical schedulers while release envelopes and effect tails keep running.
     fn restart_sequence(&mut self) {
-        self.tempo.beat = 0.0;
+        self.tempo.restart();
         self.vamp_active = false;
         self.vamp_landed_beat = None;
         self.vamp_landed_at = None;
@@ -723,9 +846,14 @@ impl FluidEngine {
         self.beat_trigger = GridTrigger::new();
         self.bass.progression = ProgressionFollower::new();
         self.bass.step_trigger = GridTrigger::new();
+        self.bass.last_cycle = None;
         self.perc.trigger = GridTrigger::new();
+        self.perc.last_cycle = None;
         self.kick.trigger = GridTrigger::new();
+        self.kick.last_cycle = None;
         self.clap.trigger = GridTrigger::new();
+        self.clap.last_cycle = None;
+        self.tonal.progression = ProgressionFollower::new();
         self.tonal.step_trigger = GridTrigger::new();
         self.tonal.step_index = 0;
         self.tonal.last_cycle = None;
@@ -733,82 +861,75 @@ impl FluidEngine {
         self.arp.note_trigger = GridTrigger::new();
         self.arp.cycle_pos = 0;
         self.arp.ping_pong_dir = 1;
+        self.arp.step_index = 0;
+        self.arp.last_cycle = None;
         self.lead.progression = ProgressionFollower::new();
         self.lead.step_trigger = GridTrigger::new();
-        if let Some(clock) = &mut self.midi_clock {
-            clock.restart();
-        }
+        self.lead.last_cycle = None;
     }
 
-    pub(crate) fn with_midi(mut self, sink: MidiSink) -> Self {
-        self.pad.set_midi(sink.clone());
-        self.arp.set_midi(sink.clone());
-        self.lead.set_midi(sink.clone());
-        self.bass.set_midi(sink.clone());
-        self.midi_clock = Some(MidiClockFollower::new(sink));
+    pub(crate) fn with_osc_voice(mut self, sink: OscVoiceSink) -> Self {
+        self.pad.set_osc(sink.clone());
+        self.arp.set_osc(sink.clone());
+        self.lead.set_osc(sink.clone());
+        self.bass.set_osc(sink);
         self
     }
 
-    pub(crate) fn with_midi_input(mut self, source: crate::midi::MidiInputSource) -> Self {
-        self.pad.set_midi_input_attached();
-        self.midi_input = Some(source);
+    #[cfg(feature = "link")]
+    pub(crate) fn with_link(mut self, clock: LinkClock) -> Self {
+        self.tempo.link = Some(clock);
         self
     }
 
-    fn route_midi_input(
-        &mut self,
-        event: crate::midi::MidiInputEvent,
-        controls: &FluidControls,
-        timing: TimingContext,
-    ) {
-        use crate::midi::MidiInputEvent::{NoteOff, NoteOn};
-        match event {
-            NoteOn(note) => {
-                if controls.pad.midi_in >= 0.5 {
-                    self.pad
-                        .midi_note_on(note, &controls.pad, controls.master.tune, timing);
-                }
-                if controls.arp.midi_in >= 0.5 {
-                    self.arp.midi_note_on(note);
-                }
-                if controls.lead.midi_in >= 0.5 {
-                    self.lead
-                        .midi_note_on(note, &controls.lead, controls.master.tune);
-                }
-                if bass_midi_mode(controls.bass.midi) == BassMidi::In {
-                    self.bass
-                        .midi_note_on(note, &controls.bass, controls.master.tune);
-                }
+    pub(crate) fn with_osc_input(mut self, source: OscVoiceSource) -> Self {
+        self.osc_input = Some(source);
+        self
+    }
+
+    fn route_osc_input(&mut self, cmd: OscVoiceCommand) {
+        let controls = &self.effective;
+        // Played notes follow the key of the progression sounding now.
+        let tune = MasterKey::from_control(controls.master.key)
+            .shift(self.pad.cursor.window.progression) as f32;
+        match cmd {
+            OscVoiceCommand::PadNoteOn(note) => {
+                self.pad.osc_note_on(note, &controls.pad, tune);
             }
-            NoteOff(note) => {
-                self.pad.midi_note_off(note);
-                self.arp.midi_note_off(note);
-                self.lead.midi_note_off(note);
+            OscVoiceCommand::PadNoteOff(note) => {
+                self.pad.osc_note_off(note);
             }
-            crate::midi::MidiInputEvent::AllNotesOff => {
+            OscVoiceCommand::PadNotes(notes) => {
+                self.pad.set_osc_notes(&notes, &controls.pad, tune);
+            }
+            OscVoiceCommand::ArpNoteOn(note) => {
+                self.arp.osc_note_on(note);
+            }
+            OscVoiceCommand::ArpNoteOff(note) => {
+                self.arp.osc_note_off(note);
+            }
+            OscVoiceCommand::ArpNotes(notes) => {
+                self.arp.set_osc_notes(&notes);
+            }
+            OscVoiceCommand::LeadNoteOn(note) => {
+                self.lead.osc_note_on(note, &controls.lead, tune);
+            }
+            OscVoiceCommand::LeadNoteOff(note) => {
+                self.lead.osc_note_off(note);
+            }
+            OscVoiceCommand::BassNoteOn(note) => {
+                self.bass.osc_note_on(note, &controls.bass, tune);
+            }
+            OscVoiceCommand::KickTrigger(velocity) => {
+                self.kick.trigger_hit(&controls.kick, velocity);
+            }
+            OscVoiceCommand::AllNotesOff => {
                 self.pad.release_input();
                 self.arp.release_input();
                 self.lead.release_input();
+                self.bass.release_input();
             }
         }
-    }
-
-    fn sync_midi_input_switches(&mut self, controls: &FluidControls) {
-        let enabled = [
-            controls.pad.midi_in >= 0.5,
-            controls.arp.midi_in >= 0.5,
-            controls.lead.midi_in >= 0.5,
-        ];
-        if self.midi_input_enabled[0] && !enabled[0] {
-            self.pad.release_input();
-        }
-        if self.midi_input_enabled[1] && !enabled[1] {
-            self.arp.release_input();
-        }
-        if self.midi_input_enabled[2] && !enabled[2] {
-            self.lead.release_input();
-        }
-        self.midi_input_enabled = enabled;
     }
 }
 
@@ -816,15 +937,37 @@ impl FluidEngine {
     /// Reseed every voice RNG for reproducible offline renders.
     pub(crate) fn reseed(&mut self, seed: u64) {
         self.pad.rng = StdRng::seed_from_u64(seed);
+        self.pad.evolution_seed = seed.wrapping_add(10);
         self.perc.rng = StdRng::seed_from_u64(seed.wrapping_add(1));
+        self.perc.evolution_seed = seed.wrapping_add(11);
         self.kick.rng = StdRng::seed_from_u64(seed.wrapping_add(2));
+        self.kick.evolution_seed = seed.wrapping_add(12);
         self.tonal.rng = StdRng::seed_from_u64(seed.wrapping_add(3));
         self.clap.rng = StdRng::seed_from_u64(seed.wrapping_add(4));
+        self.clap.evolution_seed = seed.wrapping_add(14);
         self.arp.rng = StdRng::seed_from_u64(seed.wrapping_add(5));
+        self.arp.evolution_seed = seed.wrapping_add(15);
+        self.bass.evolution_seed = seed.wrapping_add(16);
+        self.lead.evolution_seed = seed.wrapping_add(17);
     }
 }
 
 impl StereoEngine for FluidEngine {
+    #[cfg(feature = "link")]
+    fn begin_buffer(&mut self, output_latency: std::time::Duration) {
+        if let Some(link) = &mut self.tempo.link {
+            link.begin_buffer(
+                self.current_sample,
+                output_latency,
+                LocalTiming {
+                    transport: self.transport,
+                    restart: self.transport_restart,
+                    target_bpm: self.snapshot.master.bpm,
+                },
+            );
+        }
+    }
+
     fn next_stereo(&mut self) -> (f32, f32) {
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         let morph_boundary = self
@@ -861,6 +1004,7 @@ impl StereoEngine for FluidEngine {
             }
             let session = self.session.load();
             self.snapshot = session.controls.clone();
+            self.effective.clone_from(&self.snapshot);
             if restarting {
                 self.pad.restart_sequence(&self.snapshot.pad);
             }
@@ -882,6 +1026,7 @@ impl StereoEngine for FluidEngine {
                 self.control_smoothers
                     .settle("bass.level", self.snapshot.bass.level);
             }
+            self.authored_muted = session.muted;
             self.planned = session.planned;
             self.hold_muted = session.hold_muted;
             if self.vamp != session.vamp {
@@ -893,28 +1038,33 @@ impl StereoEngine for FluidEngine {
             self.lead.observe(session.lead_play);
             self.master_bus
                 .set_controls(&self.snapshot.master, self.sample_rate);
-            if session.automation != *self.plan_source {
+            if !Arc::ptr_eq(&session, &self.plan_source) {
                 self.plan.rebuild(&session.automation);
-                self.plan_source = Arc::new(session.automation.clone());
+                self.plan_source = Arc::clone(&session);
             }
         }
 
         let fade = startup_fade(self.current_sample, self.sample_rate);
-        let mut effective = self.control_smoothers.next_controls(&self.snapshot);
+        self.control_smoothers.apply(&mut self.effective);
+        let base_bpm = self.effective.master.bpm;
+        let base_kick = self.effective.kick.level;
+        let base_bass = self.effective.bass.level;
+        // Perc Roll and the vamp override these per sample; restore them below
+        // so the persistent working controls never compound the override.
+        let base_perc_interval = self.effective.perc.interval_beats;
+        let base_chord_count = self.effective.pad.chord_count;
+        let base_chord_offset = self.effective.pad.chord_offset;
         let morph = self.morph.load();
         let active_morph = morph.as_ref().as_ref();
         if let Some(morph) = active_morph {
-            effective.master.bpm = morph.tempo_at(self.tempo.beat);
+            self.effective.master.bpm = morph.tempo_at(self.tempo.beat);
             // The morph already supplies a smooth curve at sample rate.
             // A second lag would drag half/double-time jumps past the landing.
-            self.tempo.bpm = f64::from(effective.master.bpm);
+            self.tempo.bpm = f64::from(self.effective.master.bpm);
         }
-        let mut timing = self.tempo.tick(effective.master.bpm, self.transport);
+        let mut timing = self.tempo.tick(self.effective.master.bpm, self.transport);
         self.advance_planned_mute(timing);
         self.advance_vamp(timing);
-        if let Some(clock) = &mut self.midi_clock {
-            clock.tick(timing);
-        }
         if self.beat_trigger.pop_swung(timing, 1.0, 0.0, 0.0) {
             self.telemetry
                 .publish_hit(MusicalHit::Beat, 1.0, NO_PITCH_CLASS);
@@ -922,9 +1072,10 @@ impl StereoEngine for FluidEngine {
         if self.current_sample.is_multiple_of(256) {
             self.telemetry.publish_beat(timing.beat);
         }
-        self.plan.apply(&mut effective, timing);
+        self.plan.apply(&mut self.effective, timing);
         if self.hold_muted[HoldMute::PercRoll as usize] {
-            effective.perc.interval_beats = faster_perc_interval(effective.perc.interval_beats);
+            self.effective.perc.interval_beats =
+                faster_perc_interval(self.effective.perc.interval_beats);
         }
         // Both dropped layers stay silent through the percentage phase,
         // including Level automation and their post-module effect tails.
@@ -942,69 +1093,71 @@ impl StereoEngine for FluidEngine {
             (None, None) => None,
         };
         if let Some(vamp) = self.vamp.filter(|vamp| vamp.is_active(timing.beat)) {
-            effective.pad.chord_count = 1.0;
-            effective.pad.chord_offset = f32::from(vamp.slot);
+            self.effective.pad.chord_count = 1.0;
+            self.effective.pad.chord_offset = f32::from(vamp.slot);
             timing.morph_phrase_start = Some(vamp.start_beat);
         }
         let drop_gain =
             active_morph.map_or(1.0, |morph| morph.drop_gain_at(timing.beat, timing.bpm));
         if drop_gain == 0.0 {
-            effective.kick.level = 0.0;
-            effective.bass.level = 0.0;
+            self.effective.kick.level = 0.0;
+            self.effective.bass.level = 0.0;
         }
-        resolve_module_chain(&mut effective);
-        timing.drunken_amount = effective.master.drunken_amount;
-        timing.drunken_pace = effective.master.drunken_pace;
+        self.module_timing.resolve(&mut self.effective);
+        timing.drunken_amount = self.effective.master.drunken_amount;
+        timing.drunken_pace = self.effective.master.drunken_pace;
         timing.drunken_phase_beat = self.drunken_phase_beat;
         // A local slot owns its layer's grid timing, including at Amount 0.
         // Without one, Master remains the global fallback. The session's
         // saved wave phase belongs to every per-layer timing copy.
-        let layer_timing = |slots: &[ModuleSlot; MODULE_SLOTS]| {
-            let (amount, pace) = drunken_for(slots, timing.drunken_amount, timing.drunken_pace);
+        if self.current_sample.is_multiple_of(128)
+            && let Some(source) = self.osc_input.clone()
+        {
+            while let Some(cmd) = source.try_recv() {
+                self.route_osc_input(cmd);
+            }
+        }
+        let layer_timing = |tab: Tab, modules: &LayerModules| {
+            let (amount, pace) = self.module_timing.drunken(
+                tab,
+                modules,
+                timing.drunken_amount,
+                timing.drunken_pace,
+            );
             timing.with_drunken(amount, pace)
         };
-        effective.keep_midi_directions_exclusive();
-        self.sync_midi_input_switches(&effective);
-        // Suppress only effective output routing; authored switches, input,
-        // transport, and the source-owned Note Off paths stay intact.
+        // Suppress only effective OSC voice output when a layer or Master is muted.
         let master_muted = self.muted[Tab::Master as usize];
-        if master_muted || self.muted[Tab::Chords as usize] {
-            effective.pad.midi_out = 0.0;
-        }
-        if master_muted || self.muted[Tab::Arp as usize] {
-            effective.arp.midi_out = 0.0;
-        }
-        if master_muted || self.muted[Tab::Lead as usize] {
-            effective.lead.midi_out = 0.0;
-        }
-        if (master_muted || self.muted[Tab::Bass as usize])
-            && bass_midi_mode(effective.bass.midi) == BassMidi::Out
-        {
-            effective.bass.midi = 0.0;
-        }
+        self.pad
+            .set_osc_suppressed(master_muted || self.muted[Tab::Chords as usize]);
+        self.arp
+            .set_osc_suppressed(master_muted || self.muted[Tab::Arp as usize]);
+        self.lead
+            .set_osc_suppressed(master_muted || self.muted[Tab::Lead as usize]);
+        self.bass
+            .set_osc_suppressed(master_muted || self.muted[Tab::Bass as usize]);
         let mute_gains = self.mute_gates.next();
         let now_seconds = self.current_sample as f64 / self.sample_rate as f64;
 
-        let tune = effective.master.tune;
-        self.pad.set_midi_suppressed(effective.pad.midi_out < 0.5);
+        let key = MasterKey::from_control(self.effective.master.key);
         let pad = self.module_fx.process(
             Tab::Chords,
-            &effective.modules.pad,
+            &self.effective.modules.pad,
             self.pad.next(
-                &effective.pad,
-                tune,
-                layer_timing(&effective.modules.pad).with_groove_seed(1),
+                &self.effective.pad,
+                key,
+                layer_timing(Tab::Chords, &self.effective.modules).with_groove_seed(1),
             ),
             timing,
         );
         let (pad_l, pad_r) = gate_stereo(pad, mute_gains[Tab::Chords as usize]);
         let perc = self.module_fx.process(
             Tab::Perc,
-            &effective.modules.perc,
+            &self.effective.modules.perc,
             {
                 let perc = self.perc.next(
-                    &effective.perc,
-                    layer_timing(&effective.modules.perc).with_groove_seed(2),
+                    &self.effective.perc,
+                    layer_timing(Tab::Perc, &self.effective.modules).with_groove_seed(2),
                 );
                 (perc, perc)
             },
@@ -1013,82 +1166,72 @@ impl StereoEngine for FluidEngine {
         let (perc_l, perc_r) = gate_stereo(perc, mute_gains[Tab::Perc as usize]);
         let kick = self.module_fx.process(
             Tab::Kick,
-            &effective.modules.kick,
+            &self.effective.modules.kick,
             self.kick.next(
-                &effective.kick,
-                layer_timing(&effective.modules.kick).with_groove_seed(3),
+                &self.effective.kick,
+                layer_timing(Tab::Kick, &self.effective.modules).with_groove_seed(3),
             ),
             timing,
         );
         let (kick_l, kick_r) = gate_stereo(kick, mute_gains[Tab::Kick as usize] * drop_gain);
         let tonal = self.module_fx.process(
             Tab::Tonal,
-            &effective.modules.tonal,
+            &self.effective.modules.tonal,
             self.tonal.next(
-                &effective.tonal,
-                self.pad.cursor.window.progression,
-                tune,
-                layer_timing(&effective.modules.tonal).with_groove_seed(4),
+                &self.effective.tonal,
+                &self.effective.pad,
+                key,
+                layer_timing(Tab::Tonal, &self.effective.modules).with_groove_seed(4),
             ),
             timing,
         );
         let (ton_l, ton_r) = gate_stereo(tonal, mute_gains[Tab::Tonal as usize]);
         let clap = self.module_fx.process(
             Tab::Clap,
-            &effective.modules.clap,
+            &self.effective.modules.clap,
             self.clap.next(
-                &effective.clap,
-                layer_timing(&effective.modules.clap).with_groove_seed(5),
+                &self.effective.clap,
+                layer_timing(Tab::Clap, &self.effective.modules).with_groove_seed(5),
             ),
             timing,
         );
         let (clap_l, clap_r) = gate_stereo(clap, mute_gains[Tab::Clap as usize]);
         let bass = self.module_fx.process(
             Tab::Bass,
-            &effective.modules.bass,
+            &self.effective.modules.bass,
             self.bass.next(
-                &effective.bass,
-                &effective.pad,
-                tune,
-                layer_timing(&effective.modules.bass).with_groove_seed(6),
+                &self.effective.bass,
+                &self.effective.pad,
+                key,
+                layer_timing(Tab::Bass, &self.effective.modules).with_groove_seed(6),
             ),
             timing,
         );
         let (bass_l, bass_r) = gate_stereo(bass, mute_gains[Tab::Bass as usize] * drop_gain);
         let arp = self.module_fx.process(
             Tab::Arp,
-            &effective.modules.arp,
+            &self.effective.modules.arp,
             self.arp.next(
-                &effective.arp,
-                &effective.pad,
-                tune,
-                layer_timing(&effective.modules.arp).with_groove_seed(7),
+                &self.effective.arp,
+                &self.effective.pad,
+                key,
+                layer_timing(Tab::Arp, &self.effective.modules).with_groove_seed(7),
             ),
             timing,
         );
         let (arp_l, arp_r) = gate_stereo(arp, mute_gains[Tab::Arp as usize]);
         let lead = self.module_fx.process(
             Tab::Lead,
-            &effective.modules.lead,
+            &self.effective.modules.lead,
             self.lead.next(
-                &effective.lead,
-                &effective.pad,
-                tune,
-                layer_timing(&effective.modules.lead).with_groove_seed(8),
+                &self.effective.lead,
+                &self.effective.pad,
+                key,
+                layer_timing(Tab::Lead, &self.effective.modules).with_groove_seed(8),
             ),
             timing,
         );
         let (lead_l, lead_r) = gate_stereo(lead, mute_gains[Tab::Lead as usize]);
-        if self.current_sample.is_multiple_of(128)
-            && let Some(source) = self.midi_input.clone()
-        {
-            let overflowed = source.drain(|event| self.route_midi_input(event, &effective, timing));
-            if overflowed {
-                self.pad.release_input();
-                self.arp.release_input();
-                self.lead.release_input();
-            }
-        }
         self.current_sample += 1;
 
         let voices_l = VoiceMix {
@@ -1120,7 +1263,7 @@ impl StereoEngine for FluidEngine {
         let raw_r = voices_r.sum(fade);
         let master = self.module_fx.process(
             Tab::Master,
-            &effective.modules.master,
+            &self.effective.modules.master,
             (raw_l, raw_r),
             timing,
         );
@@ -1133,14 +1276,21 @@ impl StereoEngine for FluidEngine {
         let master = self.gesture_audio.process(master, gesture_amounts, timing);
         let out = gate_stereo(
             self.master_bus
-                .process(master.0, master.1, &effective.master),
+                .process(master.0, master.1, &self.effective.master),
             mute_gains[Tab::Master as usize],
         );
         self.level_acc[Tab::Master as usize] += out.0 * out.0 + out.1 * out.1;
         if self.current_sample.is_multiple_of(LEVEL_BLOCK) {
-            for (tab, acc) in Tab::all().into_iter().zip(&mut self.level_acc) {
-                self.telemetry
-                    .publish_level(tab, (*acc / (2 * LEVEL_BLOCK) as f32).sqrt());
+            let block_seconds = LEVEL_BLOCK as f32 / self.sample_rate;
+            let level_release = (-block_seconds / LEVEL_METER_RELEASE_SECONDS).exp();
+            for ((tab, acc), shown) in Tab::all()
+                .into_iter()
+                .zip(&mut self.level_acc)
+                .zip(&mut self.level_meter)
+            {
+                let rms = (*acc / (2 * LEVEL_BLOCK) as f32).sqrt();
+                *shown = rms.max(*shown * level_release);
+                self.telemetry.publish_level(tab, *shown);
                 *acc = 0.0;
             }
             for (kind, amount) in GestureKind::ALL
@@ -1149,7 +1299,16 @@ impl StereoEngine for FluidEngine {
             {
                 self.telemetry.publish_gesture(kind, amount);
             }
+            self.module_fx
+                .publish_gain_reduction(&self.telemetry, block_seconds);
         }
+        self.plan.restore(&mut self.effective);
+        self.effective.master.bpm = base_bpm;
+        self.effective.kick.level = base_kick;
+        self.effective.bass.level = base_bass;
+        self.effective.perc.interval_beats = base_perc_interval;
+        self.effective.pad.chord_count = base_chord_count;
+        self.effective.pad.chord_offset = base_chord_offset;
         out
     }
 }
@@ -1164,6 +1323,10 @@ impl FluidEngine {
         let Some(PlannedAction::Mute { tab, target_beat }) = self.planned else {
             return;
         };
+        let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, self.authored_muted);
+        if timing.beat < target_beat && boundary_muted == self.muted {
+            return;
+        }
         let action = PlannedAction::Mute { tab, target_beat };
         let session = self.session.load();
         if session.planned != Some(action) {
@@ -1176,9 +1339,11 @@ impl FluidEngine {
         }
 
         let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
-        self.mute_gates
-            .set_targets(&boundary_muted, self.sample_rate);
-        self.muted = boundary_muted;
+        if self.muted != boundary_muted {
+            self.mute_gates
+                .set_targets(&boundary_muted, self.sample_rate);
+            self.muted = boundary_muted;
+        }
 
         if timing.beat < target_beat {
             return;
@@ -1380,6 +1545,59 @@ mod planned_mute_tests {
         // TempoClock reports the sample's beat before it advances, so render
         // the first sample at or beyond the boundary as well.
         engine.next_stereo();
+    }
+
+    #[test]
+    fn plan_source_retains_the_published_session_without_map_copies() {
+        let (mut engine, session) = engine_with_planned_mute(false);
+        let original = session.load();
+        engine.next_stereo();
+        assert!(Arc::ptr_eq(&engine.plan_source, &original));
+        session
+            .transact(|snapshot| {
+                snapshot.controls.master.level = 0.4;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        for _ in 0..128 {
+            engine.next_stereo();
+        }
+        assert!(Arc::ptr_eq(&engine.plan_source, &session.load()));
+        assert!(!Arc::ptr_eq(&engine.plan_source, &original));
+    }
+
+    #[test]
+    fn perc_roll_override_does_not_compound_between_control_ticks() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        snapshot.hold_muted[HoldMute::PercRoll as usize] = true;
+        let authored = snapshot.controls.perc.interval_beats;
+        let mut engine = FluidEngine::new(
+            SAMPLE_RATE,
+            LiveSession::new(snapshot),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        for _ in 0..127 {
+            engine.next_stereo();
+            assert_eq!(engine.effective.perc.interval_beats, authored);
+        }
+    }
+
+    #[test]
+    fn cancelled_planned_mute_does_not_commit_at_the_boundary() {
+        let (mut engine, session) = engine_with_planned_mute(false);
+        while engine.muted == engine.authored_muted {
+            engine.next_stereo();
+        }
+        session
+            .transact(|snapshot| {
+                snapshot.planned = None;
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        render_through_boundary(&mut engine);
+        assert!(!session.load().muted[Tab::Kick as usize]);
+        assert_eq!(engine.planned, None);
     }
 
     #[test]
@@ -1651,8 +1869,7 @@ impl ControlSmoothers {
         }
     }
 
-    pub(crate) fn next_controls(&mut self, c: &FluidControls) -> FluidControls {
-        let mut next = c.clone();
+    pub(crate) fn apply(&mut self, next: &mut FluidControls) {
         // Most knobs are stationary. The control-rate pass prepares this
         // bounded list, so audio visits only ramps that need a sample write.
         for &index in &self.active {
@@ -1660,8 +1877,14 @@ impl ControlSmoothers {
             if smoother.idle {
                 continue;
             }
-            (smoother.spec.set)(&mut next, smoother.next());
+            (smoother.spec.set)(next, smoother.next());
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn next_controls(&mut self, c: &FluidControls) -> FluidControls {
+        let mut next = c.clone();
+        self.apply(&mut next);
         next
     }
 }
@@ -1673,6 +1896,10 @@ pub(crate) struct TempoClock {
     pub(crate) bpm: f64,
     pub(crate) sample_rate: f64,
     pub(crate) smoothing_coeff: f64,
+    /// `Some` under `--link`: beat and tempo come from the shared timeline
+    /// instead of accumulating locally.
+    #[cfg(feature = "link")]
+    pub(crate) link: Option<LinkClock>,
 }
 
 impl TempoClock {
@@ -1684,6 +1911,16 @@ impl TempoClock {
             bpm: f64::from(bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX)),
             sample_rate,
             smoothing_coeff: 1.0 - (-1.0 / smoothing_samples).exp(),
+            #[cfg(feature = "link")]
+            link: None,
+        }
+    }
+
+    pub(crate) fn restart(&mut self) {
+        self.beat = 0.0;
+        #[cfg(feature = "link")]
+        if let Some(link) = &mut self.link {
+            link.restart();
         }
     }
 
@@ -1691,6 +1928,11 @@ impl TempoClock {
     /// positions, the auto morph, grid phases) waits where it was and
     /// resumes from there. Tempo still glides toward its target.
     pub(crate) fn tick(&mut self, target_bpm: f32, transport: Transport) -> TimingContext {
+        #[cfg(feature = "link")]
+        if let Some(link) = &mut self.link {
+            let sample = link.next_sample();
+            return self.follow_link(sample, transport);
+        }
         let target_bpm = f64::from(target_bpm.clamp(MASTER_BPM_MIN, MASTER_BPM_MAX));
         self.bpm += (target_bpm - self.bpm) * self.smoothing_coeff;
 
@@ -1703,6 +1945,24 @@ impl TempoClock {
         }
         timing
     }
+
+    /// A stopped transport holds its beat exactly as the free clock does; a
+    /// launch waiting for its downbeat reads as stopped at beat zero.
+    #[cfg(feature = "link")]
+    fn follow_link(&mut self, sample: LinkSample, transport: Transport) -> TimingContext {
+        self.bpm = sample.bpm;
+        let transport = match (transport, sample.beat) {
+            (Transport::Playing, Some(beat)) => {
+                self.beat = beat;
+                Transport::Playing
+            }
+            _ => Transport::Stopped,
+        };
+        TimingContext {
+            transport,
+            ..TimingContext::new(self.sample_rate, self.bpm, self.beat)
+        }
+    }
 }
 
 /// Whether the beat clock runs. Stopped fires no new grid hit anywhere and
@@ -1714,15 +1974,6 @@ pub(crate) enum Transport {
     #[default]
     Playing,
     Stopped,
-}
-
-impl Transport {
-    pub(crate) fn toggled(self) -> Self {
-        match self {
-            Self::Playing => Self::Stopped,
-            Self::Stopped => Self::Playing,
-        }
-    }
 }
 
 /// One sample's worth of transport: where the beat clock stands, whether it

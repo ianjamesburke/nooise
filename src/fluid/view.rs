@@ -5,8 +5,9 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    AutomationKind, AutomationMode, ChordDrill, InteractionMode, InteractionModel, JumpStage,
-    LEAD_NUDGES, LeadDrill, Navigation, PerformanceInstrument, PerformanceMode, hub_layer,
+    ArpDrill, AutomationKind, AutomationMode, BassDrill, ChordDrill, ClapDrill, InteractionMode,
+    InteractionModel, JumpStage, KickDrill, LEAD_NUDGES, LeadDrill, Navigation, PercDrill,
+    PerformanceInstrument, PerformanceMode, TonalDrill, hub_layer,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -85,16 +86,40 @@ impl HelpSurface {
 pub(crate) struct NavigationView {
     pub(crate) tab: Tab,
     pub(crate) chord_drill: ChordDrill,
+    pub(crate) perc_drill: PercDrill,
+    pub(crate) bass_drill: BassDrill,
+    pub(crate) kick_drill: KickDrill,
+    pub(crate) tonal_drill: TonalDrill,
+    pub(crate) clap_drill: ClapDrill,
+    pub(crate) arp_drill: ArpDrill,
     pub(crate) lead_drill: LeadDrill,
     pub(crate) module_slot: Option<usize>,
     pub(crate) selected: usize,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TelemetryView {
     pub(crate) beat: f64,
     pub(crate) active_chord: u64,
     pub(crate) chord_span: ChordSpan,
+    /// Each tab's output RMS, indexed by `Tab` discriminant.
+    pub(crate) levels: [f32; TAB_COUNT],
+    /// Each module slot's compressor gain reduction in dB, indexed by
+    /// `module_layer_index(tab) * MODULE_SLOTS + slot`.
+    pub(crate) gain_reduction_db: [f32; MODULE_SLOT_TOTAL],
+}
+
+// Hand-written: std derives `Default` for arrays only up to length 32.
+impl Default for TelemetryView {
+    fn default() -> Self {
+        Self {
+            beat: 0.0,
+            active_chord: 0,
+            chord_span: ChordSpan::default(),
+            levels: [0.0; TAB_COUNT],
+            gain_reduction_db: [0.0; MODULE_SLOT_TOTAL],
+        }
+    }
 }
 
 /// Presentation-only state: never read by the engine, never persisted, and
@@ -299,8 +324,15 @@ pub(crate) enum PerformanceSurface {
     ChooseParameter { instrument: PerformanceInstrument },
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PROJECTION_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl<'a> UiViewModel<'a> {
     pub(crate) fn project(projection: ViewProjection<'a>) -> Self {
+        #[cfg(test)]
+        PROJECTION_COUNT.set(PROJECTION_COUNT.get() + 1);
         let ViewProjection {
             interaction,
             session,
@@ -311,14 +343,33 @@ impl<'a> UiViewModel<'a> {
         let items = match navigation.module_slot {
             Some(slot) => module_detail_controls(navigation.tab, slot, &session.controls),
             None => match navigation.tab {
-                Tab::Chords => chords_tab_controls(&session.controls, navigation.chord_drill),
+                Tab::Chords => {
+                    let mut items = chords_tab_controls(&session.controls, navigation.chord_drill);
+                    if matches!(navigation.chord_drill, ChordDrill::Progression { .. }) {
+                        for item in &mut items {
+                            if let Some((slot, _)) = parse_chord_slot_id(item.id) {
+                                item.display = progression_slot_display(
+                                    &session.controls.pad,
+                                    slot,
+                                    session.chord_labels(),
+                                );
+                            }
+                        }
+                    }
+                    items
+                }
+                Tab::Perc => perc_tab_controls(&session.controls, navigation.perc_drill),
+                Tab::Bass => bass_tab_controls(&session.controls, navigation.bass_drill),
+                Tab::Kick => kick_tab_controls(&session.controls, navigation.kick_drill),
+                Tab::Tonal => tonal_tab_controls(&session.controls, navigation.tonal_drill),
+                Tab::Clap => clap_tab_controls(&session.controls, navigation.clap_drill),
+                Tab::Arp => arp_tab_controls(&session.controls, navigation.arp_drill),
                 Tab::Lead => lead_tab_controls(&session.controls, navigation.lead_drill),
                 Tab::Master => hub_controls(
                     &session.controls,
                     &session.muted,
                     session.planned.map(PlannedAction::tab),
                 ),
-                tab => tab_controls(tab, &session.controls),
             },
         };
         let mut navigation = navigation;
@@ -420,7 +471,12 @@ impl<'a> UiViewModel<'a> {
                 };
                 Some(format!(
                     "{} · {status}",
-                    pad_chord_name(&session.controls.pad, progression, slot)
+                    pad_chord_name(
+                        &session.controls.pad,
+                        progression,
+                        slot,
+                        session.chord_labels()
+                    )
                 ))
             }
             _ => None,
@@ -499,15 +555,52 @@ fn breadcrumb(
                 .to_string(),
         )
     } else {
-        match (navigation.chord_drill, navigation.lead_drill) {
-            (ChordDrill::Pattern { .. }, _) => Some("Trigger".to_string()),
-            (ChordDrill::Progression { .. }, _) => Some("Progression".to_string()),
-            (ChordDrill::Slot { slot, .. }, _) => {
+        match (
+            navigation.chord_drill,
+            navigation.perc_drill,
+            navigation.bass_drill,
+            navigation.kick_drill,
+            navigation.tonal_drill,
+            navigation.clap_drill,
+            navigation.arp_drill,
+            navigation.lead_drill,
+        ) {
+            (ChordDrill::Progression { .. }, _, _, _, _, _, _, _) => Some("Sequence".to_string()),
+            (ChordDrill::Slot { slot, .. }, _, _, _, _, _, _, _) => {
                 let live = if slot == active_slot { " ♪" } else { "" };
                 Some(format!("Chord {}{live}", slot + 1))
             }
-            (ChordDrill::None, LeadDrill::Pattern { .. }) => Some("Pattern ♪".to_string()),
-            (ChordDrill::None, LeadDrill::None) => None,
+            (ChordDrill::None, PercDrill::Pattern { .. }, _, _, _, _, _, _) => {
+                let continuous =
+                    (controls.perc.pattern.round() as usize) == CONTINUOUS_PERC_PATTERN_INDEX;
+                let live = if continuous { "" } else { " ♪" };
+                Some(format!("Sequence{live}"))
+            }
+            (ChordDrill::None, _, BassDrill::Pattern { .. }, _, _, _, _, _)
+            | (ChordDrill::None, _, _, KickDrill::Pattern { .. }, _, _, _, _)
+            | (ChordDrill::None, _, _, _, TonalDrill::Pattern { .. }, _, _, _)
+            | (ChordDrill::None, _, _, _, _, ClapDrill::Pattern { .. }, _, _)
+            | (ChordDrill::None, _, _, _, _, _, ArpDrill::Pattern { .. }, _) => {
+                Some("Sequence ♪".to_string())
+            }
+            (ChordDrill::None, _, _, _, _, _, _, LeadDrill::Pattern { .. }) => {
+                let live = if LeadPattern::from_value(controls.lead.pattern).is_playing() {
+                    " ♪"
+                } else {
+                    ""
+                };
+                Some(format!("Sequence{live}"))
+            }
+            (
+                ChordDrill::None,
+                PercDrill::None,
+                BassDrill::None,
+                KickDrill::None,
+                TonalDrill::None,
+                ClapDrill::None,
+                ArpDrill::None,
+                LeadDrill::None,
+            ) => None,
         }
     };
     crumbs.extend(drill);
@@ -709,19 +802,75 @@ fn automation_surface(mode: AutomationMode, automation: &AutomationState) -> Aut
     }
 }
 
+/// The same ordered rows used by rendering, without any display formatting.
+pub(crate) fn navigation_control_ids(
+    navigation: Navigation,
+    controls: &FluidControls,
+) -> Vec<&'static str> {
+    let navigation = navigation_view(navigation);
+    if let Some(slot) = navigation.module_slot {
+        return module_row_specs(navigation.tab, slot, controls)
+            .map(|(spec, _)| spec.id)
+            .collect();
+    }
+    match navigation.tab {
+        Tab::Chords => {
+            let mut ids = Vec::new();
+            visit_chord_row_specs(controls, navigation.chord_drill, |spec| ids.push(spec.id));
+            ids
+        }
+        Tab::Perc => perc_row_specs(controls, navigation.perc_drill)
+            .map(|spec| spec.id)
+            .collect(),
+        Tab::Bass => bass_row_specs(controls, navigation.bass_drill)
+            .map(|spec| spec.id)
+            .collect(),
+        Tab::Kick => kick_row_specs(controls, navigation.kick_drill)
+            .map(|spec| spec.id)
+            .collect(),
+        Tab::Tonal => tonal_row_specs(controls, navigation.tonal_drill)
+            .map(|spec| spec.id)
+            .collect(),
+        Tab::Clap => clap_row_specs(controls, navigation.clap_drill)
+            .map(|spec| spec.id)
+            .collect(),
+        Tab::Arp => arp_row_specs(controls, navigation.arp_drill)
+            .map(|spec| spec.id)
+            .collect(),
+        Tab::Lead => lead_row_specs(controls, navigation.lead_drill)
+            .map(|spec| spec.id)
+            .collect(),
+        Tab::Master => tab_row_specs(Tab::Master, controls)
+            .map(|spec| spec.id)
+            .collect(),
+    }
+}
+
 fn navigation_view(navigation: Navigation) -> NavigationView {
     let mut view = NavigationView {
         tab: navigation.tab(),
         chord_drill: ChordDrill::None,
+        perc_drill: PercDrill::None,
+        bass_drill: BassDrill::None,
+        kick_drill: KickDrill::None,
+        tonal_drill: TonalDrill::None,
+        clap_drill: ClapDrill::None,
+        arp_drill: ArpDrill::None,
         lead_drill: LeadDrill::None,
         module_slot: None,
         selected: navigation.selected(),
     };
     match navigation {
         Navigation::Chords { drill, .. } => view.chord_drill = drill,
+        Navigation::Perc { drill, .. } => view.perc_drill = drill,
+        Navigation::Bass { drill, .. } => view.bass_drill = drill,
+        Navigation::Kick { drill, .. } => view.kick_drill = drill,
+        Navigation::Tonal { drill, .. } => view.tonal_drill = drill,
+        Navigation::Clap { drill, .. } => view.clap_drill = drill,
+        Navigation::Arp { drill, .. } => view.arp_drill = drill,
         Navigation::Lead { drill, .. } => view.lead_drill = drill,
         Navigation::Module { slot, .. } => view.module_slot = Some(slot),
-        Navigation::Standard { .. } | Navigation::Hub { .. } => {}
+        Navigation::Hub { .. } => {}
     }
     view
 }
@@ -790,25 +939,27 @@ fn help_surface(
         };
     }
 
-    let local_help = match (
-        navigation.tab,
-        navigation.chord_drill,
-        navigation.module_slot,
-    ) {
-        (_, _, Some(_)) => {
-            Some("BROWSE · Module detail   Shift+R randomize set   Esc: back".to_string())
-        }
-        (Tab::Chords, ChordDrill::Progression { .. }, None) => {
-            Some("Enter open · Esc back · Shift+R randomize".to_string())
-        }
-        (Tab::Chords, ChordDrill::Slot { .. }, None) => {
-            Some("Esc back · /add extension · /restore chord".to_string())
-        }
-        (Tab::Lead, _, None) if navigation.lead_drill != LeadDrill::None => Some(
-            "BROWSE · Pattern   r random   Shift+R randomize set   Enter: play   Esc: back"
+    let local_help = if navigation.module_slot.is_some() {
+        Some("BROWSE · Module detail   Shift+R randomize set   Esc: back".to_string())
+    } else if matches!(navigation.chord_drill, ChordDrill::Progression { .. }) {
+        Some("Enter open · Esc back · Shift+R randomize".to_string())
+    } else if matches!(navigation.chord_drill, ChordDrill::Slot { .. }) {
+        Some("Esc back · /add extension · /restore chord".to_string())
+    } else if matches!(navigation.perc_drill, PercDrill::Pattern { .. })
+        || matches!(navigation.bass_drill, BassDrill::Pattern { .. })
+        || matches!(navigation.kick_drill, KickDrill::Pattern { .. })
+        || matches!(navigation.tonal_drill, TonalDrill::Pattern { .. })
+        || matches!(navigation.clap_drill, ClapDrill::Pattern { .. })
+        || matches!(navigation.arp_drill, ArpDrill::Pattern { .. })
+    {
+        Some("BROWSE · Sequence   r random   Shift+R randomize set   Esc: back".to_string())
+    } else if matches!(navigation.lead_drill, LeadDrill::Pattern { .. }) {
+        Some(
+            "BROWSE · Sequence   r random   Shift+R randomize set   Enter: play   Esc: back"
                 .to_string(),
-        ),
-        _ => None,
+        )
+    } else {
+        None
     };
     if let Some(text) = local_help {
         return HelpSurface::Browsing { text };
@@ -823,7 +974,14 @@ fn help_surface(
     // layer is Esc, so the idle line names whichever this page offers.
     let way = if navigation.tab == Tab::Master {
         "↵ enter"
-    } else if navigation.chord_drill != ChordDrill::None || navigation.lead_drill != LeadDrill::None
+    } else if navigation.chord_drill != ChordDrill::None
+        || navigation.perc_drill != PercDrill::None
+        || navigation.bass_drill != BassDrill::None
+        || navigation.kick_drill != KickDrill::None
+        || navigation.tonal_drill != TonalDrill::None
+        || navigation.clap_drill != ClapDrill::None
+        || navigation.arp_drill != ArpDrill::None
+        || navigation.lead_drill != LeadDrill::None
     {
         "Esc back"
     } else {
@@ -840,9 +998,10 @@ pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
     if lead.level_pct == 0 {
         return "LEAD · level is 0 · arrows knobs · Esc, raise Level, Enter".to_string();
     }
-    let lane = match lead.pattern {
-        LeadPattern::Off => "lane off",
-        LeadPattern::Play => "lane on",
+    let lane = if lead.pattern.is_playing() {
+        "lane on"
+    } else {
+        "lane off"
     };
     let nudges = LEAD_NUDGES
         .iter()
@@ -869,7 +1028,11 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         KeyboardOwner::Browsing => unreachable!("browsing help is resolved separately"),
         KeyboardOwner::Numeric => "NUMERIC · type value   Enter: apply   Esc: cancel".to_string(),
         KeyboardOwner::Palette => {
-            "PALETTE · type to find   Tab: complete   Enter: stage   Esc: cancel".to_string()
+            if matches!(mode, ModeSurface::Palette(palette) if palette.state.is_output_picker()) {
+                "OUTPUT · type to find   Enter: switch   Esc: cancel".to_string()
+            } else {
+                "PALETTE · type to find   Tab: complete   Enter: stage   Esc: cancel".to_string()
+            }
         }
         KeyboardOwner::Lfo | KeyboardOwner::Envelope => match mode {
             ModeSurface::Automation(surface) => automation_owner_help(surface),
@@ -991,6 +1154,196 @@ mod tests {
         LiveSessionSnapshot::from_controls(FluidControls::default())
     }
 
+    fn assert_navigation_rows(session: &LiveSessionSnapshot, navigation: Navigation) {
+        let interaction = InteractionModel {
+            navigation,
+            ..InteractionModel::default()
+        };
+        let fluid = RippleField::new();
+        let flipped = FlippedUnits::new();
+        let before = PROJECTION_COUNT.get();
+        let ids = navigation_control_ids(navigation, &session.controls);
+        assert_eq!(PROJECTION_COUNT.get(), before);
+        let view = UiViewModel::project(ViewProjection {
+            interaction: &interaction,
+            session,
+            telemetry: TelemetryView::default(),
+            presentation: ViewPresentation {
+                fluid: &fluid,
+                flipped: &flipped,
+                cursor_visible: true,
+                notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
+            },
+        });
+        assert_eq!(
+            ids,
+            view.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+            "{navigation:?}"
+        );
+        assert_eq!(
+            ids.get(navigation.selected().min(ids.len().saturating_sub(1))),
+            view.items
+                .get(view.navigation.selected)
+                .map(|item| &item.id)
+        );
+    }
+
+    #[test]
+    fn lightweight_navigation_matches_rendered_rows_across_scopes() {
+        let mut session = session();
+        for page in [
+            Page::Chords,
+            Page::Perc,
+            Page::Bass,
+            Page::Kick,
+            Page::Tonal,
+            Page::Clap,
+            Page::Arp,
+            Page::Lead,
+            Page::Master,
+        ] {
+            let mut navigation = Navigation::for_page(page);
+            *navigation.selected_mut() = usize::MAX;
+            assert_navigation_rows(&session, navigation);
+        }
+        for drill in [ChordDrill::None, ChordDrill::Progression { return_to: 0 }] {
+            assert_navigation_rows(
+                &session,
+                Navigation::Chords {
+                    selected: usize::MAX,
+                    drill,
+                },
+            );
+        }
+        for count in [1.0, 8.0, 16.0] {
+            session.controls.pad.chord_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Chords {
+                    selected: usize::MAX,
+                    drill: ChordDrill::Progression { return_to: 0 },
+                },
+            );
+        }
+        for slot in 0..CHORD_SLOT_COUNT {
+            for extension2 in [false, true] {
+                assert_navigation_rows(
+                    &session,
+                    Navigation::Chords {
+                        selected: usize::MAX,
+                        drill: ChordDrill::Slot {
+                            slot,
+                            extension2,
+                            return_to: 0,
+                        },
+                    },
+                );
+            }
+        }
+        for count in [1.0, 8.0, 16.0] {
+            session.controls.perc.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Perc {
+                    selected: usize::MAX,
+                    drill: PercDrill::Pattern { return_to: 0 },
+                },
+            );
+            session.controls.bass.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Bass {
+                    selected: usize::MAX,
+                    drill: BassDrill::Pattern { return_to: 0 },
+                },
+            );
+            session.controls.kick.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Kick {
+                    selected: usize::MAX,
+                    drill: KickDrill::Pattern { return_to: 0 },
+                },
+            );
+            session.controls.tonal.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Tonal {
+                    selected: usize::MAX,
+                    drill: TonalDrill::Pattern { return_to: 0 },
+                },
+            );
+            session.controls.clap.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Clap {
+                    selected: usize::MAX,
+                    drill: ClapDrill::Pattern { return_to: 0 },
+                },
+            );
+            session.controls.arp.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Arp {
+                    selected: usize::MAX,
+                    drill: ArpDrill::Pattern { return_to: 0 },
+                },
+            );
+            session.controls.lead.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Lead {
+                    selected: usize::MAX,
+                    drill: LeadDrill::Pattern { return_to: 0 },
+                },
+            );
+        }
+        for tab in Tab::all() {
+            for slot in 0..MODULE_SLOTS {
+                for (catalog_index, kind) in MODULE_CATALOG.iter().enumerate() {
+                    session.controls.modules.for_tab_mut(tab).unwrap()[slot] =
+                        preset_slot(kind.id, 0.5);
+                    assert_navigation_rows(
+                        &session,
+                        Navigation::Module {
+                            tab,
+                            slot,
+                            catalog_index,
+                            selected: usize::MAX,
+                            return_to: 0,
+                        },
+                    );
+                }
+                session.controls.modules.for_tab_mut(tab).unwrap()[slot] = ModuleSlot::default();
+                assert_navigation_rows(
+                    &session,
+                    Navigation::Module {
+                        tab,
+                        slot,
+                        catalog_index: 0,
+                        selected: usize::MAX,
+                        return_to: 0,
+                    },
+                );
+            }
+            assert!(
+                navigation_control_ids(
+                    Navigation::Module {
+                        tab,
+                        slot: usize::MAX,
+                        catalog_index: 0,
+                        selected: usize::MAX,
+                        return_to: 0,
+                    },
+                    &session.controls,
+                )
+                .is_empty()
+            );
+        }
+    }
+
     fn snapshot_symbols(buffer: &Buffer) -> String {
         let area = buffer.area;
         (0..area.height)
@@ -1081,6 +1434,7 @@ mod tests {
                 beat: 4.0,
                 active_chord: 1,
                 chord_span: ChordSpan::default(),
+                ..TelemetryView::default()
             },
         );
         assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
@@ -1091,6 +1445,29 @@ mod tests {
         let borrowed =
             render_model_with_session_at(&interaction, &session, TelemetryView::default());
         assert!(borrowed.contains("KEY␠␠A␠Phrygian"), "{borrowed}");
+    }
+
+    #[test]
+    fn master_key_names_the_key_in_the_harmony_header() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        session.controls.master.key = 1.0;
+        let frame = render_model_with_session(&interaction, &session);
+        assert!(frame.contains("KEY␠␠C␠minor"), "{frame}");
+        assert!(frame.contains("CHORDS␠␠Cm7add11"), "{frame}");
+    }
+
+    #[test]
+    fn roman_chords_replace_the_letters_in_the_harmony_header() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        session.chord_names = ChordNames::Roman;
+        let frame = render_model_with_session(&interaction, &session);
+        assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
+        assert!(frame.contains("CHORDS␠␠i7add11␠›␠VIIsus2add11"), "{frame}");
+        assert!(!frame.contains("Am7add11"), "{frame}");
     }
 
     #[test]
@@ -1190,6 +1567,59 @@ mod tests {
     }
 
     #[test]
+    fn an_active_compressor_meters_its_gain_reduction_at_the_minimum_frame() {
+        let snapshot = session();
+        let fluid = RippleField::new();
+        let flipped = FlippedUnits::new();
+        let hub = |selected| InteractionModel {
+            navigation: Navigation::Hub { selected },
+            ..InteractionModel::default()
+        };
+        let probe = hub(0);
+        let row = UiViewModel::project(ViewProjection {
+            interaction: &probe,
+            session: &snapshot,
+            telemetry: TelemetryView::default(),
+            presentation: ViewPresentation {
+                fluid: &fluid,
+                flipped: &flipped,
+                cursor_visible: true,
+                notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
+            },
+        })
+        .items
+        .iter()
+        .position(|item| item.id == "master.slot2.time")
+        .expect("the factory Master chain holds Compression in slot 2");
+        let mut telemetry = TelemetryView::default();
+        telemetry.gain_reduction_db[module_layer_index(Tab::Master).unwrap() * MODULE_SLOTS + 1] =
+            10.0;
+        let frame = render_model_with_session_at(&hub(row), &snapshot, telemetry);
+        let line = frame
+            .lines()
+            .find(|line| line.contains("Compression"))
+            .expect("selected Compression row is on screen");
+        assert!(line.contains('▀'), "{frame}");
+        assert!(
+            frame
+                .lines()
+                .all(|line| line.chars().count() == usize::from(MIN_TERMINAL_WIDTH)),
+            "{frame}"
+        );
+
+        let mut silent = snapshot.clone();
+        silent.controls.modules.master[1].amount = 0.0;
+        let frame = render_model_with_session_at(&hub(row), &silent, telemetry);
+        let silent_line = frame
+            .lines()
+            .find(|line| line.contains("Compression"))
+            .expect("selected Compression row is on screen");
+        assert!(!silent_line.contains('▀'), "{frame}");
+    }
+
+    #[test]
     fn projection_reads_one_session_generation_and_clamps_navigation() {
         let mut session = session();
         session.generation = 42;
@@ -1227,7 +1657,8 @@ mod tests {
     fn palette_owner_projects_complete_mode_local_render_state() {
         let model = InteractionModel {
             navigation: Navigation::default(),
-            mode: InteractionMode::Palette(PaletteMode {
+            mode: InteractionMode::Palette(Box::new(PaletteMode {
+                output_choices: None,
                 capture_beat_bits: 0,
                 recipe_target: None,
                 editor_motion_target: None,
@@ -1245,7 +1676,7 @@ mod tests {
                 }],
                 resume: None,
                 module_scope: None,
-            }),
+            })),
             ..InteractionModel::default()
         };
         let transition = model.update(SemanticAction::press(Intent::TypeCharacter('5')));
@@ -1299,12 +1730,12 @@ mod tests {
 
     #[test]
     fn projection_and_render_sanitize_arbitrary_mode_indices() {
-        let invalid_palette = InteractionMode::Palette(PaletteMode {
+        let invalid_palette = InteractionMode::Palette(Box::new(PaletteMode {
             query: "bass".to_string(),
             locked: Some(usize::MAX),
             value_buffer: "42".to_string(),
             ..PaletteMode::default()
-        });
+        }));
         let session = session();
         let ModeSurface::Palette(palette) = mode_surface(
             &invalid_palette,
@@ -1450,9 +1881,9 @@ mod tests {
     #[test]
     fn jump_leader_renders_a_map_over_the_control_area() {
         let interaction = InteractionModel {
-            navigation: Navigation::Standard {
-                page: crate::fluid::interaction::StandardPage::Kick,
+            navigation: Navigation::Kick {
                 selected: 0,
+                drill: KickDrill::None,
             },
             mode: InteractionMode::Performance(PerformanceMode::Jump {
                 stage: JumpStage::ChooseParameter {
@@ -1575,8 +2006,8 @@ mod tests {
         session.controls.lead.step_count = 4.0;
         let lead = InteractionModel {
             navigation: Navigation::Lead {
-                selected: 2,
-                drill: LeadDrill::Pattern { return_to: 0 },
+                selected: 8,
+                drill: LeadDrill::Pattern { return_to: 1 },
             },
             mode: InteractionMode::Browsing,
             ..InteractionModel::default()
@@ -1588,11 +2019,12 @@ mod tests {
                 beat: 1.0,
                 active_chord: 0,
                 chord_span: ChordSpan::default(),
+                ..TelemetryView::default()
             },
             120,
             24,
         );
-        assert!(lead_frame.contains("Lead␠›␠Pattern␠♪"), "{lead_frame}");
+        assert!(lead_frame.contains("Lead␠›␠Sequence␠♪"), "{lead_frame}");
         let lead_step = lead_frame
             .lines()
             .find(|line| line.contains("Step␠3"))
@@ -1622,6 +2054,7 @@ mod tests {
                 beat: 1.0,
                 active_chord: 0,
                 chord_span: ChordSpan::default(),
+                ..TelemetryView::default()
             },
             120,
             24,
@@ -1754,6 +2187,7 @@ mod tests {
                     beat: 0.0,
                     active_chord: 7,
                     chord_span: ChordSpan::default(),
+                    ..TelemetryView::default()
                 },
             );
             assert!(frame.contains(crumb), "{frame}");

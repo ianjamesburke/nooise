@@ -101,16 +101,15 @@ impl FmPair {
         self
     }
 
-    // Detune and level are the stack's parallel-layering surface: they only
-    // do anything once a stack holds more than one pair, and the kick (one
-    // pair) is currently the only consumer. Exercised by this module's tests.
+    // Detune is the stack's ensemble surface: it only does anything once a
+    // stack holds more than one pair voicing one note. No voice uses it yet;
+    // exercised by this module's tests.
     #[allow(dead_code)]
     pub(crate) fn with_detune(mut self, detune: f32) -> Self {
         self.detune = detune;
         self
     }
 
-    #[allow(dead_code)]
     pub(crate) fn with_level(mut self, level: f32) -> Self {
         self.level = level;
         self

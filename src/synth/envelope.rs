@@ -12,6 +12,7 @@ enum Stage {
 
 pub(crate) struct Adsr {
     attack_samples: f32,
+    hold_samples: f32,
     decay_samples: f32,
     sustain_level: f32,
     release_samples: f32,
@@ -31,6 +32,7 @@ impl Adsr {
     ) -> Self {
         Self {
             attack_samples: attack_seconds * sample_rate,
+            hold_samples: 0.0,
             decay_samples: decay_seconds * sample_rate,
             sustain_level,
             release_samples: release_seconds * sample_rate,
@@ -39,6 +41,10 @@ impl Adsr {
             level: 0.0,
             release_start_level: 0.0,
         }
+    }
+
+    pub(crate) fn set_hold(&mut self, hold_seconds: f32, sample_rate: f32) {
+        self.hold_samples = (hold_seconds * sample_rate).max(0.0);
     }
 
     /// Begin the attack from `level` instead of silence: the ramp resumes at
@@ -69,6 +75,11 @@ impl Adsr {
                 }
             }
             Stage::Decay => {
+                if self.hold_samples > 0.0 {
+                    self.hold_samples = (self.hold_samples - 1.0).max(0.0);
+                    self.level = 1.0;
+                    return self.level;
+                }
                 let progress = if self.decay_samples <= 1.0 {
                     1.0
                 } else {

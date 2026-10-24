@@ -8,10 +8,10 @@ Shared DSP effects consumed by voice engines in `fluid.rs`.
 
 - `lfo.rs` — drifting/periodic LFO generators.
 - `panner.rs` — stereo pan helper.
-- `compression.rs` — shared stateful stereo compressor used by every layer and Master slot chain.
+- `compression.rs` — shared stateful stereo compressor used by every layer and Master slot chain. `gain()` reports the detector's linear gain from the latest sample (before makeup and the Amount blend) for the gain-reduction meter.
 - `crossfade.rs` — insert-style dry/wet `mix`/`mix_stereo` (`dry + (wet - dry) * amount`, so amount 0 is an exact dry pass) and `Outgoing<T>`, the fade-out holder a replaced processor or pad character stage keeps running in until its weight reaches zero.
 - `delay.rs` — stereo feedback delay whose read taps never glide: a delay-time change crossfades to a new fixed tap position over a fixed window instead of sliding the old one (so tempo-synced retargeting never pitch-bends), plus wet-only level-compensated Vintage colour, end-weighted pitch motion, true dry bypass, and allocation-free incremental buffer clearing for retired temporary processors.
-- `drive.rs` — shared stateless stereo saturation with exact zero-amount bypass.
+- `drive.rs` — `StereoDrive`, the Drive module's saturation: Soft/Hard/Fold curves, input Bias with a 5 Hz DC blocker, Dry blend, and a 10 ms Type crossfade. Unbiased Soft is the original stateless curve bit-for-bit; every other setting runs first-order ADAA. Exact bypass at Amount 0. Per-type output trims are pinned by `every_drive_type_renders_near_soft_level`.
 - `filter.rs` — shared stateful stereo biquad filter for Filter module slots; cutoff, resonance, and response type arrive per frame while each slot owns its filter history.
 - `reverb.rs` — shared Freeverb-style slot reverb with live Size/Damping updates and allocation-free incremental buffer clearing for retired temporary processors.
 - `mod.rs` — module re-exports only.

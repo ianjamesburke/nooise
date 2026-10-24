@@ -5,11 +5,13 @@ fluid:
 # Run all tests
 test:
     cargo test
+    cargo test --features link
     python3 -m unittest scripts.test_add_morph
 
 # Lint all targets
 check:
     cargo clippy --all-targets
+    cargo clippy --all-targets --features link
 
 # Render a reproducible wav without audio hardware
 render out="nooise.wav" seed="7":
@@ -46,3 +48,16 @@ bump bump="patch":
 # Run `just bump` first.
 release:
     bash scripts/publish.sh
+
+# Start a stint lane worktree branched from release/v2.9 and claim the stints.
+bs-start +stints:
+    bash /Users/ianburke/Documents/GitHub/nooise/.agents/skills/_lib/bs-start.sh {{stints}}
+
+# Force-wipe a stint's worktree and branch, unclaim, and re-run bs-start.
+bs-reset stint:
+    bash /Users/ianburke/Documents/GitHub/nooise/.agents/skills/_lib/bs-reset.sh {{stint}}
+
+# Merge a validated PR into release/v2.9, rebuild worktrees/release/v2.9, mark stints done, and reap the worktree.
+bs-merge pr:
+    bash /Users/ianburke/Documents/GitHub/nooise/.agents/skills/_lib/bs-merge.sh {{pr}}
+

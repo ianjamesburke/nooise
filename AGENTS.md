@@ -79,7 +79,7 @@ Default section order:
 - Currently working on: fluid core (`src/fluid/`)
 - The computer keyboard is the primary instrument surface. Every musical capability must have a complete keyboard path through ordinary browsing or `/`; external gear is optional and uses the same validated musical operations. Commandment 6 in `docs/NORTH_STAR.md` owns priority, gear classification, and the current persistence gap. Stabilize existing features before the next hardware sprint; APC40 support is wanted soon afterward. Preserve the active microphone exploration as separate work.
 - Live performance gestures must be accessible from normal browsing, with arrows and Tab available throughout. A separate Deck mode must not be required. `docs/PERFORMANCE.md` owns their interaction and terminal-capability contracts.
-- Song saves must restore each chosen musical state as though playback never stopped; new stateful features must persist their runtime state, not only their controls. Excluded: state that regenerates from playback within about a second (FX tails and buffers), and external-gear configuration, which belongs to launch setup. Existing MIDI-dependent code fields remain until stint 0069's explicit format change; do not silently drop them. A song code has to stay short enough to paste into a message. Commandments 4 and 6 in `docs/NORTH_STAR.md` own this rule; read them before changing what a code carries.
+- Song saves must restore each chosen musical state as though playback never stopped; new stateful features must persist their runtime state, not only their controls. Excluded: state that regenerates from playback within about a second (FX tails and buffers), and external-gear configuration, which belongs to launch setup. A song code has to stay short enough to paste into a message. Commandments 4 and 6 in `docs/NORTH_STAR.md` own this rule; read them before changing what a code carries.
 - No migration layers. A retired control's saved values are gone with it: codes naming it are refused (`SongCodeError::RetiredControl`), never loaded with the value silently defaulted. Re-author the built-in `AUTO_STATES` through the current encoder instead of translating old ids. A dial-range change is handled the same way: loading refuses a code whose modulation targets a moved dial (`SongCodeError::StaleRange`), and the built-in `AUTO_STATES` are re-authored across it.
 
 ## Purpose
@@ -113,7 +113,7 @@ All feature work lands in a worktree, never in the root checkout. The root check
 
 ## Verification
 
-- `cargo build` and `cargo test` from repo root before committing engine changes.
+- `cargo build` and `cargo test` from repo root before committing engine changes; `just test` and `just check` also cover the `link` feature build (needs CMake).
 - `python3 -m unittest scripts.test_add_morph` after changing the auto-state authoring workflow.
 - Hard rule: `cargo fmt` (no diff from `cargo fmt --check`) and `cargo clippy --all-targets` with zero warnings before every commit. Fix warnings at the source; `#[allow]` only with a one-line justification comment.
 

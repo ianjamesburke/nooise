@@ -21,6 +21,7 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 pub(crate) enum EffectFailure {
     /// The effect named a control id no registry spec claims.
     UnknownControl(&'static str),
+    AudioRouting(audio::AudioStartError),
     /// The song state could not be encoded, so there was nothing to copy.
     SongEncode(SongCodeError),
     /// The clipboard refused the write.
@@ -51,6 +52,7 @@ impl fmt::Display for EffectFailure {
                 f,
                 "{MAX_CAPTURES} Motion loops already kept; delete one first"
             ),
+            Self::AudioRouting(error) => write!(f, "{error}"),
             Self::UnknownControl(id) => write!(f, "no control named {id}"),
             Self::SongEncode(error) => write!(f, "{error}"),
             Self::Clipboard(error) => write!(f, "{error}"),
@@ -111,6 +113,7 @@ pub(crate) enum EffectAcknowledgement {
         count: usize,
     },
     Message(String),
+    OutputDevices(Vec<audio::OutputSelection>),
     ControlSelected {
         tab: Tab,
         index: usize,
@@ -125,6 +128,7 @@ pub(crate) enum EffectAcknowledgement {
 pub(crate) enum ControlEdit {
     Delta(f32),
     Value(f32),
+    Ratio(f32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -162,6 +166,18 @@ fn selected_control(selected_control: Option<&'static str>) -> Result<&'static s
     selected_control.ok_or(EffectFailure::MissingContext("selected control"))
 }
 
+/// Whether `id` is a step row in a unified sequence drill (Pads, Perc, Bass, Kick, Tonal, Clap, Arp, or Lead).
+fn is_sequence_step_id(id: &str) -> bool {
+    perc_step_index(id).is_some()
+        || bass_step_index(id).is_some()
+        || kick_step_index(id).is_some()
+        || tonal_step_index(id).is_some()
+        || clap_step_index(id).is_some()
+        || arp_step_index(id).is_some()
+        || lead_step_index(id).is_some()
+        || matches!(parse_chord_slot_id(id), Some((_, 0)))
+}
+
 /// Palette edits cross the kernel boundary as value bits; this is where they
 /// become session edits.
 fn staged_edits(edits: Vec<PaletteStagedEdit>) -> Vec<StagedEdit> {
@@ -179,7 +195,7 @@ pub(crate) struct ProductionInteractionContext<'a> {
     pub(crate) visible_control_ids: &'a [&'static str],
     pub(crate) randomizes_automation: bool,
     pub(crate) tab: Tab,
-    pub(crate) selected: usize,
+    pub(crate) selected: Option<usize>,
     pub(crate) automation_selected: usize,
     pub(crate) beat: f64,
     pub(crate) flipped: &'a mut FlippedUnits,
@@ -207,6 +223,7 @@ impl Clipboard for SystemClipboard {
 /// user-audible edits delegate to one `LiveSession` transaction; UI-only
 /// consequences are acknowledged only after publication succeeds.
 pub(crate) struct EffectExecutor {
+    output_routing: Option<audio::OutputRouting>,
     session: LiveSession,
     auto: AutoControls,
     recent: RecentControls,
@@ -235,6 +252,7 @@ impl EffectExecutor {
 
     pub(crate) fn seeded(session: LiveSession, auto: AutoControls, seed: u64) -> Self {
         Self {
+            output_routing: None,
             session,
             auto,
             recent: RecentControls::default(),
@@ -244,6 +262,24 @@ impl EffectExecutor {
             phrase: LeadPhraseBuffer::default(),
             capture_history: CaptureHistory::default(),
             edit_beat: 0.0,
+        }
+    }
+
+    pub(crate) fn with_output_routing(mut self, routing: audio::OutputRouting) -> Self {
+        self.output_routing = Some(routing);
+        self
+    }
+
+    pub(crate) fn poll_output_routing(&mut self) {
+        if let Some(notice) = self
+            .output_routing
+            .as_ref()
+            .and_then(audio::OutputRouting::take_notice)
+        {
+            match notice {
+                Ok(message) => self.show_message(message),
+                Err(error) => self.show_failure(format!("Output switch failed: {error}")),
+            }
         }
     }
 
@@ -617,6 +653,9 @@ impl EffectExecutor {
                         ControlEdit::Value(value) => {
                             spec.apply_value(value, &mut snapshot.controls)
                         }
+                        ControlEdit::Ratio(ratio) => {
+                            spec.apply_ratio(ratio, &mut snapshot.controls)
+                        }
                     }
                 });
                 Ok(EffectAcknowledgement::Published {
@@ -626,18 +665,6 @@ impl EffectExecutor {
             LiveEffect::SelectControl { tab, index, id } => {
                 if spec_by_id(id).is_none() {
                     return Err(EffectFailure::UnknownControl(id));
-                }
-                if let Some(bit) = midi_row_bit(id)
-                    && self.session.load().controls.midi_rows & bit == 0
-                {
-                    self.session
-                        .update(|snapshot| snapshot.controls.midi_rows |= bit);
-                }
-                if let Some(bit) = pad_rhythm_row_bit(id)
-                    && self.session.load().controls.hidden_pad_rhythm_rows & bit != 0
-                {
-                    self.session
-                        .update(|snapshot| snapshot.controls.hidden_pad_rhythm_rows &= !bit);
                 }
                 self.recent.touch(id);
                 Ok(EffectAcknowledgement::ControlSelected { tab, index, id })
@@ -666,12 +693,6 @@ impl EffectExecutor {
                             spec_by_id(edit.id)
                                 .expect("validated staged control")
                                 .apply_value(edit.value, &mut snapshot.controls);
-                            if let Some(bit) = midi_row_bit(edit.id) {
-                                snapshot.controls.midi_rows |= bit;
-                            }
-                            if let Some(bit) = pad_rhythm_row_bit(edit.id) {
-                                snapshot.controls.hidden_pad_rhythm_rows &= !bit;
-                            }
                         }
                     });
                     self.pending = None;
@@ -768,17 +789,66 @@ impl EffectExecutor {
     pub(crate) fn edit_session(
         &mut self,
         recent_id: Option<&'static str>,
+        edit: impl FnMut(&mut LiveSessionSnapshot),
+    ) -> Arc<LiveSessionSnapshot> {
+        self.edit_session_scoped(recent_id, None, edit)
+    }
+
+    /// Registry row edits may also update coupled chord/module fields. Those
+    /// retain full history discovery; ordinary scalar rows use the direct path.
+    pub(crate) fn edit_control_session(
+        &mut self,
+        spec: &'static ControlSpec,
+        edit: impl FnMut(&mut LiveSessionSnapshot),
+    ) -> Arc<LiveSessionSnapshot> {
+        let coupled_module = parse_module_slot_id(spec.id).is_some_and(|(_, _, field)| {
+            matches!(
+                field,
+                ModuleSlotField::Kind
+                    | ModuleSlotField::Feedback
+                    | ModuleSlotField::Clock
+                    | ModuleSlotField::RightClock
+            )
+        });
+        let single = (!coupled_module
+            && parse_chord_slot_id(spec.id).is_none()
+            && spec.id != "pad.progression"
+            && spec.id != PERC_PATTERN_ID
+            && perc_step_index(spec.id).is_none()
+            && spec.id != BASS_RHYTHM_ID
+            && bass_step_index(spec.id).is_none()
+            && spec.id != KICK_PATTERN_ID
+            && kick_step_index(spec.id).is_none()
+            && spec.id != TONAL_PHRASE_ID
+            && tonal_step_index(spec.id).is_none()
+            && spec.id != CLAP_PATTERN_ID
+            && clap_step_index(spec.id).is_none()
+            && spec.id != ARP_PATTERN_ID
+            && spec.id != "arp.octaves"
+            && arp_step_index(spec.id).is_none()
+            && spec.id != LEAD_PATTERN_ID
+            && lead_step_index(spec.id).is_none())
+        .then_some(spec);
+        self.edit_session_scoped(Some(spec.id), single, edit)
+    }
+
+    fn edit_session_scoped(
+        &mut self,
+        recent_id: Option<&'static str>,
+        single_control: Option<&'static ControlSpec>,
         mut edit: impl FnMut(&mut LiveSessionSnapshot),
     ) -> Arc<LiveSessionSnapshot> {
         self.auto.exit();
-        let mut before = self.session.load();
-        let snapshot = self.session.update(|snapshot| {
-            before = Arc::new(snapshot.clone());
-            edit(snapshot);
-            suspend_changed_captures(&before, snapshot);
-        });
+        let (before, snapshot) = self
+            .session
+            .transact_with_before::<std::convert::Infallible>(|before, snapshot| {
+                edit(snapshot);
+                suspend_changed_captures(before, snapshot);
+                Ok(())
+            })
+            .expect("infallible live-session transaction");
         self.capture_history
-            .record_changes(&before, &snapshot, self.edit_beat);
+            .record_changes(&before, &snapshot, self.edit_beat, single_control);
         if let Some(id) = recent_id {
             self.recent.touch(id);
         }
@@ -804,15 +874,13 @@ impl EffectExecutor {
     ) -> Result<Arc<LiveSessionSnapshot>, EffectFailure> {
         check(&self.session.load())?;
         self.auto.exit();
-        let mut before = self.session.load();
-        let snapshot = self.session.transact(|snapshot| {
-            before = Arc::new(snapshot.clone());
+        let (before, snapshot) = self.session.transact_with_before(|before, snapshot| {
             edit(snapshot)?;
-            suspend_changed_captures(&before, snapshot);
+            suspend_changed_captures(before, snapshot);
             Ok(())
         })?;
         self.capture_history
-            .record_changes(&before, &snapshot, self.edit_beat);
+            .record_changes(&before, &snapshot, self.edit_beat, None);
         self.recent.touch(recent_id);
         Ok(snapshot)
     }
@@ -892,11 +960,13 @@ impl EffectExecutor {
                 slot
             }
         };
-        // A newly inserted Filter is dry. Focus its hidden Amount in the
-        // detail so the first arrow makes the sweep audible. Existing
-        // Filters use their collapsed Cutoff like every browsing row.
+        // A newly inserted Filter or Compression is dry. Focus its hidden
+        // Amount in the detail so the first arrow makes it audible. Existing
+        // slots use their collapsed Time row (Cutoff/Threshold) like every
+        // browsing row.
         let focus = focus.or_else(|| {
-            (existing.is_none() && kind.family == Family::Filter).then_some(ModuleSlotField::Amount)
+            (existing.is_none() && matches!(kind.family, Family::Filter | Family::Compression))
+                .then_some(ModuleSlotField::Amount)
         });
         let id = match focus {
             Some(field) => module_slot_spec(tab, slot, field).map(|spec| spec.id),
@@ -917,7 +987,18 @@ impl EffectExecutor {
             .update(|snapshot| snapshot.muted[tab as usize] = !snapshot.muted[tab as usize]);
     }
 
-    fn plan_mute(&mut self, tab: Tab, beat: f64) -> Result<EffectAcknowledgement, EffectFailure> {
+    pub(crate) fn set_mute(&mut self, tab: Tab, muted: bool) {
+        let Some(id) = tab.level_id() else { return };
+        self.recent.touch(id);
+        self.session
+            .update(|snapshot| snapshot.muted[tab as usize] = muted);
+    }
+
+    pub(crate) fn plan_mute(
+        &mut self,
+        tab: Tab,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
         let target_beat = next_bar_beat(beat);
         let snapshot = self.session.update(|snapshot| {
             snapshot.planned = match snapshot.planned {
@@ -936,31 +1017,158 @@ impl EffectExecutor {
         })
     }
 
+    pub(crate) fn clear_sequence(
+        &mut self,
+        tab: Tab,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        match tab {
+            Tab::Chords => {
+                let snapshot = self.edit_session(Some("pad.progression"), |snapshot| {
+                    for slot in 0..CHORD_SLOT_COUNT {
+                        *snapshot.controls.pad.edit_chord_slot(slot) = ChordSlotControls::default();
+                    }
+                });
+                self.show_message("Pads sequence set to root chords".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Perc => {
+                let snapshot = self.edit_session(Some(PERC_PATTERN_ID), |snapshot| {
+                    snapshot.controls.perc.pattern = CUSTOM_PERC_PATTERN_INDEX as f32;
+                    snapshot.controls.perc.steps = [0.0; PERC_STEP_COUNT];
+                });
+                self.show_message("Perc sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Bass => {
+                let snapshot = self.edit_session(Some(BASS_RHYTHM_ID), |snapshot| {
+                    snapshot.controls.bass.rhythm = CUSTOM_BASS_RHYTHM_INDEX as f32;
+                    snapshot.controls.bass.steps = [0.0; BASS_STEP_COUNT];
+                });
+                self.show_message("Bass sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Kick => {
+                let snapshot = self.edit_session(Some(KICK_PATTERN_ID), |snapshot| {
+                    snapshot.controls.kick.pattern = CUSTOM_KICK_PATTERN_INDEX as f32;
+                    snapshot.controls.kick.steps = [0.0; KICK_STEP_COUNT];
+                });
+                self.show_message("Kick sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Tonal => {
+                let snapshot = self.edit_session(Some(TONAL_PHRASE_ID), |snapshot| {
+                    snapshot.controls.tonal.phrase = CUSTOM_TONAL_PHRASE_INDEX as f32;
+                    snapshot.controls.tonal.steps = [0.0; TONAL_STEP_COUNT];
+                });
+                self.show_message("Tonal sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Clap => {
+                let snapshot = self.edit_session(Some(CLAP_PATTERN_ID), |snapshot| {
+                    snapshot.controls.clap.pattern = CUSTOM_CLAP_PATTERN_INDEX as f32;
+                    snapshot.controls.clap.steps = [0.0; CLAP_STEP_COUNT];
+                });
+                self.show_message("Clap sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Arp => {
+                let snapshot = self.edit_session(Some(ARP_PATTERN_ID), |snapshot| {
+                    snapshot.controls.arp.pattern = CUSTOM_ARP_PATTERN_INDEX as f32;
+                    snapshot.controls.arp.steps = [0.0; ARP_STEP_COUNT];
+                });
+                self.show_message("Arp sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Lead => {
+                let snapshot = self.edit_session(Some(LEAD_PATTERN_ID), |snapshot| {
+                    snapshot.controls.lead.pattern = CUSTOM_LEAD_PATTERN_INDEX as f32;
+                    snapshot.controls.lead.steps = [0.0; LEAD_STEP_COUNT];
+                });
+                self.show_message("Lead sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            _ => {
+                self.show_message(format!("no step sequence on {}", tab.name()));
+                Ok(EffectAcknowledgement::NoChange)
+            }
+        }
+    }
+
     /// Stop or start the beat clock. Like mute it is an overlay on the song,
     /// not an edit of it, so it neither exits auto nor touches the MRU; the
     /// next play starts the sequence at beat zero.
     pub(crate) fn toggle_transport(&mut self) {
+        match self.session.load().transport {
+            Transport::Playing => self.stop_transport(),
+            Transport::Stopped => self.start_transport(),
+        }
+    }
+
+    /// Play from beat zero; from Playing this is a restart.
+    pub(crate) fn start_transport(&mut self) {
         self.session.update(|snapshot| {
-            snapshot.transport = snapshot.transport.toggled();
-            if snapshot.transport == Transport::Playing {
-                snapshot.transport_restart = snapshot.transport_restart.wrapping_add(1);
-                snapshot.automation.restart();
-                snapshot.planned = snapshot.planned.map(|action| match action {
-                    PlannedAction::Mute { tab, .. } => PlannedAction::Mute {
-                        tab,
-                        target_beat: 4.0,
-                    },
-                });
-                snapshot.vamp = snapshot.vamp.map(|vamp| VampState::start(0.0, vamp.slot));
-            }
+            snapshot.transport = Transport::Playing;
+            snapshot.transport_restart = snapshot.transport_restart.wrapping_add(1);
+            snapshot.automation.restart();
+            snapshot.planned = snapshot.planned.map(|action| match action {
+                PlannedAction::Mute { tab, .. } => PlannedAction::Mute {
+                    tab,
+                    target_beat: 4.0,
+                },
+            });
+            snapshot.vamp = snapshot.vamp.map(|vamp| VampState::start(0.0, vamp.slot));
         });
-        if self.session.load().transport == Transport::Playing {
-            self.capture_history = CaptureHistory::default();
-            self.phrase = LeadPhraseBuffer::default();
-            self.edit_beat = 0.0;
-            if let Some((beat, _)) = &mut self.pending {
-                *beat = 4.0;
+        self.capture_history = CaptureHistory::default();
+        self.phrase = LeadPhraseBuffer::default();
+        self.edit_beat = 0.0;
+        if let Some((beat, _)) = &mut self.pending {
+            *beat = 4.0;
+        }
+    }
+
+    pub(crate) fn stop_transport(&mut self) {
+        self.session
+            .update(|snapshot| snapshot.transport = Transport::Stopped);
+    }
+
+    /// A Link peer pressed Play or Stop. Play always restarts, so nooise's
+    /// beat zero lands on the peer's start even when it was already playing.
+    #[cfg(feature = "link")]
+    pub(crate) fn follow_peer_transport(&mut self, transport: Transport) {
+        match transport {
+            Transport::Playing => self.start_transport(),
+            Transport::Stopped if self.session.load().transport == Transport::Playing => {
+                self.stop_transport();
             }
+            Transport::Stopped => {}
+        }
+    }
+
+    /// A Link peer changed the session tempo. It lands on the Master tempo
+    /// dial like any control value, so the dial and a song save match what
+    /// plays; it is not a user edit, so a running auto morph keeps going.
+    #[cfg(feature = "link")]
+    pub(crate) fn follow_peer_tempo(&mut self, link_bpm: f64) {
+        let bpm = dial_bpm(link_bpm);
+        if self.session.load().controls.master.bpm != bpm {
+            self.session
+                .update(|snapshot| snapshot.controls.master.bpm = bpm);
         }
     }
 
@@ -1141,6 +1349,37 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
+            InteractionEffect::ChooseOutputDevice => {
+                let routing = self
+                    .output_routing
+                    .as_ref()
+                    .ok_or(EffectFailure::MissingContext("live output routing"))?;
+                Ok(EffectAcknowledgement::OutputDevices(
+                    routing.choices().map_err(EffectFailure::AudioRouting)?,
+                ))
+            }
+            InteractionEffect::SetOutputDevice(selection) => {
+                let routing = self
+                    .output_routing
+                    .as_ref()
+                    .ok_or(EffectFailure::MissingContext("live output routing"))?;
+                routing.request(selection.clone());
+                self.show_message(format!("Switching output to {selection}…"));
+                Ok(EffectAcknowledgement::NoChange)
+            }
+            InteractionEffect::SetChordNames(names) => {
+                let snapshot = self.session.update(|snapshot| snapshot.chord_names = names);
+                self.show_message(
+                    match names {
+                        ChordNames::Letters => "Chords as letters",
+                        ChordNames::Roman => "Chords as Roman numerals",
+                    }
+                    .to_string(),
+                );
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::ApplyRecipe { recipe, target } => {
                 let target = target.ok_or(EffectFailure::StaleRecipeTarget)?;
                 let recipe = recipe.recipe();
@@ -1152,6 +1391,7 @@ impl EffectExecutor {
             }
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
+            InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
             InteractionEffect::Quit => Ok(EffectAcknowledgement::QuitRequested),
             unsupported @ (InteractionEffect::AutomationConfirm(_)
@@ -1303,6 +1543,7 @@ impl EffectExecutor {
                 Ok(self.published())
             }
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
+            InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::ToggleTransport => {
                 self.toggle_transport();
                 Ok(self.published())
@@ -1332,15 +1573,188 @@ impl EffectExecutor {
             InteractionEffect::RandomizeSelected => {
                 let id = selected_control(context.selected_control)?;
                 let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext("control"))?;
-                let ratio = self.rng.r#gen::<f32>();
                 let initial = self.session.load();
+                let mut ratio = self.rng.r#gen::<f32>();
                 let mut candidate = initial.controls.clone();
                 spec.apply_randomized_ratio(ratio, &mut candidate);
-                if (spec.get)(&candidate) == (spec.get)(&initial.controls) {
+                if (spec.get)(&candidate) == (spec.get)(&initial.controls)
+                    && (spec.max - spec.min).abs() > f32::EPSILON
+                {
+                    for _ in 0..8 {
+                        ratio = self.rng.r#gen::<f32>();
+                        candidate = initial.controls.clone();
+                        spec.apply_randomized_ratio(ratio, &mut candidate);
+                        if (spec.get)(&candidate) != (spec.get)(&initial.controls) {
+                            break;
+                        }
+                    }
+                }
+                if id == LEAD_PATTERN_ID && candidate.lead.pattern.round() as usize == 0 {
+                    for _ in 0..8 {
+                        ratio = self.rng.r#gen::<f32>();
+                        candidate = initial.controls.clone();
+                        spec.apply_randomized_ratio(ratio, &mut candidate);
+                        if candidate.lead.pattern.round() as usize != 0
+                            && (spec.get)(&candidate) != (spec.get)(&initial.controls)
+                        {
+                            break;
+                        }
+                    }
+                    if candidate.lead.pattern.round() as usize == 0 {
+                        ratio = 1.0;
+                        candidate = initial.controls.clone();
+                        spec.apply_randomized_ratio(ratio, &mut candidate);
+                    }
+                }
+                let mut custom_perc_steps = None;
+                if id == PERC_PATTERN_ID
+                    && candidate.perc.pattern.round() as usize == CUSTOM_PERC_PATTERN_INDEX
+                {
+                    let count = perc_live_step_count(candidate.perc.step_count);
+                    let mut steps = [0.0f32; PERC_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=1) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = 1.0;
+                    }
+                    candidate.perc.steps = steps;
+                    custom_perc_steps = Some(steps);
+                }
+                let mut custom_bass_steps = None;
+                if id == BASS_RHYTHM_ID
+                    && candidate.bass.rhythm.round() as usize == CUSTOM_BASS_RHYTHM_INDEX
+                {
+                    let count = bass_live_step_count(candidate.bass.step_count);
+                    let mut steps = [0.0f32; BASS_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = 1.0;
+                    }
+                    candidate.bass.steps = steps;
+                    custom_bass_steps = Some(steps);
+                }
+                let mut custom_kick_steps = None;
+                if id == KICK_PATTERN_ID
+                    && candidate.kick.pattern.round() as usize == CUSTOM_KICK_PATTERN_INDEX
+                {
+                    let count = kick_live_step_count(candidate.kick.step_count);
+                    let mut steps = [0.0f32; KICK_STEP_COUNT];
+                    for slot in steps.iter_mut().take(count) {
+                        *slot = self.rng.gen_range(0..=1) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = 1.0;
+                    }
+                    candidate.kick.steps = steps;
+                    custom_kick_steps = Some(steps);
+                }
+                let mut custom_tonal_steps = None;
+                if id == TONAL_PHRASE_ID
+                    && candidate.tonal.phrase.round() as usize == CUSTOM_TONAL_PHRASE_INDEX
+                {
+                    let count = tonal_live_step_count(candidate.tonal.step_count);
+                    let mut steps = [0.0f32; TONAL_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = self.rng.gen_range(1..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    candidate.tonal.steps = steps;
+                    custom_tonal_steps = Some(steps);
+                }
+                let mut custom_clap_steps = None;
+                if id == CLAP_PATTERN_ID
+                    && candidate.clap.pattern.round() as usize == CUSTOM_CLAP_PATTERN_INDEX
+                {
+                    let count = clap_live_step_count(candidate.clap.step_count);
+                    let mut steps = [0.0f32; CLAP_STEP_COUNT];
+                    for slot in steps.iter_mut().take(count) {
+                        *slot = self.rng.gen_range(0..=1) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = 1.0;
+                    }
+                    candidate.clap.steps = steps;
+                    custom_clap_steps = Some(steps);
+                }
+                let mut custom_arp_steps = None;
+                if id == ARP_PATTERN_ID
+                    && matches!(
+                        arp_pattern_from_control(candidate.arp.pattern),
+                        ArpPattern::Random | ArpPattern::Custom
+                    )
+                {
+                    let count = arp_live_step_count(candidate.arp.step_count);
+                    let max_tone = (candidate.arp.octaves.round().clamp(1.0, 3.0) as i32 * 4)
+                        .clamp(4, ARP_TONE_COUNT as i32);
+                    let mut steps = [0.0f32; ARP_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=max_tone) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = self.rng.gen_range(1..=max_tone) as f32;
+                    }
+                    candidate.arp.steps = steps;
+                    custom_arp_steps = Some(steps);
+                }
+                let mut custom_lead_steps = None;
+                if id == LEAD_PATTERN_ID
+                    && candidate.lead.pattern.round() as usize == CUSTOM_LEAD_PATTERN_INDEX
+                {
+                    let count = lead_live_step_count(candidate.lead.step_count);
+                    let mut steps = [0.0f32; LEAD_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = self.rng.gen_range(1..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    candidate.lead.steps = steps;
+                    custom_lead_steps = Some(steps);
+                }
+                if (spec.get)(&candidate) == (spec.get)(&initial.controls)
+                    && custom_perc_steps.is_none()
+                    && custom_bass_steps.is_none()
+                    && custom_kick_steps.is_none()
+                    && custom_tonal_steps.is_none()
+                    && custom_clap_steps.is_none()
+                    && custom_arp_steps.is_none()
+                    && custom_lead_steps.is_none()
+                {
                     return Ok(EffectAcknowledgement::NoChange);
                 }
-                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                let snapshot = self.edit_control_session(spec, |snapshot| {
                     spec.apply_randomized_ratio(ratio, &mut snapshot.controls);
+                    if let Some(steps) = custom_perc_steps {
+                        snapshot.controls.perc.steps = steps;
+                    }
+                    if let Some(steps) = custom_bass_steps {
+                        snapshot.controls.bass.steps = steps;
+                    }
+                    if let Some(steps) = custom_kick_steps {
+                        snapshot.controls.kick.steps = steps;
+                    }
+                    if let Some(steps) = custom_tonal_steps {
+                        snapshot.controls.tonal.steps = steps;
+                    }
+                    if let Some(steps) = custom_clap_steps {
+                        snapshot.controls.clap.steps = steps;
+                    }
+                    if let Some(steps) = custom_arp_steps {
+                        snapshot.controls.arp.steps = steps;
+                    }
+                    if let Some(steps) = custom_lead_steps {
+                        snapshot.controls.lead.steps = steps;
+                    }
                 });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
@@ -1349,21 +1763,62 @@ impl EffectExecutor {
             InteractionEffect::RandomizeScope => {
                 let mut rng = self.rng.clone();
                 let mut control_rolls = None;
+                let in_sequence_drill = !context.randomizes_automation
+                    && context
+                        .visible_control_ids
+                        .iter()
+                        .any(|id| is_sequence_step_id(id));
                 if !context.randomizes_automation {
                     let initial = self.session.load();
                     let mut candidate = initial.controls.clone();
                     let mut rolls = Vec::new();
-                    for id in context.visible_control_ids {
+                    for &id in context.visible_control_ids {
+                        if in_sequence_drill && !is_sequence_step_id(id) {
+                            continue;
+                        }
                         if let Some(spec) = spec_by_id(id) {
-                            let ratio = rng.r#gen();
+                            let mut ratio: f32 = rng.r#gen();
                             spec.apply_randomized_ratio(ratio, &mut candidate);
+                            if matches!(
+                                id,
+                                "perc.step1"
+                                    | "bass.step1"
+                                    | "tonal.step1"
+                                    | "arp.step1"
+                                    | "lead.step1"
+                            ) && (spec.get)(&candidate) < 0.0
+                            {
+                                ratio = rng.gen_range(0.5..=1.0);
+                                spec.apply_randomized_ratio(ratio, &mut candidate);
+                            }
                             rolls.push((spec.id, ratio));
                         }
+                    }
+                    if in_sequence_drill
+                        && context.tab != Tab::Chords
+                        && rolls.iter().all(|(id, _)| {
+                            let spec = spec_by_id(id).expect("scope controls were validated");
+                            (spec.get)(&candidate) <= 0.0
+                        })
+                        && let Some((first_id, first_ratio)) = rolls.first_mut()
+                    {
+                        let spec = spec_by_id(first_id).expect("scope controls were validated");
+                        *first_ratio = rng.gen_range(0.5..=1.0);
+                        spec.apply_randomized_ratio(*first_ratio, &mut candidate);
+                        if (spec.get)(&candidate) <= 0.0 {
+                            *first_ratio = 1.0;
+                            spec.apply_randomized_ratio(*first_ratio, &mut candidate);
+                        }
+                    }
+                    if in_sequence_drill && context.tab == Tab::Lead {
+                        candidate.lead.pattern = LeadPattern::Custom.value();
                     }
                     let changed = rolls.iter().any(|(id, _)| {
                         let spec = spec_by_id(id).expect("scope controls were validated");
                         (spec.get)(&candidate) != (spec.get)(&initial.controls)
-                    });
+                    }) || (in_sequence_drill
+                        && context.tab == Tab::Lead
+                        && candidate.lead.pattern != initial.controls.lead.pattern);
                     if !changed {
                         self.rng = rng;
                         return Ok(EffectAcknowledgement::NoChange);
@@ -1407,6 +1862,9 @@ impl EffectExecutor {
                                 .expect("scope controls were validated")
                                 .apply_randomized_ratio(*ratio, &mut snapshot.controls);
                         }
+                        if in_sequence_drill && context.tab == Tab::Lead {
+                            snapshot.controls.lead.pattern = LeadPattern::Custom.value();
+                        }
                     }
                 });
                 self.rng = rng;
@@ -1421,7 +1879,7 @@ impl EffectExecutor {
             InteractionEffect::TouchSelected => {
                 let id = selected_control(context.selected_control)?;
                 let tab = context.tab;
-                let index = spec_index(tab, id).unwrap_or(context.selected);
+                let index = spec_index(tab, id).ok_or(EffectFailure::UnknownControl(id))?;
                 self.execute(LiveEffect::SelectControl { tab, index, id })
             }
             InteractionEffect::PaletteCommitAtBar(edits) => {
@@ -1463,7 +1921,7 @@ impl EffectExecutor {
             }
             InteractionEffect::LeadNudge { id, delta } => {
                 let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext(id))?;
-                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                let snapshot = self.edit_control_session(spec, |snapshot| {
                     spec.apply_delta(f32::from(delta), &mut snapshot.controls);
                 });
                 Ok(EffectAcknowledgement::Published {
@@ -1473,7 +1931,7 @@ impl EffectExecutor {
             InteractionEffect::LeadPattern => {
                 let spec = spec_by_id(LEAD_PATTERN_ID)
                     .ok_or(EffectFailure::MissingContext(LEAD_PATTERN_ID))?;
-                let snapshot = self.edit_session(Some(spec.id), |snapshot| {
+                let snapshot = self.edit_control_session(spec, |snapshot| {
                     let next = LeadPattern::from_value(snapshot.controls.lead.pattern).toggled();
                     spec.apply_value(next.value(), &mut snapshot.controls);
                 });
@@ -1499,7 +1957,7 @@ impl EffectExecutor {
                 let snapshot = self.edit_session(Some(steps.id), |snapshot| {
                     snapshot.controls.lead.steps = capture.steps;
                     steps.apply_value(capture.count as f32, &mut snapshot.controls);
-                    pattern.apply_value(LeadPattern::Play.value(), &mut snapshot.controls);
+                    pattern.apply_value(LeadPattern::Custom.value(), &mut snapshot.controls);
                 });
                 self.show_message(format!("kept {} steps", capture.count));
                 Ok(EffectAcknowledgement::Published {
@@ -2096,7 +2554,7 @@ mod tests {
                 .automation
                 .open_or_create(ControlAddress::new("pad.level"))
                 .depth_ratio = 0.3;
-            snapshot.controls.arp.midi_out = 1.0;
+            snapshot.controls.arp.octaves = 2.0;
         });
         executor.toggle_auto(0.0);
         let before = executor.session.load();
@@ -2172,6 +2630,173 @@ mod tests {
         executor.toggle_mute(Tab::Perc);
         assert_eq!(executor.session().load().controls.perc.level, 0.65);
         assert!(!executor.session().load().muted[Tab::Perc as usize]);
+    }
+
+    #[test]
+    fn production_palette_opens_a_frozen_output_picker_and_cancels_without_routing() {
+        use super::interaction::{Intent, InteractionMode, InteractionModel, SemanticAction};
+        fn dispatch(executor: &mut EffectExecutor, model: &mut InteractionModel, intent: Intent) {
+            let mut flipped = FlippedUnits::default();
+            let mut clipboard = FakeClipboard::default();
+            let mut context = ProductionCoordinatorContext {
+                effects: executor,
+                flipped: &mut flipped,
+                clipboard: &mut clipboard,
+                capabilities: runtime::TerminalCapabilities::full(),
+                beat: 0.0,
+            };
+            let frame = production_frame(model, &context);
+            coordinate_production_action(
+                model,
+                SemanticAction::press(intent),
+                &frame,
+                &mut context,
+            )
+            .unwrap();
+        }
+        let routing = audio::OutputRouting::new(audio::OutputSelection::SystemDefault);
+        routing.update_devices(Ok(vec!["BlackHole 2ch".into()]));
+        let mut executor = executor().with_output_routing(routing.clone());
+        executor.toggle_auto(0.0);
+        let before = executor.session.load();
+        let mut model = InteractionModel::default();
+        dispatch(&mut executor, &mut model, Intent::OpenPalette);
+        for character in "output".chars() {
+            dispatch(&mut executor, &mut model, Intent::TypeCharacter(character));
+        }
+        dispatch(&mut executor, &mut model, Intent::Confirm);
+        assert!(
+            matches!(&model.mode, InteractionMode::Palette(palette) if palette.output_choices.is_some())
+        );
+        routing.update_devices(Ok(vec!["Different Device".into()]));
+        for character in "BlackHole".chars() {
+            dispatch(&mut executor, &mut model, Intent::TypeCharacter(character));
+        }
+        dispatch(&mut executor, &mut model, Intent::Confirm);
+        assert_eq!(
+            routing.requested().0,
+            audio::OutputSelection::Device("BlackHole 2ch".into())
+        );
+        assert!(matches!(model.mode, InteractionMode::Browsing));
+        assert!(Arc::ptr_eq(&before, &executor.session.load()));
+        assert!(executor.auto.is_running());
+        let request = routing.requested();
+        dispatch(&mut executor, &mut model, Intent::OpenPalette);
+        for character in "device".chars() {
+            dispatch(&mut executor, &mut model, Intent::TypeCharacter(character));
+        }
+        dispatch(&mut executor, &mut model, Intent::Confirm);
+        dispatch(&mut executor, &mut model, Intent::Cancel);
+        assert_eq!(routing.requested(), request);
+    }
+
+    #[test]
+    fn output_routing_never_edits_song_auto_or_motion() {
+        let routing = audio::OutputRouting::new(audio::OutputSelection::SystemDefault);
+        routing.update_devices(Ok(vec!["BlackHole 2ch".into()]));
+        let mut executor = executor().with_output_routing(routing.clone());
+        executor.toggle_auto(0.0);
+        let before = executor.session.load();
+        let mut clipboard = FakeClipboard::default();
+        executor
+            .execute_with_clipboard(LiveEffect::CopySong, &mut clipboard)
+            .unwrap();
+        let code = clipboard.value.clone();
+        let recent = executor.recent.ids().to_vec();
+        assert_eq!(
+            executor
+                .execute_interaction(
+                    InteractionEffect::ChooseOutputDevice,
+                    &InteractionExecutionContext::default()
+                )
+                .unwrap(),
+            EffectAcknowledgement::OutputDevices(vec![
+                audio::OutputSelection::SystemDefault,
+                audio::OutputSelection::Device("BlackHole 2ch".into())
+            ])
+        );
+        for selection in [
+            audio::OutputSelection::Device("BlackHole 2ch".into()),
+            audio::OutputSelection::SystemDefault,
+        ] {
+            executor
+                .execute_interaction(
+                    InteractionEffect::SetOutputDevice(selection.clone()),
+                    &InteractionExecutionContext::default(),
+                )
+                .unwrap();
+            assert_eq!(routing.requested().0, selection);
+            assert!(Arc::ptr_eq(&before, &executor.session.load()));
+            assert!(executor.auto.is_running());
+            assert_eq!(executor.recent.ids(), recent);
+            executor
+                .execute_with_clipboard(LiveEffect::CopySong, &mut clipboard)
+                .unwrap();
+            assert_eq!(clipboard.value, code);
+        }
+        assert!(spec_by_id("master.output_device").is_none());
+        assert!(all_specs().all(|spec| spec.id != "master.output_device"));
+    }
+
+    #[test]
+    fn unresolved_control_selection_cannot_edit_slot_one_or_stop_auto() {
+        let mut executor = executor();
+        executor.toggle_auto(0.0);
+        let before = executor.session.load();
+        let mut flipped = FlippedUnits::default();
+        let mut context = ProductionInteractionContext {
+            selected_control: Some("master.output_device"),
+            visible_control_ids: &["master.output_device"],
+            randomizes_automation: false,
+            tab: Tab::Master,
+            selected: spec_index(Tab::Master, "master.output_device"),
+            automation_selected: 0,
+            beat: 0.0,
+            flipped: &mut flipped,
+        };
+        assert_eq!(tab_specs(Tab::Master)[12].id, "master.slot1.kind");
+        for effect in [
+            InteractionEffect::AdjustSelected(1),
+            InteractionEffect::CommitNumeric(2.0),
+            InteractionEffect::ResetSelected,
+            InteractionEffect::MaxSelected,
+            InteractionEffect::ToggleUnits,
+        ] {
+            executor.execute_production_interactions_with_clipboard(
+                [effect],
+                &mut context,
+                &mut FakeClipboard::default(),
+            );
+            assert!(Arc::ptr_eq(&before, &executor.session.load()));
+            assert!(executor.auto.is_running());
+        }
+    }
+
+    #[test]
+    fn chord_names_are_a_live_display_choice_that_edits_no_control() {
+        let mut executor = executor();
+        let before = executor.session().load();
+        for (names, notice) in [
+            (ChordNames::Roman, "Chords as Roman numerals"),
+            (ChordNames::Letters, "Chords as letters"),
+        ] {
+            executor
+                .execute_interaction(
+                    InteractionEffect::SetChordNames(names),
+                    &InteractionExecutionContext {
+                        selected_control: None,
+                        beat: 0.0,
+                    },
+                )
+                .unwrap();
+            let after = executor.session().load();
+            assert_eq!(after.chord_names, names);
+            assert_eq!(executor.message(), Some(notice));
+            assert_eq!(
+                after.controls.pad.progression.to_bits(),
+                before.controls.pad.progression.to_bits()
+            );
+        }
     }
 
     #[test]
@@ -2533,7 +3158,7 @@ mod tests {
             visible_control_ids: &[],
             randomizes_automation: false,
             tab: Tab::Kick,
-            selected,
+            selected: Some(selected),
             automation_selected: 0,
             beat: 0.0,
             flipped: &mut flipped,
@@ -2597,7 +3222,7 @@ mod tests {
                 visible_control_ids: &[],
                 randomizes_automation: true,
                 tab: Tab::Chords,
-                selected: 0,
+                selected: Some(0),
                 automation_selected,
                 beat: 0.0,
                 flipped: &mut flipped,
@@ -2658,7 +3283,7 @@ mod tests {
                 visible_control_ids: &[],
                 randomizes_automation: true,
                 tab: Tab::Chords,
-                selected: 0,
+                selected: Some(0),
                 automation_selected,
                 beat: 0.0,
                 flipped: &mut flipped,
@@ -2754,7 +3379,7 @@ mod tests {
                 visible_control_ids: &[],
                 randomizes_automation: true,
                 tab: Tab::Chords,
-                selected: 0,
+                selected: Some(0),
                 automation_selected,
                 beat: 0.0,
                 flipped: &mut flipped,
@@ -2846,7 +3471,7 @@ mod tests {
             visible_control_ids: &[],
             randomizes_automation: true,
             tab: Tab::Chords,
-            selected: 0,
+            selected: Some(0),
             automation_selected: 0,
             beat: 0.0,
             flipped: &mut flipped,
@@ -2984,7 +3609,7 @@ mod tests {
                 visible_control_ids: &[],
                 randomizes_automation: false,
                 tab: Tab::Lead,
-                selected: 0,
+                selected: Some(0),
                 automation_selected: 0,
                 beat,
                 flipped: &mut flipped,
@@ -3028,8 +3653,8 @@ mod tests {
         assert_eq!(&session.controls.lead.steps[..4], &[1.0, 3.0, 5.0, 0.0]);
         assert_eq!(
             LeadPattern::from_value(session.controls.lead.pattern),
-            LeadPattern::Play,
-            "keeping a phrase sets the lane playing"
+            LeadPattern::Custom,
+            "keeping a phrase sets the lane playing as Custom"
         );
         assert!(!executor.auto.is_running());
         assert_eq!(executor.message(), Some("kept 4 steps"));
@@ -3078,58 +3703,18 @@ mod tests {
     }
 
     #[test]
-    fn selecting_midi_from_palette_adds_its_row_without_turning_it_on() {
+    fn apply_control_edit_ratio_maps_unit_interval_to_control_range() {
         let mut executor = executor();
-        let index = spec_index(Tab::Arp, "arp.midi_out").unwrap();
-        assert!(
-            tab_controls(Tab::Arp, &executor.session.load().controls)
-                .iter()
-                .all(|item| item.id != "arp.midi_out")
-        );
-
-        executor
-            .execute(LiveEffect::SelectControl {
-                tab: Tab::Arp,
-                index,
-                id: "arp.midi_out",
+        let ack = executor
+            .execute(LiveEffect::EditControl {
+                id: "master.bpm",
+                edit: ControlEdit::Ratio(0.5),
             })
             .unwrap();
-
-        let controls = &executor.session.load().controls;
-        assert_eq!(controls.arp.midi_out, 0.0);
-        assert!(
-            tab_controls(Tab::Arp, controls)
-                .iter()
-                .any(|item| item.id == "arp.midi_out")
-        );
-        assert!(
-            tab_controls(Tab::Arp, controls)
-                .iter()
-                .any(|item| item.id == "arp.midi_gate_beats")
-        );
-    }
-
-    #[test]
-    fn selecting_a_tucked_pad_rhythm_row_restores_only_that_row() {
-        let mut executor = executor();
-        executor.session.update(|snapshot| {
-            snapshot.controls.hidden_pad_rhythm_rows = PAD_RHYTHM_ROWS;
-        });
-
-        executor
-            .execute(LiveEffect::SelectControl {
-                tab: Tab::Chords,
-                index: spec_index(Tab::Chords, "pad.trigger").unwrap(),
-                id: "pad.trigger",
-            })
-            .unwrap();
-
-        let controls = &executor.session.load().controls;
-        assert_eq!(controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS & !(1 << 0));
-        let rows = tab_controls(Tab::Chords, controls);
-        assert!(rows.iter().any(|item| item.id == "pad.trigger"));
-        assert!(rows.iter().all(|item| item.id != "pad.gate_beats"));
-        assert!(rows.iter().all(|item| item.id != "pad.offset_beats"));
+        assert!(matches!(ack, EffectAcknowledgement::Published { .. }));
+        let spec = spec_by_id("master.bpm").unwrap();
+        let value = executor.session.load().controls.master.bpm;
+        assert!((value - (spec.min + (spec.max - spec.min) * 0.5).round()).abs() < 1e-4);
     }
 
     #[test]

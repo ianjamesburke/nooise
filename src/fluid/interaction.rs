@@ -67,12 +67,17 @@ impl Page {
     }
 }
 
-/// The navigation a page opens on. Chords, Lead, and the hub own page-local
-/// navigation no other page can construct; the rest share one standard list.
+/// The navigation a page opens on. Every voice layer and the hub own page-local
+/// navigation no other page can construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerNavigation {
     Chords,
-    Standard(StandardPage),
+    Perc,
+    Bass,
+    Kick,
+    Tonal,
+    Clap,
+    Arp,
     Lead,
     Hub,
 }
@@ -99,32 +104,32 @@ const LAYERS: [Layer; 9] = [
     Layer {
         page: Page::Perc,
         tab: Tab::Perc,
-        navigation: LayerNavigation::Standard(StandardPage::Perc),
+        navigation: LayerNavigation::Perc,
     },
     Layer {
         page: Page::Bass,
         tab: Tab::Bass,
-        navigation: LayerNavigation::Standard(StandardPage::Bass),
+        navigation: LayerNavigation::Bass,
     },
     Layer {
         page: Page::Kick,
         tab: Tab::Kick,
-        navigation: LayerNavigation::Standard(StandardPage::Kick),
+        navigation: LayerNavigation::Kick,
     },
     Layer {
         page: Page::Tonal,
         tab: Tab::Tonal,
-        navigation: LayerNavigation::Standard(StandardPage::Tonal),
+        navigation: LayerNavigation::Tonal,
     },
     Layer {
         page: Page::Clap,
         tab: Tab::Clap,
-        navigation: LayerNavigation::Standard(StandardPage::Clap),
+        navigation: LayerNavigation::Clap,
     },
     Layer {
         page: Page::Arp,
         tab: Tab::Arp,
-        navigation: LayerNavigation::Standard(StandardPage::Arp),
+        navigation: LayerNavigation::Arp,
     },
     Layer {
         page: Page::Lead,
@@ -179,9 +184,6 @@ impl LayerRows {
 pub(crate) enum ChordDrill {
     #[default]
     None,
-    Pattern {
-        return_to: usize,
-    },
     Progression {
         return_to: usize,
     },
@@ -193,7 +195,73 @@ pub(crate) enum ChordDrill {
     },
 }
 
-/// The Lead page's one drill: its step lane, opened from the Steps row.
+/// The Perc page's one drill: its unified sequence view, opened from the Pattern row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PercDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
+/// The Bass page's one drill: its unified sequence view, opened from the Rhythm row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum BassDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
+/// The Kick page's one drill: its unified sequence view, opened from the Pattern row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum KickDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
+/// The Tonal page's one drill: its unified sequence view, opened from the Phrase row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TonalDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
+/// The Clap page's one drill: its unified sequence view, opened from the Pattern row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ClapDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
+/// The Arp page's one drill: its unified sequence view, opened from the Pattern row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ArpDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
+/// The Lead page's one drill: its unified sequence view, opened from the Pattern row.
 /// `return_to` restores that row on Esc.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum LeadDrill {
@@ -204,26 +272,6 @@ pub(crate) enum LeadDrill {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StandardPage {
-    Perc,
-    Bass,
-    Kick,
-    Tonal,
-    Clap,
-    Arp,
-}
-
-impl StandardPage {
-    fn page(self) -> Page {
-        LAYERS
-            .iter()
-            .find(|layer| layer.navigation == LayerNavigation::Standard(self))
-            .expect("every standard page owns a layer row")
-            .page
-    }
-}
-
 /// Page-local navigation makes a Chords drill on the hub, or a Lead drill on
 /// Chords, impossible to construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,9 +280,29 @@ pub(crate) enum Navigation {
         selected: usize,
         drill: ChordDrill,
     },
-    Standard {
-        page: StandardPage,
+    Perc {
         selected: usize,
+        drill: PercDrill,
+    },
+    Bass {
+        selected: usize,
+        drill: BassDrill,
+    },
+    Kick {
+        selected: usize,
+        drill: KickDrill,
+    },
+    Tonal {
+        selected: usize,
+        drill: TonalDrill,
+    },
+    Clap {
+        selected: usize,
+        drill: ClapDrill,
+    },
+    Arp {
+        selected: usize,
+        drill: ArpDrill,
     },
     Lead {
         selected: usize,
@@ -269,7 +337,30 @@ impl Navigation {
                 selected: 0,
                 drill: ChordDrill::None,
             },
-            LayerNavigation::Standard(page) => Self::Standard { page, selected: 0 },
+            LayerNavigation::Perc => Self::Perc {
+                selected: 0,
+                drill: PercDrill::None,
+            },
+            LayerNavigation::Bass => Self::Bass {
+                selected: 0,
+                drill: BassDrill::None,
+            },
+            LayerNavigation::Kick => Self::Kick {
+                selected: 0,
+                drill: KickDrill::None,
+            },
+            LayerNavigation::Tonal => Self::Tonal {
+                selected: 0,
+                drill: TonalDrill::None,
+            },
+            LayerNavigation::Clap => Self::Clap {
+                selected: 0,
+                drill: ClapDrill::None,
+            },
+            LayerNavigation::Arp => Self::Arp {
+                selected: 0,
+                drill: ArpDrill::None,
+            },
             LayerNavigation::Lead => Self::Lead {
                 selected: 0,
                 drill: LeadDrill::None,
@@ -281,7 +372,12 @@ impl Navigation {
     pub(crate) fn page(self) -> Page {
         match self {
             Self::Chords { .. } => Page::Chords,
-            Self::Standard { page, .. } => page.page(),
+            Self::Perc { .. } => Page::Perc,
+            Self::Bass { .. } => Page::Bass,
+            Self::Kick { .. } => Page::Kick,
+            Self::Tonal { .. } => Page::Tonal,
+            Self::Clap { .. } => Page::Clap,
+            Self::Arp { .. } => Page::Arp,
             Self::Lead { .. } => Page::Lead,
             Self::Hub { .. } => Page::Master,
             Self::Module { tab, .. } => page_for_tab(tab),
@@ -295,17 +391,27 @@ impl Navigation {
     pub(crate) fn selected(self) -> usize {
         match self {
             Self::Chords { selected, .. }
-            | Self::Standard { selected, .. }
+            | Self::Perc { selected, .. }
+            | Self::Bass { selected, .. }
+            | Self::Kick { selected, .. }
+            | Self::Tonal { selected, .. }
+            | Self::Clap { selected, .. }
+            | Self::Arp { selected, .. }
             | Self::Lead { selected, .. }
             | Self::Hub { selected, .. }
             | Self::Module { selected, .. } => selected,
         }
     }
 
-    fn selected_mut(&mut self) -> &mut usize {
+    pub(crate) fn selected_mut(&mut self) -> &mut usize {
         match self {
             Self::Chords { selected, .. }
-            | Self::Standard { selected, .. }
+            | Self::Perc { selected, .. }
+            | Self::Bass { selected, .. }
+            | Self::Kick { selected, .. }
+            | Self::Tonal { selected, .. }
+            | Self::Clap { selected, .. }
+            | Self::Arp { selected, .. }
             | Self::Lead { selected, .. }
             | Self::Hub { selected, .. }
             | Self::Module { selected, .. } => selected,
@@ -316,10 +422,31 @@ impl Navigation {
     fn root_row(self) -> usize {
         match self {
             Self::Chords {
-                drill:
-                    ChordDrill::Pattern { return_to }
-                    | ChordDrill::Progression { return_to }
-                    | ChordDrill::Slot { return_to, .. },
+                drill: ChordDrill::Progression { return_to } | ChordDrill::Slot { return_to, .. },
+                ..
+            }
+            | Self::Perc {
+                drill: PercDrill::Pattern { return_to },
+                ..
+            }
+            | Self::Bass {
+                drill: BassDrill::Pattern { return_to },
+                ..
+            }
+            | Self::Kick {
+                drill: KickDrill::Pattern { return_to },
+                ..
+            }
+            | Self::Tonal {
+                drill: TonalDrill::Pattern { return_to },
+                ..
+            }
+            | Self::Clap {
+                drill: ClapDrill::Pattern { return_to },
+                ..
+            }
+            | Self::Arp {
+                drill: ArpDrill::Pattern { return_to },
                 ..
             }
             | Self::Lead {
@@ -328,7 +455,12 @@ impl Navigation {
             }
             | Self::Module { return_to, .. } => return_to,
             Self::Chords { selected, .. }
-            | Self::Standard { selected, .. }
+            | Self::Perc { selected, .. }
+            | Self::Bass { selected, .. }
+            | Self::Kick { selected, .. }
+            | Self::Tonal { selected, .. }
+            | Self::Clap { selected, .. }
+            | Self::Arp { selected, .. }
             | Self::Lead { selected, .. }
             | Self::Hub { selected } => selected,
         }
@@ -355,14 +487,10 @@ impl Navigation {
         };
         match self {
             Self::Chords { selected, drill } => match *drill {
-                ChordDrill::Pattern { return_to } => {
-                    *selected = return_to;
-                    *drill = ChordDrill::None;
-                }
                 ChordDrill::Slot {
                     slot, return_to, ..
                 } => {
-                    *selected = slot;
+                    *selected = super::PAD_SEQUENCE_HEADER_IDS.len() + slot;
                     *drill = ChordDrill::Progression { return_to };
                 }
                 ChordDrill::Progression { return_to } => {
@@ -370,6 +498,48 @@ impl Navigation {
                     *drill = ChordDrill::None;
                 }
                 ChordDrill::None => *self = to_hub,
+            },
+            Self::Perc { selected, drill } => match *drill {
+                PercDrill::Pattern { return_to } => {
+                    *selected = return_to;
+                    *drill = PercDrill::None;
+                }
+                PercDrill::None => *self = to_hub,
+            },
+            Self::Bass { selected, drill } => match *drill {
+                BassDrill::Pattern { return_to } => {
+                    *selected = return_to;
+                    *drill = BassDrill::None;
+                }
+                BassDrill::None => *self = to_hub,
+            },
+            Self::Kick { selected, drill } => match *drill {
+                KickDrill::Pattern { return_to } => {
+                    *selected = return_to;
+                    *drill = KickDrill::None;
+                }
+                KickDrill::None => *self = to_hub,
+            },
+            Self::Tonal { selected, drill } => match *drill {
+                TonalDrill::Pattern { return_to } => {
+                    *selected = return_to;
+                    *drill = TonalDrill::None;
+                }
+                TonalDrill::None => *self = to_hub,
+            },
+            Self::Clap { selected, drill } => match *drill {
+                ClapDrill::Pattern { return_to } => {
+                    *selected = return_to;
+                    *drill = ClapDrill::None;
+                }
+                ClapDrill::None => *self = to_hub,
+            },
+            Self::Arp { selected, drill } => match *drill {
+                ArpDrill::Pattern { return_to } => {
+                    *selected = return_to;
+                    *drill = ArpDrill::None;
+                }
+                ArpDrill::None => *self = to_hub,
             },
             Self::Lead { selected, drill } => match *drill {
                 LeadDrill::Pattern { return_to } => {
@@ -383,7 +553,6 @@ impl Navigation {
                 *parent.selected_mut() = *return_to;
                 *self = parent;
             }
-            Self::Standard { .. } => *self = to_hub,
             Self::Hub { .. } => {}
         }
     }
@@ -397,6 +566,7 @@ pub(crate) struct NumericEntry {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PaletteMode {
+    pub(crate) output_choices: Option<Vec<crate::audio::OutputSelection>>,
     pub(crate) capture_beat_bits: u64,
     pub(crate) recipe_target: Option<super::recipe::RecipeTarget>,
     pub(crate) lane_target: Option<Box<super::LaneTarget>>,
@@ -419,7 +589,10 @@ impl PaletteMode {
     /// entry, and staged edits. Kernel confirm and the renderer both resolve
     /// rows by index through this one projection, so they cannot desync.
     pub(crate) fn project(&self, tab: Tab) -> PaletteState {
-        let mut state = PaletteState::resolve(tab, &self.recent, self.module_scope, &self.query);
+        let mut state = match &self.output_choices {
+            Some(choices) => PaletteState::output_devices(tab, choices, &self.query),
+            None => PaletteState::resolve(tab, &self.recent, self.module_scope, &self.query),
+        };
         state.selected = self.selected.min(state.matches.len().saturating_sub(1));
         state.locked = self.locked.filter(|&index| state.contains_entry(index));
         if state.locked.is_some() {
@@ -728,7 +901,7 @@ pub(crate) enum InteractionMode {
     #[default]
     Browsing,
     Numeric(NumericEntry),
-    Palette(PaletteMode),
+    Palette(Box<PaletteMode>),
     Automation(AutomationMode),
     Performance(PerformanceMode),
     Lead(LeadPlay),
@@ -933,9 +1106,20 @@ pub(crate) enum Intent {
     /// Open a layer from its hub row, on the row it was last left on.
     EnterLayer(Tab),
     EnterChordProgression,
-    EnterPadPattern,
     EnterChordSlot(usize),
-    /// Open the Lead's step lane from its Steps row.
+    /// Open Perc's unified sequence drill from its Pattern row.
+    EnterPercPattern,
+    /// Open Bass's unified sequence drill from its Rhythm row.
+    EnterBassPattern,
+    /// Open Kick's unified sequence drill from its Pattern row.
+    EnterKickPattern,
+    /// Open Tonal's unified sequence drill from its Phrase row.
+    EnterTonalPattern,
+    /// Open Clap's unified sequence drill from its Pattern row.
+    EnterClapPattern,
+    /// Open the Arp's unified sequence drill from its Pattern row.
+    EnterArpPattern,
+    /// Open the Lead's unified sequence drill from its Pattern row.
     EnterLeadPattern,
     EnterModuleDetail {
         tab: Tab,
@@ -1053,8 +1237,13 @@ impl Intent {
             Self::OpenAutomationField => &[ModeKind::Automation],
             Self::EnterLayer(_)
             | Self::EnterChordProgression
-            | Self::EnterPadPattern
             | Self::EnterChordSlot(_)
+            | Self::EnterPercPattern
+            | Self::EnterBassPattern
+            | Self::EnterKickPattern
+            | Self::EnterTonalPattern
+            | Self::EnterClapPattern
+            | Self::EnterArpPattern
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
             | Self::EnterLeadPlay
@@ -1134,8 +1323,13 @@ impl Intent {
             Self::Cancel
             | Self::EnterLayer(_)
             | Self::EnterChordProgression
-            | Self::EnterPadPattern
             | Self::EnterChordSlot(_)
+            | Self::EnterPercPattern
+            | Self::EnterBassPattern
+            | Self::EnterKickPattern
+            | Self::EnterTonalPattern
+            | Self::EnterClapPattern
+            | Self::EnterArpPattern
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
             | Self::BeginNumeric(_)
@@ -1214,6 +1408,9 @@ pub(crate) enum InteractionEffect {
     },
     PaletteCommit(Vec<PaletteStagedEdit>),
     ApplyMixAction(super::mix_action::MixAction),
+    SetChordNames(super::ChordNames),
+    ChooseOutputDevice,
+    SetOutputDevice(crate::audio::OutputSelection),
     Chord {
         action: super::operation::ChordAction,
         target: Option<super::operation::ChordTarget>,
@@ -1268,6 +1465,8 @@ pub(crate) enum InteractionEffect {
     ToggleMute(Tab),
     /// Arm or cancel this layer's mute at the next bar.
     PlanMute(Tab),
+    /// Reset the active sequence steps on `Tab` (Pads to root, notes to rest).
+    ClearSequence(Tab),
     ToggleTransport,
     RemoveAutomation,
     RandomizeAutomationRow,
@@ -1385,10 +1584,8 @@ impl InteractionModel {
             InteractionMode::Automation(mode) => mode.selected(),
             InteractionMode::Numeric(NumericEntry {
                 resume: Some(mode), ..
-            })
-            | InteractionMode::Palette(PaletteMode {
-                resume: Some(mode), ..
             }) => mode.selected(),
+            InteractionMode::Palette(palette) => palette.resume.map_or(0, |mode| mode.selected()),
             _ => 0,
         }
     }
@@ -1412,6 +1609,30 @@ impl InteractionModel {
                 let (drill, selected) = super::chords_drill_for_index(index, controls);
                 Navigation::Chords { selected, drill }
             }
+            Tab::Perc => {
+                let (drill, selected) = super::perc_drill_for_index(index, controls);
+                Navigation::Perc { selected, drill }
+            }
+            Tab::Bass => {
+                let (drill, selected) = super::bass_drill_for_index(index, controls);
+                Navigation::Bass { selected, drill }
+            }
+            Tab::Kick => {
+                let (drill, selected) = super::kick_drill_for_index(index, controls);
+                Navigation::Kick { selected, drill }
+            }
+            Tab::Tonal => {
+                let (drill, selected) = super::tonal_drill_for_index(index, controls);
+                Navigation::Tonal { selected, drill }
+            }
+            Tab::Clap => {
+                let (drill, selected) = super::clap_drill_for_index(index, controls);
+                Navigation::Clap { selected, drill }
+            }
+            Tab::Arp => {
+                let (drill, selected) = super::arp_drill_for_index(index, controls);
+                Navigation::Arp { selected, drill }
+            }
             Tab::Lead => {
                 let (drill, selected) = super::lead_drill_for_index(index, controls);
                 Navigation::Lead { selected, drill }
@@ -1419,13 +1640,6 @@ impl InteractionModel {
             Tab::Master => Navigation::Hub {
                 selected: root_row(),
             },
-            _ => {
-                let mut navigation = Navigation::for_page(page_for_tab(tab));
-                if let Navigation::Standard { selected, .. } = &mut navigation {
-                    *selected = root_row();
-                }
-                navigation
-            }
         };
     }
 
@@ -1571,13 +1785,6 @@ fn update_browsing(
                 *drill = ChordDrill::Progression { return_to };
             }
         }
-        Intent::EnterPadPattern => {
-            if let Navigation::Chords { selected, drill } = navigation {
-                let return_to = *selected;
-                *selected = 0;
-                *drill = ChordDrill::Pattern { return_to };
-            }
-        }
         Intent::EnterChordSlot(slot) => {
             if let Navigation::Chords { selected, drill } = navigation
                 && let ChordDrill::Progression { return_to } = *drill
@@ -1588,6 +1795,48 @@ fn update_browsing(
                     return_to,
                     extension2: false,
                 };
+            }
+        }
+        Intent::EnterPercPattern => {
+            if let Navigation::Perc { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = PercDrill::Pattern { return_to };
+            }
+        }
+        Intent::EnterBassPattern => {
+            if let Navigation::Bass { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = BassDrill::Pattern { return_to };
+            }
+        }
+        Intent::EnterKickPattern => {
+            if let Navigation::Kick { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = KickDrill::Pattern { return_to };
+            }
+        }
+        Intent::EnterTonalPattern => {
+            if let Navigation::Tonal { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = TonalDrill::Pattern { return_to };
+            }
+        }
+        Intent::EnterClapPattern => {
+            if let Navigation::Clap { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = ClapDrill::Pattern { return_to };
+            }
+        }
+        Intent::EnterArpPattern => {
+            if let Navigation::Arp { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = ArpDrill::Pattern { return_to };
             }
         }
         Intent::EnterLeadPattern => {
@@ -1617,7 +1866,7 @@ fn update_browsing(
             *next_mode = Some(InteractionMode::Numeric(entry));
         }
         Intent::OpenPalette => {
-            *next_mode = Some(InteractionMode::Palette(PaletteMode {
+            *next_mode = Some(InteractionMode::Palette(Box::new(PaletteMode {
                 planned_tab: Some(navigation.mute_target()),
                 module_scope: match navigation {
                     Navigation::Module {
@@ -1633,7 +1882,7 @@ fn update_browsing(
                     _ => None,
                 },
                 ..PaletteMode::default()
-            }));
+            })));
         }
         Intent::OpenHelp => {
             *next_mode = Some(InteractionMode::Help);
@@ -1740,7 +1989,7 @@ fn update_palette(
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
 ) {
-    let entries = PaletteState::new(tab_for_page(page), &[], palette.module_scope);
+    let entries = palette.project(tab_for_page(page));
     if palette
         .locked
         .is_some_and(|index| !entries.contains_entry(index))
@@ -1788,6 +2037,10 @@ fn update_palette(
             {
                 if let PaletteEntry::Operation(operation) = state.entry(found.entry_index) {
                     palette.query = operation.spec().label.to_string();
+                    palette.selected = 0;
+                } else if let PaletteEntry::OutputDevice(selection) = state.entry(found.entry_index)
+                {
+                    palette.query = selection.to_string();
                     palette.selected = 0;
                 } else {
                     palette.locked = Some(found.entry_index);
@@ -1921,12 +2174,12 @@ fn update_automation(
             *next_mode = Some(InteractionMode::Numeric(entry));
         }
         Intent::OpenPalette => {
-            *next_mode = Some(InteractionMode::Palette(PaletteMode {
+            *next_mode = Some(InteractionMode::Palette(Box::new(PaletteMode {
                 recent: Vec::new(),
                 resume: Some(*automation),
                 planned_tab: Some(navigation.mute_target()),
                 ..PaletteMode::default()
-            }));
+            })));
         }
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
@@ -2091,6 +2344,9 @@ fn push_numeric(buffer: &mut String, character: char) {
 fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionMode {
     if matches!(
         entry,
+        PaletteEntry::OutputDevice(_) | PaletteEntry::Operation(Operation::OutputDevice)
+    ) || matches!(
+        entry,
         PaletteEntry::Operation(operation) if operation.is_mix() || *operation == Operation::ToggleAuto
     ) || (palette.editor_motion_target.is_some()
         && matches!(entry, PaletteEntry::Operation(Operation::Motion(action)) if editor_motion_action(*action, palette)))
@@ -2132,6 +2388,9 @@ fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEf
         };
     }
     match entry {
+        PaletteEntry::OutputDevice(selection) => {
+            InteractionEffect::SetOutputDevice(selection.clone())
+        }
         PaletteEntry::Operation(operation) => operation_effect(*operation, palette),
         PaletteEntry::Control {
             tab,
@@ -2184,6 +2443,8 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
             end_beat_bits: palette.capture_beat_bits,
         },
         Operation::Mix(action) => InteractionEffect::ApplyMixAction(action),
+        Operation::ChordNames(names) => InteractionEffect::SetChordNames(names),
+        Operation::OutputDevice => InteractionEffect::ChooseOutputDevice,
         Operation::Chord(action) => InteractionEffect::Chord {
             action,
             target: palette.chord_target.as_deref().copied(),
@@ -2196,6 +2457,9 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
             InteractionEffect::PlanMute(palette.planned_tab.unwrap_or(Tab::Master))
         }
         Operation::ToggleAuto => InteractionEffect::ToggleAuto,
+        Operation::ClearSequence => {
+            InteractionEffect::ClearSequence(palette.planned_tab.unwrap_or(Tab::Chords))
+        }
     }
 }
 
@@ -2220,6 +2484,49 @@ mod tests {
     /// discriminant order would silently translate a page to another layer's
     /// tab.
     #[test]
+    fn output_picker_projects_and_confirms_the_same_frozen_device() {
+        for query in ["output", "device"] {
+            let palette = PaletteMode {
+                query: query.into(),
+                ..Default::default()
+            };
+            let projected = palette.project(Tab::Master);
+            assert!(projected.matches.iter().any(|hit| matches!(
+                projected.entry(hit.entry_index),
+                PaletteEntry::Operation(Operation::OutputDevice)
+            )));
+        }
+        let selection = crate::audio::OutputSelection::Device("BlackHole 2ch".into());
+        let palette = PaletteMode {
+            output_choices: Some(vec![
+                crate::audio::OutputSelection::SystemDefault,
+                selection.clone(),
+            ]),
+            query: "BlackHole".into(),
+            ..Default::default()
+        };
+        let projected = palette.project(Tab::Master);
+        assert_eq!(projected.matches.len(), 1);
+        assert_eq!(
+            projected
+                .entry(projected.matches[0].entry_index)
+                .display_text(),
+            "Output Device: BlackHole 2ch"
+        );
+        let model = InteractionModel {
+            mode: InteractionMode::Palette(Box::new(palette)),
+            ..Default::default()
+        };
+        let transition = model.update(SemanticAction::press(Intent::Confirm));
+        assert!(
+            transition
+                .effects
+                .contains(&InteractionEffect::SetOutputDevice(selection))
+        );
+        assert!(matches!(transition.model.mode, InteractionMode::Browsing));
+    }
+
+    #[test]
     fn every_layer_row_sits_at_its_page_and_tab_discriminant() {
         for (index, layer) in LAYERS.iter().enumerate() {
             assert_eq!(layer.page as usize, index);
@@ -2242,20 +2549,14 @@ mod tests {
     }
 
     #[test]
-    fn every_standard_page_round_trips_through_its_layer_row() {
-        for page in [
-            StandardPage::Perc,
-            StandardPage::Bass,
-            StandardPage::Kick,
-            StandardPage::Tonal,
-            StandardPage::Clap,
-            StandardPage::Arp,
-        ] {
-            assert_eq!(
-                Navigation::for_page(page.page()),
-                Navigation::Standard { page, selected: 0 }
-            );
-        }
+    fn clap_page_round_trips_through_its_layer_row() {
+        assert_eq!(
+            Navigation::for_page(Page::Clap),
+            Navigation::Clap {
+                selected: 0,
+                drill: ClapDrill::None,
+            }
+        );
     }
 
     #[test]
@@ -2269,7 +2570,7 @@ mod tests {
                 InteractionMode::Browsing,
             ),
             (
-                InteractionMode::Palette(PaletteMode::default()),
+                InteractionMode::Palette(Box::default()),
                 InteractionMode::Browsing,
             ),
             (
@@ -2321,7 +2622,7 @@ mod tests {
         assert_eq!(
             progression.navigation,
             Navigation::Chords {
-                selected: 3,
+                selected: super::super::PAD_SEQUENCE_HEADER_IDS.len() + 3,
                 drill: ChordDrill::Progression { return_to: 4 },
             }
         );
@@ -2338,7 +2639,7 @@ mod tests {
     fn lead_pattern_drill_opens_from_the_steps_row_and_cancels_back_to_it() {
         let model = InteractionModel {
             navigation: Navigation::Lead {
-                selected: 8,
+                selected: 1,
                 drill: LeadDrill::None,
             },
             ..InteractionModel::default()
@@ -2348,40 +2649,40 @@ mod tests {
             opened.navigation,
             Navigation::Lead {
                 selected: 0,
-                drill: LeadDrill::Pattern { return_to: 8 },
+                drill: LeadDrill::Pattern { return_to: 1 },
             }
         );
         assert_eq!(
             update(opened, Intent::Cancel).model.navigation,
             Navigation::Lead {
-                selected: 8,
+                selected: 1,
                 drill: LeadDrill::None,
             }
         );
     }
 
     #[test]
-    fn pad_pattern_drill_opens_and_cancels_to_trigger() {
+    fn tonal_pattern_drill_opens_from_the_phrase_row_and_cancels_back_to_it() {
         let model = InteractionModel {
-            navigation: Navigation::Chords {
-                selected: 8,
-                drill: ChordDrill::None,
+            navigation: Navigation::Tonal {
+                selected: 5,
+                drill: TonalDrill::None,
             },
             ..InteractionModel::default()
         };
-        let opened = update(model, Intent::EnterPadPattern).model;
+        let opened = update(model, Intent::EnterTonalPattern).model;
         assert_eq!(
             opened.navigation,
-            Navigation::Chords {
+            Navigation::Tonal {
                 selected: 0,
-                drill: ChordDrill::Pattern { return_to: 8 }
+                drill: TonalDrill::Pattern { return_to: 5 }
             }
         );
         assert_eq!(
             update(opened, Intent::Cancel).model.navigation,
-            Navigation::Chords {
-                selected: 8,
-                drill: ChordDrill::None
+            Navigation::Tonal {
+                selected: 5,
+                drill: TonalDrill::None
             }
         );
     }
@@ -2391,18 +2692,20 @@ mod tests {
         let controls = super::super::FluidControls::default();
         let step = super::super::spec_index(Tab::Lead, "lead.step3").expect("step 3 is a row");
         let steps = super::super::spec_index(Tab::Lead, "lead.steps").expect("steps is a row");
-        let steps_row = super::super::lead_tab_controls(&controls, LeadDrill::None)
+        let pattern =
+            super::super::spec_index(Tab::Lead, "lead.pattern").expect("pattern is a row");
+        let pattern_row = super::super::lead_tab_controls(&controls, LeadDrill::None)
             .iter()
-            .position(|row| row.id == "lead.steps")
+            .position(|row| row.id == "lead.pattern")
             .unwrap();
         let mut model = InteractionModel::default();
         model.select_control(Tab::Lead, step, &controls);
         assert_eq!(
             model.navigation,
             Navigation::Lead {
-                selected: 2,
+                selected: super::super::LEAD_SEQUENCE_HEADER_IDS.len() + 2,
                 drill: LeadDrill::Pattern {
-                    return_to: steps_row
+                    return_to: pattern_row
                 },
             }
         );
@@ -2410,7 +2713,17 @@ mod tests {
         assert_eq!(
             model.navigation,
             Navigation::Lead {
-                selected: steps_row,
+                selected: 4,
+                drill: LeadDrill::Pattern {
+                    return_to: pattern_row
+                },
+            }
+        );
+        model.select_control(Tab::Lead, pattern, &controls);
+        assert_eq!(
+            model.navigation,
+            Navigation::Lead {
+                selected: pattern_row,
                 drill: LeadDrill::None,
             }
         );
@@ -2459,9 +2772,9 @@ mod tests {
     #[test]
     fn module_detail_enters_and_returns_to_its_collapsed_row() {
         let model = InteractionModel {
-            navigation: Navigation::Standard {
-                page: StandardPage::Clap,
+            navigation: Navigation::Clap {
                 selected: 6,
+                drill: ClapDrill::None,
             },
             ..InteractionModel::default()
         };
@@ -2486,9 +2799,9 @@ mod tests {
         );
         assert_eq!(
             update(detail, Intent::Cancel).model.navigation,
-            Navigation::Standard {
-                page: StandardPage::Clap,
+            Navigation::Clap {
                 selected: 6,
+                drill: ClapDrill::None,
             }
         );
     }
@@ -2523,9 +2836,9 @@ mod tests {
         let bass = update(model, Intent::EnterLayer(Tab::Bass)).model;
         assert_eq!(
             bass.navigation,
-            Navigation::Standard {
-                page: StandardPage::Bass,
+            Navigation::Bass {
                 selected: 0,
+                drill: BassDrill::None,
             }
         );
         let moved = update(bass, Intent::MoveSelection(3)).model;
@@ -2536,9 +2849,9 @@ mod tests {
         // The layer resumes on the row it was left on.
         assert_eq!(
             update(hub, Intent::EnterLayer(Tab::Bass)).model.navigation,
-            Navigation::Standard {
-                page: StandardPage::Bass,
+            Navigation::Bass {
                 selected: 3,
+                drill: BassDrill::None,
             }
         );
     }
@@ -2636,9 +2949,9 @@ mod tests {
         let perc = update(model, Intent::ChangePage(PageDirection::Next)).model;
         assert_eq!(
             perc.navigation,
-            Navigation::Standard {
-                page: StandardPage::Perc,
+            Navigation::Perc {
                 selected: 0,
+                drill: PercDrill::None,
             }
         );
         assert_eq!(
@@ -2957,11 +3270,11 @@ mod tests {
                 Intent::ActivatePerformance(PerformanceKind::Jump),
             ),
             (
-                InteractionMode::Palette(PaletteMode::default()),
+                InteractionMode::Palette(Box::default()),
                 Intent::BeginNumeric('1'),
             ),
             (
-                InteractionMode::Palette(PaletteMode::default()),
+                InteractionMode::Palette(Box::default()),
                 Intent::OpenAutomation(AutomationKind::Lfo),
             ),
             (
@@ -3005,11 +3318,11 @@ mod tests {
 
     fn palette_model(palette: PaletteMode) -> InteractionModel {
         InteractionModel {
-            navigation: Navigation::Standard {
-                page: StandardPage::Bass,
+            navigation: Navigation::Bass {
                 selected: 0,
+                drill: BassDrill::None,
             },
-            mode: InteractionMode::Palette(palette),
+            mode: InteractionMode::Palette(Box::new(palette)),
             ..InteractionModel::default()
         }
     }
@@ -3150,9 +3463,9 @@ mod tests {
         );
         assert_eq!(
             transition.model.navigation,
-            Navigation::Standard {
-                page: StandardPage::Perc,
+            Navigation::Perc {
                 selected: 0,
+                drill: PercDrill::None,
             }
         );
         assert_eq!(transition.model.mode, InteractionMode::Browsing);

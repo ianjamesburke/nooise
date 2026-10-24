@@ -40,15 +40,35 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) transport: Transport,
     /// Counts explicit restarts, including stop/play between audio reads.
     pub(crate) transport_restart: u64,
+    /// How chords are written on screen. Live-only: a display choice, never
+    /// read by the audio thread or written to a song code.
+    pub(crate) chord_names: ChordNames,
 }
 
 impl LiveSessionSnapshot {
+    /// How this generation writes chord names: its display choice and the
+    /// Master Key that letters are written in.
+    pub(crate) fn chord_labels(&self) -> ChordLabels {
+        ChordLabels {
+            names: self.chord_names,
+            key: MasterKey::from_control(self.controls.master.key),
+        }
+    }
+
     pub(crate) fn from_song(song: &SongState) -> Self {
+        let mut controls = song.controls.clone();
+        if let Some(sequence) = &song.tonal_sequence
+            && sequence.evolution_count > 0
+        {
+            for (dst, &note) in controls.tonal.steps.iter_mut().zip(&sequence.notes) {
+                *dst = note as f32;
+            }
+        }
         Self {
             generation: 0,
             module_topology_revision: 0,
             automation_revision: 0,
-            controls: song.controls.clone(),
+            controls,
             automation: song.automation.clone(),
             muted: song.muted,
             hold_muted: [false; HOLD_MUTE_COUNT],
@@ -59,12 +79,11 @@ impl LiveSessionSnapshot {
             drunken_phase_beat: song.drunken_phase_beat,
             transport: Transport::Playing,
             transport_restart: 0,
-            tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
-                TonalSequenceState::from_phrase(wrapped_index(
-                    song.controls.tonal.phrase,
-                    TONAL_PHRASES.len(),
-                ))
-            }),
+            chord_names: ChordNames::default(),
+            tonal_sequence: song
+                .tonal_sequence
+                .clone()
+                .unwrap_or_else(|| TonalSequenceState::from_controls(&song.controls.tonal)),
         }
     }
 
@@ -74,10 +93,7 @@ impl LiveSessionSnapshot {
             generation: 0,
             module_topology_revision: 0,
             automation_revision: 0,
-            tonal_sequence: TonalSequenceState::from_phrase(wrapped_index(
-                controls.tonal.phrase,
-                TONAL_PHRASES.len(),
-            )),
+            tonal_sequence: TonalSequenceState::from_controls(&controls.tonal),
             controls,
             automation: AutomationState::default(),
             muted: [false; TAB_COUNT],
@@ -89,6 +105,7 @@ impl LiveSessionSnapshot {
             drunken_phase_beat: 0.0,
             transport: Transport::Playing,
             transport_restart: 0,
+            chord_names: ChordNames::default(),
         }
     }
 }
@@ -161,10 +178,20 @@ impl LiveSession {
         &self,
         mut edit: impl FnMut(&mut LiveSessionSnapshot) -> Result<(), E>,
     ) -> Result<Arc<LiveSessionSnapshot>, E> {
+        self.transact_with_before(|_, snapshot| edit(snapshot))
+            .map(|(_, after)| after)
+    }
+
+    /// Return the exact Arc used by the successful CAS attempt, including
+    /// after retries. Observers must compare this pair, not a separate load.
+    pub(crate) fn transact_with_before<E>(
+        &self,
+        mut edit: impl FnMut(&LiveSessionSnapshot, &mut LiveSessionSnapshot) -> Result<(), E>,
+    ) -> Result<(Arc<LiveSessionSnapshot>, Arc<LiveSessionSnapshot>), E> {
         loop {
             let current = self.published.load_full();
             let mut next = current.as_ref().clone();
-            edit(&mut next)?;
+            edit(&current, &mut next)?;
             if Tab::all().iter().any(|&tab| {
                 current
                     .controls
@@ -202,7 +229,7 @@ impl LiveSession {
             let next = Arc::new(next);
             let previous = self.published.compare_and_swap(&current, Arc::clone(&next));
             if Arc::ptr_eq(&previous, &current) {
-                return Ok(next);
+                return Ok((current, next));
             }
         }
     }
@@ -223,6 +250,33 @@ impl LiveSession {
 mod tests {
     use std::sync::Barrier;
     use std::thread;
+
+    #[test]
+    fn transaction_pair_retains_the_successful_retry_arc() {
+        let session =
+            LiveSession::new(LiveSessionSnapshot::from_controls(FluidControls::default()));
+        let original = session.load();
+        let mut intervening = None;
+        let mut attempts = 0;
+        let (before, after) = session
+            .transact_with_before::<std::convert::Infallible>(|current, next| {
+                attempts += 1;
+                if attempts == 1 {
+                    intervening =
+                        Some(session.update(|snapshot| snapshot.controls.master.bpm = 99.0));
+                }
+                next.controls.pad.level = current.controls.pad.level / 2.0;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(attempts, 2);
+        assert!(Arc::ptr_eq(&before, intervening.as_ref().unwrap()));
+        assert!(!Arc::ptr_eq(&before, &original));
+        assert!(Arc::ptr_eq(&after, &session.load()));
+        assert_eq!(after.controls.master.bpm, 99.0);
+        assert_eq!(after.generation, before.generation + 1);
+        assert_eq!(after.controls.pad.level, original.controls.pad.level / 2.0);
+    }
 
     #[test]
     fn module_topology_revision_tracks_replacement_but_not_parameter_edits() {

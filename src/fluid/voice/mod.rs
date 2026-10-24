@@ -38,13 +38,57 @@ pub(crate) fn midi_to_hz(note: i32) -> f32 {
     440.0 * 2f32.powf((note as f32 - 69.0) / 12.0)
 }
 
-/// Frequency multiplier for a master tune offset in semitones.
+/// The Master Key control: each progression keeps its authored key (`Home`),
+/// or every progression is moved into one chosen pitch class. The shift is
+/// resolved per progression, at the moment a voice builds a note, so a morph
+/// or a progression change lands in the key without a click or a stale shift.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MasterKey {
+    #[default]
+    Home,
+    /// A pitch class, C = 0 through B = 11.
+    Pitch(u8),
+}
+
+impl MasterKey {
+    /// `master.key`'s dial: 0 is Home, 1 through 12 are C through B.
+    pub(crate) const DIAL_MAX: f32 = 12.0;
+
+    pub(crate) fn from_control(value: f32) -> Self {
+        match value.round().clamp(0.0, Self::DIAL_MAX) as u8 {
+            0 => Self::Home,
+            step => Self::Pitch(step - 1),
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Home => "Home",
+            Self::Pitch(pitch) => chord_pitch_name(i32::from(pitch)),
+        }
+    }
+
+    /// Semitones that carry `progression`'s authored key into this key by the
+    /// shortest way round: -6 through +5, and 0 for Home.
+    pub(crate) fn shift(self, progression: usize) -> i32 {
+        match self {
+            Self::Home => 0,
+            Self::Pitch(pitch) => {
+                (i32::from(pitch) - progression_tonic_pitch_class(progression) + 6).rem_euclid(12)
+                    - 6
+            }
+        }
+    }
+}
+
+/// Frequency multiplier for a transposition in semitones.
 pub(crate) fn tune_ratio(semitones: f32) -> f32 {
     2f32.powf(semitones / 12.0)
 }
 
-/// A MIDI note's frequency under the master tune: the one pitch path every
-/// pitched voice (Pad, Bass, Tonal, Arp, Lead) builds a note through.
+/// A MIDI note's frequency under a transposition (`tune`, in semitones, from
+/// `MasterKey::shift`): the one pitch path every pitched voice (Pad, Bass,
+/// Tonal, Arp, Lead) builds a note through.
 pub(crate) fn note_hz(note: i32, tune: f32) -> f32 {
     midi_to_hz(note) * tune_ratio(tune)
 }

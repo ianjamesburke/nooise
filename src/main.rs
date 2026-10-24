@@ -11,49 +11,63 @@ use update_check::check_for_update;
 mod audio;
 mod fluid;
 mod fx;
-mod midi;
 mod synth;
 mod update_check;
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-    if let Err(error) = cli.validate_from() {
+    if let Err(error) = cli.validate_from().and_then(|()| cli.validate_output()) {
         error.exit();
     }
     if matches!(
         cli.command,
-        Some(CliCommand::Update | CliCommand::MidiPorts | CliCommand::Render(_))
+        Some(CliCommand::Update | CliCommand::Render(_))
     ) {
-        if cli.midi_config() != midi::MidiConfig::default() {
-            return Err("MIDI port flags only apply to live playback".into());
-        }
         if cli.start_muted {
             return Err("-M/--start-muted only applies to live playback".into());
         }
+        if cli.osc_in.is_some() {
+            return Err("--osc-in only applies to live playback".into());
+        }
+        if cli.link {
+            return Err("--link only applies to live playback".into());
+        }
     }
-    let midi = cli.midi_config();
+    if cli.link && !cfg!(feature = "link") {
+        return Err(format!(
+            "--link needs Ableton Link support, which this build left out; \
+             reinstall with `{}` (needs CMake and libclang)",
+            LINK_INSTALL
+        )
+        .into());
+    }
+    if cli.audio_devices {
+        println!("System Default (omit --output-device)");
+        for name in audio::output_device_names()? {
+            println!("{name}");
+        }
+        return Ok(());
+    }
+    let options = cli.live_options();
     let bars = cli.bars.unwrap_or(fluid::DEFAULT_AUTO_BARS);
     match cli.command {
         None => match cli.song.as_deref() {
             None => match cli.from {
-                Some(from) => {
-                    fluid::run_auto(bars, from, cli.osc, midi, cli.start_muted, cli.chassis_tap)
-                }
-                None => fluid::run(cli.osc, midi, cli.start_muted, cli.chassis_tap),
+                Some(from) => fluid::run_auto(bars, from, cli.osc, options),
+                None => fluid::run(cli.osc, options),
             },
-            Some(song) => play_song(song, bars, cli.osc, midi, cli.start_muted, cli.chassis_tap),
+            Some(song) => play_song(song, bars, cli.osc, options),
         },
         Some(CliCommand::Update) => update_nooise(),
-        Some(CliCommand::MidiPorts) => midi::list_ports(),
         Some(CliCommand::Render(args)) => render(args),
-        Some(CliCommand::Auto) => fluid::run_auto(
-            bars,
-            cli.from.unwrap_or(1),
-            cli.osc,
-            midi,
-            cli.start_muted,
-            cli.chassis_tap,
-        ),
+        Some(CliCommand::Auto) => fluid::run_auto(bars, cli.from.unwrap_or(1), cli.osc, options),
     }
 }
 
@@ -71,6 +85,17 @@ struct Cli {
     /// A song to play: a built-in number (9), several of them (9,10,11), or a
     /// shared `n1_` code.
     song: Option<String>,
+    /// Select an output device by its exact name; otherwise follow the system default.
+    #[arg(
+        long,
+        global = true,
+        value_name = "NAME",
+        conflicts_with = "audio_devices"
+    )]
+    output_device: Option<String>,
+    /// List current output devices and exit without starting playback.
+    #[arg(long, global = true, conflicts_with = "from")]
+    audio_devices: bool,
     /// Approximate bars per song plus transition, rounded to whole phrases. Defaults to 64.
     #[arg(long, global = true)]
     bars: Option<u32>,
@@ -85,9 +110,9 @@ struct Cli {
     /// and only works on Macs exposing the undocumented SPU accelerometer.
     #[arg(long, global = true)]
     chassis_tap: bool,
-    /// Mirror live telemetry (beat, chord, phrase, kick hits) as OSC over UDP for an
-    /// external visualizer. Bare `--osc` targets 127.0.0.1:9000, foorm's
-    /// default listen address; give ADDR to send elsewhere.
+    /// Mirror live telemetry, voice notes, and UI state as OSC over UDP for an
+    /// external visualizer or bridge (foorm, baton). Bare `--osc` targets
+    /// 127.0.0.1:9000; give ADDR to send elsewhere.
     #[arg(
         long,
         global = true,
@@ -97,21 +122,22 @@ struct Cli {
         require_equals = true
     )]
     osc: Option<SocketAddr>,
-    /// Use one exact-name MIDI port for input and output, both on channel 1.
-    #[arg(long, global = true, value_name = "PORT")]
-    midi: Option<String>,
-    /// Receive MIDI notes from an exactly named input port.
-    #[arg(long, global = true, value_name = "PORT")]
-    midi_in: Option<String>,
-    /// Send MIDI notes and clock to an exactly named output port.
-    #[arg(long, global = true, value_name = "PORT")]
-    midi_out: Option<String>,
-    /// Input MIDI channel (1-16, default 1).
-    #[arg(long, global = true, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=16))]
-    midi_in_channel: u8,
-    /// Output MIDI channel (1-16, default 1).
-    #[arg(long, global = true, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=16))]
-    midi_out_channel: u8,
+    /// Listen for inbound OSC commands and voice notes over UDP. Bare `--osc-in`
+    /// binds 127.0.0.1:9001; give ADDR to listen elsewhere.
+    #[arg(
+        long,
+        global = true,
+        value_name = "ADDR",
+        num_args = 0..=1,
+        default_missing_value = fluid::DEFAULT_OSC_LISTEN,
+        require_equals = true
+    )]
+    osc_in: Option<SocketAddr>,
+    /// Join the Ableton Link session on the local network: shared tempo,
+    /// bar phase, and start/stop with Live and other Link apps. Needs a
+    /// build with `--features link`.
+    #[arg(long, global = true)]
+    link: bool,
 }
 
 impl Cli {
@@ -132,24 +158,38 @@ impl Cli {
         Ok(())
     }
 
-    fn midi_config(&self) -> midi::MidiConfig<'_> {
-        midi::MidiConfig {
-            input: self
-                .midi_in
-                .as_deref()
-                .or(self.midi.as_deref())
-                .map(|name| midi::MidiEndpoint {
-                    name,
-                    channel: self.midi_in_channel,
-                }),
-            output: self
-                .midi_out
-                .as_deref()
-                .or(self.midi.as_deref())
-                .map(|name| midi::MidiEndpoint {
-                    name,
-                    channel: self.midi_out_channel,
-                }),
+    fn validate_output(&self) -> Result<(), clap::Error> {
+        let message = if self.audio_devices && (self.song.is_some() || self.command.is_some()) {
+            Some("--audio-devices lists outputs; use it without a song or subcommand")
+        } else if self.output_device.is_some()
+            && matches!(
+                self.command,
+                Some(CliCommand::Render(_) | CliCommand::Update)
+            )
+        {
+            Some("--output-device only applies to live playback")
+        } else {
+            None
+        };
+        match message {
+            Some(message) => {
+                Err(Self::command().error(clap::error::ErrorKind::ArgumentConflict, message))
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn live_options(&self) -> fluid::LiveStartOptions {
+        fluid::LiveStartOptions {
+            output: self.output_device.clone().map_or(
+                audio::OutputSelection::SystemDefault,
+                audio::OutputSelection::Device,
+            ),
+            start_muted: self.start_muted,
+            chassis_tap: self.chassis_tap,
+            osc_in: self.osc_in,
+            #[cfg(feature = "link")]
+            link: self.link,
         }
     }
 }
@@ -158,8 +198,6 @@ impl Cli {
 enum CliCommand {
     #[command(about = "Update nooise from crates.io", visible_alias = "upgrade")]
     Update,
-    #[command(about = "List available MIDI input and output port names")]
-    MidiPorts,
     #[command(about = "Render the default mix to a wav file")]
     Render(RenderArgs),
     #[command(about = "Morph through every built-in song, forever")]
@@ -191,13 +229,11 @@ fn play_song(
     song: &str,
     bars: u32,
     osc: Option<SocketAddr>,
-    midi: midi::MidiConfig<'_>,
-    start_muted: bool,
-    chassis_tap: bool,
+    options: fluid::LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
     if song.starts_with(fluid::CODE_PREFIX) {
         let state = fluid::decode_song_code(song).map_err(|error| error.to_string())?;
-        return fluid::run_with_song_state(state, osc, midi, start_muted, chassis_tap);
+        return fluid::run_with_song_state(state, osc, options);
     }
     let numbers = song
         .split(',')
@@ -207,7 +243,7 @@ fn play_song(
                 .map_err(|_| format!("{part:?} is neither a song number nor an n1_ code").into())
         })
         .collect::<Result<Vec<usize>, Box<dyn Error>>>()?;
-    fluid::run_songs(&numbers, bars, osc, midi, start_muted, chassis_tap)
+    fluid::run_songs(&numbers, bars, osc, options)
 }
 
 fn update_nooise() -> Result<(), Box<dyn Error>> {
@@ -231,15 +267,23 @@ fn update_nooise() -> Result<(), Box<dyn Error>> {
     }
 }
 
-fn cargo_install_args(version: &str) -> [&str; 6] {
-    [
+const LINK_INSTALL: &str = "cargo install nooise --locked --features link";
+
+/// An update keeps the features this build has, so `nooise update` never
+/// drops Link from a Link build.
+fn cargo_install_args(version: &str) -> Vec<&str> {
+    let mut args = vec![
         "install",
         "nooise",
         "--locked",
         "--version",
         version,
         "--force",
-    ]
+    ];
+    if cfg!(feature = "link") {
+        args.extend(["--features", "link"]);
+    }
+    args
 }
 
 #[cfg(test)]
@@ -270,7 +314,6 @@ mod tests {
             &["4,5", "--from", "2"],
             &["render", "--from", "2"],
             &["update", "--from", "2"],
-            &["midi-ports", "--from", "2"],
         ] {
             assert_eq!(
                 parse(args).unwrap().validate_from().unwrap_err().kind(),
@@ -294,27 +337,65 @@ mod tests {
     }
 
     #[test]
+    fn output_device_is_live_launch_configuration_and_listing_does_not_need_a_song() {
+        for args in [
+            &["--output-device", "BlackHole 2ch", "9"][..],
+            &["9", "--output-device", "BlackHole 2ch"],
+            &["auto", "--output-device", "BlackHole 2ch"],
+        ] {
+            assert_eq!(
+                parse(args).unwrap().live_options().output,
+                crate::audio::OutputSelection::Device("BlackHole 2ch".into())
+            );
+        }
+        assert_eq!(
+            parse(&[]).unwrap().live_options().output,
+            crate::audio::OutputSelection::SystemDefault
+        );
+        assert!(parse(&["--audio-devices"]).unwrap().audio_devices);
+        assert!(parse(&["--output-device"]).is_err());
+        assert!(
+            parse(&["render", "--output-device", "Speakers"])
+                .unwrap()
+                .validate_output()
+                .is_err()
+        );
+        assert!(
+            parse(&["--audio-devices", "9"])
+                .unwrap()
+                .validate_output()
+                .is_err()
+        );
+        assert!(
+            parse(&["auto", "--audio-devices"])
+                .unwrap()
+                .validate_output()
+                .is_err()
+        );
+        assert!(parse(&["--audio-devices", "--output-device", "Speakers"]).is_err());
+    }
+
+    #[test]
     fn no_args_runs_app() {
         let cli = parse(&[]).unwrap();
         assert_eq!(cli.command, None);
         assert_eq!(cli.osc, None);
-        assert_eq!(cli.midi_out, None);
+        assert_eq!(cli.osc_in, None);
         assert!(!cli.start_muted);
+        assert!(!cli.link);
     }
 
     #[test]
-    fn midi_output_name_is_global_and_channel_is_implicitly_one() {
+    fn link_is_a_global_live_flag() {
         for args in [
-            &["--midi-out", "Take 5", "9"][..],
-            &["9", "--midi-out", "Take 5"],
-            &["auto", "--midi-out", "Take 5"],
+            &["--link"][..],
+            &["9", "--link"],
+            &["--link", "9"],
+            &["auto", "--link"],
         ] {
-            assert_eq!(parse(args).unwrap().midi_out.as_deref(), Some("Take 5"));
+            assert!(parse(args).unwrap().link, "{args:?}");
         }
-        assert_eq!(
-            parse(&["midi-ports"]).unwrap().command,
-            Some(CliCommand::MidiPorts)
-        );
+        assert_eq!(parse(&["--link", "9"]).unwrap().song.as_deref(), Some("9"));
     }
 
     #[test]
@@ -326,32 +407,21 @@ mod tests {
     }
 
     #[test]
-    fn midi_flag_selects_both_directions_with_independent_overrides() {
-        let cli = parse(&["--midi", "Take 5"]).unwrap();
-        let config = cli.midi_config();
-        assert_eq!(config.input.unwrap().name, "Take 5");
-        assert_eq!(config.output.unwrap().name, "Take 5");
-        assert_eq!(config.input.unwrap().channel, 1);
-        assert_eq!(config.output.unwrap().channel, 1);
-
-        let cli = parse(&[
-            "auto",
-            "--midi",
-            "Take 5",
-            "--midi-in",
-            "Keyboard",
-            "--midi-in-channel",
-            "2",
-            "--midi-out-channel",
-            "5",
-        ])
-        .unwrap();
-        let config = cli.midi_config();
-        assert_eq!(config.input.unwrap().name, "Keyboard");
-        assert_eq!(config.input.unwrap().channel, 2);
-        assert_eq!(config.output.unwrap().name, "Take 5");
-        assert_eq!(config.output.unwrap().channel, 5);
-        assert!(parse(&["--midi-in-channel", "17"]).is_err());
+    fn osc_in_defaults_to_listen_port_and_accepts_an_address() {
+        let default = "127.0.0.1:9001".parse().ok();
+        for args in [
+            &["--osc-in"][..],
+            &["9", "--osc-in"],
+            &["--osc-in", "9"],
+            &["auto", "--osc-in"],
+        ] {
+            let cli = parse(args).unwrap();
+            assert_eq!(cli.osc_in, default, "{args:?}");
+        }
+        assert_eq!(
+            parse(&["--osc-in=127.0.0.1:9100", "9"]).unwrap().osc_in,
+            "127.0.0.1:9100".parse().ok()
+        );
     }
 
     /// `--osc` is a global: it reads the same before a song, after it, and on
@@ -435,18 +505,19 @@ mod tests {
     }
 
     #[test]
-    fn updater_installs_exact_latest_version() {
-        assert_eq!(
-            cargo_install_args("1.2.3"),
-            [
-                "install",
-                "nooise",
-                "--locked",
-                "--version",
-                "1.2.3",
-                "--force"
-            ]
-        );
+    fn updater_installs_exact_latest_version_with_this_builds_features() {
+        let mut expected = vec![
+            "install",
+            "nooise",
+            "--locked",
+            "--version",
+            "1.2.3",
+            "--force",
+        ];
+        if cfg!(feature = "link") {
+            expected.extend(["--features", "link"]);
+        }
+        assert_eq!(cargo_install_args("1.2.3"), expected);
     }
 
     #[test]

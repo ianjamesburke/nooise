@@ -32,15 +32,13 @@ If a proposed control fails #3 — it's there to let the user manually correct s
 
 ## External gear and persistence
 
-The priority is the computer keyboard workflow, shared musical behavior and persistence, then optional device adapters. Stabilize existing features before the next hardware sprint; APC40 support is wanted soon afterward, while microphone input is actively being explored separately. MIDI, OSC and Ableton Link may extend the same instrument; incoming controls must use the same registry validation and session publication rules as keyboard edits. Physical devices must not become prerequisites for editing or playing a song.
+The priority is the computer keyboard workflow, shared musical behavior and persistence, then optional external adapters. Stabilize existing features before the next hardware sprint; external controller/bridge support connects over OSC, while microphone input is actively being explored separately. Bidirectional OSC (`--osc`, `--osc-in`) and Ableton Link (`--link`) extend the same instrument; incoming OSC controls use the same registry validation and session publication rules as keyboard edits. Physical devices and external bridges must not become prerequisites for editing or playing a song.
 
 | Musical state | Launch or rig configuration |
 | --- | --- |
-| Chords, notes, sound, Master Tune, rhythm, automation, mutes, and chosen evolving state | MIDI ports/channels, per-layer MIDI In/Out, Pad MIDI triggering, MIDI output gate settings, MIDI row visibility, OSC destinations, Link participation, and device mappings |
+| Chords, notes, sound, Master Key, rhythm, automation, mutes, and chosen evolving state | OSC outbound destination (`--osc`), OSC inbound listener (`--osc-in`), Ableton Link participation (`--link`), and external bridge/device mappings |
 
-Recorded musical notes or actions may belong to a future session document even when they originated on a MIDI keyboard. The originating port does not become necessary to replay them internally.
-
-**Implementation gap:** current song codes still save Pad/Arp/Lead MIDI direction, Pad MIDI trigger, Arp/Lead MIDI gate, and MIDI row visibility. Stint 0069 owns moving these settings to launch configuration and the explicit incompatible-code refusal or format cut. Until that change lands, preserve their current decoding; this policy does not authorize silently discarding saved fields. Stint 0065's future song format must use the classification above.
+Recorded musical notes or actions may belong to a future session document even when they originated over OSC. The originating endpoint does not become necessary to replay them internally. All former in-app MIDI controls are retired and refused on song-code decode (`SongCodeError::RetiredControl`), keeping song codes purely musical.
 
 Keep adapters in the same application while a plain launch preserves its sound, first screen, and onboarding. Revisit the boundary if stage work changes that default, needs a persistent setlist/venue interface, or requires gig releases to freeze while the ambient player advances. First extract a shared engine library when one of those pressures becomes concrete; a second application is a separate decision.
 

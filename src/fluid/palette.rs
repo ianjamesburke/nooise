@@ -16,14 +16,16 @@ use super::palette_search::{Query, SearchMetadata, SearchRank};
 
 /// What a palette row does when confirmed.
 ///
-/// Entries derive only from registry/catalog/recipe constants and scope: the
+/// Ordinary entries derive from registry/catalog/recipe constants and scope;
+/// output-picker entries derive from the frozen choices in `PaletteMode`. The
 /// interaction kernel and the renderer each build this list independently and
-/// confirm works by index, so anything that made the list depend on live
-/// controls could desync them and jump to the wrong control. Live state is
+/// confirm works by index, so consulting live hardware or controls while
+/// projecting could desync them and select the wrong target. Live state is
 /// resolved where it exists — in the adapter, and in the value column.
 #[derive(Clone)]
 pub(crate) enum PaletteEntry {
     Operation(Operation),
+    OutputDevice(crate::audio::OutputSelection),
     /// Jump to a control at the tab that natively owns it.
     Control {
         tab: Tab,
@@ -54,6 +56,7 @@ impl PaletteEntry {
     /// entry, for the reason on the enum.
     pub(crate) fn haystack(&self) -> String {
         match self {
+            Self::OutputDevice(selection) => format!("Output Device: {selection}"),
             Self::Operation(operation) => {
                 let spec = operation.spec();
                 format!(
@@ -109,7 +112,7 @@ impl PaletteEntry {
     pub(crate) fn spec(&self) -> Option<&'static ControlSpec> {
         match self {
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => Some(spec),
-            Self::Module { .. } | Self::Operation(_) => None,
+            Self::Module { .. } | Self::Operation(_) | Self::OutputDevice(_) => None,
         }
     }
 
@@ -121,6 +124,7 @@ impl PaletteEntry {
     /// matched against, so it cannot affect indices.
     pub(crate) fn value(&self, c: &FluidControls) -> String {
         match self {
+            Self::OutputDevice(_) => "route audio".to_string(),
             Self::Operation(operation) => match operation {
                 Operation::Motion(_) => "selected knob".to_string(),
                 Operation::Mix(_) => operation.spec().description.to_string(),
@@ -128,17 +132,11 @@ impl PaletteEntry {
                 Operation::PlannedMute => "visible layer".to_string(),
                 Operation::Chord(_) => "selected chord".to_string(),
                 Operation::ToggleAuto => "auto morph".to_string(),
+                Operation::ChordNames(_) => "display".to_string(),
+                Operation::OutputDevice => "routing".to_string(),
+                Operation::ClearSequence => "visible sequence".to_string(),
             },
-            Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => {
-                if super::midi_row_bit(spec.id).is_some_and(|bit| c.midi_rows & bit == 0)
-                    || super::pad_rhythm_row_bit(spec.id)
-                        .is_some_and(|bit| c.hidden_pad_rhythm_rows & bit != 0)
-                {
-                    "add".to_string()
-                } else {
-                    (spec.display)(c)
-                }
-            }
+            Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => (spec.display)(c),
             // A loaded module shows its collapsed row's value, the same
             // knob its page row shows (a Filter's cutoff, not its mix).
             Self::Module { tab, catalog_index } => {
@@ -159,14 +157,12 @@ impl PaletteEntry {
 /// Duplicated placements (e.g. `pad.level` on both Master and Chords) collapse
 /// to the owning tab. Module slot rows are excluded as controls — a module is
 /// reached through its `Module` entry, which knows how to find or create it.
-/// MIDI Trigger is excluded because no page surfaces it; it only decodes.
 pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
     let mut entries: Vec<PaletteEntry> = Vec::new();
     for tab in Tab::all() {
         for (index_in_tab, spec) in tab_specs(tab).iter().enumerate() {
             if tab_owning_control(spec.id) == Some(tab)
                 && parse_module_slot_id(spec.id).is_none()
-                && spec.id != super::PAD_MIDI_TRIGGER_ID
                 && !entries.iter().any(|e| e.id() == Some(spec.id))
             {
                 entries.push(PaletteEntry::Control {
@@ -280,6 +276,7 @@ pub(crate) struct PaletteState {
 impl PaletteState {
     /// `recent` is most-recent-first and intentionally has no usage count:
     /// touching a control again simply promotes it to the front.
+    #[cfg(test)]
     pub(crate) fn new(
         current_tab: Tab,
         recent: &[&'static str],
@@ -309,6 +306,26 @@ impl PaletteState {
         };
         state.recompute();
         state
+    }
+
+    pub(crate) fn output_devices(
+        current_tab: Tab,
+        choices: &[crate::audio::OutputSelection],
+        query: &str,
+    ) -> Self {
+        let mut state = Self::resolve(current_tab, &[], None, "");
+        state.entries = choices
+            .iter()
+            .cloned()
+            .map(PaletteEntry::OutputDevice)
+            .collect();
+        state.query = query.to_string();
+        state.recompute();
+        state
+    }
+
+    pub(crate) fn is_output_picker(&self) -> bool {
+        matches!(self.entries.first(), Some(PaletteEntry::OutputDevice(_)))
     }
 
     pub(crate) fn entry(&self, index: usize) -> &PaletteEntry {
@@ -406,7 +423,7 @@ fn context_rank(
     // A module offered for the page you are on ranks with that page's own
     // controls, so "swing" on Bass reaches Bass before it reaches Tonal.
     let page_index = match palette_entry {
-        PaletteEntry::Operation(_) => None,
+        PaletteEntry::Operation(_) | PaletteEntry::OutputDevice(_) => None,
         PaletteEntry::Module { tab, catalog_index } => {
             (*tab == current_tab).then_some(tab_specs(current_tab).len() + catalog_index)
         }

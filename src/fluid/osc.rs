@@ -1,91 +1,973 @@
-//! Opt-in OSC feed for external visualizers (`nooise --osc 127.0.0.1:9000`).
+//! Opt-in bidirectional OSC feed for external visualizers (`foorm`) and
+//! hardware/surface bridges (`baton`):
+//! `nooise --osc[=ADDR]` and `nooise --osc-in[=ADDR]`.
 //!
-//! A second reader of `FluidTelemetry`: one thread polls the same lock-free
-//! counters the in-terminal visualizer animates from and mirrors every change
-//! to a UDP socket as OSC. The audio thread is untouched, and a consumer that
-//! is absent, slow, or dead can never back-pressure playback — UDP is
-//! fire-and-forget by design, so send errors are dropped, not surfaced.
+//! Outbound: one thread polls `FluidTelemetry`, the shared `OscUiSnapshot`, and
+//! the audio engine's `OscVoiceEvent` channel, mirroring changes to a UDP
+//! socket as OSC bundles. The audio thread never blocks on network I/O, and an
+//! absent, slow, or dead consumer can never back-pressure playback.
 //!
-//! Address vocabulary (the contract consumers like foorm build on):
-//! - `/nooise/beat` `f32` — engine beat position, sent whenever it advances
-//! - `/nooise/level` `f32` — master output RMS, sent whenever it changes;
-//!   zero means silence no matter what the tempo is doing
-//! - `/nooise/voice/<voice>/level` `f32` — that voice's RMS as it enters the
-//!   mix (post effects, mute, and mix weight), for `<voice>` in `VOICES`
-//! - `/nooise/chord` `i32 f32 f32` — the progression table slot (0..8) the
-//!   pad is sounding plus the attack and release seconds of the layer it
-//!   voiced, sent on each chord publication (including opening/restart)
-//! - `/nooise/voice/kick` `f32` — legacy one-message-per-kick hit carrying
-//!   `kick.level` (0 = inaudible)
-//! - `/nooise/hit/<source>` `f32 f32` — one message per Beat, Pad, Perc, Kick,
-//!   Tonal, Clap, or Arp onset. Arguments are that voice's level and pitch
-//!   class (C = 0, B = 11/12); unpitched voices send -1 for pitch class
-//! - `/nooise/chord/change` `i32 f32` — pad progression table slot (0..8)
-//!   and its root pitch class, sent beside the existing `/nooise/chord` feed
-//! - `/nooise/phrase/reset` — no arguments; starts a new Pad phrase epoch on
-//!   initial play, transport restart, progression switch, and morph landing
-//! - `/nooise/phrase` `i32 i32 i32` — zero-based phrase cycle since reset,
-//!   zero-based chord index in the sounding Pad window, and chord count. Sent
-//!   at each Pad chord boundary, after any reset in the same bundle
-//! - `/nooise/chord/span` `f32 f32` — transport beat the sounding chord began
-//!   on and its length in beats, sent whenever either changes (ahead of the
-//!   chord messages it accompanies, so a consumer holds the span when the
-//!   chord arrives). Chord progress is `/nooise/beat` minus the start beat,
-//!   over the length; this also covers a one-chord loop that repeats a slot
-//! - `/nooise/gesture/<gesture>` `f32` — that live gesture's amount over the
-//!   Master bus (0..1), sent whenever it changes, for `<gesture>` in
-//!   `GESTURES`; a visual can rise and return with it. `thin` is retired
-//!   with its gesture and never sent
+//! Inbound: an optional UDP listener parses `/nooise/cmd/*` packets into
+//! semantic UI commands (`OscUiCommand`, drained on the coordinator turn loop)
+//! and low-latency voice note commands (`OscVoiceCommand`, drained on the
+//! audio engine's control tick). Zero hardware-specific or APC40-specific
+//! concepts live here: `nooise` speaks only its own instrument-centric domain
+//! vocabulary.
 
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, encoder};
+use arc_swap::ArcSwap;
+use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
 
+use super::controls::{CHORD_SLOT_COUNT, FluidControls, LEAD_STEP_COUNT};
 use super::gesture::{GESTURE_COUNT, GestureKind};
-use super::registry::{TAB_COUNT, Tab};
-use super::{ChordSpan, FluidTelemetry, MUSICAL_HIT_COUNT, MusicalHit};
+use super::interaction::{InteractionMode, InteractionModel, Navigation};
+use super::planned::PlannedAction;
+use super::registry::{ControlKind, TAB_COUNT, Tab, module_slot_collapsed_id, spec_by_id};
+use super::session::LiveSessionSnapshot;
+use super::view::UiViewModel;
+use super::voice::{
+    ChordWindow, lead_live_step_count, lead_step_tone, pad_voicing, progression_index,
+};
+use super::{ChordSpan, FluidTelemetry, MUSICAL_HIT_COUNT, MusicalHit, Transport};
 
 pub(crate) const ADDR_BEAT: &str = "/nooise/beat";
 pub(crate) const ADDR_LEVEL: &str = "/nooise/level";
 /// Voice names in `Tab` order, minus `Tab::Master` (which is `ADDR_LEVEL`).
+#[cfg(test)]
 pub(crate) const VOICES: [&str; TAB_COUNT - 1] = [
     "pad", "perc", "bass", "kick", "tonal", "clap", "arp", "lead",
 ];
+/// Layer names in `Tab::all()` order, including `"master"` at index 8.
+pub(crate) const LAYERS: [&str; TAB_COUNT] = [
+    "pad", "perc", "bass", "kick", "tonal", "clap", "arp", "lead", "master",
+];
 
-fn level_addr(tab: Tab) -> String {
-    match tab {
-        Tab::Master => ADDR_LEVEL.to_string(),
-        voice => format!("/nooise/voice/{}/level", VOICES[voice as usize]),
+pub(crate) fn layer_name(tab: Tab) -> &'static str {
+    LAYERS[tab as usize]
+}
+
+pub(crate) fn parse_layer_name(name: &str) -> Option<Tab> {
+    let trimmed = name.trim();
+    if trimmed.eq_ignore_ascii_case("master") {
+        Some(Tab::Master)
+    } else if trimmed.eq_ignore_ascii_case("pad")
+        || trimmed.eq_ignore_ascii_case("pads")
+        || trimmed.eq_ignore_ascii_case("chords")
+    {
+        Some(Tab::Chords)
+    } else if trimmed.eq_ignore_ascii_case("perc") {
+        Some(Tab::Perc)
+    } else if trimmed.eq_ignore_ascii_case("bass") {
+        Some(Tab::Bass)
+    } else if trimmed.eq_ignore_ascii_case("kick") {
+        Some(Tab::Kick)
+    } else if trimmed.eq_ignore_ascii_case("tonal") {
+        Some(Tab::Tonal)
+    } else if trimmed.eq_ignore_ascii_case("clap") {
+        Some(Tab::Clap)
+    } else if trimmed.eq_ignore_ascii_case("arp") {
+        Some(Tab::Arp)
+    } else if trimmed.eq_ignore_ascii_case("lead") {
+        Some(Tab::Lead)
+    } else {
+        None
     }
 }
+
+fn level_addr(tab: Tab) -> &'static str {
+    const ADDRESSES: [&str; TAB_COUNT] = [
+        "/nooise/voice/pad/level",
+        "/nooise/voice/perc/level",
+        "/nooise/voice/bass/level",
+        "/nooise/voice/kick/level",
+        "/nooise/voice/tonal/level",
+        "/nooise/voice/clap/level",
+        "/nooise/voice/arp/level",
+        "/nooise/voice/lead/level",
+        ADDR_LEVEL,
+    ];
+    ADDRESSES[tab as usize]
+}
+
 /// Gesture names in `GestureKind::ALL` order.
+#[cfg(test)]
 pub(crate) const GESTURES: [&str; GESTURE_COUNT] = ["bloom", "submerge", "echo", "lift"];
 
-fn gesture_addr(kind: GestureKind) -> String {
-    format!("/nooise/gesture/{}", GESTURES[kind as usize])
+fn gesture_addr(kind: GestureKind) -> &'static str {
+    const ADDRESSES: [&str; GESTURE_COUNT] = [
+        "/nooise/gesture/bloom",
+        "/nooise/gesture/submerge",
+        "/nooise/gesture/echo",
+        "/nooise/gesture/lift",
+    ];
+    ADDRESSES[kind as usize]
 }
+
+pub(crate) fn parse_gesture_name(name: &str) -> Option<GestureKind> {
+    let trimmed = name.trim();
+    if trimmed.eq_ignore_ascii_case("bloom") {
+        Some(GestureKind::Bloom)
+    } else if trimmed.eq_ignore_ascii_case("submerge") {
+        Some(GestureKind::Submerge)
+    } else if trimmed.eq_ignore_ascii_case("echo") {
+        Some(GestureKind::Echo)
+    } else if trimmed.eq_ignore_ascii_case("lift") {
+        Some(GestureKind::Lift)
+    } else {
+        None
+    }
+}
+
 pub(crate) const ADDR_CHORD: &str = "/nooise/chord";
 pub(crate) const ADDR_CHORD_CHANGE: &str = "/nooise/chord/change";
 pub(crate) const ADDR_PHRASE_RESET: &str = "/nooise/phrase/reset";
 pub(crate) const ADDR_PHRASE: &str = "/nooise/phrase";
 pub(crate) const ADDR_CHORD_SPAN: &str = "/nooise/chord/span";
 pub(crate) const ADDR_KICK: &str = "/nooise/voice/kick";
+
+pub(crate) const ADDR_VOICE_PAD_NOTES: &str = "/nooise/voice/pad/notes";
+pub(crate) const ADDR_VOICE_ARP_NOTE: &str = "/nooise/voice/arp/note";
+pub(crate) const ADDR_VOICE_ARP_NOTE_OFF: &str = "/nooise/voice/arp/note_off";
+pub(crate) const ADDR_VOICE_LEAD_NOTE: &str = "/nooise/voice/lead/note";
+pub(crate) const ADDR_VOICE_LEAD_NOTE_OFF: &str = "/nooise/voice/lead/note_off";
+pub(crate) const ADDR_VOICE_BASS_NOTE: &str = "/nooise/voice/bass/note";
+pub(crate) const ADDR_VOICE_BASS_NOTE_OFF: &str = "/nooise/voice/bass/note_off";
+
+pub(crate) const ADDR_STATE_CURSOR: &str = "/nooise/state/cursor";
+pub(crate) const ADDR_STATE_PAGE_ROWS: &str = "/nooise/state/page_rows";
+pub(crate) const ADDR_STATE_PAD_WINDOW: &str = "/nooise/state/pad_window";
+pub(crate) const ADDR_STATE_STEPS: &str = "/nooise/state/steps";
+
+fn state_layer_addr(tab: Tab) -> &'static str {
+    const ADDRESSES: [&str; TAB_COUNT] = [
+        "/nooise/state/layer/pad",
+        "/nooise/state/layer/perc",
+        "/nooise/state/layer/bass",
+        "/nooise/state/layer/kick",
+        "/nooise/state/layer/tonal",
+        "/nooise/state/layer/clap",
+        "/nooise/state/layer/arp",
+        "/nooise/state/layer/lead",
+        "/nooise/state/layer/master",
+    ];
+    ADDRESSES[tab as usize]
+}
+
 /// Names in `MusicalHit::ALL` order. They are part of the OSC contract.
+#[cfg(test)]
 pub(crate) const HIT_NAMES: [&str; MUSICAL_HIT_COUNT] =
     ["beat", "pad", "perc", "kick", "tonal", "clap", "arp"];
 
-fn hit_addr(hit: MusicalHit) -> String {
-    format!("/nooise/hit/{}", HIT_NAMES[hit as usize])
+fn hit_addr(hit: MusicalHit) -> &'static str {
+    const ADDRESSES: [&str; MUSICAL_HIT_COUNT] = [
+        "/nooise/hit/beat",
+        "/nooise/hit/pad",
+        "/nooise/hit/perc",
+        "/nooise/hit/kick",
+        "/nooise/hit/tonal",
+        "/nooise/hit/clap",
+        "/nooise/hit/arp",
+    ];
+    ADDRESSES[hit as usize]
 }
 
-/// How often the emitter samples telemetry. Kick hits are counted, never
-/// missed, but their timestamps carry up to this much jitter.
+/// How often the emitter samples telemetry and state.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+const VOICE_CHANNEL_CAPACITY: usize = 256;
+const UI_CMD_CHANNEL_CAPACITY: usize = 256;
+
+// ============================================================
+// Voiced note helpers and OSC voice event stream
+// ============================================================
+
+/// Up to five MIDI-numbered notes voiced by the Pad at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PadNotes {
+    pub(crate) notes: [u8; 5],
+    pub(crate) len: usize,
+}
+
+impl PadNotes {
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.notes[..self.len]
+    }
+}
+
+pub(crate) fn tuned_note(note: i32, tune_semitones: f32) -> u8 {
+    (note as f32 + tune_semitones).round().clamp(0.0, 127.0) as u8
+}
+
+pub(crate) fn pad_notes_with_count(notes: [i32; 4], count: usize, tune_semitones: f32) -> PadNotes {
+    let (voiced, len) = pad_voicing(notes, count);
+    let mut out = [0u8; 5];
+    for (dst, &src) in out.iter_mut().zip(&voiced[..len]) {
+        *dst = tuned_note(src, tune_semitones);
+    }
+    PadNotes { notes: out, len }
+}
+
+#[cfg(test)]
+pub(crate) fn pad_notes(notes: [i32; 4], tune_semitones: f32) -> PadNotes {
+    pad_notes_with_count(notes, 4, tune_semitones)
+}
+
+/// Musical note/gate events emitted by the pitched voices for external bridges.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum OscVoiceEvent {
+    PadChord(PadNotes),
+    PadOff,
+    ArpNote { note: u8, gate_beats: f32 },
+    ArpOff,
+    LeadNote { note: u8, gate_beats: f32 },
+    LeadOff(u8),
+    BassNote { note: u8, decay_beats: f32 },
+    BassOff,
+}
+
+impl OscVoiceEvent {
+    pub(crate) fn into_message(self) -> OscMessage {
+        match self {
+            Self::PadChord(notes) => message(
+                ADDR_VOICE_PAD_NOTES,
+                notes
+                    .as_slice()
+                    .iter()
+                    .map(|&n| OscType::Int(i32::from(n)))
+                    .collect(),
+            ),
+            Self::PadOff => message(ADDR_VOICE_PAD_NOTES, vec![]),
+            Self::ArpNote { note, gate_beats } => message(
+                ADDR_VOICE_ARP_NOTE,
+                vec![OscType::Int(i32::from(note)), OscType::Float(gate_beats)],
+            ),
+            Self::ArpOff => message(ADDR_VOICE_ARP_NOTE_OFF, vec![]),
+            Self::LeadNote { note, gate_beats } => message(
+                ADDR_VOICE_LEAD_NOTE,
+                vec![OscType::Int(i32::from(note)), OscType::Float(gate_beats)],
+            ),
+            Self::LeadOff(note) => message(
+                ADDR_VOICE_LEAD_NOTE_OFF,
+                vec![OscType::Int(i32::from(note))],
+            ),
+            Self::BassNote { note, decay_beats } => message(
+                ADDR_VOICE_BASS_NOTE,
+                vec![OscType::Int(i32::from(note)), OscType::Float(decay_beats)],
+            ),
+            Self::BassOff => message(ADDR_VOICE_BASS_NOTE_OFF, vec![]),
+        }
+    }
+}
+
+/// Non-blocking sender held by the audio engine's pitched voices.
+#[derive(Clone, Default)]
+pub(crate) struct OscVoiceSink {
+    sender: Option<SyncSender<OscVoiceEvent>>,
+}
+
+impl OscVoiceSink {
+    pub(crate) fn channel() -> (Self, Receiver<OscVoiceEvent>) {
+        let (sender, receiver) = mpsc::sync_channel(VOICE_CHANNEL_CAPACITY);
+        (
+            Self {
+                sender: Some(sender),
+            },
+            receiver,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_channel() -> (Self, Receiver<OscVoiceEvent>) {
+        Self::channel()
+    }
+
+    pub(crate) fn is_attached(&self) -> bool {
+        self.sender.is_some()
+    }
+
+    pub(crate) fn send(&self, event: OscVoiceEvent) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.try_send(event);
+        }
+    }
+}
+
+// ============================================================
+// Outbound UI/session state snapshot
+// ============================================================
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OscCursorState {
+    pub(crate) tab: Tab,
+    pub(crate) row_index: usize,
+    pub(crate) browsing: bool,
+    pub(crate) playing: bool,
+    pub(crate) auto: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OscLayerState {
+    pub(crate) level_ratio: f32,
+    pub(crate) muted: bool,
+    pub(crate) first_module_label: String,
+    pub(crate) first_module_ratio: f32,
+    pub(crate) first_module_discrete: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OscPageRow {
+    pub(crate) index: usize,
+    pub(crate) id: &'static str,
+    pub(crate) label: String,
+    pub(crate) ratio: f32,
+    pub(crate) discrete: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OscPadWindowState {
+    pub(crate) progression_index: usize,
+    pub(crate) chord_count: usize,
+    pub(crate) chord_offset: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OscStepsState {
+    pub(crate) pad_steps: [u8; CHORD_SLOT_COUNT],
+    pub(crate) lead_step_count: usize,
+    pub(crate) lead_steps: [u8; LEAD_STEP_COUNT],
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OscUiSnapshot {
+    pub(crate) cursor: OscCursorState,
+    pub(crate) layers: [OscLayerState; TAB_COUNT],
+    pub(crate) page_rows: Vec<OscPageRow>,
+    pub(crate) pad_window: OscPadWindowState,
+    pub(crate) steps: OscStepsState,
+    planned: Option<PlannedAction>,
+}
+
+pub(crate) type SharedOscUiState = Arc<ArcSwap<Option<OscUiSnapshot>>>;
+
+pub(crate) fn new_shared_osc_ui_state() -> SharedOscUiState {
+    Arc::new(ArcSwap::from_pointee(None))
+}
+
+/// Retains the publication key, allocating only after an input changes.
+#[derive(Default)]
+pub(crate) struct OscUiPublisher {
+    key: Option<OscUiKey>,
+}
+
+struct OscUiKey {
+    navigation: Navigation,
+    mode: InteractionMode,
+    generation: u64,
+    auto_active: bool,
+}
+
+impl OscUiPublisher {
+    pub(crate) fn publish(
+        &mut self,
+        shared: &SharedOscUiState,
+        model: &InteractionModel,
+        session: &LiveSessionSnapshot,
+        view: &UiViewModel,
+        auto_active: bool,
+    ) {
+        if self.key.as_ref().is_some_and(|key| {
+            key.navigation == model.navigation
+                && key.mode == model.mode
+                && key.generation == session.generation
+                && key.auto_active == auto_active
+        }) {
+            return;
+        }
+        shared.store(Arc::new(Some(OscUiSnapshot::capture(
+            model,
+            session,
+            view,
+            auto_active,
+        ))));
+        self.key = Some(OscUiKey {
+            navigation: model.navigation,
+            mode: model.mode.clone(),
+            generation: session.generation,
+            auto_active,
+        });
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct UiPlayback {
+    planned_beats: [f32; TAB_COUNT],
+    active_slot: usize,
+}
+
+impl UiPlayback {
+    fn at(snapshot: &OscUiSnapshot, beat: f64, active_chord: u64) -> Self {
+        let mut planned_beats = [0.0; TAB_COUNT];
+        if let Some(PlannedAction::Mute { tab, target_beat }) = snapshot.planned {
+            planned_beats[tab as usize] = (target_beat - beat).max(0.0) as f32;
+        }
+        Self {
+            planned_beats,
+            active_slot: active_chord as usize % CHORD_SLOT_COUNT,
+        }
+    }
+}
+
+fn layer_level_ratio(tab: Tab, controls: &FluidControls) -> f32 {
+    let Some(spec) = tab.level_id().and_then(spec_by_id) else {
+        return 0.0;
+    };
+    spec.ratio((spec.get)(controls), controls)
+}
+
+fn first_module_summary(tab: Tab, controls: &FluidControls) -> (String, f32, bool) {
+    let Some(slots) = controls.modules.for_tab(tab) else {
+        return (String::new(), 0.0, false);
+    };
+    for (slot_idx, slot) in slots.iter().enumerate() {
+        if slot.kind().is_some()
+            && let Some(id) = module_slot_collapsed_id(tab, slot_idx, controls)
+            && let Some(spec) = spec_by_id(id)
+        {
+            let contextual = spec.contextual(controls);
+            let value = (spec.get)(controls);
+            let is_discrete = matches!(contextual.kind, ControlKind::Discrete);
+            return (id.to_string(), contextual.scale().ratio(value), is_discrete);
+        }
+    }
+    (String::new(), 0.0, false)
+}
+
+impl OscUiSnapshot {
+    pub(crate) fn capture(
+        model: &InteractionModel,
+        session: &LiveSessionSnapshot,
+        view: &UiViewModel,
+        auto_active: bool,
+    ) -> Self {
+        let cursor = OscCursorState {
+            tab: view.navigation.tab,
+            row_index: view.navigation.selected,
+            browsing: matches!(model.mode, InteractionMode::Browsing),
+            playing: session.transport == Transport::Playing,
+            auto: auto_active,
+        };
+        let layers = std::array::from_fn(|index| {
+            let tab = Tab::all()[index];
+            let (first_module_label, first_module_ratio, first_module_discrete) =
+                first_module_summary(tab, &session.controls);
+            OscLayerState {
+                level_ratio: layer_level_ratio(tab, &session.controls),
+                muted: session.muted[index],
+                first_module_label,
+                first_module_ratio,
+                first_module_discrete,
+            }
+        });
+        let page_rows = view
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let (ratio, discrete) = spec_by_id(item.id).map_or((0.0, false), |spec| {
+                    let contextual = spec.contextual(&session.controls);
+                    let value = (spec.get)(&session.controls);
+                    let is_discrete = matches!(contextual.kind, ControlKind::Discrete);
+                    (contextual.scale().ratio(value), is_discrete)
+                });
+                OscPageRow {
+                    index,
+                    id: item.id,
+                    label: item.label.clone(),
+                    ratio,
+                    discrete,
+                }
+            })
+            .collect();
+        let window = ChordWindow::requested(&session.controls.pad);
+        let pad_window = OscPadWindowState {
+            progression_index: progression_index(session.controls.pad.progression),
+            chord_count: window.count,
+            chord_offset: window.offset,
+        };
+        let pad_steps = std::array::from_fn(|i| {
+            u8::from(
+                !session
+                    .controls
+                    .pad
+                    .chord_slot(window.progression, i)
+                    .is_rest(),
+            )
+        });
+        let lead_step_count = lead_live_step_count(session.controls.lead.step_count);
+        let lead_steps = std::array::from_fn(|i| {
+            lead_step_tone(session.controls.lead.steps[i]).unwrap_or(0) as u8
+        });
+        Self {
+            cursor,
+            layers,
+            page_rows,
+            pad_window,
+            planned: session.planned,
+            steps: OscStepsState {
+                pad_steps,
+                lead_step_count,
+                lead_steps,
+            },
+        }
+    }
+
+    fn diff_at(
+        &self,
+        previous: Option<&Self>,
+        playback: UiPlayback,
+        old: Option<UiPlayback>,
+    ) -> Vec<OscMessage> {
+        let mut out = Vec::new();
+        if previous.map(|p| &p.cursor) != Some(&self.cursor) {
+            out.push(message(
+                ADDR_STATE_CURSOR,
+                vec![
+                    OscType::String(layer_name(self.cursor.tab).to_string()),
+                    OscType::Int(self.cursor.row_index as i32),
+                    OscType::Int(i32::from(self.cursor.browsing)),
+                    OscType::Int(i32::from(self.cursor.playing)),
+                    OscType::Int(i32::from(self.cursor.auto)),
+                ],
+            ));
+        }
+        for (index, tab) in Tab::all().into_iter().enumerate() {
+            let layer = &self.layers[index];
+            if previous.map(|p| &p.layers[index]) != Some(layer)
+                || old.map(|p| p.planned_beats[index]) != Some(playback.planned_beats[index])
+            {
+                out.push(message(
+                    state_layer_addr(tab),
+                    vec![
+                        OscType::Float(layer.level_ratio),
+                        OscType::Int(i32::from(layer.muted)),
+                        OscType::Float(playback.planned_beats[index]),
+                        OscType::String(layer.first_module_label.clone()),
+                        OscType::Float(layer.first_module_ratio),
+                        OscType::Int(i32::from(layer.first_module_discrete)),
+                    ],
+                ));
+            }
+        }
+        if previous.map(|p| &p.page_rows) != Some(&self.page_rows) {
+            let mut args = Vec::with_capacity(self.page_rows.len() * 5);
+            for row in &self.page_rows {
+                args.push(OscType::Int(row.index as i32));
+                args.push(OscType::String(row.id.to_string()));
+                args.push(OscType::String(row.label.clone()));
+                args.push(OscType::Float(row.ratio));
+                args.push(OscType::Int(i32::from(row.discrete)));
+            }
+            out.push(message(ADDR_STATE_PAGE_ROWS, args));
+        }
+        if previous.map(|p| &p.pad_window) != Some(&self.pad_window)
+            || old.map(|p| p.active_slot) != Some(playback.active_slot)
+        {
+            out.push(message(
+                ADDR_STATE_PAD_WINDOW,
+                vec![
+                    OscType::Int(self.pad_window.progression_index as i32),
+                    OscType::Int(self.pad_window.chord_count as i32),
+                    OscType::Int(self.pad_window.chord_offset as i32),
+                    OscType::Int(playback.active_slot as i32),
+                ],
+            ));
+        }
+        if previous.map(|p| &p.steps) != Some(&self.steps) {
+            let mut args = Vec::with_capacity(CHORD_SLOT_COUNT + 1 + LEAD_STEP_COUNT);
+            for &step in &self.steps.pad_steps {
+                args.push(OscType::Int(i32::from(step)));
+            }
+            args.push(OscType::Int(self.steps.lead_step_count as i32));
+            for &step in &self.steps.lead_steps {
+                args.push(OscType::Int(i32::from(step)));
+            }
+            out.push(message(ADDR_STATE_STEPS, args));
+        }
+        out
+    }
+}
+
+// ============================================================
+// Inbound OSC commands and receiver
+// ============================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OscTransportCmd {
+    Play,
+    Stop,
+    Toggle,
+}
+
+/// Semantic UI/control command received over OSC.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum OscUiCommand {
+    ControlRatio { id: String, ratio: f32 },
+    ControlValue { id: String, value: f32 },
+    ControlDelta { id: String, steps: f32 },
+    NavLayer(Tab),
+    NavRow(usize),
+    NavMove(i32),
+    NavPage(i32),
+    NavTouch,
+    NavCancel,
+    NavAdjust { steps: i32 },
+    MuteToggle(Tab),
+    MuteSet { tab: Tab, muted: bool },
+    MutePlan(Tab),
+    Gesture { kind: GestureKind, active: bool },
+    GestureReleaseAll,
+    Transport(OscTransportCmd),
+    AutoToggle,
+    MotionGrab(u8),
+}
+
+/// Low-latency voice command received over OSC and routed to the audio engine.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum OscVoiceCommand {
+    PadNoteOn(u8),
+    PadNoteOff(u8),
+    PadNotes(Vec<u8>),
+    ArpNoteOn(u8),
+    ArpNoteOff(u8),
+    ArpNotes(Vec<u8>),
+    LeadNoteOn(u8),
+    LeadNoteOff(u8),
+    BassNoteOn(u8),
+    KickTrigger(f32),
+    AllNotesOff,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum OscInboundCommand {
+    Ui(OscUiCommand),
+    Voice(OscVoiceCommand),
+}
+
+/// Non-blocking receiver held by `FluidEngine` for inbound voice commands.
+#[derive(Clone, Default)]
+pub(crate) struct OscVoiceSource {
+    receiver: Option<Arc<Mutex<Receiver<OscVoiceCommand>>>>,
+}
+
+impl OscVoiceSource {
+    pub(crate) fn channel() -> (SyncSender<OscVoiceCommand>, Self) {
+        let (sender, receiver) = mpsc::sync_channel(VOICE_CHANNEL_CAPACITY);
+        (
+            sender,
+            Self {
+                receiver: Some(Arc::new(Mutex::new(receiver))),
+            },
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_channel() -> (Self, SyncSender<OscVoiceCommand>) {
+        let (sender, source) = Self::channel();
+        (source, sender)
+    }
+
+    pub(crate) fn try_recv(&self) -> Option<OscVoiceCommand> {
+        self.receiver
+            .as_ref()
+            .and_then(|rx| rx.try_lock().ok()?.try_recv().ok())
+    }
+}
+
+fn osc_f32(arg: &OscType) -> Option<f32> {
+    match arg {
+        OscType::Float(v) => Some(*v),
+        OscType::Double(v) => Some(*v as f32),
+        OscType::Int(v) => Some(*v as f32),
+        OscType::Long(v) => Some(*v as f32),
+        _ => None,
+    }
+}
+
+fn osc_i32(arg: &OscType) -> Option<i32> {
+    match arg {
+        OscType::Int(v) => Some(*v),
+        OscType::Long(v) => Some(*v as i32),
+        OscType::Float(v) => Some(v.round() as i32),
+        OscType::Double(v) => Some(v.round() as i32),
+        _ => None,
+    }
+}
+
+fn osc_str(arg: &OscType) -> Option<&str> {
+    match arg {
+        OscType::String(s) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+fn osc_u8_note(arg: &OscType) -> Option<u8> {
+    osc_i32(arg)
+        .and_then(|n| u8::try_from(n).ok())
+        .filter(|&n| n < 128)
+}
+
+pub(crate) fn parse_inbound_message(msg: &OscMessage) -> Option<OscInboundCommand> {
+    match msg.addr.as_str() {
+        "/nooise/cmd/control/ratio" => {
+            let id = osc_str(msg.args.first()?)?.to_string();
+            let ratio = osc_f32(msg.args.get(1)?)?;
+            Some(OscInboundCommand::Ui(OscUiCommand::ControlRatio {
+                id,
+                ratio,
+            }))
+        }
+        "/nooise/cmd/control/value" => {
+            let id = osc_str(msg.args.first()?)?.to_string();
+            let value = osc_f32(msg.args.get(1)?)?;
+            Some(OscInboundCommand::Ui(OscUiCommand::ControlValue {
+                id,
+                value,
+            }))
+        }
+        "/nooise/cmd/control/delta" => {
+            let id = osc_str(msg.args.first()?)?.to_string();
+            let steps = osc_f32(msg.args.get(1)?)?;
+            Some(OscInboundCommand::Ui(OscUiCommand::ControlDelta {
+                id,
+                steps,
+            }))
+        }
+        "/nooise/cmd/nav/layer" => {
+            let tab = parse_layer_name(osc_str(msg.args.first()?)?)?;
+            Some(OscInboundCommand::Ui(OscUiCommand::NavLayer(tab)))
+        }
+        "/nooise/cmd/nav/row" => {
+            let row = osc_i32(msg.args.first()?)?.max(0) as usize;
+            Some(OscInboundCommand::Ui(OscUiCommand::NavRow(row)))
+        }
+        "/nooise/cmd/nav/move" => {
+            let delta = osc_i32(msg.args.first()?)?;
+            Some(OscInboundCommand::Ui(OscUiCommand::NavMove(delta)))
+        }
+        "/nooise/cmd/nav/page" => {
+            let delta = osc_i32(msg.args.first()?)?;
+            Some(OscInboundCommand::Ui(OscUiCommand::NavPage(delta)))
+        }
+        "/nooise/cmd/nav/touch" => Some(OscInboundCommand::Ui(OscUiCommand::NavTouch)),
+        "/nooise/cmd/nav/cancel" => Some(OscInboundCommand::Ui(OscUiCommand::NavCancel)),
+        "/nooise/cmd/nav/adjust" => {
+            let steps = osc_i32(msg.args.first()?)?;
+            Some(OscInboundCommand::Ui(OscUiCommand::NavAdjust { steps }))
+        }
+        "/nooise/cmd/mute/toggle" => {
+            let tab = parse_layer_name(osc_str(msg.args.first()?)?)?;
+            Some(OscInboundCommand::Ui(OscUiCommand::MuteToggle(tab)))
+        }
+        "/nooise/cmd/mute/set" => {
+            let tab = parse_layer_name(osc_str(msg.args.first()?)?)?;
+            let muted = osc_i32(msg.args.get(1)?)? != 0;
+            Some(OscInboundCommand::Ui(OscUiCommand::MuteSet { tab, muted }))
+        }
+        "/nooise/cmd/mute/plan" => {
+            let tab = parse_layer_name(osc_str(msg.args.first()?)?)?;
+            Some(OscInboundCommand::Ui(OscUiCommand::MutePlan(tab)))
+        }
+        "/nooise/cmd/gesture" => {
+            let kind = parse_gesture_name(osc_str(msg.args.first()?)?)?;
+            let active = osc_i32(msg.args.get(1)?)? != 0;
+            Some(OscInboundCommand::Ui(OscUiCommand::Gesture {
+                kind,
+                active,
+            }))
+        }
+        "/nooise/cmd/gesture/release_all" => {
+            Some(OscInboundCommand::Ui(OscUiCommand::GestureReleaseAll))
+        }
+        "/nooise/cmd/transport" => {
+            let cmd = match osc_str(msg.args.first()?)?.trim() {
+                s if s.eq_ignore_ascii_case("play") || s.eq_ignore_ascii_case("start") => {
+                    OscTransportCmd::Play
+                }
+                s if s.eq_ignore_ascii_case("stop") => OscTransportCmd::Stop,
+                s if s.eq_ignore_ascii_case("toggle") => OscTransportCmd::Toggle,
+                _ => return None,
+            };
+            Some(OscInboundCommand::Ui(OscUiCommand::Transport(cmd)))
+        }
+        "/nooise/cmd/auto/toggle" => Some(OscInboundCommand::Ui(OscUiCommand::AutoToggle)),
+        "/nooise/cmd/motion/grab" => {
+            let raw = osc_i32(msg.args.first()?)?;
+            let length_beats = match raw {
+                1 | 4 => 4,
+                2 | 8 => 8,
+                16 => 16,
+                32 => 32,
+                _ => return None,
+            };
+            Some(OscInboundCommand::Ui(OscUiCommand::MotionGrab(
+                length_beats,
+            )))
+        }
+        "/nooise/cmd/voice/pad/note_on" => {
+            let note = osc_u8_note(msg.args.first()?)?;
+            Some(OscInboundCommand::Voice(OscVoiceCommand::PadNoteOn(note)))
+        }
+        "/nooise/cmd/voice/pad/note_off" => {
+            let note = osc_u8_note(msg.args.first()?)?;
+            Some(OscInboundCommand::Voice(OscVoiceCommand::PadNoteOff(note)))
+        }
+        "/nooise/cmd/voice/pad/notes" => {
+            let notes: Vec<u8> = msg.args.iter().filter_map(osc_u8_note).collect();
+            Some(OscInboundCommand::Voice(OscVoiceCommand::PadNotes(notes)))
+        }
+        "/nooise/cmd/voice/arp/note_on" => {
+            let note = osc_u8_note(msg.args.first()?)?;
+            Some(OscInboundCommand::Voice(OscVoiceCommand::ArpNoteOn(note)))
+        }
+        "/nooise/cmd/voice/arp/note_off" => {
+            let note = osc_u8_note(msg.args.first()?)?;
+            Some(OscInboundCommand::Voice(OscVoiceCommand::ArpNoteOff(note)))
+        }
+        "/nooise/cmd/voice/arp/notes" => {
+            let notes: Vec<u8> = msg.args.iter().filter_map(osc_u8_note).collect();
+            Some(OscInboundCommand::Voice(OscVoiceCommand::ArpNotes(notes)))
+        }
+        "/nooise/cmd/voice/lead/note_on" => {
+            let note = osc_u8_note(msg.args.first()?)?;
+            Some(OscInboundCommand::Voice(OscVoiceCommand::LeadNoteOn(note)))
+        }
+        "/nooise/cmd/voice/lead/note_off" => {
+            let note = osc_u8_note(msg.args.first()?)?;
+            Some(OscInboundCommand::Voice(OscVoiceCommand::LeadNoteOff(note)))
+        }
+        "/nooise/cmd/voice/bass/note_on" => {
+            let note = osc_u8_note(msg.args.first()?)?;
+            Some(OscInboundCommand::Voice(OscVoiceCommand::BassNoteOn(note)))
+        }
+        "/nooise/cmd/voice/kick/trigger" => {
+            let velocity = msg
+                .args
+                .first()
+                .and_then(osc_f32)
+                .unwrap_or(1.0)
+                .clamp(0.0, 2.0);
+            Some(OscInboundCommand::Voice(OscVoiceCommand::KickTrigger(
+                velocity,
+            )))
+        }
+        "/nooise/cmd/voice/all_notes_off" => {
+            Some(OscInboundCommand::Voice(OscVoiceCommand::AllNotesOff))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn parse_inbound_packet(packet: OscPacket, out: &mut Vec<OscInboundCommand>) {
+    match packet {
+        OscPacket::Message(msg) => {
+            if let Some(cmd) = parse_inbound_message(&msg) {
+                out.push(cmd);
+            }
+        }
+        OscPacket::Bundle(bundle) => {
+            for item in bundle.content {
+                parse_inbound_packet(item, out);
+            }
+        }
+    }
+}
+
+/// Owns the inbound UDP listener thread and the UI command receiver.
+pub(crate) struct OscReceiver {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+    ui_rx: Receiver<OscUiCommand>,
+    voice_source: OscVoiceSource,
+}
+
+impl OscReceiver {
+    pub(crate) fn spawn(listen: SocketAddr) -> io::Result<Self> {
+        let socket = UdpSocket::bind(listen)
+            .map_err(|e| io::Error::new(e.kind(), format!("osc-in: bind {listen} failed: {e}")))?;
+        socket.set_read_timeout(Some(Duration::from_millis(20)))?;
+        println!("listening for OSC commands on {listen}");
+        let (ui_tx, ui_rx) = mpsc::sync_channel(UI_CMD_CHANNEL_CAPACITY);
+        let (voice_tx, voice_source) = OscVoiceSource::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = Arc::clone(&stop);
+        let handle = thread::Builder::new()
+            .name("nooise-osc-in".into())
+            .spawn(move || recv_loop(socket, ui_tx, voice_tx, &stop_for_thread))?;
+        Ok(Self {
+            stop,
+            handle: Some(handle),
+            ui_rx,
+            voice_source,
+        })
+    }
+
+    pub(crate) fn voice_source(&self) -> OscVoiceSource {
+        self.voice_source.clone()
+    }
+
+    pub(crate) fn drain_ui(&self) -> Vec<OscUiCommand> {
+        self.ui_rx.try_iter().collect()
+    }
+}
+
+impl Drop for OscReceiver {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn recv_loop(
+    socket: UdpSocket,
+    ui_tx: SyncSender<OscUiCommand>,
+    voice_tx: SyncSender<OscVoiceCommand>,
+    stop: &AtomicBool,
+) {
+    let mut buf = [0u8; 4096];
+    let mut parsed = Vec::new();
+    while !stop.load(Ordering::Relaxed) {
+        let Ok((len, _)) = socket.recv_from(&mut buf) else {
+            continue;
+        };
+        let Ok((_, packet)) = decoder::decode_udp(&buf[..len]) else {
+            continue;
+        };
+        parsed.clear();
+        parse_inbound_packet(packet, &mut parsed);
+        for cmd in parsed.drain(..) {
+            match cmd {
+                OscInboundCommand::Ui(ui) => {
+                    let _ = ui_tx.try_send(ui);
+                }
+                OscInboundCommand::Voice(voice) => {
+                    let _ = voice_tx.try_send(voice);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// Outbound OSC emitter
+// ============================================================
 
 /// Owns the emitter thread; dropping it stops the feed.
 pub(crate) struct OscEmitter {
@@ -94,7 +976,17 @@ pub(crate) struct OscEmitter {
 }
 
 impl OscEmitter {
+    #[cfg(test)]
     pub(crate) fn spawn(target: SocketAddr, telemetry: Arc<FluidTelemetry>) -> io::Result<Self> {
+        Self::spawn_full(target, telemetry, None, None)
+    }
+
+    pub(crate) fn spawn_full(
+        target: SocketAddr,
+        telemetry: Arc<FluidTelemetry>,
+        ui_state: Option<SharedOscUiState>,
+        voice_rx: Option<Receiver<OscVoiceEvent>>,
+    ) -> io::Result<Self> {
         let bind: SocketAddr = if target.is_ipv4() {
             "0.0.0.0:0".parse().expect("static v4 bind address")
         } else {
@@ -110,7 +1002,17 @@ impl OscEmitter {
         let mirrored = Mirrored::from(&telemetry);
         let handle = thread::Builder::new()
             .name("nooise-osc".into())
-            .spawn(move || emit_loop(&socket, target, &telemetry, mirrored, &stop_for_thread))?;
+            .spawn(move || {
+                emit_loop(
+                    &socket,
+                    target,
+                    &telemetry,
+                    ui_state.as_ref(),
+                    voice_rx.as_ref(),
+                    mirrored,
+                    &stop_for_thread,
+                )
+            })?;
         Ok(Self {
             stop,
             handle: Some(handle),
@@ -209,7 +1111,7 @@ impl Mirrored {
         {
             if new != old {
                 out.push(message(
-                    &level_addr(tab),
+                    level_addr(tab),
                     vec![OscType::Float(f32::from_bits(*new))],
                 ));
             }
@@ -220,7 +1122,7 @@ impl Mirrored {
         {
             if new != old {
                 out.push(message(
-                    &gesture_addr(kind),
+                    gesture_addr(kind),
                     vec![OscType::Float(f32::from_bits(*new))],
                 ));
             }
@@ -271,7 +1173,7 @@ impl Mirrored {
             let index = hit as usize;
             for _ in self.hit_pulses[index]..now.hit_pulses[index] {
                 out.push(message(
-                    &hit_addr(hit),
+                    hit_addr(hit),
                     vec![
                         OscType::Float(f32::from_bits(now.hit_level_bits[index])),
                         OscType::Float(f32::from_bits(now.hit_pitch_class_bits[index])),
@@ -295,11 +1197,52 @@ fn emit_loop(
     socket: &UdpSocket,
     target: SocketAddr,
     telemetry: &FluidTelemetry,
+    ui_state: Option<&SharedOscUiState>,
+    voice_rx: Option<&Receiver<OscVoiceEvent>>,
     mut mirrored: Mirrored,
     stop: &AtomicBool,
 ) {
+    let mut last_ui: Option<Arc<Option<OscUiSnapshot>>> = None;
+    let mut last_playback = None;
+    let mut last_full_ui = Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        let messages = mirrored.diff(telemetry);
+        let full = last_full_ui.elapsed() >= Duration::from_millis(500);
+        if full {
+            last_full_ui = Instant::now();
+        }
+        let mut messages = mirrored.diff(telemetry);
+        if let Some(rx) = voice_rx {
+            for event in rx.try_iter() {
+                messages.push(event.into_message());
+            }
+        }
+        if let Some(shared) = ui_state {
+            let current = shared.load_full();
+            if let Some(snapshot) = current.as_ref() {
+                let playback = UiPlayback::at(
+                    snapshot,
+                    telemetry.beat(),
+                    telemetry.chord_slot.load(Ordering::Relaxed),
+                );
+                let changed = last_ui
+                    .as_ref()
+                    .is_none_or(|last| !Arc::ptr_eq(last, &current));
+                if full || changed || last_playback != Some(playback) {
+                    let previous = if full {
+                        None
+                    } else {
+                        last_ui.as_ref().and_then(|last| last.as_ref().as_ref())
+                    };
+                    messages.extend(snapshot.diff_at(
+                        previous,
+                        playback,
+                        if full { None } else { last_playback },
+                    ));
+                    last_playback = Some(playback);
+                    last_ui = Some(current);
+                }
+            }
+        }
         if !messages.is_empty() {
             let bundle = OscPacket::Bundle(OscBundle {
                 timetag: OscTime::from((0, 1)),
@@ -316,8 +1259,139 @@ fn emit_loop(
 
 #[cfg(test)]
 mod tests {
+    fn publish_ui(
+        publisher: &mut OscUiPublisher,
+        shared: &SharedOscUiState,
+        model: &InteractionModel,
+        session: &LiveSessionSnapshot,
+    ) {
+        use crate::fluid::*;
+        let fluid = RippleField::new();
+        let flipped = FlippedUnits::new();
+        let view = UiViewModel::project(ViewProjection {
+            interaction: model,
+            session,
+            telemetry: TelemetryView::default(),
+            presentation: ViewPresentation {
+                fluid: &fluid,
+                flipped: &flipped,
+                cursor_visible: true,
+                notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
+            },
+        });
+        publisher.publish(shared, model, session, &view, false);
+    }
+
+    #[test]
+    fn ui_publication_reuses_arc_until_navigation_mode_or_generation_changes() {
+        let shared = new_shared_osc_ui_state();
+        let mut publisher = OscUiPublisher::default();
+        let mut model = InteractionModel::default();
+        let mut session = LiveSessionSnapshot::from_controls(FluidControls::default());
+        publish_ui(&mut publisher, &shared, &model, &session);
+        let mut previous = shared.load_full();
+        for _ in 0..100 {
+            publish_ui(&mut publisher, &shared, &model, &session);
+            assert!(Arc::ptr_eq(&previous, &shared.load_full()));
+        }
+        model.navigation = Navigation::Chords {
+            selected: 0,
+            drill: super::super::interaction::ChordDrill::None,
+        };
+        publish_ui(&mut publisher, &shared, &model, &session);
+        assert!(!Arc::ptr_eq(&previous, &shared.load_full()));
+        previous = shared.load_full();
+        model.mode = InteractionMode::Help;
+        publish_ui(&mut publisher, &shared, &model, &session);
+        assert!(!Arc::ptr_eq(&previous, &shared.load_full()));
+        previous = shared.load_full();
+        session.generation += 1;
+        session.muted[Tab::Kick as usize] = true;
+        publish_ui(&mut publisher, &shared, &model, &session);
+        assert!(!Arc::ptr_eq(&previous, &shared.load_full()));
+        assert!(shared.load().as_ref().as_ref().unwrap().layers[Tab::Kick as usize].muted);
+    }
+
+    #[test]
+    fn cached_ui_keeps_countdown_and_chord_live_without_republishing() {
+        let shared = new_shared_osc_ui_state();
+        let mut publisher = OscUiPublisher::default();
+        let model = InteractionModel::default();
+        let mut session = LiveSessionSnapshot::from_controls(FluidControls::default());
+        session.planned = Some(PlannedAction::Mute {
+            tab: Tab::Kick,
+            target_beat: 8.0,
+        });
+        publish_ui(&mut publisher, &shared, &model, &session);
+        let published = shared.load_full();
+        let snapshot = published.as_ref().as_ref().unwrap();
+        let before = UiPlayback::at(snapshot, 4.0, 0);
+        let after = UiPlayback::at(snapshot, 5.0, 2);
+        let messages = snapshot.diff_at(Some(snapshot), after, Some(before));
+        assert_eq!(messages.len(), 2);
+        let layer = messages
+            .iter()
+            .find(|m| m.addr == state_layer_addr(Tab::Kick))
+            .unwrap();
+        assert_eq!(layer.args[2], OscType::Float(3.0));
+        let window = messages
+            .iter()
+            .find(|m| m.addr == ADDR_STATE_PAD_WINDOW)
+            .unwrap();
+        assert_eq!(window.args[3], OscType::Int(2));
+        assert!(
+            snapshot
+                .diff_at(Some(snapshot), after, Some(after))
+                .is_empty()
+        );
+        assert!(!snapshot.diff_at(None, after, None).is_empty());
+        assert!(Arc::ptr_eq(&published, &shared.load_full()));
+    }
+
+    #[test]
+    fn static_addresses_preserve_wire_names() {
+        for (index, tab) in Tab::all().into_iter().enumerate() {
+            assert_eq!(
+                state_layer_addr(tab),
+                format!("/nooise/state/layer/{}", LAYERS[index])
+            );
+            if tab != Tab::Master {
+                assert_eq!(
+                    level_addr(tab),
+                    format!("/nooise/voice/{}/level", VOICES[index])
+                );
+            }
+        }
+        for kind in GestureKind::ALL {
+            assert_eq!(
+                gesture_addr(kind),
+                format!("/nooise/gesture/{}", GESTURES[kind as usize])
+            );
+        }
+        for hit in MusicalHit::ALL {
+            assert_eq!(
+                hit_addr(hit),
+                format!("/nooise/hit/{}", HIT_NAMES[hit as usize])
+            );
+        }
+    }
+
+    #[test]
+    fn every_osc_layer_reports_its_registered_level() {
+        let mut controls = FluidControls::default();
+        for tab in Tab::all() {
+            let spec = spec_by_id(tab.level_id().unwrap()).unwrap();
+            (spec.set)(&mut controls, spec.max);
+            assert_eq!(layer_level_ratio(tab, &controls), 1.0, "{tab:?}");
+            (spec.set)(&mut controls, spec.min);
+            assert_eq!(layer_level_ratio(tab, &controls), 0.0, "{tab:?}");
+        }
+    }
+
     use super::*;
-    use rosc::decoder;
+    use crate::fluid::MasterKey;
 
     fn messages_in(packet: OscPacket) -> Vec<OscMessage> {
         match packet {
@@ -396,7 +1470,7 @@ mod tests {
             ..PadControls::default()
         };
         let telemetry = Arc::new(FluidTelemetry::default());
-        let mut pad = PadEngine::new(48_000.0, &controls, 0.0, Arc::clone(&telemetry));
+        let mut pad = PadEngine::new(48_000.0, &controls, MasterKey::Home, Arc::clone(&telemetry));
         let mut mirrored = Mirrored::from(&telemetry);
         fn tick(
             pad: &mut PadEngine,
@@ -408,7 +1482,7 @@ mod tests {
         ) -> Vec<OscMessage> {
             let mut timing = TimingContext::new(48_000.0, 120.0, beat);
             timing.morph_phrase_start = morph_start;
-            pad.next(controls, 0.0, timing);
+            pad.next(controls, MasterKey::Home, timing);
             mirrored.diff(telemetry)
         }
         let tick_at = |pad: &mut PadEngine, mirrored: &mut Mirrored, beat, morph_start| {
@@ -444,7 +1518,7 @@ mod tests {
 
         let mut stopped = TimingContext::new(48_000.0, 120.0, 2.0);
         stopped.transport = crate::fluid::engine::Transport::Stopped;
-        pad.next(&controls, 0.0, stopped);
+        pad.next(&controls, MasterKey::Home, stopped);
         assert!(mirrored.diff(&telemetry).is_empty());
         pad.restart_sequence(&controls);
         let restart = tick_at(&mut pad, &mut mirrored, 0.0, None);
@@ -578,7 +1652,7 @@ mod tests {
     /// list, and a retired one leaves it without its name being reused.
     #[test]
     fn gesture_addresses_are_the_published_contract() {
-        let addrs: Vec<String> = GestureKind::ALL.into_iter().map(gesture_addr).collect();
+        let addrs: Vec<&str> = GestureKind::ALL.into_iter().map(gesture_addr).collect();
         assert_eq!(
             addrs,
             [
@@ -607,6 +1681,106 @@ mod tests {
         let addrs: Vec<String> = messages_in(packet).into_iter().map(|m| m.addr).collect();
         assert_eq!(addrs, [ADDR_KICK, "/nooise/hit/kick"]);
         drop(emitter);
+    }
+
+    #[test]
+    fn inbound_osc_messages_parse_semantic_ui_and_voice_commands() {
+        let cases = [
+            (
+                message(
+                    "/nooise/cmd/control/ratio",
+                    vec![OscType::String("master.bpm".into()), OscType::Float(0.5)],
+                ),
+                Some(OscInboundCommand::Ui(OscUiCommand::ControlRatio {
+                    id: "master.bpm".into(),
+                    ratio: 0.5,
+                })),
+            ),
+            (
+                message("/nooise/cmd/nav/layer", vec![OscType::String("pad".into())]),
+                Some(OscInboundCommand::Ui(OscUiCommand::NavLayer(Tab::Chords))),
+            ),
+            (
+                message(
+                    "/nooise/cmd/mute/set",
+                    vec![OscType::String("kick".into()), OscType::Int(1)],
+                ),
+                Some(OscInboundCommand::Ui(OscUiCommand::MuteSet {
+                    tab: Tab::Kick,
+                    muted: true,
+                })),
+            ),
+            (
+                message(
+                    "/nooise/cmd/gesture",
+                    vec![OscType::String("bloom".into()), OscType::Int(1)],
+                ),
+                Some(OscInboundCommand::Ui(OscUiCommand::Gesture {
+                    kind: GestureKind::Bloom,
+                    active: true,
+                })),
+            ),
+            (
+                message("/nooise/cmd/motion/grab", vec![OscType::Int(4)]),
+                Some(OscInboundCommand::Ui(OscUiCommand::MotionGrab(4))),
+            ),
+            (
+                message(
+                    "/nooise/cmd/voice/pad/notes",
+                    vec![OscType::Int(48), OscType::Int(52), OscType::Int(55)],
+                ),
+                Some(OscInboundCommand::Voice(OscVoiceCommand::PadNotes(vec![
+                    48, 52, 55,
+                ]))),
+            ),
+            (
+                message("/nooise/cmd/voice/lead/note_on", vec![OscType::Int(60)]),
+                Some(OscInboundCommand::Voice(OscVoiceCommand::LeadNoteOn(60))),
+            ),
+            (
+                message("/nooise/cmd/voice/kick/trigger", vec![OscType::Float(0.8)]),
+                Some(OscInboundCommand::Voice(OscVoiceCommand::KickTrigger(0.8))),
+            ),
+        ];
+        for (msg, expected) in cases {
+            assert_eq!(parse_inbound_message(&msg), expected);
+        }
+    }
+
+    #[test]
+    fn voice_events_encode_to_published_osc_addresses() {
+        let chord = pad_notes([48, 52, 55, 60], 0.0);
+        assert_eq!(
+            OscVoiceEvent::PadChord(chord).into_message(),
+            message(
+                ADDR_VOICE_PAD_NOTES,
+                vec![
+                    OscType::Int(48),
+                    OscType::Int(52),
+                    OscType::Int(55),
+                    OscType::Int(60)
+                ]
+            )
+        );
+        assert_eq!(
+            OscVoiceEvent::PadOff.into_message(),
+            message(ADDR_VOICE_PAD_NOTES, vec![])
+        );
+        assert_eq!(
+            OscVoiceEvent::ArpNote {
+                note: 64,
+                gate_beats: 0.5
+            }
+            .into_message(),
+            message(
+                ADDR_VOICE_ARP_NOTE,
+                vec![OscType::Int(64), OscType::Float(0.5)]
+            )
+        );
+        assert_eq!(
+            OscVoiceEvent::LeadOff(67).into_message(),
+            message(ADDR_VOICE_LEAD_NOTE_OFF, vec![OscType::Int(67)])
+        );
     }
 
     /// Level profile of a built-in song, for calibrating consumer
@@ -743,5 +1917,61 @@ mod tests {
         }
         // Default chord length: 4 bars of 4 beats.
         assert_eq!(span_args[1], OscType::Float(16.0));
+    }
+
+    #[test]
+    fn parse_inbound_message_covers_ui_and_voice_commands() {
+        let pos_msg = OscMessage {
+            addr: "/nooise/cmd/control/ratio".into(),
+            args: vec![OscType::String("pad.level".into()), OscType::Float(0.75)],
+        };
+        assert_eq!(
+            parse_inbound_message(&pos_msg),
+            Some(OscInboundCommand::Ui(OscUiCommand::ControlRatio {
+                id: "pad.level".into(),
+                ratio: 0.75,
+            }))
+        );
+
+        let nav_msg = OscMessage {
+            addr: "/nooise/cmd/nav/layer".into(),
+            args: vec![OscType::String("pads".into())],
+        };
+        assert_eq!(
+            parse_inbound_message(&nav_msg),
+            Some(OscInboundCommand::Ui(OscUiCommand::NavLayer(Tab::Chords)))
+        );
+
+        let mute_msg = OscMessage {
+            addr: "/nooise/cmd/mute/set".into(),
+            args: vec![OscType::String("kick".into()), OscType::Int(1)],
+        };
+        assert_eq!(
+            parse_inbound_message(&mute_msg),
+            Some(OscInboundCommand::Ui(OscUiCommand::MuteSet {
+                tab: Tab::Kick,
+                muted: true,
+            }))
+        );
+
+        let note_msg = OscMessage {
+            addr: "/nooise/cmd/voice/lead/note_on".into(),
+            args: vec![OscType::Int(60)],
+        };
+        assert_eq!(
+            parse_inbound_message(&note_msg),
+            Some(OscInboundCommand::Voice(OscVoiceCommand::LeadNoteOn(60)))
+        );
+
+        let chord_msg = OscMessage {
+            addr: "/nooise/cmd/voice/pad/notes".into(),
+            args: vec![OscType::Int(60), OscType::Int(64), OscType::Int(67)],
+        };
+        assert_eq!(
+            parse_inbound_message(&chord_msg),
+            Some(OscInboundCommand::Voice(OscVoiceCommand::PadNotes(vec![
+                60, 64, 67
+            ])))
+        );
     }
 }

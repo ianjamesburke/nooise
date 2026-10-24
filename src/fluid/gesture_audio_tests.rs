@@ -20,7 +20,6 @@ struct GesturePlayer {
     engine: FluidEngine,
     effects: EffectExecutor,
     model: InteractionModel,
-    fluid: RippleField,
     flipped: FlippedUnits,
     clipboard: TestClipboard,
     capabilities: TerminalCapabilities,
@@ -51,7 +50,6 @@ impl GesturePlayer {
                 navigation: Navigation::for_page(Page::Master),
                 ..InteractionModel::default()
             },
-            fluid: RippleField::new(),
             flipped: FlippedUnits::default(),
             clipboard: TestClipboard::default(),
             capabilities: TerminalCapabilities::full(),
@@ -69,13 +67,10 @@ impl GesturePlayer {
             &event,
             &mut ProductionCoordinatorContext {
                 effects: &mut self.effects,
-                fluid: &self.fluid,
                 flipped: &mut self.flipped,
                 clipboard: &mut self.clipboard,
                 capabilities: self.capabilities,
                 beat: self.engine.tempo.beat,
-                active_chord: 0,
-                chord_span: ChordSpan::default(),
             },
         );
         assert!(!step.quit);

@@ -48,24 +48,21 @@ pub(crate) struct ProductionTurn {
 
 pub(crate) struct ProductionCoordinatorContext<'a> {
     pub(crate) effects: &'a mut EffectExecutor,
-    pub(crate) fluid: &'a RippleField,
     pub(crate) flipped: &'a mut FlippedUnits,
     pub(crate) clipboard: &'a mut dyn Clipboard,
     pub(crate) capabilities: runtime::TerminalCapabilities,
     pub(crate) beat: f64,
-    pub(crate) active_chord: u64,
-    pub(crate) chord_span: ChordSpan,
 }
 
 pub(crate) fn coordinate_production_tick(
     effects: &mut EffectExecutor,
     beat: f64,
 ) -> Result<EffectAcknowledgement, EffectFailure> {
+    effects.poll_output_routing();
     effects.execute(LiveEffect::CommitPending { beat })
 }
 
-/// What the pre-event view projection settled before any action ran: the
-/// session snapshot the frame was drawn from and the selection it resolved.
+/// One pre-action session snapshot and its lightweight navigation selection.
 pub(crate) struct ProductionFrame {
     pub(crate) session: Arc<LiveSessionSnapshot>,
     pub(crate) item_count: usize,
@@ -73,7 +70,7 @@ pub(crate) struct ProductionFrame {
     pub(crate) visible_control_ids: Vec<&'static str>,
     pub(crate) randomizes_automation: bool,
     pub(crate) tab: Tab,
-    pub(crate) selected: usize,
+    pub(crate) selected: Option<usize>,
 }
 
 pub(crate) fn production_frame(
@@ -81,33 +78,16 @@ pub(crate) fn production_frame(
     context: &ProductionCoordinatorContext<'_>,
 ) -> ProductionFrame {
     let session = context.effects.session().load();
-    let gesture_now_seconds = context.effects.session().audio_seconds();
-    let view = UiViewModel::project(ViewProjection {
-        interaction: model,
-        session: &session,
-        telemetry: TelemetryView {
-            beat: context.beat,
-            active_chord: context.active_chord,
-            chord_span: context.chord_span,
-        },
-        presentation: ViewPresentation {
-            fluid: context.fluid,
-            flipped: context.flipped,
-            cursor_visible: true,
-            notices: ViewNotices::default(),
-            gesture_now_seconds,
-            gesture_holds_available: context.capabilities.supports_holds(),
-        },
-    });
-    let item_count = view.items.len();
-    let selected_control = view.items.get(view.navigation.selected).map(|item| item.id);
-    let visible_control_ids = view.items.iter().map(|item| item.id).collect();
+    let visible_control_ids = view::navigation_control_ids(model.navigation, &session.controls);
+    let item_count = visible_control_ids.len();
+    let selected_row = model
+        .navigation
+        .selected()
+        .min(item_count.saturating_sub(1));
+    let selected_control = visible_control_ids.get(selected_row).copied();
     let randomizes_automation = matches!(model.mode, interaction::InteractionMode::Automation(_));
-    let selected = selected_control
-        .and_then(|id| spec_index(view.navigation.tab, id))
-        .unwrap_or(view.navigation.selected);
-    let tab = view.navigation.tab;
-    drop(view);
+    let tab = model.navigation.tab();
+    let selected = selected_control.and_then(|id| spec_index(tab, id));
     model.clamp_navigation_selection(item_count);
     ProductionFrame {
         session,
@@ -126,55 +106,14 @@ pub(crate) fn coordinate_production_event(
     context: &mut ProductionCoordinatorContext<'_>,
 ) -> ProductionStep {
     let frame = production_frame(model, context);
-    let mapping = runtime::map_input(&model.mode, model.navigation, event, context.capabilities);
-    let runtime::InputMapping::Action(mut action) = mapping else {
+    let mapping = runtime::map_input(&model.mode, event, context.capabilities);
+    let runtime::InputMapping::Action(action) = mapping else {
         return ProductionStep {
             mapping,
             actions: Vec::new(),
             quit: false,
         };
     };
-    if action.intent == interaction::Intent::Cancel
-        && matches!(model.mode, interaction::InteractionMode::Browsing)
-        && matches!(model.navigation, interaction::Navigation::Hub { .. })
-        && !model.gesture_input.has_active()
-        && frame.session.gestures.has_held()
-    {
-        action.intent = interaction::Intent::ReleaseAllGestures;
-    }
-    if action.intent == interaction::Intent::TouchSelected
-        && frame.selected_control == Some("pad.progression")
-    {
-        action.intent = interaction::Intent::EnterChordProgression;
-    }
-    if action.intent == interaction::Intent::TouchSelected
-        && frame.selected_control == Some(PAD_TRIGGER_ID)
-    {
-        action.intent = interaction::Intent::EnterPadPattern;
-    }
-    if action.intent == interaction::Intent::TouchSelected
-        && let Some(id) = frame.selected_control
-        && let Some((slot, module)) =
-            module_slot_at_collapsed_id(frame.tab, id, &frame.session.controls)
-        && let Some(kind) = module.kind()
-        && kind.has_detail()
-    {
-        action.intent = interaction::Intent::EnterModuleDetail {
-            tab: frame.tab,
-            slot,
-            catalog_index: module.kind.round() as usize - 1,
-        };
-    }
-    // On the Lead page Enter on the Steps row opens the lane; anywhere else
-    // that is not a module drill it opens play mode, since the page is the
-    // instrument and there is nothing else to touch.
-    if action.intent == interaction::Intent::TouchSelected && frame.tab == Tab::Lead {
-        action.intent = if frame.selected_control == Some(LEAD_STEPS_ID) {
-            interaction::Intent::EnterLeadPattern
-        } else {
-            interaction::Intent::EnterLeadPlay
-        };
-    }
 
     let repeat_count = match event {
         runtime::TransportEvent::Key { repeat_count, .. } => repeat_count.max(&1),
@@ -199,6 +138,154 @@ pub(crate) fn coordinate_production_event(
     }
 }
 
+/// Resolve navigation-dependent Touch/Cancel identically for every input source.
+fn upgrade_navigation_action(
+    model: &interaction::InteractionModel,
+    mut action: interaction::SemanticAction,
+    frame: &ProductionFrame,
+) -> interaction::SemanticAction {
+    if action.intent == interaction::Intent::TouchSelected {
+        action.intent = match model.navigation {
+            interaction::Navigation::Chords {
+                drill: interaction::ChordDrill::Progression { .. },
+                ..
+            } => frame
+                .selected_control
+                .and_then(parse_chord_slot_id)
+                .map_or(action.intent, |(slot, _)| {
+                    interaction::Intent::EnterChordSlot(slot)
+                }),
+            interaction::Navigation::Hub { selected } => interaction::hub_layer(selected)
+                .map_or(action.intent, interaction::Intent::EnterLayer),
+            _ => action.intent,
+        };
+    }
+    if action.intent == interaction::Intent::Cancel
+        && matches!(model.mode, interaction::InteractionMode::Browsing)
+        && matches!(model.navigation, interaction::Navigation::Hub { .. })
+        && !model.gesture_input.has_active()
+        && frame.session.gestures.has_held()
+    {
+        action.intent = interaction::Intent::ReleaseAllGestures;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Chords {
+                drill: interaction::ChordDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some("pad.progression")
+    {
+        action.intent = interaction::Intent::EnterChordProgression;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Perc {
+                drill: interaction::PercDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(PERC_PATTERN_ID)
+    {
+        action.intent = interaction::Intent::EnterPercPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Bass {
+                drill: interaction::BassDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(BASS_RHYTHM_ID)
+    {
+        action.intent = interaction::Intent::EnterBassPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Kick {
+                drill: interaction::KickDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(KICK_PATTERN_ID)
+    {
+        action.intent = interaction::Intent::EnterKickPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Tonal {
+                drill: interaction::TonalDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(TONAL_PHRASE_ID)
+    {
+        action.intent = interaction::Intent::EnterTonalPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Clap {
+                drill: interaction::ClapDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(CLAP_PATTERN_ID)
+    {
+        action.intent = interaction::Intent::EnterClapPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Arp {
+                drill: interaction::ArpDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(ARP_PATTERN_ID)
+    {
+        action.intent = interaction::Intent::EnterArpPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && let Some(id) = frame.selected_control
+        && let Some((slot, module)) =
+            module_slot_at_collapsed_id(frame.tab, id, &frame.session.controls)
+        && let Some(kind) = module.kind()
+        && kind.has_detail()
+    {
+        action.intent = interaction::Intent::EnterModuleDetail {
+            tab: frame.tab,
+            slot,
+            catalog_index: module.kind.round() as usize - 1,
+        };
+    }
+    // On the Lead page Enter on the Pattern row opens the lane; anywhere else
+    // that is not a module drill it opens play mode, since the page is the
+    // instrument and there is nothing else to touch.
+    if action.intent == interaction::Intent::TouchSelected && frame.tab == Tab::Lead {
+        action.intent = if matches!(
+            model.navigation,
+            interaction::Navigation::Lead {
+                drill: interaction::LeadDrill::None,
+                ..
+            }
+        ) && frame.selected_control == Some(LEAD_PATTERN_ID)
+        {
+            interaction::Intent::EnterLeadPattern
+        } else {
+            interaction::Intent::EnterLeadPlay
+        };
+    }
+
+    action
+}
+
 /// Runs one semantic action through the kernel and the effect executor
 /// against the frame it was issued in. `None` means the action was refused
 /// before reaching the kernel (an automation kind the selected control does
@@ -209,6 +296,7 @@ pub(crate) fn coordinate_production_action(
     frame: &ProductionFrame,
     context: &mut ProductionCoordinatorContext<'_>,
 ) -> Option<ProductionActionRecord> {
+    let action = upgrade_navigation_action(model, action, frame);
     let frame_session = &frame.session;
     let selected_control = frame.selected_control;
     let tab = frame.tab;
@@ -300,6 +388,18 @@ pub(crate) fn coordinate_production_action(
     let mut effect_records = Vec::new();
     for (effect, result) in emitted.into_iter().zip(results) {
         match &result {
+            Ok(EffectAcknowledgement::OutputDevices(choices)) => {
+                let resume = match &before.mode {
+                    interaction::InteractionMode::Palette(palette) => palette.resume,
+                    _ => None,
+                };
+                model.mode =
+                    interaction::InteractionMode::Palette(Box::new(interaction::PaletteMode {
+                        output_choices: Some(choices.clone()),
+                        resume,
+                        ..Default::default()
+                    }));
+            }
             Ok(EffectAcknowledgement::ControlSelected { tab, index, id }) => {
                 let current_session = context.effects.session().load();
                 let filter_detail_field = match effect {
@@ -316,26 +416,26 @@ pub(crate) fn coordinate_production_action(
                 };
                 if let Some(field) = filter_detail_field
                     && let Some((_, slot, _)) = parse_module_slot_id(id)
-                    && current_session
+                    && let Some(kind) = current_session
                         .controls
                         .modules
                         .for_tab(*tab)
                         .and_then(|slots| slots.get(slot))
                         .and_then(ModuleSlot::kind)
-                        .is_some_and(|kind| kind.family == Family::Filter)
+                        .filter(|kind| matches!(kind.family, Family::Filter | Family::Compression))
                 {
-                    let cutoff = module_slot_spec(*tab, slot, ModuleSlotField::Time)
-                        .expect("filter Cutoff is registered");
-                    let cutoff_index =
-                        spec_index(*tab, cutoff.id).expect("filter Cutoff has a tab index");
-                    model.select_control(*tab, cutoff_index, &current_session.controls);
+                    let collapsed = module_slot_spec(*tab, slot, ModuleSlotField::Time)
+                        .expect("collapsed Time control is registered");
+                    let collapsed_index = spec_index(*tab, collapsed.id)
+                        .expect("collapsed Time control has a tab index");
+                    model.select_control(*tab, collapsed_index, &current_session.controls);
                     let return_to = model.navigation.selected();
-                    let catalog_index = module_catalog_index(interaction::FILTER_MODULE_ID);
+                    let catalog_index = module_catalog_index(kind.id);
                     let selected = MODULE_CATALOG[catalog_index]
                         .parameters()
                         .iter()
                         .position(|parameter| parameter.field == field)
-                        .expect("filter detail contains its focused field");
+                        .expect("module detail contains its focused field");
                     model.navigation = interaction::Navigation::Module {
                         tab: *tab,
                         slot,
@@ -451,16 +551,234 @@ pub(crate) fn coordinate_production_turn(
     Ok(ProductionTurn { steps, quit })
 }
 
+pub(crate) fn apply_osc_ui_command(
+    cmd: osc::OscUiCommand,
+    model: &mut interaction::InteractionModel,
+    context: &mut ProductionCoordinatorContext<'_>,
+) {
+    use osc::{OscTransportCmd, OscUiCommand};
+    match cmd {
+        OscUiCommand::ControlValue { id, value } => {
+            if let Some(spec) = spec_by_id(&id) {
+                let _ = context.effects.execute(LiveEffect::EditControl {
+                    id: spec.id,
+                    edit: ControlEdit::Value(value),
+                });
+            }
+        }
+        OscUiCommand::ControlRatio { id, ratio } => {
+            if let Some(spec) = spec_by_id(&id) {
+                let _ = context.effects.execute(LiveEffect::EditControl {
+                    id: spec.id,
+                    edit: ControlEdit::Ratio(ratio),
+                });
+            }
+        }
+        OscUiCommand::ControlDelta { id, steps } => {
+            if let Some(spec) = spec_by_id(&id) {
+                let _ = context.effects.execute(LiveEffect::EditControl {
+                    id: spec.id,
+                    edit: ControlEdit::Delta(steps),
+                });
+            }
+        }
+        OscUiCommand::MuteSet { tab, muted } => {
+            context.effects.set_mute(tab, muted);
+        }
+        OscUiCommand::MuteToggle(tab) => {
+            context.effects.toggle_mute(tab);
+        }
+        OscUiCommand::MutePlan(tab) => {
+            let _ = context.effects.plan_mute(tab, context.beat);
+        }
+        OscUiCommand::Transport(OscTransportCmd::Play) => {
+            context.effects.start_transport();
+        }
+        OscUiCommand::Transport(OscTransportCmd::Stop) => {
+            context.effects.stop_transport();
+        }
+        OscUiCommand::Transport(OscTransportCmd::Toggle) => {
+            context.effects.toggle_transport();
+        }
+        OscUiCommand::AutoToggle => {
+            context.effects.toggle_auto(context.beat);
+        }
+        OscUiCommand::Gesture { .. } | OscUiCommand::GestureReleaseAll => {
+            let action = match cmd {
+                OscUiCommand::Gesture { kind, active: true } => interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent: interaction::Intent::StartGesture(kind),
+                },
+                OscUiCommand::Gesture {
+                    kind,
+                    active: false,
+                } => interaction::SemanticAction {
+                    phase: interaction::InputPhase::Release,
+                    intent: interaction::Intent::ReleaseGesture(kind),
+                },
+                _ => interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent: interaction::Intent::ReleaseAllGestures,
+                },
+            };
+            let frame = production_frame(model, context);
+            let _ = coordinate_production_action(model, action, &frame, context);
+        }
+        OscUiCommand::MotionGrab(length_beats) => {
+            let duration = match length_beats {
+                4 => super::MotionDuration::Beats4,
+                8 => super::MotionDuration::Beats8,
+                16 => super::MotionDuration::Beats16,
+                32 => super::MotionDuration::Beats32,
+                _ => return,
+            };
+            let frame = production_frame(model, context);
+            let mut exec_ctx = ProductionInteractionContext {
+                selected_control: frame.selected_control,
+                visible_control_ids: &frame.visible_control_ids,
+                randomizes_automation: frame.randomizes_automation,
+                tab: frame.tab,
+                selected: frame.selected,
+                automation_selected: model.automation_selected(),
+                beat: context.beat,
+                flipped: context.flipped,
+            };
+            let effect = if matches!(model.mode, interaction::InteractionMode::Automation(_)) {
+                interaction::InteractionEffect::MotionGrabAutomationSelected {
+                    duration,
+                    selected: model.automation_selected(),
+                }
+            } else {
+                interaction::InteractionEffect::MotionGrabSelected(duration)
+            };
+            let _ = context
+                .effects
+                .execute_production_interactions_with_clipboard(
+                    [effect],
+                    &mut exec_ctx,
+                    context.clipboard,
+                );
+        }
+        OscUiCommand::NavLayer(tab) => {
+            model.mode = interaction::InteractionMode::Browsing;
+            let frame = production_frame(model, context);
+            let _ = coordinate_production_action(
+                model,
+                interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent: interaction::Intent::EnterLayer(tab),
+                },
+                &frame,
+                context,
+            );
+        }
+        OscUiCommand::NavRow(row) => {
+            *model.navigation.selected_mut() = row;
+            let frame = production_frame(model, context);
+            model.clamp_navigation_selection(frame.item_count);
+        }
+        OscUiCommand::NavMove(delta) => {
+            let frame = production_frame(model, context);
+            let _ = coordinate_production_action(
+                model,
+                interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent: interaction::Intent::MoveSelection(delta as isize),
+                },
+                &frame,
+                context,
+            );
+        }
+        OscUiCommand::NavPage(delta) => {
+            if delta == 0 {
+                return;
+            }
+            let direction = if delta > 0 {
+                interaction::PageDirection::Next
+            } else {
+                interaction::PageDirection::Previous
+            };
+            let steps = delta.unsigned_abs();
+            for _ in 0..steps {
+                let frame = production_frame(model, context);
+                let _ = coordinate_production_action(
+                    model,
+                    interaction::SemanticAction {
+                        phase: interaction::InputPhase::Press,
+                        intent: interaction::Intent::ChangePage(direction),
+                    },
+                    &frame,
+                    context,
+                );
+            }
+        }
+        OscUiCommand::NavTouch | OscUiCommand::NavCancel => {
+            let frame = production_frame(model, context);
+            let intent = if matches!(cmd, OscUiCommand::NavTouch) {
+                interaction::Intent::TouchSelected
+            } else {
+                interaction::Intent::Cancel
+            };
+            let _ = coordinate_production_action(
+                model,
+                interaction::SemanticAction {
+                    phase: interaction::InputPhase::Press,
+                    intent,
+                },
+                &frame,
+                context,
+            );
+        }
+        OscUiCommand::NavAdjust { steps } => {
+            if steps == 0 {
+                return;
+            }
+            let dir = if steps > 0 { 1 } else { -1 };
+            for _ in 0..steps.unsigned_abs() {
+                let frame = production_frame(model, context);
+                let _ = coordinate_production_action(
+                    model,
+                    interaction::SemanticAction {
+                        phase: interaction::InputPhase::Press,
+                        intent: interaction::Intent::AdjustSelected(dir),
+                    },
+                    &frame,
+                    context,
+                );
+            }
+        }
+    }
+}
+
+/// The opt-in outside sources a live UI loop drains each turn. Each is
+/// launch configuration, never song state.
+pub(crate) struct LiveAdapters {
+    pub(crate) output_routing: audio::OutputRouting,
+    pub(crate) chassis_tap: Option<ChassisTapReceiver>,
+    #[cfg(feature = "link")]
+    pub(crate) link: Option<LinkFollower>,
+    pub(crate) osc_rx: Option<osc::OscReceiver>,
+    pub(crate) osc_ui_state: Option<osc::SharedOscUiState>,
+}
+
 pub(crate) fn production_ui_loop(
     terminal: &mut runtime::TerminalSession,
     session: UiSession,
     telemetry: Arc<FluidTelemetry>,
     updates: UpdateNotice,
     auto: AutoControls,
-    chassis_tap: Option<ChassisTapReceiver>,
+    adapters: LiveAdapters,
 ) -> Result<(), Box<dyn Error>> {
+    let LiveAdapters {
+        output_routing,
+        chassis_tap,
+        #[cfg(feature = "link")]
+        link,
+        osc_rx,
+        osc_ui_state,
+    } = adapters;
     let mut model = interaction::InteractionModel::default();
-    let mut effects = EffectExecutor::new(session.live, auto);
+    let mut effects = EffectExecutor::new(session.live, auto).with_output_routing(output_routing);
     let mut source = runtime::CrosstermEventSource::new(terminal.capabilities());
     let clock = runtime::MonotonicClock::start();
     let mut scheduler = runtime::Scheduler::new(
@@ -474,6 +792,7 @@ pub(crate) fn production_ui_loop(
     let mut last_tick = runtime::Clock::now(&clock);
     let mut quit = false;
     let mut tap_tempo = TapTempo::default();
+    let mut osc_publisher = osc::OscUiPublisher::default();
 
     while !quit {
         let turn = scheduler.collect_turn(&mut source, &clock)?;
@@ -491,6 +810,22 @@ pub(crate) fn production_ui_loop(
                 scheduler.request_frame();
             }
         }
+        if let Some(receiver) = &osc_rx {
+            let osc_cmds = receiver.drain_ui();
+            if !osc_cmds.is_empty() {
+                let mut ctx = ProductionCoordinatorContext {
+                    effects: &mut effects,
+                    flipped: &mut flipped,
+                    clipboard: &mut clipboard,
+                    capabilities: terminal.capabilities(),
+                    beat: telemetry.beat(),
+                };
+                for cmd in osc_cmds {
+                    apply_osc_ui_command(cmd, &mut model, &mut ctx);
+                }
+                scheduler.request_frame();
+            }
+        }
         if events
             .iter()
             .any(|event| matches!(event, runtime::TransportEvent::Resize { .. }))
@@ -503,13 +838,10 @@ pub(crate) fn production_ui_loop(
             tick_due,
             &mut ProductionCoordinatorContext {
                 effects: &mut effects,
-                fluid: &fluid,
                 flipped: &mut flipped,
                 clipboard: &mut clipboard,
                 capabilities: terminal.capabilities(),
                 beat: telemetry.beat(),
-                active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
-                chord_span: telemetry.chord_span(),
             },
         )
         .expect("pending commit has no fallible effects");
@@ -519,6 +851,10 @@ pub(crate) fn production_ui_loop(
         }
 
         if tick_due {
+            #[cfg(feature = "link")]
+            if let Some(link) = &link {
+                link.follow_peers(&mut effects);
+            }
             effects.expire_message(SAVE_MESSAGE_TTL);
             let dt = now.saturating_sub(last_tick).as_secs_f32().min(0.05);
             fluid.tick(dt, &telemetry);
@@ -531,6 +867,7 @@ pub(crate) fn production_ui_loop(
             let frame_session = effects.session().load();
             let gesture_now_seconds = effects.session().audio_seconds();
             let beat = telemetry.beat();
+            let active_chord = telemetry.chord_slot.load(Ordering::Relaxed);
             let pending_message = frame_session
                 .planned
                 .map(|action| {
@@ -545,7 +882,8 @@ pub(crate) fn production_ui_loop(
                         format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
                     })
                 });
-            let auto_message = effects.auto_position(beat).map(|position| {
+            let auto_pos = effects.auto_position(beat);
+            let auto_message = auto_pos.map(|position| {
                 let name =
                     |id: Option<usize>| id.map_or_else(|| "LIVE".to_string(), |id| id.to_string());
                 // Naming the pair through the hold would announce a morph that
@@ -567,8 +905,10 @@ pub(crate) fn production_ui_loop(
                 session: &frame_session,
                 telemetry: TelemetryView {
                     beat,
-                    active_chord: telemetry.chord_slot.load(Ordering::Relaxed),
+                    active_chord,
                     chord_span: telemetry.chord_span(),
+                    levels: telemetry.levels(),
+                    gain_reduction_db: telemetry.gain_reduction(),
                 },
                 presentation: ViewPresentation {
                     fluid: &fluid,
@@ -585,6 +925,9 @@ pub(crate) fn production_ui_loop(
                     gesture_holds_available: terminal.capabilities().supports_holds(),
                 },
             });
+            if let Some(osc_ui) = &osc_ui_state {
+                osc_publisher.publish(osc_ui, &model, &frame_session, &view, auto_pos.is_some());
+            }
             let item_count = view.items.len();
             terminal.terminal_mut().draw(|frame| render(frame, &view))?;
             drop(view);

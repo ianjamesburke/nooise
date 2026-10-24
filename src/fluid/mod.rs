@@ -30,7 +30,6 @@ use ratatui::{
 use crate::audio::{self, StereoEngine};
 use crate::fx::lfo::DriftingLfo;
 use crate::fx::panner::StereoPanner;
-use crate::midi::{MidiConfig, MidiInputManager, MidiOutputManager};
 use crate::synth::envelope::Adsr;
 use crate::synth::fm::{FmPair, FmStack, FmWave};
 use crate::synth::noise::WhiteNoise;
@@ -48,6 +47,8 @@ mod effect;
 mod engine;
 mod gesture;
 mod interaction;
+#[cfg(feature = "link")]
+mod link;
 mod mix_action;
 mod module;
 mod operation;
@@ -93,6 +94,8 @@ use effect::*;
 use engine::*;
 pub(crate) use engine::{TimingContext, Transport};
 use gesture::*;
+#[cfg(feature = "link")]
+use link::*;
 use module::*;
 use operation::*;
 use palette::*;
@@ -103,7 +106,6 @@ pub(crate) use song::{CODE_PREFIX, SongState, decode_song_code, encode_song_code
 use ui::*;
 use view::*;
 use visualizer::*;
-pub(crate) use voice::pad_voicing;
 use voice::*;
 
 // ============================================================
@@ -227,6 +229,11 @@ pub(crate) struct FluidTelemetry {
     /// Per-`GestureKind` Master-bus amount (`f32::to_bits`), published each
     /// `LEVEL_BLOCK` frames so a consumer can mirror a held gesture.
     pub(crate) gesture_bits: [AtomicU32; GESTURE_COUNT],
+    /// Per module slot (`module_layer_index(tab) * MODULE_SLOTS + slot`),
+    /// the compressor's displayed gain reduction in non-negative dB
+    /// (`f32::to_bits`), published each `LEVEL_BLOCK` frames. 0 for a slot
+    /// without a compressor.
+    gain_reduction_bits: [AtomicU32; MODULE_SLOT_TOTAL],
 }
 
 impl Default for FluidTelemetry {
@@ -251,6 +258,7 @@ impl Default for FluidTelemetry {
             chord_length_beats_bits: AtomicU32::new(0.0f32.to_bits()),
             level_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
             gesture_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
+            gain_reduction_bits: std::array::from_fn(|_| AtomicU32::new(0.0f32.to_bits())),
         }
     }
 }
@@ -348,8 +356,25 @@ impl FluidTelemetry {
         self.level_bits[tab as usize].store(rms.to_bits(), Ordering::Relaxed);
     }
 
+    /// Every tab's latest output RMS, indexed by `Tab` discriminant.
+    pub(crate) fn levels(&self) -> [f32; TAB_COUNT] {
+        std::array::from_fn(|index| f32::from_bits(self.level_bits[index].load(Ordering::Relaxed)))
+    }
+
     pub(crate) fn publish_gesture(&self, kind: GestureKind, amount: f32) {
         self.gesture_bits[kind as usize].store(amount.to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn publish_gain_reduction(&self, slot_index: usize, db: f32) {
+        self.gain_reduction_bits[slot_index].store(db.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Every slot's latest gain reduction in dB, indexed like
+    /// `gain_reduction_bits`.
+    pub(crate) fn gain_reduction(&self) -> [f32; MODULE_SLOT_TOTAL] {
+        std::array::from_fn(|index| {
+            f32::from_bits(self.gain_reduction_bits[index].load(Ordering::Relaxed))
+        })
     }
 
     #[cfg(test)]
@@ -369,35 +394,40 @@ impl FluidTelemetry {
 
 const APP_ID: &str = "nooise";
 
-#[derive(Clone, Copy)]
-struct LiveStartOptions {
-    start_muted: bool,
-    chassis_tap: bool,
+/// Launch-only choices for a live session: none of them is song state.
+#[derive(Clone)]
+pub(crate) struct LiveStartOptions {
+    pub(crate) output: audio::OutputSelection,
+    /// `-M`: open with Master Level at 0%.
+    pub(crate) start_muted: bool,
+    /// `--chassis-tap`: derive BPM from taps on the MacBook chassis.
+    pub(crate) chassis_tap: bool,
+    /// `--osc-in`: listen for inbound OSC commands on this UDP socket.
+    pub(crate) osc_in: Option<SocketAddr>,
+    /// `--link`: join the local-network Ableton Link session for shared
+    /// tempo, phase, and start/stop.
+    #[cfg(feature = "link")]
+    pub(crate) link: bool,
 }
 
-/// Where a bare `--osc` sends: foorm's default listen address.
+/// Where a bare `--osc` sends: foorm's / baton's default listen address.
 pub(crate) const DEFAULT_OSC_TARGET: &str = "127.0.0.1:9000";
+/// Where a bare `--osc-in` (or `--osc`) listens for inbound OSC commands.
+pub(crate) const DEFAULT_OSC_LISTEN: &str = "127.0.0.1:9001";
 
 pub(crate) fn run(
     osc: Option<SocketAddr>,
-    midi: MidiConfig<'_>,
-    start_muted: bool,
-    chassis_tap: bool,
+    options: LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
     let mut rng = rand::thread_rng();
-    run_with_song_state(
-        randomized_start_song(&mut rng),
-        osc,
-        midi,
-        start_muted,
-        chassis_tap,
-    )
+    run_with_song_state(randomized_start_song(&mut rng), osc, options)
 }
 
 fn randomized_start_song(rng: &mut impl Rng) -> SongState {
     let mut controls = FluidControls::default();
     controls.pad.progression = rng.gen_range(0..PROGRESSIONS.len()) as f32;
-    controls.tonal.phrase = rng.gen_range(0..TONAL_PHRASES.len()) as f32;
+    let phrase = rng.gen_range(0..TONAL_PHRASES.len()) as f32;
+    controls.tonal.apply_phrase_preset(phrase);
     SongState::from_controls(controls)
 }
 
@@ -416,9 +446,7 @@ fn apply_live_start_to_states(states: &mut [SongState], start_muted: bool) {
 pub(crate) fn run_with_song_state(
     initial_song: SongState,
     osc: Option<SocketAddr>,
-    midi: MidiConfig<'_>,
-    start_muted: bool,
-    chassis_tap: bool,
+    options: LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
     // Interactive start: no morph running. `A` can begin one live, heading
     // toward the built-in states from wherever the user currently is.
@@ -429,11 +457,7 @@ pub(crate) fn run_with_song_state(
         auto_states,
         DEFAULT_AUTO_BARS,
         osc,
-        midi,
-        LiveStartOptions {
-            start_muted,
-            chassis_tap,
-        },
+        options,
     )
 }
 
@@ -445,13 +469,11 @@ pub(crate) fn run_auto(
     bars: u32,
     from: usize,
     osc: Option<SocketAddr>,
-    midi: MidiConfig<'_>,
-    start_muted: bool,
-    chassis_tap: bool,
+    options: LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
     let numbers = auto_song_numbers(from)?;
     let mut states = decode_auto_states();
-    apply_live_start_to_states(&mut states, start_muted);
+    apply_live_start_to_states(&mut states, options.start_muted);
     let initial_song = states[from - 1].clone();
     let chosen = numbers
         .iter()
@@ -460,18 +482,7 @@ pub(crate) fn run_auto(
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
         chosen, numbers, bars,
     ))));
-    run_interactive(
-        initial_song,
-        morph,
-        states,
-        bars,
-        osc,
-        midi,
-        LiveStartOptions {
-            start_muted,
-            chassis_tap,
-        },
-    )
+    run_interactive(initial_song, morph, states, bars, osc, options)
 }
 
 /// Play built-in songs by number (`nooise 9`, `nooise 9,10,11`). One song
@@ -483,9 +494,7 @@ pub(crate) fn run_songs(
     numbers: &[usize],
     bars: u32,
     osc: Option<SocketAddr>,
-    midi: MidiConfig<'_>,
-    start_muted: bool,
-    chassis_tap: bool,
+    options: LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
     let all = decode_auto_states();
     if numbers.is_empty() {
@@ -504,43 +513,33 @@ pub(crate) fn run_songs(
             }
         }
     }
-    apply_live_start_to_states(&mut chosen, start_muted);
+    apply_live_start_to_states(&mut chosen, options.start_muted);
     let initial_song = chosen[0].clone();
     let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::labelled(
         chosen.clone(),
         numbers.to_vec(),
         bars,
     ))));
-    run_interactive(
-        initial_song,
-        morph,
-        chosen,
-        bars,
-        osc,
-        midi,
-        LiveStartOptions {
-            start_muted,
-            chassis_tap,
-        },
-    )
+    run_interactive(initial_song, morph, chosen, bars, osc, options)
 }
 
 /// Shared interactive setup: wire the audio engine, terminal, and UI loop
 /// around the aggregate live session, telemetry, and morph state. `morph` starts
 /// `Some` for `nooise auto` and `None` otherwise; `auto_states`/`auto_bars` let
-/// the UI build a fresh morph when the user toggles auto mode on live. `osc`
-/// names a UDP target to mirror telemetry to for external visualizers.
+/// the UI build a fresh morph when the user toggles auto mode on live.
 fn run_interactive(
     mut initial_song: SongState,
     morph: Arc<ArcSwap<Option<MorphState>>>,
     mut auto_states: Vec<SongState>,
     auto_bars: u32,
     osc: Option<SocketAddr>,
-    midi: MidiConfig<'_>,
     options: LiveStartOptions,
 ) -> Result<(), Box<dyn Error>> {
+    let output_routing = audio::OutputRouting::new(options.output);
     apply_live_start(&mut initial_song, options.start_muted);
     apply_live_start_to_states(&mut auto_states, options.start_muted);
+    #[cfg(feature = "link")]
+    let link = options.link;
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
     let chassis_tap = options
         .chassis_tap
@@ -552,16 +551,40 @@ fn run_interactive(
     let telemetry_for_engine = Arc::clone(&telemetry);
     let updates = UpdateNotice::default();
     spawn_update_check(updates.clone());
+
+    let (osc_voice_sink, osc_voice_rx) = osc
+        .map(|_| osc::OscVoiceSink::channel())
+        .map_or((None, None), |(s, r)| (Some(s), Some(r)));
+    let osc_ui_state = osc.map(|_| osc::new_shared_osc_ui_state());
     let _osc_emitter = osc
-        .map(|target| osc::OscEmitter::spawn(target, Arc::clone(&telemetry)))
+        .map(|target| {
+            osc::OscEmitter::spawn_full(
+                target,
+                Arc::clone(&telemetry),
+                osc_ui_state.clone(),
+                osc_voice_rx,
+            )
+        })
         .transpose()?;
 
-    let _midi_input = midi.input.map(MidiInputManager::open).transpose()?;
-    let midi_for_input = _midi_input.as_ref().map(MidiInputManager::source);
-    let _midi_output = midi.output.map(MidiOutputManager::open).transpose()?;
-    let midi_for_engine = _midi_output.as_ref().map(MidiOutputManager::sink);
+    let osc_rx = match options.osc_in {
+        Some(listen) => Some(osc::OscReceiver::spawn(listen)?),
+        None if osc.is_some() => {
+            let default_listen: SocketAddr = DEFAULT_OSC_LISTEN
+                .parse()
+                .expect("valid default OSC listen socket");
+            osc::OscReceiver::spawn(default_listen).ok()
+        }
+        None => None,
+    };
+    let osc_voice_source = osc_rx.as_ref().map(osc::OscReceiver::voice_source);
 
-    let _audio_output = audio::start_stream(APP_ID, move |sr| {
+    #[cfg(feature = "link")]
+    let link = link.then(|| Arc::new(LinkSession::join(initial_song.controls.master.bpm)));
+    #[cfg(feature = "link")]
+    let link_for_engine = link.clone();
+
+    let _audio_output = audio::start_stream(APP_ID, output_routing.clone(), move |sr| {
         let engine = FluidEngine::new_with_tonal_session_state(
             sr,
             session_for_engine.clone(),
@@ -569,12 +592,17 @@ fn run_interactive(
             Arc::clone(&telemetry_for_engine),
             true,
         );
-        let engine = match &midi_for_engine {
-            Some(sink) => engine.with_midi(sink.clone()),
+        let engine = match &osc_voice_sink {
+            Some(sink) => engine.with_osc_voice(sink.clone()),
             None => engine,
         };
-        match &midi_for_input {
-            Some(source) => engine.with_midi_input(source.clone()),
+        #[cfg(feature = "link")]
+        let engine = match &link_for_engine {
+            Some(link) => engine.with_link(link.clock(sr)),
+            None => engine,
+        };
+        match &osc_voice_source {
+            Some(source) => engine.with_osc_input(source.clone()),
             None => engine,
         }
     })?;
@@ -588,7 +616,14 @@ fn run_interactive(
         telemetry,
         updates,
         AutoControls::new(morph, auto_states, auto_bars),
-        chassis_tap,
+        LiveAdapters {
+            output_routing,
+            chassis_tap,
+            #[cfg(feature = "link")]
+            link: link.as_deref().map(LinkSession::follower),
+            osc_rx,
+            osc_ui_state,
+        },
     );
 
     let restore = terminal.restore();

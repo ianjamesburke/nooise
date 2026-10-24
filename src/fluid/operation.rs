@@ -1,8 +1,8 @@
-//! Typed, static musical operations projected into control surfaces.
+//! Typed, static musical and application operations projected into control surfaces.
 
 use super::*;
 
-/// A named musical action, distinct from an editable control.
+/// A named action, distinct from an editable musical control.
 ///
 /// Operations are a closed vocabulary. Their palette metadata and typed
 /// execution payload stay together here; no surface dispatches a string.
@@ -12,8 +12,11 @@ pub(crate) enum Operation {
     Mix(mix_action::MixAction),
     Recipe(recipe::RecipeId),
     PlannedMute,
+    OutputDevice,
     Chord(ChordAction),
     ToggleAuto,
+    ChordNames(ChordNames),
+    ClearSequence,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +73,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 19] = [
+    pub(crate) const ALL: [Self; 23] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -87,9 +90,13 @@ impl Operation {
         Self::Recipe(recipe::RecipeId::Drift),
         Self::Recipe(recipe::RecipeId::Rise),
         Self::PlannedMute,
+        Self::OutputDevice,
         Self::Chord(ChordAction::AddExtension),
         Self::Chord(ChordAction::Restore),
         Self::ToggleAuto,
+        Self::ChordNames(ChordNames::Roman),
+        Self::ChordNames(ChordNames::Letters),
+        Self::ClearSequence,
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -141,6 +148,24 @@ impl Operation {
                     ChordAction::Restore => "restore this chord's original voicing",
                 },
             },
+            Self::ChordNames(ChordNames::Roman) => OperationSpec {
+                operation: self,
+                label: "Roman chords",
+                aliases: &["roman", "numerals", "roman numerals"],
+                description: "write chords as Roman numerals in the home key",
+            },
+            Self::ChordNames(ChordNames::Letters) => OperationSpec {
+                operation: self,
+                label: "Letter chords",
+                aliases: &["letters", "chord letters", "chord names"],
+                description: "write chords as letter names",
+            },
+            Self::OutputDevice => OperationSpec {
+                operation: self,
+                label: "Output device",
+                aliases: &["output", "device", "audio output", "routing"],
+                description: "choose where live audio plays",
+            },
             Self::PlannedMute => OperationSpec {
                 operation: self,
                 label: "Mute next bar",
@@ -152,6 +177,18 @@ impl Operation {
                 label: "Toggle auto",
                 aliases: &["auto", "auto morph", "morph"],
                 description: "start or stop auto-morphing between songs",
+            },
+            Self::ClearSequence => OperationSpec {
+                operation: self,
+                label: "Clear sequence",
+                aliases: &[
+                    "clear steps",
+                    "clear pattern",
+                    "clear phrase",
+                    "clear progression",
+                    "reset sequence",
+                ],
+                description: "reset the active sequence steps (Pads to root, notes to rest)",
             },
         }
     }
@@ -167,7 +204,10 @@ impl Operation {
             Self::Mix(_)
             | Self::Recipe(_)
             | Self::PlannedMute
+            | Self::OutputDevice
             | Self::Chord(_)
+            | Self::ChordNames(_)
+            | Self::ClearSequence
             | Self::ToggleAuto => None,
         }
     }
