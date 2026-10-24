@@ -64,12 +64,10 @@ impl LiveSessionSnapshot {
             transport: Transport::Playing,
             transport_restart: 0,
             chord_names: ChordNames::default(),
-            tonal_sequence: song.tonal_sequence.clone().unwrap_or_else(|| {
-                TonalSequenceState::from_phrase(wrapped_index(
-                    song.controls.tonal.phrase,
-                    TONAL_PHRASES.len(),
-                ))
-            }),
+            tonal_sequence: song
+                .tonal_sequence
+                .clone()
+                .unwrap_or_else(|| TonalSequenceState::from_controls(&song.controls.tonal)),
         }
     }
 
@@ -79,10 +77,7 @@ impl LiveSessionSnapshot {
             generation: 0,
             module_topology_revision: 0,
             automation_revision: 0,
-            tonal_sequence: TonalSequenceState::from_phrase(wrapped_index(
-                controls.tonal.phrase,
-                TONAL_PHRASES.len(),
-            )),
+            tonal_sequence: TonalSequenceState::from_controls(&controls.tonal),
             controls,
             automation: AutomationState::default(),
             muted: [false; TAB_COUNT],

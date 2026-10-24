@@ -2393,19 +2393,23 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     let plain = |code| key(0, code, InputPhase::Press);
     // Shift+Tab from the hub enters Lead, the last layer.
     let mut trace = vec![modified_key(0, FixtureKey::BackTab, InputPhase::Press, 1)];
-    trace.extend(std::iter::repeat_n(plain(FixtureKey::Down), 10));
+    trace.push(plain(FixtureKey::Down));
     trace.push(plain(FixtureKey::Enter));
     let opened = replay(&trace, TerminalCapabilities::full());
     assert_eq!(
         opened.model.navigation,
         Navigation::Lead {
             selected: 0,
-            drill: LeadDrill::Pattern { return_to: 10 },
+            drill: LeadDrill::Pattern { return_to: 1 },
         }
     );
     assert_eq!(opened.model.mode, InteractionMode::Browsing);
 
-    trace.extend([plain(FixtureKey::Down), plain(FixtureKey::Character('r'))]);
+    trace.extend(std::iter::repeat_n(
+        plain(FixtureKey::Down),
+        LEAD_SEQUENCE_HEADER_IDS.len() + 1,
+    ));
+    trace.push(plain(FixtureKey::Character('r')));
     let rolled = replay(&trace, TerminalCapabilities::full());
     assert_eq!(rolled.effect_count("RandomizeSelected"), 1);
     assert_eq!(rolled.session_generation, 1, "the roll edits step 2");
@@ -2416,8 +2420,8 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     assert_eq!(
         played.model.navigation,
         Navigation::Lead {
-            selected: 1,
-            drill: LeadDrill::Pattern { return_to: 10 },
+            selected: LEAD_SEQUENCE_HEADER_IDS.len() + 1,
+            drill: LeadDrill::Pattern { return_to: 1 },
         },
         "Esc leaves play mode but stays in the lane"
     );
@@ -2427,7 +2431,7 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     assert_eq!(
         back.model.navigation,
         Navigation::Lead {
-            selected: 10,
+            selected: 1,
             drill: LeadDrill::None,
         }
     );
@@ -2609,9 +2613,9 @@ fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
         .expect("the added delay has a row");
     assert_eq!(
         result.model.navigation,
-        Navigation::Standard {
-            page: super::interaction::StandardPage::Bass,
+        Navigation::Bass {
             selected: row,
+            drill: super::interaction::BassDrill::None,
         }
     );
 }
@@ -3878,6 +3882,11 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
     let custom = replay_with(
         &[
             key(0, FixtureKey::Enter, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
             key(0, FixtureKey::Enter, InputPhase::Press),
         ],
         TerminalCapabilities::full(),
@@ -3885,7 +3894,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
             harness
                 .with_model(InteractionModel {
                     navigation: Navigation::Chords {
-                        selected: 7,
+                        selected: 4,
                         drill: ChordDrill::None,
                     },
                     ..InteractionModel::default()
@@ -3901,7 +3910,7 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
                 drill: ChordDrill::Slot {
                     extension2: false,
                     slot: 0,
-                    return_to: 7,
+                    return_to: 4,
                 },
             },
             ..InteractionModel::default()
@@ -3913,7 +3922,15 @@ fn raw_enter_drills_custom_progression_and_master_compression() {
             .iter()
             .map(|record| record.action.intent)
             .collect::<Vec<_>>(),
-        vec![Intent::EnterChordProgression, Intent::EnterChordSlot(0)]
+        vec![
+            Intent::EnterChordProgression,
+            Intent::MoveSelection(1),
+            Intent::MoveSelection(1),
+            Intent::MoveSelection(1),
+            Intent::MoveSelection(1),
+            Intent::MoveSelection(1),
+            Intent::EnterChordSlot(0)
+        ]
     );
     assert!(custom.effects.is_empty());
     assert_eq!(custom.session_generation, 1);
@@ -4107,9 +4124,9 @@ fn enter_tab_and_esc_move_between_the_hub_and_its_layers() {
     );
     assert_eq!(
         resumed.model.navigation,
-        Navigation::Standard {
-            page: super::interaction::StandardPage::Bass,
+        Navigation::Bass {
             selected: 1,
+            drill: super::interaction::BassDrill::None,
         }
     );
 }
@@ -4294,7 +4311,7 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
     let drill = replay_from_model(
         InteractionModel {
             navigation: Navigation::Chords {
-                selected: 2,
+                selected: PAD_SEQUENCE_HEADER_IDS.len() + 2,
                 drill: ChordDrill::Progression { return_to: 0 },
             },
             mode: InteractionMode::Browsing,
@@ -5026,6 +5043,11 @@ fn chord_builder_open() -> Vec<TraceEvent> {
         },
         key(0, FixtureKey::Enter, InputPhase::Press),
         TraceEvent::Idle { after_ms: 40 },
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
+        key(0, FixtureKey::Down, InputPhase::Press),
         key(0, FixtureKey::Enter, InputPhase::Press),
         TraceEvent::Idle { after_ms: 40 },
     ]
@@ -5338,7 +5360,7 @@ fn osc_touch_cancel_matches_keyboard_on_every_visible_navigation_row() {
     }
     navigations.push(Navigation::Chords {
         selected: 0,
-        drill: ChordDrill::Progression { return_to: 7 },
+        drill: ChordDrill::Progression { return_to: 4 },
     });
     for navigation in navigations {
         for row in 0..view::navigation_control_ids(navigation, &controls).len() {
@@ -5365,9 +5387,10 @@ fn osc_touch_cancel_matches_keyboard_on_every_visible_navigation_row() {
                     drill: ChordDrill::Progression { .. },
                     ..
                 }
-            ) {
+            ) && row >= PAD_SEQUENCE_HEADER_IDS.len()
+            {
                 assert!(
-                    matches!(osc.model.navigation, Navigation::Chords { drill: ChordDrill::Slot { slot, .. }, .. } if slot == row)
+                    matches!(osc.model.navigation, Navigation::Chords { drill: ChordDrill::Slot { slot, .. }, .. } if slot == row - PAD_SEQUENCE_HEADER_IDS.len())
                 );
             }
             apply_test_osc(&mut osc, osc::OscUiCommand::NavCancel);

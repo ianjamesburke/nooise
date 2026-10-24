@@ -840,16 +840,16 @@ mod tests {
     }
 
     #[test]
-    fn discrete_motion_replays_lead_pitch_and_pad_trigger_as_exact_events() {
+    fn discrete_motion_replays_lead_pitch_and_follow_switch_as_exact_events() {
         let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
         let lead = recipe::RecipeTarget::capture("lead.step1", &snapshot).unwrap();
-        let trigger = recipe::RecipeTarget::capture("pad.trigger", &snapshot).unwrap();
+        let follow = recipe::RecipeTarget::capture("lead.follow", &snapshot).unwrap();
         let lead_initial = snapshot.controls.lead.steps[0];
-        let trigger_initial = snapshot.controls.pad.trigger;
+        let follow_initial = snapshot.controls.lead.follow;
         let mut history = CaptureHistory::default();
         let before = snapshot.clone();
         snapshot.controls.lead.steps[0] = 5.0;
-        snapshot.controls.pad.trigger = 1.0 - trigger_initial;
+        snapshot.controls.lead.follow = 1.0 - follow_initial;
         history.record_changes(&before, &snapshot, 0.5, None);
         let before = snapshot.clone();
         snapshot.controls.lead.steps[0] = 8.0;
@@ -858,8 +858,8 @@ mod tests {
         let lead_clip = history
             .motion_clip(lead, MotionDuration::Beats4, 4.0, 4.0)
             .unwrap();
-        let trigger_clip = history
-            .motion_clip(trigger, MotionDuration::Beats4, 4.0, 4.0)
+        let follow_clip = history
+            .motion_clip(follow, MotionDuration::Beats4, 4.0, 4.0)
             .unwrap();
         assert_eq!(
             lead_clip
@@ -870,7 +870,7 @@ mod tests {
             vec![0, 128, 320]
         );
         assert_eq!(
-            trigger_clip
+            follow_clip
                 .events()
                 .iter()
                 .map(|event| event.tick)
@@ -893,19 +893,19 @@ mod tests {
             .insert(ControlAddress::new("lead.step1"), lead_clip);
         automation
             .captures
-            .insert(ControlAddress::new("pad.trigger"), trigger_clip);
+            .insert(ControlAddress::new("lead.follow"), follow_clip);
         let mut plan = AutomationPlan::default();
         plan.rebuild(&automation);
         for (beat, pitch, mode) in [
-            (4.25, lead_initial, trigger_initial),
-            (4.5, 5.0, 1.0 - trigger_initial),
-            (5.25, 8.0, 1.0 - trigger_initial),
-            (8.0, lead_initial, trigger_initial),
+            (4.25, lead_initial, follow_initial),
+            (4.5, 5.0, 1.0 - follow_initial),
+            (5.25, 8.0, 1.0 - follow_initial),
+            (8.0, lead_initial, follow_initial),
         ] {
             let mut controls = snapshot.controls.clone();
             plan.apply(&mut controls, TimingContext::new(44_100.0, 120.0, beat));
             assert_eq!(controls.lead.steps[0], pitch, "beat {beat}");
-            assert_eq!(controls.pad.trigger, mode, "beat {beat}");
+            assert_eq!(controls.lead.follow, mode, "beat {beat}");
         }
     }
 

@@ -30,6 +30,7 @@ pub(crate) struct PadEngine {
     pub(crate) last_chord_notes: [i32; 4],
     last_chord_definition: ChordSlotControls,
     active_note_count: usize,
+    sounding: bool,
     /// The transport seen on the previous sample, so a stop releases the
     /// sounding chord once and a restart voices it once.
     transport: Transport,
@@ -46,11 +47,9 @@ pub(crate) struct PadEngine {
     osc_input_active: bool,
     osc_suppressed: bool,
     osc_initial_pending: bool,
-    stab_trigger: GridTrigger,
-    active_stab_until_beat: Option<f64>,
-    active_stab_until_sample: Option<u64>,
-    sample_clock: u64,
-    stabbing: bool,
+    pub(crate) evolution_seed: u64,
+    pub(crate) evolution_count: u64,
+    pub(crate) session_state: Option<LiveSession>,
 }
 
 struct PadInputVoice {
@@ -66,10 +65,21 @@ impl PadEngine {
     /// next chord), so a session started from a song code with a chosen key
     /// would play its first chord in its authored key while Bass, Tonal and
     /// Arp — which resolve the key per note — are all in the chosen one.
+    #[cfg(test)]
     pub(crate) fn new(
         sample_rate: f32,
         c: &PadControls,
         key: MasterKey,
+        telemetry: Arc<FluidTelemetry>,
+    ) -> Self {
+        Self::new_with_live_state(sample_rate, c, key, None, telemetry)
+    }
+
+    pub(crate) fn new_with_live_state(
+        sample_rate: f32,
+        c: &PadControls,
+        key: MasterKey,
+        session_state: Option<LiveSession>,
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
         let cursor = ProgressionCursor::new(c);
@@ -78,12 +88,9 @@ impl PadEngine {
         let last_chord_definition = *c.chord_slot(cursor.window.progression, cursor.slot());
         let initial_notes = pad_chord_notes_with_slot(&last_chord_definition);
         let note_count = pad_note_count(c.chord_notes);
-        telemetry
-            .chord_slot
-            .store(cursor.slot() as u64, Ordering::Relaxed);
-        Self {
-            sample_rate,
-            layers: vec![PadLayer::new(
+        let sounding = !last_chord_definition.is_rest() && !last_chord_definition.is_tie();
+        let layers = if sounding {
+            vec![PadLayer::new(
                 active_character,
                 initial_notes,
                 note_count,
@@ -91,7 +98,18 @@ impl PadEngine {
                 sample_rate,
                 c.attack_time,
                 c.release_time,
-            )],
+            )]
+        } else {
+            Vec::new()
+        };
+        telemetry
+            .chord_slot
+            .store(cursor.slot() as u64, Ordering::Relaxed);
+        let mut rng = StdRng::from_entropy();
+        let evolution_seed = rng.r#gen();
+        Self {
+            sample_rate,
+            layers,
             input_voices: Vec::with_capacity(MAX_OSC_PAD_VOICES),
             cursor,
             active_character,
@@ -99,23 +117,59 @@ impl PadEngine {
             last_chord_definition,
             published_span: None,
             active_note_count: note_count,
+            sounding,
             transport: Transport::Playing,
             phrase_index: 0,
             phrase_sent: false,
             width_lfo: DriftingLfo::new(1.0 / 54.0, sample_rate),
             air: WhiteNoise::new(),
-            rng: StdRng::from_entropy(),
+            rng,
             telemetry,
             osc: OscVoiceSink::default(),
             internal_audio: EasedRamp::settled(1.0),
             osc_input_active: false,
             osc_suppressed: false,
             osc_initial_pending: false,
-            stab_trigger: GridTrigger::new(),
-            active_stab_until_beat: None,
-            active_stab_until_sample: None,
-            sample_clock: 0,
-            stabbing: false,
+            evolution_seed,
+            evolution_count: 0,
+            session_state,
+        }
+    }
+
+    fn evolve_progression(&mut self, c: &PadControls) {
+        let count = self.cursor.window.count.max(1);
+        let mutations = ((c.evolve_rate.clamp(0.0, 1.0) * 2.0).ceil() as usize).max(1);
+        let seed = self
+            .evolution_seed
+            .wrapping_add(
+                self.evolution_count
+                    .wrapping_add(1)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            )
+            .wrapping_add(self.phrase_index.rotate_left(11));
+        let mut evo_rng = StdRng::seed_from_u64(seed);
+        let mut edits = Vec::with_capacity(mutations);
+        for _ in 0..mutations {
+            let step = evo_rng.gen_range(0..count);
+            let slot = self.cursor.window.slot(step);
+            let mut chord = *c.chord_slot(self.cursor.window.progression, slot);
+            let current_deg = chord.degree.round() as i32;
+            let next_deg = if current_deg < -7 {
+                evo_rng.gen_range(-3..=4)
+            } else {
+                let delta = if evo_rng.gen_bool(0.5) { 1 } else { -1 };
+                (current_deg + delta).clamp(-7, 7)
+            };
+            chord.degree = next_deg as f32;
+            edits.push((slot, chord));
+        }
+        self.evolution_count = self.evolution_count.saturating_add(1);
+        if let Some(session_state) = &self.session_state {
+            session_state.update(|snapshot| {
+                for &(slot, chord) in &edits {
+                    *snapshot.controls.pad.edit_chord_slot(slot) = chord;
+                }
+            });
         }
     }
 
@@ -139,17 +193,6 @@ impl PadEngine {
     fn send_osc(&self, event: OscVoiceEvent) {
         if !self.osc_suppressed {
             self.osc.send(event);
-        }
-    }
-
-    fn release_stab(&mut self) {
-        let beat_active = self.active_stab_until_beat.take().is_some();
-        let sample_active = self.active_stab_until_sample.take().is_some();
-        if beat_active || sample_active {
-            for layer in &mut self.layers {
-                layer.release();
-            }
-            self.send_osc(OscVoiceEvent::PadOff);
         }
     }
 
@@ -218,48 +261,17 @@ impl PadEngine {
         }
     }
 
-    fn trigger_stab(&mut self, c: &PadControls, tune: f32, timing: TimingContext) {
-        self.release_stab();
-        let chord_notes = self.last_chord_notes;
-        self.telemetry
-            .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
-        self.send_osc(OscVoiceEvent::PadChord(pad_notes_with_count(
-            chord_notes,
-            self.active_note_count,
-            tune,
-        )));
-        if self.layers.len() >= MAX_PAD_LAYERS {
-            let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
-            self.layers.drain(0..remove_count);
-        }
-        self.layers.push(PadLayer::new(
-            self.active_character,
-            chord_notes,
-            self.active_note_count,
-            tune,
-            self.sample_rate,
-            c.attack_time,
-            c.release_time,
-        ));
-        if timing.transport == Transport::Stopped {
-            let samples = (f64::from(c.gate_beats) * 60.0 / timing.bpm
-                * f64::from(self.sample_rate))
-            .round() as u64;
-            self.active_stab_until_sample = Some(self.sample_clock + samples.max(1));
-        } else {
-            self.active_stab_until_beat = Some(timing.beat + f64::from(c.gate_beats));
-        }
-    }
-
     pub(crate) fn restart_sequence(&mut self, c: &PadControls) {
-        self.release_stab();
         for layer in &mut self.layers {
             layer.release();
+        }
+        if self.sounding {
+            self.send_osc(OscVoiceEvent::PadOff);
+            self.sounding = false;
         }
         self.cursor = ProgressionCursor::new(c);
         self.phrase_index = 0;
         self.phrase_sent = false;
-        self.stab_trigger = GridTrigger::new();
         self.transport = Transport::Stopped;
     }
 
@@ -281,6 +293,9 @@ impl PadEngine {
             self.phrase_index = 0;
         } else if advance && self.cursor.step == 0 {
             self.phrase_index = self.phrase_index.saturating_add(1);
+            if c.evolve_rate > 0.0 {
+                self.evolve_progression(c);
+            }
         }
         // Ahead of any chord onset, so the span is known from the first
         // frame and a consumer holds it when the chord arrives.
@@ -289,29 +304,18 @@ impl PadEngine {
             self.telemetry.publish_chord_span(span);
             self.published_span = Some(span);
         }
-        let definition = c.chord_slot(self.cursor.window.progression, self.cursor.slot());
-        let chord_notes = if *definition == self.last_chord_definition {
-            self.last_chord_notes
-        } else {
-            self.last_chord_definition = *definition;
-            pad_chord_notes_with_slot(definition)
-        };
+        let definition = *c.chord_slot(self.cursor.window.progression, self.cursor.slot());
+        let is_rest = definition.is_rest();
+        let is_tie = definition.is_tie();
         let note_count = pad_note_count(c.chord_notes);
-        let chord_edited =
-            chord_notes != self.last_chord_notes || note_count != self.active_note_count;
         let character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let character_changed = character != self.active_character;
-        self.last_chord_notes = chord_notes;
-        self.active_note_count = note_count;
         self.active_character = character;
 
         // A type change is a change of character, not a new note. Every
         // character runs the same oscillator stack and differs only in the
         // stage after it, so the sounding tones swap that stage in place —
         // no new layer, no restarted envelope, no oscillator phase reset.
-        // Voicing a fresh layer instead meant a full chord re-attacking from
-        // silence with all its oscillators phase-aligned, which is an onset
-        // transient, and it cut off every sustaining tail to do it.
         if character_changed {
             for layer in &mut self.layers {
                 layer.set_character(character, self.sample_rate);
@@ -328,122 +332,94 @@ impl PadEngine {
         let transport_changed = timing.transport != self.transport;
         self.transport = timing.transport;
         let playing = timing.transport == Transport::Playing;
-        let stabbing = c.trigger >= 0.5;
-        let mode_changed = stabbing != self.stabbing;
-        self.stabbing = stabbing;
-        if mode_changed {
-            if stabbing {
-                self.layers.clear();
-                self.stab_trigger = GridTrigger::new();
-            } else {
-                for layer in &mut self.layers {
-                    layer.release();
-                }
-            }
-            self.active_stab_until_beat = None;
-            self.active_stab_until_sample = None;
-            self.send_osc(OscVoiceEvent::PadOff);
-        }
         if transport_changed && !playing {
-            let had_stab =
-                self.active_stab_until_beat.is_some() || self.active_stab_until_sample.is_some();
-            self.release_stab();
             for layer in &mut self.layers {
                 layer.release();
             }
-            if !had_stab && !stabbing {
+            if self.sounding {
                 self.send_osc(OscVoiceEvent::PadOff);
+                self.sounding = false;
             }
         }
 
         let mut chord_published = false;
-        if stabbing {
+        if is_rest {
+            self.last_chord_definition = definition;
+            if self.sounding {
+                for layer in &mut self.layers {
+                    layer.release();
+                }
+                self.send_osc(OscVoiceEvent::PadOff);
+                self.sounding = false;
+            }
             self.osc_initial_pending = false;
-            if playing && (advance || chord_edited) {
+        } else if is_tie {
+            self.last_chord_definition = definition;
+            // Tie sustains the currently sounding layers without re-attacking
+            // or re-sending OSC / hit telemetry.
+        } else {
+            let chord_notes = if definition == self.last_chord_definition && self.sounding {
+                self.last_chord_notes
+            } else {
+                pad_chord_notes_with_slot(&definition)
+            };
+            let chord_edited = !self.sounding
+                || chord_notes != self.last_chord_notes
+                || note_count != self.active_note_count;
+            self.last_chord_definition = definition;
+            self.last_chord_notes = chord_notes;
+            self.active_note_count = note_count;
+
+            if playing && (advance || chord_edited || transport_changed) {
+                for layer in &mut self.layers {
+                    layer.release();
+                }
                 self.telemetry.publish_chord(
                     self.cursor.slot() as u64,
                     pitch_class(chord_notes[0]),
-                    0.01,
-                    0.08,
+                    c.attack_time,
+                    c.release_time,
                 );
                 chord_published = true;
-            }
-            if chord_edited
-                && (self.active_stab_until_beat.is_some()
-                    || self.active_stab_until_sample.is_some())
-            {
-                self.release_stab();
-            }
-            if self
-                .active_stab_until_beat
-                .is_some_and(|end| timing.beat >= end)
-                || self
-                    .active_stab_until_sample
-                    .is_some_and(|end| self.sample_clock >= end)
-            {
-                self.release_stab();
-            }
-            if self
-                .stab_trigger
-                .pop_swung(timing, 0.25, c.offset_beats, c.swing)
-            {
-                // The lane travels with the grid: slot k of the shifted grid
-                // plays step k, so Offset rotates the pattern, not just the clock.
-                let step = lane_step_at(timing.beat, 0.25, c.offset_beats, 16);
-                if c.steps[step] >= 0.5 {
-                    self.trigger_stab(c, tune, timing);
+                self.telemetry
+                    .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
+                self.send_osc(OscVoiceEvent::PadChord(pad_notes_with_count(
+                    chord_notes,
+                    note_count,
+                    tune,
+                )));
+                self.osc_initial_pending = false;
+                if self.layers.len() >= MAX_PAD_LAYERS {
+                    let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
+                    self.layers.drain(0..remove_count);
                 }
+                self.layers.push(PadLayer::new(
+                    character,
+                    chord_notes,
+                    note_count,
+                    tune,
+                    self.sample_rate,
+                    c.attack_time,
+                    c.release_time,
+                ));
+                self.sounding = true;
+            }
+            if playing && self.osc_initial_pending && self.sounding {
+                self.send_osc(OscVoiceEvent::PadChord(pad_notes_with_count(
+                    chord_notes,
+                    note_count,
+                    tune,
+                )));
+                self.osc_initial_pending = false;
             }
         }
 
-        if !stabbing && playing && (advance || chord_edited || transport_changed || mode_changed) {
-            for layer in &mut self.layers {
-                layer.release();
-            }
+        if playing && !self.phrase_sent && !chord_published && self.sounding {
             self.telemetry.publish_chord(
                 self.cursor.slot() as u64,
-                pitch_class(chord_notes[0]),
+                pitch_class(self.last_chord_notes[0]),
                 c.attack_time,
                 c.release_time,
-            );
-            chord_published = true;
-            self.telemetry
-                .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
-            self.send_osc(OscVoiceEvent::PadChord(pad_notes_with_count(
-                chord_notes,
-                note_count,
-                tune,
-            )));
-            self.osc_initial_pending = false;
-            if self.layers.len() >= MAX_PAD_LAYERS {
-                let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
-                self.layers.drain(0..remove_count);
-            }
-            self.layers.push(PadLayer::new(
-                character,
-                chord_notes,
-                note_count,
-                tune,
-                self.sample_rate,
-                c.attack_time,
-                c.release_time,
-            ));
-        }
-        if !stabbing && playing && self.osc_initial_pending {
-            self.send_osc(OscVoiceEvent::PadChord(pad_notes_with_count(
-                chord_notes,
-                note_count,
-                tune,
-            )));
-            self.osc_initial_pending = false;
-        }
-
-        if playing && !self.phrase_sent && !chord_published {
-            self.telemetry.publish_chord(
-                self.cursor.slot() as u64,
-                pitch_class(chord_notes[0]),
-                if stabbing { 0.01 } else { c.attack_time },
-                if stabbing { 0.08 } else { c.release_time },
             );
         }
 
@@ -484,17 +460,12 @@ impl PadEngine {
         // Once external Pad notes arrive, external input owns Hold-mode Pad
         // audio while the progression cursor and chord feed continue advancing
         // underneath.
-        let internal_target = if self.osc_input_active && !stabbing {
-            0.0
-        } else {
-            1.0
-        };
+        let internal_target = if self.osc_input_active { 0.0 } else { 1.0 };
         if self.internal_audio.target != internal_target {
             let samples = (LEVEL_RAMP_MS * 0.001 * self.sample_rate).round() as u32;
             self.internal_audio.retarget(internal_target, samples);
         }
         let internal_gain = self.internal_audio.next();
-        self.sample_clock += 1;
         (
             ((dry_l * internal_gain + input_l) * OUTPUT_TRIM + air) * c.level,
             ((dry_r * internal_gain + input_r) * OUTPUT_TRIM + air) * c.level,
@@ -895,10 +866,10 @@ pub(crate) struct Progression {
     pub(crate) song_value: i8,
     pub(crate) mood: &'static str,
     pub(crate) home_mode: HomeMode,
-    pub(crate) chords: [Chord; CHORD_SLOT_COUNT],
+    pub(crate) chords: [Chord; BUILTIN_PROGRESSION_CHORDS],
     /// One Bass note per chord, authored independently of the voicing so
     /// the line can walk where the chord's lowest tone would not.
-    pub(crate) bass: [i32; CHORD_SLOT_COUNT],
+    pub(crate) bass: [i32; BUILTIN_PROGRESSION_CHORDS],
 }
 
 /// The home scale stays put when a chord borrows a note outside it.
@@ -1375,7 +1346,7 @@ pub(crate) const PROGRESSION_SONG_VALUES: [i8; CUSTOM_PROGRESSION_INDEX + 1] = {
 /// Resolve an authored preset for catalog regression tests.
 #[cfg(test)]
 pub(crate) fn pad_chord_midi(progression: usize, slot: usize) -> [i32; 4] {
-    PROGRESSIONS[progression % PROGRESSIONS.len()].chords[slot % CHORD_SLOT_COUNT].notes()
+    PROGRESSIONS[progression % PROGRESSIONS.len()].chords[slot % BUILTIN_PROGRESSION_CHORDS].notes()
 }
 
 /// The key a built-in progression is heard in: its first chord's root, with
@@ -1502,16 +1473,43 @@ pub(crate) struct ProgressionCursor {
     /// first chord boundary after the engine starts.
     next_chord_beat: Option<f64>,
     morph_phrase_start: Option<f64>,
+    span: ChordSpan,
 }
 
 impl ProgressionCursor {
     pub(crate) fn new(c: &PadControls) -> Self {
-        Self {
+        let mut cursor = Self {
             window: ChordWindow::requested(c),
             chord_beats: c.chord_bars * 4.0,
             step: 0,
             next_chord_beat: None,
             morph_phrase_start: None,
+            span: ChordSpan {
+                start_beat: 0.0,
+                length_beats: 0.0,
+            },
+        };
+        cursor.span = cursor.compute_span(c);
+        cursor
+    }
+
+    fn compute_span(&self, c: &PadControls) -> ChordSpan {
+        let interval = GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats;
+        let step_start = self.next_chord_beat.map_or(0.0, |next| next - interval);
+        let progression = self.window.progression;
+        let is_tie = |step: usize| c.chord_slot(progression, self.window.slot(step)).is_tie();
+        let mut back = 0usize;
+        while back < self.step && is_tie(self.step - back) {
+            back += 1;
+        }
+        let mut forward = 0usize;
+        while self.step + 1 + forward < self.window.count && is_tie(self.step + 1 + forward) {
+            forward += 1;
+        }
+        let total_steps = (1 + back + forward) as f64;
+        ChordSpan {
+            start_beat: (step_start - back as f64 * interval).max(0.0),
+            length_beats: (total_steps * interval) as f32,
         }
     }
 
@@ -1523,11 +1521,7 @@ impl ProgressionCursor {
     /// The sounding chord's start beat and length. Before the first tick
     /// the chord has not begun, so it reads as one chord from beat zero.
     pub(crate) fn chord_span(&self) -> ChordSpan {
-        let length = GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats;
-        ChordSpan {
-            start_beat: self.next_chord_beat.map_or(0.0, |next| next - length),
-            length_beats: length as f32,
-        }
+        self.span
     }
 
     /// Start of the sounding phrase, for a live auto toggle after chord edits.
@@ -1553,6 +1547,7 @@ impl ProgressionCursor {
             let chord = ((timing.beat - start).max(0.0) / interval).floor();
             self.step = chord as usize % self.window.count;
             self.next_chord_beat = Some(start + (chord + 1.0) * interval);
+            self.span = self.compute_span(c);
             return timing.beat > 0.0;
         }
         self.morph_phrase_start = timing.morph_phrase_start;
@@ -1564,6 +1559,7 @@ impl ProgressionCursor {
         // A stopped transport holds its beat, and like every grid it fires
         // nothing until the clock runs again.
         if timing.beat + GRID_BEAT_EPSILON < next {
+            self.span = self.compute_span(c);
             return false;
         }
         let window = ChordWindow::requested(c);
@@ -1585,12 +1581,13 @@ impl ProgressionCursor {
         // noticed it, so chords stay on the transport grid.
         self.next_chord_beat =
             Some(next + GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats);
+        self.span = self.compute_span(c);
         true
     }
 }
 
-/// How Bass, Arp, and Lead follow the Pad's chord loop without reaching into
-/// `PadEngine`: the same cursor on the same transport beat, so the
+/// How Bass, Arp, Tonal, and Lead follow the Pad's chord loop without reaching
+/// into `PadEngine`: the same cursor on the same transport beat, so the
 /// follower's chord always matches the pad's. The phrase is adopted from the
 /// first frame's controls, exactly as the pad adopts it at construction.
 pub(crate) struct ProgressionFollower {
@@ -1609,7 +1606,19 @@ impl ProgressionFollower {
             .cursor
             .get_or_insert_with(|| ProgressionCursor::new(pad));
         cursor.tick(pad, timing);
-        (cursor.window.progression, cursor.slot())
+        let progression = cursor.window.progression;
+        let mut step = cursor.step;
+        for _ in 0..cursor.window.count {
+            let slot = cursor.window.slot(step);
+            if !pad.chord_slot(progression, slot).is_tie() {
+                return (progression, slot);
+            }
+            if step == 0 {
+                break;
+            }
+            step -= 1;
+        }
+        (progression, cursor.slot())
     }
 }
 

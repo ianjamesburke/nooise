@@ -426,7 +426,8 @@ pub(crate) fn run(
 fn randomized_start_song(rng: &mut impl Rng) -> SongState {
     let mut controls = FluidControls::default();
     controls.pad.progression = rng.gen_range(0..PROGRESSIONS.len()) as f32;
-    controls.tonal.phrase = rng.gen_range(0..TONAL_PHRASES.len()) as f32;
+    let phrase = rng.gen_range(0..TONAL_PHRASES.len()) as f32;
+    controls.tonal.apply_phrase_preset(phrase);
     SongState::from_controls(controls)
 }
 

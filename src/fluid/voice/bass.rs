@@ -11,12 +11,13 @@ use crate::synth::oscillator::PolyBlepSaw;
 /// reads that slot's root directly. Built-ins retain their authored Bass
 /// register/pedal and transpose only by an edited Root/Accidental delta.
 pub(crate) fn bass_root_note(progression: usize, slot: usize, pad: &PadControls) -> i32 {
+    let slot = slot % CHORD_SLOT_COUNT;
     match PROGRESSIONS.get(progression) {
         Some(built_in) => {
-            let slot = slot % CHORD_SLOT_COUNT;
+            let built_in_slot = slot % BUILTIN_PROGRESSION_CHORDS;
             let shift = pad_chord_root_note(pad.chord_slot(progression, slot))
-                - pad_chord_root_note(&built_in.chords[slot].preset);
-            built_in.bass[slot] + shift
+                - pad_chord_root_note(&built_in.chords[built_in_slot].preset);
+            built_in.bass[built_in_slot] + shift
         }
         None => pad_chord_root_note(&pad.chord_slots[slot]),
     }
@@ -58,6 +59,80 @@ pub(crate) const BASS_RHYTHMS: [[bool; 16]; 4] = [
 /// trailing silence, for a "gap" feel).
 pub(crate) const BASS_STEP_BEATS: f32 = 0.25;
 
+pub(crate) fn bass_live_step_count(step_count: f32) -> usize {
+    (step_count.round() as i64).clamp(1, BASS_STEP_COUNT as i64) as usize
+}
+
+pub(crate) fn bass_loop_steps(c: &BassControls) -> usize {
+    let live_steps = bass_live_step_count(c.step_count);
+    let interval_steps = (c.interval_beats / BASS_STEP_BEATS)
+        .round()
+        .clamp(1.0, 32.0) as usize;
+    if interval_steps == BASS_STEP_COUNT && live_steps < BASS_STEP_COUNT {
+        live_steps
+    } else {
+        interval_steps
+    }
+}
+
+pub(crate) fn bass_authored_steps(c: &BassControls) -> [f32; BASS_STEP_COUNT] {
+    let rhythm = (c.rhythm.round() as isize).clamp(0, CUSTOM_BASS_RHYTHM_INDEX as isize) as usize;
+    if rhythm < BASS_RHYTHM_PRESET_COUNT {
+        bass_rhythm_steps(rhythm)
+    } else {
+        c.steps
+    }
+}
+
+pub(crate) fn bass_page_reach(bass: &BassControls, pad: &PadControls) -> LeadReach {
+    let window = ChordWindow::requested(pad);
+    lead_reach(
+        LeadFollow::from_value(bass.follow),
+        pad,
+        window.progression,
+        window.slot(0),
+    )
+}
+
+pub(crate) fn bass_step_note(
+    tone: usize,
+    follow: LeadFollow,
+    progression: usize,
+    slot: usize,
+    pad: &PadControls,
+    octave: f32,
+) -> i32 {
+    let octave_shift = (octave.round() as i32) * 12;
+    match follow {
+        LeadFollow::Chord => {
+            let root = bass_root_note(progression, slot, pad);
+            if tone <= 1 {
+                root + octave_shift
+            } else {
+                let reach = lead_reach(LeadFollow::Chord, pad, progression, slot);
+                let semitones_above_first = reach.note(tone, 0.0) - reach.note(1, 0.0);
+                root + semitones_above_first + octave_shift
+            }
+        }
+        LeadFollow::Scale => {
+            let reach = progression_scale(pad, progression);
+            reach.note(tone, octave) - 12
+        }
+    }
+}
+
+pub(crate) fn consecutive_ties_after(steps: &[f32], start_step: usize, live_len: usize) -> usize {
+    let len = live_len.min(steps.len());
+    if len <= 1 {
+        return 0;
+    }
+    let mut ties = 0usize;
+    while ties + 1 < len && lead_step_is_tie(steps[(start_step + 1 + ties) % len]) {
+        ties += 1;
+    }
+    ties
+}
+
 /// Bass is monophonic: a rhythm-grid hit hard-cuts whatever is currently
 /// sounding and starts the new note fresh, regardless of `decay_time`. The
 /// replaced voice isn't dropped instantly (that clicks) — it's handed to
@@ -88,10 +163,26 @@ pub(crate) struct BassEngine {
     /// its internal rhythm pattern.
     osc_input_active: bool,
     transport: Transport,
+    pub(crate) last_cycle: Option<u64>,
+    pub(crate) active_steps_source: [f32; BASS_STEP_COUNT],
+    pub(crate) evolved_steps: [f32; BASS_STEP_COUNT],
+    pub(crate) evolution_seed: u64,
+    pub(crate) evolution_count: u64,
+    pub(crate) session_state: Option<LiveSession>,
 }
 
 impl BassEngine {
+    #[cfg(test)]
     pub(crate) fn new(sample_rate: f32) -> Self {
+        Self::new_with_live_state(sample_rate, None)
+    }
+
+    pub(crate) fn new_with_live_state(
+        sample_rate: f32,
+        session_state: Option<LiveSession>,
+    ) -> Self {
+        let mut rng = StdRng::from_entropy();
+        let evolution_seed = rng.r#gen();
         Self {
             sample_rate,
             progression: ProgressionFollower::new(),
@@ -107,6 +198,57 @@ impl BassEngine {
             osc_release_beat: 0.0,
             osc_input_active: false,
             transport: Transport::Stopped,
+            last_cycle: None,
+            active_steps_source: DEFAULT_BASS_STEPS,
+            evolved_steps: DEFAULT_BASS_STEPS,
+            evolution_seed,
+            evolution_count: 0,
+            session_state,
+        }
+    }
+
+    fn evolve_steps(&mut self, live_len: usize, evolve_rate: f32, cycle: u64) {
+        let live_len = live_len.clamp(1, BASS_STEP_COUNT);
+        let max_tone = LEAD_TONE_COUNT as i32;
+        let mutations = ((evolve_rate.clamp(0.0, 1.0) * 3.0).ceil() as usize).max(1);
+        let seed = self
+            .evolution_seed
+            .wrapping_add(
+                self.evolution_count
+                    .wrapping_add(1)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            )
+            .wrapping_add(cycle.rotate_left(17));
+        let mut evo_rng = StdRng::seed_from_u64(seed);
+        for _ in 0..mutations {
+            let idx = evo_rng.gen_range(0..live_len);
+            let current = (self.evolved_steps[idx].round() as i32).clamp(-1, max_tone);
+            let next = if current <= 0 {
+                if evo_rng.gen_bool(0.55) {
+                    1
+                } else {
+                    evo_rng.gen_range(1..=max_tone)
+                }
+            } else if idx > 0 && evo_rng.gen_bool(0.12) {
+                -1
+            } else if evo_rng.gen_bool(0.20) {
+                0
+            } else {
+                let delta = if evo_rng.gen_bool(0.5) { 1 } else { -1 };
+                (current + delta).clamp(1, max_tone)
+            };
+            self.evolved_steps[idx] = next as f32;
+        }
+        if self.evolved_steps[0] < 0.0 {
+            self.evolved_steps[0] = 1.0;
+        }
+        self.evolution_count = self.evolution_count.saturating_add(1);
+        if let Some(session_state) = &self.session_state {
+            let steps = self.evolved_steps;
+            session_state.update(|snapshot| {
+                snapshot.controls.bass.steps = steps;
+                snapshot.controls.bass.rhythm = CUSTOM_BASS_RHYTHM_INDEX as f32;
+            });
         }
     }
 
@@ -137,13 +279,18 @@ impl BassEngine {
     /// Start a note now, handing whatever was sounding to the click-guard
     /// fade-out slot.
     fn start_note(&mut self, hz: f32, c: &BassControls) {
+        self.start_note_with_hold(hz, 0.0, c);
+    }
+
+    fn start_note_with_hold(&mut self, hz: f32, hold_seconds: f32, c: &BassControls) {
         self.fading_voice = self.voice.take();
         self.fade_samples_remaining = self.fade_total_samples;
-        self.voice = Some(BassVoice::new(
+        self.voice = Some(BassVoice::new_with_hold(
             wrapped_index(c.voice_type, BASS_TYPES.len()),
             hz,
             c.attack_time,
             c.decay_time,
+            hold_seconds,
             c.punch,
             self.sample_rate,
         ));
@@ -174,27 +321,54 @@ impl BassEngine {
             self.release_osc();
         }
 
-        let loop_len = (c.interval_beats / BASS_STEP_BEATS)
-            .round()
-            .clamp(1.0, 32.0) as usize;
+        let loop_len = bass_loop_steps(c);
+        let live_steps = bass_live_step_count(c.step_count);
         if self
             .step_trigger
             .pop_swung(timing, BASS_STEP_BEATS, c.offset_beats, c.swing)
         {
+            let authored = bass_authored_steps(c);
+            let is_custom = (c.rhythm.round() as usize) >= CUSTOM_BASS_RHYTHM_INDEX;
+            if is_custom && c.steps == self.evolved_steps {
+                self.active_steps_source = c.steps;
+            } else if authored != self.active_steps_source {
+                self.active_steps_source = authored;
+                self.evolved_steps = authored;
+                self.last_cycle = None;
+            }
+            let active_step_window = loop_len.min(live_steps);
+            let cycle_beats = (BASS_STEP_BEATS * loop_len as f32).max(BASS_STEP_BEATS);
+            let cycle = (timing.beat.max(0.0) / f64::from(cycle_beats)).floor() as u64;
+            if self.last_cycle.is_some_and(|last| cycle > last) && c.evolve_rate > 0.0 {
+                self.evolve_steps(active_step_window, c.evolve_rate, cycle);
+            }
+            self.last_cycle = Some(cycle);
+
             let rhythm_step = lane_step_at(timing.beat, BASS_STEP_BEATS, c.offset_beats, loop_len);
-            let rhythm = (c.rhythm.round() as usize) % BASS_RHYTHMS.len();
-            let hit = rhythm_step < BASS_RHYTHMS[rhythm].len() && BASS_RHYTHMS[rhythm][rhythm_step];
             // When inbound OSC notes are driving Bass, played notes replace the rhythm pattern.
-            if hit && !self.osc_input_active {
-                let note = bass_root_note(progression, slot, pad) + (c.octave.round() as i32) * 12;
+            if rhythm_step < active_step_window
+                && !self.osc_input_active
+                && let Some(tone) = lead_step_tone(self.evolved_steps[rhythm_step])
+            {
+                let follow = LeadFollow::from_value(c.follow);
+                let note = bass_step_note(tone, follow, progression, slot, pad, c.octave);
+                let ties =
+                    consecutive_ties_after(&self.evolved_steps, rhythm_step, active_step_window);
+                let hold_beats = ties as f32 * BASS_STEP_BEATS;
+                let hold_seconds = if ties > 0 {
+                    (f64::from(hold_beats) * 60.0 / timing.bpm.max(1.0)) as f32
+                } else {
+                    0.0
+                };
                 // Hard-cut: whatever was sounding hands off to the fade-out
                 // slot (replacing any prior fade in progress) and the new
                 // note starts clean and immediately, not layered on top.
-                self.start_note(note_hz(note, tune), c);
+                self.start_note_with_hold(note_hz(note, tune), hold_seconds, c);
                 if !self.osc_suppressed
                     && let Some(sink) = &self.osc
                 {
-                    let decay_beats = (f64::from(c.decay_time) * timing.bpm / 60.0) as f32;
+                    let decay_beats =
+                        hold_beats + (f64::from(c.decay_time) * timing.bpm / 60.0) as f32;
                     sink.send(OscVoiceEvent::BassNote {
                         note: tuned_note(note, tune),
                         decay_beats,
@@ -248,11 +422,32 @@ pub(crate) enum BassVoice {
 }
 
 impl BassVoice {
+    #[cfg(test)]
     pub(crate) fn new(
         voice_type: usize,
         hz: f32,
         attack_time: f32,
         decay_time: f32,
+        punch: f32,
+        sample_rate: f32,
+    ) -> Self {
+        Self::new_with_hold(
+            voice_type,
+            hz,
+            attack_time,
+            decay_time,
+            0.0,
+            punch,
+            sample_rate,
+        )
+    }
+
+    pub(crate) fn new_with_hold(
+        voice_type: usize,
+        hz: f32,
+        attack_time: f32,
+        decay_time: f32,
+        hold_seconds: f32,
         punch: f32,
         sample_rate: f32,
     ) -> Self {
@@ -287,6 +482,12 @@ impl BassVoice {
                 sample_rate,
             )),
         };
+        if hold_seconds > 0.0 {
+            voice
+                .core_mut()
+                .envelope
+                .set_hold(hold_seconds, sample_rate);
+        }
         voice.core_mut().sweep = PunchSweep::new(punch, sample_rate);
         voice
     }

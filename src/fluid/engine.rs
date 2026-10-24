@@ -754,13 +754,18 @@ impl FluidEngine {
             mute_gates: OutputGates::new(&live.muted),
             muted: live.muted,
             planned: live.planned,
-            pad: PadEngine::new(
+            pad: PadEngine::new_with_live_state(
                 sample_rate,
                 &snapshot.pad,
                 MasterKey::from_control(snapshot.master.key),
+                publish_tonal_session_state.then(|| session.clone()),
                 Arc::clone(&telemetry),
             ),
-            perc: PercEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
+            perc: PercEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+                Arc::clone(&telemetry),
+            ),
             kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
             tonal: TonalEngine::new_with_live_state(
                 sample_rate,
@@ -769,9 +774,20 @@ impl FluidEngine {
                 Arc::clone(&telemetry),
             ),
             clap: ClapEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
-            bass: BassEngine::new(sample_rate),
-            arp: ArpEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
-            lead: LeadEngine::with_play_state(sample_rate, live.lead_play),
+            bass: BassEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+            ),
+            arp: ArpEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+                Arc::clone(&telemetry),
+            ),
+            lead: LeadEngine::new_with_live_state(
+                sample_rate,
+                live.lead_play,
+                publish_tonal_session_state.then(|| session.clone()),
+            ),
             module_fx: ModuleFxBank::new(sample_rate),
             gesture_audio: GestureAudioBank::new(sample_rate),
             master_bus: MasterBus::new(&snapshot.master, sample_rate),
@@ -803,9 +819,12 @@ impl FluidEngine {
         self.beat_trigger = GridTrigger::new();
         self.bass.progression = ProgressionFollower::new();
         self.bass.step_trigger = GridTrigger::new();
+        self.bass.last_cycle = None;
         self.perc.trigger = GridTrigger::new();
+        self.perc.last_cycle = None;
         self.kick.trigger = GridTrigger::new();
         self.clap.trigger = GridTrigger::new();
+        self.tonal.progression = ProgressionFollower::new();
         self.tonal.step_trigger = GridTrigger::new();
         self.tonal.step_index = 0;
         self.tonal.last_cycle = None;
@@ -813,8 +832,11 @@ impl FluidEngine {
         self.arp.note_trigger = GridTrigger::new();
         self.arp.cycle_pos = 0;
         self.arp.ping_pong_dir = 1;
+        self.arp.step_index = 0;
+        self.arp.last_cycle = None;
         self.lead.progression = ProgressionFollower::new();
         self.lead.step_trigger = GridTrigger::new();
+        self.lead.last_cycle = None;
     }
 
     pub(crate) fn with_osc_voice(mut self, sink: OscVoiceSink) -> Self {
@@ -1091,7 +1113,7 @@ impl StereoEngine for FluidEngine {
             &self.effective.modules.tonal,
             self.tonal.next(
                 &self.effective.tonal,
-                self.pad.cursor.window.progression,
+                &self.effective.pad,
                 key,
                 layer_timing(Tab::Tonal, &self.effective.modules).with_groove_seed(4),
             ),

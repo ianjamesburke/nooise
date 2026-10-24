@@ -27,6 +27,12 @@ pub(crate) enum LeadFollow {
 
 pub(crate) const LEAD_FOLLOWS: [LeadFollow; 2] = [LeadFollow::Chord, LeadFollow::Scale];
 
+impl LeadFollow {
+    pub(crate) const fn value(self) -> f32 {
+        self as u8 as f32
+    }
+}
+
 /// The lane's transport. One control, two states, so a Steps LFO can gate
 /// the pattern in bars and play mode drops the lane out without leaving the
 /// keys. There is no armed record state: a phrase enters the lane by capture
@@ -233,18 +239,31 @@ pub(crate) fn progression_scale(_pad: &PadControls, progression: usize) -> LeadR
     LeadReach { notes, len: 7 }
 }
 
-/// A step value (or a play-row key) as a 1-based tone; `None` is the rest
-/// at position 0. Out-of-table values clamp to the last tone.
+pub(crate) const LEAD_STEP_TIE: f32 = -1.0;
+pub(crate) const LEAD_STEP_REST: f32 = 0.0;
+
+pub(crate) fn lead_step_is_tie(value: f32) -> bool {
+    (value.round() as i64) < LEAD_STEP_REST as i64
+}
+
+/// A step value (or a play-row key) as a 1-based tone; `None` is a rest (0)
+/// or tie (-1). Out-of-table values clamp to the valid range.
 pub(crate) fn lead_step_tone(value: f32) -> Option<usize> {
-    match (value.round() as i64).clamp(0, LEAD_TONE_COUNT as i64) as usize {
-        0 => None,
-        tone => Some(tone),
+    let rounded = (value.round() as i64).clamp(-1, LEAD_TONE_COUNT as i64);
+    if rounded <= 0 {
+        None
+    } else {
+        Some(rounded as usize)
     }
 }
 
 /// How a step value reads on the page, against the reach the song is in.
 pub(crate) fn lead_step_label(value: f32, reach: &LeadReach) -> String {
-    lead_step_tone(value).map_or_else(|| "Rest".to_string(), |tone| reach.label(tone))
+    if lead_step_is_tie(value) {
+        "Tie".to_string()
+    } else {
+        lead_step_tone(value).map_or_else(|| "Rest".to_string(), |tone| reach.label(tone))
+    }
 }
 
 /// The reach a page reads its labels against: the lane's tones are named
@@ -254,6 +273,16 @@ pub(crate) fn lead_page_reach(lead: &LeadControls, pad: &PadControls) -> LeadRea
     let window = ChordWindow::requested(pad);
     lead_reach(
         LeadFollow::from_value(lead.follow),
+        pad,
+        window.progression,
+        window.slot(0),
+    )
+}
+
+pub(crate) fn tonal_page_reach(tonal: &TonalControls, pad: &PadControls) -> LeadReach {
+    let window = ChordWindow::requested(pad);
+    lead_reach(
+        LeadFollow::from_value(tonal.follow),
         pad,
         window.progression,
         window.slot(0),
@@ -448,6 +477,7 @@ pub(crate) struct LeadEngine {
     held_seen: bool,
     pending_press: Option<(usize, bool)>,
     pending_release: bool,
+    lane_holding: bool,
     osc: OscVoiceSink,
     osc_suppressed: bool,
     osc_active_note: Option<u8>,
@@ -455,6 +485,12 @@ pub(crate) struct LeadEngine {
     osc_gate_remaining_beats: Option<f64>,
     input_note: Option<u8>,
     transport: Transport,
+    pub(crate) last_cycle: Option<u64>,
+    pub(crate) active_steps_source: [f32; LEAD_STEP_COUNT],
+    pub(crate) evolved_steps: [f32; LEAD_STEP_COUNT],
+    pub(crate) evolution_seed: u64,
+    pub(crate) evolution_count: u64,
+    pub(crate) session_state: Option<LiveSession>,
 }
 
 impl LeadEngine {
@@ -465,7 +501,18 @@ impl LeadEngine {
 
     /// Start already caught up with `play`, so a session that was loaded
     /// mid-gesture does not replay its last press on the first sample.
+    #[cfg(test)]
     pub(crate) fn with_play_state(sample_rate: f32, play: LeadPlayState) -> Self {
+        Self::new_with_live_state(sample_rate, play, None)
+    }
+
+    pub(crate) fn new_with_live_state(
+        sample_rate: f32,
+        play: LeadPlayState,
+        session_state: Option<LiveSession>,
+    ) -> Self {
+        let mut rng = StdRng::from_entropy();
+        let evolution_seed = rng.r#gen();
         Self {
             sample_rate,
             progression: ProgressionFollower::new(),
@@ -475,6 +522,7 @@ impl LeadEngine {
             held_seen: play.held,
             pending_press: None,
             pending_release: false,
+            lane_holding: false,
             osc: OscVoiceSink::default(),
             osc_suppressed: false,
             osc_active_note: None,
@@ -482,6 +530,52 @@ impl LeadEngine {
             osc_gate_remaining_beats: None,
             input_note: None,
             transport: Transport::Playing,
+            last_cycle: None,
+            active_steps_source: DEFAULT_LEAD_STEPS,
+            evolved_steps: DEFAULT_LEAD_STEPS,
+            evolution_seed,
+            evolution_count: 0,
+            session_state,
+        }
+    }
+
+    fn evolve_steps(&mut self, live_len: usize, evolve_rate: f32, cycle: u64) {
+        let live_len = live_len.clamp(1, LEAD_STEP_COUNT);
+        let max_tone = LEAD_TONE_COUNT as i32;
+        let mutations = ((evolve_rate.clamp(0.0, 1.0) * 3.0).ceil() as usize).max(1);
+        let seed = self
+            .evolution_seed
+            .wrapping_add(
+                self.evolution_count
+                    .wrapping_add(1)
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            )
+            .wrapping_add(cycle.rotate_left(17));
+        let mut evo_rng = StdRng::seed_from_u64(seed);
+        for _ in 0..mutations {
+            let idx = evo_rng.gen_range(0..live_len);
+            let current = (self.evolved_steps[idx].round() as i32).clamp(-1, max_tone);
+            let next = if current <= 0 {
+                evo_rng.gen_range(1..=max_tone)
+            } else if idx > 0 && evo_rng.gen_bool(0.10) {
+                -1
+            } else if evo_rng.gen_bool(0.12) {
+                0
+            } else {
+                let delta = if evo_rng.gen_bool(0.5) { 1 } else { -1 };
+                (current + delta).clamp(1, max_tone)
+            };
+            self.evolved_steps[idx] = next as f32;
+        }
+        if self.evolved_steps[0] < 0.0 {
+            self.evolved_steps[0] = 1.0;
+        }
+        self.evolution_count = self.evolution_count.saturating_add(1);
+        if let Some(session_state) = &self.session_state {
+            let steps = self.evolved_steps;
+            session_state.update(|snapshot| {
+                snapshot.controls.lead.steps = steps;
+            });
         }
     }
 
@@ -500,6 +594,7 @@ impl LeadEngine {
     /// echoing back to outbound OSC.
     pub(crate) fn osc_note_on(&mut self, note: u8, c: &LeadControls, tune: f32) {
         self.input_note = Some(note);
+        self.lane_holding = false;
         self.play(i32::from(note), tune, c, true);
     }
 
@@ -586,6 +681,10 @@ impl LeadEngine {
         if !osc_enabled || timing.transport != self.transport {
             self.release_osc();
         }
+        if timing.transport != Transport::Playing && self.lane_holding {
+            self.lane_holding = false;
+            self.release();
+        }
         self.transport = timing.transport;
         if let Some(remaining) = &mut self.osc_gate_remaining_beats {
             *remaining -= timing.bpm / (60.0 * timing.sample_rate);
@@ -604,7 +703,24 @@ impl LeadEngine {
             .step_trigger
             .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
         {
+            if c.steps == self.evolved_steps {
+                self.active_steps_source = c.steps;
+            } else if c.steps != self.active_steps_source {
+                self.active_steps_source = c.steps;
+                self.evolved_steps = c.steps;
+                self.last_cycle = None;
+            }
             let count = lead_live_step_count(c.step_count);
+            let cycle_beats = (rate_beats * count as f32).max(LEAD_RATE_BEATS_MIN);
+            let cycle = (timing.beat.max(0.0) / f64::from(cycle_beats)).floor() as u64;
+            if self.last_cycle.is_some_and(|last| cycle > last)
+                && c.evolve_rate > 0.0
+                && LeadPattern::from_value(c.pattern) != LeadPattern::Off
+            {
+                self.evolve_steps(count, c.evolve_rate, cycle);
+            }
+            self.last_cycle = Some(cycle);
+
             let lane_step = lane_step_at(timing.beat, rate_beats, c.offset_beats, count);
             // A silent layer plays nothing, so a Level of exactly 0 (the
             // default) never keeps a voice alive. A rest lets the current
@@ -616,16 +732,47 @@ impl LeadEngine {
                 && LeadPattern::from_value(c.pattern) != LeadPattern::Off
                 && !self.held_seen
                 && self.input_note.is_none()
-                && let Some(tone) = lead_step_tone(c.steps[lane_step])
             {
-                let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
-                let note = reach.note(tone, c.octave);
-                if c.level != 0.0 {
-                    self.play(note, tune, c, false);
+                let step_val = self.evolved_steps[lane_step];
+                if let Some(tone) = lead_step_tone(step_val) {
+                    let mut tied_steps = 0usize;
+                    while tied_steps + 1 < count
+                        && lead_step_is_tie(
+                            self.evolved_steps[(lane_step + 1 + tied_steps) % count],
+                        )
+                    {
+                        tied_steps += 1;
+                    }
+                    let hold_for_tie = tied_steps > 0;
+                    self.lane_holding = hold_for_tie;
+                    let reach =
+                        lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
+                    let note = reach.note(tone, c.octave);
+                    if c.level != 0.0 {
+                        self.play(note, tune, c, hold_for_tie);
+                    }
+                    if osc_enabled {
+                        let osc_gate = if tied_steps > 0 {
+                            rate_beats * (1 + tied_steps) as f32
+                        } else {
+                            gate_beats
+                        };
+                        self.play_osc(note, tune, osc_gate, false);
+                    }
+                } else if lead_step_is_tie(step_val) {
+                    let next_is_tie =
+                        count > 1 && lead_step_is_tie(self.evolved_steps[(lane_step + 1) % count]);
+                    if !next_is_tie && self.lane_holding {
+                        self.lane_holding = false;
+                        self.release();
+                    }
+                } else if self.lane_holding {
+                    self.lane_holding = false;
+                    self.release();
                 }
-                if osc_enabled {
-                    self.play_osc(note, tune, gate_beats, false);
-                }
+            } else if self.lane_holding {
+                self.lane_holding = false;
+                self.release();
             }
         }
         // A played key sounds the moment the engine sees it, on top of (and
@@ -634,6 +781,7 @@ impl LeadEngine {
             && (c.level != 0.0 || osc_enabled)
             && let Some(tone) = lead_step_tone(pressed as f32)
         {
+            self.lane_holding = false;
             let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
             let note = reach.note(tone, c.octave);
             if c.level != 0.0 {

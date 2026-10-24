@@ -133,16 +133,9 @@ impl PaletteEntry {
                 Operation::Chord(_) => "selected chord".to_string(),
                 Operation::ChordNames(_) => "display".to_string(),
                 Operation::OutputDevice => "routing".to_string(),
+                Operation::ClearSequence => "visible sequence".to_string(),
             },
-            Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => {
-                if super::pad_rhythm_row_bit(spec.id)
-                    .is_some_and(|bit| c.hidden_pad_rhythm_rows & bit != 0)
-                {
-                    "add".to_string()
-                } else {
-                    (spec.display)(c)
-                }
-            }
+            Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => (spec.display)(c),
             // A loaded module shows its collapsed row's value, the same
             // knob its page row shows (a Filter's cutoff, not its mix).
             Self::Module { tab, catalog_index } => {

@@ -5,7 +5,10 @@
 use std::sync::Arc;
 
 use super::module::LayerModules;
-use super::voice::{CUSTOM_PROGRESSION_INDEX, LeadPattern, PROGRESSIONS, progression_index};
+use super::voice::{
+    CUSTOM_PROGRESSION_INDEX, LeadPattern, PROGRESSIONS, arp_generate_steps,
+    arp_pattern_from_control, progression_index,
+};
 
 pub(crate) const MASTER_BPM_MIN: f32 = 30.0;
 pub(crate) const MASTER_BPM_MAX: f32 = 200.0;
@@ -38,13 +41,56 @@ impl Default for MasterControls {
     }
 }
 
+pub(crate) const PERC_STEP_COUNT: usize = 16;
+pub(crate) const PERC_PATTERN_PRESET_COUNT: usize = 4;
+pub(crate) const CONTINUOUS_PERC_PATTERN_INDEX: usize = 4;
+pub(crate) const CUSTOM_PERC_PATTERN_INDEX: usize = 5;
+
+pub(crate) const PERC_PATTERNS: &[&str] = &[
+    "Steady",
+    "Offbeat",
+    "Broken",
+    "Groove",
+    "Continuous",
+    "Custom",
+];
+
+pub(crate) const DEFAULT_PERC_STEPS: [f32; PERC_STEP_COUNT] = [1.0; PERC_STEP_COUNT];
+
+/// Built-in Perc pattern presets (`Steady`, `Offbeat`, `Broken`, `Groove`).
+pub(crate) const PERC_PATTERN_PRESETS: [(u8, [f32; PERC_STEP_COUNT]); PERC_PATTERN_PRESET_COUNT] = [
+    (8, DEFAULT_PERC_STEPS),
+    (
+        8,
+        [
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+        ],
+    ),
+    (
+        8,
+        [
+            1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0,
+        ],
+    ),
+    (
+        16,
+        [
+            1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, -1.0, 0.0,
+        ],
+    ),
+];
+
 #[derive(Clone)]
 pub(crate) struct PercControls {
     pub(crate) level: f32,
     pub(crate) attack_ms: f32,
     pub(crate) decay_ms: f32,
+    pub(crate) pattern: f32,
     pub(crate) interval_beats: f32,
     pub(crate) offset_beats: f32,
+    pub(crate) step_count: f32,
+    pub(crate) evolve_rate: f32,
+    pub(crate) steps: [f32; PERC_STEP_COUNT],
     pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
@@ -54,9 +100,25 @@ impl Default for PercControls {
             level: 0.0,
             attack_ms: 0.0,
             decay_ms: 200.0,
+            pattern: 0.0,
             interval_beats: 0.25,
             offset_beats: 0.0,
+            step_count: 8.0,
+            evolve_rate: 0.0,
+            steps: DEFAULT_PERC_STEPS,
             swing: 0.0,
+        }
+    }
+}
+
+impl PercControls {
+    pub(crate) fn apply_pattern_preset(&mut self, pattern_value: f32) {
+        let idx =
+            (pattern_value.round() as isize).clamp(0, CUSTOM_PERC_PATTERN_INDEX as isize) as usize;
+        self.pattern = idx as f32;
+        if let Some(&(len, steps)) = PERC_PATTERN_PRESETS.get(idx) {
+            self.step_count = len as f32;
+            self.steps = steps;
         }
     }
 }
@@ -78,6 +140,17 @@ pub(crate) struct ChordSlotControls {
 }
 
 impl ChordSlotControls {
+    pub(crate) const REST_DEGREE: f32 = -9.0;
+    pub(crate) const TIE_DEGREE: f32 = -8.0;
+
+    pub(crate) fn is_rest(self) -> bool {
+        (self.degree.round() as i32) <= Self::REST_DEGREE as i32
+    }
+
+    pub(crate) fn is_tie(self) -> bool {
+        (self.degree.round() as i32) == Self::TIE_DEGREE as i32
+    }
+
     /// Compact authored/wire order: root, accidental, third, extensions,
     /// bass, spread, fifth. All values are exact discrete choices.
     pub(crate) const fn preset(values: [i8; 8]) -> Self {
@@ -124,16 +197,21 @@ impl ChordSlotControls {
     }
 }
 
+/// Number of chords in each built-in progression table (`PROGRESSIONS`), and the
+/// default active length of `pad.chord_count`.
+pub(crate) const BUILTIN_PROGRESSION_CHORDS: usize = 8;
+pub(crate) const DEFAULT_CHORD_COUNT: usize = 8;
+
+/// Number of chord sequence steps (`PadControls::chord_slots`), and the max of
+/// `pad.chord_count`.
+pub(crate) const CHORD_SLOT_COUNT: usize = 16;
+
 /// Default per-slot root degrees for a fresh custom progression: a stepwise
 /// shape around the tonic so switching into Custom mode is immediately
-/// musical rather than eight identical tonic chords.
-pub(crate) const DEFAULT_CHORD_SLOT_DEGREES: [f32; 8] = [0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 2.0, 4.0];
-
-/// Number of custom chord slots (`PadControls::chord_slots`), and the max of
-/// `pad.chord_count`. Matches the built-ins' fixed 8-chord length.
-pub(crate) const CHORD_SLOT_COUNT: usize = 8;
-pub(crate) const PAD_STEP_COUNT: usize = 16;
-pub(crate) const PAD_RHYTHM_ROWS: u8 = 0b0000_1101;
+/// musical rather than identical tonic chords.
+pub(crate) const DEFAULT_CHORD_SLOT_DEGREES: [f32; CHORD_SLOT_COUNT] = [
+    0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 2.0, 4.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 2.0, 4.0,
+];
 
 /// Audio-only scratch for the currently evaluated progression. Registry
 /// automation writes here so its shared authored bank never needs a copy.
@@ -150,18 +228,14 @@ pub(crate) type ChordOverrideSlots =
 pub(crate) struct PadControls {
     pub(crate) level: f32,
     pub(crate) voice_type: f32, // Character selector; labels and range live in PAD_TYPES.
-    pub(crate) chord_bars: f32, // 1,2,4,8,16,32,64
+    pub(crate) chord_bars: f32, // 0.0625..=64.0 bars (0.25..=256 beats)
     pub(crate) chord_count: f32,
-    /// The table slot the loop starts from, 0..8; `ChordWindow` wraps.
+    /// The table slot the loop starts from, 0..16; `ChordWindow` wraps.
     pub(crate) chord_offset: f32,
     pub(crate) progression: f32,
     pub(crate) chord_notes: f32,
-    pub(crate) trigger: f32,
     pub(crate) swing: f32,
-    pub(crate) gate_beats: f32,
-    /// Beats the Stabs step lane is shifted; 0 keeps the lane on the grid.
-    pub(crate) offset_beats: f32,
-    pub(crate) steps: [f32; PAD_STEP_COUNT],
+    pub(crate) evolve_rate: f32,
     pub(crate) chord_slots: [ChordSlotControls; CHORD_SLOT_COUNT],
     pub(crate) chord_overrides: Arc<ChordOverrideSlots>,
     /// Rebuilt each audio evaluation; excluded from authored song state.
@@ -179,17 +253,12 @@ impl Default for PadControls {
             level: 0.7,
             voice_type: 0.0,
             chord_bars: 4.0,
-            chord_count: 8.0,
+            chord_count: DEFAULT_CHORD_COUNT as f32,
             chord_offset: 0.0,
             progression: 0.0,
             chord_notes: 4.0,
-            trigger: 0.0,
             swing: 0.0,
-            gate_beats: 0.5,
-            offset_beats: 0.0,
-            steps: [
-                1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0,
-            ],
+            evolve_rate: 0.0,
             chord_slots: std::array::from_fn(|slot| ChordSlotControls {
                 degree: DEFAULT_CHORD_SLOT_DEGREES[slot],
                 ..ChordSlotControls::default()
@@ -219,12 +288,12 @@ impl PadControls {
         match PROGRESSIONS.get(progression) {
             Some(authored) => self.chord_overrides[progression][slot]
                 .as_ref()
-                .unwrap_or(&authored.chords[slot].preset),
+                .unwrap_or(&authored.chords[slot % BUILTIN_PROGRESSION_CHORDS].preset),
             None => &self.chord_slots[slot],
         }
     }
 
-    /// Called before any audio automation setter. Resetting eight optional
+    /// Called before any audio automation setter. Resetting sixteen optional
     /// slots is bounded; subsequent effective edits never mutate the Arc.
     pub(crate) fn begin_chord_evaluation(&mut self) {
         self.evaluated_chords = Some(EvaluatedChords {
@@ -239,8 +308,8 @@ impl PadControls {
         let Some(authored) = PROGRESSIONS.get(progression) else {
             return &mut self.chord_slots[slot];
         };
-        let preset =
-            self.chord_overrides[progression][slot].unwrap_or(authored.chords[slot].preset);
+        let preset = self.chord_overrides[progression][slot]
+            .unwrap_or(authored.chords[slot % BUILTIN_PROGRESSION_CHORDS].preset);
         if let Some(evaluated) = &mut self.evaluated_chords {
             if evaluated.progression != progression {
                 evaluated.progression = progression;
@@ -311,17 +380,75 @@ impl Default for KickControls {
     }
 }
 
+pub(crate) const TONAL_STEP_COUNT: usize = 16;
+pub(crate) const TONAL_PHRASE_PRESET_COUNT: usize = 8;
+pub(crate) const CUSTOM_TONAL_PHRASE_INDEX: usize = TONAL_PHRASE_PRESET_COUNT;
+
+/// Built-in Tonal phrase presets A..H (`(step_count, steps)`).
+pub(crate) const TONAL_PHRASE_PRESETS: [(u8, [f32; TONAL_STEP_COUNT]); TONAL_PHRASE_PRESET_COUNT] = [
+    (
+        8,
+        [
+            1.0, 4.0, 7.0, 3.0, 5.0, 8.0, 4.0, 7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        12,
+        [
+            1.0, 5.0, 8.0, 9.0, 8.0, 5.0, 4.0, 3.0, 4.0, 7.0, 5.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        8,
+        [
+            8.0, 9.0, 5.0, 4.0, 9.0, 8.0, 5.0, 7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        12,
+        [
+            1.0, 3.0, 5.0, 7.0, 9.0, 8.0, 7.0, 5.0, 4.0, 5.0, 7.0, 3.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        8,
+        [
+            5.0, 7.0, 9.0, 5.0, 7.0, 5.0, 9.0, 7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        16,
+        [
+            1.0, 4.0, 5.0, 7.0, 8.0, 7.0, 5.0, 4.0, 3.0, 4.0, 5.0, 1.0, 7.0, 1.0, 3.0, 4.0,
+        ],
+    ),
+    (
+        8,
+        [
+            9.0, 8.0, 7.0, 5.0, 4.0, 5.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        16,
+        [
+            1.0, 3.0, 4.0, 7.0, 5.0, 8.0, 7.0, 9.0, 8.0, 5.0, 9.0, 7.0, 5.0, 9.0, 7.0, 5.0,
+        ],
+    ),
+];
+
 #[derive(Clone)]
 pub(crate) struct TonalControls {
     pub(crate) level: f32,
     pub(crate) synth_type: f32,
     pub(crate) octave: f32,
     pub(crate) phrase: f32,
+    pub(crate) follow: f32,
     pub(crate) randomness: f32,
     pub(crate) evolve_rate: f32,
     pub(crate) rate_beats: f32,
-    pub(crate) step_interval_beats: f32,
     pub(crate) offset_beats: f32,
+    pub(crate) step_count: f32,
+    pub(crate) steps: [f32; TONAL_STEP_COUNT],
     pub(crate) attack: f32,
     pub(crate) decay: f32,
     pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
@@ -334,11 +461,13 @@ impl Default for TonalControls {
             synth_type: 0.0,
             octave: 0.0,
             phrase: 0.0,
+            follow: 1.0,
             randomness: 0.5,
             evolve_rate: 0.0,
             rate_beats: 0.5,
-            step_interval_beats: 16.0,
             offset_beats: 0.0,
+            step_count: TONAL_PHRASE_PRESETS[0].0 as f32,
+            steps: TONAL_PHRASE_PRESETS[0].1,
             // Attack + decay are the note's whole envelope: ramp in over
             // `attack`, then fall from the peak to silence over `decay`. The
             // note's sounding length is exactly `attack + decay`, decoupled
@@ -347,6 +476,23 @@ impl Default for TonalControls {
             attack: 0.03,
             decay: 1.2,
             swing: 0.0,
+        }
+    }
+}
+
+impl TonalControls {
+    #[cfg(test)]
+    pub(crate) fn active_step_count(&self) -> usize {
+        (self.step_count.round() as usize).clamp(1, TONAL_STEP_COUNT)
+    }
+
+    pub(crate) fn apply_phrase_preset(&mut self, phrase_value: f32) {
+        let idx =
+            (phrase_value.round() as isize).clamp(0, CUSTOM_TONAL_PHRASE_INDEX as isize) as usize;
+        self.phrase = idx as f32;
+        if let Some(&(len, steps)) = TONAL_PHRASE_PRESETS.get(idx) {
+            self.step_count = len as f32;
+            self.steps = steps;
         }
     }
 }
@@ -378,6 +524,19 @@ impl Default for ClapControls {
     }
 }
 
+pub(crate) const BASS_STEP_COUNT: usize = 16;
+pub(crate) const BASS_RHYTHM_PRESET_COUNT: usize = 4;
+pub(crate) const CUSTOM_BASS_RHYTHM_INDEX: usize = BASS_RHYTHM_PRESET_COUNT;
+
+pub(crate) const DEFAULT_BASS_STEPS: [f32; BASS_STEP_COUNT] = [
+    1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+];
+
+pub(crate) fn bass_rhythm_steps(rhythm: usize) -> [f32; BASS_STEP_COUNT] {
+    let flags = super::voice::BASS_RHYTHMS[rhythm % super::voice::BASS_RHYTHMS.len()];
+    std::array::from_fn(|idx| if flags[idx] { 1.0 } else { 0.0 })
+}
+
 #[derive(Clone)]
 pub(crate) struct BassControls {
     pub(crate) level: f32,
@@ -385,7 +544,11 @@ pub(crate) struct BassControls {
     pub(crate) punch: f32, // 0..1 onset pitch drop and brightness; 0 leaves every type untouched
     pub(crate) interval_beats: f32, // crops the 16-step rhythm phrase to this many beats (step length is fixed)
     pub(crate) offset_beats: f32,
-    pub(crate) rhythm: f32, // 0..=3, A/B/C/D pattern selector
+    pub(crate) rhythm: f32, // 0..=3 A/B/C/D pattern selector, 4=Custom
+    pub(crate) follow: f32, // 0=Chord, 1=Scale
+    pub(crate) step_count: f32,
+    pub(crate) evolve_rate: f32,
+    pub(crate) steps: [f32; BASS_STEP_COUNT],
     pub(crate) octave: f32, // octaves relative to the chord root, e.g. -1.0 = one octave down
     pub(crate) attack_time: f32,
     pub(crate) decay_time: f32, // also used as the cutoff curve when a hit retriggers mid-decay
@@ -401,6 +564,10 @@ impl Default for BassControls {
             interval_beats: 4.0,
             offset_beats: 0.0,
             rhythm: 0.0,
+            follow: 0.0,
+            step_count: BASS_STEP_COUNT as f32,
+            evolve_rate: 0.0,
+            steps: DEFAULT_BASS_STEPS,
             octave: -1.0,
             decay_time: 0.3,
             attack_time: 0.01,
@@ -409,14 +576,37 @@ impl Default for BassControls {
     }
 }
 
+impl BassControls {
+    pub(crate) fn apply_rhythm_preset(&mut self, rhythm_value: f32) {
+        let idx =
+            (rhythm_value.round() as isize).clamp(0, CUSTOM_BASS_RHYTHM_INDEX as isize) as usize;
+        self.rhythm = idx as f32;
+        if idx < CUSTOM_BASS_RHYTHM_INDEX {
+            self.steps = bass_rhythm_steps(idx);
+        }
+    }
+}
+
+pub(crate) const ARP_STEP_COUNT: usize = 16;
+pub(crate) const ARP_TONE_COUNT: usize = 12;
+pub(crate) const CUSTOM_ARP_PATTERN_INDEX: usize = 4;
+
+pub(crate) const DEFAULT_ARP_STEPS: [f32; ARP_STEP_COUNT] = [
+    1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0,
+];
+
 #[derive(Clone)]
 pub(crate) struct ArpControls {
     pub(crate) gain: f32,
     pub(crate) voice_type: f32, // same Sine/piano-profile set as tonal.synth_type
     pub(crate) rate_beats: f32,
     pub(crate) offset_beats: f32,
-    pub(crate) pattern: f32, // 0=Up, 1=Down, 2=Up-Down, 3=Random
+    pub(crate) pattern: f32, // 0=Up, 1=Down, 2=Up-Down, 3=Random, 4=Custom
+    pub(crate) follow: f32,  // 0=Chord, 1=Scale
     pub(crate) octaves: f32, // 1-3, octave span of the cycled chord tones
+    pub(crate) step_count: f32,
+    pub(crate) evolve_rate: f32,
+    pub(crate) steps: [f32; ARP_STEP_COUNT],
     pub(crate) attack: f32,
     pub(crate) decay: f32,
     pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
@@ -434,10 +624,40 @@ impl Default for ArpControls {
             rate_beats: 0.5,
             offset_beats: 0.0,
             pattern: 0.0,
+            follow: 0.0,
             octaves: 1.0,
+            step_count: 8.0,
+            evolve_rate: 0.0,
+            steps: DEFAULT_ARP_STEPS,
             attack: 0.005,
             decay: 0.4,
             swing: 0.0,
+        }
+    }
+}
+
+impl ArpControls {
+    pub(crate) fn apply_pattern_preset(&mut self, pattern_value: f32) {
+        let idx =
+            (pattern_value.round() as isize).clamp(0, CUSTOM_ARP_PATTERN_INDEX as isize) as usize;
+        self.pattern = idx as f32;
+        if idx < CUSTOM_ARP_PATTERN_INDEX {
+            let (len, steps) =
+                arp_generate_steps(arp_pattern_from_control(self.pattern), self.octaves);
+            self.step_count = len as f32;
+            self.steps = steps;
+        }
+    }
+
+    pub(crate) fn apply_octaves(&mut self, octaves_value: f32) {
+        self.octaves = octaves_value.round().clamp(1.0, 3.0);
+        let idx =
+            (self.pattern.round() as isize).clamp(0, CUSTOM_ARP_PATTERN_INDEX as isize) as usize;
+        if idx < CUSTOM_ARP_PATTERN_INDEX {
+            let (len, steps) =
+                arp_generate_steps(arp_pattern_from_control(self.pattern), self.octaves);
+            self.step_count = len as f32;
+            self.steps = steps;
         }
     }
 }
@@ -468,7 +688,8 @@ pub(crate) struct LeadControls {
     pub(crate) rate_beats: f32,
     pub(crate) offset_beats: f32,
     pub(crate) step_count: f32, // 1..=LEAD_STEP_COUNT live steps in the lane
-    pub(crate) pattern: f32,    // lane transport: labels and range live in LEAD_PATTERNS
+    pub(crate) evolve_rate: f32,
+    pub(crate) pattern: f32, // lane transport: labels and range live in LEAD_PATTERNS
     pub(crate) steps: [f32; LEAD_STEP_COUNT],
     pub(crate) swing: f32, // derived from the optional Swing module
 }
@@ -490,6 +711,7 @@ impl Default for LeadControls {
             rate_beats: 0.5,
             offset_beats: 0.0,
             step_count: 8.0,
+            evolve_rate: 0.0,
             // Play, so a code from before the transport existed still runs
             // its lane.
             pattern: LeadPattern::Play.value(),
@@ -499,7 +721,7 @@ impl Default for LeadControls {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct FluidControls {
     pub(crate) master: MasterControls,
     pub(crate) perc: PercControls,
@@ -510,27 +732,7 @@ pub(crate) struct FluidControls {
     pub(crate) bass: BassControls,
     pub(crate) arp: ArpControls,
     pub(crate) lead: LeadControls,
-    /// Pad Trigger, Gate, and Offset rows hidden until selected through `/`.
-    pub(crate) hidden_pad_rhythm_rows: u8,
     /// Per-layer module chains, including the factory presets defined by
     /// `LayerModules::default`.
     pub(crate) modules: LayerModules,
-}
-
-impl Default for FluidControls {
-    fn default() -> Self {
-        Self {
-            master: MasterControls::default(),
-            perc: PercControls::default(),
-            pad: PadControls::default(),
-            kick: KickControls::default(),
-            tonal: TonalControls::default(),
-            clap: ClapControls::default(),
-            bass: BassControls::default(),
-            arp: ArpControls::default(),
-            lead: LeadControls::default(),
-            hidden_pad_rhythm_rows: PAD_RHYTHM_ROWS,
-            modules: LayerModules::default(),
-        }
-    }
 }

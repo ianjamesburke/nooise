@@ -6,7 +6,7 @@ Shared synthesis primitives consumed by voice engines in `fluid.rs`.
 
 ## Ownership
 
-- `envelope.rs` — ADSR/attack-release envelope generators.
+- `envelope.rs` — ADSR/attack-release envelope generators (with `Adsr::set_hold` for peak-hold sustain before decay).
 - `oscillator.rs` — `SineOscillator` (with `next_scaled` for a caller-owned pitch envelope; `next` stays the unscaled path) and `PolyBlepSaw`, a band-limited saw read at a fresh frequency every sample.
 - `filter.rs` — `SvfLowpass`, a per-voice TPT state-variable lowpass that stays stable while its cutoff moves every sample. Module slots use `fx::filter` instead.
 - `noise.rs` — white-noise generator used by unpitched/textural voices.

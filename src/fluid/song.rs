@@ -15,15 +15,15 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use super::range_epoch::{CURRENT_RANGE_EPOCH, DRUNKEN_WAVE_EPOCH, stale_modulation};
 use super::song_ids::{song_id_at, song_id_index};
-use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
+use super::voice::{TONAL_MAX_LOOP_STEPS, TonalSequenceState};
 use super::{
-    AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO,
-    EditorMotionAddress, EditorMotionField, EnvField, EnvTrigger, EnvelopeRoute, FluidControls,
-    GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState, LfoField, LfoRoute, LfoShape,
-    MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
-    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField,
-    MuteState, PAD_RHYTHM_ROWS, PlannedAction, RampParams, Step, StepTarget, TAB_COUNT, Tab,
-    all_specs, parse_module_slot_id, spec_by_id,
+    AutomationState, CUSTOM_TONAL_PHRASE_INDEX, ControlAddress, ControlKind, ControlSpec,
+    DEFAULT_LFO_DEPTH_RATIO, EditorMotionAddress, EditorMotionField, EnvField, EnvTrigger,
+    EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState,
+    LfoField, LfoRoute, LfoShape, MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS,
+    MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS,
+    MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField, MuteState, PlannedAction,
+    RampParams, Step, StepTarget, TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -48,11 +48,8 @@ const GESTURE_RECORD: u8 = 4;
 const RANGE_EPOCH_RECORD: u8 = 5;
 /// Retired MIDI-row visibility record; any code carrying it is refused.
 const MIDI_ROWS_RECORD: u8 = 6;
-/// Pad rhythm rows hidden by default and restored with a song.
+/// Retired Pad rhythm-row visibility record; any code carrying it is refused.
 const PAD_RHYTHM_ROWS_RECORD: u8 = 7;
-/// Visibility bit of the retired `pad.swing` row. Visibility is not audible
-/// state; the swing value itself is refused as `RetiredControl`.
-const RETIRED_PAD_SWING_ROW: u8 = 1 << 1;
 const CAPTURE_RECORD: u8 = 8;
 const LANE_BYPASS_RECORD: u8 = 9;
 /// Beat offset that lets a saved Drunken wave resume its phrase position.
@@ -141,8 +138,6 @@ pub(crate) enum SongCodeError {
         kind: u8,
     },
     DuplicateGestureRecord,
-    InvalidPadRhythmRows(u8),
-    DuplicatePadRhythmRowsRecord,
     InvalidCapture,
     UnsupportedMotionVersion(u8),
     InvalidChordOverrides,
@@ -223,12 +218,6 @@ impl fmt::Display for SongCodeError {
                 "song code repeats gesture kind {kind} on target {target}"
             ),
             Self::DuplicateGestureRecord => write!(f, "song code repeats the gesture record"),
-            Self::InvalidPadRhythmRows(rows) => {
-                write!(f, "song code has unknown Pad rhythm row bits {rows:#04x}")
-            }
-            Self::DuplicatePadRhythmRowsRecord => {
-                write!(f, "song code repeats the Pad rhythm rows record")
-            }
             Self::InvalidDrunkenPhase => write!(f, "song code has an invalid Drunken phase"),
             Self::StaleDrunken => write!(
                 f,
@@ -370,13 +359,6 @@ pub(crate) fn encode_song_code_at_epoch(
         write_planned_action(action, &mut planned);
         write_record(PLANNED_ACTION_RECORD, &planned, &mut bytes)?;
     }
-    if song.controls.hidden_pad_rhythm_rows != PAD_RHYTHM_ROWS {
-        write_record(
-            PAD_RHYTHM_ROWS_RECORD,
-            &[song.controls.hidden_pad_rhythm_rows],
-            &mut bytes,
-        )?;
-    }
     if song.drunken_phase_beat != 0.0 {
         if !song.drunken_phase_beat.is_finite() || song.drunken_phase_beat < 0.0 {
             return Err(SongCodeError::InvalidDrunkenPhase);
@@ -436,7 +418,6 @@ fn decode_song_code_at_any_epoch(code: &str) -> Result<(SongState, u16), SongCod
 fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeError> {
     let mut song = SongState::default();
     let mut gesture_record_seen = false;
-    let mut pad_rhythm_rows_record_seen = false;
     let mut drunken_phase_record_seen = false;
     let mut capture_record_seen = false;
     let mut editor_motion_record_seen = false;
@@ -492,16 +473,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 return Err(SongCodeError::RetiredControl("midi routing"));
             }
             PAD_RHYTHM_ROWS_RECORD => {
-                if pad_rhythm_rows_record_seen {
-                    return Err(SongCodeError::DuplicatePadRhythmRowsRecord);
-                }
-                pad_rhythm_rows_record_seen = true;
-                let mut rows = Reader::new(payload);
-                let bits = rows.u8()?;
-                if !rows.is_empty() || bits & !(PAD_RHYTHM_ROWS | RETIRED_PAD_SWING_ROW) != 0 {
-                    return Err(SongCodeError::InvalidPadRhythmRows(bits));
-                }
-                song.controls.hidden_pad_rhythm_rows = bits & PAD_RHYTHM_ROWS;
+                return Err(SongCodeError::RetiredControl("pad.trigger"));
             }
             GESTURE_RECORD => {
                 if gesture_record_seen {
@@ -730,7 +702,7 @@ mod chord_override_codec_tests {
             (1, 255),
             (2, 8),
             (2, 255),
-            (3, 8),
+            (3, 16),
             (4, 127),
             (5, 2),
             (6, 5),
@@ -1525,7 +1497,7 @@ fn read_tonal_sequence(bytes: &[u8]) -> Result<TonalSequenceState, SongCodeError
     let mut reader = Reader::new(bytes);
     let phrase = reader.u8()? as usize;
     let note_count = reader.u8()? as usize;
-    if phrase >= TONAL_PHRASES.len() || note_count == 0 || note_count > TONAL_MAX_LOOP_STEPS {
+    if phrase > CUSTOM_TONAL_PHRASE_INDEX || note_count == 0 || note_count > TONAL_MAX_LOOP_STEPS {
         return Err(SongCodeError::Truncated);
     }
     let mut notes = Vec::with_capacity(note_count);
@@ -1729,7 +1701,17 @@ fn control_at(index: u16) -> Option<&'static ControlSpec> {
 /// reconstruct the default from either — so this both fixes that and prunes
 /// slightly harder.
 fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
-    let defaults = FluidControls::default();
+    let mut defaults = FluidControls::default();
+    defaults.tonal.apply_phrase_preset(controls.tonal.phrase);
+    defaults.tonal.phrase = 0.0;
+    defaults.arp.apply_pattern_preset(controls.arp.pattern);
+    defaults.arp.apply_octaves(controls.arp.octaves);
+    defaults.arp.pattern = 0.0;
+    defaults.arp.octaves = 1.0;
+    defaults.bass.apply_rhythm_preset(controls.bass.rhythm);
+    defaults.bass.rhythm = 0.0;
+    defaults.perc.apply_pattern_preset(controls.perc.pattern);
+    defaults.perc.pattern = 0.0;
     let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
 
@@ -1776,12 +1758,19 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
     for structural in [true, false] {
         for &(index, value) in &entries {
             let id = song_id_at(index).unwrap_or_default();
-            let is_structural = parse_module_slot_id(id).is_some_and(|(_, _, field)| {
-                matches!(
-                    field,
-                    ModuleSlotField::Kind | ModuleSlotField::Clock | ModuleSlotField::RightClock
-                )
-            });
+            let is_structural = id == "tonal.phrase"
+                || id == "arp.pattern"
+                || id == "arp.octaves"
+                || id == "bass.rhythm"
+                || id == "perc.pattern"
+                || parse_module_slot_id(id).is_some_and(|(_, _, field)| {
+                    matches!(
+                        field,
+                        ModuleSlotField::Kind
+                            | ModuleSlotField::Clock
+                            | ModuleSlotField::RightClock
+                    )
+                });
             if is_structural != structural {
                 continue;
             }
@@ -2062,29 +2051,14 @@ mod pad_rhythm_rows_record_tests {
     use super::*;
 
     #[test]
-    fn rejects_unknown_hidden_row_bits() {
+    fn refuses_the_retired_pad_rhythm_rows_record() {
         let code = code_from_records(
             CONTAINER_VERSION,
-            &[(PAD_RHYTHM_ROWS_RECORD, &[0b0001_0000])],
+            &[(PAD_RHYTHM_ROWS_RECORD, &[0b0000_0100])],
         );
         assert_eq!(
             decode_song_code(&code).err(),
-            Some(SongCodeError::InvalidPadRhythmRows(0b0001_0000))
-        );
-    }
-
-    #[test]
-    fn drops_the_retired_swing_row_bit() {
-        let code = code_from_records(
-            CONTAINER_VERSION,
-            &[(PAD_RHYTHM_ROWS_RECORD, &[0b0000_0110])],
-        );
-        assert_eq!(
-            decode_song_code(&code)
-                .unwrap()
-                .controls
-                .hidden_pad_rhythm_rows,
-            0b0000_0100
+            Some(SongCodeError::RetiredControl("pad.trigger"))
         );
     }
 }
@@ -2552,6 +2526,24 @@ mod retired_control_tests {
         }
     }
 
+    #[test]
+    fn a_code_setting_a_retired_pad_stab_or_tonal_step_interval_control_is_refused() {
+        for id in [
+            "pad.trigger",
+            "pad.gate_beats",
+            "pad.offset_beats",
+            "pad.step1",
+            "pad.step8",
+            "pad.step16",
+            "tonal.step_interval_beats",
+        ] {
+            assert_eq!(
+                decode_song_code(&code_setting(id)).err(),
+                Some(SongCodeError::RetiredControl(id))
+            );
+        }
+    }
+
     /// The same skip that makes a retired id fatal must not catch an id from
     /// a newer build: that index is past the table's end, not inside it.
     #[test]
@@ -2680,18 +2672,24 @@ mod song_value_tests {
     }
 
     #[test]
-    fn pad_stab_pattern_round_trips() {
+    fn pad_chord_sequence_with_rest_tie_and_sixteen_slots_round_trips() {
         let mut song = SongState::default();
-        song.controls.pad.trigger = 1.0;
+        song.controls.pad.chord_bars = 0.0625;
+        song.controls.pad.chord_count = 16.0;
+        song.controls.pad.chord_offset = 11.0;
         song.controls.modules.pad[1] = super::super::module::preset_slot("swing", 0.4);
-        song.controls.pad.gate_beats = 1.0;
-        song.controls.pad.steps[1] = 1.0;
-        song.controls.pad.steps[4] = 0.0;
+        song.controls.pad.edit_chord_slot(1).degree = super::super::ChordSlotControls::TIE_DEGREE;
+        song.controls.pad.edit_chord_slot(4).degree = super::super::ChordSlotControls::REST_DEGREE;
+        song.controls.pad.edit_chord_slot(15).degree = 4.0;
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-        assert_eq!(decoded.controls.pad.trigger, 1.0);
+        assert_eq!(decoded.controls.pad.chord_bars, 0.0625);
+        assert_eq!(decoded.controls.pad.chord_count, 16.0);
+        assert_eq!(decoded.controls.pad.chord_offset, 11.0);
         assert!((decoded.controls.modules.pad[1].amount - 0.4).abs() < 0.001);
-        assert_eq!(decoded.controls.pad.gate_beats, 1.0);
-        assert_eq!(decoded.controls.pad.steps, song.controls.pad.steps);
+        assert_eq!(
+            decoded.controls.pad.chord_overrides,
+            song.controls.pad.chord_overrides
+        );
     }
 
     #[test]

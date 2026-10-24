@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder};
 
-use super::controls::{FluidControls, LEAD_STEP_COUNT, PAD_STEP_COUNT};
+use super::controls::{CHORD_SLOT_COUNT, FluidControls, LEAD_STEP_COUNT};
 use super::gesture::{GESTURE_COUNT, GestureKind};
 use super::interaction::{InteractionMode, InteractionModel, Navigation};
 use super::planned::PlannedAction;
@@ -338,7 +338,7 @@ pub(crate) struct OscPadWindowState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OscStepsState {
-    pub(crate) pad_steps: [u8; PAD_STEP_COUNT],
+    pub(crate) pad_steps: [u8; CHORD_SLOT_COUNT],
     pub(crate) lead_step_count: usize,
     pub(crate) lead_steps: [u8; LEAD_STEP_COUNT],
 }
@@ -418,7 +418,7 @@ impl UiPlayback {
         }
         Self {
             planned_beats,
-            active_slot: active_chord as usize % 8,
+            active_slot: active_chord as usize % CHORD_SLOT_COUNT,
         }
     }
 }
@@ -500,7 +500,15 @@ impl OscUiSnapshot {
             chord_count: window.count,
             chord_offset: window.offset,
         };
-        let pad_steps = std::array::from_fn(|i| u8::from(session.controls.pad.steps[i] >= 0.5));
+        let pad_steps = std::array::from_fn(|i| {
+            u8::from(
+                !session
+                    .controls
+                    .pad
+                    .chord_slot(window.progression, i)
+                    .is_rest(),
+            )
+        });
         let lead_step_count = lead_live_step_count(session.controls.lead.step_count);
         let lead_steps = std::array::from_fn(|i| {
             lead_step_tone(session.controls.lead.steps[i]).unwrap_or(0) as u8
@@ -581,7 +589,7 @@ impl OscUiSnapshot {
             ));
         }
         if previous.map(|p| &p.steps) != Some(&self.steps) {
-            let mut args = Vec::with_capacity(PAD_STEP_COUNT + 1 + LEAD_STEP_COUNT);
+            let mut args = Vec::with_capacity(CHORD_SLOT_COUNT + 1 + LEAD_STEP_COUNT);
             for &step in &self.steps.pad_steps {
                 args.push(OscType::Int(i32::from(step)));
             }

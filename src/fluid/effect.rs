@@ -166,6 +166,16 @@ fn selected_control(selected_control: Option<&'static str>) -> Result<&'static s
     selected_control.ok_or(EffectFailure::MissingContext("selected control"))
 }
 
+/// Whether `id` is a step row in a unified sequence drill (Pads, Perc, Bass, Tonal, Arp, or Lead).
+fn is_sequence_step_id(id: &str) -> bool {
+    perc_step_index(id).is_some()
+        || bass_step_index(id).is_some()
+        || tonal_step_index(id).is_some()
+        || arp_step_index(id).is_some()
+        || lead_step_index(id).is_some()
+        || matches!(parse_chord_slot_id(id), Some((_, 0)))
+}
+
 /// Palette edits cross the kernel boundary as value bits; this is where they
 /// become session edits.
 fn staged_edits(edits: Vec<PaletteStagedEdit>) -> Vec<StagedEdit> {
@@ -650,12 +660,6 @@ impl EffectExecutor {
                 if spec_by_id(id).is_none() {
                     return Err(EffectFailure::UnknownControl(id));
                 }
-                if let Some(bit) = pad_rhythm_row_bit(id)
-                    && self.session.load().controls.hidden_pad_rhythm_rows & bit != 0
-                {
-                    self.session
-                        .update(|snapshot| snapshot.controls.hidden_pad_rhythm_rows &= !bit);
-                }
                 self.recent.touch(id);
                 Ok(EffectAcknowledgement::ControlSelected { tab, index, id })
             }
@@ -683,9 +687,6 @@ impl EffectExecutor {
                             spec_by_id(edit.id)
                                 .expect("validated staged control")
                                 .apply_value(edit.value, &mut snapshot.controls);
-                            if let Some(bit) = pad_rhythm_row_bit(edit.id) {
-                                snapshot.controls.hidden_pad_rhythm_rows &= !bit;
-                            }
                         }
                     });
                     self.pending = None;
@@ -795,8 +796,17 @@ impl EffectExecutor {
         });
         let single = (!coupled_module
             && parse_chord_slot_id(spec.id).is_none()
-            && spec.id != "pad.progression")
-            .then_some(spec);
+            && spec.id != "pad.progression"
+            && spec.id != PERC_PATTERN_ID
+            && perc_step_index(spec.id).is_none()
+            && spec.id != BASS_RHYTHM_ID
+            && bass_step_index(spec.id).is_none()
+            && spec.id != TONAL_PHRASE_ID
+            && tonal_step_index(spec.id).is_none()
+            && spec.id != ARP_PATTERN_ID
+            && spec.id != "arp.octaves"
+            && arp_step_index(spec.id).is_none())
+        .then_some(spec);
         self.edit_session_scoped(Some(spec.id), single, edit)
     }
 
@@ -983,6 +993,78 @@ impl EffectExecutor {
         Ok(EffectAcknowledgement::Published {
             generation: snapshot.generation,
         })
+    }
+
+    pub(crate) fn clear_sequence(
+        &mut self,
+        tab: Tab,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        match tab {
+            Tab::Chords => {
+                let snapshot = self.edit_session(Some("pad.progression"), |snapshot| {
+                    for slot in 0..CHORD_SLOT_COUNT {
+                        *snapshot.controls.pad.edit_chord_slot(slot) = ChordSlotControls::default();
+                    }
+                });
+                self.show_message("Pads sequence set to root chords".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Perc => {
+                let snapshot = self.edit_session(Some(PERC_PATTERN_ID), |snapshot| {
+                    snapshot.controls.perc.pattern = CUSTOM_PERC_PATTERN_INDEX as f32;
+                    snapshot.controls.perc.steps = [0.0; PERC_STEP_COUNT];
+                });
+                self.show_message("Perc sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Bass => {
+                let snapshot = self.edit_session(Some(BASS_RHYTHM_ID), |snapshot| {
+                    snapshot.controls.bass.rhythm = CUSTOM_BASS_RHYTHM_INDEX as f32;
+                    snapshot.controls.bass.steps = [0.0; BASS_STEP_COUNT];
+                });
+                self.show_message("Bass sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Tonal => {
+                let snapshot = self.edit_session(Some(TONAL_PHRASE_ID), |snapshot| {
+                    snapshot.controls.tonal.phrase = CUSTOM_TONAL_PHRASE_INDEX as f32;
+                    snapshot.controls.tonal.steps = [0.0; TONAL_STEP_COUNT];
+                });
+                self.show_message("Tonal sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Arp => {
+                let snapshot = self.edit_session(Some(ARP_PATTERN_ID), |snapshot| {
+                    snapshot.controls.arp.pattern = CUSTOM_ARP_PATTERN_INDEX as f32;
+                    snapshot.controls.arp.steps = [0.0; ARP_STEP_COUNT];
+                });
+                self.show_message("Arp sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Lead => {
+                let snapshot = self.edit_session(Some(LEAD_PATTERN_ID), |snapshot| {
+                    snapshot.controls.lead.steps = [0.0; LEAD_STEP_COUNT];
+                });
+                self.show_message("Lead sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            _ => {
+                self.show_message(format!("no step sequence on {}", tab.name()));
+                Ok(EffectAcknowledgement::NoChange)
+            }
+        }
     }
 
     /// Stop or start the beat clock. Like mute it is an overlay on the song,
@@ -1265,6 +1347,7 @@ impl EffectExecutor {
             }
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
+            InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
             InteractionEffect::Quit => Ok(EffectAcknowledgement::QuitRequested),
             unsupported @ (InteractionEffect::AutomationConfirm(_)
@@ -1413,6 +1496,7 @@ impl EffectExecutor {
                 Ok(self.published())
             }
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
+            InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::ToggleTransport => {
                 self.toggle_transport();
                 Ok(self.published())
@@ -1442,15 +1526,131 @@ impl EffectExecutor {
             InteractionEffect::RandomizeSelected => {
                 let id = selected_control(context.selected_control)?;
                 let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext("control"))?;
-                let ratio = self.rng.r#gen::<f32>();
                 let initial = self.session.load();
+                if id == LEAD_PATTERN_ID {
+                    let count = lead_live_step_count(initial.controls.lead.step_count);
+                    let mut steps = [0.0f32; LEAD_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = self.rng.gen_range(1..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    let snapshot = self.edit_session(Some(LEAD_PATTERN_ID), |snapshot| {
+                        snapshot.controls.lead.pattern = LeadPattern::Play.value();
+                        snapshot.controls.lead.steps = steps;
+                    });
+                    return Ok(EffectAcknowledgement::Published {
+                        generation: snapshot.generation,
+                    });
+                }
+                let mut ratio = self.rng.r#gen::<f32>();
                 let mut candidate = initial.controls.clone();
                 spec.apply_randomized_ratio(ratio, &mut candidate);
-                if (spec.get)(&candidate) == (spec.get)(&initial.controls) {
+                if (spec.get)(&candidate) == (spec.get)(&initial.controls)
+                    && (spec.max - spec.min).abs() > f32::EPSILON
+                {
+                    for _ in 0..8 {
+                        ratio = self.rng.r#gen::<f32>();
+                        candidate = initial.controls.clone();
+                        spec.apply_randomized_ratio(ratio, &mut candidate);
+                        if (spec.get)(&candidate) != (spec.get)(&initial.controls) {
+                            break;
+                        }
+                    }
+                }
+                let mut custom_perc_steps = None;
+                if id == PERC_PATTERN_ID
+                    && candidate.perc.pattern.round() as usize == CUSTOM_PERC_PATTERN_INDEX
+                {
+                    let count = perc_live_step_count(candidate.perc.step_count);
+                    let mut steps = [0.0f32; PERC_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=1) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = 1.0;
+                    }
+                    candidate.perc.steps = steps;
+                    custom_perc_steps = Some(steps);
+                }
+                let mut custom_bass_steps = None;
+                if id == BASS_RHYTHM_ID
+                    && candidate.bass.rhythm.round() as usize == CUSTOM_BASS_RHYTHM_INDEX
+                {
+                    let count = bass_live_step_count(candidate.bass.step_count);
+                    let mut steps = [0.0f32; BASS_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = 1.0;
+                    }
+                    candidate.bass.steps = steps;
+                    custom_bass_steps = Some(steps);
+                }
+                let mut custom_tonal_steps = None;
+                if id == TONAL_PHRASE_ID
+                    && candidate.tonal.phrase.round() as usize == CUSTOM_TONAL_PHRASE_INDEX
+                {
+                    let count = lead_live_step_count(candidate.tonal.step_count);
+                    let mut steps = [0.0f32; TONAL_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = self.rng.gen_range(1..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    candidate.tonal.steps = steps;
+                    custom_tonal_steps = Some(steps);
+                }
+                let mut custom_arp_steps = None;
+                if id == ARP_PATTERN_ID
+                    && matches!(
+                        arp_pattern_from_control(candidate.arp.pattern),
+                        ArpPattern::Random | ArpPattern::Custom
+                    )
+                {
+                    let count = arp_live_step_count(candidate.arp.step_count);
+                    let max_tone = (candidate.arp.octaves.round().clamp(1.0, 3.0) as i32 * 4)
+                        .clamp(4, ARP_TONE_COUNT as i32);
+                    let mut steps = [0.0f32; ARP_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=max_tone) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = self.rng.gen_range(1..=max_tone) as f32;
+                    }
+                    candidate.arp.steps = steps;
+                    custom_arp_steps = Some(steps);
+                }
+                if (spec.get)(&candidate) == (spec.get)(&initial.controls)
+                    && custom_perc_steps.is_none()
+                    && custom_bass_steps.is_none()
+                    && custom_tonal_steps.is_none()
+                    && custom_arp_steps.is_none()
+                {
                     return Ok(EffectAcknowledgement::NoChange);
                 }
                 let snapshot = self.edit_control_session(spec, |snapshot| {
                     spec.apply_randomized_ratio(ratio, &mut snapshot.controls);
+                    if let Some(steps) = custom_perc_steps {
+                        snapshot.controls.perc.steps = steps;
+                    }
+                    if let Some(steps) = custom_bass_steps {
+                        snapshot.controls.bass.steps = steps;
+                    }
+                    if let Some(steps) = custom_tonal_steps {
+                        snapshot.controls.tonal.steps = steps;
+                    }
+                    if let Some(steps) = custom_arp_steps {
+                        snapshot.controls.arp.steps = steps;
+                    }
                 });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
@@ -1459,21 +1659,46 @@ impl EffectExecutor {
             InteractionEffect::RandomizeScope => {
                 let mut rng = self.rng.clone();
                 let mut control_rolls = None;
+                let in_sequence_drill = !context.randomizes_automation
+                    && context
+                        .visible_control_ids
+                        .iter()
+                        .any(|id| is_sequence_step_id(id));
                 if !context.randomizes_automation {
                     let initial = self.session.load();
                     let mut candidate = initial.controls.clone();
                     let mut rolls = Vec::new();
-                    for id in context.visible_control_ids {
+                    for &id in context.visible_control_ids {
+                        if in_sequence_drill && !is_sequence_step_id(id) {
+                            continue;
+                        }
                         if let Some(spec) = spec_by_id(id) {
-                            let ratio = rng.r#gen();
+                            let mut ratio: f32 = rng.r#gen();
                             spec.apply_randomized_ratio(ratio, &mut candidate);
+                            if matches!(
+                                id,
+                                "perc.step1"
+                                    | "bass.step1"
+                                    | "tonal.step1"
+                                    | "arp.step1"
+                                    | "lead.step1"
+                            ) && (spec.get)(&candidate) < 0.0
+                            {
+                                ratio = rng.gen_range(0.5..=1.0);
+                                spec.apply_randomized_ratio(ratio, &mut candidate);
+                            }
                             rolls.push((spec.id, ratio));
                         }
+                    }
+                    if in_sequence_drill && context.tab == Tab::Lead {
+                        candidate.lead.pattern = LeadPattern::Play.value();
                     }
                     let changed = rolls.iter().any(|(id, _)| {
                         let spec = spec_by_id(id).expect("scope controls were validated");
                         (spec.get)(&candidate) != (spec.get)(&initial.controls)
-                    });
+                    }) || (in_sequence_drill
+                        && context.tab == Tab::Lead
+                        && candidate.lead.pattern != initial.controls.lead.pattern);
                     if !changed {
                         self.rng = rng;
                         return Ok(EffectAcknowledgement::NoChange);
@@ -1516,6 +1741,9 @@ impl EffectExecutor {
                             spec_by_id(id)
                                 .expect("scope controls were validated")
                                 .apply_randomized_ratio(*ratio, &mut snapshot.controls);
+                        }
+                        if in_sequence_drill && context.tab == Tab::Lead {
+                            snapshot.controls.lead.pattern = LeadPattern::Play.value();
                         }
                     }
                 });
@@ -3300,29 +3528,6 @@ mod tests {
         let spec = spec_by_id("master.bpm").unwrap();
         let value = executor.session.load().controls.master.bpm;
         assert!((value - (spec.min + (spec.max - spec.min) * 0.5).round()).abs() < 1e-4);
-    }
-
-    #[test]
-    fn selecting_a_tucked_pad_rhythm_row_restores_only_that_row() {
-        let mut executor = executor();
-        executor.session.update(|snapshot| {
-            snapshot.controls.hidden_pad_rhythm_rows = PAD_RHYTHM_ROWS;
-        });
-
-        executor
-            .execute(LiveEffect::SelectControl {
-                tab: Tab::Chords,
-                index: spec_index(Tab::Chords, "pad.trigger").unwrap(),
-                id: "pad.trigger",
-            })
-            .unwrap();
-
-        let controls = &executor.session.load().controls;
-        assert_eq!(controls.hidden_pad_rhythm_rows, PAD_RHYTHM_ROWS & !(1 << 0));
-        let rows = tab_controls(Tab::Chords, controls);
-        assert!(rows.iter().any(|item| item.id == "pad.trigger"));
-        assert!(rows.iter().all(|item| item.id != "pad.gate_beats"));
-        assert!(rows.iter().all(|item| item.id != "pad.offset_beats"));
     }
 
     #[test]

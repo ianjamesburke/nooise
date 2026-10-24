@@ -147,9 +147,14 @@ fn upgrade_navigation_action(
     if action.intent == interaction::Intent::TouchSelected {
         action.intent = match model.navigation {
             interaction::Navigation::Chords {
-                selected,
                 drill: interaction::ChordDrill::Progression { .. },
-            } => interaction::Intent::EnterChordSlot(selected),
+                ..
+            } => frame
+                .selected_control
+                .and_then(parse_chord_slot_id)
+                .map_or(action.intent, |(slot, _)| {
+                    interaction::Intent::EnterChordSlot(slot)
+                }),
             interaction::Navigation::Hub { selected } => interaction::hub_layer(selected)
                 .map_or(action.intent, interaction::Intent::EnterLayer),
             _ => action.intent,
@@ -162,14 +167,64 @@ fn upgrade_navigation_action(
         action.intent = interaction::Intent::ReleaseAllGestures;
     }
     if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Chords {
+                drill: interaction::ChordDrill::None,
+                ..
+            }
+        )
         && frame.selected_control == Some("pad.progression")
     {
         action.intent = interaction::Intent::EnterChordProgression;
     }
     if action.intent == interaction::Intent::TouchSelected
-        && frame.selected_control == Some(PAD_TRIGGER_ID)
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Perc {
+                drill: interaction::PercDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(PERC_PATTERN_ID)
     {
-        action.intent = interaction::Intent::EnterPadPattern;
+        action.intent = interaction::Intent::EnterPercPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Bass {
+                drill: interaction::BassDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(BASS_RHYTHM_ID)
+    {
+        action.intent = interaction::Intent::EnterBassPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Tonal {
+                drill: interaction::TonalDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(TONAL_PHRASE_ID)
+    {
+        action.intent = interaction::Intent::EnterTonalPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
+            interaction::Navigation::Arp {
+                drill: interaction::ArpDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(ARP_PATTERN_ID)
+    {
+        action.intent = interaction::Intent::EnterArpPattern;
     }
     if action.intent == interaction::Intent::TouchSelected
         && let Some(id) = frame.selected_control
@@ -184,11 +239,18 @@ fn upgrade_navigation_action(
             catalog_index: module.kind.round() as usize - 1,
         };
     }
-    // On the Lead page Enter on the Steps row opens the lane; anywhere else
+    // On the Lead page Enter on the Pattern row opens the lane; anywhere else
     // that is not a module drill it opens play mode, since the page is the
     // instrument and there is nothing else to touch.
     if action.intent == interaction::Intent::TouchSelected && frame.tab == Tab::Lead {
-        action.intent = if frame.selected_control == Some(LEAD_STEPS_ID) {
+        action.intent = if matches!(
+            model.navigation,
+            interaction::Navigation::Lead {
+                drill: interaction::LeadDrill::None,
+                ..
+            }
+        ) && frame.selected_control == Some(LEAD_PATTERN_ID)
+        {
             interaction::Intent::EnterLeadPattern
         } else {
             interaction::Intent::EnterLeadPlay

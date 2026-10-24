@@ -15,6 +15,7 @@ pub(crate) enum Operation {
     OutputDevice,
     Chord(ChordAction),
     ChordNames(ChordNames),
+    ClearSequence,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,7 +72,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 21] = [
+    pub(crate) const ALL: [Self; 22] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -93,6 +94,7 @@ impl Operation {
         Self::Chord(ChordAction::Restore),
         Self::ChordNames(ChordNames::Roman),
         Self::ChordNames(ChordNames::Letters),
+        Self::ClearSequence,
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -168,6 +170,18 @@ impl Operation {
                 aliases: &["planned mute", "mute next"],
                 description: "mute the visible layer at the next bar",
             },
+            Self::ClearSequence => OperationSpec {
+                operation: self,
+                label: "Clear sequence",
+                aliases: &[
+                    "clear steps",
+                    "clear pattern",
+                    "clear phrase",
+                    "clear progression",
+                    "reset sequence",
+                ],
+                description: "reset the active sequence steps (Pads to root, notes to rest)",
+            },
         }
     }
 
@@ -184,7 +198,8 @@ impl Operation {
             | Self::PlannedMute
             | Self::OutputDevice
             | Self::Chord(_)
-            | Self::ChordNames(_) => None,
+            | Self::ChordNames(_)
+            | Self::ClearSequence => None,
         }
     }
 
