@@ -136,6 +136,8 @@ pub(crate) fn coordinate_production_event(
     };
     if action.intent == interaction::Intent::Cancel
         && matches!(model.mode, interaction::InteractionMode::Browsing)
+        && matches!(model.navigation, interaction::Navigation::Hub { .. })
+        && !model.gesture_input.has_active()
         && frame.session.gestures.has_held()
     {
         action.intent = interaction::Intent::ReleaseAllGestures;

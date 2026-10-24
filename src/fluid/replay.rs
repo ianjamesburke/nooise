@@ -1841,7 +1841,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 automation: None,
                 intents: vec![Intent::ToggleVamp],
                 effects: vec!["ToggleVamp=>OK:Published { generation: 1 }"],
-                notice: Some("16-bar vamp: kick + bass muted, chord 1 locked"),
+                notice: Some("16-bar vamp armed for next bar"),
             },
             "palette" => ExpectedBinding {
                 owner: "PALETTE",
@@ -5362,15 +5362,38 @@ fn hold_mutes_on_e_and_r_immediately_mute_and_drop_bass_and_kick_back_in() {
     let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
     let release = |ch| key(0, FixtureKey::Character(ch), InputPhase::Release);
 
-    let held_both = replay(&[press('e'), press('r')], TerminalCapabilities::full());
-    assert_eq!(held_both.effect_count("HoldMutePress(Bass)"), 1);
-    assert_eq!(held_both.effect_count("HoldMutePress(Kick)"), 1);
+    let held_and_navigated = replay(
+        &[
+            key(0, FixtureKey::Enter, InputPhase::Press),
+            press('z'),
+            press('e'),
+            press('r'),
+            key(0, FixtureKey::Escape, InputPhase::Press),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(held_and_navigated.effect_count("HoldMutePress(Bass)"), 1);
+    assert_eq!(held_and_navigated.effect_count("HoldMutePress(Kick)"), 1);
+    assert_eq!(
+        held_and_navigated.effect_count("GestureReleaseAll"),
+        0,
+        "Esc in Browsing navigates back without clearing held left-hand gestures or mutes"
+    );
+    assert_eq!(
+        held_and_navigated.model.navigation,
+        Navigation::Hub { selected: 0 }
+    );
+    let held_text = &held_and_navigated.frames.last().unwrap().text;
     assert!(
-        held_both.frames.last().unwrap().text.contains("Bass Mute●"),
+        held_text.contains("Bloom"),
+        "holding z stays active across Esc navigation"
+    );
+    assert!(
+        held_text.contains("Bass Mute●"),
         "holding e shows Bass Mute● on the activity line"
     );
     assert!(
-        held_both.frames.last().unwrap().text.contains("Kick Mute●"),
+        held_text.contains("Kick Mute●"),
         "holding r shows Kick Mute● on the activity line"
     );
 
@@ -5390,30 +5413,80 @@ fn vamp_on_a_mutes_kick_and_bass_clamps_first_chord_and_restores_when_ended() {
     let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
     let ctrl_s = modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
 
-    let active = replay(&[press('a'), ctrl_s.clone()], TerminalCapabilities::full());
-    assert_eq!(active.effect_count("ToggleVamp"), 1);
+    let armed = replay(&[press('a'), ctrl_s.clone()], TerminalCapabilities::full());
+    assert_eq!(armed.effect_count("ToggleVamp"), 1);
+    let armed_text = &armed.frames.last().unwrap().text;
+    assert!(
+        armed_text.contains("Vamp · next bar · a cancel"),
+        "pressing a arms vamp for the next bar on the activity line: {armed_text}"
+    );
+    let saved_armed =
+        song::decode_song_code(armed.saved_automation_code.as_deref().unwrap()).unwrap();
+    let vamp = saved_armed.vamp.expect("saved song carries armed vamp");
+    assert!((vamp.start_beat - 4.0).abs() < 0.01);
+    assert!((vamp.end_beat - 68.0).abs() < 0.01);
+    assert!(!saved_armed.muted[Tab::Kick as usize]);
+    assert!(!saved_armed.muted[Tab::Bass as usize]);
+
+    let active = replay(
+        &[
+            press('a'),
+            TraceEvent::Tick { after_ms: 4_000 },
+            ctrl_s.clone(),
+        ],
+        TerminalCapabilities::full(),
+    );
     let active_text = &active.frames.last().unwrap().text;
     assert!(
         active_text.contains("Vamp · bar 1/16 · a end"),
-        "active vamp shows 16-bar countdown on the activity line: {active_text}"
+        "at next bar downbeat, vamp enters bar 1/16 on the activity line: {active_text}"
     );
     let saved_active =
         song::decode_song_code(active.saved_automation_code.as_deref().unwrap()).unwrap();
-    let vamp = saved_active.vamp.expect("saved song carries active vamp");
-    assert_eq!(vamp.start_beat, 0.0);
-    assert!((vamp.end_beat - 64.0).abs() < 0.01);
+    let active_vamp = saved_active.vamp.expect("saved song carries active vamp");
+    assert!(active_vamp.start_beat <= 0.0 && active_vamp.start_beat > -0.05);
+    assert!((active_vamp.end_beat - 64.0).abs() < 0.05);
     assert!(saved_active.muted[Tab::Kick as usize]);
     assert!(saved_active.muted[Tab::Bass as usize]);
 
-    let ended = replay(
-        &[press('a'), press('a'), ctrl_s],
+    let releasing_at_bar = replay(
+        &[
+            press('a'),
+            TraceEvent::Tick { after_ms: 4_000 },
+            press('a'),
+            ctrl_s.clone(),
+        ],
         TerminalCapabilities::full(),
     );
-    assert_eq!(ended.effect_count("ToggleVamp"), 2);
-    let ended_text = &ended.frames.last().unwrap().text;
-    assert!(!ended_text.contains("Vamp · bar"));
+    let releasing_text = &releasing_at_bar.frames.last().unwrap().text;
+    assert!(
+        releasing_text.contains("Vamp · end next bar · a keep"),
+        "pressing a during active vamp locks release to next bar: {releasing_text}"
+    );
+    let saved_releasing =
+        song::decode_song_code(releasing_at_bar.saved_automation_code.as_deref().unwrap()).unwrap();
+    let releasing_vamp = saved_releasing
+        .vamp
+        .expect("bar-locked release stays active until the bar line");
+    assert!((releasing_vamp.end_beat - 4.0).abs() < 0.05);
+    assert!(saved_releasing.muted[Tab::Kick as usize]);
+    assert!(saved_releasing.muted[Tab::Bass as usize]);
+
+    let released_after_bar = replay(
+        &[
+            press('a'),
+            TraceEvent::Tick { after_ms: 4_000 },
+            press('a'),
+            TraceEvent::Tick { after_ms: 4_000 },
+            ctrl_s,
+        ],
+        TerminalCapabilities::full(),
+    );
+    let ended_text = &released_after_bar.frames.last().unwrap().text;
+    assert!(!ended_text.contains("Vamp ·"));
     let saved_ended =
-        song::decode_song_code(ended.saved_automation_code.as_deref().unwrap()).unwrap();
+        song::decode_song_code(released_after_bar.saved_automation_code.as_deref().unwrap())
+            .unwrap();
     assert_eq!(saved_ended.vamp, None);
     assert!(!saved_ended.muted[Tab::Kick as usize]);
     assert!(!saved_ended.muted[Tab::Bass as usize]);

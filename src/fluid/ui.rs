@@ -114,6 +114,10 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         _ => None,
     };
     let controls = &view.session.controls;
+    let vamp_active = view
+        .session
+        .vamp
+        .is_some_and(|vamp| vamp.is_active(view.telemetry.beat));
     let frame = PanelFrame {
         view,
         automation,
@@ -130,7 +134,11 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             kick_interval_beats: controls.kick.interval_beats,
             kick_offset_beats: controls.kick.offset_beats,
         },
-        active_slot: view.telemetry.active_chord as usize,
+        active_slot: if vamp_active {
+            0
+        } else {
+            view.telemetry.active_chord as usize
+        },
         // One text row per control, blank line between for vertical breathing
         // room.
         bar_w: (inner.width as usize).saturating_sub(34).clamp(6, 80),
@@ -142,7 +150,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         header.chords,
         &controls.pad,
         frame.active_slot,
-        view.session.vamp.is_some(),
+        vamp_active,
     );
     if let Some(title) = &view.chord_title {
         f.render_widget(
@@ -156,8 +164,20 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             header.ribbon,
         );
     } else {
+        let ribbon_span = if let Some(vamp) = view
+            .session
+            .vamp
+            .filter(|vamp| vamp.is_active(view.telemetry.beat))
+        {
+            ChordSpan {
+                start_beat: vamp.start_beat,
+                length_beats: super::planned::VAMP_BEATS as f32,
+            }
+        } else {
+            view.telemetry.chord_span
+        };
         f.render_widget(
-            Paragraph::new(chord_ribbon(view.telemetry.beat, view.telemetry.chord_span))
+            Paragraph::new(chord_ribbon(view.telemetry.beat, ribbon_span))
                 .alignment(Alignment::Center),
             header.ribbon,
         );

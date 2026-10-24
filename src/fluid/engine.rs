@@ -596,6 +596,7 @@ pub(crate) struct FluidEngine {
     /// boundary so an onset never sees the previous mute state.
     planned: Option<PlannedAction>,
     pub(crate) vamp: Option<VampState>,
+    vamp_active: bool,
     pub(crate) vamp_landed_beat: Option<f64>,
     pub(crate) pad: PadEngine,
     pub(crate) perc: PercEngine,
@@ -646,6 +647,13 @@ impl FluidEngine {
     ) -> Self {
         let live = session.load();
         let snapshot = live.controls.clone();
+        let vamp_active = live.vamp.is_some_and(|vamp| vamp.is_active(0.0));
+        let mut initial_pad = snapshot.pad.clone();
+        if vamp_active {
+            initial_pad.chord_count = 1.0;
+            initial_pad.chord_offset = 0.0;
+            initial_pad.chord_bars = VAMP_BARS as f32;
+        }
         let plan_source = Arc::new(live.automation.clone());
         let mut plan = AutomationPlan::default();
         plan.rebuild(&plan_source);
@@ -662,10 +670,11 @@ impl FluidEngine {
             muted: live.muted,
             planned: live.planned,
             vamp: live.vamp,
+            vamp_active,
             vamp_landed_beat: None,
             pad: PadEngine::new(
                 sample_rate,
-                &snapshot.pad,
+                &initial_pad,
                 snapshot.master.tune,
                 Arc::clone(&telemetry),
             ),
@@ -702,6 +711,7 @@ impl FluidEngine {
     /// Rewind musical schedulers while release envelopes and effect tails keep running.
     fn restart_sequence(&mut self) {
         self.tempo.beat = 0.0;
+        self.vamp_active = false;
         self.vamp_landed_beat = None;
         self.morph_writer = MorphWriter::default();
         self.morph
@@ -870,12 +880,6 @@ impl StereoEngine for FluidEngine {
             }
             self.planned = session.planned;
             if self.vamp != session.vamp {
-                if self.vamp.is_some() && session.vamp.is_none() {
-                    self.vamp_landed_beat = Some((self.tempo.beat / 4.0).floor() * 4.0);
-                } else if session.vamp.is_some() {
-                    self.vamp_landed_beat = None;
-                }
-                self.pad.cursor.morph_phrase_start = None;
                 self.vamp = session.vamp;
             }
             let muted = self.planned_mute_state(self.tempo.beat, self.tempo.bpm, session.muted);
@@ -916,10 +920,14 @@ impl StereoEngine for FluidEngine {
         self.plan.apply(&mut effective, timing);
         // Both dropped layers stay silent through the percentage phase,
         // including Level automation and their post-module effect tails.
-        timing.morph_phrase_start = active_morph
-            .and_then(|morph| morph.phrase_start_at(timing.beat))
-            .or(self.vamp_landed_beat);
-        if let Some(vamp) = self.vamp {
+        let morph_phrase = active_morph.and_then(|morph| morph.phrase_start_at(timing.beat));
+        timing.morph_phrase_start = match (morph_phrase, self.vamp_landed_beat) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        if let Some(vamp) = self.vamp.filter(|vamp| vamp.is_active(timing.beat)) {
             effective.pad.chord_count = 1.0;
             effective.pad.chord_offset = 0.0;
             effective.pad.chord_bars = VAMP_BARS as f32;
@@ -1191,68 +1199,98 @@ impl FluidEngine {
         {
             boundary_muted[tab as usize] = !boundary_muted[tab as usize];
         }
-        if let Some(vamp) = self.vamp
-            && beat >= vamp.end_beat - ramp_beats
-        {
-            let session = self.session.load();
-            boundary_muted[Tab::Kick as usize] = session.hold_muted[HoldMute::Kick as usize];
-            boundary_muted[Tab::Bass as usize] = session.hold_muted[HoldMute::Bass as usize];
+        if let Some(vamp) = self.vamp {
+            if beat >= vamp.end_beat - ramp_beats {
+                let session = self.session.load();
+                boundary_muted[Tab::Kick as usize] = session.hold_muted[HoldMute::Kick as usize];
+                boundary_muted[Tab::Bass as usize] = session.hold_muted[HoldMute::Bass as usize];
+            } else if beat >= vamp.start_beat - ramp_beats {
+                boundary_muted[Tab::Kick as usize] = true;
+                boundary_muted[Tab::Bass as usize] = true;
+            }
         }
         boundary_muted
     }
 
-    fn advance_vamp(&mut self, timing: TimingContext) {
-        if timing.transport != Transport::Playing {
-            return;
-        }
-        let Some(vamp) = self.vamp else {
-            return;
-        };
-        let session = self.session.load();
-        if session.vamp != Some(vamp) {
-            if session.vamp.is_none() {
-                self.vamp_landed_beat = Some((timing.beat / 4.0).floor() * 4.0);
+    fn reset_progression_phrase_anchors(&mut self) {
+        self.pad.cursor.morph_phrase_start = None;
+        for follower in [
+            &mut self.bass.progression,
+            &mut self.arp.progression,
+            &mut self.lead.progression,
+        ] {
+            if let Some(cursor) = &mut follower.cursor {
+                cursor.morph_phrase_start = None;
             }
-            self.pad.cursor.morph_phrase_start = None;
+        }
+    }
+
+    fn advance_vamp(&mut self, timing: TimingContext) {
+        let session = self.session.load();
+        if session.vamp != self.vamp {
             self.vamp = session.vamp;
             let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
             self.mute_gates
                 .set_targets(&boundary_muted, self.sample_rate);
             self.muted = boundary_muted;
-            return;
         }
 
-        let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
-        self.mute_gates
-            .set_targets(&boundary_muted, self.sample_rate);
-        self.muted = boundary_muted;
+        if timing.transport == Transport::Playing
+            && let Some(vamp) = self.vamp
+        {
+            let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
+            self.mute_gates
+                .set_targets(&boundary_muted, self.sample_rate);
+            self.muted = boundary_muted;
 
-        if timing.beat < vamp.end_beat {
-            return;
-        }
-        match self.session.transact(|snapshot| {
-            if snapshot.vamp != Some(vamp) {
-                return Err(());
-            }
-            snapshot.vamp = None;
-            snapshot.muted[Tab::Kick as usize] = snapshot.hold_muted[HoldMute::Kick as usize];
-            snapshot.muted[Tab::Bass as usize] = snapshot.hold_muted[HoldMute::Bass as usize];
-            Ok(())
-        }) {
-            Ok(snapshot) => {
+            if timing.beat >= vamp.end_beat {
+                match self.session.transact(|snapshot| {
+                    if snapshot.vamp != Some(vamp) {
+                        return Err(());
+                    }
+                    snapshot.vamp = None;
+                    snapshot.muted[Tab::Kick as usize] =
+                        snapshot.hold_muted[HoldMute::Kick as usize];
+                    snapshot.muted[Tab::Bass as usize] =
+                        snapshot.hold_muted[HoldMute::Bass as usize];
+                    Ok(())
+                }) {
+                    Ok(snapshot) => {
+                        self.muted = snapshot.muted;
+                        self.vamp = None;
+                    }
+                    Err(()) => {
+                        let session = self.session.load();
+                        self.mute_gates
+                            .set_targets(&session.muted, self.sample_rate);
+                        self.muted = session.muted;
+                        self.vamp = session.vamp;
+                    }
+                }
+            } else if timing.beat >= vamp.start_beat
+                && (!session.muted[Tab::Kick as usize] || !session.muted[Tab::Bass as usize])
+                && let Ok(snapshot) = self.session.transact(|snapshot| {
+                    if snapshot.vamp != Some(vamp) {
+                        return Err(());
+                    }
+                    snapshot.muted[Tab::Kick as usize] = true;
+                    snapshot.muted[Tab::Bass as usize] = true;
+                    Ok(())
+                })
+            {
                 self.muted = snapshot.muted;
-                self.vamp = None;
-                self.vamp_landed_beat = Some(vamp.end_beat);
-                self.pad.cursor.morph_phrase_start = None;
             }
-            Err(()) => {
-                let session = self.session.load();
-                self.mute_gates
-                    .set_targets(&session.muted, self.sample_rate);
-                self.muted = session.muted;
-                self.vamp = session.vamp;
-                self.pad.cursor.morph_phrase_start = None;
+        }
+
+        let now_active = self.vamp.is_some_and(|vamp| vamp.is_active(timing.beat));
+        if now_active != self.vamp_active {
+            if now_active {
+                self.vamp_landed_beat = None;
+            } else {
+                self.vamp_landed_beat = Some((timing.beat / 4.0).floor() * 4.0);
             }
+            self.reset_progression_phrase_anchors();
+            self.vamp_active = now_active;
         }
     }
 }

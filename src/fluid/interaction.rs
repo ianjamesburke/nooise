@@ -787,7 +787,7 @@ impl GestureInputState {
         was_active
     }
 
-    fn has_active(&self) -> bool {
+    pub(crate) fn has_active(&self) -> bool {
         self.keys.contains(&GestureKeyState::Active)
             || self.mutes.contains(&GestureKeyState::Active)
     }
@@ -1468,16 +1468,6 @@ impl InteractionModel {
             } else {
                 self.gesture_input.quarantine_all();
             }
-            return Transition {
-                model: self,
-                effects: vec![InteractionEffect::GestureReleaseAll],
-            };
-        }
-        if intent == Intent::Cancel
-            && matches!(self.mode, InteractionMode::Browsing)
-            && self.gesture_input.has_active()
-        {
-            self.gesture_input.quarantine_all();
             return Transition {
                 model: self,
                 effects: vec![InteractionEffect::GestureReleaseAll],

@@ -334,9 +334,15 @@ impl<'a> UiViewModel<'a> {
         let holding_mute = session.hold_muted.into_iter().any(|held| held);
         let holding_gesture = !gestures.is_empty() || holding_mute;
         let vamp_status = session.vamp.map(|vamp| {
-            let bar = (((telemetry.beat - vamp.start_beat).max(0.0) / 4.0).floor() as usize + 1)
-                .clamp(1, VAMP_BARS);
-            format!("Vamp · bar {bar}/{VAMP_BARS} · a end")
+            if telemetry.beat < vamp.start_beat {
+                "Vamp · next bar · a cancel".to_string()
+            } else if vamp.is_releasing_early() {
+                "Vamp · end next bar · a keep".to_string()
+            } else {
+                let bar = (((telemetry.beat - vamp.start_beat) / 4.0).floor() as usize + 1)
+                    .clamp(1, VAMP_BARS);
+                format!("Vamp · bar {bar}/{VAMP_BARS} · a end")
+            }
         });
         let stopped = session.transport == Transport::Stopped;
         let editor = match &mode {
@@ -391,7 +397,14 @@ impl<'a> UiViewModel<'a> {
             &session.controls,
             &session.muted,
             session.planned.map(PlannedAction::tab),
-            telemetry.active_chord as usize,
+            if session
+                .vamp
+                .is_some_and(|vamp| vamp.is_active(telemetry.beat))
+            {
+                0
+            } else {
+                telemetry.active_chord as usize
+            },
         );
 
         let chord_title = match navigation.chord_drill {
@@ -748,9 +761,9 @@ fn help_surface(
         return HelpSurface::Notice { kind, text };
     }
 
-    if holding_gesture {
+    if holding_gesture && navigation.tab == Tab::Master && navigation.module_slot.is_none() {
         // The activity row (rendered above this one) carries the expandable
-        // per-gesture detail; this row only needs to name the two exits.
+        // per-gesture detail; at the hub root this row names the two exits.
         return HelpSurface::Owner {
             owner: KeyboardOwner::Browsing,
             text: "Esc release · ^Q quit".to_string(),

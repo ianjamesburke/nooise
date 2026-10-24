@@ -49,11 +49,19 @@ pub(crate) struct VampState {
 
 impl VampState {
     pub(crate) fn start(beat: f64) -> Self {
-        let start_beat = (beat.max(0.0) / 4.0).floor() * 4.0;
+        let start_beat = super::next_bar_beat(beat.max(0.0));
         Self {
             start_beat,
             end_beat: start_beat + VAMP_BEATS,
         }
+    }
+
+    pub(crate) fn is_active(self, beat: f64) -> bool {
+        beat >= self.start_beat && beat < self.end_beat
+    }
+
+    pub(crate) fn is_releasing_early(self) -> bool {
+        self.end_beat < self.start_beat + VAMP_BEATS - 1e-6
     }
 
     pub(crate) fn is_due(self, beat: f64) -> bool {
@@ -61,10 +69,10 @@ impl VampState {
     }
 
     pub(crate) fn rebased_at(self, beat: f64) -> Self {
-        let remaining = (self.end_beat - beat.max(0.0)).max(0.0);
+        let beat = beat.max(0.0);
         Self {
-            start_beat: 0.0,
-            end_beat: remaining,
+            start_beat: self.start_beat - beat,
+            end_beat: (self.end_beat - beat).max(0.0),
         }
     }
 }
