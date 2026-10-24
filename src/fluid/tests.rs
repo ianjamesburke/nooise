@@ -10885,7 +10885,7 @@ mod chord_span_startup_tests {
     }
 
     #[test]
-    fn vamp_locks_next_bar_chord_indefinitely_and_releases_into_next_chord_on_next_bar() {
+    fn vamp_in_second_half_arms_for_next_chord_and_releases_on_chord_boundary() {
         let mut song = SongState::from_controls(FluidControls::default());
         song.controls.master.bpm = 180.0;
         song.controls.pad.chord_bars = 1.0;
@@ -10895,17 +10895,17 @@ mod chord_span_startup_tests {
         let mut engine =
             FluidEngine::new(3_000.0, session.clone(), no_morph(), Arc::clone(&telemetry));
 
-        // Advance to beat 5.5 (mid-bar 2, while playing Chord 2 = slot 1):
-        // 180 BPM = 3 beats/sec -> 1,000 samples/beat -> 5,500 samples = 5.5 beats.
-        for _ in 0..5_500 {
+        // Advance to beat 6.5 (second half of Chord 2 [4.0..8.0), playing Chord 2 = slot 1):
+        // 180 BPM = 3 beats/sec -> 1,000 samples/beat -> 6,500 samples = 6.5 beats.
+        for _ in 0..6_500 {
             engine.next_stereo();
         }
-        assert_eq!(engine.pad.cursor.slot(), 1, "on Chord 2 at beat 5.5");
+        assert_eq!(engine.pad.cursor.slot(), 1, "on Chord 2 at beat 6.5");
         assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 1);
 
-        // Arm vamp mid-bar at beat 5.5 -> quantizes to next bar at beat 8.0,
+        // Arm vamp in second half at beat 6.5 -> quantizes to nearest chord start at beat 8.0,
         // where the progression lands on Chord 3 (slot 2).
-        let armed = planned::VampState::start(telemetry.beat(), 2);
+        let armed = planned::VampState::start(8.0, 2);
         assert_eq!(armed.start_beat, 8.0);
         assert!(armed.end_beat.is_infinite());
         session
@@ -10915,43 +10915,46 @@ mod chord_span_startup_tests {
             })
             .unwrap();
 
-        // At beat 6.5 (still before next bar at 8.0), vamp is armed but not yet active.
+        // At beat 7.5 (still before next chord at 8.0), vamp is armed but not yet active.
         for _ in 0..1_000 {
             engine.next_stereo();
         }
         assert_eq!(
             engine.pad.cursor.slot(),
             1,
-            "current bar finishes on Chord 2 before the next bar downbeat"
+            "current chord finishes on Chord 2 before the next chord downbeat"
         );
 
-        // Advance past beat 8.0 through several bars (to beat 25.5):
+        // Advance past beat 8.0 through several chords (to beat 25.5):
         // without the vamp it would have cycled through slots 2 -> 3 -> 0 -> 1 -> 2,
         // but with the vamp it stays locked on Chord 3 (slot 2) indefinitely.
-        for _ in 0..19_000 {
+        for _ in 0..18_000 {
             engine.next_stereo();
         }
         assert_eq!(
             engine.pad.cursor.slot(),
             2,
-            "vamp holds Chord 3 (slot 2) across bar boundaries until released"
+            "vamp holds Chord 3 (slot 2) across chord boundaries until released"
         );
         assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 2);
         assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 2);
         assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 2);
 
-        // Cue bar-locked release at beat 25.5 -> releases on next bar downbeat at beat 28.0.
+        // Cue release at beat 25.5 -> chord interval is 4.0, next chord start is beat 28.0.
+        let interval = 4.0;
+        let next_chord = 8.0 + (((telemetry.beat() - 8.0) / interval).floor() + 1.0) * interval;
+        assert_eq!(next_chord, 28.0);
         session
             .transact(|next| {
                 if let Some(vamp) = &mut next.vamp {
-                    vamp.end_beat = next_bar_beat(telemetry.beat());
+                    vamp.end_beat = next_chord;
                 }
                 Ok::<(), ()>(())
             })
             .unwrap();
         assert_eq!(session.load().vamp.unwrap().end_beat, 28.0);
 
-        // At beat 26.5 (before bar downbeat at 28.0), still holding Chord 3 (slot 2).
+        // At beat 26.5 (before chord downbeat at 28.0), still holding Chord 3 (slot 2).
         for _ in 0..1_000 {
             engine.next_stereo();
         }
@@ -10973,6 +10976,77 @@ mod chord_span_startup_tests {
         assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 3);
         assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 3);
         assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 3);
+    }
+
+    #[test]
+    fn vamp_in_first_half_quantizes_to_current_chord_and_activates_immediately() {
+        let mut song = SongState::from_controls(FluidControls::default());
+        song.controls.master.bpm = 180.0;
+        song.controls.pad.chord_bars = 4.0; // 16 beats per chord
+        song.controls.pad.chord_count = 4.0;
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(&song));
+        let telemetry = Arc::new(FluidTelemetry::default());
+        let mut engine =
+            FluidEngine::new(3_000.0, session.clone(), no_morph(), Arc::clone(&telemetry));
+
+        // Advance to beat 5.0 (which is in bar 2 of 4-bar Chord 1 [0.0..16.0)):
+        for _ in 0..5_000 {
+            engine.next_stereo();
+        }
+        assert_eq!(engine.pad.cursor.slot(), 0, "on Chord 1 at beat 5.0");
+
+        // Nearest chord start to beat 5.0 is 0.0 (Chord 1). Start beat is 0.0 <= 5.0.
+        let active_vamp = planned::VampState::start(0.0, 0);
+        assert_eq!(active_vamp.start_beat, 0.0);
+        assert!(active_vamp.is_active(telemetry.beat()));
+        session
+            .transact(|next| {
+                next.vamp = Some(active_vamp);
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+
+        // Advance past beat 16.0, 32.0, 48.0 (to beat 50.0):
+        // without vamp it would have progressed through all chords; with vamp it stays on Chord 1 (slot 0).
+        for _ in 0..45_000 {
+            engine.next_stereo();
+        }
+        assert_eq!(
+            engine.pad.cursor.slot(),
+            0,
+            "vamp holds Chord 1 across 16-beat boundaries"
+        );
+
+        // Cue release at beat 50.0: next chord boundary is beat 64.0 (0.0 + 4 * 16.0), NOT next bar (52.0).
+        let interval = 16.0;
+        let next_chord = 0.0 + (((telemetry.beat() - 0.0) / interval).floor() + 1.0) * interval;
+        assert_eq!(next_chord, 64.0);
+        session
+            .transact(|next| {
+                if let Some(vamp) = &mut next.vamp {
+                    vamp.end_beat = next_chord;
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+
+        // Advance to beat 60.0 (still before beat 64.0): still on Chord 1.
+        for _ in 0..10_000 {
+            engine.next_stereo();
+        }
+        assert_eq!(engine.pad.cursor.slot(), 0);
+
+        // Advance past beat 64.0 (to beat 66.0): releases cleanly into Chord 2 (slot 1)!
+        for _ in 0..6_000 {
+            engine.next_stereo();
+        }
+        assert!(telemetry.beat() >= 64.0);
+        assert_eq!(engine.vamp, None);
+        assert_eq!(
+            engine.pad.cursor.slot(),
+            1,
+            "releases into Chord 2 (slot 1)"
+        );
     }
 }
 

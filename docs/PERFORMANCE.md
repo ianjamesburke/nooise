@@ -46,17 +46,17 @@ transitions or focus loss. Envelope editor keyboard bindings (`e`/`g`/`Shift+E`/
 are commented out for now, and Randomize in Browsing is on `u` (inside an open automation
 editor, `r`/`u` both work).
 
-Press `a` in Browsing to arm a bar-quantized indefinite chord vamp for the next
-bar downbeat (`Vamp · next bar · a cancel`). On the next bar's beat 1, the vamp
-locks onto whatever chord slot (`0..8`) the progression lands on at that downbeat
-and holds that chord across Pads, Bass, Arp, and Lead (`Vamp · Chord N · a release`)
-until you cue the release. Pressing `a` while armed cancels it; pressing `a` while
-active bar-locks the release of the vamp to the next bar downbeat (`Vamp · release next bar · a keep`,
-and pressing `a` again before the bar line keeps holding the chord), releasing directly
-into the next chord in the progression on beat 1 of that bar. Auto-morph toggle is
-available on `Shift+A` and in the `/` command palette as `/auto` (`Toggle auto`).
-Armed or active vamp state persists in song codes (`VAMP_RECORD`) and rebases to the
-loaded song's beat zero.
+Press `a` in Browsing to toggle an indefinite chord vamp quantized to the nearest
+chord start. Pressing during the first half of a chord locks the currently sounding
+chord immediately (`Vamp · Chord N · a release`); pressing in the second half arms
+for the next chord start (`Vamp · next chord · a cancel`). The vamp holds that chord
+across Pads, Bass, Arp, and Lead until you cue the release. Pressing `a` while armed
+cancels it; pressing `a` while active cues release at the next chord boundary
+(`Vamp · release next chord · a keep`, and pressing `a` again before the boundary keeps
+holding the chord), releasing directly into the next chord in the progression.
+Auto-morph toggle is available on `Shift+A` and in the `/` command palette as `/auto`
+(`Toggle auto`). Armed or active vamp state persists in song codes (`VAMP_RECORD`) and
+rebases to the loaded song's beat zero.
 
 Every gesture plays over the whole mix, after Master's module chain, whatever
 page is open. Arrows and Tab remain available while a key is down, and

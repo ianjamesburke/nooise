@@ -2018,27 +2018,35 @@ impl EffectExecutor {
                             snapshot.vamp = None;
                             message = "Chord vamp cancelled".to_string();
                         } else if !vamp.is_releasing() {
-                            vamp.end_beat = next_bar_beat(beat.max(0.0));
+                            let interval =
+                                GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
+                                    .interval_beats;
+                            let cycle =
+                                ((beat - vamp.start_beat).max(0.0) / interval).floor() + 1.0;
+                            vamp.end_beat = vamp.start_beat + cycle * interval;
                             snapshot.vamp = Some(vamp);
-                            message = "Chord vamp releasing next bar".to_string();
+                            message = "Chord vamp releasing next chord".to_string();
                         } else {
                             vamp.end_beat = f64::INFINITY;
                             snapshot.vamp = Some(vamp);
                             message = "Chord vamp kept".to_string();
                         }
                     } else {
-                        let start_beat = next_bar_beat(beat.max(0.0));
                         let window = ChordWindow::requested(&snapshot.controls.pad);
                         let interval =
                             GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
                                 .interval_beats;
-                        let step = (((start_beat - phrase_start).max(0.0) + GRID_BEAT_EPSILON)
-                            / interval)
-                            .floor() as usize
-                            % window.count;
+                        let elapsed = (beat.max(0.0) - phrase_start).max(0.0);
+                        let nearest_k = (elapsed / interval).round();
+                        let start_beat = (phrase_start + nearest_k * interval).max(0.0);
+                        let step = (nearest_k as usize) % window.count;
                         let slot = window.slot(step) as u8;
-                        snapshot.vamp = Some(VampState::start(beat, slot));
-                        message = "Chord vamp armed for next bar".to_string();
+                        snapshot.vamp = Some(VampState::start(start_beat, slot));
+                        if start_beat <= beat {
+                            message = "Chord vamp active".to_string();
+                        } else {
+                            message = "Chord vamp armed for next chord".to_string();
+                        }
                     }
                 });
                 self.show_message(message);
