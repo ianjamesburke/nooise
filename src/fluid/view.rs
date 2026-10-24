@@ -387,9 +387,11 @@ impl<'a> UiViewModel<'a> {
         let holding_gesture = !gestures.is_empty() || holding_mute || rise_status.is_some();
         let vamp_status = session.vamp.map(|vamp| {
             if telemetry.beat < vamp.start_beat {
-                "Vamp · next bar · a cancel".to_string()
+                "Vamp · next chord · a cancel".to_string()
             } else if vamp.is_releasing() {
-                "Vamp · release next bar · a keep".to_string()
+                "Vamp · release next chord · a keep".to_string()
+            } else if !session.vamp_latched && session.vamp_press_seconds.is_some() {
+                format!("Vamp · Chord {} · key up releases", vamp.slot + 1)
             } else {
                 format!("Vamp · Chord {} · a release", vamp.slot + 1)
             }

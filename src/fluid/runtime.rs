@@ -470,6 +470,9 @@ pub(crate) fn map_input(
         if let Some(mute) = HoldMute::from_key(lower) {
             return semantic(*phase, Intent::ReleaseHoldMute(mute));
         }
+        if lower == 'a' && matches!(mode, InteractionMode::Browsing) {
+            return semantic(*phase, Intent::ReleaseVamp);
+        }
     }
 
     if matches!(mode, InteractionMode::Browsing)
@@ -483,6 +486,9 @@ pub(crate) fn map_input(
         }
         if let Some(mute) = HoldMute::from_key(character) {
             return semantic(*phase, Intent::StartHoldMute(mute));
+        }
+        if character == 'a' {
+            return semantic(*phase, Intent::PressVamp);
         }
     }
 

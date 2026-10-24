@@ -132,6 +132,7 @@ impl PaletteEntry {
                 Operation::PlannedMute => "visible layer".to_string(),
                 Operation::Chord(_) => "selected chord".to_string(),
                 Operation::ToggleAuto => "auto morph".to_string(),
+                Operation::ToggleVamp => "chord vamp".to_string(),
                 Operation::ChordNames(_) => "display".to_string(),
                 Operation::OutputDevice => "routing".to_string(),
                 Operation::ClearSequence => "visible sequence".to_string(),

@@ -35,10 +35,10 @@ impl PlannedAction {
     }
 }
 
-/// Left-hand chord vamp (`a` in Browsing): arms for the next bar downbeat,
-/// holds whatever chord slot the progression lands on at `start_beat` across
-/// all chord-following voices until the player taps `a` again to release on
-/// the next bar downbeat into the next chord in the progression.
+/// Left-hand chord vamp (`a` in Browsing): quantizes to nearest chord start,
+/// holds whatever chord slot the progression lands on across all chord-following
+/// voices until the player taps `a` again to release on the next chord start
+/// into the next chord in the progression.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct VampState {
     pub(crate) start_beat: f64,
@@ -47,8 +47,7 @@ pub(crate) struct VampState {
 }
 
 impl VampState {
-    pub(crate) fn start(beat: f64, slot: u8) -> Self {
-        let start_beat = super::next_bar_beat(beat.max(0.0));
+    pub(crate) fn start(start_beat: f64, slot: u8) -> Self {
         Self {
             start_beat,
             end_beat: f64::INFINITY,

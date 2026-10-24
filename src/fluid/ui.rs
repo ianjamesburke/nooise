@@ -171,11 +171,13 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         );
     } else {
         let ribbon_span = if let Some(vamp) = active_vamp {
-            let bar_start = ((view.telemetry.beat - vamp.start_beat).max(0.0) / 4.0).floor() * 4.0
+            let interval = GridSpec::new(controls.pad.chord_bars * 4.0, 0.0, 0.0).interval_beats;
+            let chord_start = ((view.telemetry.beat - vamp.start_beat).max(0.0) / interval).floor()
+                * interval
                 + vamp.start_beat;
             ChordSpan {
-                start_beat: bar_start,
-                length_beats: 4.0,
+                start_beat: chord_start,
+                length_beats: interval as f32,
             }
         } else {
             view.telemetry.chord_span
@@ -1228,7 +1230,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("e", "rise"),
                 ("r", "perc roll"),
             ],
-            &[("a", "chord vamp (tap)")],
+            &[("a", "chord vamp (hold/tap)")],
         ],
     ));
     lines.extend(section(

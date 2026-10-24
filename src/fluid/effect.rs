@@ -1393,6 +1393,8 @@ impl EffectExecutor {
             | InteractionEffect::GestureRelease(_)
             | InteractionEffect::HoldMutePress(_)
             | InteractionEffect::HoldMuteRelease(_)
+            | InteractionEffect::PressVamp
+            | InteractionEffect::ReleaseVamp
             | InteractionEffect::ToggleVamp
             | InteractionEffect::GestureReleaseAll) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
@@ -1983,6 +1985,96 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
+            InteractionEffect::PressVamp => {
+                let now_seconds = self.session.audio_seconds();
+                let beat = self.current_beat(context.beat);
+                let phrase_start = self.session.audio_phrase_start();
+                let mut message = String::new();
+                let snapshot = self.session.update(|snapshot| {
+                    if let Some(mut vamp) = snapshot.vamp {
+                        if beat < vamp.start_beat {
+                            snapshot.vamp = None;
+                            snapshot.vamp_press_seconds = None;
+                            snapshot.vamp_latched = false;
+                            message = "Chord vamp cancelled".to_string();
+                        } else if !vamp.is_releasing() {
+                            let interval =
+                                GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
+                                    .interval_beats;
+                            let cycle =
+                                ((beat - vamp.start_beat).max(0.0) / interval).floor() + 1.0;
+                            vamp.end_beat = vamp.start_beat + cycle * interval;
+                            snapshot.vamp = Some(vamp);
+                            snapshot.vamp_press_seconds = Some(now_seconds);
+                            snapshot.vamp_latched = false;
+                            message = "Chord vamp releasing next chord".to_string();
+                        } else {
+                            vamp.end_beat = f64::INFINITY;
+                            snapshot.vamp = Some(vamp);
+                            snapshot.vamp_press_seconds = Some(now_seconds);
+                            snapshot.vamp_latched = true;
+                            message = "Chord vamp kept".to_string();
+                        }
+                    } else {
+                        let window = ChordWindow::requested(&snapshot.controls.pad);
+                        let interval =
+                            GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
+                                .interval_beats;
+                        let elapsed = (beat.max(0.0) - phrase_start).max(0.0);
+                        let k = (elapsed / interval).floor();
+                        let start_beat = (phrase_start + k * interval).max(0.0);
+                        let step = (k as usize) % window.count;
+                        let slot = window.slot(step) as u8;
+                        snapshot.vamp = Some(VampState::start(start_beat, slot));
+                        snapshot.vamp_press_seconds = Some(now_seconds);
+                        snapshot.vamp_latched = false;
+                        message = "Chord vamp active".to_string();
+                    }
+                });
+                self.show_message(message);
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::ReleaseVamp => {
+                let now_seconds = self.session.audio_seconds();
+                let beat = self.current_beat(context.beat);
+                let mut message = None;
+                let snapshot = self.session.update(|snapshot| {
+                    let pressed_at = snapshot.vamp_press_seconds.take();
+                    let elapsed =
+                        pressed_at.map_or(f64::INFINITY, |at| (now_seconds - at).max(0.0));
+                    const VAMP_TAP_MAX_SECONDS: f64 = 0.25;
+                    if elapsed < VAMP_TAP_MAX_SECONDS {
+                        // Quick tap: latch the vamp hands-free!
+                        if snapshot.vamp.is_some() {
+                            snapshot.vamp_latched = true;
+                        }
+                    } else {
+                        // Sustained hold: releasing the key cues release on the next chord boundary!
+                        if let Some(mut vamp) = snapshot.vamp
+                            && !vamp.is_releasing()
+                            && vamp.is_active(beat)
+                        {
+                            let interval =
+                                GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
+                                    .interval_beats;
+                            let cycle =
+                                ((beat - vamp.start_beat).max(0.0) / interval).floor() + 1.0;
+                            vamp.end_beat = vamp.start_beat + cycle * interval;
+                            snapshot.vamp = Some(vamp);
+                            snapshot.vamp_latched = false;
+                            message = Some("Chord vamp releasing next chord".to_string());
+                        }
+                    }
+                });
+                if let Some(msg) = message {
+                    self.show_message(msg);
+                }
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::ToggleVamp => {
                 let beat = self.current_beat(context.beat);
                 let phrase_start = self.session.audio_phrase_start();
@@ -1991,29 +2083,41 @@ impl EffectExecutor {
                     if let Some(mut vamp) = snapshot.vamp {
                         if beat < vamp.start_beat {
                             snapshot.vamp = None;
+                            snapshot.vamp_press_seconds = None;
+                            snapshot.vamp_latched = false;
                             message = "Chord vamp cancelled".to_string();
                         } else if !vamp.is_releasing() {
-                            vamp.end_beat = next_bar_beat(beat.max(0.0));
+                            let interval =
+                                GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
+                                    .interval_beats;
+                            let cycle =
+                                ((beat - vamp.start_beat).max(0.0) / interval).floor() + 1.0;
+                            vamp.end_beat = vamp.start_beat + cycle * interval;
                             snapshot.vamp = Some(vamp);
-                            message = "Chord vamp releasing next bar".to_string();
+                            snapshot.vamp_press_seconds = None;
+                            snapshot.vamp_latched = false;
+                            message = "Chord vamp releasing next chord".to_string();
                         } else {
                             vamp.end_beat = f64::INFINITY;
                             snapshot.vamp = Some(vamp);
+                            snapshot.vamp_press_seconds = None;
+                            snapshot.vamp_latched = true;
                             message = "Chord vamp kept".to_string();
                         }
                     } else {
-                        let start_beat = next_bar_beat(beat.max(0.0));
                         let window = ChordWindow::requested(&snapshot.controls.pad);
                         let interval =
                             GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
                                 .interval_beats;
-                        let step = (((start_beat - phrase_start).max(0.0) + GRID_BEAT_EPSILON)
-                            / interval)
-                            .floor() as usize
-                            % window.count;
+                        let elapsed = (beat.max(0.0) - phrase_start).max(0.0);
+                        let k = (elapsed / interval).floor();
+                        let start_beat = (phrase_start + k * interval).max(0.0);
+                        let step = (k as usize) % window.count;
                         let slot = window.slot(step) as u8;
-                        snapshot.vamp = Some(VampState::start(beat, slot));
-                        message = "Chord vamp armed for next bar".to_string();
+                        snapshot.vamp = Some(VampState::start(start_beat, slot));
+                        snapshot.vamp_press_seconds = None;
+                        snapshot.vamp_latched = true;
+                        message = "Chord vamp active".to_string();
                     }
                 });
                 self.show_message(message);
@@ -2023,14 +2127,35 @@ impl EffectExecutor {
             }
             InteractionEffect::GestureReleaseAll => {
                 let current = self.session.load();
-                if !current.gestures.has_held() && !current.hold_muted.into_iter().any(|held| held)
+                let unlatched_held_vamp = current.vamp.is_some_and(|vamp| {
+                    !vamp.is_releasing()
+                        && !current.vamp_latched
+                        && current.vamp_press_seconds.is_some()
+                });
+                if !current.gestures.has_held()
+                    && !current.hold_muted.into_iter().any(|held| held)
+                    && !unlatched_held_vamp
                 {
                     return Ok(EffectAcknowledgement::NoChange);
                 }
                 let now_seconds = self.session.audio_seconds();
+                let beat = self.current_beat(context.beat);
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.gestures.release_all(now_seconds);
                     snapshot.hold_muted = [false; HOLD_MUTE_COUNT];
+                    if let Some(mut vamp) = snapshot.vamp
+                        && !vamp.is_releasing()
+                        && !snapshot.vamp_latched
+                        && snapshot.vamp_press_seconds.is_some()
+                    {
+                        snapshot.vamp_press_seconds = None;
+                        let interval =
+                            GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
+                                .interval_beats;
+                        let cycle = ((beat - vamp.start_beat).max(0.0) / interval).floor() + 1.0;
+                        vamp.end_beat = vamp.start_beat + cycle * interval;
+                        snapshot.vamp = Some(vamp);
+                    }
                 });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
