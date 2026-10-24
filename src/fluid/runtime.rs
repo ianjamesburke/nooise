@@ -21,12 +21,12 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
-use super::GestureKind;
 use super::interaction::{
     AutomationKind, ChordDrill, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge,
     Navigation, PageDirection, PerformanceInstrument, PerformanceKind, PerformanceParameter,
     SemanticAction, hub_layer,
 };
+use super::{GestureKind, HoldMute};
 
 /// Target spacing between drawn frames.
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -464,9 +464,14 @@ pub(crate) fn map_input(
     // if modifiers or keyboard owner changed while it was held.
     if *phase == InputPhase::Release
         && let PhysicalKey::Character(character) = key.code
-        && let Some(kind) = GestureKind::from_key(character.to_ascii_lowercase())
     {
-        return semantic(*phase, Intent::ReleaseGesture(kind));
+        let lower = character.to_ascii_lowercase();
+        if let Some(kind) = GestureKind::from_key(lower) {
+            return semantic(*phase, Intent::ReleaseGesture(kind));
+        }
+        if let Some(mute) = HoldMute::from_key(lower) {
+            return semantic(*phase, Intent::ReleaseHoldMute(mute));
+        }
     }
 
     if matches!(mode, InteractionMode::Browsing)
@@ -474,9 +479,13 @@ pub(crate) fn map_input(
         && *phase == InputPhase::Press
         && capabilities.supports_holds()
         && let PhysicalKey::Character(character) = key.code
-        && let Some(kind) = GestureKind::from_key(character)
     {
-        return semantic(*phase, Intent::StartGesture(kind));
+        if let Some(kind) = GestureKind::from_key(character) {
+            return semantic(*phase, Intent::StartGesture(kind));
+        }
+        if let Some(mute) = HoldMute::from_key(character) {
+            return semantic(*phase, Intent::StartHoldMute(mute));
+        }
     }
 
     // The shortcut map answers to either report a terminal might send for
@@ -585,8 +594,7 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
         PhysicalKey::Character('/') => Intent::OpenPalette,
         PhysicalKey::Character('f') => Intent::OpenAutomation(AutomationKind::Lfo),
-        PhysicalKey::Character('e') => Intent::OpenAutomation(AutomationKind::Envelope),
-        PhysicalKey::Character('a') => Intent::ToggleAuto,
+        PhysicalKey::Character('g') => Intent::OpenAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
         PhysicalKey::Character('t') => Intent::ToggleUnits,
         PhysicalKey::Character('x') => Intent::RemoveAutomation,
@@ -599,9 +607,11 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
 
 fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent> {
     Some(match *code {
-        // `r` rolls the selected control's own dial; inside an automation
-        // editor the same key reseeds the open random lane instead.
-        PhysicalKey::Character('r') => Intent::RandomizeSelected,
+        // `u` rolls the selected control's own dial; `a` triggers or cancels
+        // the 16-bar breakdown vamp (`e`/`r` are hold-mutes when holds are
+        // supported).
+        PhysicalKey::Character('u') => Intent::RandomizeSelected,
+        PhysicalKey::Character('a') => Intent::ToggleVamp,
         PhysicalKey::Character('i') => Intent::EnterLeadPlay,
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Jump),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
@@ -624,7 +634,9 @@ fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
         // Enter stays inert while an automation editor owns the keyboard.
         PhysicalKey::Enter => None,
         PhysicalKey::Character(' ') => Some(Intent::ActivatePerformance(PerformanceKind::Jump)),
-        PhysicalKey::Character('r') => Some(Intent::RandomizeAutomationRow),
+        PhysicalKey::Character('e') => Some(Intent::OpenAutomation(AutomationKind::Envelope)),
+        PhysicalKey::Character('a') => Some(Intent::ToggleAuto),
+        PhysicalKey::Character('r' | 'u') => Some(Intent::RandomizeAutomationRow),
         _ => slider_binding(code),
     }
 }
@@ -636,11 +648,14 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         // control's range, this takes the top.
         PhysicalKey::Right | PhysicalKey::Character('L' | 'l') => Intent::MaxSelected,
         PhysicalKey::Character('M' | 'm') => Intent::ToggleMute { master: true },
+        PhysicalKey::Character('A' | 'a') => Intent::ToggleAuto,
         PhysicalKey::Character('T' | 't') => Intent::ToggleUnits,
         PhysicalKey::Character('F' | 'f') => Intent::AddAutomation(AutomationKind::Lfo),
-        PhysicalKey::Character('E' | 'e') => Intent::AddAutomation(AutomationKind::Envelope),
+        PhysicalKey::Character('E' | 'e' | 'G' | 'g') => {
+            Intent::AddAutomation(AutomationKind::Envelope)
+        }
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
-        PhysicalKey::Character('R' | 'r') => Intent::RandomizeScope,
+        PhysicalKey::Character('R' | 'r' | 'U' | 'u') => Intent::RandomizeScope,
         // Shifted so a stray keystroke cannot end the song.
         PhysicalKey::Character('P' | 'p') => Intent::ToggleTransport,
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
@@ -2009,12 +2024,12 @@ mod tests {
 
         for (code, expected) in [
             ('f', Intent::OpenAutomation(super::AutomationKind::Lfo)),
-            ('e', Intent::OpenAutomation(super::AutomationKind::Envelope)),
-            ('a', Intent::ToggleAuto),
+            ('g', Intent::OpenAutomation(super::AutomationKind::Envelope)),
+            ('a', Intent::ToggleVamp),
             ('m', Intent::ToggleMute { master: false }),
             ('t', Intent::ToggleUnits),
             ('x', Intent::RemoveAutomation),
-            ('r', Intent::RandomizeSelected),
+            ('u', Intent::RandomizeSelected),
         ] {
             assert!(matches!(
                 map_input(
@@ -2033,7 +2048,10 @@ mod tests {
         for (code, expected) in [
             ('F', Intent::AddAutomation(super::AutomationKind::Lfo)),
             ('E', Intent::AddAutomation(super::AutomationKind::Envelope)),
+            ('G', Intent::AddAutomation(super::AutomationKind::Envelope)),
+            ('A', Intent::ToggleAuto),
             ('R', Intent::RandomizeScope),
+            ('U', Intent::RandomizeScope),
             ('P', Intent::ToggleTransport),
         ] {
             assert_eq!(

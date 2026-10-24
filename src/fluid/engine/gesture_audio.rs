@@ -6,14 +6,16 @@ const SUBMERGE_MIN_CUTOFF_HZ: f32 = 600.0;
 const SUBMERGE_OPEN_CUTOFF_HZ: f32 = 8_000.0;
 const LIFT_MIN_CUTOFF_HZ: f32 = 40.0;
 const LIFT_MAX_CUTOFF_HZ: f32 = 320.0;
-const BLOOM_SEND_GAIN: f32 = 0.42;
-const BLOOM_DRY_DUCK: f32 = 0.3;
-const BLOOM_ROOM_SIZE: f32 = 0.82;
-/// Comb damping. Low, so the wash keeps its air instead of going dull.
-const BLOOM_DAMPING: f32 = 0.15;
-/// The send is high-passed so sustained lows never pile up in the combs:
-/// the wash is built from the mids and highs.
-const BLOOM_SEND_HIGH_PASS_HZ: f32 = 300.0;
+const BLOOM_SEND_GAIN: f32 = 0.32;
+const BLOOM_DRY_DUCK: f32 = 0.10;
+const BLOOM_ROOM_SIZE: f32 = 0.80;
+/// Comb damping: warm enough to absorb sharp percussive clicks so they do not
+/// slap back at the 25–37 ms Haas boundary and drag the perceived beat.
+const BLOOM_DAMPING: f32 = 0.48;
+/// The send is band-shaped so sustained lows never pile up in the combs and
+/// sharp drum/pluck clicks stay on the dry grid instead of flamming in the wash.
+const BLOOM_SEND_HIGH_PASS_HZ: f32 = 220.0;
+const BLOOM_SEND_LOW_PASS_HZ: f32 = 3_200.0;
 const ECHO_SEND_GAIN: f32 = 0.35;
 const ECHO_DRY_DUCK: f32 = 0.2;
 const ECHO_MAX_FEEDBACK: f32 = 0.5;
@@ -25,6 +27,8 @@ struct GestureFx {
     lift: SlotFx,
     bloom: SlotFx,
     bloom_send_filter: StereoFilter,
+    bloom_send_lowpass: (f32, f32),
+    bloom_send_lowpass_alpha: f32,
     echo: SlotFx,
     submerge_active: bool,
     lift_active: bool,
@@ -47,6 +51,9 @@ impl GestureFx {
             lift: SlotFx::Filter(StereoFilter::default()),
             bloom: SlotFx::Reverb(Freeverb::new(sample_rate)),
             bloom_send_filter: StereoFilter::default(),
+            bloom_send_lowpass: (0.0, 0.0),
+            bloom_send_lowpass_alpha: 1.0
+                - (-std::f32::consts::TAU * BLOOM_SEND_LOW_PASS_HZ / sample_rate).exp(),
             echo: SlotFx::Delay(StereoDelay::new(max_delay_samples)),
             submerge_active: false,
             lift_active: false,
@@ -190,6 +197,7 @@ impl GestureFx {
                 self.bloom_has_history = false;
                 self.bloom_clear_cursor = 0;
                 self.bloom_send_filter = StereoFilter::default();
+                self.bloom_send_lowpass = (0.0, 0.0);
             }
             return (0.0, 0.0);
         }
@@ -204,6 +212,11 @@ impl GestureFx {
                 amount: 1.0,
             },
         );
+        self.bloom_send_lowpass.0 +=
+            self.bloom_send_lowpass_alpha * (input.0 - self.bloom_send_lowpass.0);
+        self.bloom_send_lowpass.1 +=
+            self.bloom_send_lowpass_alpha * (input.1 - self.bloom_send_lowpass.1);
+        let input = self.bloom_send_lowpass;
         let slot = ModuleSlot {
             amount: 1.0,
             time: BLOOM_ROOM_SIZE,

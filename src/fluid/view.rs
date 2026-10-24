@@ -331,7 +331,13 @@ impl<'a> UiViewModel<'a> {
             &session.automation,
         );
         let gestures = gesture_activities(session, presentation.gesture_now_seconds);
-        let holding_gesture = !gestures.is_empty();
+        let holding_mute = session.hold_muted.into_iter().any(|held| held);
+        let holding_gesture = !gestures.is_empty() || holding_mute;
+        let vamp_status = session.vamp.map(|vamp| {
+            let bar = (((telemetry.beat - vamp.start_beat).max(0.0) / 4.0).floor() as usize + 1)
+                .clamp(1, VAMP_BARS);
+            format!("Vamp · bar {bar}/{VAMP_BARS} · a end")
+        });
         let stopped = session.transport == Transport::Stopped;
         let editor = match &mode {
             ModeSurface::Automation(surface) => Some(surface),
@@ -350,13 +356,16 @@ impl<'a> UiViewModel<'a> {
                     .get(&ControlAddress::new(item.id))
             })
         };
-        let activity_live = holding_gesture || stopped || capture.is_some();
-        let activity = match (stopped, holding_gesture) {
+        let activity_live =
+            holding_gesture || stopped || vamp_status.is_some() || capture.is_some();
+        let live_gesture_text =
+            gesture_activity_line(&gestures, &session.hold_muted, vamp_status.as_deref());
+        let activity = match (stopped, holding_gesture || vamp_status.is_some()) {
             // Stopped leads the row in every owner, so silence is never
             // mistaken for a dead engine; gestures still play into the tails.
-            (true, true) => format!("■ STOPPED · {}", gesture_activity_line(&gestures)),
+            (true, true) => format!("■ STOPPED · {live_gesture_text}"),
             (true, false) => "■ STOPPED · Shift+P play".to_string(),
-            (false, true) => gesture_activity_line(&gestures),
+            (false, true) => live_gesture_text,
             (false, false) if capture.is_some() => format!(
                 "↻ {} beats · {} · {}",
                 capture.map_or(0, |clip| clip.duration.beats()),
@@ -492,10 +501,15 @@ fn breadcrumb(
 }
 
 /// The gesture-activity row's text: one entry per held/returning envelope,
-/// or empty when none are active. Kept separate from `help_surface` so a
-/// gesture readout never crowds out the exits/mode help sharing the footer.
-fn gesture_activity_line(gestures: &[GestureActivity]) -> String {
-    gestures
+/// hold-mute, or active vamp, or empty when none are active. Kept separate
+/// from `help_surface` so a gesture readout never crowds out the exits/mode
+/// help sharing the footer.
+fn gesture_activity_line(
+    gestures: &[GestureActivity],
+    hold_muted: &[bool; HOLD_MUTE_COUNT],
+    vamp_status: Option<&str>,
+) -> String {
+    let mut parts: Vec<String> = gestures
         .iter()
         .map(|gesture| {
             let direction = match gesture.direction {
@@ -510,8 +524,16 @@ fn gesture_activity_line(gestures: &[GestureActivity]) -> String {
                 gesture.amount_pct
             )
         })
-        .collect::<Vec<_>>()
-        .join(" · ")
+        .collect();
+    for mute in HoldMute::ALL {
+        if hold_muted[mute as usize] {
+            parts.push(format!("{}●", mute.name()));
+        }
+    }
+    if let Some(vamp) = vamp_status {
+        parts.push(vamp.to_string());
+    }
+    parts.join(" · ")
 }
 
 /// The gesture-activity row's idle text: the key/name for every hold

@@ -142,6 +142,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         header.chords,
         &controls.pad,
         frame.active_slot,
+        view.session.vamp.is_some(),
     );
     if let Some(title) = &view.chord_title {
         f.render_widget(
@@ -291,6 +292,7 @@ fn draw_harmony(
     chords_area: Rect,
     pad: &PadControls,
     active_slot: usize,
+    vamp_active: bool,
 ) {
     let window = ChordWindow::requested(pad);
     let key = progression_home_label(window.progression);
@@ -306,7 +308,11 @@ fn draw_harmony(
         key_area,
     );
 
-    let slots: Vec<_> = window.slots().collect();
+    let (slots, active_slot): (Vec<_>, usize) = if vamp_active {
+        (vec![0], 0)
+    } else {
+        (window.slots().collect(), active_slot)
+    };
     let mut spans = vec![Span::styled("CHORDS  ", Style::default().fg(DIM_TEXT))];
     let mut used = "CHORDS  ".len();
     for (index, &slot) in slots.iter().enumerate() {
@@ -1106,7 +1112,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("Tab / \u{21e7}Tab", "next/prev layer"),
             ],
             &[
-                ("r", "random"),
+                ("u", "random"),
                 ("\u{21e7}R", "randomize set"),
                 ("\u{21b5}", "enter/confirm"),
                 ("x", "remove"),
@@ -1121,18 +1127,29 @@ fn draw_help(f: &mut Frame, inner: Rect) {
     );
     lines.extend(section(
         "Gestures (hold)",
-        &[&[
-            ("z", "bloom"),
-            ("c", "submerge"),
-            ("v", "echo"),
-            ("x", "lift"),
-        ]],
+        &[
+            &[
+                ("z", "bloom"),
+                ("c", "submerge"),
+                ("v", "echo"),
+                ("x", "lift"),
+            ],
+            &[
+                ("e", "bass mute"),
+                ("r", "kick mute"),
+                ("a", "16-bar vamp (tap)"),
+            ],
+        ],
     ));
     lines.extend(section(
         "Editors",
         &[
             &[("/", "palette"), ("f", "LFO"), ("\u{21e7}F", "add LFO")],
-            &[("a", "toggle auto"), ("e", "ENV"), ("\u{21e7}E", "add ENV")],
+            &[
+                ("\u{21e7}A", "toggle auto"),
+                ("g", "ENV"),
+                ("\u{21e7}E", "add ENV"),
+            ],
         ],
     ));
     lines.extend(section(

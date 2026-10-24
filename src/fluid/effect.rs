@@ -696,6 +696,25 @@ impl EffectExecutor {
                         generation: snapshot.generation,
                     };
                 }
+                if !self.session.audio_clock_active()
+                    && self
+                        .session
+                        .load()
+                        .vamp
+                        .is_some_and(|vamp| vamp.is_due(beat))
+                {
+                    let snapshot = self.session.update(|snapshot| {
+                        snapshot.vamp = None;
+                        snapshot.muted[Tab::Kick as usize] =
+                            snapshot.hold_muted[HoldMute::Kick as usize];
+                        snapshot.muted[Tab::Bass as usize] =
+                            snapshot.hold_muted[HoldMute::Bass as usize];
+                    });
+                    self.show_message("16-bar vamp ended".to_string());
+                    acknowledgement = EffectAcknowledgement::Published {
+                        generation: snapshot.generation,
+                    };
+                }
                 Ok(acknowledgement)
             }
             LiveEffect::CopySong => {
@@ -711,6 +730,9 @@ impl EffectExecutor {
                     planned: snapshot.planned.map(|action| {
                         action.rebased_at(self.session.audio_beat().max(self.edit_beat))
                     }),
+                    vamp: snapshot
+                        .vamp
+                        .map(|vamp| vamp.rebased_at(self.session.audio_beat().max(self.edit_beat))),
                     gestures: snapshot.gestures.snapshot_at(now_seconds),
                     drunken_phase_beat: if snapshot
                         .controls
@@ -937,6 +959,7 @@ impl EffectExecutor {
                         target_beat: 4.0,
                     },
                 });
+                snapshot.vamp = snapshot.vamp.map(|_| VampState::start(0.0));
             }
         });
         if self.session.load().transport == Transport::Playing {
@@ -1161,6 +1184,9 @@ impl EffectExecutor {
             | InteractionEffect::LeadCapture
             | InteractionEffect::GesturePress(_)
             | InteractionEffect::GestureRelease(_)
+            | InteractionEffect::HoldMutePress(_)
+            | InteractionEffect::HoldMuteRelease(_)
+            | InteractionEffect::ToggleVamp
             | InteractionEffect::GestureReleaseAll) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
@@ -1506,14 +1532,65 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
+            InteractionEffect::HoldMutePress(mute) => {
+                let snapshot = self.session.update(|snapshot| {
+                    snapshot.hold_muted[mute as usize] = true;
+                    snapshot.muted[mute.tab() as usize] = true;
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::HoldMuteRelease(mute) => {
+                let snapshot = self.session.update(|snapshot| {
+                    snapshot.hold_muted[mute as usize] = false;
+                    snapshot.muted[mute.tab() as usize] = snapshot.vamp.is_some();
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::ToggleVamp => {
+                let beat = self.session.audio_beat().max(self.edit_beat);
+                let snapshot = self.session.update(|snapshot| {
+                    if snapshot.vamp.is_some() {
+                        snapshot.vamp = None;
+                        snapshot.muted[Tab::Kick as usize] =
+                            snapshot.hold_muted[HoldMute::Kick as usize];
+                        snapshot.muted[Tab::Bass as usize] =
+                            snapshot.hold_muted[HoldMute::Bass as usize];
+                    } else {
+                        snapshot.vamp = Some(VampState::start(beat));
+                        snapshot.muted[Tab::Kick as usize] = true;
+                        snapshot.muted[Tab::Bass as usize] = true;
+                    }
+                });
+                let message = if snapshot.vamp.is_some() {
+                    "16-bar vamp: kick + bass muted, chord 1 locked".to_string()
+                } else {
+                    "16-bar vamp ended".to_string()
+                };
+                self.show_message(message);
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             InteractionEffect::GestureReleaseAll => {
-                if !self.session.load().gestures.has_held() {
+                let current = self.session.load();
+                if !current.gestures.has_held() && !current.hold_muted.into_iter().any(|held| held)
+                {
                     return Ok(EffectAcknowledgement::NoChange);
                 }
                 let now_seconds = self.session.audio_seconds();
-                let snapshot = self
-                    .session
-                    .update(|snapshot| snapshot.gestures.release_all(now_seconds));
+                let snapshot = self.session.update(|snapshot| {
+                    snapshot.gestures.release_all(now_seconds);
+                    for mute in HoldMute::ALL {
+                        if snapshot.hold_muted[mute as usize] {
+                            snapshot.hold_muted[mute as usize] = false;
+                            snapshot.muted[mute.tab() as usize] = snapshot.vamp.is_some();
+                        }
+                    }
+                });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })

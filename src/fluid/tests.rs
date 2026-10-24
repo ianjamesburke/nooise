@@ -10627,4 +10627,56 @@ mod chord_span_startup_tests {
             }
         );
     }
+
+    #[test]
+    fn vamp_locks_first_chord_for_16_bars_and_drops_kick_and_bass_back_in_on_bar_17() {
+        let mut song = SongState::from_controls(FluidControls::default());
+        song.controls.master.bpm = 180.0;
+        song.controls.pad.chord_bars = 4.0;
+        song.controls.pad.chord_count = 4.0;
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(&song));
+        let telemetry = Arc::new(FluidTelemetry::default());
+        let mut engine =
+            FluidEngine::new(3_000.0, session.clone(), no_morph(), Arc::clone(&telemetry));
+
+        session
+            .transact(|next| {
+                next.muted[Tab::Kick as usize] = true;
+                next.muted[Tab::Bass as usize] = true;
+                next.vamp = Some(planned::VampState::start(0.0));
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+
+        // Advance to beat 20.0 (past the normal 16-beat first chord boundary):
+        // 180 BPM = 3 beats/sec -> 1,000 samples/beat -> 20,000 samples = 20 beats.
+        for _ in 0..20_000 {
+            engine.next_stereo();
+        }
+        assert!(telemetry.beat() >= 19.5 && telemetry.beat() < 21.0);
+        assert_eq!(
+            engine.pad.cursor.slot(),
+            0,
+            "vamp must clamp progression to Chord 1 past the normal 4-bar chord change"
+        );
+        assert_eq!(engine.pad.cursor.chord_beats, 64.0);
+        let mid_vamp = session.load();
+        assert!(mid_vamp.muted[Tab::Kick as usize]);
+        assert!(mid_vamp.muted[Tab::Bass as usize]);
+
+        // Advance past beat 64.0 (45,000 more samples = beat 65.0).
+        for _ in 0..45_000 {
+            engine.next_stereo();
+        }
+        assert!(telemetry.beat() >= 64.0);
+        assert_eq!(engine.vamp, None, "vamp ends automatically after 16 bars");
+        assert_eq!(
+            engine.pad.cursor.chord_beats, 16.0,
+            "progression chord length restores after vamp"
+        );
+        let published = session.load();
+        assert_eq!(published.vamp, None);
+        assert!(!published.muted[Tab::Kick as usize]);
+        assert!(!published.muted[Tab::Bass as usize]);
+    }
 }

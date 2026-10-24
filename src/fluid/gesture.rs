@@ -2,10 +2,50 @@
 //! than keyboard repeat or UI ticks, determines every gesture's amount.
 
 pub(crate) const GESTURE_COUNT: usize = 4;
+pub(crate) const HOLD_MUTE_COUNT: usize = 2;
 
 /// Every gesture lets go this fast on key-up: the envelope, and on the audio
 /// stage each wet return, reach zero within it.
 pub(crate) const GESTURE_RELEASE_SECONDS: f64 = 0.010;
+
+/// Momentary left-hand layer mute (`e` for Bass, `r` for Kick) in normal
+/// browsing: held mutes immediately without waiting for a bar boundary, and
+/// releasing brings the layer straight back in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum HoldMute {
+    Bass = 0,
+    Kick = 1,
+}
+
+impl HoldMute {
+    pub(crate) const ALL: [Self; HOLD_MUTE_COUNT] = [Self::Bass, Self::Kick];
+
+    pub(crate) fn from_key(key: char) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.key() == key)
+    }
+
+    pub(crate) const fn key(self) -> char {
+        match self {
+            Self::Bass => 'e',
+            Self::Kick => 'r',
+        }
+    }
+
+    pub(crate) const fn tab(self) -> super::Tab {
+        match self {
+            Self::Bass => super::Tab::Bass,
+            Self::Kick => super::Tab::Kick,
+        }
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Bass => "Bass Mute",
+            Self::Kick => "Kick Mute",
+        }
+    }
+}
 
 /// The discriminant is the storage index. The song-code tag is `wire_tag`,
 /// which never moves when a gesture retires.

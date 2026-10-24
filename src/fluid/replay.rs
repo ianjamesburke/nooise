@@ -526,6 +526,8 @@ impl Clipboard for FakeClipboard {
         let authored = SongState {
             controls: saved.controls,
             muted: saved.muted,
+            planned: saved.planned,
+            vamp: saved.vamp,
             automation: saved.automation,
             ..SongState::default()
         };
@@ -1659,16 +1661,19 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("L max", vec![shift(FixtureKey::Character('L'))]),
         ("next page", vec![plain(FixtureKey::Tab)]),
         ("previous page", vec![shift(FixtureKey::BackTab)]),
-        ("auto", vec![plain(FixtureKey::Character('a'))]),
+        ("auto", vec![shift(FixtureKey::Character('A'))]),
+        ("vamp", vec![plain(FixtureKey::Character('a'))]),
         ("palette", vec![plain(FixtureKey::Character('/'))]),
         ("lfo", vec![plain(FixtureKey::Character('f'))]),
-        ("envelope", vec![plain(FixtureKey::Character('e'))]),
+        ("envelope", vec![plain(FixtureKey::Character('g'))]),
         ("lift gesture", vec![plain(FixtureKey::Character('x'))]),
+        ("bass hold mute", vec![plain(FixtureKey::Character('e'))]),
+        ("kick hold mute", vec![plain(FixtureKey::Character('r'))]),
         ("unit flip", vec![plain(FixtureKey::Character('t'))]),
         ("track mute", vec![plain(FixtureKey::Character('m'))]),
         ("master mute", vec![shift(FixtureKey::Character('M'))]),
         ("clock stop", vec![shift(FixtureKey::Character('P'))]),
-        ("randomize", vec![plain(FixtureKey::Character('r'))]),
+        ("randomize", vec![plain(FixtureKey::Character('u'))]),
         ("randomize set", vec![shift(FixtureKey::Character('R'))]),
         ("numeric", vec![plain(FixtureKey::Character('1'))]),
         ("enter layer", vec![plain(FixtureKey::Enter)]),
@@ -1830,6 +1835,14 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 effects: vec!["ToggleAuto=>OK:Published { generation: 1 }"],
                 notice: None,
             },
+            "vamp" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::ToggleVamp],
+                effects: vec!["ToggleVamp=>OK:Published { generation: 1 }"],
+                notice: Some("16-bar vamp: kick + bass muted, chord 1 locked"),
+            },
             "palette" => ExpectedBinding {
                 owner: "PALETTE",
                 generation: 0,
@@ -1860,6 +1873,22 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 automation: None,
                 intents: vec![Intent::StartGesture(GestureKind::Lift)],
                 effects: vec!["GesturePress(Lift)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "bass hold mute" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::StartHoldMute(gesture::HoldMute::Bass)],
+                effects: vec!["HoldMutePress(Bass)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "kick hold mute" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::StartHoldMute(gesture::HoldMute::Kick)],
+                effects: vec!["HoldMutePress(Kick)=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "unit flip" => ExpectedBinding {
@@ -2183,7 +2212,7 @@ fn escape_closes_a_neutral_lfo_without_trapping_the_keyboard_owner() {
 fn silent_lanes_survive_editor_exit_navigation_and_save() {
     let plain = |code| key(0, code, InputPhase::Press);
     let ctrl = |code| modified_key(0, code, InputPhase::Press, 1 << 1);
-    for family in ['f', 'e'] {
+    for family in ['f', 'g'] {
         for exit in [FixtureKey::Escape, FixtureKey::Tab] {
             let result = replay(
                 &[
@@ -2212,7 +2241,7 @@ fn silent_lanes_survive_editor_exit_navigation_and_save() {
 fn silent_lane_capacity_notice_and_x_removal_use_the_production_bindings() {
     let plain = |code| key(0, code, InputPhase::Press);
     let ctrl = |code| modified_key(0, code, InputPhase::Press, 1 << 1);
-    for family in ['f', 'e'] {
+    for family in ['f', 'g'] {
         let add = modified_key(0, FixtureKey::Character(family), InputPhase::Press, 1);
         let mut events = vec![plain(FixtureKey::Character(family))];
         events.extend(std::iter::repeat_n(add.clone(), 4));
@@ -2407,7 +2436,7 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     );
     assert_eq!(opened.model.mode, InteractionMode::Browsing);
 
-    trace.extend([plain(FixtureKey::Down), plain(FixtureKey::Character('r'))]);
+    trace.extend([plain(FixtureKey::Down), plain(FixtureKey::Character('u'))]);
     let rolled = replay(&trace, TerminalCapabilities::full());
     assert_eq!(rolled.effect_count("RandomizeSelected"), 1);
     assert_eq!(rolled.session_generation, 1, "the roll edits step 2");
@@ -2435,7 +2464,7 @@ fn enter_on_the_steps_row_opens_the_lead_pattern_and_esc_returns_to_it() {
     );
 }
 
-/// `r` while browsing rolls the selected control; the same key inside an
+/// `u` while browsing rolls the selected control; `r` or `u` inside an
 /// LFO editor rolls the editor row under the cursor instead.
 #[test]
 fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor() {
@@ -2444,7 +2473,7 @@ fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor
     // Enter on the hub's first row opens Pads, whose Level is its first row.
 
     let rolled = replay(
-        &[plain(FixtureKey::Enter), plain(FixtureKey::Character('r'))],
+        &[plain(FixtureKey::Enter), plain(FixtureKey::Character('u'))],
         TerminalCapabilities::full(),
     );
     assert_eq!(rolled.effect_count("RandomizeSelected"), 1);
@@ -2452,7 +2481,7 @@ fn r_randomizes_the_selected_control_while_browsing_and_the_row_inside_an_editor
     let level = rolled.control("pad.level").unwrap();
     assert!((0.0..=1.0).contains(&level));
     let again = replay(
-        &[plain(FixtureKey::Enter), plain(FixtureKey::Character('r'))],
+        &[plain(FixtureKey::Enter), plain(FixtureKey::Character('u'))],
         TerminalCapabilities::full(),
     );
     assert_eq!(
@@ -3185,7 +3214,7 @@ fn lane_bypass_resume_delete_preserve_editor_and_saved_lane_settings() {
         TerminalCapabilities::full(),
         TerminalCapabilities::default(),
     ] {
-        for (open, kind) in [('f', ModKind::Lfo), ('e', ModKind::Envelope)] {
+        for (open, kind) in [('f', ModKind::Lfo), ('g', ModKind::Envelope)] {
             let mut events = vec![
                 TraceEvent::Resize {
                     after_ms: 0,
@@ -5326,4 +5355,66 @@ fn chord_builder_actions_leave_lane_editors_without_removing_the_lane() {
             );
         }
     }
+}
+
+#[test]
+fn hold_mutes_on_e_and_r_immediately_mute_and_drop_bass_and_kick_back_in() {
+    let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
+    let release = |ch| key(0, FixtureKey::Character(ch), InputPhase::Release);
+
+    let held_both = replay(&[press('e'), press('r')], TerminalCapabilities::full());
+    assert_eq!(held_both.effect_count("HoldMutePress(Bass)"), 1);
+    assert_eq!(held_both.effect_count("HoldMutePress(Kick)"), 1);
+    assert!(
+        held_both.frames.last().unwrap().text.contains("Bass Mute●"),
+        "holding e shows Bass Mute● on the activity line"
+    );
+    assert!(
+        held_both.frames.last().unwrap().text.contains("Kick Mute●"),
+        "holding r shows Kick Mute● on the activity line"
+    );
+
+    let released_both = replay(
+        &[press('e'), press('r'), release('e'), release('r')],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(released_both.effect_count("HoldMuteRelease(Bass)"), 1);
+    assert_eq!(released_both.effect_count("HoldMuteRelease(Kick)"), 1);
+    let final_text = &released_both.frames.last().unwrap().text;
+    assert!(!final_text.contains("Bass Mute●"));
+    assert!(!final_text.contains("Kick Mute●"));
+}
+
+#[test]
+fn vamp_on_a_mutes_kick_and_bass_clamps_first_chord_and_restores_when_ended() {
+    let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
+    let ctrl_s = modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
+
+    let active = replay(&[press('a'), ctrl_s.clone()], TerminalCapabilities::full());
+    assert_eq!(active.effect_count("ToggleVamp"), 1);
+    let active_text = &active.frames.last().unwrap().text;
+    assert!(
+        active_text.contains("Vamp · bar 1/16 · a end"),
+        "active vamp shows 16-bar countdown on the activity line: {active_text}"
+    );
+    let saved_active =
+        song::decode_song_code(active.saved_automation_code.as_deref().unwrap()).unwrap();
+    let vamp = saved_active.vamp.expect("saved song carries active vamp");
+    assert_eq!(vamp.start_beat, 0.0);
+    assert!((vamp.end_beat - 64.0).abs() < 0.01);
+    assert!(saved_active.muted[Tab::Kick as usize]);
+    assert!(saved_active.muted[Tab::Bass as usize]);
+
+    let ended = replay(
+        &[press('a'), press('a'), ctrl_s],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(ended.effect_count("ToggleVamp"), 2);
+    let ended_text = &ended.frames.last().unwrap().text;
+    assert!(!ended_text.contains("Vamp · bar"));
+    let saved_ended =
+        song::decode_song_code(ended.saved_automation_code.as_deref().unwrap()).unwrap();
+    assert_eq!(saved_ended.vamp, None);
+    assert!(!saved_ended.muted[Tab::Kick as usize]);
+    assert!(!saved_ended.muted[Tab::Bass as usize]);
 }

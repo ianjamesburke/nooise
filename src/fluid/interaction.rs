@@ -6,7 +6,7 @@
 use super::ModKind;
 use super::Tab;
 use super::palette::{ModuleScope, PaletteEntry, PaletteState, StagedEdit};
-use super::{FluidControls, GESTURE_COUNT, GestureKind, Operation};
+use super::{FluidControls, GESTURE_COUNT, GestureKind, HOLD_MUTE_COUNT, HoldMute, Operation};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 /// Which edge of a physical key produced this event. A legacy terminal can
@@ -751,6 +751,7 @@ enum GestureKeyState {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GestureInputState {
     keys: [GestureKeyState; GESTURE_COUNT],
+    mutes: [GestureKeyState; HOLD_MUTE_COUNT],
 }
 
 impl GestureInputState {
@@ -770,8 +771,25 @@ impl GestureInputState {
         was_active
     }
 
+    fn press_mute(&mut self, mute: HoldMute) -> bool {
+        let state = &mut self.mutes[mute as usize];
+        if *state != GestureKeyState::Up {
+            return false;
+        }
+        *state = GestureKeyState::Active;
+        true
+    }
+
+    fn release_mute(&mut self, mute: HoldMute) -> bool {
+        let state = &mut self.mutes[mute as usize];
+        let was_active = *state == GestureKeyState::Active;
+        *state = GestureKeyState::Up;
+        was_active
+    }
+
     fn has_active(&self) -> bool {
         self.keys.contains(&GestureKeyState::Active)
+            || self.mutes.contains(&GestureKeyState::Active)
     }
 
     fn quarantine_all(&mut self) {
@@ -780,10 +798,16 @@ impl GestureInputState {
                 *state = GestureKeyState::Quarantined;
             }
         }
+        for state in &mut self.mutes {
+            if *state == GestureKeyState::Active {
+                *state = GestureKeyState::Quarantined;
+            }
+        }
     }
 
     fn clear(&mut self) {
         self.keys.fill(GestureKeyState::Up);
+        self.mutes.fill(GestureKeyState::Up);
     }
 }
 
@@ -971,6 +995,9 @@ pub(crate) enum Intent {
     CaptureLeadPhrase,
     StartGesture(GestureKind),
     ReleaseGesture(GestureKind),
+    StartHoldMute(HoldMute),
+    ReleaseHoldMute(HoldMute),
+    ToggleVamp,
     ReleaseAllGestures,
     AbandonGestures,
     AdjustSelected(i8),
@@ -1039,9 +1066,14 @@ impl Intent {
             | Self::NudgeLead { .. }
             | Self::ToggleLeadPattern
             | Self::CaptureLeadPhrase => &[ModeKind::Lead],
-            Self::StartGesture(_) => &[ModeKind::Browsing],
+            Self::StartGesture(_) | Self::StartHoldMute(_) | Self::ToggleVamp => {
+                &[ModeKind::Browsing]
+            }
             Self::OpenHelp => &[ModeKind::Browsing],
-            Self::ReleaseGesture(_) | Self::ReleaseAllGestures | Self::AbandonGestures => &[
+            Self::ReleaseGesture(_)
+            | Self::ReleaseHoldMute(_)
+            | Self::ReleaseAllGestures
+            | Self::AbandonGestures => &[
                 ModeKind::Browsing,
                 ModeKind::Numeric,
                 ModeKind::Palette,
@@ -1096,7 +1128,9 @@ impl Intent {
             | Self::TypeCharacter(_)
             | Self::Backspace
             | Self::AdjustSelected(_) => PhasePolicy::Repeatable,
-            Self::ReleaseLeadTone(_) | Self::ReleaseGesture(_) => PhasePolicy::ReleaseOnly,
+            Self::ReleaseLeadTone(_) | Self::ReleaseGesture(_) | Self::ReleaseHoldMute(_) => {
+                PhasePolicy::ReleaseOnly
+            }
             Self::Cancel
             | Self::EnterLayer(_)
             | Self::EnterChordProgression
@@ -1123,6 +1157,8 @@ impl Intent {
             | Self::ToggleLeadPattern
             | Self::CaptureLeadPhrase
             | Self::StartGesture(_)
+            | Self::StartHoldMute(_)
+            | Self::ToggleVamp
             | Self::ReleaseAllGestures
             | Self::AbandonGestures
             | Self::ResetSelected
@@ -1260,6 +1296,9 @@ pub(crate) enum InteractionEffect {
     LeadCapture,
     GesturePress(GestureKind),
     GestureRelease(GestureKind),
+    HoldMutePress(HoldMute),
+    HoldMuteRelease(HoldMute),
+    ToggleVamp,
     GestureReleaseAll,
     Save,
     Quit,
@@ -1404,6 +1443,18 @@ impl InteractionModel {
                 .gesture_input
                 .release(kind)
                 .then_some(InteractionEffect::GestureRelease(kind))
+                .into_iter()
+                .collect();
+            return Transition {
+                model: self,
+                effects,
+            };
+        }
+        if let Intent::ReleaseHoldMute(mute) = intent {
+            let effects = self
+                .gesture_input
+                .release_mute(mute)
+                .then_some(InteractionEffect::HoldMuteRelease(mute))
                 .into_iter()
                 .collect();
             return Transition {
@@ -1621,6 +1672,12 @@ fn update_browsing(
                 effects.push(InteractionEffect::GesturePress(kind));
             }
         }
+        Intent::StartHoldMute(mute) => {
+            if gesture_input.press_mute(mute) {
+                effects.push(InteractionEffect::HoldMutePress(mute));
+            }
+        }
+        Intent::ToggleVamp => effects.push(InteractionEffect::ToggleVamp),
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
         Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
         Intent::MaxSelected => effects.push(InteractionEffect::MaxSelected),

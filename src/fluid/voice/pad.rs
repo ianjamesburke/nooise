@@ -1363,7 +1363,7 @@ pub(crate) struct ProgressionCursor {
     /// Transport beat the next chord starts on; set on the first tick, the
     /// first chord boundary after the engine starts.
     next_chord_beat: Option<f64>,
-    morph_phrase_start: Option<f64>,
+    pub(crate) morph_phrase_start: Option<f64>,
 }
 
 impl ProgressionCursor {

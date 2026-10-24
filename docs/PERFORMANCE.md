@@ -30,11 +30,29 @@ frame. Navigation is never saved in a song code.
 
 Hold `z` for Bloom, `c` for Submerge, `v` for Echo, or `x` for Lift.
 The amount rises while held and returns smoothly on release. Bloom blends the
-mix into a bright reverb cloud built from its mids and highs, Submerge darkens
+mix into a reverb cloud built from a transient-softened mid-band send (`220 Hz..3.2 kHz`)
+with a light 10% dry duck so rhythmic transients stay locked to the dry grid, Submerge darkens
 it, Echo throws it into repeats, and Lift thins its low end. Every gesture
 lets go within 10 ms of release, wet returns included, so no reverb or echo
 rings on. The former Thin
 gesture on `b` is retired; a song code carrying one is refused.
+
+Hold `e` in Browsing for an immediate momentary Bass mute and `r` for an
+immediate momentary Kick mute; holding both drops Kick and Bass together, and
+releasing brings them straight back in. While held, the activity row shows
+`Bass Mute●` and `Kick Mute●`. Like `z`/`x`/`c`/`v`, these holds require
+negotiated key-release support and release cleanly on Escape, mode transitions,
+or focus loss. To free `e` and `r` on the left hand in Browsing, Envelope
+editor entry moves to `g` (next to `f` LFO) and Randomize moves to `u` (inside
+an open automation editor, `e`/`g` and `r`/`u` both work).
+
+Press `a` in Browsing to start a 16-bar breakdown vamp (`VAMP_BARS = 16`, 64
+beats): Kick and Bass mute immediately and the Pad progression clamps to Chord 1
+(slot 0) on a 16-bar loop. The activity row reads `Vamp · bar X/16 · a end`.
+When bar 17 arrives, Kick and Bass drop back in together on the downbeat and the
+full chord progression resumes; pressing `a` again while the vamp is active ends
+it early. Auto-morph toggle in Browsing moves to `Shift+A`. Active vamp state
+persists in song codes (`VAMP_RECORD`) and rebases to the loaded song's beat zero.
 
 Every gesture plays over the whole mix, after Master's module chain, whatever
 page is open. Arrows and Tab remain available while a key is down, and

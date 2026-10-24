@@ -23,7 +23,7 @@ use super::{
     MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
     MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIDI_ROW_BITS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind,
     ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, PlannedAction, RampParams, Step, StepTarget,
-    TAB_COUNT, Tab, all_specs, parse_module_slot_id, spec_by_id,
+    TAB_COUNT, Tab, VampState, all_specs, parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -63,6 +63,7 @@ const PLANNED_ACTION_RECORD: u8 = 11;
 /// Addressed Motion on LFO, envelope, and inline Steps editor fields.
 const EDITOR_MOTION_RECORD: u8 = 12;
 const CHORD_OVERRIDES_RECORD: u8 = 13;
+const VAMP_RECORD: u8 = 14;
 const CHORD_OVERRIDES_VERSION: u8 = 1;
 const PLANNED_MUTE_TAG: u8 = 0;
 /// Relative Motion has an explicit reference; previous absolute sampled
@@ -98,6 +99,7 @@ pub(crate) struct SongState {
     pub(crate) tonal_sequence: Option<TonalSequenceState>,
     pub(crate) muted: MuteState,
     pub(crate) planned: Option<PlannedAction>,
+    pub(crate) vamp: Option<VampState>,
     pub(crate) gestures: GestureState,
     pub(crate) drunken_phase_beat: f64,
 }
@@ -110,6 +112,7 @@ impl SongState {
             tonal_sequence: None,
             muted: [false; TAB_COUNT],
             planned: None,
+            vamp: None,
             gestures: GestureState::default(),
             drunken_phase_beat: 0.0,
         }
@@ -376,6 +379,19 @@ pub(crate) fn encode_song_code_at_epoch(
         write_planned_action(action, &mut planned);
         write_record(PLANNED_ACTION_RECORD, &planned, &mut bytes)?;
     }
+    if let Some(vamp) = song.vamp {
+        if !vamp.start_beat.is_finite()
+            || !vamp.end_beat.is_finite()
+            || vamp.end_beat < 0.0
+            || vamp.end_beat <= vamp.start_beat
+        {
+            return Err(SongCodeError::InvalidPlannedAction);
+        }
+        let mut payload = Vec::with_capacity(16);
+        payload.extend_from_slice(&vamp.start_beat.to_le_bytes());
+        payload.extend_from_slice(&vamp.end_beat.to_le_bytes());
+        write_record(VAMP_RECORD, &payload, &mut bytes)?;
+    }
     if song.controls.midi_rows != 0 {
         write_record(MIDI_ROWS_RECORD, &[song.controls.midi_rows], &mut bytes)?;
     }
@@ -451,6 +467,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut capture_record_seen = false;
     let mut editor_motion_record_seen = false;
     let mut planned_action_record_seen = false;
+    let mut vamp_record_seen = false;
     let mut lane_bypass = None;
     let mut epoch = 0;
     let mut chord_overrides_seen = false;
@@ -496,6 +513,13 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 }
                 planned_action_record_seen = true;
                 song.planned = Some(read_planned_action(payload)?);
+            }
+            VAMP_RECORD => {
+                if vamp_record_seen {
+                    return Err(SongCodeError::InvalidPlannedAction);
+                }
+                vamp_record_seen = true;
+                song.vamp = Some(read_vamp(payload)?);
             }
             RANGE_EPOCH_RECORD => epoch = Reader::new(payload).u16()?,
             MIDI_ROWS_RECORD => {
@@ -1490,6 +1514,28 @@ fn read_planned_action(bytes: &[u8]) -> Result<PlannedAction, SongCodeError> {
         .find(|tab| tab.mute_bit() == mute_bit)
         .ok_or(SongCodeError::InvalidPlannedAction)?;
     Ok(PlannedAction::Mute { tab, target_beat })
+}
+
+fn read_vamp(bytes: &[u8]) -> Result<VampState, SongCodeError> {
+    let mut reader = Reader::new(bytes);
+    let start_beat = reader
+        .f64()
+        .map_err(|_| SongCodeError::InvalidPlannedAction)?;
+    let end_beat = reader
+        .f64()
+        .map_err(|_| SongCodeError::InvalidPlannedAction)?;
+    if !reader.is_empty()
+        || !start_beat.is_finite()
+        || !end_beat.is_finite()
+        || end_beat < 0.0
+        || end_beat <= start_beat
+    {
+        return Err(SongCodeError::InvalidPlannedAction);
+    }
+    Ok(VampState {
+        start_beat,
+        end_beat,
+    })
 }
 
 #[cfg(test)]
