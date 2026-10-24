@@ -1540,6 +1540,7 @@ impl ProgressionCursor {
         if let Some(start) = timing.morph_phrase_start
             && self.morph_phrase_start != Some(start)
         {
+            let old_slot = self.slot();
             self.morph_phrase_start = Some(start);
             self.window = ChordWindow::requested(c);
             self.chord_beats = c.chord_bars * 4.0;
@@ -1548,7 +1549,11 @@ impl ProgressionCursor {
             self.step = chord as usize % self.window.count;
             self.next_chord_beat = Some(start + (chord + 1.0) * interval);
             self.span = self.compute_span(c);
-            return timing.beat > 0.0;
+            let chord_start = start + chord * interval;
+            let sample_delta = (timing.bpm / (60.0 * timing.sample_rate)).max(GRID_BEAT_EPSILON);
+            let is_onset = (timing.beat - chord_start).abs() <= sample_delta * 2.0;
+            let slot_changed = self.slot() != old_slot;
+            return (is_onset || slot_changed) && timing.beat > 0.0;
         }
         self.morph_phrase_start = timing.morph_phrase_start;
         let next = *self.next_chord_beat.get_or_insert_with(|| {

@@ -47,7 +47,8 @@ are commented out for now, and Randomize in Browsing is on `u` (inside an open a
 editor, `r`/`u` both work).
 
 Hold or tap `a` in Browsing for an indefinite chord vamp quantized to the start
-of the currently playing chord, so whatever chord is sounding stays locked.
+of the currently playing chord, so whatever chord is sounding stays locked seamlessly
+without re-triggering its voices or re-attacking mid-phrase.
 Sustaining a hold on `a` keeps the chord locked momentarily under your finger
 (`Vamp · Chord N · key up releases`), and letting go of the key cues release directly
 into the next chord on the next chord boundary.

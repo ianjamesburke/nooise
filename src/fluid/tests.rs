@@ -6496,6 +6496,52 @@ fn pad_engine_progression_change_waits_for_the_chord_then_restarts() {
 }
 
 #[test]
+fn vamp_quantizes_to_currently_playing_chord_without_retriggering_pad_voices() {
+    let mut controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 4.0,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+
+    // Initial frame at beat 0 starts chord 0.
+    let _ = pad.next(&controls, MasterKey::Home, timing(0, 120.0));
+    assert_eq!(pad.cursor.slot(), 0);
+    assert_eq!(pad.layers.len(), 1);
+
+    // Advance to beat 4.0: chord 1 starts.
+    let sample_beat_4 = (4.0 * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let _ = pad.next(&controls, MasterKey::Home, timing(sample_beat_4, 120.0));
+    assert_eq!(pad.cursor.slot(), 1);
+    let layer_count_at_chord_1 = pad.layers.len();
+
+    // Advance to mid-chord at beat 6.0 (halfway through chord 1, which runs 4.0..8.0).
+    let sample_beat_6 = (6.0 * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let _ = pad.next(&controls, MasterKey::Home, timing(sample_beat_6, 120.0));
+    assert_eq!(pad.layers.len(), layer_count_at_chord_1);
+
+    // Vamp is triggered mid-chord: locks chord 1 (slot 1) with chord_count: 1, chord_offset: 1.
+    // timing.morph_phrase_start is set to 4.0 (the chord's start beat).
+    controls.chord_count = 1.0;
+    controls.chord_offset = 1.0;
+    let mut vamp_timing = timing(sample_beat_6 + 1, 120.0);
+    vamp_timing.morph_phrase_start = Some(4.0);
+
+    let _ = pad.next(&controls, MasterKey::Home, vamp_timing);
+
+    // Crucial assertion: no new layer was pushed, sounding layers were not released!
+    assert_eq!(pad.cursor.slot(), 1);
+    assert_eq!(pad.layers.len(), layer_count_at_chord_1);
+
+    // Advance to beat 8.0: the next chord boundary arrives, repeating the vamped chord.
+    let sample_beat_8 = (8.0 * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let mut next_boundary_timing = timing(sample_beat_8, 120.0);
+    next_boundary_timing.morph_phrase_start = Some(4.0);
+    let _ = pad.next(&controls, MasterKey::Home, next_boundary_timing);
+    assert_eq!(pad.cursor.slot(), 1);
+}
+
+#[test]
 fn chord_window_plays_count_chords_from_offset_wrapping() {
     let window = |count: f32, offset: f32| {
         ChordWindow::requested(&PadControls {

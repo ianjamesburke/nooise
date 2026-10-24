@@ -1499,8 +1499,8 @@ impl FluidEngine {
                 let next_step = (locked_step + 1) % window.count;
                 self.vamp_landed_beat = Some(landed_at - (next_step as f64) * interval);
                 self.vamp_landed_at = Some(landed_at);
+                self.reset_progression_phrase_anchors();
             }
-            self.reset_progression_phrase_anchors();
             self.vamp_active = now_active;
         }
     }
