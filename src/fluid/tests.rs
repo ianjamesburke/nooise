@@ -251,6 +251,10 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
             selected: cursor,
             drill: interaction::BassDrill::None,
         },
+        Tab::Kick => interaction::Navigation::Kick {
+            selected: cursor,
+            drill: interaction::KickDrill::None,
+        },
         Tab::Lead => interaction::Navigation::Lead {
             selected: cursor,
             drill: interaction::LeadDrill::None,
@@ -265,11 +269,11 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
         },
         page => interaction::Navigation::Standard {
             page: match page {
-                Tab::Kick => interaction::StandardPage::Kick,
                 Tab::Clap => interaction::StandardPage::Clap,
                 Tab::Chords
                 | Tab::Perc
                 | Tab::Bass
+                | Tab::Kick
                 | Tab::Tonal
                 | Tab::Arp
                 | Tab::Lead
@@ -539,7 +543,11 @@ fn tonal_random_hits_stay_in_home_scale_through_borrowed_chords() {
         let controls = TonalControls {
             level: 1.0,
             rate_beats: 1.0,
-            randomness: 1.0,
+            step_count: 16.0,
+            evolve_rate: 1.0,
+            steps: [
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0,
+            ],
             ..TonalControls::default()
         };
         let pad = PadControls {
@@ -589,7 +597,6 @@ fn tonal_home_changes_with_the_sounding_pad_progression_at_its_boundary() {
     controls.pad.chord_bars = 0.5;
     controls.tonal.level = 1.0;
     controls.tonal.rate_beats = 1.0;
-    controls.tonal.randomness = 0.0;
     let session = live_session(controls, AutomationState::default());
     let telemetry = Arc::new(FluidTelemetry::default());
     let mut engine = FluidEngine::new(SAMPLE_RATE, session.clone(), no_morph(), telemetry);
@@ -757,7 +764,6 @@ fn tonal_decay_control_sets_ring_length() {
 fn tonal_engine_triggers_all_non_sine_type_variants() {
     let controls = TonalControls {
         level: 1.0,
-        randomness: 0.0,
         ..TonalControls::default()
     };
     for synth_type in 1..=9 {
@@ -856,7 +862,6 @@ fn tonal_offset_moves_the_phrase_window_without_delaying_triggers() {
         rate_beats: 1.0,
         step_count: 2.0,
         offset_beats: 1.0,
-        randomness: 0.0,
         ..TonalControls::default()
     };
     let pad = PadControls::default();
@@ -897,7 +902,6 @@ fn tonal_level_ducks_notes_that_are_already_sounding() {
         level: 0.8,
         rate_beats: 0.25,
         decay: 4.0,
-        randomness: 0.0,
         ..TonalControls::default()
     };
     let pad = PadControls::default();
@@ -946,7 +950,6 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
     let controls = TonalControls {
         rate_beats: 1.0,
         step_count: 4.0,
-        randomness: 0.0,
         ..TonalControls::default()
     };
     let pad = PadControls::default();
@@ -1059,7 +1062,6 @@ fn tonal_home_scale_render_repeats_from_one_seed_and_saved_evolution() {
         controls.master.bpm = 180.0;
         controls.pad.progression = progression as f32;
         controls.tonal.level = 0.8;
-        controls.tonal.randomness = 0.6;
         controls.tonal.evolve_rate = 1.0;
         controls.tonal.rate_beats = 0.125;
         controls.tonal.step_count = 4.0;
@@ -1121,7 +1123,6 @@ fn tonal_home_scale_audio_evidence() {
         controls.pad.progression = progression as f32;
         controls.pad.chord_bars = 0.5;
         controls.tonal.level = 0.75;
-        controls.tonal.randomness = 0.25;
         controls.tonal.evolve_rate = 0.4;
         controls.tonal.rate_beats = 0.5;
         controls.tonal.step_count = 8.0;
@@ -3273,7 +3274,7 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // Re-blessed for unified 16-step sequencer: Tonal now resolves degrees via
 // ProgressionFollower + lead_reach on the shared 16-step lane.
 #[cfg(debug_assertions)]
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x2eae_91c7_3abe_3db1;
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x1890_a990_3482_b7eb;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -3614,7 +3615,6 @@ fn defaults_match_current_mix() {
     assert_close(controls.tonal.rate_beats, 0.5);
     assert_close(controls.tonal.step_count, 8.0);
     assert_close(controls.tonal.decay, 1.2);
-    assert_close(controls.tonal.randomness, 0.5);
     assert_close(controls.tonal.evolve_rate, 0.0);
 
     assert_eq!(controls.modules.pad[0].kind().unwrap().id, "room");
@@ -3709,10 +3709,11 @@ fn apply_value_accepts_percent_style_unit_controls() {
 fn apply_value_snaps_direct_numeric_entry_to_control_grid() {
     let mut controls = FluidControls::default();
 
-    apply_value(Tab::Kick, 4, 1.13, &mut controls);
+    let kick_interval = spec_index(Tab::Kick, "kick.interval_beats").unwrap();
+    apply_value(Tab::Kick, kick_interval, 1.13, &mut controls);
     assert_close(controls.kick.interval_beats, 1.25);
 
-    apply_value(Tab::Kick, 4, 0.16, &mut controls);
+    apply_value(Tab::Kick, kick_interval, 0.16, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
     apply_value(Tab::Chords, 5, 12.0, &mut controls);
@@ -4219,21 +4220,20 @@ fn tab_controls_classify_each_slider_kind() {
             // Root rows only: the sequence header and step lane live in the pattern drill.
             Tab::Bass,
             vec![
-                Gain, Timing, Timing, Discrete, Gain, Discrete, Discrete, Continuous, Gain,
+                Gain, Timing, Timing, Discrete, Gain, Discrete, Continuous, Gain,
             ],
         ),
         (
+            // Root rows only: the sequence header and step lane live in the pattern drill.
             Tab::Kick,
             vec![
-                Gain, Timing, Timing, Discrete, Timing, Timing, Continuous, Gain, Continuous, Gain,
+                Gain, Timing, Timing, Discrete, Continuous, Gain, Discrete, Continuous, Gain,
             ],
         ),
         (
             // Root rows only: the sequence header and step lane live in the pattern drill.
             Tab::Tonal,
-            vec![
-                Gain, Timing, Timing, Discrete, Discrete, Discrete, Gain, Continuous, Gain,
-            ],
+            vec![Gain, Timing, Timing, Discrete, Discrete, Gain],
         ),
         (
             Tab::Clap,
@@ -4248,9 +4248,7 @@ fn tab_controls_classify_each_slider_kind() {
         (
             // Root rows only: the sequence header and step lane live in the pattern drill.
             Tab::Lead,
-            vec![
-                Gain, Discrete, Timing, Timing, Timing, Discrete, Discrete, Gain,
-            ],
+            vec![Gain, Discrete, Timing, Timing, Timing, Discrete, Gain],
         ),
     ];
 
@@ -4713,7 +4711,7 @@ fn control_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.modules.pad[0].amount = 0.0;
     controls.kick.click = 0.0;
     controls.modules.kick[0].amount = 0.0;
-    controls.tonal.randomness = 0.0;
+    controls.tonal.evolve_rate = 0.0;
     controls.clap.body = 0.0;
     controls.master.level = 0.0;
     controls.modules.master[0].amount = 0.0;
@@ -4723,7 +4721,7 @@ fn control_smoothers_ramp_live_gain_controls_without_timing_changes() {
     controls.pad.level = 1.0;
     controls.modules.pad[0].amount = 1.0;
     controls.kick.click = 0.2;
-    controls.tonal.randomness = 1.0;
+    controls.tonal.evolve_rate = 1.0;
     controls.clap.body = 1.0;
     controls.master.level = 0.5;
     controls.modules.master[0].amount = 1.0;
@@ -4737,7 +4735,7 @@ fn control_smoothers_ramp_live_gain_controls_without_timing_changes() {
     assert!(next.pad.level > 0.0 && next.pad.level < 1.0);
     assert!(next.modules.pad[0].amount > 0.0 && next.modules.pad[0].amount < 1.0);
     assert!(next.kick.click > 0.0 && next.kick.click < 0.2);
-    assert!(next.tonal.randomness > 0.0 && next.tonal.randomness < 1.0);
+    assert!(next.tonal.evolve_rate > 0.0 && next.tonal.evolve_rate < 1.0);
     assert!(next.clap.body > 0.0 && next.clap.body < 1.0);
     assert!(next.master.level > 0.0 && next.master.level < 0.5);
     assert!(next.modules.master[0].amount > 0.0 && next.modules.master[0].amount < 1.0);
@@ -4915,22 +4913,22 @@ fn tonal_tab_separates_rate_from_cycle() {
     assert_eq!(rows[3].id, "tonal.synth_type");
     assert_eq!(rows[3].label, "Type");
     assert_eq!(rows[3].display, "Sine");
-    assert_eq!(rows[4].id, "tonal.octave");
-    assert_eq!(rows[4].label, "Octave");
-    assert_eq!(rows[5].id, "tonal.phrase");
-    assert_eq!(rows[5].label, "Phrase ›");
+    assert_eq!(rows[4].id, "tonal.phrase");
+    assert_eq!(rows[4].label, "Phrase ›");
 
-    let sequence = tonal_tab_controls(&controls, TonalDrill::Pattern { return_to: 5 });
+    let sequence = tonal_tab_controls(&controls, TonalDrill::Pattern { return_to: 4 });
     assert_eq!(sequence[0].id, "tonal.phrase");
     assert_eq!(sequence[1].id, "tonal.follow");
     assert_eq!(sequence[1].label, "Follow");
     assert_eq!(sequence[1].display, "Scale");
-    assert_eq!(sequence[2].id, "tonal.rate_beats");
-    assert_eq!(sequence[2].label, "Rate");
-    assert_eq!(sequence[2].display, "0.50 beats");
-    assert_eq!(sequence[3].id, "tonal.steps");
-    assert_eq!(sequence[3].label, "Steps");
-    assert_eq!(sequence[3].display, "8");
+    assert_eq!(sequence[2].id, "tonal.octave");
+    assert_eq!(sequence[2].label, "Octave");
+    assert_eq!(sequence[3].id, "tonal.rate_beats");
+    assert_eq!(sequence[3].label, "Rate");
+    assert_eq!(sequence[3].display, "0.50 beats");
+    assert_eq!(sequence[4].id, "tonal.steps");
+    assert_eq!(sequence[4].label, "Steps");
+    assert_eq!(sequence[4].display, "8");
 }
 
 #[test]
@@ -5808,12 +5806,13 @@ fn chords_attack_and_release_adjust_and_clamp_low() {
 #[test]
 fn kick_interval_floor_is_eighth_beat() {
     let mut controls = FluidControls::default();
+    let kick_interval = spec_index(Tab::Kick, "kick.interval_beats").unwrap();
     controls.kick.interval_beats = 1.0;
-    apply_reset(Tab::Kick, 4, &mut controls);
+    apply_reset(Tab::Kick, kick_interval, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 
     controls.kick.interval_beats = 0.125;
-    apply_delta(Tab::Kick, 4, -1.0, &mut controls);
+    apply_delta(Tab::Kick, kick_interval, -1.0, &mut controls);
     assert_close(controls.kick.interval_beats, 0.125);
 }
 
@@ -9324,7 +9323,7 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
         "arp.rate_beats",
         "master.bpm",
         "pad.stereo_width",
-        "tonal.randomness",
+        "tonal.evolve_rate",
     ] {
         recent.touch(id);
     }
@@ -9338,7 +9337,7 @@ fn palette_first_ten_are_the_global_mru_across_tabs() {
     assert_eq!(
         ids,
         [
-            "tonal.randomness",
+            "tonal.evolve_rate",
             "pad.stereo_width",
             "master.bpm",
             "arp.rate_beats",
@@ -9861,6 +9860,7 @@ fn lead_step_rows_live_only_inside_the_pattern_drill() {
         [
             "lead.pattern",
             "lead.follow",
+            "lead.octave",
             "lead.rate_beats",
             "lead.steps",
             "lead.offset_beats",
@@ -11034,7 +11034,6 @@ fn lead_and_tonal_tie_and_rest_steps_and_follow_modes() {
         steps: tonal_tied_steps,
         attack: 0.0,
         decay: 0.3,
-        randomness: 0.0,
         ..TonalControls::default()
     };
     let mut tonal_untied_steps = [0.0; TONAL_STEP_COUNT];
@@ -11125,10 +11124,10 @@ fn unified_sequence_drill_navigation_and_palette_inverse_across_pads_tonal_and_l
         }
     );
 
-    // 2. Tonal: Phrase › (row 5) -> TonalDrill::Pattern -> Esc -> Phrase ›.
+    // 2. Tonal: Phrase › (row 4) -> TonalDrill::Pattern -> Esc -> Phrase ›.
     let mut tonal_model = interaction::InteractionModel {
         navigation: interaction::Navigation::Tonal {
-            selected: 5,
+            selected: 4,
             drill: TonalDrill::None,
         },
         ..interaction::InteractionModel::default()
@@ -11140,14 +11139,14 @@ fn unified_sequence_drill_navigation_and_palette_inverse_across_pads_tonal_and_l
         tonal_model.navigation,
         interaction::Navigation::Tonal {
             selected: 0,
-            drill: TonalDrill::Pattern { return_to: 5 },
+            drill: TonalDrill::Pattern { return_to: 4 },
         }
     );
     tonal_model = tonal_model.update(press(interaction::Intent::Cancel)).model;
     assert_eq!(
         tonal_model.navigation,
         interaction::Navigation::Tonal {
-            selected: 5,
+            selected: 4,
             drill: TonalDrill::None,
         }
     );
@@ -11193,25 +11192,27 @@ fn unified_sequence_drill_navigation_and_palette_inverse_across_pads_tonal_and_l
     }
     for (id, expected_row) in [
         ("tonal.follow", 1),
-        ("tonal.rate_beats", 2),
-        ("tonal.steps", 3),
-        ("tonal.offset_beats", 4),
-        ("tonal.evolve_rate", 5),
-        ("tonal.step7", 12),
+        ("tonal.octave", 2),
+        ("tonal.rate_beats", 3),
+        ("tonal.steps", 4),
+        ("tonal.offset_beats", 5),
+        ("tonal.evolve_rate", 6),
+        ("tonal.step7", 13),
     ] {
         let flat = spec_index(Tab::Tonal, id).unwrap();
         assert_eq!(
             tonal_drill_for_index(flat, &controls),
-            (TonalDrill::Pattern { return_to: 5 }, expected_row)
+            (TonalDrill::Pattern { return_to: 4 }, expected_row)
         );
     }
     for (id, expected_row) in [
         ("lead.follow", 1),
-        ("lead.rate_beats", 2),
-        ("lead.steps", 3),
-        ("lead.offset_beats", 4),
-        ("lead.evolve_rate", 5),
-        ("lead.step7", 12),
+        ("lead.octave", 2),
+        ("lead.rate_beats", 3),
+        ("lead.steps", 4),
+        ("lead.offset_beats", 5),
+        ("lead.evolve_rate", 6),
+        ("lead.step7", 13),
     ] {
         let flat = spec_index(Tab::Lead, id).unwrap();
         assert_eq!(
@@ -11376,14 +11377,21 @@ fn clear_sequence_sets_pads_to_root_and_note_sequences_to_rest() {
             Tab::Bass,
             interaction::Navigation::Bass {
                 selected: 0,
-                drill: interaction::BassDrill::Pattern { return_to: 6 },
+                drill: interaction::BassDrill::Pattern { return_to: 5 },
+            },
+        ),
+        (
+            Tab::Kick,
+            interaction::Navigation::Kick {
+                selected: 0,
+                drill: interaction::KickDrill::Pattern { return_to: 6 },
             },
         ),
         (
             Tab::Tonal,
             interaction::Navigation::Tonal {
                 selected: 0,
-                drill: TonalDrill::Pattern { return_to: 5 },
+                drill: TonalDrill::Pattern { return_to: 4 },
             },
         ),
         (
@@ -11454,6 +11462,11 @@ fn clear_sequence_sets_pads_to_root_and_note_sequences_to_rest() {
     assert_eq!(
         snapshot.controls.bass.rhythm,
         CUSTOM_BASS_RHYTHM_INDEX as f32
+    );
+    assert_eq!(snapshot.controls.kick.steps, [0.0; KICK_STEP_COUNT]);
+    assert_eq!(
+        snapshot.controls.kick.pattern,
+        CUSTOM_KICK_PATTERN_INDEX as f32
     );
     assert_eq!(snapshot.controls.tonal.steps, [0.0; TONAL_STEP_COUNT]);
     assert_eq!(
@@ -11558,16 +11571,17 @@ fn randomize_scope_inside_sequence_drills_rolls_only_steps_preserving_header() {
 #[test]
 fn bass_and_perc_sequence_drills_roundtrip_and_step_edits_switch_to_custom() {
     let mut controls = FluidControls::default();
-    let bass_drill = interaction::BassDrill::Pattern { return_to: 6 };
+    let bass_drill = interaction::BassDrill::Pattern { return_to: 5 };
     let bass_rows = bass_tab_controls(&controls, bass_drill);
     assert_eq!(bass_rows[0].label, "Rhythm");
     assert_eq!(bass_rows[1].label, "Follow");
-    assert_eq!(bass_rows[2].label, "Length");
-    assert_eq!(bass_rows[3].label, "Steps");
-    assert_eq!(bass_rows[4].label, "Offset");
-    assert_eq!(bass_rows[5].label, "Evolve");
-    assert_eq!(bass_rows[6].label, "Step 1");
-    assert_eq!(bass_rows.len(), 6 + 16);
+    assert_eq!(bass_rows[2].label, "Octave");
+    assert_eq!(bass_rows[3].label, "Length");
+    assert_eq!(bass_rows[4].label, "Steps");
+    assert_eq!(bass_rows[5].label, "Offset");
+    assert_eq!(bass_rows[6].label, "Evolve");
+    assert_eq!(bass_rows[7].label, "Step 1");
+    assert_eq!(bass_rows.len(), 7 + 16);
 
     let perc_drill = interaction::PercDrill::Pattern { return_to: 3 };
     let perc_rows = perc_tab_controls(&controls, perc_drill);
@@ -11579,7 +11593,17 @@ fn bass_and_perc_sequence_drills_roundtrip_and_step_edits_switch_to_custom() {
     assert_eq!(perc_rows[5].label, "Step 1");
     assert_eq!(perc_rows.len(), 5 + 8);
 
-    // Editing a step in the session switches bass.rhythm / perc.pattern to Custom.
+    let kick_drill = interaction::KickDrill::Pattern { return_to: 6 };
+    let kick_rows = kick_tab_controls(&controls, kick_drill);
+    assert_eq!(kick_rows[0].label, "Pattern");
+    assert_eq!(kick_rows[1].label, "Interval");
+    assert_eq!(kick_rows[2].label, "Steps");
+    assert_eq!(kick_rows[3].label, "Offset");
+    assert_eq!(kick_rows[4].label, "Evolve");
+    assert_eq!(kick_rows[5].label, "Step 1");
+    assert_eq!(kick_rows.len(), 5 + 8);
+
+    // Editing a step in the session switches bass.rhythm / perc.pattern / kick.pattern to Custom.
     let session = live_session(controls.clone(), AutomationState::default());
     let mut effects = EffectExecutor::new(
         session.clone(),
@@ -11591,7 +11615,7 @@ fn bass_and_perc_sequence_drills_roundtrip_and_step_edits_switch_to_custom() {
     for (nav, target_id, value) in [
         (
             interaction::Navigation::Bass {
-                selected: 6,
+                selected: 7,
                 drill: bass_drill,
             },
             "bass.step1",
@@ -11603,6 +11627,14 @@ fn bass_and_perc_sequence_drills_roundtrip_and_step_edits_switch_to_custom() {
                 drill: perc_drill,
             },
             "perc.step1",
+            0.0,
+        ),
+        (
+            interaction::Navigation::Kick {
+                selected: 5,
+                drill: kick_drill,
+            },
+            "kick.step1",
             0.0,
         ),
     ] {
@@ -11644,11 +11676,19 @@ fn bass_and_perc_sequence_drills_roundtrip_and_step_edits_switch_to_custom() {
         after.controls.perc.pattern,
         CUSTOM_PERC_PATTERN_INDEX as f32
     );
+    assert_eq!(after.controls.kick.steps[0], 0.0);
+    assert_eq!(
+        after.controls.kick.pattern,
+        CUSTOM_KICK_PATTERN_INDEX as f32
+    );
 
     // Selecting a preset again seeds steps from that preset.
     controls.perc.apply_pattern_preset(1.0); // Offbeat
     assert_eq!(controls.perc.steps[0], 0.0);
     assert_eq!(controls.perc.steps[1], 1.0);
+    controls.kick.apply_pattern_preset(1.0); // Offbeat
+    assert_eq!(controls.kick.steps[0], 0.0);
+    assert_eq!(controls.kick.steps[1], 1.0);
     controls.bass.apply_rhythm_preset(1.0); // Rhythm B
     assert_eq!(controls.bass.steps, bass_rhythm_steps(1));
 }
@@ -11662,23 +11702,37 @@ fn bass_and_perc_evolve_mutates_live_steps_at_cycle_boundaries() {
     controls.perc.level = 0.8;
     controls.perc.evolve_rate = 1.0;
     controls.perc.step_count = 4.0;
+    controls.kick.level = 0.8;
+    controls.kick.evolve_rate = 1.0;
+    controls.kick.step_count = 2.0;
 
     let initial_bass_steps = controls.bass.steps;
     let initial_perc_steps = controls.perc.steps;
+    let initial_kick_steps = controls.kick.steps;
     let session = live_session(controls.clone(), AutomationState::default());
     let telemetry = Arc::new(FluidTelemetry::default());
     let mut bass = voice::BassEngine::new_with_live_state(SAMPLE_RATE, Some(session.clone()));
-    let mut perc =
-        voice::PercEngine::new_with_live_state(SAMPLE_RATE, Some(session.clone()), telemetry);
+    let mut perc = voice::PercEngine::new_with_live_state(
+        SAMPLE_RATE,
+        Some(session.clone()),
+        telemetry.clone(),
+    );
+    let mut kick =
+        voice::KickEngine::new_with_live_state(SAMPLE_RATE, Some(session.clone()), telemetry);
 
     let pad = PadControls::default();
     let t0 = timing(0, 120.0);
     bass.next(&session.load().controls.bass, &pad, MasterKey::Home, t0);
     perc.next(&session.load().controls.perc, t0);
+    kick.next(&session.load().controls.kick, t0);
 
-    let t1 = timing((SAMPLE_RATE * 2.0) as u64, 120.0);
-    bass.next(&session.load().controls.bass, &pad, MasterKey::Home, t1);
-    perc.next(&session.load().controls.perc, t1);
+    let t1 = timing((SAMPLE_RATE * 1.0) as u64, 120.0);
+    kick.next(&session.load().controls.kick, t1);
+
+    let t2 = timing((SAMPLE_RATE * 2.0) as u64, 120.0);
+    bass.next(&session.load().controls.bass, &pad, MasterKey::Home, t2);
+    perc.next(&session.load().controls.perc, t2);
+    kick.next(&session.load().controls.kick, t2);
 
     let after = session.load();
     assert_ne!(after.controls.bass.steps[..4], initial_bass_steps[..4]);
@@ -11687,6 +11741,11 @@ fn bass_and_perc_evolve_mutates_live_steps_at_cycle_boundaries() {
     assert_eq!(
         after.controls.perc.pattern,
         CUSTOM_PERC_PATTERN_INDEX as f32
+    );
+    assert_ne!(after.controls.kick.steps[..2], initial_kick_steps[..2]);
+    assert_eq!(
+        after.controls.kick.pattern,
+        CUSTOM_KICK_PATTERN_INDEX as f32
     );
 }
 

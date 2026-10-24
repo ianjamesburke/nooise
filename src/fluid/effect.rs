@@ -166,10 +166,11 @@ fn selected_control(selected_control: Option<&'static str>) -> Result<&'static s
     selected_control.ok_or(EffectFailure::MissingContext("selected control"))
 }
 
-/// Whether `id` is a step row in a unified sequence drill (Pads, Perc, Bass, Tonal, Arp, or Lead).
+/// Whether `id` is a step row in a unified sequence drill (Pads, Perc, Bass, Kick, Tonal, Arp, or Lead).
 fn is_sequence_step_id(id: &str) -> bool {
     perc_step_index(id).is_some()
         || bass_step_index(id).is_some()
+        || kick_step_index(id).is_some()
         || tonal_step_index(id).is_some()
         || arp_step_index(id).is_some()
         || lead_step_index(id).is_some()
@@ -801,6 +802,8 @@ impl EffectExecutor {
             && perc_step_index(spec.id).is_none()
             && spec.id != BASS_RHYTHM_ID
             && bass_step_index(spec.id).is_none()
+            && spec.id != KICK_PATTERN_ID
+            && kick_step_index(spec.id).is_none()
             && spec.id != TONAL_PHRASE_ID
             && tonal_step_index(spec.id).is_none()
             && spec.id != ARP_PATTERN_ID
@@ -1027,6 +1030,16 @@ impl EffectExecutor {
                     snapshot.controls.bass.steps = [0.0; BASS_STEP_COUNT];
                 });
                 self.show_message("Bass sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            Tab::Kick => {
+                let snapshot = self.edit_session(Some(KICK_PATTERN_ID), |snapshot| {
+                    snapshot.controls.kick.pattern = CUSTOM_KICK_PATTERN_INDEX as f32;
+                    snapshot.controls.kick.steps = [0.0; KICK_STEP_COUNT];
+                });
+                self.show_message("Kick sequence cleared".to_string());
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
@@ -1592,11 +1605,26 @@ impl EffectExecutor {
                     candidate.bass.steps = steps;
                     custom_bass_steps = Some(steps);
                 }
+                let mut custom_kick_steps = None;
+                if id == KICK_PATTERN_ID
+                    && candidate.kick.pattern.round() as usize == CUSTOM_KICK_PATTERN_INDEX
+                {
+                    let count = kick_live_step_count(candidate.kick.step_count);
+                    let mut steps = [0.0f32; KICK_STEP_COUNT];
+                    for slot in steps.iter_mut().take(count) {
+                        *slot = self.rng.gen_range(0..=1) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = 1.0;
+                    }
+                    candidate.kick.steps = steps;
+                    custom_kick_steps = Some(steps);
+                }
                 let mut custom_tonal_steps = None;
                 if id == TONAL_PHRASE_ID
                     && candidate.tonal.phrase.round() as usize == CUSTOM_TONAL_PHRASE_INDEX
                 {
-                    let count = lead_live_step_count(candidate.tonal.step_count);
+                    let count = tonal_live_step_count(candidate.tonal.step_count);
                     let mut steps = [0.0f32; TONAL_STEP_COUNT];
                     for (idx, slot) in steps.iter_mut().enumerate().take(count) {
                         let min = if idx == 0 { 0 } else { -1 };
@@ -1632,6 +1660,7 @@ impl EffectExecutor {
                 if (spec.get)(&candidate) == (spec.get)(&initial.controls)
                     && custom_perc_steps.is_none()
                     && custom_bass_steps.is_none()
+                    && custom_kick_steps.is_none()
                     && custom_tonal_steps.is_none()
                     && custom_arp_steps.is_none()
                 {
@@ -1644,6 +1673,9 @@ impl EffectExecutor {
                     }
                     if let Some(steps) = custom_bass_steps {
                         snapshot.controls.bass.steps = steps;
+                    }
+                    if let Some(steps) = custom_kick_steps {
+                        snapshot.controls.kick.steps = steps;
                     }
                     if let Some(steps) = custom_tonal_steps {
                         snapshot.controls.tonal.steps = steps;
@@ -1688,6 +1720,22 @@ impl EffectExecutor {
                                 spec.apply_randomized_ratio(ratio, &mut candidate);
                             }
                             rolls.push((spec.id, ratio));
+                        }
+                    }
+                    if in_sequence_drill
+                        && context.tab != Tab::Chords
+                        && rolls.iter().all(|(id, _)| {
+                            let spec = spec_by_id(id).expect("scope controls were validated");
+                            (spec.get)(&candidate) <= 0.0
+                        })
+                        && let Some((first_id, first_ratio)) = rolls.first_mut()
+                    {
+                        let spec = spec_by_id(first_id).expect("scope controls were validated");
+                        *first_ratio = rng.gen_range(0.5..=1.0);
+                        spec.apply_randomized_ratio(*first_ratio, &mut candidate);
+                        if (spec.get)(&candidate) <= 0.0 {
+                            *first_ratio = 1.0;
+                            spec.apply_randomized_ratio(*first_ratio, &mut candidate);
                         }
                     }
                     if in_sequence_drill && context.tab == Tab::Lead {

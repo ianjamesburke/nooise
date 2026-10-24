@@ -6,7 +6,7 @@
 use super::*;
 use crate::fluid::interaction::{
     ArpDrill, AutomationKind, AutomationMode, BassDrill, ChordDrill, InteractionMode,
-    InteractionModel, JumpStage, LEAD_NUDGES, LeadDrill, Navigation, PercDrill,
+    InteractionModel, JumpStage, KickDrill, LEAD_NUDGES, LeadDrill, Navigation, PercDrill,
     PerformanceInstrument, PerformanceMode, TonalDrill, hub_layer,
 };
 
@@ -88,6 +88,7 @@ pub(crate) struct NavigationView {
     pub(crate) chord_drill: ChordDrill,
     pub(crate) perc_drill: PercDrill,
     pub(crate) bass_drill: BassDrill,
+    pub(crate) kick_drill: KickDrill,
     pub(crate) tonal_drill: TonalDrill,
     pub(crate) arp_drill: ArpDrill,
     pub(crate) lead_drill: LeadDrill,
@@ -358,6 +359,7 @@ impl<'a> UiViewModel<'a> {
                 }
                 Tab::Perc => perc_tab_controls(&session.controls, navigation.perc_drill),
                 Tab::Bass => bass_tab_controls(&session.controls, navigation.bass_drill),
+                Tab::Kick => kick_tab_controls(&session.controls, navigation.kick_drill),
                 Tab::Tonal => tonal_tab_controls(&session.controls, navigation.tonal_drill),
                 Tab::Arp => arp_tab_controls(&session.controls, navigation.arp_drill),
                 Tab::Lead => lead_tab_controls(&session.controls, navigation.lead_drill),
@@ -533,26 +535,40 @@ fn breadcrumb(
             navigation.chord_drill,
             navigation.perc_drill,
             navigation.bass_drill,
+            navigation.kick_drill,
             navigation.tonal_drill,
             navigation.arp_drill,
             navigation.lead_drill,
         ) {
-            (ChordDrill::Progression { .. }, _, _, _, _, _) => Some("Sequence".to_string()),
-            (ChordDrill::Slot { slot, .. }, _, _, _, _, _) => {
+            (ChordDrill::Progression { .. }, _, _, _, _, _, _) => Some("Sequence".to_string()),
+            (ChordDrill::Slot { slot, .. }, _, _, _, _, _, _) => {
                 let live = if slot == active_slot { " ♪" } else { "" };
                 Some(format!("Chord {}{live}", slot + 1))
             }
-            (ChordDrill::None, PercDrill::Pattern { .. }, _, _, _, _)
-            | (ChordDrill::None, _, BassDrill::Pattern { .. }, _, _, _)
-            | (ChordDrill::None, _, _, TonalDrill::Pattern { .. }, _, _)
-            | (ChordDrill::None, _, _, _, ArpDrill::Pattern { .. }, _)
-            | (ChordDrill::None, _, _, _, _, LeadDrill::Pattern { .. }) => {
+            (ChordDrill::None, PercDrill::Pattern { .. }, _, _, _, _, _) => {
+                let continuous = controls.perc.interval_beats >= 4.25
+                    || (controls.perc.pattern.round() as usize) == CONTINUOUS_PERC_PATTERN_INDEX;
+                let live = if continuous { "" } else { " ♪" };
+                Some(format!("Sequence{live}"))
+            }
+            (ChordDrill::None, _, BassDrill::Pattern { .. }, _, _, _, _)
+            | (ChordDrill::None, _, _, KickDrill::Pattern { .. }, _, _, _)
+            | (ChordDrill::None, _, _, _, TonalDrill::Pattern { .. }, _, _)
+            | (ChordDrill::None, _, _, _, _, ArpDrill::Pattern { .. }, _) => {
                 Some("Sequence ♪".to_string())
+            }
+            (ChordDrill::None, _, _, _, _, _, LeadDrill::Pattern { .. }) => {
+                let live = match LeadPattern::from_value(controls.lead.pattern) {
+                    LeadPattern::Play => " ♪",
+                    LeadPattern::Off => "",
+                };
+                Some(format!("Sequence{live}"))
             }
             (
                 ChordDrill::None,
                 PercDrill::None,
                 BassDrill::None,
+                KickDrill::None,
                 TonalDrill::None,
                 ArpDrill::None,
                 LeadDrill::None,
@@ -749,6 +765,9 @@ pub(crate) fn navigation_control_ids(
         Tab::Bass => bass_row_specs(controls, navigation.bass_drill)
             .map(|spec| spec.id)
             .collect(),
+        Tab::Kick => kick_row_specs(controls, navigation.kick_drill)
+            .map(|spec| spec.id)
+            .collect(),
         Tab::Tonal => tonal_row_specs(controls, navigation.tonal_drill)
             .map(|spec| spec.id)
             .collect(),
@@ -768,6 +787,7 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
         chord_drill: ChordDrill::None,
         perc_drill: PercDrill::None,
         bass_drill: BassDrill::None,
+        kick_drill: KickDrill::None,
         tonal_drill: TonalDrill::None,
         arp_drill: ArpDrill::None,
         lead_drill: LeadDrill::None,
@@ -778,6 +798,7 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
         Navigation::Chords { drill, .. } => view.chord_drill = drill,
         Navigation::Perc { drill, .. } => view.perc_drill = drill,
         Navigation::Bass { drill, .. } => view.bass_drill = drill,
+        Navigation::Kick { drill, .. } => view.kick_drill = drill,
         Navigation::Tonal { drill, .. } => view.tonal_drill = drill,
         Navigation::Arp { drill, .. } => view.arp_drill = drill,
         Navigation::Lead { drill, .. } => view.lead_drill = drill,
@@ -851,32 +872,26 @@ fn help_surface(
         };
     }
 
-    let local_help = match (
-        navigation.tab,
-        navigation.chord_drill,
-        navigation.tonal_drill,
-        navigation.arp_drill,
-        navigation.lead_drill,
-        navigation.module_slot,
-    ) {
-        (_, _, _, _, _, Some(_)) => {
-            Some("BROWSE · Module detail   Shift+R randomize set   Esc: back".to_string())
-        }
-        (Tab::Chords, ChordDrill::Progression { .. }, _, _, _, None) => {
-            Some("Enter open · Esc back · Shift+R randomize".to_string())
-        }
-        (Tab::Chords, ChordDrill::Slot { .. }, _, _, _, None) => {
-            Some("Esc back · /add extension · /restore chord".to_string())
-        }
-        (Tab::Tonal, _, TonalDrill::Pattern { .. }, _, _, None)
-        | (Tab::Arp, _, _, ArpDrill::Pattern { .. }, _, None) => {
-            Some("BROWSE · Sequence   r random   Shift+R randomize set   Esc: back".to_string())
-        }
-        (Tab::Lead, _, _, _, LeadDrill::Pattern { .. }, None) => Some(
+    let local_help = if navigation.module_slot.is_some() {
+        Some("BROWSE · Module detail   Shift+R randomize set   Esc: back".to_string())
+    } else if matches!(navigation.chord_drill, ChordDrill::Progression { .. }) {
+        Some("Enter open · Esc back · Shift+R randomize".to_string())
+    } else if matches!(navigation.chord_drill, ChordDrill::Slot { .. }) {
+        Some("Esc back · /add extension · /restore chord".to_string())
+    } else if matches!(navigation.perc_drill, PercDrill::Pattern { .. })
+        || matches!(navigation.bass_drill, BassDrill::Pattern { .. })
+        || matches!(navigation.kick_drill, KickDrill::Pattern { .. })
+        || matches!(navigation.tonal_drill, TonalDrill::Pattern { .. })
+        || matches!(navigation.arp_drill, ArpDrill::Pattern { .. })
+    {
+        Some("BROWSE · Sequence   r random   Shift+R randomize set   Esc: back".to_string())
+    } else if matches!(navigation.lead_drill, LeadDrill::Pattern { .. }) {
+        Some(
             "BROWSE · Sequence   r random   Shift+R randomize set   Enter: play   Esc: back"
                 .to_string(),
-        ),
-        _ => None,
+        )
+    } else {
+        None
     };
     if let Some(text) = local_help {
         return HelpSurface::Browsing { text };
@@ -892,6 +907,9 @@ fn help_surface(
     let way = if navigation.tab == Tab::Master {
         "↵ enter"
     } else if navigation.chord_drill != ChordDrill::None
+        || navigation.perc_drill != PercDrill::None
+        || navigation.bass_drill != BassDrill::None
+        || navigation.kick_drill != KickDrill::None
         || navigation.tonal_drill != TonalDrill::None
         || navigation.arp_drill != ArpDrill::None
         || navigation.lead_drill != LeadDrill::None
@@ -1155,6 +1173,30 @@ mod tests {
             }
         }
         for count in [1.0, 8.0, 16.0] {
+            session.controls.perc.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Perc {
+                    selected: usize::MAX,
+                    drill: PercDrill::Pattern { return_to: 0 },
+                },
+            );
+            session.controls.bass.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Bass {
+                    selected: usize::MAX,
+                    drill: BassDrill::Pattern { return_to: 0 },
+                },
+            );
+            session.controls.kick.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Kick {
+                    selected: usize::MAX,
+                    drill: KickDrill::Pattern { return_to: 0 },
+                },
+            );
             session.controls.tonal.step_count = count;
             assert_navigation_rows(
                 &session,
@@ -1761,9 +1803,9 @@ mod tests {
     #[test]
     fn jump_leader_renders_a_map_over_the_control_area() {
         let interaction = InteractionModel {
-            navigation: Navigation::Standard {
-                page: crate::fluid::interaction::StandardPage::Kick,
+            navigation: Navigation::Kick {
                 selected: 0,
+                drill: KickDrill::None,
             },
             mode: InteractionMode::Performance(PerformanceMode::Jump {
                 stage: JumpStage::ChooseParameter {
@@ -1886,7 +1928,7 @@ mod tests {
         session.controls.lead.step_count = 4.0;
         let lead = InteractionModel {
             navigation: Navigation::Lead {
-                selected: 7,
+                selected: 8,
                 drill: LeadDrill::Pattern { return_to: 1 },
             },
             mode: InteractionMode::Browsing,

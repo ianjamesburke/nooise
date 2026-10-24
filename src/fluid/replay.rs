@@ -4055,9 +4055,9 @@ fn planned_mute_and_cancel_preserve_minimum_frame_navigation_on_both_terminals()
         assert_eq!(result.final_owner(), Some("BROWSE"));
         assert_eq!(
             result.model.navigation,
-            Navigation::Standard {
-                page: super::interaction::StandardPage::Kick,
+            Navigation::Kick {
                 selected: 1,
+                drill: super::interaction::KickDrill::None,
             }
         );
         assert!(

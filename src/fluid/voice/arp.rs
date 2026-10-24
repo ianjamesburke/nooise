@@ -254,6 +254,7 @@ impl ArpEngine {
             let steps = self.evolved_steps;
             session_state.update(|snapshot| {
                 snapshot.controls.arp.steps = steps;
+                snapshot.controls.arp.pattern = CUSTOM_ARP_PATTERN_INDEX as f32;
             });
         }
     }

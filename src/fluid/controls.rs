@@ -351,6 +351,37 @@ impl PadControls {
     }
 }
 
+pub(crate) const KICK_STEP_COUNT: usize = 16;
+pub(crate) const KICK_PATTERN_PRESET_COUNT: usize = 4;
+pub(crate) const CUSTOM_KICK_PATTERN_INDEX: usize = 4;
+
+pub(crate) const KICK_PATTERNS: &[&str] = &["Steady", "Offbeat", "Broken", "Groove", "Custom"];
+
+pub(crate) const DEFAULT_KICK_STEPS: [f32; KICK_STEP_COUNT] = [1.0; KICK_STEP_COUNT];
+
+/// Built-in Kick pattern presets (`Steady`, `Offbeat`, `Broken`, `Groove`).
+pub(crate) const KICK_PATTERN_PRESETS: [(u8, [f32; KICK_STEP_COUNT]); KICK_PATTERN_PRESET_COUNT] = [
+    (8, DEFAULT_KICK_STEPS),
+    (
+        8,
+        [
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+        ],
+    ),
+    (
+        8,
+        [
+            1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        16,
+        [
+            1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0,
+        ],
+    ),
+];
+
 #[derive(Clone)]
 pub(crate) struct KickControls {
     pub(crate) level: f32,
@@ -359,8 +390,12 @@ pub(crate) struct KickControls {
     pub(crate) pitch_decay_ms: f32,
     pub(crate) amp_decay_ms: f32,
     pub(crate) click: f32, // 0–0.2 UI range
+    pub(crate) pattern: f32,
     pub(crate) interval_beats: f32,
     pub(crate) offset_beats: f32,
+    pub(crate) step_count: f32,
+    pub(crate) evolve_rate: f32,
+    pub(crate) steps: [f32; KICK_STEP_COUNT],
     pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
 }
 
@@ -373,9 +408,25 @@ impl Default for KickControls {
             pitch_decay_ms: 55.0,
             amp_decay_ms: 150.0,
             click: 0.02,
+            pattern: 0.0,
             interval_beats: 1.0,
             offset_beats: 0.0,
+            step_count: 8.0,
+            evolve_rate: 0.0,
+            steps: DEFAULT_KICK_STEPS,
             swing: 0.0,
+        }
+    }
+}
+
+impl KickControls {
+    pub(crate) fn apply_pattern_preset(&mut self, pattern_value: f32) {
+        let idx =
+            (pattern_value.round() as isize).clamp(0, CUSTOM_KICK_PATTERN_INDEX as isize) as usize;
+        self.pattern = idx as f32;
+        if let Some(&(len, steps)) = KICK_PATTERN_PRESETS.get(idx) {
+            self.step_count = len as f32;
+            self.steps = steps;
         }
     }
 }
@@ -443,7 +494,6 @@ pub(crate) struct TonalControls {
     pub(crate) octave: f32,
     pub(crate) phrase: f32,
     pub(crate) follow: f32,
-    pub(crate) randomness: f32,
     pub(crate) evolve_rate: f32,
     pub(crate) rate_beats: f32,
     pub(crate) offset_beats: f32,
@@ -462,7 +512,6 @@ impl Default for TonalControls {
             octave: 0.0,
             phrase: 0.0,
             follow: 1.0,
-            randomness: 0.5,
             evolve_rate: 0.0,
             rate_beats: 0.5,
             offset_beats: 0.0,

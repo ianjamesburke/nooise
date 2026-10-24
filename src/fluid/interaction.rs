@@ -67,14 +67,15 @@ impl Page {
     }
 }
 
-/// The navigation a page opens on. Chords, Perc, Bass, Tonal, Arp, Lead, and
-/// the hub own page-local navigation no other page can construct; the rest
-/// share one standard list.
+/// The navigation a page opens on. Chords, Perc, Bass, Kick, Tonal, Arp, Lead,
+/// and the hub own page-local navigation no other page can construct; Clap
+/// uses the standard list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerNavigation {
     Chords,
     Perc,
     Bass,
+    Kick,
     Standard(StandardPage),
     Tonal,
     Arp,
@@ -114,7 +115,7 @@ const LAYERS: [Layer; 9] = [
     Layer {
         page: Page::Kick,
         tab: Tab::Kick,
-        navigation: LayerNavigation::Standard(StandardPage::Kick),
+        navigation: LayerNavigation::Kick,
     },
     Layer {
         page: Page::Tonal,
@@ -217,6 +218,17 @@ pub(crate) enum BassDrill {
     },
 }
 
+/// The Kick page's one drill: its unified sequence view, opened from the Pattern row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum KickDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
 /// The Tonal page's one drill: its unified sequence view, opened from the Phrase row.
 /// `return_to` restores that row on Esc.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -252,7 +264,6 @@ pub(crate) enum LeadDrill {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StandardPage {
-    Kick,
     Clap,
 }
 
@@ -281,6 +292,10 @@ pub(crate) enum Navigation {
     Bass {
         selected: usize,
         drill: BassDrill,
+    },
+    Kick {
+        selected: usize,
+        drill: KickDrill,
     },
     Standard {
         page: StandardPage,
@@ -335,6 +350,10 @@ impl Navigation {
                 selected: 0,
                 drill: BassDrill::None,
             },
+            LayerNavigation::Kick => Self::Kick {
+                selected: 0,
+                drill: KickDrill::None,
+            },
             LayerNavigation::Standard(page) => Self::Standard { page, selected: 0 },
             LayerNavigation::Tonal => Self::Tonal {
                 selected: 0,
@@ -357,6 +376,7 @@ impl Navigation {
             Self::Chords { .. } => Page::Chords,
             Self::Perc { .. } => Page::Perc,
             Self::Bass { .. } => Page::Bass,
+            Self::Kick { .. } => Page::Kick,
             Self::Standard { page, .. } => page.page(),
             Self::Tonal { .. } => Page::Tonal,
             Self::Arp { .. } => Page::Arp,
@@ -375,6 +395,7 @@ impl Navigation {
             Self::Chords { selected, .. }
             | Self::Perc { selected, .. }
             | Self::Bass { selected, .. }
+            | Self::Kick { selected, .. }
             | Self::Standard { selected, .. }
             | Self::Tonal { selected, .. }
             | Self::Arp { selected, .. }
@@ -389,6 +410,7 @@ impl Navigation {
             Self::Chords { selected, .. }
             | Self::Perc { selected, .. }
             | Self::Bass { selected, .. }
+            | Self::Kick { selected, .. }
             | Self::Standard { selected, .. }
             | Self::Tonal { selected, .. }
             | Self::Arp { selected, .. }
@@ -413,6 +435,10 @@ impl Navigation {
                 drill: BassDrill::Pattern { return_to },
                 ..
             }
+            | Self::Kick {
+                drill: KickDrill::Pattern { return_to },
+                ..
+            }
             | Self::Tonal {
                 drill: TonalDrill::Pattern { return_to },
                 ..
@@ -429,6 +455,7 @@ impl Navigation {
             Self::Chords { selected, .. }
             | Self::Perc { selected, .. }
             | Self::Bass { selected, .. }
+            | Self::Kick { selected, .. }
             | Self::Standard { selected, .. }
             | Self::Tonal { selected, .. }
             | Self::Arp { selected, .. }
@@ -483,6 +510,13 @@ impl Navigation {
                     *drill = BassDrill::None;
                 }
                 BassDrill::None => *self = to_hub,
+            },
+            Self::Kick { selected, drill } => match *drill {
+                KickDrill::Pattern { return_to } => {
+                    *selected = return_to;
+                    *drill = KickDrill::None;
+                }
+                KickDrill::None => *self = to_hub,
             },
             Self::Tonal { selected, drill } => match *drill {
                 TonalDrill::Pattern { return_to } => {
@@ -1045,6 +1079,8 @@ pub(crate) enum Intent {
     EnterPercPattern,
     /// Open Bass's unified sequence drill from its Rhythm row.
     EnterBassPattern,
+    /// Open Kick's unified sequence drill from its Pattern row.
+    EnterKickPattern,
     /// Open Tonal's unified sequence drill from its Phrase row.
     EnterTonalPattern,
     /// Open the Arp's unified sequence drill from its Pattern row.
@@ -1167,6 +1203,7 @@ impl Intent {
             | Self::EnterChordSlot(_)
             | Self::EnterPercPattern
             | Self::EnterBassPattern
+            | Self::EnterKickPattern
             | Self::EnterTonalPattern
             | Self::EnterArpPattern
             | Self::EnterLeadPattern
@@ -1244,6 +1281,7 @@ impl Intent {
             | Self::EnterChordSlot(_)
             | Self::EnterPercPattern
             | Self::EnterBassPattern
+            | Self::EnterKickPattern
             | Self::EnterTonalPattern
             | Self::EnterArpPattern
             | Self::EnterLeadPattern
@@ -1528,6 +1566,10 @@ impl InteractionModel {
                 let (drill, selected) = super::bass_drill_for_index(index, controls);
                 Navigation::Bass { selected, drill }
             }
+            Tab::Kick => {
+                let (drill, selected) = super::kick_drill_for_index(index, controls);
+                Navigation::Kick { selected, drill }
+            }
             Tab::Tonal => {
                 let (drill, selected) = super::tonal_drill_for_index(index, controls);
                 Navigation::Tonal { selected, drill }
@@ -1717,6 +1759,13 @@ fn update_browsing(
                 let return_to = *selected;
                 *selected = 0;
                 *drill = BassDrill::Pattern { return_to };
+            }
+        }
+        Intent::EnterKickPattern => {
+            if let Navigation::Kick { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = KickDrill::Pattern { return_to };
             }
         }
         Intent::EnterTonalPattern => {
@@ -2435,12 +2484,11 @@ mod tests {
 
     #[test]
     fn every_standard_page_round_trips_through_its_layer_row() {
-        for page in [StandardPage::Kick, StandardPage::Clap] {
-            assert_eq!(
-                Navigation::for_page(page.page()),
-                Navigation::Standard { page, selected: 0 }
-            );
-        }
+        let page = StandardPage::Clap;
+        assert_eq!(
+            Navigation::for_page(page.page()),
+            Navigation::Standard { page, selected: 0 }
+        );
     }
 
     #[test]
@@ -2597,7 +2645,7 @@ mod tests {
         assert_eq!(
             model.navigation,
             Navigation::Lead {
-                selected: 3,
+                selected: 4,
                 drill: LeadDrill::Pattern {
                     return_to: pattern_row
                 },

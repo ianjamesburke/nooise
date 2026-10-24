@@ -451,8 +451,6 @@ impl TonalEngine {
                 .get(self.step_index % self.evolved_phrase.len().max(1))
                 .copied()
                 .unwrap_or(0);
-            let random_draw = self.rng.gen_range(0.0f32..1.0);
-            let random_tone = self.rng.gen_range(1..=LEAD_TONE_COUNT);
             let pan = self.rng.gen_range(-0.5f32..0.5);
 
             if step_val < 0 {
@@ -462,11 +460,7 @@ impl TonalEngine {
                     last.extend_decay(extra_seconds);
                 }
             } else if step_val > 0 {
-                let tone = if random_draw < c.randomness {
-                    random_tone
-                } else {
-                    (step_val as usize).clamp(1, LEAD_TONE_COUNT)
-                };
+                let tone = (step_val as usize).clamp(1, LEAD_TONE_COUNT);
                 let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
                 let note = reach.note(tone, c.octave);
                 let hz = note_hz(note, tune);

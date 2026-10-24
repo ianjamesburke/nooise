@@ -1887,6 +1887,18 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.bass.follow = v,
             |c| LeadFollow::from_value(c.bass.follow).label().to_string(),
         ),
+        ControlSpec::new(
+            "bass.octave",
+            "Octave",
+            ControlKind::Discrete,
+            -3.0,
+            0.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.bass.octave,
+            |c, v| c.bass.octave = v,
+            |c| format!("{:.0}", c.bass.octave),
+        ),
         beat_interval!(
             "bass.interval_beats",
             "Length",
@@ -1936,18 +1948,6 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
         bass_step_row!(14),
         bass_step_row!(15),
         bass_step_row!(16),
-        ControlSpec::new(
-            "bass.octave",
-            "Octave",
-            ControlKind::Discrete,
-            -3.0,
-            0.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.bass.octave,
-            |c, v| c.bass.octave = v,
-            |c| format!("{:.0}", c.bass.octave),
-        ),
     ]
 );
 
@@ -1993,6 +1993,35 @@ fn letter_label(index: usize) -> String {
     char::from(b'A' + index as u8).to_string()
 }
 
+macro_rules! kick_step_row {
+    ($step:literal) => {
+        ControlSpec::new(
+            concat!("kick.step", $step),
+            concat!("Step ", $step),
+            ControlKind::Discrete,
+            0.0,
+            1.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.kick.steps[$step - 1],
+            |c, v| {
+                if (c.kick.steps[$step - 1] - v).abs() > f32::EPSILON {
+                    c.kick.steps[$step - 1] = v;
+                    c.kick.pattern = CUSTOM_KICK_PATTERN_INDEX as f32;
+                }
+            },
+            |c| kick_step_label(c.kick.steps[$step - 1]).to_string(),
+        )
+        .stored_as(
+            |c| c.kick.steps[$step - 1],
+            |c, v| c.kick.steps[$step - 1] = v,
+        )
+    };
+}
+
+/// `KICK_CONTROLS` enumerates its steps literally.
+const _: () = assert!(KICK_STEP_COUNT == 16);
+
 pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
     kick,
     "kick",
@@ -2026,14 +2055,6 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.kick.voice_type = v,
             |c| type_label(c.kick.voice_type, KICK_TYPES).to_string(),
         ),
-        beat_interval!(
-            "kick.interval_beats",
-            "Interval",
-            0.125,
-            4.0,
-            kick.interval_beats
-        ),
-        beat_offset!("kick.offset_beats", "Offset", 4.0, kick.offset_beats),
         ControlSpec::new(
             "kick.start_freq",
             "Start Freq",
@@ -2056,6 +2077,67 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| pct(c.kick.click / 0.2),
         )
         .with_step(0.01),
+        ControlSpec::new(
+            KICK_PATTERN_ID,
+            "Pattern",
+            ControlKind::Discrete,
+            0.0,
+            CUSTOM_KICK_PATTERN_INDEX as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.kick.pattern,
+            |c, v| c.kick.apply_pattern_preset(v),
+            |c| kick_pattern_label(c.kick.pattern).to_string(),
+        ),
+        beat_interval!(
+            "kick.interval_beats",
+            "Interval",
+            0.125,
+            4.0,
+            kick.interval_beats
+        ),
+        ControlSpec::new(
+            KICK_STEPS_ID,
+            "Steps",
+            ControlKind::Discrete,
+            1.0,
+            KICK_STEP_COUNT as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.kick.step_count,
+            |c, v| c.kick.step_count = v,
+            |c| format!("{:.0}", c.kick.step_count),
+        )
+        .reset_at(8.0),
+        beat_offset!("kick.offset_beats", "Offset", 4.0, kick.offset_beats),
+        ControlSpec::new(
+            "kick.evolve_rate",
+            "Evolve",
+            ControlKind::Continuous,
+            0.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Percent,
+            |c| c.kick.evolve_rate,
+            |c, v| c.kick.evolve_rate = v,
+            |c| pct(c.kick.evolve_rate),
+        ),
+        kick_step_row!(1),
+        kick_step_row!(2),
+        kick_step_row!(3),
+        kick_step_row!(4),
+        kick_step_row!(5),
+        kick_step_row!(6),
+        kick_step_row!(7),
+        kick_step_row!(8),
+        kick_step_row!(9),
+        kick_step_row!(10),
+        kick_step_row!(11),
+        kick_step_row!(12),
+        kick_step_row!(13),
+        kick_step_row!(14),
+        kick_step_row!(15),
+        kick_step_row!(16),
     ]
 );
 
@@ -2121,19 +2203,6 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| type_label(c.tonal.synth_type, TONAL_SYNTH_TYPES).to_string(),
         ),
         ControlSpec::new(
-            "tonal.octave",
-            "Octave",
-            ControlKind::Discrete,
-            -2.0,
-            2.0,
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.tonal.octave,
-            |c, v| c.tonal.octave = v,
-            |c| format!("{:.0}", c.tonal.octave),
-        )
-        .reset_at(0.0),
-        ControlSpec::new(
             TONAL_PHRASE_ID,
             "Phrase",
             ControlKind::Discrete,
@@ -2169,6 +2238,19 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| LeadFollow::from_value(c.tonal.follow).label().to_string(),
         )
         .reset_at(LeadFollow::Scale.value()),
+        ControlSpec::new(
+            "tonal.octave",
+            "Octave",
+            ControlKind::Discrete,
+            -2.0,
+            2.0,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.tonal.octave,
+            |c, v| c.tonal.octave = v,
+            |c| format!("{:.0}", c.tonal.octave),
+        )
+        .reset_at(0.0),
         beat_interval!(
             "tonal.rate_beats",
             "Rate",
@@ -2190,7 +2272,6 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(8.0),
         beat_offset!("tonal.offset_beats", "Offset", 4.0, tonal.offset_beats),
-        gain_pct!("tonal.randomness", "Randomness", tonal.randomness),
         ControlSpec::new(
             "tonal.evolve_rate",
             "Evolve",
@@ -2463,6 +2544,18 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| lead_type_label(c.lead.voice_type).to_string(),
         ),
         ControlSpec::new(
+            "lead.follow",
+            "Follow",
+            ControlKind::Discrete,
+            0.0,
+            last_index_of(&LEAD_FOLLOWS),
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.lead.follow,
+            |c, v| c.lead.follow = v,
+            |c| LeadFollow::from_value(c.lead.follow).label().to_string(),
+        ),
+        ControlSpec::new(
             "lead.octave",
             "Octave",
             ControlKind::Discrete,
@@ -2475,18 +2568,6 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| format!("{:+.0}", c.lead.octave),
         )
         .reset_at(0.0),
-        ControlSpec::new(
-            "lead.follow",
-            "Follow",
-            ControlKind::Discrete,
-            0.0,
-            last_index_of(&LEAD_FOLLOWS),
-            Step::Linear(1.0),
-            Entry::Round,
-            |c| c.lead.follow,
-            |c, v| c.lead.follow = v,
-            |c| LeadFollow::from_value(c.lead.follow).label().to_string(),
-        ),
         beat_interval!(
             "lead.rate_beats",
             "Rate",
@@ -2601,20 +2682,32 @@ pub(crate) const PERC_SEQUENCE_HEADER_IDS: [&str; 5] = [
 
 pub(crate) const BASS_RHYTHM_ID: &str = "bass.rhythm";
 pub(crate) const BASS_STEPS_ID: &str = "bass.steps";
-pub(crate) const BASS_SEQUENCE_HEADER_IDS: [&str; 6] = [
+pub(crate) const BASS_SEQUENCE_HEADER_IDS: [&str; 7] = [
     BASS_RHYTHM_ID,
     "bass.follow",
+    "bass.octave",
     "bass.interval_beats",
     BASS_STEPS_ID,
     "bass.offset_beats",
     "bass.evolve_rate",
 ];
 
+pub(crate) const KICK_PATTERN_ID: &str = "kick.pattern";
+pub(crate) const KICK_STEPS_ID: &str = "kick.steps";
+pub(crate) const KICK_SEQUENCE_HEADER_IDS: [&str; 5] = [
+    KICK_PATTERN_ID,
+    "kick.interval_beats",
+    KICK_STEPS_ID,
+    "kick.offset_beats",
+    "kick.evolve_rate",
+];
+
 pub(crate) const TONAL_PHRASE_ID: &str = "tonal.phrase";
 pub(crate) const TONAL_STEPS_ID: &str = "tonal.steps";
-pub(crate) const TONAL_SEQUENCE_HEADER_IDS: [&str; 6] = [
+pub(crate) const TONAL_SEQUENCE_HEADER_IDS: [&str; 7] = [
     TONAL_PHRASE_ID,
     "tonal.follow",
+    "tonal.octave",
     "tonal.rate_beats",
     TONAL_STEPS_ID,
     "tonal.offset_beats",
@@ -2633,9 +2726,10 @@ pub(crate) const ARP_SEQUENCE_HEADER_IDS: [&str; 7] = [
     "arp.evolve_rate",
 ];
 
-pub(crate) const LEAD_SEQUENCE_HEADER_IDS: [&str; 6] = [
+pub(crate) const LEAD_SEQUENCE_HEADER_IDS: [&str; 7] = [
     LEAD_PATTERN_ID,
     "lead.follow",
+    "lead.octave",
     "lead.rate_beats",
     LEAD_STEPS_ID,
     "lead.offset_beats",
@@ -2656,6 +2750,13 @@ pub(crate) fn bass_step_index(id: &str) -> Option<usize> {
     (1..=BASS_STEP_COUNT).contains(&step).then(|| step - 1)
 }
 
+/// Parse `kick.step<N>` back to its 0-based step, `None` for any other id.
+pub(crate) fn kick_step_index(id: &str) -> Option<usize> {
+    let number = id.strip_prefix("kick.step")?;
+    let step: usize = number.parse().ok()?;
+    (1..=KICK_STEP_COUNT).contains(&step).then(|| step - 1)
+}
+
 /// Parse `tonal.step<N>` back to its 0-based step, `None` for any other id.
 pub(crate) fn tonal_step_index(id: &str) -> Option<usize> {
     let number = id.strip_prefix("tonal.step")?;
@@ -2674,13 +2775,13 @@ fn sequence_drill_only_row(id: &str) -> bool {
     (id != "pad.progression" && PAD_SEQUENCE_HEADER_IDS.contains(&id))
         || (id != PERC_PATTERN_ID && PERC_SEQUENCE_HEADER_IDS.contains(&id))
         || (id != BASS_RHYTHM_ID && BASS_SEQUENCE_HEADER_IDS.contains(&id))
-        || (id != TONAL_PHRASE_ID
-            && id != "tonal.evolve_rate"
-            && TONAL_SEQUENCE_HEADER_IDS.contains(&id))
+        || (id != KICK_PATTERN_ID && KICK_SEQUENCE_HEADER_IDS.contains(&id))
+        || (id != TONAL_PHRASE_ID && TONAL_SEQUENCE_HEADER_IDS.contains(&id))
         || (id != ARP_PATTERN_ID && ARP_SEQUENCE_HEADER_IDS.contains(&id))
         || (id != LEAD_PATTERN_ID && LEAD_SEQUENCE_HEADER_IDS.contains(&id))
         || perc_step_index(id).is_some()
         || bass_step_index(id).is_some()
+        || kick_step_index(id).is_some()
         || tonal_step_index(id).is_some()
         || arp_step_index(id).is_some()
         || lead_step_index(id).is_some()
@@ -2819,6 +2920,64 @@ pub(crate) fn bass_drill_for_index(
         return (drill, selected);
     }
     (interaction::BassDrill::None, root_row(spec.id))
+}
+
+/// Kick-tab visible rows for the given drill level: the root page, or the
+/// unified sequence drill (header controls + live steps).
+pub(crate) fn kick_tab_controls(
+    c: &FluidControls,
+    drill: interaction::KickDrill,
+) -> Vec<ControlItem> {
+    kick_row_specs(c, drill)
+        .map(|spec| {
+            let mut item = spec.item(c);
+            if drill == interaction::KickDrill::None && item.id == KICK_PATTERN_ID {
+                item.label = "Pattern ›".into();
+            }
+            item
+        })
+        .collect()
+}
+
+pub(crate) fn kick_row_specs(
+    c: &FluidControls,
+    drill: interaction::KickDrill,
+) -> impl Iterator<Item = &'static ControlSpec> + '_ {
+    tab_specs(Tab::Kick).iter().filter(move |spec| match drill {
+        interaction::KickDrill::None => root_row_visible(spec.id, c),
+        interaction::KickDrill::Pattern { .. } => {
+            KICK_SEQUENCE_HEADER_IDS.contains(&spec.id)
+                || kick_step_index(spec.id)
+                    .is_some_and(|step| step < kick_live_step_count(c.kick.step_count))
+        }
+    })
+}
+
+pub(crate) fn kick_drill_for_index(
+    flat: usize,
+    c: &FluidControls,
+) -> (interaction::KickDrill, usize) {
+    let Some(spec) = KICK_CONTROLS.get(flat) else {
+        return (interaction::KickDrill::None, 0);
+    };
+    let root = kick_tab_controls(c, interaction::KickDrill::None);
+    let root_row = |id: &str| root.iter().position(|item| item.id == id).unwrap_or(0);
+    if (spec.id != KICK_PATTERN_ID && KICK_SEQUENCE_HEADER_IDS.contains(&spec.id))
+        || kick_step_index(spec.id).is_some()
+    {
+        let drill = interaction::KickDrill::Pattern {
+            return_to: root_row(KICK_PATTERN_ID),
+        };
+        let selected = kick_row_specs(c, drill)
+            .position(|candidate| candidate.id == spec.id)
+            .unwrap_or_else(|| {
+                kick_step_index(spec.id)
+                    .map(|step| KICK_SEQUENCE_HEADER_IDS.len() + step)
+                    .unwrap_or(0)
+            });
+        return (drill, selected);
+    }
+    (interaction::KickDrill::None, root_row(spec.id))
 }
 
 /// Tonal-tab visible rows for the given drill level: the root page, or the

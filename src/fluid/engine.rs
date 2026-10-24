@@ -766,7 +766,11 @@ impl FluidEngine {
                 publish_tonal_session_state.then(|| session.clone()),
                 Arc::clone(&telemetry),
             ),
-            kick: KickEngine::new(sample_rate, Arc::clone(&telemetry)),
+            kick: KickEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+                Arc::clone(&telemetry),
+            ),
             tonal: TonalEngine::new_with_live_state(
                 sample_rate,
                 live.tonal_sequence.clone(),
@@ -823,6 +827,7 @@ impl FluidEngine {
         self.perc.trigger = GridTrigger::new();
         self.perc.last_cycle = None;
         self.kick.trigger = GridTrigger::new();
+        self.kick.last_cycle = None;
         self.clap.trigger = GridTrigger::new();
         self.tonal.progression = ProgressionFollower::new();
         self.tonal.step_trigger = GridTrigger::new();
@@ -908,11 +913,17 @@ impl FluidEngine {
     /// Reseed every voice RNG for reproducible offline renders.
     pub(crate) fn reseed(&mut self, seed: u64) {
         self.pad.rng = StdRng::seed_from_u64(seed);
+        self.pad.evolution_seed = seed.wrapping_add(10);
         self.perc.rng = StdRng::seed_from_u64(seed.wrapping_add(1));
+        self.perc.evolution_seed = seed.wrapping_add(11);
         self.kick.rng = StdRng::seed_from_u64(seed.wrapping_add(2));
+        self.kick.evolution_seed = seed.wrapping_add(12);
         self.tonal.rng = StdRng::seed_from_u64(seed.wrapping_add(3));
         self.clap.rng = StdRng::seed_from_u64(seed.wrapping_add(4));
         self.arp.rng = StdRng::seed_from_u64(seed.wrapping_add(5));
+        self.arp.evolution_seed = seed.wrapping_add(15);
+        self.bass.evolution_seed = seed.wrapping_add(16);
+        self.lead.evolution_seed = seed.wrapping_add(17);
     }
 }
 

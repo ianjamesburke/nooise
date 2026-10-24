@@ -518,6 +518,24 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
             ));
         }
+        let kick_step_playing = view.navigation.tab == Tab::Kick
+            && matches!(
+                view.navigation.kick_drill,
+                interaction::KickDrill::Pattern { .. }
+            )
+            && kick_step_index(item.id)
+                == Some(lane_step_at(
+                    beat,
+                    frame.controls().kick.interval_beats.max(0.25),
+                    frame.controls().kick.offset_beats,
+                    kick_live_step_count(frame.controls().kick.step_count),
+                ));
+        if kick_step_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
         let lead_step_playing = view.navigation.tab == Tab::Lead
             && matches!(
                 view.navigation.lead_drill,
@@ -546,7 +564,7 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                     beat,
                     frame.controls().tonal.rate_beats,
                     frame.controls().tonal.offset_beats,
-                    lead_live_step_count(frame.controls().tonal.step_count),
+                    tonal_live_step_count(frame.controls().tonal.step_count),
                 ));
         if tonal_step_playing {
             spans.push(Span::styled(

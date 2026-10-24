@@ -205,6 +205,18 @@ fn upgrade_navigation_action(
     if action.intent == interaction::Intent::TouchSelected
         && matches!(
             model.navigation,
+            interaction::Navigation::Kick {
+                drill: interaction::KickDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(KICK_PATTERN_ID)
+    {
+        action.intent = interaction::Intent::EnterKickPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
             interaction::Navigation::Tonal {
                 drill: interaction::TonalDrill::None,
                 ..

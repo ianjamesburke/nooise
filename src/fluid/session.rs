@@ -50,11 +50,19 @@ impl LiveSessionSnapshot {
     }
 
     pub(crate) fn from_song(song: &SongState) -> Self {
+        let mut controls = song.controls.clone();
+        if let Some(sequence) = &song.tonal_sequence
+            && sequence.evolution_count > 0
+        {
+            for (dst, &note) in controls.tonal.steps.iter_mut().zip(&sequence.notes) {
+                *dst = note as f32;
+            }
+        }
         Self {
             generation: 0,
             module_topology_revision: 0,
             automation_revision: 0,
-            controls: song.controls.clone(),
+            controls,
             automation: song.automation.clone(),
             muted: song.muted,
             planned: song.planned,
