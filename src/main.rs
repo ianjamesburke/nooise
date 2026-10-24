@@ -36,17 +36,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         if cli.osc_in.is_some() {
             return Err("--osc-in only applies to live playback".into());
         }
-        if cli.link {
-            return Err("--link only applies to live playback".into());
-        }
-    }
-    if cli.link && !cfg!(feature = "link") {
-        return Err(format!(
-            "--link needs Ableton Link support, which this build left out; \
-             reinstall with `{}` (needs CMake and libclang)",
-            LINK_INSTALL
-        )
-        .into());
     }
     if cli.audio_devices {
         println!("System Default (omit --output-device)");
@@ -133,11 +122,6 @@ struct Cli {
         require_equals = true
     )]
     osc_in: Option<SocketAddr>,
-    /// Join the Ableton Link session on the local network: shared tempo,
-    /// bar phase, and start/stop with Live and other Link apps. Needs a
-    /// build with `--features link`.
-    #[arg(long, global = true)]
-    link: bool,
 }
 
 impl Cli {
@@ -188,8 +172,6 @@ impl Cli {
             start_muted: self.start_muted,
             chassis_tap: self.chassis_tap,
             osc_in: self.osc_in,
-            #[cfg(feature = "link")]
-            link: self.link,
         }
     }
 }
@@ -267,23 +249,15 @@ fn update_nooise() -> Result<(), Box<dyn Error>> {
     }
 }
 
-const LINK_INSTALL: &str = "cargo install nooise --locked --features link";
-
-/// An update keeps the features this build has, so `nooise update` never
-/// drops Link from a Link build.
 fn cargo_install_args(version: &str) -> Vec<&str> {
-    let mut args = vec![
+    vec![
         "install",
         "nooise",
         "--locked",
         "--version",
         version,
         "--force",
-    ];
-    if cfg!(feature = "link") {
-        args.extend(["--features", "link"]);
-    }
-    args
+    ]
 }
 
 #[cfg(test)]
@@ -382,20 +356,6 @@ mod tests {
         assert_eq!(cli.osc, None);
         assert_eq!(cli.osc_in, None);
         assert!(!cli.start_muted);
-        assert!(!cli.link);
-    }
-
-    #[test]
-    fn link_is_a_global_live_flag() {
-        for args in [
-            &["--link"][..],
-            &["9", "--link"],
-            &["--link", "9"],
-            &["auto", "--link"],
-        ] {
-            assert!(parse(args).unwrap().link, "{args:?}");
-        }
-        assert_eq!(parse(&["--link", "9"]).unwrap().song.as_deref(), Some("9"));
     }
 
     #[test]
@@ -505,19 +465,18 @@ mod tests {
     }
 
     #[test]
-    fn updater_installs_exact_latest_version_with_this_builds_features() {
-        let mut expected = vec![
-            "install",
-            "nooise",
-            "--locked",
-            "--version",
-            "1.2.3",
-            "--force",
-        ];
-        if cfg!(feature = "link") {
-            expected.extend(["--features", "link"]);
-        }
-        assert_eq!(cargo_install_args("1.2.3"), expected);
+    fn updater_installs_exact_latest_version() {
+        assert_eq!(
+            cargo_install_args("1.2.3"),
+            [
+                "install",
+                "nooise",
+                "--locked",
+                "--version",
+                "1.2.3",
+                "--force"
+            ]
+        );
     }
 
     #[test]

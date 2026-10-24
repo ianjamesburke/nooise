@@ -32,11 +32,11 @@ If a proposed control fails #3 — it's there to let the user manually correct s
 
 ## External gear and persistence
 
-The priority is the computer keyboard workflow, shared musical behavior and persistence, then optional external adapters. Stabilize existing features before the next hardware sprint; external controller/bridge support connects over OSC, while microphone input is actively being explored separately. Bidirectional OSC (`--osc`, `--osc-in`) and Ableton Link (`--link`) extend the same instrument; incoming OSC controls use the same registry validation and session publication rules as keyboard edits. Physical devices and external bridges must not become prerequisites for editing or playing a song.
+The priority is the computer keyboard workflow, shared musical behavior and persistence, then optional external adapters. Stabilize existing features before the next hardware sprint; external controller/bridge support connects over OSC, while microphone input is actively being explored separately. Bidirectional OSC (`--osc`, `--osc-in`) extends the same instrument; incoming OSC controls use the same registry validation and session publication rules as keyboard edits. Physical devices and external bridges must not become prerequisites for editing or playing a song.
 
 | Musical state | Launch or rig configuration |
 | --- | --- |
-| Chords, notes, sound, Master Key, rhythm, automation, mutes, and chosen evolving state | OSC outbound destination (`--osc`), OSC inbound listener (`--osc-in`), Ableton Link participation (`--link`), and external bridge/device mappings |
+| Chords, notes, sound, Master Key, rhythm, automation, mutes, and chosen evolving state | OSC outbound destination (`--osc`), OSC inbound listener (`--osc-in`), and external bridge/device mappings |
 
 Recorded musical notes or actions may belong to a future session document even when they originated over OSC. The originating endpoint does not become necessary to replay them internally. All former in-app MIDI controls are retired and refused on song-code decode (`SongCodeError::RetiredControl`), keeping song codes purely musical.
 

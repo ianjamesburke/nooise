@@ -755,8 +755,6 @@ pub(crate) fn apply_osc_ui_command(
 pub(crate) struct LiveAdapters {
     pub(crate) output_routing: audio::OutputRouting,
     pub(crate) chassis_tap: Option<ChassisTapReceiver>,
-    #[cfg(feature = "link")]
-    pub(crate) link: Option<LinkFollower>,
     pub(crate) osc_rx: Option<osc::OscReceiver>,
     pub(crate) osc_ui_state: Option<osc::SharedOscUiState>,
 }
@@ -772,8 +770,6 @@ pub(crate) fn production_ui_loop(
     let LiveAdapters {
         output_routing,
         chassis_tap,
-        #[cfg(feature = "link")]
-        link,
         osc_rx,
         osc_ui_state,
     } = adapters;
@@ -851,10 +847,6 @@ pub(crate) fn production_ui_loop(
         }
 
         if tick_due {
-            #[cfg(feature = "link")]
-            if let Some(link) = &link {
-                link.follow_peers(&mut effects);
-            }
             effects.expire_message(SAVE_MESSAGE_TTL);
             let dt = now.saturating_sub(last_tick).as_secs_f32().min(0.05);
             fluid.tick(dt, &telemetry);

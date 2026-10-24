@@ -163,9 +163,6 @@ fn find_output_device(selection: &OutputSelection) -> Result<cpal::Device, Audio
 }
 
 pub(crate) trait StereoEngine: Send + 'static {
-    /// Called once per output buffer before its first frame, with how long
-    /// the buffer waits between this callback and the speaker.
-    fn begin_buffer(&mut self, _output_latency: Duration) {}
     fn next_stereo(&mut self) -> (f32, f32);
 }
 
@@ -475,13 +472,7 @@ struct SharedEngine<E> {
 }
 
 impl<E: StereoEngine> SharedEngine<E> {
-    fn render<T: Copy>(
-        &self,
-        data: &mut [T],
-        channels: usize,
-        latency: Duration,
-        convert: &impl Fn(f32) -> T,
-    ) {
+    fn render<T: Copy>(&self, data: &mut [T], channels: usize, convert: &impl Fn(f32) -> T) {
         // Never wait on another callback or the handover owner.
         let Ok(mut engine) = self.engine.try_lock() else {
             data.fill(convert(0.0));
@@ -491,7 +482,6 @@ impl<E: StereoEngine> SharedEngine<E> {
             data.fill(convert(0.0));
             return;
         }
-        engine.begin_buffer(latency);
         for frame in data.chunks_mut(channels) {
             let (left, right) = engine.next_stereo();
             write_frame(frame, convert(left), convert(right));
@@ -527,17 +517,8 @@ where
     device
         .build_output_stream(
             config,
-            move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
-                let timestamp = info.timestamp();
-                callback.render(
-                    data,
-                    channels,
-                    timestamp
-                        .playback
-                        .duration_since(&timestamp.callback)
-                        .unwrap_or_default(),
-                    &convert,
-                );
+            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                callback.render(data, channels, &convert);
             },
             move |error| audio_error(error, &needs_rebuild),
             None,
@@ -642,14 +623,14 @@ mod routing_tests {
             generation: 2,
         };
         let mut samples = [0.0; 4];
-        old.render(&mut samples, 2, Duration::ZERO, &|s| s);
+        old.render(&mut samples, 2, &|s| s);
         assert_eq!(samples, [1.0, -1.0, 2.0, -2.0]);
-        next.render(&mut samples, 2, Duration::ZERO, &|s| s);
+        next.render(&mut samples, 2, &|s| s);
         assert_eq!(samples, [0.0; 4]);
         active.store(2, Ordering::Release);
-        old.render(&mut samples, 2, Duration::ZERO, &|s| s);
+        old.render(&mut samples, 2, &|s| s);
         assert_eq!(samples, [0.0; 4]);
-        next.render(&mut samples, 2, Duration::ZERO, &|s| s);
+        next.render(&mut samples, 2, &|s| s);
         assert_eq!(samples, [3.0, -3.0, 4.0, -4.0]);
         assert_eq!(builds.get(), 1);
         let changed_rate = reusable_engine(Some((48_000, &engine)), 44_100, &factory);
@@ -667,7 +648,7 @@ mod routing_tests {
         };
         let guard = engine.lock().unwrap();
         let mut samples = [1.0; 4];
-        callback.render(&mut samples, 2, Duration::ZERO, &|s| s);
+        callback.render(&mut samples, 2, &|s| s);
         assert_eq!(samples, [0.0; 4]);
         assert_eq!(guard.0, 0);
     }

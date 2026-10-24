@@ -47,8 +47,6 @@ mod effect;
 mod engine;
 mod gesture;
 mod interaction;
-#[cfg(feature = "link")]
-mod link;
 mod mix_action;
 mod module;
 mod operation;
@@ -94,8 +92,6 @@ use effect::*;
 use engine::*;
 pub(crate) use engine::{TimingContext, Transport};
 use gesture::*;
-#[cfg(feature = "link")]
-use link::*;
 use module::*;
 use operation::*;
 use palette::*;
@@ -404,10 +400,6 @@ pub(crate) struct LiveStartOptions {
     pub(crate) chassis_tap: bool,
     /// `--osc-in`: listen for inbound OSC commands on this UDP socket.
     pub(crate) osc_in: Option<SocketAddr>,
-    /// `--link`: join the local-network Ableton Link session for shared
-    /// tempo, phase, and start/stop.
-    #[cfg(feature = "link")]
-    pub(crate) link: bool,
 }
 
 /// Where a bare `--osc` sends: foorm's / baton's default listen address.
@@ -538,8 +530,6 @@ fn run_interactive(
     let output_routing = audio::OutputRouting::new(options.output);
     apply_live_start(&mut initial_song, options.start_muted);
     apply_live_start_to_states(&mut auto_states, options.start_muted);
-    #[cfg(feature = "link")]
-    let link = options.link;
     let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
     let chassis_tap = options
         .chassis_tap
@@ -579,11 +569,6 @@ fn run_interactive(
     };
     let osc_voice_source = osc_rx.as_ref().map(osc::OscReceiver::voice_source);
 
-    #[cfg(feature = "link")]
-    let link = link.then(|| Arc::new(LinkSession::join(initial_song.controls.master.bpm)));
-    #[cfg(feature = "link")]
-    let link_for_engine = link.clone();
-
     let _audio_output = audio::start_stream(APP_ID, output_routing.clone(), move |sr| {
         let engine = FluidEngine::new_with_tonal_session_state(
             sr,
@@ -594,11 +579,6 @@ fn run_interactive(
         );
         let engine = match &osc_voice_sink {
             Some(sink) => engine.with_osc_voice(sink.clone()),
-            None => engine,
-        };
-        #[cfg(feature = "link")]
-        let engine = match &link_for_engine {
-            Some(link) => engine.with_link(link.clock(sr)),
             None => engine,
         };
         match &osc_voice_source {
@@ -619,8 +599,6 @@ fn run_interactive(
         LiveAdapters {
             output_routing,
             chassis_tap,
-            #[cfg(feature = "link")]
-            link: link.as_deref().map(LinkSession::follower),
             osc_rx,
             osc_ui_state,
         },
