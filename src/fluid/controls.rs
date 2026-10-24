@@ -546,11 +546,46 @@ impl TonalControls {
     }
 }
 
+pub(crate) const CLAP_STEP_COUNT: usize = 16;
+pub(crate) const CLAP_PATTERN_PRESET_COUNT: usize = 4;
+pub(crate) const CUSTOM_CLAP_PATTERN_INDEX: usize = 4;
+
+pub(crate) const CLAP_PATTERNS: &[&str] = &["Steady", "Offbeat", "Broken", "Groove", "Custom"];
+
+pub(crate) const DEFAULT_CLAP_STEPS: [f32; CLAP_STEP_COUNT] = [1.0; CLAP_STEP_COUNT];
+
+/// Built-in Clap pattern presets (`Steady`, `Offbeat`, `Broken`, `Groove`).
+pub(crate) const CLAP_PATTERN_PRESETS: [(u8, [f32; CLAP_STEP_COUNT]); CLAP_PATTERN_PRESET_COUNT] = [
+    (8, DEFAULT_CLAP_STEPS),
+    (
+        8,
+        [
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+        ],
+    ),
+    (
+        8,
+        [
+            1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        16,
+        [
+            1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0,
+        ],
+    ),
+];
+
 #[derive(Clone)]
 pub(crate) struct ClapControls {
     pub(crate) level: f32,
+    pub(crate) pattern: f32,
     pub(crate) interval_beats: f32,
     pub(crate) offset_beats: f32,
+    pub(crate) step_count: f32,
+    pub(crate) evolve_rate: f32,
+    pub(crate) steps: [f32; CLAP_STEP_COUNT],
     pub(crate) swing: f32, // 0 (straight) to 1 (max shuffle) on this voice's grid
     pub(crate) slap_count: f32, // 1-8
     pub(crate) slap_spread_ms: f32, // 0-100 ms
@@ -562,8 +597,12 @@ impl Default for ClapControls {
     fn default() -> Self {
         Self {
             level: 0.0,
+            pattern: 0.0,
             interval_beats: 2.0,
             offset_beats: 1.0,
+            step_count: 8.0,
+            evolve_rate: 0.0,
+            steps: DEFAULT_CLAP_STEPS,
             swing: 0.0,
             slap_count: 3.0,
             slap_spread_ms: 8.0,
@@ -573,9 +612,23 @@ impl Default for ClapControls {
     }
 }
 
+impl ClapControls {
+    pub(crate) fn apply_pattern_preset(&mut self, pattern_value: f32) {
+        let index =
+            (pattern_value.round() as isize).clamp(0, CUSTOM_CLAP_PATTERN_INDEX as isize) as usize;
+        self.pattern = index as f32;
+        if let Some(&(len, steps)) = CLAP_PATTERN_PRESETS.get(index) {
+            self.step_count = len as f32;
+            self.steps = steps;
+        }
+    }
+}
+
 pub(crate) const BASS_STEP_COUNT: usize = 16;
 pub(crate) const BASS_RHYTHM_PRESET_COUNT: usize = 4;
 pub(crate) const CUSTOM_BASS_RHYTHM_INDEX: usize = BASS_RHYTHM_PRESET_COUNT;
+
+pub(crate) const BASS_PATTERNS: &[&str] = &["Steady", "Offbeat", "Broken", "Groove", "Custom"];
 
 pub(crate) const DEFAULT_BASS_STEPS: [f32; BASS_STEP_COUNT] = [
     1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
@@ -591,7 +644,7 @@ pub(crate) struct BassControls {
     pub(crate) level: f32,
     pub(crate) voice_type: f32, // index into BASS_TYPES; 0=Sub is the legacy voice
     pub(crate) punch: f32, // 0..1 onset pitch drop and brightness; 0 leaves every type untouched
-    pub(crate) interval_beats: f32, // crops the 16-step rhythm phrase to this many beats (step length is fixed)
+    pub(crate) interval_beats: f32, // step rate in beats (default 0.25 = sixteenth note)
     pub(crate) offset_beats: f32,
     pub(crate) rhythm: f32, // 0..=3 A/B/C/D pattern selector, 4=Custom
     pub(crate) follow: f32, // 0=Chord, 1=Scale
@@ -610,7 +663,7 @@ impl Default for BassControls {
             level: 0.0,
             voice_type: 0.0,
             punch: 0.0,
-            interval_beats: 4.0,
+            interval_beats: 0.25,
             offset_beats: 0.0,
             rhythm: 0.0,
             follow: 0.0,
@@ -713,9 +766,11 @@ impl ArpControls {
 
 /// Number of steps in the Lead's pattern lane, and the max of `lead.steps`.
 pub(crate) const LEAD_STEP_COUNT: usize = 16;
+pub(crate) const LEAD_PATTERN_PRESET_COUNT: usize = 4;
+pub(crate) const CUSTOM_LEAD_PATTERN_INDEX: usize = 5;
 
-/// Default Lead pattern: a stepwise line over the chord tones so a fresh
-/// Lead is immediately musical once its level comes up. Step values index
+/// Default Lead pattern (`Steady`): a stepwise line over the chord tones so a
+/// fresh Lead is immediately musical once its level comes up. Step values index
 /// the Lead's reach (0 = rest, 1..=4 chord tones, 5..=8 an octave up, 9 the
 /// root two octaves up; in Scale follow the same nine walk the progression's
 /// scale). Only the default live length is authored; every step past it
@@ -723,6 +778,30 @@ pub(crate) const LEAD_STEP_COUNT: usize = 16;
 /// remove.
 pub(crate) const DEFAULT_LEAD_STEPS: [f32; LEAD_STEP_COUNT] = [
     1.0, 2.0, 3.0, 5.0, 4.0, 3.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+];
+
+/// Built-in Lead pattern presets (`Steady`, `Call`, `Climb`, `Groove`), indexed
+/// at `lead.pattern` positions `1..=4` (`0 = Off`, `5 = Custom`).
+pub(crate) const LEAD_PATTERN_PRESETS: [(u8, [f32; LEAD_STEP_COUNT]); LEAD_PATTERN_PRESET_COUNT] = [
+    (8, DEFAULT_LEAD_STEPS),
+    (
+        8,
+        [
+            1.0, 3.0, 5.0, -1.0, 0.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        8,
+        [
+            1.0, 3.0, 5.0, 8.0, 9.0, 8.0, 5.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ],
+    ),
+    (
+        16,
+        [
+            1.0, 0.0, 3.0, 2.0, 5.0, -1.0, 4.0, 0.0, 2.0, 0.0, 4.0, 3.0, 7.0, -1.0, 5.0, 0.0,
+        ],
+    ),
 ];
 
 #[derive(Clone)]
@@ -738,7 +817,7 @@ pub(crate) struct LeadControls {
     pub(crate) offset_beats: f32,
     pub(crate) step_count: f32, // 1..=LEAD_STEP_COUNT live steps in the lane
     pub(crate) evolve_rate: f32,
-    pub(crate) pattern: f32, // lane transport: labels and range live in LEAD_PATTERNS
+    pub(crate) pattern: f32, // lane pattern/transport: labels and range live in LEAD_PATTERNS
     pub(crate) steps: [f32; LEAD_STEP_COUNT],
     pub(crate) swing: f32, // derived from the optional Swing module
 }
@@ -761,11 +840,24 @@ impl Default for LeadControls {
             offset_beats: 0.0,
             step_count: 8.0,
             evolve_rate: 0.0,
-            // Play, so a code from before the transport existed still runs
-            // its lane.
-            pattern: LeadPattern::Play.value(),
+            // Steady (1.0), so a code from before the transport existed still
+            // runs its default lane.
+            pattern: LeadPattern::Steady.value(),
             steps: DEFAULT_LEAD_STEPS,
             swing: 0.0,
+        }
+    }
+}
+
+impl LeadControls {
+    pub(crate) fn apply_pattern_preset(&mut self, pattern_value: f32) {
+        let index =
+            (pattern_value.round() as isize).clamp(0, CUSTOM_LEAD_PATTERN_INDEX as isize) as usize;
+        self.pattern = index as f32;
+        if (1..=LEAD_PATTERN_PRESET_COUNT).contains(&index) {
+            let (len, steps) = LEAD_PATTERN_PRESETS[index - 1];
+            self.step_count = len as f32;
+            self.steps = steps;
         }
     }
 }

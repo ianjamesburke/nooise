@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    ArpDrill, AutomationKind, AutomationMode, BassDrill, ChordDrill, InteractionMode,
+    ArpDrill, AutomationKind, AutomationMode, BassDrill, ChordDrill, ClapDrill, InteractionMode,
     InteractionModel, JumpStage, KickDrill, LEAD_NUDGES, LeadDrill, Navigation, PercDrill,
     PerformanceInstrument, PerformanceMode, TonalDrill, hub_layer,
 };
@@ -90,6 +90,7 @@ pub(crate) struct NavigationView {
     pub(crate) bass_drill: BassDrill,
     pub(crate) kick_drill: KickDrill,
     pub(crate) tonal_drill: TonalDrill,
+    pub(crate) clap_drill: ClapDrill,
     pub(crate) arp_drill: ArpDrill,
     pub(crate) lead_drill: LeadDrill,
     pub(crate) module_slot: Option<usize>,
@@ -361,6 +362,7 @@ impl<'a> UiViewModel<'a> {
                 Tab::Bass => bass_tab_controls(&session.controls, navigation.bass_drill),
                 Tab::Kick => kick_tab_controls(&session.controls, navigation.kick_drill),
                 Tab::Tonal => tonal_tab_controls(&session.controls, navigation.tonal_drill),
+                Tab::Clap => clap_tab_controls(&session.controls, navigation.clap_drill),
                 Tab::Arp => arp_tab_controls(&session.controls, navigation.arp_drill),
                 Tab::Lead => lead_tab_controls(&session.controls, navigation.lead_drill),
                 Tab::Master => hub_controls(
@@ -368,7 +370,6 @@ impl<'a> UiViewModel<'a> {
                     &session.muted,
                     session.planned.map(PlannedAction::tab),
                 ),
-                tab => tab_controls(tab, &session.controls),
             },
         };
         let mut navigation = navigation;
@@ -537,30 +538,33 @@ fn breadcrumb(
             navigation.bass_drill,
             navigation.kick_drill,
             navigation.tonal_drill,
+            navigation.clap_drill,
             navigation.arp_drill,
             navigation.lead_drill,
         ) {
-            (ChordDrill::Progression { .. }, _, _, _, _, _, _) => Some("Sequence".to_string()),
-            (ChordDrill::Slot { slot, .. }, _, _, _, _, _, _) => {
+            (ChordDrill::Progression { .. }, _, _, _, _, _, _, _) => Some("Sequence".to_string()),
+            (ChordDrill::Slot { slot, .. }, _, _, _, _, _, _, _) => {
                 let live = if slot == active_slot { " ♪" } else { "" };
                 Some(format!("Chord {}{live}", slot + 1))
             }
-            (ChordDrill::None, PercDrill::Pattern { .. }, _, _, _, _, _) => {
-                let continuous = controls.perc.interval_beats >= 4.25
-                    || (controls.perc.pattern.round() as usize) == CONTINUOUS_PERC_PATTERN_INDEX;
+            (ChordDrill::None, PercDrill::Pattern { .. }, _, _, _, _, _, _) => {
+                let continuous =
+                    (controls.perc.pattern.round() as usize) == CONTINUOUS_PERC_PATTERN_INDEX;
                 let live = if continuous { "" } else { " ♪" };
                 Some(format!("Sequence{live}"))
             }
-            (ChordDrill::None, _, BassDrill::Pattern { .. }, _, _, _, _)
-            | (ChordDrill::None, _, _, KickDrill::Pattern { .. }, _, _, _)
-            | (ChordDrill::None, _, _, _, TonalDrill::Pattern { .. }, _, _)
-            | (ChordDrill::None, _, _, _, _, ArpDrill::Pattern { .. }, _) => {
+            (ChordDrill::None, _, BassDrill::Pattern { .. }, _, _, _, _, _)
+            | (ChordDrill::None, _, _, KickDrill::Pattern { .. }, _, _, _, _)
+            | (ChordDrill::None, _, _, _, TonalDrill::Pattern { .. }, _, _, _)
+            | (ChordDrill::None, _, _, _, _, ClapDrill::Pattern { .. }, _, _)
+            | (ChordDrill::None, _, _, _, _, _, ArpDrill::Pattern { .. }, _) => {
                 Some("Sequence ♪".to_string())
             }
-            (ChordDrill::None, _, _, _, _, _, LeadDrill::Pattern { .. }) => {
-                let live = match LeadPattern::from_value(controls.lead.pattern) {
-                    LeadPattern::Play => " ♪",
-                    LeadPattern::Off => "",
+            (ChordDrill::None, _, _, _, _, _, _, LeadDrill::Pattern { .. }) => {
+                let live = if LeadPattern::from_value(controls.lead.pattern).is_playing() {
+                    " ♪"
+                } else {
+                    ""
                 };
                 Some(format!("Sequence{live}"))
             }
@@ -570,6 +574,7 @@ fn breadcrumb(
                 BassDrill::None,
                 KickDrill::None,
                 TonalDrill::None,
+                ClapDrill::None,
                 ArpDrill::None,
                 LeadDrill::None,
             ) => None,
@@ -771,13 +776,18 @@ pub(crate) fn navigation_control_ids(
         Tab::Tonal => tonal_row_specs(controls, navigation.tonal_drill)
             .map(|spec| spec.id)
             .collect(),
+        Tab::Clap => clap_row_specs(controls, navigation.clap_drill)
+            .map(|spec| spec.id)
+            .collect(),
         Tab::Arp => arp_row_specs(controls, navigation.arp_drill)
             .map(|spec| spec.id)
             .collect(),
         Tab::Lead => lead_row_specs(controls, navigation.lead_drill)
             .map(|spec| spec.id)
             .collect(),
-        tab => tab_row_specs(tab, controls).map(|spec| spec.id).collect(),
+        Tab::Master => tab_row_specs(Tab::Master, controls)
+            .map(|spec| spec.id)
+            .collect(),
     }
 }
 
@@ -789,6 +799,7 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
         bass_drill: BassDrill::None,
         kick_drill: KickDrill::None,
         tonal_drill: TonalDrill::None,
+        clap_drill: ClapDrill::None,
         arp_drill: ArpDrill::None,
         lead_drill: LeadDrill::None,
         module_slot: None,
@@ -800,10 +811,11 @@ fn navigation_view(navigation: Navigation) -> NavigationView {
         Navigation::Bass { drill, .. } => view.bass_drill = drill,
         Navigation::Kick { drill, .. } => view.kick_drill = drill,
         Navigation::Tonal { drill, .. } => view.tonal_drill = drill,
+        Navigation::Clap { drill, .. } => view.clap_drill = drill,
         Navigation::Arp { drill, .. } => view.arp_drill = drill,
         Navigation::Lead { drill, .. } => view.lead_drill = drill,
         Navigation::Module { slot, .. } => view.module_slot = Some(slot),
-        Navigation::Standard { .. } | Navigation::Hub { .. } => {}
+        Navigation::Hub { .. } => {}
     }
     view
 }
@@ -882,6 +894,7 @@ fn help_surface(
         || matches!(navigation.bass_drill, BassDrill::Pattern { .. })
         || matches!(navigation.kick_drill, KickDrill::Pattern { .. })
         || matches!(navigation.tonal_drill, TonalDrill::Pattern { .. })
+        || matches!(navigation.clap_drill, ClapDrill::Pattern { .. })
         || matches!(navigation.arp_drill, ArpDrill::Pattern { .. })
     {
         Some("BROWSE · Sequence   r random   Shift+R randomize set   Esc: back".to_string())
@@ -911,6 +924,7 @@ fn help_surface(
         || navigation.bass_drill != BassDrill::None
         || navigation.kick_drill != KickDrill::None
         || navigation.tonal_drill != TonalDrill::None
+        || navigation.clap_drill != ClapDrill::None
         || navigation.arp_drill != ArpDrill::None
         || navigation.lead_drill != LeadDrill::None
     {
@@ -929,9 +943,10 @@ pub(crate) fn lead_owner_help(lead: LeadSurface) -> String {
     if lead.level_pct == 0 {
         return "LEAD · level is 0 · arrows knobs · Esc, raise Level, Enter".to_string();
     }
-    let lane = match lead.pattern {
-        LeadPattern::Off => "lane off",
-        LeadPattern::Play => "lane on",
+    let lane = if lead.pattern.is_playing() {
+        "lane on"
+    } else {
+        "lane off"
     };
     let nudges = LEAD_NUDGES
         .iter()
@@ -1203,6 +1218,14 @@ mod tests {
                 Navigation::Tonal {
                     selected: usize::MAX,
                     drill: TonalDrill::Pattern { return_to: 0 },
+                },
+            );
+            session.controls.clap.step_count = count;
+            assert_navigation_rows(
+                &session,
+                Navigation::Clap {
+                    selected: usize::MAX,
+                    drill: ClapDrill::Pattern { return_to: 0 },
                 },
             );
             session.controls.arp.step_count = count;

@@ -166,12 +166,13 @@ fn selected_control(selected_control: Option<&'static str>) -> Result<&'static s
     selected_control.ok_or(EffectFailure::MissingContext("selected control"))
 }
 
-/// Whether `id` is a step row in a unified sequence drill (Pads, Perc, Bass, Kick, Tonal, Arp, or Lead).
+/// Whether `id` is a step row in a unified sequence drill (Pads, Perc, Bass, Kick, Tonal, Clap, Arp, or Lead).
 fn is_sequence_step_id(id: &str) -> bool {
     perc_step_index(id).is_some()
         || bass_step_index(id).is_some()
         || kick_step_index(id).is_some()
         || tonal_step_index(id).is_some()
+        || clap_step_index(id).is_some()
         || arp_step_index(id).is_some()
         || lead_step_index(id).is_some()
         || matches!(parse_chord_slot_id(id), Some((_, 0)))
@@ -806,9 +807,13 @@ impl EffectExecutor {
             && kick_step_index(spec.id).is_none()
             && spec.id != TONAL_PHRASE_ID
             && tonal_step_index(spec.id).is_none()
+            && spec.id != CLAP_PATTERN_ID
+            && clap_step_index(spec.id).is_none()
             && spec.id != ARP_PATTERN_ID
             && spec.id != "arp.octaves"
-            && arp_step_index(spec.id).is_none())
+            && arp_step_index(spec.id).is_none()
+            && spec.id != LEAD_PATTERN_ID
+            && lead_step_index(spec.id).is_none())
         .then_some(spec);
         self.edit_session_scoped(Some(spec.id), single, edit)
     }
@@ -1054,6 +1059,16 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
+            Tab::Clap => {
+                let snapshot = self.edit_session(Some(CLAP_PATTERN_ID), |snapshot| {
+                    snapshot.controls.clap.pattern = CUSTOM_CLAP_PATTERN_INDEX as f32;
+                    snapshot.controls.clap.steps = [0.0; CLAP_STEP_COUNT];
+                });
+                self.show_message("Clap sequence cleared".to_string());
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
             Tab::Arp => {
                 let snapshot = self.edit_session(Some(ARP_PATTERN_ID), |snapshot| {
                     snapshot.controls.arp.pattern = CUSTOM_ARP_PATTERN_INDEX as f32;
@@ -1066,6 +1081,7 @@ impl EffectExecutor {
             }
             Tab::Lead => {
                 let snapshot = self.edit_session(Some(LEAD_PATTERN_ID), |snapshot| {
+                    snapshot.controls.lead.pattern = CUSTOM_LEAD_PATTERN_INDEX as f32;
                     snapshot.controls.lead.steps = [0.0; LEAD_STEP_COUNT];
                 });
                 self.show_message("Lead sequence cleared".to_string());
@@ -1540,24 +1556,6 @@ impl EffectExecutor {
                 let id = selected_control(context.selected_control)?;
                 let spec = spec_by_id(id).ok_or(EffectFailure::MissingContext("control"))?;
                 let initial = self.session.load();
-                if id == LEAD_PATTERN_ID {
-                    let count = lead_live_step_count(initial.controls.lead.step_count);
-                    let mut steps = [0.0f32; LEAD_STEP_COUNT];
-                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
-                        let min = if idx == 0 { 0 } else { -1 };
-                        *slot = self.rng.gen_range(min..=LEAD_TONE_COUNT as i32) as f32;
-                    }
-                    if steps[..count].iter().all(|&s| s <= 0.0) {
-                        steps[0] = self.rng.gen_range(1..=LEAD_TONE_COUNT as i32) as f32;
-                    }
-                    let snapshot = self.edit_session(Some(LEAD_PATTERN_ID), |snapshot| {
-                        snapshot.controls.lead.pattern = LeadPattern::Play.value();
-                        snapshot.controls.lead.steps = steps;
-                    });
-                    return Ok(EffectAcknowledgement::Published {
-                        generation: snapshot.generation,
-                    });
-                }
                 let mut ratio = self.rng.r#gen::<f32>();
                 let mut candidate = initial.controls.clone();
                 spec.apply_randomized_ratio(ratio, &mut candidate);
@@ -1571,6 +1569,23 @@ impl EffectExecutor {
                         if (spec.get)(&candidate) != (spec.get)(&initial.controls) {
                             break;
                         }
+                    }
+                }
+                if id == LEAD_PATTERN_ID && candidate.lead.pattern.round() as usize == 0 {
+                    for _ in 0..8 {
+                        ratio = self.rng.r#gen::<f32>();
+                        candidate = initial.controls.clone();
+                        spec.apply_randomized_ratio(ratio, &mut candidate);
+                        if candidate.lead.pattern.round() as usize != 0
+                            && (spec.get)(&candidate) != (spec.get)(&initial.controls)
+                        {
+                            break;
+                        }
+                    }
+                    if candidate.lead.pattern.round() as usize == 0 {
+                        ratio = 1.0;
+                        candidate = initial.controls.clone();
+                        spec.apply_randomized_ratio(ratio, &mut candidate);
                     }
                 }
                 let mut custom_perc_steps = None;
@@ -1636,6 +1651,21 @@ impl EffectExecutor {
                     candidate.tonal.steps = steps;
                     custom_tonal_steps = Some(steps);
                 }
+                let mut custom_clap_steps = None;
+                if id == CLAP_PATTERN_ID
+                    && candidate.clap.pattern.round() as usize == CUSTOM_CLAP_PATTERN_INDEX
+                {
+                    let count = clap_live_step_count(candidate.clap.step_count);
+                    let mut steps = [0.0f32; CLAP_STEP_COUNT];
+                    for slot in steps.iter_mut().take(count) {
+                        *slot = self.rng.gen_range(0..=1) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = 1.0;
+                    }
+                    candidate.clap.steps = steps;
+                    custom_clap_steps = Some(steps);
+                }
                 let mut custom_arp_steps = None;
                 if id == ARP_PATTERN_ID
                     && matches!(
@@ -1657,12 +1687,30 @@ impl EffectExecutor {
                     candidate.arp.steps = steps;
                     custom_arp_steps = Some(steps);
                 }
+                let mut custom_lead_steps = None;
+                if id == LEAD_PATTERN_ID
+                    && candidate.lead.pattern.round() as usize == CUSTOM_LEAD_PATTERN_INDEX
+                {
+                    let count = lead_live_step_count(candidate.lead.step_count);
+                    let mut steps = [0.0f32; LEAD_STEP_COUNT];
+                    for (idx, slot) in steps.iter_mut().enumerate().take(count) {
+                        let min = if idx == 0 { 0 } else { -1 };
+                        *slot = self.rng.gen_range(min..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    if steps[..count].iter().all(|&s| s <= 0.0) {
+                        steps[0] = self.rng.gen_range(1..=LEAD_TONE_COUNT as i32) as f32;
+                    }
+                    candidate.lead.steps = steps;
+                    custom_lead_steps = Some(steps);
+                }
                 if (spec.get)(&candidate) == (spec.get)(&initial.controls)
                     && custom_perc_steps.is_none()
                     && custom_bass_steps.is_none()
                     && custom_kick_steps.is_none()
                     && custom_tonal_steps.is_none()
+                    && custom_clap_steps.is_none()
                     && custom_arp_steps.is_none()
+                    && custom_lead_steps.is_none()
                 {
                     return Ok(EffectAcknowledgement::NoChange);
                 }
@@ -1680,8 +1728,14 @@ impl EffectExecutor {
                     if let Some(steps) = custom_tonal_steps {
                         snapshot.controls.tonal.steps = steps;
                     }
+                    if let Some(steps) = custom_clap_steps {
+                        snapshot.controls.clap.steps = steps;
+                    }
                     if let Some(steps) = custom_arp_steps {
                         snapshot.controls.arp.steps = steps;
+                    }
+                    if let Some(steps) = custom_lead_steps {
+                        snapshot.controls.lead.steps = steps;
                     }
                 });
                 Ok(EffectAcknowledgement::Published {
@@ -1739,7 +1793,7 @@ impl EffectExecutor {
                         }
                     }
                     if in_sequence_drill && context.tab == Tab::Lead {
-                        candidate.lead.pattern = LeadPattern::Play.value();
+                        candidate.lead.pattern = LeadPattern::Custom.value();
                     }
                     let changed = rolls.iter().any(|(id, _)| {
                         let spec = spec_by_id(id).expect("scope controls were validated");
@@ -1791,7 +1845,7 @@ impl EffectExecutor {
                                 .apply_randomized_ratio(*ratio, &mut snapshot.controls);
                         }
                         if in_sequence_drill && context.tab == Tab::Lead {
-                            snapshot.controls.lead.pattern = LeadPattern::Play.value();
+                            snapshot.controls.lead.pattern = LeadPattern::Custom.value();
                         }
                     }
                 });
@@ -1885,7 +1939,7 @@ impl EffectExecutor {
                 let snapshot = self.edit_session(Some(steps.id), |snapshot| {
                     snapshot.controls.lead.steps = capture.steps;
                     steps.apply_value(capture.count as f32, &mut snapshot.controls);
-                    pattern.apply_value(LeadPattern::Play.value(), &mut snapshot.controls);
+                    pattern.apply_value(LeadPattern::Custom.value(), &mut snapshot.controls);
                 });
                 self.show_message(format!("kept {} steps", capture.count));
                 Ok(EffectAcknowledgement::Published {
@@ -3514,8 +3568,8 @@ mod tests {
         assert_eq!(&session.controls.lead.steps[..4], &[1.0, 3.0, 5.0, 0.0]);
         assert_eq!(
             LeadPattern::from_value(session.controls.lead.pattern),
-            LeadPattern::Play,
-            "keeping a phrase sets the lane playing"
+            LeadPattern::Custom,
+            "keeping a phrase sets the lane playing as Custom"
         );
         assert!(!executor.auto.is_running());
         assert_eq!(executor.message(), Some("kept 4 steps"));

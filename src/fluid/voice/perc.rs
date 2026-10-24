@@ -120,10 +120,9 @@ impl PercEngine {
     pub(crate) fn next(&mut self, c: &PercControls, timing: TimingContext) -> f32 {
         let pattern_index =
             (c.pattern.round() as isize).clamp(0, CUSTOM_PERC_PATTERN_INDEX as isize) as usize;
-        if c.interval_beats >= 4.25 || pattern_index == CONTINUOUS_PERC_PATTERN_INDEX {
+        if pattern_index == CONTINUOUS_PERC_PATTERN_INDEX {
             // Continuous mode: bypass GridTrigger/NoiseHit entirely so there is
             // no trigger-rate amplitude ripple to disguise (see GOTCHAS.md).
-            // Reuse the same exponential smoothing transform as discrete hits so
             return self.noise.next(&mut self.rng) * c.level * OUTPUT_TRIM;
         }
 

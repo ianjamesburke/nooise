@@ -141,6 +141,26 @@ const RANGE_CHANGES: &[RangeChange] = &[
     },
     RangeChange {
         epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("perc.interval_beats"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("bass.interval_beats"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("clap.interval_beats"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("clap.offset_beats"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
+        target: RangeTarget::Control("lead.pattern"),
+    },
+    RangeChange {
+        epoch: SEQUENCER_UNIFICATION_EPOCH,
         target: RangeTarget::Control("lead.step1"),
     },
     RangeChange {
@@ -300,8 +320,11 @@ mod tests {
     #[test]
     fn no_built_in_song_modulates_the_progression() {
         for (index, song) in decode_auto_states().into_iter().enumerate() {
-            let expected = matches!(index, 8 | 9 | 15 | 16).then_some("bass.rhythm");
-            assert_eq!(stale_modulation(&song, 1), expected);
+            assert_ne!(
+                stale_modulation(&song, 1),
+                Some("pad.progression"),
+                "song {index} modulates pad.progression"
+            );
         }
     }
 
@@ -322,8 +345,11 @@ mod tests {
     #[test]
     fn built_in_songs_do_not_sweep_the_kick_type_dial() {
         for (index, song) in decode_auto_states().into_iter().enumerate() {
-            let expected = matches!(index, 8 | 9 | 15 | 16).then_some("bass.rhythm");
-            assert_eq!(stale_modulation(&song, 2), expected);
+            assert_ne!(
+                stale_modulation(&song, 2),
+                Some("kick.type"),
+                "song {index} modulates kick.type"
+            );
             assert_eq!(stale_modulation(&song, SEQUENCER_UNIFICATION_EPOCH), None);
         }
     }

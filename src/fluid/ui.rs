@@ -485,7 +485,6 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
                 view.navigation.perc_drill,
                 interaction::PercDrill::Pattern { .. }
             )
-            && frame.controls().perc.interval_beats < 4.25
             && (frame.controls().perc.pattern.round() as usize) != CONTINUOUS_PERC_PATTERN_INDEX
             && perc_step_index(item.id)
                 == Some(lane_step_at(
@@ -508,9 +507,9 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             && bass_step_index(item.id)
                 == Some(lane_step_at(
                     beat,
-                    BASS_STEP_BEATS,
+                    frame.controls().bass.interval_beats.max(0.125),
                     frame.controls().bass.offset_beats,
-                    bass_loop_steps(&frame.controls().bass),
+                    bass_live_step_count(frame.controls().bass.step_count),
                 ));
         if bass_step_playing {
             spans.push(Span::styled(
@@ -526,11 +525,29 @@ fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
             && kick_step_index(item.id)
                 == Some(lane_step_at(
                     beat,
-                    frame.controls().kick.interval_beats.max(0.25),
+                    frame.controls().kick.interval_beats.max(0.125),
                     frame.controls().kick.offset_beats,
                     kick_live_step_count(frame.controls().kick.step_count),
                 ));
         if kick_step_playing {
+            spans.push(Span::styled(
+                " ♪",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
+        let clap_step_playing = view.navigation.tab == Tab::Clap
+            && matches!(
+                view.navigation.clap_drill,
+                interaction::ClapDrill::Pattern { .. }
+            )
+            && clap_step_index(item.id)
+                == Some(lane_step_at(
+                    beat,
+                    frame.controls().clap.interval_beats.max(0.125),
+                    frame.controls().clap.offset_beats,
+                    clap_live_step_count(frame.controls().clap.step_count),
+                ));
+        if clap_step_playing {
             spans.push(Span::styled(
                 " ♪",
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),

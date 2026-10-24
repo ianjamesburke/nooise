@@ -2361,7 +2361,10 @@ fn space_toggles_the_lead_lane_and_c_keeps_the_phrase() {
     ]);
     let kept = replay(&trace, TerminalCapabilities::full());
     assert_eq!(kept.effect_count("LeadCapture"), 2);
-    assert_eq!(kept.control("lead.pattern"), Some(1.0));
+    assert_eq!(
+        kept.control("lead.pattern"),
+        Some(CUSTOM_LEAD_PATTERN_INDEX as f32)
+    );
     assert_eq!(kept.control("lead.steps"), Some(4.0));
     assert!(kept.deferred_inputs.is_empty());
 }
@@ -4470,7 +4473,6 @@ fn escape_converges_from_every_owner_and_nested_depth() {
                     drill: ChordDrill::None,
                     ..
                 } | Navigation::Hub { .. }
-                    | Navigation::Standard { .. }
             ),
             "Escape left a navigation drill open: {:?}",
             result.model

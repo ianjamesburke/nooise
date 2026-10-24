@@ -67,17 +67,16 @@ impl Page {
     }
 }
 
-/// The navigation a page opens on. Chords, Perc, Bass, Kick, Tonal, Arp, Lead,
-/// and the hub own page-local navigation no other page can construct; Clap
-/// uses the standard list.
+/// The navigation a page opens on. Every voice layer and the hub own page-local
+/// navigation no other page can construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayerNavigation {
     Chords,
     Perc,
     Bass,
     Kick,
-    Standard(StandardPage),
     Tonal,
+    Clap,
     Arp,
     Lead,
     Hub,
@@ -125,7 +124,7 @@ const LAYERS: [Layer; 9] = [
     Layer {
         page: Page::Clap,
         tab: Tab::Clap,
-        navigation: LayerNavigation::Standard(StandardPage::Clap),
+        navigation: LayerNavigation::Clap,
     },
     Layer {
         page: Page::Arp,
@@ -240,6 +239,17 @@ pub(crate) enum TonalDrill {
     },
 }
 
+/// The Clap page's one drill: its unified sequence view, opened from the Pattern row.
+/// `return_to` restores that row on Esc.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ClapDrill {
+    #[default]
+    None,
+    Pattern {
+        return_to: usize,
+    },
+}
+
 /// The Arp page's one drill: its unified sequence view, opened from the Pattern row.
 /// `return_to` restores that row on Esc.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -262,21 +272,6 @@ pub(crate) enum LeadDrill {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StandardPage {
-    Clap,
-}
-
-impl StandardPage {
-    fn page(self) -> Page {
-        LAYERS
-            .iter()
-            .find(|layer| layer.navigation == LayerNavigation::Standard(self))
-            .expect("every standard page owns a layer row")
-            .page
-    }
-}
-
 /// Page-local navigation makes a Chords drill on the hub, or a Lead drill on
 /// Chords, impossible to construct.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -297,13 +292,13 @@ pub(crate) enum Navigation {
         selected: usize,
         drill: KickDrill,
     },
-    Standard {
-        page: StandardPage,
-        selected: usize,
-    },
     Tonal {
         selected: usize,
         drill: TonalDrill,
+    },
+    Clap {
+        selected: usize,
+        drill: ClapDrill,
     },
     Arp {
         selected: usize,
@@ -354,10 +349,13 @@ impl Navigation {
                 selected: 0,
                 drill: KickDrill::None,
             },
-            LayerNavigation::Standard(page) => Self::Standard { page, selected: 0 },
             LayerNavigation::Tonal => Self::Tonal {
                 selected: 0,
                 drill: TonalDrill::None,
+            },
+            LayerNavigation::Clap => Self::Clap {
+                selected: 0,
+                drill: ClapDrill::None,
             },
             LayerNavigation::Arp => Self::Arp {
                 selected: 0,
@@ -377,8 +375,8 @@ impl Navigation {
             Self::Perc { .. } => Page::Perc,
             Self::Bass { .. } => Page::Bass,
             Self::Kick { .. } => Page::Kick,
-            Self::Standard { page, .. } => page.page(),
             Self::Tonal { .. } => Page::Tonal,
+            Self::Clap { .. } => Page::Clap,
             Self::Arp { .. } => Page::Arp,
             Self::Lead { .. } => Page::Lead,
             Self::Hub { .. } => Page::Master,
@@ -396,8 +394,8 @@ impl Navigation {
             | Self::Perc { selected, .. }
             | Self::Bass { selected, .. }
             | Self::Kick { selected, .. }
-            | Self::Standard { selected, .. }
             | Self::Tonal { selected, .. }
+            | Self::Clap { selected, .. }
             | Self::Arp { selected, .. }
             | Self::Lead { selected, .. }
             | Self::Hub { selected, .. }
@@ -411,8 +409,8 @@ impl Navigation {
             | Self::Perc { selected, .. }
             | Self::Bass { selected, .. }
             | Self::Kick { selected, .. }
-            | Self::Standard { selected, .. }
             | Self::Tonal { selected, .. }
+            | Self::Clap { selected, .. }
             | Self::Arp { selected, .. }
             | Self::Lead { selected, .. }
             | Self::Hub { selected, .. }
@@ -443,6 +441,10 @@ impl Navigation {
                 drill: TonalDrill::Pattern { return_to },
                 ..
             }
+            | Self::Clap {
+                drill: ClapDrill::Pattern { return_to },
+                ..
+            }
             | Self::Arp {
                 drill: ArpDrill::Pattern { return_to },
                 ..
@@ -456,8 +458,8 @@ impl Navigation {
             | Self::Perc { selected, .. }
             | Self::Bass { selected, .. }
             | Self::Kick { selected, .. }
-            | Self::Standard { selected, .. }
             | Self::Tonal { selected, .. }
+            | Self::Clap { selected, .. }
             | Self::Arp { selected, .. }
             | Self::Lead { selected, .. }
             | Self::Hub { selected } => selected,
@@ -525,6 +527,13 @@ impl Navigation {
                 }
                 TonalDrill::None => *self = to_hub,
             },
+            Self::Clap { selected, drill } => match *drill {
+                ClapDrill::Pattern { return_to } => {
+                    *selected = return_to;
+                    *drill = ClapDrill::None;
+                }
+                ClapDrill::None => *self = to_hub,
+            },
             Self::Arp { selected, drill } => match *drill {
                 ArpDrill::Pattern { return_to } => {
                     *selected = return_to;
@@ -544,7 +553,6 @@ impl Navigation {
                 *parent.selected_mut() = *return_to;
                 *self = parent;
             }
-            Self::Standard { .. } => *self = to_hub,
             Self::Hub { .. } => {}
         }
     }
@@ -1083,6 +1091,8 @@ pub(crate) enum Intent {
     EnterKickPattern,
     /// Open Tonal's unified sequence drill from its Phrase row.
     EnterTonalPattern,
+    /// Open Clap's unified sequence drill from its Pattern row.
+    EnterClapPattern,
     /// Open the Arp's unified sequence drill from its Pattern row.
     EnterArpPattern,
     /// Open the Lead's unified sequence drill from its Pattern row.
@@ -1205,6 +1215,7 @@ impl Intent {
             | Self::EnterBassPattern
             | Self::EnterKickPattern
             | Self::EnterTonalPattern
+            | Self::EnterClapPattern
             | Self::EnterArpPattern
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
@@ -1283,6 +1294,7 @@ impl Intent {
             | Self::EnterBassPattern
             | Self::EnterKickPattern
             | Self::EnterTonalPattern
+            | Self::EnterClapPattern
             | Self::EnterArpPattern
             | Self::EnterLeadPattern
             | Self::EnterModuleDetail { .. }
@@ -1574,6 +1586,10 @@ impl InteractionModel {
                 let (drill, selected) = super::tonal_drill_for_index(index, controls);
                 Navigation::Tonal { selected, drill }
             }
+            Tab::Clap => {
+                let (drill, selected) = super::clap_drill_for_index(index, controls);
+                Navigation::Clap { selected, drill }
+            }
             Tab::Arp => {
                 let (drill, selected) = super::arp_drill_for_index(index, controls);
                 Navigation::Arp { selected, drill }
@@ -1585,13 +1601,6 @@ impl InteractionModel {
             Tab::Master => Navigation::Hub {
                 selected: root_row(),
             },
-            _ => {
-                let mut navigation = Navigation::for_page(page_for_tab(tab));
-                if let Navigation::Standard { selected, .. } = &mut navigation {
-                    *selected = root_row();
-                }
-                navigation
-            }
         };
     }
 
@@ -1773,6 +1782,13 @@ fn update_browsing(
                 let return_to = *selected;
                 *selected = 0;
                 *drill = TonalDrill::Pattern { return_to };
+            }
+        }
+        Intent::EnterClapPattern => {
+            if let Navigation::Clap { selected, drill } = navigation {
+                let return_to = *selected;
+                *selected = 0;
+                *drill = ClapDrill::Pattern { return_to };
             }
         }
         Intent::EnterArpPattern => {
@@ -2483,11 +2499,13 @@ mod tests {
     }
 
     #[test]
-    fn every_standard_page_round_trips_through_its_layer_row() {
-        let page = StandardPage::Clap;
+    fn clap_page_round_trips_through_its_layer_row() {
         assert_eq!(
-            Navigation::for_page(page.page()),
-            Navigation::Standard { page, selected: 0 }
+            Navigation::for_page(Page::Clap),
+            Navigation::Clap {
+                selected: 0,
+                drill: ClapDrill::None,
+            }
         );
     }
 
@@ -2704,9 +2722,9 @@ mod tests {
     #[test]
     fn module_detail_enters_and_returns_to_its_collapsed_row() {
         let model = InteractionModel {
-            navigation: Navigation::Standard {
-                page: StandardPage::Clap,
+            navigation: Navigation::Clap {
                 selected: 6,
+                drill: ClapDrill::None,
             },
             ..InteractionModel::default()
         };
@@ -2731,9 +2749,9 @@ mod tests {
         );
         assert_eq!(
             update(detail, Intent::Cancel).model.navigation,
-            Navigation::Standard {
-                page: StandardPage::Clap,
+            Navigation::Clap {
                 selected: 6,
+                drill: ClapDrill::None,
             }
         );
     }

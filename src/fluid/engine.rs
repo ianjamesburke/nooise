@@ -777,7 +777,11 @@ impl FluidEngine {
                 publish_tonal_session_state.then(|| session.clone()),
                 Arc::clone(&telemetry),
             ),
-            clap: ClapEngine::with_telemetry(sample_rate, Arc::clone(&telemetry)),
+            clap: ClapEngine::new_with_live_state(
+                sample_rate,
+                publish_tonal_session_state.then(|| session.clone()),
+                Arc::clone(&telemetry),
+            ),
             bass: BassEngine::new_with_live_state(
                 sample_rate,
                 publish_tonal_session_state.then(|| session.clone()),
@@ -829,6 +833,7 @@ impl FluidEngine {
         self.kick.trigger = GridTrigger::new();
         self.kick.last_cycle = None;
         self.clap.trigger = GridTrigger::new();
+        self.clap.last_cycle = None;
         self.tonal.progression = ProgressionFollower::new();
         self.tonal.step_trigger = GridTrigger::new();
         self.tonal.step_index = 0;
@@ -920,6 +925,7 @@ impl FluidEngine {
         self.kick.evolution_seed = seed.wrapping_add(12);
         self.tonal.rng = StdRng::seed_from_u64(seed.wrapping_add(3));
         self.clap.rng = StdRng::seed_from_u64(seed.wrapping_add(4));
+        self.clap.evolution_seed = seed.wrapping_add(14);
         self.arp.rng = StdRng::seed_from_u64(seed.wrapping_add(5));
         self.arp.evolution_seed = seed.wrapping_add(15);
         self.bass.evolution_seed = seed.wrapping_add(16);

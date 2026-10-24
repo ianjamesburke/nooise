@@ -1714,6 +1714,10 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
     defaults.perc.pattern = 0.0;
     defaults.kick.apply_pattern_preset(controls.kick.pattern);
     defaults.kick.pattern = 0.0;
+    defaults.clap.apply_pattern_preset(controls.clap.pattern);
+    defaults.clap.pattern = 0.0;
+    defaults.lead.apply_pattern_preset(controls.lead.pattern);
+    defaults.lead.pattern = 1.0;
     let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
 
@@ -1766,6 +1770,8 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
                 || id == "bass.rhythm"
                 || id == "perc.pattern"
                 || id == "kick.pattern"
+                || id == "clap.pattern"
+                || id == "lead.pattern"
                 || parse_module_slot_id(id).is_some_and(|(_, _, field)| {
                     matches!(
                         field,

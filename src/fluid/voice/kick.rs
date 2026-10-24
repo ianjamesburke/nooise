@@ -135,8 +135,8 @@ impl KickEngine {
                 self.last_cycle = None;
             }
             let count = kick_live_step_count(c.step_count);
-            let interval = c.interval_beats.max(0.25);
-            let cycle_beats = (interval * count as f32).max(0.25);
+            let interval = c.interval_beats.max(0.125);
+            let cycle_beats = (interval * count as f32).max(0.125);
             let cycle = (timing.beat.max(0.0) / f64::from(cycle_beats)).floor() as u64;
             if self.last_cycle.is_some_and(|last| cycle > last) && c.evolve_rate > 0.0 {
                 self.evolve_steps(count, c.evolve_rate, cycle);

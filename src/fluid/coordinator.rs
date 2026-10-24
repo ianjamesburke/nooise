@@ -229,6 +229,18 @@ fn upgrade_navigation_action(
     if action.intent == interaction::Intent::TouchSelected
         && matches!(
             model.navigation,
+            interaction::Navigation::Clap {
+                drill: interaction::ClapDrill::None,
+                ..
+            }
+        )
+        && frame.selected_control == Some(CLAP_PATTERN_ID)
+    {
+        action.intent = interaction::Intent::EnterClapPattern;
+    }
+    if action.intent == interaction::Intent::TouchSelected
+        && matches!(
+            model.navigation,
             interaction::Navigation::Arp {
                 drill: interaction::ArpDrill::None,
                 ..

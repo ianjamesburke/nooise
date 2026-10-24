@@ -53,26 +53,12 @@ pub(crate) const BASS_RHYTHMS: [[bool; 16]; 4] = [
     ],
 ];
 
-/// Fixed duration of one rhythm-pattern step (a 16th note). Step timing never
-/// changes; `interval_beats` instead crops how many steps of the 16-step
-/// phrase play before looping back to step 0 (or extends the loop with
-/// trailing silence, for a "gap" feel).
-pub(crate) const BASS_STEP_BEATS: f32 = 0.25;
-
 pub(crate) fn bass_live_step_count(step_count: f32) -> usize {
     (step_count.round() as i64).clamp(1, BASS_STEP_COUNT as i64) as usize
 }
 
-pub(crate) fn bass_loop_steps(c: &BassControls) -> usize {
-    let live_steps = bass_live_step_count(c.step_count);
-    let interval_steps = (c.interval_beats / BASS_STEP_BEATS)
-        .round()
-        .clamp(1.0, 32.0) as usize;
-    if interval_steps == BASS_STEP_COUNT && live_steps < BASS_STEP_COUNT {
-        live_steps
-    } else {
-        interval_steps
-    }
+pub(crate) fn bass_pattern_label(value: f32) -> &'static str {
+    BASS_PATTERNS[wrapped_index(value, BASS_PATTERNS.len())]
 }
 
 pub(crate) fn bass_authored_steps(c: &BassControls) -> [f32; BASS_STEP_COUNT] {
@@ -321,11 +307,11 @@ impl BassEngine {
             self.release_osc();
         }
 
-        let loop_len = bass_loop_steps(c);
+        let rate_beats = c.interval_beats.clamp(0.125, 4.0);
         let live_steps = bass_live_step_count(c.step_count);
         if self
             .step_trigger
-            .pop_swung(timing, BASS_STEP_BEATS, c.offset_beats, c.swing)
+            .pop_swung(timing, rate_beats, c.offset_beats, c.swing)
         {
             let authored = bass_authored_steps(c);
             let is_custom = (c.rhythm.round() as usize) >= CUSTOM_BASS_RHYTHM_INDEX;
@@ -336,25 +322,22 @@ impl BassEngine {
                 self.evolved_steps = authored;
                 self.last_cycle = None;
             }
-            let active_step_window = loop_len.min(live_steps);
-            let cycle_beats = (BASS_STEP_BEATS * loop_len as f32).max(BASS_STEP_BEATS);
+            let cycle_beats = (rate_beats * live_steps as f32).max(0.125);
             let cycle = (timing.beat.max(0.0) / f64::from(cycle_beats)).floor() as u64;
             if self.last_cycle.is_some_and(|last| cycle > last) && c.evolve_rate > 0.0 {
-                self.evolve_steps(active_step_window, c.evolve_rate, cycle);
+                self.evolve_steps(live_steps, c.evolve_rate, cycle);
             }
             self.last_cycle = Some(cycle);
 
-            let rhythm_step = lane_step_at(timing.beat, BASS_STEP_BEATS, c.offset_beats, loop_len);
+            let rhythm_step = lane_step_at(timing.beat, rate_beats, c.offset_beats, live_steps);
             // When inbound OSC notes are driving Bass, played notes replace the rhythm pattern.
-            if rhythm_step < active_step_window
-                && !self.osc_input_active
+            if !self.osc_input_active
                 && let Some(tone) = lead_step_tone(self.evolved_steps[rhythm_step])
             {
                 let follow = LeadFollow::from_value(c.follow);
                 let note = bass_step_note(tone, follow, progression, slot, pad, c.octave);
-                let ties =
-                    consecutive_ties_after(&self.evolved_steps, rhythm_step, active_step_window);
-                let hold_beats = ties as f32 * BASS_STEP_BEATS;
+                let ties = consecutive_ties_after(&self.evolved_steps, rhythm_step, live_steps);
+                let hold_beats = ties as f32 * rate_beats;
                 let hold_seconds = if ties > 0 {
                     (f64::from(hold_beats) * 60.0 / timing.bpm.max(1.0)) as f32
                 } else {

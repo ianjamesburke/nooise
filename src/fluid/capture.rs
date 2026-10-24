@@ -789,7 +789,7 @@ mod tests {
     fn direct_history_matches_bulk_discovery_for_scalar_edits() {
         for id in [
             "pad.level",
-            "lead.step1",
+            "lead.octave",
             "master.bpm",
             "lead.steps",
             "bass.slot1.time",
