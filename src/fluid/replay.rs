@@ -5580,8 +5580,8 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
         "releasing held a cues release at next chord: {hold_release_text}"
     );
 
-    // At 10,000 ms (beat 10.0, second half of Chord 1 [0..16)), tapping a arms for next chord at beat 16.0.
-    let armed = replay(
+    // At 10,000 ms (beat 10.0, second half of Chord 1 [0..16)), tapping a stays on currently playing Chord 1:
+    let latched_in_second_half = replay(
         &[
             TraceEvent::Tick { after_ms: 10_000 },
             press('a'),
@@ -5590,17 +5590,22 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
         ],
         TerminalCapabilities::full(),
     );
-    let armed_text = &armed.frames.last().unwrap().text;
+    let latched_text = &latched_in_second_half.frames.last().unwrap().text;
     assert!(
-        armed_text.contains("Vamp · next chord · a cancel"),
-        "tapping a in second half arms vamp for next chord: {armed_text}"
+        latched_text.contains("Vamp · Chord 1 · a release"),
+        "tapping a in second half keeps currently playing Chord 1: {latched_text}"
     );
-    let saved_armed =
-        song::decode_song_code(armed.saved_automation_code.as_deref().unwrap()).unwrap();
-    let armed_vamp = saved_armed.vamp.expect("saved song carries armed vamp");
-    assert!((armed_vamp.start_beat - 6.0).abs() < 0.05);
+    let saved_latched = song::decode_song_code(
+        latched_in_second_half
+            .saved_automation_code
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    let latched_vamp = saved_latched.vamp.expect("saved song carries latched vamp");
+    assert_eq!(latched_vamp.slot, 0);
 
-    // Cross chord boundary at beat 16.0 (at 18,000 ms = beat 18.0): vamp is active on Chord 2.
+    // Cross chord boundary at beat 16.0 (at 18,000 ms = beat 18.0): vamp stays locked on Chord 1!
     let active = replay(
         &[
             TraceEvent::Tick { after_ms: 10_000 },
@@ -5613,8 +5618,8 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     );
     let active_text = &active.frames.last().unwrap().text;
     assert!(
-        active_text.contains("Vamp · Chord 2 · a release"),
-        "at chord boundary, vamp activates on landed chord: {active_text}"
+        active_text.contains("Vamp · Chord 1 · a release"),
+        "at chord boundary, vamp remains locked on Chord 1: {active_text}"
     );
 
     // Tapping a during active vamp cues release on the next chord boundary (beat 32.0).

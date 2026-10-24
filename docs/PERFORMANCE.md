@@ -46,12 +46,11 @@ transitions or focus loss. Envelope editor keyboard bindings (`e`/`g`/`Shift+E`/
 are commented out for now, and Randomize in Browsing is on `u` (inside an open automation
 editor, `r`/`u` both work).
 
-Hold or tap `a` in Browsing for an indefinite chord vamp quantized to the nearest
-chord start. Pressing during the first half of a chord locks the currently sounding
-chord immediately; pressing in the second half arms for the next chord start
-(`Vamp · next chord · a cancel`). Sustaining a hold on `a` keeps the chord locked
-momentarily under your finger (`Vamp · Chord N · key up releases`), and letting go
-of the key cues release directly into the next chord on the next chord boundary.
+Hold or tap `a` in Browsing for an indefinite chord vamp quantized to the start
+of the currently playing chord, so whatever chord is sounding stays locked.
+Sustaining a hold on `a` keeps the chord locked momentarily under your finger
+(`Vamp · Chord N · key up releases`), and letting go of the key cues release directly
+into the next chord on the next chord boundary.
 A quick tap (< 250 ms) latches the vamp on hands-free (`Vamp · Chord N · a release`),
 allowing you to browse and adjust parameters while the chord holds; a subsequent tap
 cues release at the next chord boundary (`Vamp · release next chord · a keep`, and

@@ -10885,7 +10885,7 @@ mod chord_span_startup_tests {
     }
 
     #[test]
-    fn vamp_in_second_half_arms_for_next_chord_and_releases_on_chord_boundary() {
+    fn vamp_in_second_half_quantizes_to_currently_playing_chord_and_activates_immediately() {
         let mut song = SongState::from_controls(FluidControls::default());
         song.controls.master.bpm = 180.0;
         song.controls.pad.chord_bars = 1.0;
@@ -10903,46 +10903,37 @@ mod chord_span_startup_tests {
         assert_eq!(engine.pad.cursor.slot(), 1, "on Chord 2 at beat 6.5");
         assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 1);
 
-        // Arm vamp in second half at beat 6.5 -> quantizes to nearest chord start at beat 8.0,
-        // where the progression lands on Chord 3 (slot 2).
-        let armed = planned::VampState::start(8.0, 2);
-        assert_eq!(armed.start_beat, 8.0);
-        assert!(armed.end_beat.is_infinite());
+        // Vamping in second half at beat 6.5 quantizes to the start of this currently
+        // playing chord at beat 4.0 (Chord 2, slot 1), activating immediately.
+        let active = planned::VampState::start(4.0, 1);
+        assert_eq!(active.start_beat, 4.0);
+        assert!(active.is_active(telemetry.beat()));
+        assert!(active.end_beat.is_infinite());
         session
             .transact(|next| {
-                next.vamp = Some(armed);
+                next.vamp = Some(active);
                 Ok::<(), ()>(())
             })
             .unwrap();
 
-        // At beat 7.5 (still before next chord at 8.0), vamp is armed but not yet active.
-        for _ in 0..1_000 {
+        // Advance past beat 8.0 through several chords (to beat 25.5):
+        // without the vamp it would have cycled through slots 2 -> 3 -> 0 -> 1 -> 2,
+        // but with the vamp it stays locked on Chord 2 (slot 1) indefinitely.
+        for _ in 0..19_000 {
             engine.next_stereo();
         }
         assert_eq!(
             engine.pad.cursor.slot(),
             1,
-            "current chord finishes on Chord 2 before the next chord downbeat"
+            "vamp holds currently playing Chord 2 (slot 1) across chord boundaries until released"
         );
+        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 1);
+        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 1);
+        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 1);
 
-        // Advance past beat 8.0 through several chords (to beat 25.5):
-        // without the vamp it would have cycled through slots 2 -> 3 -> 0 -> 1 -> 2,
-        // but with the vamp it stays locked on Chord 3 (slot 2) indefinitely.
-        for _ in 0..18_000 {
-            engine.next_stereo();
-        }
-        assert_eq!(
-            engine.pad.cursor.slot(),
-            2,
-            "vamp holds Chord 3 (slot 2) across chord boundaries until released"
-        );
-        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 2);
-        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 2);
-        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 2);
-
-        // Cue release at beat 25.5 -> chord interval is 4.0, next chord start is beat 28.0.
+        // Cue release at beat 25.5 -> chord interval is 4.0, next chord boundary is beat 28.0.
         let interval = 4.0;
-        let next_chord = 8.0 + (((telemetry.beat() - 8.0) / interval).floor() + 1.0) * interval;
+        let next_chord = 4.0 + (((telemetry.beat() - 4.0) / interval).floor() + 1.0) * interval;
         assert_eq!(next_chord, 28.0);
         session
             .transact(|next| {
@@ -10954,14 +10945,14 @@ mod chord_span_startup_tests {
             .unwrap();
         assert_eq!(session.load().vamp.unwrap().end_beat, 28.0);
 
-        // At beat 26.5 (before chord downbeat at 28.0), still holding Chord 3 (slot 2).
+        // At beat 26.5 (before chord downbeat at 28.0), still holding Chord 2 (slot 1).
         for _ in 0..1_000 {
             engine.next_stereo();
         }
-        assert_eq!(engine.pad.cursor.slot(), 2);
+        assert_eq!(engine.pad.cursor.slot(), 1);
 
         // Cross beat 28.0 (to beat 29.0): vamp releases directly into the next chord
-        // in the progression after slot 2, which is Chord 4 (slot 3)!
+        // in the progression after slot 1, which is Chord 3 (slot 2)!
         for _ in 0..2_500 {
             engine.next_stereo();
         }
@@ -10970,12 +10961,12 @@ mod chord_span_startup_tests {
         assert_eq!(session.load().vamp, None);
         assert_eq!(
             engine.pad.cursor.slot(),
-            3,
-            "releasing vamp steps directly into the next chord in the progression (slot 3)"
+            2,
+            "releasing vamp steps directly into the next chord in the progression (slot 2)"
         );
-        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 3);
-        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 3);
-        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 3);
+        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 2);
+        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 2);
+        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 2);
     }
 
     #[test]
