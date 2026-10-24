@@ -607,9 +607,9 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
 
 fn browsing_binding(code: &PhysicalKey, navigation: Navigation) -> Option<Intent> {
     Some(match *code {
-        // `u` rolls the selected control's own dial; `a` triggers or cancels
-        // the 16-bar breakdown vamp (`e`/`r` are hold-mutes when holds are
-        // supported).
+        // `u` rolls the selected control's own dial; `a` arms or releases
+        // the bar-quantized chord vamp (`q`/`e`/`r` are top-row holds when
+        // holds are supported).
         PhysicalKey::Character('u') => Intent::RandomizeSelected,
         PhysicalKey::Character('a') => Intent::ToggleVamp,
         PhysicalKey::Character('i') => Intent::EnterLeadPlay,
@@ -635,7 +635,6 @@ fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Enter => None,
         PhysicalKey::Character(' ') => Some(Intent::ActivatePerformance(PerformanceKind::Jump)),
         // PhysicalKey::Character('e') => Some(Intent::OpenAutomation(AutomationKind::Envelope)),
-        PhysicalKey::Character('a') => Some(Intent::ToggleAuto),
         PhysicalKey::Character('r' | 'u') => Some(Intent::RandomizeAutomationRow),
         _ => slider_binding(code),
     }

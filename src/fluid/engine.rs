@@ -1168,9 +1168,10 @@ impl FluidEngine {
         let session = self.session.load();
         if session.planned != Some(action) {
             self.planned = session.planned;
+            let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
             self.mute_gates
-                .set_targets(&session.muted, self.sample_rate);
-            self.muted = session.muted;
+                .set_targets(&boundary_muted, self.sample_rate);
+            self.muted = boundary_muted;
             return;
         }
 
@@ -1191,15 +1192,17 @@ impl FluidEngine {
             Ok(())
         }) {
             Ok(snapshot) => {
-                self.muted = snapshot.muted;
                 self.planned = None;
+                self.muted = self.planned_mute_state(timing.beat, timing.bpm, snapshot.muted);
             }
             Err(()) => {
                 let session = self.session.load();
-                self.mute_gates
-                    .set_targets(&session.muted, self.sample_rate);
-                self.muted = session.muted;
                 self.planned = session.planned;
+                let boundary_muted =
+                    self.planned_mute_state(timing.beat, timing.bpm, session.muted);
+                self.mute_gates
+                    .set_targets(&boundary_muted, self.sample_rate);
+                self.muted = boundary_muted;
             }
         }
     }
@@ -1215,6 +1218,10 @@ impl FluidEngine {
             && beat >= target_beat - ramp_beats
         {
             boundary_muted[tab as usize] = !boundary_muted[tab as usize];
+        }
+        if self.hold_muted[HoldMute::KickAndBass as usize] {
+            boundary_muted[Tab::Kick as usize] = true;
+            boundary_muted[Tab::Bass as usize] = true;
         }
         boundary_muted
     }

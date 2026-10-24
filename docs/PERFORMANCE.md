@@ -16,9 +16,10 @@ who knows only arrows and Tab must still reach every page, and with Esc as
 the only way up, Master's own rows (BPM, Tone, Drive) would be lost to them
 after leaving the hub. Esc backs out one level at a time: the innermost drill
 first, then from the layer's root to the hub with the cursor on that
-layer's row. A held gesture is released by the first Esc instead, as
-below. Each layer remembers the row it was left on for the session, however
-it is re-entered. Esc on the hub does nothing.
+layer's row. Held gestures stay active while Esc navigates back; at the hub
+root with no gesture key held, Esc releases any loaded holds, and otherwise
+does nothing. Each layer remembers the row it was left on for the session,
+however it is re-entered.
 
 The line above the rows is a breadcrumb: `Master` on the hub, `Master ›
 Pads` in a layer, `Master › Pads › Progression` in a drill, `Master › Pads
@@ -83,7 +84,9 @@ These are temporary effects over the playing song. User module slots remain
 intact, automation and auto-morph continue, and edits made during a gesture
 survive its return.
 
-Escape releases held gestures before backing out of a browsing drill.
+Held gestures stay active while Escape backs out of browsing drills and layers;
+at the hub root with no gesture key held, Escape releases any restored holds
+loaded from a song code.
 Opening a keyboard-owning editor or Lead play releases gestures; Echo's
 repeats can finish in the background. A key held through that transition must be
 released before it can start another gesture. Reported focus loss and shutdown

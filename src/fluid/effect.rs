@@ -1529,12 +1529,8 @@ impl EffectExecutor {
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.hold_muted[mute as usize] = true;
                     match mute {
-                        HoldMute::KickAndBass => {
-                            snapshot.muted[Tab::Kick as usize] = true;
-                            snapshot.muted[Tab::Bass as usize] = true;
-                        }
                         HoldMute::Rise => snapshot.gestures.press_rise(now_seconds),
-                        HoldMute::PercRoll => {}
+                        HoldMute::KickAndBass | HoldMute::PercRoll => {}
                     }
                 });
                 Ok(EffectAcknowledgement::Published {
@@ -1546,12 +1542,8 @@ impl EffectExecutor {
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.hold_muted[mute as usize] = false;
                     match mute {
-                        HoldMute::KickAndBass => {
-                            snapshot.muted[Tab::Kick as usize] = false;
-                            snapshot.muted[Tab::Bass as usize] = false;
-                        }
                         HoldMute::Rise => snapshot.gestures.release_rise(now_seconds),
-                        HoldMute::PercRoll => {}
+                        HoldMute::KickAndBass | HoldMute::PercRoll => {}
                     }
                 });
                 Ok(EffectAcknowledgement::Published {
@@ -1605,10 +1597,6 @@ impl EffectExecutor {
                 let now_seconds = self.session.audio_seconds();
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.gestures.release_all(now_seconds);
-                    if snapshot.hold_muted[HoldMute::KickAndBass as usize] {
-                        snapshot.muted[Tab::Kick as usize] = false;
-                        snapshot.muted[Tab::Bass as usize] = false;
-                    }
                     snapshot.hold_muted = [false; HOLD_MUTE_COUNT];
                 });
                 Ok(EffectAcknowledgement::Published {

@@ -5481,6 +5481,56 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
         1,
         "/auto in the slash command palette toggles auto morph"
     );
+
+    // Holding `q` does not write into the persistent user mute overlay (`snapshot.muted`),
+    // so saving during `q` does not save Kick/Bass as muted, and releasing `q` preserves an
+    // explicit `m` mute on Kick.
+    let saved_during_q = replay(
+        &[
+            press('q'),
+            modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1),
+        ],
+        TerminalCapabilities::full(),
+    );
+    let decoded_during_q =
+        song::decode_song_code(saved_during_q.saved_automation_code.as_deref().unwrap()).unwrap();
+    assert!(!decoded_during_q.muted[Tab::Kick as usize]);
+    assert!(!decoded_during_q.muted[Tab::Bass as usize]);
+
+    let kick_mute_preserved = replay(
+        &[
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Down, InputPhase::Press),
+            press('m'),
+            press('q'),
+            release('q'),
+            modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1),
+        ],
+        TerminalCapabilities::full(),
+    );
+    let decoded_after_q_release = song::decode_song_code(
+        kick_mute_preserved
+            .saved_automation_code
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        decoded_after_q_release.muted[Tab::Kick as usize],
+        "releasing q preserves an explicit Kick mute"
+    );
+    assert!(!decoded_after_q_release.muted[Tab::Bass as usize]);
+
+    // Plain `a` inside an open automation editor does not toggle auto morph.
+    let plain_a_in_editor = replay(
+        &[
+            modified_key(0, FixtureKey::Character('F'), InputPhase::Press, 1),
+            press('a'),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(plain_a_in_editor.effect_count("ToggleAuto"), 0);
 }
 
 #[test]
