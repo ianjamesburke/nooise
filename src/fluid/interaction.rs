@@ -2089,9 +2089,11 @@ fn push_numeric(buffer: &mut String, character: char) {
 /// in the adapter, which is the only place that can see whether the layer
 /// already holds it.
 fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionMode {
-    if matches!(entry, PaletteEntry::Operation(operation) if operation.is_mix())
-        || (palette.editor_motion_target.is_some()
-            && matches!(entry, PaletteEntry::Operation(Operation::Motion(action)) if editor_motion_action(*action, palette)))
+    if matches!(
+        entry,
+        PaletteEntry::Operation(operation) if operation.is_mix() || *operation == Operation::ToggleAuto
+    ) || (palette.editor_motion_target.is_some()
+        && matches!(entry, PaletteEntry::Operation(Operation::Motion(action)) if editor_motion_action(*action, palette)))
         || (palette.resume.is_some()
             && matches!(
                 entry,
@@ -2193,6 +2195,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::PlannedMute => {
             InteractionEffect::PlanMute(palette.planned_tab.unwrap_or(Tab::Master))
         }
+        Operation::ToggleAuto => InteractionEffect::ToggleAuto,
     }
 }
 

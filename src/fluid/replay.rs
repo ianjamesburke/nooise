@@ -1555,10 +1555,10 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
 fn gesture_press_repeat_navigation_and_modified_release_follow_the_production_path() {
     let result = replay(
         &[
-            key(0, FixtureKey::Character('z'), InputPhase::Press),
-            key(200, FixtureKey::Character('z'), InputPhase::Repeat),
+            key(0, FixtureKey::Character('w'), InputPhase::Press),
+            key(200, FixtureKey::Character('w'), InputPhase::Repeat),
             key(200, FixtureKey::Tab, InputPhase::Press),
-            modified_key(200, FixtureKey::Character('z'), InputPhase::Release, 1 << 1),
+            modified_key(200, FixtureKey::Character('w'), InputPhase::Release, 1 << 1),
         ],
         TerminalCapabilities::full(),
     );
@@ -1566,12 +1566,12 @@ fn gesture_press_repeat_navigation_and_modified_release_follow_the_production_pa
     // Tab from the hub enters the first layer while the gesture plays.
     assert!(matches!(result.model.navigation, Navigation::Chords { .. }));
     assert_eq!(result.effect_count("GesturePress"), 1);
-    assert_eq!(result.effect_count("GestureRelease(Bloom)"), 1);
+    assert_eq!(result.effect_count("GestureRelease(Submerge)"), 1);
     assert!(
         result
             .effects
             .iter()
-            .any(|effect| { effect.starts_with("GesturePress(Bloom)") })
+            .any(|effect| { effect.starts_with("GesturePress(Submerge)") })
     );
     assert_eq!(
         result
@@ -1588,20 +1588,20 @@ fn gesture_press_repeat_navigation_and_modified_release_follow_the_production_pa
 fn gesture_mode_transition_and_focus_loss_release_without_rearming_quarantined_keys() {
     let result = replay(
         &[
-            key(0, FixtureKey::Character('z'), InputPhase::Press),
+            key(0, FixtureKey::Character('w'), InputPhase::Press),
             key(100, FixtureKey::Character('/'), InputPhase::Press),
             key(0, FixtureKey::Escape, InputPhase::Press),
             // The editor closed while the physical key is still down. A
             // repeated Press must remain quarantined until its real key-up.
-            key(0, FixtureKey::Character('z'), InputPhase::Press),
-            key(100, FixtureKey::Character('z'), InputPhase::Release),
-            key(0, FixtureKey::Character('z'), InputPhase::Press),
+            key(0, FixtureKey::Character('w'), InputPhase::Press),
+            key(100, FixtureKey::Character('w'), InputPhase::Release),
+            key(0, FixtureKey::Character('w'), InputPhase::Press),
             TraceEvent::Focus {
                 after_ms: 100,
                 gained: false,
             },
-            key(0, FixtureKey::Character('z'), InputPhase::Repeat),
-            key(0, FixtureKey::Character('z'), InputPhase::Release),
+            key(0, FixtureKey::Character('w'), InputPhase::Repeat),
+            key(0, FixtureKey::Character('w'), InputPhase::Release),
         ],
         TerminalCapabilities::full(),
     );
@@ -1629,7 +1629,7 @@ fn gesture_mode_transition_and_focus_loss_release_without_rearming_quarantined_k
 #[test]
 fn unsupported_gesture_press_is_inert_and_the_activity_row_stays_blank() {
     let result = replay(
-        &[key(0, FixtureKey::Character('z'), InputPhase::Press)],
+        &[key(0, FixtureKey::Character('w'), InputPhase::Press)],
         TerminalCapabilities::default(),
     );
 
@@ -1665,8 +1665,9 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("vamp", vec![plain(FixtureKey::Character('a'))]),
         ("palette", vec![plain(FixtureKey::Character('/'))]),
         ("lfo", vec![plain(FixtureKey::Character('f'))]),
-        ("envelope", vec![plain(FixtureKey::Character('g'))]),
-        ("lift gesture", vec![plain(FixtureKey::Character('x'))]),
+        // ("envelope", vec![plain(FixtureKey::Character('g'))]),
+        ("submerge gesture", vec![plain(FixtureKey::Character('w'))]),
+        ("remove automation", vec![plain(FixtureKey::Character('x'))]),
         (
             "kick+bass hold mute",
             vec![plain(FixtureKey::Character('q'))],
@@ -1863,20 +1864,20 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 effects: vec!["AutomationConfirm(Lfo)=>OK:Published { generation: 1 }"],
                 notice: None,
             },
-            "envelope" => ExpectedBinding {
-                owner: "ENV",
-                generation: 1,
-                automation: Some("Envelope"),
-                intents: vec![Intent::OpenAutomation(AutomationKind::Envelope)],
-                effects: vec!["AutomationConfirm(Envelope)=>OK:Published { generation: 1 }"],
-                notice: None,
-            },
-            "lift gesture" => ExpectedBinding {
+            "submerge gesture" => ExpectedBinding {
                 owner: "BROWSE",
                 generation: 1,
                 automation: None,
-                intents: vec![Intent::StartGesture(GestureKind::Lift)],
-                effects: vec!["GesturePress(Lift)=>OK:Published { generation: 1 }"],
+                intents: vec![Intent::StartGesture(GestureKind::Submerge)],
+                effects: vec!["GesturePress(Submerge)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "remove automation" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::RemoveAutomation],
+                effects: vec!["RemoveAutomation=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "kick+bass hold mute" => ExpectedBinding {
@@ -2224,28 +2225,22 @@ fn escape_closes_a_neutral_lfo_without_trapping_the_keyboard_owner() {
 fn silent_lanes_survive_editor_exit_navigation_and_save() {
     let plain = |code| key(0, code, InputPhase::Press);
     let ctrl = |code| modified_key(0, code, InputPhase::Press, 1 << 1);
-    for family in ['f', 'g'] {
-        for exit in [FixtureKey::Escape, FixtureKey::Tab] {
-            let result = replay(
-                &[
-                    plain(FixtureKey::Character(family)),
-                    plain(exit),
-                    plain(FixtureKey::Tab),
-                    ctrl(FixtureKey::Character('s')),
-                ],
-                TerminalCapabilities::full(),
-            );
-            assert_eq!(result.model.mode, InteractionMode::Browsing);
-            let saved =
-                song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
-            if family == 'f' {
-                assert_eq!(saved.automation.routes().count(), 1);
-                assert_eq!(saved.automation.routes().next().unwrap().1.depth_ratio, 0.0);
-            } else {
-                assert_eq!(saved.automation.envelopes().count(), 1);
-                assert_eq!(saved.automation.envelopes().next().unwrap().1.amount, 0.0);
-            }
-        }
+    let family = 'f';
+    for exit in [FixtureKey::Escape, FixtureKey::Tab] {
+        let result = replay(
+            &[
+                plain(FixtureKey::Character(family)),
+                plain(exit),
+                plain(FixtureKey::Tab),
+                ctrl(FixtureKey::Character('s')),
+            ],
+            TerminalCapabilities::full(),
+        );
+        assert_eq!(result.model.mode, InteractionMode::Browsing);
+        let saved =
+            song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+        assert_eq!(saved.automation.routes().count(), 1);
+        assert_eq!(saved.automation.routes().next().unwrap().1.depth_ratio, 0.0);
     }
 }
 
@@ -2253,32 +2248,26 @@ fn silent_lanes_survive_editor_exit_navigation_and_save() {
 fn silent_lane_capacity_notice_and_x_removal_use_the_production_bindings() {
     let plain = |code| key(0, code, InputPhase::Press);
     let ctrl = |code| modified_key(0, code, InputPhase::Press, 1 << 1);
-    for family in ['f', 'g'] {
-        let add = modified_key(0, FixtureKey::Character(family), InputPhase::Press, 1);
-        let mut events = vec![plain(FixtureKey::Character(family))];
-        events.extend(std::iter::repeat_n(add.clone(), 4));
-        let full = replay(&events, TerminalCapabilities::full());
-        assert!(
-            full.effect_notice
-                .as_deref()
-                .unwrap()
-                .contains("four lanes")
-        );
-        events.extend([
-            plain(FixtureKey::Character('x')),
-            add,
-            ctrl(FixtureKey::Character('s')),
-        ]);
-        let replaced = replay(&events, TerminalCapabilities::full());
-        let saved =
-            song::decode_song_code(replaced.saved_automation_code.as_deref().unwrap()).unwrap();
-        let count = if family == 'f' {
-            saved.automation.routes().count()
-        } else {
-            saved.automation.envelopes().count()
-        };
-        assert_eq!(count, 4);
-    }
+    let family = 'f';
+    let add = modified_key(0, FixtureKey::Character(family), InputPhase::Press, 1);
+    let mut events = vec![plain(FixtureKey::Character(family))];
+    events.extend(std::iter::repeat_n(add.clone(), 4));
+    let full = replay(&events, TerminalCapabilities::full());
+    assert!(
+        full.effect_notice
+            .as_deref()
+            .unwrap()
+            .contains("four lanes")
+    );
+    events.extend([
+        plain(FixtureKey::Character('x')),
+        add,
+        ctrl(FixtureKey::Character('s')),
+    ]);
+    let replaced = replay(&events, TerminalCapabilities::full());
+    let saved = song::decode_song_code(replaced.saved_automation_code.as_deref().unwrap()).unwrap();
+    let count = saved.automation.routes().count();
+    assert_eq!(count, 4);
 }
 
 /// Enter on the Lead page opens play mode; arrows edit the selected control
@@ -3226,72 +3215,71 @@ fn lane_bypass_resume_delete_preserve_editor_and_saved_lane_settings() {
         TerminalCapabilities::full(),
         TerminalCapabilities::default(),
     ] {
-        for (open, kind) in [('f', ModKind::Lfo), ('g', ModKind::Envelope)] {
-            let mut events = vec![
-                TraceEvent::Resize {
-                    after_ms: 0,
-                    width: MIN_TERMINAL_WIDTH,
-                    height: MIN_TERMINAL_HEIGHT,
-                },
-                key(0, FixtureKey::Character(open), InputPhase::Press),
-                modified_key(
-                    0,
-                    FixtureKey::Character(open.to_ascii_uppercase()),
-                    InputPhase::Press,
-                    1,
-                ),
-            ];
-            events.extend(recipe_keys("bypass"));
-            events.push(TraceEvent::Idle { after_ms: 40 });
-            events.push(modified_key(
+        let (open, kind) = ('f', ModKind::Lfo);
+        let mut events = vec![
+            TraceEvent::Resize {
+                after_ms: 0,
+                width: MIN_TERMINAL_WIDTH,
+                height: MIN_TERMINAL_HEIGHT,
+            },
+            key(0, FixtureKey::Character(open), InputPhase::Press),
+            modified_key(
                 0,
-                FixtureKey::Character('s'),
+                FixtureKey::Character(open.to_ascii_uppercase()),
                 InputPhase::Press,
-                1 << 1,
-            ));
-            let bypassed = replay(&events, capabilities);
-            assert_eq!(bypassed.automation_kind, Some(format!("{kind:?}")));
-            assert!(
-                bypassed
-                    .frames
-                    .iter()
-                    .any(|frame| frame.text.contains("bypassed · /resume"))
-            );
-            let song =
-                song::decode_song_code(bypassed.saved_automation_code.as_deref().unwrap()).unwrap();
-            assert_eq!(song.automation.lane_enabled(address, kind, 0), Some(true));
-            assert_eq!(song.automation.lane_enabled(address, kind, 1), Some(false));
-            events.extend(recipe_keys("resume"));
-            events.push(modified_key(
-                0,
-                FixtureKey::Character('s'),
-                InputPhase::Press,
-                1 << 1,
-            ));
-            let resumed = replay(&events, capabilities);
-            assert_eq!(resumed.model.mode, bypassed.model.mode);
-            let song =
-                song::decode_song_code(resumed.saved_automation_code.as_deref().unwrap()).unwrap();
-            assert_eq!(song.automation.lane_enabled(address, kind, 0), Some(true));
-            assert_eq!(song.automation.lane_enabled(address, kind, 1), Some(true));
-            events.extend(recipe_keys("delete"));
-            events.push(modified_key(
-                0,
-                FixtureKey::Character('s'),
-                InputPhase::Press,
-                1 << 1,
-            ));
-            events.extend([
-                key(0, FixtureKey::Down, InputPhase::Press),
-                key(0, FixtureKey::Tab, InputPhase::Press),
-            ]);
-            let deleted = replay(&events, capabilities);
-            assert_eq!(deleted.model.mode, InteractionMode::Browsing);
-            let song =
-                song::decode_song_code(deleted.saved_automation_code.as_deref().unwrap()).unwrap();
-            assert_eq!(song.automation.lane_enabled(address, kind, 0), Some(true));
-            assert_eq!(song.automation.lane_enabled(address, kind, 1), None);
-        }
+                1,
+            ),
+        ];
+        events.extend(recipe_keys("bypass"));
+        events.push(TraceEvent::Idle { after_ms: 40 });
+        events.push(modified_key(
+            0,
+            FixtureKey::Character('s'),
+            InputPhase::Press,
+            1 << 1,
+        ));
+        let bypassed = replay(&events, capabilities);
+        assert_eq!(bypassed.automation_kind, Some(format!("{kind:?}")));
+        assert!(
+            bypassed
+                .frames
+                .iter()
+                .any(|frame| frame.text.contains("bypassed · /resume"))
+        );
+        let song =
+            song::decode_song_code(bypassed.saved_automation_code.as_deref().unwrap()).unwrap();
+        assert_eq!(song.automation.lane_enabled(address, kind, 0), Some(true));
+        assert_eq!(song.automation.lane_enabled(address, kind, 1), Some(false));
+        events.extend(recipe_keys("resume"));
+        events.push(modified_key(
+            0,
+            FixtureKey::Character('s'),
+            InputPhase::Press,
+            1 << 1,
+        ));
+        let resumed = replay(&events, capabilities);
+        assert_eq!(resumed.model.mode, bypassed.model.mode);
+        let song =
+            song::decode_song_code(resumed.saved_automation_code.as_deref().unwrap()).unwrap();
+        assert_eq!(song.automation.lane_enabled(address, kind, 0), Some(true));
+        assert_eq!(song.automation.lane_enabled(address, kind, 1), Some(true));
+        events.extend(recipe_keys("delete"));
+        events.push(modified_key(
+            0,
+            FixtureKey::Character('s'),
+            InputPhase::Press,
+            1 << 1,
+        ));
+        events.extend([
+            key(0, FixtureKey::Down, InputPhase::Press),
+            key(0, FixtureKey::Tab, InputPhase::Press),
+        ]);
+        let deleted = replay(&events, capabilities);
+        assert_eq!(deleted.model.mode, InteractionMode::Browsing);
+        let song =
+            song::decode_song_code(deleted.saved_automation_code.as_deref().unwrap()).unwrap();
+        assert_eq!(song.automation.lane_enabled(address, kind, 0), Some(true));
+        assert_eq!(song.automation.lane_enabled(address, kind, 1), None);
     }
 }
 
@@ -5377,7 +5365,7 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
     let held_and_navigated = replay(
         &[
             key(0, FixtureKey::Enter, InputPhase::Press),
-            press('z'),
+            press('w'),
             press('q'),
             press('e'),
             key(0, FixtureKey::Escape, InputPhase::Press),
@@ -5400,8 +5388,8 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
     );
     let held_text = &held_and_navigated.frames.last().unwrap().text;
     assert!(
-        held_text.contains("Bloom"),
-        "holding z stays active across Esc navigation"
+        held_text.contains("Submerge"),
+        "holding w stays active across Esc navigation"
     );
     assert!(
         held_text.contains("Rise"),
@@ -5412,10 +5400,8 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
         "holding q shows Kick+Bass Mute● on the activity line"
     );
 
-    let held_top_row = replay(
-        &[press('q'), press('e'), press('r')],
-        TerminalCapabilities::full(),
-    );
+    let held_top_row = replay(&[press('w'), press('r')], TerminalCapabilities::full());
+    assert_eq!(held_top_row.effect_count("GesturePress(Submerge)"), 1);
     assert_eq!(held_top_row.effect_count("HoldMutePress(PercRoll)"), 1);
     let top_row_text = &held_top_row.frames.last().unwrap().text;
     assert!(
@@ -5426,20 +5412,75 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
     let released_all = replay(
         &[
             press('q'),
+            press('w'),
             press('e'),
             press('r'),
             release('q'),
+            release('w'),
             release('e'),
             release('r'),
         ],
         TerminalCapabilities::full(),
     );
     assert_eq!(released_all.effect_count("HoldMuteRelease(KickAndBass)"), 1);
+    assert_eq!(released_all.effect_count("GestureRelease(Submerge)"), 1);
     assert_eq!(released_all.effect_count("HoldMuteRelease(Rise)"), 1);
     assert_eq!(released_all.effect_count("HoldMuteRelease(PercRoll)"), 1);
     let final_text = &released_all.frames.last().unwrap().text;
     assert!(!final_text.contains("Kick+Bass Mute●"));
     assert!(!final_text.contains("Perc Roll●"));
+
+    // z, c, v are superseded; x in Browsing deletes saved Motion on hold-capable terminals.
+    let superseded = replay(
+        &[press('z'), press('c'), press('v')],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(superseded.effect_count("GesturePress"), 0);
+
+    let ctrl_s = modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
+    let motion_deleted_by_x = replay(
+        &[
+            key(0, FixtureKey::Right, InputPhase::Press),
+            TraceEvent::Tick { after_ms: 500 },
+            key(0, FixtureKey::Left, InputPhase::Press),
+            TraceEvent::Tick { after_ms: 500 },
+            press(' '),
+            press('1'),
+            press('x'),
+            ctrl_s,
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(motion_deleted_by_x.effect_count("MotionGrab"), 1);
+    assert_eq!(motion_deleted_by_x.effect_count("RemoveAutomation"), 1);
+    let saved_after_x = song::decode_song_code(
+        motion_deleted_by_x
+            .saved_automation_code
+            .as_deref()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        saved_after_x.automation.captures.is_empty(),
+        "pressing x in Browsing deletes the saved Motion loop"
+    );
+
+    let slash_auto = replay(
+        &[
+            press('/'),
+            press('a'),
+            press('u'),
+            press('t'),
+            press('o'),
+            key(0, FixtureKey::Enter, InputPhase::Press),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(
+        slash_auto.effect_count("ToggleAuto"),
+        1,
+        "/auto in the slash command palette toggles auto morph"
+    );
 }
 
 #[test]

@@ -707,7 +707,9 @@ pub(crate) fn remove_automation_effect(
             if let Some(id) = selected_control {
                 let address = ControlAddress::new(id);
                 effects.edit_session(Some(id), |snapshot| {
-                    snapshot.automation.clear_control(address);
+                    if snapshot.automation.captures.remove(&address).is_none() {
+                        snapshot.automation.clear_control(address);
+                    }
                 });
             }
         }

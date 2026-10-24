@@ -28,24 +28,22 @@ frame. Navigation is never saved in a song code.
 
 ## Normal browsing gestures
 
-Hold `z` for Bloom, `c` for Submerge, `v` for Echo, or `x` for Lift.
-The amount rises while held and returns smoothly on release. Bloom blends the
-mix into a reverb cloud built from a transient-softened mid-band send (`220 Hz..3.2 kHz`)
-with a light 10% dry duck so rhythmic transients stay locked to the dry grid, Submerge darkens
-it, Echo throws it into repeats, and Lift thins its low end. Every gesture
-lets go within 10 ms of release, wet returns included, so no reverb or echo
-rings on. The former Thin
-gesture on `b` is retired; a song code carrying one is refused.
-
 Hold `q` in Browsing for an immediate momentary Kick+Bass mute (`Kick+Bass Mute●`),
+`w` for Submerge (darkening the mix while held, `Submerge XX%↑` / `Submerge 100%●` / `Submerge XX%↓`),
 `e` for Rise (a gentler, slower high-pass lift that ramps over 1.8 s to 52% of Lift's
-throw, `Rise XX%↑` / `Rise 100%●` / `Rise XX%↓`), and `r` for Perc Roll (stepping the
-Perc trigger interval down by one subdivision while held, `Perc Roll●`). Like
-`z`/`x`/`c`/`v`, these holds require negotiated key-release support, stay active
-while `Esc` navigates back through drills and layers in Browsing, and release
-cleanly on mode transitions or focus loss. To free `e` and `r` on the left hand
-in Browsing, Envelope editor entry moves to `g` (next to `f` LFO) and Randomize
-moves to `u` (inside an open automation editor, `e`/`g` and `r`/`u` both work).
+throw with a 25% touch of stereo Echo delay, `Rise XX%↑` / `Rise 100%●` / `Rise XX%↓`),
+and `r` for Perc Roll (stepping the Perc trigger interval down by one subdivision while held, `Perc Roll●`).
+The former bottom-row `z`/`x`/`c`/`v` gesture bindings are superseded by `q`/`w`/`e`/`r`,
+freeing `x` in Browsing on all terminals so pressing `x` on a control deletes its saved
+Motion loop (or clears its modulators). Every gesture lets go within 10 ms of release,
+wet returns included, so no reverb or echo rings on. The former Thin gesture on `b` is
+retired; a song code carrying one is refused.
+
+These top-row holds require negotiated key-release support, stay active while `Esc`
+navigates back through drills and layers in Browsing, and release cleanly on mode
+transitions or focus loss. Envelope editor keyboard bindings (`e`/`g`/`Shift+E`/`Shift+G`)
+are commented out for now, and Randomize in Browsing is on `u` (inside an open automation
+editor, `r`/`u` both work).
 
 Press `a` in Browsing to arm a bar-quantized indefinite chord vamp for the next
 bar downbeat (`Vamp · next bar · a cancel`). On the next bar's beat 1, the vamp
@@ -54,9 +52,10 @@ and holds that chord across Pads, Bass, Arp, and Lead (`Vamp · Chord N · a rel
 until you cue the release. Pressing `a` while armed cancels it; pressing `a` while
 active bar-locks the release of the vamp to the next bar downbeat (`Vamp · release next bar · a keep`,
 and pressing `a` again before the bar line keeps holding the chord), releasing directly
-into the next chord in the progression on beat 1 of that bar. Auto-morph toggle in
-Browsing moves to `Shift+A`. Armed or active vamp state persists in song codes
-(`VAMP_RECORD`) and rebases to the loaded song's beat zero.
+into the next chord in the progression on beat 1 of that bar. Auto-morph toggle is
+available on `Shift+A` and in the `/` command palette as `/auto` (`Toggle auto`).
+Armed or active vamp state persists in song codes (`VAMP_RECORD`) and rebases to the
+loaded song's beat zero.
 
 Every gesture plays over the whole mix, after Master's module chain, whatever
 page is open. Arrows and Tab remain available while a key is down, and
@@ -67,8 +66,8 @@ on top of it.
 
 The footer is two rows: a gesture-activity row above a stable exits/mode-help
 row, so a held gesture never crowds out `Esc release · ^Q quit` or the row
-below it. Idle, the activity row lists each hold's key and name (`z bloom
-c submerge  v echo  x lift`); held or returning, it switches to a
+below it. Idle, the activity row lists each hold's key and name (`q mute
+w submerge  e rise  r roll`); held or returning, it switches to a
 bold readout of gesture and amount — `↑` means rising, `↓` returning, and `R`
 marks a restored hold loaded from a song code. The row below stays a terse
 `BROWSE · ? shortcuts   ^Q quit`; pressing `?` opens the full keyboard-shortcut

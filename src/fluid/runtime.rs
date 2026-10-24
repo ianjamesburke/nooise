@@ -594,7 +594,7 @@ fn slider_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Tab => Intent::ChangePage(PageDirection::Next),
         PhysicalKey::Character('/') => Intent::OpenPalette,
         PhysicalKey::Character('f') => Intent::OpenAutomation(AutomationKind::Lfo),
-        PhysicalKey::Character('g') => Intent::OpenAutomation(AutomationKind::Envelope),
+        // PhysicalKey::Character('g') => Intent::OpenAutomation(AutomationKind::Envelope),
         PhysicalKey::Character('m') => Intent::ToggleMute { master: false },
         PhysicalKey::Character('t') => Intent::ToggleUnits,
         PhysicalKey::Character('x') => Intent::RemoveAutomation,
@@ -634,7 +634,7 @@ fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
         // Enter stays inert while an automation editor owns the keyboard.
         PhysicalKey::Enter => None,
         PhysicalKey::Character(' ') => Some(Intent::ActivatePerformance(PerformanceKind::Jump)),
-        PhysicalKey::Character('e') => Some(Intent::OpenAutomation(AutomationKind::Envelope)),
+        // PhysicalKey::Character('e') => Some(Intent::OpenAutomation(AutomationKind::Envelope)),
         PhysicalKey::Character('a') => Some(Intent::ToggleAuto),
         PhysicalKey::Character('r' | 'u') => Some(Intent::RandomizeAutomationRow),
         _ => slider_binding(code),
@@ -651,9 +651,9 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('A' | 'a') => Intent::ToggleAuto,
         PhysicalKey::Character('T' | 't') => Intent::ToggleUnits,
         PhysicalKey::Character('F' | 'f') => Intent::AddAutomation(AutomationKind::Lfo),
-        PhysicalKey::Character('E' | 'e' | 'G' | 'g') => {
-            Intent::AddAutomation(AutomationKind::Envelope)
-        }
+        // PhysicalKey::Character('E' | 'e' | 'G' | 'g') => {
+        //     Intent::AddAutomation(AutomationKind::Envelope)
+        // }
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
         PhysicalKey::Character('R' | 'r' | 'U' | 'u') => Intent::RandomizeScope,
         // Shifted so a stray keystroke cannot end the song.
@@ -2024,7 +2024,7 @@ mod tests {
 
         for (code, expected) in [
             ('f', Intent::OpenAutomation(super::AutomationKind::Lfo)),
-            ('g', Intent::OpenAutomation(super::AutomationKind::Envelope)),
+            // ('g', Intent::OpenAutomation(super::AutomationKind::Envelope)),
             ('a', Intent::ToggleVamp),
             ('m', Intent::ToggleMute { master: false }),
             ('t', Intent::ToggleUnits),
@@ -2047,8 +2047,8 @@ mod tests {
 
         for (code, expected) in [
             ('F', Intent::AddAutomation(super::AutomationKind::Lfo)),
-            ('E', Intent::AddAutomation(super::AutomationKind::Envelope)),
-            ('G', Intent::AddAutomation(super::AutomationKind::Envelope)),
+            // ('E', Intent::AddAutomation(super::AutomationKind::Envelope)),
+            // ('G', Intent::AddAutomation(super::AutomationKind::Envelope)),
             ('A', Intent::ToggleAuto),
             ('R', Intent::RandomizeScope),
             ('U', Intent::RandomizeScope),

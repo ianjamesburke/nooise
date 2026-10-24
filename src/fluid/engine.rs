@@ -1128,6 +1128,8 @@ impl StereoEngine for FluidEngine {
         let rise_amount = self.gesture_snapshot.rise_amount(now_seconds);
         gesture_amounts[GestureKind::Lift as usize] =
             gesture_amounts[GestureKind::Lift as usize].max(rise_amount * 0.52);
+        gesture_amounts[GestureKind::Echo as usize] =
+            gesture_amounts[GestureKind::Echo as usize].max(rise_amount * 0.25);
         let master = self.gesture_audio.process(master, gesture_amounts, timing);
         let out = gate_stereo(
             self.master_bus

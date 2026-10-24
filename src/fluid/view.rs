@@ -136,7 +136,7 @@ pub(crate) struct UiViewModel<'a> {
     pub(crate) cursor_visible: bool,
     pub(crate) help: HelpSurface,
     /// The gesture-activity row's text: a stopped-clock marker and/or a
-    /// held/returning readout, or an idle key hint (`z bloom  c submerge
+    /// held/returning readout, or an idle key hint (`q mute  w submerge
     /// ...`) when nothing is held. Empty only when the clock runs and the
     /// terminal cannot support holds at all.
     pub(crate) activity: String,
@@ -577,11 +577,7 @@ fn rise_activity(session: &LiveSessionSnapshot, now_seconds: f64) -> Option<Stri
 /// gesture, so the row that shows a live readout while holding still tells
 /// you what's available when nothing is held.
 fn gesture_idle_hint() -> String {
-    GestureKind::ALL
-        .iter()
-        .map(|kind| format!("{} {}", kind.key(), kind.name().to_ascii_lowercase()))
-        .collect::<Vec<_>>()
-        .join("  ")
+    "q mute  w submerge  e rise  r roll".to_string()
 }
 
 fn gesture_activities(session: &LiveSessionSnapshot, now_seconds: f64) -> Vec<GestureActivity> {
@@ -1516,11 +1512,11 @@ mod tests {
             "the footer row must keep the quit exit visible: {frame}"
         );
         assert!(
-            frame.contains("z␠bloom"),
+            frame.contains("q␠mute"),
             "gesture key hints must show on the activity row when idle: {frame}"
         );
         assert!(
-            frame.contains("x␠lift"),
+            frame.contains("w␠submerge"),
             "gesture key hints must show on the activity row when idle: {frame}"
         );
     }

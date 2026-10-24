@@ -1145,17 +1145,12 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         "Gestures (hold)",
         &[
             &[
-                ("z", "bloom"),
-                ("c", "submerge"),
-                ("v", "echo"),
-                ("x", "lift"),
-            ],
-            &[
                 ("q", "kick+bass mute"),
+                ("w", "submerge"),
                 ("e", "rise"),
                 ("r", "perc roll"),
-                ("a", "chord vamp (tap)"),
             ],
+            &[("a", "chord vamp (tap)")],
         ],
     ));
     lines.extend(section(
@@ -1164,8 +1159,8 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             &[("/", "palette"), ("f", "LFO"), ("\u{21e7}F", "add LFO")],
             &[
                 ("\u{21e7}A", "toggle auto"),
-                ("g", "ENV"),
-                ("\u{21e7}E", "add ENV"),
+                // ("g", "ENV"),
+                // ("\u{21e7}E", "add ENV"),
             ],
         ],
     ));

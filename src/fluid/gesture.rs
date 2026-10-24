@@ -78,13 +78,21 @@ impl GestureKind {
     }
 
     pub(crate) fn from_key(key: char) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.key() == key)
+        match key {
+            'w' => Some(Self::Submerge),
+            // 'z' => Some(Self::Bloom),
+            // 'c' => Some(Self::Submerge),
+            // 'v' => Some(Self::Echo),
+            // 'x' => Some(Self::Lift),
+            _ => None,
+        }
     }
 
+    #[cfg(test)]
     pub(crate) const fn key(self) -> char {
         match self {
             Self::Bloom => 'z',
-            Self::Submerge => 'c',
+            Self::Submerge => 'w',
             Self::Echo => 'v',
             Self::Lift => 'x',
         }

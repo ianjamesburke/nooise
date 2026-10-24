@@ -101,12 +101,16 @@ impl GesturePlayer {
 #[test]
 fn every_normal_mode_gesture_changes_the_rendered_audio() {
     const SAMPLE_RATE: f32 = 12_000.0;
-    for kind in GestureKind::ALL {
+    for (label, key_char) in [("Submerge", 'w'), ("Rise", 'e')] {
         let mut dry = GesturePlayer::new(SAMPLE_RATE);
         let mut played = GesturePlayer::new(SAMPLE_RATE);
         dry.render(2.0);
         played.render(2.0);
-        played.gesture(kind, KeyEventKind::Press);
+        played.key(
+            KeyCode::Char(key_char),
+            KeyEventKind::Press,
+            KeyModifiers::NONE,
+        );
         let mut difference = 0.0f64;
         let mut reference = 0.0f64;
         for _ in 0..(SAMPLE_RATE * 2.0) as usize {
@@ -119,16 +123,13 @@ fn every_normal_mode_gesture_changes_the_rendered_audio() {
         }
         assert!(reference > 0.001, "fixture must contain audible music");
         let relative_difference = (difference / reference).sqrt();
-        eprintln!(
-            "{} relative audio difference: {relative_difference:.3}",
-            kind.name()
+        eprintln!("{label} relative audio difference: {relative_difference:.3}");
+        assert!(relative_difference > 0.02, "{label} did not change audio",);
+        played.key(
+            KeyCode::Char(key_char),
+            KeyEventKind::Release,
+            KeyModifiers::NONE,
         );
-        assert!(
-            relative_difference > 0.02,
-            "{} did not change audio",
-            kind.name()
-        );
-        played.gesture(kind, KeyEventKind::Release);
         played.render(1.0);
         assert!(!played.effects.session().load().gestures.has_held());
         assert_eq!(
@@ -147,16 +148,16 @@ fn every_normal_mode_gesture_changes_the_rendered_audio() {
 fn held_gesture_amount_reaches_telemetry_and_returns_on_release() {
     let mut played = GesturePlayer::new(12_000.0);
     played.render(0.5);
-    assert_eq!(played.engine.telemetry.gesture(GestureKind::Lift), 0.0);
-    played.gesture(GestureKind::Lift, KeyEventKind::Press);
-    played.render(0.3);
-    let rising = played.engine.telemetry.gesture(GestureKind::Lift);
-    assert!(rising > 0.3 && rising < 1.0, "lift amount {rising}");
-    played.render(1.0);
-    assert_eq!(played.engine.telemetry.gesture(GestureKind::Lift), 1.0);
-    played.gesture(GestureKind::Lift, KeyEventKind::Release);
+    assert_eq!(played.engine.telemetry.gesture(GestureKind::Submerge), 0.0);
+    played.gesture(GestureKind::Submerge, KeyEventKind::Press);
+    played.render(0.4);
+    let rising = played.engine.telemetry.gesture(GestureKind::Submerge);
+    assert!(rising > 0.25 && rising < 1.0, "submerge amount {rising}");
+    played.render(1.2);
+    assert_eq!(played.engine.telemetry.gesture(GestureKind::Submerge), 1.0);
+    played.gesture(GestureKind::Submerge, KeyEventKind::Release);
     played.render(0.5);
-    assert_eq!(played.engine.telemetry.gesture(GestureKind::Lift), 0.0);
+    assert_eq!(played.engine.telemetry.gesture(GestureKind::Submerge), 0.0);
 }
 
 #[test]
@@ -244,7 +245,7 @@ fn live_gesture_keeps_auto_running_and_release_preserves_an_intervening_edit() {
         64,
     ))));
     player.render(2.0);
-    player.gesture(GestureKind::Lift, KeyEventKind::Press);
+    player.gesture(GestureKind::Submerge, KeyEventKind::Press);
     player.render(0.2);
     assert!(
         player.engine.morph.load().is_some(),
@@ -264,7 +265,7 @@ fn live_gesture_keeps_auto_running_and_release_preserves_an_intervening_edit() {
         player.engine.morph.load().is_none(),
         "ordinary edits still exit auto"
     );
-    player.gesture(GestureKind::Lift, KeyEventKind::Release);
+    player.gesture(GestureKind::Submerge, KeyEventKind::Release);
     player.render(0.5);
     assert_eq!(
         player.effects.session().load().controls.master.bpm,

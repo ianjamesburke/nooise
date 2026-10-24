@@ -13,6 +13,7 @@ pub(crate) enum Operation {
     Recipe(recipe::RecipeId),
     PlannedMute,
     Chord(ChordAction),
+    ToggleAuto,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +70,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -88,6 +89,7 @@ impl Operation {
         Self::PlannedMute,
         Self::Chord(ChordAction::AddExtension),
         Self::Chord(ChordAction::Restore),
+        Self::ToggleAuto,
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -145,6 +147,12 @@ impl Operation {
                 aliases: &["planned mute", "mute next"],
                 description: "mute the visible layer at the next bar",
             },
+            Self::ToggleAuto => OperationSpec {
+                operation: self,
+                label: "Toggle auto",
+                aliases: &["auto", "auto morph", "morph"],
+                description: "start or stop auto-morphing between songs",
+            },
         }
     }
 
@@ -156,7 +164,11 @@ impl Operation {
                 MotionAction::Resume => Some(CaptureAction::Resume),
                 MotionAction::Delete => Some(CaptureAction::Delete),
             },
-            Self::Mix(_) | Self::Recipe(_) | Self::PlannedMute | Self::Chord(_) => None,
+            Self::Mix(_)
+            | Self::Recipe(_)
+            | Self::PlannedMute
+            | Self::Chord(_)
+            | Self::ToggleAuto => None,
         }
     }
 
