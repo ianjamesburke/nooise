@@ -2,24 +2,28 @@
 //! than keyboard repeat or UI ticks, determines every gesture's amount.
 
 pub(crate) const GESTURE_COUNT: usize = 4;
-pub(crate) const HOLD_MUTE_COUNT: usize = 2;
+pub(crate) const HOLD_MUTE_COUNT: usize = 3;
 
 /// Every gesture lets go this fast on key-up: the envelope, and on the audio
 /// stage each wet return, reach zero within it.
 pub(crate) const GESTURE_RELEASE_SECONDS: f64 = 0.010;
 
-/// Momentary left-hand layer mute (`e` for Bass, `r` for Kick) in normal
-/// browsing: held mutes immediately without waiting for a bar boundary, and
-/// releasing brings the layer straight back in.
+/// Smooth high-pass riser (`e` in Browsing): slower and gentler than `x` Lift.
+pub(crate) const RISE_SECONDS: f64 = 1.8;
+
+/// Momentary left-hand top-row holds (`q` for Kick+Bass Mute, `e` for Rise,
+/// `r` for Perc Roll) in normal browsing: active while held and released
+/// immediately on key-up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum HoldMute {
-    Bass = 0,
-    Kick = 1,
+    KickAndBass = 0,
+    Rise = 1,
+    PercRoll = 2,
 }
 
 impl HoldMute {
-    pub(crate) const ALL: [Self; HOLD_MUTE_COUNT] = [Self::Bass, Self::Kick];
+    pub(crate) const ALL: [Self; HOLD_MUTE_COUNT] = [Self::KickAndBass, Self::Rise, Self::PercRoll];
 
     pub(crate) fn from_key(key: char) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.key() == key)
@@ -27,22 +31,17 @@ impl HoldMute {
 
     pub(crate) const fn key(self) -> char {
         match self {
-            Self::Bass => 'e',
-            Self::Kick => 'r',
-        }
-    }
-
-    pub(crate) const fn tab(self) -> super::Tab {
-        match self {
-            Self::Bass => super::Tab::Bass,
-            Self::Kick => super::Tab::Kick,
+            Self::KickAndBass => 'q',
+            Self::Rise => 'e',
+            Self::PercRoll => 'r',
         }
     }
 
     pub(crate) const fn name(self) -> &'static str {
         match self {
-            Self::Bass => "Bass Mute",
-            Self::Kick => "Kick Mute",
+            Self::KickAndBass => "Kick+Bass Mute",
+            Self::Rise => "Rise",
+            Self::PercRoll => "Perc Roll",
         }
     }
 }
@@ -108,10 +107,6 @@ impl GestureKind {
             Self::Lift => 0.55,
         }
     }
-
-    fn return_seconds(self) -> f64 {
-        GESTURE_RELEASE_SECONDS
-    }
 }
 
 /// An amount anchored to the engine's monotonic seconds. Keeping the anchor
@@ -128,17 +123,25 @@ pub(crate) struct GestureEnvelope {
 
 impl GestureEnvelope {
     pub(crate) fn amount_at(self, kind: GestureKind, now_seconds: f64) -> f32 {
+        self.amount_at_with_rise(kind.rise_seconds(), now_seconds)
+    }
+
+    pub(crate) fn amount_at_with_rise(self, rise_seconds: f64, now_seconds: f64) -> f32 {
         let elapsed = (now_seconds - self.at_seconds).max(0.0);
         if self.held {
-            (self.amount as f64 + elapsed / kind.rise_seconds()).min(1.0) as f32
+            (self.amount as f64 + elapsed / rise_seconds).min(1.0) as f32
         } else {
-            (self.amount as f64 - elapsed / kind.return_seconds()).max(0.0) as f32
+            (self.amount as f64 - elapsed / GESTURE_RELEASE_SECONDS).max(0.0) as f32
         }
     }
 
     fn release(&mut self, kind: GestureKind, now_seconds: f64) {
+        self.release_with_rise(kind.rise_seconds(), now_seconds);
+    }
+
+    fn release_with_rise(&mut self, rise_seconds: f64, now_seconds: f64) {
         if self.held {
-            self.amount = self.amount_at(kind, now_seconds);
+            self.amount = self.amount_at_with_rise(rise_seconds, now_seconds);
             self.at_seconds = now_seconds;
             self.held = false;
             self.restored = false;
@@ -146,11 +149,13 @@ impl GestureEnvelope {
     }
 }
 
-/// One envelope per gesture. Every gesture plays over the Master bus, so the
-/// state carries no target; the key alone names the lane.
+/// One envelope per gesture, plus the gentler top-row `Rise` envelope (`e`).
+/// Every gesture plays over the Master bus, so the state carries no target;
+/// the key alone names the lane.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct GestureState {
     pub(crate) lanes: [GestureEnvelope; GESTURE_COUNT],
+    pub(crate) rise: GestureEnvelope,
 }
 
 impl GestureState {
@@ -162,8 +167,12 @@ impl GestureState {
         GestureKind::ALL.map(|kind| self.envelope(kind).amount_at(kind, now_seconds))
     }
 
+    pub(crate) fn rise_amount(&self, now_seconds: f64) -> f32 {
+        self.rise.amount_at_with_rise(RISE_SECONDS, now_seconds)
+    }
+
     pub(crate) fn has_held(&self) -> bool {
-        self.lanes.iter().any(|envelope| envelope.held)
+        self.lanes.iter().any(|envelope| envelope.held) || self.rise.held
     }
 
     pub(crate) fn press(&mut self, kind: GestureKind, now_seconds: f64) {
@@ -182,14 +191,32 @@ impl GestureState {
         };
     }
 
+    pub(crate) fn press_rise(&mut self, now_seconds: f64) {
+        if self.rise.held {
+            self.rise.restored = false;
+            return;
+        }
+        self.rise = GestureEnvelope {
+            amount: self.rise_amount(now_seconds),
+            at_seconds: now_seconds,
+            held: true,
+            restored: false,
+        };
+    }
+
     pub(crate) fn release(&mut self, kind: GestureKind, now_seconds: f64) {
         self.lanes[kind as usize].release(kind, now_seconds);
+    }
+
+    pub(crate) fn release_rise(&mut self, now_seconds: f64) {
+        self.rise.release_with_rise(RISE_SECONDS, now_seconds);
     }
 
     pub(crate) fn release_all(&mut self, now_seconds: f64) {
         for kind in GestureKind::ALL {
             self.release(kind, now_seconds);
         }
+        self.release_rise(now_seconds);
     }
 
     /// Capture compact envelope state relative to the next playback's zero.

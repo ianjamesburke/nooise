@@ -702,31 +702,15 @@ impl EffectExecutor {
                 }
                 if !self.session.audio_clock_active()
                     && let Some(vamp) = self.session.load().vamp
+                    && vamp.is_due(beat)
                 {
-                    if vamp.is_due(beat) {
-                        let snapshot = self.session.update(|snapshot| {
-                            snapshot.vamp = None;
-                            snapshot.muted[Tab::Kick as usize] =
-                                snapshot.hold_muted[HoldMute::Kick as usize];
-                            snapshot.muted[Tab::Bass as usize] =
-                                snapshot.hold_muted[HoldMute::Bass as usize];
-                        });
-                        self.show_message("16-bar vamp ended".to_string());
-                        acknowledgement = EffectAcknowledgement::Published {
-                            generation: snapshot.generation,
-                        };
-                    } else if vamp.is_active(beat)
-                        && (!self.session.load().muted[Tab::Kick as usize]
-                            || !self.session.load().muted[Tab::Bass as usize])
-                    {
-                        let snapshot = self.session.update(|snapshot| {
-                            snapshot.muted[Tab::Kick as usize] = true;
-                            snapshot.muted[Tab::Bass as usize] = true;
-                        });
-                        acknowledgement = EffectAcknowledgement::Published {
-                            generation: snapshot.generation,
-                        };
-                    }
+                    let snapshot = self.session.update(|snapshot| {
+                        snapshot.vamp = None;
+                    });
+                    self.show_message("Chord vamp released".to_string());
+                    acknowledgement = EffectAcknowledgement::Published {
+                        generation: snapshot.generation,
+                    };
                 }
                 Ok(acknowledgement)
             }
@@ -967,7 +951,7 @@ impl EffectExecutor {
                         target_beat: 4.0,
                     },
                 });
-                snapshot.vamp = snapshot.vamp.map(|_| VampState::start(0.0));
+                snapshot.vamp = snapshot.vamp.map(|vamp| VampState::start(0.0, vamp.slot));
             }
         });
         if self.session.load().transport == Transport::Playing {
@@ -1541,20 +1525,34 @@ impl EffectExecutor {
                 })
             }
             InteractionEffect::HoldMutePress(mute) => {
+                let now_seconds = self.session.audio_seconds();
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.hold_muted[mute as usize] = true;
-                    snapshot.muted[mute.tab() as usize] = true;
+                    match mute {
+                        HoldMute::KickAndBass => {
+                            snapshot.muted[Tab::Kick as usize] = true;
+                            snapshot.muted[Tab::Bass as usize] = true;
+                        }
+                        HoldMute::Rise => snapshot.gestures.press_rise(now_seconds),
+                        HoldMute::PercRoll => {}
+                    }
                 });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
                 })
             }
             InteractionEffect::HoldMuteRelease(mute) => {
-                let beat = self.current_beat(context.beat);
+                let now_seconds = self.session.audio_seconds();
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.hold_muted[mute as usize] = false;
-                    snapshot.muted[mute.tab() as usize] =
-                        snapshot.vamp.is_some_and(|vamp| vamp.is_active(beat));
+                    match mute {
+                        HoldMute::KickAndBass => {
+                            snapshot.muted[Tab::Kick as usize] = false;
+                            snapshot.muted[Tab::Bass as usize] = false;
+                        }
+                        HoldMute::Rise => snapshot.gestures.release_rise(now_seconds),
+                        HoldMute::PercRoll => {}
+                    }
                 });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
@@ -1562,33 +1560,35 @@ impl EffectExecutor {
             }
             InteractionEffect::ToggleVamp => {
                 let beat = self.current_beat(context.beat);
+                let phrase_start = self.session.audio_phrase_start();
                 let mut message = String::new();
                 let snapshot = self.session.update(|snapshot| {
                     if let Some(mut vamp) = snapshot.vamp {
                         if beat < vamp.start_beat {
                             snapshot.vamp = None;
-                            snapshot.muted[Tab::Kick as usize] =
-                                snapshot.hold_muted[HoldMute::Kick as usize];
-                            snapshot.muted[Tab::Bass as usize] =
-                                snapshot.hold_muted[HoldMute::Bass as usize];
-                            message = "16-bar vamp cancelled".to_string();
+                            message = "Chord vamp cancelled".to_string();
+                        } else if !vamp.is_releasing() {
+                            vamp.end_beat = next_bar_beat(beat.max(0.0));
+                            snapshot.vamp = Some(vamp);
+                            message = "Chord vamp releasing next bar".to_string();
                         } else {
-                            let release_beat = next_bar_beat(beat.max(0.0));
-                            if vamp.end_beat > release_beat + 1e-6 {
-                                vamp.end_beat = release_beat;
-                                snapshot.vamp = Some(vamp);
-                                message = "16-bar vamp ending next bar".to_string();
-                            } else if vamp.is_releasing_early() {
-                                vamp.end_beat = vamp.start_beat + super::planned::VAMP_BEATS;
-                                snapshot.vamp = Some(vamp);
-                                message = "16-bar vamp kept".to_string();
-                            } else {
-                                message = "16-bar vamp ending next bar".to_string();
-                            }
+                            vamp.end_beat = f64::INFINITY;
+                            snapshot.vamp = Some(vamp);
+                            message = "Chord vamp kept".to_string();
                         }
                     } else {
-                        snapshot.vamp = Some(VampState::start(beat));
-                        message = "16-bar vamp armed for next bar".to_string();
+                        let start_beat = next_bar_beat(beat.max(0.0));
+                        let window = ChordWindow::requested(&snapshot.controls.pad);
+                        let interval =
+                            GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
+                                .interval_beats;
+                        let step = (((start_beat - phrase_start).max(0.0) + GRID_BEAT_EPSILON)
+                            / interval)
+                            .floor() as usize
+                            % window.count;
+                        let slot = window.slot(step) as u8;
+                        snapshot.vamp = Some(VampState::start(beat, slot));
+                        message = "Chord vamp armed for next bar".to_string();
                     }
                 });
                 self.show_message(message);
@@ -1603,16 +1603,13 @@ impl EffectExecutor {
                     return Ok(EffectAcknowledgement::NoChange);
                 }
                 let now_seconds = self.session.audio_seconds();
-                let beat = self.current_beat(context.beat);
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.gestures.release_all(now_seconds);
-                    for mute in HoldMute::ALL {
-                        if snapshot.hold_muted[mute as usize] {
-                            snapshot.hold_muted[mute as usize] = false;
-                            snapshot.muted[mute.tab() as usize] =
-                                snapshot.vamp.is_some_and(|vamp| vamp.is_active(beat));
-                        }
+                    if snapshot.hold_muted[HoldMute::KickAndBass as usize] {
+                        snapshot.muted[Tab::Kick as usize] = false;
+                        snapshot.muted[Tab::Bass as usize] = false;
                     }
+                    snapshot.hold_muted = [false; HOLD_MUTE_COUNT];
                 });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,

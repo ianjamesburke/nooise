@@ -592,12 +592,14 @@ pub(crate) struct FluidEngine {
     pub(crate) control_smoothers: ControlSmoothers,
     mute_gates: OutputGates,
     muted: MuteState,
+    hold_muted: [bool; HOLD_MUTE_COUNT],
     /// The UI publishes planned actions ahead of time; audio owns their exact
     /// boundary so an onset never sees the previous mute state.
     planned: Option<PlannedAction>,
     pub(crate) vamp: Option<VampState>,
     vamp_active: bool,
     pub(crate) vamp_landed_beat: Option<f64>,
+    vamp_landed_at: Option<f64>,
     pub(crate) pad: PadEngine,
     pub(crate) perc: PercEngine,
     pub(crate) kick: KickEngine,
@@ -649,10 +651,9 @@ impl FluidEngine {
         let snapshot = live.controls.clone();
         let vamp_active = live.vamp.is_some_and(|vamp| vamp.is_active(0.0));
         let mut initial_pad = snapshot.pad.clone();
-        if vamp_active {
+        if let Some(vamp) = live.vamp.filter(|vamp| vamp.is_active(0.0)) {
             initial_pad.chord_count = 1.0;
-            initial_pad.chord_offset = 0.0;
-            initial_pad.chord_bars = VAMP_BARS as f32;
+            initial_pad.chord_offset = f32::from(vamp.slot);
         }
         let plan_source = Arc::new(live.automation.clone());
         let mut plan = AutomationPlan::default();
@@ -668,10 +669,12 @@ impl FluidEngine {
             control_smoothers: ControlSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
             muted: live.muted,
+            hold_muted: live.hold_muted,
             planned: live.planned,
             vamp: live.vamp,
             vamp_active,
             vamp_landed_beat: None,
+            vamp_landed_at: None,
             pad: PadEngine::new(
                 sample_rate,
                 &initial_pad,
@@ -713,6 +716,7 @@ impl FluidEngine {
         self.tempo.beat = 0.0;
         self.vamp_active = false;
         self.vamp_landed_beat = None;
+        self.vamp_landed_at = None;
         self.morph_writer = MorphWriter::default();
         self.morph
             .rcu(|current| current.as_ref().as_ref().map(MorphState::restarted));
@@ -879,6 +883,7 @@ impl StereoEngine for FluidEngine {
                     .settle("bass.level", self.snapshot.bass.level);
             }
             self.planned = session.planned;
+            self.hold_muted = session.hold_muted;
             if self.vamp != session.vamp {
                 self.vamp = session.vamp;
             }
@@ -918,19 +923,27 @@ impl StereoEngine for FluidEngine {
             self.telemetry.publish_beat(timing.beat);
         }
         self.plan.apply(&mut effective, timing);
+        if self.hold_muted[HoldMute::PercRoll as usize] {
+            effective.perc.interval_beats = faster_perc_interval(effective.perc.interval_beats);
+        }
         // Both dropped layers stay silent through the percentage phase,
         // including Level automation and their post-module effect tails.
         let morph_phrase = active_morph.and_then(|morph| morph.phrase_start_at(timing.beat));
         timing.morph_phrase_start = match (morph_phrase, self.vamp_landed_beat) {
-            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), Some(b)) => {
+                if self.vamp_landed_at.is_some_and(|at| at >= a) {
+                    Some(b)
+                } else {
+                    Some(a)
+                }
+            }
             (Some(a), None) => Some(a),
             (None, Some(b)) => Some(b),
             (None, None) => None,
         };
         if let Some(vamp) = self.vamp.filter(|vamp| vamp.is_active(timing.beat)) {
             effective.pad.chord_count = 1.0;
-            effective.pad.chord_offset = 0.0;
-            effective.pad.chord_bars = VAMP_BARS as f32;
+            effective.pad.chord_offset = f32::from(vamp.slot);
             timing.morph_phrase_start = Some(vamp.start_beat);
         }
         let drop_gain =
@@ -1111,9 +1124,11 @@ impl StereoEngine for FluidEngine {
             (raw_l, raw_r),
             timing,
         );
-        let master =
-            self.gesture_audio
-                .process(master, self.gesture_snapshot.amounts(now_seconds), timing);
+        let mut gesture_amounts = self.gesture_snapshot.amounts(now_seconds);
+        let rise_amount = self.gesture_snapshot.rise_amount(now_seconds);
+        gesture_amounts[GestureKind::Lift as usize] =
+            gesture_amounts[GestureKind::Lift as usize].max(rise_amount * 0.52);
+        let master = self.gesture_audio.process(master, gesture_amounts, timing);
         let out = gate_stereo(
             self.master_bus
                 .process(master.0, master.1, &effective.master),
@@ -1199,16 +1214,6 @@ impl FluidEngine {
         {
             boundary_muted[tab as usize] = !boundary_muted[tab as usize];
         }
-        if let Some(vamp) = self.vamp {
-            if beat >= vamp.end_beat - ramp_beats {
-                let session = self.session.load();
-                boundary_muted[Tab::Kick as usize] = session.hold_muted[HoldMute::Kick as usize];
-                boundary_muted[Tab::Bass as usize] = session.hold_muted[HoldMute::Bass as usize];
-            } else if beat >= vamp.start_beat - ramp_beats {
-                boundary_muted[Tab::Kick as usize] = true;
-                boundary_muted[Tab::Bass as usize] = true;
-            }
-        }
         boundary_muted
     }
 
@@ -1225,73 +1230,113 @@ impl FluidEngine {
         }
     }
 
+    fn pad_landing_slot_at(&self, beat: f64) -> usize {
+        if self
+            .pad
+            .cursor
+            .next_chord_beat
+            .is_some_and(|next| beat + GRID_BEAT_EPSILON >= next)
+        {
+            let window = ChordWindow::requested(&self.snapshot.pad);
+            let old_next_slot = self
+                .pad
+                .cursor
+                .window
+                .slot((self.pad.cursor.step + 1) % self.pad.cursor.window.count);
+            let step = if window.progression != self.pad.cursor.window.progression {
+                0
+            } else if let Some(current_step) = window
+                .slots()
+                .position(|slot| slot == self.pad.cursor.slot())
+            {
+                (current_step + 1) % window.count
+            } else {
+                window
+                    .slots()
+                    .position(|slot| slot == old_next_slot)
+                    .unwrap_or(0)
+            };
+            window.slot(step)
+        } else {
+            self.pad.cursor.slot()
+        }
+    }
+
     fn advance_vamp(&mut self, timing: TimingContext) {
         let session = self.session.load();
         if session.vamp != self.vamp {
             self.vamp = session.vamp;
-            let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
-            self.mute_gates
-                .set_targets(&boundary_muted, self.sample_rate);
-            self.muted = boundary_muted;
         }
 
+        let mut released_vamp = None;
         if timing.transport == Transport::Playing
             && let Some(vamp) = self.vamp
+            && vamp.is_due(timing.beat)
         {
-            let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
-            self.mute_gates
-                .set_targets(&boundary_muted, self.sample_rate);
-            self.muted = boundary_muted;
-
-            if timing.beat >= vamp.end_beat {
-                match self.session.transact(|snapshot| {
-                    if snapshot.vamp != Some(vamp) {
-                        return Err(());
-                    }
-                    snapshot.vamp = None;
-                    snapshot.muted[Tab::Kick as usize] =
-                        snapshot.hold_muted[HoldMute::Kick as usize];
-                    snapshot.muted[Tab::Bass as usize] =
-                        snapshot.hold_muted[HoldMute::Bass as usize];
-                    Ok(())
-                }) {
-                    Ok(snapshot) => {
-                        self.muted = snapshot.muted;
-                        self.vamp = None;
-                    }
-                    Err(()) => {
-                        let session = self.session.load();
-                        self.mute_gates
-                            .set_targets(&session.muted, self.sample_rate);
-                        self.muted = session.muted;
-                        self.vamp = session.vamp;
-                    }
+            match self.session.transact(|snapshot| {
+                if snapshot.vamp != Some(vamp) {
+                    return Err(());
                 }
-            } else if timing.beat >= vamp.start_beat
-                && (!session.muted[Tab::Kick as usize] || !session.muted[Tab::Bass as usize])
-                && let Ok(snapshot) = self.session.transact(|snapshot| {
-                    if snapshot.vamp != Some(vamp) {
-                        return Err(());
-                    }
-                    snapshot.muted[Tab::Kick as usize] = true;
-                    snapshot.muted[Tab::Bass as usize] = true;
-                    Ok(())
-                })
-            {
-                self.muted = snapshot.muted;
+                snapshot.vamp = None;
+                Ok(())
+            }) {
+                Ok(_) => {
+                    self.vamp = None;
+                    released_vamp = Some(vamp);
+                }
+                Err(()) => {
+                    self.vamp = self.session.load().vamp;
+                }
             }
         }
 
         let now_active = self.vamp.is_some_and(|vamp| vamp.is_active(timing.beat));
         if now_active != self.vamp_active {
             if now_active {
+                if let Some(mut vamp) = self.vamp {
+                    let landing_slot = self.pad_landing_slot_at(timing.beat) as u8;
+                    if landing_slot != vamp.slot {
+                        vamp.slot = landing_slot;
+                        self.vamp = Some(vamp);
+                        let _ = self.session.transact(|snapshot| {
+                            if let Some(active) = &mut snapshot.vamp {
+                                active.slot = landing_slot;
+                            }
+                            Ok::<(), ()>(())
+                        });
+                    }
+                }
                 self.vamp_landed_beat = None;
+                self.vamp_landed_at = None;
             } else {
-                self.vamp_landed_beat = Some((timing.beat / 4.0).floor() * 4.0);
+                let landed_at = released_vamp
+                    .map_or_else(|| (timing.beat / 4.0).floor() * 4.0, |vamp| vamp.end_beat);
+                let window = ChordWindow::requested(&self.snapshot.pad);
+                let locked_slot = released_vamp
+                    .map_or_else(|| self.pad.cursor.slot(), |vamp| usize::from(vamp.slot));
+                let locked_step = window
+                    .slots()
+                    .position(|slot| slot == locked_slot)
+                    .unwrap_or(0);
+                let next_step = (locked_step + 1) % window.count;
+                let interval =
+                    GridSpec::new(self.snapshot.pad.chord_bars * 4.0, 0.0, 0.0).interval_beats;
+                self.vamp_landed_beat = Some(landed_at - (next_step as f64) * interval);
+                self.vamp_landed_at = Some(landed_at);
             }
             self.reset_progression_phrase_anchors();
             self.vamp_active = now_active;
         }
+    }
+}
+
+fn faster_perc_interval(interval_beats: f32) -> f32 {
+    if interval_beats >= 4.25 {
+        interval_beats
+    } else if interval_beats <= BEAT_GRID_FLOOR {
+        BEAT_GRID_FLOOR * 0.5
+    } else {
+        beat_grid_adjust(interval_beats, -1.0, BEAT_GRID_FLOOR, 4.25)
     }
 }
 

@@ -37,26 +37,26 @@ lets go within 10 ms of release, wet returns included, so no reverb or echo
 rings on. The former Thin
 gesture on `b` is retired; a song code carrying one is refused.
 
-Hold `e` in Browsing for an immediate momentary Bass mute and `r` for an
-immediate momentary Kick mute; holding both drops Kick and Bass together, and
-releasing brings them straight back in. While held, the activity row shows
-`Bass Mute●` and `Kick Mute●`. Like `z`/`x`/`c`/`v`, these holds require
-negotiated key-release support, stay active while `Esc` navigates back through
-drills and layers in Browsing, and release cleanly on mode transitions or focus
-loss. To free `e` and `r` on the left hand in Browsing, Envelope editor entry
-moves to `g` (next to `f` LFO) and Randomize moves to `u` (inside an open
-automation editor, `e`/`g` and `r`/`u` both work).
+Hold `q` in Browsing for an immediate momentary Kick+Bass mute (`Kick+Bass Mute●`),
+`e` for Rise (a gentler, slower high-pass lift that ramps over 1.8 s to 52% of Lift's
+throw, `Rise XX%↑` / `Rise 100%●` / `Rise XX%↓`), and `r` for Perc Roll (stepping the
+Perc trigger interval down by one subdivision while held, `Perc Roll●`). Like
+`z`/`x`/`c`/`v`, these holds require negotiated key-release support, stay active
+while `Esc` navigates back through drills and layers in Browsing, and release
+cleanly on mode transitions or focus loss. To free `e` and `r` on the left hand
+in Browsing, Envelope editor entry moves to `g` (next to `f` LFO) and Randomize
+moves to `u` (inside an open automation editor, `e`/`g` and `r`/`u` both work).
 
-Press `a` in Browsing to arm a 16-bar breakdown vamp (`VAMP_BARS = 16`, 64
-beats) for the next bar downbeat (`Vamp · next bar · a cancel`). On the next
-bar's beat 1, Kick and Bass mute and the progression clamps to Chord 1 (slot 0)
-starting at bar 1 of 16 (`Vamp · bar 1/16 · a end` through `16/16`). When bar 17
-arrives, Kick and Bass drop back in together on the downbeat and the full chord
-progression resumes cleanly from that bar; pressing `a` while armed cancels it,
-and pressing `a` while active bar-locks the release of the vamp to the next bar
-downbeat (`Vamp · end next bar · a keep`). Auto-morph toggle in Browsing moves
-to `Shift+A`. Armed or active vamp state persists in song codes (`VAMP_RECORD`)
-and rebases to the loaded song's beat zero.
+Press `a` in Browsing to arm a bar-quantized indefinite chord vamp for the next
+bar downbeat (`Vamp · next bar · a cancel`). On the next bar's beat 1, the vamp
+locks onto whatever chord slot (`0..8`) the progression lands on at that downbeat
+and holds that chord across Pads, Bass, Arp, and Lead (`Vamp · Chord N · a release`)
+until you cue the release. Pressing `a` while armed cancels it; pressing `a` while
+active bar-locks the release of the vamp to the next bar downbeat (`Vamp · release next bar · a keep`,
+and pressing `a` again before the bar line keeps holding the chord), releasing directly
+into the next chord in the progression on beat 1 of that bar. Auto-morph toggle in
+Browsing moves to `Shift+A`. Armed or active vamp state persists in song codes
+(`VAMP_RECORD`) and rebases to the loaded song's beat zero.
 
 Every gesture plays over the whole mix, after Master's module chain, whatever
 page is open. Arrows and Tab remain available while a key is down, and

@@ -22,13 +22,13 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) automation: AutomationState,
     pub(crate) tonal_sequence: TonalSequenceState,
     pub(crate) muted: MuteState,
-    /// Momentary hold-mutes (`e` = Bass, `r` = Kick). Live-only: held keys do
-    /// not travel in song codes.
+    /// Momentary left-hand holds (`q` = Kick+Bass Mute, `e` = Rise, `r` = Perc Roll).
+    /// Live-only: held keys do not travel in song codes.
     pub(crate) hold_muted: [bool; HOLD_MUTE_COUNT],
     /// A boundary action that changes the audible future of this session.
     pub(crate) planned: Option<PlannedAction>,
-    /// Active 16-bar breakdown vamp (`a`), muting Kick + Bass and locking
-    /// Pads to Chord 1 until `end_beat`.
+    /// Active bar-quantized chord vamp (`a`), locking Pads, Bass, Arp, and Lead
+    /// to the chord the next bar lands on until released on a bar boundary.
     pub(crate) vamp: Option<VampState>,
     /// Lead play-mode presses. Live-only: never written to a song code.
     pub(crate) lead_play: LeadPlayState,

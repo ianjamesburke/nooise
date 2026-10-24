@@ -17,13 +17,14 @@ use super::range_epoch::{CURRENT_RANGE_EPOCH, DRUNKEN_WAVE_EPOCH, stale_modulati
 use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TONAL_PHRASES, TonalSequenceState};
 use super::{
-    AutomationState, ControlAddress, ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO,
-    EditorMotionAddress, EditorMotionField, EnvField, EnvTrigger, EnvelopeRoute, FluidControls,
-    GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState, LfoField, LfoRoute, LfoShape,
-    MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
-    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIDI_ROW_BITS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind,
-    ModuleSlotField, MuteState, PAD_RHYTHM_ROWS, PlannedAction, RampParams, Step, StepTarget,
-    TAB_COUNT, Tab, VampState, all_specs, parse_module_slot_id, spec_by_id,
+    AutomationState, CHORD_SLOT_COUNT, ControlAddress, ControlKind, ControlSpec,
+    DEFAULT_LFO_DEPTH_RATIO, EditorMotionAddress, EditorMotionField, EnvField, EnvTrigger,
+    EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind, GestureState,
+    LfoField, LfoRoute, LfoShape, MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS,
+    MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIDI_ROW_BITS,
+    MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField, MuteState, PAD_RHYTHM_ROWS,
+    PlannedAction, RampParams, Step, StepTarget, TAB_COUNT, Tab, VampState, all_specs,
+    parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -380,14 +381,16 @@ pub(crate) fn encode_song_code_at_epoch(
         write_record(PLANNED_ACTION_RECORD, &planned, &mut bytes)?;
     }
     if let Some(vamp) = song.vamp {
-        if !vamp.start_beat.is_finite()
-            || !vamp.end_beat.is_finite()
-            || vamp.end_beat < 0.0
-            || vamp.end_beat <= vamp.start_beat
+        let valid_end = (vamp.end_beat.is_infinite() && vamp.end_beat.is_sign_positive())
+            || (vamp.end_beat.is_finite()
+                && vamp.end_beat >= 0.0
+                && vamp.end_beat > vamp.start_beat);
+        if usize::from(vamp.slot) >= CHORD_SLOT_COUNT || !vamp.start_beat.is_finite() || !valid_end
         {
             return Err(SongCodeError::InvalidPlannedAction);
         }
-        let mut payload = Vec::with_capacity(16);
+        let mut payload = Vec::with_capacity(17);
+        payload.push(vamp.slot);
         payload.extend_from_slice(&vamp.start_beat.to_le_bytes());
         payload.extend_from_slice(&vamp.end_beat.to_le_bytes());
         write_record(VAMP_RECORD, &payload, &mut bytes)?;
@@ -1518,23 +1521,28 @@ fn read_planned_action(bytes: &[u8]) -> Result<PlannedAction, SongCodeError> {
 
 fn read_vamp(bytes: &[u8]) -> Result<VampState, SongCodeError> {
     let mut reader = Reader::new(bytes);
+    let slot = reader
+        .u8()
+        .map_err(|_| SongCodeError::InvalidPlannedAction)?;
     let start_beat = reader
         .f64()
         .map_err(|_| SongCodeError::InvalidPlannedAction)?;
     let end_beat = reader
         .f64()
         .map_err(|_| SongCodeError::InvalidPlannedAction)?;
+    let valid_end = (end_beat.is_infinite() && end_beat.is_sign_positive())
+        || (end_beat.is_finite() && end_beat >= 0.0 && end_beat > start_beat);
     if !reader.is_empty()
+        || usize::from(slot) >= CHORD_SLOT_COUNT
         || !start_beat.is_finite()
-        || !end_beat.is_finite()
-        || end_beat < 0.0
-        || end_beat <= start_beat
+        || !valid_end
     {
         return Err(SongCodeError::InvalidPlannedAction);
     }
     Ok(VampState {
         start_beat,
         end_beat,
+        slot,
     })
 }
 

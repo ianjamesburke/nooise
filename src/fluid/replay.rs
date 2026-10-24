@@ -1667,8 +1667,12 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
         ("lfo", vec![plain(FixtureKey::Character('f'))]),
         ("envelope", vec![plain(FixtureKey::Character('g'))]),
         ("lift gesture", vec![plain(FixtureKey::Character('x'))]),
-        ("bass hold mute", vec![plain(FixtureKey::Character('e'))]),
-        ("kick hold mute", vec![plain(FixtureKey::Character('r'))]),
+        (
+            "kick+bass hold mute",
+            vec![plain(FixtureKey::Character('q'))],
+        ),
+        ("rise hold", vec![plain(FixtureKey::Character('e'))]),
+        ("perc roll hold", vec![plain(FixtureKey::Character('r'))]),
         ("unit flip", vec![plain(FixtureKey::Character('t'))]),
         ("track mute", vec![plain(FixtureKey::Character('m'))]),
         ("master mute", vec![shift(FixtureKey::Character('M'))]),
@@ -1841,7 +1845,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 automation: None,
                 intents: vec![Intent::ToggleVamp],
                 effects: vec!["ToggleVamp=>OK:Published { generation: 1 }"],
-                notice: Some("16-bar vamp armed for next bar"),
+                notice: Some("Chord vamp armed for next bar"),
             },
             "palette" => ExpectedBinding {
                 owner: "PALETTE",
@@ -1875,20 +1879,28 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 effects: vec!["GesturePress(Lift)=>OK:Published { generation: 1 }"],
                 notice: None,
             },
-            "bass hold mute" => ExpectedBinding {
+            "kick+bass hold mute" => ExpectedBinding {
                 owner: "BROWSE",
                 generation: 1,
                 automation: None,
-                intents: vec![Intent::StartHoldMute(gesture::HoldMute::Bass)],
-                effects: vec!["HoldMutePress(Bass)=>OK:Published { generation: 1 }"],
+                intents: vec![Intent::StartHoldMute(gesture::HoldMute::KickAndBass)],
+                effects: vec!["HoldMutePress(KickAndBass)=>OK:Published { generation: 1 }"],
                 notice: None,
             },
-            "kick hold mute" => ExpectedBinding {
+            "rise hold" => ExpectedBinding {
                 owner: "BROWSE",
                 generation: 1,
                 automation: None,
-                intents: vec![Intent::StartHoldMute(gesture::HoldMute::Kick)],
-                effects: vec!["HoldMutePress(Kick)=>OK:Published { generation: 1 }"],
+                intents: vec![Intent::StartHoldMute(gesture::HoldMute::Rise)],
+                effects: vec!["HoldMutePress(Rise)=>OK:Published { generation: 1 }"],
+                notice: None,
+            },
+            "perc roll hold" => ExpectedBinding {
+                owner: "BROWSE",
+                generation: 1,
+                automation: None,
+                intents: vec![Intent::StartHoldMute(gesture::HoldMute::PercRoll)],
+                effects: vec!["HoldMutePress(PercRoll)=>OK:Published { generation: 1 }"],
                 notice: None,
             },
             "unit flip" => ExpectedBinding {
@@ -5358,7 +5370,7 @@ fn chord_builder_actions_leave_lane_editors_without_removing_the_lane() {
 }
 
 #[test]
-fn hold_mutes_on_e_and_r_immediately_mute_and_drop_bass_and_kick_back_in() {
+fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
     let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
     let release = |ch| key(0, FixtureKey::Character(ch), InputPhase::Release);
 
@@ -5366,14 +5378,17 @@ fn hold_mutes_on_e_and_r_immediately_mute_and_drop_bass_and_kick_back_in() {
         &[
             key(0, FixtureKey::Enter, InputPhase::Press),
             press('z'),
+            press('q'),
             press('e'),
-            press('r'),
             key(0, FixtureKey::Escape, InputPhase::Press),
         ],
         TerminalCapabilities::full(),
     );
-    assert_eq!(held_and_navigated.effect_count("HoldMutePress(Bass)"), 1);
-    assert_eq!(held_and_navigated.effect_count("HoldMutePress(Kick)"), 1);
+    assert_eq!(
+        held_and_navigated.effect_count("HoldMutePress(KickAndBass)"),
+        1
+    );
+    assert_eq!(held_and_navigated.effect_count("HoldMutePress(Rise)"), 1);
     assert_eq!(
         held_and_navigated.effect_count("GestureReleaseAll"),
         0,
@@ -5389,27 +5404,46 @@ fn hold_mutes_on_e_and_r_immediately_mute_and_drop_bass_and_kick_back_in() {
         "holding z stays active across Esc navigation"
     );
     assert!(
-        held_text.contains("Bass Mute●"),
-        "holding e shows Bass Mute● on the activity line"
+        held_text.contains("Rise"),
+        "holding e shows Rise on the activity line"
     );
     assert!(
-        held_text.contains("Kick Mute●"),
-        "holding r shows Kick Mute● on the activity line"
+        held_text.contains("Kick+Bass Mute●"),
+        "holding q shows Kick+Bass Mute● on the activity line"
     );
 
-    let released_both = replay(
-        &[press('e'), press('r'), release('e'), release('r')],
+    let held_top_row = replay(
+        &[press('q'), press('e'), press('r')],
         TerminalCapabilities::full(),
     );
-    assert_eq!(released_both.effect_count("HoldMuteRelease(Bass)"), 1);
-    assert_eq!(released_both.effect_count("HoldMuteRelease(Kick)"), 1);
-    let final_text = &released_both.frames.last().unwrap().text;
-    assert!(!final_text.contains("Bass Mute●"));
-    assert!(!final_text.contains("Kick Mute●"));
+    assert_eq!(held_top_row.effect_count("HoldMutePress(PercRoll)"), 1);
+    let top_row_text = &held_top_row.frames.last().unwrap().text;
+    assert!(
+        top_row_text.contains("Perc Roll●"),
+        "holding r shows Perc Roll● on the activity line"
+    );
+
+    let released_all = replay(
+        &[
+            press('q'),
+            press('e'),
+            press('r'),
+            release('q'),
+            release('e'),
+            release('r'),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(released_all.effect_count("HoldMuteRelease(KickAndBass)"), 1);
+    assert_eq!(released_all.effect_count("HoldMuteRelease(Rise)"), 1);
+    assert_eq!(released_all.effect_count("HoldMuteRelease(PercRoll)"), 1);
+    let final_text = &released_all.frames.last().unwrap().text;
+    assert!(!final_text.contains("Kick+Bass Mute●"));
+    assert!(!final_text.contains("Perc Roll●"));
 }
 
 #[test]
-fn vamp_on_a_mutes_kick_and_bass_clamps_first_chord_and_restores_when_ended() {
+fn vamp_on_a_arms_for_next_bar_holds_chord_indefinitely_and_releases_on_next_bar() {
     let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
     let ctrl_s = modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
 
@@ -5424,7 +5458,7 @@ fn vamp_on_a_mutes_kick_and_bass_clamps_first_chord_and_restores_when_ended() {
         song::decode_song_code(armed.saved_automation_code.as_deref().unwrap()).unwrap();
     let vamp = saved_armed.vamp.expect("saved song carries armed vamp");
     assert!((vamp.start_beat - 4.0).abs() < 0.01);
-    assert!((vamp.end_beat - 68.0).abs() < 0.01);
+    assert!(vamp.end_beat.is_infinite() && vamp.end_beat.is_sign_positive());
     assert!(!saved_armed.muted[Tab::Kick as usize]);
     assert!(!saved_armed.muted[Tab::Bass as usize]);
 
@@ -5438,16 +5472,16 @@ fn vamp_on_a_mutes_kick_and_bass_clamps_first_chord_and_restores_when_ended() {
     );
     let active_text = &active.frames.last().unwrap().text;
     assert!(
-        active_text.contains("Vamp · bar 1/16 · a end"),
-        "at next bar downbeat, vamp enters bar 1/16 on the activity line: {active_text}"
+        active_text.contains("Vamp · Chord "),
+        "at next bar downbeat, vamp holds the landed chord on the activity line: {active_text}"
     );
     let saved_active =
         song::decode_song_code(active.saved_automation_code.as_deref().unwrap()).unwrap();
     let active_vamp = saved_active.vamp.expect("saved song carries active vamp");
     assert!(active_vamp.start_beat <= 0.0 && active_vamp.start_beat > -0.05);
-    assert!((active_vamp.end_beat - 64.0).abs() < 0.05);
-    assert!(saved_active.muted[Tab::Kick as usize]);
-    assert!(saved_active.muted[Tab::Bass as usize]);
+    assert!(active_vamp.end_beat.is_infinite() && active_vamp.end_beat.is_sign_positive());
+    assert!(!saved_active.muted[Tab::Kick as usize]);
+    assert!(!saved_active.muted[Tab::Bass as usize]);
 
     let releasing_at_bar = replay(
         &[
@@ -5460,7 +5494,7 @@ fn vamp_on_a_mutes_kick_and_bass_clamps_first_chord_and_restores_when_ended() {
     );
     let releasing_text = &releasing_at_bar.frames.last().unwrap().text;
     assert!(
-        releasing_text.contains("Vamp · end next bar · a keep"),
+        releasing_text.contains("Vamp · release next bar · a keep"),
         "pressing a during active vamp locks release to next bar: {releasing_text}"
     );
     let saved_releasing =
@@ -5469,8 +5503,6 @@ fn vamp_on_a_mutes_kick_and_bass_clamps_first_chord_and_restores_when_ended() {
         .vamp
         .expect("bar-locked release stays active until the bar line");
     assert!((releasing_vamp.end_beat - 4.0).abs() < 0.05);
-    assert!(saved_releasing.muted[Tab::Kick as usize]);
-    assert!(saved_releasing.muted[Tab::Bass as usize]);
 
     let released_after_bar = replay(
         &[
@@ -5488,6 +5520,4 @@ fn vamp_on_a_mutes_kick_and_bass_clamps_first_chord_and_restores_when_ended() {
         song::decode_song_code(released_after_bar.saved_automation_code.as_deref().unwrap())
             .unwrap();
     assert_eq!(saved_ended.vamp, None);
-    assert!(!saved_ended.muted[Tab::Kick as usize]);
-    assert!(!saved_ended.muted[Tab::Bass as usize]);
 }

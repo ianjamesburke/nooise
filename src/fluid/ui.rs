@@ -114,10 +114,10 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         _ => None,
     };
     let controls = &view.session.controls;
-    let vamp_active = view
+    let active_vamp = view
         .session
         .vamp
-        .is_some_and(|vamp| vamp.is_active(view.telemetry.beat));
+        .filter(|vamp| vamp.is_active(view.telemetry.beat));
     let frame = PanelFrame {
         view,
         automation,
@@ -134,11 +134,9 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             kick_interval_beats: controls.kick.interval_beats,
             kick_offset_beats: controls.kick.offset_beats,
         },
-        active_slot: if vamp_active {
-            0
-        } else {
-            view.telemetry.active_chord as usize
-        },
+        active_slot: active_vamp.map_or(view.telemetry.active_chord as usize, |vamp| {
+            usize::from(vamp.slot)
+        }),
         // One text row per control, blank line between for vertical breathing
         // room.
         bar_w: (inner.width as usize).saturating_sub(34).clamp(6, 80),
@@ -150,7 +148,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         header.chords,
         &controls.pad,
         frame.active_slot,
-        vamp_active,
+        active_vamp.is_some(),
     );
     if let Some(title) = &view.chord_title {
         f.render_widget(
@@ -164,14 +162,12 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             header.ribbon,
         );
     } else {
-        let ribbon_span = if let Some(vamp) = view
-            .session
-            .vamp
-            .filter(|vamp| vamp.is_active(view.telemetry.beat))
-        {
+        let ribbon_span = if let Some(vamp) = active_vamp {
+            let bar_start = ((view.telemetry.beat - vamp.start_beat).max(0.0) / 4.0).floor() * 4.0
+                + vamp.start_beat;
             ChordSpan {
-                start_beat: vamp.start_beat,
-                length_beats: super::planned::VAMP_BEATS as f32,
+                start_beat: bar_start,
+                length_beats: 4.0,
             }
         } else {
             view.telemetry.chord_span
@@ -329,7 +325,7 @@ fn draw_harmony(
     );
 
     let (slots, active_slot): (Vec<_>, usize) = if vamp_active {
-        (vec![0], 0)
+        (vec![active_slot], active_slot)
     } else {
         (window.slots().collect(), active_slot)
     };
@@ -1155,9 +1151,10 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("x", "lift"),
             ],
             &[
-                ("e", "bass mute"),
-                ("r", "kick mute"),
-                ("a", "16-bar vamp (tap)"),
+                ("q", "kick+bass mute"),
+                ("e", "rise"),
+                ("r", "perc roll"),
+                ("a", "chord vamp (tap)"),
             ],
         ],
     ));

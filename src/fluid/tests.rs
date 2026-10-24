@@ -10629,7 +10629,7 @@ mod chord_span_startup_tests {
     }
 
     #[test]
-    fn vamp_locks_first_chord_for_16_bars_and_drops_kick_and_bass_back_in_on_bar_17() {
+    fn vamp_locks_next_bar_chord_indefinitely_and_releases_into_next_chord_on_next_bar() {
         let mut song = SongState::from_controls(FluidControls::default());
         song.controls.master.bpm = 180.0;
         song.controls.pad.chord_bars = 1.0;
@@ -10639,18 +10639,19 @@ mod chord_span_startup_tests {
         let mut engine =
             FluidEngine::new(3_000.0, session.clone(), no_morph(), Arc::clone(&telemetry));
 
-        // Advance to beat 9.5 (mid-bar 3, while playing Chord 3 = slot 2):
-        // 180 BPM = 3 beats/sec -> 1,000 samples/beat -> 9,500 samples = 9.5 beats.
-        for _ in 0..9_500 {
+        // Advance to beat 5.5 (mid-bar 2, while playing Chord 2 = slot 1):
+        // 180 BPM = 3 beats/sec -> 1,000 samples/beat -> 5,500 samples = 5.5 beats.
+        for _ in 0..5_500 {
             engine.next_stereo();
         }
-        assert_eq!(engine.pad.cursor.slot(), 2, "on Chord 3 at beat 9.5");
-        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 2);
+        assert_eq!(engine.pad.cursor.slot(), 1, "on Chord 2 at beat 5.5");
+        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 1);
 
-        // Arm vamp mid-bar at beat 9.5 -> must quantize to the next bar at beat 12.0.
-        let armed = planned::VampState::start(telemetry.beat());
-        assert_eq!(armed.start_beat, 12.0);
-        assert_eq!(armed.end_beat, 76.0);
+        // Arm vamp mid-bar at beat 5.5 -> quantizes to next bar at beat 8.0,
+        // where the progression lands on Chord 3 (slot 2).
+        let armed = planned::VampState::start(telemetry.beat(), 2);
+        assert_eq!(armed.start_beat, 8.0);
+        assert!(armed.end_beat.is_infinite());
         session
             .transact(|next| {
                 next.vamp = Some(armed);
@@ -10658,65 +10659,63 @@ mod chord_span_startup_tests {
             })
             .unwrap();
 
-        // At beat 10.5 (still before next bar at 12.0), vamp is armed but not yet active.
+        // At beat 6.5 (still before next bar at 8.0), vamp is armed but not yet active.
         for _ in 0..1_000 {
             engine.next_stereo();
         }
         assert_eq!(
             engine.pad.cursor.slot(),
-            2,
-            "current bar finishes on Chord 3 before the next bar downbeat"
+            1,
+            "current bar finishes on Chord 2 before the next bar downbeat"
         );
-        let pre_vamp = session.load();
-        assert!(!pre_vamp.muted[Tab::Kick as usize]);
-        assert!(!pre_vamp.muted[Tab::Bass as usize]);
 
-        // Advance past beat 12.0 into bar 1 of the vamp (to beat 13.0) and then beat 30.0.
+        // Advance past beat 8.0 through several bars (to beat 25.5):
+        // without the vamp it would have cycled through slots 2 -> 3 -> 0 -> 1 -> 2,
+        // but with the vamp it stays locked on Chord 3 (slot 2) indefinitely.
+        for _ in 0..19_000 {
+            engine.next_stereo();
+        }
+        assert_eq!(
+            engine.pad.cursor.slot(),
+            2,
+            "vamp holds Chord 3 (slot 2) across bar boundaries until released"
+        );
+        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 2);
+        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 2);
+        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 2);
+
+        // Cue bar-locked release at beat 25.5 -> releases on next bar downbeat at beat 28.0.
+        session
+            .transact(|next| {
+                if let Some(vamp) = &mut next.vamp {
+                    vamp.end_beat = next_bar_beat(telemetry.beat());
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+        assert_eq!(session.load().vamp.unwrap().end_beat, 28.0);
+
+        // At beat 26.5 (before bar downbeat at 28.0), still holding Chord 3 (slot 2).
+        for _ in 0..1_000 {
+            engine.next_stereo();
+        }
+        assert_eq!(engine.pad.cursor.slot(), 2);
+
+        // Cross beat 28.0 (to beat 29.0): vamp releases directly into the next chord
+        // in the progression after slot 2, which is Chord 4 (slot 3)!
         for _ in 0..2_500 {
             engine.next_stereo();
         }
+        assert!(telemetry.beat() >= 28.0);
+        assert_eq!(engine.vamp, None);
+        assert_eq!(session.load().vamp, None);
         assert_eq!(
             engine.pad.cursor.slot(),
-            0,
-            "vamp starts at bar 1 of 16 on Chord 1 at beat 12.0"
+            3,
+            "releasing vamp steps directly into the next chord in the progression (slot 3)"
         );
-        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 0);
-        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 0);
-        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 0);
-        assert_eq!(engine.pad.cursor.chord_beats, 64.0);
-        let mid_vamp = session.load();
-        assert!(mid_vamp.muted[Tab::Kick as usize]);
-        assert!(mid_vamp.muted[Tab::Bass as usize]);
-
-        for _ in 0..17_000 {
-            engine.next_stereo();
-        }
-        assert_eq!(
-            engine.pad.cursor.slot(),
-            0,
-            "vamp stays locked to Chord 1 across all 16 bars"
-        );
-        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 0);
-
-        // Advance past beat 76.0 (47,000 more samples = beat 77.0, bar 17 after vamp start).
-        for _ in 0..47_000 {
-            engine.next_stereo();
-        }
-        assert!(telemetry.beat() >= 76.0);
-        assert_eq!(engine.vamp, None, "vamp ends automatically after 16 bars");
-        assert_eq!(
-            engine.pad.cursor.chord_beats, 4.0,
-            "progression chord length restores after vamp"
-        );
-        assert_eq!(
-            engine.pad.cursor.slot(),
-            0,
-            "progression resumes cleanly from Chord 1 at bar 17"
-        );
-        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 0);
-        let published = session.load();
-        assert_eq!(published.vamp, None);
-        assert!(!published.muted[Tab::Kick as usize]);
-        assert!(!published.muted[Tab::Bass as usize]);
+        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 3);
+        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 3);
+        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 3);
     }
 }

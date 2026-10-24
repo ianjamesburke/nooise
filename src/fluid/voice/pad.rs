@@ -1362,7 +1362,7 @@ pub(crate) struct ProgressionCursor {
     pub(crate) step: usize,
     /// Transport beat the next chord starts on; set on the first tick, the
     /// first chord boundary after the engine starts.
-    next_chord_beat: Option<f64>,
+    pub(crate) next_chord_beat: Option<f64>,
     pub(crate) morph_phrase_start: Option<f64>,
 }
 
@@ -1412,7 +1412,7 @@ impl ProgressionCursor {
             self.window = ChordWindow::requested(c);
             self.chord_beats = c.chord_bars * 4.0;
             let interval = GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats;
-            let chord = ((timing.beat - start).max(0.0) / interval).floor();
+            let chord = (((timing.beat - start).max(0.0) + GRID_BEAT_EPSILON) / interval).floor();
             self.step = chord as usize % self.window.count;
             self.next_chord_beat = Some(start + (chord + 1.0) * interval);
             return timing.beat > 0.0;

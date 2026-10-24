@@ -331,17 +331,16 @@ impl<'a> UiViewModel<'a> {
             &session.automation,
         );
         let gestures = gesture_activities(session, presentation.gesture_now_seconds);
+        let rise_status = rise_activity(session, presentation.gesture_now_seconds);
         let holding_mute = session.hold_muted.into_iter().any(|held| held);
-        let holding_gesture = !gestures.is_empty() || holding_mute;
+        let holding_gesture = !gestures.is_empty() || holding_mute || rise_status.is_some();
         let vamp_status = session.vamp.map(|vamp| {
             if telemetry.beat < vamp.start_beat {
                 "Vamp · next bar · a cancel".to_string()
-            } else if vamp.is_releasing_early() {
-                "Vamp · end next bar · a keep".to_string()
+            } else if vamp.is_releasing() {
+                "Vamp · release next bar · a keep".to_string()
             } else {
-                let bar = (((telemetry.beat - vamp.start_beat) / 4.0).floor() as usize + 1)
-                    .clamp(1, VAMP_BARS);
-                format!("Vamp · bar {bar}/{VAMP_BARS} · a end")
+                format!("Vamp · Chord {} · a release", vamp.slot + 1)
             }
         });
         let stopped = session.transport == Transport::Stopped;
@@ -364,8 +363,12 @@ impl<'a> UiViewModel<'a> {
         };
         let activity_live =
             holding_gesture || stopped || vamp_status.is_some() || capture.is_some();
-        let live_gesture_text =
-            gesture_activity_line(&gestures, &session.hold_muted, vamp_status.as_deref());
+        let live_gesture_text = gesture_activity_line(
+            &gestures,
+            rise_status.as_deref(),
+            &session.hold_muted,
+            vamp_status.as_deref(),
+        );
         let activity = match (stopped, holding_gesture || vamp_status.is_some()) {
             // Stopped leads the row in every owner, so silence is never
             // mistaken for a dead engine; gestures still play into the tails.
@@ -397,14 +400,12 @@ impl<'a> UiViewModel<'a> {
             &session.controls,
             &session.muted,
             session.planned.map(PlannedAction::tab),
-            if session
+            session
                 .vamp
-                .is_some_and(|vamp| vamp.is_active(telemetry.beat))
-            {
-                0
-            } else {
-                telemetry.active_chord as usize
-            },
+                .filter(|vamp| vamp.is_active(telemetry.beat))
+                .map_or(telemetry.active_chord as usize, |vamp| {
+                    usize::from(vamp.slot)
+                }),
         );
 
         let chord_title = match navigation.chord_drill {
@@ -519,6 +520,7 @@ fn breadcrumb(
 /// help sharing the footer.
 fn gesture_activity_line(
     gestures: &[GestureActivity],
+    rise_status: Option<&str>,
     hold_muted: &[bool; HOLD_MUTE_COUNT],
     vamp_status: Option<&str>,
 ) -> String {
@@ -538,8 +540,11 @@ fn gesture_activity_line(
             )
         })
         .collect();
+    if let Some(rise) = rise_status {
+        parts.push(rise.to_string());
+    }
     for mute in HoldMute::ALL {
-        if hold_muted[mute as usize] {
+        if mute != HoldMute::Rise && hold_muted[mute as usize] {
             parts.push(format!("{}●", mute.name()));
         }
     }
@@ -547,6 +552,25 @@ fn gesture_activity_line(
         parts.push(vamp.to_string());
     }
     parts.join(" · ")
+}
+
+fn rise_activity(session: &LiveSessionSnapshot, now_seconds: f64) -> Option<String> {
+    let envelope = session.gestures.rise;
+    let amount = session.gestures.rise_amount(now_seconds);
+    if !envelope.held && amount <= f32::EPSILON {
+        return None;
+    }
+    let direction = if !envelope.held {
+        "↓"
+    } else if amount >= 1.0 - f32::EPSILON {
+        "●"
+    } else {
+        "↑"
+    };
+    Some(format!(
+        "Rise {}%{direction}",
+        (amount * 100.0).round() as u8
+    ))
 }
 
 /// The gesture-activity row's idle text: the key/name for every hold
