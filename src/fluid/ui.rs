@@ -1230,7 +1230,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("e", "rise"),
                 ("r", "perc roll"),
             ],
-            &[("a", "chord vamp (tap)")],
+            &[("a", "chord vamp (hold/tap)")],
         ],
     ));
     lines.extend(section(

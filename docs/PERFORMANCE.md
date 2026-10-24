@@ -46,17 +46,20 @@ transitions or focus loss. Envelope editor keyboard bindings (`e`/`g`/`Shift+E`/
 are commented out for now, and Randomize in Browsing is on `u` (inside an open automation
 editor, `r`/`u` both work).
 
-Press `a` in Browsing to toggle an indefinite chord vamp quantized to the nearest
+Hold or tap `a` in Browsing for an indefinite chord vamp quantized to the nearest
 chord start. Pressing during the first half of a chord locks the currently sounding
-chord immediately (`Vamp · Chord N · a release`); pressing in the second half arms
-for the next chord start (`Vamp · next chord · a cancel`). The vamp holds that chord
-across Pads, Bass, Arp, and Lead until you cue the release. Pressing `a` while armed
-cancels it; pressing `a` while active cues release at the next chord boundary
-(`Vamp · release next chord · a keep`, and pressing `a` again before the boundary keeps
-holding the chord), releasing directly into the next chord in the progression.
-Auto-morph toggle is available on `Shift+A` and in the `/` command palette as `/auto`
-(`Toggle auto`). Armed or active vamp state persists in song codes (`VAMP_RECORD`) and
-rebases to the loaded song's beat zero.
+chord immediately; pressing in the second half arms for the next chord start
+(`Vamp · next chord · a cancel`). Sustaining a hold on `a` keeps the chord locked
+momentarily under your finger (`Vamp · Chord N · key up releases`), and letting go
+of the key cues release directly into the next chord on the next chord boundary.
+A quick tap (< 250 ms) latches the vamp on hands-free (`Vamp · Chord N · a release`),
+allowing you to browse and adjust parameters while the chord holds; a subsequent tap
+cues release at the next chord boundary (`Vamp · release next chord · a keep`, and
+tapping again before the boundary cancels release and keeps holding).
+Vamp toggle is also available in the `/` command palette as `/vamp` (`Toggle vamp`),
+and auto-morph toggle is on `Shift+A` or `/auto` (`Toggle auto`). Armed or active
+vamp state persists in song codes (`VAMP_RECORD`) and rebases to the loaded song's
+beat zero. On terminals lacking key-release support, `a` operates as a latching tap.
 
 Every gesture plays over the whole mix, after Master's module chain, whatever
 page is open. Arrows and Tab remain available while a key is down, and

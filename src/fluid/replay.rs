@@ -1842,8 +1842,8 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
                 owner: "BROWSE",
                 generation: 1,
                 automation: None,
-                intents: vec![Intent::ToggleVamp],
-                effects: vec!["ToggleVamp=>OK:Published { generation: 1 }"],
+                intents: vec![Intent::PressVamp],
+                effects: vec!["PressVamp=>OK:Published { generation: 1 }"],
                 notice: Some("Chord vamp active"),
             },
             "palette" => ExpectedBinding {
@@ -5460,6 +5460,23 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
         "/auto in the slash command palette toggles auto morph"
     );
 
+    let slash_vamp = replay(
+        &[
+            press('/'),
+            press('v'),
+            press('a'),
+            press('m'),
+            press('p'),
+            key(0, FixtureKey::Enter, InputPhase::Press),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(
+        slash_vamp.effect_count("ToggleVamp"),
+        1,
+        "/vamp in the slash command palette toggles chord vamp"
+    );
+
     // Holding `q` does not write into the persistent user mute overlay (`snapshot.muted`),
     // so saving during `q` does not save Kick/Bass as muted, and releasing `q` preserves an
     // explicit `m` mute on Kick.
@@ -5514,15 +5531,20 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
 #[test]
 fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_chord() {
     let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
+    let release = |ch| key(0, FixtureKey::Character(ch), InputPhase::Release);
     let ctrl_s = modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
 
-    // At beat 0.0 (first half of Chord 1 [0..16)), pressing a quantizes to beat 0.0 and activates immediately.
-    let immediate = replay(&[press('a'), ctrl_s.clone()], TerminalCapabilities::full());
-    assert_eq!(immediate.effect_count("ToggleVamp"), 1);
+    // At beat 0.0 (first half of Chord 1 [0..16)), tapping a (press + immediate release) activates and latches immediately.
+    let immediate = replay(
+        &[press('a'), release('a'), ctrl_s.clone()],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(immediate.effect_count("PressVamp"), 1);
+    assert_eq!(immediate.effect_count("ReleaseVamp"), 1);
     let immediate_text = &immediate.frames.last().unwrap().text;
     assert!(
         immediate_text.contains("Vamp · Chord 1 · a release"),
-        "pressing a at beat 0 activates immediately on Chord 1: {immediate_text}"
+        "tapping a at beat 0 latches immediately on Chord 1: {immediate_text}"
     );
     let saved_immediate =
         song::decode_song_code(immediate.saved_automation_code.as_deref().unwrap()).unwrap();
@@ -5534,11 +5556,36 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     assert!(!saved_immediate.muted[Tab::Kick as usize]);
     assert!(!saved_immediate.muted[Tab::Bass as usize]);
 
-    // At 10,000 ms (beat 10.0, second half of Chord 1 [0..16)), pressing a arms for next chord at beat 16.0.
+    // Holding a (without release) shows 'key up releases' while held:
+    let held = replay(&[press('a')], TerminalCapabilities::full());
+    let held_text = &held.frames.last().unwrap().text;
+    assert!(
+        held_text.contains("Vamp · Chord 1 · key up releases"),
+        "holding a shows key up releases: {held_text}"
+    );
+
+    // Releasing after a sustained hold (> 250ms) cues release on the next chord boundary:
+    let hold_and_release = replay(
+        &[
+            press('a'),
+            TraceEvent::Tick { after_ms: 500 },
+            release('a'),
+            ctrl_s.clone(),
+        ],
+        TerminalCapabilities::full(),
+    );
+    let hold_release_text = &hold_and_release.frames.last().unwrap().text;
+    assert!(
+        hold_release_text.contains("Vamp · release next chord · a keep"),
+        "releasing held a cues release at next chord: {hold_release_text}"
+    );
+
+    // At 10,000 ms (beat 10.0, second half of Chord 1 [0..16)), tapping a arms for next chord at beat 16.0.
     let armed = replay(
         &[
             TraceEvent::Tick { after_ms: 10_000 },
             press('a'),
+            release('a'),
             ctrl_s.clone(),
         ],
         TerminalCapabilities::full(),
@@ -5546,7 +5593,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     let armed_text = &armed.frames.last().unwrap().text;
     assert!(
         armed_text.contains("Vamp · next chord · a cancel"),
-        "pressing a in second half arms vamp for next chord: {armed_text}"
+        "tapping a in second half arms vamp for next chord: {armed_text}"
     );
     let saved_armed =
         song::decode_song_code(armed.saved_automation_code.as_deref().unwrap()).unwrap();
@@ -5558,6 +5605,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
         &[
             TraceEvent::Tick { after_ms: 10_000 },
             press('a'),
+            release('a'),
             TraceEvent::Tick { after_ms: 8_000 },
             ctrl_s.clone(),
         ],
@@ -5569,13 +5617,15 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
         "at chord boundary, vamp activates on landed chord: {active_text}"
     );
 
-    // Pressing a during active vamp cues release on the next chord boundary (beat 32.0).
+    // Tapping a during active vamp cues release on the next chord boundary (beat 32.0).
     let releasing = replay(
         &[
             TraceEvent::Tick { after_ms: 10_000 },
             press('a'),
+            release('a'),
             TraceEvent::Tick { after_ms: 8_000 },
             press('a'),
+            release('a'),
             ctrl_s.clone(),
         ],
         TerminalCapabilities::full(),
@@ -5583,7 +5633,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     let releasing_text = &releasing.frames.last().unwrap().text;
     assert!(
         releasing_text.contains("Vamp · release next chord · a keep"),
-        "pressing a during active vamp cues release on next chord: {releasing_text}"
+        "tapping a during active vamp cues release on next chord: {releasing_text}"
     );
     let saved_releasing =
         song::decode_song_code(releasing.saved_automation_code.as_deref().unwrap()).unwrap();
@@ -5595,8 +5645,10 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
         &[
             TraceEvent::Tick { after_ms: 10_000 },
             press('a'),
+            release('a'),
             TraceEvent::Tick { after_ms: 8_000 },
             press('a'),
+            release('a'),
             TraceEvent::Tick { after_ms: 16_000 },
             ctrl_s,
         ],

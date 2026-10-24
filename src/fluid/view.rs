@@ -390,6 +390,8 @@ impl<'a> UiViewModel<'a> {
                 "Vamp · next chord · a cancel".to_string()
             } else if vamp.is_releasing() {
                 "Vamp · release next chord · a keep".to_string()
+            } else if !session.vamp_latched && session.vamp_press_seconds.is_some() {
+                format!("Vamp · Chord {} · key up releases", vamp.slot + 1)
             } else {
                 format!("Vamp · Chord {} · a release", vamp.slot + 1)
             }
