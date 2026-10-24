@@ -953,7 +953,7 @@ pub(crate) fn progression_home_label(progression: usize, key: MasterKey) -> Stri
 /// loop back and within each half's own loop (chords 4 → 1 and 8 → 5), so a
 /// Chord Count of 4 at Offset 0 or 4 is a complete progression in its own
 /// right (`voice_led_progressions_hold_a_tone_through_every_window`).
-pub(crate) const PROGRESSIONS: [Progression; 21] = [
+pub(crate) const PROGRESSIONS: [Progression; 37] = [
     Progression {
         song_value: 0,
         mood: "Drift",
@@ -1322,6 +1322,294 @@ pub(crate) const PROGRESSIONS: [Progression; 21] = [
             chord("D7", [3, 0, 1, 4, 0, 0, 1, 0]),
         ],
         bass: [43, 51, 48, 50, 46, 51, 53, 50],
+    },
+    // Ab major lydian haze: Abmaj7 and Fm7 float over warm extensions before
+    // Dbmaj7 and Eb7sus turn home.
+    Progression {
+        song_value: 22,
+        mood: "Haze",
+        home_mode: HomeMode::Major,
+        chords: [
+            chord("Abmaj7", [0, -1, 1, 5, 0, 0, 3, 0]),
+            chord("Cm7", [2, 0, -1, 4, 0, 0, 1, 0]),
+            chord("Fm7", [-2, 0, -1, 4, 0, 0, 2, 0]),
+            chord("Ebsus4", [4, -1, 3, 0, 0, 0, 0, 0]),
+            chord("Dbmaj7", [3, -1, 1, 5, 0, 0, 0, 0]),
+            chord("Fm7", [-2, 0, -1, 4, 0, 0, 2, 0]),
+            chord("Bbm7", [1, -1, -1, 4, 0, 0, 1, 1]),
+            chord("Eb7sus", [4, -1, 3, 4, 0, 0, 0, 2]),
+        ],
+        bass: [44, 48, 41, 51, 49, 41, 46, 51],
+    },
+    // E dorian undergrowth: the raised sixth (C#m7, A6) brightens the minor
+    // tonic before Dmaj7 settles back.
+    Progression {
+        song_value: 23,
+        mood: "Moss",
+        home_mode: HomeMode::Dorian,
+        chords: [
+            chord("Em9", [4, 0, -1, 4, 6, 0, 0, 0]),
+            chord("A6", [0, 0, 1, 9, 0, 0, 0, 0]),
+            chord("Bm7", [1, 0, -1, 4, 0, 0, 3, 1]),
+            chord("Gmaj7", [-1, 0, 1, 5, 0, 0, 3, 0]),
+            chord("C#m7", [2, 1, -1, 4, 0, 0, 0, 2]),
+            chord("F#m7", [-2, 1, -1, 4, 0, 0, 3, 0]),
+            chord("Aadd9", [0, 0, 1, 6, 0, 0, 1, 0]),
+            chord("Dmaj7", [3, 0, 1, 5, 0, 0, 1, 0]),
+        ],
+        bass: [40, 45, 47, 43, 49, 42, 45, 50],
+    },
+    // A major open canopy: major sevenths and ninths step down the scale and
+    // lift through Esus4.
+    Progression {
+        song_value: 24,
+        mood: "Bloom",
+        home_mode: HomeMode::Major,
+        chords: [
+            chord("Amaj7", [0, 0, 1, 5, 0, 0, 1, 0]),
+            chord("F#m7", [-2, 1, -1, 4, 0, 0, 3, 0]),
+            chord("Dmaj9", [3, 0, 1, 5, 6, 0, 0, 0]),
+            chord("Esus4", [4, 0, 3, 0, 0, 0, 0, 0]),
+            chord("Bm7", [1, 0, -1, 4, 0, 0, 1, 1]),
+            chord("F#m7", [-2, 1, -1, 4, 0, 0, 3, 0]),
+            chord("Dmaj7", [3, 0, 1, 5, 0, 0, 0, 0]),
+            chord("E7sus", [4, 0, 3, 4, 0, 0, 0, 0]),
+        ],
+        bass: [45, 42, 50, 52, 47, 42, 50, 52],
+    },
+    // Bb minor twilight: rich minor ninths and flat-VI major sevenths hang on
+    // a suspended fifth.
+    Progression {
+        song_value: 25,
+        mood: "Dusk",
+        home_mode: HomeMode::Minor,
+        chords: [
+            chord("Bbm7", [1, -1, -1, 4, 0, 0, 1, 1]),
+            chord("Gbmaj7", [-1, -1, 1, 5, 0, 0, 3, 0]),
+            chord("Dbmaj7", [3, -1, 1, 5, 0, 0, 0, 0]),
+            chord("Fsus4", [-2, 0, 3, 0, 0, 0, 2, 0]),
+            chord("Ebm7", [4, -1, -1, 4, 0, 0, 0, 0]),
+            chord("Bbm7/F", [-6, -1, -1, 4, 0, 2, 2, 1]),
+            chord("Gbmaj7", [-1, -1, 1, 5, 0, 0, 3, 0]),
+            chord("F7sus", [5, 0, 3, 4, 0, 0, 0, 0]),
+        ],
+        bass: [46, 42, 49, 41, 51, 41, 42, 41],
+    },
+    // F# dorian mist: F#m7 and B9 trade the dorian fourth before Dmaj7 and
+    // Esus4 loop back.
+    Progression {
+        song_value: 26,
+        mood: "Vapor",
+        home_mode: HomeMode::Dorian,
+        chords: [
+            chord("F#m7", [-2, 1, -1, 4, 0, 0, 3, 0]),
+            chord("B9", [1, 0, 1, 4, 6, 0, 0, 0]),
+            chord("Dmaj7", [3, 0, 1, 5, 0, 0, 0, 0]),
+            chord("C#m7", [2, 1, -1, 4, 0, 0, 0, 2]),
+            chord("Bm7", [1, 0, -1, 4, 0, 0, 1, 2]),
+            chord("F#m7/C#", [-2, 1, -1, 4, 0, 2, 1, 0]),
+            chord("Dadd9", [3, 0, 1, 6, 0, 0, 0, 0]),
+            chord("Esus4", [4, 0, 3, 0, 0, 0, 0, 0]),
+        ],
+        bass: [42, 47, 50, 49, 47, 49, 50, 52],
+    },
+    // Db major calm: wide major sevenths and suspended dominant chords move
+    // over a gentle bass walk.
+    Progression {
+        song_value: 27,
+        mood: "Still",
+        home_mode: HomeMode::Major,
+        chords: [
+            chord("Dbmaj7", [3, -1, 1, 5, 0, 0, 0, 0]),
+            chord("Bbm7", [1, -1, -1, 4, 0, 0, 1, 1]),
+            chord("Gbmaj7", [-1, -1, 1, 5, 0, 0, 3, 0]),
+            chord("Ab7sus", [7, -1, 3, 4, 0, 0, 0, 0]),
+            chord("Fm7", [-2, 0, -1, 4, 0, 0, 2, 0]),
+            chord("Bbm9", [1, -1, -1, 4, 6, 0, 1, 0]),
+            chord("Gbadd9", [-1, -1, 1, 6, 0, 0, 2, 0]),
+            chord("Absus4", [0, -1, 3, 0, 0, 0, 1, 0]),
+        ],
+        bass: [49, 46, 42, 44, 41, 46, 42, 44],
+    },
+    // C phrygian dark glow: the flat-II (Dbmaj7) and minor seventh (Bbm7)
+    // lean against the C tonic.
+    Progression {
+        song_value: 28,
+        mood: "Cinder",
+        home_mode: HomeMode::Phrygian,
+        chords: [
+            chord("Cm7", [2, 0, -1, 4, 0, 0, 1, 0]),
+            chord("Dbmaj7", [-4, -1, 1, 5, 0, 0, 3, 0]),
+            chord("Fm7", [-2, 0, -1, 4, 0, 0, 2, 0]),
+            chord("G7sus", [6, 0, 3, 4, 0, 0, 0, 0]),
+            chord("Bbm7", [1, -1, -1, 4, 0, 0, 3, 1]),
+            chord("Abmaj7", [7, -1, 1, 5, 0, 0, 0, 0]),
+            chord("Dbmaj7", [3, -1, 1, 5, 0, 0, 0, 0]),
+            chord("Fm7/C", [-2, 0, -1, 4, 0, 2, 1, 0]),
+        ],
+        bass: [48, 49, 41, 43, 46, 44, 49, 48],
+    },
+    // Bb mixolydian drift: the flat-VII (Abmaj7) and minor iv colour keep the
+    // major tonic weightless.
+    Progression {
+        song_value: 29,
+        mood: "Breeze",
+        home_mode: HomeMode::Mixolydian,
+        chords: [
+            chord("Bbadd9", [1, -1, 1, 6, 0, 0, 1, 1]),
+            chord("Fm7", [-2, 0, -1, 4, 0, 0, 2, 0]),
+            chord("Abmaj7", [0, -1, 1, 5, 0, 0, 3, 0]),
+            chord("Ebmaj7", [4, -1, 1, 5, 0, 0, 0, 0]),
+            chord("Gm7", [-1, 0, -1, 4, 0, 0, 3, 0]),
+            chord("Dm7", [3, 0, -1, 4, 0, 0, 0, 0]),
+            chord("Ebmaj7", [-3, -1, 1, 5, 0, 0, 3, 0]),
+            chord("F7sus", [-2, 0, 3, 4, 0, 0, 2, 0]),
+        ],
+        bass: [46, 41, 44, 51, 43, 50, 51, 41],
+    },
+    // B minor glass: clean minor sevenths and Gmaj7 voicings resolve through
+    // an F#sus4 tension.
+    Progression {
+        song_value: 30,
+        mood: "Frost",
+        home_mode: HomeMode::Minor,
+        chords: [
+            chord("Bm7", [1, 0, -1, 4, 0, 0, 1, 1]),
+            chord("Gmaj7", [-1, 0, 1, 5, 0, 0, 3, 0]),
+            chord("Dmaj7", [3, 0, 1, 5, 0, 0, 0, 0]),
+            chord("F#sus4", [-2, 1, 3, 0, 0, 0, 2, 0]),
+            chord("Em7", [4, 0, -1, 4, 0, 0, 0, 0]),
+            chord("Bm7/F#", [-6, 0, -1, 4, 0, 2, 2, 1]),
+            chord("Gadd9", [-1, 0, 1, 6, 0, 0, 2, 0]),
+            chord("Aadd9", [0, 0, 1, 6, 0, 0, 1, 2]),
+        ],
+        bass: [47, 43, 50, 42, 40, 42, 43, 45],
+    },
+    // E major light: Emaj7 and Amaj7 voicings share high upper tones across
+    // every step.
+    Progression {
+        song_value: 31,
+        mood: "Glimmer",
+        home_mode: HomeMode::Major,
+        chords: [
+            chord("Emaj7", [4, 0, 1, 5, 0, 0, 0, 0]),
+            chord("C#m7", [2, 1, -1, 4, 0, 0, 1, 0]),
+            chord("Amaj7", [0, 0, 1, 5, 0, 0, 1, 0]),
+            chord("Bsus4", [1, 0, 3, 0, 0, 0, 0, 0]),
+            chord("F#m7", [-2, 1, -1, 4, 0, 0, 3, 0]),
+            chord("C#m7", [2, 1, -1, 4, 0, 0, 0, 0]),
+            chord("Amaj7", [0, 0, 1, 5, 0, 0, 1, 0]),
+            chord("B7sus", [1, 0, 3, 4, 0, 0, 0, 0]),
+        ],
+        bass: [40, 49, 45, 47, 42, 49, 45, 47],
+    },
+    // G dorian shimmer: the major IV (C9) and flat-VII (Fmaj7) open up the
+    // minor key.
+    Progression {
+        song_value: 32,
+        mood: "Mirage",
+        home_mode: HomeMode::Dorian,
+        chords: [
+            chord("Gm7", [-1, 0, -1, 4, 0, 0, 3, 0]),
+            chord("C9", [2, 0, 1, 4, 6, 0, 0, 0]),
+            chord("Fmaj7", [-2, 0, 1, 5, 0, 0, 3, 0]),
+            chord("Dm7", [3, 0, -1, 4, 0, 0, 0, 0]),
+            chord("Ebmaj7", [-3, -1, 1, 5, 0, 0, 3, 0]),
+            chord("Cm7", [2, 0, -1, 4, 0, 0, 1, 0]),
+            chord("Bbadd9", [1, -1, 1, 6, 0, 0, 1, 2]),
+            chord("D7sus", [3, 0, 3, 4, 0, 0, 0, 2]),
+        ],
+        bass: [43, 48, 41, 50, 51, 48, 46, 50],
+    },
+    // E minor deep current: slow-moving seventh chords descend to a suspended
+    // B before returning home.
+    Progression {
+        song_value: 33,
+        mood: "Abyss",
+        home_mode: HomeMode::Minor,
+        chords: [
+            chord("Em7", [4, 0, -1, 4, 0, 0, 0, 0]),
+            chord("Cmaj7", [2, 0, 1, 5, 0, 0, 1, 0]),
+            chord("Am7", [0, 0, -1, 4, 0, 0, 1, 0]),
+            chord("Bsus4", [1, 0, 3, 0, 0, 0, 0, 0]),
+            chord("Gmaj7", [-1, 0, 1, 5, 0, 0, 3, 0]),
+            chord("Bm7", [1, 0, -1, 4, 0, 0, 1, 1]),
+            chord("Cmaj7", [-5, 0, 1, 5, 0, 0, 3, 0]),
+            chord("Dadd9", [-4, 0, 1, 6, 0, 0, 2, 0]),
+        ],
+        bass: [40, 48, 45, 47, 43, 47, 48, 50],
+    },
+    // A mixolydian wide sky: Gmaj7 and Dmaj7 answer the A tonic without a
+    // leading-tone pull.
+    Progression {
+        song_value: 34,
+        mood: "Horizon",
+        home_mode: HomeMode::Mixolydian,
+        chords: [
+            chord("Aadd9", [0, 0, 1, 6, 0, 0, 1, 0]),
+            chord("Em7", [4, 0, -1, 4, 0, 0, 0, 0]),
+            chord("Gmaj7", [-1, 0, 1, 5, 0, 0, 3, 0]),
+            chord("Dmaj7", [3, 0, 1, 5, 0, 0, 0, 0]),
+            chord("F#m7", [-2, 1, -1, 4, 0, 0, 3, 0]),
+            chord("C#m7", [2, 1, -1, 4, 0, 0, 0, 0]),
+            chord("Dmaj7", [-4, 0, 1, 5, 0, 0, 3, 0]),
+            chord("E7sus", [4, 0, 3, 4, 0, 0, 0, 0]),
+        ],
+        bass: [45, 40, 43, 50, 42, 49, 50, 52],
+    },
+    // D minor steady heart: Dm9 and Bbmaj7 trade common tones while Asus4
+    // holds the loop taut.
+    Progression {
+        song_value: 35,
+        mood: "Pulse",
+        home_mode: HomeMode::Minor,
+        chords: [
+            chord("Dm9", [3, 0, -1, 4, 6, 0, 0, 0]),
+            chord("Bbmaj7", [1, -1, 1, 5, 0, 0, 1, 1]),
+            chord("Fmaj7", [-2, 0, 1, 5, 0, 0, 2, 0]),
+            chord("Asus4", [0, 0, 3, 0, 0, 0, 2, 0]),
+            chord("Gm7", [-1, 0, -1, 4, 0, 0, 3, 0]),
+            chord("Dm7/A", [-4, 0, -1, 4, 0, 2, 3, 0]),
+            chord("Bbmaj7", [1, -1, 1, 5, 0, 0, 1, 1]),
+            chord("Csus4", [2, 0, 3, 0, 0, 0, 0, 0]),
+        ],
+        bass: [50, 46, 41, 45, 43, 45, 46, 48],
+    },
+    // Bb major warm tide: Ebmaj7 and Cm7 rise into an F7sus crest that eases
+    // back to Bbmaj7.
+    Progression {
+        song_value: 36,
+        mood: "Swell",
+        home_mode: HomeMode::Major,
+        chords: [
+            chord("Bbmaj7", [1, -1, 1, 5, 0, 0, 1, 1]),
+            chord("Gm7", [-1, 0, -1, 4, 0, 0, 3, 0]),
+            chord("Ebmaj7", [4, -1, 1, 5, 0, 0, 0, 0]),
+            chord("Fsus4", [-2, 0, 3, 0, 0, 0, 2, 0]),
+            chord("Cm7", [2, 0, -1, 4, 0, 0, 1, 0]),
+            chord("Dm7", [-4, 0, -1, 4, 0, 0, 1, 2]),
+            chord("Ebmaj7", [-3, -1, 1, 5, 0, 0, 3, 0]),
+            chord("F7sus", [5, 0, 3, 4, 0, 0, 0, 0]),
+        ],
+        bass: [46, 43, 51, 41, 48, 50, 51, 41],
+    },
+    // C# minor weightless loop: C#m7 and Amaj7 circle around E and G#sus4
+    // with a held upper tone.
+    Progression {
+        song_value: 37,
+        mood: "Orbit",
+        home_mode: HomeMode::Minor,
+        chords: [
+            chord("C#m7", [2, 1, -1, 4, 0, 0, 1, 0]),
+            chord("Amaj7", [0, 0, 1, 5, 0, 0, 1, 0]),
+            chord("Emaj7", [4, 0, 1, 5, 0, 0, 0, 0]),
+            chord("G#sus4", [-1, 1, 3, 0, 0, 0, 1, 0]),
+            chord("F#m7", [-2, 1, -1, 4, 0, 0, 3, 0]),
+            chord("C#m7/G#", [-5, 1, -1, 4, 0, 2, 3, 0]),
+            chord("Amaj7", [0, 0, 1, 5, 0, 0, 1, 0]),
+            chord("Bsus4", [1, 0, 3, 0, 0, 0, 0, 0]),
+        ],
+        bass: [49, 45, 40, 44, 42, 44, 45, 47],
     },
 ];
 

@@ -6833,6 +6833,22 @@ fn progression_labels_pair_key_and_mood() {
             "Am · Funk4",
             "F · Harvest",
             "Gm · Ember",
+            "Ab · Haze",
+            "Em · Moss",
+            "A · Bloom",
+            "Bbm · Dusk",
+            "F#m · Vapor",
+            "Db · Still",
+            "Cm · Cinder",
+            "Bb · Breeze",
+            "Bm · Frost",
+            "E · Glimmer",
+            "Gm · Mirage",
+            "Em · Abyss",
+            "A · Horizon",
+            "Dm · Pulse",
+            "Bb · Swell",
+            "C#m · Orbit",
             "Custom",
         ]
     );
@@ -10410,9 +10426,9 @@ fn apply_ratio_lands_on_the_dial_evenly_for_every_scale() {
 }
 
 /// Notes audited before the shared builder; only Ache 8 and Float 7 differ.
-/// Funk1-Funk4, Harvest and Ember were authored on the shared builder and
-/// pinned as heard.
-const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 168] = [
+/// Funk1-Funk4, Harvest, Ember, and Haze-Orbit were authored on the shared
+/// builder and pinned as heard.
+const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 296] = [
     [45, 50, 55, 60], // Drift 1
     [43, 50, 57, 60], // Drift 2
     [45, 52, 57, 60], // Drift 3
@@ -10581,6 +10597,134 @@ const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 168] = [
     [39, 46, 53, 55], // Ember 6
     [53, 57, 60, 67], // Ember 7
     [50, 57, 60, 66], // Ember 8
+    [44, 55, 60, 63], // Haze 1
+    [48, 55, 58, 63], // Haze 2
+    [41, 56, 60, 63], // Haze 3
+    [51, 56, 58, 63], // Haze 4
+    [49, 53, 56, 60], // Haze 5
+    [41, 56, 60, 63], // Haze 6
+    [46, 53, 56, 61], // Haze 7
+    [51, 56, 61, 63], // Haze 8
+    [52, 55, 62, 66], // Moss 1
+    [45, 49, 52, 66], // Moss 2
+    [47, 57, 62, 66], // Moss 3
+    [43, 54, 59, 62], // Moss 4
+    [49, 52, 59, 61], // Moss 5
+    [42, 52, 57, 61], // Moss 6
+    [45, 52, 59, 61], // Moss 7
+    [50, 57, 61, 66], // Moss 8
+    [45, 52, 56, 61], // Bloom 1
+    [42, 52, 57, 61], // Bloom 2
+    [50, 54, 61, 64], // Bloom 3
+    [52, 57, 59, 64], // Bloom 4
+    [47, 54, 57, 62], // Bloom 5
+    [42, 52, 57, 61], // Bloom 6
+    [50, 54, 57, 61], // Bloom 7
+    [52, 57, 59, 62], // Bloom 8
+    [46, 53, 56, 61], // Dusk 1
+    [42, 53, 58, 61], // Dusk 2
+    [49, 53, 56, 60], // Dusk 3
+    [41, 53, 58, 60], // Dusk 4
+    [51, 54, 58, 61], // Dusk 5
+    [41, 56, 58, 61], // Dusk 6
+    [42, 53, 58, 61], // Dusk 7
+    [53, 58, 60, 63], // Dusk 8
+    [42, 52, 57, 61], // Vapor 1
+    [47, 51, 57, 61], // Vapor 2
+    [50, 54, 57, 61], // Vapor 3
+    [49, 52, 59, 61], // Vapor 4
+    [47, 57, 59, 62], // Vapor 5
+    [49, 54, 57, 64], // Vapor 6
+    [50, 54, 57, 64], // Vapor 7
+    [52, 57, 59, 64], // Vapor 8
+    [49, 53, 56, 60], // Still 1
+    [46, 53, 56, 61], // Still 2
+    [42, 53, 58, 61], // Still 3
+    [56, 61, 63, 66], // Still 4
+    [41, 56, 60, 63], // Still 5
+    [46, 56, 60, 61], // Still 6
+    [42, 56, 58, 61], // Still 7
+    [44, 51, 56, 61], // Still 8
+    [48, 55, 58, 63], // Cinder 1
+    [37, 48, 53, 56], // Cinder 2
+    [41, 56, 60, 63], // Cinder 3
+    [55, 60, 62, 65], // Cinder 4
+    [46, 56, 61, 65], // Cinder 5
+    [56, 60, 63, 67], // Cinder 6
+    [49, 53, 56, 60], // Cinder 7
+    [48, 53, 56, 63], // Cinder 8
+    [46, 53, 60, 62], // Breeze 1
+    [41, 56, 60, 63], // Breeze 2
+    [44, 55, 60, 63], // Breeze 3
+    [51, 55, 58, 62], // Breeze 4
+    [43, 53, 58, 62], // Breeze 5
+    [50, 53, 57, 60], // Breeze 6
+    [39, 50, 55, 58], // Breeze 7
+    [41, 58, 60, 63], // Breeze 8
+    [47, 54, 57, 62], // Frost 1
+    [43, 54, 59, 62], // Frost 2
+    [50, 54, 57, 61], // Frost 3
+    [42, 54, 59, 61], // Frost 4
+    [52, 55, 59, 62], // Frost 5
+    [42, 57, 59, 62], // Frost 6
+    [43, 57, 59, 62], // Frost 7
+    [45, 57, 59, 61], // Frost 8
+    [52, 56, 59, 63], // Glimmer 1
+    [49, 56, 59, 64], // Glimmer 2
+    [45, 52, 56, 61], // Glimmer 3
+    [47, 52, 54, 59], // Glimmer 4
+    [42, 52, 57, 61], // Glimmer 5
+    [49, 52, 56, 59], // Glimmer 6
+    [45, 52, 56, 61], // Glimmer 7
+    [47, 52, 54, 57], // Glimmer 8
+    [43, 53, 58, 62], // Mirage 1
+    [48, 52, 58, 62], // Mirage 2
+    [41, 52, 57, 60], // Mirage 3
+    [50, 53, 57, 60], // Mirage 4
+    [39, 50, 55, 58], // Mirage 5
+    [48, 55, 58, 63], // Mirage 6
+    [46, 58, 60, 62], // Mirage 7
+    [50, 55, 60, 62], // Mirage 8
+    [52, 55, 59, 62], // Abyss 1
+    [48, 55, 59, 64], // Abyss 2
+    [45, 52, 55, 60], // Abyss 3
+    [47, 52, 54, 59], // Abyss 4
+    [43, 54, 59, 62], // Abyss 5
+    [47, 54, 57, 62], // Abyss 6
+    [36, 47, 52, 55], // Abyss 7
+    [38, 52, 54, 57], // Abyss 8
+    [45, 52, 59, 61], // Horizon 1
+    [52, 55, 59, 62], // Horizon 2
+    [43, 54, 59, 62], // Horizon 3
+    [50, 54, 57, 61], // Horizon 4
+    [42, 52, 57, 61], // Horizon 5
+    [49, 52, 56, 59], // Horizon 6
+    [38, 49, 54, 57], // Horizon 7
+    [52, 57, 59, 62], // Horizon 8
+    [50, 53, 60, 64], // Pulse 1
+    [46, 53, 57, 62], // Pulse 2
+    [41, 57, 60, 64], // Pulse 3
+    [45, 57, 62, 64], // Pulse 4
+    [43, 53, 58, 62], // Pulse 5
+    [45, 53, 60, 62], // Pulse 6
+    [46, 53, 57, 62], // Pulse 7
+    [48, 53, 55, 60], // Pulse 8
+    [46, 53, 57, 62], // Swell 1
+    [43, 53, 58, 62], // Swell 2
+    [51, 55, 58, 62], // Swell 3
+    [41, 53, 58, 60], // Swell 4
+    [48, 55, 58, 63], // Swell 5
+    [38, 48, 50, 53], // Swell 6
+    [39, 50, 55, 58], // Swell 7
+    [53, 58, 60, 63], // Swell 8
+    [49, 56, 59, 64], // Orbit 1
+    [45, 52, 56, 61], // Orbit 2
+    [52, 56, 59, 63], // Orbit 3
+    [44, 51, 56, 61], // Orbit 4
+    [42, 52, 57, 61], // Orbit 5
+    [44, 52, 59, 61], // Orbit 6
+    [45, 52, 56, 61], // Orbit 7
+    [47, 52, 54, 59], // Orbit 8
 ];
 
 #[test]

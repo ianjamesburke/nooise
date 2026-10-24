@@ -15,7 +15,8 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = SEQUENCER_UNIFICATION_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = V3_PROGRESSION_EPOCH;
+pub(crate) const V3_PROGRESSION_EPOCH: u16 = 11;
 pub(crate) const SEQUENCER_UNIFICATION_EPOCH: u16 = 10;
 pub(crate) const FALL_PROGRESSION_EPOCH: u16 = 9;
 pub(crate) const FUNK_PROGRESSION_EPOCH: u16 = 8;
@@ -223,6 +224,12 @@ const RANGE_CHANGES: &[RangeChange] = &[
         epoch: SEQUENCER_UNIFICATION_EPOCH,
         target: RangeTarget::Control("lead.step16"),
     },
+    // Progression gained sixteen built-in progressions (Haze through Orbit)
+    // before Custom.
+    RangeChange {
+        epoch: V3_PROGRESSION_EPOCH,
+        target: RangeTarget::Control("pad.progression"),
+    },
 ];
 
 impl RangeChange {
@@ -306,7 +313,7 @@ mod tests {
         song.automation
             .open_or_create(ControlAddress::new("pad.progression"))
             .depth_ratio = 0.5;
-        let stale = encode_song_code_at_epoch(&song, FALL_PROGRESSION_EPOCH - 1).unwrap();
+        let stale = encode_song_code_at_epoch(&song, V3_PROGRESSION_EPOCH - 1).unwrap();
         assert_eq!(
             decode_song_code(&stale).err(),
             Some(SongCodeError::StaleRange("pad.progression"))
