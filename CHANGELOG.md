@@ -1,6 +1,91 @@
 # Changelog
 
 Newest releases appear first.
+## [2.9.0] — 2026-10-25
+
+### Added
+- feat: quantize vamp to start of currently playing chord so sounding chord stays
+- feat: hold a to vamp momentarily and tap a or /vamp to latch
+- feat: quantize chord vamp to nearest chord start instead of next bar
+- feat: add clap sequence drill, lead presets, bass pattern labels, and unified rate/offset
+- feat: add kick pattern drill, move octave into sequence drills, retire tonal randomness
+- feat: unify 16-step sequence drills across pads, perc, bass, tonal, arp, and lead
+- feat: live audio output device picker and CLI selection
+- feat: Harvest and Ember fall progressions
+- feat: replace in-app MIDI with bidirectional OSC and split half-block live meters
+- feat: Master Key replaces Tune, moving every progression into one chosen key
+- feat: Roman numeral chord names, switched from / without touching sound or song codes
+- feat: sync tempo, bar phase, and start/stop over opt-in Ableton Link (--features link)
+- feat: Funk1-Funk4 built-in Pad progressions
+- feat: FM, Fold and Acid bass types plus a Punch control
+- feat: Drive drill with Type, Bias and Dry
+- feat: live gain-reduction meter on every active compressor
+- feat: move Submerge to w, add delay to e Rise, free x for motion delete, and add /auto
+- feat: add q/e/r performance holds and bar-quantized indefinite chord vamp on a
+- feat: retune bloom gesture and add left-hand hold-mutes and 16-bar vamp
+- feat: chord-length beat ribbon in the home header, span served over OSC
+- feat: opening a MIDI port no longer presets Pad level or direction
+- feat: Bass MIDI In/Out as one Off/In/Out control
+- feat: LFO steps run -100 to +100%, centred at 0
+- feat: re-author built-in morph ramps with exact zero anchor
+- feat: make Ramp anchor bipolar, 0 centred, +lifts, -ducks
+- feat: merge triangle, ramp up/down and sidechain duck into one Ramp LFO shape
+- feat: add delay wet filter
+- feat: add layer-level drunken timing
+- feat: add Perc attack envelope
+- feat: expose Pad phrase timing over OSC
+- feat: animate chord phrase highlight
+- feat: show home harmony and align bass pattern timing
+- feat: keep Motion relative to its base and support eight bar loops (stint 0070)
+- feat: edit every progression through the shared chord builder (stint 0055)
+- feat: rank palette results by musical intent and context (stint 0072)
+- feat: loop LFO and envelope editor fields with Motion
+- feat: loop discrete controls and Steps LFO edits with Motion
+- feat: add Motion Grab palette actions
+- feat: add planned next-bar mute
+- feat: compact leader and shortcut menus
+- feat: group leader commands into a menu
+- feat: show the Space leader map
+- feat: jump directly to remembered layer controls
+
+### Changed
+- Revert "fix: keep delay filter on cutoff"
+
+### Fixed
+- fix: start vamp seamlessly without retriggering currently sounding chord voices
+- fix: unify OSC navigation and gesture routing (stint 0004) (#57)
+- fix: soften Ember's chord 7 from Cm9 to Fadd9
+- fix: remove randomize-away-from-current-value rule
+- fix: keep q hold-mute overlay separate from user mute and align Esc/auto docs
+- fix: bar-quantize 16-bar vamp start/release and preserve held gestures on Esc
+- fix: remove Delay wet Filter child ahead of nested racks (0077)
+- fix: keep delay filter on cutoff
+- fix: browse filter modules by cutoff
+- fix: randomize controls away from current value
+- fix: keep Sidechain duck below the authored base
+- fix: insert silent recipes and focus their Amount
+- fix: reset centered tone controls to neutral
+- fix: align Tonal home with sounding Pad progression
+- fix: make Tonal phrases follow the progression home scale
+- fix: keep Kick straight under Master Swing
+- fix: reconcile October 3 sprint with current harmony controls
+- fix: center harmony header
+- fix: integrate current control smoothing and tremolo fixes into sprint
+- fix: keep tremolo to one authored LFO
+- fix: declick continuous effect controls using contextual smoothing
+- fix: integrate and verify ergonomic controls (stint 0073)
+- fix: resolve Hosking on Dbmaj7
+- fix: preserve Motion loop tails
+- fix: anchor Motion Grab to nearest bar
+- fix: align planned mute to downbeat
+- fix: prioritize current page module matches
+
+### Performance
+- perf: cache OSC UI state and discover audio devices on change (stint 0005) (#58)
+- perf: avoid redundant control edit snapshots and registry scans (stint 0006) (#56)
+- perf: avoid UI projections during navigation (stint 0002) (#55)
+- perf: reduce fluid background rendering work (stint 0001) (#54)
+- perf: cut repeated audio control work (stint 0003) (#53)
 ## [2.8.0] — 2026-10-03
 
 ### Added
