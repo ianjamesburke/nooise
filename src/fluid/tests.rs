@@ -1207,6 +1207,66 @@ fn no_argument_start_hides_pad_rhythm_rows_without_showing_midi() {
 }
 
 #[test]
+fn start_stopped_preserves_song_and_waits_for_play_before_audio_or_notes() {
+    let mut song = decode_auto_states().remove(0);
+    song.controls.perc.pattern = CONTINUOUS_PERC_PATTERN_INDEX as f32;
+    song.controls.perc.level = 0.5;
+    let original = encode_song_code(&song).unwrap();
+    let snapshot = live_start_snapshot(&song, true);
+    assert_eq!(snapshot.transport, Transport::Stopped);
+    assert_eq!(snapshot.controls.master.level, song.controls.master.level);
+    assert_eq!(snapshot.controls.pad.level, song.controls.pad.level);
+    assert_eq!(snapshot.muted, song.muted);
+    assert_eq!(encode_song_code(&song).unwrap(), original);
+    assert_eq!(
+        live_start_snapshot(&song, false).transport,
+        Transport::Playing
+    );
+
+    let session = LiveSession::new(snapshot);
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let (sink, receiver) = OscVoiceSink::test_channel();
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session.clone(),
+        no_morph(),
+        Arc::clone(&telemetry),
+    )
+    .with_osc_voice(sink);
+    let peak = (0..4096)
+        .map(|_| {
+            let (left, right) = engine.next_stereo();
+            left.abs().max(right.abs())
+        })
+        .fold(0.0_f32, f32::max);
+    assert_eq!(
+        peak, 0.0,
+        "stopped startup must also silence continuous voices"
+    );
+    assert_eq!(telemetry.beat(), 0.0);
+    assert!(
+        !receiver
+            .try_iter()
+            .any(|event| matches!(event, OscVoiceEvent::PadChord(_)))
+    );
+    session.update(|snapshot| {
+        snapshot.transport = Transport::Playing;
+        snapshot.transport_restart += 1;
+    });
+    let samples = render_seconds(&mut engine, 0.1);
+    assert!(
+        samples
+            .iter()
+            .any(|&(left, right)| left != 0.0 || right != 0.0)
+    );
+    assert!(
+        receiver
+            .try_iter()
+            .any(|event| matches!(event, OscVoiceEvent::PadChord(_)))
+    );
+}
+
+#[test]
 fn start_muted_zeros_master_level_across_morph_endpoints() {
     let mut states = vec![SongState::default(), SongState::default()];
     states[0].controls.master.level = 0.3;
