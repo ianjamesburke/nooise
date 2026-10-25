@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [2.9.1] — 2026-10-25
+
+### Added
+- feat: tune compression amount, perc level taper, and evolve intensity
 ## [2.9.0] — 2026-10-25
 
 ### Added
