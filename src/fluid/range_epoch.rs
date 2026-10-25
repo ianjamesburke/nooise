@@ -15,7 +15,8 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = SEQUENCER_UNIFICATION_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = PERC_EVOLVE_TAPER_EPOCH;
+pub(crate) const PERC_EVOLVE_TAPER_EPOCH: u16 = 11;
 pub(crate) const SEQUENCER_UNIFICATION_EPOCH: u16 = 10;
 pub(crate) const FALL_PROGRESSION_EPOCH: u16 = 9;
 pub(crate) const FUNK_PROGRESSION_EPOCH: u16 = 8;
@@ -223,6 +224,43 @@ const RANGE_CHANGES: &[RangeChange] = &[
         epoch: SEQUENCER_UNIFICATION_EPOCH,
         target: RangeTarget::Control("lead.step16"),
     },
+    // Perc Level and every voice's Evolve dial moved from Linear to Exp(2.0).
+    RangeChange {
+        epoch: PERC_EVOLVE_TAPER_EPOCH,
+        target: RangeTarget::Control("perc.level"),
+    },
+    RangeChange {
+        epoch: PERC_EVOLVE_TAPER_EPOCH,
+        target: RangeTarget::Control("pad.evolve_rate"),
+    },
+    RangeChange {
+        epoch: PERC_EVOLVE_TAPER_EPOCH,
+        target: RangeTarget::Control("perc.evolve_rate"),
+    },
+    RangeChange {
+        epoch: PERC_EVOLVE_TAPER_EPOCH,
+        target: RangeTarget::Control("bass.evolve_rate"),
+    },
+    RangeChange {
+        epoch: PERC_EVOLVE_TAPER_EPOCH,
+        target: RangeTarget::Control("kick.evolve_rate"),
+    },
+    RangeChange {
+        epoch: PERC_EVOLVE_TAPER_EPOCH,
+        target: RangeTarget::Control("tonal.evolve_rate"),
+    },
+    RangeChange {
+        epoch: PERC_EVOLVE_TAPER_EPOCH,
+        target: RangeTarget::Control("clap.evolve_rate"),
+    },
+    RangeChange {
+        epoch: PERC_EVOLVE_TAPER_EPOCH,
+        target: RangeTarget::Control("arp.evolve_rate"),
+    },
+    RangeChange {
+        epoch: PERC_EVOLVE_TAPER_EPOCH,
+        target: RangeTarget::Control("lead.evolve_rate"),
+    },
 ];
 
 impl RangeChange {
@@ -241,16 +279,15 @@ impl RangeChange {
 /// The first control a code written at `epoch` modulates whose dial range has
 /// changed since, or `None` when the code sweeps nothing that moved.
 pub(crate) fn stale_modulation(song: &SongState, epoch: u16) -> Option<&'static str> {
-    let modulated = song
-        .automation
-        .routes()
-        .map(|(address, _)| address)
-        .chain(song.automation.envelopes().map(|(address, _)| address))
-        .chain(song.automation.captures.keys().copied());
-    for address in modulated {
-        if RANGE_CHANGES
-            .iter()
-            .any(|change| change.epoch > epoch && change.applies(address.id(), &song.controls))
+    for change in RANGE_CHANGES.iter().filter(|change| change.epoch > epoch) {
+        let mut modulated = song
+            .automation
+            .routes()
+            .map(|(address, _)| address)
+            .chain(song.automation.envelopes().map(|(address, _)| address))
+            .chain(song.automation.captures.keys().copied());
+        if let Some(address) =
+            modulated.find(|address| change.applies(address.id(), &song.controls))
         {
             return Some(address.id());
         }
@@ -350,7 +387,37 @@ mod tests {
                 Some("kick.type"),
                 "song {index} modulates kick.type"
             );
-            assert_eq!(stale_modulation(&song, SEQUENCER_UNIFICATION_EPOCH), None);
+            assert_eq!(stale_modulation(&song, CURRENT_RANGE_EPOCH), None);
+        }
+    }
+
+    #[test]
+    fn old_perc_level_and_evolve_sweeps_are_refused_after_taper_change() {
+        for id in [
+            "perc.level",
+            "pad.evolve_rate",
+            "perc.evolve_rate",
+            "bass.evolve_rate",
+            "kick.evolve_rate",
+            "tonal.evolve_rate",
+            "clap.evolve_rate",
+            "arp.evolve_rate",
+            "lead.evolve_rate",
+        ] {
+            let mut song = SongState::default();
+            song.automation
+                .open_or_create(ControlAddress::new(id))
+                .depth_ratio = 0.25;
+            let stale = encode_song_code_at_epoch(&song, PERC_EVOLVE_TAPER_EPOCH - 1).unwrap();
+            assert_eq!(
+                decode_song_code(&stale).err(),
+                Some(SongCodeError::StaleRange(id)),
+                "{id}"
+            );
+            assert!(
+                decode_song_code(&encode_song_code(&song).unwrap()).is_ok(),
+                "{id}"
+            );
         }
     }
 

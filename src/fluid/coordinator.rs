@@ -422,7 +422,7 @@ pub(crate) fn coordinate_production_action(
                         .for_tab(*tab)
                         .and_then(|slots| slots.get(slot))
                         .and_then(ModuleSlot::kind)
-                        .filter(|kind| matches!(kind.family, Family::Filter | Family::Compression))
+                        .filter(|kind| kind.family == Family::Filter)
                 {
                     let collapsed = module_slot_spec(*tab, slot, ModuleSlotField::Time)
                         .expect("collapsed Time control is registered");

@@ -107,6 +107,26 @@ pub(crate) fn soft_clip(sample: f32) -> f32 {
     sample / (1.0 + sample.abs())
 }
 
+/// Expected mutations per cycle follow `rate^1.5 * max_mutations`, with the
+/// fractional part resolved deterministically from `seed` so low evolve rates
+/// only mutate occasionally instead of forcing a step change every cycle.
+pub(crate) fn evolve_mutation_count(rate: f32, max_mutations: usize, seed: u64) -> usize {
+    let rate = rate.clamp(0.0, 1.0);
+    if rate <= 0.0 || max_mutations == 0 {
+        return 0;
+    }
+    let expected = rate.powf(1.5) * max_mutations as f32;
+    let guaranteed = expected.floor() as usize;
+    let frac = expected - guaranteed as f32;
+    let extra = if frac > 0.0 {
+        let unit = (splitmix64_mix(seed) >> 40) as f32 * (1.0 / (1u64 << 24) as f32);
+        usize::from(unit < frac)
+    } else {
+        0
+    };
+    (guaranteed + extra).min(max_mutations)
+}
+
 /// Shared sum-then-cull idiom: advance every voice (in order), accumulating
 /// its stereo output, then drop whichever voices are finished. Voice order
 /// and the summation order are unchanged from the equivalent hand-written

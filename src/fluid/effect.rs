@@ -941,7 +941,7 @@ impl EffectExecutor {
                         // Added modules always start inert, whatever a
                         // pre-loaded slot's factory amount happens to be, so
                         // adding one is audibly free and needs no confirming.
-                        slots[free] = preset_slot(kind.id, 0.0);
+                        slots[free] = added_module_slot(kind.id);
                     }
                 });
                 let Some(slot) = placed
@@ -960,13 +960,12 @@ impl EffectExecutor {
                 slot
             }
         };
-        // A newly inserted Filter or Compression is dry. Focus its hidden
-        // Amount in the detail so the first arrow makes it audible. Existing
-        // slots use their collapsed Time row (Cutoff/Threshold) like every
-        // browsing row.
+        // A newly inserted Filter is dry. Focus its hidden Amount in the
+        // detail so the first arrow makes the sweep audible. Compression starts
+        // at 100% Amount with a 0 dB Threshold, so like existing slots it uses
+        // its collapsed Time row (Cutoff/Threshold).
         let focus = focus.or_else(|| {
-            (existing.is_none() && matches!(kind.family, Family::Filter | Family::Compression))
-                .then_some(ModuleSlotField::Amount)
+            (existing.is_none() && kind.family == Family::Filter).then_some(ModuleSlotField::Amount)
         });
         let id = match focus {
             Some(field) => module_slot_spec(tab, slot, field).map(|spec| spec.id),

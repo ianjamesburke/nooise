@@ -138,7 +138,6 @@ impl PadEngine {
 
     fn evolve_progression(&mut self, c: &PadControls) {
         let count = self.cursor.window.count.max(1);
-        let mutations = ((c.evolve_rate.clamp(0.0, 1.0) * 2.0).ceil() as usize).max(1);
         let seed = self
             .evolution_seed
             .wrapping_add(
@@ -147,6 +146,10 @@ impl PadEngine {
                     .wrapping_mul(0x9E37_79B9_7F4A_7C15),
             )
             .wrapping_add(self.phrase_index.rotate_left(11));
+        let mutations = evolve_mutation_count(c.evolve_rate, 2, seed);
+        if mutations == 0 {
+            return;
+        }
         let mut evo_rng = StdRng::seed_from_u64(seed);
         let mut edits = Vec::with_capacity(mutations);
         for _ in 0..mutations {

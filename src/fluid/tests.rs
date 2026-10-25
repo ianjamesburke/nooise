@@ -970,31 +970,46 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
 
 #[test]
 fn tonal_evolve_rate_maps_to_actual_notes_per_cycle() {
-    assert_eq!(tonal_evolve_note_count(0.0, 8), 0);
-    assert_eq!(tonal_evolve_note_count(0.01, 8), 1);
-    assert_eq!(tonal_evolve_note_count(0.50, 8), 2);
-    assert_eq!(tonal_evolve_note_count(1.0, 8), 4);
+    assert_eq!(tonal_evolve_note_count(0.0, 8, 1), 0);
+    let low_rate_mutations: usize = (0..200)
+        .map(|cycle| tonal_evolve_note_count(0.05, 8, cycle))
+        .sum();
+    assert!(
+        (2..=20).contains(&low_rate_mutations),
+        "5% evolve should mutate only a few times across 200 cycles, got {low_rate_mutations}"
+    );
+    let mid_rate_mutations = tonal_evolve_note_count(0.50, 8, 1);
+    assert!((1..=2).contains(&mid_rate_mutations));
+    assert_eq!(tonal_evolve_note_count(1.0, 8, 1), 4);
 }
 
 #[test]
 fn tonal_engine_evolves_notes_proportional_to_rate() {
-    for (rate, expected_changed) in [(0.01, 1), (1.0, 4)] {
-        let mut tonal = TonalEngine::new(SAMPLE_RATE);
-        tonal.rng = StdRng::seed_from_u64(5);
-        let before = tonal.evolved_phrase.clone();
-
-        tonal.evolve_phrase(rate);
-
-        let changed = before
-            .iter()
-            .zip(&tonal.evolved_phrase)
-            .filter(|(before, after)| before != after)
-            .count();
-        assert_eq!(
-            changed, expected_changed,
-            "evolve rate {rate}: unexpected changed-note count"
-        );
+    let mut low = TonalEngine::new(SAMPLE_RATE);
+    low.evolution_seed = 5;
+    let mut low_changed_cycles = 0;
+    for _ in 0..100 {
+        let before = low.evolved_phrase.clone();
+        low.evolve_phrase(0.05);
+        if low.evolved_phrase != before {
+            low_changed_cycles += 1;
+        }
     }
+    assert!(
+        (1..=12).contains(&low_changed_cycles),
+        "5% evolve mutated on {low_changed_cycles}/100 cycles"
+    );
+
+    let mut full = TonalEngine::new(SAMPLE_RATE);
+    full.evolution_seed = 5;
+    let before = full.evolved_phrase.clone();
+    full.evolve_phrase(1.0);
+    let changed = before
+        .iter()
+        .zip(&full.evolved_phrase)
+        .filter(|(before, after)| before != after)
+        .count();
+    assert_eq!(changed, 4, "evolve rate 1.0: unexpected changed-note count");
 }
 
 #[test]
@@ -3262,7 +3277,7 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // Re-blessed for unified 16-step sequencer: Tonal now resolves degrees via
 // ProgressionFollower + lead_reach on the shared 16-step lane.
 #[cfg(debug_assertions)]
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x1890_a990_3482_b7eb;
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x8611_0f2f_a641_55a4;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -12024,4 +12039,89 @@ fn bass_and_perc_evolve_mutates_live_steps_at_cycle_boundaries() {
         after.controls.clap.pattern,
         CUSTOM_CLAP_PATTERN_INDEX as f32
     );
+}
+
+#[test]
+fn compression_starts_at_100_percent_amount_by_default_and_when_added() {
+    let controls = FluidControls::default();
+    let master_comp = &controls.modules.master[1];
+    assert_eq!(master_comp.kind().map(|k| k.id), Some("compression"));
+    assert_eq!(master_comp.amount, 1.0);
+
+    let added = module::added_module_slot("compression");
+    assert_eq!(added.kind().map(|k| k.id), Some("compression"));
+    assert_eq!(added.amount, 1.0);
+    assert_eq!(added.time, 0.0, "threshold starts at 0 dB passthrough");
+    assert_eq!(added.vintage, 0.0, "makeup starts at 0 dB passthrough");
+
+    let added_drive = module::added_module_slot("drive");
+    assert_eq!(added_drive.kind().map(|k| k.id), Some("drive"));
+    assert_eq!(added_drive.amount, 0.0);
+}
+
+#[test]
+fn perc_level_uses_exp_taper_with_fine_low_end_resolution() {
+    let spec = spec_by_id("perc.level").unwrap();
+    assert_eq!(spec.taper, Taper::Exp(registry::PERC_LEVEL_TAPER));
+
+    let mut controls = FluidControls::default();
+    assert_eq!((spec.display)(&controls), "0%");
+
+    // Stepping up from 0% walks through sub-percent and 1..3% values smoothly
+    // rather than jumping 2% per press.
+    let mut visited = Vec::new();
+    let mut displays = Vec::new();
+    for _ in 0..10 {
+        spec.apply_delta(1.0, &mut controls);
+        visited.push(controls.perc.level);
+        displays.push((spec.display)(&controls));
+    }
+    assert!(
+        visited[0] > 0.0 && visited[0] < 0.005,
+        "first step should be sub-0.5%, got {}",
+        visited[0]
+    );
+    assert!(
+        visited[4] < 0.02,
+        "fifth step should still be under 2%, got {}",
+        visited[4]
+    );
+    assert_ne!(
+        displays[0], displays[1],
+        "consecutive low-end steps should format to distinct readouts"
+    );
+}
+
+#[test]
+fn evolve_rate_uses_exp_taper_and_probabilistic_low_rate_mutation() {
+    for id in [
+        "perc.evolve_rate",
+        "pad.evolve_rate",
+        "bass.evolve_rate",
+        "kick.evolve_rate",
+        "tonal.evolve_rate",
+        "clap.evolve_rate",
+        "arp.evolve_rate",
+        "lead.evolve_rate",
+    ] {
+        let spec = spec_by_id(id).unwrap();
+        assert_eq!(spec.taper, Taper::Exp(registry::EVOLVE_TAPER), "{id}");
+    }
+
+    // At 5% evolve rate with max 3 mutations, expected mutations per cycle is
+    // 0.05^1.5 * 3 ≈ 0.0335 (~3.4% of cycles mutate a single step), instead of
+    // mutating every single cycle.
+    let mut total_mutations = 0usize;
+    let trials = 1_000u64;
+    for cycle in 0..trials {
+        let count = voice::evolve_mutation_count(0.05, 3, cycle);
+        assert!(count <= 1, "5% rate must never mutate more than 1 step");
+        total_mutations += count;
+    }
+    assert!(
+        (15..=60).contains(&total_mutations),
+        "5% evolve rate should mutate only ~34 times in 1000 cycles, got {total_mutations}"
+    );
+    assert_eq!(voice::evolve_mutation_count(0.0, 4, 42), 0);
+    assert_eq!(voice::evolve_mutation_count(1.0, 4, 42), 4);
 }
