@@ -115,8 +115,8 @@ const REVERB_PARAMETERS: &[EffectParameter] = &[
     },
 ];
 
-/// Threshold leads because it is the Compressor's ordinary browsing control. A
-/// palette-added Compression opens this detail on Amount so its dry mix can rise.
+/// Threshold leads because it is the Compressor's ordinary browsing control;
+/// Amount starts at 100% both on Master and when added from the palette.
 const COMPRESSION_PARAMETERS: &[EffectParameter] = &[
     EffectParameter {
         field: ModuleSlotField::Time,
@@ -581,6 +581,22 @@ pub(crate) fn preset_slot(id: &str, amount: f32) -> ModuleSlot {
     slot
 }
 
+/// Initial slot state when a player adds `id` from the `/` palette.
+/// Compression starts at 100% Amount with a 0 dB threshold and 0 dB makeup
+/// so insertion is audibly passthrough and pulling Threshold down on its
+/// collapsed row immediately starts compressing; every other module starts
+/// at 0% Amount.
+pub(crate) fn added_module_slot(id: &str) -> ModuleSlot {
+    if id == "compression" {
+        let mut slot = preset_slot(id, 1.0);
+        slot.time = 0.0;
+        slot.vintage = 0.0;
+        slot
+    } else {
+        preset_slot(id, 0.0)
+    }
+}
+
 /// Amount of the first slot holding `id`, or zero when the chain has none.
 /// The single read path for an effect that used to be a bespoke field.
 #[cfg(test)]
@@ -644,7 +660,7 @@ impl Default for LayerModules {
             master: {
                 let mut slots = empty;
                 slots[0] = preset_slot("drive", 0.05);
-                slots[1] = preset_slot("compression", 0.1);
+                slots[1] = preset_slot("compression", 1.0);
                 slots
             },
         }

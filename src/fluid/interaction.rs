@@ -925,6 +925,7 @@ enum GestureKeyState {
 pub(crate) struct GestureInputState {
     keys: [GestureKeyState; GESTURE_COUNT],
     mutes: [GestureKeyState; HOLD_MUTE_COUNT],
+    vamp: GestureKeyState,
 }
 
 impl GestureInputState {
@@ -960,9 +961,24 @@ impl GestureInputState {
         was_active
     }
 
+    fn press_vamp(&mut self) -> bool {
+        if self.vamp != GestureKeyState::Up {
+            return false;
+        }
+        self.vamp = GestureKeyState::Active;
+        true
+    }
+
+    fn release_vamp(&mut self) -> bool {
+        let was_active = self.vamp == GestureKeyState::Active;
+        self.vamp = GestureKeyState::Up;
+        was_active
+    }
+
     pub(crate) fn has_active(&self) -> bool {
         self.keys.contains(&GestureKeyState::Active)
             || self.mutes.contains(&GestureKeyState::Active)
+            || self.vamp == GestureKeyState::Active
     }
 
     fn quarantine_all(&mut self) {
@@ -976,11 +992,15 @@ impl GestureInputState {
                 *state = GestureKeyState::Quarantined;
             }
         }
+        if self.vamp == GestureKeyState::Active {
+            self.vamp = GestureKeyState::Quarantined;
+        }
     }
 
     fn clear(&mut self) {
         self.keys.fill(GestureKeyState::Up);
         self.mutes.fill(GestureKeyState::Up);
+        self.vamp = GestureKeyState::Up;
     }
 }
 
@@ -1181,6 +1201,8 @@ pub(crate) enum Intent {
     ReleaseGesture(GestureKind),
     StartHoldMute(HoldMute),
     ReleaseHoldMute(HoldMute),
+    PressVamp,
+    ReleaseVamp,
     ToggleVamp,
     ReleaseAllGestures,
     AbandonGestures,
@@ -1255,12 +1277,13 @@ impl Intent {
             | Self::NudgeLead { .. }
             | Self::ToggleLeadPattern
             | Self::CaptureLeadPhrase => &[ModeKind::Lead],
-            Self::StartGesture(_) | Self::StartHoldMute(_) | Self::ToggleVamp => {
+            Self::StartGesture(_) | Self::StartHoldMute(_) | Self::PressVamp | Self::ToggleVamp => {
                 &[ModeKind::Browsing]
             }
             Self::OpenHelp => &[ModeKind::Browsing],
             Self::ReleaseGesture(_)
             | Self::ReleaseHoldMute(_)
+            | Self::ReleaseVamp
             | Self::ReleaseAllGestures
             | Self::AbandonGestures => &[
                 ModeKind::Browsing,
@@ -1317,9 +1340,10 @@ impl Intent {
             | Self::TypeCharacter(_)
             | Self::Backspace
             | Self::AdjustSelected(_) => PhasePolicy::Repeatable,
-            Self::ReleaseLeadTone(_) | Self::ReleaseGesture(_) | Self::ReleaseHoldMute(_) => {
-                PhasePolicy::ReleaseOnly
-            }
+            Self::ReleaseLeadTone(_)
+            | Self::ReleaseGesture(_)
+            | Self::ReleaseHoldMute(_)
+            | Self::ReleaseVamp => PhasePolicy::ReleaseOnly,
             Self::Cancel
             | Self::EnterLayer(_)
             | Self::EnterChordProgression
@@ -1352,6 +1376,7 @@ impl Intent {
             | Self::CaptureLeadPhrase
             | Self::StartGesture(_)
             | Self::StartHoldMute(_)
+            | Self::PressVamp
             | Self::ToggleVamp
             | Self::ReleaseAllGestures
             | Self::AbandonGestures
@@ -1497,6 +1522,8 @@ pub(crate) enum InteractionEffect {
     GestureRelease(GestureKind),
     HoldMutePress(HoldMute),
     HoldMuteRelease(HoldMute),
+    PressVamp,
+    ReleaseVamp,
     ToggleVamp,
     GestureReleaseAll,
     Save,
@@ -1669,6 +1696,18 @@ impl InteractionModel {
                 .gesture_input
                 .release_mute(mute)
                 .then_some(InteractionEffect::HoldMuteRelease(mute))
+                .into_iter()
+                .collect();
+            return Transition {
+                model: self,
+                effects,
+            };
+        }
+        if let Intent::ReleaseVamp = intent {
+            let effects = self
+                .gesture_input
+                .release_vamp()
+                .then_some(InteractionEffect::ReleaseVamp)
                 .into_iter()
                 .collect();
             return Transition {
@@ -1914,6 +1953,11 @@ fn update_browsing(
         Intent::StartHoldMute(mute) => {
             if gesture_input.press_mute(mute) {
                 effects.push(InteractionEffect::HoldMutePress(mute));
+            }
+        }
+        Intent::PressVamp => {
+            if gesture_input.press_vamp() {
+                effects.push(InteractionEffect::PressVamp);
             }
         }
         Intent::ToggleVamp => effects.push(InteractionEffect::ToggleVamp),
@@ -2347,7 +2391,10 @@ fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> Interac
         PaletteEntry::OutputDevice(_) | PaletteEntry::Operation(Operation::OutputDevice)
     ) || matches!(
         entry,
-        PaletteEntry::Operation(operation) if operation.is_mix() || *operation == Operation::ToggleAuto
+        PaletteEntry::Operation(operation)
+            if operation.is_mix()
+                || *operation == Operation::ToggleAuto
+                || *operation == Operation::ToggleVamp
     ) || (palette.editor_motion_target.is_some()
         && matches!(entry, PaletteEntry::Operation(Operation::Motion(action)) if editor_motion_action(*action, palette)))
         || (palette.resume.is_some()
@@ -2457,6 +2504,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
             InteractionEffect::PlanMute(palette.planned_tab.unwrap_or(Tab::Master))
         }
         Operation::ToggleAuto => InteractionEffect::ToggleAuto,
+        Operation::ToggleVamp => InteractionEffect::ToggleVamp,
         Operation::ClearSequence => {
             InteractionEffect::ClearSequence(palette.planned_tab.unwrap_or(Tab::Chords))
         }

@@ -138,7 +138,6 @@ impl PadEngine {
 
     fn evolve_progression(&mut self, c: &PadControls) {
         let count = self.cursor.window.count.max(1);
-        let mutations = ((c.evolve_rate.clamp(0.0, 1.0) * 2.0).ceil() as usize).max(1);
         let seed = self
             .evolution_seed
             .wrapping_add(
@@ -147,6 +146,10 @@ impl PadEngine {
                     .wrapping_mul(0x9E37_79B9_7F4A_7C15),
             )
             .wrapping_add(self.phrase_index.rotate_left(11));
+        let mutations = evolve_mutation_count(c.evolve_rate, 2, seed);
+        if mutations == 0 {
+            return;
+        }
         let mut evo_rng = StdRng::seed_from_u64(seed);
         let mut edits = Vec::with_capacity(mutations);
         for _ in 0..mutations {
@@ -1848,6 +1851,7 @@ impl ProgressionCursor {
         if let Some(start) = timing.morph_phrase_start
             && self.morph_phrase_start != Some(start)
         {
+            let old_slot = self.slot();
             self.morph_phrase_start = Some(start);
             self.window = ChordWindow::requested(c);
             self.chord_beats = c.chord_bars * 4.0;
@@ -1856,7 +1860,11 @@ impl ProgressionCursor {
             self.step = chord as usize % self.window.count;
             self.next_chord_beat = Some(start + (chord + 1.0) * interval);
             self.span = self.compute_span(c);
-            return timing.beat > 0.0;
+            let chord_start = start + chord * interval;
+            let sample_delta = (timing.bpm / (60.0 * timing.sample_rate)).max(GRID_BEAT_EPSILON);
+            let is_onset = (timing.beat - chord_start).abs() <= sample_delta * 2.0;
+            let slot_changed = self.slot() != old_slot;
+            return (is_onset || slot_changed) && timing.beat > 0.0;
         }
         self.morph_phrase_start = timing.morph_phrase_start;
         let next = *self.next_chord_beat.get_or_insert_with(|| {

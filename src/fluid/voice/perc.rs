@@ -82,7 +82,6 @@ impl PercEngine {
 
     fn evolve_steps(&mut self, live_len: usize, evolve_rate: f32, cycle: u64) {
         let live_len = live_len.clamp(1, PERC_STEP_COUNT);
-        let mutations = ((evolve_rate.clamp(0.0, 1.0) * 3.0).ceil() as usize).max(1);
         let seed = self
             .evolution_seed
             .wrapping_add(
@@ -91,6 +90,10 @@ impl PercEngine {
                     .wrapping_mul(0x9E37_79B9_7F4A_7C15),
             )
             .wrapping_add(cycle.rotate_left(17));
+        let mutations = evolve_mutation_count(evolve_rate, 3, seed);
+        if mutations == 0 {
+            return;
+        }
         let mut evo_rng = StdRng::seed_from_u64(seed);
         for _ in 0..mutations {
             let idx = evo_rng.gen_range(0..live_len);

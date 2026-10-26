@@ -16,8 +16,8 @@ pub(crate) struct TonalEngine {
     pub(crate) low_cut_l: TonalLowCut,
     pub(crate) low_cut_r: TonalLowCut,
     pub(crate) rng: StdRng,
-    evolution_seed: u64,
-    evolution_count: u64,
+    pub(crate) evolution_seed: u64,
+    pub(crate) evolution_count: u64,
     session_state: Option<LiveSession>,
     telemetry: Arc<FluidTelemetry>,
 }
@@ -533,8 +533,14 @@ impl TonalEngine {
     }
 
     pub(crate) fn evolve_phrase(&mut self, rate: f32) {
-        let count = tonal_evolve_note_count(rate, self.evolved_phrase.len());
+        if self.evolved_phrase.is_empty() || rate <= 0.0 {
+            return;
+        }
+        let draw = evolve_random(self.evolution_seed, self.evolution_count, u64::MAX);
+        let count = tonal_evolve_note_count(rate, self.evolved_phrase.len(), draw);
         if count == 0 {
+            self.evolution_count = self.evolution_count.wrapping_add(1);
+            self.publish_session_state();
             return;
         }
         let mut changed_positions = [usize::MAX; TONAL_MAX_EVOLVE_NOTES];
@@ -616,13 +622,11 @@ pub(crate) fn tonal_rate_beats(rate_beats: f32) -> f32 {
     rate_beats.clamp(TONAL_RATE_BEATS_MIN, TONAL_RATE_BEATS_MAX)
 }
 
-pub(crate) fn tonal_evolve_note_count(rate: f32, phrase_len: usize) -> usize {
-    if phrase_len == 0 || rate <= 0.0 {
+pub(crate) fn tonal_evolve_note_count(rate: f32, phrase_len: usize, seed: u64) -> usize {
+    if phrase_len == 0 {
         return 0;
     }
-    (rate.clamp(0.0, 1.0) * TONAL_MAX_EVOLVE_NOTES as f32)
-        .ceil()
-        .min(phrase_len as f32) as usize
+    evolve_mutation_count(rate, TONAL_MAX_EVOLVE_NOTES, seed).min(phrase_len)
 }
 
 pub(crate) struct TonalLowCut {

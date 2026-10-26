@@ -229,6 +229,14 @@ pub(crate) const TAPER_STEPS_PER_SWEEP: f32 = 48.0;
 /// The one place to retune the feel of every envelope-time dial. Tuned by ear.
 pub(crate) const TIME_TAPER: f32 = 3.0;
 
+/// Exponent for Perc's level dial — spreads the quiet 1-3% region across
+/// several fine arrow steps while keeping 100% at full scale.
+pub(crate) const PERC_LEVEL_TAPER: f32 = 2.0;
+
+/// Exponent for every voice's Evolve dial — concentrates resolution near
+/// zero so gentle generative drift is easy to dial in.
+pub(crate) const EVOLVE_TAPER: f32 = 2.0;
+
 /// How a control's value maps onto dial position — the shared taper driving
 /// both the visual ratio bar and h/l stepping. `forward` sends a value into the
 /// space where position is linear; `inverse` brings a position back to a value.
@@ -825,6 +833,20 @@ pub(crate) fn pct(v: f32) -> String {
     format!("{:.0}%", v * 100.0)
 }
 
+/// Percentage readout with tenth-percent resolution below 10% so every
+/// low-end step on an exp-tapered percent dial (`perc.level`, `*.evolve_rate`)
+/// visibly advances the number without widening 10-100% readouts.
+pub(crate) fn fine_pct(v: f32) -> String {
+    let pct = v.clamp(0.0, 1.0) * 100.0;
+    if pct <= 0.0 {
+        "0%".to_string()
+    } else if pct < 9.95 {
+        format!("{:.1}%", pct.max(0.1))
+    } else {
+        format!("{pct:.0}%")
+    }
+}
+
 /// Swing's own percent convention (matches classic drum-machine swing dials):
 /// 50% is straight, 75% pushes the off-beat all the way to a dotted-note
 /// position on this voice's own grid (a dotted eighth on an eighth-note grid,
@@ -901,6 +923,39 @@ macro_rules! gain_pct {
             |c, v| c.$($f)+ = v,
             |c| pct(c.$($f)+),
         )
+    };
+}
+
+macro_rules! perc_level_pct {
+    ($label:literal) => {
+        ControlSpec::gain(
+            "perc.level",
+            $label,
+            0.0,
+            1.0,
+            |c| c.perc.level,
+            |c, v| c.perc.level = v,
+            |c| fine_pct(c.perc.level),
+        )
+        .taper(Taper::Exp(PERC_LEVEL_TAPER))
+    };
+}
+
+macro_rules! evolve_pct {
+    ($id:literal, $($f:tt)+) => {
+        ControlSpec::new(
+            $id,
+            "Evolve",
+            ControlKind::Continuous,
+            0.0,
+            1.0,
+            Step::Linear(0.05),
+            Entry::Percent,
+            |c| c.$($f)+,
+            |c, v| c.$($f)+ = v,
+            |c| fine_pct(c.$($f)+),
+        )
+        .taper(Taper::Exp(EVOLVE_TAPER))
     };
 }
 
@@ -1478,7 +1533,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
         // (`hub_rows_open_with_every_layer_in_page_order`): each is that
         // layer's level, and Enter on it enters the layer.
         gain_pct!("pad.level", "Pads", pad.level),
-        gain_pct!("perc.level", "Perc", perc.level),
+        perc_level_pct!("Perc"),
         gain_pct!("bass.level", "Bass", bass.level),
         gain_pct!("kick.level", "Kick", kick.level),
         gain_pct!("tonal.level", "Tonal", tonal.level),
@@ -1570,7 +1625,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
     perc,
     "perc",
     [
-        gain_pct!("perc.level", "Level", perc.level),
+        perc_level_pct!("Level"),
         ControlSpec::new(
             "perc.attack_ms",
             "Attack",
@@ -1622,18 +1677,7 @@ pub(crate) const PERC_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(8.0),
         beat_offset!("perc.offset_beats", "Offset", 4.0, perc.offset_beats),
-        ControlSpec::new(
-            "perc.evolve_rate",
-            "Evolve",
-            ControlKind::Continuous,
-            0.0,
-            1.0,
-            Step::Linear(0.05),
-            Entry::Percent,
-            |c| c.perc.evolve_rate,
-            |c, v| c.perc.evolve_rate = v,
-            |c| pct(c.perc.evolve_rate),
-        ),
+        evolve_pct!("perc.evolve_rate", perc.evolve_rate),
         perc_step_row!(1),
         perc_step_row!(2),
         perc_step_row!(3),
@@ -1748,18 +1792,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c| format!("{:.0}", c.pad.chord_offset),
     )
     .search_name("Chord Offset"),
-    ControlSpec::new(
-        "pad.evolve_rate",
-        "Evolve",
-        ControlKind::Continuous,
-        0.0,
-        1.0,
-        Step::Linear(0.05),
-        Entry::Percent,
-        |c| c.pad.evolve_rate,
-        |c, v| c.pad.evolve_rate = v,
-        |c| pct(c.pad.evolve_rate),
-    ),
+    evolve_pct!("pad.evolve_rate", pad.evolve_rate),
     ControlSpec::new(
         "pad.chord_notes",
         "Chord Notes",
@@ -1900,18 +1933,7 @@ pub(crate) const BASS_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(BASS_STEP_COUNT as f32),
         beat_offset!("bass.offset_beats", "Offset", 4.0, bass.offset_beats),
-        ControlSpec::new(
-            "bass.evolve_rate",
-            "Evolve",
-            ControlKind::Continuous,
-            0.0,
-            1.0,
-            Step::Linear(0.05),
-            Entry::Percent,
-            |c| c.bass.evolve_rate,
-            |c, v| c.bass.evolve_rate = v,
-            |c| pct(c.bass.evolve_rate),
-        ),
+        evolve_pct!("bass.evolve_rate", bass.evolve_rate),
         bass_step_row!(1),
         bass_step_row!(2),
         bass_step_row!(3),
@@ -2091,18 +2113,7 @@ pub(crate) const KICK_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(8.0),
         beat_offset!("kick.offset_beats", "Offset", 4.0, kick.offset_beats),
-        ControlSpec::new(
-            "kick.evolve_rate",
-            "Evolve",
-            ControlKind::Continuous,
-            0.0,
-            1.0,
-            Step::Linear(0.05),
-            Entry::Percent,
-            |c| c.kick.evolve_rate,
-            |c, v| c.kick.evolve_rate = v,
-            |c| pct(c.kick.evolve_rate),
-        ),
+        evolve_pct!("kick.evolve_rate", kick.evolve_rate),
         kick_step_row!(1),
         kick_step_row!(2),
         kick_step_row!(3),
@@ -2253,18 +2264,7 @@ pub(crate) const TONAL_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(8.0),
         beat_offset!("tonal.offset_beats", "Offset", 4.0, tonal.offset_beats),
-        ControlSpec::new(
-            "tonal.evolve_rate",
-            "Evolve",
-            ControlKind::Continuous,
-            0.0,
-            1.0,
-            Step::Linear(0.05),
-            Entry::Percent,
-            |c| c.tonal.evolve_rate,
-            |c, v| c.tonal.evolve_rate = v,
-            |c| pct(c.tonal.evolve_rate),
-        ),
+        evolve_pct!("tonal.evolve_rate", tonal.evolve_rate),
         tonal_step_row!(1),
         tonal_step_row!(2),
         tonal_step_row!(3),
@@ -2353,18 +2353,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(8.0),
         beat_offset!("clap.offset_beats", "Offset", 4.0, clap.offset_beats),
-        ControlSpec::new(
-            "clap.evolve_rate",
-            "Evolve",
-            ControlKind::Continuous,
-            0.0,
-            1.0,
-            Step::Linear(0.05),
-            Entry::Percent,
-            |c| c.clap.evolve_rate,
-            |c, v| c.clap.evolve_rate = v,
-            |c| pct(c.clap.evolve_rate),
-        ),
+        evolve_pct!("clap.evolve_rate", clap.evolve_rate),
         ControlSpec::new(
             "clap.slap_count",
             "Slap Count",
@@ -2511,18 +2500,7 @@ pub(crate) const ARP_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(8.0),
         beat_offset!("arp.offset_beats", "Offset", 4.0, arp.offset_beats),
-        ControlSpec::new(
-            "arp.evolve_rate",
-            "Evolve",
-            ControlKind::Continuous,
-            0.0,
-            1.0,
-            Step::Linear(0.05),
-            Entry::Percent,
-            |c| c.arp.evolve_rate,
-            |c, v| c.arp.evolve_rate = v,
-            |c| pct(c.arp.evolve_rate),
-        ),
+        evolve_pct!("arp.evolve_rate", arp.evolve_rate),
         arp_step_row!(1),
         arp_step_row!(2),
         arp_step_row!(3),
@@ -2662,18 +2640,7 @@ pub(crate) const LEAD_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .reset_at(8.0),
         beat_offset!("lead.offset_beats", "Offset", 4.0, lead.offset_beats),
-        ControlSpec::new(
-            "lead.evolve_rate",
-            "Evolve",
-            ControlKind::Continuous,
-            0.0,
-            1.0,
-            Step::Linear(0.05),
-            Entry::Percent,
-            |c| c.lead.evolve_rate,
-            |c, v| c.lead.evolve_rate = v,
-            |c| pct(c.lead.evolve_rate),
-        ),
+        evolve_pct!("lead.evolve_rate", lead.evolve_rate),
         lead_step_row!(1),
         lead_step_row!(2),
         lead_step_row!(3),

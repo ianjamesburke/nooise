@@ -970,31 +970,46 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
 
 #[test]
 fn tonal_evolve_rate_maps_to_actual_notes_per_cycle() {
-    assert_eq!(tonal_evolve_note_count(0.0, 8), 0);
-    assert_eq!(tonal_evolve_note_count(0.01, 8), 1);
-    assert_eq!(tonal_evolve_note_count(0.50, 8), 2);
-    assert_eq!(tonal_evolve_note_count(1.0, 8), 4);
+    assert_eq!(tonal_evolve_note_count(0.0, 8, 1), 0);
+    let low_rate_mutations: usize = (0..200)
+        .map(|cycle| tonal_evolve_note_count(0.05, 8, cycle))
+        .sum();
+    assert!(
+        (2..=20).contains(&low_rate_mutations),
+        "5% evolve should mutate only a few times across 200 cycles, got {low_rate_mutations}"
+    );
+    let mid_rate_mutations = tonal_evolve_note_count(0.50, 8, 1);
+    assert!((1..=2).contains(&mid_rate_mutations));
+    assert_eq!(tonal_evolve_note_count(1.0, 8, 1), 4);
 }
 
 #[test]
 fn tonal_engine_evolves_notes_proportional_to_rate() {
-    for (rate, expected_changed) in [(0.01, 1), (1.0, 4)] {
-        let mut tonal = TonalEngine::new(SAMPLE_RATE);
-        tonal.rng = StdRng::seed_from_u64(5);
-        let before = tonal.evolved_phrase.clone();
-
-        tonal.evolve_phrase(rate);
-
-        let changed = before
-            .iter()
-            .zip(&tonal.evolved_phrase)
-            .filter(|(before, after)| before != after)
-            .count();
-        assert_eq!(
-            changed, expected_changed,
-            "evolve rate {rate}: unexpected changed-note count"
-        );
+    let mut low = TonalEngine::new(SAMPLE_RATE);
+    low.evolution_seed = 5;
+    let mut low_changed_cycles = 0;
+    for _ in 0..100 {
+        let before = low.evolved_phrase.clone();
+        low.evolve_phrase(0.05);
+        if low.evolved_phrase != before {
+            low_changed_cycles += 1;
+        }
     }
+    assert!(
+        (1..=12).contains(&low_changed_cycles),
+        "5% evolve mutated on {low_changed_cycles}/100 cycles"
+    );
+
+    let mut full = TonalEngine::new(SAMPLE_RATE);
+    full.evolution_seed = 5;
+    let before = full.evolved_phrase.clone();
+    full.evolve_phrase(1.0);
+    let changed = before
+        .iter()
+        .zip(&full.evolved_phrase)
+        .filter(|(before, after)| before != after)
+        .count();
+    assert_eq!(changed, 4, "evolve rate 1.0: unexpected changed-note count");
 }
 
 #[test]
@@ -3262,7 +3277,7 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // Re-blessed for unified 16-step sequencer: Tonal now resolves degrees via
 // ProgressionFollower + lead_reach on the shared 16-step lane.
 #[cfg(debug_assertions)]
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x1890_a990_3482_b7eb;
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x8611_0f2f_a641_55a4;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -6493,6 +6508,52 @@ fn pad_engine_progression_change_waits_for_the_chord_then_restarts() {
 
     assert_eq!(pad.cursor.step, 0);
     assert_eq!(pad.cursor.window.progression, 1);
+}
+
+#[test]
+fn vamp_quantizes_to_currently_playing_chord_without_retriggering_pad_voices() {
+    let mut controls = PadControls {
+        chord_bars: 1.0,
+        chord_count: 4.0,
+        ..PadControls::default()
+    };
+    let mut pad = pad_engine(&controls);
+
+    // Initial frame at beat 0 starts chord 0.
+    let _ = pad.next(&controls, MasterKey::Home, timing(0, 120.0));
+    assert_eq!(pad.cursor.slot(), 0);
+    assert_eq!(pad.layers.len(), 1);
+
+    // Advance to beat 4.0: chord 1 starts.
+    let sample_beat_4 = (4.0 * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let _ = pad.next(&controls, MasterKey::Home, timing(sample_beat_4, 120.0));
+    assert_eq!(pad.cursor.slot(), 1);
+    let layer_count_at_chord_1 = pad.layers.len();
+
+    // Advance to mid-chord at beat 6.0 (halfway through chord 1, which runs 4.0..8.0).
+    let sample_beat_6 = (6.0 * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let _ = pad.next(&controls, MasterKey::Home, timing(sample_beat_6, 120.0));
+    assert_eq!(pad.layers.len(), layer_count_at_chord_1);
+
+    // Vamp is triggered mid-chord: locks chord 1 (slot 1) with chord_count: 1, chord_offset: 1.
+    // timing.morph_phrase_start is set to 4.0 (the chord's start beat).
+    controls.chord_count = 1.0;
+    controls.chord_offset = 1.0;
+    let mut vamp_timing = timing(sample_beat_6 + 1, 120.0);
+    vamp_timing.morph_phrase_start = Some(4.0);
+
+    let _ = pad.next(&controls, MasterKey::Home, vamp_timing);
+
+    // Crucial assertion: no new layer was pushed, sounding layers were not released!
+    assert_eq!(pad.cursor.slot(), 1);
+    assert_eq!(pad.layers.len(), layer_count_at_chord_1);
+
+    // Advance to beat 8.0: the next chord boundary arrives, repeating the vamped chord.
+    let sample_beat_8 = (8.0 * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
+    let mut next_boundary_timing = timing(sample_beat_8, 120.0);
+    next_boundary_timing.morph_phrase_start = Some(4.0);
+    let _ = pad.next(&controls, MasterKey::Home, next_boundary_timing);
+    assert_eq!(pad.cursor.slot(), 1);
 }
 
 #[test]
@@ -11038,7 +11099,7 @@ mod chord_span_startup_tests {
     }
 
     #[test]
-    fn vamp_locks_next_bar_chord_indefinitely_and_releases_into_next_chord_on_next_bar() {
+    fn vamp_in_second_half_quantizes_to_currently_playing_chord_and_activates_immediately() {
         let mut song = SongState::from_controls(FluidControls::default());
         song.controls.master.bpm = 180.0;
         song.controls.pad.chord_bars = 1.0;
@@ -11048,70 +11109,64 @@ mod chord_span_startup_tests {
         let mut engine =
             FluidEngine::new(3_000.0, session.clone(), no_morph(), Arc::clone(&telemetry));
 
-        // Advance to beat 5.5 (mid-bar 2, while playing Chord 2 = slot 1):
-        // 180 BPM = 3 beats/sec -> 1,000 samples/beat -> 5,500 samples = 5.5 beats.
-        for _ in 0..5_500 {
+        // Advance to beat 6.5 (second half of Chord 2 [4.0..8.0), playing Chord 2 = slot 1):
+        // 180 BPM = 3 beats/sec -> 1,000 samples/beat -> 6,500 samples = 6.5 beats.
+        for _ in 0..6_500 {
             engine.next_stereo();
         }
-        assert_eq!(engine.pad.cursor.slot(), 1, "on Chord 2 at beat 5.5");
+        assert_eq!(engine.pad.cursor.slot(), 1, "on Chord 2 at beat 6.5");
         assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 1);
 
-        // Arm vamp mid-bar at beat 5.5 -> quantizes to next bar at beat 8.0,
-        // where the progression lands on Chord 3 (slot 2).
-        let armed = planned::VampState::start(telemetry.beat(), 2);
-        assert_eq!(armed.start_beat, 8.0);
-        assert!(armed.end_beat.is_infinite());
+        // Vamping in second half at beat 6.5 quantizes to the start of this currently
+        // playing chord at beat 4.0 (Chord 2, slot 1), activating immediately.
+        let active = planned::VampState::start(4.0, 1);
+        assert_eq!(active.start_beat, 4.0);
+        assert!(active.is_active(telemetry.beat()));
+        assert!(active.end_beat.is_infinite());
         session
             .transact(|next| {
-                next.vamp = Some(armed);
+                next.vamp = Some(active);
                 Ok::<(), ()>(())
             })
             .unwrap();
 
-        // At beat 6.5 (still before next bar at 8.0), vamp is armed but not yet active.
-        for _ in 0..1_000 {
-            engine.next_stereo();
-        }
-        assert_eq!(
-            engine.pad.cursor.slot(),
-            1,
-            "current bar finishes on Chord 2 before the next bar downbeat"
-        );
-
-        // Advance past beat 8.0 through several bars (to beat 25.5):
+        // Advance past beat 8.0 through several chords (to beat 25.5):
         // without the vamp it would have cycled through slots 2 -> 3 -> 0 -> 1 -> 2,
-        // but with the vamp it stays locked on Chord 3 (slot 2) indefinitely.
+        // but with the vamp it stays locked on Chord 2 (slot 1) indefinitely.
         for _ in 0..19_000 {
             engine.next_stereo();
         }
         assert_eq!(
             engine.pad.cursor.slot(),
-            2,
-            "vamp holds Chord 3 (slot 2) across bar boundaries until released"
+            1,
+            "vamp holds currently playing Chord 2 (slot 1) across chord boundaries until released"
         );
-        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 2);
-        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 2);
-        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 2);
+        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 1);
+        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 1);
+        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 1);
 
-        // Cue bar-locked release at beat 25.5 -> releases on next bar downbeat at beat 28.0.
+        // Cue release at beat 25.5 -> chord interval is 4.0, next chord boundary is beat 28.0.
+        let interval = 4.0;
+        let next_chord = 4.0 + (((telemetry.beat() - 4.0) / interval).floor() + 1.0) * interval;
+        assert_eq!(next_chord, 28.0);
         session
             .transact(|next| {
                 if let Some(vamp) = &mut next.vamp {
-                    vamp.end_beat = next_bar_beat(telemetry.beat());
+                    vamp.end_beat = next_chord;
                 }
                 Ok::<(), ()>(())
             })
             .unwrap();
         assert_eq!(session.load().vamp.unwrap().end_beat, 28.0);
 
-        // At beat 26.5 (before bar downbeat at 28.0), still holding Chord 3 (slot 2).
+        // At beat 26.5 (before chord downbeat at 28.0), still holding Chord 2 (slot 1).
         for _ in 0..1_000 {
             engine.next_stereo();
         }
-        assert_eq!(engine.pad.cursor.slot(), 2);
+        assert_eq!(engine.pad.cursor.slot(), 1);
 
         // Cross beat 28.0 (to beat 29.0): vamp releases directly into the next chord
-        // in the progression after slot 2, which is Chord 4 (slot 3)!
+        // in the progression after slot 1, which is Chord 3 (slot 2)!
         for _ in 0..2_500 {
             engine.next_stereo();
         }
@@ -11120,12 +11175,83 @@ mod chord_span_startup_tests {
         assert_eq!(session.load().vamp, None);
         assert_eq!(
             engine.pad.cursor.slot(),
-            3,
-            "releasing vamp steps directly into the next chord in the progression (slot 3)"
+            2,
+            "releasing vamp steps directly into the next chord in the progression (slot 2)"
         );
-        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 3);
-        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 3);
-        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 3);
+        assert_eq!(engine.bass.progression.cursor.unwrap().slot(), 2);
+        assert_eq!(engine.arp.progression.cursor.unwrap().slot(), 2);
+        assert_eq!(engine.lead.progression.cursor.unwrap().slot(), 2);
+    }
+
+    #[test]
+    fn vamp_in_first_half_quantizes_to_current_chord_and_activates_immediately() {
+        let mut song = SongState::from_controls(FluidControls::default());
+        song.controls.master.bpm = 180.0;
+        song.controls.pad.chord_bars = 4.0; // 16 beats per chord
+        song.controls.pad.chord_count = 4.0;
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(&song));
+        let telemetry = Arc::new(FluidTelemetry::default());
+        let mut engine =
+            FluidEngine::new(3_000.0, session.clone(), no_morph(), Arc::clone(&telemetry));
+
+        // Advance to beat 5.0 (which is in bar 2 of 4-bar Chord 1 [0.0..16.0)):
+        for _ in 0..5_000 {
+            engine.next_stereo();
+        }
+        assert_eq!(engine.pad.cursor.slot(), 0, "on Chord 1 at beat 5.0");
+
+        // Nearest chord start to beat 5.0 is 0.0 (Chord 1). Start beat is 0.0 <= 5.0.
+        let active_vamp = planned::VampState::start(0.0, 0);
+        assert_eq!(active_vamp.start_beat, 0.0);
+        assert!(active_vamp.is_active(telemetry.beat()));
+        session
+            .transact(|next| {
+                next.vamp = Some(active_vamp);
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+
+        // Advance past beat 16.0, 32.0, 48.0 (to beat 50.0):
+        // without vamp it would have progressed through all chords; with vamp it stays on Chord 1 (slot 0).
+        for _ in 0..45_000 {
+            engine.next_stereo();
+        }
+        assert_eq!(
+            engine.pad.cursor.slot(),
+            0,
+            "vamp holds Chord 1 across 16-beat boundaries"
+        );
+
+        // Cue release at beat 50.0: next chord boundary is beat 64.0 (0.0 + 4 * 16.0), NOT next bar (52.0).
+        let interval = 16.0;
+        let next_chord = 0.0 + (((telemetry.beat() - 0.0) / interval).floor() + 1.0) * interval;
+        assert_eq!(next_chord, 64.0);
+        session
+            .transact(|next| {
+                if let Some(vamp) = &mut next.vamp {
+                    vamp.end_beat = next_chord;
+                }
+                Ok::<(), ()>(())
+            })
+            .unwrap();
+
+        // Advance to beat 60.0 (still before beat 64.0): still on Chord 1.
+        for _ in 0..10_000 {
+            engine.next_stereo();
+        }
+        assert_eq!(engine.pad.cursor.slot(), 0);
+
+        // Advance past beat 64.0 (to beat 66.0): releases cleanly into Chord 2 (slot 1)!
+        for _ in 0..6_000 {
+            engine.next_stereo();
+        }
+        assert!(telemetry.beat() >= 64.0);
+        assert_eq!(engine.vamp, None);
+        assert_eq!(
+            engine.pad.cursor.slot(),
+            1,
+            "releases into Chord 2 (slot 1)"
+        );
     }
 }
 
@@ -12066,4 +12192,89 @@ fn bass_and_perc_evolve_mutates_live_steps_at_cycle_boundaries() {
         after.controls.clap.pattern,
         CUSTOM_CLAP_PATTERN_INDEX as f32
     );
+}
+
+#[test]
+fn compression_starts_at_100_percent_amount_by_default_and_when_added() {
+    let controls = FluidControls::default();
+    let master_comp = &controls.modules.master[1];
+    assert_eq!(master_comp.kind().map(|k| k.id), Some("compression"));
+    assert_eq!(master_comp.amount, 1.0);
+
+    let added = module::added_module_slot("compression");
+    assert_eq!(added.kind().map(|k| k.id), Some("compression"));
+    assert_eq!(added.amount, 1.0);
+    assert_eq!(added.time, 0.0, "threshold starts at 0 dB passthrough");
+    assert_eq!(added.vintage, 0.0, "makeup starts at 0 dB passthrough");
+
+    let added_drive = module::added_module_slot("drive");
+    assert_eq!(added_drive.kind().map(|k| k.id), Some("drive"));
+    assert_eq!(added_drive.amount, 0.0);
+}
+
+#[test]
+fn perc_level_uses_exp_taper_with_fine_low_end_resolution() {
+    let spec = spec_by_id("perc.level").unwrap();
+    assert_eq!(spec.taper, Taper::Exp(registry::PERC_LEVEL_TAPER));
+
+    let mut controls = FluidControls::default();
+    assert_eq!((spec.display)(&controls), "0%");
+
+    // Stepping up from 0% walks through sub-percent and 1..3% values smoothly
+    // rather than jumping 2% per press.
+    let mut visited = Vec::new();
+    let mut displays = Vec::new();
+    for _ in 0..10 {
+        spec.apply_delta(1.0, &mut controls);
+        visited.push(controls.perc.level);
+        displays.push((spec.display)(&controls));
+    }
+    assert!(
+        visited[0] > 0.0 && visited[0] < 0.005,
+        "first step should be sub-0.5%, got {}",
+        visited[0]
+    );
+    assert!(
+        visited[4] < 0.02,
+        "fifth step should still be under 2%, got {}",
+        visited[4]
+    );
+    assert_ne!(
+        displays[0], displays[1],
+        "consecutive low-end steps should format to distinct readouts"
+    );
+}
+
+#[test]
+fn evolve_rate_uses_exp_taper_and_probabilistic_low_rate_mutation() {
+    for id in [
+        "perc.evolve_rate",
+        "pad.evolve_rate",
+        "bass.evolve_rate",
+        "kick.evolve_rate",
+        "tonal.evolve_rate",
+        "clap.evolve_rate",
+        "arp.evolve_rate",
+        "lead.evolve_rate",
+    ] {
+        let spec = spec_by_id(id).unwrap();
+        assert_eq!(spec.taper, Taper::Exp(registry::EVOLVE_TAPER), "{id}");
+    }
+
+    // At 5% evolve rate with max 3 mutations, expected mutations per cycle is
+    // 0.05^1.5 * 3 ≈ 0.0335 (~3.4% of cycles mutate a single step), instead of
+    // mutating every single cycle.
+    let mut total_mutations = 0usize;
+    let trials = 1_000u64;
+    for cycle in 0..trials {
+        let count = voice::evolve_mutation_count(0.05, 3, cycle);
+        assert!(count <= 1, "5% rate must never mutate more than 1 step");
+        total_mutations += count;
+    }
+    assert!(
+        (15..=60).contains(&total_mutations),
+        "5% evolve rate should mutate only ~34 times in 1000 cycles, got {total_mutations}"
+    );
+    assert_eq!(voice::evolve_mutation_count(0.0, 4, 42), 0);
+    assert_eq!(voice::evolve_mutation_count(1.0, 4, 42), 4);
 }

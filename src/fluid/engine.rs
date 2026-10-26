@@ -1462,8 +1462,12 @@ impl FluidEngine {
                 self.vamp_landed_beat = None;
                 self.vamp_landed_at = None;
             } else {
-                let landed_at = released_vamp
-                    .map_or_else(|| (timing.beat / 4.0).floor() * 4.0, |vamp| vamp.end_beat);
+                let interval =
+                    GridSpec::new(self.snapshot.pad.chord_bars * 4.0, 0.0, 0.0).interval_beats;
+                let landed_at = released_vamp.map_or_else(
+                    || (timing.beat / interval).floor() * interval,
+                    |vamp| vamp.end_beat,
+                );
                 let window = ChordWindow::requested(&self.snapshot.pad);
                 let locked_slot = released_vamp
                     .map_or_else(|| self.pad.cursor.slot(), |vamp| usize::from(vamp.slot));
@@ -1472,12 +1476,10 @@ impl FluidEngine {
                     .position(|slot| slot == locked_slot)
                     .unwrap_or(0);
                 let next_step = (locked_step + 1) % window.count;
-                let interval =
-                    GridSpec::new(self.snapshot.pad.chord_bars * 4.0, 0.0, 0.0).interval_beats;
                 self.vamp_landed_beat = Some(landed_at - (next_step as f64) * interval);
                 self.vamp_landed_at = Some(landed_at);
+                self.reset_progression_phrase_anchors();
             }
-            self.reset_progression_phrase_anchors();
             self.vamp_active = now_active;
         }
     }

@@ -27,9 +27,13 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) hold_muted: [bool; HOLD_MUTE_COUNT],
     /// A boundary action that changes the audible future of this session.
     pub(crate) planned: Option<PlannedAction>,
-    /// Active bar-quantized chord vamp (`a`), locking Pads, Bass, Arp, and Lead
-    /// to the chord the next bar lands on until released on a bar boundary.
+    /// Active chord vamp (`a`), locking Pads, Bass, Arp, and Lead to the nearest
+    /// chord start until released into the next chord in the progression.
     pub(crate) vamp: Option<VampState>,
+    /// When `a` was physically pressed down, in audio seconds. Live-only.
+    pub(crate) vamp_press_seconds: Option<f64>,
+    /// Whether the vamp is latched hands-free (via a tap or `/vamp`) vs held. Live-only.
+    pub(crate) vamp_latched: bool,
     /// Lead play-mode presses. Live-only: never written to a song code.
     pub(crate) lead_play: LeadPlayState,
     pub(crate) gestures: GestureState,
@@ -74,6 +78,8 @@ impl LiveSessionSnapshot {
             hold_muted: [false; HOLD_MUTE_COUNT],
             planned: song.planned,
             vamp: song.vamp,
+            vamp_press_seconds: None,
+            vamp_latched: song.vamp.is_some(),
             lead_play: LeadPlayState::default(),
             gestures: song.gestures.restored(),
             drunken_phase_beat: song.drunken_phase_beat,
@@ -100,6 +106,8 @@ impl LiveSessionSnapshot {
             hold_muted: [false; HOLD_MUTE_COUNT],
             planned: None,
             vamp: None,
+            vamp_press_seconds: None,
+            vamp_latched: false,
             lead_play: LeadPlayState::default(),
             gestures: GestureState::default(),
             drunken_phase_beat: 0.0,

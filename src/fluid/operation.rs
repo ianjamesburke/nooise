@@ -15,6 +15,7 @@ pub(crate) enum Operation {
     OutputDevice,
     Chord(ChordAction),
     ToggleAuto,
+    ToggleVamp,
     ChordNames(ChordNames),
     ClearSequence,
 }
@@ -73,7 +74,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 23] = [
+    pub(crate) const ALL: [Self; 24] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -94,6 +95,7 @@ impl Operation {
         Self::Chord(ChordAction::AddExtension),
         Self::Chord(ChordAction::Restore),
         Self::ToggleAuto,
+        Self::ToggleVamp,
         Self::ChordNames(ChordNames::Roman),
         Self::ChordNames(ChordNames::Letters),
         Self::ClearSequence,
@@ -178,6 +180,12 @@ impl Operation {
                 aliases: &["auto", "auto morph", "morph"],
                 description: "start or stop auto-morphing between songs",
             },
+            Self::ToggleVamp => OperationSpec {
+                operation: self,
+                label: "Toggle vamp",
+                aliases: &["vamp", "chord vamp"],
+                description: "vamp the current chord or cue release",
+            },
             Self::ClearSequence => OperationSpec {
                 operation: self,
                 label: "Clear sequence",
@@ -208,6 +216,7 @@ impl Operation {
             | Self::Chord(_)
             | Self::ChordNames(_)
             | Self::ClearSequence
+            | Self::ToggleVamp
             | Self::ToggleAuto => None,
         }
     }
