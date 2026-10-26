@@ -12418,3 +12418,256 @@ fn evolve_rate_uses_exp_taper_and_probabilistic_low_rate_mutation() {
     assert_eq!(voice::evolve_mutation_count(0.0, 4, 42), 0);
     assert_eq!(voice::evolve_mutation_count(1.0, 4, 42), 4);
 }
+
+/// Author a Custom progression from `(degree, accidental, quality, fifth, inversion)`.
+fn custom_pad(specs: &[(f32, f32, f32, f32, f32)]) -> PadControls {
+    let mut pad = PadControls {
+        progression: CUSTOM_PROGRESSION_INDEX as f32,
+        chord_count: specs.len() as f32,
+        ..PadControls::default()
+    };
+    for (slot, (degree, accidental, quality, fifth, inversion)) in specs.iter().enumerate() {
+        pad.chord_slots[slot] = ChordSlotControls {
+            degree: *degree,
+            accidental: *accidental,
+            quality: *quality,
+            fifth: *fifth,
+            inversion: *inversion,
+            // "Stack" (4): a plain close stack that resolves a doubled-voice
+            // collision by octave, so it never invents a non-chord tone the
+            // way Close's legacy diatonic climb does.
+            voicing: 4.0,
+            ..ChordSlotControls::default()
+        };
+    }
+    pad
+}
+
+fn pitch_classes(slot: &ChordSlotControls) -> Vec<i32> {
+    let mut pcs: Vec<i32> = pad_chord_notes_with_slot(slot)
+        .iter()
+        .map(|n| n.rem_euclid(12))
+        .collect();
+    pcs.sort_unstable();
+    pcs.dedup();
+    pcs
+}
+
+/// Three real songs authored as Custom progressions. Pins the traps that bite
+/// when a song is expressed through the degree ladder: a chord's degree picks
+/// its octave, so the degrees must be chosen for an ascending bass, and
+/// `Close` voicing climbs a colliding voice up the diatonic scale, so a
+/// realized chord can gain a non-chord tone unless `Stack` is used.
+#[test]
+fn custom_song_progressions_keep_their_chords_octaves_and_bass() {
+    struct Song {
+        name: &'static str,
+        bpm: f32,
+        bars: f32,
+        specs: &'static [(f32, f32, f32, f32, f32)],
+        /// The song's chords as pitch classes, in order.
+        expect: &'static [&'static [i32]],
+        /// The real bass line the degrees were chosen to produce.
+        bass: &'static [i32],
+        attack: f32,
+        release: f32,
+        arp_steps: &'static [f32],
+        arp_gain: f32,
+        arp_type: f32,
+        bass_level: f32,
+    }
+    let songs = [
+        Song {
+            name: "creep",
+            bpm: 92.0,
+            bars: 1.0,
+            specs: &[
+                (-1.0, 0.0, 1.0, 1.0, 3.0),
+                (1.0, 0.0, 1.0, 1.0, 3.0),
+                (2.0, 0.0, 1.0, 1.0, 3.0),
+                (2.0, 0.0, -1.0, 1.0, 3.0),
+            ],
+            expect: &[&[2, 7, 11], &[3, 6, 11], &[0, 4, 7], &[0, 3, 7]],
+            bass: &[43, 43, 47, 47, 48, 48, 48, 48],
+            attack: 0.6,
+            release: 1.4,
+            arp_steps: &[1.0, 2.0, 3.0, 4.0],
+            arp_gain: 0.40,
+            arp_type: 6.0,
+            bass_level: 0.5,
+        },
+        Song {
+            name: "let-it-be",
+            bpm: 74.0,
+            bars: 0.5,
+            specs: &[
+                (-5.0, 0.0, 1.0, 1.0, 3.0),
+                (-1.0, 0.0, 1.0, 1.0, 3.0),
+                (0.0, 0.0, -1.0, 1.0, 3.0),
+                (-2.0, 0.0, 1.0, 1.0, 3.0),
+                (-5.0, 0.0, 1.0, 1.0, 3.0),
+                (-1.0, 0.0, 1.0, 1.0, 3.0),
+                (-2.0, 0.0, 1.0, 1.0, 3.0),
+                (-5.0, 0.0, 1.0, 1.0, 3.0),
+            ],
+            expect: &[
+                &[0, 4, 7],
+                &[2, 7, 11],
+                &[0, 4, 9],
+                &[0, 5, 9],
+                &[0, 4, 7],
+                &[2, 7, 11],
+                &[0, 5, 9],
+                &[0, 4, 7],
+            ],
+            // Two beats per chord, so one bass hit lands on each chord change.
+            bass: &[36, 43, 45, 41, 36, 43, 41, 36],
+            attack: 0.35,
+            release: 0.9,
+            arp_steps: &[1.0, 3.0, 2.0, 4.0],
+            arp_gain: 0.35,
+            arp_type: 6.0,
+            bass_level: 0.45,
+        },
+        Song {
+            name: "sweet-dreams",
+            bpm: 126.0,
+            bars: 1.0,
+            specs: &[
+                (-5.0, 0.0, -1.0, 1.0, 3.0),
+                (0.0, -1.0, 1.0, 1.0, 3.0),
+                (-1.0, 0.0, 1.0, 1.0, 3.0),
+            ],
+            expect: &[&[0, 3, 7], &[0, 3, 8], &[2, 7, 11]],
+            bass: &[36, 36, 44, 44, 43, 43],
+            attack: 0.2,
+            release: 0.8,
+            arp_steps: &[1.0, 3.0, 4.0, 2.0, 1.0, 3.0, 4.0, 2.0],
+            arp_gain: 0.45,
+            arp_type: 8.0,
+            bass_level: 0.5,
+        },
+    ];
+
+    for song in &songs {
+        let pad = custom_pad(song.specs);
+        for (slot, expected) in song.expect.iter().enumerate() {
+            let got = pitch_classes(pad.chord_slot(CUSTOM_PROGRESSION_INDEX, slot));
+            let want: Vec<i32> = {
+                let mut v = expected.to_vec();
+                v.sort_unstable();
+                v
+            };
+            assert_eq!(got, want, "{} chord {slot}", song.name);
+        }
+
+        let mut c = FluidControls::default();
+        c.master.bpm = song.bpm;
+        c.pad = custom_pad(song.specs);
+        c.pad.chord_bars = song.bars;
+        c.pad.attack_time = song.attack;
+        c.pad.release_time = song.release;
+        c.arp.gain = song.arp_gain;
+        c.arp.voice_type = song.arp_type;
+        c.arp.rate_beats = 0.5;
+        c.arp.pattern = 4.0;
+        c.arp.follow = 0.0;
+        c.arp.octaves = 1.0;
+        c.arp.step_count = song.arp_steps.len() as f32;
+        c.arp.decay = 0.5;
+        c.arp.steps = {
+            let mut s = [1.0f32; ARP_STEP_COUNT];
+            for (i, v) in song
+                .arp_steps
+                .iter()
+                .cycle()
+                .take(ARP_STEP_COUNT)
+                .enumerate()
+            {
+                s[i] = *v;
+            }
+            s
+        };
+        c.bass.level = song.bass_level;
+        c.bass.rhythm = 4.0;
+        c.bass.interval_beats = 0.5;
+        c.bass.step_count = 8.0;
+        c.bass.octave = 0.0;
+        c.bass.steps = {
+            let mut s = [0.0f32; BASS_STEP_COUNT];
+            s[0] = 1.0;
+            s[4] = 1.0;
+            s
+        };
+
+        let state = SongState {
+            controls: c.clone(),
+            ..Default::default()
+        };
+        let code = encode_song_code(&state).unwrap();
+        let back = decode_song_code(&code).unwrap();
+        for slot in 0..song.specs.len() {
+            assert_eq!(
+                pitch_classes(back.controls.pad.chord_slot(CUSTOM_PROGRESSION_INDEX, slot)),
+                pitch_classes(c.pad.chord_slot(CUSTOM_PROGRESSION_INDEX, slot)),
+                "{} chord {slot} did not survive the code",
+                song.name
+            );
+        }
+        assert_eq!(
+            progression_index(back.controls.pad.progression),
+            CUSTOM_PROGRESSION_INDEX,
+            "{} progression index",
+            song.name
+        );
+
+        println!("=== {} ({} bpm) ===", song.name, song.bpm);
+        for slot in 0..song.specs.len() {
+            let slotc = back.controls.pad.chord_slot(CUSTOM_PROGRESSION_INDEX, slot);
+            let notes = pad_chord_notes_with_slot(slotc);
+            let names: Vec<String> = notes
+                .iter()
+                .map(|n| format!("{}{}", chord_pitch_name(*n), n / 12 - 1))
+                .collect();
+            println!(
+                "  slot {slot}: bass_root={} chord: {}",
+                bass_root_note(CUSTOM_PROGRESSION_INDEX, slot, &back.controls.pad),
+                names.join(" ")
+            );
+        }
+
+        let (sink, rx) = OscVoiceSink::test_channel();
+        let mut engine = FluidEngine::new(
+            SAMPLE_RATE,
+            live_session(back.controls.clone(), AutomationState::default()),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        )
+        .with_osc_voice(sink);
+        engine.reseed(7);
+        let rate = f64::from(SAMPLE_RATE);
+        let per_chord = (f64::from(song.bars) * 4.0 * 60.0 / f64::from(song.bpm) * rate) as u64;
+        let total = per_chord * song.specs.len() as u64;
+        let mut peak = 0.0f32;
+        for _ in 0..total {
+            let (l, r) = engine.next_stereo();
+            peak = peak.max(l.abs().max(r.abs()));
+        }
+        let mut chords = 0usize;
+        let mut bass_notes = Vec::new();
+        for e in rx.try_iter() {
+            match e {
+                OscVoiceEvent::PadChord(_) => chords += 1,
+                OscVoiceEvent::BassNote { note, .. } => bass_notes.push(i32::from(note)),
+                _ => {}
+            }
+        }
+        assert_eq!(chords, song.specs.len(), "{} pad chords", song.name);
+        println!(
+            "  chords={chords} peak={peak:.3} bass={bass_notes:?} expect={:?} code_len={}",
+            song.bass,
+            code.len()
+        );
+        assert_eq!(bass_notes, song.bass, "{} bass line", song.name);
+    }
+}
