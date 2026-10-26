@@ -189,6 +189,41 @@ Progression { song_value, name, home_mode, bass: [BassStep], cells: [Cell; N] }
 - Production keyboard replay on both terminal profiles covers the lane
   editor and clipboard.
 
+## Implementation status
+
+Landed:
+
+- `voice/harmony.rs` — `Harmony`, `Quality`, `Voicing`, `realize`, the
+  temporary `chord_from_slot` bridge.
+- `voice/cell.rs` — `Cell { harmony, voicing, gate }` and `Gate`
+  (Rest/Hold/Sound); the resolver and the Pad's sounding test read them.
+- `voice/evolve.rs` — the smart one-cell evolution, with engine-level
+  guarantees pinned in `tests.rs`.
+
+Remaining (the lane + editor epic):
+
+- `PadControls.chord_slots` and `chord_overrides` become `[Cell; 16]`;
+  `chord_slot` returns an owned `Cell`. This cascades through ~50 call sites
+  and ~46 test field reads.
+- Registry: rewrite `chord_slot_rows!` once (it generates all 128 rows).
+  Per-step fields: `gate`, `root`, `accidental`, `quality`, `tension1`,
+  `tension2`, `fifth`, `voicing` (a mode that seeds the explicit voices,
+  mirroring how `arp.pattern` seeds `arp.step1..16`; a manual tone edit
+  switches it to Custom). Per-tone rows live in a `Voicing ›` detail.
+- Storage: a dedicated `cells` record (version 3) replaces record 13 and the
+  chord half of the snapshot; a v2 chord record is refused, not migrated.
+  Bump `CURRENT_RANGE_EPOCH` and append the moved-dial entries.
+- Naming (`custom_chord_name`, `roman_chord_name`) reads `Cell`/`Harmony`
+  instead of `ChordSlotControls`.
+- Copy/paste a cell and copy-to-all-steps, owned by the interaction kernel.
+- Re-author `AUTO_STATES` through the current encoder (`just add-morph`).
+
+Decision recorded for the voicing half: the lane stores explicit
+`Voicing` voices; the `voicing` control is a mode that seeds them, and a
+manual tone edit selects Custom. This keeps the editor to eight rows per
+step (the user's "too many options" complaint) while the detail drill still
+offers per-tone editing.
+
 ## Out of scope
 
 - The `nooise make-song` authoring command (a serializer front-end; separate).
