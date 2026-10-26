@@ -62,7 +62,7 @@ const PLANNED_ACTION_RECORD: u8 = 11;
 const EDITOR_MOTION_RECORD: u8 = 12;
 const CHORD_OVERRIDES_RECORD: u8 = 13;
 const VAMP_RECORD: u8 = 14;
-const CHORD_OVERRIDES_VERSION: u8 = 1;
+const CHORD_OVERRIDES_VERSION: u8 = 2;
 const PLANNED_MUTE_TAG: u8 = 0;
 /// Relative Motion has an explicit reference; previous absolute sampled
 /// payloads are refused rather than given a different musical meaning.
@@ -604,11 +604,11 @@ fn read_chord_overrides(bytes: &[u8], pad: &mut super::PadControls) -> Result<()
             .position(|p| p.song_value == identity)
             .ok_or(SongCodeError::InvalidChordOverrides)?;
         let slot = usize::from(reader.u8()?);
-        let mut values = [0; 8];
+        let mut values = [0; 9];
         for value in &mut values {
             *value = reader.i8()?;
         }
-        let chord = super::ChordSlotControls::preset(values);
+        let chord = super::ChordSlotControls::from_values(values.map(f32::from));
         if slot >= super::CHORD_SLOT_COUNT
             || !chord.is_valid()
             || pad.chord_overrides[progression][slot].is_some()
@@ -637,6 +637,40 @@ mod chord_override_codec_tests {
         }
         song.controls.pad.progression = 2.0;
         song
+    }
+
+    #[test]
+    fn chord_gate_round_trips_through_a_song_code() {
+        let mut song = SongState::default();
+        song.controls.pad.chord_slots[2].gate = super::super::ChordSlotControls::GATE_REST;
+        song.controls.pad.chord_slots[3].gate = super::super::ChordSlotControls::GATE_HOLD;
+        let loaded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(
+            loaded.controls.pad.chord_slots[2].gate,
+            super::super::ChordSlotControls::GATE_REST
+        );
+        assert_eq!(
+            loaded.controls.pad.chord_slots[3].gate,
+            super::super::ChordSlotControls::GATE_HOLD
+        );
+    }
+
+    #[test]
+    fn a_stored_chord_degree_below_the_new_dial_range_is_refused() {
+        let id = song_id_index("pad.chord1_degree").unwrap();
+        // One snapshot entry: `pad.chord1_degree = -9`, the old Rest
+        // sentinel. The degree dial now stops at -7, so the code is refused
+        // rather than clamped onto a neighbouring root.
+        let mut snapshot = Vec::new();
+        snapshot.extend_from_slice(&1u16.to_le_bytes());
+        snapshot.extend_from_slice(&id.to_le_bytes());
+        snapshot.push(VALUE_TAG_SMALL_INT);
+        snapshot.push((-9i8) as u8);
+        let code = code_from_records(CONTAINER_VERSION, &[(SNAPSHOT_RECORD, &snapshot)]);
+        assert_eq!(
+            decode_song_code(&code).err(),
+            Some(SongCodeError::StaleRange("pad.chord1_degree"))
+        );
     }
 
     #[test]
@@ -724,7 +758,7 @@ mod chord_override_codec_tests {
             assert!(decode(&bytes[..length]).is_err(), "truncation {length}");
         }
         for (offset, value) in [
-            (0, 2),
+            (0, 3),
             (1, 0),
             (1, 255),
             (2, 8),
@@ -738,14 +772,16 @@ mod chord_override_codec_tests {
             (9, 8),
             (10, 5),
             (11, 3),
+            (12, 3),
         ] {
             let mut invalid = bytes.clone();
             invalid[offset] = value;
             assert!(decode(&invalid).is_err(), "offset {offset} value {value}");
         }
+        // Entry 0 spans 13 bytes, so entry 1's key starts at 15.
         let mut duplicate_key = bytes.clone();
-        duplicate_key[12] = duplicate_key[2];
-        duplicate_key[13] = duplicate_key[3];
+        duplicate_key[15] = duplicate_key[2];
+        duplicate_key[16] = duplicate_key[3];
         assert!(decode(&duplicate_key).is_err());
         let mut trailing = bytes.clone();
         trailing.push(0);
@@ -1707,6 +1743,22 @@ impl EncodedValue {
         };
         Ok(value.clamp(spec.min, spec.max))
     }
+
+    /// An exact stored value that sits below the spec's range: the dial
+    /// narrowed under it since the code was written. Positions map into the
+    /// range by construction, and a table-valued row stores a table entry
+    /// rather than a dial value, so neither can be out of range.
+    fn below_range(self, spec: &ControlSpec) -> bool {
+        if spec.song_values.is_some() {
+            return false;
+        }
+        match self {
+            Self::Position(_) => false,
+            Self::SmallInt(value) => f32::from(value) < spec.min,
+            Self::Int(value) => f32::from(value) < spec.min,
+            Self::Float(value) => value < spec.min,
+        }
+    }
 }
 
 /// A `0..=1` ratio as a u16; both endpoints land exactly.
@@ -1839,6 +1891,14 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
             }
             if let Some(spec) = control_at(index) {
                 let spec = spec.contextual(controls);
+                // Rhythm moved out of `degree` into `gate`, narrowing the
+                // degree dial. A code that stored a Rest/Hold sentinel there
+                // is refused rather than clamped onto a neighbouring root.
+                if super::registry::parse_chord_slot_id(spec.id).is_some()
+                    && value.below_range(&spec)
+                {
+                    return Err(SongCodeError::StaleRange(spec.id));
+                }
                 spec.apply_stored_quantized_value(value.resolve(&spec)?, controls);
             } else if !structural {
                 reject_retired_control(index)?;
@@ -2741,8 +2801,8 @@ mod song_value_tests {
         song.controls.pad.chord_count = 16.0;
         song.controls.pad.chord_offset = 11.0;
         song.controls.modules.pad[1] = super::super::module::preset_slot("swing", 0.4);
-        song.controls.pad.edit_chord_slot(1).degree = super::super::ChordSlotControls::TIE_DEGREE;
-        song.controls.pad.edit_chord_slot(4).degree = super::super::ChordSlotControls::REST_DEGREE;
+        song.controls.pad.edit_chord_slot(1).gate = super::super::ChordSlotControls::GATE_HOLD;
+        song.controls.pad.edit_chord_slot(4).gate = super::super::ChordSlotControls::GATE_REST;
         song.controls.pad.edit_chord_slot(15).degree = 4.0;
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
         assert_eq!(decoded.controls.pad.chord_bars, 0.0625);

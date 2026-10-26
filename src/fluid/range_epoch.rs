@@ -15,7 +15,10 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = LANDSLIDE_PROGRESSION_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = RHYTHM_GATE_EPOCH;
+/// Rhythm moved out of the chord `degree` sentinels into a `gate` row, so the
+/// degree dial narrowed from `-9..=7` to `-7..=7`.
+pub(crate) const RHYTHM_GATE_EPOCH: u16 = 14;
 pub(crate) const LANDSLIDE_PROGRESSION_EPOCH: u16 = 13;
 pub(crate) const V3_PROGRESSION_EPOCH: u16 = 12;
 pub(crate) const PERC_EVOLVE_TAPER_EPOCH: u16 = 11;
@@ -273,6 +276,11 @@ const RANGE_CHANGES: &[RangeChange] = &[
     RangeChange {
         epoch: LANDSLIDE_PROGRESSION_EPOCH,
         target: RangeTarget::Control("pad.progression"),
+    },
+    // Chord rhythm became its own `gate` row, narrowing `degree` to -7..=7.
+    RangeChange {
+        epoch: RHYTHM_GATE_EPOCH,
+        target: RangeTarget::ChordSlot,
     },
 ];
 

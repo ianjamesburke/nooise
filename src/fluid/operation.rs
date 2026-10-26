@@ -32,7 +32,7 @@ pub(crate) enum ChordAction {
 pub(crate) struct ChordTarget {
     pub(crate) progression: i8,
     pub(crate) slot: usize,
-    fields: [u32; 8],
+    fields: [u32; 9],
 }
 
 impl ChordTarget {

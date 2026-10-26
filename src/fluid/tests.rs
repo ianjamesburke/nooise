@@ -2280,7 +2280,7 @@ fn osc_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop() 
 fn pad_osc_input_plays_its_sound_at_the_received_pitch_without_echo() {
     let mut controls = FluidControls::default();
     for slot in 0..CHORD_SLOT_COUNT {
-        controls.pad.edit_chord_slot(slot).degree = ChordSlotControls::REST_DEGREE;
+        controls.pad.edit_chord_slot(slot).gate = ChordSlotControls::GATE_REST;
     }
     controls.pad.attack_time = 0.01;
     controls.pad.level = 1.0;
@@ -2739,9 +2739,9 @@ fn pad_stabs_send_only_selected_steps_and_release_between_hits() {
         ..PadControls::default()
     };
     let first = *controls.chord_slot(0, 0);
-    controls.edit_chord_slot(1).degree = ChordSlotControls::REST_DEGREE;
+    controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_REST;
     *controls.edit_chord_slot(2) = first;
-    controls.edit_chord_slot(3).degree = ChordSlotControls::REST_DEGREE;
+    controls.edit_chord_slot(3).gate = ChordSlotControls::GATE_REST;
     let mut pad = pad_engine(&controls);
     let (sink, receiver) = OscVoiceSink::test_channel();
     pad.set_osc(sink);
@@ -2776,9 +2776,9 @@ fn pad_tie_holds_osc_until_a_rest_step_releases_it() {
         chord_count: 4.0,
         ..PadControls::default()
     };
-    controls.edit_chord_slot(1).degree = ChordSlotControls::TIE_DEGREE;
-    controls.edit_chord_slot(2).degree = ChordSlotControls::REST_DEGREE;
-    controls.edit_chord_slot(3).degree = ChordSlotControls::REST_DEGREE;
+    controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_HOLD;
+    controls.edit_chord_slot(2).gate = ChordSlotControls::GATE_REST;
+    controls.edit_chord_slot(3).gate = ChordSlotControls::GATE_REST;
     let mut pad = pad_engine(&controls);
     let (sink, receiver) = OscVoiceSink::test_channel();
     pad.set_osc(sink);
@@ -2847,9 +2847,9 @@ fn pad_sub_bar_chord_bars_and_tied_offbeat_span() {
         chord_count: 4.0,
         ..PadControls::default()
     };
-    controls.edit_chord_slot(0).degree = ChordSlotControls::REST_DEGREE;
-    controls.edit_chord_slot(2).degree = ChordSlotControls::TIE_DEGREE;
-    controls.edit_chord_slot(3).degree = ChordSlotControls::REST_DEGREE;
+    controls.edit_chord_slot(0).gate = ChordSlotControls::GATE_REST;
+    controls.edit_chord_slot(2).gate = ChordSlotControls::GATE_HOLD;
+    controls.edit_chord_slot(3).gate = ChordSlotControls::GATE_REST;
     let mut pad = pad_engine(&controls);
     let (sink, receiver) = OscVoiceSink::test_channel();
     pad.set_osc(sink);
@@ -2893,7 +2893,7 @@ fn pad_chord_offset_rotates_the_step_lane_with_the_grid() {
         ..PadControls::default()
     };
     for slot in [0, 1, 2, 3, 5] {
-        controls.edit_chord_slot(slot).degree = ChordSlotControls::REST_DEGREE;
+        controls.edit_chord_slot(slot).gate = ChordSlotControls::GATE_REST;
     }
     let mut pad = pad_engine(&controls);
     let (sink, receiver) = OscVoiceSink::test_channel();
@@ -2949,7 +2949,7 @@ fn pad_switching_from_rest_to_active_slot_voices_chord() {
         chord_bars: 0.0625,
         ..PadControls::default()
     };
-    controls.edit_chord_slot(0).degree = ChordSlotControls::REST_DEGREE;
+    controls.edit_chord_slot(0).gate = ChordSlotControls::GATE_REST;
     let mut pad = pad_engine(&controls);
     let (sink, receiver) = OscVoiceSink::test_channel();
     pad.set_osc(sink);
@@ -2959,7 +2959,8 @@ fn pad_switching_from_rest_to_active_slot_voices_chord() {
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
     );
     receiver.try_iter().for_each(drop);
-    controls.edit_chord_slot(0).degree = 0.0;
+    // Rhythm is explicit now: leaving Rest means sounding the gate again.
+    controls.edit_chord_slot(0).gate = ChordSlotControls::GATE_SOUND;
     pad.next(
         &controls,
         MasterKey::Home,
@@ -2982,7 +2983,7 @@ fn pad_stab_audio_dies_between_hits() {
     };
     controls.chord_bars = 0.0625;
     for slot in 1..CHORD_SLOT_COUNT {
-        controls.edit_chord_slot(slot).degree = ChordSlotControls::REST_DEGREE;
+        controls.edit_chord_slot(slot).gate = ChordSlotControls::GATE_REST;
     }
     let mut pad = pad_engine(&controls);
     let mut early = 0.0f64;
@@ -3018,10 +3019,10 @@ fn pad_tie_length_changes_the_audible_stab() {
             ..PadControls::default()
         };
         for slot in 1..CHORD_SLOT_COUNT {
-            controls.edit_chord_slot(slot).degree = ChordSlotControls::REST_DEGREE;
+            controls.edit_chord_slot(slot).gate = ChordSlotControls::GATE_REST;
         }
         if tie_second_step {
-            controls.edit_chord_slot(1).degree = ChordSlotControls::TIE_DEGREE;
+            controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_HOLD;
         }
         let mut pad = pad_engine(&controls);
         let mut power = 0.0f64;
@@ -4212,11 +4213,11 @@ fn tab_controls_classify_each_slider_kind() {
             vec![Gain, Timing, Timing, Discrete, Continuous],
         ),
         (Tab::Chords, {
-            // 9 visible root base rows, then 16 slots x 8 discrete rows.
+            // 9 visible root base rows, then 16 slots x 9 discrete rows.
             let mut kinds = vec![
                 Gain, Timing, Timing, Discrete, Discrete, Discrete, Gain, Gain, Gain,
             ];
-            kinds.extend(vec![Discrete; 128]);
+            kinds.extend(vec![Discrete; 144]);
             kinds.push(Gain); // pre-loaded shared Reverb
             kinds
         }),
@@ -5056,7 +5057,8 @@ fn chords_tab_controls_slot_shows_the_shared_builder_fields() {
             "Extension",
             "Bass",
             "Voicing",
-            "Fifth"
+            "Fifth",
+            "Gate"
         ]
     );
 }
@@ -11264,9 +11266,9 @@ fn chord_tie_sustains_without_reattacking_and_rest_releases_pads() {
         release_time: 0.05,
         ..PadControls::default()
     };
-    controls.edit_chord_slot(1).degree = ChordSlotControls::TIE_DEGREE;
-    controls.edit_chord_slot(2).degree = ChordSlotControls::TIE_DEGREE;
-    controls.edit_chord_slot(3).degree = ChordSlotControls::REST_DEGREE;
+    controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_HOLD;
+    controls.edit_chord_slot(2).gate = ChordSlotControls::GATE_HOLD;
+    controls.edit_chord_slot(3).gate = ChordSlotControls::GATE_REST;
 
     let mut pad = pad_engine(&controls);
     let (sink, receiver) = OscVoiceSink::test_channel();
@@ -11708,7 +11710,7 @@ fn evolve_visibly_mutates_session_steps_and_chord_slots_across_all_sequenced_voi
     );
 }
 
-fn pad_slot_snapshot(controls: &FluidControls, progression: usize) -> Vec<[f32; 8]> {
+fn pad_slot_snapshot(controls: &FluidControls, progression: usize) -> Vec<[f32; 9]> {
     (0..8)
         .map(|slot| controls.pad.chord_slot(progression, slot).values())
         .collect()

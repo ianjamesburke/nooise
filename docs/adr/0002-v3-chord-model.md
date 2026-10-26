@@ -200,29 +200,29 @@ Landed:
 - `voice/evolve.rs` — the smart one-cell evolution, with engine-level
   guarantees pinned in `tests.rs`.
 
-Remaining (the lane + editor epic):
+- Stage 2 (rhythm half) — `ChordSlotControls::gate` (`0`/`1`/`2`) with the
+  `pad.chordN_gate` registry row (`CHORD_FIELDS` nine entries, gate last,
+  `reset_at(GATE_SOUND)`); the degree dial narrowed to `-7..=7`;
+  `RHYTHM_GATE_EPOCH` appended as a `RangeTarget::ChordSlot` change; record 13
+  version 2 (nine bytes, gate last) with version 1 refused; `read_snapshot`
+  refuses a stored chord-degree value below the new minimum rather than
+  clamping it. All 16 gate ids appended to `SONG_ID_TABLE`.
+
+Remaining (the lane + voicing epic):
 
 - `PadControls.chord_slots` and `chord_overrides` become `[Cell; 16]`;
-  `chord_slot` returns an owned `Cell`. This cascades through ~50 call sites
-  and ~46 test field reads.
-- Registry: rewrite `chord_slot_rows!` once (it generates all 128 rows).
-  Per-step fields: `gate`, `root`, `accidental`, `quality`, `tension1`,
-  `tension2`, `fifth`, `voicing` (a mode that seeds the explicit voices,
-  mirroring how `arp.pattern` seeds `arp.step1..16`; a manual tone edit
-  switches it to Custom). Per-tone rows live in a `Voicing ›` detail.
-- Storage: a dedicated `cells` record (version 3) replaces record 13 and the
-  chord half of the snapshot; a v2 chord record is refused, not migrated.
-  Bump `CURRENT_RANGE_EPOCH` and append the moved-dial entries.
+  `chord_slot` returns an owned `Cell`, so the stored fields *are* `Harmony`,
+  `Voicing`, and `Gate` rather than a legacy slot the cell is derived from.
+  This cascades through ~50 call sites and ~46 test field reads.
+- Voicing becomes explicit: the `voicing` control seeds the four `Voicing`
+  voices from a mode and a manual tone edit selects Custom, mirroring how
+  `arp.pattern` seeds `arp.step1..16`. Per-tone rows live in a `Voicing ›`
+  detail so the step editor keeps its nine rows.
 - Naming (`custom_chord_name`, `roman_chord_name`) reads `Cell`/`Harmony`
   instead of `ChordSlotControls`.
 - Copy/paste a cell and copy-to-all-steps, owned by the interaction kernel.
 - Re-author `AUTO_STATES` through the current encoder (`just add-morph`).
-
-Decision recorded for the voicing half: the lane stores explicit
-`Voicing` voices; the `voicing` control is a mode that seeds them, and a
-manual tone edit selects Custom. This keeps the editor to eight rows per
-step (the user's "too many options" complaint) while the detail drill still
-offers per-tone editing.
+- Retire `legacy_chord_notes` and the `chord_from_slot` bridge.
 
 ## Out of scope
 

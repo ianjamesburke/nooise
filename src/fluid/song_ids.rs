@@ -978,6 +978,23 @@ const SONG_ID_TABLE: &[&str] = &[
     "clap.step14",
     "clap.step15",
     "clap.step16",
+    // Chord rhythm moved out of the `degree` sentinels into its own row.
+    "pad.chord1_gate",
+    "pad.chord2_gate",
+    "pad.chord3_gate",
+    "pad.chord4_gate",
+    "pad.chord5_gate",
+    "pad.chord6_gate",
+    "pad.chord7_gate",
+    "pad.chord8_gate",
+    "pad.chord9_gate",
+    "pad.chord10_gate",
+    "pad.chord11_gate",
+    "pad.chord12_gate",
+    "pad.chord13_gate",
+    "pad.chord14_gate",
+    "pad.chord15_gate",
+    "pad.chord16_gate",
 ];
 
 /// Index of `id` in the song-code id table, or `None` if the control has

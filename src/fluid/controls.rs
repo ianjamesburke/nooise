@@ -127,7 +127,7 @@ impl PercControls {
 /// coordinates; quality chooses the third/suspension, fifth is independent,
 /// and two extensions share the source-tone priority. Defaults preserve the
 /// existing Custom sound. Registry specs own every field's allowed values.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ChordSlotControls {
     pub(crate) degree: f32,
     pub(crate) accidental: f32,
@@ -137,22 +137,43 @@ pub(crate) struct ChordSlotControls {
     pub(crate) extension2: f32,
     pub(crate) voicing: f32,
     pub(crate) fifth: f32,
+    /// How the step meets the next boundary: `Rest`/`Hold`/`Sound`. Rhythm is
+    /// its own field; it used to hide in `degree` as the `-9`/`-8` sentinels.
+    pub(crate) gate: f32,
+}
+
+impl Default for ChordSlotControls {
+    fn default() -> Self {
+        Self {
+            degree: 0.0,
+            accidental: 0.0,
+            quality: 0.0,
+            extension: 0.0,
+            inversion: 0.0,
+            extension2: 0.0,
+            voicing: 0.0,
+            fifth: 0.0,
+            gate: Self::GATE_SOUND,
+        }
+    }
 }
 
 impl ChordSlotControls {
-    pub(crate) const REST_DEGREE: f32 = -9.0;
-    pub(crate) const TIE_DEGREE: f32 = -8.0;
+    pub(crate) const GATE_REST: f32 = 0.0;
+    pub(crate) const GATE_HOLD: f32 = 1.0;
+    pub(crate) const GATE_SOUND: f32 = 2.0;
 
     pub(crate) fn is_rest(self) -> bool {
-        (self.degree.round() as i32) <= Self::REST_DEGREE as i32
+        (self.gate.round() as i32) <= Self::GATE_REST as i32
     }
 
     pub(crate) fn is_tie(self) -> bool {
-        (self.degree.round() as i32) == Self::TIE_DEGREE as i32
+        (self.gate.round() as i32) == Self::GATE_HOLD as i32
     }
 
-    /// Compact authored/wire order: root, accidental, third, extensions,
-    /// bass, spread, fifth. All values are exact discrete choices.
+    /// Compact authored order: root, accidental, third, extensions, bass,
+    /// spread, fifth. All values are exact discrete choices, and every
+    /// built-in progression chord sounds its step.
     pub(crate) const fn preset(values: [i8; 8]) -> Self {
         Self {
             degree: values[0] as f32,
@@ -163,10 +184,26 @@ impl ChordSlotControls {
             inversion: values[5] as f32,
             voicing: values[6] as f32,
             fifth: values[7] as f32,
+            gate: Self::GATE_SOUND,
         }
     }
 
-    pub(crate) fn values(&self) -> [f32; 8] {
+    /// Wire order for record 13: `values` including the gate.
+    pub(crate) fn from_values(values: [f32; 9]) -> Self {
+        Self {
+            degree: values[0],
+            accidental: values[1],
+            quality: values[2],
+            extension: values[3],
+            extension2: values[4],
+            inversion: values[5],
+            voicing: values[6],
+            fifth: values[7],
+            gate: values[8],
+        }
+    }
+
+    pub(crate) fn values(&self) -> [f32; 9] {
         [
             self.degree,
             self.accidental,
@@ -176,11 +213,12 @@ impl ChordSlotControls {
             self.inversion,
             self.voicing,
             self.fifth,
+            self.gate,
         ]
     }
 
     pub(crate) fn is_valid(&self) -> bool {
-        const IDS: [&str; 8] = [
+        const IDS: [&str; 9] = [
             "pad.chord1_degree",
             "pad.chord1_accidental",
             "pad.chord1_quality",
@@ -189,6 +227,7 @@ impl ChordSlotControls {
             "pad.chord1_inversion",
             "pad.chord1_voicing",
             "pad.chord1_fifth",
+            "pad.chord1_gate",
         ];
         self.values().into_iter().zip(IDS).all(|(value, id)| {
             value.is_finite()

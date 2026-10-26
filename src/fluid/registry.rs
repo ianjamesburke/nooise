@@ -1223,7 +1223,7 @@ macro_rules! chord_slot_rows {
                 concat!("pad.chord", $slot, "_degree"),
                 concat!("Chord ", $slot, " Root"),
                 ControlKind::Discrete,
-                ChordSlotControls::REST_DEGREE,
+                -7.0,
                 7.0,
                 Step::Linear(1.0),
                 Entry::Round,
@@ -1240,7 +1240,7 @@ macro_rules! chord_slot_rows {
                     if slot.is_rest() {
                         "Rest".to_string()
                     } else if slot.is_tie() {
-                        "Tie".to_string()
+                        "Hold".to_string()
                     } else {
                         format!(
                             "{} ({:+.0})",
@@ -1467,6 +1467,32 @@ macro_rules! chord_slot_rows {
                 |c| c.pad.chord_slots[$slot - 1].fifth,
                 |c, v| c.pad.chord_slots[$slot - 1].fifth = v,
             ),
+            ControlSpec::new(
+                concat!("pad.chord", $slot, "_gate"),
+                concat!("Chord ", $slot, " Gate"),
+                ControlKind::Discrete,
+                ChordSlotControls::GATE_REST,
+                ChordSlotControls::GATE_SOUND,
+                Step::Linear(1.0),
+                Entry::Round,
+                |c| {
+                    c.pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1)
+                        .gate
+                },
+                |c, v| c.pad.edit_chord_slot($slot - 1).gate = v,
+                |c| {
+                    let slot = c
+                        .pad
+                        .chord_slot(progression_index(c.pad.progression), $slot - 1);
+                    type_label(slot.gate, &["Rest", "Hold", "Sound"]).into()
+                },
+            )
+            .reset_at(ChordSlotControls::GATE_SOUND)
+            .stored_as(
+                |c| c.pad.chord_slots[$slot - 1].gate,
+                |c, v| c.pad.chord_slots[$slot - 1].gate = v,
+            ),
         ]
     };
 }
@@ -1506,6 +1532,7 @@ macro_rules! layer_controls {
                 chord_slot_rows!($chord)[5],
                 chord_slot_rows!($chord)[6],
                 chord_slot_rows!($chord)[7],
+                chord_slot_rows!($chord)[8],
             )*
             $(
                 module_slot_rows!($layer, $prefix, $slot)[0],
@@ -3540,7 +3567,7 @@ pub(crate) fn module_slot_spec(
 }
 
 /// Stable field names define both the editor ordering and palette inverse.
-pub(crate) const CHORD_FIELDS: [&str; 8] = [
+pub(crate) const CHORD_FIELDS: [&str; 9] = [
     "degree",
     "accidental",
     "quality",
@@ -3549,6 +3576,7 @@ pub(crate) const CHORD_FIELDS: [&str; 8] = [
     "inversion",
     "voicing",
     "fifth",
+    "gate",
 ];
 
 pub(crate) fn parse_chord_slot_id(id: &str) -> Option<(usize, usize)> {
