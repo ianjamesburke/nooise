@@ -1,5 +1,5 @@
-//! Binary entry point: CLI parsing for `run`/`version`/`update`/`render`/`auto`
-//! and a bare song code, then handoff to the matching `fluid` entry.
+//! Binary entry point: CLI parsing for `run`/`version`/`update`/`render`/`auto`/
+//! `make-song` and a bare song code, then handoff to the matching `fluid` entry.
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use std::error::Error;
@@ -28,7 +28,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     if matches!(
         cli.command,
-        Some(CliCommand::Update | CliCommand::Render(_))
+        Some(CliCommand::Update | CliCommand::Render(_) | CliCommand::MakeSong(_))
     ) {
         if cli.start_muted {
             return Err("-M/--start-muted only applies to live playback".into());
@@ -57,6 +57,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         Some(CliCommand::Update) => update_nooise(),
         Some(CliCommand::Render(args)) => render(args),
         Some(CliCommand::Auto) => fluid::run_auto(bars, cli.from.unwrap_or(1), cli.osc, options),
+        Some(CliCommand::MakeSong(args)) => make_song(args),
     }
 }
 
@@ -148,7 +149,7 @@ impl Cli {
         } else if self.output_device.is_some()
             && matches!(
                 self.command,
-                Some(CliCommand::Render(_) | CliCommand::Update)
+                Some(CliCommand::Render(_) | CliCommand::Update | CliCommand::MakeSong(_))
             )
         {
             Some("--output-device only applies to live playback")
@@ -184,6 +185,74 @@ enum CliCommand {
     Render(RenderArgs),
     #[command(about = "Morph through every built-in song, forever")]
     Auto,
+    #[command(
+        about = "Turn chord names into an n1_ song code",
+        long_about = "Turn chord names into an n1_ song code.\n\n\
+            Authors the chord backbone -- tempo, harmony, harmonic rhythm, bass\n\
+            rhythm, and at most one arp figure. Drums, lead, and the tonal lane\n\
+            stay at their defaults to add in the TUI."
+    )]
+    MakeSong(MakeSongArgs),
+}
+
+#[derive(Debug, Clone, PartialEq, Args)]
+struct MakeSongArgs {
+    /// Tempo in BPM.
+    #[arg(long, default_value_t = 120.0)]
+    bpm: f32,
+    /// Chord names, e.g. "Em Cmaj7 G D". Spaces, commas, and bars all separate.
+    #[arg(long, value_name = "CHORDS")]
+    chords: String,
+    /// Bars each chord holds -- the harmonic rhythm. 1.0 is one chord per bar.
+    #[arg(long, default_value_t = 1.0)]
+    chord_bars: f32,
+    /// Bass rhythm: quarter, syncopated, eighths, sixteenths, or off.
+    #[arg(long, default_value = "quarter")]
+    bass: String,
+    /// Arp figure: up, down, up-down, random, or off.
+    #[arg(long, default_value = "off")]
+    arp: String,
+    /// Beats each arp step holds. 0.5 is eighth notes.
+    #[arg(long, default_value_t = 0.5)]
+    arp_rate: f32,
+    /// Arp span in octaves, 1 to 3.
+    #[arg(long, default_value_t = 1.0)]
+    arp_octaves: f32,
+    /// Pad swell in seconds. The factory 6s assumes one chord per four bars.
+    #[arg(long, default_value_t = 0.4)]
+    attack: f32,
+    /// Pad fall in seconds.
+    #[arg(long, default_value_t = 1.2)]
+    release: f32,
+    /// Write the code to PATH instead of stdout.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Print the tempo, realized voicings, and rhythms alongside the code.
+    #[arg(long)]
+    show: bool,
+}
+
+fn make_song(args: MakeSongArgs) -> Result<(), Box<dyn Error>> {
+    let (code, summary) = fluid::make_song_code(&fluid::SongSpec {
+        bpm: args.bpm,
+        chords: args.chords,
+        chord_bars: args.chord_bars,
+        bass: args.bass,
+        arp: args.arp,
+        arp_rate_beats: args.arp_rate,
+        arp_octaves: args.arp_octaves,
+        attack: args.attack,
+        release: args.release,
+    })?;
+    if args.show {
+        print!("{summary}");
+    }
+    match args.out {
+        Some(path) => std::fs::write(&path, format!("{code}\n"))
+            .map_err(|error| format!("could not write {}: {error}", path.display()))?,
+        None => println!("{code}"),
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Args)]
