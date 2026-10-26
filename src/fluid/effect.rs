@@ -33,6 +33,8 @@ pub(crate) enum EffectFailure {
     StaleRecipeTarget,
     StaleLaneTarget,
     StaleChordTarget,
+    /// Paste with nothing copied yet.
+    EmptyChordClipboard,
     CaptureUnavailable,
     CaptureHistory(CaptureHistoryError),
     CaptureLimit,
@@ -65,6 +67,7 @@ impl fmt::Display for EffectFailure {
             }
             Self::StaleLaneTarget => write!(f, "lane changed; reopen /"),
             Self::StaleChordTarget => write!(f, "open / on the desired chord again"),
+            Self::EmptyChordClipboard => write!(f, "copy a chord before pasting"),
             Self::UnsupportedInteraction(effect) => {
                 write!(f, "unsupported interaction effect {effect:?}")
             }
@@ -236,6 +239,9 @@ pub(crate) struct EffectExecutor {
     /// What play mode has played lately, for `LeadCapture`. Live-only.
     phrase: LeadPhraseBuffer,
     capture_history: CaptureHistory,
+    /// The last chord copied for pasting onto other steps. Live-only editing
+    /// state; it is deliberately not part of a song code.
+    chord_clip: Option<ChordSlotControls>,
     edit_beat: f64,
 }
 
@@ -261,6 +267,7 @@ impl EffectExecutor {
             rng: StdRng::seed_from_u64(seed),
             phrase: LeadPhraseBuffer::default(),
             capture_history: CaptureHistory::default(),
+            chord_clip: None,
             edit_beat: 0.0,
         }
     }
@@ -1190,6 +1197,44 @@ impl EffectExecutor {
                             Ok(())
                         })?;
                         self.show_message(format!("Chord {} restored", target.slot + 1));
+                        "degree"
+                    }
+                    operation::ChordAction::Copy => {
+                        let copied = {
+                            let snapshot = self.session.load();
+                            let progression = target
+                                .resolve(&snapshot.controls)
+                                .ok_or(EffectFailure::StaleChordTarget)?;
+                            *snapshot.controls.pad.chord_slot(progression, target.slot)
+                        };
+                        self.chord_clip = Some(copied);
+                        self.show_message(format!("Chord {} copied", target.slot + 1));
+                        "degree"
+                    }
+                    operation::ChordAction::Paste | operation::ChordAction::PasteAll => {
+                        let clip = self.chord_clip.ok_or(EffectFailure::EmptyChordClipboard)?;
+                        let all = action == operation::ChordAction::PasteAll;
+                        let mut filled = 0;
+                        self.edit_session_checked("pad.progression", check, |snapshot| {
+                            target
+                                .resolve(&snapshot.controls)
+                                .ok_or(EffectFailure::StaleChordTarget)?;
+                            let steps = if all {
+                                ChordWindow::requested(&snapshot.controls.pad).count
+                            } else {
+                                target.slot + 1
+                            };
+                            for slot in if all { 0 } else { target.slot }..steps {
+                                *snapshot.controls.pad.edit_chord_slot(slot) = clip;
+                            }
+                            filled = steps;
+                            Ok(())
+                        })?;
+                        self.show_message(match filled {
+                            1 => "Chord pasted to step 1".to_string(),
+                            steps if all => format!("Chord filled {steps} steps"),
+                            _ => format!("Chord pasted to step {}", target.slot + 1),
+                        });
                         "degree"
                     }
                 };
@@ -2399,6 +2444,9 @@ mod tests {
         for action in [
             operation::ChordAction::AddExtension,
             operation::ChordAction::Restore,
+            operation::ChordAction::Copy,
+            operation::ChordAction::Paste,
+            operation::ChordAction::PasteAll,
         ] {
             for change_preset in [false, true] {
                 let mut executor = executor();
@@ -2429,6 +2477,60 @@ mod tests {
                 assert!(Arc::ptr_eq(&before, &executor.session.load()));
                 assert!(executor.auto.is_running());
             }
+        }
+    }
+
+    #[test]
+    fn copy_then_paste_writes_the_chord_onto_other_steps() {
+        let context = InteractionExecutionContext::default();
+        let mut executor = executor();
+        executor.session.update(|snapshot| {
+            let slot = snapshot.controls.pad.edit_chord_slot(0);
+            slot.degree = 4.0;
+            slot.quality = -1.0;
+            slot.extension = 4.0;
+        });
+        let chord = *executor.session.load().controls.pad.chord_slot(0, 0);
+        let copy = interaction::InteractionEffect::Chord {
+            action: operation::ChordAction::Copy,
+            target: operation::ChordTarget::capture(
+                "pad.chord1_degree",
+                &executor.session.load().controls,
+            ),
+        };
+        executor.execute_interaction(copy, &context).unwrap();
+
+        let paste = interaction::InteractionEffect::Chord {
+            action: operation::ChordAction::Paste,
+            target: operation::ChordTarget::capture(
+                "pad.chord3_degree",
+                &executor.session.load().controls,
+            ),
+        };
+        executor.execute_interaction(paste, &context).unwrap();
+        assert_eq!(
+            *executor.session.load().controls.pad.chord_slot(0, 2),
+            chord
+        );
+
+        executor
+            .session
+            .update(|snapshot| snapshot.controls.pad.chord_count = 4.0);
+        let paste_all = interaction::InteractionEffect::Chord {
+            action: operation::ChordAction::PasteAll,
+            target: operation::ChordTarget::capture(
+                "pad.chord2_degree",
+                &executor.session.load().controls,
+            ),
+        };
+        executor.execute_interaction(paste_all, &context).unwrap();
+        let after = executor.session.load();
+        for slot in 0..4 {
+            assert_eq!(
+                *after.controls.pad.chord_slot(0, slot),
+                chord,
+                "step {slot}"
+            );
         }
     }
 

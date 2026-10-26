@@ -199,7 +199,10 @@ Landed:
   (Rest/Hold/Sound); the resolver and the Pad's sounding test read them.
 - `voice/evolve.rs` — the smart one-cell evolution, with engine-level
   guarantees pinned in `tests.rs`.
-
+- Copy/paste — `ChordAction::Copy` keeps the selected step's chord in a
+  live-only `EffectExecutor` clipboard; `Paste` writes it onto the selected
+  step and `PasteAll` onto every step of the phrase. All three are ordinary
+  `/` operations, so the keyboard path is complete and no control was added.
 - Stage 2 (rhythm half) — `ChordSlotControls::gate` (`0`/`1`/`2`) with the
   `pad.chordN_gate` registry row (`CHORD_FIELDS` nine entries, gate last,
   `reset_at(GATE_SOUND)`); the degree dial narrowed to `-7..=7`;
@@ -220,7 +223,6 @@ Remaining (the lane + voicing epic):
   detail so the step editor keeps its nine rows.
 - Naming (`custom_chord_name`, `roman_chord_name`) reads `Cell`/`Harmony`
   instead of `ChordSlotControls`.
-- Copy/paste a cell and copy-to-all-steps, owned by the interaction kernel.
 - Re-author `AUTO_STATES` through the current encoder (`just add-morph`).
 - Retire `legacy_chord_notes` and the `chord_from_slot` bridge.
 

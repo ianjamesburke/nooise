@@ -24,6 +24,9 @@ pub(crate) enum Operation {
 pub(crate) enum ChordAction {
     AddExtension,
     Restore,
+    Copy,
+    Paste,
+    PasteAll,
 }
 
 /// A palette action keeps its original preset and slot, and refuses a slot
@@ -74,7 +77,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 24] = [
+    pub(crate) const ALL: [Self; 27] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -94,6 +97,9 @@ impl Operation {
         Self::OutputDevice,
         Self::Chord(ChordAction::AddExtension),
         Self::Chord(ChordAction::Restore),
+        Self::Chord(ChordAction::Copy),
+        Self::Chord(ChordAction::Paste),
+        Self::Chord(ChordAction::PasteAll),
         Self::ToggleAuto,
         Self::ToggleVamp,
         Self::ChordNames(ChordNames::Roman),
@@ -143,11 +149,22 @@ impl Operation {
                 label: match action {
                     ChordAction::AddExtension => "Add extension",
                     ChordAction::Restore => "Restore chord",
+                    ChordAction::Copy => "Copy chord",
+                    ChordAction::Paste => "Paste chord",
+                    ChordAction::PasteAll => "Paste chord to all steps",
                 },
-                aliases: &[],
+                aliases: match action {
+                    ChordAction::Copy => &["copy step", "copy this chord"],
+                    ChordAction::Paste => &["paste step", "paste this chord"],
+                    ChordAction::PasteAll => &["paste all", "fill with chord"],
+                    ChordAction::AddExtension | ChordAction::Restore => &[],
+                },
                 description: match action {
                     ChordAction::AddExtension => "open the chord's second extension",
                     ChordAction::Restore => "restore this chord's original voicing",
+                    ChordAction::Copy => "keep this chord for pasting onto other steps",
+                    ChordAction::Paste => "write the copied chord onto this step",
+                    ChordAction::PasteAll => "write the copied chord onto every step of the phrase",
                 },
             },
             Self::ChordNames(ChordNames::Roman) => OperationSpec {
