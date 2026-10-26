@@ -956,7 +956,7 @@ pub(crate) fn progression_home_label(progression: usize, key: MasterKey) -> Stri
 /// loop back and within each half's own loop (chords 4 → 1 and 8 → 5), so a
 /// Chord Count of 4 at Offset 0 or 4 is a complete progression in its own
 /// right (`voice_led_progressions_hold_a_tone_through_every_window`).
-pub(crate) const PROGRESSIONS: [Progression; 38] = [
+pub(crate) static PROGRESSIONS: [Progression; 38] = [
     Progression {
         song_value: 0,
         mood: "Drift",
