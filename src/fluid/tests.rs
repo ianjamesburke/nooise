@@ -11708,6 +11708,69 @@ fn evolve_visibly_mutates_session_steps_and_chord_slots_across_all_sequenced_voi
     );
 }
 
+fn pad_slot_snapshot(controls: &FluidControls, progression: usize) -> Vec<[f32; 8]> {
+    (0..8)
+        .map(|slot| controls.pad.chord_slot(progression, slot).values())
+        .collect()
+}
+
+#[test]
+fn pad_evolve_changes_at_most_one_chord_per_phrase_and_keeps_the_home_mode() {
+    let mut controls = FluidControls::default();
+    controls.master.bpm = 240.0;
+    controls.pad.chord_bars = 0.0625; // 0.25 beats per chord
+    controls.pad.chord_count = 8.0;
+    controls.pad.progression = 9.0;
+    controls.pad.evolve_rate = 1.0;
+    let progression = 9;
+    let phrase_beats = controls.pad.chord_bars * 4.0 * controls.pad.chord_count;
+    // Just under one phrase, so no render can straddle two chord-window wraps.
+    let seconds_per_phrase = phrase_beats * 60.0 / controls.master.bpm * 0.99;
+
+    let session = live_session(controls, AutomationState::default());
+    let mut engine = FluidEngine::new_with_tonal_session_state(
+        SAMPLE_RATE,
+        session.clone(),
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+        true,
+    );
+    engine.reseed(1234);
+
+    let (tonic, mode, _) = super::voice::progression_home(progression);
+    let intervals = mode.intervals();
+    let mut previous = pad_slot_snapshot(&session.load().controls, progression);
+    let mut edits = 0;
+    for _ in 0..24 {
+        render_seconds(&mut engine, seconds_per_phrase);
+        let live = session.load();
+        let current = pad_slot_snapshot(&live.controls, progression);
+        let changed = current
+            .iter()
+            .zip(&previous)
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(changed <= 1, "one phrase changed {changed} chords");
+        for (slot, (now, before)) in current.iter().zip(&previous).enumerate() {
+            if now == before {
+                continue;
+            }
+            edits += 1;
+            let notes = super::voice::pad_chord_notes_with_slot(
+                live.controls.pad.chord_slot(progression, slot),
+            );
+            for note in notes {
+                assert!(
+                    intervals.contains(&(note - tonic).rem_euclid(12)),
+                    "slot {slot} left the home mode: {notes:?}"
+                );
+            }
+        }
+        previous = current;
+    }
+    assert!(edits > 0, "evolve never changed a chord over 24 phrases");
+}
+
 #[test]
 fn clear_sequence_sets_pads_to_root_and_note_sequences_to_rest() {
     let mut controls = FluidControls::default();
