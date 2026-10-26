@@ -6849,6 +6849,7 @@ fn progression_labels_pair_key_and_mood() {
             "Dm · Pulse",
             "Bb · Swell",
             "C#m · Orbit",
+            "Eb · Landslide",
             "Custom",
         ]
     );
@@ -10428,7 +10429,7 @@ fn apply_ratio_lands_on_the_dial_evenly_for_every_scale() {
 /// Notes audited before the shared builder; only Ache 8 and Float 7 differ.
 /// Funk1-Funk4, Harvest, Ember, and Haze-Orbit were authored on the shared
 /// builder and pinned as heard.
-const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 296] = [
+const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 304] = [
     [45, 50, 55, 60], // Drift 1
     [43, 50, 57, 60], // Drift 2
     [45, 52, 57, 60], // Drift 3
@@ -10725,6 +10726,14 @@ const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 296] = [
     [44, 52, 59, 61], // Orbit 6
     [45, 52, 56, 61], // Orbit 7
     [47, 52, 54, 59], // Orbit 8
+    [51, 55, 58, 63], // Landslide 1
+    [50, 53, 58, 62], // Landslide 2
+    [48, 51, 55, 58], // Landslide 3
+    [50, 53, 56, 58], // Landslide 4
+    [44, 48, 51, 56], // Landslide 5
+    [51, 55, 58, 63], // Landslide 6
+    [50, 53, 58, 62], // Landslide 7
+    [48, 51, 55, 58], // Landslide 8
 ];
 
 #[test]

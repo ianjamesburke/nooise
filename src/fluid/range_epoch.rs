@@ -15,7 +15,8 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = V3_PROGRESSION_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = LANDSLIDE_PROGRESSION_EPOCH;
+pub(crate) const LANDSLIDE_PROGRESSION_EPOCH: u16 = 12;
 pub(crate) const V3_PROGRESSION_EPOCH: u16 = 11;
 pub(crate) const SEQUENCER_UNIFICATION_EPOCH: u16 = 10;
 pub(crate) const FALL_PROGRESSION_EPOCH: u16 = 9;
@@ -230,6 +231,11 @@ const RANGE_CHANGES: &[RangeChange] = &[
         epoch: V3_PROGRESSION_EPOCH,
         target: RangeTarget::Control("pad.progression"),
     },
+    // Progression gained Landslide before Custom.
+    RangeChange {
+        epoch: LANDSLIDE_PROGRESSION_EPOCH,
+        target: RangeTarget::Control("pad.progression"),
+    },
 ];
 
 impl RangeChange {
@@ -313,7 +319,7 @@ mod tests {
         song.automation
             .open_or_create(ControlAddress::new("pad.progression"))
             .depth_ratio = 0.5;
-        let stale = encode_song_code_at_epoch(&song, V3_PROGRESSION_EPOCH - 1).unwrap();
+        let stale = encode_song_code_at_epoch(&song, LANDSLIDE_PROGRESSION_EPOCH - 1).unwrap();
         assert_eq!(
             decode_song_code(&stale).err(),
             Some(SongCodeError::StaleRange("pad.progression"))

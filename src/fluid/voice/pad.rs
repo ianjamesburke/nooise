@@ -953,7 +953,7 @@ pub(crate) fn progression_home_label(progression: usize, key: MasterKey) -> Stri
 /// loop back and within each half's own loop (chords 4 → 1 and 8 → 5), so a
 /// Chord Count of 4 at Offset 0 or 4 is a complete progression in its own
 /// right (`voice_led_progressions_hold_a_tone_through_every_window`).
-pub(crate) const PROGRESSIONS: [Progression; 37] = [
+pub(crate) const PROGRESSIONS: [Progression; 38] = [
     Progression {
         song_value: 0,
         mood: "Drift",
@@ -1610,6 +1610,26 @@ pub(crate) const PROGRESSIONS: [Progression; 37] = [
             chord("Bsus4", [1, 0, 3, 0, 0, 0, 0, 0]),
         ],
         bass: [49, 45, 40, 44, 42, 44, 45, 47],
+    },
+    // Eb major landslide: the verse's descending IV-I-vamp bass walk
+    // (Eb-D-C-D) over I-V/3-vi7-V7/3, then a IV-I-V-vi half. The Bb7's Ab
+    // is the leading tone into the IV; every window keeps a common tone.
+    Progression {
+        song_value: 38,
+        mood: "Landslide",
+        home_mode: HomeMode::Major,
+        chords: [
+            chord("Eb", [4, -1, 1, 0, 0, 0, 0, 0]),
+            chord("Bb/D", [1, -1, 1, 0, 0, 1, 4, 1]),
+            chord("Cm7", [2, 0, -1, 4, 0, 0, 0, 0]),
+            chord("Bb7/D", [1, -1, 1, 4, 0, 1, 4, 1]),
+            chord("Ab", [0, -1, 1, 0, 0, 0, 0, 0]),
+            chord("Eb", [4, -1, 1, 0, 0, 0, 0, 0]),
+            chord("Bb/D", [1, -1, 1, 0, 0, 1, 4, 1]),
+            chord("Cm7", [2, 0, -1, 4, 0, 0, 0, 0]),
+        ],
+        // The song's thumb line: Eb-D-C-D then Ab-Eb-D-C.
+        bass: [51, 50, 48, 50, 44, 51, 50, 48],
     },
 ];
 
