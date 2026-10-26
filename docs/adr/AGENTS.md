@@ -2,13 +2,18 @@
 
 ## Purpose
 
-Accepted architecture decisions and their implementation contracts.
+Architecture decisions and their implementation contracts. An ADR marked
+Proposed is a design under review and does not bind implementation; only an
+Accepted ADR is a contract.
 
 ## Ownership
 
 - `0001-unidirectional-interaction-architecture.md` owns the interaction kernel,
   terminal runtime, live-session transaction, rendering, and migration
   contracts.
+- `0002-v3-chord-model.md` (Accepted; Stage 1 implemented) owns the separation
+  of chord harmony, voicing, and rhythm, the gate-aware common-tone rule, and
+  the chord payload and migration contracts.
 
 ## Local Contracts
 
@@ -16,6 +21,8 @@ Accepted architecture decisions and their implementation contracts.
   alternatives, consequences, and verification scenarios.
 - Amend or supersede an ADR when its accepted contract changes; do not leave
   contradictory decisions active.
+- Mark an unaccepted design Proposed; do not describe Proposed decisions as
+  shipped contracts in parent docs or source.
 
 ## Work Guidance
 

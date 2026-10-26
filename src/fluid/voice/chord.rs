@@ -4,7 +4,7 @@
 
 use super::*;
 
-fn shift_diatonic(note: i32, steps: i32) -> i32 {
+pub(crate) fn shift_diatonic(note: i32, steps: i32) -> i32 {
     const SCALE: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
     let degree = note.div_euclid(12) * 7
         + SCALE
@@ -23,7 +23,7 @@ pub(crate) fn pad_chord_root_note(slot: &ChordSlotControls) -> i32 {
     natural_root(slot) + slot.accidental.round().clamp(-1.0, 1.0) as i32
 }
 
-fn third_interval(slot: &ChordSlotControls) -> Option<i32> {
+pub(crate) fn third_interval(slot: &ChordSlotControls) -> Option<i32> {
     Some(match slot.quality.round() as i32 {
         -1 => 3,
         1 => 4,
@@ -65,7 +65,7 @@ fn extension_interval(slot: &ChordSlotControls, value: f32) -> Option<i32> {
 /// Four distinct source roles at most: root, third/suspension, extensions,
 /// fifth. Duplicate pitch classes and a conflicting second seventh are
 /// omitted; spare voices double the lowest selected tones by octaves.
-fn source_intervals(slot: &ChordSlotControls) -> ([i32; 4], usize) {
+pub(crate) fn source_intervals(slot: &ChordSlotControls) -> ([i32; 4], usize) {
     let first = extension_interval(slot, slot.extension);
     let second = extension_interval(slot, slot.extension2).filter(|value| {
         !(matches!(first, Some(10 | 11)) && matches!(value, 10 | 11) && first != Some(*value))
@@ -96,7 +96,15 @@ fn source_intervals(slot: &ChordSlotControls) -> ([i32; 4], usize) {
     (roles, count)
 }
 
+/// The v3 resolution path: express the slot as harmony + voicing, then
+/// realize it. `legacy_chord_notes` remains the reference the converter
+/// reads; a later stage authors `Harmony`/`Voicing` directly and retires it.
 pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
+    let (harmony, voicing) = chord_from_slot(slot);
+    realize(&harmony, &voicing)
+}
+
+pub(crate) fn legacy_chord_notes(slot: &ChordSlotControls) -> [i32; 4] {
     let root = pad_chord_root_note(slot);
     let (mut roles, count) = source_intervals(slot);
     let inversion = slot.inversion.round().clamp(0.0, 7.0) as usize;
