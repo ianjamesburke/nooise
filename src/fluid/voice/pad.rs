@@ -88,7 +88,7 @@ impl PadEngine {
         let last_chord_definition = *c.chord_slot(cursor.window.progression, cursor.slot());
         let initial_notes = pad_chord_notes_with_slot(&last_chord_definition);
         let note_count = pad_note_count(c.chord_notes);
-        let sounding = !last_chord_definition.is_rest() && !last_chord_definition.is_tie();
+        let sounding = Cell::from_slot(&last_chord_definition).gate == Gate::Sound;
         let layers = if sounding {
             vec![PadLayer::new(
                 active_character,

@@ -100,8 +100,7 @@ pub(crate) fn source_intervals(slot: &ChordSlotControls) -> ([i32; 4], usize) {
 /// realize it. `legacy_chord_notes` remains the reference the converter
 /// reads; a later stage authors `Harmony`/`Voicing` directly and retires it.
 pub(crate) fn pad_chord_notes_with_slot(slot: &ChordSlotControls) -> [i32; 4] {
-    let (harmony, voicing) = chord_from_slot(slot);
-    realize(&harmony, &voicing)
+    Cell::from_slot(slot).notes()
 }
 
 pub(crate) fn legacy_chord_notes(slot: &ChordSlotControls) -> [i32; 4] {
