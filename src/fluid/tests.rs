@@ -12474,6 +12474,7 @@ fn custom_song_progressions_keep_their_chords_octaves_and_bass() {
         arp_steps: &'static [f32],
         arp_gain: f32,
         arp_type: f32,
+        arp_octaves: f32,
         bass_level: f32,
     }
     let songs = [
@@ -12494,6 +12495,7 @@ fn custom_song_progressions_keep_their_chords_octaves_and_bass() {
             arp_steps: &[1.0, 2.0, 3.0, 4.0],
             arp_gain: 0.40,
             arp_type: 6.0,
+            arp_octaves: 1.0,
             bass_level: 0.5,
         },
         Song {
@@ -12527,24 +12529,31 @@ fn custom_song_progressions_keep_their_chords_octaves_and_bass() {
             arp_steps: &[1.0, 3.0, 2.0, 4.0],
             arp_gain: 0.35,
             arp_type: 6.0,
+            arp_octaves: 1.0,
             bass_level: 0.45,
         },
         Song {
             name: "sweet-dreams",
             bpm: 126.0,
-            bars: 1.0,
+            // Two beats per slot, so the two Cm slots are four beats of Cm:
+            // the record holds one bar of Cm, then half a bar each of Ab and
+            // G. Three equal block chords would be the wrong harmonic rhythm.
+            bars: 0.5,
             specs: &[
+                (-5.0, 0.0, -1.0, 1.0, 3.0),
                 (-5.0, 0.0, -1.0, 1.0, 3.0),
                 (0.0, -1.0, 1.0, 1.0, 3.0),
                 (-1.0, 0.0, 1.0, 1.0, 3.0),
             ],
-            expect: &[&[0, 3, 7], &[0, 3, 8], &[2, 7, 11]],
-            bass: &[36, 36, 44, 44, 43, 43],
+            expect: &[&[0, 3, 7], &[0, 3, 7], &[0, 3, 8], &[2, 7, 11]],
+            bass: &[36, 36, 44, 43],
             attack: 0.2,
             release: 0.8,
-            arp_steps: &[1.0, 3.0, 4.0, 2.0, 1.0, 3.0, 4.0, 2.0],
+            // Broken octaves, the shape of the record's two-bar riff.
+            arp_steps: &[1.0, 5.0, 1.0, 5.0, 1.0, 5.0, 3.0, 6.0],
             arp_gain: 0.45,
             arp_type: 8.0,
+            arp_octaves: 2.0,
             bass_level: 0.5,
         },
     ];
@@ -12572,7 +12581,7 @@ fn custom_song_progressions_keep_their_chords_octaves_and_bass() {
         c.arp.rate_beats = 0.5;
         c.arp.pattern = 4.0;
         c.arp.follow = 0.0;
-        c.arp.octaves = 1.0;
+        c.arp.octaves = song.arp_octaves;
         c.arp.step_count = song.arp_steps.len() as f32;
         c.arp.decay = 0.5;
         c.arp.steps = {
@@ -12670,4 +12679,53 @@ fn custom_song_progressions_keep_their_chords_octaves_and_bass() {
         );
         assert_eq!(bass_notes, song.bass, "{} bass line", song.name);
     }
+}
+
+/// Sweet Dreams changes chord on a two-bar loop: one bar of Cm, then half a
+/// bar each of Ab and G. The bar lines in the chart (`Cm / / / | Ab / Gm /`)
+/// are the harmonic rhythm, so this asserts the beats the sounding chord
+/// actually changes rather than trusting `chord_bars` to mean what it looks
+/// like it means.
+#[test]
+fn sweet_dreams_holds_cm_for_a_bar_then_ab_and_g_for_half_each() {
+    let slots = [
+        (-5.0f32, 0.0f32, -1.0f32, 1.0f32, 3.0f32),
+        (-5.0, 0.0, -1.0, 1.0, 3.0),
+        (0.0, -1.0, 1.0, 1.0, 3.0),
+        (-1.0, 0.0, 1.0, 1.0, 3.0),
+    ];
+    let mut pad = custom_pad(&slots);
+    pad.chord_bars = 0.5;
+
+    let rate = f64::from(SAMPLE_RATE);
+    let bpm = 126.0f64;
+    let total = (16.0 * 60.0 / bpm * rate) as u64; // two loops
+    let (sink, rx) = OscVoiceSink::test_channel();
+    let mut engine = pad_engine(&pad);
+    engine.set_osc(sink);
+    let mut changes = Vec::new();
+    let mut current: Option<Vec<i32>> = None;
+    for sample in 0..total {
+        let beat = sample as f64 * bpm / (60.0 * rate);
+        let _ = engine.next(&pad, MasterKey::Home, TimingContext::new(rate, bpm, beat));
+        for e in rx.try_iter() {
+            if let OscVoiceEvent::PadChord(notes) = e {
+                let mut pcs: Vec<i32> = notes.notes[..notes.len]
+                    .iter()
+                    .map(|n| i32::from(*n).rem_euclid(12))
+                    .collect();
+                pcs.sort_unstable();
+                pcs.dedup();
+                if current.as_ref() != Some(&pcs) {
+                    changes.push((beat * 100.0).round() / 100.0);
+                    current = Some(pcs);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        changes,
+        vec![0.0, 4.0, 6.0, 8.0, 12.0, 14.0],
+        "Cm at 0 and 8, Ab at 4 and 12, G at 6 and 14"
+    );
 }
