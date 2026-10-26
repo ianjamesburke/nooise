@@ -3639,7 +3639,7 @@ pub(crate) fn progression_slot_display(
         return "Rest".to_string();
     }
     if chord.is_tie() {
-        return "Tie".to_string();
+        return "Hold".to_string();
     }
     let status = if pad.chord_is_edited(progression, slot) {
         "Edited"
