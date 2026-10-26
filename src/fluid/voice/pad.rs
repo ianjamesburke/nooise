@@ -137,7 +137,8 @@ impl PadEngine {
     }
 
     fn evolve_progression(&mut self, c: &PadControls) {
-        let count = self.cursor.window.count.max(1);
+        let window = self.cursor.window;
+        let count = window.count.max(1);
         let seed = self
             .evolution_seed
             .wrapping_add(
@@ -146,33 +147,59 @@ impl PadEngine {
                     .wrapping_mul(0x9E37_79B9_7F4A_7C15),
             )
             .wrapping_add(self.phrase_index.rotate_left(11));
-        let mutations = evolve_mutation_count(c.evolve_rate, 2, seed);
-        if mutations == 0 {
+        // At most one cell changes per phrase. The tonic anchor (step 0) is
+        // never it, so the phrase keeps a home to return to.
+        if evolve_mutation_count(c.evolve_rate, 1, seed) == 0 {
+            return;
+        }
+        let progression = window.progression;
+        let home = Home::of(progression);
+        let mut eligible = Vec::new();
+        for step in 1..count {
+            let slot = *c.chord_slot(progression, window.slot(step));
+            if slot.is_rest() || slot.is_tie() {
+                continue;
+            }
+            if home.degree_of(pad_chord_root_note(&slot)).is_none() {
+                continue;
+            }
+            eligible.push(step);
+        }
+        if eligible.is_empty() {
             return;
         }
         let mut evo_rng = StdRng::seed_from_u64(seed);
-        let mut edits = Vec::with_capacity(mutations);
-        for _ in 0..mutations {
-            let step = evo_rng.gen_range(0..count);
-            let slot = self.cursor.window.slot(step);
-            let mut chord = *c.chord_slot(self.cursor.window.progression, slot);
-            let current_deg = chord.degree.round() as i32;
-            let next_deg = if current_deg < -7 {
-                evo_rng.gen_range(-3..=4)
-            } else {
-                let delta = if evo_rng.gen_bool(0.5) { 1 } else { -1 };
-                (current_deg + delta).clamp(-7, 7)
-            };
-            chord.degree = next_deg as f32;
-            edits.push((slot, chord));
+        let step = eligible[evo_rng.gen_range(0..eligible.len())];
+        let slot = window.slot(step);
+        let base = *c.chord_slot(progression, slot);
+        let (harmony, _) = chord_from_slot(&base);
+        let mut linked = [None; 6];
+        for (index, offset) in [count - 1, 1].into_iter().enumerate() {
+            let neighbour = window.slot((step + offset) % count);
+            linked[index] = Some((
+                pad_chord_notes_with_slot(c.chord_slot(progression, neighbour)),
+                true,
+            ));
         }
+        let ctx = CellContext {
+            current: pad_chord_notes_with_slot(&base),
+            linked,
+        };
+        let voice = |candidate: &Harmony| {
+            slot_with_harmony(&base, candidate).map_or(ctx.current, |candidate| {
+                pad_chord_notes_with_slot(&candidate)
+            })
+        };
+        let Some(next_harmony) = evolve_harmony(&harmony, &ctx, home, &mut evo_rng, voice) else {
+            return;
+        };
+        let Some(next_slot) = slot_with_harmony(&base, &next_harmony) else {
+            return;
+        };
         self.evolution_count = self.evolution_count.saturating_add(1);
         if let Some(session_state) = &self.session_state {
-            session_state.update(|snapshot| {
-                for &(slot, chord) in &edits {
-                    *snapshot.controls.pad.edit_chord_slot(slot) = chord;
-                }
-            });
+            session_state
+                .update(|snapshot| *snapshot.controls.pad.edit_chord_slot(slot) = next_slot);
         }
     }
 
