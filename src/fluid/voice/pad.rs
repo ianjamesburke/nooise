@@ -59,6 +59,16 @@ struct PadInputVoice {
 }
 
 impl PadEngine {
+    /// The level the pad is currently sounding at, so a slur can enter there
+    /// instead of restarting the attack. Zero when nothing sounds.
+    fn sounding_level(&self) -> f32 {
+        self.layers
+            .iter()
+            .flat_map(|layer| layer.tones.iter())
+            .map(|tone| tone.stack.envelope.level())
+            .fold(0.0, f32::max)
+    }
+
     /// `key` is `master.key` at construction. It must be passed in rather
     /// than assumed neutral: the opening chord is voiced here and holds for a
     /// whole `chord_bars` (~12 s at defaults, its release bleeding into the
@@ -157,7 +167,7 @@ impl PadEngine {
         let mut eligible = Vec::new();
         for step in 1..count {
             let slot = *c.chord_slot(progression, window.slot(step));
-            if slot.is_rest() || slot.is_tie() {
+            if slot.is_rest() {
                 continue;
             }
             if home.degree_of(pad_chord_root_note(&slot)).is_none() {
@@ -336,7 +346,7 @@ impl PadEngine {
         }
         let definition = *c.chord_slot(self.cursor.window.progression, self.cursor.slot());
         let is_rest = definition.is_rest();
-        let is_tie = definition.is_tie();
+        let is_slur = definition.is_slur();
         let note_count = pad_note_count(c.chord_notes);
         let character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let character_changed = character != self.active_character;
@@ -383,10 +393,6 @@ impl PadEngine {
                 self.sounding = false;
             }
             self.osc_initial_pending = false;
-        } else if is_tie {
-            self.last_chord_definition = definition;
-            // Tie sustains the currently sounding layers without re-attacking
-            // or re-sending OSC / hit telemetry.
         } else {
             let chord_notes = if definition == self.last_chord_definition && self.sounding {
                 self.last_chord_notes
@@ -401,6 +407,10 @@ impl PadEngine {
             self.active_note_count = note_count;
 
             if playing && (advance || chord_edited || transport_changed) {
+                // A slur reaches the new chord without restarting the swell:
+                // the incoming layer enters at the level the pad already
+                // holds, so the ramp resumes instead of climbing from silence.
+                let entry_level = if is_slur { self.sounding_level() } else { 0.0 };
                 for layer in &mut self.layers {
                     layer.release();
                 }
@@ -423,7 +433,7 @@ impl PadEngine {
                     let remove_count = self.layers.len() + 1 - MAX_PAD_LAYERS;
                     self.layers.drain(0..remove_count);
                 }
-                self.layers.push(PadLayer::new(
+                let mut layer = PadLayer::new(
                     character,
                     chord_notes,
                     note_count,
@@ -431,7 +441,9 @@ impl PadEngine {
                     self.sample_rate,
                     c.attack_time,
                     c.release_time,
-                ));
+                );
+                layer.start_at(entry_level);
+                self.layers.push(layer);
                 self.sounding = true;
             }
             if playing && self.osc_initial_pending && self.sounding {
@@ -546,6 +558,13 @@ impl PadLayer {
     pub(crate) fn release(&mut self) {
         for t in &mut self.tones {
             t.release();
+        }
+    }
+    /// Enter at `level` instead of silence, so the attack ramp resumes from
+    /// where the pad already was rather than climbing from zero.
+    pub(crate) fn start_at(&mut self, level: f32) {
+        for t in &mut self.tones {
+            t.stack.envelope.start_at(level);
         }
     }
     /// Swaps every tone onto a new `pad.type` character in place, leaving
@@ -1827,27 +1846,18 @@ impl ProgressionCursor {
                 length_beats: 0.0,
             },
         };
-        cursor.span = cursor.compute_span(c);
+        cursor.span = cursor.compute_span();
         cursor
     }
 
-    fn compute_span(&self, c: &PadControls) -> ChordSpan {
+    /// Every step's chord replaces the last, so a chord spans exactly its own
+    /// interval; nothing extends it backwards over a held neighbour.
+    fn compute_span(&self) -> ChordSpan {
         let interval = GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats;
         let step_start = self.next_chord_beat.map_or(0.0, |next| next - interval);
-        let progression = self.window.progression;
-        let is_tie = |step: usize| c.chord_slot(progression, self.window.slot(step)).is_tie();
-        let mut back = 0usize;
-        while back < self.step && is_tie(self.step - back) {
-            back += 1;
-        }
-        let mut forward = 0usize;
-        while self.step + 1 + forward < self.window.count && is_tie(self.step + 1 + forward) {
-            forward += 1;
-        }
-        let total_steps = (1 + back + forward) as f64;
         ChordSpan {
-            start_beat: (step_start - back as f64 * interval).max(0.0),
-            length_beats: (total_steps * interval) as f32,
+            start_beat: step_start.max(0.0),
+            length_beats: interval as f32,
         }
     }
 
@@ -1886,7 +1896,7 @@ impl ProgressionCursor {
             let chord = (((timing.beat - start).max(0.0) + GRID_BEAT_EPSILON) / interval).floor();
             self.step = chord as usize % self.window.count;
             self.next_chord_beat = Some(start + (chord + 1.0) * interval);
-            self.span = self.compute_span(c);
+            self.span = self.compute_span();
             let chord_start = start + chord * interval;
             let sample_delta = (timing.bpm / (60.0 * timing.sample_rate)).max(GRID_BEAT_EPSILON);
             let is_onset = (timing.beat - chord_start).abs() <= sample_delta * 2.0;
@@ -1902,7 +1912,7 @@ impl ProgressionCursor {
         // A stopped transport holds its beat, and like every grid it fires
         // nothing until the clock runs again.
         if timing.beat + GRID_BEAT_EPSILON < next {
-            self.span = self.compute_span(c);
+            self.span = self.compute_span();
             return false;
         }
         let window = ChordWindow::requested(c);
@@ -1924,7 +1934,7 @@ impl ProgressionCursor {
         // noticed it, so chords stay on the transport grid.
         self.next_chord_beat =
             Some(next + GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats);
-        self.span = self.compute_span(c);
+        self.span = self.compute_span();
         true
     }
 }
@@ -1944,24 +1954,16 @@ impl ProgressionFollower {
 
     /// Advances the phrase and returns the `(progression, slot)` to voice
     /// this frame.
+    /// Advances the phrase and returns the `(progression, slot)` to voice
+    /// this frame. The harmony always advances, so every follower reads the
+    /// step the cursor is on: a slur or a rest changes how the pad is struck,
+    /// never which chord the band is playing.
     pub(crate) fn follow(&mut self, pad: &PadControls, timing: TimingContext) -> (usize, usize) {
         let cursor = self
             .cursor
             .get_or_insert_with(|| ProgressionCursor::new(pad));
         cursor.tick(pad, timing);
-        let progression = cursor.window.progression;
-        let mut step = cursor.step;
-        for _ in 0..cursor.window.count {
-            let slot = cursor.window.slot(step);
-            if !pad.chord_slot(progression, slot).is_tie() {
-                return (progression, slot);
-            }
-            if step == 0 {
-                break;
-            }
-            step -= 1;
-        }
-        (progression, cursor.slot())
+        (cursor.window.progression, cursor.slot())
     }
 }
 

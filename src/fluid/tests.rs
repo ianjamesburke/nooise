@@ -2770,13 +2770,13 @@ fn pad_stabs_send_only_selected_steps_and_release_between_hits() {
 }
 
 #[test]
-fn pad_tie_holds_osc_until_a_rest_step_releases_it() {
+fn pad_slur_voices_its_own_chord_until_a_rest_step_releases_it() {
     let mut controls = PadControls {
         chord_bars: 0.0625,
         chord_count: 4.0,
         ..PadControls::default()
     };
-    controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_HOLD;
+    controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_SLUR;
     controls.edit_chord_slot(2).gate = ChordSlotControls::GATE_REST;
     controls.edit_chord_slot(3).gate = ChordSlotControls::GATE_REST;
     let mut pad = pad_engine(&controls);
@@ -2789,15 +2789,16 @@ fn pad_tie_holds_osc_until_a_rest_step_releases_it() {
             TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
         );
     }
+    // Step 1 slurs into its own chord instead of repeating step 0's.
     assert_eq!(
         receiver
             .try_iter()
             .filter(|event| matches!(event, OscVoiceEvent::PadChord(_) | OscVoiceEvent::PadOff))
             .collect::<Vec<_>>(),
-        [OscVoiceEvent::PadChord(pad_notes(
-            pad_chord_tones(&controls, 0, 0),
-            0.0
-        ))]
+        [
+            OscVoiceEvent::PadChord(pad_notes(pad_chord_tones(&controls, 0, 0), 0.0)),
+            OscVoiceEvent::PadChord(pad_notes(pad_chord_tones(&controls, 0, 1), 0.0)),
+        ]
     );
     pad.next(
         &controls,
@@ -2841,14 +2842,14 @@ fn pad_retriggers_on_an_adjacent_active_hit_with_identical_chord() {
 }
 
 #[test]
-fn pad_sub_bar_chord_bars_and_tied_offbeat_span() {
+fn pad_sub_bar_chord_bars_and_slur_offbeat_span() {
     let mut controls = PadControls {
         chord_bars: 0.125, // 0.5 beats
         chord_count: 4.0,
         ..PadControls::default()
     };
     controls.edit_chord_slot(0).gate = ChordSlotControls::GATE_REST;
-    controls.edit_chord_slot(2).gate = ChordSlotControls::GATE_HOLD;
+    controls.edit_chord_slot(2).gate = ChordSlotControls::GATE_SLUR;
     controls.edit_chord_slot(3).gate = ChordSlotControls::GATE_REST;
     let mut pad = pad_engine(&controls);
     let (sink, receiver) = OscVoiceSink::test_channel();
@@ -2864,7 +2865,8 @@ fn pad_sub_bar_chord_bars_and_tied_offbeat_span() {
             .try_iter()
             .any(|event| matches!(event, OscVoiceEvent::PadChord(_)))
     );
-    // Step 1 at off-beat 0.5 is followed by Tie on Step 2, so its ChordSpan covers 2 * 0.5 = 1.0 beat.
+    // Step 1 at off-beat 0.5 spans exactly its own 0.5-beat interval: a slur
+    // changes the chord, it does not extend the previous one.
     pad.next(
         &controls,
         MasterKey::Home,
@@ -2879,7 +2881,7 @@ fn pad_sub_bar_chord_bars_and_tied_offbeat_span() {
         pad.telemetry.chord_span(),
         ChordSpan {
             start_beat: 0.5,
-            length_beats: 1.0,
+            length_beats: 0.5,
         }
     );
 }
@@ -3022,7 +3024,7 @@ fn pad_tie_length_changes_the_audible_stab() {
             controls.edit_chord_slot(slot).gate = ChordSlotControls::GATE_REST;
         }
         if tie_second_step {
-            controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_HOLD;
+            controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_SLUR;
         }
         let mut pad = pad_engine(&controls);
         let mut power = 0.0f64;
@@ -6767,6 +6769,57 @@ fn followers_stay_in_lockstep_with_the_pad_through_an_offset_window() {
         assert_eq!((progression, slot), (0, pad.cursor.slot()), "chord {chord}");
         assert!((4..8).contains(&slot));
     }
+}
+
+/// Rhythm is articulation, not a second progression. A slur or a rest must
+/// not make the band repeat a chord, so the authored bass walk plays every
+/// step of the phrase however it is struck.
+#[test]
+fn every_gate_still_advances_the_harmony_and_the_authored_bass_walk() {
+    let progression = PROGRESSIONS
+        .iter()
+        .position(|p| p.mood == "Landslide")
+        .expect("Landslide is a built-in progression");
+    let mut controls = PadControls {
+        progression: progression as f32,
+        chord_bars: 1.0,
+        chord_count: 8.0,
+        ..PadControls::default()
+    };
+    for (slot, gate) in [
+        (0usize, ChordSlotControls::GATE_SOUND),
+        (1, ChordSlotControls::GATE_REST),
+        (2, ChordSlotControls::GATE_SLUR),
+        (3, ChordSlotControls::GATE_REST),
+        (4, ChordSlotControls::GATE_SLUR),
+        (5, ChordSlotControls::GATE_SOUND),
+        (6, ChordSlotControls::GATE_REST),
+        (7, ChordSlotControls::GATE_SLUR),
+    ] {
+        controls.edit_chord_slot(slot).gate = gate;
+    }
+
+    let mut follower = ProgressionFollower::new();
+    let mut visited = Vec::new();
+    let mut bass = Vec::new();
+    // Eight steps of four beats at 120 BPM: one chord every two seconds.
+    for chord in 0..8u64 {
+        let timing = timing(chord * SAMPLE_RATE as u64 * 2, 120.0);
+        let (got, slot) = follower.follow(&controls, timing);
+        assert_eq!(got, progression, "chord {chord}");
+        visited.push(slot);
+        bass.push(crate::fluid::voice::bass_root_note(
+            progression,
+            slot,
+            &controls,
+        ));
+    }
+    assert_eq!(visited, (0..8).collect::<Vec<_>>());
+    assert_eq!(
+        bass,
+        PROGRESSIONS[progression].bass.to_vec(),
+        "the authored walk must survive every gate"
+    );
 }
 
 /// The key a pitch-class set implies for a chord symbol's quality suffix,
@@ -11258,7 +11311,7 @@ mod chord_span_startup_tests {
 }
 
 #[test]
-fn chord_tie_sustains_without_reattacking_and_rest_releases_pads() {
+fn chord_slur_voices_without_reattacking_and_rest_releases_pads() {
     let mut controls = PadControls {
         chord_bars: 0.25, // 1.0 beat per step
         chord_count: 4.0,
@@ -11266,15 +11319,15 @@ fn chord_tie_sustains_without_reattacking_and_rest_releases_pads() {
         release_time: 0.05,
         ..PadControls::default()
     };
-    controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_HOLD;
-    controls.edit_chord_slot(2).gate = ChordSlotControls::GATE_HOLD;
+    controls.edit_chord_slot(1).gate = ChordSlotControls::GATE_SLUR;
+    controls.edit_chord_slot(2).gate = ChordSlotControls::GATE_SLUR;
     controls.edit_chord_slot(3).gate = ChordSlotControls::GATE_REST;
 
     let mut pad = pad_engine(&controls);
     let (sink, receiver) = OscVoiceSink::test_channel();
     pad.set_osc(sink);
 
-    // Beat 0.0 (Step 1): attacks chord 0 and spans 3 tied beats (Step 1 + 2 Ties).
+    // Beat 0.0 (Step 1): strikes chord 0, spanning exactly its own interval.
     pad.next(
         &controls,
         MasterKey::Home,
@@ -11285,7 +11338,7 @@ fn chord_tie_sustains_without_reattacking_and_rest_releases_pads() {
         pad.telemetry.chord_span(),
         ChordSpan {
             start_beat: 0.0,
-            length_beats: 3.0,
+            length_beats: 1.0,
         }
     );
     let first_notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
@@ -11294,29 +11347,51 @@ fn chord_tie_sustains_without_reattacking_and_rest_releases_pads() {
         [OscVoiceEvent::PadChord(first_notes)]
     );
 
-    // Beats 1.0 and 2.0 (Steps 2 and 3, both Tie): sustains without re-attacking or OSC events.
-    for beat in [1.0, 2.0] {
+    // Let the swell climb inside step 1, so a slur has a level to enter at.
+    for _ in 0..4_800 {
+        pad.next(
+            &controls,
+            MasterKey::Home,
+            TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.5),
+        );
+    }
+    let held_level = pad.layers.last().unwrap().tones[0].stack.envelope.level();
+    assert!(held_level > 0.0, "the pad must be sounding before the slur");
+
+    // Beats 1.0 and 2.0 (Steps 2 and 3, both Slur): each voices its own chord
+    // and enters where the ramp already was instead of climbing from silence.
+    for (beat, step) in [(1.0, 1usize), (2.0, 2)] {
         pad.next(
             &controls,
             MasterKey::Home,
             TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
         );
-        assert_eq!(pad.layers.len(), 1, "Tie at beat {beat} must not re-attack");
+        let entered = pad.layers.last().unwrap().tones[0].stack.envelope.level();
         assert!(
-            receiver.try_iter().next().is_none(),
-            "Tie at beat {beat} must emit no OSC event"
+            entered > 0.0,
+            "slur at beat {beat} must not restart the swell from silence"
+        );
+        let expected = pad_notes(pad_chord_tones(&controls, 0, step), 0.0);
+        assert!(
+            receiver
+                .try_iter()
+                .any(|event| event == OscVoiceEvent::PadChord(expected)),
+            "slur at beat {beat} must voice step {}'s own chord",
+            step + 1
         );
     }
 
-    // Beat 3.0 (Step 4, Rest): releases the pad layer and emits PadOff.
+    // Beat 3.0 (Step 4, Rest): releases the pad and emits PadOff.
     pad.next(
         &controls,
         MasterKey::Home,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 3.0),
     );
-    assert_eq!(
-        receiver.try_iter().collect::<Vec<_>>(),
-        [OscVoiceEvent::PadOff]
+    assert!(
+        receiver
+            .try_iter()
+            .any(|event| event == OscVoiceEvent::PadOff),
+        "Rest must release the pad"
     );
     for _ in 0..4_800 {
         pad.next(

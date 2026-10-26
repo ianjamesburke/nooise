@@ -1239,8 +1239,8 @@ macro_rules! chord_slot_rows {
                         .chord_slot(progression_index(c.pad.progression), $slot - 1);
                     if slot.is_rest() {
                         "Rest".to_string()
-                    } else if slot.is_tie() {
-                        "Hold".to_string()
+                    } else if slot.is_slur() {
+                        "Slur".to_string()
                     } else {
                         format!(
                             "{} ({:+.0})",
@@ -1485,7 +1485,7 @@ macro_rules! chord_slot_rows {
                     let slot = c
                         .pad
                         .chord_slot(progression_index(c.pad.progression), $slot - 1);
-                    type_label(slot.gate, &["Rest", "Hold", "Sound"]).into()
+                    type_label(slot.gate, &["Rest", "Slur", "Sound"]).into()
                 },
             )
             .reset_at(ChordSlotControls::GATE_SOUND)
@@ -3638,8 +3638,8 @@ pub(crate) fn progression_slot_display(
     if chord.is_rest() {
         return "Rest".to_string();
     }
-    if chord.is_tie() {
-        return "Hold".to_string();
+    if chord.is_slur() {
+        return "Slur".to_string();
     }
     let status = if pad.chord_is_edited(progression, slot) {
         "Edited"

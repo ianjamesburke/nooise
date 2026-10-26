@@ -137,8 +137,10 @@ pub(crate) struct ChordSlotControls {
     pub(crate) extension2: f32,
     pub(crate) voicing: f32,
     pub(crate) fifth: f32,
-    /// How the step meets the next boundary: `Rest`/`Hold`/`Sound`. Rhythm is
-    /// its own field; it used to hide in `degree` as the `-9`/`-8` sentinels.
+    /// How the step is struck: `Rest` is silent, `Slur` changes chord without
+    /// restarting the attack, `Sound` strikes it. The harmony always advances,
+    /// so rhythm is articulation rather than a second progression. This used
+    /// to hide in `degree` as the `-9`/`-8` sentinels.
     pub(crate) gate: f32,
 }
 
@@ -160,15 +162,17 @@ impl Default for ChordSlotControls {
 
 impl ChordSlotControls {
     pub(crate) const GATE_REST: f32 = 0.0;
-    pub(crate) const GATE_HOLD: f32 = 1.0;
+    /// The chord still changes on this step; the pad just does not restart
+    /// its swell to get there.
+    pub(crate) const GATE_SLUR: f32 = 1.0;
     pub(crate) const GATE_SOUND: f32 = 2.0;
 
     pub(crate) fn is_rest(self) -> bool {
         (self.gate.round() as i32) <= Self::GATE_REST as i32
     }
 
-    pub(crate) fn is_tie(self) -> bool {
-        (self.gate.round() as i32) == Self::GATE_HOLD as i32
+    pub(crate) fn is_slur(self) -> bool {
+        (self.gate.round() as i32) == Self::GATE_SLUR as i32
     }
 
     /// Compact authored order: root, accidental, third, extensions, bass,

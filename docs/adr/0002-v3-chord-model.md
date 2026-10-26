@@ -53,7 +53,7 @@ a lane of cells that holds them. Illustrative shapes:
 Harmony  { root: HomeDegree, accidental: i8, quality: Quality, tensions: [Tension] }
 Voicing  { tones: [Voice] }              // up to 5
 Voice    { degree: ChordDegree, octave: i8 }   // ChordDegree names an available tone
-Cell     = Rest | Hold | Sound { harmony: Harmony, voicing: Voicing, gate: Gate }
+Cell     = Rest | Slur | Sound { harmony: Harmony, voicing: Voicing, gate: Gate }
 Progression { song_value, name, home_mode, bass: [BassStep], cells: [Cell; N] }
 ```
 
@@ -67,15 +67,21 @@ Progression { song_value, name, home_mode, bass: [BassStep], cells: [Cell; N] }
    edits a single tone, omits it, doubles it, or moves its octave — the
    "individual chord tones" capability, as data rather than a preset wheel.
 
-3. **Rhythm is first-class.** A progression is a lane of `Rest` / `Hold` /
-   `Sound` cells; `gate` says how long a `Sound` lasts. The sentinel encodings
-   are deleted. The progression editor *is* the sequence editor.
+3. **Rhythm is first-class, and it is articulation, not a second
+   progression.** A progression is a lane of `Rest` / `Slur` / `Sound` cells.
+   The harmony always advances to the step's own chord; the gate only decides
+   how it is struck — `Rest` releases the pad, `Slur` voices the chord without
+   restarting the attack, `Sound` strikes it. A gate never makes the band
+   repeat an earlier chord, so an authored bass line walks every step. The
+   sentinel encodings are deleted. The progression editor *is* the sequence
+   editor.
 
-4. **Overlap is the cell's gate, not a global rule.** A sustained gate
-   overlaps the next chord and must hold a common tone; a short gate turns
-   over and may be chromatic. The common-tone test becomes gate-aware, and
-   the Creep-style progressions become legal by articulation instead of by
-   an exemption.
+4. **Overlap follows the gate, not a global rule.** A `Slur` rides the
+   outgoing chord's release; a `Sound` strikes over it; a `Rest` clears the
+   pad first. Because the harmony still advances on every gate, a chromatic
+   neighbour (Creep's B into C) overlaps unless the lane articulates it, so
+   the common-tone test becomes gate-aware and the Creep-style progressions
+   become legal by articulation instead of by an exemption.
 
 5. **Bass follows chord roots by default.** An authored bass is a lane of
    scale-degree steps (root, fifth, octave, approach) relative to the
@@ -114,10 +120,12 @@ Progression { song_value, name, home_mode, bass: [BassStep], cells: [Cell; N] }
    tension resolves inside the mode.
 2. Voicing never names a tone the chord does not contain. Omission and
    octave moves are free; invention is not.
-3. `Rest` and `Hold` are cell variants, not numbers inside a pitch field.
-4. A sustained cell (gate reaches the next cell) shares at least one sounding
-   tone with the next sounding cell. An articulated cell is exempt. This is
-   the only form of the old common-tone rule that survives.
+3. `Rest` and `Slur` are cell variants, not numbers inside a pitch field, and
+   neither one holds the harmony back: every cell voices its own chord.
+4. Two cells whose releases overlap — adjacent sounding cells with no `Rest`
+   between them — share at least one sounding tone. A `Rest` clears the pad,
+   so a chromatic neighbour is legal across one. This is the only form of the
+   old common-tone rule that survives.
 5. The chord a voice sounds is still resolved from one place. `Pad`, `Bass`,
    `Arp`, `Lead`, and `Tonal` continue to read `[i32; 4]` notes, a bass root,
    and a home scale through `ProgressionFollower`/`ProgressionCursor`; the
@@ -177,8 +185,9 @@ Progression { song_value, name, home_mode, bass: [BassStep], cells: [Cell; N] }
 
 - Every carried-forward built-in reproduces its sounding pitch content, or
   the change is explicitly auditioned and blessed (audio fixture export).
-- Gate-aware common-tone: a sustained lane passes; an articulated chromatic
-  lane passes for the opposite reason; a sustained chromatic lane is refused
+- Gate-aware common-tone: a lane of adjacent sounding cells passes when each
+  pair shares a tone; the same chromatic lane passes once a `Rest` sits
+  between the colliding pair; a chromatic lane with no `Rest` is refused
   by the test.
 - Copy/paste round-trips a chord and a cell/range onto other steps.
 - Evolve and randomize never leave `home_mode` over a long seeded run.
@@ -196,14 +205,21 @@ Landed:
 - `voice/harmony.rs` — `Harmony`, `Quality`, `Voicing`, `realize`, the
   temporary `chord_from_slot` bridge.
 - `voice/cell.rs` — `Cell { harmony, voicing, gate }` and `Gate`
-  (Rest/Hold/Sound); the resolver and the Pad's sounding test read them.
+  (Rest/Slur/Sound); the resolver and the Pad's sounding test read them.
 - `voice/evolve.rs` — the smart one-cell evolution, with engine-level
   guarantees pinned in `tests.rs`.
+- Gate semantics — the harmony always advances. `Rest` releases the pad,
+  `Slur` voices this step's chord without restarting the swell (via
+  `Adsr::start_at` at the level the pad already holds), `Sound` strikes it.
+  The old `Tie`/`Hold` and its backwards walk in `ProgressionFollower::follow`
+  and `ProgressionCursor::compute_span` are deleted, so an authored bass walk
+  plays every step however it is struck.
 - Copy/paste — `ChordAction::Copy` keeps the selected step's chord in a
   live-only `EffectExecutor` clipboard; `Paste` writes it onto the selected
   step and `PasteAll` onto every step of the phrase. All three are ordinary
   `/` operations, so the keyboard path is complete and no control was added.
-- Stage 2 (rhythm half) — `ChordSlotControls::gate` (`0`/`1`/`2`) with the
+- Stage 2 (rhythm half) — `ChordSlotControls::gate` (`0`/`1`/`2`, Rest /
+  Slur / Sound) with the
   `pad.chordN_gate` registry row (`CHORD_FIELDS` nine entries, gate last,
   `reset_at(GATE_SOUND)`); the degree dial narrowed to `-7..=7`;
   `RHYTHM_GATE_EPOCH` appended as a `RangeTarget::ChordSlot` change; record 13

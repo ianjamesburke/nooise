@@ -643,7 +643,7 @@ mod chord_override_codec_tests {
     fn chord_gate_round_trips_through_a_song_code() {
         let mut song = SongState::default();
         song.controls.pad.chord_slots[2].gate = super::super::ChordSlotControls::GATE_REST;
-        song.controls.pad.chord_slots[3].gate = super::super::ChordSlotControls::GATE_HOLD;
+        song.controls.pad.chord_slots[3].gate = super::super::ChordSlotControls::GATE_SLUR;
         let loaded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
         assert_eq!(
             loaded.controls.pad.chord_slots[2].gate,
@@ -651,7 +651,7 @@ mod chord_override_codec_tests {
         );
         assert_eq!(
             loaded.controls.pad.chord_slots[3].gate,
-            super::super::ChordSlotControls::GATE_HOLD
+            super::super::ChordSlotControls::GATE_SLUR
         );
     }
 
@@ -2801,7 +2801,7 @@ mod song_value_tests {
         song.controls.pad.chord_count = 16.0;
         song.controls.pad.chord_offset = 11.0;
         song.controls.modules.pad[1] = super::super::module::preset_slot("swing", 0.4);
-        song.controls.pad.edit_chord_slot(1).gate = super::super::ChordSlotControls::GATE_HOLD;
+        song.controls.pad.edit_chord_slot(1).gate = super::super::ChordSlotControls::GATE_SLUR;
         song.controls.pad.edit_chord_slot(4).gate = super::super::ChordSlotControls::GATE_REST;
         song.controls.pad.edit_chord_slot(15).degree = 4.0;
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();

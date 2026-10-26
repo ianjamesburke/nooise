@@ -8,14 +8,15 @@
 
 use super::*;
 
-/// How a cell meets the step boundary. `Sound` voices the chord (re-attacking
-/// a repeated cell), `Hold` sustains the sounding chord across the boundary,
-/// and `Rest` releases it. This replaces the legacy `-9`/`-8` sentinels
-/// smuggled through the old `degree` field.
+/// How a cell is struck. The harmony always advances to this step's chord:
+/// `Sound` strikes it with a fresh attack, `Slur` voices it without restarting
+/// the attack, and `Rest` releases the pad. This replaces the legacy `-9`/`-8`
+/// sentinels smuggled through the old `degree` field, and the old `Hold` that
+/// made the whole band repeat the previous step's chord.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Gate {
     Rest,
-    Hold,
+    Slur,
     Sound,
 }
 
@@ -34,8 +35,8 @@ impl Cell {
         let (harmony, voicing) = chord_from_slot(slot);
         let gate = if slot.is_rest() {
             Gate::Rest
-        } else if slot.is_tie() {
-            Gate::Hold
+        } else if slot.is_slur() {
+            Gate::Slur
         } else {
             Gate::Sound
         };
