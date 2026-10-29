@@ -47,15 +47,16 @@ bump bump="patch":
 release:
     bash scripts/publish.sh
 
-# Start a stint lane worktree branched from release/v2.9 and claim the stints.
+# Start a stint lane worktree branched from the configured base branch and claim the stints.
+# Base branch comes from .agents/skills/babysitter/RUN_CONFIG.toml [topology].base_branch.
 bs-start +stints:
-    bash /Users/ianburke/Documents/GitHub/nooise/.agents/skills/_lib/bs-start.sh {{stints}}
+    bash .agents/skills/_lib/bs-start.sh {{stints}}
 
 # Force-wipe a stint's worktree and branch, unclaim, and re-run bs-start.
 bs-reset stint:
-    bash /Users/ianburke/Documents/GitHub/nooise/.agents/skills/_lib/bs-reset.sh {{stint}}
+    bash .agents/skills/_lib/bs-reset.sh {{stint}}
 
-# Merge a validated PR into release/v2.9, rebuild worktrees/release/v2.9, mark stints done, and reap the worktree.
+# Merge a validated PR into the configured base branch, rebuild it, mark stints done, and reap the worktree.
 bs-merge pr:
-    bash /Users/ianburke/Documents/GitHub/nooise/.agents/skills/_lib/bs-merge.sh {{pr}}
+    bash .agents/skills/_lib/bs-merge.sh {{pr}}
 
