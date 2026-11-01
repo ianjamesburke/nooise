@@ -495,10 +495,10 @@ impl PadEngine {
 
         let air = self.air.next_filtered(&mut self.rng, 0.0002) * 0.00025;
 
-        // Headroom trim on the summed layer output, not a character control —
-        // `pad.level` at 100% should reach close to full scale on its own,
-        // leaving final safety margin to the master bus's soft-clip/compressor.
-        const OUTPUT_TRIM: f32 = 0.95;
+        // Makeup gain on the summed layer output, not a character control.
+        // `pad.level` at 100% must sit as loud as other voices at 100%; the
+        // master bus's soft-clip/compressor provides the safety margin.
+        const OUTPUT_TRIM: f32 = 1.35;
         // Once external Pad notes arrive, external input owns Hold-mode Pad
         // audio while the progression cursor and chord feed continue advancing
         // underneath.
