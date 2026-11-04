@@ -6,6 +6,13 @@ Use `/store section A`, `/store section B`, or `/store section C` to keep the cu
 
 Launch with `nooise --set PATH` to save and reopen the bank. Without `--set`, sections last only for this run. The file holds separate song codes and does not contain recorded audio. If a bank or code is invalid, the current song keeps playing.
 
+## Slapback preset
+
+`/slapback` applies Delay to the current layer at 40% Amount, 0.25 beats on
+both synced channels, and 0% Feedback. It focuses Amount. An existing Delay
+is reused and these settings are reapplied, retaining its other settings;
+ordinary `/delay` keeps its existing add-or-jump behavior.
+
 ## Hub navigation
 
 The app opens on Master, the hub. Its first rows list the layers in order

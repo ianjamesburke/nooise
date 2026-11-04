@@ -1,58 +1,66 @@
-# nooise Stabilization State
+# V3 performance checkpoint
 
-Updated: 2026-10-05
+Updated: 2026-11-03
 
 ## Current candidate
 
-- Worktree: `worktrees/temp-stabilization-sprint`
-- Integrated code: `2956aca` (`fix: keep delay filter on cutoff`)
-- Latest report commit: `ba9848b`
-- Root `main`: `f28f95d`, clean and unchanged
-- Release status: not approved; no release PR, tag, or publication
+- Worktree: `worktrees/v3`.
+- Verified source commit: `54f9968` (`feat: add slapback delay preset`).
+- Starting code: `aa47af3b48ce50ec7bd072397e3abad33407fcba`.
+- Status: ready for the next 15–20 minute rehearsal; musical acceptance pending.
+- No release PR, tag, or publication.
 
-## Progress
+## Included
 
-The stabilization implementation is integrated in this worktree. It includes:
+- Fresh Perc at 0.50 and Bass on Saw. Existing saved songs retain authored levels and sounds, including omitted historical defaults.
+- Bass Offbeat has regular eighth-note offbeats instead of irregular pickups.
+- Stereo feedback-delay-network reverb replaces Freeverb.
+- Hold `b` or use `/freeze` for a temporary grain stretch/repeat texture.
+- `VAMP` and `VAMP ENDING` appear beside the chord.
+- Tap `q` for a saved Kick+Bass latch; hold for a temporary gate. Individual mutes remain independent.
+- A/B/C section storage, next-bar queue/replace/cancel, and `--set PATH` persistence. The key header shows the current and queued sections. Recall retains performed holds, restores the destination snapshot, and lands at its authored tempo and beat zero.
+- `/slapback` sets Delay Amount to 40%, both synchronized times to 0.25 beats, and Feedback to 0%. It also reapplies these values to an existing Delay.
 
-- Tonal phrases follow the selected progression home scale.
-- Kick stays straight under Master Swing; OSC exposes Pad phrase timing.
-- Centered controls reset to neutral; recipes start silently and focus Amount; Sidechain stays below its authored base.
-- Randomize avoids returning the current value; morph structural landing and LFO Amount continuity have focused coverage.
-- Perc has a saved Attack control.
-- Collapsed Filter rows browse Cutoff.
-- A layer's Drunken module overrides Master Drunken, including at local Amount 0%.
+The [performance guide](docs/PERFORMANCE.md) owns the controls and terminal-capability contracts.
+The [show plan](docs/proposals/2026-11-02-show-readiness.md) owns the rehearsal loop.
+Ian deferred Melody 1/2/3 consolidation and longer sequences to the following checkpoint.
+Named songs, `/songs`, transition previews, and session/Baton joining remain proposed follow-on work.
+Microphone work stays separate. The [October gate](docs/proposals/2026-10-05-stabilization-gate.md) retains historical evidence.
 
-## Automated evidence
+## Verification
 
-- `RUSTC_WRAPPER= cargo test --locked --quiet`: 876 passed, 0 failed, 6 ignored.
-- `cargo fmt --check` and `git diff --check`: pass.
-- Locked build and strict all-target Clippy pass on the same code in the implementation worktree; the integrated candidate has no additional code beyond that verified commit.
-- Two seed-42, 2-second renders are byte-identical and match the October 3 baseline SHA-256 `a8995df35255429d324c623f6cc4f69eb98fdd913a7961ccbfeb5b83c9919830`.
-- Production keyboard replay, song-code, and OSC behavior are covered by the full suite. There has been no new physical keyboard, live terminal, speaker/headphone, or external OSC-consumer audition.
+- Final build, format, strict all-target Clippy, and diff checks: PASS.
+- Full final suite: 981 passed, 0 failed, 9 ignored. Baseline: 955 passed, 0 failed, 8 ignored.
+- Production keyboard/session/audio coverage: A → B → C → A, queue cancel/replace, incoming tempos, bank reopen, invalid code refusal, saved Tonal evolution and module Motion, physical holds across recall, and cancellation during the transition fade.
+- Populated render inspection at 46×11 and 80×24: current/queued sections, Vamp, q latch and Freeze remain visible together. `target/show-checkpoint/combined-frames.txt` records the combined frame.
+- Actual app/PTY smoke with Master at zero: stored A/B, recalled them, used `/slapback` and `/freeze`, quit, reopened the bank and recalled again. Both launches exited 0. Evidence: `target/show-checkpoint/live-smoke.json` and `.ansi`. This was not listening or physical keyboard acceptance.
+- Two final seed-21, 30-second renders match SHA-256 `9da9d0579325c538c1b8779c637eb4f4c75454d84bd4beab67c4c091cab4280b`. Files: `target/show-checkpoint/after.wav` and `after-repeat.wav`.
+- Broad DSP probe after sound/gesture integration: 59 built-in songs/fresh progressions, 354 wet gesture cases, zero clamp hits; highest dry peak 0.341 and wet peak 0.335. This diagnostic preceded section/preset integration. The final full suite reran the populated-Freeze combined loud-song headroom gate. Full table: `target/show-checkpoint/all-song-levels.log`.
+- Final checks: `target/show-checkpoint/final-gates.log`. Baseline binary/render and candidate binary are retained in the same local artifact directory.
 
-Detailed procedures and measured evidence: [stabilization gate](docs/proposals/2026-10-05-stabilization-gate.md).
+## Listening and performance gate
 
-## Stint coverage audit
+The new reverb is deliberately a candidate for audition. Its six-second wet
+impulse RMS is 0.00105 versus the old 0.00737; peak is 0.063 versus 0.307.
+A fourfold gain increase failed sustained-signal and transport checks and was
+rejected. Do not equate safe signal measurements with a better-sounding reverb.
+Compare `target/show-checkpoint/reverb-before.wav` and `reverb-after.wav`, then
+listen on actual show material. Captured audio is not part of saved songs.
 
-The local tracker lives in the root checkout's ignored `.stint/`; it is not present in this worktree. Current coverage is incomplete and some statuses are stale.
+1. Launch with `cargo run -- --set show-rehearsal.set`. Prepare contrasting A/B/C
+   snapshots using `/store section A` and the B/C equivalents. Use `/replace
+   section A` only when deliberately updating prepared material.
+2. Record 15–20 uninterrupted minutes. Play A → B → C → A with `/queue section A`
+   or `/queue next section`; cancel and replace one queued destination, and recover
+   from one wrong section. Include a different-tempo destination.
+3. Play q tap/hold, Vamp ending, Freeze release, Offbeat and Slapback. Listen for
+   useful balance, clicks, dropouts and a clean ending on the intended audio route.
+   Physical holds need a terminal reporting key releases; fallback palette paths
+   remain available.
+4. Quit and reopen the same bank. Confirm the intended snapshots, then timestamp
+   the three largest interruptions and use them to choose the next batch.
 
-| Stint | Current tracker state | Relationship to this candidate |
-| --- | --- | --- |
-| 0075 | Ready/open | Combined hands-on audition gate. It is the direct acceptance checkpoint for this candidate. |
-| 0073 | Blocked by 0075 | Versioned release follow-on; still requires the audition and release decision. |
-| 0024 | Active | Auto-morph still needs full-loop musical audition. |
-| 0044 | Backlog | Envelope taper and folded-effect listening remain open. |
-| 0052 | Done | Existing recipe work; this candidate adjusts recipe insertion behavior. |
-| 0029 | Backlog | Neutral reset fix is present in the candidate, but tracker status was not reconciled. |
-| 0057 | Backlog | No-op randomize fix is present in the candidate, but tracker status was not reconciled. |
-| 0050 | Backlog | Broad morph redesign remains open; this candidate only covers bounded structural-landing and Amount-continuity checks. |
-| 0064 | Done | Harmony/track model decision; it does not fully track the new Tonal scale implementation. |
-
-No dedicated stint was found for the stabilization-specific Tonal scale fix, Kick anchoring under Master Swing, OSC phrase feed, Perc Attack, collapsed Filter Cutoff browsing, layer Drunken override, or Delay child Filter. These changes are in the integration worktree but are not individually represented in `.stint/`. The older `s1` sprint is the October 3 keyboard/harmony sprint, not this October 5 stabilization batch.
-
-## Remaining
-
-1. Ian auditions the candidate using the ordered checks in the linked gate report, including the corrected Delay Filter interaction.
-2. Record the musical and live-terminal results against 0075; make any requested fixes in this worktree.
-3. Reconcile the local stint ledger before closing this stabilization: update 0029/0057 evidence, distinguish the bounded 0050 checks from the broader open design, and decide whether to create dedicated records for untracked slices.
-4. Only after acceptance, proceed through 0073's versioned release gate.
+The set-duration rig rehearsal, subjective reverb choice, physical key-release
+behavior and real-device dropout acceptance remain open. The section publication
+uses a bounded CAS attempt but still clones the prepared snapshot on audio;
+no worst-case populated landing-latency benchmark has been claimed.

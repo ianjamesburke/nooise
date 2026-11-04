@@ -77,6 +77,7 @@ Default section order:
 ## User Preferences
 
 - Currently working on: fluid core (`src/fluid/`)
+- November 21, 2026 show preparation targets `v3` or derivatives. Work in batches followed by simulated sets and post-mortems; `docs/proposals/2026-11-02-show-readiness.md` owns checkpoints and pending performance requests.
 - The computer keyboard is the primary instrument surface. Every musical capability must have a complete keyboard path through ordinary browsing or `/`; external gear is optional and uses the same validated musical operations. Commandment 6 in `docs/NORTH_STAR.md` owns priority, gear classification, and the current persistence gap. Stabilize existing features before the next hardware sprint; APC40 support is wanted soon afterward. Preserve the active microphone exploration as separate work.
 - Live performance gestures must be accessible from normal browsing, with arrows and Tab available throughout. A separate Deck mode must not be required. `docs/PERFORMANCE.md` owns their interaction and terminal-capability contracts.
 - Song saves must restore each chosen musical state as though playback never stopped; new stateful features must persist their runtime state, not only their controls. Excluded: state that regenerates from playback within about a second (FX tails and buffers), and external-gear configuration, which belongs to launch setup. A song code has to stay short enough to paste into a message. Commandments 4 and 6 in `docs/NORTH_STAR.md` own this rule; read them before changing what a code carries.
