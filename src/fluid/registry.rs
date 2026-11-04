@@ -335,6 +335,7 @@ pub(crate) enum LfoSnap {
 #[derive(Clone, Copy)]
 pub(crate) struct ControlSearch {
     pub(crate) name: &'static str,
+    pub(crate) include_id_alias: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -382,7 +383,10 @@ impl ControlSpec {
         Self {
             id,
             label,
-            search: ControlSearch { name: label },
+            search: ControlSearch {
+                name: label,
+                include_id_alias: true,
+            },
             kind,
             min,
             max,
@@ -430,6 +434,13 @@ impl ControlSpec {
     /// otherwise be an exact match for a concept shared across layers.
     pub(crate) const fn search_name(mut self, name: &'static str) -> Self {
         self.search.name = name;
+        self
+    }
+
+    /// Keep a historical ID addressable exactly without exposing its old wording
+    /// as an implicit alias in ordinary name searches.
+    pub(crate) const fn without_id_search_alias(mut self) -> Self {
+        self.search.include_id_alias = false;
         self
     }
 
@@ -2383,7 +2394,7 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
         evolve_pct!("clap.evolve_rate", clap.evolve_rate),
         ControlSpec::new(
             "clap.slap_count",
-            "Slap Count",
+            "Clap Count",
             ControlKind::Discrete,
             1.0,
             8.0,
@@ -2392,15 +2403,17 @@ pub(crate) const CLAP_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| c.clap.slap_count,
             |c, v| c.clap.slap_count = v,
             |c| format!("{:.0}", c.clap.slap_count),
-        ),
+        )
+        .without_id_search_alias(),
         time_ms!(
             "clap.slap_spread_ms",
-            "Slap Spread",
+            "Clap Spread",
             0.0,
             100.0,
             1.0,
             clap.slap_spread_ms
-        ),
+        )
+        .without_id_search_alias(),
         gain_pct!("clap.body", "Body", clap.body),
         clap_step_row!(1),
         clap_step_row!(2),

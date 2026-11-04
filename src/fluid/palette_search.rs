@@ -28,7 +28,9 @@ impl SearchMetadata {
             },
             PaletteEntry::Control { tab, spec, .. } => {
                 let mut names = vec![spec.search.name.to_string()];
-                if let Some((_, field)) = spec.id.split_once('.') {
+                if spec.search.include_id_alias
+                    && let Some((_, field)) = spec.id.split_once('.')
+                {
                     names.push(field.to_string());
                 }
                 Self {
@@ -435,7 +437,7 @@ mod tests {
         }
         let mut extra = *spec_by_id("pad.level").unwrap();
         extra.id = "pad.unrelated";
-        extra.search = ControlSearch { name: "Unrelated" };
+        extra.search.name = "Unrelated";
         entries.insert(
             0,
             PaletteEntry::Control {

@@ -213,14 +213,37 @@ mod global_groove_tests {
 
     #[test]
     fn slapback_search_selects_current_layer() {
-        for tab in [Tab::Bass, Tab::Master] {
-            let mut palette = PaletteState::new(tab, &[], None);
-            for character in "slapback".chars() {
-                palette.push_char(character);
+        for tab in [Tab::Bass, Tab::Clap, Tab::Master] {
+            for query in ["slap", "slapb", "slapback"] {
+                let mut palette =
+                    PaletteState::new(tab, &["clap.slap_count", "clap.slap_spread_ms"], None);
+                for character in query.chars() {
+                    palette.push_char(character);
+                }
+                assert!(
+                    matches!(palette.entry(palette.matches[0].entry_index), PaletteEntry::Slapback { tab: result } if *result == tab),
+                    "{query} on {tab:?}"
+                );
             }
-            assert!(
-                matches!(palette.entry(palette.matches[0].entry_index), PaletteEntry::Slapback { tab: result } if *result == tab)
-            );
+        }
+    }
+
+    #[test]
+    fn clap_controls_use_current_names_and_keep_exact_saved_ids_addressable() {
+        for (name, id) in [
+            ("clap count", "clap.slap_count"),
+            ("clap spread", "clap.slap_spread_ms"),
+        ] {
+            for query in [name, id] {
+                let mut palette = PaletteState::new(Tab::Master, &[], None);
+                for character in query.chars() {
+                    palette.push_char(character);
+                }
+                assert!(
+                    matches!(palette.entry(palette.matches[0].entry_index), PaletteEntry::Control { spec, .. } if spec.id == id),
+                    "{query}"
+                );
+            }
         }
     }
 
