@@ -13,7 +13,7 @@ Shared DSP effects consumed by voice engines in `fluid.rs`.
 - `delay.rs` — stereo feedback delay whose read taps never glide: a delay-time change crossfades to a new fixed tap position over a fixed window instead of sliding the old one (so tempo-synced retargeting never pitch-bends), plus wet-only level-compensated Vintage colour, end-weighted pitch motion, true dry bypass, and allocation-free incremental buffer clearing for retired temporary processors.
 - `drive.rs` — `StereoDrive`, the Drive module's saturation: Soft/Hard/Fold curves, input Bias with a 5 Hz DC blocker, Dry blend, and a 10 ms Type crossfade. Unbiased Soft is the original stateless curve bit-for-bit; every other setting runs first-order ADAA. Exact bypass at Amount 0. Per-type output trims are pinned by `every_drive_type_renders_near_soft_level`.
 - `filter.rs` — shared stateful stereo biquad filter for Filter module slots; cutoff, resonance, and response type arrive per frame while each slot owns its filter history.
-- `reverb.rs` — shared Freeverb-style slot reverb with live Size/Damping updates and allocation-free incremental buffer clearing for retired temporary processors.
+- `reverb.rs` — shared stereo feedback-delay-network reverb with live Size/Damping updates and allocation-free incremental buffer clearing for retired temporary processors.
 - `mod.rs` — module re-exports only.
 
 ## Local Contracts

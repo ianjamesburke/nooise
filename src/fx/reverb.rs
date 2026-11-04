@@ -1,108 +1,60 @@
-//! Freeverb-style stereo reverb: damped comb filters into allpass diffusers.
-//! Used by Reverb module slots.
+//! Stereo feedback-delay-network reverb with input diffusion and damped tails.
+//! Used by Reverb module slots and the Bloom gesture.
 
-struct Comb {
+struct DelayLine {
     buffer: Vec<f32>,
     index: usize,
-    feedback: f32,
-    filter_store: f32,
-    damp1: f32,
-    damp2: f32,
+    filter: f32,
 }
 
-impl Comb {
-    /// Feedback and damping are left at pass-through values: `Freeverb::process`
-    /// writes both from its per-call params before any sample is read.
-    fn new(size: usize) -> Self {
+impl DelayLine {
+    fn new(length: usize) -> Self {
         Self {
-            buffer: vec![0.0; size.max(1)],
+            buffer: vec![0.0; length.max(1)],
             index: 0,
-            feedback: 0.0,
-            filter_store: 0.0,
-            damp1: 0.0,
-            damp2: 1.0,
+            filter: 0.0,
         }
     }
 
+    fn advance(&mut self, input: f32) {
+        self.buffer[self.index] = input;
+        self.index = (self.index + 1) % self.buffer.len();
+    }
+}
+
+struct Diffuser {
+    line: DelayLine,
+}
+
+impl Diffuser {
     fn process(&mut self, input: f32) -> f32 {
-        let output = self.buffer[self.index];
-        self.filter_store = output * self.damp2 + self.filter_store * self.damp1;
-        self.buffer[self.index] = input + self.filter_store * self.feedback;
-        self.index += 1;
-        if self.index >= self.buffer.len() {
-            self.index = 0;
-        }
+        let delayed = self.line.buffer[self.line.index];
+        let output = delayed - input * 0.7;
+        self.line.advance(input + output * 0.7);
         output
     }
 }
 
-struct AllPass {
-    buffer: Vec<f32>,
-    index: usize,
-    feedback: f32,
-}
-
-impl AllPass {
-    fn new(size: usize, feedback: f32) -> Self {
-        Self {
-            buffer: vec![0.0; size.max(1)],
-            index: 0,
-            feedback,
-        }
-    }
-
-    fn process(&mut self, input: f32) -> f32 {
-        let buffered = self.buffer[self.index];
-        let output = -input + buffered;
-        self.buffer[self.index] = input + buffered * self.feedback;
-        self.index += 1;
-        if self.index >= self.buffer.len() {
-            self.index = 0;
-        }
-        output
-    }
-}
-
-pub(crate) struct Freeverb {
-    combs_left: Vec<Comb>,
-    combs_right: Vec<Comb>,
-    allpasses_left: Vec<AllPass>,
-    allpasses_right: Vec<AllPass>,
-    /// Sticky: false until the first nonzero input sample. While every input
-    /// so far has been zero, every comb/allpass buffer and filter holds exact
-    /// zeros and the output is exact silence, so `process` skips all work.
-    /// Once audio arrives it stays active so the tail always rings out.
+/// Eight delay lines mixed through an energy-preserving Hadamard matrix.
+/// Inputs diffuse before entering the orthogonal feedback network.
+pub(crate) struct FdnReverb {
+    lines: Box<[DelayLine; 8]>,
+    diffusers: Box<[[Diffuser; 3]; 2]>,
     active: bool,
 }
 
-impl Freeverb {
+impl FdnReverb {
     pub(crate) fn new(sample_rate: f32) -> Self {
-        let scale = sample_rate / 44_100.0;
-        let comb_tunings = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
-        let allpass_tunings = [556, 441, 341, 225];
-
-        let build_combs = |offset: i32| -> Vec<Comb> {
-            comb_tunings
-                .iter()
-                .map(|size| Comb::new(((*size + offset) as f32 * scale) as usize))
-                .collect()
-        };
-        let combs_left = build_combs(0);
-        let combs_right = build_combs(23);
-        let build_allpasses = |offset: i32| -> Vec<AllPass> {
-            allpass_tunings
-                .iter()
-                .map(|size| AllPass::new(((*size + offset) as f32 * scale) as usize, 0.5))
-                .collect()
-        };
-        let allpasses_left = build_allpasses(0);
-        let allpasses_right = build_allpasses(23);
-
+        let length = |ms: f32| (sample_rate * ms / 1000.0).round().max(1.0) as usize;
+        let lengths = [29.7, 37.1, 41.1, 43.7, 53.1, 59.3, 67.7, 71.9];
+        let diffusion = [[4.8, 7.3, 12.7], [5.3, 8.9, 13.7]];
         Self {
-            combs_left,
-            combs_right,
-            allpasses_left,
-            allpasses_right,
+            lines: Box::new(std::array::from_fn(|i| DelayLine::new(length(lengths[i])))),
+            diffusers: Box::new(std::array::from_fn(|channel| {
+                std::array::from_fn(|i| Diffuser {
+                    line: DelayLine::new(length(diffusion[channel][i])),
+                })
+            })),
             active: false,
         }
     }
@@ -113,112 +65,94 @@ impl Freeverb {
         input_right: f32,
         params: ReverbParams,
     ) -> (f32, f32) {
-        self.set_character(params);
-        let input = (input_left + input_right) * 0.5;
         if !self.active {
-            if input == 0.0 {
+            if input_left == 0.0 && input_right == 0.0 {
                 return (0.0, 0.0);
             }
             self.active = true;
         }
-        let mut left = self
-            .combs_left
-            .iter_mut()
-            .map(|comb| comb.process(input))
-            .sum::<f32>();
-        let mut right = self
-            .combs_right
-            .iter_mut()
-            .map(|comb| comb.process(input))
-            .sum::<f32>();
-
-        for allpass in &mut self.allpasses_left {
-            left = allpass.process(left);
+        let mut input = [input_left, input_right];
+        for (sample, chain) in input.iter_mut().zip(self.diffusers.iter_mut()) {
+            for diffuser in chain {
+                *sample = diffuser.process(*sample);
+            }
         }
-        for allpass in &mut self.allpasses_right {
-            right = allpass.process(right);
+        let feedback = 0.55 + params.room_size.clamp(0.0, 1.0) * 0.40;
+        let damping = params.damp.clamp(0.0, 1.0) * 0.75;
+        let mut values = [0.0; 8];
+        for (value, line) in values.iter_mut().zip(self.lines.iter_mut()) {
+            let delayed = line.buffer[line.index];
+            line.filter = delayed * (1.0 - damping) + line.filter * damping;
+            *value = line.filter;
         }
-
-        (left * 0.18, right * 0.18)
+        // Orthogonal mixing prevents feedback gain increasing with density.
+        let mut mixed = values;
+        for stride in [1, 2, 4] {
+            for base in (0..8).step_by(stride * 2) {
+                for offset in 0..stride {
+                    let a = mixed[base + offset];
+                    let b = mixed[base + offset + stride];
+                    mixed[base + offset] = a + b;
+                    mixed[base + offset + stride] = a - b;
+                }
+            }
+        }
+        let norm = std::f32::consts::FRAC_1_SQRT_2 / 2.0;
+        for (i, line) in self.lines.iter_mut().enumerate() {
+            let injection = if i % 2 == 0 { input[0] } else { input[1] };
+            line.advance(injection * 0.25 + mixed[i] * norm * feedback);
+        }
+        let left = values[0] + values[2] - values[4] - values[6];
+        let right = values[1] + values[3] - values[5] - values[7];
+        (left * 1.05, right * 1.05)
     }
 
-    /// Clear at most `samples` stored samples without allocating. Gesture
-    /// retirement uses this to amortize cleanup across audio frames after its
-    /// return has faded fully silent.
+    /// Clear storage incrementally without allocating on the audio thread.
     pub(crate) fn clear_chunk(&mut self, cursor: &mut usize, samples: usize) -> bool {
-        let total = self
-            .combs_left
+        let total: usize = self
+            .lines
             .iter()
-            .chain(&self.combs_right)
-            .map(|comb| comb.buffer.len())
+            .map(|line| line.buffer.len())
             .sum::<usize>()
             + self
-                .allpasses_left
+                .diffusers
                 .iter()
-                .chain(&self.allpasses_right)
-                .map(|allpass| allpass.buffer.len())
+                .flatten()
+                .map(|d| d.line.buffer.len())
                 .sum::<usize>();
         let mut skip = *cursor;
         let mut remaining = samples;
-        for comb in self.combs_left.iter_mut().chain(&mut self.combs_right) {
-            clear_buffer_chunk(&mut comb.buffer, &mut skip, &mut remaining);
-        }
-        for allpass in self
-            .allpasses_left
+        for line in self
+            .lines
             .iter_mut()
-            .chain(&mut self.allpasses_right)
+            .chain(self.diffusers.iter_mut().flatten().map(|d| &mut d.line))
         {
-            clear_buffer_chunk(&mut allpass.buffer, &mut skip, &mut remaining);
+            if skip >= line.buffer.len() {
+                skip -= line.buffer.len();
+                continue;
+            }
+            let count = remaining.min(line.buffer.len() - skip);
+            line.buffer[skip..skip + count].fill(0.0);
+            remaining -= count;
+            skip = 0;
         }
         *cursor = cursor.saturating_add(samples - remaining).min(total);
         if *cursor < total {
             return false;
         }
-        for comb in self.combs_left.iter_mut().chain(&mut self.combs_right) {
-            comb.index = 0;
-            comb.filter_store = 0.0;
-        }
-        for allpass in self
-            .allpasses_left
+        for line in self
+            .lines
             .iter_mut()
-            .chain(&mut self.allpasses_right)
+            .chain(self.diffusers.iter_mut().flatten().map(|d| &mut d.line))
         {
-            allpass.index = 0;
+            line.index = 0;
+            line.filter = 0.0;
         }
         self.active = false;
         true
     }
-
-    fn set_character(&mut self, params: ReverbParams) {
-        let feedback = 0.28 + params.room_size.clamp(0.0, 1.0) * 0.68;
-        let damp1 = params.damp.clamp(0.0, 1.0) * 0.4;
-        for comb in self.combs_left.iter_mut().chain(&mut self.combs_right) {
-            comb.feedback = feedback;
-            comb.damp1 = damp1;
-            comb.damp2 = 1.0 - damp1;
-        }
-    }
 }
 
-fn clear_buffer_chunk(buffer: &mut [f32], skip: &mut usize, remaining: &mut usize) {
-    if *remaining == 0 {
-        return;
-    }
-    if *skip >= buffer.len() {
-        *skip -= buffer.len();
-        return;
-    }
-    let start = *skip;
-    let count = (*remaining).min(buffer.len() - start);
-    buffer[start..start + count].fill(0.0);
-    *remaining -= count;
-    *skip = 0;
-}
-
-/// Per-call character, matching the `DelayParams` convention. Comb/allpass
-/// buffer lengths stay construction-time because they depend only on the
-/// sample rate; Size and Damping are plain coefficients the caller is free to
-/// move every sample.
 #[derive(Clone, Copy)]
 pub(crate) struct ReverbParams {
     pub(crate) room_size: f32,
@@ -231,7 +165,7 @@ mod tests {
 
     #[test]
     fn incremental_clear_returns_used_reverb_to_exact_silence() {
-        let mut reverb = Freeverb::new(44_100.0);
+        let mut reverb = FdnReverb::new(44_100.0);
         let params = ReverbParams {
             room_size: 0.9,
             damp: 0.5,
@@ -241,7 +175,90 @@ mod tests {
         }
         let mut cursor = 0;
         while !reverb.clear_chunk(&mut cursor, 47) {}
-
         assert_eq!(reverb.process(0.0, 0.0, params), (0.0, 0.0));
+    }
+
+    #[test]
+    fn impulse_tail_is_stereo_dense_and_stable() {
+        for rate in [44_100.0, 48_000.0] {
+            let mut reverb = FdnReverb::new(rate);
+            let params = ReverbParams {
+                room_size: 1.0,
+                damp: 0.4,
+            };
+            let mut nonzero = 0;
+            let mut different = 0;
+            let mut peak = 0.0_f32;
+            for i in 0..(rate as usize * 4) {
+                let x = if i == 0 { 1.0 } else { 0.0 };
+                let (l, r) = reverb.process(x, x, params);
+                assert!(l.is_finite() && r.is_finite());
+                peak = peak.max(l.abs()).max(r.abs());
+                if i > rate as usize / 2 && l.abs() > 1e-9 {
+                    nonzero += 1;
+                }
+                if (l - r).abs() > 1e-9 {
+                    different += 1;
+                }
+            }
+            assert!(peak < 1.0, "peak {peak}");
+            assert!(nonzero > rate as usize, "density {nonzero}");
+            assert!(different > rate as usize, "stereo {different}");
+        }
+    }
+    #[test]
+    fn sustained_low_frequency_and_noise_remain_bounded() {
+        for noise in [false, true] {
+            let mut reverb = FdnReverb::new(48_000.0);
+            let params = ReverbParams {
+                room_size: 1.0,
+                damp: 0.0,
+            };
+            let mut seed = 1_u32;
+            let mut peak = 0.0_f32;
+            let mut energy = 0.0_f64;
+            for i in 0..(48_000 * 4) {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let x = if noise {
+                    (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * 0.1
+                } else {
+                    (i as f32 * std::f32::consts::TAU * 80.0 / 48_000.0).sin() * 0.1
+                };
+                let (l, r) = reverb.process(x, x, params);
+                assert!(l.is_finite() && r.is_finite());
+                peak = peak.max(l.abs()).max(r.abs());
+                if i >= 48_000 {
+                    energy += f64::from(l * l + r * r);
+                }
+            }
+            let rms = (energy / (48_000.0 * 3.0 * 2.0)).sqrt();
+            assert!(peak < 0.8, "peak {peak} noise={noise}");
+            assert!(rms < 0.25, "rms {rms} noise={noise}");
+        }
+    }
+
+    #[test]
+    #[ignore = "writes an impulse response for listening"]
+    fn render_reverb_impulse() {
+        let path = std::env::var("NOOISE_REVERB_WAV").expect("set NOOISE_REVERB_WAV");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48_000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        let mut reverb = FdnReverb::new(48_000.0);
+        let params = ReverbParams {
+            room_size: 0.8,
+            damp: 0.4,
+        };
+        for i in 0..(48_000 * 6) {
+            let x = if i == 0 { 1.0 } else { 0.0 };
+            let (l, r) = reverb.process(x, x, params);
+            writer.write_sample(l).unwrap();
+            writer.write_sample(r).unwrap();
+        }
+        writer.finalize().unwrap();
     }
 }

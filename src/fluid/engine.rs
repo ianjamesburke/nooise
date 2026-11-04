@@ -12,7 +12,7 @@ use crate::fx::crossfade::{Outgoing, mix_stereo};
 use crate::fx::delay::{DelayParams, StereoDelay};
 use crate::fx::drive::{DriveParams, DriveType, StereoDrive};
 use crate::fx::filter::{FilterParams, FilterType, StereoFilter};
-use crate::fx::reverb::{Freeverb, ReverbParams};
+use crate::fx::reverb::{FdnReverb, ReverbParams};
 
 use super::*;
 
@@ -33,7 +33,7 @@ const LEVEL_METER_RELEASE_SECONDS: f32 = 0.25;
 /// `(layer, slot)` storage identity rather than a catalog name.
 enum SlotFx {
     Delay(StereoDelay),
-    Reverb(Freeverb),
+    Reverb(FdnReverb),
     Compression(StereoCompressor),
     Filter(StereoFilter),
     Drive(StereoDrive),
@@ -302,7 +302,7 @@ impl ModuleFxBank {
                     if processor.is_none() {
                         *processor = Some(match kind.family {
                             Family::Delay => SlotFx::Delay(StereoDelay::new(max_delay_samples)),
-                            Family::Reverb => SlotFx::Reverb(Freeverb::new(sample_rate)),
+                            Family::Reverb => SlotFx::Reverb(FdnReverb::new(sample_rate)),
                             Family::Filter => SlotFx::Filter(StereoFilter::default()),
                             Family::Drive => SlotFx::Drive(StereoDrive::new(sample_rate)),
                             _ => SlotFx::Compression(StereoCompressor::new(0.0)),

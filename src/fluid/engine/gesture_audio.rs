@@ -49,7 +49,7 @@ impl GestureFx {
         Self {
             submerge: SlotFx::Filter(StereoFilter::default()),
             lift: SlotFx::Filter(StereoFilter::default()),
-            bloom: SlotFx::Reverb(Freeverb::new(sample_rate)),
+            bloom: SlotFx::Reverb(FdnReverb::new(sample_rate)),
             bloom_send_filter: StereoFilter::default(),
             bloom_send_lowpass: (0.0, 0.0),
             bloom_send_lowpass_alpha: 1.0

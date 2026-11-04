@@ -36,10 +36,10 @@ pub(crate) const BASS_RHYTHMS: [[bool; 16]; 4] = [
         true, false, false, false, true, false, false, false, true, false, false, false, true,
         false, false, false,
     ],
-    // B: syncopated — pickup into 1, push before 3, quick pickups into 4
+    // B: the eighth-note offbeats, between each quarter-note beat
     [
-        true, false, false, true, false, false, true, false, true, true, false, false, true, true,
-        false, false,
+        false, false, true, false, false, false, true, false, false, false, true, false, false,
+        false, true, false,
     ],
     // C: straight eighths — steady walking-bass feel
     [

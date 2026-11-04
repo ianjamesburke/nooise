@@ -1623,6 +1623,7 @@ fn morph_percentage_phase_silences_kick_and_bass_including_automation_and_tails(
     for tab in [Tab::Kick, Tab::Bass] {
         let sample_rate = 8_000.0;
         let mut controls = FluidControls::default();
+        controls.perc.level = 0.0;
         controls.master.bpm = 120.0;
         controls.pad.chord_bars = 0.5;
         controls.pad.chord_count = 2.0;
@@ -3260,8 +3261,7 @@ fn pads_release_on_stop_and_revoice_on_start_between_chord_boundaries() {
 //
 // A deliberate DSP change (e.g. replacing a per-sample `exp()` with an
 // equivalent closed-form recurrence) is expected to trip it — re-bless
-// GOLDEN_RENDER_CHECKSUM only after confirming the new output is inaudibly
-// close to the old one.
+// GOLDEN_RENDER_CHECKSUM after verifying the intended change and render stability.
 const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // Re-blessed for the deliberate Drive recalibration: the knob's range now
 // tops out at the old curve's 50% point (twice the resolution, half the
@@ -3280,7 +3280,8 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // Re-blessed for unified 16-step sequencer: Tonal now resolves degrees via
 // ProgressionFollower + lead_reach on the shared 16-step lane.
 #[cfg(debug_assertions)]
-const GOLDEN_RENDER_CHECKSUM: u64 = 0xf84f_5014_6d92_6d8d;
+// Updated for the intended Perc default and feedback-delay-network reverb.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0xf188_fb35_91dc_0ee7;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
@@ -5210,7 +5211,15 @@ fn render_slot_breadcrumb_marks_live_chord() {
 fn bass_rhythms_have_expected_hit_counts() {
     assert_eq!(BASS_RHYTHMS[0].iter().filter(|&&b| b).count(), 4);
     assert!(BASS_RHYTHMS[0][0]);
-    assert!(BASS_RHYTHMS[1].iter().filter(|&&b| b).count() > 4);
+    let offbeats: Vec<_> = BASS_RHYTHMS[1]
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &hit)| hit.then_some(i))
+        .collect();
+    assert_eq!(offbeats, [2, 6, 10, 14]);
+    for (beat, step) in [(0.5, 2), (1.5, 6), (2.5, 10), (3.5, 14)] {
+        assert_eq!(lane_step_at(beat, 0.25, 0.0, 16), step);
+    }
     assert_eq!(BASS_RHYTHMS[2].iter().filter(|&&b| b).count(), 8);
 }
 
@@ -5239,7 +5248,7 @@ fn bass_root_note_follows_custom_chord_slot_root_when_selected() {
 fn bass_defaults_are_silent_quarter_note_a() {
     let controls = BassControls::default();
     assert_close(controls.level, 0.0);
-    assert_close(controls.voice_type, 0.0);
+    assert_close(controls.voice_type, 1.0);
     assert_close(controls.rhythm, 0.0);
     assert_close(controls.octave, -1.0);
     assert_close(controls.interval_beats, 0.25);
@@ -5737,6 +5746,7 @@ fn bass_pattern_returns_to_kick_phase_after_length_edit() {
     let mut bass = BassEngine::new(sample_rate);
     let pad = PadControls::default();
     let mut controls = BassControls {
+        voice_type: 0.0,
         interval_beats: 0.25,
         step_count: 16.0,
         rhythm: 0.0,
@@ -12358,6 +12368,7 @@ fn perc_level_uses_exp_taper_with_fine_low_end_resolution() {
     assert_eq!(spec.taper, Taper::Exp(registry::PERC_LEVEL_TAPER));
 
     let mut controls = FluidControls::default();
+    controls.perc.level = 0.0;
     assert_eq!((spec.display)(&controls), "0%");
 
     // Stepping up from 0% walks through sub-percent and 1..3% values smoothly

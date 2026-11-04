@@ -1384,6 +1384,7 @@ mod tests {
     /// Two four-beat chords make an explicit eight-beat phrase for control tests.
     fn phrase_controls() -> FluidControls {
         let mut controls = FluidControls::default();
+        controls.perc.level = 0.0;
         controls.pad.chord_bars = 1.0;
         controls.pad.chord_count = 2.0;
         controls

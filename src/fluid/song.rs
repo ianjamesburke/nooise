@@ -436,6 +436,9 @@ fn decode_song_code_at_any_epoch(code: &str) -> Result<(SongState, u16), SongCod
 
 fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeError> {
     let mut song = SongState::default();
+    // Omitted values in existing codes mean the original Perc and Bass defaults.
+    song.controls.perc.level = 0.0;
+    song.controls.bass.voice_type = 0.0;
     let mut gesture_record_seen = false;
     let mut drunken_phase_record_seen = false;
     let mut capture_record_seen = false;
@@ -1808,6 +1811,9 @@ fn control_at(index: u16) -> Option<&'static ControlSpec> {
 /// slightly harder.
 fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), SongCodeError> {
     let mut defaults = FluidControls::default();
+    // Keep original snapshot baselines so existing codes retain their sound.
+    defaults.perc.level = 0.0;
+    defaults.bass.voice_type = 0.0;
     defaults.tonal.apply_phrase_preset(controls.tonal.phrase);
     defaults.tonal.phrase = 0.0;
     defaults.arp.apply_pattern_preset(controls.arp.pattern);
@@ -2858,5 +2864,19 @@ mod song_value_tests {
         song.controls.pad.chord_notes = 2.0;
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
         assert_eq!(decoded.controls.pad.chord_notes, 2.0);
+    }
+    #[test]
+    fn fresh_defaults_and_historical_song_baselines_round_trip() {
+        let mut song = SongState::default();
+        assert_eq!(song.controls.perc.level, 0.5);
+        assert_eq!(song.controls.bass.voice_type, 1.0);
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert!((decoded.controls.perc.level - 0.5).abs() < 0.001);
+        assert_eq!(decoded.controls.bass.voice_type, 1.0);
+        song.controls.perc.level = 0.0;
+        song.controls.bass.voice_type = 0.0;
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(decoded.controls.perc.level, 0.0);
+        assert_eq!(decoded.controls.bass.voice_type, 0.0);
     }
 }

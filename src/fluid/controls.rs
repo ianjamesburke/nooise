@@ -97,7 +97,7 @@ pub(crate) struct PercControls {
 impl Default for PercControls {
     fn default() -> Self {
         Self {
-            level: 0.0,
+            level: 0.5,
             attack_ms: 0.0,
             decay_ms: 200.0,
             pattern: 0.0,
@@ -704,7 +704,7 @@ impl Default for BassControls {
     fn default() -> Self {
         Self {
             level: 0.0,
-            voice_type: 0.0,
+            voice_type: 1.0,
             punch: 0.0,
             interval_beats: 0.25,
             offset_beats: 0.0,
