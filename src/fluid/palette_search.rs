@@ -61,6 +61,14 @@ impl SearchMetadata {
                     scope_default: false,
                 }
             }
+            PaletteEntry::Slapback { tab } => Self {
+                identity: format!("preset:{}:slapback", tab.search_names()[0]),
+                stable_id: None,
+                scope: Some(*tab),
+                names: vec!["slapback".to_string()],
+                group: None,
+                scope_default: false,
+            },
             PaletteEntry::ModuleControl {
                 tab,
                 spec,

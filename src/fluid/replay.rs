@@ -2655,6 +2655,31 @@ fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
 }
 
 #[test]
+fn slash_slapback_adds_preset_to_current_layer() {
+    let mut events = vec![
+        key(0, FixtureKey::Tab, InputPhase::Press),
+        key(0, FixtureKey::Tab, InputPhase::Press),
+        key(0, FixtureKey::Tab, InputPhase::Press),
+        key(0, FixtureKey::Character('/'), InputPhase::Press),
+    ];
+    events.extend(
+        "slapback"
+            .chars()
+            .map(|c| key(0, FixtureKey::Character(c), InputPhase::Press)),
+    );
+    events.push(key(0, FixtureKey::Enter, InputPhase::Press));
+    let result = replay(&events, TerminalCapabilities::full());
+    assert_eq!(
+        result.control("bass.slot3.kind"),
+        Some(super::module_kind_value("delay"))
+    );
+    assert_eq!(result.control("bass.slot3.amount"), Some(0.4));
+    assert_eq!(result.control("bass.slot3.time"), Some(0.25));
+    assert_eq!(result.control("bass.slot3.right_time"), Some(0.25));
+    assert_eq!(result.control("bass.slot3.feedback"), Some(0.0));
+}
+
+#[test]
 fn palette_semantic_winners_render_and_confirm_on_both_terminals() {
     for capabilities in [
         TerminalCapabilities::full(),

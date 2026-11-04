@@ -1480,6 +1480,9 @@ pub(crate) enum InteractionEffect {
         tab: Tab,
         catalog_index: usize,
     },
+    PlaceSlapback {
+        tab: Tab,
+    },
     /// Jump's direct filter shortcut keeps Cutoff as its destination.
     PlaceFilterCutoff {
         tab: Tab,
@@ -2462,6 +2465,7 @@ fn palette_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> InteractionEf
             tab: *tab,
             catalog_index: *catalog_index,
         },
+        PaletteEntry::Slapback { tab } => InteractionEffect::PlaceSlapback { tab: *tab },
         PaletteEntry::ModuleControl { tab, spec, .. } => InteractionEffect::JumpToControl {
             tab: *tab,
             index: super::tab_specs(*tab)

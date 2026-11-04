@@ -228,6 +228,12 @@ impl Clipboard for SystemClipboard {
 /// Stateful boundary for executing ordered interaction effects. All
 /// user-audible edits delegate to one `LiveSession` transaction; UI-only
 /// consequences are acknowledged only after publication succeeds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModulePlacement {
+    Default,
+    Slapback,
+}
+
 pub(crate) struct EffectExecutor {
     bank: Result<sections::SectionBank, sections::SectionError>,
     seen_section_revision: u64,
@@ -999,6 +1005,7 @@ impl EffectExecutor {
         tab: Tab,
         catalog_index: usize,
         focus: Option<ModuleSlotField>,
+        preset: ModulePlacement,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         let kind = MODULE_CATALOG
             .get(catalog_index)
@@ -1022,10 +1029,17 @@ impl EffectExecutor {
                     if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab)
                         && let Some(free) = slots.iter().position(ModuleSlot::is_empty)
                     {
-                        // Added modules always start inert, whatever a
-                        // pre-loaded slot's factory amount happens to be, so
-                        // adding one is audibly free and needs no confirming.
-                        slots[free] = added_module_slot(kind.id);
+                        // Ordinary additions start inert; the named Slapback
+                        // preset intentionally applies its authored wet amount.
+                        slots[free] = if preset == ModulePlacement::Slapback {
+                            let mut preset = preset_slot("delay", 0.4);
+                            preset.time = 0.25;
+                            preset.right_time = 0.25;
+                            preset.feedback = 0.0;
+                            preset
+                        } else {
+                            added_module_slot(kind.id)
+                        };
                     }
                 });
                 let Some(slot) = placed
@@ -1044,11 +1058,27 @@ impl EffectExecutor {
                 slot
             }
         };
+        if existing.is_some() && preset == ModulePlacement::Slapback {
+            self.edit_session(None, |snapshot| {
+                if let Some(slots) = snapshot.controls.modules.for_tab_mut(tab) {
+                    let delay = &mut slots[slot];
+                    delay.amount = 0.4;
+                    delay.time = 0.25;
+                    delay.right_time = 0.25;
+                    delay.clock = DelayClock::Sync.value();
+                    delay.right_clock = DelayClock::Sync.value();
+                    delay.feedback = 0.0;
+                }
+            });
+        }
         // A newly inserted Filter is dry. Focus its hidden Amount in the
         // detail so the first arrow makes the sweep audible. Compression starts
         // at 100% Amount with a 0 dB Threshold, so like existing slots it uses
         // its collapsed Time row (Cutoff/Threshold).
         let focus = focus.or_else(|| {
+            if preset == ModulePlacement::Slapback {
+                return Some(ModuleSlotField::Amount);
+            }
             (existing.is_none() && kind.family == Family::Filter).then_some(ModuleSlotField::Amount)
         });
         let id = match focus {
@@ -1421,12 +1451,19 @@ impl EffectExecutor {
             // Needs only the session, so the generic bridge can resolve it;
             // the production path adds closing the open editor first.
             InteractionEffect::PlaceModule { tab, catalog_index } => {
-                self.place_module(tab, catalog_index, None)
+                self.place_module(tab, catalog_index, None, ModulePlacement::Default)
             }
+            InteractionEffect::PlaceSlapback { tab } => self.place_module(
+                tab,
+                module_catalog_index("delay"),
+                None,
+                ModulePlacement::Slapback,
+            ),
             InteractionEffect::PlaceFilterCutoff { tab } => self.place_module(
                 tab,
                 module_catalog_index(interaction::FILTER_MODULE_ID),
                 Some(ModuleSlotField::Time),
+                ModulePlacement::Default,
             ),
             InteractionEffect::PaletteCommit(edits) => {
                 let edits = staged_edits(edits);
@@ -2324,7 +2361,16 @@ impl EffectExecutor {
             }
             InteractionEffect::PlaceModule { tab, catalog_index } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
-                self.place_module(tab, catalog_index, None)
+                self.place_module(tab, catalog_index, None, ModulePlacement::Default)
+            }
+            InteractionEffect::PlaceSlapback { tab } => {
+                self.edit_navigation_automation(AutomationState::close_editor);
+                self.place_module(
+                    tab,
+                    module_catalog_index("delay"),
+                    None,
+                    ModulePlacement::Slapback,
+                )
             }
             InteractionEffect::PlaceFilterCutoff { tab } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
@@ -3329,6 +3375,78 @@ mod tests {
             ack,
             EffectAcknowledgement::ControlSelected { tab: Tab::Bass, .. }
         ));
+    }
+
+    #[test]
+    fn slapback_adds_and_reapplies_a_synced_delay() {
+        let mut executor = executor_with(FluidControls::default());
+        let effect = InteractionEffect::PlaceSlapback { tab: Tab::Bass };
+        let ack = executor
+            .execute_interaction(effect.clone(), &InteractionExecutionContext::default())
+            .unwrap();
+        assert!(matches!(
+            ack,
+            EffectAcknowledgement::ControlSelected { tab: Tab::Bass, .. }
+        ));
+        let snapshot = executor.session().load();
+        let slots = snapshot.controls.modules.bass;
+        let index = chain_amount_slot(&slots, "delay").unwrap();
+        let slot = slots[index];
+        assert_eq!(slot.amount, 0.4);
+        assert_eq!(
+            (slot.time, slot.right_time, slot.feedback),
+            (0.25, 0.25, 0.0)
+        );
+        assert_eq!(DelayClock::from_value(slot.clock), DelayClock::Sync);
+        assert_eq!(DelayClock::from_value(slot.right_clock), DelayClock::Sync);
+        assert_eq!(delay_time_ms(slot.time, DelayClock::Sync, 120.0), 125.0);
+        let song = SongState::from_controls(snapshot.controls.clone());
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        let restored = decoded.controls.modules.bass[index];
+        assert!((restored.amount - 0.4).abs() < 0.001);
+        assert_eq!(
+            (restored.time, restored.right_time, restored.feedback),
+            (0.25, 0.25, 0.0)
+        );
+        assert_eq!(
+            (restored.clock, restored.right_clock),
+            (slot.clock, slot.right_clock)
+        );
+        executor.session.update(|snapshot| {
+            let slot = &mut snapshot.controls.modules.bass[index];
+            slot.amount = 0.7;
+            slot.time = 300.0;
+            slot.clock = DelayClock::Free.value();
+            slot.right_time = 400.0;
+            slot.right_clock = DelayClock::Free.value();
+            slot.feedback = 0.8;
+            slot.vintage = 0.6;
+        });
+        executor
+            .execute_interaction(effect, &InteractionExecutionContext::default())
+            .unwrap();
+        let slots = executor.session().load().controls.modules.bass;
+        assert_eq!(slots[index].amount, 0.4);
+        assert_eq!(
+            (
+                slots[index].time,
+                slots[index].right_time,
+                slots[index].feedback
+            ),
+            (0.25, 0.25, 0.0)
+        );
+        assert_eq!(
+            (slots[index].clock, slots[index].right_clock),
+            (DelayClock::Sync.value(), DelayClock::Sync.value())
+        );
+        assert_eq!(slots[index].vintage, 0.6);
+        assert_eq!(
+            slots
+                .iter()
+                .filter(|slot| slot.kind().is_some_and(|kind| kind.id == "delay"))
+                .count(),
+            1
+        );
     }
 
     /// The rule that stops three compressors piling up: a layer that already

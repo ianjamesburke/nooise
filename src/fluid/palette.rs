@@ -39,6 +39,10 @@ pub(crate) enum PaletteEntry {
         tab: Tab,
         catalog_index: usize,
     },
+    /// Named Delay preset, added or reapplied on the chosen layer.
+    Slapback {
+        tab: Tab,
+    },
     /// A stable slot control projected under the active module's human-facing
     /// dotted scope; its backing id remains slot-addressed for song codes.
     ModuleControl {
@@ -81,6 +85,7 @@ impl PaletteEntry {
                     tab.name()
                 )
             }
+            Self::Slapback { tab } => format!("Slapback · {} · Delay preset", tab.name()),
             Self::ModuleControl {
                 tab,
                 spec,
@@ -112,7 +117,10 @@ impl PaletteEntry {
     pub(crate) fn spec(&self) -> Option<&'static ControlSpec> {
         match self {
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => Some(spec),
-            Self::Module { .. } | Self::Operation(_) | Self::OutputDevice(_) => None,
+            Self::Module { .. }
+            | Self::Slapback { .. }
+            | Self::Operation(_)
+            | Self::OutputDevice(_) => None,
         }
     }
 
@@ -143,6 +151,11 @@ impl PaletteEntry {
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => (spec.display)(c),
             // A loaded module shows its collapsed row's value, the same
             // knob its page row shows (a Filter's cutoff, not its mix).
+            Self::Slapback { tab } => c
+                .modules
+                .for_tab(*tab)
+                .and_then(|slots| chain_amount_slot(slots, "delay"))
+                .map_or_else(|| "add".to_string(), |_| "apply".to_string()),
             Self::Module { tab, catalog_index } => {
                 let kind = MODULE_CATALOG[*catalog_index];
                 c.modules
@@ -181,6 +194,9 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
         if !tab_has_module_chain(tab) {
             continue;
         }
+        if module_available_on(MODULE_CATALOG[module::module_catalog_index("delay")], tab) {
+            entries.push(PaletteEntry::Slapback { tab });
+        }
         for (catalog_index, kind) in MODULE_CATALOG.iter().copied().enumerate() {
             if module_available_on(kind, tab) {
                 entries.push(PaletteEntry::Module { tab, catalog_index });
@@ -194,6 +210,19 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
 #[cfg(test)]
 mod global_groove_tests {
     use super::*;
+
+    #[test]
+    fn slapback_search_selects_current_layer() {
+        for tab in [Tab::Bass, Tab::Master] {
+            let mut palette = PaletteState::new(tab, &[], None);
+            for character in "slapback".chars() {
+                palette.push_char(character);
+            }
+            assert!(
+                matches!(palette.entry(palette.matches[0].entry_index), PaletteEntry::Slapback { tab: result } if *result == tab)
+            );
+        }
+    }
 
     #[test]
     fn global_swing_and_drunken_are_addable_from_any_page() {
@@ -430,6 +459,9 @@ fn context_rank(
         PaletteEntry::Operation(_) | PaletteEntry::OutputDevice(_) => None,
         PaletteEntry::Module { tab, catalog_index } => {
             (*tab == current_tab).then_some(tab_specs(current_tab).len() + catalog_index)
+        }
+        PaletteEntry::Slapback { tab } => {
+            (*tab == current_tab).then_some(tab_specs(current_tab).len())
         }
         PaletteEntry::Control { spec, .. } => tab_specs(current_tab)
             .iter()
