@@ -500,6 +500,17 @@ impl TonalEngine {
         )
     }
 
+    /// Restore the chosen evolution state when a whole song lands.
+    pub(crate) fn restore_sequence(&mut self, state: &TonalSequenceState) {
+        self.active_phrase = state.phrase;
+        self.active_steps_source = None;
+        self.evolved_phrase.clone_from(&state.notes);
+        self.evolution_seed = state.evolution_seed;
+        self.evolution_count = state.evolution_count;
+        self.step_index = 0;
+        self.last_cycle = None;
+    }
+
     pub(crate) fn sync_sequence(&mut self, c: &TonalControls) {
         let phrase =
             (c.phrase.round() as isize).clamp(0, CUSTOM_TONAL_PHRASE_INDEX as isize) as usize;

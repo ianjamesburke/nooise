@@ -153,10 +153,9 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         f,
         header.key,
         header.chords,
-        &controls.pad,
+        view.session,
         frame.active_slot,
         active_vamp.map(|vamp| vamp.is_releasing()),
-        view.session.chord_labels(),
     );
     if let Some(title) = &view.chord_title {
         f.render_widget(
@@ -316,22 +315,38 @@ fn draw_harmony(
     f: &mut Frame,
     key_area: Rect,
     chords_area: Rect,
-    pad: &PadControls,
+    session: &LiveSessionSnapshot,
     active_slot: usize,
     vamp: Option<bool>,
-    labels: ChordLabels,
 ) {
+    let pad = &session.controls.pad;
+    let labels = session.chord_labels();
     let window = ChordWindow::requested(pad);
     let key = progression_home_label(window.progression, labels.key);
+    let mut key_spans = vec![
+        Span::styled("KEY  ", Style::default().fg(DIM_TEXT)),
+        Span::styled(
+            key,
+            Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let section = match (&session.pending_section, session.current_section) {
+        (Some(pending), current) => Some(format!(
+            " · {}→ {} next bar",
+            current.map_or_else(String::new, |index| format!(
+                "{} ",
+                sections::SECTION_NAMES[index]
+            )),
+            sections::SECTION_NAMES[pending.index],
+        )),
+        (None, Some(index)) => Some(format!(" · SECTION {}", sections::SECTION_NAMES[index])),
+        (None, None) => None,
+    };
+    if let Some(section) = section {
+        key_spans.push(Span::styled(section, Style::default().fg(LIVE_AMBER)));
+    }
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("KEY  ", Style::default().fg(DIM_TEXT)),
-            Span::styled(
-                key,
-                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .alignment(Alignment::Center),
+        Paragraph::new(Line::from(key_spans)).alignment(Alignment::Center),
         key_area,
     );
 

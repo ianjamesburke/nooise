@@ -92,6 +92,9 @@ struct Cli {
     /// Start the full built-in song loop at this song number, then wrap around.
     #[arg(long, global = true, value_name = "SONG")]
     from: Option<usize>,
+    /// Load and save section snapshots in this set file.
+    #[arg(long, global = true, value_name = "PATH")]
+    set: Option<std::path::PathBuf>,
     /// Start live playback with Master Level at 0%.
     #[arg(short = 'M', long, global = true)]
     start_muted: bool,
@@ -144,7 +147,14 @@ impl Cli {
     }
 
     fn validate_output(&self) -> Result<(), clap::Error> {
-        let message = if self.audio_devices && (self.song.is_some() || self.command.is_some()) {
+        let message = if self.set.is_some()
+            && (self.audio_devices
+                || matches!(
+                    self.command,
+                    Some(CliCommand::Render(_) | CliCommand::Update | CliCommand::MakeSong(_))
+                )) {
+            Some("--set only applies to live playback")
+        } else if self.audio_devices && (self.song.is_some() || self.command.is_some()) {
             Some("--audio-devices lists outputs; use it without a song or subcommand")
         } else if self.output_device.is_some()
             && matches!(
@@ -171,6 +181,7 @@ impl Cli {
                 audio::OutputSelection::Device,
             ),
             start_muted: self.start_muted,
+            set: self.set.clone(),
             chassis_tap: self.chassis_tap,
             osc_in: self.osc_in,
         }
@@ -551,6 +562,26 @@ mod tests {
     #[test]
     fn unknown_arg_errors() {
         assert!(parse(&["--experiment"]).is_err());
+    }
+
+    #[test]
+    fn section_set_is_live_only() {
+        assert!(
+            parse(&["--set", "songs.set"])
+                .unwrap()
+                .validate_output()
+                .is_ok()
+        );
+        for args in [
+            &["--set", "songs.set", "render"][..],
+            &["--set", "songs.set", "update"],
+            &["--set", "songs.set", "--audio-devices"],
+        ] {
+            assert_eq!(
+                parse(args).unwrap().validate_output().unwrap_err().kind(),
+                ErrorKind::ArgumentConflict
+            );
+        }
     }
 
     #[test]

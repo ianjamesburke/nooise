@@ -1494,6 +1494,7 @@ pub(crate) enum InteractionEffect {
     ToggleMute(Tab),
     /// Arm or cancel this layer's mute at the next bar.
     PlanMute(Tab),
+    Section(super::SectionAction),
     /// Reset the active sequence steps on `Tab` (Pads to root, notes to rest).
     ClearSequence(Tab),
     ToggleTransport,
@@ -2516,6 +2517,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::ToggleVamp => InteractionEffect::ToggleVamp,
         Operation::ToggleKickBass => InteractionEffect::ToggleKickBass,
         Operation::ToggleFreeze => InteractionEffect::ToggleFreeze,
+        Operation::Section(action) => InteractionEffect::Section(action),
         Operation::ClearSequence => {
             InteractionEffect::ClearSequence(palette.planned_tab.unwrap_or(Tab::Chords))
         }

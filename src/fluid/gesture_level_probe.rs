@@ -21,6 +21,9 @@ fn render(song: &SongState, held: &[GestureKind], seconds: f32) -> Level {
     let mut snapshot = LiveSessionSnapshot::from_song(song);
     snapshot.gestures = GestureState::default();
     for kind in held {
+        if *kind == GestureKind::Freeze {
+            continue;
+        }
         snapshot.gestures.lanes[*kind as usize] = GestureEnvelope {
             amount: 1.0,
             at_seconds: 0.0,
@@ -28,9 +31,10 @@ fn render(song: &SongState, held: &[GestureKind], seconds: f32) -> Level {
             restored: false,
         };
     }
+    let session = LiveSession::new(snapshot);
     let mut engine = FluidEngine::new(
         RATE,
-        LiveSession::new(snapshot),
+        session.clone(),
         no_morph(),
         Arc::new(FluidTelemetry::default()),
     );
@@ -41,6 +45,12 @@ fn render(song: &SongState, held: &[GestureKind], seconds: f32) -> Level {
     let mut energy = [0.0_f64; 3];
     let (mut clamp_hits, mut peak) = (0, 0.0_f32);
     for frame in 0..(seconds * RATE) as usize {
+        // Freeze real playing history, rather than an empty startup buffer.
+        if frame == (2.0 * RATE) as usize && held.contains(&GestureKind::Freeze) {
+            session.update(|snapshot| {
+                snapshot.gestures.press(GestureKind::Freeze, 2.0);
+            });
+        }
         let (l, r) = engine.next_stereo();
         if (frame as f32) < SKIP_SECONDS * RATE {
             continue;
@@ -67,7 +77,7 @@ fn render(song: &SongState, held: &[GestureKind], seconds: f32) -> Level {
 }
 
 /// The Master clamp is a backstop, never gain staging. Every gesture that
-/// adds a return, thrown fully at once at real playback level, must never
+/// adds a return, combined with Freeze over populated live history, must never
 /// touch it and must keep 4 dB clear of it: on the song whose Bloom lifts
 /// peaks most (5), a song the pre-fix Bloom clipped 14,497 times (9), and
 /// the loudest built-in song (18).
@@ -76,7 +86,7 @@ fn full_gesture_throw_never_reaches_the_master_clamp() {
     use GestureKind::*;
     let songs = decode_auto_states();
     for index in [5, 9, 18] {
-        let level = render(&songs[index], &[Bloom, Echo, Submerge], 9.0);
+        let level = render(&songs[index], &[Bloom, Echo, Submerge, Freeze], 9.0);
         assert!(
             level.clamp_hits == 0 && level.peak < 0.6,
             "song {index}: {} clamp hits, peak {:.3}",
@@ -90,12 +100,13 @@ fn full_gesture_throw_never_reaches_the_master_clamp() {
 #[ignore = "diagnostic render, prints a level table"]
 fn gesture_level_probe() {
     use GestureKind::*;
-    let cases: [(&str, &[GestureKind]); 5] = [
+    let cases: [(&str, &[GestureKind]); 6] = [
         ("Bloom", &[Bloom]),
         ("Submerge", &[Submerge]),
         ("Echo", &[Echo]),
         ("Lift", &[Lift]),
-        ("Bl+Ec+Su", &[Bloom, Echo, Submerge]),
+        ("Freeze", &[Freeze]),
+        ("Bl+Ec+Su+Fr", &[Bloom, Echo, Submerge, Freeze]),
     ];
     let mut songs: Vec<(String, SongState)> = decode_auto_states()
         .into_iter()

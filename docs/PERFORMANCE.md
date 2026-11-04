@@ -1,5 +1,11 @@
 # Live performance
 
+## Prepared sections
+
+Use `/store section A`, `/store section B`, or `/store section C` to keep the current song snapshot. Store refuses an occupied slot; `/replace section A` (or B/C) deliberately updates it. `/queue section A` selects a destination, `/queue next section` advances in A/B/C order, and `/cancel section queue` keeps the current song. A new queue replaces the old one; the key header shows the current section and queued destination. The change lands at the next bar and starts the destination at its saved tempo and state. Queuing requires a running clock; landing exits auto. The destination starts at beat zero, with a short fade around the boundary. A queued section waits while stopped and moves to the first new bar after restart. Physical holds continue across recall until release; held Vamp locks the destination first chord. The destination supplies the saved q latch and individual mutes.
+
+Launch with `nooise --set PATH` to save and reopen the bank. Without `--set`, sections last only for this run. The file holds separate song codes and does not contain recorded audio. If a bank or code is invalid, the current song keeps playing.
+
 ## Hub navigation
 
 The app opens on Master, the hub. Its first rows list the layers in order

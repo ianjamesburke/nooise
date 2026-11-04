@@ -24,6 +24,7 @@ pub(crate) enum EffectFailure {
     AudioRouting(audio::AudioStartError),
     /// The song state could not be encoded, so there was nothing to copy.
     SongEncode(SongCodeError),
+    Section(sections::SectionError),
     /// The clipboard refused the write.
     Clipboard(ClipboardError),
     /// The effect needs a piece of live context the frame did not carry.
@@ -57,6 +58,7 @@ impl fmt::Display for EffectFailure {
             Self::AudioRouting(error) => write!(f, "{error}"),
             Self::UnknownControl(id) => write!(f, "no control named {id}"),
             Self::SongEncode(error) => write!(f, "{error}"),
+            Self::Section(error) => write!(f, "{error}"),
             Self::Clipboard(error) => write!(f, "{error}"),
             Self::MissingContext(what) => write!(f, "no {what} in this frame"),
             Self::AutomationLaneLimit => {
@@ -79,6 +81,7 @@ impl Error for EffectFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::SongEncode(error) => Some(error),
+            Self::Section(error) => Some(error),
             Self::Clipboard(error) => Some(error),
             Self::CaptureHistory(error) => Some(error),
             _ => None,
@@ -226,6 +229,8 @@ impl Clipboard for SystemClipboard {
 /// user-audible edits delegate to one `LiveSession` transaction; UI-only
 /// consequences are acknowledged only after publication succeeds.
 pub(crate) struct EffectExecutor {
+    bank: Result<sections::SectionBank, sections::SectionError>,
+    seen_section_revision: u64,
     output_routing: Option<audio::OutputRouting>,
     session: LiveSession,
     auto: AutoControls,
@@ -258,6 +263,8 @@ impl EffectExecutor {
 
     pub(crate) fn seeded(session: LiveSession, auto: AutoControls, seed: u64) -> Self {
         Self {
+            bank: sections::SectionBank::open(None),
+            seen_section_revision: 0,
             output_routing: None,
             session,
             auto,
@@ -272,12 +279,104 @@ impl EffectExecutor {
         }
     }
 
+    fn capture_song(&self) -> SongState {
+        let snapshot = self.session.load();
+        let now_seconds = self.session.audio_seconds();
+        let beat = self.current_beat(self.edit_beat);
+        SongState {
+            controls: snapshot.controls.clone(),
+            automation: snapshot.automation.snapshot_at(beat),
+            tonal_sequence: Some(snapshot.tonal_sequence.clone()),
+            muted: snapshot.muted,
+            planned: snapshot.planned.map(|action| action.rebased_at(beat)),
+            vamp: snapshot.vamp.map(|vamp| vamp.rebased_at(beat)),
+            kick_bass_latched: snapshot.kick_bass_latched,
+            gestures: snapshot.gestures.snapshot_at(now_seconds),
+            drunken_phase_beat: if snapshot
+                .controls
+                .modules
+                .master
+                .iter()
+                .any(|slot| slot.kind().is_some_and(|kind| kind.id == "drunken"))
+            {
+                snapshot.drunken_phase_beat + self.session.audio_beat()
+            } else {
+                0.0
+            },
+        }
+    }
+
+    fn section_action(
+        &mut self,
+        action: SectionAction,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        match action {
+            SectionAction::Store(index) | SectionAction::Replace(index) => {
+                let song = self.capture_song();
+                self.bank
+                    .as_mut()
+                    .map_err(|e| EffectFailure::Section(e.clone()))?
+                    .store(index, &song, matches!(action, SectionAction::Replace(_)))
+                    .map_err(EffectFailure::Section)?;
+                self.show_message(format!("Stored section {}", sections::SECTION_NAMES[index]));
+            }
+            SectionAction::Cancel => {
+                self.session
+                    .update(|snapshot| snapshot.pending_section = None);
+                self.show_message("Section queue cancelled".into());
+            }
+            SectionAction::Recall(_) | SectionAction::Next => {
+                if self.session.load().transport == Transport::Stopped {
+                    return Err(EffectFailure::Section(sections::SectionError::Stopped));
+                }
+                let bank = self
+                    .bank
+                    .as_ref()
+                    .map_err(|e| EffectFailure::Section(e.clone()))?;
+                let index = match action {
+                    SectionAction::Recall(index) => index,
+                    _ => bank
+                        .next(self.session.load().current_section)
+                        .ok_or(EffectFailure::Section(sections::SectionError::Empty))?,
+                };
+                let song = bank.song(index).map_err(EffectFailure::Section)?;
+                let section_snapshot = Arc::new(LiveSessionSnapshot::from_song(&song));
+                let target_beat = (beat / 4.0).floor() * 4.0 + 4.0;
+                self.session.update(|snapshot| {
+                    snapshot.pending_section = Some(PendingSection {
+                        index,
+                        target_beat,
+                        snapshot: Arc::clone(&section_snapshot),
+                    })
+                });
+                self.show_message(format!(
+                    "Queued section {} for next bar",
+                    sections::SECTION_NAMES[index]
+                ));
+            }
+        }
+        Ok(self.published())
+    }
+
+    pub(crate) fn with_section_path(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.bank = sections::SectionBank::open(path);
+        self
+    }
+
     pub(crate) fn with_output_routing(mut self, routing: audio::OutputRouting) -> Self {
         self.output_routing = Some(routing);
         self
     }
 
     pub(crate) fn poll_output_routing(&mut self) {
+        let revision = self.session.load().section_revision;
+        if self.seen_section_revision != revision {
+            self.seen_section_revision = revision;
+            self.pending = None;
+            self.capture_history = CaptureHistory::default();
+            self.phrase = LeadPhraseBuffer::default();
+        }
         if let Some(notice) = self
             .output_routing
             .as_ref()
@@ -743,31 +842,8 @@ impl EffectExecutor {
                 Ok(acknowledgement)
             }
             LiveEffect::CopySong => {
-                let snapshot = self.session.load();
-                let now_seconds = self.session.audio_seconds();
-                let beat = self.current_beat(self.edit_beat);
-                let code = encode_song_code(&SongState {
-                    controls: snapshot.controls.clone(),
-                    automation: snapshot.automation.snapshot_at(beat),
-                    tonal_sequence: Some(snapshot.tonal_sequence.clone()),
-                    muted: snapshot.muted,
-                    planned: snapshot.planned.map(|action| action.rebased_at(beat)),
-                    vamp: snapshot.vamp.map(|vamp| vamp.rebased_at(beat)),
-                    kick_bass_latched: snapshot.kick_bass_latched,
-                    gestures: snapshot.gestures.snapshot_at(now_seconds),
-                    drunken_phase_beat: if snapshot
-                        .controls
-                        .modules
-                        .master
-                        .iter()
-                        .any(|slot| slot.kind().is_some_and(|kind| kind.id == "drunken"))
-                    {
-                        snapshot.drunken_phase_beat + self.session.audio_beat()
-                    } else {
-                        0.0
-                    },
-                })
-                .map_err(EffectFailure::SongEncode)?;
+                let code =
+                    encode_song_code(&self.capture_song()).map_err(EffectFailure::SongEncode)?;
                 clipboard.set_text(code).map_err(EffectFailure::Clipboard)?;
                 let message = "song code copied to clipboard".to_string();
                 self.show_message(message.clone());
@@ -1139,6 +1215,9 @@ impl EffectExecutor {
                     target_beat: 4.0,
                 },
             });
+            if let Some(pending) = &mut snapshot.pending_section {
+                pending.target_beat = 4.0;
+            }
             snapshot.vamp = snapshot.vamp.map(|vamp| VampState::start(0.0, vamp.slot));
         });
         self.capture_history = CaptureHistory::default();
@@ -1410,6 +1489,7 @@ impl EffectExecutor {
                 })
             }
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
+            InteractionEffect::Section(action) => self.section_action(action, context.beat),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
@@ -1566,6 +1646,7 @@ impl EffectExecutor {
                 self.toggle_mute(tab);
                 Ok(self.published())
             }
+            InteractionEffect::Section(action) => self.section_action(action, context.beat),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::ToggleTransport => {

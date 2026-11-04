@@ -9,10 +9,9 @@ const LIFT_MAX_CUTOFF_HZ: f32 = 320.0;
 const BLOOM_SEND_GAIN: f32 = 0.32;
 const BLOOM_DRY_DUCK: f32 = 0.10;
 const BLOOM_ROOM_SIZE: f32 = 0.80;
-/// Comb damping: warm enough to absorb sharp percussive clicks so they do not
-/// slap back at the 25–37 ms Haas boundary and drag the perceived beat.
+/// Damping softens the reverberant high end while the dry transient stays clear.
 const BLOOM_DAMPING: f32 = 0.48;
-/// The send is band-shaped so sustained lows never pile up in the combs and
+/// The send is band-shaped so sustained lows never pile up in the feedback network and
 /// sharp drum/pluck clicks stay on the dry grid instead of flamming in the wash.
 const BLOOM_SEND_HIGH_PASS_HZ: f32 = 220.0;
 const BLOOM_SEND_LOW_PASS_HZ: f32 = 3_200.0;

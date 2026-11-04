@@ -137,6 +137,7 @@ impl PaletteEntry {
                 Operation::ToggleFreeze => "live mix".to_string(),
                 Operation::ChordNames(_) => "display".to_string(),
                 Operation::OutputDevice => "routing".to_string(),
+                Operation::Section(_) => "section bank".to_string(),
                 Operation::ClearSequence => "visible sequence".to_string(),
             },
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => (spec.display)(c),

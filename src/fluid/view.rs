@@ -1497,6 +1497,45 @@ mod tests {
     }
 
     #[test]
+    fn queued_sections_and_performance_overlays_remain_visible_together() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.current_section = Some(0);
+        session.pending_section = Some(PendingSection {
+            index: 1,
+            target_beat: 4.0,
+            snapshot: Arc::new(LiveSessionSnapshot::from_song(&SongState::default())),
+        });
+        session.kick_bass_latched = true;
+        session.vamp = Some(VampState::start(0.0, 0));
+        session.gestures.lanes[GestureKind::Freeze as usize] = GestureEnvelope {
+            amount: 1.0,
+            held: true,
+            ..GestureEnvelope::default()
+        };
+        for (width, height) in [(46, 11), (80, 24)] {
+            let frame = render_model_with_session_at_size(
+                &interaction,
+                &session,
+                TelemetryView::default(),
+                width,
+                height,
+            );
+            let key_line = frame.lines().find(|line| line.contains("KEY")).unwrap();
+            assert!(key_line.contains("A␠→␠B␠next␠bar"), "{frame}");
+            for expected in ["VAMP", "Kick+Bass␠latched", "Freeze"] {
+                assert!(frame.contains(expected), "missing {expected}: {frame}");
+            }
+            if std::env::var_os("NOOISE_PRINT_STATUS_FRAMES").is_some() {
+                println!("{width}x{height} combined queued section:\n{frame}");
+            }
+        }
+        session.pending_section = None;
+        let frame = render_model_with_session(&interaction, &session);
+        assert!(frame.contains("SECTION␠A"), "{frame}");
+    }
+
+    #[test]
     fn harmony_header_is_centered() {
         let interaction = InteractionModel::default();
         let mut session = session();

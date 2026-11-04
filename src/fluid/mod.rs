@@ -63,6 +63,7 @@ mod registry;
 #[cfg(test)]
 mod replay;
 mod runtime;
+mod sections;
 mod session;
 mod song;
 mod song_ids;
@@ -99,6 +100,7 @@ use operation::*;
 use palette::*;
 use planned::*;
 use registry::*;
+use session::PendingSection;
 use session::*;
 pub(crate) use song::{CODE_PREFIX, SongState, decode_song_code, encode_song_code};
 use ui::*;
@@ -398,6 +400,7 @@ pub(crate) struct LiveStartOptions {
     pub(crate) output: audio::OutputSelection,
     /// `-M`: open with Master Level at 0%.
     pub(crate) start_muted: bool,
+    pub(crate) set: Option<std::path::PathBuf>,
     /// `--chassis-tap`: derive BPM from taps on the MacBook chassis.
     pub(crate) chassis_tap: bool,
     /// `--osc-in`: listen for inbound OSC commands on this UDP socket.
@@ -599,6 +602,7 @@ fn run_interactive(
         updates,
         AutoControls::new(morph, auto_states, auto_bars),
         LiveAdapters {
+            section_path: options.set,
             output_routing,
             chassis_tap,
             osc_rx,

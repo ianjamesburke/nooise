@@ -308,6 +308,13 @@ fn match_words(query: &[String], name: &[String]) -> Option<(Meaning, i32)> {
     let matched = (query.len() <= name.len())
         .then(|| assign(query, name, &mut vec![false; name.len()]))
         .flatten();
+    let matched = matched.map(|(meaning, score)| {
+        if query.len() == 1 && query[0].len() == 1 && name.len() > 1 && meaning == Meaning::Exact {
+            (Meaning::Prefix, score)
+        } else {
+            (meaning, score)
+        }
+    });
     matched.or_else(|| {
         fuzzy_score(&query.join(""), &name.join("")).map(|(score, _)| (Meaning::Fuzzy, score))
     })

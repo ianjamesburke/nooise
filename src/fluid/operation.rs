@@ -20,6 +20,16 @@ pub(crate) enum Operation {
     ToggleFreeze,
     ChordNames(ChordNames),
     ClearSequence,
+    Section(SectionAction),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SectionAction {
+    Store(usize),
+    Replace(usize),
+    Recall(usize),
+    Next,
+    Cancel,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,7 +89,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 29] = [
+    pub(crate) const ALL: [Self; 40] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -109,6 +119,17 @@ impl Operation {
         Self::ChordNames(ChordNames::Roman),
         Self::ChordNames(ChordNames::Letters),
         Self::ClearSequence,
+        Self::Section(SectionAction::Store(0)),
+        Self::Section(SectionAction::Store(1)),
+        Self::Section(SectionAction::Store(2)),
+        Self::Section(SectionAction::Replace(0)),
+        Self::Section(SectionAction::Replace(1)),
+        Self::Section(SectionAction::Replace(2)),
+        Self::Section(SectionAction::Recall(0)),
+        Self::Section(SectionAction::Recall(1)),
+        Self::Section(SectionAction::Recall(2)),
+        Self::Section(SectionAction::Next),
+        Self::Section(SectionAction::Cancel),
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -219,6 +240,30 @@ impl Operation {
                 aliases: &["freeze", "smear", "grain repeat"],
                 description: "capture live audio; Escape releases",
             },
+            Self::Section(action) => OperationSpec {
+                operation: self,
+                label: match action {
+                    SectionAction::Store(0) => "Store section A",
+                    SectionAction::Store(1) => "Store section B",
+                    SectionAction::Store(_) => "Store section C",
+                    SectionAction::Replace(0) => "Replace section A",
+                    SectionAction::Replace(1) => "Replace section B",
+                    SectionAction::Replace(_) => "Replace section C",
+                    SectionAction::Recall(0) => "Queue section A",
+                    SectionAction::Recall(1) => "Queue section B",
+                    SectionAction::Recall(_) => "Queue section C",
+                    SectionAction::Next => "Queue next section",
+                    SectionAction::Cancel => "Cancel section queue",
+                },
+                aliases: &[],
+                description: match action {
+                    SectionAction::Store(_) | SectionAction::Replace(_) => {
+                        "save current song to bank"
+                    }
+                    SectionAction::Recall(_) | SectionAction::Next => "change at next bar",
+                    SectionAction::Cancel => "keep playing current section",
+                },
+            },
             Self::ClearSequence => OperationSpec {
                 operation: self,
                 label: "Clear sequence",
@@ -249,6 +294,7 @@ impl Operation {
             | Self::Chord(_)
             | Self::ChordNames(_)
             | Self::ClearSequence
+            | Self::Section(_)
             | Self::ToggleVamp
             | Self::ToggleKickBass
             | Self::ToggleFreeze

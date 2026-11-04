@@ -257,6 +257,15 @@ impl GestureState {
         saved
     }
 
+    pub(crate) fn restored_at(&self, now_seconds: f64) -> Self {
+        let mut state = self.restored();
+        for envelope in &mut state.lanes {
+            envelope.at_seconds += now_seconds;
+        }
+        state.rise.at_seconds += now_seconds;
+        state
+    }
+
     pub(crate) fn restored(&self) -> Self {
         let mut state = self.clone();
         for envelope in &mut state.lanes {

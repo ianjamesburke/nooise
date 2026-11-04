@@ -686,6 +686,9 @@ pub(crate) struct FluidEngine {
     /// The UI publishes planned actions ahead of time; audio owns their exact
     /// boundary so an onset never sees the previous mute state.
     planned: Option<PlannedAction>,
+    pending_section: Option<PendingSection>,
+    section_landed_sample: Option<u64>,
+    section_gain: f32,
     pub(crate) vamp: Option<VampState>,
     vamp_active: bool,
     pub(crate) vamp_landed_beat: Option<f64>,
@@ -770,6 +773,9 @@ impl FluidEngine {
                 holds
             },
             planned: live.planned,
+            pending_section: live.pending_section.clone(),
+            section_landed_sample: None,
+            section_gain: 1.0,
             vamp: live.vamp,
             vamp_active,
             vamp_landed_beat: None,
@@ -952,6 +958,24 @@ impl FluidEngine {
 
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
+        let section_due = self
+            .pending_section
+            .as_ref()
+            .is_some_and(|p| self.tempo.beat >= p.target_beat);
+        let landed = if section_due {
+            let pending = self.pending_section.take().unwrap();
+            let landed = self.session.land_section(
+                &pending,
+                self.current_sample as f64 / f64::from(self.sample_rate),
+            );
+            if landed {
+                self.morph.store(Arc::new(None));
+                self.section_landed_sample = Some(self.current_sample);
+            }
+            landed
+        } else {
+            false
+        };
         // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
         let morph_boundary = self
             .morph
@@ -959,7 +983,12 @@ impl StereoEngine for FluidEngine {
             .as_ref()
             .as_ref()
             .is_some_and(|morph| self.morph_writer.boundary_due(morph, self.tempo.beat));
-        if self.current_sample.is_multiple_of(128) || morph_boundary {
+        // Inspect newly queued work on every sample near a bar: a command
+        // arriving between ordinary control ticks must still reach that bar.
+        let until_bar = 4.0 - self.tempo.beat.rem_euclid(4.0);
+        let probe_beats = 128.0 * self.tempo.bpm / (60.0 * f64::from(self.sample_rate));
+        let near_bar = until_bar <= probe_beats;
+        if self.current_sample.is_multiple_of(128) || morph_boundary || section_due || near_bar {
             let live = self.session.load();
             let restarting = self.transport_restart != live.transport_restart;
             if restarting {
@@ -986,6 +1015,9 @@ impl StereoEngine for FluidEngine {
                 });
             }
             let session = self.session.load();
+            if landed {
+                self.tonal.restore_sequence(&session.tonal_sequence);
+            }
             self.snapshot = session.controls.clone();
             self.effective.clone_from(&self.snapshot);
             if restarting {
@@ -996,6 +1028,11 @@ impl StereoEngine for FluidEngine {
             self.transport = session.transport;
             self.control_smoothers
                 .set_targets(&self.snapshot, self.sample_rate);
+            if landed {
+                self.tempo.bpm = f64::from(self.snapshot.master.bpm);
+                self.control_smoothers
+                    .settle("master.bpm", self.snapshot.master.bpm);
+            }
             if morph_boundary
                 && morph_source
                     .as_ref()
@@ -1011,6 +1048,7 @@ impl StereoEngine for FluidEngine {
             }
             self.authored_muted = session.muted;
             self.planned = session.planned;
+            self.pending_section = session.pending_section.clone();
             self.hold_muted = session.hold_muted;
             self.hold_muted[HoldMute::KickAndBass as usize] |= session.kick_bass_latched;
             if self.vamp != session.vamp {
@@ -1258,11 +1296,25 @@ impl StereoEngine for FluidEngine {
         gesture_amounts[GestureKind::Echo as usize] =
             gesture_amounts[GestureKind::Echo as usize].max(rise_amount * 0.25);
         let master = self.gesture_audio.process(master, gesture_amounts, timing);
-        let out = gate_stereo(
+        let mut out = gate_stereo(
             self.master_bus
                 .process(master.0, master.1, &self.effective.master),
             mute_gains[Tab::Master as usize],
         );
+        let fade_samples = (self.sample_rate * 0.005).max(1.0) as u64;
+        let fade_in = self.section_landed_sample.map_or(1.0, |start| {
+            (self.current_sample.saturating_sub(start) as f32 / fade_samples as f32).min(1.0)
+        });
+        let fade_out = self.pending_section.as_ref().map_or(1.0, |p| {
+            let remaining = ((p.target_beat - self.tempo.beat) * 60.0 * f64::from(self.sample_rate)
+                / self.tempo.bpm) as f32;
+            (remaining / fade_samples as f32).clamp(0.0, 1.0)
+        });
+        let target_gain = fade_in.min(fade_out);
+        let step = 1.0 / fade_samples as f32;
+        self.section_gain += (target_gain - self.section_gain).clamp(-step, step);
+        out.0 *= self.section_gain;
+        out.1 *= self.section_gain;
         self.level_acc[Tab::Master as usize] += out.0 * out.0 + out.1 * out.1;
         if self.current_sample.is_multiple_of(LEVEL_BLOCK) {
             let block_seconds = LEVEL_BLOCK as f32 / self.sample_rate;
@@ -2484,5 +2536,94 @@ impl MasterBus {
             (l * c.level).clamp(-0.95, 0.95),
             (r * c.level).clamp(-0.95, 0.95),
         )
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+    #[test]
+    fn queued_recall_lands_on_boundary_and_replace_cancel_are_respected() {
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(&SongState::default()));
+        let mut engine = FluidEngine::new(
+            8000.0,
+            session.clone(),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        let mut destination = SongState::default();
+        destination.controls.master.bpm = 130.0;
+        let snapshot = Arc::new(LiveSessionSnapshot::from_song(&destination));
+        session.update(|s| {
+            s.pending_section = Some(PendingSection {
+                index: 1,
+                target_beat: 0.1,
+                snapshot: snapshot.clone(),
+            })
+        });
+        for _ in 0..128 {
+            engine.next_stereo();
+        }
+        session.update(|s| s.pending_section = None);
+        while engine.tempo.beat < 0.11 {
+            engine.next_stereo();
+        }
+        assert_eq!(session.load().current_section, None);
+        let target = engine.tempo.beat + 0.1;
+        session.update(|s| {
+            s.pending_section = Some(PendingSection {
+                index: 2,
+                target_beat: target,
+                snapshot: snapshot.clone(),
+            })
+        });
+        while engine.tempo.beat < target {
+            engine.next_stereo();
+        }
+        engine.next_stereo();
+        assert_eq!(session.load().current_section, Some(2));
+        assert!(engine.tempo.beat < 0.01);
+        assert_eq!(session.load().controls.master.bpm, 130.0);
+    }
+    #[test]
+    fn cancellation_during_fade_recovers_without_gain_jump() {
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(&SongState::default()));
+        let mut engine = FluidEngine::new(
+            8000.0,
+            session.clone(),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        let mut peak = 0.0_f32;
+        for _ in 0..3000 {
+            let sample = engine.next_stereo();
+            peak = peak.max(sample.0.abs()).max(sample.1.abs());
+        }
+        assert!(peak > 0.000001);
+        let target = engine.tempo.beat + 0.04;
+        let snapshot = Arc::new(LiveSessionSnapshot::from_song(&SongState::default()));
+        session.update(|s| {
+            s.pending_section = Some(PendingSection {
+                index: 0,
+                target_beat: target,
+                snapshot: snapshot.clone(),
+            })
+        });
+        for _ in 0..1000 {
+            engine.next_stereo();
+            if engine.section_gain < 0.7 {
+                break;
+            }
+        }
+        assert!(engine.section_gain < 0.7);
+        session.update(|s| s.pending_section = None);
+        let mut previous = engine.section_gain;
+        for _ in 0..400 {
+            engine.next_stereo();
+            assert!((engine.section_gain - previous).abs() <= 0.026);
+            previous = engine.section_gain;
+        }
+        assert!(engine.section_gain > 0.99);
+        assert_eq!(session.load().current_section, None);
     }
 }
