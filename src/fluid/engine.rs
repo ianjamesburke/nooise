@@ -764,7 +764,11 @@ impl FluidEngine {
             control_smoothers: ControlSmoothers::new(&snapshot),
             mute_gates: OutputGates::new(&live.muted),
             muted: live.muted,
-            hold_muted: live.hold_muted,
+            hold_muted: {
+                let mut holds = live.hold_muted;
+                holds[HoldMute::KickAndBass as usize] |= live.kick_bass_latched;
+                holds
+            },
             planned: live.planned,
             vamp: live.vamp,
             vamp_active,
@@ -1008,6 +1012,7 @@ impl StereoEngine for FluidEngine {
             self.authored_muted = session.muted;
             self.planned = session.planned;
             self.hold_muted = session.hold_muted;
+            self.hold_muted[HoldMute::KickAndBass as usize] |= session.kick_bass_latched;
             if self.vamp != session.vamp {
                 self.vamp = session.vamp;
             }

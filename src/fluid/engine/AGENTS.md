@@ -17,7 +17,7 @@ Audio processing helpers owned by `../engine.rs`.
 - Gestures never clip the master: returns trade dry level for wet (Bloom/Echo duck the dry path), filters carry no resonance, and Bloom's send is band-shaped (high-passed at 220 Hz so sustained lows cannot pile up in its reverb, and low-passed at 3.2 kHz with a 10% dry duck so sharp percussive transients stay locked to the dry grid instead of slapping back through the reverb). At real playback level a full throw never touches the clamp. The Master output clamp stays as a backstop; headroom is the gesture stage's job.
 - Every gesture lets go within `GESTURE_RELEASE_SECONDS` (10 ms, `fluid/gesture.rs`): the envelope returns in it, and Bloom's and Echo's wet returns ramp out linearly over it through `ReturnWeight`, so no reverb or echo tail rings on; the dry duck returns with the envelope, and a repress slews the return back up. Both processors then clear incrementally, and a fresh press during clearing must accept new input.
 - Zero envelopes with drained tails must pass dry audio unchanged. Mute and Master output protection remain downstream.
-- Tail buffers stay out of song codes; active scalar envelopes belong to the aggregate session.
+- Freeze keeps a preallocated half-second rolling stereo history. Its two half-speed Hann grains reset only at zero gain, use interpolation, and never allocate in processing. On a loaded hold or early press it passes dry audio while collecting its first half-second, then captures. Captured audio stays out of song codes; active scalar envelopes belong to the aggregate session.
 
 ## Work Guidance
 

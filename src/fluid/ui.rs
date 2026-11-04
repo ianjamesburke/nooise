@@ -155,7 +155,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         header.chords,
         &controls.pad,
         frame.active_slot,
-        active_vamp.is_some(),
+        active_vamp.map(|vamp| vamp.is_releasing()),
         view.session.chord_labels(),
     );
     if let Some(title) = &view.chord_title {
@@ -318,7 +318,7 @@ fn draw_harmony(
     chords_area: Rect,
     pad: &PadControls,
     active_slot: usize,
-    vamp_active: bool,
+    vamp: Option<bool>,
     labels: ChordLabels,
 ) {
     let window = ChordWindow::requested(pad);
@@ -335,7 +335,7 @@ fn draw_harmony(
         key_area,
     );
 
-    let (slots, active_slot): (Vec<_>, usize) = if vamp_active {
+    let (slots, active_slot): (Vec<_>, usize) = if vamp.is_some() {
         (vec![active_slot], active_slot)
     } else {
         (window.slots().collect(), active_slot)
@@ -366,6 +366,12 @@ fn draw_harmony(
             },
         ));
         used += separator.chars().count() + name.chars().count();
+    }
+    if let Some(ending) = vamp {
+        spans.push(Span::styled(
+            if ending { "  VAMP ENDING" } else { "  VAMP" },
+            Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+        ));
     }
     f.render_widget(
         Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
@@ -1222,15 +1228,18 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ],
     );
     lines.extend(section(
-        "Gestures (hold)",
+        "Gestures",
         &[
             &[
-                ("q", "kick+bass mute"),
+                ("q", "kick+bass tap/hold"),
                 ("w", "submerge"),
                 ("e", "rise"),
                 ("r", "perc roll"),
             ],
-            &[("a", "chord vamp (hold/tap)")],
+            &[
+                ("a", "chord vamp (hold/tap)"),
+                ("b", "freeze (hold / palette)"),
+            ],
         ],
     ));
     lines.extend(section(

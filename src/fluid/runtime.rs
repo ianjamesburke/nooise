@@ -616,6 +616,7 @@ fn browsing_binding(code: &PhysicalKey) -> Option<Intent> {
         // holds are supported).
         PhysicalKey::Character('u') => Intent::RandomizeSelected,
         PhysicalKey::Character('a') => Intent::ToggleVamp,
+        PhysicalKey::Character('q') => Intent::ToggleKickBass,
         PhysicalKey::Character('i') => Intent::EnterLeadPlay,
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Jump),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
@@ -1935,7 +1936,7 @@ mod tests {
                 &event(PhysicalKey::Character('q'), Modifiers::default()),
                 TerminalCapabilities::default(),
             ),
-            InputMapping::Ignored,
+            semantic(InputPhase::Press, Intent::ToggleKickBass),
         );
         let code = PhysicalKey::Character(' ');
         let kind = PerformanceKind::Jump;

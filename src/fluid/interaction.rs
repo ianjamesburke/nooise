@@ -1204,6 +1204,7 @@ pub(crate) enum Intent {
     PressVamp,
     ReleaseVamp,
     ToggleVamp,
+    ToggleKickBass,
     ReleaseAllGestures,
     AbandonGestures,
     AdjustSelected(i8),
@@ -1277,9 +1278,11 @@ impl Intent {
             | Self::NudgeLead { .. }
             | Self::ToggleLeadPattern
             | Self::CaptureLeadPhrase => &[ModeKind::Lead],
-            Self::StartGesture(_) | Self::StartHoldMute(_) | Self::PressVamp | Self::ToggleVamp => {
-                &[ModeKind::Browsing]
-            }
+            Self::StartGesture(_)
+            | Self::StartHoldMute(_)
+            | Self::PressVamp
+            | Self::ToggleVamp
+            | Self::ToggleKickBass => &[ModeKind::Browsing],
             Self::OpenHelp => &[ModeKind::Browsing],
             Self::ReleaseGesture(_)
             | Self::ReleaseHoldMute(_)
@@ -1378,6 +1381,7 @@ impl Intent {
             | Self::StartHoldMute(_)
             | Self::PressVamp
             | Self::ToggleVamp
+            | Self::ToggleKickBass
             | Self::ReleaseAllGestures
             | Self::AbandonGestures
             | Self::ResetSelected
@@ -1525,6 +1529,8 @@ pub(crate) enum InteractionEffect {
     PressVamp,
     ReleaseVamp,
     ToggleVamp,
+    ToggleKickBass,
+    ToggleFreeze,
     GestureReleaseAll,
     Save,
     Quit,
@@ -1961,6 +1967,7 @@ fn update_browsing(
             }
         }
         Intent::ToggleVamp => effects.push(InteractionEffect::ToggleVamp),
+        Intent::ToggleKickBass => effects.push(InteractionEffect::ToggleKickBass),
         Intent::AdjustSelected(delta) => effects.push(InteractionEffect::AdjustSelected(delta)),
         Intent::ResetSelected => effects.push(InteractionEffect::ResetSelected),
         Intent::MaxSelected => effects.push(InteractionEffect::MaxSelected),
@@ -2395,6 +2402,8 @@ fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> Interac
             if operation.is_mix()
                 || *operation == Operation::ToggleAuto
                 || *operation == Operation::ToggleVamp
+                || *operation == Operation::ToggleKickBass
+                || *operation == Operation::ToggleFreeze
     ) || (palette.editor_motion_target.is_some()
         && matches!(entry, PaletteEntry::Operation(Operation::Motion(action)) if editor_motion_action(*action, palette)))
         || (palette.resume.is_some()
@@ -2505,6 +2514,8 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         }
         Operation::ToggleAuto => InteractionEffect::ToggleAuto,
         Operation::ToggleVamp => InteractionEffect::ToggleVamp,
+        Operation::ToggleKickBass => InteractionEffect::ToggleKickBass,
+        Operation::ToggleFreeze => InteractionEffect::ToggleFreeze,
         Operation::ClearSequence => {
             InteractionEffect::ClearSequence(palette.planned_tab.unwrap_or(Tab::Chords))
         }

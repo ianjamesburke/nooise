@@ -23,6 +23,12 @@ const PROCESSOR_CLEAR_SAMPLES_PER_FRAME: usize = 512;
 const ECHO_FEEDBACK_SECONDS: f32 = 0.03;
 
 struct GestureFx {
+    freeze_buffer: Vec<(f32, f32)>,
+    freeze_write: usize,
+    freeze_filled: usize,
+    freeze_phase: usize,
+    freeze_active: bool,
+    freeze_capture_gain: f32,
     submerge: SlotFx,
     lift: SlotFx,
     bloom: SlotFx,
@@ -47,6 +53,12 @@ struct GestureFx {
 impl GestureFx {
     fn new(sample_rate: f32, max_delay_samples: usize) -> Self {
         Self {
+            freeze_buffer: vec![(0.0, 0.0); (sample_rate * 0.5).max(2.0) as usize],
+            freeze_write: 0,
+            freeze_filled: 0,
+            freeze_phase: 0,
+            freeze_active: false,
+            freeze_capture_gain: 0.0,
             submerge: SlotFx::Filter(StereoFilter::default()),
             lift: SlotFx::Filter(StereoFilter::default()),
             bloom: SlotFx::Reverb(FdnReverb::new(sample_rate)),
@@ -78,6 +90,18 @@ impl GestureFx {
         max_delay_samples: usize,
         sample_rate: f32,
     ) -> (f32, f32) {
+        let freeze_amount = amounts[GestureKind::Freeze as usize];
+        if freeze_amount <= f32::EPSILON || self.freeze_filled < self.freeze_buffer.len() {
+            self.freeze_active = false;
+            self.freeze_capture_gain = 0.0;
+            self.freeze_buffer[self.freeze_write] = sample;
+            self.freeze_write = (self.freeze_write + 1) % self.freeze_buffer.len();
+            self.freeze_filled = (self.freeze_filled + 1).min(self.freeze_buffer.len());
+        } else if !self.freeze_active {
+            self.freeze_active = true;
+            self.freeze_phase = 0;
+        }
+
         if amounts == [0.0; GESTURE_COUNT]
             && !self.submerge_active
             && !self.lift_active
@@ -88,6 +112,35 @@ impl GestureFx {
         }
 
         let mut source = sample;
+        if self.freeze_active {
+            // Each head resets only where its Hann window reaches zero. The
+            // heads overlap by half a grain, giving complementary weights.
+            let grain = (((sample_rate * 0.12) as usize).max(4) / 2) * 2;
+            let len = self.freeze_buffer.len();
+            let span = len.saturating_sub(grain / 2 + 2).max(1);
+            let read_grain = |time: usize, offset: usize| {
+                let age = time % grain;
+                let cycle = time / grain;
+                let start = (cycle.wrapping_mul(grain / 2).wrapping_add(offset)) % span;
+                let position = start + age / 2;
+                let left = self.freeze_buffer[(self.freeze_write + position) % len];
+                let right = self.freeze_buffer[(self.freeze_write + position + 1) % len];
+                let fraction = (age % 2) as f32 * 0.5;
+                let weight = 0.5 - 0.5 * (std::f32::consts::TAU * age as f32 / grain as f32).cos();
+                (
+                    (left.0 + (right.0 - left.0) * fraction) * weight,
+                    (left.1 + (right.1 - left.1) * fraction) * weight,
+                )
+            };
+            let first = read_grain(self.freeze_phase, 0);
+            let second = read_grain(self.freeze_phase.wrapping_add(grain / 2), grain / 4);
+            let frozen = (first.0 + second.0, first.1 + second.1);
+            self.freeze_capture_gain = (self.freeze_capture_gain
+                + 1.0 / (GESTURE_RELEASE_SECONDS as f32 * sample_rate).max(1.0))
+            .min(1.0);
+            source = mix_stereo(source, frozen, freeze_amount * self.freeze_capture_gain);
+            self.freeze_phase = self.freeze_phase.wrapping_add(1);
+        }
 
         let submerge_amount = amounts[GestureKind::Submerge as usize];
         if submerge_amount > f32::EPSILON {
@@ -101,6 +154,7 @@ impl GestureFx {
                 feedback: 0.0,
                 ..ModuleSlot::default()
             };
+            let input = source;
             source = ModuleFxBank::process_slot_fx(
                 &mut self.submerge,
                 &slot,
@@ -109,7 +163,7 @@ impl GestureFx {
                 max_delay_samples,
                 sample_rate,
             );
-            source = mix_stereo(sample, source, submerge_amount);
+            source = mix_stereo(input, source, submerge_amount);
         } else if self.submerge_active {
             self.submerge = SlotFx::Filter(StereoFilter::default());
             self.submerge_active = false;
@@ -372,6 +426,76 @@ impl GestureAudioBank {
 mod tests {
     use super::*;
 
+    #[test]
+    fn freeze_captures_live_history_and_returns_to_dry_without_allocation() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let capacity = bank.fx.freeze_buffer.capacity();
+        for i in 0..24_000 {
+            let value = (i as f32 * 0.031).sin() * 0.2;
+            bank.process((value, value), [0.0; GESTURE_COUNT], timing());
+        }
+        let mut amounts = [0.0; GESTURE_COUNT];
+        amounts[GestureKind::Freeze as usize] = 1.0;
+        let mut energy = 0.0;
+        for _ in 0..48_000 {
+            let sample = bank.process((0.0, 0.0), amounts, timing());
+            assert!(sample.0.is_finite() && sample.1.is_finite());
+            energy += sample.0.abs();
+        }
+        assert!(energy > 100.0);
+        assert_eq!(bank.fx.freeze_buffer.capacity(), capacity);
+        assert_eq!(
+            bank.process((0.17, -0.17), [0.0; GESTURE_COUNT], timing()),
+            (0.17, -0.17)
+        );
+    }
+
+    #[test]
+    fn freeze_grain_boundaries_and_release_are_smooth_for_discontinuous_history() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        for i in 0..24_000 {
+            let value = i as f32 / 24_000.0 * 0.8 - 0.4;
+            bank.process((value, value), [0.0; GESTURE_COUNT], timing());
+        }
+        let mut amounts = [0.0; GESTURE_COUNT];
+        amounts[GestureKind::Freeze as usize] = 1.0;
+        let mut previous = bank.process((0.0, 0.0), amounts, timing()).0;
+        for _ in 0..120_000 {
+            let next = bank.process((0.0, 0.0), amounts, timing()).0;
+            assert!(
+                (next - previous).abs() < 0.005,
+                "grain seam: {previous} -> {next}"
+            );
+            previous = next;
+        }
+        for step in (0..480).rev() {
+            amounts[GestureKind::Freeze as usize] = step as f32 / 480.0;
+            let next = bank.process((0.0, 0.0), amounts, timing()).0;
+            assert!(
+                (next - previous).abs() < 0.005,
+                "release: {previous} -> {next}"
+            );
+            previous = next;
+        }
+    }
+
+    #[test]
+    fn restored_freeze_fades_in_after_initial_capture() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let mut amounts = [0.0; GESTURE_COUNT];
+        amounts[GestureKind::Freeze as usize] = 1.0;
+        let mut previous = 0.4;
+        for i in 0..26_000 {
+            let input = (0.4 - i as f32 / 24_000.0 * 0.4).max(0.0);
+            let next = bank.process((input, input), amounts, timing()).0;
+            assert!(
+                (next - previous).abs() < 0.005,
+                "capture transition: {previous} -> {next}"
+            );
+            previous = next;
+        }
+    }
+
     const SAMPLE_RATE: f32 = 48_000.0;
 
     fn timing() -> TimingContext {
@@ -538,7 +662,7 @@ mod tests {
     #[test]
     fn drained_tails_clear_incrementally_then_restore_exact_dry_bypass() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        bank.process((0.5, -0.5), [1.0, 0.0, 1.0, 0.0], timing());
+        bank.process((0.5, -0.5), [1.0, 0.0, 1.0, 0.0, 0.0], timing());
         bank.fx.bloom_wet = ReturnWeight::default();
         bank.fx.echo_wet = ReturnWeight::default();
         for _ in 0..1_000 {

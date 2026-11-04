@@ -1,7 +1,7 @@
 //! Temporary performance envelopes over the running song's Master bus. Audio time, rather
 //! than keyboard repeat or UI ticks, determines every gesture's amount.
 
-pub(crate) const GESTURE_COUNT: usize = 4;
+pub(crate) const GESTURE_COUNT: usize = 5;
 pub(crate) const HOLD_MUTE_COUNT: usize = 3;
 
 /// Every gesture lets go this fast on key-up: the envelope, and on the audio
@@ -55,11 +55,17 @@ pub(crate) enum GestureKind {
     Submerge,
     Echo,
     Lift,
+    Freeze,
 }
 
 impl GestureKind {
-    pub(crate) const ALL: [Self; GESTURE_COUNT] =
-        [Self::Bloom, Self::Submerge, Self::Echo, Self::Lift];
+    pub(crate) const ALL: [Self; GESTURE_COUNT] = [
+        Self::Bloom,
+        Self::Submerge,
+        Self::Echo,
+        Self::Lift,
+        Self::Freeze,
+    ];
 
     /// Wire tag 3 belonged to the retired Thin gesture and is never reused.
     pub(crate) const RETIRED_THIN_WIRE_TAG: u8 = 3;
@@ -70,6 +76,7 @@ impl GestureKind {
             Self::Submerge => 1,
             Self::Echo => 2,
             Self::Lift => 4,
+            Self::Freeze => 5,
         }
     }
 
@@ -80,6 +87,7 @@ impl GestureKind {
     pub(crate) fn from_key(key: char) -> Option<Self> {
         match key {
             'w' => Some(Self::Submerge),
+            'b' => Some(Self::Freeze),
             // 'z' => Some(Self::Bloom),
             // 'c' => Some(Self::Submerge),
             // 'v' => Some(Self::Echo),
@@ -95,6 +103,7 @@ impl GestureKind {
             Self::Submerge => 'w',
             Self::Echo => 'v',
             Self::Lift => 'x',
+            Self::Freeze => 'b',
         }
     }
 
@@ -104,6 +113,7 @@ impl GestureKind {
             Self::Submerge => "Submerge",
             Self::Echo => "Echo",
             Self::Lift => "Lift",
+            Self::Freeze => "Freeze",
         }
     }
 
@@ -113,6 +123,7 @@ impl GestureKind {
             Self::Submerge => 1.2,
             Self::Echo => 0.7,
             Self::Lift => 0.55,
+            Self::Freeze => 0.05,
         }
     }
 }

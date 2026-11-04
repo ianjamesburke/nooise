@@ -16,6 +16,8 @@ pub(crate) enum Operation {
     Chord(ChordAction),
     ToggleAuto,
     ToggleVamp,
+    ToggleKickBass,
+    ToggleFreeze,
     ChordNames(ChordNames),
     ClearSequence,
 }
@@ -77,7 +79,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 27] = [
+    pub(crate) const ALL: [Self; 29] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -102,6 +104,8 @@ impl Operation {
         Self::Chord(ChordAction::PasteAll),
         Self::ToggleAuto,
         Self::ToggleVamp,
+        Self::ToggleKickBass,
+        Self::ToggleFreeze,
         Self::ChordNames(ChordNames::Roman),
         Self::ChordNames(ChordNames::Letters),
         Self::ClearSequence,
@@ -203,6 +207,18 @@ impl Operation {
                 aliases: &["vamp", "chord vamp"],
                 description: "vamp the current chord or cue release",
             },
+            Self::ToggleKickBass => OperationSpec {
+                operation: self,
+                label: "Toggle group mute",
+                aliases: &["group mute", "q mute"],
+                description: "toggle the Kick and Bass group gate",
+            },
+            Self::ToggleFreeze => OperationSpec {
+                operation: self,
+                label: "Freeze mix",
+                aliases: &["freeze", "smear", "grain repeat"],
+                description: "capture live audio; Escape releases",
+            },
             Self::ClearSequence => OperationSpec {
                 operation: self,
                 label: "Clear sequence",
@@ -234,6 +250,8 @@ impl Operation {
             | Self::ChordNames(_)
             | Self::ClearSequence
             | Self::ToggleVamp
+            | Self::ToggleKickBass
+            | Self::ToggleFreeze
             | Self::ToggleAuto => None,
         }
     }

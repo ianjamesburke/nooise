@@ -528,6 +528,7 @@ impl Clipboard for FakeClipboard {
             muted: saved.muted,
             planned: saved.planned,
             vamp: saved.vamp,
+            kick_bass_latched: saved.kick_bass_latched,
             automation: saved.automation,
             ..SongState::default()
         };
@@ -5374,8 +5375,8 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
         "holding e shows Rise on the activity line"
     );
     assert!(
-        held_text.contains("Kick+Bass Mute●"),
-        "holding q shows Kick+Bass Mute● on the activity line"
+        held_text.contains("Kick+Bass held"),
+        "holding q shows Kick+Bass held on the activity line"
     );
 
     let held_top_row = replay(&[press('w'), press('r')], TerminalCapabilities::full());
@@ -5405,7 +5406,7 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
     assert_eq!(released_all.effect_count("HoldMuteRelease(Rise)"), 1);
     assert_eq!(released_all.effect_count("HoldMuteRelease(PercRoll)"), 1);
     let final_text = &released_all.frames.last().unwrap().text;
-    assert!(!final_text.contains("Kick+Bass Mute●"));
+    assert!(!final_text.contains("Kick+Bass held"));
     assert!(!final_text.contains("Perc Roll●"));
 
     // z, c, v are superseded; x in Browsing deletes saved Motion on hold-capable terminals.
@@ -5489,6 +5490,7 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
     );
     let decoded_during_q =
         song::decode_song_code(saved_during_q.saved_automation_code.as_deref().unwrap()).unwrap();
+    assert!(!decoded_during_q.kick_bass_latched);
     assert!(!decoded_during_q.muted[Tab::Kick as usize]);
     assert!(!decoded_during_q.muted[Tab::Bass as usize]);
 
@@ -5543,7 +5545,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     assert_eq!(immediate.effect_count("ReleaseVamp"), 1);
     let immediate_text = &immediate.frames.last().unwrap().text;
     assert!(
-        immediate_text.contains("Vamp · Chord 1 · a release"),
+        immediate_text.contains("VAMP"),
         "tapping a at beat 0 latches immediately on Chord 1: {immediate_text}"
     );
     let saved_immediate =
@@ -5560,7 +5562,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     let held = replay(&[press('a')], TerminalCapabilities::full());
     let held_text = &held.frames.last().unwrap().text;
     assert!(
-        held_text.contains("Vamp · Chord 1 · key up releases"),
+        held_text.contains("VAMP"),
         "holding a shows key up releases: {held_text}"
     );
 
@@ -5576,7 +5578,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     );
     let hold_release_text = &hold_and_release.frames.last().unwrap().text;
     assert!(
-        hold_release_text.contains("Vamp · release next chord · a keep"),
+        hold_release_text.contains("VAMP ENDING"),
         "releasing held a cues release at next chord: {hold_release_text}"
     );
 
@@ -5592,7 +5594,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     );
     let latched_text = &latched_in_second_half.frames.last().unwrap().text;
     assert!(
-        latched_text.contains("Vamp · Chord 1 · a release"),
+        latched_text.contains("VAMP"),
         "tapping a in second half keeps currently playing Chord 1: {latched_text}"
     );
     let saved_latched = song::decode_song_code(
@@ -5618,7 +5620,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     );
     let active_text = &active.frames.last().unwrap().text;
     assert!(
-        active_text.contains("Vamp · Chord 1 · a release"),
+        active_text.contains("VAMP"),
         "at chord boundary, vamp remains locked on Chord 1: {active_text}"
     );
 
@@ -5637,7 +5639,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
     );
     let releasing_text = &releasing.frames.last().unwrap().text;
     assert!(
-        releasing_text.contains("Vamp · release next chord · a keep"),
+        releasing_text.contains("VAMP ENDING"),
         "tapping a during active vamp cues release on next chord: {releasing_text}"
     );
     let saved_releasing =
@@ -5660,7 +5662,7 @@ fn vamp_on_a_quantizes_to_nearest_chord_holds_indefinitely_and_releases_on_next_
         TerminalCapabilities::full(),
     );
     let ended_text = &released.frames.last().unwrap().text;
-    assert!(!ended_text.contains("Vamp ·"));
+    assert!(!ended_text.contains("VAMP"));
     let saved_ended =
         song::decode_song_code(released.saved_automation_code.as_deref().unwrap()).unwrap();
     assert_eq!(saved_ended.vamp, None);
@@ -5803,4 +5805,134 @@ fn osc_gestures_obey_kernel_latches_modes_and_cancel() {
         assert!(!harness.executor.session().load().gestures.has_held());
         harness.model.mode = InteractionMode::Browsing;
     }
+}
+
+#[test]
+fn kick_bass_tap_latches_hold_restores_and_focus_loss_never_latches() {
+    let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
+    let release = |ch| key(0, FixtureKey::Character(ch), InputPhase::Release);
+    let save = modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
+    let check = |events: &[TraceEvent], expected| {
+        let result = replay(events, TerminalCapabilities::full());
+        let song =
+            song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            song.kick_bass_latched, expected,
+            "effects {:?}",
+            result.effects
+        );
+        assert!(!song.muted[Tab::Kick as usize]);
+        assert!(!song.muted[Tab::Bass as usize]);
+    };
+    check(&[press('q'), release('q'), save.clone()], true);
+    check(
+        &[
+            press('q'),
+            release('q'),
+            press('q'),
+            release('q'),
+            save.clone(),
+        ],
+        false,
+    );
+    check(
+        &[
+            press('q'),
+            release('q'),
+            press('q'),
+            TraceEvent::Tick { after_ms: 500 },
+            release('q'),
+            save.clone(),
+        ],
+        true,
+    );
+    check(
+        &[
+            press('q'),
+            TraceEvent::Focus {
+                after_ms: 0,
+                gained: false,
+            },
+            release('q'),
+            save,
+        ],
+        false,
+    );
+}
+
+#[test]
+fn performance_status_frames_at_minimum_and_roomy_sizes() {
+    let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
+    let release = |ch| key(0, FixtureKey::Character(ch), InputPhase::Release);
+    for (width, height) in [(46, 11), (80, 24)] {
+        for (label, events) in [
+            ("held", vec![press('a')]),
+            ("latched", vec![press('a'), release('a')]),
+            (
+                "ending",
+                vec![press('a'), release('a'), press('a'), release('a')],
+            ),
+            (
+                "combined",
+                vec![
+                    press('a'),
+                    release('a'),
+                    press('q'),
+                    release('q'),
+                    press('b'),
+                    TraceEvent::Tick { after_ms: 100 },
+                ],
+            ),
+        ] {
+            let mut trace = vec![TraceEvent::Resize {
+                after_ms: 0,
+                width,
+                height,
+            }];
+            trace.extend(events);
+            let result = replay(&trace, TerminalCapabilities::full());
+            let text = &result.frames.last().unwrap().text;
+            assert!(
+                text.contains(if label == "ending" {
+                    "VAMP ENDING"
+                } else {
+                    "VAMP"
+                }),
+                "{width}x{height} {label}: {text}"
+            );
+            if label == "combined" {
+                assert!(text.contains("Kick+Bass latched"), "{text}");
+                assert!(text.contains("Freeze"), "{text}");
+            }
+            if std::env::var_os("NOOISE_PRINT_STATUS_FRAMES").is_some() {
+                println!("--- {width}x{height} {label} ---\n{text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn reduced_terminal_can_toggle_group_mute_and_start_then_release_freeze() {
+    let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
+    let save = modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
+    let result = replay(&[press('q'), save], TerminalCapabilities::default());
+    let song = song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+    assert!(song.kick_bass_latched);
+    let freeze = replay(
+        &[
+            press('/'),
+            press('f'),
+            press('r'),
+            press('e'),
+            press('e'),
+            press('z'),
+            press('e'),
+            key(0, FixtureKey::Enter, InputPhase::Press),
+            TraceEvent::Tick { after_ms: 100 },
+            key(0, FixtureKey::Escape, InputPhase::Press),
+        ],
+        TerminalCapabilities::default(),
+    );
+    assert_eq!(freeze.effect_count("ToggleFreeze"), 1);
+    assert_eq!(freeze.effect_count("GestureReleaseAll"), 1);
 }

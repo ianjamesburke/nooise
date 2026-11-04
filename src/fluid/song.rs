@@ -62,6 +62,7 @@ const PLANNED_ACTION_RECORD: u8 = 11;
 const EDITOR_MOTION_RECORD: u8 = 12;
 const CHORD_OVERRIDES_RECORD: u8 = 13;
 const VAMP_RECORD: u8 = 14;
+const KICK_BASS_LATCH_RECORD: u8 = 15;
 const CHORD_OVERRIDES_VERSION: u8 = 2;
 const PLANNED_MUTE_TAG: u8 = 0;
 /// Relative Motion has an explicit reference; previous absolute sampled
@@ -98,6 +99,7 @@ pub(crate) struct SongState {
     pub(crate) muted: MuteState,
     pub(crate) planned: Option<PlannedAction>,
     pub(crate) vamp: Option<VampState>,
+    pub(crate) kick_bass_latched: bool,
     pub(crate) gestures: GestureState,
     pub(crate) drunken_phase_beat: f64,
 }
@@ -111,6 +113,7 @@ impl SongState {
             muted: [false; TAB_COUNT],
             planned: None,
             vamp: None,
+            kick_bass_latched: false,
             gestures: GestureState::default(),
             drunken_phase_beat: 0.0,
         }
@@ -378,6 +381,9 @@ pub(crate) fn encode_song_code_at_epoch(
         payload.extend_from_slice(&vamp.end_beat.to_le_bytes());
         write_record(VAMP_RECORD, &payload, &mut bytes)?;
     }
+    if song.kick_bass_latched {
+        write_record(KICK_BASS_LATCH_RECORD, &[], &mut bytes)?;
+    }
     if song.drunken_phase_beat != 0.0 {
         if !song.drunken_phase_beat.is_finite() || song.drunken_phase_beat < 0.0 {
             return Err(SongCodeError::InvalidDrunkenPhase);
@@ -490,6 +496,12 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 }
                 planned_action_record_seen = true;
                 song.planned = Some(read_planned_action(payload)?);
+            }
+            KICK_BASS_LATCH_RECORD => {
+                if song.kick_bass_latched || !payload.is_empty() {
+                    return Err(SongCodeError::InvalidPlannedAction);
+                }
+                song.kick_bass_latched = true;
             }
             VAMP_RECORD => {
                 if vamp_record_seen {
@@ -2308,7 +2320,7 @@ mod gesture_record_tests {
 
     #[test]
     fn gesture_kind_wire_tags_are_stable() {
-        assert_eq!(GestureKind::ALL.map(GestureKind::wire_tag), [0, 1, 2, 4]);
+        assert_eq!(GestureKind::ALL.map(GestureKind::wire_tag), [0, 1, 2, 4, 5]);
     }
 
     #[test]

@@ -133,6 +133,8 @@ impl PaletteEntry {
                 Operation::Chord(_) => "selected chord".to_string(),
                 Operation::ToggleAuto => "auto morph".to_string(),
                 Operation::ToggleVamp => "chord vamp".to_string(),
+                Operation::ToggleKickBass => "kick and bass".to_string(),
+                Operation::ToggleFreeze => "live mix".to_string(),
                 Operation::ChordNames(_) => "display".to_string(),
                 Operation::OutputDevice => "routing".to_string(),
                 Operation::ClearSequence => "visible sequence".to_string(),

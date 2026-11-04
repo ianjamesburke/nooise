@@ -318,3 +318,27 @@ fn render_live_gesture_audition() {
     wav.finalize().unwrap();
     eprintln!("Audition WAV: {path}");
 }
+
+#[test]
+fn freeze_key_captures_live_audio_and_returns_to_the_running_mix() {
+    let mut dry = GesturePlayer::new(12_000.0);
+    let mut wet = GesturePlayer::new(12_000.0);
+    dry.render(1.0);
+    wet.render(1.0);
+    wet.gesture(GestureKind::Freeze, KeyEventKind::Press);
+    let mut difference = 0.0;
+    for _ in 0..6_000 {
+        let clean = dry.engine.next_stereo();
+        let frozen = wet.engine.next_stereo();
+        difference += (clean.0 - frozen.0).abs() + (clean.1 - frozen.1).abs();
+    }
+    assert!(difference > 1.0, "freeze must alter captured live audio");
+    wet.gesture(GestureKind::Freeze, KeyEventKind::Release);
+    for _ in 0..240 {
+        dry.engine.next_stereo();
+        wet.engine.next_stereo();
+    }
+    for _ in 0..100 {
+        assert_eq!(dry.engine.next_stereo(), wet.engine.next_stereo());
+    }
+}

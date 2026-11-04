@@ -25,6 +25,8 @@ pub(crate) struct LiveSessionSnapshot {
     /// Momentary left-hand holds (`q` = Kick+Bass Mute, `e` = Rise, `r` = Perc Roll).
     /// Live-only: held keys do not travel in song codes.
     pub(crate) hold_muted: [bool; HOLD_MUTE_COUNT],
+    pub(crate) kick_bass_latched: bool,
+    pub(crate) kick_bass_press_seconds: Option<f64>,
     /// A boundary action that changes the audible future of this session.
     pub(crate) planned: Option<PlannedAction>,
     /// Active chord vamp (`a`), locking Pads, Bass, Arp, and Lead to the nearest
@@ -76,6 +78,8 @@ impl LiveSessionSnapshot {
             automation: song.automation.clone(),
             muted: song.muted,
             hold_muted: [false; HOLD_MUTE_COUNT],
+            kick_bass_latched: song.kick_bass_latched,
+            kick_bass_press_seconds: None,
             planned: song.planned,
             vamp: song.vamp,
             vamp_press_seconds: None,
@@ -104,6 +108,8 @@ impl LiveSessionSnapshot {
             automation: AutomationState::default(),
             muted: [false; TAB_COUNT],
             hold_muted: [false; HOLD_MUTE_COUNT],
+            kick_bass_latched: false,
+            kick_bass_press_seconds: None,
             planned: None,
             vamp: None,
             vamp_press_seconds: None,

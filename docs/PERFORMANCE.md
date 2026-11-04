@@ -29,40 +29,27 @@ frame. Navigation is never saved in a song code.
 
 ## Normal browsing gestures
 
-Hold `q` in Browsing for an immediate momentary Kick+Bass mute (`Kick+Bass Mute●`),
-`w` for Submerge (darkening the mix while held, `Submerge XX%↑` / `Submerge 100%●` / `Submerge XX%↓`),
-`e` for Rise (a gentler, slower high-pass lift that ramps over 1.8 s to 52% of Lift's
-throw with a 25% touch of stereo Echo delay, `Rise XX%↑` / `Rise 100%●` / `Rise XX%↓`),
-and `r` for Perc Roll (stepping the Perc trigger interval down by one subdivision while held, `Perc Roll●`).
-The former bottom-row `z`/`x`/`c`/`v` gesture bindings are superseded by `q`/`w`/`e`/`r`,
-freeing `x` in Browsing on all terminals so pressing `x` on a control deletes its saved
-Motion loop (or clears its modulators). Every gesture lets go within 10 ms of release,
-wet returns included, so no reverb or echo rings on. The former Thin gesture on `b` is
-retired; a song code carrying one is refused.
+Tap `q` to latch a Kick+Bass group mute; tap again to clear it. Hold for at least 250 ms to mute temporarily, returning to the previous latch state on release. This gate never changes individual layer mutes. It survives in song codes; a physical hold does not. Focus loss or entering an editor releases a hold without changing the latch. `/group mute` toggles the latch, including on terminals without key-release reporting. On such terminals `q` also toggles on each reported press; if the terminal reports autorepeat as indistinguishable presses, use the palette to avoid accidental repeated toggles.
 
-These top-row holds require negotiated key-release support, stay active while `Esc`
-navigates back through drills and layers in Browsing, and release cleanly on mode
-transitions or focus loss. Envelope editor keyboard bindings (`e`/`g`/`Shift+E`/`Shift+G`)
-are commented out for now, and Randomize in Browsing is on `u` (inside an open automation
-editor, `r`/`u` both work).
+Hold `w` for Submerge, `e` for Rise, `r` for Perc Roll, and `b` for Freeze. Freeze captures the latest half-second of the live Master mix and repeats overlapping half-speed grains. It collects live audio first if the rolling buffer has not filled, including after loading an active hold. Release returns to the live mix within 10 ms. `/freeze` starts the effect without key-release support; Escape releases it. Captured audio is never embedded in song codes. Arrows and Tab remain available while holding. Opening a keyboard-owning editor or losing focus releases physical holds, and a held key must come up before starting again.
 
 Hold or tap `a` in Browsing for an indefinite chord vamp quantized to the start
 of the currently playing chord, so whatever chord is sounding stays locked seamlessly
 without re-triggering its voices or re-attacking mid-phrase.
 Sustaining a hold on `a` keeps the chord locked momentarily under your finger
-(`Vamp · Chord N · key up releases`), and letting go of the key cues release directly
+(`VAMP` beside the chord), and letting go of the key cues release directly
 into the next chord on the next chord boundary.
-A quick tap (< 250 ms) latches the vamp on hands-free (`Vamp · Chord N · a release`),
+A quick tap (< 250 ms) latches the vamp on hands-free (`VAMP` beside the chord),
 allowing you to browse and adjust parameters while the chord holds; a subsequent tap
-cues release at the next chord boundary (`Vamp · release next chord · a keep`, and
+cues release at the next chord boundary (`VAMP ENDING` beside the chord, and
 tapping again before the boundary cancels release and keeps holding).
 Vamp toggle is also available in the `/` command palette as `/vamp` (`Toggle vamp`),
 and auto-morph toggle is on `Shift+A` or `/auto` (`Toggle auto`). Armed or active
 vamp state persists in song codes (`VAMP_RECORD`) and rebases to the loaded song's
 beat zero. On terminals lacking key-release support, `a` operates as a latching tap.
 
-Every gesture plays over the whole mix, after Master's module chain, whatever
-page is open. Arrows and Tab remain available while a key is down, and
+The Master effects play over the whole mix after Master's module chain, whatever
+page is open. The q gate acts on Kick and Bass before they join the mix. Arrows and Tab remain available while a key is down, and
 different gestures can overlap. Pressing during a return catches it at its
 current amount. Gestures are gain-staged so a full throw never raises the
 master: Bloom and Echo trade dry level for their returns instead of stacking
@@ -70,8 +57,7 @@ on top of it.
 
 The footer is two rows: a gesture-activity row above a stable exits/mode-help
 row, so a held gesture never crowds out `Esc release · ^Q quit` or the row
-below it. Idle, the activity row lists each hold's key and name (`q mute
-w submerge  e rise  r roll`); held or returning, it switches to a
+below it. Idle, the activity row lists each hold's key and name (`q mute  w submerge  e rise  r roll  b freeze`); held or returning, it switches to a
 bold readout of gesture and amount — `↑` means rising, `↓` returning, and `R`
 marks a restored hold loaded from a song code. The row below stays a terse
 `BROWSE · ? shortcuts   ^Q quit`; pressing `?` opens the full keyboard-shortcut
@@ -90,18 +76,16 @@ survive its return.
 Held gestures stay active while Escape backs out of browsing drills and layers;
 at the hub root with no gesture key held, Escape releases any restored holds
 loaded from a song code.
-Opening a keyboard-owning editor or Lead play releases gestures; Echo's
-repeats can finish in the background. A key held through that transition must be
+Opening a keyboard-owning editor or Lead play releases gestures. A key held through that transition must be
 released before it can start another gesture. Reported focus loss and shutdown
 also release held gestures.
 
-Hold gestures require negotiated key-release support. Without it, the
-activity row stays blank and gesture keys remain inactive — the shortcut map
+Hold gestures require negotiated key-release support. Without it, q and palette operations remain available; other hold keys remain inactive — the shortcut map
 (`?`) still lists them, since they are a capability gap, not a hidden feature.
 The runtime never guesses release from a timeout or keyboard repeat.
 
 A saved song carries active gesture amounts and envelope direction, with no
-audio buffers. Loaded holds resume where they were. A code from a build with
+audio buffers. Freeze rebuilds its rolling capture from live audio after loading. Loaded holds resume where they were. A code from a build with
 per-layer gestures that carries a gesture aimed at a voice is refused as a
 retired per-layer gesture. Press the matching
 gesture key to claim a loaded hold and release it, or use Escape to release
@@ -243,22 +227,11 @@ Lead play retains its own `i` entry and existing bindings.
 
 ## Audio smoke
 
-1. Run `cargo run` in this worktree, in a terminal reporting key releases.
-   On any page, hold `c`: expect the whole mix to darken smoothly and a
-   Submerge amount in the footer. Release: expect the original clarity to
-   return.
-2. Hold `z`, move with arrows and Tab, and release. The Bloom must keep
-   playing over the mix while navigation continues. Overlap a different
-   gesture and confirm both are named. Neither should make the mix louder.
-3. Release `z` after a long hold: the wash must be gone at once (10 ms)
-   with no click. Try short and long `v` presses, then `x`. Echoes stop on
-   release; Lift should clear its low end while held and restore it at once
-   on release. `b` does nothing in Browse.
-4. Open the palette during a held gesture, return to Browse, and keep the
-   physical key down. It must stay released until a fresh press after key-up.
-   Escape must also release held or loaded gestures.
-5. Save during a swell and load that code. Its amount should resume; the
-   matching gesture key or Escape must let it return.
+1. Run `cargo run` in a terminal reporting key releases. Tap `q`: Kick and Bass mute; tap again and they return. Mute Kick individually, then use a long `q` hold: releasing must leave Kick muted. Repeat with the group latch already on; the hold must preserve it.
+2. Hold `w`, `e`, `r`, and `b` in turn while navigating with arrows and Tab. Freeze should capture the current mix into a sustained, repeated smear and return smoothly on release. Overlap Freeze with another gesture and check both readouts.
+3. Tap `a` and inspect `VAMP` beside the chord. Tap again and inspect `VAMP ENDING` until the next chord boundary. Check both at 46x11 and while browsing another layer.
+4. Open the palette while holding a gesture, return to Browse, and keep the key down. It must stay released until a fresh press after key-up. Test `/freeze` and Escape, and `/group mute` on a terminal without key-release support.
+5. Save with the q latch and Vamp active, reload the code, and confirm both resume. Save a held Freeze and reload; the audio history must rebuild from live audio instead of containing captured samples.
 6. Move to a non-Level Bass row, then press Space, `d`: it returns to that
    remembered Bass row in Browse with nothing changed, and `h`/`j`/`k`/`l`
    work at once. From Bass press Space, `j`: the cursor reaches Bass Level.
@@ -280,8 +253,8 @@ Lead play retains its own `i` entry and existing bindings.
    it. Esc returns to Browsing.
 9. On Pads with Reverb loaded and Kick audible, press Shift+P: no new kick or
    chord arrives, the chord and reverb fade out naturally rather than
-   cutting, and the activity row shows `■ STOPPED`. Hold `z` during the
-   tail and hear it bloom. Press Shift+P again: the grid restarts at bar 1 and
+   cutting, and the activity row shows `■ STOPPED`. Hold `w` during the
+   tail and hear it darken. Press Shift+P again: the grid restarts at bar 1 and
    the first chord in the selected window swells back in.
 10. Launch: the hub shows `Master` above one `›` row per layer. Press `m` on
    Kick: its row and nothing else reads `(M)`. Enter Bass, move down two

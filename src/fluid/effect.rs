@@ -753,6 +753,7 @@ impl EffectExecutor {
                     muted: snapshot.muted,
                     planned: snapshot.planned.map(|action| action.rebased_at(beat)),
                     vamp: snapshot.vamp.map(|vamp| vamp.rebased_at(beat)),
+                    kick_bass_latched: snapshot.kick_bass_latched,
                     gestures: snapshot.gestures.snapshot_at(now_seconds),
                     drunken_phase_beat: if snapshot
                         .controls
@@ -1440,6 +1441,8 @@ impl EffectExecutor {
             | InteractionEffect::PressVamp
             | InteractionEffect::ReleaseVamp
             | InteractionEffect::ToggleVamp
+            | InteractionEffect::ToggleKickBass
+            | InteractionEffect::ToggleFreeze
             | InteractionEffect::GestureReleaseAll) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
@@ -2007,6 +2010,9 @@ impl EffectExecutor {
                 let now_seconds = self.session.audio_seconds();
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.hold_muted[mute as usize] = true;
+                    if mute == HoldMute::KickAndBass {
+                        snapshot.kick_bass_press_seconds = Some(now_seconds);
+                    }
                     match mute {
                         HoldMute::Rise => snapshot.gestures.press_rise(now_seconds),
                         HoldMute::KickAndBass | HoldMute::PercRoll => {}
@@ -2020,10 +2026,39 @@ impl EffectExecutor {
                 let now_seconds = self.session.audio_seconds();
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.hold_muted[mute as usize] = false;
+                    if mute == HoldMute::KickAndBass
+                        && snapshot
+                            .kick_bass_press_seconds
+                            .take()
+                            .is_some_and(|start| now_seconds - start < 0.25)
+                    {
+                        snapshot.kick_bass_latched = !snapshot.kick_bass_latched;
+                    }
                     match mute {
                         HoldMute::Rise => snapshot.gestures.release_rise(now_seconds),
                         HoldMute::KickAndBass | HoldMute::PercRoll => {}
                     }
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::ToggleFreeze => {
+                let now_seconds = self.session.audio_seconds();
+                let snapshot = self.session.update(|snapshot| {
+                    if snapshot.gestures.envelope(GestureKind::Freeze).held {
+                        snapshot.gestures.release(GestureKind::Freeze, now_seconds);
+                    } else {
+                        snapshot.gestures.press(GestureKind::Freeze, now_seconds);
+                    }
+                });
+                Ok(EffectAcknowledgement::Published {
+                    generation: snapshot.generation,
+                })
+            }
+            InteractionEffect::ToggleKickBass => {
+                let snapshot = self.session.update(|snapshot| {
+                    snapshot.kick_bass_latched = !snapshot.kick_bass_latched;
                 });
                 Ok(EffectAcknowledgement::Published {
                     generation: snapshot.generation,
@@ -2187,6 +2222,7 @@ impl EffectExecutor {
                 let snapshot = self.session.update(|snapshot| {
                     snapshot.gestures.release_all(now_seconds);
                     snapshot.hold_muted = [false; HOLD_MUTE_COUNT];
+                    snapshot.kick_bass_press_seconds = None;
                     if let Some(mut vamp) = snapshot.vamp
                         && !vamp.is_releasing()
                         && !snapshot.vamp_latched

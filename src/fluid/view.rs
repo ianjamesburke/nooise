@@ -384,18 +384,10 @@ impl<'a> UiViewModel<'a> {
         let gestures = gesture_activities(session, presentation.gesture_now_seconds);
         let rise_status = rise_activity(session, presentation.gesture_now_seconds);
         let holding_mute = session.hold_muted.into_iter().any(|held| held);
-        let holding_gesture = !gestures.is_empty() || holding_mute || rise_status.is_some();
-        let vamp_status = session.vamp.map(|vamp| {
-            if telemetry.beat < vamp.start_beat {
-                "Vamp · next chord · a cancel".to_string()
-            } else if vamp.is_releasing() {
-                "Vamp · release next chord · a keep".to_string()
-            } else if !session.vamp_latched && session.vamp_press_seconds.is_some() {
-                format!("Vamp · Chord {} · key up releases", vamp.slot + 1)
-            } else {
-                format!("Vamp · Chord {} · a release", vamp.slot + 1)
-            }
-        });
+        let holding_gesture = !gestures.is_empty()
+            || holding_mute
+            || rise_status.is_some()
+            || session.kick_bass_latched;
         let stopped = session.transport == Transport::Stopped;
         let editor = match &mode {
             ModeSurface::Automation(surface) => Some(surface),
@@ -414,15 +406,14 @@ impl<'a> UiViewModel<'a> {
                     .get(&ControlAddress::new(item.id))
             })
         };
-        let activity_live =
-            holding_gesture || stopped || vamp_status.is_some() || capture.is_some();
+        let activity_live = holding_gesture || stopped || capture.is_some();
         let live_gesture_text = gesture_activity_line(
             &gestures,
             rise_status.as_deref(),
             &session.hold_muted,
-            vamp_status.as_deref(),
+            session.kick_bass_latched,
         );
-        let activity = match (stopped, holding_gesture || vamp_status.is_some()) {
+        let activity = match (stopped, holding_gesture) {
             // Stopped leads the row in every owner, so silence is never
             // mistaken for a dead engine; gestures still play into the tails.
             (true, true) => format!("■ STOPPED · {live_gesture_text}"),
@@ -617,7 +608,7 @@ fn gesture_activity_line(
     gestures: &[GestureActivity],
     rise_status: Option<&str>,
     hold_muted: &[bool; HOLD_MUTE_COUNT],
-    vamp_status: Option<&str>,
+    kick_bass_latched: bool,
 ) -> String {
     let mut parts: Vec<String> = gestures
         .iter()
@@ -639,12 +630,19 @@ fn gesture_activity_line(
         parts.push(rise.to_string());
     }
     for mute in HoldMute::ALL {
-        if mute != HoldMute::Rise && hold_muted[mute as usize] {
+        if mute == HoldMute::KickAndBass && (hold_muted[mute as usize] || kick_bass_latched) {
+            parts.insert(
+                0,
+                if hold_muted[mute as usize] {
+                    "Kick+Bass held"
+                } else {
+                    "Kick+Bass latched"
+                }
+                .to_string(),
+            );
+        } else if mute != HoldMute::Rise && hold_muted[mute as usize] {
             parts.push(format!("{}●", mute.name()));
         }
-    }
-    if let Some(vamp) = vamp_status {
-        parts.push(vamp.to_string());
     }
     parts.join(" · ")
 }
@@ -672,7 +670,7 @@ fn rise_activity(session: &LiveSessionSnapshot, now_seconds: f64) -> Option<Stri
 /// gesture, so the row that shows a live readout while holding still tells
 /// you what's available when nothing is held.
 fn gesture_idle_hint() -> String {
-    "q mute  w submerge  e rise  r roll".to_string()
+    "q mute  w submerge  e rise  r roll  b freeze".to_string()
 }
 
 fn gesture_activities(session: &LiveSessionSnapshot, now_seconds: f64) -> Vec<GestureActivity> {

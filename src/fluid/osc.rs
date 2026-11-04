@@ -98,7 +98,7 @@ fn level_addr(tab: Tab) -> &'static str {
 
 /// Gesture names in `GestureKind::ALL` order.
 #[cfg(test)]
-pub(crate) const GESTURES: [&str; GESTURE_COUNT] = ["bloom", "submerge", "echo", "lift"];
+pub(crate) const GESTURES: [&str; GESTURE_COUNT] = ["bloom", "submerge", "echo", "lift", "freeze"];
 
 fn gesture_addr(kind: GestureKind) -> &'static str {
     const ADDRESSES: [&str; GESTURE_COUNT] = [
@@ -106,6 +106,7 @@ fn gesture_addr(kind: GestureKind) -> &'static str {
         "/nooise/gesture/submerge",
         "/nooise/gesture/echo",
         "/nooise/gesture/lift",
+        "/nooise/gesture/freeze",
     ];
     ADDRESSES[kind as usize]
 }
@@ -1660,6 +1661,7 @@ mod tests {
                 "/nooise/gesture/submerge",
                 "/nooise/gesture/echo",
                 "/nooise/gesture/lift",
+                "/nooise/gesture/freeze",
             ]
         );
     }
