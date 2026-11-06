@@ -13,6 +13,19 @@ both synced channels, and 0% Feedback. It focuses Amount. An existing Delay
 is reused and these settings are reapplied, retaining its other settings;
 ordinary `/delay` keeps its existing add-or-jump behavior.
 
+## Pad rhythm experiment
+
+Select Pad Level (`/pad.level`), then `/chop`. The ordinary Steps editor opens
+on Amount at 0%; raise it, or Shift+Right for a full chop. Rate starts at 0.25
+beats per step, Steps at eight. A step at 0% preserves the sound; -100% closes
+it at full Amount. Consecutive open steps sustain without retriggering. Arrows
+reach rate, offset, count, glide, and step values; `/bypass`, `/resume`, and
+`/delete` use the existing lane actions. Ctrl+S saves the ordinary lane.
+
+The chord progression and Slur continue independently. Reverb tails remain
+after the level gate. This shortcut also works on other selected controls and
+layers; it is not a new Pad envelope mode.
+
 ## Hub navigation
 
 The app opens on Master, the hub. Its first rows list the layers in order

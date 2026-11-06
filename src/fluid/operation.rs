@@ -89,7 +89,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 40] = [
+    pub(crate) const ALL: [Self; 41] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -105,6 +105,7 @@ impl Operation {
         Self::Recipe(recipe::RecipeId::Pulse),
         Self::Recipe(recipe::RecipeId::Drift),
         Self::Recipe(recipe::RecipeId::Rise),
+        Self::Recipe(recipe::RecipeId::Rhythm),
         Self::PlannedMute,
         Self::OutputDevice,
         Self::Chord(ChordAction::AddExtension),

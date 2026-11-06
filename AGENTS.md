@@ -76,6 +76,7 @@ Default section order:
 
 ## User Preferences
 
+- For musical experiments, deliver the smallest playable in-app version quickly. Do not build a separate web proof of concept unless requested.
 - Currently working on: fluid core (`src/fluid/`)
 - November 21, 2026 show preparation targets `v3` or derivatives. Work in batches followed by simulated sets and post-mortems; `docs/proposals/2026-11-02-show-readiness.md` owns checkpoints and pending performance requests.
 - The computer keyboard is the primary instrument surface. Every musical capability must have a complete keyboard path through ordinary browsing or `/`; external gear is optional and uses the same validated musical operations. Commandment 6 in `docs/NORTH_STAR.md` owns priority, gear classification, and the current persistence gap. Stabilize existing features before the next hardware sprint; APC40 support is wanted soon afterward. Preserve the active microphone exploration as separate work.

@@ -2,6 +2,21 @@
 
 Updated: 2026-11-06
 
+## Playable Pad rhythm experiment
+
+- `/pad.level`, then `/chop`, then Shift+Right on Amount gives a full chop
+  over the existing swell. Eight quarter-beat steps, zero offset, soft edges.
+  In the ordinary Steps editor, 0% retains the sound and -100% ducks it.
+- Uses the existing shared LFO editor, save codec, and clock. No new song IDs,
+  envelope mode, or separate UI. Chord Slur and harmonic followers remain intact.
+- The separate web audition was discarded after user feedback. The user wants
+  a playable in-app iteration first; melodic consolidation remains deferred.
+- Build, all 997 tests (9 ignored), strict all-target Clippy, and formatting pass.
+  Keyboard replay covers Chop insertion and save. A separate live PTY probe
+  timed out during shutdown; no live listening acceptance is claimed.
+- DOX updated in source, performance guide, and the owning proposal. Parent
+  indexes unchanged because ownership and folder boundaries did not change.
+
 ## November 6 playing-feedback corrections
 
 - Perc starts at zero. Its meter display floor is -66 dB instead of -42 dB;
@@ -22,7 +37,7 @@ Updated: 2026-11-06
   exercised freeze/release, and exited cleanly twice. Evidence lives under
   `target/playing-feedback/`; no listening or physical-keyboard acceptance claimed.
 - The show plan records proposed independent Pad articulation rhythm and three
-  independent melodic parts with shared machinery. Neither redesign is implemented.
+  independent melodic parts with shared machinery. The shared melodic redesign is not implemented; the small Pad rhythm shortcut is described above.
 - DOX: source and engine contracts, performance guide, and owning proposal updated.
   Root/docs parent instructions and child indexes remain unchanged: no ownership
   boundary or directory changed.

@@ -120,7 +120,13 @@ eight steps, zero Offset, and only step 5 active: beats 2 and 4 in a repeated
 Freeze must sustain captured pitch; the half-speed grain playback caused an
 octave drop. These corrections require audition after automated checks.
 
-**Proposed Pad rhythm design, not implemented:** separate the progression clock
+**First playable Pad rhythm experiment:** `/chop` on Pad Level seeds the
+existing Steps LFO as an eight-step, quarter-beat duck pattern, initially at
+zero Amount. Raise Amount to audition chopping without restarting the swell.
+The user requested the experiment directly in nooise; a separate web audition
+was discarded. No new saved IDs or parallel sequencer are introduced.
+
+**Further Pad articulation proposal, not implemented:** separate the progression clock
 (which chord, including a 64-bar phrase) from a repeating articulation pattern
 (when that chord sounds). Start with a bypassed pattern, editable Rate, Steps,
 Offset, and Hit/Hold/Rest cells in an ordinary keyboard drill. Hit retriggers the
@@ -130,13 +136,12 @@ restarting the rhythmic phase. Preserve v3 Slur. Keep rhythmic rests local to
 Pads: they must not silence Chord-following melodic parts. Existing progression
 Rest still means no harmonic source under the accepted chord contract.
 
-Decide through audition whether the desired first slice is amplitude chopping
-of a continuous pad (a reusable shared gate module) or envelope retriggering
-(a note-generation lane). They are different sounds; a slow Pad attack can make
-sixteenth-note retriggers nearly inaudible. Test the same long progression with
-both before adding controls. Never reuse the retired Pad Stabs IDs. Persist the
+The first slice uses amplitude chopping through the shared Steps lane. Envelope
+retriggering remains a separate note-generation proposal: a six-second Pad
+attack makes sixteenth-note retriggers nearly inaudible. Audition the in-app
+shortcut before adding another sequencer or a dedicated gate module. Never reuse the retired Pad Stabs IDs. Persist the
 chosen pattern and phase/anchor compactly; check recall, tempo changes, Vamp,
-transport restart, and chord/rhythm boundary coincidences.
+transport restart, and chord/chop boundary coincidences.
 
 **Melodic recommendation, not implemented:** keep three independent parts with
 one common editing model. Separate note source (live keys, authored sequence,

@@ -3395,6 +3395,7 @@ fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
             ("pulse", recipe::RecipeId::Pulse),
             ("drift", recipe::RecipeId::Drift),
             ("rise", recipe::RecipeId::Rise),
+            ("chop", recipe::RecipeId::Rhythm),
         ] {
             let mut events = recipe_keys(query);
             events.push(TraceEvent::Idle { after_ms: 40 });

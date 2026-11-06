@@ -8340,6 +8340,21 @@ fn palette_recipes_render_like_authored_lanes_and_start_sample_identical() {
         id.recipe().apply(&mut snapshot, target).unwrap();
         let mut authored = AutomationState::default();
         match id {
+            recipe::RecipeId::Rhythm => {
+                let mut steps = [-1.0; MAX_LFO_STEPS];
+                steps[..8].copy_from_slice(&[0.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0, -1.0]);
+                authored.add_route(
+                    address,
+                    LfoRoute {
+                        shape: LfoShape::Steps,
+                        cycle_beats: 0.25,
+                        step_count: 8,
+                        steps,
+                        step_glide: 0.04,
+                        ..LfoRoute::default()
+                    },
+                );
+            }
             recipe::RecipeId::Sway
             | recipe::RecipeId::Tremolo
             | recipe::RecipeId::Pulse
@@ -8351,7 +8366,7 @@ fn palette_recipes_render_like_authored_lanes_and_start_sample_identical() {
                     recipe::RecipeId::Pulse => (LfoShape::Square, 1.0, 0),
                     recipe::RecipeId::Drift => (LfoShape::RandomDrift, 4.0, 0x4452_4946),
                     recipe::RecipeId::Rise => (LfoShape::Ramp, 8.0, 0),
-                    recipe::RecipeId::Sidechain => unreachable!(),
+                    recipe::RecipeId::Sidechain | recipe::RecipeId::Rhythm => unreachable!(),
                 };
                 authored.add_route(
                     address,

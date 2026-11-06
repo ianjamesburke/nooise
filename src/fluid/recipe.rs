@@ -10,6 +10,7 @@ pub(crate) enum RecipeId {
     Pulse,
     Drift,
     Rise,
+    Rhythm,
 }
 
 pub(crate) struct Recipe {
@@ -31,6 +32,19 @@ pub(crate) enum RecipeLane {
 }
 
 pub(crate) const RECIPES: &[Recipe] = &[
+    Recipe {
+        id: RecipeId::Rhythm,
+        name: "Chop",
+        aliases: &["rhythm gate"],
+        description: "8-step duck, 1/4 beat, starts silent",
+        lane: RecipeLane::Lfo {
+            shape: LfoShape::Steps,
+            seed: 0,
+            beats: 0.25,
+            depth: 0.0,
+            ramp: RampParams::DEFAULT,
+        },
+    },
     Recipe {
         id: RecipeId::Sway,
         name: "Sway",
@@ -161,7 +175,7 @@ impl RecipeTarget {
 
 impl Recipe {
     fn lfo_route(&self) -> LfoRoute {
-        match self.lane {
+        let mut route = match self.lane {
             RecipeLane::Lfo {
                 shape,
                 beats,
@@ -176,7 +190,16 @@ impl Recipe {
                 ramp,
                 ..LfoRoute::default()
             },
+        };
+        if self.id == RecipeId::Rhythm {
+            // Neutral sustains the selected base; negative steps duck it.
+            // With Level selected, full Amount makes these complete rests.
+            route.steps = [-1.0; MAX_LFO_STEPS];
+            route.steps[..8].copy_from_slice(&[0.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0, -1.0]);
+            route.step_count = 8;
+            route.step_glide = 0.04;
         }
+        route
     }
 
     fn keeps_one_authored_lane(&self) -> bool {
@@ -249,6 +272,125 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rhythm_gates_level_independently_of_a_long_slurred_progression() {
+        let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
+        snapshot.controls.pad.chord_bars = 8.0;
+        snapshot.controls.pad.chord_count = 8.0;
+        for slot in 1..8 {
+            snapshot.controls.pad.edit_chord_slot(slot).gate = ChordSlotControls::GATE_SLUR;
+        }
+        let target = RecipeTarget::capture("pad.level", &snapshot).unwrap();
+        RecipeId::Rhythm
+            .recipe()
+            .apply(&mut snapshot, target)
+            .unwrap();
+        let address = ControlAddress::new(target.id);
+        let route = snapshot.automation.route_mut(address).unwrap();
+        assert_eq!(route.depth_ratio, 0.0);
+        route.depth_ratio = 1.0;
+        route.step_count = 7;
+        route.phase_offset_beats = 0.5;
+        let route = *route;
+        let base = snapshot.controls.pad.level;
+        let mut follower = ProgressionFollower::new();
+        for tick in 0..1024 {
+            let beat = tick as f64 * 0.25 + 0.125;
+            let mut controls = snapshot.controls.pad.clone();
+            let context = ModContext {
+                beat,
+                kick_interval_beats: 1.0,
+                kick_offset_beats: 0.0,
+            };
+            controls.level = modulated_control_value_full(
+                spec_by_id(target.id).unwrap(),
+                &[route],
+                &[],
+                base,
+                context,
+            );
+            let expected = if route.wave_at(beat) == 0.0 {
+                base
+            } else {
+                0.0
+            };
+            assert!((controls.level - expected).abs() < 0.0001);
+            let (progression, slot) =
+                follower.follow(&controls, TimingContext::new(48_000.0, 120.0, beat));
+            assert_eq!(slot, (beat / 32.0).floor() as usize);
+            assert!(!controls.chord_slot(progression, slot).is_rest());
+        }
+        let mut song = SongState::from_controls(snapshot.controls.clone());
+        song.automation = snapshot.automation;
+        let code = song::encode_song_code(&song).unwrap();
+        assert!(code.len() < 500, "one rhythm must stay compact");
+        let restored = song::decode_song_code(&code).unwrap();
+        let saved = restored.automation.route(address).unwrap();
+        for beat in [0.125, 0.625, 1.125, 31.875, 32.125, 255.875] {
+            assert!((saved.wave_at(beat) - route.wave_at(beat)).abs() < 0.0001);
+        }
+        assert_eq!(saved.step_count, 7);
+        assert_eq!(saved.phase_offset_beats, 0.5);
+    }
+
+    #[test]
+    fn rhythm_rest_does_not_restart_the_pad_swell() {
+        let mut controls = PadControls::default();
+        let mut reference = PadEngine::new(
+            8_000.0,
+            &controls,
+            MasterKey::Home,
+            Arc::new(FluidTelemetry::default()),
+        );
+        let mut chopped = PadEngine::new(
+            8_000.0,
+            &controls,
+            MasterKey::Home,
+            Arc::new(FluidTelemetry::default()),
+        );
+        reference.rng = StdRng::seed_from_u64(7);
+        chopped.rng = StdRng::seed_from_u64(7);
+        let mut route = RecipeId::Rhythm.recipe().lfo_route();
+        route.depth_ratio = 1.0;
+        let base = controls.level;
+        let mut open_power = 0.0;
+        let mut closed_power = 0.0;
+        for frame in 0..64_000 {
+            let beat = frame as f64 / 4_000.0;
+            let timing = TimingContext::new(8_000.0, 120.0, beat);
+            controls.level = base;
+            let dry = reference.next(&controls, MasterKey::Home, timing);
+            controls.level = modulated_control_value_full(
+                spec_by_id("pad.level").unwrap(),
+                &[route],
+                &[],
+                base,
+                ModContext {
+                    beat,
+                    kick_interval_beats: 1.0,
+                    kick_offset_beats: 0.0,
+                },
+            );
+            let wet = chopped.next(&controls, MasterKey::Home, timing);
+            assert_eq!(reference.layers.len(), chopped.layers.len());
+            for (original, gated) in reference.layers.iter().zip(&chopped.layers) {
+                for (a, b) in original.tones.iter().zip(&gated.tones) {
+                    assert_eq!(a.stack.envelope.level(), b.stack.envelope.level());
+                }
+            }
+            if frame > 48_000 {
+                if route.wave_at(beat) == -1.0 {
+                    closed_power += wet.0 * wet.0 + wet.1 * wet.1;
+                } else if route.wave_at(beat) == 0.0 {
+                    assert_eq!(dry, wet);
+                    open_power += wet.0 * wet.0 + wet.1 * wet.1;
+                }
+            }
+        }
+        assert!(open_power > 0.01);
+        assert_eq!(closed_power, 0.0);
+    }
+
+    #[test]
     fn recipe_table_has_unique_ids_and_valid_lanes() {
         for id in [
             RecipeId::Sway,
@@ -257,6 +399,7 @@ mod tests {
             RecipeId::Pulse,
             RecipeId::Drift,
             RecipeId::Rise,
+            RecipeId::Rhythm,
         ] {
             assert_eq!(RECIPES.iter().filter(|recipe| recipe.id == id).count(), 1);
             let recipe = id.recipe();
