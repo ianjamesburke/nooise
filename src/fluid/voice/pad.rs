@@ -1798,7 +1798,7 @@ impl ChordWindow {
 
     /// The table slot the window's `step`th chord comes from.
     pub(crate) fn slot(self, step: usize) -> usize {
-        (self.offset + step) % CHORD_SLOT_COUNT
+        SequenceWindow::new(self.count, self.offset).slot(step)
     }
 
     /// Every slot the window plays, in play order.

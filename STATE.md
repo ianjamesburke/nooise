@@ -1,8 +1,19 @@
 # V3 performance checkpoint
 
-Updated: 2026-11-03
+Updated: 2026-11-06
 
-## Current candidate
+## Stint 0007 completion on v3
+
+- Implementation completed in this worktree on top of `7ba8a96`; the older `8573732` candidate was selectively ported, preserving subsequent v3 and show work.
+- User confirmed v3 Slur remains: chord steps advance their own harmony without restarting the swell. Literal chord Tie in the original stint is superseded; Lead and Tonal retain literal note ties.
+- Shared sixteen-step windows; Pad Rate reaches 0.125 beats. Lead and every Tonal character sustain through the complete final Tie and loop wrap. Tonal evolution preserves rests/ties, and stop, sequence edits, and section restoration release outgoing holds. Chord rests suppress new chord-following triggers; Scale remains playable.
+- All 21 built-in songs re-encoded through the current encoder at range epoch 15. Older modulation on the expanded Pad Rate dial is refused as StaleRange.
+- Verification: 991 Rust tests passed, 9 ignored; 6 Python authoring tests passed; format, strict all-target Clippy, build, and diff checks passed. New tests cover short-decay ties, loop wrap, initial source-less ties, evolution, follower rests, and section restoration.
+- `src/AGENTS.md` updated for the shared sequence primitive, timing, sustain and current Slur contract. Root and product DOX documents and child indexes remain unchanged because ownership and workflow did not change.
+- Muted real-app PTY smoke: the Rate row displayed 0.125 beats after keyboard reset; A/B sections stored, recalled, reopened, and both app launches exited 0. Evidence: `target/stint-0007/live-smoke.json` and `.ansi`. This does not establish listening or physical-keyboard acceptance.
+- Hands-on listening remains pending. No PR, merge, release, or publication; run `cargo run` here to audition.
+
+## Previous show checkpoint
 
 - Worktree: `worktrees/v3`.
 - Verified source commit: `54f9968` (`feat: add slapback delay preset`).

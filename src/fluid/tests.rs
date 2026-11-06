@@ -3655,7 +3655,7 @@ fn apply_reset_moves_selected_control_to_floor() {
 
     controls.pad.chord_bars = 16.0;
     apply_reset(Tab::Chords, 5, &mut controls);
-    assert_close(controls.pad.chord_bars, 0.0625);
+    assert_close(controls.pad.chord_bars, 0.03125);
 }
 
 /// Shift+L is the mirror of the reset gesture: reset already owns the bottom
@@ -12739,4 +12739,256 @@ fn sweet_dreams_holds_cm_for_a_bar_then_ab_and_g_for_half_each() {
         vec![0.0, 4.0, 6.0, 8.0, 12.0, 14.0],
         "Cm at 0 and 8, Ab at 4 and 12, G at 6 and 14"
     );
+}
+
+#[test]
+fn sequencer_completion_pad_rate_reaches_an_eighth_beat_and_round_trips() {
+    let mut controls = FluidControls::default();
+    let spec = spec_by_id("pad.chord_bars").unwrap();
+    spec.apply_value(0.125, &mut controls);
+    assert_eq!(controls.pad.chord_bars * 4.0, 0.125);
+    let loaded =
+        decode_song_code(&encode_song_code(&SongState::from_controls(controls)).unwrap()).unwrap();
+    assert_eq!(loaded.controls.pad.chord_bars * 4.0, 0.125);
+    let mut cursor = ProgressionCursor::new(&loaded.controls.pad);
+    cursor.tick(
+        &loaded.controls.pad,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
+    );
+    cursor.tick(
+        &loaded.controls.pad,
+        TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.125),
+    );
+    assert_eq!(cursor.step, 1);
+}
+
+#[test]
+fn sequencer_completion_lead_holds_through_the_entire_final_tie() {
+    let mut controls = LeadControls {
+        pattern: CUSTOM_LEAD_PATTERN_INDEX as f32,
+        level: 0.5,
+        rate_beats: 0.5,
+        step_count: 4.0,
+        attack: 0.005,
+        decay: 0.01,
+        steps: [0.0; LEAD_STEP_COUNT],
+        ..LeadControls::default()
+    };
+    controls.steps[..3].copy_from_slice(&[1.0, -1.0, -1.0]);
+    let mut engine = LeadEngine::new(SAMPLE_RATE);
+    let pad = PadControls::default();
+    for sample in 0..(SAMPLE_RATE as u64 * 7 / 10) {
+        engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+    }
+    assert!(engine.voice.is_some(), "final Tie spans 0.5s through 0.75s");
+    for sample in (SAMPLE_RATE as u64 * 7 / 10)..(SAMPLE_RATE as u64 * 9 / 10) {
+        engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+    }
+    assert!(engine.voice.is_none(), "Rest releases the tied note");
+}
+
+#[test]
+fn sequencer_completion_tonal_short_notes_survive_ties_for_every_character() {
+    for synth_type in 0..TONAL_SYNTH_TYPES.len() {
+        let mut controls = TonalControls {
+            synth_type: synth_type as f32,
+            level: 0.5,
+            rate_beats: 0.5,
+            step_count: 4.0,
+            attack: 0.005,
+            decay: 0.01,
+            steps: [0.0; TONAL_STEP_COUNT],
+            ..TonalControls::default()
+        };
+        controls.steps[..3].copy_from_slice(&[1.0, -1.0, -1.0]);
+        let mut engine = TonalEngine::new(SAMPLE_RATE);
+        let pad = PadControls::default();
+        let mut energy = 0.0;
+        for sample in 0..(SAMPLE_RATE as u64 * 7 / 10) {
+            let (l, r) = engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+            if sample > SAMPLE_RATE as u64 * 6 / 10 {
+                energy += l * l + r * r;
+            }
+        }
+        assert_eq!(
+            engine.voices.len(),
+            1,
+            "character {synth_type}: keep one held note"
+        );
+        assert!(
+            energy > 0.001,
+            "character {synth_type}: Tie must remain audible"
+        );
+        for sample in (SAMPLE_RATE as u64 * 7 / 10)..(SAMPLE_RATE as u64 * 9 / 10) {
+            engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        }
+        assert!(
+            engine.voices.is_empty(),
+            "character {synth_type}: release on Rest"
+        );
+    }
+}
+
+#[test]
+fn sequencer_completion_tonal_evolve_preserves_authored_rests_and_ties() {
+    let mut controls = TonalControls {
+        step_count: 4.0,
+        steps: [0.0; TONAL_STEP_COUNT],
+        ..TonalControls::default()
+    };
+    controls.steps[..4].copy_from_slice(&[1.0, -1.0, 0.0, 3.0]);
+    let mut engine = TonalEngine::new(SAMPLE_RATE);
+    engine.sync_sequence(&controls);
+    engine.evolution_seed = 42;
+    for _ in 0..32 {
+        engine.evolve_phrase(1.0);
+        assert_eq!(&engine.evolved_phrase[1..3], &[-1, 0]);
+    }
+    controls.steps = [0.0; TONAL_STEP_COUNT];
+    engine.sync_sequence(&controls);
+    engine.evolve_phrase(1.0);
+    assert!(engine.evolved_phrase.iter().all(|step| *step == 0));
+}
+
+#[test]
+fn sequencer_completion_chord_rests_suppress_followers_but_leave_scale_sequences_playable() {
+    let mut pad = PadControls::default();
+    pad.edit_chord_slot(0).gate = ChordSlotControls::GATE_REST;
+    for follow in [0.0, 1.0] {
+        let mut lead = LeadEngine::new(SAMPLE_RATE);
+        let mut tonal = TonalEngine::new(SAMPLE_RATE);
+        let mut bass = BassEngine::new(SAMPLE_RATE);
+        let mut arp = ArpEngine::new(SAMPLE_RATE);
+        let lead_controls = LeadControls {
+            level: 0.5,
+            follow,
+            ..LeadControls::default()
+        };
+        let tonal_controls = TonalControls {
+            level: 0.5,
+            follow,
+            ..TonalControls::default()
+        };
+        let bass_controls = BassControls {
+            level: 0.5,
+            follow,
+            ..BassControls::default()
+        };
+        let arp_controls = ArpControls {
+            gain: 0.5,
+            follow,
+            ..ArpControls::default()
+        };
+        for sample in 0..100 {
+            let t = timing(sample, 120.0);
+            lead.next(&lead_controls, &pad, MasterKey::Home, t);
+            tonal.next(&tonal_controls, &pad, MasterKey::Home, t);
+            bass.next(&bass_controls, &pad, MasterKey::Home, t);
+            arp.next(&arp_controls, &pad, MasterKey::Home, t);
+        }
+        let sounding = follow == 1.0;
+        assert_eq!(lead.voice.is_some(), sounding, "Lead Follow {follow}");
+        assert_eq!(!tonal.voices.is_empty(), sounding, "Tonal Follow {follow}");
+        assert_eq!(bass.voice.is_some(), sounding, "Bass Follow {follow}");
+        assert_eq!(!arp.voices.is_empty(), sounding, "Arp Follow {follow}");
+    }
+}
+
+#[test]
+fn sequencer_completion_tonal_hold_releases_on_stop_or_sequence_edit() {
+    for stop in [false, true] {
+        let mut controls = TonalControls {
+            level: 0.5,
+            step_count: 2.0,
+            attack: 0.005,
+            decay: 0.01,
+            steps: [0.0; TONAL_STEP_COUNT],
+            ..TonalControls::default()
+        };
+        controls.steps[..2].copy_from_slice(&[1.0, -1.0]);
+        let pad = PadControls::default();
+        let mut engine = TonalEngine::new(SAMPLE_RATE);
+        for sample in 0..24_000 {
+            engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        }
+        assert!(!engine.voices.is_empty());
+        if !stop {
+            controls.steps = [0.0; TONAL_STEP_COUNT];
+        }
+        for sample in 24_000..30_000 {
+            let mut t = timing(sample, 120.0);
+            if stop {
+                t.transport = Transport::Stopped;
+            }
+            engine.next(&controls, &pad, MasterKey::Home, t);
+        }
+        assert!(engine.voices.is_empty(), "stop={stop}: no stranded sustain");
+    }
+}
+
+#[test]
+fn sequencer_completion_section_restore_releases_outgoing_tonal_tie() {
+    let mut controls = TonalControls {
+        level: 0.5,
+        step_count: 2.0,
+        attack: 0.005,
+        decay: 0.01,
+        steps: [0.0; TONAL_STEP_COUNT],
+        ..TonalControls::default()
+    };
+    controls.steps[..2].copy_from_slice(&[1.0, -1.0]);
+    let pad = PadControls::default();
+    let mut engine = TonalEngine::new(SAMPLE_RATE);
+    for sample in 0..12_000 {
+        engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+    }
+    assert_eq!(engine.voices.len(), 1);
+    controls.steps = [0.0; TONAL_STEP_COUNT];
+    engine.restore_sequence(&TonalSequenceState::from_controls(&controls));
+    for sample in 12_000..18_000 {
+        engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+    }
+    assert!(
+        engine.voices.is_empty(),
+        "section recall must not strand a held voice"
+    );
+}
+
+#[test]
+fn sequencer_completion_melodic_ties_hold_across_loop_wrap() {
+    let mut controls = FluidControls::default();
+    controls.lead.level = 0.5;
+    controls.lead.pattern = CUSTOM_LEAD_PATTERN_INDEX as f32;
+    controls.lead.rate_beats = 0.5;
+    controls.lead.step_count = 4.0;
+    controls.lead.attack = 0.005;
+    controls.lead.decay = 0.01;
+    controls.lead.steps = [0.0; LEAD_STEP_COUNT];
+    controls.lead.steps[..4].copy_from_slice(&[-1.0, 0.0, 1.0, -1.0]);
+    controls.tonal.level = 0.5;
+    controls.tonal.rate_beats = 0.5;
+    controls.tonal.step_count = 4.0;
+    controls.tonal.attack = 0.005;
+    controls.tonal.decay = 0.01;
+    controls.tonal.steps = controls.lead.steps;
+    let mut lead = LeadEngine::new(SAMPLE_RATE);
+    let mut tonal = TonalEngine::new(SAMPLE_RATE);
+    for sample in 0..(SAMPLE_RATE as u64 * 12 / 10) {
+        let t = timing(sample, 120.0);
+        lead.next(&controls.lead, &controls.pad, MasterKey::Home, t);
+        tonal.next(&controls.tonal, &controls.pad, MasterKey::Home, t);
+        if sample == 100 {
+            assert!(lead.voice.is_none(), "an initial Tie has no source");
+            assert!(tonal.voices.is_empty());
+        }
+    }
+    assert!(lead.voice.is_some(), "wrap Tie lasts until 1.25 seconds");
+    assert_eq!(tonal.voices.len(), 1);
+    for sample in (SAMPLE_RATE as u64 * 12 / 10)..(SAMPLE_RATE as u64 * 14 / 10) {
+        let t = timing(sample, 120.0);
+        lead.next(&controls.lead, &controls.pad, MasterKey::Home, t);
+        tonal.next(&controls.tonal, &controls.pad, MasterKey::Home, t);
+    }
+    assert!(lead.voice.is_none());
+    assert!(tonal.voices.is_empty());
 }

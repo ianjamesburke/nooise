@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::module::LayerModules;
 use super::voice::{
-    CUSTOM_PROGRESSION_INDEX, LeadPattern, PROGRESSIONS, arp_generate_steps,
+    CUSTOM_PROGRESSION_INDEX, LeadPattern, PROGRESSIONS, SEQUENCE_STEP_COUNT, arp_generate_steps,
     arp_pattern_from_control, progression_index,
 };
 
@@ -247,7 +247,7 @@ pub(crate) const DEFAULT_CHORD_COUNT: usize = 8;
 
 /// Number of chord sequence steps (`PadControls::chord_slots`), and the max of
 /// `pad.chord_count`.
-pub(crate) const CHORD_SLOT_COUNT: usize = 16;
+pub(crate) const CHORD_SLOT_COUNT: usize = SEQUENCE_STEP_COUNT;
 
 /// Default per-slot root degrees for a fresh custom progression: a stepwise
 /// shape around the tonic so switching into Custom mode is immediately
@@ -271,7 +271,7 @@ pub(crate) type ChordOverrideSlots =
 pub(crate) struct PadControls {
     pub(crate) level: f32,
     pub(crate) voice_type: f32, // Character selector; labels and range live in PAD_TYPES.
-    pub(crate) chord_bars: f32, // 0.0625..=64.0 bars (0.25..=256 beats)
+    pub(crate) chord_bars: f32, // 0.03125..=64.0 bars (0.125..=256 beats)
     pub(crate) chord_count: f32,
     /// The table slot the loop starts from, 0..16; `ChordWindow` wraps.
     pub(crate) chord_offset: f32,
@@ -474,7 +474,7 @@ impl KickControls {
     }
 }
 
-pub(crate) const TONAL_STEP_COUNT: usize = 16;
+pub(crate) const TONAL_STEP_COUNT: usize = SEQUENCE_STEP_COUNT;
 pub(crate) const TONAL_PHRASE_PRESET_COUNT: usize = 8;
 pub(crate) const CUSTOM_TONAL_PHRASE_INDEX: usize = TONAL_PHRASE_PRESET_COUNT;
 
@@ -808,7 +808,7 @@ impl ArpControls {
 }
 
 /// Number of steps in the Lead's pattern lane, and the max of `lead.steps`.
-pub(crate) const LEAD_STEP_COUNT: usize = 16;
+pub(crate) const LEAD_STEP_COUNT: usize = SEQUENCE_STEP_COUNT;
 pub(crate) const LEAD_PATTERN_PRESET_COUNT: usize = 4;
 pub(crate) const CUSTOM_LEAD_PATTERN_INDEX: usize = 5;
 

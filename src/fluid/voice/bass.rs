@@ -335,6 +335,7 @@ impl BassEngine {
             let rhythm_step = lane_step_at(timing.beat, rate_beats, c.offset_beats, live_steps);
             // When inbound OSC notes are driving Bass, played notes replace the rhythm pattern.
             if !self.osc_input_active
+                && LeadFollow::from_value(c.follow).has_source(pad, progression, slot)
                 && let Some(tone) = lead_step_tone(self.evolved_steps[rhythm_step])
             {
                 let follow = LeadFollow::from_value(c.follow);

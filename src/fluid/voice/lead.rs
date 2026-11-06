@@ -207,6 +207,10 @@ impl LeadFollow {
         LEAD_FOLLOWS[(value.round() as i64).clamp(0, LEAD_FOLLOWS.len() as i64 - 1) as usize]
     }
 
+    pub(crate) fn has_source(self, pad: &PadControls, progression: usize, slot: usize) -> bool {
+        self == Self::Scale || !pad.chord_slot(progression, slot).is_rest()
+    }
+
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Chord => "Chord",
@@ -280,20 +284,17 @@ pub(crate) fn progression_scale(_pad: &PadControls, progression: usize) -> LeadR
 }
 
 pub(crate) const LEAD_STEP_TIE: f32 = -1.0;
-pub(crate) const LEAD_STEP_REST: f32 = 0.0;
 
 pub(crate) fn lead_step_is_tie(value: f32) -> bool {
-    (value.round() as i64) < LEAD_STEP_REST as i64
+    matches!(SequenceStep::note(value), SequenceStep::Tie)
 }
 
 /// A step value (or a play-row key) as a 1-based tone; `None` is a rest (0)
 /// or tie (-1). Out-of-table values clamp to the valid range.
 pub(crate) fn lead_step_tone(value: f32) -> Option<usize> {
-    let rounded = (value.round() as i64).clamp(-1, LEAD_TONE_COUNT as i64);
-    if rounded <= 0 {
-        None
-    } else {
-        Some(rounded as usize)
+    match SequenceStep::note(value) {
+        SequenceStep::Hit(tone) => Some(tone.min(LEAD_TONE_COUNT)),
+        SequenceStep::Rest | SequenceStep::Tie => None,
     }
 }
 
@@ -778,19 +779,14 @@ impl LeadEngine {
             // the trigger still ticks so Play resumes on the clock's step.
             if (c.level != 0.0 || osc_enabled)
                 && LeadPattern::from_value(c.pattern).is_playing()
+                && LeadFollow::from_value(c.follow).has_source(pad, progression, slot)
                 && !self.held_seen
                 && self.input_note.is_none()
             {
                 let step_val = self.evolved_steps[lane_step];
                 if let Some(tone) = lead_step_tone(step_val) {
-                    let mut tied_steps = 0usize;
-                    while tied_steps + 1 < count
-                        && lead_step_is_tie(
-                            self.evolved_steps[(lane_step + 1 + tied_steps) % count],
-                        )
-                    {
-                        tied_steps += 1;
-                    }
+                    let tied_steps = SequenceWindow::new(count, 0)
+                        .ties_after(lane_step, |step| lead_step_is_tie(self.evolved_steps[step]));
                     let hold_for_tie = tied_steps > 0;
                     self.lane_holding = hold_for_tie;
                     let reach =
@@ -807,14 +803,7 @@ impl LeadEngine {
                         };
                         self.play_osc(note, tune, osc_gate, false);
                     }
-                } else if lead_step_is_tie(step_val) {
-                    let next_is_tie =
-                        count > 1 && lead_step_is_tie(self.evolved_steps[(lane_step + 1) % count]);
-                    if !next_is_tie && self.lane_holding {
-                        self.lane_holding = false;
-                        self.release();
-                    }
-                } else if self.lane_holding {
+                } else if !lead_step_is_tie(step_val) && self.lane_holding {
                     self.lane_holding = false;
                     self.release();
                 }

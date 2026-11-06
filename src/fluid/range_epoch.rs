@@ -15,7 +15,8 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = RHYTHM_GATE_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = PAD_EIGHTH_BEAT_EPOCH;
+pub(crate) const PAD_EIGHTH_BEAT_EPOCH: u16 = 15;
 /// Rhythm moved out of the chord `degree` sentinels into a `gate` row, so the
 /// degree dial narrowed from `-9..=7` to `-7..=7`.
 pub(crate) const RHYTHM_GATE_EPOCH: u16 = 14;
@@ -282,6 +283,10 @@ const RANGE_CHANGES: &[RangeChange] = &[
         epoch: RHYTHM_GATE_EPOCH,
         target: RangeTarget::ChordSlot,
     },
+    RangeChange {
+        epoch: PAD_EIGHTH_BEAT_EPOCH,
+        target: RangeTarget::Control("pad.chord_bars"),
+    },
 ];
 
 impl RangeChange {
@@ -321,6 +326,19 @@ mod tests {
     use super::super::song::{SongCodeError, encode_song_code_at_epoch};
     use super::*;
 
+    #[test]
+    fn pad_eighth_beat_rate_refuses_older_modulation_depths() {
+        let mut song = SongState::default();
+        song.automation
+            .open_or_create(ControlAddress::new("pad.chord_bars"))
+            .depth_ratio = 0.25;
+        let stale = encode_song_code_at_epoch(&song, PAD_EIGHTH_BEAT_EPOCH - 1).unwrap();
+        assert_eq!(
+            decode_song_code(&stale).err(),
+            Some(SongCodeError::StaleRange("pad.chord_bars"))
+        );
+        assert!(decode_song_code(&encode_song_code(&song).unwrap()).is_ok());
+    }
     /// Built-in song 2 as the last build on the 80..8000 Hz cutoff dial
     /// saved it (`a54b594`): epoch 0, with an LFO on Perc's Filter cutoff.
     const PRE_WIDENING_SONG_2: &str = "n1_Tk9PSQIAcwAAABgAAAAAj8IBAABUUwIAAEhhAwADAgQAAwIFAAMEBgADCAgAALieCQAAAAAKAACZmQ4AAwMQAAMFEwADAhgAAwMaAAMFHQADAx4AAwJ8AAB6lDMAAFwPNQAAcTk2AAIAAIhAlQABQwHFAAJKMPtEcQAARUUBOwAAAAMACgAAAMA_pDAAAABAP9XNKX4zAAAAeEEfBQAAAAAAmaB_xJUAAACAPy4FAAAAgD4AAAAAAAAAAAAA";

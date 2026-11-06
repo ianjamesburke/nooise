@@ -1,5 +1,4 @@
-//! The Tonal voice: evolving A-minor phrase degrees sounded in the selected
-//! progression's home scale, with per-step randomness.
+//! The Tonal voice: evolving sixteen-step phrases following chords or the home scale.
 
 use super::*;
 
@@ -18,6 +17,7 @@ pub(crate) struct TonalEngine {
     pub(crate) rng: StdRng,
     pub(crate) evolution_seed: u64,
     pub(crate) evolution_count: u64,
+    lane_holding: bool,
     session_state: Option<LiveSession>,
     telemetry: Arc<FluidTelemetry>,
 }
@@ -415,6 +415,7 @@ impl TonalEngine {
             rng: StdRng::from_entropy(),
             evolution_seed: state.evolution_seed,
             evolution_count: state.evolution_count,
+            lane_holding: false,
             session_state,
             telemetry,
         }
@@ -430,6 +431,10 @@ impl TonalEngine {
         let (progression, slot) = self.progression.follow(pad, timing);
         let tune = key.shift(progression) as f32;
         self.sync_sequence(c);
+
+        if timing.transport == Transport::Stopped {
+            self.release_lane();
+        }
 
         let rate_beats = tonal_rate_beats(c.rate_beats);
         let count = tonal_live_step_count(c.step_count);
@@ -453,19 +458,20 @@ impl TonalEngine {
                 .unwrap_or(0);
             let pan = self.rng.gen_range(-0.5f32..0.5);
 
-            if step_val < 0 {
-                // Tie: extend the last active voice's decay by one step duration.
-                let extra_seconds = (f64::from(rate_beats) * 60.0 / timing.bpm.max(1.0)) as f32;
-                if let Some(last) = self.voices.iter_mut().rev().find(|v| !v.is_done()) {
-                    last.extend_decay(extra_seconds);
-                }
-            } else if step_val > 0 {
-                let tone = (step_val as usize).clamp(1, LEAD_TONE_COUNT);
+            let step = SequenceStep::note(step_val as f32);
+            let has_source = LeadFollow::from_value(c.follow).has_source(pad, progression, slot);
+            if !matches!(step, SequenceStep::Tie) || !has_source {
+                self.release_lane();
+            }
+            if let SequenceStep::Hit(tone) = step
+                && has_source
+            {
+                let tone = tone.min(LEAD_TONE_COUNT);
                 let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
                 let note = reach.note(tone, c.octave);
                 let hz = note_hz(note, tune);
                 if c.level != 0.0 {
-                    self.voices.push(TonalVoice::new(
+                    let mut voice = TonalVoice::new(
                         wrapped_index(c.synth_type, TONAL_SYNTH_TYPES.len()),
                         TonalNote {
                             midi: note,
@@ -475,7 +481,12 @@ impl TonalEngine {
                             attack_time: c.attack,
                             decay_time: c.decay,
                         },
-                    ));
+                    );
+                    self.lane_holding = SequenceWindow::new(count, 0)
+                        .ties_after(self.step_index, |step| self.evolved_phrase[step] < 0)
+                        > 0;
+                    voice.set_hold(self.lane_holding);
+                    self.voices.push(voice);
                     self.telemetry
                         .publish_hit(MusicalHit::Tonal, c.level, pitch_class(note));
                 }
@@ -502,6 +513,7 @@ impl TonalEngine {
 
     /// Restore the chosen evolution state when a whole song lands.
     pub(crate) fn restore_sequence(&mut self, state: &TonalSequenceState) {
+        self.release_lane();
         self.active_phrase = state.phrase;
         self.active_steps_source = None;
         self.evolved_phrase.clone_from(&state.notes);
@@ -509,6 +521,15 @@ impl TonalEngine {
         self.evolution_count = state.evolution_count;
         self.step_index = 0;
         self.last_cycle = None;
+    }
+
+    fn release_lane(&mut self) {
+        if self.lane_holding {
+            if let Some(voice) = self.voices.last_mut() {
+                voice.set_hold(false);
+            }
+            self.lane_holding = false;
+        }
     }
 
     pub(crate) fn sync_sequence(&mut self, c: &TonalControls) {
@@ -532,6 +553,7 @@ impl TonalEngine {
         if self.active_phrase != phrase
             || self.active_steps_source != Some((steps_source, step_count))
         {
+            self.release_lane();
             self.active_phrase = phrase;
             self.active_steps_source = Some((steps_source, step_count));
             self.evolved_phrase = steps_source[..step_count].to_vec();
@@ -548,7 +570,15 @@ impl TonalEngine {
             return;
         }
         let draw = evolve_random(self.evolution_seed, self.evolution_count, u64::MAX);
-        let count = tonal_evolve_note_count(rate, self.evolved_phrase.len(), draw);
+        let mut active = [0; TONAL_STEP_COUNT];
+        let mut active_count = 0;
+        for (index, step) in self.evolved_phrase.iter().enumerate() {
+            if *step > 0 {
+                active[active_count] = index;
+                active_count += 1;
+            }
+        }
+        let count = tonal_evolve_note_count(rate, active_count, draw);
         if count == 0 {
             self.evolution_count = self.evolution_count.wrapping_add(1);
             self.publish_session_state();
@@ -556,12 +586,13 @@ impl TonalEngine {
         }
         let mut changed_positions = [usize::MAX; TONAL_MAX_EVOLVE_NOTES];
         for changed in 0..count {
-            let mut pos = evolve_random(self.evolution_seed, self.evolution_count, changed as u64)
-                as usize
-                % self.evolved_phrase.len();
-            while changed_positions[..changed].contains(&pos) {
-                pos = (pos + 1) % self.evolved_phrase.len();
+            let mut active_index =
+                evolve_random(self.evolution_seed, self.evolution_count, changed as u64) as usize
+                    % active_count;
+            while changed_positions[..changed].contains(&active[active_index]) {
+                active_index = (active_index + 1) % active_count;
             }
+            let pos = active[active_index];
             changed_positions[changed] = pos;
 
             let old = self.evolved_phrase[pos];
@@ -718,6 +749,13 @@ impl TonalVoice {
         }
     }
 
+    fn set_hold(&mut self, held: bool) {
+        match self {
+            Self::Sine(voice) => voice.life.held = held,
+            Self::Piano(voice) => voice.life.held = held,
+        }
+    }
+
     pub(crate) fn extend_decay(&mut self, extra_seconds: f32) {
         match self {
             Self::Sine(voice) => voice.life.extend_decay(extra_seconds),
@@ -766,6 +804,7 @@ pub(crate) fn attack_decay_gain(elapsed: f32, attack: f32, decay: f32, power: f3
 /// at the voice's own decay `power`, and its pan. A voice keeps only its
 /// oscillators next to one of these.
 pub(crate) struct TonalNoteLife {
+    held: bool,
     samples_elapsed: u64,
     total_samples: u64,
     total_duration: f32,
@@ -783,6 +822,7 @@ impl TonalNoteLife {
         // exactly at that point, so this length ends the voice in silence.
         let total = (((note.attack_time + note.decay_time) * sample_rate).round() as u64).max(1);
         Self {
+            held: false,
             samples_elapsed: 0,
             total_samples: total,
             total_duration: total as f32 / sample_rate,
@@ -812,7 +852,9 @@ impl TonalNoteLife {
             return None;
         }
         let elapsed = self.samples_elapsed as f32 / self.total_samples as f32 * self.total_duration;
-        self.samples_elapsed += 1;
+        if !self.holding_at_peak() {
+            self.samples_elapsed += 1;
+        }
         Some(attack_decay_gain(
             elapsed,
             self.attack_time,
@@ -823,6 +865,10 @@ impl TonalNoteLife {
 
     pub(crate) fn is_done(&self) -> bool {
         self.samples_elapsed >= self.total_samples
+    }
+
+    fn holding_at_peak(&self) -> bool {
+        self.held && self.samples_elapsed as f32 >= self.attack_time * self.sample_rate
     }
 
     pub(crate) fn pan(&self, s: f32) -> (f32, f32) {
@@ -931,7 +977,9 @@ impl PianoTonalVoice {
         for index in 0..TONAL_PIANO_HARMONIC_COUNT {
             let harmonic = self.oscillators[index].next();
             let decay = self.harmonic_decay_state[index];
-            self.harmonic_decay_state[index] *= self.harmonic_decay_steps[index];
+            if !self.life.holding_at_peak() {
+                self.harmonic_decay_state[index] *= self.harmonic_decay_steps[index];
+            }
             sample += harmonic * self.harmonic_amplitudes[index] * decay;
         }
 

@@ -14,6 +14,7 @@ mod kick;
 mod lead;
 mod pad;
 mod perc;
+mod sequence;
 mod tonal;
 
 pub(crate) use arp::*;
@@ -27,6 +28,7 @@ pub(crate) use kick::*;
 pub(crate) use lead::*;
 pub(crate) use pad::*;
 pub(crate) use perc::*;
+pub(crate) use sequence::*;
 pub(crate) use tonal::*;
 
 // ============================================================

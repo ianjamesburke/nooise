@@ -378,13 +378,20 @@ impl ArpEngine {
 
             let step_idx = lane_step_at(timing.beat, rate_beats, c.offset_beats, live_len);
             self.step_index = self.step_index.wrapping_add(1);
-            let step_val = self.evolved_steps[step_idx];
+            let chord_rest = held.is_empty()
+                && !LeadFollow::from_value(c.follow).has_source(pad, progression, slot);
+            let step_val = if chord_rest {
+                0.0
+            } else {
+                self.evolved_steps[step_idx]
+            };
             let pan = self.rng.gen_range(-0.4f32..0.4);
 
             // Preserve direct struct-literal `ArpControls { pattern: 3.0, ..Default::default() }`
             // unit tests that bypass `apply_pattern_preset`.
-            let direct_random =
-                pattern == ArpPattern::Random && self.evolved_steps == DEFAULT_ARP_STEPS;
+            let direct_random = !chord_rest
+                && pattern == ArpPattern::Random
+                && self.evolved_steps == DEFAULT_ARP_STEPS;
 
             if !direct_random && arp_step_is_tie(step_val) {
                 let extra_seconds = (f64::from(rate_beats) * 60.0 / timing.bpm.max(1.0)) as f32;

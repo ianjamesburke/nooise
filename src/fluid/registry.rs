@@ -1785,7 +1785,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         "pad.chord_bars",
         "Rate",
         ControlKind::Timing,
-        0.0625,
+        0.03125,
         64.0,
         Step::PowerOfTwo,
         Entry::BeatsAsBars,
@@ -1793,7 +1793,9 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c, v| c.pad.chord_bars = v,
         |c| {
             let beats = c.pad.chord_bars * 4.0;
-            if beats < 1.0 {
+            if beats < 0.25 {
+                format!("{beats:.3} beats")
+            } else if beats < 1.0 {
                 format!("{beats:.2} beats")
             } else {
                 format!("{beats:.0} beats")
