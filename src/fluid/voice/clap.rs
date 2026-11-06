@@ -24,12 +24,7 @@ pub(crate) fn clap_step_label(value: f32) -> &'static str {
 }
 
 pub(crate) fn clap_authored_steps(c: &ClapControls) -> [f32; CLAP_STEP_COUNT] {
-    let index = (c.pattern.round() as isize).clamp(0, CUSTOM_CLAP_PATTERN_INDEX as isize) as usize;
-    if index < CLAP_PATTERN_PRESET_COUNT {
-        CLAP_PATTERN_PRESETS[index].1
-    } else {
-        c.steps
-    }
+    c.steps
 }
 
 pub(crate) struct ClapEngine {
@@ -246,6 +241,7 @@ mod tests {
         let controls = ClapControls {
             level: 1.0,
             interval_beats: 0.5,
+            steps: [1.0; CLAP_STEP_COUNT],
             swing: 1.0,
             ..ClapControls::default()
         };

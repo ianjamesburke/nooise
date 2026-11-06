@@ -116,20 +116,16 @@ impl GestureFx {
             // heads overlap by half a grain, giving complementary weights.
             let grain = (((sample_rate * 0.12) as usize).max(4) / 2) * 2;
             let len = self.freeze_buffer.len();
-            let span = len.saturating_sub(grain / 2 + 2).max(1);
+            let span = len.saturating_sub(grain + 1).max(1);
             let read_grain = |time: usize, offset: usize| {
                 let age = time % grain;
                 let cycle = time / grain;
                 let start = (cycle.wrapping_mul(grain / 2).wrapping_add(offset)) % span;
-                let position = start + age / 2;
+                // Unit-speed playback sustains the captured pitch.
+                let position = start + age;
                 let left = self.freeze_buffer[(self.freeze_write + position) % len];
-                let right = self.freeze_buffer[(self.freeze_write + position + 1) % len];
-                let fraction = (age % 2) as f32 * 0.5;
                 let weight = 0.5 - 0.5 * (std::f32::consts::TAU * age as f32 / grain as f32).cos();
-                (
-                    (left.0 + (right.0 - left.0) * fraction) * weight,
-                    (left.1 + (right.1 - left.1) * fraction) * weight,
-                )
+                (left.0 * weight, left.1 * weight)
             };
             let first = read_grain(self.freeze_phase, 0);
             let second = read_grain(self.freeze_phase.wrapping_add(grain / 2), grain / 4);
@@ -424,6 +420,37 @@ impl GestureAudioBank {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn freeze_sustains_pitch_instead_of_dropping_an_octave() {
+        for sample_rate in [44_100.0, 48_000.0] {
+            for hz in [110.0, 440.0, 997.0] {
+                let mut bank = GestureAudioBank::new(sample_rate);
+                for frame in 0..sample_rate as usize {
+                    let x = (std::f32::consts::TAU * hz * frame as f32 / sample_rate).sin() * 0.2;
+                    bank.process((x, -x), [0.0; GESTURE_COUNT], timing());
+                }
+                let mut crossings = 0;
+                let mut previous = 0.0;
+                let mut energy = 0.0;
+                for frame in 0..sample_rate as usize * 2 {
+                    let (left, right) =
+                        bank.process((0.0, 0.0), active(GestureKind::Freeze), timing());
+                    assert_eq!(left, -right);
+                    if frame >= sample_rate as usize {
+                        crossings += usize::from(previous <= 0.0 && left > 0.0);
+                        energy += left * left;
+                    }
+                    previous = left;
+                }
+                assert!(
+                    (crossings as f32 - hz).abs() < hz * 0.05,
+                    "{sample_rate} Hz: expected {hz} Hz, measured {crossings}"
+                );
+                assert!(energy / sample_rate > 0.001, "sustain cancelled away");
+            }
+        }
+    }
 
     #[test]
     fn freeze_captures_live_history_and_returns_to_dry_without_allocation() {

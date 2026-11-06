@@ -3321,6 +3321,11 @@ fn golden_render_controls() -> FluidControls {
             bpm: 140.0,
             ..MasterControls::default()
         },
+        // Keep the golden DSP fixture audible independently of startup defaults.
+        perc: PercControls {
+            level: 0.5,
+            ..PercControls::default()
+        },
         tonal: TonalControls {
             level: 0.5,
             synth_type: 2.0,
@@ -12183,7 +12188,7 @@ fn bass_and_perc_sequence_drills_roundtrip_and_step_edits_switch_to_custom() {
                 drill: clap_drill,
             },
             "clap.step1",
-            0.0,
+            1.0,
         ),
         (
             interaction::Navigation::Lead {
@@ -12237,7 +12242,7 @@ fn bass_and_perc_sequence_drills_roundtrip_and_step_edits_switch_to_custom() {
         after.controls.kick.pattern,
         CUSTOM_KICK_PATTERN_INDEX as f32
     );
-    assert_eq!(after.controls.clap.steps[0], 0.0);
+    assert_eq!(after.controls.clap.steps[0], 1.0);
     assert_eq!(
         after.controls.clap.pattern,
         CUSTOM_CLAP_PATTERN_INDEX as f32
@@ -12991,4 +12996,26 @@ fn sequencer_completion_melodic_ties_hold_across_loop_wrap() {
     }
     assert!(lead.voice.is_none());
     assert!(tonal.voices.is_empty());
+}
+
+#[test]
+fn fresh_clap_steady_hits_beats_two_and_four_and_survives_save() {
+    let controls = FluidControls::default();
+    assert_eq!(controls.perc.level, 0.0);
+    assert_eq!(controls.clap.interval_beats, 0.25);
+    assert_eq!(controls.clap.offset_beats, 0.0);
+    assert_eq!(controls.clap.step_count, 8.0);
+    let mut song = SongState::default();
+    song.controls.clap.level = 0.7;
+    let restored = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+    assert_eq!(restored.controls.clap.steps, controls.clap.steps);
+    assert_eq!(restored.controls.clap.interval_beats, 0.25);
+    assert_eq!(restored.controls.clap.offset_beats, 0.0);
+    let hits: Vec<_> = (0..16)
+        .filter(|step| {
+            let index = lane_step_at(*step as f64 * 0.25, 0.25, 0.0, 8);
+            clap_authored_steps(&restored.controls.clap)[index] > 0.0
+        })
+        .collect();
+    assert_eq!(hits, [4, 12]);
 }

@@ -1512,6 +1512,17 @@ enum LiveMeter {
     GainReduction { ratio: f32 },
 }
 
+/// Perc's filtered noise needs a lower display floor; audio and telemetry
+/// remain untouched. Exact silence stays empty on every layer.
+fn level_meter_ratio(tab: Tab, rms: f32) -> f32 {
+    if rms <= 0.0 {
+        return 0.0;
+    }
+    let floor_db = if tab == Tab::Perc { 66.0 } else { 42.0 };
+    let db = 20.0 * (rms * 2.5).max(1e-8).log10();
+    ((db + floor_db) / floor_db).clamp(0.0, 1.0)
+}
+
 /// Resolves the live meter overlay for a control row: voice/Master `Level`
 /// rows meter their output RMS left-to-right, and active `Compression`
 /// `Threshold` rows (`amount > 0`) meter gain reduction right-to-left.
@@ -1521,12 +1532,7 @@ fn live_meter(item: &ControlItem, frame: &PanelFrame<'_, '_>) -> Option<LiveMete
         .find(|tab| tab.level_id() == Some(item.id))
     {
         let rms = frame.view.telemetry.levels[tab as usize];
-        let ratio = if rms <= 1e-4 {
-            0.0
-        } else {
-            let db = 20.0 * (rms * 2.5).max(1e-5).log10();
-            ((db + 42.0) / 42.0).clamp(0.0, 1.0)
-        };
+        let ratio = level_meter_ratio(tab, rms);
         return Some(LiveMeter::Level { ratio });
     }
     let (prefix, slot, field) = parse_module_slot_id(item.id)?;
@@ -2028,5 +2034,17 @@ mod motion_render_tests {
                     .any(|line| line.contains("steps") && line.contains(" 4"))
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod meter_sensitivity_tests {
+    use super::*;
+    #[test]
+    fn quiet_percussion_is_visible_without_lighting_silence() {
+        assert_eq!(level_meter_ratio(Tab::Perc, 0.0), 0.0);
+        assert!(level_meter_ratio(Tab::Perc, 0.001) > 0.2);
+        assert_eq!(level_meter_ratio(Tab::Tonal, 0.001), 0.0);
+        assert_eq!(level_meter_ratio(Tab::Perc, 1.0), 1.0);
     }
 }

@@ -99,7 +99,7 @@ These observations drove the implemented batch. The proofs below remain part of 
 
 | Topic | Captured request | Next proof |
 | --- | --- | --- |
-| Perc startup level | Default Perc to 0.50 on startup. | Verify a fresh default launch at 50%; loading a saved song should retain its authored level. |
+| Perc startup level | November 6 revision: start at 0%. | Verify a silent Perc on fresh launch; saved songs retain their authored level. |
 | Bass startup sound | Default Bass to Saw on a fresh launch. | Verify Saw at startup while saved songs retain their authored sound, including an omitted historical Sub default. |
 | Bass Off Beat | It sounds like a broken beat rather than an offbeat bass pattern. Reported behavior, cause unverified. | Reproduce against a straight kick, inspect onset timing, and audition the corrected offbeat feel. |
 | Reverb | The current sound is unsatisfactory; a new algorithm is wanted. | Prioritize the reverb slice of 0011 and compare replacements on the same show material by ear. |
@@ -111,6 +111,48 @@ Vamp visibility, and `/slapback` are in the candidate. Freeze uses `b` or
 `/freeze`; its captured audio remains transient and stays out of song codes.
 The replacement reverb is quieter than the old algorithm and needs a musical
 listening decision; automated signal checks do not settle that choice.
+
+## November 6 playing feedback and design recommendation
+
+Confirmed defaults: Perc starts at zero. Clap Steady uses Rate 0.25 beats,
+eight steps, zero Offset, and only step 5 active: beats 2 and 4 in a repeated
+4/4 bar. Perc needs a more sensitive display without extra audio gain.
+Freeze must sustain captured pitch; the half-speed grain playback caused an
+octave drop. These corrections require audition after automated checks.
+
+**Proposed Pad rhythm design, not implemented:** separate the progression clock
+(which chord, including a 64-bar phrase) from a repeating articulation pattern
+(when that chord sounds). Start with a bypassed pattern, editable Rate, Steps,
+Offset, and Hit/Hold/Rest cells in an ordinary keyboard drill. Hit retriggers the
+current harmony; Hold sustains it without an attack; Rest closes the Pad envelope
+with a short release. A chord change updates harmony under an open gate without
+restarting the rhythmic phase. Preserve v3 Slur. Keep rhythmic rests local to
+Pads: they must not silence Chord-following melodic parts. Existing progression
+Rest still means no harmonic source under the accepted chord contract.
+
+Decide through audition whether the desired first slice is amplitude chopping
+of a continuous pad (a reusable shared gate module) or envelope retriggering
+(a note-generation lane). They are different sounds; a slow Pad attack can make
+sixteenth-note retriggers nearly inaudible. Test the same long progression with
+both before adding controls. Never reuse the retired Pad Stabs IDs. Persist the
+chosen pattern and phase/anchor compactly; check recall, tempo changes, Vamp,
+transport restart, and chord/rhythm boundary coincidences.
+
+**Melodic recommendation, not implemented:** keep three independent parts with
+one common editing model. Separate note source (live keys, authored sequence,
+arpeggiator), sound, articulation/voice allocation, and effects. Tonal and Arp
+already share `TonalVoice`; Lead differs materially through monophonic glide,
+held keyboard input, and phrase capture. Preserve those capabilities explicitly
+instead of flattening all voices to one behavior. Evolution modifies a sequence;
+it need not become a fourth channel or an exclusive note-source mode. Live keys
+should play over the focused part even while its sequence runs, and capture
+into its sequence.
+
+First share note events and sequence semantics internally with current labels
+and saved IDs intact. Then audition two independent instances, including a
+monophonic sliding part against overlapping piano notes, before a three-part UI
+change. Compare keyboard reach, arpeggiator behavior, saved evolving state,
+mutes, effects, and CPU. A rename alone does not resolve the current duplication.
 
 ## Named songs and transition previews
 

@@ -17,10 +17,10 @@ use super::range_epoch::{CURRENT_RANGE_EPOCH, DRUNKEN_WAVE_EPOCH, stale_modulati
 use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TonalSequenceState};
 use super::{
-    AutomationState, CHORD_SLOT_COUNT, CUSTOM_TONAL_PHRASE_INDEX, ControlAddress, ControlKind,
-    ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EditorMotionAddress, EditorMotionField, EnvField,
-    EnvTrigger, EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope, GestureKind,
-    GestureState, LfoField, LfoRoute, LfoShape, MAX_AUTOMATION_LANES_PER_KIND,
+    AutomationState, CHORD_SLOT_COUNT, CLAP_STEP_COUNT, CUSTOM_TONAL_PHRASE_INDEX, ControlAddress,
+    ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EditorMotionAddress, EditorMotionField,
+    EnvField, EnvTrigger, EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope,
+    GestureKind, GestureState, LfoField, LfoRoute, LfoShape, MAX_AUTOMATION_LANES_PER_KIND,
     MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS,
     MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField, MuteState,
     PlannedAction, RampParams, Step, StepTarget, TAB_COUNT, Tab, VampState, all_specs,
@@ -442,9 +442,12 @@ fn decode_song_code_at_any_epoch(code: &str) -> Result<(SongState, u16), SongCod
 
 fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeError> {
     let mut song = SongState::default();
-    // Omitted values in existing codes mean the original Perc and Bass defaults.
+    // Omitted snapshot values retain their original meaning independently of startup defaults.
     song.controls.perc.level = 0.0;
     song.controls.bass.voice_type = 0.0;
+    song.controls.clap.interval_beats = 2.0;
+    song.controls.clap.offset_beats = 1.0;
+    song.controls.clap.steps = [1.0; CLAP_STEP_COUNT];
     let mut gesture_record_seen = false;
     let mut drunken_phase_record_seen = false;
     let mut capture_record_seen = false;
@@ -1826,6 +1829,9 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
     // Keep original snapshot baselines so existing codes retain their sound.
     defaults.perc.level = 0.0;
     defaults.bass.voice_type = 0.0;
+    defaults.clap.interval_beats = 2.0;
+    defaults.clap.offset_beats = 1.0;
+    defaults.clap.steps = [1.0; CLAP_STEP_COUNT];
     defaults.tonal.apply_phrase_preset(controls.tonal.phrase);
     defaults.tonal.phrase = 0.0;
     defaults.arp.apply_pattern_preset(controls.arp.pattern);
@@ -1839,6 +1845,9 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
     defaults.kick.apply_pattern_preset(controls.kick.pattern);
     defaults.kick.pattern = 0.0;
     defaults.clap.apply_pattern_preset(controls.clap.pattern);
+    if controls.clap.pattern == 0.0 {
+        defaults.clap.steps = [1.0; CLAP_STEP_COUNT];
+    }
     defaults.clap.pattern = 0.0;
     defaults.lead.apply_pattern_preset(controls.lead.pattern);
     defaults.lead.pattern = 1.0;
@@ -1918,6 +1927,11 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
                     return Err(SongCodeError::StaleRange(spec.id));
                 }
                 spec.apply_stored_quantized_value(value.resolve(&spec)?, controls);
+                // Sparse snapshots keep their original preset baseline; explicit
+                // step entries below carry the current authored pattern.
+                if spec.id == "clap.pattern" && controls.clap.pattern == 0.0 {
+                    controls.clap.steps = [1.0; CLAP_STEP_COUNT];
+                }
             } else if !structural {
                 reject_retired_control(index)?;
             }
@@ -2546,15 +2560,21 @@ mod gesture_record_tests {
     }
 
     #[test]
-    fn maximum_gesture_record_stays_below_120_characters() {
+    fn maximum_gesture_record_adds_fewer_than_120_characters() {
         let mut song = SongState::default();
+        let base_len = encode_song_code(&song).unwrap().len();
         for kind in GestureKind::ALL {
             song.gestures.lanes[kind as usize].amount = 1.0;
         }
 
         let code = encode_song_code(&song).unwrap();
 
-        assert!(code.len() < 120, "max gesture code is {} chars", code.len());
+        assert!(
+            code.len() - base_len < 120,
+            "gesture record added {} chars",
+            code.len() - base_len
+        );
+        assert!(code.len() < 200, "default song must remain compact");
     }
 }
 
@@ -2878,12 +2898,23 @@ mod song_value_tests {
         assert_eq!(decoded.controls.pad.chord_notes, 2.0);
     }
     #[test]
+    fn omitted_clap_snapshot_fields_keep_the_original_rhythm() {
+        let code = code_from_records(CONTAINER_VERSION, &[]);
+        let decoded = decode_song_code(&code).unwrap();
+        assert_eq!(decoded.controls.clap.interval_beats, 2.0);
+        assert_eq!(decoded.controls.clap.offset_beats, 1.0);
+        assert_eq!(decoded.controls.clap.steps, [1.0; CLAP_STEP_COUNT]);
+        let again = decode_song_code(&encode_song_code(&decoded).unwrap()).unwrap();
+        assert_eq!(again.controls.clap.steps, decoded.controls.clap.steps);
+    }
+
+    #[test]
     fn fresh_defaults_and_historical_song_baselines_round_trip() {
         let mut song = SongState::default();
-        assert_eq!(song.controls.perc.level, 0.5);
+        assert_eq!(song.controls.perc.level, 0.0);
         assert_eq!(song.controls.bass.voice_type, 1.0);
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
-        assert!((decoded.controls.perc.level - 0.5).abs() < 0.001);
+        assert_eq!(decoded.controls.perc.level, 0.0);
         assert_eq!(decoded.controls.bass.voice_type, 1.0);
         song.controls.perc.level = 0.0;
         song.controls.bass.voice_type = 0.0;

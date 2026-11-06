@@ -2,6 +2,31 @@
 
 Updated: 2026-11-06
 
+## November 6 playing-feedback corrections
+
+- Perc starts at zero. Its meter display floor is -66 dB instead of -42 dB;
+  audio gain and telemetry remain unchanged.
+- Clap Steady starts at Rate 0.25 beats, eight steps, zero Offset, only step 5
+  active. The loop hits beats 2 and 4. Snapshot defaults remain fixed, so saved
+  Clap patterns retain their original timing and steps; the current default
+  round-trips explicitly and stays under 200 characters with every gesture on.
+- Freeze reads captured grains at normal speed, removing the previous octave
+  drop. Pitch/energy checks at 44.1/48 kHz, stereo, seams, capture and release
+  checks pass. Its musical texture still needs audition.
+- Automated verification: 995 tests passed, 9 ignored; strict all-target Clippy,
+  formatting, build, and diff checks passed. The unchanged golden DSP fixture
+  explicitly raises Perc to its prior level, retaining its existing checksum.
+- Release headroom probe: all 21 built-in songs and 38 fresh progressions, 354
+  gesture renders plus dry references, zero clamp hits.
+- Muted real-app PTY smoke displayed Clap Rate 0.25, stored/reopened A/B sections,
+  exercised freeze/release, and exited cleanly twice. Evidence lives under
+  `target/playing-feedback/`; no listening or physical-keyboard acceptance claimed.
+- The show plan records proposed independent Pad articulation rhythm and three
+  independent melodic parts with shared machinery. Neither redesign is implemented.
+- DOX: source and engine contracts, performance guide, and owning proposal updated.
+  Root/docs parent instructions and child indexes remain unchanged: no ownership
+  boundary or directory changed.
+
 ## Stint 0007 completion on v3
 
 - Implementation completed in this worktree on top of `7ba8a96`; the older `8573732` candidate was selectively ported, preserving subsequent v3 and show work.

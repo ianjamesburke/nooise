@@ -97,7 +97,7 @@ pub(crate) struct PercControls {
 impl Default for PercControls {
     fn default() -> Self {
         Self {
-            level: 0.5,
+            level: 0.0,
             attack_ms: 0.0,
             decay_ms: 200.0,
             pattern: 0.0,
@@ -595,7 +595,9 @@ pub(crate) const CUSTOM_CLAP_PATTERN_INDEX: usize = 4;
 
 pub(crate) const CLAP_PATTERNS: &[&str] = &["Steady", "Offbeat", "Broken", "Groove", "Custom"];
 
-pub(crate) const DEFAULT_CLAP_STEPS: [f32; CLAP_STEP_COUNT] = [1.0; CLAP_STEP_COUNT];
+pub(crate) const DEFAULT_CLAP_STEPS: [f32; CLAP_STEP_COUNT] = [
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+];
 
 /// Built-in Clap pattern presets (`Steady`, `Offbeat`, `Broken`, `Groove`).
 pub(crate) const CLAP_PATTERN_PRESETS: [(u8, [f32; CLAP_STEP_COUNT]); CLAP_PATTERN_PRESET_COUNT] = [
@@ -641,8 +643,8 @@ impl Default for ClapControls {
         Self {
             level: 0.0,
             pattern: 0.0,
-            interval_beats: 2.0,
-            offset_beats: 1.0,
+            interval_beats: 0.25,
+            offset_beats: 0.0,
             step_count: 8.0,
             evolve_rate: 0.0,
             steps: DEFAULT_CLAP_STEPS,
