@@ -25,7 +25,7 @@ const ECHO_FEEDBACK_SECONDS: f32 = 0.03;
 struct GestureFx {
     submerge: SlotFx,
     lift: SlotFx,
-    bloom: SlotFx,
+    bloom: Freeverb,
     bloom_send_filter: StereoFilter,
     bloom_send_lowpass: (f32, f32),
     bloom_send_lowpass_alpha: f32,
@@ -49,7 +49,7 @@ impl GestureFx {
         Self {
             submerge: SlotFx::Filter(StereoFilter::default()),
             lift: SlotFx::Filter(StereoFilter::default()),
-            bloom: SlotFx::Reverb(Freeverb::new(sample_rate)),
+            bloom: Freeverb::new(sample_rate),
             bloom_send_filter: StereoFilter::default(),
             bloom_send_lowpass: (0.0, 0.0),
             bloom_send_lowpass_alpha: 1.0
@@ -174,8 +174,8 @@ impl GestureFx {
         &mut self,
         input: (f32, f32),
         amount: f32,
-        timing: TimingContext,
-        max_delay_samples: usize,
+        _timing: TimingContext,
+        _max_delay_samples: usize,
         sample_rate: f32,
     ) -> (f32, f32) {
         let fresh = amount > f32::EPSILON && !self.bloom_has_history;
@@ -188,12 +188,10 @@ impl GestureFx {
         }
         let wet = self.bloom_wet.advance(amount, fresh, sample_rate);
         if amount <= f32::EPSILON && wet == 0.0 {
-            if let SlotFx::Reverb(reverb) = &mut self.bloom
-                && reverb.clear_chunk(
-                    &mut self.bloom_clear_cursor,
-                    PROCESSOR_CLEAR_SAMPLES_PER_FRAME,
-                )
-            {
+            if self.bloom.clear_chunk(
+                &mut self.bloom_clear_cursor,
+                PROCESSOR_CLEAR_SAMPLES_PER_FRAME,
+            ) {
                 self.bloom_has_history = false;
                 self.bloom_clear_cursor = 0;
                 self.bloom_send_filter = StereoFilter::default();
@@ -217,21 +215,15 @@ impl GestureFx {
         self.bloom_send_lowpass.1 +=
             self.bloom_send_lowpass_alpha * (input.1 - self.bloom_send_lowpass.1);
         let input = self.bloom_send_lowpass;
-        let slot = ModuleSlot {
-            amount: 1.0,
-            time: BLOOM_ROOM_SIZE,
-            feedback: BLOOM_DAMPING,
-            ..ModuleSlot::default()
-        };
-        let processed = ModuleFxBank::process_slot_fx(
-            &mut self.bloom,
-            &slot,
-            input,
-            timing,
-            max_delay_samples,
-            sample_rate,
+        let wet_audio = self.bloom.process(
+            input.0,
+            input.1,
+            ReverbParams {
+                room_size: BLOOM_ROOM_SIZE,
+                damp: BLOOM_DAMPING,
+            },
         );
-        scale(subtract(processed, input), wet)
+        scale(wet_audio, wet)
     }
 
     fn clear_echo(&mut self) {

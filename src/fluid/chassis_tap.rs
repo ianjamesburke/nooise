@@ -4,7 +4,7 @@
 //! to the UI thread. It never touches the live session or audio callback.
 
 use std::collections::VecDeque;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 const MIN_INTERVAL: Duration = Duration::from_millis(250); // 240 BPM
@@ -115,6 +115,7 @@ mod platform {
     use std::ptr;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{self, Sender};
 
     use core_foundation_sys::base::{CFRelease, CFTypeRef, kCFAllocatorDefault};
     use core_foundation_sys::dictionary::{
