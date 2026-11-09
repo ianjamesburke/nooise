@@ -551,6 +551,133 @@ fn audio_error(error: cpal::StreamError, needs_rebuild: &Arc<AtomicBool>) {
     needs_rebuild.store(true, Ordering::Relaxed);
 }
 
+/// Notification-only CoreAudio adapter. No callback queries or allocates.
+#[cfg(target_os = "macos")]
+mod device_notifications {
+    use super::*;
+    use std::ffi::c_void;
+
+    #[repr(C)]
+    struct Address {
+        selector: u32,
+        scope: u32,
+        element: u32,
+    }
+    const SYSTEM: u32 = 1;
+    const ADDRESSES: [Address; 2] = [
+        Address {
+            selector: u32::from_be_bytes(*b"dev#"),
+            scope: u32::from_be_bytes(*b"glob"),
+            element: 0,
+        },
+        Address {
+            selector: u32::from_be_bytes(*b"dOut"),
+            scope: u32::from_be_bytes(*b"glob"),
+            element: 0,
+        },
+    ];
+    static REVISION: AtomicU64 = AtomicU64::new(0);
+    type Listener = unsafe extern "C" fn(u32, u32, *const Address, *mut c_void) -> i32;
+    #[link(name = "CoreAudio", kind = "framework")]
+    unsafe extern "C" {
+        fn AudioObjectAddPropertyListener(
+            object: u32,
+            address: *const Address,
+            listener: Listener,
+            data: *mut c_void,
+        ) -> i32;
+        fn AudioObjectRemovePropertyListener(
+            object: u32,
+            address: *const Address,
+            listener: Listener,
+            data: *mut c_void,
+        ) -> i32;
+    }
+    unsafe extern "C" fn notify(_: u32, _: u32, _: *const Address, _: *mut c_void) -> i32 {
+        REVISION.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+    pub(super) struct DeviceChanges {
+        registered: usize,
+        revision: u64,
+    }
+    impl DeviceChanges {
+        pub(super) fn new() -> Result<Self, AudioStartError> {
+            let mut changes = Self {
+                registered: 0,
+                revision: REVISION.load(Ordering::Relaxed),
+            };
+            for address in &ADDRESSES {
+                // Static callback and addresses; no client data is dereferenced.
+                let status = unsafe {
+                    AudioObjectAddPropertyListener(SYSTEM, address, notify, std::ptr::null_mut())
+                };
+                if status != 0 {
+                    return Err(AudioStartError::Backend(format!(
+                        "CoreAudio device notifications: {status}"
+                    )));
+                }
+                changes.registered += 1;
+            }
+            Ok(changes)
+        }
+        pub(super) fn changed(&mut self) -> bool {
+            let revision = REVISION.load(Ordering::Relaxed);
+            let changed = revision != self.revision;
+            self.revision = revision;
+            changed
+        }
+    }
+    impl Drop for DeviceChanges {
+        fn drop(&mut self) {
+            for address in &ADDRESSES[..self.registered] {
+                // Same registration identity; late callbacks only touch a static atomic.
+                unsafe {
+                    AudioObjectRemovePropertyListener(
+                        SYSTEM,
+                        address,
+                        notify,
+                        std::ptr::null_mut(),
+                    );
+                }
+            }
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn notifications_invalidate_once_without_backend_queries() {
+            let mut changes = DeviceChanges {
+                registered: 0,
+                revision: REVISION.load(Ordering::Relaxed),
+            };
+            assert!(!changes.changed());
+            // The callback ignores arguments and touches only static storage.
+            unsafe {
+                notify(SYSTEM, 0, std::ptr::null(), std::ptr::null_mut());
+            }
+            assert!(changes.changed());
+            assert!(!changes.changed());
+        }
+    }
+}
+#[cfg(target_os = "macos")]
+use device_notifications::DeviceChanges;
+
+/// Other backends refresh on picker requests and recover through stream errors.
+#[cfg(not(target_os = "macos"))]
+struct DeviceChanges;
+#[cfg(not(target_os = "macos"))]
+impl DeviceChanges {
+    fn new() -> Result<Self, AudioStartError> {
+        Ok(Self)
+    }
+    fn changed(&mut self) -> bool {
+        false
+    }
+}
+
 #[cfg(test)]
 mod routing_tests {
     use super::*;
@@ -678,132 +805,5 @@ mod routing_tests {
         assert_eq!(routing.requested().1, 2);
         routing.report(2, Ok("Output: Speakers".into()));
         assert_eq!(routing.take_notice(), Some(Ok("Output: Speakers".into())));
-    }
-}
-
-/// Notification-only CoreAudio adapter. No callback queries or allocates.
-#[cfg(target_os = "macos")]
-mod device_notifications {
-    use super::*;
-    use std::ffi::c_void;
-
-    #[repr(C)]
-    struct Address {
-        selector: u32,
-        scope: u32,
-        element: u32,
-    }
-    const SYSTEM: u32 = 1;
-    const ADDRESSES: [Address; 2] = [
-        Address {
-            selector: u32::from_be_bytes(*b"dev#"),
-            scope: u32::from_be_bytes(*b"glob"),
-            element: 0,
-        },
-        Address {
-            selector: u32::from_be_bytes(*b"dOut"),
-            scope: u32::from_be_bytes(*b"glob"),
-            element: 0,
-        },
-    ];
-    static REVISION: AtomicU64 = AtomicU64::new(0);
-    type Listener = unsafe extern "C" fn(u32, u32, *const Address, *mut c_void) -> i32;
-    #[link(name = "CoreAudio", kind = "framework")]
-    unsafe extern "C" {
-        fn AudioObjectAddPropertyListener(
-            object: u32,
-            address: *const Address,
-            listener: Listener,
-            data: *mut c_void,
-        ) -> i32;
-        fn AudioObjectRemovePropertyListener(
-            object: u32,
-            address: *const Address,
-            listener: Listener,
-            data: *mut c_void,
-        ) -> i32;
-    }
-    unsafe extern "C" fn notify(_: u32, _: u32, _: *const Address, _: *mut c_void) -> i32 {
-        REVISION.fetch_add(1, Ordering::Relaxed);
-        0
-    }
-    pub(super) struct DeviceChanges {
-        registered: usize,
-        revision: u64,
-    }
-    impl DeviceChanges {
-        pub(super) fn new() -> Result<Self, AudioStartError> {
-            let mut changes = Self {
-                registered: 0,
-                revision: REVISION.load(Ordering::Relaxed),
-            };
-            for address in &ADDRESSES {
-                // Static callback and addresses; no client data is dereferenced.
-                let status = unsafe {
-                    AudioObjectAddPropertyListener(SYSTEM, address, notify, std::ptr::null_mut())
-                };
-                if status != 0 {
-                    return Err(AudioStartError::Backend(format!(
-                        "CoreAudio device notifications: {status}"
-                    )));
-                }
-                changes.registered += 1;
-            }
-            Ok(changes)
-        }
-        pub(super) fn changed(&mut self) -> bool {
-            let revision = REVISION.load(Ordering::Relaxed);
-            let changed = revision != self.revision;
-            self.revision = revision;
-            changed
-        }
-    }
-    impl Drop for DeviceChanges {
-        fn drop(&mut self) {
-            for address in &ADDRESSES[..self.registered] {
-                // Same registration identity; late callbacks only touch a static atomic.
-                unsafe {
-                    AudioObjectRemovePropertyListener(
-                        SYSTEM,
-                        address,
-                        notify,
-                        std::ptr::null_mut(),
-                    );
-                }
-            }
-        }
-    }
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        #[test]
-        fn notifications_invalidate_once_without_backend_queries() {
-            let mut changes = DeviceChanges {
-                registered: 0,
-                revision: REVISION.load(Ordering::Relaxed),
-            };
-            assert!(!changes.changed());
-            // The callback ignores arguments and touches only static storage.
-            unsafe {
-                notify(SYSTEM, 0, std::ptr::null(), std::ptr::null_mut());
-            }
-            assert!(changes.changed());
-            assert!(!changes.changed());
-        }
-    }
-}
-#[cfg(target_os = "macos")]
-use device_notifications::DeviceChanges;
-
-/// Other backends refresh on picker requests and recover through stream errors.
-#[cfg(not(target_os = "macos"))]
-struct DeviceChanges;
-#[cfg(not(target_os = "macos"))]
-impl DeviceChanges {
-    fn new() -> Result<Self, AudioStartError> {
-        Ok(Self)
-    }
-    fn changed(&mut self) -> bool {
-        false
     }
 }
