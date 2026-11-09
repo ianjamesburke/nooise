@@ -456,9 +456,21 @@ impl PadEngine {
 
         let air = self.air.next_filtered(&mut self.rng, 0.0002) * 0.00025;
 
-        // Headroom trim on the summed layer output, not a character control —
-        // `pad.level` at 100% should reach close to full scale on its own,
-        // leaving final safety margin to the master bus's soft-clip/compressor.
+        // The per-note gains in `pad_tones` are a voicing balance (the lower
+        // tones sit forward), and each tone is scaled by 0.55 before its
+        // soft clip. Those two factors, not `pad.level` or `master.level`,
+        // are why a sustained chord at both faders full and with the factory
+        // room/drive/compression bypassed peaks around -16 dBFS. `PAD_SUM_GAIN`
+        // is one makeup on the summed chord — internal notes and external Pad
+        // notes alike — so saved levels and the chord's internal balance stay
+        // put while the factory default moves up beside other instruments.
+        // +6 dB (`2.0`) on the dry sum. The factory 5% master drive bends it,
+        // so the default mix (pad 70%, master 80%, seed 42) measures about
+        // -9.4 dBFS peak and -18.8 LUFS, up from -13.8 dBFS and -24.1 LUFS.
+        // Pad-led built-in songs stay under the master clamp. A bus-wide
+        // makeup does not, because a dense drum mix already reaches it.
+        const PAD_SUM_GAIN: f32 = 2.0;
+        // Small trim after the makeup, not the loudness control.
         const OUTPUT_TRIM: f32 = 0.95;
         // Once external Pad notes arrive, external input owns Hold-mode Pad
         // audio while the progression cursor and chord feed continue advancing
@@ -469,9 +481,10 @@ impl PadEngine {
             self.internal_audio.retarget(internal_target, samples);
         }
         let internal_gain = self.internal_audio.next();
+        let bus = OUTPUT_TRIM * PAD_SUM_GAIN;
         (
-            ((dry_l * internal_gain + input_l) * OUTPUT_TRIM + air) * c.level,
-            ((dry_r * internal_gain + input_r) * OUTPUT_TRIM + air) * c.level,
+            ((dry_l * internal_gain + input_l) * bus + air) * c.level,
+            ((dry_r * internal_gain + input_r) * bus + air) * c.level,
         )
     }
 }
