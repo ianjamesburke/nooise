@@ -80,6 +80,9 @@ mod gesture_audio_tests;
 #[cfg(test)]
 mod gesture_level_probe;
 
+#[cfg(test)]
+mod gain_stage_probe;
+
 pub(crate) use auto::{
     AutoControls, DEFAULT_AUTO_BARS, MorphPosition, MorphState, MorphWriter, auto_song_numbers,
     decode_auto_states, no_morph,
