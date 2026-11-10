@@ -315,7 +315,6 @@ impl EffectExecutor {
     fn section_action(
         &mut self,
         action: SectionAction,
-        beat: f64,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         match action {
             SectionAction::Store(index) => {
@@ -339,7 +338,7 @@ impl EffectExecutor {
             }
             SectionAction::Recall(index) => {
                 self.require_running_clock()?;
-                self.queue_section(index, beat)?;
+                self.queue_section(index)?;
             }
             SectionAction::Next => {
                 self.require_running_clock()?;
@@ -349,7 +348,7 @@ impl EffectExecutor {
                     .map_err(|e| EffectFailure::Section(e.clone()))?
                     .next(self.session.load().current_section)
                     .ok_or(EffectFailure::Section(sections::SectionError::Empty))?;
-                self.queue_section(index, beat)?;
+                self.queue_section(index)?;
             }
             SectionAction::Previous => {
                 self.require_running_clock()?;
@@ -358,7 +357,7 @@ impl EffectExecutor {
                     .load()
                     .previous_section
                     .ok_or(EffectFailure::Section(sections::SectionError::NoPrevious))?;
-                self.queue_section(index, beat)?;
+                self.queue_section(index)?;
             }
         }
         Ok(self.published())
@@ -371,7 +370,7 @@ impl EffectExecutor {
         Ok(())
     }
 
-    fn queue_section(&mut self, index: usize, beat: f64) -> Result<(), EffectFailure> {
+    fn queue_section(&mut self, index: usize) -> Result<(), EffectFailure> {
         let song = self
             .bank
             .as_ref()
@@ -379,16 +378,14 @@ impl EffectExecutor {
             .song(index)
             .map_err(EffectFailure::Section)?;
         let section_snapshot = Arc::new(LiveSessionSnapshot::from_song(&song));
-        let target_beat = (beat / 4.0).floor() * 4.0 + 4.0;
         self.session.update(|snapshot| {
             snapshot.pending_section = Some(PendingSection {
                 index,
-                target_beat,
                 snapshot: Arc::clone(&section_snapshot),
             })
         });
         self.show_message(format!(
-            "Queued section {} for next bar",
+            "Queued section {} for phrase end",
             sections::SECTION_NAMES[index]
         ));
         Ok(())
@@ -399,7 +396,6 @@ impl EffectExecutor {
     fn toggle_section_queue(
         &mut self,
         index: usize,
-        beat: f64,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         let queued = self
             .session
@@ -407,14 +403,11 @@ impl EffectExecutor {
             .pending_section
             .as_ref()
             .is_some_and(|pending| pending.index == index);
-        self.section_action(
-            if queued {
-                SectionAction::Cancel
-            } else {
-                SectionAction::Recall(index)
-            },
-            beat,
-        )
+        self.section_action(if queued {
+            SectionAction::Cancel
+        } else {
+            SectionAction::Recall(index)
+        })
     }
 
     /// Which slots hold a section, for the leader overlay. A refused bank
@@ -1309,9 +1302,6 @@ impl EffectExecutor {
                     target_beat: 4.0,
                 },
             });
-            if let Some(pending) = &mut snapshot.pending_section {
-                pending.target_beat = 4.0;
-            }
             snapshot.vamp = snapshot.vamp.map(|vamp| VampState::start(0.0, vamp.slot));
         });
         self.capture_history = CaptureHistory::default();
@@ -1590,10 +1580,8 @@ impl EffectExecutor {
                 })
             }
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
-            InteractionEffect::Section(action) => self.section_action(action, context.beat),
-            InteractionEffect::ToggleSectionQueue(index) => {
-                self.toggle_section_queue(index, context.beat)
-            }
+            InteractionEffect::Section(action) => self.section_action(action),
+            InteractionEffect::ToggleSectionQueue(index) => self.toggle_section_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
@@ -1750,10 +1738,8 @@ impl EffectExecutor {
                 self.toggle_mute(tab);
                 Ok(self.published())
             }
-            InteractionEffect::Section(action) => self.section_action(action, context.beat),
-            InteractionEffect::ToggleSectionQueue(index) => {
-                self.toggle_section_queue(index, context.beat)
-            }
+            InteractionEffect::Section(action) => self.section_action(action),
+            InteractionEffect::ToggleSectionQueue(index) => self.toggle_section_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::ToggleTransport => {

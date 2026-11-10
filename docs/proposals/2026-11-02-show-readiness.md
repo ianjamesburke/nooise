@@ -41,8 +41,10 @@ operation. The performer can stay in a section indefinitely, choose another,
 see which state is queued, and cancel or replace it before it lands. Every
 operation must be reachable through normal browsing or `/`.
 
-Proposed first timing rule: changes land on the next bar, with an explicit
-cancel path. The spike must compare that with a phrase boundary on real material.
+Timing rule: changes land at the end of the sounding phrase, with an explicit
+cancel path. The first spike landed on the next bar; after playing it the owner
+chose the phrase boundary on 2026-11-10, because a bar landing cut the chord
+progression mid-phrase. The bar-versus-phrase comparison is settled.
 It must settle BPM changes, destination phrase position, active automation,
 evolved notes, pending mutes, vamp, gestures, and the fate of unsaved live edits.
 Suggested first policy: recall restores the authored snapshot; saving a new

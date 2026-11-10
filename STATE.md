@@ -69,7 +69,7 @@ Updated: 2026-11-06
 - Hold `b` or use `/freeze` for a temporary grain stretch/repeat texture.
 - `VAMP` and `VAMP ENDING` appear beside the chord.
 - Tap `q` for a saved Kick+Bass latch; hold for a temporary gate. Individual mutes remain independent.
-- Nine numbered sections (1-9): `"` then a digit stores (overwriting), `'` then a digit queues at the next bar (the queued digit again cancels, `''` queues the previous section), all also reachable through `/`; `--set PATH` persistence. The key header shows the current and queued sections. Recall retains performed holds, restores the destination snapshot, and lands at its authored tempo and beat zero.
+- Nine numbered sections (1-9): `"` then a digit stores (overwriting), `'` then a digit queues for the end of the phrase (the header counts down the bars; the queued digit again cancels, `''` queues the previous section), all also reachable through `/`; `--set PATH` persistence. The key header shows the current and queued sections. Recall retains performed holds, restores the destination snapshot, and lands at its authored tempo and beat zero.
 - `/slapback` sets Delay Amount to 40%, both synchronized times to 0.25 beats, and Feedback to 0%. It also reapplies these values to an existing Delay.
 
 The [performance guide](docs/PERFORMANCE.md) owns the controls and terminal-capability contracts.

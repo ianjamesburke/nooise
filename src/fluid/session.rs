@@ -9,7 +9,6 @@ use super::*;
 #[derive(Clone)]
 pub(crate) struct PendingSection {
     pub(crate) index: usize,
-    pub(crate) target_beat: f64,
     pub(crate) snapshot: Arc<LiveSessionSnapshot>,
 }
 
@@ -153,6 +152,7 @@ pub(crate) struct LiveSession {
     audio_seconds_bits: Arc<AtomicU64>,
     audio_beat_bits: Arc<AtomicU64>,
     audio_phrase_start_bits: Arc<AtomicU64>,
+    audio_phrase_end_bits: Arc<AtomicU64>,
     /// Once rendering has begun, the audio clock owns exact-boundary actions.
     audio_clock_active: Arc<AtomicBool>,
 }
@@ -164,6 +164,7 @@ impl LiveSession {
             audio_seconds_bits: Arc::new(AtomicU64::new(0)),
             audio_beat_bits: Arc::new(AtomicU64::new(0)),
             audio_phrase_start_bits: Arc::new(AtomicU64::new(0)),
+            audio_phrase_end_bits: Arc::new(AtomicU64::new(f64::NAN.to_bits())),
             audio_clock_active: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -199,6 +200,17 @@ impl LiveSession {
     pub(crate) fn publish_audio_phrase_start(&self, beat: f64) {
         self.audio_phrase_start_bits
             .store(beat.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The beat a queued section lands on, or `None` when nothing is queued.
+    pub(crate) fn audio_phrase_end(&self) -> Option<f64> {
+        let end = f64::from_bits(self.audio_phrase_end_bits.load(Ordering::Relaxed));
+        end.is_finite().then_some(end)
+    }
+
+    pub(crate) fn publish_audio_phrase_end(&self, end: Option<f64>) {
+        self.audio_phrase_end_bits
+            .store(end.unwrap_or(f64::NAN).to_bits(), Ordering::Relaxed);
     }
 
     pub(crate) fn publish_audio_seconds(&self, seconds: f64) {
@@ -362,7 +374,6 @@ mod tests {
         };
         let pending = PendingSection {
             index: 1,
-            target_beat: 4.0,
             snapshot: Arc::new(destination),
         };
         current.pending_section = Some(pending.clone());
@@ -400,7 +411,6 @@ mod tests {
         destination.muted[Tab::Bass as usize] = true;
         let pending = PendingSection {
             index: 0,
-            target_beat: 4.0,
             snapshot: Arc::new(destination),
         };
         current.pending_section = Some(pending.clone());
@@ -444,7 +454,6 @@ mod tests {
         let destination = LiveSessionSnapshot::from_controls(FluidControls::default());
         let pending = PendingSection {
             index: 0,
-            target_beat: 4.0,
             snapshot: Arc::new(destination),
         };
         current.pending_section = Some(pending.clone());
@@ -465,7 +474,6 @@ mod tests {
         destination.controls.pad.chord_offset = 3.0;
         let pending = PendingSection {
             index: 0,
-            target_beat: 16.0,
             snapshot: Arc::new(destination),
         };
         current.pending_section = Some(pending.clone());
@@ -487,7 +495,6 @@ mod tests {
         destination.vamp_latched = true;
         let pending = PendingSection {
             index: 0,
-            target_beat: 16.0,
             snapshot: Arc::new(destination),
         };
         current.pending_section = Some(pending.clone());

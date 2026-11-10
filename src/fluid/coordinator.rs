@@ -906,6 +906,7 @@ pub(crate) fn production_ui_loop(
                     chord_span: telemetry.chord_span(),
                     levels: telemetry.levels(),
                     gain_reduction_db: telemetry.gain_reduction(),
+                    phrase_end_beat: effects.session().audio_phrase_end(),
                 },
                 presentation: ViewPresentation {
                     fluid: &fluid,

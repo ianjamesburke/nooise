@@ -156,6 +156,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         view.session,
         frame.active_slot,
         active_vamp.map(|vamp| vamp.is_releasing()),
+        &view.telemetry,
     );
     if let Some(title) = &view.chord_title {
         f.render_widget(
@@ -314,6 +315,20 @@ fn chord_ribbon(beat: f64, span: ChordSpan) -> Line<'static> {
     Line::from(spans)
 }
 
+/// How long a queued section waits, in whole bars rounded up, so the last
+/// bar of the phrase reads `in 1 bar`. A stopped clock restarts the phrase
+/// from its first chord, so no countdown is true until it runs again.
+fn queue_countdown(transport: Transport, telemetry: &TelemetryView) -> String {
+    let Some(end) = telemetry
+        .phrase_end_beat
+        .filter(|_| transport == Transport::Playing)
+    else {
+        return "waiting".to_string();
+    };
+    let bars = ((end - telemetry.beat) / 4.0).ceil().max(1.0) as u64;
+    format!("in {bars} bar{}", if bars == 1 { "" } else { "s" })
+}
+
 /// Keep harmony in view even when a layer's control list scrolls.
 fn draw_harmony(
     f: &mut Frame,
@@ -322,6 +337,7 @@ fn draw_harmony(
     session: &LiveSessionSnapshot,
     active_slot: usize,
     vamp: Option<bool>,
+    telemetry: &TelemetryView,
 ) {
     let pad = &session.controls.pad;
     let labels = session.chord_labels();
@@ -336,12 +352,13 @@ fn draw_harmony(
     ];
     let section = match (&session.pending_section, session.current_section) {
         (Some(pending), current) => Some(format!(
-            " · {}→ {} next bar",
+            " · {}→ {} {}",
             current.map_or_else(String::new, |index| format!(
                 "{} ",
                 sections::SECTION_NAMES[index]
             )),
             sections::SECTION_NAMES[pending.index],
+            queue_countdown(session.transport, telemetry),
         )),
         (None, Some(index)) => Some(format!(" · SECTION {}", sections::SECTION_NAMES[index])),
         (None, None) => None,

@@ -1879,6 +1879,54 @@ impl ProgressionCursor {
         })
     }
 
+    /// The step the next chord boundary lands on when `window` is the window
+    /// then requested. The one rule for what plays next after a window edit,
+    /// shared by `tick` and by `phrase_end_beat`.
+    fn step_after_boundary(&self, window: ChordWindow) -> usize {
+        if window.progression != self.window.progression {
+            0
+        } else if let Some(current_step) = window.slots().position(|slot| slot == self.slot()) {
+            (current_step + 1) % window.count
+        } else {
+            let old_next_slot = self.window.slot((self.step + 1) % self.window.count);
+            window
+                .slots()
+                .position(|slot| slot == old_next_slot)
+                .unwrap_or(0)
+        }
+    }
+
+    /// The beat this phrase ends: the next chord boundary that starts the
+    /// window's first chord again. It plays the cursor forward on `window`
+    /// and `chord_beats` as they are requested now, so a Chord Count, Offset
+    /// or Length edit made while waiting moves the answer exactly as it moves
+    /// the phrase. `beat` stands in for the first boundary before the cursor's
+    /// first tick. Every consumer of "the phrase ends here" reads this.
+    pub(crate) fn phrase_end_beat(
+        &self,
+        window: ChordWindow,
+        chord_beats: f32,
+        beat: f64,
+    ) -> Option<f64> {
+        let interval = GridSpec::new(chord_beats, 0.0, 0.0).interval_beats;
+        let mut boundary = self.next_chord_beat.unwrap_or_else(|| {
+            GridSpec::new(self.chord_beats, 0.0, 0.0)
+                .hit_after(beat)
+                .beat
+        });
+        let mut cursor = *self;
+        for _ in 0..=CHORD_SLOT_COUNT * 2 {
+            let step = cursor.step_after_boundary(window);
+            if step == 0 {
+                return Some(boundary);
+            }
+            cursor.step = step;
+            cursor.window = window;
+            boundary += interval;
+        }
+        None
+    }
+
     /// Moves the cursor up to `timing`'s beat, reading `c` only at a chord
     /// boundary. Returns whether a new chord starts on this tick.
     pub(crate) fn tick(&mut self, c: &PadControls, timing: TimingContext) -> bool {
@@ -1917,17 +1965,7 @@ impl ProgressionCursor {
         }
         let window = ChordWindow::requested(c);
         let chord_beats = c.chord_bars * 4.0;
-        let old_next_slot = self.window.slot((self.step + 1) % self.window.count);
-        self.step = if window.progression != self.window.progression {
-            0
-        } else if let Some(current_step) = window.slots().position(|slot| slot == self.slot()) {
-            (current_step + 1) % window.count
-        } else {
-            window
-                .slots()
-                .position(|slot| slot == old_next_slot)
-                .unwrap_or(0)
-        };
+        self.step = self.step_after_boundary(window);
         self.window = window;
         self.chord_beats = chord_beats;
         // Counted from the boundary itself rather than the sample that

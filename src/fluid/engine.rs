@@ -688,6 +688,8 @@ pub(crate) struct FluidEngine {
     planned: Option<PlannedAction>,
     pending_section: Option<PendingSection>,
     section_landed_sample: Option<u64>,
+    /// The beat a queued section lands on, while one is queued.
+    section_end_beat: Option<f64>,
     section_gain: f32,
     pub(crate) vamp: Option<VampState>,
     vamp_active: bool,
@@ -777,6 +779,7 @@ impl FluidEngine {
             planned: live.planned,
             pending_section: live.pending_section.clone(),
             section_landed_sample: None,
+            section_end_beat: None,
             section_gain: 1.0,
             vamp: live.vamp,
             vamp_active,
@@ -967,10 +970,25 @@ impl StereoEngine for FluidEngine {
             }
             self.awaiting_initial_play = false;
         }
-        let section_due = self
+        // A queued section lands on the pad cursor's phrase end, the same
+        // `ProgressionCursor::phrase_end_beat` that every phrase consumer
+        // reads, recomputed each sample so chord edits and a held Vamp move
+        // it exactly as they move the phrase. `tempo.beat` is already the beat
+        // this sample's pad tick will use, so landing here is before the
+        // crossing, never a sample after it.
+        // The queue is read from the session every sample, not on the control
+        // tick: a phrase end is not bar-aligned, and a section queued a few
+        // samples before it must still land on it.
+        self.pending_section = self.session.load().pending_section.clone();
+        self.section_end_beat = self
             .pending_section
             .as_ref()
-            .is_some_and(|p| self.tempo.beat >= p.target_beat);
+            .and_then(|_| self.phrase_end_now());
+        self.session.publish_audio_phrase_end(self.section_end_beat);
+        let section_due = self.transport == Transport::Playing
+            && self
+                .section_end_beat
+                .is_some_and(|end| self.tempo.beat + GRID_BEAT_EPSILON >= end);
         let landed = if section_due {
             let pending = self.pending_section.take().unwrap();
             let landed = self.session.land_section(
@@ -1314,8 +1332,8 @@ impl StereoEngine for FluidEngine {
         let fade_in = self.section_landed_sample.map_or(1.0, |start| {
             (self.current_sample.saturating_sub(start) as f32 / fade_samples as f32).min(1.0)
         });
-        let fade_out = self.pending_section.as_ref().map_or(1.0, |p| {
-            let remaining = ((p.target_beat - self.tempo.beat) * 60.0 * f64::from(self.sample_rate)
+        let fade_out = self.section_end_beat.map_or(1.0, |end| {
+            let remaining = ((end - self.tempo.beat) * 60.0 * f64::from(self.sample_rate)
                 / self.tempo.bpm) as f32;
             (remaining / fade_samples as f32).clamp(0.0, 1.0)
         });
@@ -1434,6 +1452,21 @@ impl FluidEngine {
             boundary_muted[Tab::Bass as usize] = true;
         }
         boundary_muted
+    }
+
+    /// Where the sounding phrase ends, read from the pad cursor under the
+    /// controls its next tick will use: the requested window and chord length,
+    /// narrowed to the held chord while a Vamp is active.
+    fn phrase_end_now(&self) -> Option<f64> {
+        let pad = &self.effective.pad;
+        let mut window = ChordWindow::requested(pad);
+        if let Some(vamp) = self.vamp.filter(|vamp| vamp.is_active(self.tempo.beat)) {
+            window.count = 1;
+            window.offset = usize::from(vamp.slot);
+        }
+        self.pad
+            .cursor
+            .phrase_end_beat(window, pad.chord_bars * 4.0, self.tempo.beat)
     }
 
     fn reset_progression_phrase_anchors(&mut self) {
@@ -2551,73 +2584,307 @@ impl MasterBus {
 #[cfg(test)]
 mod section_tests {
     use super::*;
-    #[test]
-    fn queued_recall_lands_on_boundary_and_replace_cancel_are_respected() {
-        let session = LiveSession::new(LiveSessionSnapshot::from_song(&SongState::default()));
-        let mut engine = FluidEngine::new(
-            8000.0,
+
+    const RATE: f32 = 8000.0;
+
+    /// Four 2-beat chords: an 8-beat phrase, short enough to play through.
+    fn short_song(bpm: f32) -> SongState {
+        let mut song = SongState::default();
+        song.controls.master.bpm = bpm;
+        song.controls.pad.chord_bars = 0.5;
+        song.controls.pad.chord_count = 4.0;
+        song.controls.pad.chord_offset = 0.0;
+        song
+    }
+
+    fn engine_for(song: &SongState) -> (LiveSession, FluidEngine) {
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(song));
+        let engine = FluidEngine::new(
+            RATE,
             session.clone(),
             no_morph(),
             Arc::new(FluidTelemetry::default()),
         );
-        let mut destination = SongState::default();
-        destination.controls.master.bpm = 130.0;
-        let snapshot = Arc::new(LiveSessionSnapshot::from_song(&destination));
-        session.update(|s| {
-            s.pending_section = Some(PendingSection {
-                index: 1,
-                target_beat: 0.1,
-                snapshot: snapshot.clone(),
-            })
-        });
-        for _ in 0..128 {
-            engine.next_stereo();
-        }
-        session.update(|s| s.pending_section = None);
-        while engine.tempo.beat < 0.11 {
-            engine.next_stereo();
-        }
-        assert_eq!(session.load().current_section, None);
-        let target = engine.tempo.beat + 0.1;
-        session.update(|s| {
-            s.pending_section = Some(PendingSection {
-                index: 2,
-                target_beat: target,
-                snapshot: snapshot.clone(),
-            })
-        });
-        while engine.tempo.beat < target {
-            engine.next_stereo();
-        }
-        engine.next_stereo();
-        assert_eq!(session.load().current_section, Some(2));
-        assert!(engine.tempo.beat < 0.01);
-        assert_eq!(session.load().controls.master.bpm, 130.0);
+        (session, engine)
     }
+
+    fn queue(session: &LiveSession, index: usize, destination: &SongState) {
+        let snapshot = Arc::new(LiveSessionSnapshot::from_song(destination));
+        session.update(|s| {
+            s.pending_section = Some(PendingSection {
+                index,
+                snapshot: snapshot.clone(),
+            })
+        });
+    }
+
+    fn beats_per_sample(engine: &FluidEngine) -> f64 {
+        engine.tempo.bpm / (60.0 * f64::from(RATE))
+    }
+
+    fn play_until_beat(engine: &mut FluidEngine, beat: f64) {
+        while engine.tempo.beat < beat {
+            engine.next_stereo();
+        }
+    }
+
+    /// Plays until a section lands and returns the beat the landing sample
+    /// started on, i.e. the beat the old song had reached.
+    fn play_to_landing(engine: &mut FluidEngine, session: &LiveSession) -> f64 {
+        for _ in 0..400_000 {
+            let before = engine.tempo.beat;
+            let generation = session.load().section_revision;
+            engine.next_stereo();
+            if session.load().section_revision != generation {
+                return before;
+            }
+        }
+        panic!("the queued section never landed");
+    }
+
+    fn assert_on_wrap(landed_at: f64, wrap: f64, engine: &FluidEngine) {
+        let tolerance = beats_per_sample(engine) + GRID_BEAT_EPSILON;
+        assert!(
+            (landed_at - wrap).abs() <= tolerance,
+            "landed at beat {landed_at}, the phrase wraps at {wrap}"
+        );
+    }
+
+    #[test]
+    fn a_queued_section_lands_exactly_on_the_phrase_wrap_and_starts_at_beat_zero() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        let destination = short_song(90.0);
+        play_until_beat(&mut engine, 3.0);
+        queue(&session, 1, &destination);
+        // Not at the next bar (beat 4), not at the next chord (beat 4): the
+        // phrase wraps at 8.
+        let landed_at = play_to_landing(&mut engine, &session);
+        assert_on_wrap(landed_at, 8.0, &engine);
+        assert_eq!(session.load().current_section, Some(1));
+        assert!(engine.tempo.beat < 0.01, "destination starts at beat zero");
+        assert_eq!(session.load().controls.master.bpm, 90.0);
+        assert!(session.load().pending_section.is_none());
+        // The destination's own phrase is what the next queue waits for.
+        play_until_beat(&mut engine, 1.0);
+        queue(&session, 0, &short_song(120.0));
+        let again = play_to_landing(&mut engine, &session);
+        assert_on_wrap(again, 8.0, &engine);
+        assert_eq!(session.load().previous_section, Some(1));
+    }
+
+    #[test]
+    fn landing_follows_the_destinations_phrase_length_not_the_sources() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        let mut long = short_song(120.0);
+        long.controls.pad.chord_count = 2.0;
+        long.controls.pad.chord_bars = 1.0;
+        play_until_beat(&mut engine, 1.0);
+        queue(&session, 0, &long);
+        assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
+        // Now playing the 8-beat phrase of 2 four-beat chords.
+        play_until_beat(&mut engine, 1.0);
+        queue(&session, 1, &short_song(120.0));
+        assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
+    }
+
+    #[test]
+    fn cancelling_before_the_wrap_keeps_the_song_and_replacing_retargets_it() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        play_until_beat(&mut engine, 1.0);
+        queue(&session, 1, &short_song(100.0));
+        play_until_beat(&mut engine, 6.0);
+        session.update(|s| s.pending_section = None);
+        play_until_beat(&mut engine, 9.0);
+        assert_eq!(session.load().current_section, None);
+        assert!(engine.section_gain > 0.99, "cancel recovers the fade");
+        // A replacement queued before the wrap lands once, at that wrap.
+        queue(&session, 2, &short_song(100.0));
+        play_until_beat(&mut engine, 12.0);
+        queue(&session, 3, &short_song(80.0));
+        let landed_at = play_to_landing(&mut engine, &session);
+        assert_on_wrap(landed_at, 16.0, &engine);
+        assert_eq!(session.load().current_section, Some(3));
+        assert_eq!(session.load().controls.master.bpm, 80.0);
+    }
+
+    #[test]
+    fn queued_on_the_last_beat_it_lands_at_the_imminent_wrap_not_a_phrase_later() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        play_until_beat(&mut engine, 7.0);
+        queue(&session, 1, &short_song(90.0));
+        assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
+        // And a few samples before the wrap, inside the fade window.
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        let samples_before = 3.0;
+        let beat = 8.0 - samples_before * beats_per_sample(&engine);
+        play_until_beat(&mut engine, beat);
+        queue(&session, 1, &short_song(90.0));
+        assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
+        // The fade stays continuous even with no room to ramp.
+        assert!(engine.section_gain.is_finite());
+    }
+
+    /// A queue the engine sees by the sample that crosses the wrap belongs to
+    /// the phrase that ends there; one made after that sample belongs to the
+    /// next phrase.
+    #[test]
+    fn a_queue_on_the_boundary_sample_belongs_to_the_ending_phrase_and_one_after_to_the_next() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        while engine.tempo.beat + GRID_BEAT_EPSILON < 8.0 {
+            engine.next_stereo();
+        }
+        // The next call crosses the wrap.
+        queue(&session, 1, &short_song(90.0));
+        assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
+
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        while engine.tempo.beat + GRID_BEAT_EPSILON < 8.0 {
+            engine.next_stereo();
+        }
+        engine.next_stereo(); // the crossing sample, nothing queued
+        assert_eq!(session.load().current_section, None);
+        queue(&session, 1, &short_song(90.0));
+        assert_on_wrap(play_to_landing(&mut engine, &session), 16.0, &engine);
+    }
+
+    #[test]
+    fn editing_chord_count_while_queued_moves_the_landing_with_the_phrase() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        play_until_beat(&mut engine, 1.0);
+        queue(&session, 1, &short_song(90.0));
+        play_until_beat(&mut engine, 2.5);
+        // Halving the window while on chord 2 of 4: the phrase now ends at 4.
+        session.update(|s| s.controls.pad.chord_count = 2.0);
+        assert_on_wrap(play_to_landing(&mut engine, &session), 4.0, &engine);
+    }
+
+    #[test]
+    fn editing_chord_length_while_queued_follows_the_boundaries_as_played() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        play_until_beat(&mut engine, 0.5);
+        queue(&session, 1, &short_song(90.0));
+        // The sounding 2-beat chord finishes at its old length; the three
+        // after it are 4 beats each: 2 + 3 * 4 = 14.
+        session.update(|s| s.controls.pad.chord_bars = 1.0);
+        assert_on_wrap(play_to_landing(&mut engine, &session), 14.0, &engine);
+    }
+
+    #[test]
+    fn editing_chord_offset_while_queued_follows_the_phrase_as_played() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        play_until_beat(&mut engine, 0.5);
+        queue(&session, 1, &short_song(90.0));
+        // Offset 2 removes the sounding slot 0 from the window; its old
+        // successor (slot 1) is not in it either, so the new window starts at
+        // its first chord at the next boundary: that boundary is the wrap.
+        session.update(|s| s.controls.pad.chord_offset = 2.0);
+        assert_on_wrap(play_to_landing(&mut engine, &session), 2.0, &engine);
+    }
+
+    #[test]
+    fn a_tempo_change_during_the_wait_does_not_move_the_landing_off_the_wrap() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        play_until_beat(&mut engine, 1.0);
+        queue(&session, 1, &short_song(90.0));
+        play_until_beat(&mut engine, 3.0);
+        session.update(|s| s.controls.master.bpm = 60.0);
+        play_until_beat(&mut engine, 5.0);
+        session.update(|s| s.controls.master.bpm = 180.0);
+        assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
+    }
+
+    #[test]
+    fn a_queue_survives_a_stop_and_lands_at_the_first_phrase_end_after_restart() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        let mut effects = EffectExecutor::seeded(
+            session.clone(),
+            AutoControls::new(no_morph(), vec![], 64),
+            1,
+        );
+        play_until_beat(&mut engine, 1.0);
+        queue(&session, 1, &short_song(90.0));
+        session.update(|s| s.transport = Transport::Stopped);
+        for _ in 0..20_000 {
+            engine.next_stereo();
+        }
+        assert!(session.load().pending_section.is_some());
+        assert_eq!(session.load().current_section, None);
+        effects.start_transport();
+        // Restart is beat zero of a fresh phrase: the first phrase end after
+        // it is a whole phrase away, where the bar rule's first new bar was
+        // beat 4.
+        assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
+    }
+
+    /// A held or latched Vamp narrows the pad to one chord, so the shared
+    /// boundary is that chord's end: the queue does not wait forever.
+    #[test]
+    fn under_a_vamp_the_phrase_end_is_the_vamped_chord_end() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        play_until_beat(&mut engine, 2.5);
+        session.update(|s| {
+            s.vamp = Some(VampState::start(2.0, 1));
+            s.vamp_latched = true;
+        });
+        play_until_beat(&mut engine, 3.0);
+        queue(&session, 1, &short_song(90.0));
+        let landed_at = play_to_landing(&mut engine, &session);
+        assert_on_wrap(landed_at, 4.0, &engine);
+    }
+
+    #[test]
+    fn the_published_phrase_end_is_the_same_beat_the_section_lands_on() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        assert_eq!(session.audio_phrase_end(), None);
+        play_until_beat(&mut engine, 1.0);
+        queue(&session, 1, &short_song(90.0));
+        engine.next_stereo();
+        assert_eq!(session.audio_phrase_end(), Some(8.0));
+        play_until_beat(&mut engine, 5.0);
+        assert_eq!(session.audio_phrase_end(), Some(8.0));
+        let landed_at = play_to_landing(&mut engine, &session);
+        assert_on_wrap(landed_at, 8.0, &engine);
+        engine.next_stereo();
+        assert_eq!(session.audio_phrase_end(), None);
+    }
+
+    #[test]
+    fn longest_wait_and_song_one_wait() {
+        // 8 chords of 64 bars (256 beats) at the slowest tempo.
+        let longest = PadControls {
+            chord_bars: 64.0,
+            chord_count: 8.0,
+            ..PadControls::default()
+        };
+        let window = ChordWindow::requested(&longest);
+        let beats = window.phrase_beats(&longest);
+        assert_eq!(beats, 2048.0);
+        assert_eq!(beats / 4.0, 512.0);
+        assert_eq!(beats * 60.0 / f64::from(MASTER_BPM_MIN), 4096.0);
+        // Song 1's own defaults, read from the built-in.
+        let song = decode_auto_states().remove(0);
+        let pad = &song.controls.pad;
+        let phrase = ChordWindow::requested(pad).phrase_beats(pad);
+        let bpm = f64::from(song.controls.master.bpm);
+        assert_eq!((pad.chord_bars, pad.chord_count, bpm), (4.0, 8.0, 82.0));
+        assert_eq!(phrase, 128.0);
+        assert_eq!(phrase / 4.0, 32.0);
+        assert!((phrase * 60.0 / bpm - 93.66).abs() < 0.01);
+    }
+
     #[test]
     fn cancellation_during_fade_recovers_without_gain_jump() {
-        let session = LiveSession::new(LiveSessionSnapshot::from_song(&SongState::default()));
-        let mut engine = FluidEngine::new(
-            8000.0,
-            session.clone(),
-            no_morph(),
-            Arc::new(FluidTelemetry::default()),
-        );
+        let (session, mut engine) = engine_for(&short_song(120.0));
         let mut peak = 0.0_f32;
         for _ in 0..3000 {
             let sample = engine.next_stereo();
             peak = peak.max(sample.0.abs()).max(sample.1.abs());
         }
         assert!(peak > 0.000001);
-        let target = engine.tempo.beat + 0.04;
-        let snapshot = Arc::new(LiveSessionSnapshot::from_song(&SongState::default()));
-        session.update(|s| {
-            s.pending_section = Some(PendingSection {
-                index: 0,
-                target_beat: target,
-                snapshot: snapshot.clone(),
-            })
-        });
+        // Queue just before the wrap so the fade-out is under way.
+        let beat = 8.0 - 20.0 * beats_per_sample(&engine);
+        play_until_beat(&mut engine, beat);
+        queue(&session, 0, &short_song(120.0));
         for _ in 0..1000 {
             engine.next_stereo();
             if engine.section_gain < 0.7 {

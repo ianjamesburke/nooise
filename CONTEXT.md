@@ -69,7 +69,7 @@
 - **Chord window:** the part of a progression that loops: Chord Count chords
   starting at Chord Offset, wrapping past the eighth. Count 4, Offset 4 plays
   chords 5–8.
-- **Phrase:** one run of the chord window at one Chord Length. Manual
+- **Phrase:** one run of the chord window at one Chord Length. A queued section lands where the phrase ends, when the window wraps to its first chord. Manual
   window/length edits wait for the sounding chord to end, then preserve its
   successor where possible; selecting another progression starts at its first
   chord. An auto morph keeps the outgoing harmony through whole phrases

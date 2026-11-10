@@ -30,10 +30,22 @@ The same operations are reachable through `/`: `/store section 1` to `9`,
 order, skipping empty slots and wrapping), `/queue previous section`, and
 `/cancel section queue`. There is one store operation and it overwrites. A new
 queue replaces the old one; the key header shows the current section and queued
-destination. The change lands at the next bar and starts the destination at its
+destination, with the bars left (`1 → 2 in 3 bars`, rounded up, so the last bar
+reads `in 1 bar`). The change lands at the end of the sounding Phrase, the moment
+the chord window wraps to its first chord, and starts the destination at its
 saved tempo and state. Queuing requires a running clock; landing exits auto. The
-destination starts at beat zero, with a short fade around the boundary. A queued
-section waits while stopped and moves to the first new bar after restart.
+destination starts at beat zero, with a short fade around the boundary. The
+landing is read from the pad's own chord cursor every sample, so a Chord Count,
+Offset or Length edit made while waiting moves it exactly as it moves the phrase
+(edits still wait for the sounding chord to end), and tempo changes never move
+it off the wrap. A queue made on the last beat of a phrase lands at that
+imminent wrap; one made after the wrap sample waits for the next phrase end.
+Under a held or latched Vamp the pad plays one chord, so the end of that chord is
+the phrase end. A queued section waits while stopped, shows `waiting`, and after
+a restart lands at the first phrase end, a whole phrase from beat zero. The wait
+is one phrase: song 1 is 8 chords of 4 bars at 82 BPM, 32 bars or about 94
+seconds; the longest possible phrase, 8 chords of 64 bars at 30 BPM, is 512 bars
+or 68 minutes.
 Physical holds continue across recall until release; held Vamp locks the
 destination first chord. The destination supplies the saved q latch and
 individual mutes. An empty slot, a stopped clock and a missing previous section
@@ -335,7 +347,8 @@ Lead play retains its own `i` entry and existing bindings.
    Tab: the hub is back, with BPM reachable by arrows.
 11. With `--set PATH`, press `"` then `1`, `2`, `3` in turn after changing a knob
    each time: the message reads `Stored section N`. Press `'` then `2`: the
-   header shows the queue and the section lands on the next bar. Press `'` then
+   header counts down the bars (`in N bars`) and the section lands when the chord
+   progression loops back to its first chord. Press `'` then
    `2` again before the bar: the queue cancels. After a landing, press `'` `'`:
    the previous section is queued. Press `"` then `2`: `Replaced section 2`, with
    no prompt. Press `'` then `9`, an empty slot: a message, and the song plays on.

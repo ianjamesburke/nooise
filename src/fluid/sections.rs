@@ -288,7 +288,6 @@ mod tests {
         let session = LiveSession::new(LiveSessionSnapshot::from_song(&SongState::default()));
         let pending = PendingSection {
             index: 0,
-            target_beat: 4.0,
             snapshot: Arc::new(LiveSessionSnapshot::from_song(&restored)),
         };
         session.update(|snapshot| snapshot.pending_section = Some(pending.clone()));
@@ -332,8 +331,11 @@ mod input_tests {
     }
     impl Rig {
         fn new(caps: TerminalCapabilities) -> Self {
-            let session =
-                LiveSession::new(LiveSessionSnapshot::from_controls(FluidControls::default()));
+            // A short phrase (four 2-beat chords) keeps landings quick to play.
+            let mut controls = FluidControls::default();
+            controls.pad.chord_bars = 0.5;
+            controls.pad.chord_count = 4.0;
+            let session = LiveSession::new(LiveSessionSnapshot::from_controls(controls));
             let morph = no_morph();
             Self {
                 effects: EffectExecutor::seeded(
@@ -417,7 +419,7 @@ mod input_tests {
         }
         /// Run audio until the queued section lands.
         fn land(&mut self) {
-            for _ in 0..60000 {
+            for _ in 0..600_000 {
                 let sample = self.engine.next_stereo();
                 assert!(sample.0.is_finite() && sample.1.is_finite());
                 if self.session.load().pending_section.is_none() {
@@ -472,14 +474,6 @@ mod input_tests {
         rig.command("queue section 3");
         for (index, bpm) in [(1, 90.0), (2, 130.0), (3, 110.0), (1, 90.0)] {
             rig.command(&format!("queue section {index}"));
-            let target = rig
-                .session
-                .load()
-                .pending_section
-                .as_ref()
-                .unwrap()
-                .target_beat;
-            assert!((target / 4.0).fract().abs() < 1e-9);
             rig.land();
             assert_eq!(rig.session.load().current_section, Some(index - 1));
             assert!((rig.engine.tempo.bpm - bpm).abs() < 0.001);
@@ -539,7 +533,7 @@ mod input_tests {
         Rig::ok(rig.tap('2'));
         assert!(rig.browsing());
         assert_eq!(rig.pending(), Some(1));
-        assert_eq!(rig.message(), Some("Queued section 2 for next bar"));
+        assert_eq!(rig.message(), Some("Queued section 2 for phrase end"));
         Rig::ok(rig.tap('\''));
         Rig::ok(rig.tap('3'));
         assert_eq!(rig.pending(), Some(2), "another digit replaces the queue");
@@ -766,7 +760,6 @@ mod input_tests {
         palette.command("queue section 2");
         let via_palette = palette.session.load().pending_section.clone().unwrap();
         assert_eq!(queued.index, via_palette.index);
-        assert_eq!(queued.target_beat, via_palette.target_beat);
         rig.land();
         let landed = rig.session.load();
         assert_eq!(landed.vamp, Some(VampState::start(0.0, 3)));

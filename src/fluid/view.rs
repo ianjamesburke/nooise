@@ -109,6 +109,9 @@ pub(crate) struct TelemetryView {
     /// Each module slot's compressor gain reduction in dB, indexed by
     /// `module_layer_index(tab) * MODULE_SLOTS + slot`.
     pub(crate) gain_reduction_db: [f32; MODULE_SLOT_TOTAL],
+    /// The beat a queued section lands on (the sounding phrase's end), or
+    /// `None` when nothing is queued.
+    pub(crate) phrase_end_beat: Option<f64>,
 }
 
 // Hand-written: std derives `Default` for arrays only up to length 32.
@@ -120,6 +123,7 @@ impl Default for TelemetryView {
             chord_span: ChordSpan::default(),
             levels: [0.0; TAB_COUNT],
             gain_reduction_db: [0.0; MODULE_SLOT_TOTAL],
+            phrase_end_beat: None,
         }
     }
 }
@@ -1528,7 +1532,6 @@ mod tests {
         session.current_section = Some(0);
         session.pending_section = Some(PendingSection {
             index: 1,
-            target_beat: 4.0,
             snapshot: Arc::new(LiveSessionSnapshot::from_song(&SongState::default())),
         });
         session.kick_bass_latched = true;
@@ -1542,12 +1545,16 @@ mod tests {
             let frame = render_model_with_session_at_size(
                 &interaction,
                 &session,
-                TelemetryView::default(),
+                TelemetryView {
+                    beat: 1.0,
+                    phrase_end_beat: Some(9.0),
+                    ..TelemetryView::default()
+                },
                 width,
                 height,
             );
             let key_line = frame.lines().find(|line| line.contains("KEY")).unwrap();
-            assert!(key_line.contains("1␠→␠2␠next␠bar"), "{frame}");
+            assert!(key_line.contains("1␠→␠2␠in␠2␠bars"), "{frame}");
             for expected in ["VAMP", "Kick+Bass␠latched", "Freeze"] {
                 assert!(frame.contains(expected), "missing {expected}: {frame}");
             }
@@ -1597,7 +1604,6 @@ mod tests {
         session.current_section = Some(1);
         session.pending_section = Some(PendingSection {
             index: 4,
-            target_beat: 4.0,
             snapshot: Arc::new(LiveSessionSnapshot::from_song(&SongState::default())),
         });
         session
@@ -1673,6 +1679,84 @@ mod tests {
             assert!(
                 line.chars().count() <= usize::from(MIN_TERMINAL_WIDTH - 2),
                 "{line:?}"
+            );
+        }
+    }
+
+    fn key_line_with_queue(
+        session: &LiveSessionSnapshot,
+        beat: f64,
+        phrase_end_beat: Option<f64>,
+    ) -> String {
+        let frame = render_model_with_session_at_size(
+            &InteractionModel::default(),
+            session,
+            TelemetryView {
+                beat,
+                phrase_end_beat,
+                ..TelemetryView::default()
+            },
+            MIN_TERMINAL_WIDTH,
+            MIN_TERMINAL_HEIGHT,
+        );
+        frame
+            .lines()
+            .find(|line| line.contains("KEY"))
+            .unwrap()
+            .to_string()
+    }
+
+    fn queued_session() -> LiveSessionSnapshot {
+        let mut session = session();
+        session.current_section = Some(0);
+        session.pending_section = Some(PendingSection {
+            index: 1,
+            snapshot: Arc::new(LiveSessionSnapshot::from_song(&SongState::default())),
+        });
+        session
+    }
+
+    #[test]
+    fn queued_header_counts_down_the_bars_to_the_phrase_end() {
+        let session = queued_session();
+        for (beat, end, text) in [
+            (0.0, 16.0, "1␠→␠2␠in␠4␠bars"),
+            (4.5, 16.0, "1␠→␠2␠in␠3␠bars"),
+            (12.0, 16.0, "1␠→␠2␠in␠1␠bar"),
+            (15.99, 16.0, "1␠→␠2␠in␠1␠bar"),
+        ] {
+            let line = key_line_with_queue(&session, beat, Some(end));
+            assert!(line.contains(text), "{text}: {line}");
+        }
+        assert!(
+            !key_line_with_queue(&session, 12.0, Some(16.0)).contains("bars"),
+            "one bar left is singular"
+        );
+    }
+
+    #[test]
+    fn queued_header_says_waiting_when_stopped_or_without_a_published_end() {
+        let mut session = queued_session();
+        let line = key_line_with_queue(&session, 0.0, None);
+        assert!(line.contains("1␠→␠2␠waiting"), "{line}");
+        session.transport = Transport::Stopped;
+        let line = key_line_with_queue(&session, 0.0, Some(8.0));
+        assert!(line.contains("1␠→␠2␠waiting"), "{line}");
+    }
+
+    /// The longest wait (512 bars) beside the widest key label still fits the
+    /// 46-column frame without clipping the countdown.
+    #[test]
+    fn queued_header_countdown_fits_the_minimum_frame_for_every_progression() {
+        let mut session = queued_session();
+        session.current_section = Some(7);
+        session.pending_section.as_mut().unwrap().index = 8;
+        for progression in 0..PROGRESSIONS.len() {
+            session.controls.pad.progression = progression as f32;
+            let line = key_line_with_queue(&session, 0.0, Some(2048.0));
+            assert!(
+                line.contains("8␠→␠9␠in␠512␠bars"),
+                "progression {progression}: {line}"
             );
         }
     }

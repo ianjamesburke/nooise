@@ -288,7 +288,7 @@ impl Operation {
                 description: match action {
                     SectionAction::Store(_) => "save current song, replacing any stored one",
                     SectionAction::Recall(_) | SectionAction::Next | SectionAction::Previous => {
-                        "change at next bar"
+                        "change when the phrase ends"
                     }
                     SectionAction::Cancel => "keep playing current section",
                 },
