@@ -98,6 +98,9 @@ struct Cli {
     /// Start live playback with Master Level at 0%.
     #[arg(short = 'M', long, global = true)]
     start_muted: bool,
+    /// Open with the transport stopped, preserving the song's levels and mutes.
+    #[arg(long, global = true)]
+    start_stopped: bool,
     /// Experimental: derive BPM from taps on the Apple Silicon MacBook chassis.
     /// This is opt-in, needs no Accessibility or Input Monitoring permission,
     /// and only works on Macs exposing the undocumented SPU accelerometer.
@@ -156,6 +159,14 @@ impl Cli {
             Some("--set only applies to live playback")
         } else if self.audio_devices && (self.song.is_some() || self.command.is_some()) {
             Some("--audio-devices lists outputs; use it without a song or subcommand")
+        } else if self.start_stopped
+            && (self.audio_devices
+                || matches!(
+                    self.command,
+                    Some(CliCommand::Render(_) | CliCommand::Update)
+                ))
+        {
+            Some("--start-stopped only applies to live playback")
         } else if self.output_device.is_some()
             && matches!(
                 self.command,
@@ -182,6 +193,7 @@ impl Cli {
             ),
             start_muted: self.start_muted,
             set: self.set.clone(),
+            start_stopped: self.start_stopped,
             chassis_tap: self.chassis_tap,
             osc_in: self.osc_in,
         }
@@ -387,6 +399,25 @@ mod tests {
         }
         for args in [&["--from"][..], &["--from", "nope"], &["--from", "-1"]] {
             assert!(parse(args).is_err());
+        }
+    }
+
+    #[test]
+    fn start_stopped_is_live_only_and_preserves_song_selection() {
+        for song in ["9", "n1_example"] {
+            let cli = parse(&["--start-stopped", song]).unwrap();
+            assert_eq!(cli.song.as_deref(), Some(song));
+            assert!(cli.live_options().start_stopped);
+            assert!(!cli.live_options().start_muted);
+            assert!(cli.validate_output().is_ok());
+        }
+        assert!(!parse(&[]).unwrap().live_options().start_stopped);
+        for args in [
+            &["render", "--start-stopped"][..],
+            &["update", "--start-stopped"],
+            &["--audio-devices", "--start-stopped"],
+        ] {
+            assert!(parse(args).unwrap().validate_output().is_err());
         }
     }
 

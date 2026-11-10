@@ -719,6 +719,8 @@ pub(crate) struct FluidEngine {
     drunken_phase_beat: f64,
     transport: Transport,
     transport_restart: u64,
+    /// A stopped launch must not sound continuous voices or age the saved state.
+    awaiting_initial_play: bool,
     /// Allocation-free per-sample plan, rebuilt only when aggregate
     /// session identity changes, without comparing or cloning automation maps.
     plan: AutomationPlan,
@@ -839,6 +841,7 @@ impl FluidEngine {
             drunken_phase_beat: live.drunken_phase_beat,
             transport: live.transport,
             transport_restart: live.transport_restart,
+            awaiting_initial_play: live.transport == Transport::Stopped,
             plan,
             plan_source,
         }
@@ -958,6 +961,12 @@ impl FluidEngine {
 
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
+        if self.awaiting_initial_play {
+            if self.session.load().transport == Transport::Stopped {
+                return (0.0, 0.0);
+            }
+            self.awaiting_initial_play = false;
+        }
         let section_due = self
             .pending_section
             .as_ref()

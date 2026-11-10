@@ -401,6 +401,8 @@ pub(crate) struct LiveStartOptions {
     /// `-M`: open with Master Level at 0%.
     pub(crate) start_muted: bool,
     pub(crate) set: Option<std::path::PathBuf>,
+    /// Open with the transport stopped before starting the audio stream.
+    pub(crate) start_stopped: bool,
     /// `--chassis-tap`: derive BPM from taps on the MacBook chassis.
     pub(crate) chassis_tap: bool,
     /// `--osc-in`: listen for inbound OSC commands on this UDP socket.
@@ -438,6 +440,14 @@ fn apply_live_start_to_states(states: &mut [SongState], start_muted: bool) {
     for state in states {
         apply_live_start(state, start_muted);
     }
+}
+
+fn live_start_snapshot(song: &SongState, start_stopped: bool) -> LiveSessionSnapshot {
+    let mut snapshot = LiveSessionSnapshot::from_song(song);
+    if start_stopped {
+        snapshot.transport = Transport::Stopped;
+    }
+    snapshot
 }
 
 pub(crate) fn run_with_song_state(
@@ -535,7 +545,7 @@ fn run_interactive(
     let output_routing = audio::OutputRouting::new(options.output);
     apply_live_start(&mut initial_song, options.start_muted);
     apply_live_start_to_states(&mut auto_states, options.start_muted);
-    let session = LiveSession::new(LiveSessionSnapshot::from_song(&initial_song));
+    let session = LiveSession::new(live_start_snapshot(&initial_song, options.start_stopped));
     let chassis_tap = options
         .chassis_tap
         .then(ChassisTapReceiver::start)
