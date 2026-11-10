@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "name": "Default show",
+  "nooise": {
+    "song": "1",
+    "output_device": "BlackHole 2ch"
+  },
+  "audio": {
+    "monitor_output": { "device": "Clarett 8Pre", "channels": "1-2" },
+    "stream_output": { "device": "BlackHole 16ch", "channels": "1-2" },
+    "tracks": [
+      { "name": "TAKE 5", "input": { "device": "Clarett 8Pre", "channels": "3-4" }, "record": true },
+      { "name": "NOOISE", "input": { "device": "BlackHole 2ch", "channels": "1-2" }, "record": true }
+    ]
+  },
+  "baton": {
+    "take5": {
+      "enabled": false,
+      "port": "Take5",
+      "input_channel": 1,
+      "pad_channel": 1,
+      "arp_channel": 0,
+      "lead_channel": 0,
+      "bass_channel": 0
+    }
+  },
+  "recording": {
+    "events": false
+  },
+  "visuals": {
+    "foorm": true,
+    "obs_scene": "Show Test 2026-10-25",
+    "obs_source": "Show Foorm Video"
+  }
+}
