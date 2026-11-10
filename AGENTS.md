@@ -133,3 +133,4 @@ All feature work lands in a worktree, never in the root checkout. The root check
 
 - `docs/AGENTS.md` — product direction and durable architecture records
 - `src/AGENTS.md` — engine/UI source tree (audio, fluid core, fx, synth)
+- `show/AGENTS.md` — editable default live-rig profile for the show launcher
