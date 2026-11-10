@@ -41,6 +41,7 @@
   layers, each showing its level and opening that layer on Enter; Master's
   own controls follow. Tab reaches it after Lead, and Esc from a layer's
   root returns to it on that layer's row.
+- **Section leader:** a pending `'` or `"` that waits for one digit `1`-`9` naming a section slot. `'` queues the section (a second `'` queues the previous one) and `"` stores the current song there, replacing any stored one. It opens only from browsing, acts on key presses, and leaves physical holds running.
 - **Layer:** one voice's page (Pads, Perc, Bass, Kick, Tonal, Clap, Arp,
   Lead), entered from the hub. It remembers its row for the session.
 - **Breadcrumb:** the line naming the path from the hub to the open page,

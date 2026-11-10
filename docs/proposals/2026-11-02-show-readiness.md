@@ -179,7 +179,7 @@ move while discrete changes wait for their musical boundary.
 Muted preparation, tempo matching, tempo preservation, gradual morphing, and
 headphone audition remain separate design choices. Muting an instance alone
 does not provide headphone cueing. Baton clock/session ownership is unresolved.
-The current A/B/C section-bank batch is the foundation, not an implementation
+The current numbered section-bank batch (slots 1-9) is the foundation, not an implementation
 of this library, preview, discovery, or multi-engine design.
 
 ## Rehearsal checkpoints
@@ -187,7 +187,7 @@ of this library, preview, discovery, or multi-engine design.
 | Target | Work to bring | Performance gate |
 | --- | --- | --- |
 | Nov 2–4 | Baseline recording, three section snapshots, current task audit | Play 10 minutes; identify the three largest interruptions and choose one piece for the recall spike |
-| Nov 5–8 | In-process section bank/recall and q tap/hold | Play 15–20 minutes with A/B/C/return, one song transition, and hands-free breakdowns; exercise cancel and recovery |
+| Nov 5–8 | In-process section bank/recall and q tap/hold | Play 15–20 minutes with sections 1/2/3/return, one song transition, and hands-free breakdowns; exercise cancel and recovery |
 | Nov 9–12 | Chosen melodic slice, any required harmony fixes, longer phrase only if it earns its place | Play the draft set end to end; decide the final feature scope and song order |
 | Nov 13–16 | Rehearsal fixes, balanced patches, complete set material and startup path | Full-duration recorded set on the intended rig, including setup, ending, and a deliberate wrong-section recovery |
 | Nov 17–18 | Frozen candidate and matching saved material | Two full-duration passes with no blocking failure; verify restart/reload and backup material |

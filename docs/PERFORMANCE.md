@@ -2,9 +2,49 @@
 
 ## Prepared sections
 
-Use `/store section A`, `/store section B`, or `/store section C` to keep the current song snapshot. Store refuses an occupied slot; `/replace section A` (or B/C) deliberately updates it. `/queue section A` selects a destination, `/queue next section` advances in A/B/C order, and `/cancel section queue` keeps the current song. A new queue replaces the old one; the key header shows the current section and queued destination. The change lands at the next bar and starts the destination at its saved tempo and state. Queuing requires a running clock; landing exits auto. The destination starts at beat zero, with a short fade around the boundary. A queued section waits while stopped and moves to the first new bar after restart. Physical holds continue across recall until release; held Vamp locks the destination first chord. The destination supplies the saved q latch and individual mutes.
+A bank holds nine numbered sections, 1 through 9. Store, recall and cancel
+each have a two-key gesture from ordinary browsing and a `/` operation, so the
+keyboard path never needs a typed command.
 
-Launch with `nooise --set PATH` to save and reopen the bank. Without `--set`, sections last only for this run. The file holds separate song codes and does not contain recorded audio. If a bank or code is invalid, the current song keeps playing.
+`'` (apostrophe) opens the Queue leader. A digit `1`-`9` queues that section.
+The digit of the section already queued cancels the queue, the same toggle feel
+as `Space m`. A second `'` queues the previous section: the one that was
+current before the most recent landing, so `''` goes back and, repeated,
+alternates between two sections. With no previous section it says so and
+returns to browsing.
+
+`"` (Shift plus the same key) opens the Store leader. A digit `1`-`9` stores the
+current song snapshot into that slot at once, replacing whatever is there, with
+no confirmation. The message says `Stored section 3` for an empty slot and
+`Replaced section 3` for an occupied one. Esc cancels either leader with no
+effect. Both leaders act on a key press and need no key-release support, and
+both open only from browsing: in the palette, numeric entry, or an editor,
+`'` and `"` are ordinary characters or nothing. A terminal may report `"` as the
+glyph alone, the glyph with Shift, or `'` with Shift; all three open the Store
+leader. A compact overlay lists slots 1-9, each marked `empty` or `filled`,
+with `now` on the current section and `next` on the queued one, a title
+saying `Queue section` or `Store section`, and `Esc Cancel`.
+
+The same operations are reachable through `/`: `/store section 1` to `9`,
+`/queue section 1` to `9`, `/queue next section` (the next filled slot in number
+order, skipping empty slots and wrapping), `/queue previous section`, and
+`/cancel section queue`. There is one store operation and it overwrites. A new
+queue replaces the old one; the key header shows the current section and queued
+destination. The change lands at the next bar and starts the destination at its
+saved tempo and state. Queuing requires a running clock; landing exits auto. The
+destination starts at beat zero, with a short fade around the boundary. A queued
+section waits while stopped and moves to the first new bar after restart.
+Physical holds continue across recall until release; held Vamp locks the
+destination first chord. The destination supplies the saved q latch and
+individual mutes. An empty slot, a stopped clock and a missing previous section
+each show a message and leave the current song playing.
+
+Launch with `nooise --set PATH` to save and reopen the bank. Without `--set`,
+sections last only for this run. The file holds one `number<TAB>song code` line
+per filled slot and does not contain recorded audio. A bank that is invalid, or
+that still uses the old letter names A, B and C, is refused with a message at
+launch (sections are now numbered 1 to 9); nothing translates an old file. The
+current song keeps playing.
 
 ## Slapback preset
 
@@ -102,9 +142,14 @@ survive its return.
 Held gestures stay active while Escape backs out of browsing drills and layers;
 at the hub root with no gesture key held, Escape releases any restored holds
 loaded from a song code.
-Opening a keyboard-owning editor or Lead play releases gestures. A key held through that transition must be
-released before it can start another gesture. Reported focus loss and shutdown
-also release held gestures.
+Opening a keyboard-owning editor, Lead play, the palette or the Jump leader
+releases gestures. A key held through that transition must be released before
+it can start another gesture. Reported focus loss and shutdown also release held
+gestures. The one exception is the section leaders (`'` and `"`): opening one,
+completing it with a digit, or cancelling it leaves a physical hold running, and
+a key-up while one is pending releases the hold exactly as in browsing. On a
+terminal without key-release support, the latched `q` and `a` toggles are state
+rather than holds and likewise survive.
 
 Hold gestures require negotiated key-release support. Without it, q and palette operations remain available; other hold keys remain inactive — the shortcut map
 (`?`) still lists them, since they are a capability gap, not a hidden feature.
@@ -247,7 +292,8 @@ Mute share a row with Motion Grab, and `Esc Cancel` has the bottom row. The foot
 visible.
 
 Motion Record and a shared lane editor remain deferred. `Space 1/2/4/8` are
-assigned to Grab; any future state-mark recall needs a separate route.
+assigned to Grab; state-mark recall has its own routes, the `'` and `"` section
+leaders above.
 
 Lead play retains its own `i` entry and existing bindings.
 
@@ -287,6 +333,17 @@ Lead play retains its own `i` entry and existing bindings.
    rows, Tab to Kick and Esc: the cursor is on the hub's Kick row. Enter
    Bass again: the cursor is back where it was left. Shift+Tab to Lead, then
    Tab: the hub is back, with BPM reachable by arrows.
+11. With `--set PATH`, press `"` then `1`, `2`, `3` in turn after changing a knob
+   each time: the message reads `Stored section N`. Press `'` then `2`: the
+   header shows the queue and the section lands on the next bar. Press `'` then
+   `2` again before the bar: the queue cancels. After a landing, press `'` `'`:
+   the previous section is queued. Press `"` then `2`: `Replaced section 2`, with
+   no prompt. Press `'` then `9`, an empty slot: a message, and the song plays on.
+   Hold `w` and press `'` then `3`: the Submerge stays held through the landing.
+   Quit and relaunch with the same path: the filled slots show `filled` in the
+   `'` overlay and recall as stored. Check both overlays at 46x11.
+12. Edit the set file to start a line with `A`: relaunch shows the refusal at
+   launch and the song plays.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the

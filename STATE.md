@@ -69,7 +69,7 @@ Updated: 2026-11-06
 - Hold `b` or use `/freeze` for a temporary grain stretch/repeat texture.
 - `VAMP` and `VAMP ENDING` appear beside the chord.
 - Tap `q` for a saved Kick+Bass latch; hold for a temporary gate. Individual mutes remain independent.
-- A/B/C section storage, next-bar queue/replace/cancel, and `--set PATH` persistence. The key header shows the current and queued sections. Recall retains performed holds, restores the destination snapshot, and lands at its authored tempo and beat zero.
+- Nine numbered sections (1-9): `"` then a digit stores (overwriting), `'` then a digit queues at the next bar (the queued digit again cancels, `''` queues the previous section), all also reachable through `/`; `--set PATH` persistence. The key header shows the current and queued sections. Recall retains performed holds, restores the destination snapshot, and lands at its authored tempo and beat zero.
 - `/slapback` sets Delay Amount to 40%, both synchronized times to 0.25 beats, and Feedback to 0%. It also reapplies these values to an existing Delay.
 
 The [performance guide](docs/PERFORMANCE.md) owns the controls and terminal-capability contracts.
@@ -98,12 +98,12 @@ rejected. Do not equate safe signal measurements with a better-sounding reverb.
 Compare `target/show-checkpoint/reverb-before.wav` and `reverb-after.wav`, then
 listen on actual show material. Captured audio is not part of saved songs.
 
-1. Launch with `cargo run -- --set show-rehearsal.set`. Prepare contrasting A/B/C
-   snapshots using `/store section A` and the B/C equivalents. Use `/replace
-   section A` only when deliberately updating prepared material.
-2. Record 15–20 uninterrupted minutes. Play A → B → C → A with `/queue section A`
-   or `/queue next section`; cancel and replace one queued destination, and recover
-   from one wrong section. Include a different-tempo destination.
+1. Launch with `cargo run -- --set show-rehearsal.set`. Prepare contrasting
+   snapshots with `"1`, `"2`, `"3` (or `/store section 1`). Storing into an
+   occupied slot replaces it at once, with no prompt.
+2. Record 15–20 uninterrupted minutes. Play 1 → 2 → 3 → 1 with `'1`, `'2`, `'3`
+   or `/queue next section`; cancel one queued destination with the same digit, use
+   `''` to go back, and recover from one wrong section. Include a different-tempo destination.
 3. Play q tap/hold, Vamp ending, Freeze release, Offbeat and Slapback. Listen for
    useful balance, clicks, dropouts and a clean ending on the intended audio route.
    Physical holds need a terminal reporting key releases; fallback palette paths

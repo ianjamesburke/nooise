@@ -70,4 +70,11 @@ Long-term, layer power-user ergonomics on top of the floor above — fast value 
 - [ORCA](https://github.com/hundredrabbits/Orca) — 2D-grid livecoding esolang, one letter per operator, keyboard-navigated spatial grid, outputs MIDI/OSC. The clearest existing fusion of vim's spatial-navigation model with procedural music generation.
 - Livecoding pattern languages ([TidalCycles](https://github.com/tidalcycles/Tidal)/Strudel, Sonic Pi, Gibber) — terse cyclic-pattern DSLs, hot-reloaded while playing. Different axis (text-as-interface, not modal navigation) but same underlying goal: compress expert intent into very few keystrokes. nooise's own song-code (compact serialized state) is already adjacent to this idea.
 
+**Direction (stated by the owner, 2026-11-10):** the eventual goal is to
+perform without looking at the screen, from muscle memory. Arrows, Enter and
+Escape stay as the onboarding floor. The whole control surface (entering
+layers, the step sequencer, per-layer amounts) should over time gain a
+keyboard-native route that works eyes-closed, explored incrementally one area
+at a time. Section marks (`'` to recall, `"` to store) are the first step.
+
 None of these are directly portable — nooise's control surface is sliders/pages, not a timeline or a text buffer — but they're the reference set to study before designing the advanced layer.
