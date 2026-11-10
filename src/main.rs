@@ -422,6 +422,29 @@ mod tests {
     }
 
     #[test]
+    fn show_launcher_argument_shape_parses_as_one_live_launch() {
+        let cli = parse(&[
+            "9",
+            "--start-stopped",
+            "--osc=127.0.0.1:9000",
+            "--osc-in=127.0.0.1:9001",
+            "--output-device",
+            "BlackHole 2ch",
+        ])
+        .unwrap();
+        assert!(cli.validate_output().is_ok());
+        assert_eq!(cli.song.as_deref(), Some("9"));
+        assert_eq!(cli.osc, Some("127.0.0.1:9000".parse().unwrap()));
+        let options = cli.live_options();
+        assert!(options.start_stopped);
+        assert_eq!(options.osc_in, Some("127.0.0.1:9001".parse().unwrap()));
+        assert_eq!(
+            options.output,
+            super::audio::OutputSelection::Device("BlackHole 2ch".to_string())
+        );
+    }
+
+    #[test]
     fn output_device_is_live_launch_configuration_and_listing_does_not_need_a_song() {
         for args in [
             &["--output-device", "BlackHole 2ch", "9"][..],
