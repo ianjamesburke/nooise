@@ -318,55 +318,119 @@ impl EffectExecutor {
         beat: f64,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         match action {
-            SectionAction::Store(index) | SectionAction::Replace(index) => {
+            SectionAction::Store(index) => {
                 let song = self.capture_song();
-                self.bank
+                let replaced = self
+                    .bank
                     .as_mut()
                     .map_err(|e| EffectFailure::Section(e.clone()))?
-                    .store(index, &song, matches!(action, SectionAction::Replace(_)))
+                    .store(index, &song)
                     .map_err(EffectFailure::Section)?;
-                self.show_message(format!("Stored section {}", sections::SECTION_NAMES[index]));
+                self.show_message(format!(
+                    "{} section {}",
+                    if replaced { "Replaced" } else { "Stored" },
+                    sections::SECTION_NAMES[index]
+                ));
             }
             SectionAction::Cancel => {
                 self.session
                     .update(|snapshot| snapshot.pending_section = None);
                 self.show_message("Section queue cancelled".into());
             }
-            SectionAction::Recall(_) | SectionAction::Next => {
-                if self.session.load().transport == Transport::Stopped {
-                    return Err(EffectFailure::Section(sections::SectionError::Stopped));
-                }
-                let bank = self
+            SectionAction::Recall(index) => {
+                self.require_running_clock()?;
+                self.queue_section(index, beat)?;
+            }
+            SectionAction::Next => {
+                self.require_running_clock()?;
+                let index = self
                     .bank
                     .as_ref()
-                    .map_err(|e| EffectFailure::Section(e.clone()))?;
-                let index = match action {
-                    SectionAction::Recall(index) => index,
-                    _ => bank
-                        .next(self.session.load().current_section)
-                        .ok_or(EffectFailure::Section(sections::SectionError::Empty))?,
-                };
-                let song = bank.song(index).map_err(EffectFailure::Section)?;
-                let section_snapshot = Arc::new(LiveSessionSnapshot::from_song(&song));
-                let target_beat = (beat / 4.0).floor() * 4.0 + 4.0;
-                self.session.update(|snapshot| {
-                    snapshot.pending_section = Some(PendingSection {
-                        index,
-                        target_beat,
-                        snapshot: Arc::clone(&section_snapshot),
-                    })
-                });
-                self.show_message(format!(
-                    "Queued section {} for next bar",
-                    sections::SECTION_NAMES[index]
-                ));
+                    .map_err(|e| EffectFailure::Section(e.clone()))?
+                    .next(self.session.load().current_section)
+                    .ok_or(EffectFailure::Section(sections::SectionError::Empty))?;
+                self.queue_section(index, beat)?;
+            }
+            SectionAction::Previous => {
+                self.require_running_clock()?;
+                let index = self
+                    .session
+                    .load()
+                    .previous_section
+                    .ok_or(EffectFailure::Section(sections::SectionError::NoPrevious))?;
+                self.queue_section(index, beat)?;
             }
         }
         Ok(self.published())
     }
 
+    fn require_running_clock(&self) -> Result<(), EffectFailure> {
+        if self.session.load().transport == Transport::Stopped {
+            return Err(EffectFailure::Section(sections::SectionError::Stopped));
+        }
+        Ok(())
+    }
+
+    fn queue_section(&mut self, index: usize, beat: f64) -> Result<(), EffectFailure> {
+        let song = self
+            .bank
+            .as_ref()
+            .map_err(|e| EffectFailure::Section(e.clone()))?
+            .song(index)
+            .map_err(EffectFailure::Section)?;
+        let section_snapshot = Arc::new(LiveSessionSnapshot::from_song(&song));
+        let target_beat = (beat / 4.0).floor() * 4.0 + 4.0;
+        self.session.update(|snapshot| {
+            snapshot.pending_section = Some(PendingSection {
+                index,
+                target_beat,
+                snapshot: Arc::clone(&section_snapshot),
+            })
+        });
+        self.show_message(format!(
+            "Queued section {} for next bar",
+            sections::SECTION_NAMES[index]
+        ));
+        Ok(())
+    }
+
+    /// The recall leader's digit: queue the section, or cancel the queue when
+    /// that section is already the queued one.
+    fn toggle_section_queue(
+        &mut self,
+        index: usize,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let queued = self
+            .session
+            .load()
+            .pending_section
+            .as_ref()
+            .is_some_and(|pending| pending.index == index);
+        self.section_action(
+            if queued {
+                SectionAction::Cancel
+            } else {
+                SectionAction::Recall(index)
+            },
+            beat,
+        )
+    }
+
+    /// Which slots hold a section, for the leader overlay. A refused bank
+    /// holds nothing.
+    pub(crate) fn filled_sections(&self) -> [bool; sections::SECTION_COUNT] {
+        self.bank.as_ref().map_or(
+            [false; sections::SECTION_COUNT],
+            sections::SectionBank::filled,
+        )
+    }
+
     pub(crate) fn with_section_path(mut self, path: Option<std::path::PathBuf>) -> Self {
         self.bank = sections::SectionBank::open(path);
+        if let Err(error) = &self.bank {
+            self.show_failure(format!("Section bank refused: {error}"));
+        }
         self
     }
 
@@ -1527,6 +1591,9 @@ impl EffectExecutor {
             }
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
             InteractionEffect::Section(action) => self.section_action(action, context.beat),
+            InteractionEffect::ToggleSectionQueue(index) => {
+                self.toggle_section_queue(index, context.beat)
+            }
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
@@ -1684,6 +1751,9 @@ impl EffectExecutor {
                 Ok(self.published())
             }
             InteractionEffect::Section(action) => self.section_action(action, context.beat),
+            InteractionEffect::ToggleSectionQueue(index) => {
+                self.toggle_section_queue(index, context.beat)
+            }
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::ToggleTransport => {

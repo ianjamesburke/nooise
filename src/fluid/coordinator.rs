@@ -357,7 +357,8 @@ pub(crate) fn coordinate_production_action(
     }
     model.seed_palette_recent(context.effects.recent().ids());
     let entered_modal_owner = matches!(before.mode, interaction::InteractionMode::Browsing)
-        && !matches!(model.mode, interaction::InteractionMode::Browsing);
+        && !matches!(model.mode, interaction::InteractionMode::Browsing)
+        && !model.mode.preserves_holds();
     let mut emitted = transition.effects;
     // Restored holds have no physical input latch in the interaction model,
     // but entering a modal owner must still return them before that owner
@@ -919,6 +920,7 @@ pub(crate) fn production_ui_loop(
                     },
                     gesture_now_seconds,
                     gesture_holds_available: terminal.capabilities().supports_holds(),
+                    filled_sections: effects.filled_sections(),
                 },
             });
             if let Some(osc_ui) = &osc_ui_state {

@@ -38,6 +38,9 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) planned: Option<PlannedAction>,
     pub(crate) pending_section: Option<PendingSection>,
     pub(crate) current_section: Option<usize>,
+    /// The section that was current before the most recent landing; `''`
+    /// queues it. Live-only.
+    pub(crate) previous_section: Option<usize>,
     pub(crate) section_revision: u64,
     /// Active chord vamp (`a`), locking Pads, Bass, Arp, and Lead to the nearest
     /// chord start until released into the next chord in the progression.
@@ -93,6 +96,7 @@ impl LiveSessionSnapshot {
             planned: song.planned,
             pending_section: None,
             current_section: None,
+            previous_section: None,
             section_revision: 0,
             vamp: song.vamp,
             vamp_press_seconds: None,
@@ -126,6 +130,7 @@ impl LiveSessionSnapshot {
             planned: None,
             pending_section: None,
             current_section: None,
+            previous_section: None,
             section_revision: 0,
             vamp: None,
             vamp_press_seconds: None,
@@ -242,6 +247,7 @@ impl LiveSession {
                 next.vamp_press_seconds = current.vamp_press_seconds;
                 next.vamp_latched = false;
             }
+            next.previous_section = current.current_section;
             next.current_section = Some(pending.index);
             next.section_revision = current.section_revision.wrapping_add(1);
             next.transport_restart = current.transport_restart.wrapping_add(1);

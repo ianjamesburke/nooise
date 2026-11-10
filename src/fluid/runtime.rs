@@ -23,7 +23,8 @@ use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
     AutomationKind, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge, PageDirection,
-    PerformanceInstrument, PerformanceKind, PerformanceParameter, SemanticAction,
+    PerformanceInstrument, PerformanceKind, PerformanceMode, PerformanceParameter, SectionLeader,
+    SemanticAction,
 };
 use super::{GestureKind, HoldMute};
 
@@ -470,7 +471,7 @@ pub(crate) fn map_input(
         if let Some(mute) = HoldMute::from_key(lower) {
             return semantic(*phase, Intent::ReleaseHoldMute(mute));
         }
-        if lower == 'a' && matches!(mode, InteractionMode::Browsing) {
+        if lower == 'a' && (matches!(mode, InteractionMode::Browsing) || mode.preserves_holds()) {
             return semantic(*phase, Intent::ReleaseVamp);
         }
     }
@@ -506,6 +507,15 @@ pub(crate) fn map_input(
                 && key.modifiers.contains(Modifiers::SHIFT)))
     {
         return semantic(*phase, Intent::OpenHelp);
+    }
+
+    // `'` opens the queue leader and `"` the store leader, from Browsing only:
+    // everywhere else they are ordinary characters or nothing at all.
+    if matches!(mode, InteractionMode::Browsing)
+        && *phase == InputPhase::Press
+        && let Some(leader) = section_leader_key(key)
+    {
+        return semantic(*phase, Intent::OpenSectionLeader(leader));
     }
 
     // Global bindings resolve before any mode claims the key. The palette
@@ -557,9 +567,12 @@ pub(crate) fn map_input(
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
         }
-        InteractionMode::Performance(_) => {
+        InteractionMode::Performance(performance) => {
             if unmodified {
-                performance_binding(&key.code)
+                match performance {
+                    PerformanceMode::Jump { .. } => performance_binding(&key.code),
+                    PerformanceMode::Sections { .. } => section_leader_binding(&key.code),
+                }
             } else {
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
@@ -688,6 +701,36 @@ fn palette_control_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('b' | 'B') => Intent::CommitPaletteAtBar,
         _ => return None,
     })
+}
+
+/// Which section leader a key opens. `'` is the queue leader. `"` is the
+/// store leader, and terminals report it three ways: the shifted glyph with no
+/// modifier bit (punctuation never gets one synthesized), the glyph with
+/// SHIFT set, or the base key `'` with SHIFT (keyboard-enhancement style).
+fn section_leader_key(key: &TransportKey) -> Option<SectionLeader> {
+    let PhysicalKey::Character(character) = key.code else {
+        return None;
+    };
+    let unmodified = key.modifiers == Modifiers::default();
+    let shifted = key.modifiers == Modifiers::SHIFT;
+    match character {
+        '\'' if unmodified => Some(SectionLeader::Queue),
+        '\'' if shifted => Some(SectionLeader::Store),
+        '"' if unmodified || shifted => Some(SectionLeader::Store),
+        _ => None,
+    }
+}
+
+/// A pending section leader's keyboard: a digit `1`-`9` names the slot, and
+/// `'` is the queue leader's "previous" gesture. Every other key is inert.
+fn section_leader_binding(code: &PhysicalKey) -> Option<Intent> {
+    match *code {
+        PhysicalKey::Character('\'') => Some(Intent::PreviousSection),
+        PhysicalKey::Character(digit @ '1'..='9') => {
+            Some(Intent::ChooseSection(digit as usize - '1' as usize))
+        }
+        _ => None,
+    }
 }
 
 /// The Jump leader's keyboard: Space re-arms it, `INSTRUMENTS` keys open a
@@ -1776,6 +1819,124 @@ mod tests {
                 intent: Intent::OpenPalette,
             })
         );
+    }
+
+    fn section_map(
+        mode: &InteractionMode,
+        character: char,
+        modifiers: Modifiers,
+        capabilities: TerminalCapabilities,
+    ) -> InputMapping {
+        map_input(
+            mode,
+            &TransportEvent::key(
+                PhysicalKey::Character(character),
+                modifiers,
+                InputPhase::Press,
+            ),
+            capabilities,
+        )
+    }
+
+    #[test]
+    fn apostrophe_opens_the_queue_leader_and_every_reported_double_quote_the_store_leader() {
+        let open =
+            |leader| InputMapping::Action(SemanticAction::press(Intent::OpenSectionLeader(leader)));
+        for capabilities in [
+            TerminalCapabilities::full(),
+            TerminalCapabilities::default(),
+        ] {
+            let map = |character, modifiers| {
+                section_map(
+                    &InteractionMode::Browsing,
+                    character,
+                    modifiers,
+                    capabilities,
+                )
+            };
+            assert_eq!(map('\'', Modifiers::default()), open(SectionLeader::Queue));
+            // The shifted glyph, with no modifier bit reported.
+            assert_eq!(map('"', Modifiers::default()), open(SectionLeader::Store));
+            // The shifted glyph, with SHIFT reported alongside it.
+            assert_eq!(map('"', Modifiers::SHIFT), open(SectionLeader::Store));
+            // The base key plus SHIFT (keyboard-enhancement report style).
+            assert_eq!(map('\'', Modifiers::SHIFT), open(SectionLeader::Store));
+            // Chords are not leaders.
+            for chord in [Modifiers::ALT, Modifiers::CONTROL] {
+                assert!(!matches!(
+                    map('\'', chord),
+                    InputMapping::Action(SemanticAction {
+                        intent: Intent::OpenSectionLeader(_),
+                        ..
+                    })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn section_leader_keys_are_not_bound_outside_browsing() {
+        let capabilities = TerminalCapabilities::full();
+        let palette = InteractionMode::Palette(Box::default());
+        for character in ['\'', '"'] {
+            assert_eq!(
+                section_map(&palette, character, Modifiers::default(), capabilities),
+                InputMapping::Action(SemanticAction::press(Intent::TypeCharacter(character)))
+            );
+            assert_eq!(
+                section_map(&palette, character, Modifiers::SHIFT, capabilities),
+                InputMapping::Action(SemanticAction::press(Intent::TypeCharacter(character)))
+            );
+            for mode in [
+                InteractionMode::Numeric(Default::default()),
+                InteractionMode::Help,
+                InteractionMode::Lead(Default::default()),
+            ] {
+                assert!(
+                    !matches!(
+                        section_map(&mode, character, Modifiers::default(), capabilities),
+                        InputMapping::Action(SemanticAction {
+                            intent: Intent::OpenSectionLeader(_),
+                            ..
+                        })
+                    ),
+                    "{mode:?} {character}"
+                );
+            }
+        }
+        // The Jump leader neither opens a section leader nor reads them.
+        let jump = InteractionMode::Performance(PerformanceMode::Jump {
+            stage: crate::fluid::interaction::JumpStage::ChooseLayer,
+        });
+        assert_eq!(
+            section_map(&jump, '\'', Modifiers::default(), capabilities),
+            InputMapping::Ignored
+        );
+    }
+
+    #[test]
+    fn pending_section_leaders_read_digits_and_the_queue_leader_reads_apostrophe() {
+        let capabilities = TerminalCapabilities::full();
+        for leader in [SectionLeader::Queue, SectionLeader::Store] {
+            let mode = InteractionMode::Performance(PerformanceMode::Sections { leader });
+            for (offset, digit) in ('1'..='9').enumerate() {
+                assert_eq!(
+                    section_map(&mode, digit, Modifiers::default(), capabilities),
+                    InputMapping::Action(SemanticAction::press(Intent::ChooseSection(offset)))
+                );
+            }
+            for ignored in ['0', 'a', ' ', 'm', '"'] {
+                assert_eq!(
+                    section_map(&mode, ignored, Modifiers::default(), capabilities),
+                    InputMapping::Ignored,
+                    "{leader:?} {ignored}"
+                );
+            }
+            assert_eq!(
+                section_map(&mode, '\'', Modifiers::default(), capabilities),
+                InputMapping::Action(SemanticAction::press(Intent::PreviousSection))
+            );
+        }
     }
 
     #[test]

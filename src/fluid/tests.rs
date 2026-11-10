@@ -311,6 +311,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
             },
             gesture_now_seconds: 0.0,
             gesture_holds_available: true,
+            filled_sections: [false; sections::SECTION_COUNT],
         },
     });
     let backend = TestBackend::new(width, height);

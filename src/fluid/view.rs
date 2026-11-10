@@ -7,7 +7,7 @@ use super::*;
 use crate::fluid::interaction::{
     ArpDrill, AutomationKind, AutomationMode, BassDrill, ChordDrill, ClapDrill, InteractionMode,
     InteractionModel, JumpStage, KickDrill, LEAD_NUDGES, LeadDrill, Navigation, PercDrill,
-    PerformanceInstrument, PerformanceMode, TonalDrill, hub_layer,
+    PerformanceInstrument, PerformanceMode, SectionLeader, TonalDrill, hub_layer,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -25,6 +25,7 @@ pub(crate) enum KeyboardOwner {
     Lfo,
     Envelope,
     PerformanceJump,
+    PerformanceSections,
     Lead,
     Help,
 }
@@ -38,6 +39,7 @@ impl KeyboardOwner {
             Self::Lfo => AutomationKind::Lfo.label(),
             Self::Envelope => AutomationKind::Envelope.label(),
             Self::PerformanceJump => "JUMP",
+            Self::PerformanceSections => "SECTIONS",
             Self::Lead => "LEAD",
             Self::Help => "SHORTCUTS",
         }
@@ -131,6 +133,9 @@ pub(crate) struct ViewPresentation<'a> {
     pub(crate) notices: ViewNotices,
     pub(crate) gesture_now_seconds: f64,
     pub(crate) gesture_holds_available: bool,
+    /// Which section slots hold a song. Bank state, not audio state, so it
+    /// reaches the view from the UI-side executor and not the session.
+    pub(crate) filled_sections: [bool; sections::SECTION_COUNT],
 }
 
 /// Everything a projection consumes. The session is *one* generation: fields
@@ -168,6 +173,7 @@ pub(crate) struct UiViewModel<'a> {
     /// True while `activity` is a live readout (stopped clock or held/returning
     /// gesture) rather than the idle key-hint list, so the row can render with different emphasis.
     pub(crate) activity_live: bool,
+    pub(crate) filled_sections: [bool; sections::SECTION_COUNT],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,6 +328,7 @@ impl AutomationSurface<'_> {
 pub(crate) enum PerformanceSurface {
     ChooseLayer,
     ChooseParameter { instrument: PerformanceInstrument },
+    Sections { leader: SectionLeader },
 }
 
 #[cfg(test)]
@@ -490,6 +497,7 @@ impl<'a> UiViewModel<'a> {
             help,
             activity,
             activity_live,
+            filled_sections: presentation.filled_sections,
         }
     }
 }
@@ -738,6 +746,9 @@ fn mode_surface<'a>(
         }) => ModeSurface::Performance(PerformanceSurface::ChooseParameter {
             instrument: *instrument,
         }),
+        InteractionMode::Performance(PerformanceMode::Sections { leader }) => {
+            ModeSurface::Performance(PerformanceSurface::Sections { leader: *leader })
+        }
     }
 }
 
@@ -887,6 +898,9 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
         InteractionMode::Automation(AutomationMode::Envelope { .. }) => KeyboardOwner::Envelope,
         InteractionMode::Performance(PerformanceMode::Jump { .. }) => {
             KeyboardOwner::PerformanceJump
+        }
+        InteractionMode::Performance(PerformanceMode::Sections { .. }) => {
+            KeyboardOwner::PerformanceSections
         }
         InteractionMode::Lead(_) => KeyboardOwner::Lead,
         InteractionMode::Help => KeyboardOwner::Help,
@@ -1051,6 +1065,15 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             }
             _ => unreachable!("jump owner requires a jump surface"),
         },
+        KeyboardOwner::PerformanceSections => match mode {
+            ModeSurface::Performance(PerformanceSurface::Sections {
+                leader: SectionLeader::Queue,
+            }) => "SECTIONS · 1-9 queue   ' previous   Esc".to_string(),
+            ModeSurface::Performance(PerformanceSurface::Sections {
+                leader: SectionLeader::Store,
+            }) => "SECTIONS · 1-9 store   Esc".to_string(),
+            _ => unreachable!("sections owner requires a sections surface"),
+        },
         KeyboardOwner::Help => "SHORTCUTS · Esc: close".to_string(),
     }
 }
@@ -1175,6 +1198,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
+                filled_sections: [false; sections::SECTION_COUNT],
             },
         });
         assert_eq!(
@@ -1400,6 +1424,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
+                filled_sections: [false; sections::SECTION_COUNT],
             },
         });
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1522,7 +1547,7 @@ mod tests {
                 height,
             );
             let key_line = frame.lines().find(|line| line.contains("KEY")).unwrap();
-            assert!(key_line.contains("A␠→␠B␠next␠bar"), "{frame}");
+            assert!(key_line.contains("1␠→␠2␠next␠bar"), "{frame}");
             for expected in ["VAMP", "Kick+Bass␠latched", "Freeze"] {
                 assert!(frame.contains(expected), "missing {expected}: {frame}");
             }
@@ -1532,7 +1557,124 @@ mod tests {
         }
         session.pending_section = None;
         let frame = render_model_with_session(&interaction, &session);
-        assert!(frame.contains("SECTION␠A"), "{frame}");
+        assert!(frame.contains("SECTION␠1"), "{frame}");
+    }
+
+    fn render_sections_leader(
+        leader: SectionLeader,
+        session: &LiveSessionSnapshot,
+        filled: [bool; sections::SECTION_COUNT],
+        width: u16,
+        height: u16,
+    ) -> String {
+        let interaction = InteractionModel {
+            mode: InteractionMode::Performance(PerformanceMode::Sections { leader }),
+            ..InteractionModel::default()
+        };
+        let fluid = RippleField::new();
+        let flipped = FlippedUnits::new();
+        let view = UiViewModel::project(ViewProjection {
+            interaction: &interaction,
+            session,
+            telemetry: TelemetryView::default(),
+            presentation: ViewPresentation {
+                fluid: &fluid,
+                flipped: &flipped,
+                cursor_visible: true,
+                notices: ViewNotices::default(),
+                gesture_now_seconds: 0.0,
+                gesture_holds_available: true,
+                filled_sections: filled,
+            },
+        });
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, &view)).unwrap();
+        snapshot_symbols(terminal.backend().buffer())
+    }
+
+    fn marked_session() -> LiveSessionSnapshot {
+        let mut session = session();
+        session.current_section = Some(1);
+        session.pending_section = Some(PendingSection {
+            index: 4,
+            target_beat: 4.0,
+            snapshot: Arc::new(LiveSessionSnapshot::from_song(&SongState::default())),
+        });
+        session
+    }
+
+    #[test]
+    fn queue_leader_overlay_lists_nine_slots_with_marks_at_minimum_size() {
+        let mut filled = [false; sections::SECTION_COUNT];
+        for index in [0, 1, 4, 7] {
+            filled[index] = true;
+        }
+        let frame = render_sections_leader(
+            SectionLeader::Queue,
+            &marked_session(),
+            filled,
+            MIN_TERMINAL_WIDTH,
+            MIN_TERMINAL_HEIGHT,
+        );
+        for text in [
+            "Queue␠section",
+            "1␠filled",
+            "2␠now",
+            "3␠empty",
+            "5␠next",
+            "8␠filled",
+            "9␠empty",
+            "1-9␠Queue",
+            "'␠Previous",
+            "Esc␠␠Cancel",
+            "SECTIONS␠·␠1-9␠queue",
+        ] {
+            assert!(frame.contains(text), "missing {text:?}:\n{frame}");
+        }
+        assert!(!frame.contains("Store"), "{frame}");
+    }
+
+    #[test]
+    fn store_leader_overlay_says_store_and_fits_the_minimum_frame() {
+        let frame = render_sections_leader(
+            SectionLeader::Store,
+            &session(),
+            [true; sections::SECTION_COUNT],
+            MIN_TERMINAL_WIDTH,
+            MIN_TERMINAL_HEIGHT,
+        );
+        for text in ["Store␠section", "9␠filled", "1-9␠Store␠here", "Esc␠␠Cancel"] {
+            assert!(frame.contains(text), "missing {text:?}:\n{frame}");
+        }
+        assert!(!frame.contains("Queue"), "{frame}");
+        for leader in [SectionLeader::Queue, SectionLeader::Store] {
+            let mut session = marked_session();
+            session.current_section = session.pending_section.as_ref().map(|p| p.index);
+            let frame = render_sections_leader(
+                leader,
+                &session,
+                [true; sections::SECTION_COUNT],
+                MIN_TERMINAL_WIDTH,
+                MIN_TERMINAL_HEIGHT,
+            );
+            assert!(frame.contains("5␠now+next"), "{frame}");
+        }
+    }
+
+    #[test]
+    fn section_leader_footers_fit_the_minimum_frame() {
+        let session = session();
+        for leader in [SectionLeader::Queue, SectionLeader::Store] {
+            let mode = InteractionMode::Performance(PerformanceMode::Sections { leader });
+            let line = owner_help(
+                KeyboardOwner::PerformanceSections,
+                &mode_surface(&mode, Tab::Bass, &session.controls, &session.automation),
+            );
+            assert!(
+                line.chars().count() <= usize::from(MIN_TERMINAL_WIDTH - 2),
+                "{line:?}"
+            );
+        }
     }
 
     #[test]
@@ -1626,6 +1768,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
+                filled_sections: [false; sections::SECTION_COUNT],
             },
         })
         .items
@@ -1683,6 +1826,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
+                filled_sections: [false; sections::SECTION_COUNT],
             },
         });
 
@@ -1733,6 +1877,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
+                filled_sections: [false; sections::SECTION_COUNT],
             },
         });
 
@@ -1819,6 +1964,7 @@ mod tests {
                 },
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
+                filled_sections: [false; sections::SECTION_COUNT],
             },
         });
 

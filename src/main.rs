@@ -430,6 +430,8 @@ mod tests {
             "--osc-in=127.0.0.1:9001",
             "--output-device",
             "BlackHole 2ch",
+            "--set",
+            "/tmp/show.set",
         ])
         .unwrap();
         assert!(cli.validate_output().is_ok());
@@ -442,6 +444,7 @@ mod tests {
             options.output,
             super::audio::OutputSelection::Device("BlackHole 2ch".to_string())
         );
+        assert_eq!(options.set, Some(PathBuf::from("/tmp/show.set")));
     }
 
     #[test]

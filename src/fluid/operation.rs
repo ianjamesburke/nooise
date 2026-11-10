@@ -25,12 +25,36 @@ pub(crate) enum Operation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SectionAction {
+    /// Keep the current song in slot `0..SECTION_COUNT`, overwriting it.
     Store(usize),
-    Replace(usize),
     Recall(usize),
     Next,
+    Previous,
     Cancel,
 }
+
+const STORE_LABELS: [&str; sections::SECTION_COUNT] = [
+    "Store section 1",
+    "Store section 2",
+    "Store section 3",
+    "Store section 4",
+    "Store section 5",
+    "Store section 6",
+    "Store section 7",
+    "Store section 8",
+    "Store section 9",
+];
+const QUEUE_LABELS: [&str; sections::SECTION_COUNT] = [
+    "Queue section 1",
+    "Queue section 2",
+    "Queue section 3",
+    "Queue section 4",
+    "Queue section 5",
+    "Queue section 6",
+    "Queue section 7",
+    "Queue section 8",
+    "Queue section 9",
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChordAction {
@@ -89,7 +113,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 41] = [
+    pub(crate) const ALL: [Self; 51] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -123,13 +147,23 @@ impl Operation {
         Self::Section(SectionAction::Store(0)),
         Self::Section(SectionAction::Store(1)),
         Self::Section(SectionAction::Store(2)),
-        Self::Section(SectionAction::Replace(0)),
-        Self::Section(SectionAction::Replace(1)),
-        Self::Section(SectionAction::Replace(2)),
+        Self::Section(SectionAction::Store(3)),
+        Self::Section(SectionAction::Store(4)),
+        Self::Section(SectionAction::Store(5)),
+        Self::Section(SectionAction::Store(6)),
+        Self::Section(SectionAction::Store(7)),
+        Self::Section(SectionAction::Store(8)),
         Self::Section(SectionAction::Recall(0)),
         Self::Section(SectionAction::Recall(1)),
         Self::Section(SectionAction::Recall(2)),
+        Self::Section(SectionAction::Recall(3)),
+        Self::Section(SectionAction::Recall(4)),
+        Self::Section(SectionAction::Recall(5)),
+        Self::Section(SectionAction::Recall(6)),
+        Self::Section(SectionAction::Recall(7)),
+        Self::Section(SectionAction::Recall(8)),
         Self::Section(SectionAction::Next),
+        Self::Section(SectionAction::Previous),
         Self::Section(SectionAction::Cancel),
     ];
 
@@ -244,24 +278,18 @@ impl Operation {
             Self::Section(action) => OperationSpec {
                 operation: self,
                 label: match action {
-                    SectionAction::Store(0) => "Store section A",
-                    SectionAction::Store(1) => "Store section B",
-                    SectionAction::Store(_) => "Store section C",
-                    SectionAction::Replace(0) => "Replace section A",
-                    SectionAction::Replace(1) => "Replace section B",
-                    SectionAction::Replace(_) => "Replace section C",
-                    SectionAction::Recall(0) => "Queue section A",
-                    SectionAction::Recall(1) => "Queue section B",
-                    SectionAction::Recall(_) => "Queue section C",
+                    SectionAction::Store(index) => STORE_LABELS[index],
+                    SectionAction::Recall(index) => QUEUE_LABELS[index],
                     SectionAction::Next => "Queue next section",
+                    SectionAction::Previous => "Queue previous section",
                     SectionAction::Cancel => "Cancel section queue",
                 },
                 aliases: &[],
                 description: match action {
-                    SectionAction::Store(_) | SectionAction::Replace(_) => {
-                        "save current song to bank"
+                    SectionAction::Store(_) => "save current song, replacing any stored one",
+                    SectionAction::Recall(_) | SectionAction::Next | SectionAction::Previous => {
+                        "change at next bar"
                     }
-                    SectionAction::Recall(_) | SectionAction::Next => "change at next bar",
                     SectionAction::Cancel => "keep playing current section",
                 },
             },

@@ -866,9 +866,23 @@ pub(crate) enum JumpStage {
     },
 }
 
+/// What the digit does once a section leader is pending: queue that section
+/// (`'`), or store the current song into it (`"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SectionLeader {
+    Queue,
+    Store,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PerformanceMode {
-    Jump { stage: JumpStage },
+    Jump {
+        stage: JumpStage,
+    },
+    /// A pending `'` or `"`: the next key picks a section slot.
+    Sections {
+        leader: SectionLeader,
+    },
 }
 
 impl PerformanceMode {
@@ -878,6 +892,24 @@ impl PerformanceMode {
                 stage: JumpStage::ChooseLayer,
             },
         }
+    }
+
+    /// Whether opening this leader leaves physical holds running. Jump
+    /// releases them like every other keyboard owner; the section leaders
+    /// exist to be played with a gesture key held down.
+    pub(crate) fn preserves_holds(self) -> bool {
+        match self {
+            Self::Jump { .. } => false,
+            Self::Sections { .. } => true,
+        }
+    }
+}
+
+impl InteractionMode {
+    /// Whether entering this mode from Browsing leaves physical holds
+    /// running instead of quarantining them.
+    pub(crate) fn preserves_holds(&self) -> bool {
+        matches!(self, Self::Performance(performance) if performance.preserves_holds())
     }
 }
 
@@ -1175,6 +1207,12 @@ pub(crate) enum Intent {
     JumpToParameter(PerformanceParameter),
     /// Arm or cancel the visible layer's next-bar mute.
     PlanMute,
+    /// Open the `'` (queue) or `"` (store) section leader.
+    OpenSectionLeader(SectionLeader),
+    /// The 0-based section slot a pending section leader's digit names.
+    ChooseSection(usize),
+    /// `''`: queue the section that was current before the last landing.
+    PreviousSection,
     /// Grab recent movement on the visible knob, phase-anchored to its
     /// nearest bar downbeat.
     GrabMotion(super::MotionDuration),
@@ -1328,7 +1366,10 @@ impl Intent {
             Self::SelectPerformanceInstrument { .. }
             | Self::JumpToParameter(_)
             | Self::PlanMute
-            | Self::GrabMotion(_) => &[ModeKind::Performance],
+            | Self::GrabMotion(_)
+            | Self::ChooseSection(_)
+            | Self::PreviousSection => &[ModeKind::Performance],
+            Self::OpenSectionLeader(_) => &[ModeKind::Browsing],
         }
     }
 
@@ -1372,6 +1413,9 @@ impl Intent {
             | Self::JumpToParameter(_)
             | Self::PlanMute
             | Self::GrabMotion(_)
+            | Self::OpenSectionLeader(_)
+            | Self::ChooseSection(_)
+            | Self::PreviousSection
             | Self::EnterLeadPlay
             | Self::PlayLeadTone { .. }
             | Self::NudgeLead { .. }
@@ -1498,6 +1542,9 @@ pub(crate) enum InteractionEffect {
     /// Arm or cancel this layer's mute at the next bar.
     PlanMute(Tab),
     Section(super::SectionAction),
+    /// The recall leader's digit: queue that section, or cancel the queue
+    /// when it is already the queued one. The kernel cannot see the queue.
+    ToggleSectionQueue(usize),
     /// Reset the active sequence steps on `Tab` (Pads to root, notes to rest).
     ClearSequence(Tab),
     ToggleTransport,
@@ -1786,9 +1833,9 @@ impl InteractionModel {
             self.layer_rows.leave(departing);
         }
         if self.gesture_input.has_active()
-            && next_mode
-                .as_ref()
-                .is_some_and(|mode| !matches!(mode, InteractionMode::Browsing))
+            && next_mode.as_ref().is_some_and(|mode| {
+                !matches!(mode, InteractionMode::Browsing) && !mode.preserves_holds()
+            })
             && matches!(self.mode, InteractionMode::Browsing)
         {
             self.gesture_input.quarantine_all();
@@ -1946,6 +1993,11 @@ fn update_browsing(
         }
         Intent::ActivatePerformance(kind) => {
             *next_mode = Some(InteractionMode::Performance(PerformanceMode::new(kind)));
+        }
+        Intent::OpenSectionLeader(leader) => {
+            *next_mode = Some(InteractionMode::Performance(PerformanceMode::Sections {
+                leader,
+            }));
         }
         Intent::EnterLeadPlay => {
             // The Lead page is the instrument: entering from elsewhere lands
@@ -2287,10 +2339,8 @@ fn update_lead(
     }
 }
 
-/// The Jump leader: `Space` plus a layer key restores that layer's cursor;
-/// a parameter key addresses the current layer, `m` plans a mute, and
-/// `1/2/4/8` grabs Motion. An editor-field grab returns to its editor; other
-/// completed routes return to browsing. Every route acts on a Press edge.
+/// Dispatches a pending performance leader to its own transition table.
+/// Ctrl+S and Ctrl+Q reach every leader.
 fn update_performance(
     performance: &mut PerformanceMode,
     navigation: &mut Navigation,
@@ -2303,24 +2353,71 @@ fn update_performance(
         return;
     }
     match intent {
+        Intent::Save => effects.push(InteractionEffect::Save),
+        Intent::Quit => effects.push(InteractionEffect::Quit),
+        _ => match performance {
+            PerformanceMode::Jump { stage } => {
+                update_jump(stage, navigation, layer_rows, intent, next_mode, effects);
+            }
+            PerformanceMode::Sections { leader } => {
+                update_section_leader(*leader, intent, next_mode, effects);
+            }
+        },
+    }
+}
+
+/// The section leaders: `'` queues and `"` stores. The digit names the slot
+/// and completes the leader; Esc leaves it with no effect. Every route acts
+/// on a Press edge, and a physical hold stays running throughout.
+fn update_section_leader(
+    leader: SectionLeader,
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    let effect = match (leader, intent) {
+        (_, Intent::Cancel) => None,
+        (SectionLeader::Queue, Intent::ChooseSection(index)) => {
+            Some(InteractionEffect::ToggleSectionQueue(index))
+        }
+        (SectionLeader::Store, Intent::ChooseSection(index)) => Some(InteractionEffect::Section(
+            super::SectionAction::Store(index),
+        )),
+        (SectionLeader::Queue, Intent::PreviousSection) => {
+            Some(InteractionEffect::Section(super::SectionAction::Previous))
+        }
+        _ => return,
+    };
+    effects.extend(effect);
+    *next_mode = Some(InteractionMode::Browsing);
+}
+
+/// The Jump leader: `Space` plus a layer key restores that layer's cursor;
+/// a parameter key addresses the current layer, `m` plans a mute, and
+/// `1/2/4/8` grabs Motion. An editor-field grab returns to its editor; other
+/// completed routes return to browsing. Every route acts on a Press edge.
+fn update_jump(
+    stage: &mut JumpStage,
+    navigation: &mut Navigation,
+    layer_rows: &LayerRows,
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    match intent {
         Intent::Cancel => {
-            *next_mode = Some(match *performance {
-                PerformanceMode::Jump {
-                    stage: JumpStage::AutomationRow { mode },
-                } => InteractionMode::Automation(mode),
+            *next_mode = Some(match *stage {
+                JumpStage::AutomationRow { mode } => InteractionMode::Automation(mode),
                 _ => InteractionMode::Browsing,
             })
         }
         // Space while the leader is already pending leaves its stage alone.
         Intent::ActivatePerformance(_) => {}
-        Intent::Save => effects.push(InteractionEffect::Save),
-        Intent::Quit => effects.push(InteractionEffect::Quit),
         Intent::SelectPerformanceInstrument { instrument } => {
             // Keep the selected target in the transient leader state until
             // the transition applies Browsing. This preserves the closed
             // grammar's typed representation without making a layer jump
             // wait for another key.
-            let PerformanceMode::Jump { stage } = performance;
             *stage = JumpStage::ChooseParameter { instrument };
             let page = instrument.page();
             *navigation = layer_rows.open(page);
@@ -2328,8 +2425,7 @@ fn update_performance(
             *next_mode = Some(InteractionMode::Browsing);
         }
         Intent::JumpToParameter(parameter) => {
-            let PerformanceMode::Jump { stage } = *performance;
-            let tab = match stage {
+            let tab = match *stage {
                 // No layer key: the page already open is the layer, so
                 // `Space k` reaches the filter on whatever is in front of
                 // you, on any page rather than only the four layer keys.
@@ -2349,10 +2445,7 @@ fn update_performance(
             *next_mode = Some(InteractionMode::Browsing);
         }
         Intent::GrabMotion(duration) => {
-            if let PerformanceMode::Jump {
-                stage: JumpStage::AutomationRow { mode },
-            } = *performance
-            {
+            if let JumpStage::AutomationRow { mode } = *stage {
                 effects.push(InteractionEffect::MotionGrabAutomationSelected {
                     duration,
                     selected: mode.selected(),
@@ -3309,6 +3402,176 @@ mod tests {
         let cancelled = update(aimed, Intent::Cancel);
         assert!(cancelled.effects.is_empty());
         assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
+    }
+
+    fn open_leader(leader: SectionLeader) -> InteractionModel {
+        update(
+            InteractionModel::default(),
+            Intent::OpenSectionLeader(leader),
+        )
+        .model
+    }
+
+    #[test]
+    fn section_leaders_open_only_from_browsing_and_hold_their_kind() {
+        for leader in [SectionLeader::Queue, SectionLeader::Store] {
+            let opened = update(
+                InteractionModel::default(),
+                Intent::OpenSectionLeader(leader),
+            );
+            assert!(opened.effects.is_empty());
+            assert_eq!(
+                opened.model.mode,
+                InteractionMode::Performance(PerformanceMode::Sections { leader })
+            );
+            // A second open, or a Jump open, leaves a pending leader alone.
+            for intent in [
+                Intent::OpenSectionLeader(SectionLeader::Store),
+                Intent::OpenSectionLeader(SectionLeader::Queue),
+                Intent::ActivatePerformance(PerformanceKind::Jump),
+            ] {
+                let again = update(opened.model.clone(), intent);
+                assert_eq!(again.model, opened.model);
+                assert!(again.effects.is_empty());
+            }
+            for mode in [
+                InteractionMode::Numeric(NumericEntry::default()),
+                InteractionMode::Palette(Box::default()),
+                InteractionMode::Help,
+            ] {
+                let model = InteractionModel {
+                    mode,
+                    ..InteractionModel::default()
+                };
+                let result = update(model.clone(), Intent::OpenSectionLeader(leader));
+                assert_eq!(result.model, model);
+                assert!(result.effects.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn queue_leader_digit_previous_and_escape_return_to_browsing() {
+        let digit = update(open_leader(SectionLeader::Queue), Intent::ChooseSection(3));
+        assert_eq!(digit.model.mode, InteractionMode::Browsing);
+        assert_eq!(
+            digit.effects,
+            vec![InteractionEffect::ToggleSectionQueue(3)]
+        );
+        let previous = update(open_leader(SectionLeader::Queue), Intent::PreviousSection);
+        assert_eq!(previous.model.mode, InteractionMode::Browsing);
+        assert_eq!(
+            previous.effects,
+            vec![InteractionEffect::Section(
+                super::super::SectionAction::Previous
+            )]
+        );
+        let cancelled = update(open_leader(SectionLeader::Queue), Intent::Cancel);
+        assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
+        assert!(cancelled.effects.is_empty());
+    }
+
+    #[test]
+    fn store_leader_digit_stores_and_has_no_previous_gesture() {
+        let digit = update(open_leader(SectionLeader::Store), Intent::ChooseSection(8));
+        assert_eq!(digit.model.mode, InteractionMode::Browsing);
+        assert_eq!(
+            digit.effects,
+            vec![InteractionEffect::Section(
+                super::super::SectionAction::Store(8)
+            )]
+        );
+        let previous = update(open_leader(SectionLeader::Store), Intent::PreviousSection);
+        assert_eq!(previous.model, open_leader(SectionLeader::Store));
+        assert!(previous.effects.is_empty());
+        let cancelled = update(open_leader(SectionLeader::Store), Intent::Cancel);
+        assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
+        assert!(cancelled.effects.is_empty());
+    }
+
+    #[test]
+    fn jump_routes_and_section_routes_do_not_cross() {
+        let jump = update(
+            InteractionModel::default(),
+            Intent::ActivatePerformance(PerformanceKind::Jump),
+        )
+        .model;
+        for intent in [Intent::ChooseSection(0), Intent::PreviousSection] {
+            let result = update(jump.clone(), intent);
+            assert_eq!(result.model, jump);
+            assert!(result.effects.is_empty());
+        }
+        for intent in [
+            Intent::PlanMute,
+            Intent::GrabMotion(MotionDuration::Beats4),
+            Intent::JumpToParameter(PerformanceParameter::Volume),
+            Intent::SelectPerformanceInstrument {
+                instrument: PerformanceInstrument::Pads,
+            },
+        ] {
+            let leader = open_leader(SectionLeader::Queue);
+            let result = update(leader.clone(), intent);
+            assert_eq!(result.model, leader);
+            assert!(result.effects.is_empty());
+        }
+    }
+
+    /// Only the section leaders keep a physical hold running. Jump, the
+    /// palette and every other keyboard owner still quarantine it and emit
+    /// `GestureReleaseAll`, so the exemption cannot leak.
+    #[test]
+    fn only_the_section_leaders_preserve_physical_holds() {
+        let held = || {
+            update(
+                InteractionModel::default(),
+                Intent::StartGesture(super::super::GestureKind::Submerge),
+            )
+            .model
+        };
+        for intent in [
+            Intent::ActivatePerformance(PerformanceKind::Jump),
+            Intent::OpenPalette,
+            Intent::OpenHelp,
+            Intent::EnterLeadPlay,
+            Intent::BeginNumeric('5'),
+        ] {
+            let result = update(held(), intent);
+            assert_eq!(
+                result.effects.first(),
+                Some(&InteractionEffect::GestureReleaseAll),
+                "{intent:?} must keep releasing holds"
+            );
+            assert!(!result.model.gesture_input.has_active(), "{intent:?}");
+        }
+        for leader in [SectionLeader::Queue, SectionLeader::Store] {
+            let opened = update(held(), Intent::OpenSectionLeader(leader));
+            assert!(opened.effects.is_empty());
+            assert!(opened.model.gesture_input.has_active());
+            assert!(opened.model.mode.preserves_holds());
+            // Digit and Esc finish the leader without touching the hold.
+            for finish in [Intent::ChooseSection(0), Intent::Cancel] {
+                let done = update(opened.model.clone(), finish);
+                assert!(
+                    !done.effects.contains(&InteractionEffect::GestureReleaseAll),
+                    "{finish:?}"
+                );
+                assert!(done.model.gesture_input.has_active());
+            }
+            // A key-up inside the leader releases exactly like Browsing.
+            let released = opened.model.clone().update(SemanticAction {
+                phase: InputPhase::Release,
+                intent: Intent::ReleaseGesture(super::super::GestureKind::Submerge),
+            });
+            assert_eq!(
+                released.effects,
+                vec![InteractionEffect::GestureRelease(
+                    super::super::GestureKind::Submerge
+                )]
+            );
+            assert!(!released.model.gesture_input.has_active());
+        }
+        assert!(!InteractionMode::Browsing.preserves_holds());
+        assert!(!InteractionMode::Help.preserves_holds());
     }
 
     #[test]

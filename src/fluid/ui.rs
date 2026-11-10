@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use super::interaction::{INSTRUMENTS, LEAD_PLAY_KEYS, PARAMETERS};
+use super::interaction::{INSTRUMENTS, LEAD_PLAY_KEYS, PARAMETERS, SectionLeader};
 use super::widget::{Dial, DialScale};
 use super::*;
 
@@ -205,8 +205,12 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     if matches!(view.mode, ModeSurface::Help) {
         draw_help(f, inner);
     }
-    if let ModeSurface::Performance(surface) = &view.mode {
-        draw_leader(f, inner, surface);
+    match &view.mode {
+        ModeSurface::Performance(PerformanceSurface::Sections { leader }) => {
+            draw_section_leader(f, inner, view, *leader);
+        }
+        ModeSurface::Performance(surface) => draw_leader(f, inner, surface),
+        _ => {}
     }
 }
 
@@ -1298,6 +1302,16 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             ],
         ],
     ));
+    lines.extend(section(
+        "Sections (' queue, \" store)",
+        &[
+            &[("' 1-9", "queue section"), ("' '", "previous section")],
+            &[
+                ("\" 1-9", "store here (replaces)"),
+                ("' same", "cancel queue"),
+            ],
+        ],
+    ));
     lines.push(Line::from(Span::styled("System", heading_style)));
     lines.push(Line::from(Span::styled(rule, rule_style)));
     lines.push(key_row(&[
@@ -1309,14 +1323,11 @@ fn draw_help(f: &mut Frame, inner: Rect) {
     f.render_widget(Paragraph::new(lines), inner_block);
 }
 
-/// The immediate Space map is a compact, centered menu with a dedicated
-/// cancel row. It leaves the footer visible at every terminal size.
-fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
+/// The shared chrome of every leader overlay: a compact centered box with a
+/// titled border over a scrim. Returns the inner content area. It leaves the
+/// footer visible at every terminal size.
+fn leader_frame(f: &mut Frame, inner: Rect, title: &'static str, desired_height: u16) -> Rect {
     let available_height = inner.height.saturating_sub(1);
-    let desired_height = match surface {
-        PerformanceSurface::ChooseLayer => 8,
-        PerformanceSurface::ChooseParameter { .. } => 8,
-    };
     let height = desired_height.min(available_height);
     let width = 38.min(inner.width.saturating_sub(2));
     let area = Rect::new(
@@ -1330,7 +1341,7 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
     });
     let block = Block::default()
         .title(Line::from(Span::styled(
-            " Jump ",
+            title,
             Style::default()
                 .fg(EMPHASIS_YELLOW)
                 .add_modifier(Modifier::BOLD),
@@ -1340,7 +1351,66 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
         .border_style(Style::default().fg(BORDER));
     let content = block.inner(area);
     f.render_widget(block, area);
+    content
+}
 
+/// The pending `'` or `"` leader: slots 1-9 in three rows, each marked empty
+/// or filled, with the playing and queued sections called out.
+fn draw_section_leader(f: &mut Frame, inner: Rect, view: &UiViewModel<'_>, leader: SectionLeader) {
+    let (title, hint) = match leader {
+        SectionLeader::Queue => (" Queue section ", "1-9 Queue   ' Previous"),
+        SectionLeader::Store => (" Store section ", "1-9 Store here (replaces)"),
+    };
+    let content = leader_frame(f, inner, title, 7);
+    let queued = view.session.pending_section.as_ref().map(|p| p.index);
+    let key_style = Style::default()
+        .fg(BROWSE_PALETTE.active)
+        .add_modifier(Modifier::BOLD);
+    let cell = |index: usize| -> Vec<Span<'static>> {
+        let (label, style) = match (
+            view.session.current_section == Some(index),
+            queued == Some(index),
+        ) {
+            (true, true) => ("now+next", Style::default().fg(LIVE_AMBER)),
+            (true, false) => ("now", Style::default().fg(LIVE_AMBER)),
+            (false, true) => (
+                "next",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ),
+            (false, false) if view.filled_sections[index] => {
+                ("filled", Style::default().fg(Color::Rgb(205, 210, 222)))
+            }
+            (false, false) => ("empty", Style::default().fg(DIM_TEXT)),
+        };
+        vec![
+            Span::styled(format!("{} ", sections::SECTION_NAMES[index]), key_style),
+            Span::styled(format!("{label:<10}"), style),
+        ]
+    };
+    let mut lines: Vec<Line<'static>> = (0..3)
+        .map(|row| {
+            Line::from(
+                (0..3)
+                    .flat_map(|column| cell(row * 3 + column))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    lines.push(Line::from(Span::styled(
+        hint,
+        Style::default().fg(Color::Rgb(205, 210, 222)),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("Esc  ", key_style),
+        Span::styled("Cancel", Style::default().fg(Color::Rgb(205, 210, 222))),
+    ]));
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
+}
+
+/// The immediate Space map is a compact, centered menu with a dedicated
+/// cancel row. It leaves the footer visible at every terminal size.
+fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
+    let content = leader_frame(f, inner, " Jump ", 8);
     let key_style = Style::default()
         .fg(BROWSE_PALETTE.active)
         .add_modifier(Modifier::BOLD);
@@ -1385,6 +1455,9 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
             ]));
             lines.push(single("Esc", "Cancel"));
             lines
+        }
+        PerformanceSurface::Sections { .. } => {
+            unreachable!("section leaders render through draw_section_leader")
         }
         PerformanceSurface::ChooseParameter { instrument } => vec![
             Line::from(Span::styled(instrument.name().to_string(), label_style)),
@@ -1895,6 +1968,7 @@ mod motion_render_tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
+                filled_sections: [false; sections::SECTION_COUNT],
             },
         });
         let ModeSurface::Automation(surface) = &view.mode else {
