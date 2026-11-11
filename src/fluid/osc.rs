@@ -179,8 +179,13 @@ fn hit_addr(hit: MusicalHit) -> &'static str {
     ADDRESSES[hit as usize]
 }
 
-/// How often the emitter samples telemetry and state.
+/// How often the emitter samples telemetry and state. Beat, hits, chords,
+/// phrases, and voice notes go out at this rate: consumers clock note-offs
+/// and loop playback off `/nooise/beat`.
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// How often level and gesture meters go out (about 30 Hz): consumers only
+/// display them or derive energy from them.
+const METER_INTERVAL: Duration = Duration::from_millis(33);
 const VOICE_CHANNEL_CAPACITY: usize = 256;
 const UI_CMD_CHANNEL_CAPACITY: usize = 256;
 
@@ -1096,9 +1101,15 @@ impl Mirrored {
     }
 
     /// Messages describing the change from `self` to the current telemetry,
-    /// then advance `self` to it.
-    fn diff(&mut self, telemetry: &FluidTelemetry) -> Vec<OscMessage> {
-        let now = Mirrored::from(telemetry);
+    /// then advance `self` to it. Level and gesture meters are compared and
+    /// advanced only when `meters_due`, so a held change goes out on the next
+    /// meter poll.
+    fn diff(&mut self, telemetry: &FluidTelemetry, meters_due: bool) -> Vec<OscMessage> {
+        let mut now = Mirrored::from(telemetry);
+        if !meters_due {
+            now.level_bits = self.level_bits;
+            now.gesture_bits = self.gesture_bits;
+        }
         let mut out = Vec::new();
         if now.beat_bits != self.beat_bits {
             out.push(message(
@@ -1206,12 +1217,17 @@ fn emit_loop(
     let mut last_ui: Option<Arc<Option<OscUiSnapshot>>> = None;
     let mut last_playback = None;
     let mut last_full_ui = Instant::now();
+    let mut last_meters = Instant::now();
     while !stop.load(Ordering::Relaxed) {
         let full = last_full_ui.elapsed() >= Duration::from_millis(500);
         if full {
             last_full_ui = Instant::now();
         }
-        let mut messages = mirrored.diff(telemetry);
+        let meters_due = last_meters.elapsed() >= METER_INTERVAL;
+        if meters_due {
+            last_meters = Instant::now();
+        }
+        let mut messages = mirrored.diff(telemetry, meters_due);
         if let Some(rx) = voice_rx {
             for event in rx.try_iter() {
                 messages.push(event.into_message());
@@ -1406,7 +1422,7 @@ mod tests {
     fn diff_sends_only_changes_and_one_message_per_kick() {
         let telemetry = FluidTelemetry::default();
         let mut mirrored = Mirrored::from(&telemetry);
-        assert!(mirrored.diff(&telemetry).is_empty());
+        assert!(mirrored.diff(&telemetry, true).is_empty());
 
         telemetry.publish_kick(0.25);
         telemetry.publish_kick(0.5);
@@ -1420,7 +1436,7 @@ mod tests {
         telemetry.publish_level(Tab::Bass, 0.05);
         telemetry.publish_level(Tab::Master, 0.1);
         telemetry.publish_gesture(GestureKind::Echo, 0.6);
-        let out = mirrored.diff(&telemetry);
+        let out = mirrored.diff(&telemetry, true);
         let addrs: Vec<&str> = out.iter().map(|m| m.addr.as_str()).collect();
         assert_eq!(
             addrs,
@@ -1456,7 +1472,26 @@ mod tests {
             out[10].args,
             vec![OscType::Float(0.75), OscType::Float(-1.0)]
         );
-        assert!(mirrored.diff(&telemetry).is_empty());
+        assert!(mirrored.diff(&telemetry, true).is_empty());
+    }
+
+    #[test]
+    fn meters_wait_for_their_poll_while_the_beat_goes_out_at_once() {
+        let telemetry = FluidTelemetry::default();
+        let mut mirrored = Mirrored::from(&telemetry);
+        telemetry.publish_beat(1.5);
+        telemetry.publish_level(Tab::Bass, 0.05);
+        telemetry.publish_gesture(GestureKind::Echo, 0.6);
+        let addrs = |out: Vec<OscMessage>| -> Vec<String> {
+            out.into_iter().map(|message| message.addr).collect()
+        };
+        assert_eq!(addrs(mirrored.diff(&telemetry, false)), [ADDR_BEAT]);
+        assert!(mirrored.diff(&telemetry, false).is_empty());
+        assert_eq!(
+            addrs(mirrored.diff(&telemetry, true)),
+            ["/nooise/voice/bass/level", "/nooise/gesture/echo"]
+        );
+        assert!(mirrored.diff(&telemetry, true).is_empty());
     }
 
     #[test]
@@ -1485,7 +1520,7 @@ mod tests {
             let mut timing = TimingContext::new(48_000.0, 120.0, beat);
             timing.morph_phrase_start = morph_start;
             pad.next(controls, MasterKey::Home, timing);
-            mirrored.diff(telemetry)
+            mirrored.diff(telemetry, true)
         }
         let tick_at = |pad: &mut PadEngine, mirrored: &mut Mirrored, beat, morph_start| {
             tick(pad, &controls, &telemetry, mirrored, beat, morph_start)
@@ -1521,7 +1556,7 @@ mod tests {
         let mut stopped = TimingContext::new(48_000.0, 120.0, 2.0);
         stopped.transport = crate::fluid::engine::Transport::Stopped;
         pad.next(&controls, MasterKey::Home, stopped);
-        assert!(mirrored.diff(&telemetry).is_empty());
+        assert!(mirrored.diff(&telemetry, true).is_empty());
         pad.restart_sequence(&controls);
         let restart = tick_at(&mut pad, &mut mirrored, 0.0, None);
         assert!(restart.iter().any(|m| m.addr == ADDR_CHORD));
@@ -1627,7 +1662,7 @@ mod tests {
             telemetry.publish_hit(hit, level, pitch_class);
         }
 
-        let messages = mirrored.diff(&telemetry);
+        let messages = mirrored.diff(&telemetry, true);
         let addresses: Vec<&str> = messages
             .iter()
             .map(|message| message.addr.as_str())
