@@ -336,7 +336,9 @@ fn beat_repeat_key_loops_the_live_beat_and_returns_to_the_running_mix() {
     }
     assert!(difference > 1.0, "beat repeat must alter the live mix");
     wet.gesture(GestureKind::BeatRepeat, KeyEventKind::Release);
-    for _ in 0..240 {
+    // Release is quantized: the loop plays on to the next beat line, then
+    // fades within 10 ms, so a beat plus the fade is always enough.
+    for _ in 0..(60.0 / 82.0 * SAMPLE_RATE) as usize + 240 {
         dry.engine.next_stereo();
         wet.engine.next_stereo();
     }

@@ -2672,6 +2672,44 @@ mod section_tests {
         assert_eq!(session.load().previous_section, Some(1));
     }
 
+    /// A hold across a landing must not loop the song swap: the cut is hidden
+    /// by the engine's fade only once, so a loop that carried it would click
+    /// on every repeat. Worst jump is compared with the same landing dry.
+    #[test]
+    fn beat_repeat_held_across_a_section_landing_adds_no_click() {
+        let worst_jump = |hold: bool, hold_at: f64| {
+            let (session, mut engine) = engine_for(&short_song(120.0));
+            engine.reseed(5);
+            play_until_beat(&mut engine, hold_at);
+            if hold {
+                let now = session.audio_seconds();
+                session.update(|s| s.gestures.press(GestureKind::BeatRepeat, now));
+            }
+            queue(&session, 1, &short_song(90.0));
+            let landed_at = play_to_landing(&mut engine, &session);
+            assert!(landed_at > 7.9, "landed at {landed_at}");
+            let mut previous = engine.next_stereo();
+            let mut worst = 0.0_f32;
+            // Past the landing fade, across several repeats of the new song.
+            for frame in 0..RATE as usize * 8 {
+                let next = engine.next_stereo();
+                if frame > (RATE * 0.05) as usize {
+                    worst = worst.max((next.0 - previous.0).abs());
+                }
+                previous = next;
+            }
+            worst
+        };
+        for hold_at in [2.5, 7.2] {
+            let dry = worst_jump(false, hold_at);
+            let held = worst_jump(true, hold_at);
+            assert!(
+                held < dry * 2.0 + 0.01,
+                "hold from beat {hold_at}: dry worst {dry}, held worst {held}"
+            );
+        }
+    }
+
     #[test]
     fn landing_follows_the_destinations_phrase_length_not_the_sources() {
         let (session, mut engine) = engine_for(&short_song(120.0));
