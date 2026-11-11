@@ -427,7 +427,7 @@ struct ReplayResult {
     telemetry_beat_bits: u64,
     harmony_held: Option<HeldChord>,
     /// The queued push target and the bits of the beat it lands on.
-    harmony_queued: Option<(PushTarget, u64)>,
+    harmony_queued: Option<(Triad, u64)>,
 }
 
 impl ReplayResult {
@@ -5906,15 +5906,9 @@ fn replay_bar(trace: &[TraceEvent], capabilities: TerminalCapabilities) -> Repla
 
 /// The queued push's destination as a letter name, and the beat it lands on.
 fn queued_harmony(result: &ReplayResult) -> Option<(String, f64)> {
-    result.harmony_queued.map(|(target, bits)| {
-        (
-            match target {
-                PushTarget::Chord(triad) => triad.name(0),
-                PushTarget::Release => "progression".to_string(),
-            },
-            f64::from_bits(bits),
-        )
-    })
+    result
+        .harmony_queued
+        .map(|(target, bits)| (target.name(0), f64::from_bits(bits)))
 }
 
 /// Space down and up, as a held thumb: the push keys go between them.
@@ -6026,8 +6020,14 @@ fn held_moves_compose_before_the_bar_and_undo_walks_back() {
     assert_eq!(two_lifts.final_owner(), Some("HARMONY"));
     // Two fifths up from A minor: E minor, then B, diminished in A minor.
     assert_eq!(queued_harmony(&two_lifts), Some(("Bdim".to_string(), 4.0)));
+    let backspace = || key(0, FixtureKey::Backspace, InputPhase::Press);
     let undone = replay_bar(
-        &[space(InputPhase::Press), plain('l'), plain('l'), plain('u')],
+        &[
+            space(InputPhase::Press),
+            plain('l'),
+            plain('l'),
+            backspace(),
+        ],
         TerminalCapabilities::full(),
     );
     assert_eq!(queued_harmony(&undone), Some(("Em".to_string(), 4.0)));
@@ -6035,7 +6035,7 @@ fn held_moves_compose_before_the_bar_and_undo_walks_back() {
         &[
             space(InputPhase::Press),
             plain('l'),
-            plain('u'),
+            backspace(),
             space(InputPhase::Release),
         ],
         TerminalCapabilities::full(),
@@ -6061,7 +6061,7 @@ fn focus_loss_ends_a_held_push() {
 }
 
 #[test]
-fn a_push_lands_on_the_bar_and_g_releases_it_on_the_next() {
+fn a_push_lands_on_the_bar_and_stays() {
     let plain = |after_ms, code| key(after_ms, code, InputPhase::Press);
     let before_bar = replay_bar(
         &[
@@ -6090,20 +6090,25 @@ fn a_push_lands_on_the_bar_and_g_releases_it_on_the_next() {
     assert!(frame.contains("C  PUSH"), "{frame}");
     assert!(frame.contains("Push the Harmony"), "{frame}");
 
-    let released = replay_bar(
+    // Letting Space go, and keys that are not moves, leave it held: there is
+    // no release back to the progression.
+    let kept = replay_bar(
         &[
             space(InputPhase::Press),
             plain(0, FixtureKey::Character('f')),
             TraceEvent::Tick { after_ms: 4_100 },
             plain(0, FixtureKey::Character('g')),
-            TraceEvent::Tick { after_ms: 4_000 },
             space(InputPhase::Release),
+            TraceEvent::Tick { after_ms: 4_000 },
         ],
         TerminalCapabilities::full(),
     );
-    assert_eq!(released.harmony_held, None);
-    assert_eq!(released.harmony_queued, None);
-    assert_eq!(released.final_owner(), Some("BROWSE"));
+    assert_eq!(
+        kept.harmony_held.map(|held| held.triad.name(0)),
+        Some("C".to_string())
+    );
+    assert_eq!(kept.effect_count("Harmony("), 1);
+    assert_eq!(kept.final_owner(), Some("BROWSE"));
 }
 
 /// Ctrl+C still quits from inside the mode, held or one-shot.

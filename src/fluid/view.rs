@@ -376,15 +376,9 @@ impl HarmonyView {
                 |held| held.triad.name(shift),
             ),
             held: push.held.is_some(),
-            queued: push.queued.map(|queued| {
-                (
-                    match queued.target {
-                        PushTarget::Chord(triad) => triad.name(shift),
-                        PushTarget::Release => "progression".to_string(),
-                    },
-                    queued.land_beat,
-                )
-            }),
+            queued: push
+                .queued
+                .map(|queued| (queued.target.name(shift), queued.land_beat)),
             quantize: push.quantize,
             previews: HARMONY_MOVES
                 .each_ref()
@@ -1120,7 +1114,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         },
         KeyboardOwner::PerformanceHarmony => match mode {
             ModeSurface::Performance(PerformanceSurface::Harmony { held: true }) => {
-                "HARMONY · push   u undo   g release   let go".to_string()
+                "HARMONY · push   \u{232b} undo   let Space go".to_string()
             }
             ModeSurface::Performance(PerformanceSurface::Harmony { held: false }) => {
                 "HARMONY · one push   Esc".to_string()
@@ -1660,7 +1654,7 @@ mod tests {
                     "j␠step␠down␠F",
                     "l␠lift",
                     "a␠home",
-                    "u␠undo",
+                    "⌫␠undo",
                 ] {
                     assert!(frame.contains(expected), "missing {expected}: {frame}");
                 }

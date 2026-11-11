@@ -1192,15 +1192,9 @@ impl EffectExecutor {
             Some(_) => format!(" · quantize {}", quantize.label()),
         };
         self.show_message(match outcome {
-            PushOutcome::Queued(PushTarget::Chord(triad)) => {
-                format!("Harmony → {}{when}", triad.name(shift))
-            }
-            PushOutcome::Queued(PushTarget::Release) => format!("Progression returns{when}"),
+            PushOutcome::Queued(triad) => format!("Harmony → {}{when}", triad.name(shift)),
             PushOutcome::Cancelled => "Push cancelled".to_string(),
-            PushOutcome::Nothing => match action {
-                HarmonyAction::Undo => "Nothing to undo".to_string(),
-                _ => "Harmony already follows the progression".to_string(),
-            },
+            PushOutcome::Nothing => "Nothing to undo".to_string(),
         });
         Ok(match outcome {
             PushOutcome::Nothing => EffectAcknowledgement::NoChange,

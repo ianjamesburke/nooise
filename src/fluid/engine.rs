@@ -3077,11 +3077,11 @@ mod push_tests {
         play_until_beat(&mut engine, 20.5);
         push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
         close(&profile_change(&mut engine, 24.0), "a push");
-        // Release, then undo back to the pushed chord, each on its own bar
+        // A second push, then undo back to the first, each on its own bar
         // with no authored boundary (every 16 beats) inside the 5 s window.
         play_until_beat(&mut engine, 32.5);
-        push(&mut effects, HarmonyAction::Release);
-        close(&profile_change(&mut engine, 36.0), "a release");
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Parallel));
+        close(&profile_change(&mut engine, 36.0), "a second push");
         play_until_beat(&mut engine, 48.5);
         push(&mut effects, HarmonyAction::Undo);
         close(&profile_change(&mut engine, 52.0), "an undo");
@@ -3198,25 +3198,20 @@ mod push_tests {
     }
 
     #[test]
-    fn moves_compose_before_the_bar_and_release_hands_back_to_the_progression() {
+    fn moves_compose_before_the_bar_and_the_push_never_hands_back() {
         let (session, mut engine, mut effects) = engine();
         play_until_beat(&mut engine, 0.5);
         push(&mut effects, HarmonyAction::Move(HarmonyMove::FifthUp));
         push(&mut effects, HarmonyAction::Move(HarmonyMove::FifthUp));
         play_until_beat(&mut engine, 4.01);
         assert_eq!(session.load().push.held.unwrap().triad.name(0), "Bdim");
-        play_until_beat(&mut engine, 5.0);
-        push(&mut effects, HarmonyAction::Release);
-        play_until_beat(&mut engine, 8.01);
-        assert_eq!(session.load().push.held, None);
-        // The authored chord on the held slot sounds again from the bar, and
-        // the progression moves on at its next chord boundary.
-        assert_eq!(
-            engine.pad.last_chord_notes,
-            pad_chord_tones(&engine.effective.pad, 0, 0)
-        );
-        play_until_beat(&mut engine, 16.01);
-        assert_eq!(engine.pad.cursor.slot(), 1);
+        // Undo walks back through the composed moves, never to the
+        // progression: once landed, the home row is the instrument.
+        push(&mut effects, HarmonyAction::Undo);
+        push(&mut effects, HarmonyAction::Undo);
+        play_until_beat(&mut engine, 64.01);
+        assert_eq!(session.load().push.held.unwrap().triad.name(0), "Em");
+        assert_eq!(engine.pad.cursor.slot(), 0, "the progression stays held");
     }
 
     #[test]

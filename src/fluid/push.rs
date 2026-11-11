@@ -1,14 +1,16 @@
 //! Push the Harmony's live state: the chord the harmony has been pushed to,
-//! a move waiting for its bar, and a bounded undo history.
+//! a move waiting to land, and a bounded undo history.
 //!
 //! The harmony model itself (`Triad`, `HarmonyMove`, `voice_lead`) is pure and
 //! lives in `voice/triad.rs`. This module only decides *when* a chord sounds:
-//! a move queues, composes with any move already queued, and lands on the next
-//! bar, where the audio clock voices it from the notes sounding at that moment.
+//! a move queues, composes with any move already queued, and lands at once or
+//! on the quantize line, where the audio clock voices it from the notes
+//! sounding at that moment. There is no way back to the authored progression:
+//! once pushed, the home row is the instrument.
 
 use super::*;
 
-/// How many moves `u` can walk back. Live-only, never in a song code.
+/// How many moves Backspace can walk back. Live-only, never in a song code.
 pub(crate) const PUSH_UNDO_DEPTH: usize = 16;
 
 /// The chord the harmony was pushed to and how the pad voices it. While one
@@ -22,18 +24,11 @@ pub(crate) struct HeldChord {
     pub(crate) notes: [i32; 4],
 }
 
-/// Where a queued move takes the harmony when its bar arrives.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PushTarget {
-    Chord(Triad),
-    /// Hand the harmony back to the authored progression.
-    Release,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct QueuedPush {
-    pub(crate) target: PushTarget,
-    /// The bar line it lands on, in transport beats.
+    /// The chord the move lands on.
+    pub(crate) target: Triad,
+    /// The beat it lands on: now when unquantized, else a bar line.
     pub(crate) land_beat: f64,
 }
 
@@ -81,7 +76,9 @@ impl PushQuantize {
     }
 }
 
-/// What the harmony was before one move: a pushed triad, or the progression.
+/// What the harmony was headed to before one move: a pushed triad, or
+/// `None` while it still followed the progression (undoing that withdraws a
+/// waiting first move; it never hands back a landed one).
 type UndoEntry = Option<Triad>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -121,14 +118,12 @@ pub(crate) struct PushedHarmony {
 pub(crate) enum HarmonyAction {
     Move(HarmonyMove),
     Undo,
-    /// Hand the harmony back to the authored progression at the next bar.
-    Release,
 }
 
 /// What one push key did, for the confirmation message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PushOutcome {
-    Queued(PushTarget),
+    Queued(Triad),
     /// The queued move was withdrawn; the harmony stays where it is.
     Cancelled,
     Nothing,
@@ -137,7 +132,7 @@ pub(crate) enum PushOutcome {
 impl PushedHarmony {
     /// A saved song's state: what was held, and a queued target, which lands
     /// on the loaded song's first bar. Undo history is never saved.
-    pub(crate) fn restored(held: Option<HeldChord>, queued: Option<PushTarget>) -> Self {
+    pub(crate) fn restored(held: Option<HeldChord>, queued: Option<Triad>) -> Self {
         Self {
             held,
             queued: queued.map(|target| QueuedPush {
@@ -157,23 +152,17 @@ impl PushedHarmony {
     /// The harmony a new move reads: the queued chord, else the held one,
     /// else `authored`, the progression chord sounding now.
     pub(crate) fn base(&self, authored: Triad) -> Triad {
-        match self.queued.map(|queued| queued.target) {
-            Some(PushTarget::Chord(triad)) => triad,
-            Some(PushTarget::Release) => authored,
-            None => self.held.map_or(authored, |held| held.triad),
-        }
+        self.heading().unwrap_or(authored)
     }
 
     /// Where the harmony is headed, as the undo history records it.
     fn heading(&self) -> UndoEntry {
-        match self.queued.map(|queued| queued.target) {
-            Some(PushTarget::Chord(triad)) => Some(triad),
-            Some(PushTarget::Release) => None,
-            None => self.held.map(|held| held.triad),
-        }
+        self.queued
+            .map(|queued| queued.target)
+            .or(self.held.map(|held| held.triad))
     }
 
-    fn queue(&mut self, target: PushTarget, beat: f64) {
+    fn queue(&mut self, target: Triad, beat: f64) {
         let land_beat = self
             .queued
             .map_or_else(|| self.quantize.landing(beat), |queued| queued.land_beat);
@@ -192,22 +181,13 @@ impl PushedHarmony {
     ) -> PushOutcome {
         let target = harmony_move.apply(self.base(authored), key);
         self.undo.push(self.heading());
-        self.queue(PushTarget::Chord(target), beat);
-        PushOutcome::Queued(PushTarget::Chord(target))
-    }
-
-    /// Queue the hand-back to the authored progression.
-    pub(crate) fn release(&mut self, beat: f64) -> PushOutcome {
-        if self.heading().is_none() {
-            return PushOutcome::Nothing;
-        }
-        self.undo.push(self.heading());
-        self.queue(PushTarget::Release, beat);
-        PushOutcome::Queued(PushTarget::Release)
+        self.queue(target, beat);
+        PushOutcome::Queued(target)
     }
 
     /// Walk back one move. Returning to where the harmony already sounds
-    /// withdraws the queue; anywhere else queues that harmony.
+    /// withdraws the queue; another pushed chord is queued again. Nothing
+    /// walks back past the first landed push to the authored progression.
     pub(crate) fn undo(&mut self, beat: f64) -> PushOutcome {
         let Some(previous) = self.undo.pop() else {
             return PushOutcome::Nothing;
@@ -216,7 +196,11 @@ impl PushedHarmony {
             self.queued = None;
             return PushOutcome::Cancelled;
         }
-        let target = previous.map_or(PushTarget::Release, PushTarget::Chord);
+        let Some(target) = previous else {
+            // The first move already landed: the progression is behind us.
+            self.undo = UndoHistory::default();
+            return PushOutcome::Nothing;
+        };
         self.queue(target, beat);
         PushOutcome::Queued(target)
     }
@@ -226,19 +210,16 @@ impl PushedHarmony {
     }
 
     /// Land the queued move: voice its chord from `sounding` on `slot` (a
-    /// held chord keeps its slot), or hand back to the progression.
+    /// held chord keeps its slot).
     pub(crate) fn land(&mut self, sounding: [i32; 4], slot: usize) {
         let Some(queued) = self.queued.take() else {
             return;
         };
-        self.held = match queued.target {
-            PushTarget::Chord(triad) => Some(HeldChord {
-                slot: self.held.map_or(slot as u8, |held| held.slot),
-                triad,
-                notes: voice_lead(triad, sounding),
-            }),
-            PushTarget::Release => None,
-        };
+        self.held = Some(HeldChord {
+            slot: self.held.map_or(slot as u8, |held| held.slot),
+            triad: queued.target,
+            notes: voice_lead(queued.target, sounding),
+        });
     }
 
     /// Change where moves land. A waiting move is re-timed to the new
@@ -272,7 +253,6 @@ impl PushedHarmony {
         match action {
             HarmonyAction::Move(harmony_move) => self.push(harmony_move, key, authored, beat),
             HarmonyAction::Undo => self.undo(beat),
-            HarmonyAction::Release => self.release(beat),
         }
     }
 }
@@ -301,7 +281,7 @@ mod tests {
         }
     }
 
-    fn target(push: &PushedHarmony) -> Option<PushTarget> {
+    fn target(push: &PushedHarmony) -> Option<Triad> {
         push.queued.map(|queued| queued.target)
     }
 
@@ -314,7 +294,7 @@ mod tests {
         // Two fifths up from A minor: E minor, then B (diminished in A minor).
         assert_eq!(
             target(&push),
-            Some(PushTarget::Chord(Triad::new(11, TriadQuality::Diminished)))
+            Some(Triad::new(11, TriadQuality::Diminished))
         );
         assert_eq!(
             push.queued.unwrap().land_beat,
@@ -341,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn undo_walks_back_through_queued_and_landed_moves() {
+    fn undo_walks_back_through_pushes_but_never_to_the_progression() {
         let mut push = bar_push();
         push.push(HarmonyMove::Relative, KEY, am(), 0.5);
         assert_eq!(push.undo(1.0), PushOutcome::Cancelled);
@@ -352,17 +332,16 @@ mod tests {
         push.land([45, 48, 52, 57], 0);
         push.push(HarmonyMove::FifthUp, KEY, am(), 4.5);
         push.land(push.held.unwrap().notes, 0);
-        // Back to C, then back to the progression.
+        // Back to C; past that the progression is behind us.
         assert_eq!(
             push.undo(9.0),
-            PushOutcome::Queued(PushTarget::Chord(Triad::new(0, TriadQuality::Major)))
+            PushOutcome::Queued(Triad::new(0, TriadQuality::Major))
         );
         assert_eq!(push.queued.unwrap().land_beat, 12.0);
         push.land(push.held.unwrap().notes, 0);
-        assert_eq!(push.undo(13.0), PushOutcome::Queued(PushTarget::Release));
-        push.land([0; 4], 0);
-        assert_eq!(push.held, None);
-        assert!(!push.is_active());
+        assert_eq!(push.undo(13.0), PushOutcome::Nothing);
+        assert_eq!(push.held.unwrap().triad.name(0), "C");
+        assert_eq!(push.queued, None);
     }
 
     #[test]
@@ -376,19 +355,6 @@ mod tests {
             undone += 1;
         }
         assert_eq!(undone, PUSH_UNDO_DEPTH);
-    }
-
-    #[test]
-    fn release_hands_back_only_when_pushed() {
-        let mut push = bar_push();
-        assert_eq!(push.release(1.0), PushOutcome::Nothing);
-        push.push(HarmonyMove::Home, KEY, am(), 1.0);
-        assert_eq!(push.release(1.0), PushOutcome::Queued(PushTarget::Release));
-        assert_eq!(
-            push.base(am()),
-            am(),
-            "a queued release reads the progression"
-        );
     }
 
     #[test]
@@ -418,10 +384,7 @@ mod tests {
         assert_eq!(push.queued.unwrap().land_beat, 16.0);
         push.set_quantize(PushQuantize::Off, 7.0);
         assert!(push.is_due(7.0));
-        assert_eq!(
-            target(&push),
-            Some(PushTarget::Chord(Triad::new(0, TriadQuality::Major)))
-        );
+        assert_eq!(target(&push), Some(Triad::new(0, TriadQuality::Major)));
     }
 
     #[test]

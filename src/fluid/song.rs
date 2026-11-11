@@ -13,7 +13,7 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-use super::push::{HeldChord, PushTarget, PushedHarmony};
+use super::push::{HeldChord, PushedHarmony};
 use super::range_epoch::{CURRENT_RANGE_EPOCH, DRUNKEN_WAVE_EPOCH, stale_modulation};
 use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TonalSequenceState, Triad, TriadQuality};
@@ -1505,7 +1505,6 @@ fn read_mute(bytes: &[u8], muted: &mut MuteState) -> Result<(), SongCodeError> {
 
 const PUSH_NONE: u8 = 0;
 const PUSH_CHORD: u8 = 1;
-const PUSH_RELEASE: u8 = 2;
 
 fn write_push_harmony(push: &PushedHarmony) -> Result<Vec<u8>, SongCodeError> {
     let mut out = vec![PUSH_HARMONY_VERSION];
@@ -1527,10 +1526,9 @@ fn write_push_harmony(push: &PushedHarmony) -> Result<Vec<u8>, SongCodeError> {
         None => out.push(PUSH_NONE),
     }
     match push.queued.map(|queued| queued.target) {
-        Some(PushTarget::Chord(triad)) => {
+        Some(triad) => {
             out.extend_from_slice(&[PUSH_CHORD, triad.root() as u8, triad.quality.tag()]);
         }
-        Some(PushTarget::Release) => out.push(PUSH_RELEASE),
         None => out.push(PUSH_NONE),
     }
     Ok(out)
@@ -1577,8 +1575,7 @@ fn read_push_harmony(bytes: &[u8]) -> Result<PushedHarmony, SongCodeError> {
     };
     let queued = match reader.u8().map_err(invalid)? {
         PUSH_NONE => None,
-        PUSH_CHORD => Some(PushTarget::Chord(triad(&mut reader)?)),
-        PUSH_RELEASE if held.is_some() => Some(PushTarget::Release),
+        PUSH_CHORD => Some(triad(&mut reader)?),
         _ => return Err(SongCodeError::InvalidPushHarmony),
     };
     if !reader.is_empty() || (held.is_none() && queued.is_none()) {
@@ -1633,8 +1630,8 @@ mod planned_action_codec_tests {
             [&[2][..], &held_c, &[PUSH_NONE]].concat(),
             // Nothing held and nothing queued is not a push.
             vec![PUSH_HARMONY_VERSION, PUSH_NONE, PUSH_NONE],
-            // A release with nothing held has nothing to release.
-            vec![PUSH_HARMONY_VERSION, PUSH_NONE, PUSH_RELEASE],
+            // Tag 2 was a queued release to the progression, which is gone.
+            vec![PUSH_HARMONY_VERSION, PUSH_NONE, 2],
             // Unknown quality tag, root out of range, slot out of range.
             vec![PUSH_HARMONY_VERSION, PUSH_NONE, PUSH_CHORD, 0, 3],
             vec![PUSH_HARMONY_VERSION, PUSH_NONE, PUSH_CHORD, 12, 0],

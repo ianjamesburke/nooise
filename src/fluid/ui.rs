@@ -1365,7 +1365,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("d", "major/minor"),
                 ("s", "leading tone"),
             ],
-            &[("u", "undo"), ("g", "release"), ("Esc", "close")],
+            &[("\u{232b}", "undo"), ("let go", "close")],
         ],
     ));
     lines.extend(state(
@@ -1506,12 +1506,10 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: 
             .map(|(left, right)| Line::from([half(left), half(right)].concat())),
     );
     lines.push(Line::from(vec![
-        Span::styled("u ", key_style),
+        Span::styled("\u{232b} ", key_style),
         Span::styled("undo  ", label_style),
-        Span::styled("g ", key_style),
-        Span::styled("release  ", label_style),
-        Span::styled("Esc ", key_style),
-        Span::styled("close", label_style),
+        Span::styled(if held { "let Space go" } else { "Esc" }, key_style),
+        Span::styled(" close", label_style),
     ]));
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
 }

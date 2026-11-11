@@ -776,16 +776,15 @@ fn grab_binding(code: &PhysicalKey) -> Option<Intent> {
     Some(Intent::GrabMotion(duration))
 }
 
-/// Push the Harmony's keyboard: the `HARMONY_MOVES` home-row keys push, `u`
-/// undoes and `g` hands back to the progression. Every other key is inert.
+/// Push the Harmony's keyboard (Space held): the `HARMONY_MOVES` keys push,
+/// Backspace undoes. Every other key is inert.
 fn harmony_binding(code: &PhysicalKey) -> Option<Intent> {
-    let PhysicalKey::Character(key) = *code else {
-        return None;
-    };
-    let action = match key {
-        'u' => super::HarmonyAction::Undo,
-        'g' => super::HarmonyAction::Release,
-        _ => super::HarmonyAction::Move(super::HarmonyMove::from_key(key)?),
+    let action = match *code {
+        PhysicalKey::Backspace => super::HarmonyAction::Undo,
+        PhysicalKey::Character(key) => {
+            super::HarmonyAction::Move(super::HarmonyMove::from_key(key)?)
+        }
+        _ => return None,
     };
     Some(Intent::PushHarmony(action))
 }

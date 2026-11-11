@@ -114,7 +114,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 64] = [
+    pub(crate) const ALL: [Self; 63] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -174,7 +174,6 @@ impl Operation {
         Self::Harmony(HarmonyAction::Move(HarmonyMove::LeadingTone)),
         Self::Harmony(HarmonyAction::Move(HarmonyMove::Home)),
         Self::Harmony(HarmonyAction::Undo),
-        Self::Harmony(HarmonyAction::Release),
         Self::HarmonyQuantize(PushQuantize::Off),
         Self::HarmonyQuantize(PushQuantize::OneBar),
         Self::HarmonyQuantize(PushQuantize::TwoBars),
@@ -313,7 +312,6 @@ impl Operation {
                     HarmonyAction::Move(HarmonyMove::LeadingTone) => "Harmony leading tone",
                     HarmonyAction::Move(HarmonyMove::Home) => "Harmony home",
                     HarmonyAction::Undo => "Harmony undo",
-                    HarmonyAction::Release => "Harmony release",
                 },
                 aliases: match action {
                     HarmonyAction::Move(HarmonyMove::StepDown) => &["push j", "push step down"],
@@ -332,13 +330,11 @@ impl Operation {
                         &["push s", "leading tone swap"]
                     }
                     HarmonyAction::Move(HarmonyMove::Home) => &["push a", "push home", "tonic"],
-                    HarmonyAction::Undo => &["push u", "push undo"],
-                    HarmonyAction::Release => &["push g", "push release", "back to progression"],
+                    HarmonyAction::Undo => &["push undo", "push backspace"],
                 },
                 description: match action {
-                    HarmonyAction::Move(_) => "push the harmony (c then key; Shift+C stays)",
+                    HarmonyAction::Move(_) => "push the harmony (hold Space, then the key)",
                     HarmonyAction::Undo => "walk back the last harmony push",
-                    HarmonyAction::Release => "return to the authored progression",
                 },
             },
             Self::HarmonyQuantize(quantize) => OperationSpec {
