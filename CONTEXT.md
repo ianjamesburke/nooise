@@ -75,6 +75,12 @@
   chord. An auto morph keeps the outgoing harmony through whole phrases
   with Kick and Bass silent, then starts the incoming window at its first
   chord on landing.
+- **Push the Harmony:** steering the harmony by single-voice moves from the
+  chord sounding now (P, L, R, diatonic steps, fifths, home), never by naming
+  a chord. A **move** queues for the next bar and composes with one already
+  queued. The **pushed chord** is the triad a landed move sounds; it holds the
+  progression on its slot until **release** hands back to the authored
+  progression.
 - **Morph leg:** an outgoing song's hold followed by its crossing into the
   next song. `--bars` requests an approximate total length. Hold and crossing
   each round to whole outgoing phrases, at least one phrase per section.

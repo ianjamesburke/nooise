@@ -58,6 +58,31 @@ that still uses the old letter names A, B and C, is refused with a message at
 launch (sections are now numbered 1 to 9); nothing translates an old file. The
 current song keeps playing.
 
+## Push the Harmony (v4 mock-up)
+
+`c` opens Push the Harmony for one move and returns to browsing; Shift+`C`
+keeps it open until Esc. Inside it the home row pushes the harmony from where
+it is now, never by naming a chord: `j`/`k` step down/up the home scale,
+`h`/`l` move down/up a fifth, `f` is the relative swap (R), `d` the
+major/minor flip (P), `s` the leading-tone swap (L), and `a` returns to the
+key's tonic. `u` undoes the last move (16 deep) and `g` hands the harmony back
+to the authored progression. Outside the mode every key keeps its browsing
+meaning. Each action is also a `/` operation (`/harmony lift`, `/push l`).
+
+A move lands on the next bar. A second move before that bar composes from the
+queued chord and keeps the bar, so `l l` is two fifths up. The pad voices the
+new triad from the notes it is sounding, each voice moving to a nearby chord
+tone, and slurs into it; the Bass follows the new root in its own register.
+While pushed, the progression is held on the sounding slot like a Vamp; `g`
+(or undoing past the first move) brings the authored chord back on the next
+bar and the progression moves on at its next chord boundary. The header reads
+`CHORDS  C → G in 1 bar  PUSH`, and the overlay lists the eight moves with the
+chord each would produce. A saved song keeps the pushed chord and any queued
+move, which lands on the loaded song's first bar; undo history is not saved.
+Opening, pushing and leaving keep physical holds running, and Ctrl+C still
+quits. Smear (hold Space to glide a move over a bar) is not built in the
+mock-up. `proposals/2026-11-11-v4-push-the-harmony.md` owns the design.
+
 ## Slapback preset
 
 `/slapback` applies Delay to the current layer at 40% Amount, 0.25 beats on
@@ -157,9 +182,10 @@ loaded from a song code.
 Opening a keyboard-owning editor, Lead play, the palette or the Jump leader
 releases gestures. A key held through that transition must be released before
 it can start another gesture. Reported focus loss and shutdown also release held
-gestures. The one exception is the section leaders (`'` and `"`): opening one,
-completing it with a digit, or cancelling it leaves a physical hold running, and
-a key-up while one is pending releases the hold exactly as in browsing. On a
+gestures. The exceptions are the section leaders (`'` and `"`) and Push the
+Harmony (`c`, Shift+`C`): opening one, completing it, or cancelling it leaves a
+physical hold running, and a key-up while one is open releases the hold exactly
+as in browsing. On a
 terminal without key-release support, the latched `q` and `a` toggles are state
 rather than holds and likewise survive.
 
@@ -357,6 +383,14 @@ Lead play retains its own `i` entry and existing bindings.
    `'` overlay and recall as stored. Check both overlays at 46x11.
 12. Edit the set file to start a line with `A`: relaunch shows the refusal at
    launch and the song plays.
+
+13. On song 1 (A minor), press `c` then `f`: the header reads
+   `Am7add11 → C in 1 bar` (the authored name, then the pushed triad), and on
+   the next bar the pad slides into C with the least voice movement and the
+   Bass steps up a minor third. Press Shift+`C`, then `l` `l` before the bar: it lands on B
+   diminished. `u` walks back to E minor on the next bar; `g` returns the
+   authored chord on the bar after. Hold `w` through all of it: Submerge stays
+   held. Save with a chord pushed, reload: it sounds at once.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the
