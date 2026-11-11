@@ -572,6 +572,7 @@ pub(crate) fn map_input(
                 match performance {
                     PerformanceMode::Jump { .. } => performance_binding(&key.code),
                     PerformanceMode::Sections { .. } => section_leader_binding(&key.code),
+                    PerformanceMode::Harmony { .. } => harmony_binding(&key.code),
                 }
             } else {
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
@@ -631,6 +632,10 @@ fn browsing_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('a') => Intent::ToggleVamp,
         PhysicalKey::Character('q') => Intent::ToggleKickBass,
         PhysicalKey::Character('i') => Intent::EnterLeadPlay,
+        // `c` pushes the harmony once; `C` (a terminal that reports the
+        // shifted letter without SHIFT) latches it, as Shift+`c` does.
+        PhysicalKey::Character('c') => Intent::OpenHarmony { latched: false },
+        PhysicalKey::Character('C') => Intent::OpenHarmony { latched: true },
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Jump),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         PhysicalKey::Enter => Intent::TouchSelected,
@@ -663,6 +668,7 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         //     Intent::AddAutomation(AutomationKind::Envelope)
         // }
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
+        PhysicalKey::Character('C' | 'c') => Intent::OpenHarmony { latched: true },
         PhysicalKey::Character('R' | 'r' | 'U' | 'u') => Intent::RandomizeScope,
         // Shifted so a stray keystroke cannot end the song.
         PhysicalKey::Character('P' | 'p') => Intent::ToggleTransport,
@@ -731,6 +737,20 @@ fn section_leader_binding(code: &PhysicalKey) -> Option<Intent> {
         }
         _ => None,
     }
+}
+
+/// Push the Harmony's keyboard: the `HARMONY_MOVES` home-row keys push, `u`
+/// undoes and `g` hands back to the progression. Every other key is inert.
+fn harmony_binding(code: &PhysicalKey) -> Option<Intent> {
+    let PhysicalKey::Character(key) = *code else {
+        return None;
+    };
+    let action = match key {
+        'u' => super::HarmonyAction::Undo,
+        'g' => super::HarmonyAction::Release,
+        _ => super::HarmonyAction::Move(super::HarmonyMove::from_key(key)?),
+    };
+    Some(Intent::PushHarmony(action))
 }
 
 /// The Jump leader's keyboard: Space re-arms it, `INSTRUMENTS` keys open a

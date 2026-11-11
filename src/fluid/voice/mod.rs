@@ -16,6 +16,7 @@ mod pad;
 mod perc;
 mod sequence;
 mod tonal;
+mod triad;
 
 pub(crate) use arp::*;
 pub(crate) use bass::*;
@@ -30,6 +31,7 @@ pub(crate) use pad::*;
 pub(crate) use perc::*;
 pub(crate) use sequence::*;
 pub(crate) use tonal::*;
+pub(crate) use triad::*;
 
 // ============================================================
 // Shared voice utilities

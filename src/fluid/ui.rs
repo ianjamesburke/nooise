@@ -153,10 +153,9 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         f,
         header.key,
         header.chords,
-        view.session,
+        view,
         frame.active_slot,
         active_vamp.map(|vamp| vamp.is_releasing()),
-        &view.telemetry,
     );
     if let Some(title) = &view.chord_title {
         f.render_widget(
@@ -209,6 +208,9 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
     match &view.mode {
         ModeSurface::Performance(PerformanceSurface::Sections { leader }) => {
             draw_section_leader(f, inner, view, *leader);
+        }
+        ModeSurface::Performance(PerformanceSurface::Harmony { latched }) => {
+            draw_harmony_leader(f, inner, &view.harmony, *latched);
         }
         ModeSurface::Performance(surface) => draw_leader(f, inner, surface),
         _ => {}
@@ -319,12 +321,18 @@ fn chord_ribbon(beat: f64, span: ChordSpan) -> Line<'static> {
 /// bar of the phrase reads `in 1 bar`. A stopped clock restarts the phrase
 /// from its first chord, so no countdown is true until it runs again.
 fn queue_countdown(transport: Transport, telemetry: &TelemetryView) -> String {
-    let Some(end) = telemetry
-        .phrase_end_beat
-        .filter(|_| transport == Transport::Playing)
-    else {
+    match telemetry.phrase_end_beat {
+        Some(end) => bar_countdown(transport, telemetry, end),
+        None => "waiting".to_string(),
+    }
+}
+
+/// Whole bars until `end`, rounded up so the last bar reads `in 1 bar`, or
+/// `waiting` while the clock is stopped.
+fn bar_countdown(transport: Transport, telemetry: &TelemetryView, end: f64) -> String {
+    if transport != Transport::Playing {
         return "waiting".to_string();
-    };
+    }
     let bars = ((end - telemetry.beat) / 4.0).ceil().max(1.0) as u64;
     format!("in {bars} bar{}", if bars == 1 { "" } else { "s" })
 }
@@ -334,11 +342,11 @@ fn draw_harmony(
     f: &mut Frame,
     key_area: Rect,
     chords_area: Rect,
-    session: &LiveSessionSnapshot,
+    view: &UiViewModel<'_>,
     active_slot: usize,
     vamp: Option<bool>,
-    telemetry: &TelemetryView,
 ) {
+    let (session, telemetry, harmony) = (view.session, &view.telemetry, &view.harmony);
     let pad = &session.controls.pad;
     let labels = session.chord_labels();
     let window = ChordWindow::requested(pad);
@@ -371,6 +379,35 @@ fn draw_harmony(
         key_area,
     );
 
+    if harmony.is_active() {
+        let mut spans = vec![
+            Span::styled("CHORDS  ", Style::default().fg(DIM_TEXT)),
+            Span::styled(
+                harmony.sounding.clone(),
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if let Some((target, land_beat)) = &harmony.queued {
+            spans.push(Span::styled(
+                format!(
+                    " → {target} {}",
+                    bar_countdown(session.transport, telemetry, *land_beat)
+                ),
+                Style::default().fg(LIVE_AMBER),
+            ));
+        }
+        if harmony.held {
+            spans.push(Span::styled(
+                "  PUSH",
+                Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
+            ));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).alignment(Alignment::Center),
+            chords_area,
+        );
+        return;
+    }
     let (slots, active_slot): (Vec<_>, usize) = if vamp.is_some() {
         (vec![active_slot], active_slot)
     } else {
@@ -1306,6 +1343,22 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ],
     ));
     lines.extend(section(
+        "Push the Harmony (c once, \u{21e7}C stays)",
+        &[
+            &[
+                ("j / k", "step down/up"),
+                ("h / l", "fifth down/up"),
+                ("a", "home"),
+            ],
+            &[
+                ("f", "relative"),
+                ("d", "major/minor"),
+                ("s", "leading tone"),
+            ],
+            &[("u", "undo"), ("g", "release"), ("Esc", "close")],
+        ],
+    ));
+    lines.extend(section(
         "Jump (Space, then one key)",
         &[
             &jump_layers[..4],
@@ -1369,6 +1422,55 @@ fn leader_frame(f: &mut Frame, inner: Rect, title: &'static str, desired_height:
     let content = block.inner(area);
     f.render_widget(block, area);
     content
+}
+
+/// Push the Harmony's overlay: the chord the next push reads, then every
+/// move's key, word and destination, so the eyes-open player learns the map.
+fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, latched: bool) {
+    let title = if latched {
+        " Push the Harmony "
+    } else {
+        " Push once "
+    };
+    let content = leader_frame(f, inner, title, 8);
+    let key_style = Style::default()
+        .fg(BROWSE_PALETTE.active)
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(Color::Rgb(205, 210, 222));
+    let chord_style = Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD);
+    let half = |index: usize| -> Vec<Span<'static>> {
+        let row = &HARMONY_MOVES[index];
+        vec![
+            Span::styled(format!("{} ", row.key), key_style),
+            Span::styled(format!("{:<10}", row.label), label_style),
+            Span::styled(format!("{:<6}", harmony.previews[index]), chord_style),
+        ]
+    };
+    let mut now = vec![
+        Span::styled("now ", label_style),
+        Span::styled(harmony.sounding.clone(), chord_style),
+    ];
+    if let Some((target, _)) = &harmony.queued {
+        now.extend([
+            Span::styled(" → ", label_style),
+            Span::styled(target.clone(), chord_style),
+            Span::styled(" next bar", label_style),
+        ]);
+    }
+    let mut lines = vec![Line::from(now)];
+    lines.extend(
+        [(0, 1), (2, 3), (4, 5), (6, 7)]
+            .map(|(left, right)| Line::from([half(left), half(right)].concat())),
+    );
+    lines.push(Line::from(vec![
+        Span::styled("u ", key_style),
+        Span::styled("undo  ", label_style),
+        Span::styled("g ", key_style),
+        Span::styled("release  ", label_style),
+        Span::styled("Esc ", key_style),
+        Span::styled("close", label_style),
+    ]));
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
 }
 
 /// The pending `'` or `"` leader: slots 1-9 in three rows, each marked empty
@@ -1473,8 +1575,8 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
             lines.push(single("Esc", "Cancel"));
             lines
         }
-        PerformanceSurface::Sections { .. } => {
-            unreachable!("section leaders render through draw_section_leader")
+        PerformanceSurface::Sections { .. } | PerformanceSurface::Harmony { .. } => {
+            unreachable!("section and harmony leaders render through their own overlays")
         }
         PerformanceSurface::ChooseParameter { instrument } => vec![
             Line::from(Span::styled(instrument.name().to_string(), label_style)),

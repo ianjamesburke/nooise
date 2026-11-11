@@ -29,6 +29,9 @@ pub(crate) struct PadEngine {
     pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
     last_chord_definition: ChordSlotControls,
+    /// The pushed chord the last frame voiced, so landing and release each
+    /// revoice even when the slot's authored definition is unchanged.
+    last_held: Option<HeldChord>,
     active_note_count: usize,
     sounding: bool,
     /// The transport seen on the previous sample, so a stop releases the
@@ -96,9 +99,14 @@ impl PadEngine {
         let tune = key.shift(cursor.window.progression) as f32;
         let active_character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let last_chord_definition = *c.chord_slot(cursor.window.progression, cursor.slot());
-        let initial_notes = pad_chord_notes_with_slot(&last_chord_definition);
+        let last_held = c.held_at(cursor.slot()).copied();
+        let initial_notes = last_held.map_or_else(
+            || pad_chord_notes_with_slot(&last_chord_definition),
+            |held| held.notes,
+        );
         let note_count = pad_note_count(c.chord_notes);
-        let sounding = Cell::from_slot(&last_chord_definition).gate == Gate::Sound;
+        let sounding =
+            last_held.is_some() || Cell::from_slot(&last_chord_definition).gate == Gate::Sound;
         let layers = if sounding {
             vec![PadLayer::new(
                 active_character,
@@ -125,6 +133,7 @@ impl PadEngine {
             active_character,
             last_chord_notes: initial_notes,
             last_chord_definition,
+            last_held,
             published_span: None,
             active_note_count: note_count,
             sounding,
@@ -345,8 +354,13 @@ impl PadEngine {
             self.published_span = Some(span);
         }
         let definition = *c.chord_slot(self.cursor.window.progression, self.cursor.slot());
-        let is_rest = definition.is_rest();
-        let is_slur = definition.is_slur();
+        let held = c.held_at(self.cursor.slot()).copied();
+        let held_changed = held != self.last_held;
+        self.last_held = held;
+        // A pushed chord always sounds, and slurs in: the harmony shifts under
+        // the swell instead of re-attacking it.
+        let is_rest = held.is_none() && definition.is_rest();
+        let is_slur = held.is_some() || definition.is_slur();
         let note_count = pad_note_count(c.chord_notes);
         let character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let character_changed = character != self.active_character;
@@ -394,7 +408,9 @@ impl PadEngine {
             }
             self.osc_initial_pending = false;
         } else {
-            let chord_notes = if definition == self.last_chord_definition && self.sounding {
+            let chord_notes = if let Some(held) = held {
+                held.notes
+            } else if definition == self.last_chord_definition && self.sounding && !held_changed {
                 self.last_chord_notes
             } else {
                 pad_chord_notes_with_slot(&definition)
@@ -406,7 +422,10 @@ impl PadEngine {
             self.last_chord_notes = chord_notes;
             self.active_note_count = note_count;
 
-            if playing && (advance || chord_edited || transport_changed) {
+            // A held push sustains across chord boundaries; only a new pushed
+            // voicing (or the transport) revoices it.
+            let boundary = advance && held.is_none();
+            if playing && (boundary || chord_edited || transport_changed) {
                 // A slur reaches the new chord without restarting the swell:
                 // the incoming layer enters at the level the pad already
                 // holds, so the ramp resumes instead of climbing from silence.
@@ -2008,7 +2027,10 @@ impl ProgressionFollower {
 /// The shared chord-source entry point: the four notes at one table slot of
 /// a progression, built-in or Custom.
 pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, slot: usize) -> [i32; 4] {
-    pad_chord_notes_with_slot(c.chord_slot(progression, slot))
+    match c.held_at(slot) {
+        Some(held) => held.notes,
+        None => pad_chord_notes_with_slot(c.chord_slot(progression, slot)),
+    }
 }
 
 /// The displayed identity follows the same resolved chord as every voice.

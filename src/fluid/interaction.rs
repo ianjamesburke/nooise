@@ -883,6 +883,11 @@ pub(crate) enum PerformanceMode {
     Sections {
         leader: SectionLeader,
     },
+    /// Push the Harmony: `c` opens it for one move, Shift+`C` latches it
+    /// until Esc. Its home-row keys push the harmony instead of browsing.
+    Harmony {
+        latched: bool,
+    },
 }
 
 impl PerformanceMode {
@@ -900,7 +905,7 @@ impl PerformanceMode {
     pub(crate) fn preserves_holds(self) -> bool {
         match self {
             Self::Jump { .. } => false,
-            Self::Sections { .. } => true,
+            Self::Sections { .. } | Self::Harmony { .. } => true,
         }
     }
 }
@@ -1213,6 +1218,12 @@ pub(crate) enum Intent {
     ChooseSection(usize),
     /// `''`: queue the section that was current before the last landing.
     PreviousSection,
+    /// Open Push the Harmony for one move (`c`) or latched (Shift+`C`).
+    OpenHarmony {
+        latched: bool,
+    },
+    /// One Push the Harmony key: a move, undo, or release.
+    PushHarmony(super::HarmonyAction),
     /// Grab recent movement on the visible knob, phase-anchored to its
     /// nearest bar downbeat.
     GrabMotion(super::MotionDuration),
@@ -1368,8 +1379,9 @@ impl Intent {
             | Self::PlanMute
             | Self::GrabMotion(_)
             | Self::ChooseSection(_)
-            | Self::PreviousSection => &[ModeKind::Performance],
-            Self::OpenSectionLeader(_) => &[ModeKind::Browsing],
+            | Self::PreviousSection
+            | Self::PushHarmony(_) => &[ModeKind::Performance],
+            Self::OpenSectionLeader(_) | Self::OpenHarmony { .. } => &[ModeKind::Browsing],
         }
     }
 
@@ -1416,6 +1428,8 @@ impl Intent {
             | Self::OpenSectionLeader(_)
             | Self::ChooseSection(_)
             | Self::PreviousSection
+            | Self::OpenHarmony { .. }
+            | Self::PushHarmony(_)
             | Self::EnterLeadPlay
             | Self::PlayLeadTone { .. }
             | Self::NudgeLead { .. }
@@ -1545,6 +1559,9 @@ pub(crate) enum InteractionEffect {
     /// The recall leader's digit: queue that section, or cancel the queue
     /// when it is already the queued one. The kernel cannot see the queue.
     ToggleSectionQueue(usize),
+    /// One Push the Harmony key. The kernel cannot see the harmony, so the
+    /// executor resolves the move against the chord sounding now.
+    Harmony(super::HarmonyAction),
     /// Reset the active sequence steps on `Tab` (Pads to root, notes to rest).
     ClearSequence(Tab),
     ToggleTransport,
@@ -1999,6 +2016,11 @@ fn update_browsing(
                 leader,
             }));
         }
+        Intent::OpenHarmony { latched } => {
+            *next_mode = Some(InteractionMode::Performance(PerformanceMode::Harmony {
+                latched,
+            }));
+        }
         Intent::EnterLeadPlay => {
             // The Lead page is the instrument: entering from elsewhere lands
             // on it so the rows the nudges edit are in view.
@@ -2362,6 +2384,9 @@ fn update_performance(
             PerformanceMode::Sections { leader } => {
                 update_section_leader(*leader, intent, next_mode, effects);
             }
+            PerformanceMode::Harmony { latched } => {
+                update_harmony(*latched, intent, next_mode, effects);
+            }
         },
     }
 }
@@ -2390,6 +2415,28 @@ fn update_section_leader(
     };
     effects.extend(effect);
     *next_mode = Some(InteractionMode::Browsing);
+}
+
+/// Push the Harmony: each key pushes the harmony (or undoes, or releases it)
+/// for the next bar. One-shot entry returns to browsing after one key; the
+/// latched mode stays until Esc. Every key acts on a Press edge, and physical
+/// holds keep running.
+fn update_harmony(
+    latched: bool,
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    match intent {
+        Intent::Cancel => *next_mode = Some(InteractionMode::Browsing),
+        Intent::PushHarmony(action) => {
+            effects.push(InteractionEffect::Harmony(action));
+            if !latched {
+                *next_mode = Some(InteractionMode::Browsing);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// The Jump leader: `Space` plus a layer key restores that layer's cursor;
@@ -2615,6 +2662,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::ToggleKickBass => InteractionEffect::ToggleKickBass,
         Operation::ToggleBeatRepeat => InteractionEffect::ToggleBeatRepeat,
         Operation::Section(action) => InteractionEffect::Section(action),
+        Operation::Harmony(action) => InteractionEffect::Harmony(action),
         Operation::ClearSequence => {
             InteractionEffect::ClearSequence(palette.planned_tab.unwrap_or(Tab::Chords))
         }

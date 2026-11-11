@@ -10,16 +10,21 @@ use crate::synth::oscillator::PolyBlepSaw;
 /// Bass follows the same active progression slot as Pad/Arp. For Custom it
 /// reads that slot's root directly. Built-ins retain their authored Bass
 /// register/pedal and transpose only by an edited Root/Accidental delta.
+/// A pushed chord's root moves the line by its distance from the slot's own
+/// root, within a tritone, so the Bass stays in its authored register.
 pub(crate) fn bass_root_note(progression: usize, slot: usize, pad: &PadControls) -> i32 {
     let slot = slot % CHORD_SLOT_COUNT;
+    let slot_root = pad_chord_root_note(pad.chord_slot(progression, slot));
+    let root = pad
+        .held_at(slot)
+        .map_or(slot_root, |held| root_near(held.triad.root(), slot_root));
     match PROGRESSIONS.get(progression) {
         Some(built_in) => {
             let built_in_slot = slot % BUILTIN_PROGRESSION_CHORDS;
-            let shift = pad_chord_root_note(pad.chord_slot(progression, slot))
-                - pad_chord_root_note(&built_in.chords[built_in_slot].preset);
+            let shift = root - pad_chord_root_note(&built_in.chords[built_in_slot].preset);
             built_in.bass[built_in_slot] + shift
         }
-        None => pad_chord_root_note(&pad.chord_slots[slot]),
+        None => root,
     }
 }
 

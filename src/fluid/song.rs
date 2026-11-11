@@ -13,9 +13,10 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use super::push::{HeldChord, PushTarget, PushedHarmony};
 use super::range_epoch::{CURRENT_RANGE_EPOCH, DRUNKEN_WAVE_EPOCH, stale_modulation};
 use super::song_ids::{song_id_at, song_id_index};
-use super::voice::{TONAL_MAX_LOOP_STEPS, TonalSequenceState};
+use super::voice::{TONAL_MAX_LOOP_STEPS, TonalSequenceState, Triad, TriadQuality};
 use super::{
     AutomationState, CHORD_SLOT_COUNT, CLAP_STEP_COUNT, CUSTOM_TONAL_PHRASE_INDEX, ControlAddress,
     ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EditorMotionAddress, EditorMotionField,
@@ -63,6 +64,11 @@ const EDITOR_MOTION_RECORD: u8 = 12;
 const CHORD_OVERRIDES_RECORD: u8 = 13;
 const VAMP_RECORD: u8 = 14;
 const KICK_BASS_LATCH_RECORD: u8 = 15;
+/// Push the Harmony: version, the held chord (slot, root, quality, four
+/// notes) and a queued target. A queued move lands on the loaded song's
+/// first bar; undo history is never saved.
+const PUSH_HARMONY_RECORD: u8 = 16;
+const PUSH_HARMONY_VERSION: u8 = 1;
 const CHORD_OVERRIDES_VERSION: u8 = 2;
 const PLANNED_MUTE_TAG: u8 = 0;
 /// Relative Motion has an explicit reference; previous absolute sampled
@@ -99,6 +105,8 @@ pub(crate) struct SongState {
     pub(crate) muted: MuteState,
     pub(crate) planned: Option<PlannedAction>,
     pub(crate) vamp: Option<VampState>,
+    /// The pushed chord and any queued push target (`PUSH_HARMONY_RECORD`).
+    pub(crate) push: PushedHarmony,
     pub(crate) kick_bass_latched: bool,
     pub(crate) gestures: GestureState,
     pub(crate) drunken_phase_beat: f64,
@@ -113,6 +121,7 @@ impl SongState {
             muted: [false; TAB_COUNT],
             planned: None,
             vamp: None,
+            push: PushedHarmony::default(),
             kick_bass_latched: false,
             gestures: GestureState::default(),
             drunken_phase_beat: 0.0,
@@ -140,6 +149,7 @@ pub(crate) enum SongCodeError {
         kind: u8,
     },
     InvalidPlannedAction,
+    InvalidPushHarmony,
     DuplicateGesture {
         target: u8,
         kind: u8,
@@ -179,6 +189,7 @@ impl fmt::Display for SongCodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPlannedAction => write!(f, "song code has an invalid planned action"),
+            Self::InvalidPushHarmony => write!(f, "song code has an invalid pushed harmony"),
             Self::EvaluatedControls => write!(
                 f,
                 "cannot save temporary audio controls as an authored song"
@@ -267,7 +278,7 @@ pub(crate) fn encode_song_code_at_epoch(
     song: &SongState,
     epoch: u16,
 ) -> Result<String, SongCodeError> {
-    if song.controls.pad.evaluated_chords.is_some() {
+    if song.controls.pad.evaluated_chords.is_some() || song.controls.pad.held_chord.is_some() {
         return Err(SongCodeError::EvaluatedControls);
     }
     let mut bytes = Vec::new();
@@ -381,6 +392,13 @@ pub(crate) fn encode_song_code_at_epoch(
         payload.extend_from_slice(&vamp.end_beat.to_le_bytes());
         write_record(VAMP_RECORD, &payload, &mut bytes)?;
     }
+    if song.push.is_active() {
+        write_record(
+            PUSH_HARMONY_RECORD,
+            &write_push_harmony(&song.push)?,
+            &mut bytes,
+        )?;
+    }
     if song.kick_bass_latched {
         write_record(KICK_BASS_LATCH_RECORD, &[], &mut bytes)?;
     }
@@ -454,6 +472,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut editor_motion_record_seen = false;
     let mut planned_action_record_seen = false;
     let mut vamp_record_seen = false;
+    let mut push_record_seen = false;
     let mut lane_bypass = None;
     let mut epoch = 0;
     let mut chord_overrides_seen = false;
@@ -512,6 +531,13 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 }
                 vamp_record_seen = true;
                 song.vamp = Some(read_vamp(payload)?);
+            }
+            PUSH_HARMONY_RECORD => {
+                if push_record_seen {
+                    return Err(SongCodeError::InvalidPushHarmony);
+                }
+                push_record_seen = true;
+                song.push = read_push_harmony(payload)?;
             }
             RANGE_EPOCH_RECORD => epoch = Reader::new(payload).u16()?,
             MIDI_ROWS_RECORD => {
@@ -1526,6 +1552,90 @@ fn read_planned_action(bytes: &[u8]) -> Result<PlannedAction, SongCodeError> {
     Ok(PlannedAction::Mute { tab, target_beat })
 }
 
+const PUSH_NONE: u8 = 0;
+const PUSH_CHORD: u8 = 1;
+const PUSH_RELEASE: u8 = 2;
+
+fn write_push_harmony(push: &PushedHarmony) -> Result<Vec<u8>, SongCodeError> {
+    let mut out = vec![PUSH_HARMONY_VERSION];
+    match push.held {
+        Some(held) => {
+            if usize::from(held.slot) >= CHORD_SLOT_COUNT
+                || held.notes.iter().any(|note| !(0..=127).contains(note))
+            {
+                return Err(SongCodeError::InvalidPushHarmony);
+            }
+            out.extend_from_slice(&[
+                PUSH_CHORD,
+                held.slot,
+                held.triad.root() as u8,
+                held.triad.quality.tag(),
+            ]);
+            out.extend(held.notes.map(|note| note as u8));
+        }
+        None => out.push(PUSH_NONE),
+    }
+    match push.queued.map(|queued| queued.target) {
+        Some(PushTarget::Chord(triad)) => {
+            out.extend_from_slice(&[PUSH_CHORD, triad.root() as u8, triad.quality.tag()]);
+        }
+        Some(PushTarget::Release) => out.push(PUSH_RELEASE),
+        None => out.push(PUSH_NONE),
+    }
+    Ok(out)
+}
+
+fn read_push_harmony(bytes: &[u8]) -> Result<PushedHarmony, SongCodeError> {
+    let invalid = |_| SongCodeError::InvalidPushHarmony;
+    let mut reader = Reader::new(bytes);
+    if reader.u8().map_err(invalid)? != PUSH_HARMONY_VERSION {
+        return Err(SongCodeError::InvalidPushHarmony);
+    }
+    let triad = |reader: &mut Reader| -> Result<Triad, SongCodeError> {
+        let root = reader.u8().map_err(invalid)?;
+        let quality = TriadQuality::from_tag(reader.u8().map_err(invalid)?)
+            .ok_or(SongCodeError::InvalidPushHarmony)?;
+        if root >= 12 {
+            return Err(SongCodeError::InvalidPushHarmony);
+        }
+        Ok(Triad::new(i32::from(root), quality))
+    };
+    let held = match reader.u8().map_err(invalid)? {
+        PUSH_NONE => None,
+        PUSH_CHORD => {
+            let slot = reader.u8().map_err(invalid)?;
+            let triad = triad(&mut reader)?;
+            let mut notes = [0; 4];
+            for note in &mut notes {
+                *note = i32::from(reader.u8().map_err(invalid)?);
+            }
+            let ascending = notes.windows(2).all(|pair| pair[0] < pair[1]);
+            let spells = triad
+                .pitch_classes()
+                .iter()
+                .all(|pc| notes.iter().any(|note| note.rem_euclid(12) == *pc))
+                && notes
+                    .iter()
+                    .all(|note| triad.pitch_classes().contains(&note.rem_euclid(12)));
+            if usize::from(slot) >= CHORD_SLOT_COUNT || notes[3] > 127 || !ascending || !spells {
+                return Err(SongCodeError::InvalidPushHarmony);
+            }
+            Some(HeldChord { slot, triad, notes })
+        }
+        _ => return Err(SongCodeError::InvalidPushHarmony),
+    };
+    let queued = match reader.u8().map_err(invalid)? {
+        PUSH_NONE => None,
+        PUSH_CHORD => Some(PushTarget::Chord(triad(&mut reader)?)),
+        PUSH_RELEASE if held.is_some() => Some(PushTarget::Release),
+        _ => return Err(SongCodeError::InvalidPushHarmony),
+    };
+    if !reader.is_empty() || (held.is_none() && queued.is_none()) {
+        return Err(SongCodeError::InvalidPushHarmony);
+    }
+    Ok(PushedHarmony::restored(held, queued))
+}
+
 fn read_vamp(bytes: &[u8]) -> Result<VampState, SongCodeError> {
     let mut reader = Reader::new(bytes);
     let slot = reader
@@ -1570,6 +1680,57 @@ mod planned_action_codec_tests {
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
 
         assert_eq!(decoded.planned, song.planned);
+    }
+
+    #[test]
+    fn malformed_push_harmony_records_are_refused() {
+        let held_c = [PUSH_CHORD, 0, 0, 0, 43, 48, 52, 55];
+        let valid = [&[PUSH_HARMONY_VERSION][..], &held_c, &[PUSH_NONE]].concat();
+        let decoded = decode_song_code(&code_from_records(
+            CONTAINER_VERSION,
+            &[(PUSH_HARMONY_RECORD, &valid)],
+        ))
+        .unwrap();
+        assert_eq!(decoded.push.held.unwrap().notes, [43, 48, 52, 55]);
+        for payload in [
+            vec![],
+            [&[2][..], &held_c, &[PUSH_NONE]].concat(),
+            // Nothing held and nothing queued is not a push.
+            vec![PUSH_HARMONY_VERSION, PUSH_NONE, PUSH_NONE],
+            // A release with nothing held has nothing to release.
+            vec![PUSH_HARMONY_VERSION, PUSH_NONE, PUSH_RELEASE],
+            // Unknown quality tag, root out of range, slot out of range.
+            vec![PUSH_HARMONY_VERSION, PUSH_NONE, PUSH_CHORD, 0, 3],
+            vec![PUSH_HARMONY_VERSION, PUSH_NONE, PUSH_CHORD, 12, 0],
+            [
+                &[PUSH_HARMONY_VERSION, PUSH_CHORD, 16][..],
+                &held_c[2..],
+                &[PUSH_NONE],
+            ]
+            .concat(),
+            // Notes that do not spell the chord, or not ascending.
+            [
+                &[PUSH_HARMONY_VERSION][..],
+                &[PUSH_CHORD, 0, 0, 0, 43, 48, 52, 54],
+                &[PUSH_NONE],
+            ]
+            .concat(),
+            [
+                &[PUSH_HARMONY_VERSION][..],
+                &[PUSH_CHORD, 0, 0, 0, 48, 43, 52, 55],
+                &[PUSH_NONE],
+            ]
+            .concat(),
+            // Trailing bytes.
+            [&valid[..], &[0]].concat(),
+        ] {
+            let code = code_from_records(CONTAINER_VERSION, &[(PUSH_HARMONY_RECORD, &payload)]);
+            assert_eq!(
+                decode_song_code(&code).err(),
+                Some(SongCodeError::InvalidPushHarmony),
+                "{payload:?}"
+            );
+        }
     }
 
     #[test]

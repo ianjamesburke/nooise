@@ -26,6 +26,7 @@ pub(crate) enum KeyboardOwner {
     Envelope,
     PerformanceJump,
     PerformanceSections,
+    PerformanceHarmony,
     Lead,
     Help,
 }
@@ -40,6 +41,7 @@ impl KeyboardOwner {
             Self::Envelope => AutomationKind::Envelope.label(),
             Self::PerformanceJump => "JUMP",
             Self::PerformanceSections => "SECTIONS",
+            Self::PerformanceHarmony => "HARMONY",
             Self::Lead => "LEAD",
             Self::Help => "SHORTCUTS",
         }
@@ -178,6 +180,7 @@ pub(crate) struct UiViewModel<'a> {
     /// gesture) rather than the idle key-hint list, so the row can render with different emphasis.
     pub(crate) activity_live: bool,
     pub(crate) filled_sections: [bool; sections::SECTION_COUNT],
+    pub(crate) harmony: HarmonyView,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,6 +336,57 @@ pub(crate) enum PerformanceSurface {
     ChooseLayer,
     ChooseParameter { instrument: PerformanceInstrument },
     Sections { leader: SectionLeader },
+    Harmony { latched: bool },
+}
+
+/// Push the Harmony as the header and its overlay show it, in letter names
+/// under the Master Key.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HarmonyView {
+    /// The chord sounding now: the pushed one, or the progression's.
+    pub(crate) sounding: String,
+    /// Whether a pushed chord overrides the progression.
+    pub(crate) held: bool,
+    /// A move waiting for its bar: where it goes and the bar it lands on.
+    pub(crate) queued: Option<(String, f64)>,
+    /// What each `HARMONY_MOVES` key would produce from the current base.
+    pub(crate) previews: [String; 8],
+}
+
+impl HarmonyView {
+    fn project(session: &LiveSessionSnapshot, active_slot: usize) -> Self {
+        let pad = &session.controls.pad;
+        let progression = progression_index(pad.progression);
+        let shift = session.chord_labels().key.shift(progression);
+        let key = HomeKey::of_progression(progression);
+        let authored = authored_triad(pad, progression, active_slot);
+        let push = session.push;
+        let base = push.base(authored);
+        Self {
+            sounding: push.held.map_or_else(
+                || pad_chord_name(pad, progression, active_slot, session.chord_labels()),
+                |held| held.triad.name(shift),
+            ),
+            held: push.held.is_some(),
+            queued: push.queued.map(|queued| {
+                (
+                    match queued.target {
+                        PushTarget::Chord(triad) => triad.name(shift),
+                        PushTarget::Release => "progression".to_string(),
+                    },
+                    queued.land_beat,
+                )
+            }),
+            previews: HARMONY_MOVES
+                .each_ref()
+                .map(|row| row.harmony_move.apply(base, key).name(shift)),
+        }
+    }
+
+    /// Whether the header shows the push instead of the progression.
+    pub(crate) fn is_active(&self) -> bool {
+        self.held || self.queued.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -450,18 +504,20 @@ impl<'a> UiViewModel<'a> {
             presentation.notices,
             holding_gesture,
         );
+        let active_slot = session
+            .vamp
+            .filter(|vamp| vamp.is_active(telemetry.beat))
+            .map_or(telemetry.active_chord as usize, |vamp| {
+                usize::from(vamp.slot)
+            });
         let breadcrumb = breadcrumb(
             navigation,
             &session.controls,
             &session.muted,
             session.planned.map(PlannedAction::tab),
-            session
-                .vamp
-                .filter(|vamp| vamp.is_active(telemetry.beat))
-                .map_or(telemetry.active_chord as usize, |vamp| {
-                    usize::from(vamp.slot)
-                }),
+            active_slot,
         );
+        let harmony = HarmonyView::project(session, active_slot);
 
         let chord_title = match navigation.chord_drill {
             ChordDrill::Slot { slot, .. } => {
@@ -502,6 +558,7 @@ impl<'a> UiViewModel<'a> {
             activity,
             activity_live,
             filled_sections: presentation.filled_sections,
+            harmony,
         }
     }
 }
@@ -753,6 +810,9 @@ fn mode_surface<'a>(
         InteractionMode::Performance(PerformanceMode::Sections { leader }) => {
             ModeSurface::Performance(PerformanceSurface::Sections { leader: *leader })
         }
+        InteractionMode::Performance(PerformanceMode::Harmony { latched }) => {
+            ModeSurface::Performance(PerformanceSurface::Harmony { latched: *latched })
+        }
     }
 }
 
@@ -905,6 +965,9 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
         }
         InteractionMode::Performance(PerformanceMode::Sections { .. }) => {
             KeyboardOwner::PerformanceSections
+        }
+        InteractionMode::Performance(PerformanceMode::Harmony { .. }) => {
+            KeyboardOwner::PerformanceHarmony
         }
         InteractionMode::Lead(_) => KeyboardOwner::Lead,
         InteractionMode::Help => KeyboardOwner::Help,
@@ -1077,6 +1140,15 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
                 leader: SectionLeader::Store,
             }) => "SECTIONS · 1-9 store   Esc".to_string(),
             _ => unreachable!("sections owner requires a sections surface"),
+        },
+        KeyboardOwner::PerformanceHarmony => match mode {
+            ModeSurface::Performance(PerformanceSurface::Harmony { latched: true }) => {
+                "HARMONY · push   u undo   g release   Esc".to_string()
+            }
+            ModeSurface::Performance(PerformanceSurface::Harmony { latched: false }) => {
+                "HARMONY · one push   Esc".to_string()
+            }
+            _ => unreachable!("harmony owner requires a harmony surface"),
         },
         KeyboardOwner::Help => "SHORTCUTS · Esc: close".to_string(),
     }
@@ -1565,6 +1637,56 @@ mod tests {
         session.pending_section = None;
         let frame = render_model_with_session(&interaction, &session);
         assert!(frame.contains("SECTION␠1"), "{frame}");
+    }
+
+    /// The header names the pushed chord and the queued one with its bar
+    /// countdown, and the overlay previews every move, at the minimum frame.
+    #[test]
+    fn harmony_header_and_overlay_fit_the_minimum_frame() {
+        let mut session = session();
+        let mut push = PushedHarmony::default();
+        let key = HomeKey::of_progression(0);
+        let am = Triad::new(9, TriadQuality::Minor);
+        push.push(HarmonyMove::Relative, key, am, 0.5);
+        push.land([45, 48, 52, 57], 0);
+        push.push(HarmonyMove::FifthUp, key, am, 1.0);
+        session.push = push;
+        for latched in [true, false] {
+            let interaction = InteractionModel {
+                mode: InteractionMode::Performance(PerformanceMode::Harmony { latched }),
+                ..InteractionModel::default()
+            };
+            for (width, height) in [(46, 11), (80, 24)] {
+                let frame = render_model_with_session_at_size(
+                    &interaction,
+                    &session,
+                    TelemetryView {
+                        beat: 1.0,
+                        ..TelemetryView::default()
+                    },
+                    width,
+                    height,
+                );
+                if std::env::var_os("NOOISE_PRINT_STATUS_FRAMES").is_some() {
+                    println!("{width}x{height} harmony latched={latched}:\n{frame}");
+                }
+                // At the minimum frame the overlay covers the header and
+                // carries the same now/next line itself.
+                if height > 11 {
+                    let chords = frame.lines().find(|line| line.contains("CHORDS")).unwrap();
+                    assert!(chords.contains("C␠→␠G␠in␠1␠bar␠␠PUSH"), "{frame}");
+                }
+                for expected in [
+                    "now␠C␠→␠G␠next␠bar",
+                    "j␠step␠down␠F",
+                    "l␠lift",
+                    "a␠home",
+                    "u␠undo",
+                ] {
+                    assert!(frame.contains(expected), "missing {expected}: {frame}");
+                }
+            }
+        }
     }
 
     fn render_sections_leader(

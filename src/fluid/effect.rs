@@ -296,6 +296,7 @@ impl EffectExecutor {
             muted: snapshot.muted,
             planned: snapshot.planned.map(|action| action.rebased_at(beat)),
             vamp: snapshot.vamp.map(|vamp| vamp.rebased_at(beat)),
+            push: snapshot.push,
             kick_bass_latched: snapshot.kick_bass_latched,
             gestures: snapshot.gestures.snapshot_at(now_seconds),
             drunken_phase_beat: if snapshot
@@ -890,6 +891,21 @@ impl EffectExecutor {
                         generation: snapshot.generation,
                     };
                 }
+                if !self.session.audio_clock_active() && self.session.load().push.is_due(beat) {
+                    let snapshot = self.session.update(|snapshot| {
+                        let pad = &snapshot.controls.pad;
+                        let progression = progression_index(pad.progression);
+                        let slot = usize::from(
+                            sounding_chord(pad, beat, self.session.audio_phrase_start()).1,
+                        );
+                        let sounding = pad_chord_tones(pad, progression, slot);
+                        let sounding = snapshot.push.held.map_or(sounding, |held| held.notes);
+                        snapshot.push.land(sounding, slot);
+                    });
+                    acknowledgement = EffectAcknowledgement::Published {
+                        generation: snapshot.generation,
+                    };
+                }
                 if !self.session.audio_clock_active()
                     && let Some(vamp) = self.session.load().vamp
                     && vamp.is_due(beat)
@@ -1187,6 +1203,52 @@ impl EffectExecutor {
         })
     }
 
+    /// One Push the Harmony key: queue a move for the next bar (composing
+    /// with one already queued), undo, or hand back to the progression. Like
+    /// the vamp it plays over the song rather than editing it, so auto keeps
+    /// running and the MRU is untouched.
+    pub(crate) fn push_harmony(
+        &mut self,
+        action: HarmonyAction,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let beat = self.current_beat(beat);
+        let phrase_start = self.session.audio_phrase_start();
+        let mut outcome = PushOutcome::Nothing;
+        let mut shift = 0;
+        let snapshot = self.session.update(|snapshot| {
+            let pad = &snapshot.controls.pad;
+            let progression = progression_index(pad.progression);
+            let slot = match snapshot.vamp.filter(|vamp| vamp.is_active(beat)) {
+                Some(vamp) => usize::from(vamp.slot),
+                None => usize::from(sounding_chord(pad, beat, phrase_start).1),
+            };
+            let authored = authored_triad(pad, progression, slot);
+            shift = MasterKey::from_control(snapshot.controls.master.key).shift(progression);
+            outcome =
+                snapshot
+                    .push
+                    .act(action, HomeKey::of_progression(progression), authored, beat);
+        });
+        self.show_message(match outcome {
+            PushOutcome::Queued(PushTarget::Chord(triad)) => {
+                format!("Harmony → {} next bar", triad.name(shift))
+            }
+            PushOutcome::Queued(PushTarget::Release) => "Progression returns next bar".to_string(),
+            PushOutcome::Cancelled => "Push cancelled".to_string(),
+            PushOutcome::Nothing => match action {
+                HarmonyAction::Undo => "Nothing to undo".to_string(),
+                _ => "Harmony already follows the progression".to_string(),
+            },
+        });
+        Ok(match outcome {
+            PushOutcome::Nothing => EffectAcknowledgement::NoChange,
+            _ => EffectAcknowledgement::Published {
+                generation: snapshot.generation,
+            },
+        })
+    }
+
     pub(crate) fn clear_sequence(
         &mut self,
         tab: Tab,
@@ -1303,6 +1365,7 @@ impl EffectExecutor {
                 },
             });
             snapshot.vamp = snapshot.vamp.map(|vamp| VampState::start(0.0, vamp.slot));
+            snapshot.push = snapshot.push.restarted();
         });
         self.capture_history = CaptureHistory::default();
         self.phrase = LeadPhraseBuffer::default();
@@ -1583,6 +1646,7 @@ impl EffectExecutor {
             InteractionEffect::Section(action) => self.section_action(action),
             InteractionEffect::ToggleSectionQueue(index) => self.toggle_section_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
+            InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
             InteractionEffect::Quit => Ok(EffectAcknowledgement::QuitRequested),
@@ -1741,6 +1805,7 @@ impl EffectExecutor {
             InteractionEffect::Section(action) => self.section_action(action),
             InteractionEffect::ToggleSectionQueue(index) => self.toggle_section_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
+            InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::ToggleTransport => {
                 self.toggle_transport();
@@ -2273,15 +2338,8 @@ impl EffectExecutor {
                             message = "Chord vamp kept".to_string();
                         }
                     } else {
-                        let window = ChordWindow::requested(&snapshot.controls.pad);
-                        let interval =
-                            GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
-                                .interval_beats;
-                        let elapsed = (beat.max(0.0) - phrase_start).max(0.0);
-                        let k = (elapsed / interval).floor();
-                        let start_beat = (phrase_start + k * interval).max(0.0);
-                        let step = (k as usize) % window.count;
-                        let slot = window.slot(step) as u8;
+                        let (start_beat, slot) =
+                            sounding_chord(&snapshot.controls.pad, beat, phrase_start);
                         snapshot.vamp = Some(VampState::start(start_beat, slot));
                         snapshot.vamp_press_seconds = Some(now_seconds);
                         snapshot.vamp_latched = false;
@@ -2362,15 +2420,8 @@ impl EffectExecutor {
                             message = "Chord vamp kept".to_string();
                         }
                     } else {
-                        let window = ChordWindow::requested(&snapshot.controls.pad);
-                        let interval =
-                            GridSpec::new(snapshot.controls.pad.chord_bars * 4.0, 0.0, 0.0)
-                                .interval_beats;
-                        let elapsed = (beat.max(0.0) - phrase_start).max(0.0);
-                        let k = (elapsed / interval).floor();
-                        let start_beat = (phrase_start + k * interval).max(0.0);
-                        let step = (k as usize) % window.count;
-                        let slot = window.slot(step) as u8;
+                        let (start_beat, slot) =
+                            sounding_chord(&snapshot.controls.pad, beat, phrase_start);
                         snapshot.vamp = Some(VampState::start(start_beat, slot));
                         snapshot.vamp_press_seconds = None;
                         snapshot.vamp_latched = true;
@@ -2458,6 +2509,19 @@ impl EffectExecutor {
 /// Run an ordered effect list and stop at the first failure: every bridge
 /// executes its transition's effects in order, and none of them may attempt
 /// an effect after one has failed.
+/// The chord the progression sounds at `beat`, read from the published
+/// phrase start: its start beat and table slot. The UI side's estimate of the
+/// pad cursor, shared by the vamp and Push the Harmony.
+fn sounding_chord(pad: &PadControls, beat: f64, phrase_start: f64) -> (f64, u8) {
+    let window = ChordWindow::requested(pad);
+    let interval = GridSpec::new(pad.chord_bars * 4.0, 0.0, 0.0).interval_beats;
+    let elapsed = (beat.max(0.0) - phrase_start).max(0.0);
+    let k = (elapsed / interval).floor();
+    let start_beat = (phrase_start + k * interval).max(0.0);
+    let step = (k as usize) % window.count;
+    (start_beat, window.slot(step) as u8)
+}
+
 fn run_ordered<T>(
     effects: impl IntoIterator<Item = T>,
     mut execute: impl FnMut(T) -> Result<EffectAcknowledgement, EffectFailure>,

@@ -21,6 +21,7 @@ pub(crate) enum Operation {
     ChordNames(ChordNames),
     ClearSequence,
     Section(SectionAction),
+    Harmony(HarmonyAction),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,7 +114,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 51] = [
+    pub(crate) const ALL: [Self; 61] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -165,6 +166,16 @@ impl Operation {
         Self::Section(SectionAction::Next),
         Self::Section(SectionAction::Previous),
         Self::Section(SectionAction::Cancel),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::StepDown)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::StepUp)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::FifthDown)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::FifthUp)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::Relative)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::Parallel)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::LeadingTone)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::Home)),
+        Self::Harmony(HarmonyAction::Undo),
+        Self::Harmony(HarmonyAction::Release),
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -293,6 +304,48 @@ impl Operation {
                     SectionAction::Cancel => "keep playing current section",
                 },
             },
+            Self::Harmony(action) => OperationSpec {
+                operation: self,
+                label: match action {
+                    HarmonyAction::Move(HarmonyMove::StepDown) => "Harmony step down",
+                    HarmonyAction::Move(HarmonyMove::StepUp) => "Harmony step up",
+                    HarmonyAction::Move(HarmonyMove::FifthDown) => "Harmony resolve",
+                    HarmonyAction::Move(HarmonyMove::FifthUp) => "Harmony lift",
+                    HarmonyAction::Move(HarmonyMove::Relative) => "Harmony relative",
+                    HarmonyAction::Move(HarmonyMove::Parallel) => "Harmony parallel",
+                    HarmonyAction::Move(HarmonyMove::LeadingTone) => "Harmony leading tone",
+                    HarmonyAction::Move(HarmonyMove::Home) => "Harmony home",
+                    HarmonyAction::Undo => "Harmony undo",
+                    HarmonyAction::Release => "Harmony release",
+                },
+                aliases: match action {
+                    HarmonyAction::Move(HarmonyMove::StepDown) => &["push j", "push step down"],
+                    HarmonyAction::Move(HarmonyMove::StepUp) => &["push k", "push step up"],
+                    HarmonyAction::Move(HarmonyMove::FifthDown) => {
+                        &["push h", "down a fifth", "push resolve"]
+                    }
+                    HarmonyAction::Move(HarmonyMove::FifthUp) => {
+                        &["push l", "up a fifth", "push lift"]
+                    }
+                    HarmonyAction::Move(HarmonyMove::Relative) => &["push f", "relative swap"],
+                    HarmonyAction::Move(HarmonyMove::Parallel) => {
+                        &["push d", "major minor flip", "parallel flip"]
+                    }
+                    HarmonyAction::Move(HarmonyMove::LeadingTone) => {
+                        &["push s", "leading tone swap"]
+                    }
+                    HarmonyAction::Move(HarmonyMove::Home) => &["push a", "push home", "tonic"],
+                    HarmonyAction::Undo => &["push u", "push undo"],
+                    HarmonyAction::Release => &["push g", "push release", "back to progression"],
+                },
+                description: match action {
+                    HarmonyAction::Move(_) => {
+                        "push the harmony at the next bar (c then key; Shift+C stays)"
+                    }
+                    HarmonyAction::Undo => "walk back the last harmony push",
+                    HarmonyAction::Release => "return to the authored progression at the next bar",
+                },
+            },
             Self::ClearSequence => OperationSpec {
                 operation: self,
                 label: "Clear sequence",
@@ -324,6 +377,7 @@ impl Operation {
             | Self::ChordNames(_)
             | Self::ClearSequence
             | Self::Section(_)
+            | Self::Harmony(_)
             | Self::ToggleVamp
             | Self::ToggleKickBass
             | Self::ToggleBeatRepeat

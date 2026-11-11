@@ -695,6 +695,10 @@ pub(crate) struct FluidEngine {
     vamp_active: bool,
     pub(crate) vamp_landed_beat: Option<f64>,
     vamp_landed_at: Option<f64>,
+    /// Push the Harmony as this engine last read it from the session. The
+    /// audio clock lands a queued push on its bar, voicing it from the notes
+    /// the pad is sounding at that sample.
+    push: PushedHarmony,
     pub(crate) pad: PadEngine,
     pub(crate) perc: PercEngine,
     pub(crate) kick: KickEngine,
@@ -759,6 +763,11 @@ impl FluidEngine {
             initial_pad.chord_count = 1.0;
             initial_pad.chord_offset = f32::from(vamp.slot);
         }
+        if let Some(held) = live.push.held {
+            initial_pad.chord_count = 1.0;
+            initial_pad.chord_offset = f32::from(held.slot);
+            initial_pad.held_chord = Some(held);
+        }
         let plan_source = Arc::clone(&live);
         let mut plan = AutomationPlan::default();
         plan.rebuild(&plan_source.automation);
@@ -785,6 +794,7 @@ impl FluidEngine {
             vamp_active,
             vamp_landed_beat: None,
             vamp_landed_at: None,
+            push: live.push,
             pad: PadEngine::new_with_live_state(
                 sample_rate,
                 &initial_pad,
@@ -1114,6 +1124,7 @@ impl StereoEngine for FluidEngine {
         let mut timing = self.tempo.tick(self.effective.master.bpm, self.transport);
         self.advance_planned_mute(timing);
         self.advance_vamp(timing);
+        self.advance_push(timing);
         if self.beat_trigger.pop_swung(timing, 1.0, 0.0, 0.0) {
             self.telemetry
                 .publish_hit(MusicalHit::Beat, 1.0, NO_PITCH_CLASS);
@@ -1145,6 +1156,13 @@ impl StereoEngine for FluidEngine {
             self.effective.pad.chord_count = 1.0;
             self.effective.pad.chord_offset = f32::from(vamp.slot);
             timing.morph_phrase_start = Some(vamp.start_beat);
+        }
+        // A pushed chord overrides the progression the way a held vamp does:
+        // every chord follower stays on its slot and reads the pushed notes.
+        self.effective.pad.held_chord = self.push.held;
+        if let Some(held) = self.push.held {
+            self.effective.pad.chord_count = 1.0;
+            self.effective.pad.chord_offset = f32::from(held.slot);
         }
         let drop_gain =
             active_morph.map_or(1.0, |morph| morph.drop_gain_at(timing.beat, timing.bpm));
@@ -1464,6 +1482,10 @@ impl FluidEngine {
             window.count = 1;
             window.offset = usize::from(vamp.slot);
         }
+        if let Some(held) = self.push.held {
+            window.count = 1;
+            window.offset = usize::from(held.slot);
+        }
         self.pad
             .cursor
             .phrase_end_beat(window, pad.chord_bars * 4.0, self.tempo.beat)
@@ -1580,6 +1602,36 @@ impl FluidEngine {
                 self.reset_progression_phrase_anchors();
             }
             self.vamp_active = now_active;
+        }
+    }
+}
+
+impl FluidEngine {
+    /// Land a queued push on its bar line. The chord is voiced from the notes
+    /// the pad sounds at this sample, on the slot sounding now (a held chord
+    /// keeps its own), and published before this sample's chord tick reads
+    /// it. A UI writer racing the landing wins; the landing retries next
+    /// sample from the newer state.
+    fn advance_push(&mut self, timing: TimingContext) {
+        let push = self.session.load().push;
+        self.push = push;
+        if timing.transport != Transport::Playing || !push.is_due(timing.beat + GRID_BEAT_EPSILON) {
+            return;
+        }
+        let mut landed = push;
+        landed.land(self.pad.last_chord_notes, self.pad.cursor.slot());
+        if self
+            .session
+            .transact(|snapshot| {
+                if snapshot.push != push {
+                    return Err(());
+                }
+                snapshot.push = landed;
+                Ok(())
+            })
+            .is_ok()
+        {
+            self.push = landed;
         }
     }
 }
@@ -2901,5 +2953,159 @@ mod section_tests {
         }
         assert!(engine.section_gain > 0.99);
         assert_eq!(session.load().current_section, None);
+    }
+}
+
+#[cfg(test)]
+mod push_tests {
+    use super::*;
+
+    const RATE: f32 = 8000.0;
+
+    /// Song 1's shape at a quick tempo: A minor Drift, one chord per 4 bars.
+    fn engine() -> (LiveSession, FluidEngine, EffectExecutor) {
+        let mut song = SongState::default();
+        song.controls.master.bpm = 120.0;
+        engine_for(&song)
+    }
+
+    fn engine_for(song: &SongState) -> (LiveSession, FluidEngine, EffectExecutor) {
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(song));
+        let engine = FluidEngine::new(
+            RATE,
+            session.clone(),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        let effects = EffectExecutor::seeded(
+            session.clone(),
+            AutoControls::new(no_morph(), vec![], 64),
+            1,
+        );
+        (session, engine, effects)
+    }
+
+    fn play_until_beat(engine: &mut FluidEngine, beat: f64) {
+        while engine.tempo.beat < beat {
+            engine.next_stereo();
+        }
+    }
+
+    fn push(effects: &mut EffectExecutor, action: HarmonyAction) {
+        effects
+            .push_harmony(action, 0.0)
+            .expect("a push always executes");
+    }
+
+    #[test]
+    fn a_push_lands_on_the_next_bar_voiced_from_the_sounding_notes() {
+        let (session, mut engine, mut effects) = engine();
+        play_until_beat(&mut engine, 1.5);
+        let sounding = engine.pad.last_chord_notes;
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        play_until_beat(&mut engine, 3.99);
+        assert_eq!(session.load().push.held, None, "nothing lands mid-bar");
+        assert_eq!(engine.pad.last_chord_notes, sounding);
+        play_until_beat(&mut engine, 4.01);
+        let held = session.load().push.held.expect("lands on beat 4");
+        assert_eq!(held.triad.name(0), "C");
+        assert_eq!(held.slot, 0);
+        assert_eq!(held.notes, voice_lead(held.triad, sounding));
+        assert_eq!(engine.pad.last_chord_notes, held.notes, "the pad voices it");
+    }
+
+    #[test]
+    fn the_band_follows_the_pushed_chord_and_it_holds_past_chord_boundaries() {
+        let (session, mut engine, mut effects) = engine();
+        play_until_beat(&mut engine, 0.5);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        play_until_beat(&mut engine, 4.01);
+        let held = session.load().push.held.unwrap();
+        let pad = &engine.effective.pad;
+        assert_eq!(
+            pad_chord_tones(pad, 0, 0),
+            held.notes,
+            "Arp and Lead read it"
+        );
+        // Slot 0 is Am11 rooted on A1; C sits a minor third above, and the
+        // authored bass (A2) moves with it.
+        assert_eq!(bass_root_note(0, 0, pad), 48);
+        // The progression would move to slot 1 at beat 16; the push holds.
+        play_until_beat(&mut engine, 33.0);
+        assert_eq!(engine.pad.cursor.slot(), 0);
+        assert_eq!(engine.pad.last_chord_notes, held.notes);
+    }
+
+    #[test]
+    fn moves_compose_before_the_bar_and_release_hands_back_to_the_progression() {
+        let (session, mut engine, mut effects) = engine();
+        play_until_beat(&mut engine, 0.5);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::FifthUp));
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::FifthUp));
+        play_until_beat(&mut engine, 4.01);
+        assert_eq!(session.load().push.held.unwrap().triad.name(0), "Bdim");
+        play_until_beat(&mut engine, 5.0);
+        push(&mut effects, HarmonyAction::Release);
+        play_until_beat(&mut engine, 8.01);
+        assert_eq!(session.load().push.held, None);
+        // The authored chord on the held slot sounds again from the bar, and
+        // the progression moves on at its next chord boundary.
+        assert_eq!(
+            engine.pad.last_chord_notes,
+            pad_chord_tones(&engine.effective.pad, 0, 0)
+        );
+        play_until_beat(&mut engine, 16.01);
+        assert_eq!(engine.pad.cursor.slot(), 1);
+    }
+
+    #[test]
+    fn undo_before_the_bar_withdraws_and_after_it_walks_back() {
+        let (session, mut engine, mut effects) = engine();
+        play_until_beat(&mut engine, 0.5);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Parallel));
+        push(&mut effects, HarmonyAction::Undo);
+        assert_eq!(session.load().push.queued, None);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Parallel));
+        play_until_beat(&mut engine, 4.01);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        play_until_beat(&mut engine, 8.01);
+        assert_eq!(session.load().push.held.unwrap().triad.name(0), "F#m");
+        push(&mut effects, HarmonyAction::Undo);
+        play_until_beat(&mut engine, 12.01);
+        assert_eq!(session.load().push.held.unwrap().triad.name(0), "A");
+    }
+
+    #[test]
+    fn a_saved_push_restores_as_though_playback_never_stopped() {
+        let (session, mut engine, mut effects) = engine();
+        play_until_beat(&mut engine, 0.5);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::LeadingTone));
+        play_until_beat(&mut engine, 4.01);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::FifthDown));
+        let live = session.load();
+        let song = SongState {
+            controls: live.controls.clone(),
+            push: live.push,
+            ..SongState::default()
+        };
+        let code = encode_song_code(&song).unwrap();
+        let loaded = decode_song_code(&code).unwrap();
+        assert_eq!(loaded.push.held, live.push.held);
+        assert_eq!(
+            loaded
+                .push
+                .queued
+                .map(|queued| (queued.target, queued.land_beat)),
+            Some((live.push.queued.unwrap().target, 0.0)),
+            "the queued move lands on the loaded song's first bar"
+        );
+        let (session, mut engine, _) = engine_for(&loaded);
+        // The pushed chord sounds from the first sample, then the queued
+        // move lands on bar one.
+        assert_eq!(engine.pad.last_chord_notes, live.push.held.unwrap().notes);
+        engine.next_stereo();
+        let held = session.load().push.held.unwrap();
+        assert_eq!(held.triad.name(0), "Bb");
+        assert_eq!(engine.pad.last_chord_notes, held.notes);
     }
 }

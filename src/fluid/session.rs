@@ -48,6 +48,9 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) vamp_press_seconds: Option<f64>,
     /// Whether the vamp is latched hands-free (via a tap or `/vamp`) vs held. Live-only.
     pub(crate) vamp_latched: bool,
+    /// Push the Harmony: the pushed chord, a move waiting for its bar, and
+    /// the live-only undo history. The chord and queue persist in song codes.
+    pub(crate) push: PushedHarmony,
     /// Lead play-mode presses. Live-only: never written to a song code.
     pub(crate) lead_play: LeadPlayState,
     pub(crate) gestures: GestureState,
@@ -100,6 +103,7 @@ impl LiveSessionSnapshot {
             vamp: song.vamp,
             vamp_press_seconds: None,
             vamp_latched: song.vamp.is_some(),
+            push: song.push,
             lead_play: LeadPlayState::default(),
             gestures: song.gestures.restored(),
             drunken_phase_beat: song.drunken_phase_beat,
@@ -134,6 +138,7 @@ impl LiveSessionSnapshot {
             vamp: None,
             vamp_press_seconds: None,
             vamp_latched: false,
+            push: PushedHarmony::default(),
             lead_play: LeadPlayState::default(),
             gestures: GestureState::default(),
             drunken_phase_beat: 0.0,

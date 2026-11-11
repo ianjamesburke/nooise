@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use super::module::LayerModules;
+use super::push::HeldChord;
 use super::voice::{
     CUSTOM_PROGRESSION_INDEX, LeadPattern, PROGRESSIONS, SEQUENCE_STEP_COUNT, arp_generate_steps,
     arp_pattern_from_control, progression_index,
@@ -283,6 +284,9 @@ pub(crate) struct PadControls {
     pub(crate) chord_overrides: Arc<ChordOverrideSlots>,
     /// Rebuilt each audio evaluation; excluded from authored song state.
     pub(crate) evaluated_chords: Option<EvaluatedChords>,
+    /// The pushed chord (`LiveSessionSnapshot::push`) the engine overlays on
+    /// its slot each sample. Audio-only; authored controls never carry one.
+    pub(crate) held_chord: Option<HeldChord>,
     pub(crate) stereo_width: f32,
     pub(crate) detune: f32,
     pub(crate) octave_mix: f32,
@@ -308,6 +312,7 @@ impl Default for PadControls {
             }),
             chord_overrides: Arc::new([[None; CHORD_SLOT_COUNT]; PROGRESSIONS.len()]),
             evaluated_chords: None,
+            held_chord: None,
             stereo_width: 0.8,
             detune: 0.5,
             octave_mix: 0.5,
@@ -334,6 +339,13 @@ impl PadControls {
                 .unwrap_or(&authored.chords[slot % BUILTIN_PROGRESSION_CHORDS].preset),
             None => &self.chord_slots[slot],
         }
+    }
+
+    /// The pushed chord when it overrides `slot`.
+    pub(crate) fn held_at(&self, slot: usize) -> Option<&HeldChord> {
+        self.held_chord
+            .as_ref()
+            .filter(|held| usize::from(held.slot) == slot % CHORD_SLOT_COUNT)
     }
 
     /// Called before any audio automation setter. Resetting sixteen optional

@@ -208,7 +208,9 @@ impl LeadFollow {
     }
 
     pub(crate) fn has_source(self, pad: &PadControls, progression: usize, slot: usize) -> bool {
-        self == Self::Scale || !pad.chord_slot(progression, slot).is_rest()
+        self == Self::Scale
+            || pad.held_at(slot).is_some()
+            || !pad.chord_slot(progression, slot).is_rest()
     }
 
     pub(crate) fn label(self) -> &'static str {
