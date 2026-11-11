@@ -175,12 +175,16 @@ impl PaletteEntry {
 /// Duplicated placements (e.g. `pad.level` on both Master and Chords) collapse
 /// to the owning tab. Module slot rows are excluded as controls — a module is
 /// reached through its `Module` entry, which knows how to find or create it.
+/// The sixteen per-step chord Quality rows are excluded too: they crowded
+/// every chord and harmony search, and the chord builder (Enter on a step)
+/// still edits Quality.
 pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
     let mut entries: Vec<PaletteEntry> = Vec::new();
     for tab in Tab::all() {
         for (index_in_tab, spec) in tab_specs(tab).iter().enumerate() {
             if tab_owning_control(spec.id) == Some(tab)
                 && parse_module_slot_id(spec.id).is_none()
+                && !is_chord_quality_row(spec.id)
                 && !entries.iter().any(|e| e.id() == Some(spec.id))
             {
                 entries.push(PaletteEntry::Control {
@@ -206,6 +210,10 @@ pub(crate) fn palette_entries() -> Vec<PaletteEntry> {
     }
     entries.extend(Operation::ALL.into_iter().map(PaletteEntry::Operation));
     entries
+}
+
+fn is_chord_quality_row(id: &str) -> bool {
+    parse_chord_slot_id(id).is_some_and(|(_, field)| CHORD_FIELDS[field] == "quality")
 }
 
 #[cfg(test)]
@@ -575,4 +583,28 @@ pub(crate) fn fuzzy_score(query: &str, haystack: &str) -> Option<(i32, Vec<usize
     // Reward matching a larger fraction of the label.
     score += (needle.len() as i32) * 2;
     Some((score, hits))
+}
+
+#[cfg(test)]
+mod chord_quality_tests {
+    use super::*;
+
+    /// The per-step chord Quality rows stay out of `/`, so chord and harmony
+    /// searches are not buried; the row itself still exists for the chord
+    /// builder, and the other per-step rows stay searchable.
+    #[test]
+    fn chord_quality_rows_are_not_in_the_palette_but_still_exist() {
+        let entries = palette_entries();
+        for slot in 0..CHORD_SLOT_COUNT {
+            let quality = chord_slot_spec(slot, "quality").expect("the builder's Quality row");
+            assert!(!entries.iter().any(|entry| entry.id() == Some(quality.id)));
+            let degree = chord_slot_spec(slot, "degree").expect("the Root row");
+            assert!(entries.iter().any(|entry| entry.id() == Some(degree.id)));
+        }
+        let mut palette = PaletteState::new(Tab::Chords, &[], None);
+        for character in "quality".chars() {
+            palette.push_char(character);
+        }
+        assert!(palette.matches.is_empty());
+    }
 }
