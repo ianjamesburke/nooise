@@ -72,7 +72,9 @@ meaning. Each action is also a `/` operation (`/harmony lift`, `/push l`).
 A move lands on the next bar. A second move before that bar composes from the
 queued chord and keeps the bar, so `l l` is two fifths up. The pad voices the
 new triad from the notes it is sounding, each voice moving to a nearby chord
-tone, and slurs into it; the Bass follows the new root in its own register.
+tone, and changes exactly as an authored chord does: the new chord fades in
+over the pad Attack while the old one rings out over Release. The Bass
+follows the new root in its own register.
 While pushed, the progression is held on the sounding slot like a Vamp; `g`
 (or undoing past the first move) brings the authored chord back on the next
 bar and the progression moves on at its next chord boundary. The header reads

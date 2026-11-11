@@ -2997,6 +2997,109 @@ mod push_tests {
             .expect("a push always executes");
     }
 
+    /// What a chord change does to the pad, sampled from the first sample
+    /// of the change: the newest layer's envelope level at 0, 0.5, 2 and 5
+    /// seconds, how many layers start during the window, and the oldest
+    /// sounding layer's level at 2 s (the outgoing chord ringing out).
+    #[derive(Debug)]
+    struct ChangeProfile {
+        incoming: [f32; 4],
+        layers_started: usize,
+        outgoing_at_2s: f32,
+    }
+
+    fn newest_level(engine: &FluidEngine) -> f32 {
+        engine.pad.layers.last().map_or(0.0, |layer| {
+            layer
+                .tones
+                .iter()
+                .map(|tone| tone.stack.envelope.level())
+                .fold(0.0, f32::max)
+        })
+    }
+
+    /// Play to `beat` (one sample before the change), then profile 5 s.
+    fn profile_change(engine: &mut FluidEngine, beat: f64) -> ChangeProfile {
+        let before = engine.tempo.bpm / (60.0 * f64::from(RATE));
+        play_until_beat(engine, beat - 2.0 * before);
+        let notes = engine.pad.last_chord_notes;
+        while engine.pad.last_chord_notes == notes {
+            engine.next_stereo();
+        }
+        let mut incoming = [0.0; 4];
+        let mut layers_started = 0;
+        let mut last_newest = newest_level(engine);
+        let mut outgoing_at_2s = 0.0;
+        let marks = [0, RATE as usize / 2, 2 * RATE as usize, 5 * RATE as usize];
+        for sample in 0..=marks[3] {
+            if let Some(index) = marks.iter().position(|mark| *mark == sample) {
+                incoming[index] = newest_level(engine);
+            }
+            if sample == marks[2] && engine.pad.layers.len() > 1 {
+                let outgoing = &engine.pad.layers[engine.pad.layers.len() - 2];
+                outgoing_at_2s = outgoing.tones[0].stack.envelope.level();
+            }
+            engine.next_stereo();
+            // A fresh layer replaces the newest one: its level steps down.
+            let newest = newest_level(engine);
+            if newest + 0.01 < last_newest {
+                layers_started += 1;
+            }
+            last_newest = newest;
+        }
+        ChangeProfile {
+            incoming,
+            layers_started,
+            outgoing_at_2s,
+        }
+    }
+
+    #[test]
+    #[ignore = "diagnostic: prints authored vs pushed chord-change profiles"]
+    fn print_chord_change_profiles() {
+        let (_, mut authored, _) = engine();
+        println!("authored {:?}", profile_change(&mut authored, 16.0));
+        let (_, mut pushed, mut effects) = engine();
+        play_until_beat(&mut pushed, 20.5);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        println!("pushed {:?}", profile_change(&mut pushed, 24.0));
+    }
+
+    /// A pushed change, its release and an undo must each sound like the
+    /// progression's own chord change: the new chord fades in from silence
+    /// over the pad Attack, the old one rings out over Release, and nothing
+    /// re-strikes afterwards.
+    #[test]
+    fn a_pushed_change_sounds_like_an_authored_one() {
+        let (_, mut authored, _) = engine();
+        let reference = profile_change(&mut authored, 16.0);
+        let close = |profile: &ChangeProfile, what: &str| {
+            for (got, want) in profile.incoming.iter().zip(reference.incoming) {
+                assert!(
+                    (got - want).abs() < 0.02,
+                    "{what} jolts: {profile:?} vs {reference:?}"
+                );
+            }
+            assert_eq!(profile.layers_started, 0, "{what} re-strikes: {profile:?}");
+            assert!(
+                profile.outgoing_at_2s > 0.1,
+                "{what} cuts the old chord: {profile:?}"
+            );
+        };
+        let (_, mut engine, mut effects) = engine();
+        play_until_beat(&mut engine, 20.5);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        close(&profile_change(&mut engine, 24.0), "a push");
+        // Release, then undo back to the pushed chord, each on its own bar
+        // with no authored boundary (every 16 beats) inside the 5 s window.
+        play_until_beat(&mut engine, 32.5);
+        push(&mut effects, HarmonyAction::Release);
+        close(&profile_change(&mut engine, 36.0), "a release");
+        play_until_beat(&mut engine, 48.5);
+        push(&mut effects, HarmonyAction::Undo);
+        close(&profile_change(&mut engine, 52.0), "an undo");
+    }
+
     #[test]
     fn a_push_lands_on_the_next_bar_voiced_from_the_sounding_notes() {
         let (session, mut engine, mut effects) = engine();

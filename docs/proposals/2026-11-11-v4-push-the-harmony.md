@@ -102,7 +102,13 @@ Physical holds keep running through the mode, as with the section leaders.
   existing automation overlay). Pad, Arp and Lead read the pushed notes through
   `pad_chord_tones`, and every chord follower treats it as sounding (never a
   Rest). Bass moves its authored line by the root's distance within a tritone
-  (`root_near`), so it follows the new root in its own register. A pushed chord slurs in and sustains across chord boundaries.
+  (`root_near`), so it follows the new root in its own register. A pushed chord, its release and an undo change exactly as an authored Sound
+  step does (the incoming layer fades in from silence over the pad Attack, the
+  outgoing one rings out over Release), and a held chord sustains across
+  chord boundaries without re-striking. `a_pushed_change_sounds_like_an_authored_one`
+  compares the envelopes. The first mock slurred pushes in (the incoming layer
+  started at the level the pad held), which put the new pitch in at about
+  two thirds of full level at once: the jolt Ian heard.
 - Release (`g`, or undo back past the first move) lands on the next bar like a
   move: the held slot's authored chord sounds again and the progression moves
   on at its next chord boundary. This is the clean way back; the Vamp (`a` in
@@ -123,7 +129,7 @@ destination's own push state.
 
 - Smear (hold Space to glide a move over a whole bar) is not built. A real
   glide needs per-voice pitch glides in `PadLayer`, which does not exist; the
-  mock lands every move with the existing slur entry. Space keeps its Jump
+  mock lands every move through the authored chord-change path. Space keeps its Jump
   meaning.
 - Triads only: no sevenths or tensions on pushed chords, and no augmented
   quality (no home mode produces one).
@@ -139,8 +145,8 @@ destination's own push state.
 
 ## What only listening can confirm
 
-- Whether slurring each landing (no re-attack) reads as a smooth shift or as
-  a smear, with the default 6 s attack and 8 s release.
+- Whether the authored crossfade (6 s attack, 8 s release by default) makes
+  fast chained pushes feel responsive enough, or blur together.
 - Whether minimal voice leading keeps the pad's colour when the authored
   chord was a wide voicing (Am11 collapses to a close triad).
 - Whether the Bass register rule (within a tritone of the slot's root) sounds

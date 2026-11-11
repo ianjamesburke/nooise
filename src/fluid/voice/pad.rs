@@ -357,10 +357,11 @@ impl PadEngine {
         let held = c.held_at(self.cursor.slot()).copied();
         let held_changed = held != self.last_held;
         self.last_held = held;
-        // A pushed chord always sounds, and slurs in: the harmony shifts under
-        // the swell instead of re-attacking it.
+        // A pushed chord always sounds, and changes exactly as an authored
+        // Sound step does: the incoming layer fades in over Attack while the
+        // outgoing one rings out over Release.
         let is_rest = held.is_none() && definition.is_rest();
-        let is_slur = held.is_some() || definition.is_slur();
+        let is_slur = held.is_none() && definition.is_slur();
         let note_count = pad_note_count(c.chord_notes);
         let character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let character_changed = character != self.active_character;
