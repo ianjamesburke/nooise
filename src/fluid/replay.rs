@@ -5933,6 +5933,10 @@ fn holding_space_makes_the_home_row_push_the_harmony() {
         ('d', "A"),
         ('s', "F"),
         ('a', "Am"),
+        ('u', "F"),
+        ('m', "Em"),
+        ('i', "C"),
+        (',', "Dm"),
     ] {
         let pushed = replay_bar(
             &[

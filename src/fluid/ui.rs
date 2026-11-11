@@ -1357,9 +1357,10 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         &[
             &[
                 ("j / k", "step down/up"),
-                ("h / l", "fifth down/up"),
-                ("a", "home"),
+                ("u / i", "2 steps down/up"),
+                ("m / ,", "3 steps down/up"),
             ],
+            &[("h / l", "fifth down/up"), ("a", "home")],
             &[
                 ("f", "relative"),
                 ("d", "major/minor"),
@@ -1478,13 +1479,32 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: 
         .add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(Color::Rgb(205, 210, 222));
     let chord_style = Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD);
-    let half = |index: usize| -> Vec<Span<'static>> {
+    let index_of = |harmony_move: HarmonyMove| harmony_move as usize;
+    let half = |harmony_move: HarmonyMove| -> Vec<Span<'static>> {
+        let index = index_of(harmony_move);
         let row = &HARMONY_MOVES[index];
         vec![
             Span::styled(format!("{} ", row.key), key_style),
             Span::styled(format!("{:<10}", row.label), label_style),
             Span::styled(format!("{:<6}", harmony.previews[index]), chord_style),
         ]
+    };
+    // The step columns read as on a columnar keyboard: above, home, below.
+    let steps = |column: [HarmonyMove; 3]| -> Line<'static> {
+        Line::from(
+            column
+                .iter()
+                .flat_map(|harmony_move| {
+                    let index = index_of(*harmony_move);
+                    let row = &HARMONY_MOVES[index];
+                    [
+                        Span::styled(format!("{}", row.key), key_style),
+                        Span::styled(format!("{} ", row.label), label_style),
+                        Span::styled(format!("{:<6}", harmony.previews[index]), chord_style),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        )
     };
     let mut now = vec![
         Span::styled("now ", label_style),
@@ -1500,17 +1520,28 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: 
         format!("   quantize {}", harmony.quantize.label()),
         label_style,
     ));
-    let mut lines = vec![Line::from(now)];
+    let mut lines = vec![
+        Line::from(now),
+        steps([
+            HarmonyMove::StepDownTwo,
+            HarmonyMove::StepDown,
+            HarmonyMove::StepDownThree,
+        ]),
+        steps([
+            HarmonyMove::StepUpTwo,
+            HarmonyMove::StepUp,
+            HarmonyMove::StepUpThree,
+        ]),
+    ];
+    // Undo and how to close live in the footer, which stays visible.
     lines.extend(
-        [(0, 1), (2, 3), (4, 5), (6, 7)]
-            .map(|(left, right)| Line::from([half(left), half(right)].concat())),
+        [
+            (HarmonyMove::FifthDown, HarmonyMove::FifthUp),
+            (HarmonyMove::Relative, HarmonyMove::Parallel),
+            (HarmonyMove::LeadingTone, HarmonyMove::Home),
+        ]
+        .map(|(left, right)| Line::from([half(left), half(right)].concat())),
     );
-    lines.push(Line::from(vec![
-        Span::styled("\u{232b} ", key_style),
-        Span::styled("undo  ", label_style),
-        Span::styled(if held { "let Space go" } else { "Esc" }, key_style),
-        Span::styled(" close", label_style),
-    ]));
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
 }
 

@@ -356,7 +356,7 @@ pub(crate) struct HarmonyView {
     /// A move waiting for its bar: where it goes and the bar it lands on.
     pub(crate) queued: Option<(String, f64)>,
     /// What each `HARMONY_MOVES` key would produce from the current base.
-    pub(crate) previews: [String; 8],
+    pub(crate) previews: [String; HARMONY_MOVES.len()],
     /// Where moves land; the header counts down only when quantized.
     pub(crate) quantize: PushQuantize,
 }
@@ -1117,7 +1117,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
                 "HARMONY · push   \u{232b} undo   let Space go".to_string()
             }
             ModeSurface::Performance(PerformanceSurface::Harmony { held: false }) => {
-                "HARMONY · one push   Esc".to_string()
+                "HARMONY · one push   \u{232b} undo   Esc".to_string()
             }
             _ => unreachable!("harmony owner requires a harmony surface"),
         },
@@ -1651,7 +1651,10 @@ mod tests {
                 }
                 for expected in [
                     "now␠C␠→␠G␠␠␠quantize␠1␠bar",
-                    "j␠step␠down␠F",
+                    "u↓2␠Em",
+                    "j↓1␠F",
+                    "m↓3␠Dm",
+                    ",↑3␠C",
                     "l␠lift",
                     "a␠home",
                     "⌫␠undo",

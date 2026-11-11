@@ -114,7 +114,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 63] = [
+    pub(crate) const ALL: [Self; 67] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -173,6 +173,10 @@ impl Operation {
         Self::Harmony(HarmonyAction::Move(HarmonyMove::Parallel)),
         Self::Harmony(HarmonyAction::Move(HarmonyMove::LeadingTone)),
         Self::Harmony(HarmonyAction::Move(HarmonyMove::Home)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::StepDownTwo)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::StepDownThree)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::StepUpTwo)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::StepUpThree)),
         Self::Harmony(HarmonyAction::Undo),
         Self::HarmonyQuantize(PushQuantize::Off),
         Self::HarmonyQuantize(PushQuantize::OneBar),
@@ -311,6 +315,10 @@ impl Operation {
                     HarmonyAction::Move(HarmonyMove::Parallel) => "Harmony parallel",
                     HarmonyAction::Move(HarmonyMove::LeadingTone) => "Harmony leading tone",
                     HarmonyAction::Move(HarmonyMove::Home) => "Harmony home",
+                    HarmonyAction::Move(HarmonyMove::StepDownTwo) => "Harmony down 2 steps",
+                    HarmonyAction::Move(HarmonyMove::StepDownThree) => "Harmony down 3 steps",
+                    HarmonyAction::Move(HarmonyMove::StepUpTwo) => "Harmony up 2 steps",
+                    HarmonyAction::Move(HarmonyMove::StepUpThree) => "Harmony up 3 steps",
                     HarmonyAction::Undo => "Harmony undo",
                 },
                 aliases: match action {
@@ -330,6 +338,10 @@ impl Operation {
                         &["push s", "leading tone swap"]
                     }
                     HarmonyAction::Move(HarmonyMove::Home) => &["push a", "push home", "tonic"],
+                    HarmonyAction::Move(HarmonyMove::StepDownTwo) => &["push u", "down a third"],
+                    HarmonyAction::Move(HarmonyMove::StepDownThree) => &["push m", "down a fourth"],
+                    HarmonyAction::Move(HarmonyMove::StepUpTwo) => &["push i", "up a third"],
+                    HarmonyAction::Move(HarmonyMove::StepUpThree) => &["push comma", "up a fourth"],
                     HarmonyAction::Undo => &["push undo", "push backspace"],
                 },
                 description: match action {

@@ -166,6 +166,17 @@ impl HomeKey {
             .map_or(fallback, |degree| self.triad_on(degree).quality)
     }
 
+    /// `count` scale degrees below (`-1`) or above (`+1`) `root`: the first
+    /// step lands on the nearest degree that way, each further step on the
+    /// next degree.
+    fn steps(self, root: i32, direction: i32, count: usize) -> Triad {
+        let mut triad = self.step(root, direction);
+        for _ in 1..count {
+            triad = self.step(triad.root(), direction);
+        }
+        triad
+    }
+
     /// The nearest scale degree strictly below (`-1`) or above (`+1`) `root`.
     fn step(self, root: i32, direction: i32) -> Triad {
         let degree = self
@@ -192,9 +203,16 @@ pub(crate) enum HarmonyMove {
     Parallel,
     LeadingTone,
     Home,
+    StepDownTwo,
+    StepDownThree,
+    StepUpTwo,
+    StepUpThree,
 }
 
-/// One move, the home-row key that plays it, and the overlay's word for it.
+/// One move, the key that plays it, and the overlay's word for it. The step
+/// moves sit in two columns of a columnar keyboard: `u`/`j`/`m` go down 2, 1
+/// and 3 scale steps, and `i`/`k`/`,` go up 2, 1 and 3, so the row above and
+/// below the home key is a bigger step the same way.
 pub(crate) struct HarmonyMoveRow {
     pub(crate) harmony_move: HarmonyMove,
     pub(crate) key: char,
@@ -203,16 +221,16 @@ pub(crate) struct HarmonyMoveRow {
 
 /// The single key table for the moves, in `HarmonyMove` discriminant order
 /// (test-enforced). The runtime key map, the overlay and the help read it.
-pub(crate) const HARMONY_MOVES: [HarmonyMoveRow; 8] = [
+pub(crate) const HARMONY_MOVES: [HarmonyMoveRow; 12] = [
     HarmonyMoveRow {
         harmony_move: HarmonyMove::StepDown,
         key: 'j',
-        label: "step down",
+        label: "↓1",
     },
     HarmonyMoveRow {
         harmony_move: HarmonyMove::StepUp,
         key: 'k',
-        label: "step up",
+        label: "↑1",
     },
     HarmonyMoveRow {
         harmony_move: HarmonyMove::FifthDown,
@@ -244,6 +262,26 @@ pub(crate) const HARMONY_MOVES: [HarmonyMoveRow; 8] = [
         key: 'a',
         label: "home",
     },
+    HarmonyMoveRow {
+        harmony_move: HarmonyMove::StepDownTwo,
+        key: 'u',
+        label: "↓2",
+    },
+    HarmonyMoveRow {
+        harmony_move: HarmonyMove::StepDownThree,
+        key: 'm',
+        label: "↓3",
+    },
+    HarmonyMoveRow {
+        harmony_move: HarmonyMove::StepUpTwo,
+        key: 'i',
+        label: "↑2",
+    },
+    HarmonyMoveRow {
+        harmony_move: HarmonyMove::StepUpThree,
+        key: ',',
+        label: "↑3",
+    },
 ];
 
 impl HarmonyMove {
@@ -266,8 +304,12 @@ impl HarmonyMove {
     pub(crate) fn apply(self, from: Triad, key: HomeKey) -> Triad {
         let root = from.root();
         match self {
-            Self::StepDown => key.step(root, -1),
-            Self::StepUp => key.step(root, 1),
+            Self::StepDown => key.steps(root, -1, 1),
+            Self::StepUp => key.steps(root, 1, 1),
+            Self::StepDownTwo => key.steps(root, -1, 2),
+            Self::StepDownThree => key.steps(root, -1, 3),
+            Self::StepUpTwo => key.steps(root, 1, 2),
+            Self::StepUpThree => key.steps(root, 1, 3),
             Self::FifthDown => Triad::new(root - 7, key.quality_on(root - 7, from.quality)),
             Self::FifthUp => Triad::new(root + 7, key.quality_on(root + 7, from.quality)),
             Self::Parallel => match from.quality {
@@ -364,17 +406,14 @@ mod tests {
     fn the_key_table_is_in_move_order_with_distinct_home_row_keys() {
         for (index, row) in HARMONY_MOVES.iter().enumerate() {
             assert_eq!(row.harmony_move as usize, index);
-            assert!(
-                "asdfhjkl".contains(row.key),
-                "{} is off the home row",
-                row.key
-            );
+            // The home row plus the rows above and below the step columns.
+            assert!("asdfhjkluim,".contains(row.key), "{} is unplanned", row.key);
             assert_eq!(HarmonyMove::from_key(row.key), Some(row.harmony_move));
         }
         let mut keys: Vec<char> = HARMONY_MOVES.iter().map(|row| row.key).collect();
         keys.sort_unstable();
         keys.dedup();
-        assert_eq!(keys.len(), 8);
+        assert_eq!(keys.len(), HARMONY_MOVES.len());
     }
 
     #[test]
@@ -388,6 +427,10 @@ mod tests {
             (HarmonyMove::Parallel, "A"),
             (HarmonyMove::LeadingTone, "F"),
             (HarmonyMove::Home, "Am"),
+            (HarmonyMove::StepDownTwo, "F"),
+            (HarmonyMove::StepDownThree, "Em"),
+            (HarmonyMove::StepUpTwo, "C"),
+            (HarmonyMove::StepUpThree, "Dm"),
         ];
         for (harmony_move, name) in expected {
             assert_eq!(
@@ -460,6 +503,41 @@ mod tests {
             for degree in (0..7).rev() {
                 triad = HarmonyMove::StepDown.apply(triad, key);
                 assert_eq!(triad, key.triad_on(degree), "{mode:?} down to {degree}");
+            }
+        }
+    }
+
+    /// A bigger step is the same number of single steps, in every mode.
+    #[test]
+    fn interval_steps_are_repeated_single_steps() {
+        for mode in [
+            HomeMode::Major,
+            HomeMode::Minor,
+            HomeMode::Dorian,
+            HomeMode::Phrygian,
+            HomeMode::Mixolydian,
+        ] {
+            let key = HomeKey::new(5, mode);
+            for root in 0..12 {
+                let from = Triad::new(root, TriadQuality::Minor);
+                let twice = |single: HarmonyMove| single.apply(single.apply(from, key), key);
+                let thrice = |single: HarmonyMove| single.apply(twice(single), key);
+                assert_eq!(
+                    HarmonyMove::StepDownTwo.apply(from, key),
+                    twice(HarmonyMove::StepDown)
+                );
+                assert_eq!(
+                    HarmonyMove::StepUpTwo.apply(from, key),
+                    twice(HarmonyMove::StepUp)
+                );
+                assert_eq!(
+                    HarmonyMove::StepDownThree.apply(from, key),
+                    thrice(HarmonyMove::StepDown)
+                );
+                assert_eq!(
+                    HarmonyMove::StepUpThree.apply(from, key),
+                    thrice(HarmonyMove::StepUp)
+                );
             }
         }
     }
@@ -551,7 +629,8 @@ mod tests {
         let mut triad = am();
         // A long deterministic walk through every move.
         for step in 0..400 {
-            let harmony_move = HARMONY_MOVES[(step * 5 + step / 7) % 8].harmony_move;
+            let harmony_move =
+                HARMONY_MOVES[(step * 5 + step / 7) % HARMONY_MOVES.len()].harmony_move;
             triad = harmony_move.apply(triad, key);
             let next = voice_lead(triad, notes);
             for pc in triad.pitch_classes() {
