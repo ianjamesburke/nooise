@@ -1505,7 +1505,7 @@ mod tests {
                         lanes,
                         &[],
                         (spec.get)(&song.controls),
-                        ModContext::lfo_only(f64::from(step) / 100.0),
+                        ModContext::at(f64::from(step) / 100.0),
                     )
                 })
                 .fold((f32::MAX, f32::MIN), |(lo, hi), hz| {
@@ -2193,7 +2193,7 @@ mod tests {
                     lanes,
                     &[],
                     controls.master.level,
-                    ModContext::lfo_only(beat),
+                    ModContext::at(beat),
                 );
                 let expected_effective = if enabled {
                     (0.6 + amount * lanes.first().map_or(0.0, |lane| lane.wave_at(beat)))

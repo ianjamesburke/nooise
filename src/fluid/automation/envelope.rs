@@ -23,26 +23,24 @@ const DEFAULT_ENV_DECAY_BEATS: f32 = 4.0;
 // ============================================================
 
 /// What re-triggers a one-shot envelope. `EveryBeats` cycles on a musical grid,
-/// `OnKick` fires on the Kick's authored hit steps, and `Once` is the set-and-forget macro that
+/// and `Once` is the set-and-forget macro that
 /// sweeps a single time from song start.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum EnvTrigger {
     EveryBeats(f32),
-    OnKick,
     Once,
 }
 
 impl EnvTrigger {
     /// Ordered presets the Trigger field cycles through, folding the every-N
     /// interval choices and the macro one-shot into one discrete field.
-    const CYCLE: [EnvTrigger; 8] = [
+    const CYCLE: [EnvTrigger; 7] = [
         Self::EveryBeats(1.0),
         Self::EveryBeats(2.0),
         Self::EveryBeats(4.0),
         Self::EveryBeats(8.0),
         Self::EveryBeats(16.0),
         Self::EveryBeats(32.0),
-        Self::OnKick,
         Self::Once,
     ];
 
@@ -61,7 +59,6 @@ impl EnvTrigger {
     fn label(self) -> String {
         match self {
             Self::EveryBeats(n) => format!("every {n:.0} beats"),
-            Self::OnKick => "on kick".to_string(),
             Self::Once => "once (macro)".to_string(),
         }
     }
@@ -227,23 +224,6 @@ impl EnvelopeRoute {
                     Some(ctx.beat as f32)
                 }
             }
-            EnvTrigger::OnKick => {
-                // Walk back at most one pattern cycle to the latest grid slot
-                // whose step is a hit, numbered as the Kick numbers them.
-                let interval = f64::from(ctx.kick_interval_beats.max(1.0 / 64.0));
-                let offset = f64::from(ctx.kick_offset_beats);
-                let steps = i64::from(ctx.kick_steps.max(1));
-                let slot = ((ctx.beat - offset) / interval + 1e-9).floor() as i64;
-                (0..steps).find_map(|back| {
-                    let candidate = slot - back;
-                    let last = offset + candidate as f64 * interval;
-                    if last < -1e-9 {
-                        return Some(None);
-                    }
-                    let step = candidate.rem_euclid(steps) as u32;
-                    (ctx.kick_hits & (1 << step) != 0).then_some(Some((ctx.beat - last) as f32))
-                })?
-            }
         }
     }
 
@@ -274,7 +254,6 @@ impl EnvelopeRoute {
     pub(crate) fn window_beats(&self) -> f32 {
         match self.trigger {
             EnvTrigger::EveryBeats(n) => n.max(ENV_BEATS_STEP),
-            EnvTrigger::OnKick => self.attack_beats + self.decay_beats.max(ENV_BEATS_STEP),
             EnvTrigger::Once => (self.attack_beats + self.decay_beats).max(ENV_BEATS_STEP),
         }
     }

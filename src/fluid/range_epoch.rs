@@ -15,7 +15,10 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = PAD_EIGHTH_BEAT_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = ON_KICK_RETIRED_EPOCH;
+/// The On Kick envelope trigger was retired, so the Trigger field's dial
+/// lost a choice and every Motion position on it means another trigger.
+pub(crate) const ON_KICK_RETIRED_EPOCH: u16 = 16;
 pub(crate) const PAD_EIGHTH_BEAT_EPOCH: u16 = 15;
 /// Rhythm moved out of the chord `degree` sentinels into a `gate` row, so the
 /// degree dial narrowed from `-9..=7` to `-7..=7`.
@@ -42,6 +45,8 @@ enum RangeTarget {
         family: Family,
         field: ModuleSlotField,
     },
+    /// The Trigger field of any envelope, swept by editor Motion.
+    EnvelopeTrigger,
 }
 
 /// One dial whose range changed at `epoch`.
@@ -287,6 +292,12 @@ const RANGE_CHANGES: &[RangeChange] = &[
         epoch: PAD_EIGHTH_BEAT_EPOCH,
         target: RangeTarget::Control("pad.chord_bars"),
     },
+    // On Kick left the envelope Trigger choices (Every 1..32 beats, On Kick,
+    // Once became Every 1..32 beats, Once).
+    RangeChange {
+        epoch: ON_KICK_RETIRED_EPOCH,
+        target: RangeTarget::EnvelopeTrigger,
+    },
 ];
 
 impl RangeChange {
@@ -298,6 +309,7 @@ impl RangeChange {
                 .is_some_and(|(slot, slot_field)| {
                     slot_field == field && slot.kind().is_some_and(|kind| kind.family == family)
                 }),
+            RangeTarget::EnvelopeTrigger => false,
         }
     }
 }
@@ -306,6 +318,13 @@ impl RangeChange {
 /// changed since, or `None` when the code sweeps nothing that moved.
 pub(crate) fn stale_modulation(song: &SongState, epoch: u16) -> Option<&'static str> {
     for change in RANGE_CHANGES.iter().filter(|change| change.epoch > epoch) {
+        if matches!(change.target, RangeTarget::EnvelopeTrigger)
+            && let Some(target) = song.automation.editor_captures.keys().find(|target| {
+                target.target == EditorMotionField::Envelope(super::automation::EnvField::Trigger)
+            })
+        {
+            return Some(target.control.id());
+        }
         let mut modulated = song
             .automation
             .routes()
@@ -534,6 +553,39 @@ mod tests {
             decode_song_code(&stale).err(),
             Some(SongCodeError::StaleRange("pad.chord1_accidental"))
         );
+    }
+
+    #[test]
+    fn older_motion_on_an_envelope_trigger_is_refused_after_on_kick_left() {
+        let address = ControlAddress::new("master.level");
+        let mut song = SongState::default();
+        song.automation.open_or_create_envelope(address);
+        song.automation.close_editor();
+        song.automation.editor_captures.insert(
+            EditorMotionAddress {
+                control: address,
+                lane_index: 0,
+                target: EditorMotionField::Envelope(super::super::automation::EnvField::Trigger),
+            },
+            super::super::CaptureClip {
+                duration: super::super::MotionDuration::Beats4,
+                data: super::super::MotionData::Absolute {
+                    events: vec![super::super::MotionEvent {
+                        tick: 0,
+                        position: u16::MAX,
+                    }],
+                },
+                origin: 0.0,
+                launch: 0.0,
+                enabled: true,
+            },
+        );
+        let stale = encode_song_code_at_epoch(&song, ON_KICK_RETIRED_EPOCH - 1).unwrap();
+        assert_eq!(
+            decode_song_code(&stale).err(),
+            Some(SongCodeError::StaleRange("master.level"))
+        );
+        assert!(decode_song_code(&encode_song_code(&song).unwrap()).is_ok());
     }
 
     #[test]

@@ -296,13 +296,7 @@ mod tests {
         for tick in 0..1024 {
             let beat = tick as f64 * 0.25 + 0.125;
             let mut controls = snapshot.controls.pad.clone();
-            let context = ModContext {
-                beat,
-                kick_interval_beats: 1.0,
-                kick_offset_beats: 0.0,
-                kick_hits: u16::MAX,
-                kick_steps: 1,
-            };
+            let context = ModContext { beat };
             controls.level = modulated_control_value_full(
                 spec_by_id(target.id).unwrap(),
                 &[route],
@@ -366,13 +360,7 @@ mod tests {
                 &[route],
                 &[],
                 base,
-                ModContext {
-                    beat,
-                    kick_interval_beats: 1.0,
-                    kick_offset_beats: 0.0,
-                    kick_hits: u16::MAX,
-                    kick_steps: 1,
-                },
+                ModContext { beat },
             );
             let wet = chopped.next(&controls, MasterKey::Home, timing);
             assert_eq!(reference.layers.len(), chopped.layers.len());
@@ -505,13 +493,7 @@ mod tests {
             .unwrap();
         let address = ControlAddress::new(target.id);
         let route = snapshot.automation.route(address).unwrap();
-        let context = |beat| ModContext {
-            beat,
-            kick_interval_beats: 2.0,
-            kick_offset_beats: 0.5,
-            kick_hits: u16::MAX,
-            kick_steps: 1,
-        };
+        let context = |beat| ModContext { beat };
         let spec = spec_by_id(target.id).unwrap();
         let value = |beat| {
             modulated_control_value_full(

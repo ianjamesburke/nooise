@@ -136,7 +136,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             },
             cursor_visible: view.cursor_visible,
         },
-        mod_ctx: ModContext::new(view.telemetry.beat, controls),
+        mod_ctx: ModContext::at(view.telemetry.beat),
         active_slot: active_vamp.map_or(view.telemetry.active_chord as usize, |vamp| {
             usize::from(vamp.slot)
         }),
@@ -1996,13 +1996,7 @@ mod motion_render_tests {
                 entry: None,
                 cursor_visible: true,
             },
-            mod_ctx: ModContext {
-                beat: 3.0,
-                kick_interval_beats: 1.0,
-                kick_offset_beats: 0.0,
-                kick_hits: u16::MAX,
-                kick_steps: 1,
-            },
+            mod_ctx: ModContext { beat: 3.0 },
             active_slot: 0,
             bar_w: 12,
         });

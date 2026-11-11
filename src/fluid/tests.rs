@@ -3539,7 +3539,7 @@ fn envelope_lane_shows_negative_amount_rising_from_below_neutral() {
         amount: -0.5,
         attack_beats: 0.0,
         decay_beats: 1.0,
-        trigger: EnvTrigger::OnKick,
+        trigger: EnvTrigger::EveryBeats(1.0),
     };
     let heights = |amount| {
         let route = EnvelopeRoute {
@@ -7685,13 +7685,7 @@ fn lfo_shape(shape: LfoShape) -> LfoRoute {
 }
 
 fn env_ctx(beat: f64) -> ModContext {
-    ModContext {
-        beat,
-        kick_interval_beats: 1.0,
-        kick_offset_beats: 0.0,
-        kick_hits: u16::MAX,
-        kick_steps: 1,
-    }
+    ModContext { beat }
 }
 
 #[test]
@@ -8125,51 +8119,6 @@ fn envelope_every_n_beats_retriggers() {
 }
 
 #[test]
-fn envelope_on_kick_tracks_the_kick_grid() {
-    let env = EnvelopeRoute {
-        enabled: true,
-        amount: 1.0,
-        attack_beats: 0.0,
-        decay_beats: 1.0,
-        trigger: EnvTrigger::OnKick,
-    };
-    let ctx = |beat: f64| ModContext {
-        beat,
-        kick_interval_beats: 2.0,
-        kick_offset_beats: 0.0,
-        kick_hits: u16::MAX,
-        kick_steps: 1,
-    };
-    // Kicks land on beats 0, 2, 4, ...; the one-shot peaks right at each hit.
-    assert_near(env.level_at(ctx(2.0)), 1.0);
-    assert_near(env.level_at(ctx(2.5)), 0.5);
-    assert_near(env.level_at(ctx(4.0)), 1.0);
-}
-
-#[test]
-fn envelope_on_kick_fires_on_hit_steps_not_every_grid_slot() {
-    let env = EnvelopeRoute {
-        enabled: true,
-        amount: 1.0,
-        attack_beats: 0.0,
-        decay_beats: 1.0,
-        trigger: EnvTrigger::OnKick,
-    };
-    // The fresh Kick: steps 1 and 5 of eight at 0.25 beats, a hit per beat.
-    let controls = FluidControls::default();
-    let ctx = |beat: f64| ModContext::new(beat, &controls);
-    assert_near(env.level_at(ctx(1.0)), 1.0);
-    assert_near(env.level_at(ctx(1.5)), 0.5);
-    assert_near(env.level_at(ctx(1.75)), 0.25);
-    assert_near(env.level_at(ctx(2.0)), 1.0);
-
-    // An all-rest pattern never fires.
-    let mut silent = FluidControls::default();
-    silent.kick.steps = [0.0; KICK_STEP_COUNT];
-    assert_near(env.level_at(ModContext::new(3.3, &silent)), 0.0);
-}
-
-#[test]
 fn fresh_kick_and_clap_play_beats_and_backbeats_on_a_sixteenth_grid() {
     let controls = FluidControls::default();
     assert_eq!(
@@ -8244,7 +8193,7 @@ fn close_editor_preserves_zero_amount_envelope() {
         enabled: true,
         attack_beats: 0.75,
         decay_beats: 2.5,
-        trigger: EnvTrigger::OnKick,
+        trigger: EnvTrigger::Once,
         ..EnvelopeRoute::default()
     };
     *automation.open_or_create_envelope(address) = authored;
@@ -8446,7 +8395,7 @@ fn silent_lfo_and_envelope_render_the_same_as_no_automation() {
     let address = ControlAddress::new("master.level");
     let mut neutral = AutomationState::default();
     neutral.open_or_create(address).shape = LfoShape::Steps;
-    neutral.open_or_create_envelope(address).trigger = EnvTrigger::OnKick;
+    neutral.open_or_create_envelope(address).trigger = EnvTrigger::Once;
     neutral.close_editor();
     let mut dry = engine_for(FluidControls::default(), AutomationState::default());
     let mut silent = engine_for(FluidControls::default(), neutral);
@@ -9110,7 +9059,7 @@ fn song_code_round_trips_envelope_routes() {
             amount: 0.6,
             attack_beats: 1.5,
             decay_beats: 3.0,
-            trigger: EnvTrigger::OnKick,
+            trigger: EnvTrigger::Once,
             enabled: true,
         },
     );
@@ -9129,7 +9078,7 @@ fn song_code_round_trips_envelope_routes() {
     assert_quantized(env.amount, 0.6);
     assert_close(env.attack_beats, 1.5);
     assert_close(env.decay_beats, 3.0);
-    assert_eq!(env.trigger, EnvTrigger::OnKick);
+    assert_eq!(env.trigger, EnvTrigger::Once);
 }
 
 #[test]
