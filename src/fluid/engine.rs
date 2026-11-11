@@ -3476,4 +3476,36 @@ mod push_tests {
         let landed = session.load().push.looping.expect("the state's loop");
         assert!(same(&landed, &looping), "{landed:?}");
     }
+
+    /// Mode sets the home pushes move in and nothing else: the sounding
+    /// pushed chord and the progression stay exactly as they were, and only
+    /// the next move reads the new mode.
+    #[test]
+    fn mode_moves_later_pushes_but_never_the_sounding_chord_or_progression() {
+        let (session, mut engine, mut effects) = engine();
+        play_until_beat(&mut engine, 0.5);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        play_until_beat(&mut engine, 4.5);
+        let before = session.load();
+        let held = before.push.held.unwrap();
+        session.update(|s| s.controls.master.mode = 3.0); // Dorian
+        play_until_beat(&mut engine, 7.5);
+        let after = session.load();
+        assert_eq!(after.push.held, Some(held));
+        assert_eq!(engine.pad.last_chord_notes, held.notes);
+        assert_eq!(
+            after.controls.pad.progression,
+            before.controls.pad.progression
+        );
+        for slot in 0..CHORD_SLOT_COUNT {
+            assert_eq!(
+                after.controls.pad.chord_slot(0, slot).values(),
+                before.controls.pad.chord_slot(0, slot).values()
+            );
+        }
+        // A step up from C: D minor in A minor, D major in A Dorian.
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::StepUp));
+        play_until_beat(&mut engine, 8.5);
+        assert_eq!(session.load().push.held.unwrap().triad.name(0), "D");
+    }
 }

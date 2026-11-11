@@ -2641,6 +2641,14 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::State(action) => InteractionEffect::State(action),
         Operation::Harmony(action) => InteractionEffect::Harmony(action),
         Operation::HarmonyQuantize(quantize) => InteractionEffect::SetHarmonyQuantize(quantize),
+        Operation::SetMode(index) => InteractionEffect::PaletteCommit(vec![PaletteStagedEdit {
+            id: "master.mode",
+            value_bits: f32::from(index).to_bits(),
+        }]),
+        Operation::SetKey(index) => InteractionEffect::PaletteCommit(vec![PaletteStagedEdit {
+            id: "master.key",
+            value_bits: f32::from(index).to_bits(),
+        }]),
         Operation::ClearSequence => {
             InteractionEffect::ClearSequence(palette.scope_tab.unwrap_or(Tab::Chords))
         }

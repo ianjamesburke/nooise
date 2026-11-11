@@ -22,7 +22,41 @@ pub(crate) enum Operation {
     State(StateAction),
     Harmony(HarmonyAction),
     HarmonyQuantize(PushQuantize),
+    /// Set `master.mode` to this `MASTER_MODES` row.
+    SetMode(u8),
+    /// Set `master.key`: 0 is Home, 1..=12 are C..B.
+    SetKey(u8),
 }
+
+const MODE_LABELS: [&str; MASTER_MODES.len()] = [
+    "Mode home",
+    "Mode major",
+    "Mode minor",
+    "Mode dorian",
+    "Mode phrygian",
+    "Mode mixolydian",
+];
+/// Black keys are spelled as flats: palette search reads `#` as a word
+/// break, so `Key C#` would read as `Key C`. The sharp names are aliases.
+const KEY_LABELS: [&str; 13] = [
+    "Key home", "Key C", "Key Db", "Key D", "Key Eb", "Key E", "Key F", "Key Gb", "Key G",
+    "Key Ab", "Key A", "Key Bb", "Key B",
+];
+const KEY_ALIASES: [&[&str]; 13] = [
+    &["key own", "home key"],
+    &[],
+    &["key c sharp"],
+    &[],
+    &["key d sharp"],
+    &[],
+    &[],
+    &["key f sharp"],
+    &[],
+    &["key g sharp"],
+    &[],
+    &["key a sharp"],
+    &[],
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StateAction {
@@ -114,7 +148,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 68] = [
+    pub(crate) const ALL: [Self; 87] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -183,6 +217,25 @@ impl Operation {
         Self::HarmonyQuantize(PushQuantize::OneBar),
         Self::HarmonyQuantize(PushQuantize::TwoBars),
         Self::HarmonyQuantize(PushQuantize::FourBars),
+        Self::SetMode(0),
+        Self::SetMode(1),
+        Self::SetMode(2),
+        Self::SetMode(3),
+        Self::SetMode(4),
+        Self::SetMode(5),
+        Self::SetKey(0),
+        Self::SetKey(1),
+        Self::SetKey(2),
+        Self::SetKey(3),
+        Self::SetKey(4),
+        Self::SetKey(5),
+        Self::SetKey(6),
+        Self::SetKey(7),
+        Self::SetKey(8),
+        Self::SetKey(9),
+        Self::SetKey(10),
+        Self::SetKey(11),
+        Self::SetKey(12),
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -386,6 +439,26 @@ impl Operation {
                     _ => "harmony pushes wait for the next bar line of this length",
                 },
             },
+            Self::SetMode(index) => OperationSpec {
+                operation: self,
+                label: MODE_LABELS[usize::from(index)],
+                aliases: &[],
+                description: if index == 0 {
+                    "pushes move in each progression's own mode"
+                } else {
+                    "the mode pushes move in; played chords keep their colour"
+                },
+            },
+            Self::SetKey(index) => OperationSpec {
+                operation: self,
+                label: KEY_LABELS[usize::from(index)],
+                aliases: KEY_ALIASES[usize::from(index)],
+                description: if index == 0 {
+                    "each progression plays in its own key"
+                } else {
+                    "the key every progression plays in"
+                },
+            },
             Self::ClearSequence => OperationSpec {
                 operation: self,
                 label: "Clear sequence",
@@ -418,6 +491,8 @@ impl Operation {
             | Self::State(_)
             | Self::Harmony(_)
             | Self::HarmonyQuantize(_)
+            | Self::SetMode(_)
+            | Self::SetKey(_)
             | Self::ToggleVamp
             | Self::ToggleKickBass
             | Self::ToggleBeatRepeat

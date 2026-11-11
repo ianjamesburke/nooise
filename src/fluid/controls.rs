@@ -23,6 +23,7 @@ pub(crate) struct MasterControls {
     pub(crate) level: f32,
     pub(crate) tone: f32,           // -1 (bass) to +1 (treble)
     pub(crate) key: f32,            // 0 = each progression's own key, 1..=12 = C..B
+    pub(crate) mode: f32,           // 0 = the progression's own mode, else MASTER_MODES
     pub(crate) swing: f32,          // fallback for voices without a Swing module
     pub(crate) drunken_amount: f32, // 0..1, derived from the Master module
     pub(crate) drunken_pace: f32,   // nominal rise-and-fall length in trigger hits
@@ -35,6 +36,7 @@ impl Default for MasterControls {
             level: 0.8,
             tone: 0.0,
             key: 0.0,
+            mode: 0.0,
             swing: 0.0,
             drunken_amount: 0.0,
             drunken_pace: 7.0,

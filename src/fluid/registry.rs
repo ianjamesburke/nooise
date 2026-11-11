@@ -1637,6 +1637,20 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .search_name("master key transpose tune")
         .reset_at(0.0),
+        ControlSpec::new(
+            "master.mode",
+            "Mode",
+            ControlKind::Discrete,
+            0.0,
+            (MASTER_MODES.len() - 1) as f32,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.master.mode,
+            |c, v| c.master.mode = v,
+            |c| master_mode(c.master.mode).0.to_string(),
+        )
+        .search_name("master mode scale harmony home")
+        .reset_at(0.0),
     ]
 );
 

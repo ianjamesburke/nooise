@@ -492,7 +492,11 @@ mod input_tests {
             rig.command(&format!("queue state {index}"));
             assert_eq!(rig.pending(), Some(index - 1));
         }
-        for operation in Operation::ALL {
+        // No state operation names a letter slot or a Replace.
+        for operation in Operation::ALL
+            .into_iter()
+            .filter(|operation| matches!(operation, Operation::State(_)))
+        {
             let label = operation.spec().label;
             assert!(!label.contains("Replace"), "{label}");
             assert!(!label.contains(" A") && !label.ends_with(" B"), "{label}");

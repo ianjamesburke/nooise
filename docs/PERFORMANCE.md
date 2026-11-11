@@ -273,6 +273,19 @@ untouched, like mute.
 A song code never carries the stopped state. A stopped song is silence,
 not a state worth sharing, so a loaded code always plays.
 
+## Master Mode
+
+The Master page has Key (the existing Master Key) and Mode: Home (the
+default, each progression's own mode), Major, Minor, Dorian, Phrygian or
+Mixolydian. Mode sets the home pushes move in: scale steps walk that mode,
+step chords take its qualities, and `a` goes to its tonic chord. It never
+rewrites the progression, a loop or the chord sounding now, so played colour
+and borrowed chords are never lost; changing Key or Mode mid-push leaves the
+sounding chord alone and only later moves follow the new home. To hear a
+loop in another mode, push it there and grab it again. The header names the
+home (`KEY  A Dorian`). `/mode dorian` and `/key d` (or `/key f sharp`) reach
+both from the palette. Mode is saved in song codes.
+
 ## Harmony loops
 
 `G` then `1`, `2`, `4` or `8` loops the chords heard over the last that-many

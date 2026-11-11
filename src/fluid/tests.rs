@@ -380,9 +380,9 @@ fn master_key_renames_the_key_and_the_letter_chords() {
         names: ChordNames::Letters,
         key: MasterKey::Pitch(0),
     };
-    assert_eq!(progression_home_label(0, labels.key), "C minor");
+    assert_eq!(progression_home_label(0, labels.key, None), "C minor");
     assert_eq!(progression_label(0, labels.key), "Cm · Drift");
-    assert_eq!(progression_home_label(0, MasterKey::Home), "A minor");
+    assert_eq!(progression_home_label(0, MasterKey::Home, None), "A minor");
     let pad = PadControls::default();
     assert_eq!(pad_chord_name(&pad, 0, 0, labels), "Cm7add11");
     assert_eq!(
@@ -4273,7 +4273,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Master,
             vec![
                 Gain, Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Continuous, Discrete,
-                Gain, Continuous,
+                Discrete, Gain, Continuous,
             ],
         ),
         (

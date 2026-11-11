@@ -356,7 +356,11 @@ fn draw_harmony(
     let pad = &session.controls.pad;
     let labels = session.chord_labels();
     let window = ChordWindow::requested(pad);
-    let key = progression_home_label(window.progression, labels.key);
+    let key = progression_home_label(
+        window.progression,
+        labels.key,
+        master_mode(session.controls.master.mode).1,
+    );
     let mut key_spans = vec![
         Span::styled("KEY  ", Style::default().fg(DIM_TEXT)),
         Span::styled(
@@ -1378,6 +1382,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("s", "leading tone"),
             ],
             &[("\u{232b}", "undo"), ("let go", "close")],
+            &[("/mode", "home pushes move in"), ("/key", "master key")],
         ],
     ));
     lines.extend(state(

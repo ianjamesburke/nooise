@@ -189,6 +189,24 @@ bar line, with their real timing, and start the first pass on that line.
   writes that lane instead of a separate one. The triad widens to the full
   `Harmony` (tensions, slash bass); nothing here needs replacing.
 
+## Master Mode
+
+Key (the existing `master.key`) and Mode (`master.mode`: Home, Major, Minor,
+Dorian, Phrygian, Mixolydian) sit on the Master page. Decision for the
+re-spelling snags: Mode never rewrites anything. It sets the home pushes move
+in (`HomeKey::of_song`: the progression's tonic in the chosen mode; Home
+keeps the progression's own), so scale steps, step qualities and `a` follow
+it, while the progression's slots, a loop's chords (with their colour and
+borrowed tones) and the sounding chord are untouched; Custom is never
+clobbered. To hear a loop in a new mode, push it there and `G` it. Changing
+Key or Mode mid-push leaves the sounding pad chord alone; only later moves
+follow (Bass, Arp and Lead re-key per note under Master Key, as before).
+Mode is musical state, so it is a registry control saved in song codes
+(appended to `SONG_ID_TABLE`; default Home is omitted, so existing codes
+are unchanged) and morphs land it with the harmony. The palette has
+`/mode <name>` and `/key <pitch>`; black keys are labelled as flats with
+sharp aliases because palette search reads `#` as a word break.
+
 ## What this build leaves out
 
 - A harmony loop has no gate: a loop chord always sounds. Rests captured from

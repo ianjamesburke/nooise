@@ -114,6 +114,22 @@ impl Triad {
     }
 }
 
+/// The Master Mode dial: Home keeps each progression's own mode; the others
+/// set the mode pushes move in. Mode never rewrites a chord already played.
+pub(crate) const MASTER_MODES: [(&str, Option<HomeMode>); 6] = [
+    ("Home", None),
+    ("Major", Some(HomeMode::Major)),
+    ("Minor", Some(HomeMode::Minor)),
+    ("Dorian", Some(HomeMode::Dorian)),
+    ("Phrygian", Some(HomeMode::Phrygian)),
+    ("Mixolydian", Some(HomeMode::Mixolydian)),
+];
+
+/// The `MASTER_MODES` row a `master.mode` value names.
+pub(crate) fn master_mode(value: f32) -> (&'static str, Option<HomeMode>) {
+    MASTER_MODES[wrapped_index(value, MASTER_MODES.len())]
+}
+
 /// The song's home key: the progression's tonic and mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HomeKey {
@@ -134,6 +150,14 @@ impl HomeKey {
     pub(crate) fn of_progression(progression: usize) -> Self {
         let (tonic, mode, _) = progression_home(progression);
         Self::new(tonic, mode)
+    }
+
+    /// The home pushes move in: the progression's tonic, in the Master Mode
+    /// when one is chosen, else the progression's own mode.
+    pub(crate) fn of_song(controls: &FluidControls) -> Self {
+        let progression = progression_index(controls.pad.progression);
+        let (tonic, own, _) = progression_home(progression);
+        Self::new(tonic, master_mode(controls.master.mode).1.unwrap_or(own))
     }
 
     fn scale(self) -> [i32; 7] {
@@ -585,6 +609,33 @@ mod tests {
         );
         let far = Triad::new(6, TriadQuality::Diminished);
         assert_eq!(HarmonyMove::Home.apply(far, A_MINOR), am());
+    }
+
+    /// Mode Home follows each progression's own mode; a chosen mode keeps
+    /// the progression's tonic and changes what steps and home produce.
+    #[test]
+    fn the_master_mode_sets_the_home_pushes_move_in() {
+        let mut controls = FluidControls::default();
+        for progression in 0..=CUSTOM_PROGRESSION_INDEX {
+            controls.pad.progression = progression as f32;
+            controls.master.mode = 0.0;
+            assert_eq!(
+                HomeKey::of_song(&controls),
+                HomeKey::of_progression(progression)
+            );
+        }
+        controls.pad.progression = 0.0; // A minor
+        let am = Triad::new(A, TriadQuality::Minor);
+        let named = |controls: &FluidControls, harmony_move: HarmonyMove| {
+            harmony_move.apply(am, HomeKey::of_song(controls)).name(0)
+        };
+        assert_eq!(named(&controls, HarmonyMove::StepUp), "Bdim");
+        controls.master.mode = 3.0; // Dorian
+        assert_eq!(named(&controls, HarmonyMove::StepUp), "Bm");
+        controls.master.mode = 1.0; // Major
+        assert_eq!(named(&controls, HarmonyMove::Home), "A");
+        assert_eq!(named(&controls, HarmonyMove::StepDown), "Abdim");
+        assert_eq!(master_mode(controls.master.mode).0, "Major");
     }
 
     #[test]

@@ -227,6 +227,7 @@ const STAGGER_STEP_BARS: f64 = 8.0;
 fn waits_for_harmony(spec_id: &str) -> bool {
     spec_id == "pad.progression"
         || spec_id == "master.key"
+        || spec_id == "master.mode"
         || spec_id.starts_with("pad.chord")
         || spec_id.starts_with("pad.step")
 }

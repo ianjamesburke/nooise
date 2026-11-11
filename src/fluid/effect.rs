@@ -1208,7 +1208,7 @@ impl EffectExecutor {
             outcome =
                 snapshot
                     .push
-                    .act(action, HomeKey::of_progression(progression), authored, beat);
+                    .act(action, HomeKey::of_song(&snapshot.controls), authored, beat);
         });
         let when = match quantize.grid_beats() {
             None => String::new(),
@@ -3276,7 +3276,7 @@ mod tests {
             beat: 0.0,
             flipped: &mut flipped,
         };
-        assert_eq!(tab_specs(Tab::Master)[12].id, "master.slot1.kind");
+        assert_eq!(tab_specs(Tab::Master)[13].id, "master.slot1.kind");
         for effect in [
             InteractionEffect::AdjustSelected(1),
             InteractionEffect::CommitNumeric(2.0),

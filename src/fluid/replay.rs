@@ -6348,3 +6348,32 @@ fn shift_g_loops_the_chords_just_played() {
     let frame = &result.frames.last().unwrap().text;
     assert!(frame.contains("LOOP 1 bar"), "{frame}");
 }
+
+/// `/mode dorian` and `/key d` set the Master rows, and the Mode saves in
+/// the song code.
+#[test]
+fn the_palette_sets_mode_and_key_and_mode_is_saved() {
+    let mut trace = Vec::new();
+    for query in ["mode dorian", "key d"] {
+        trace.push(key(0, FixtureKey::Character('/'), InputPhase::Press));
+        trace.extend(
+            query
+                .chars()
+                .map(|character| key(0, FixtureKey::Character(character), InputPhase::Press)),
+        );
+        trace.push(key(0, FixtureKey::Enter, InputPhase::Press));
+    }
+    trace.push(modified_key(
+        0,
+        FixtureKey::Character('s'),
+        InputPhase::Press,
+        1 << 1,
+    ));
+    let result = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(result.control("master.mode"), Some(3.0));
+    assert_eq!(result.control("master.key"), Some(3.0));
+    let saved = decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
+    assert_eq!(saved.controls.master.mode, 3.0);
+    let frame = &result.frames.last().unwrap().text;
+    assert!(frame.contains("D Dorian"), "{frame}");
+}

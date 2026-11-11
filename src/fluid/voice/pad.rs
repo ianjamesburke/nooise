@@ -1011,8 +1011,15 @@ pub(crate) fn progression_tonic_pitch_class(progression: usize) -> i32 {
 
 /// The key a progression sounds in under the Master Key: its authored home,
 /// or the chosen pitch class with the same mode ("C minor").
-pub(crate) fn progression_home_label(progression: usize, key: MasterKey) -> String {
-    let (_, mode, tonic) = progression_home(progression);
+/// `mode` is the Master Mode when one is chosen, which names the home pushes
+/// move in; `None` keeps the progression's own.
+pub(crate) fn progression_home_label(
+    progression: usize,
+    key: MasterKey,
+    mode: Option<HomeMode>,
+) -> String {
+    let (_, own, tonic) = progression_home(progression);
+    let mode = mode.unwrap_or(own);
     let tonic = match key {
         MasterKey::Home => tonic,
         MasterKey::Pitch(_) => {

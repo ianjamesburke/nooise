@@ -369,7 +369,7 @@ impl HarmonyView {
         let pad = &session.controls.pad;
         let progression = progression_index(pad.progression);
         let shift = session.chord_labels().key.shift(progression);
-        let key = HomeKey::of_progression(progression);
+        let key = HomeKey::of_song(&session.controls);
         let authored = authored_triad(pad, progression, active_slot);
         let push = &session.push;
         let base = push.base(authored, beat);

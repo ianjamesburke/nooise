@@ -75,6 +75,12 @@
   keeps its authored key. Choosing a pitch keeps each progression's mode and
   moves its tonic there, so a morph or progression change never leaves the key.
   Letter names and the header follow it; Roman numerals do not.
+- **Master Mode:** Home (each progression's own mode) or Major, Minor,
+  Dorian, Phrygian or Mixolydian. It sets the **home** pushes move in: the
+  progression's tonic in that mode, which scale steps walk, step chords take
+  their quality from, and `a` returns to. It never rewrites a progression,
+  a loop or the sounding chord; to hear material in a new mode, push it
+  there and loop it. Saved in song codes.
 - **Chord names:** Letters ("Am7") or Roman numerals ("i7"), a display choice
   made from `/` that never changes sound or a song code. Roman reads each chord
   against the progression's own home key and mode.
