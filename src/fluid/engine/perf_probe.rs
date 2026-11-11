@@ -129,6 +129,35 @@ fn engine_perf_probe() {
         );
     }
 
+    // `--start-stopped`: the clock sits at beat 0 until the first play.
+    {
+        let mut snapshot = LiveSessionSnapshot::from_song(&songs[0]);
+        snapshot.transport = Transport::Stopped;
+        let mut e = FluidEngine::new(
+            RATE,
+            LiveSession::new(snapshot),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        report(
+            "song 1 launched stopped",
+            run(&mut e, buffers / 4, |_, _| {}),
+        );
+    }
+
+    // A stop between pieces, mid-bar.
+    {
+        let (s, mut e) = engine_for(&songs[0]);
+        while e.tempo.beat < 6.0 {
+            e.next_stereo();
+        }
+        s.update(|snap| snap.transport = Transport::Stopped);
+        report(
+            "song 1 stopped mid-bar",
+            run(&mut e, buffers / 4, |_, _| {}),
+        );
+    }
+
     // Stop the transport a few samples before a bar and stay stopped.
     {
         let (s, mut e) = engine_for(&songs[0]);
