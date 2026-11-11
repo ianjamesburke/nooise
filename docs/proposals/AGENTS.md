@@ -7,7 +7,7 @@ Feature designs that can be discussed before changing runtime behavior.
 ## Ownership
 
 - Dated proposal files own each feature's scope, interaction, tradeoffs, and acceptance criteria.
-- `2026-11-02-show-readiness.md` owns the November 21 V3 show checkpoints, rehearsal/post-mortem loop, current performance batch, deferred melodic spike, November 6 Pad rhythm and melodic consolidation recommendations, and proposed named-song library/transition previews. `../../STATE.md` records the current candidate's verification and remaining acceptance.
+- `2026-11-02-show-readiness.md` owns the November 22 V3 show checkpoints, rehearsal/post-mortem loop, current performance batch, deferred melodic spike, November 6 Pad rhythm and melodic consolidation recommendations, and proposed named-song library/transition previews. `../../STATE.md` records the current candidate's verification and remaining acceptance.
 - `2026-10-04-stabilization-intake.md` owns the current stabilization intake, reported musical bugs, near-term hardware priorities, and song-cue, harmony, groove, and recipe decisions.
 - `2026-10-04-sprint-audit.md` records baseline worktree and stint evidence. `2026-10-05-stabilization-sprint.md` owns the nine-step order and focused reproduction/acceptance cases.
 - `2026-10-05-stabilization-gate.md` records the integrated automated results, listening artifacts, and remaining hands-on acceptance for that sprint.

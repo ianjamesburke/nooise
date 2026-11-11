@@ -1,4 +1,4 @@
-# November 21 show readiness
+# November 22 show readiness
 
 Status: the November 3 performance batch is integrated into V3. The show date,
 V3 target, and rehearsal/post-mortem loop are confirmed. Listening and the
@@ -8,7 +8,7 @@ sequences stay at the following checkpoint, as confirmed by Ian.
 
 ## Outcome
 
-Play a prepared set on November 21, 2026, with room to improvise, moving between
+Play a prepared set on November 22, 2026 (5:30 to 6:30 pm, one hour), with room to improvise, moving between
 musical sections and songs inside one running nooise instance. Develop on `v3`
 or worktrees based on it. Each batch ends with a recorded performance and a short
 post-mortem that determines the next batch.
@@ -194,7 +194,7 @@ of this library, preview, discovery, or multi-engine design.
 | Nov 13–16 | Rehearsal fixes, balanced patches, complete set material and startup path | Full-duration recorded set on the intended rig, including setup, ending, and a deliberate wrong-section recovery |
 | Nov 17–18 | Frozen candidate and matching saved material | Two full-duration passes with no blocking failure; verify restart/reload and backup material |
 | Nov 19–20 | Only blocking fixes and regression rehearsal | Pack and check the rig; verify the exact show binary and material together |
-| Nov 21 | Rehearsed build and set | Soundcheck routing, levels, first transition, and ending |
+| Nov 22 | Rehearsed build and set | Soundcheck routing, levels, first transition, and ending |
 
 If recall slips, keep the existing melodic voices for the show. If a new feature
 cannot be rehearsed by November 16, defer it. Any later blocking fix requires a
