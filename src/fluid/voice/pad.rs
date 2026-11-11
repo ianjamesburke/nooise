@@ -32,6 +32,9 @@ pub(crate) struct PadEngine {
     /// The pushed chord the last frame voiced, so landing and release each
     /// revoice even when the slot's authored definition is unchanged.
     last_held: Option<HeldChord>,
+    /// The notes of a chord that began this sample, for the heard log. The
+    /// engine takes it after each tick.
+    pub(crate) onset: Option<[i32; 4]>,
     active_note_count: usize,
     sounding: bool,
     /// The transport seen on the previous sample, so a stop releases the
@@ -134,6 +137,8 @@ impl PadEngine {
             last_chord_notes: initial_notes,
             last_chord_definition,
             last_held,
+            // The opening chord is heard too, from the first sample.
+            onset: sounding.then_some(initial_notes),
             published_span: None,
             active_note_count: note_count,
             sounding,
@@ -441,6 +446,7 @@ impl PadEngine {
                     c.release_time,
                 );
                 chord_published = true;
+                self.onset = Some(chord_notes);
                 self.telemetry
                     .publish_hit(MusicalHit::Pad, c.level, pitch_class(chord_notes[0]));
                 self.send_osc(OscVoiceEvent::PadChord(pad_notes_with_count(

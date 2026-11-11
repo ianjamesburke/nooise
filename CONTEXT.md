@@ -42,7 +42,8 @@
   own controls follow. Tab reaches it after Lead, and Esc from a layer's
   root returns to it on that layer's row.
 - **State leader:** a pending `'` (go) or `"` (keep). Go: a digit `1`-`9` queues that stored state (a second `'` queues the previous one), a layer key opens that layer, and `j`/`k` reach Level/Filter on the open page. Keep: a digit stores the current song there, replacing any stored one. It opens only from browsing, acts on key presses, and leaves physical holds running.
-- **Grab leader:** a pending `g` waiting for `1`/`2`/`4`/`8` bars of the selected knob's or editor field's movement to keep as Motion; `G` targets the pushed harmony (not built yet).
+- **Grab leader:** a pending `g` waiting for `1`/`2`/`4`/`8` bars of the selected knob's or editor field's movement to keep as Motion; `G` loops the harmony instead.
+- **Loop:** a harmony loop: the chords heard over the last 1, 2, 4 or 8 bars (authored, pushed or looped), replayed with their real timing as a lane separate from the progression's slots. A new grab replaces it; a landed push ends it.
 - **State (stored state):** one numbered slot, 1-9, in the state bank. It
   holds a whole song snapshot (controls and automation) that the performer
   stored from the live song and recalls with the State leader or `/queue state

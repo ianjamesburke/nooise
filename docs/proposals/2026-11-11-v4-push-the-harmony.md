@@ -87,9 +87,7 @@ leaders.
 - `"` is keep: `"1`-`"9` store states (unchanged).
 - `g` is grab: `g1 g2 g4 g8` grab Motion on the selected knob, or on the
   selected field in an automation editor (moved from Space 1/2/4/8). `G1 G2
-  G4 G8` will grab the chords pushed over the last N bars and make them the
-  looping progression, replacing the loop outright (PM ruling); in this build
-  `G` is a stub that says so and changes nothing (see below).
+  G4 G8` loop the harmony heard over the last N bars (see Harmony loops).
 - Planned mute (`Space m`) is retired with its palette row and OSC surfaces;
   a song code carrying one is refused as `RetiredControl("planned mute")`.
 
@@ -156,17 +154,47 @@ respond. What it already affected is saved: the pushed chord and any queued
 move. It lives in the live session (`PushedHarmony::quantize`), survives state
 landings, resets to `beat` on launch, and needs no record or migration.
 
+## Harmony loops (`G`)
+
+Ian's model is loop + home + pushes + states: play chords, loop what you
+played at any length, push over it, store the result as a state. `G1 G2 G4
+G8` loop the chords heard over the last 1, 2, 4 or 8 bars before the nearest
+bar line, with their real timing, and start the first pass on that line.
+
+- **Heard log.** The audio clock appends every pad chord onset to a bounded
+  live-only log (`HeardLog`, 64 entries) as a `HarmonyEvent { at, triad,
+  notes }`: authored chords (heard as a triad on their slot, with their own
+  notes, so colour is kept), pushes and loop chords alike. Re-strikes of the
+  same chord add nothing.
+- **Loop.** `HarmonyLoop { slot, bars, start_beat, events }` holds at most
+  32 events (`LOOP_EVENT_LIMIT`), offsets from the loop's start. 8 bars on the
+  default beat grid is at most 32 changes, so it always fits; a denser window
+  (quantize off) keeps its first 32 changes and holds the last to the end.
+  It sounds on the slot that was sounding, like a held push, through the same
+  Attack/Release path, and its chord is the base pushes read.
+- **Replace and take over.** A grab replaces the loop and withdraws a waiting
+  push. A landed push ends the loop and holds the pushed chord; undo still
+  walks back pushes.
+- **Persistence.** Song record 17 (version 1): slot, bars, the start beat
+  rebased to song beat zero (so a state or code resumes at the same phase),
+  and per event an offset in 1/1024 beat, root, quality and four notes, 8
+  bytes each: at most 268 bytes. States store it through the same song
+  snapshot.
+- **How it maps to ADR 0002.** A loop is already the shape of the chord-lane
+  redesign: a lane of timed cells whose harmony (`Triad`, the root and
+  quality ADR 0002's `Harmony` names) is kept apart from its voicing (the
+  four sounded notes, ADR 0002's `Voicing` realized). When the Cell lane
+  lands, a loop event becomes a `Cell { harmony, voicing, gate: Sound }` at a
+  beat offset, a loop becomes a progression lane with free timing, and `G`
+  writes that lane instead of a separate one. The triad widens to the full
+  `Harmony` (tensions, slash bass); nothing here needs replacing.
+
 ## What this build leaves out
 
-- `G` harmony grab is a stub. Doing it properly needs: a log of landed pushes
-  with their beats; a progression lane that can hold any pushed triad with
-  its voicing and its own length (the legacy eight-field chord slot cannot
-  spell every diminished triad or keep a voice-led voicing, and its uniform
-  Chord Length cannot hold free-timed unquantized pushes); and a rule for
-  consecutive identical chords so the pad does not re-strike them. That is
-  ADR 0002's Cell lane (harmony, voicing, gate per step); building it inside
-  this mock would be a parallel chord model. Recommended next: land the Cell
-  lane, then G-grab writes Cells.
+- A harmony loop has no gate: a loop chord always sounds. Rests captured from
+  an authored Rest step are not logged, so the loop holds the chord before.
+- The heard log starts over when the clock restarts or a state lands, so a
+  grab right after a landing reaches back only to the landing.
 - Smear (glide a move over a whole bar) is not built: it needs per-voice
   pitch glides in `PadLayer`.
 - Triads only: no sevenths, tensions or inversions on pushed chords (Ian:

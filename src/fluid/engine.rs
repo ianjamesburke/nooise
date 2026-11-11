@@ -766,7 +766,7 @@ impl FluidEngine {
             initial_pad.chord_count = 1.0;
             initial_pad.chord_offset = f32::from(vamp.slot);
         }
-        if let Some(held) = live.push.held {
+        if let Some(held) = live.push.sounding(0.0) {
             initial_pad.chord_count = 1.0;
             initial_pad.chord_offset = f32::from(held.slot);
             initial_pad.held_chord = Some(held);
@@ -1127,8 +1127,9 @@ impl StereoEngine for FluidEngine {
         }
         // A pushed chord overrides the progression the way a held vamp does:
         // every chord follower stays on its slot and reads the pushed notes.
-        self.effective.pad.held_chord = self.push.held;
-        if let Some(held) = self.push.held {
+        let sounding = self.push.sounding(timing.beat);
+        self.effective.pad.held_chord = sounding;
+        if let Some(held) = sounding {
             self.effective.pad.chord_count = 1.0;
             self.effective.pad.chord_offset = f32::from(held.slot);
         }
@@ -1351,6 +1352,7 @@ impl StereoEngine for FluidEngine {
             self.module_fx
                 .publish_gain_reduction(&self.telemetry, block_seconds);
         }
+        self.log_heard_onset(timing.beat);
         self.plan.restore(&mut self.effective);
         self.effective.master.bpm = base_bpm;
         self.effective.kick.level = base_kick;
@@ -1442,7 +1444,7 @@ impl FluidEngine {
             window.count = 1;
             window.offset = usize::from(vamp.slot);
         }
-        if let Some(held) = self.push.held {
+        if let Some(held) = self.push.sounding(self.tempo.beat) {
             window.count = 1;
             window.offset = usize::from(held.slot);
         }
@@ -1569,6 +1571,31 @@ impl FluidEngine {
 }
 
 impl FluidEngine {
+    /// Append a chord the pad just began to the heard log `G` grabs from:
+    /// a pushed or looped chord by its own triad, an authored one heard as a
+    /// triad on its slot, each with the notes actually sounded.
+    fn log_heard_onset(&mut self, beat: f64) {
+        let Some(notes) = self.pad.onset.take() else {
+            return;
+        };
+        let pad = &self.effective.pad;
+        let slot = self.pad.cursor.slot();
+        let triad = pad.held_at(slot).map_or_else(
+            || authored_triad(pad, progression_index(pad.progression), slot),
+            |held| held.triad,
+        );
+        let event = HarmonyEvent {
+            at: beat,
+            triad,
+            notes,
+        };
+        let _ = self.session.transact(|snapshot| {
+            snapshot.push.heard.record(event);
+            Ok::<(), ()>(())
+        });
+        self.push.heard.record(event);
+    }
+
     /// Land a queued push on its bar line. The chord is voiced from the notes
     /// the pad sounds at this sample, on the slot sounding now (a held chord
     /// keeps its own), and published before this sample's chord tick reads
@@ -3264,5 +3291,189 @@ mod push_tests {
         let held = session.load().push.held.unwrap();
         assert_eq!(held.triad.name(0), "Bb");
         assert_eq!(engine.pad.last_chord_notes, held.notes);
+    }
+
+    fn grab(effects: &mut EffectExecutor, duration: MotionDuration) {
+        effects
+            .grab_harmony(duration, 0.0)
+            .expect("a grab always executes");
+    }
+
+    /// Play until the pad's notes change and return the beat of that sample.
+    fn play_to_change(engine: &mut FluidEngine, limit_beat: f64) -> f64 {
+        let notes = engine.pad.last_chord_notes;
+        while engine.pad.last_chord_notes == notes {
+            assert!(
+                engine.tempo.beat < limit_beat,
+                "no chord change before {limit_beat}"
+            );
+            engine.next_stereo();
+        }
+        engine.tempo.beat
+    }
+
+    fn assert_near(beat: f64, expected: f64, engine: &FluidEngine) {
+        let step = engine.tempo.bpm / (60.0 * f64::from(RATE));
+        assert!(
+            (beat - expected).abs() <= 2.0 * step,
+            "changed at {beat}, expected {expected}"
+        );
+    }
+
+    /// Unquantized pushes land off the beat; `G1` loops the bar that held
+    /// them, opening chord included, and replays every change at its own
+    /// offset into each pass.
+    #[test]
+    fn grab_loops_off_beat_pushes_with_their_exact_timing() {
+        let (session, mut engine, mut effects) = engine_quantized(PushQuantize::Off);
+        let opening = engine.pad.last_chord_notes;
+        play_until_beat(&mut engine, 1.25);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        play_until_beat(&mut engine, 2.0);
+        let c = session.load().push.held.unwrap();
+        play_until_beat(&mut engine, 2.75);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::FifthUp));
+        play_until_beat(&mut engine, 3.5);
+        grab(&mut effects, MotionDuration::Beats4);
+        let looping = session.load().push.looping.expect("a loop");
+        assert_eq!(looping.start_beat, 4.0);
+        let offsets: Vec<f64> = looping.events().iter().map(|event| event.at).collect();
+        assert_eq!(offsets.len(), 3);
+        assert_eq!(offsets[0], 0.0);
+        assert!((offsets[1] - 1.25).abs() < 0.01, "{offsets:?}");
+        assert!((offsets[2] - 2.75).abs() < 0.01, "{offsets:?}");
+        assert_eq!(
+            looping.events()[0].notes,
+            opening,
+            "the authored chord is kept"
+        );
+        for pass in [4.0, 8.0] {
+            let at = play_to_change(&mut engine, pass + 1.0);
+            assert_near(at, pass, &engine);
+            assert_eq!(engine.pad.last_chord_notes, opening);
+            let at = play_to_change(&mut engine, pass + 2.0);
+            assert_near(at, pass + offsets[1], &engine);
+            assert_eq!(engine.pad.last_chord_notes, c.notes);
+            let at = play_to_change(&mut engine, pass + 3.5);
+            assert_near(at, pass + offsets[2], &engine);
+        }
+    }
+
+    /// Beat-quantized pushes land on beat lines and loop on them.
+    #[test]
+    fn grab_loops_beat_quantized_pushes_on_their_beats() {
+        let (session, mut engine, mut effects) = engine_quantized(PushQuantize::Beat);
+        play_until_beat(&mut engine, 4.3);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        play_until_beat(&mut engine, 5.6);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::StepUp));
+        play_until_beat(&mut engine, 7.5);
+        grab(&mut effects, MotionDuration::Beats4);
+        let looping = session.load().push.looping.unwrap();
+        let offsets: Vec<f64> = looping.events().iter().map(|event| event.at).collect();
+        assert_eq!(looping.start_beat, 8.0);
+        assert_eq!(offsets.len(), 3);
+        assert!(
+            (offsets[1] - 1.0).abs() < 0.01 && (offsets[2] - 2.0).abs() < 0.01,
+            "{offsets:?}"
+        );
+        let at = play_to_change(&mut engine, 9.5);
+        assert_near(at, 8.0, &engine);
+        let at = play_to_change(&mut engine, 10.5);
+        assert_near(at, 9.0, &engine);
+    }
+
+    /// Each size loops that many bars; a new grab replaces the loop, and a
+    /// landed push ends it and holds the pushed chord.
+    #[test]
+    fn grabs_replace_each_other_and_a_push_ends_the_loop() {
+        let (session, mut engine, mut effects) = engine_quantized(PushQuantize::Off);
+        play_until_beat(&mut engine, 1.0);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        play_until_beat(&mut engine, 32.5);
+        for (duration, bars) in [
+            (MotionDuration::Beats4, 1),
+            (MotionDuration::Beats8, 2),
+            (MotionDuration::Beats16, 4),
+            (MotionDuration::Beats32, 8),
+        ] {
+            grab(&mut effects, duration);
+            let looping = session.load().push.looping.unwrap();
+            assert_eq!(looping.bars, bars);
+            assert_eq!(looping.period(), f64::from(bars) * 4.0);
+        }
+        // The 8-bar grab reached back past the push to the authored chord.
+        assert_eq!(session.load().push.looping.unwrap().events().len(), 2);
+        play_until_beat(&mut engine, 33.5);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Parallel));
+        engine.next_stereo();
+        let after = session.load();
+        assert_eq!(after.push.looping, None, "the push took over");
+        assert_eq!(engine.pad.last_chord_notes, after.push.held.unwrap().notes);
+    }
+
+    /// A loop survives a song code and a stored state, keeping its phase.
+    #[test]
+    fn a_loop_round_trips_through_song_codes_and_states() {
+        let (session, mut engine, mut effects) = engine_quantized(PushQuantize::Off);
+        play_until_beat(&mut engine, 1.25);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        play_until_beat(&mut engine, 3.5);
+        grab(&mut effects, MotionDuration::Beats4);
+        play_until_beat(&mut engine, 6.0);
+        let live = session.load();
+        let looping = live.push.looping.unwrap();
+        let song = SongState {
+            controls: live.controls.clone(),
+            push: live.push.rebased_at(6.0),
+            ..SongState::default()
+        };
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        let restored = decoded.push.looping.unwrap();
+        let same = |a: &HarmonyLoop, b: &HarmonyLoop| {
+            a.events().len() == b.events().len()
+                && a.events().iter().zip(b.events()).all(|(x, y)| {
+                    x.triad == y.triad && x.notes == y.notes && (x.at - y.at).abs() < 1.0 / 1024.0
+                })
+        };
+        assert!(same(&restored, &looping), "{restored:?} vs {looping:?}");
+        assert_eq!(restored.start_beat, looping.start_beat - 6.0);
+        // At the loaded song's beat zero it plays what was playing at 6.0.
+        assert_eq!(
+            restored.at(0.0).map(|event| event.notes),
+            looping.at(6.0).map(|event| event.notes)
+        );
+        let (reloaded, mut replay, _) = engine_for(&decoded);
+        replay.next_stereo();
+        assert_eq!(
+            Some(replay.pad.last_chord_notes),
+            looping.at(6.0).map(|event| event.notes)
+        );
+        drop(reloaded);
+        // A stored state carries it the same way.
+        let context = InteractionExecutionContext {
+            selected_control: None,
+            beat: 6.0,
+        };
+        effects
+            .execute_interaction(
+                interaction::InteractionEffect::State(StateAction::Store(0)),
+                &context,
+            )
+            .unwrap();
+        session.update(|s| s.push.looping = None);
+        effects
+            .execute_interaction(
+                interaction::InteractionEffect::ToggleStateQueue(0),
+                &context,
+            )
+            .unwrap();
+        let revision = session.load().state_revision;
+        while session.load().state_revision == revision {
+            engine.next_stereo();
+            assert!(engine.tempo.beat < 300.0, "the state never landed");
+        }
+        let landed = session.load().push.looping.expect("the state's loop");
+        assert!(same(&landed, &looping), "{landed:?}");
     }
 }

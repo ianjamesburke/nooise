@@ -273,6 +273,23 @@ untouched, like mute.
 A song code never carries the stopped state. A stopped song is silence,
 not a state worth sharing, so a loaded code always plays.
 
+## Harmony loops
+
+`G` then `1`, `2`, `4` or `8` loops the chords heard over the last that-many
+bars, with their real timing: authored chords, pushes and loop chords alike,
+each with the notes the pad actually sounded. The window ends at the nearest
+bar line and the loop starts its first pass there. It is a lane of timed
+chords separate from the progression's slots, so a loop can be any of the
+four lengths whatever the progression holds, and it changes chords through
+the same Attack/Release crossfade as a push. A new grab replaces the loop.
+A push while a loop plays ends it when the push lands: you have taken over;
+grab again to loop the new material. Backspace (Space held) still undoes
+pushes. The header reads `LOOP 4 bars · 2` (the bar of the pass). States and
+song codes keep the playing loop and its phase; a loop holds at most 32
+chord changes, every change of an 8-bar loop on the default beat grid. The
+heard log is live-only and starts over when the clock restarts or a state
+lands.
+
 ## Go, keep and grab
 
 `'` is go and `"` is keep (see Prepared states). Go also reaches layers: a
@@ -297,8 +314,7 @@ stays put.
 `g` is grab. `g 1`, `g 2`, `g 4` and `g 8` grab Motion from the selected knob:
 the last one, two, four, or eight bars. In an LFO or envelope editor, `g`
 then a digit grabs the selected field and the editor stays open. `G` then a
-digit will make the chords pushed over the last bars the looping
-progression, replacing it outright; it is a stub in this build and says so.
+digit loops the harmony instead (see Harmony loops below).
 A grab belongs to its nearest bar downbeat. When that downbeat is ahead, the
 current value holds until it arrives and the loop starts there. When it has
 passed, the loop joins immediately at the phase it would already have
@@ -353,7 +369,9 @@ Lead play retains its own `i` entry and existing bindings.
    Lead, confirm `'`, `j` reaches its Level.
 7. Move a knob for two bars, then `g`, `2`: the movement loops. Open its LFO
    editor, move a field, `g`, `1`: the field loops and the editor stays open.
-   `G`, `4` says the harmony grab is not built yet and changes nothing.
+   Hold Space and push two chords, let go, then `G`, `1`: the header reads
+   `LOOP 1 bar` and the bar's chords, the opening authored one included,
+   replay at the moments they were played.
 8. Press `?` from Browsing: the shortcut map should open over the
    breadcrumb and control rows, leaving both footer rows visible beneath
    it. Esc returns to Browsing.

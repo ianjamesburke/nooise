@@ -329,6 +329,10 @@ fn queue_countdown(transport: Transport, telemetry: &TelemetryView) -> String {
     }
 }
 
+fn plural(count: u8) -> &'static str {
+    if count == 1 { "" } else { "s" }
+}
+
 /// Whole bars until `end`, rounded up so the last bar reads `in 1 bar`, or
 /// `waiting` while the clock is stopped.
 fn bar_countdown(transport: Transport, telemetry: &TelemetryView, end: f64) -> String {
@@ -402,9 +406,15 @@ fn draw_harmony(
                 Style::default().fg(LIVE_AMBER),
             ));
         }
-        if harmony.held {
+        let badge = match harmony.looping {
+            Some((bars, bar)) if bar > 0 => format!("  LOOP {bars} bar{} · {bar}", plural(bars)),
+            Some((bars, _)) => format!("  LOOP {bars} bar{} next", plural(bars)),
+            None if harmony.held => "  PUSH".to_string(),
+            None => String::new(),
+        };
+        if !badge.is_empty() {
             spans.push(Span::styled(
-                "  PUSH",
+                badge,
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
             ));
         }
@@ -1374,7 +1384,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         "Grab (then 1 / 2 / 4 / 8 bars)",
         &[&[
             ("g", "knob or editor field motion"),
-            ("\u{21e7}G", "pushed chords (not built)"),
+            ("\u{21e7}G", "loop the chords heard"),
         ]],
     ));
     lines.extend(state(
@@ -1441,7 +1451,7 @@ fn draw_grab_leader(f: &mut Frame, inner: Rect, harmony: bool) {
         .add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(Color::Rgb(205, 210, 222));
     let what = if harmony {
-        "the pushed chords become the loop"
+        "loop the chords heard, in time"
     } else {
         "the selected knob's movement"
     };

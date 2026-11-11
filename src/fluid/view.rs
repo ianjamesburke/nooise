@@ -359,23 +359,33 @@ pub(crate) struct HarmonyView {
     pub(crate) previews: [String; HARMONY_MOVES.len()],
     /// Where moves land; the header counts down only when quantized.
     pub(crate) quantize: PushQuantize,
+    /// A playing harmony loop: its length in bars and the bar it is on
+    /// (1-based), or `None`.
+    pub(crate) looping: Option<(u8, u8)>,
 }
 
 impl HarmonyView {
-    fn project(session: &LiveSessionSnapshot, active_slot: usize) -> Self {
+    fn project(session: &LiveSessionSnapshot, active_slot: usize, beat: f64) -> Self {
         let pad = &session.controls.pad;
         let progression = progression_index(pad.progression);
         let shift = session.chord_labels().key.shift(progression);
         let key = HomeKey::of_progression(progression);
         let authored = authored_triad(pad, progression, active_slot);
-        let push = session.push;
-        let base = push.base(authored);
+        let push = &session.push;
+        let base = push.base(authored, beat);
+        let sounding = push.sounding(beat);
         Self {
-            sounding: push.held.map_or_else(
+            sounding: sounding.map_or_else(
                 || pad_chord_name(pad, progression, active_slot, session.chord_labels()),
                 |held| held.triad.name(shift),
             ),
-            held: push.held.is_some(),
+            held: sounding.is_some(),
+            looping: push.looping.map(|looping| {
+                let bar = looping
+                    .phase(beat)
+                    .map_or(0, |phase| (phase / 4.0) as u8 + 1);
+                (looping.bars, bar)
+            }),
             queued: push
                 .queued
                 .map(|queued| (queued.target.name(shift), queued.land_beat)),
@@ -388,7 +398,7 @@ impl HarmonyView {
 
     /// Whether the header shows the push instead of the progression.
     pub(crate) fn is_active(&self) -> bool {
-        self.held || self.queued.is_some()
+        self.held || self.queued.is_some() || self.looping.is_some()
     }
 }
 
@@ -510,7 +520,7 @@ impl<'a> UiViewModel<'a> {
                 usize::from(vamp.slot)
             });
         let breadcrumb = breadcrumb(navigation, &session.controls, &session.muted, active_slot);
-        let harmony = HarmonyView::project(session, active_slot);
+        let harmony = HarmonyView::project(session, active_slot, telemetry.beat);
 
         let chord_title = match navigation.chord_drill {
             ChordDrill::Slot { slot, .. } => {

@@ -110,11 +110,189 @@ impl UndoHistory {
     }
 }
 
+/// How many chord changes the heard log keeps. Live-only.
+pub(crate) const HEARD_CAPACITY: usize = 64;
+/// The most chords one loop holds: 8 bars at the beat grid is 32 beats, so
+/// a beat-quantized 8-bar grab always fits. A denser window (quantize off)
+/// keeps its first 32 changes and holds the last of them to the loop's end.
+pub(crate) const LOOP_EVENT_LIMIT: usize = 32;
+
+/// One chord as heard: its harmony (the triad pushes read) and its voicing
+/// (the exact notes the pad sounded), kept apart as ADR 0002 keeps harmony
+/// and voicing apart. `at` is a transport beat in the heard log and a beat
+/// offset from the loop's start in a loop.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HarmonyEvent {
+    pub(crate) at: f64,
+    pub(crate) triad: Triad,
+    pub(crate) notes: [i32; 4],
+}
+
+const NO_EVENT: HarmonyEvent = HarmonyEvent {
+    at: 0.0,
+    triad: Triad::C_MAJOR,
+    notes: [0; 4],
+};
+
+/// What the pad actually sounded, in time order: authored chords, pushes and
+/// loop chords alike. The audio clock appends on every chord onset; `G`
+/// reads it. Bounded ring, live-only, cleared when the transport restarts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HeardLog {
+    events: [HarmonyEvent; HEARD_CAPACITY],
+    len: usize,
+    head: usize,
+}
+
+impl Default for HeardLog {
+    fn default() -> Self {
+        Self {
+            events: [NO_EVENT; HEARD_CAPACITY],
+            len: 0,
+            head: 0,
+        }
+    }
+}
+
+impl HeardLog {
+    /// Record an onset. A re-strike of the chord already logged adds nothing.
+    pub(crate) fn record(&mut self, event: HarmonyEvent) {
+        if self
+            .iter()
+            .next_back()
+            .is_some_and(|last| last.triad == event.triad && last.notes == event.notes)
+        {
+            return;
+        }
+        let index = (self.head + self.len) % HEARD_CAPACITY;
+        self.events[index] = event;
+        if self.len == HEARD_CAPACITY {
+            self.head = (self.head + 1) % HEARD_CAPACITY;
+        } else {
+            self.len += 1;
+        }
+    }
+
+    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &HarmonyEvent> {
+        (0..self.len).map(move |offset| &self.events[(self.head + offset) % HEARD_CAPACITY])
+    }
+}
+
+/// A harmony loop: the chords heard over the last 1, 2, 4 or 8 bars with
+/// their real timing, replayed in time from `start_beat`. A lane of timed
+/// harmony events separate from the progression's slots; it sounds on table
+/// slot `slot` the way a held push does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct HarmonyLoop {
+    pub(crate) slot: u8,
+    pub(crate) bars: u8,
+    /// The transport beat its first pass starts on.
+    pub(crate) start_beat: f64,
+    events: [HarmonyEvent; LOOP_EVENT_LIMIT],
+    len: usize,
+}
+
+impl HarmonyLoop {
+    /// Build a loop from validated parts (a song code). `None` unless the
+    /// events start at offset 0, ascend strictly, fit the period and the limit.
+    pub(crate) fn new(
+        slot: u8,
+        bars: u8,
+        start_beat: f64,
+        events: &[HarmonyEvent],
+    ) -> Option<Self> {
+        let period = f64::from(bars) * 4.0;
+        let valid = matches!(bars, 1 | 2 | 4 | 8)
+            && usize::from(slot) < CHORD_SLOT_COUNT
+            && start_beat.is_finite()
+            && !events.is_empty()
+            && events.len() <= LOOP_EVENT_LIMIT
+            && events[0].at == 0.0
+            && events.windows(2).all(|pair| pair[0].at < pair[1].at)
+            && events.iter().all(|event| event.at < period);
+        if !valid {
+            return None;
+        }
+        let mut stored = [NO_EVENT; LOOP_EVENT_LIMIT];
+        stored[..events.len()].copy_from_slice(events);
+        Some(Self {
+            slot,
+            bars,
+            start_beat,
+            events: stored,
+            len: events.len(),
+        })
+    }
+
+    /// Loop the chords heard in the `bars` bars before `end`, starting its
+    /// first pass at `end`. The chord already sounding when the window opens
+    /// is the loop's first chord. `None` when nothing was heard.
+    pub(crate) fn grab(heard: &HeardLog, bars: u8, end: f64, slot: u8) -> Option<Self> {
+        let period = f64::from(bars) * 4.0;
+        let window_start = end - period;
+        let opening = heard
+            .iter()
+            .rev()
+            .find(|event| event.at <= window_start + GRID_BEAT_EPSILON);
+        let mut events = Vec::with_capacity(LOOP_EVENT_LIMIT);
+        if let Some(opening) = opening {
+            events.push(HarmonyEvent {
+                at: 0.0,
+                ..*opening
+            });
+        }
+        for event in heard
+            .iter()
+            .filter(|event| event.at > window_start + GRID_BEAT_EPSILON && event.at < end)
+        {
+            if events.len() == LOOP_EVENT_LIMIT {
+                break;
+            }
+            // Nothing heard before the first change: it opens the loop.
+            let at = if events.is_empty() {
+                0.0
+            } else {
+                event.at - window_start
+            };
+            events.push(HarmonyEvent { at, ..*event });
+        }
+        Self::new(slot, bars, end, &events)
+    }
+
+    pub(crate) fn period(&self) -> f64 {
+        f64::from(self.bars) * 4.0
+    }
+
+    pub(crate) fn events(&self) -> &[HarmonyEvent] {
+        &self.events[..self.len]
+    }
+
+    /// Where the loop is at `beat`, in beats into the pass, or `None` before
+    /// its first pass starts.
+    pub(crate) fn phase(&self, beat: f64) -> Option<f64> {
+        (beat + GRID_BEAT_EPSILON >= self.start_beat)
+            .then(|| (beat - self.start_beat).max(0.0).rem_euclid(self.period()))
+    }
+
+    /// The loop chord sounding at `beat`.
+    pub(crate) fn at(&self, beat: f64) -> Option<&HarmonyEvent> {
+        let phase = self.phase(beat)?;
+        self.events()
+            .iter()
+            .rev()
+            .find(|event| event.at <= phase + GRID_BEAT_EPSILON)
+    }
+}
+
 /// The whole of Push the Harmony's state, carried in the live session.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct PushedHarmony {
     pub(crate) held: Option<HeldChord>,
     pub(crate) queued: Option<QueuedPush>,
+    /// A grabbed harmony loop replaying in time. A landed push ends it.
+    pub(crate) looping: Option<HarmonyLoop>,
+    /// What the pad sounded, for `G`. Live-only.
+    pub(crate) heard: HeardLog,
     /// Live-only, like the undo history.
     pub(crate) quantize: PushQuantize,
     undo: UndoHistory,
@@ -137,29 +315,53 @@ pub(crate) enum PushOutcome {
 }
 
 impl PushedHarmony {
-    /// A saved song's state: what was held, and a queued target, which lands
-    /// on the loaded song's first bar. Undo history is never saved.
-    pub(crate) fn restored(held: Option<HeldChord>, queued: Option<Triad>) -> Self {
+    /// A saved song's state: what was held, a queued target, which lands on
+    /// the loaded song's first bar, and a loop (its start rebased by the
+    /// codec). Undo history and the heard log are never saved.
+    pub(crate) fn restored(
+        held: Option<HeldChord>,
+        queued: Option<Triad>,
+        looping: Option<HarmonyLoop>,
+    ) -> Self {
         Self {
             held,
             queued: queued.map(|target| QueuedPush {
                 target,
                 land_beat: 0.0,
             }),
-            quantize: PushQuantize::default(),
-            undo: UndoHistory::default(),
+            looping,
+            ..Self::default()
         }
     }
 
-    /// Whether the harmony is pushed or about to be.
-    pub(crate) fn is_active(&self) -> bool {
-        self.held.is_some() || self.queued.is_some()
+    /// The pushed or looped chord sounding at `beat`: the loop's, once its
+    /// first pass has started, else the held push.
+    pub(crate) fn sounding(&self, beat: f64) -> Option<HeldChord> {
+        self.looping
+            .and_then(|looping| {
+                looping.at(beat).map(|event| HeldChord {
+                    slot: looping.slot,
+                    triad: event.triad,
+                    notes: event.notes,
+                })
+            })
+            .or(self.held)
     }
 
-    /// The harmony a new move reads: the queued chord, else the held one,
-    /// else `authored`, the progression chord sounding now.
-    pub(crate) fn base(&self, authored: Triad) -> Triad {
-        self.heading().unwrap_or(authored)
+    /// The harmony a new move reads at `beat`: the queued chord, else the
+    /// loop or held chord sounding, else `authored`, the progression chord.
+    pub(crate) fn base(&self, authored: Triad, beat: f64) -> Triad {
+        self.queued
+            .map(|queued| queued.target)
+            .or(self.sounding(beat).map(|held| held.triad))
+            .unwrap_or(authored)
+    }
+
+    /// Make `looping` the loop, replacing any loop and withdrawing a waiting
+    /// push: the grab is the newest thing played.
+    pub(crate) fn start_loop(&mut self, looping: HarmonyLoop) {
+        self.looping = Some(looping);
+        self.queued = None;
     }
 
     /// Where the harmony is headed, as the undo history records it.
@@ -186,7 +388,7 @@ impl PushedHarmony {
         authored: Triad,
         beat: f64,
     ) -> PushOutcome {
-        let target = harmony_move.apply(self.base(authored), key);
+        let target = harmony_move.apply(self.base(authored, beat), key);
         self.undo.push(self.heading());
         self.queue(target, beat);
         PushOutcome::Queued(target)
@@ -217,13 +419,20 @@ impl PushedHarmony {
     }
 
     /// Land the queued move: voice its chord from `sounding` on `slot` (a
-    /// held chord keeps its slot).
+    /// held or looped chord keeps its slot). A landed push ends a loop: the
+    /// player has taken over.
     pub(crate) fn land(&mut self, sounding: [i32; 4], slot: usize) {
         let Some(queued) = self.queued.take() else {
             return;
         };
+        let slot = self
+            .held
+            .map(|held| held.slot)
+            .or(self.looping.map(|looping| looping.slot))
+            .unwrap_or(slot as u8);
+        self.looping = None;
         self.held = Some(HeldChord {
-            slot: self.held.map_or(slot as u8, |held| held.slot),
+            slot,
             triad: queued.target,
             notes: voice_lead(queued.target, sounding),
         });
@@ -239,11 +448,24 @@ impl PushedHarmony {
         }
     }
 
-    /// A restart begins at bar one, so a waiting move lands there.
+    /// Rebase onto song beat zero for a song code: the loop keeps its phase.
+    pub(crate) fn rebased_at(mut self, beat: f64) -> Self {
+        if let Some(looping) = &mut self.looping {
+            looping.start_beat -= beat;
+        }
+        self
+    }
+
+    /// A restart begins at bar one, so a waiting move lands there and a loop
+    /// starts its pass there. The heard log's beats no longer apply.
     pub(crate) fn restarted(mut self) -> Self {
         if let Some(queued) = &mut self.queued {
             queued.land_beat = 0.0;
         }
+        if let Some(looping) = &mut self.looping {
+            looping.start_beat = 0.0;
+        }
+        self.heard = HeardLog::default();
         self
     }
 }

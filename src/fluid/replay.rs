@@ -428,6 +428,8 @@ struct ReplayResult {
     harmony_held: Option<HeldChord>,
     /// The queued push target and the bits of the beat it lands on.
     harmony_queued: Option<(Triad, u64)>,
+    /// A playing loop's bars and each event's offset bits and triad.
+    harmony_loop: Option<(u8, Vec<(u64, Triad)>)>,
 }
 
 impl ReplayResult {
@@ -780,6 +782,16 @@ impl ReplayHarness {
             idle_turn_ids: self.idle_turn_ids,
             telemetry_beat_bits: self.telemetry.beat().to_bits(),
             harmony_held: session.push.held,
+            harmony_loop: session.push.looping.map(|looping| {
+                (
+                    looping.bars,
+                    looping
+                        .events()
+                        .iter()
+                        .map(|event| (event.at.to_bits(), event.triad))
+                        .collect(),
+                )
+            }),
             harmony_queued: session
                 .push
                 .queued
@@ -6281,6 +6293,7 @@ fn g_grabs_motion_and_shift_g_reaches_the_harmony_grab() {
         press('G'),
     ] {
         let harmony = replay(&[shift_g, press('2')], TerminalCapabilities::full());
+        // Nothing heard yet: the grab says so and changes nothing.
         assert_eq!(harmony.effect_count("GrabHarmony(Beats8)=>OK:NoChange"), 1);
         assert_eq!(harmony.final_owner(), Some("BROWSE"));
     }
@@ -6294,4 +6307,44 @@ fn g_grabs_motion_and_shift_g_reaches_the_harmony_grab() {
     );
     assert_eq!(cancelled.effect_count("Motion"), 0);
     assert_eq!(cancelled.final_owner(), Some("BROWSE"));
+}
+
+/// Through the production keys: two pushes on beats, then `G` `1` loops the
+/// bar that held them, with the authored chord that opened it.
+#[test]
+fn shift_g_loops_the_chords_just_played() {
+    let press = |character| key(0, FixtureKey::Character(character), InputPhase::Press);
+    let result = replay(
+        &[
+            space(InputPhase::Press),
+            press('f'),
+            TraceEvent::Tick { after_ms: 1_100 },
+            press('l'),
+            TraceEvent::Tick { after_ms: 1_000 },
+            space(InputPhase::Release),
+            TraceEvent::Tick { after_ms: 1_000 },
+            modified_key(0, FixtureKey::Character('G'), InputPhase::Press, 1),
+            press('1'),
+            TraceEvent::Tick { after_ms: 20 },
+        ],
+        TerminalCapabilities::full(),
+    );
+    let (bars, events) = result.harmony_loop.clone().expect("a loop");
+    assert_eq!(bars, 1);
+    let names: Vec<(f64, String)> = events
+        .iter()
+        .map(|(bits, triad)| (f64::from_bits(*bits), triad.name(0)))
+        .collect();
+    // C landed on beat 1 and G (a fifth up) on beat 2; Am opened the bar.
+    assert_eq!(
+        names,
+        vec![
+            (0.0, "Am".to_string()),
+            (1.0, "C".to_string()),
+            (2.0, "G".to_string())
+        ]
+    );
+    assert_eq!(result.effect_count("GrabHarmony(Beats4)=>OK:Published"), 1);
+    let frame = &result.frames.last().unwrap().text;
+    assert!(frame.contains("LOOP 1 bar"), "{frame}");
 }

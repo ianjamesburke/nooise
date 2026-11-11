@@ -295,7 +295,7 @@ impl EffectExecutor {
             tonal_sequence: Some(snapshot.tonal_sequence.clone()),
             muted: snapshot.muted,
             vamp: snapshot.vamp.map(|vamp| vamp.rebased_at(beat)),
-            push: snapshot.push,
+            push: snapshot.push.rebased_at(beat),
             kick_bass_latched: snapshot.kick_bass_latched,
             gestures: snapshot.gestures.snapshot_at(now_seconds),
             drunken_phase_beat: if snapshot
@@ -875,9 +875,32 @@ impl EffectExecutor {
                         let slot = usize::from(
                             sounding_chord(pad, beat, self.session.audio_phrase_start()).1,
                         );
-                        let sounding = pad_chord_tones(pad, progression, slot);
-                        let sounding = snapshot.push.held.map_or(sounding, |held| held.notes);
+                        let authored = pad_chord_tones(pad, progression, slot);
+                        let sounding = snapshot
+                            .push
+                            .sounding(beat)
+                            .map_or(authored, |held| held.notes);
+                        if snapshot.push.heard.iter().next().is_none() {
+                            // What sounded before the first landing, as the
+                            // audio clock would have logged it.
+                            snapshot.push.heard.record(HarmonyEvent {
+                                at: 0.0,
+                                triad: authored_triad(pad, progression, slot),
+                                notes: authored,
+                            });
+                        }
+                        // Logged on the line it landed on, as the audio
+                        // clock would have, not on this later tick.
+                        let landed_at =
+                            snapshot.push.queued.map_or(beat, |queued| queued.land_beat);
                         snapshot.push.land(sounding, slot);
+                        if let Some(held) = snapshot.push.held {
+                            snapshot.push.heard.record(HarmonyEvent {
+                                at: landed_at,
+                                triad: held.triad,
+                                notes: held.notes,
+                            });
+                        }
                     });
                     acknowledgement = EffectAcknowledgement::Published {
                         generation: snapshot.generation,
@@ -1204,19 +1227,43 @@ impl EffectExecutor {
         })
     }
 
-    /// STUB: `G` then 1/2/4/8 will make the chords pushed over that many bars
-    /// the looping progression, replacing it outright. Not built in the v4
-    /// mock: it needs a landing log and a lane that can hold any pushed triad
-    /// with its voicing and timing (ADR 0002's Cell lane). Changes nothing.
+    /// `G` then 1/2/4/8: loop the chords heard over that many bars before
+    /// the nearest bar line, with their real timing, from that bar line on.
+    /// Replaces any loop. Like a push it plays over the song, so auto keeps
+    /// running and the MRU is untouched.
     pub(crate) fn grab_harmony(
         &mut self,
         duration: MotionDuration,
+        beat: f64,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let beat = self.current_beat(beat);
+        let bars = duration.beats() / 4;
+        let end = (beat / 4.0).round() * 4.0;
+        let phrase_start = self.session.audio_phrase_start();
+        let mut grabbed = None;
+        let snapshot = self.session.update(|snapshot| {
+            let slot = snapshot.push.sounding(beat).map_or_else(
+                || sounding_chord(&snapshot.controls.pad, beat, phrase_start).1,
+                |held| held.slot,
+            );
+            grabbed = HarmonyLoop::grab(&snapshot.push.heard, bars, end, slot);
+            if let Some(looping) = grabbed {
+                snapshot.push.start_loop(looping);
+            }
+        });
+        let Some(looping) = grabbed else {
+            self.show_message("Nothing heard yet to loop".to_string());
+            return Ok(EffectAcknowledgement::NoChange);
+        };
+        let chords = looping.events().len();
         self.show_message(format!(
-            "Harmony grab ({} bars) is not built yet",
-            duration.beats() / 4
+            "Loop {bars} bar{} · {chords} chord{}",
+            if bars == 1 { "" } else { "s" },
+            if chords == 1 { "" } else { "s" }
         ));
-        Ok(EffectAcknowledgement::NoChange)
+        Ok(EffectAcknowledgement::Published {
+            generation: snapshot.generation,
+        })
     }
 
     /// Set where Push the Harmony moves land. A live play-style choice: it
@@ -1627,7 +1674,7 @@ impl EffectExecutor {
             InteractionEffect::State(action) => self.state_action(action),
             InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
-            InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration),
+            InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration, context.beat),
             InteractionEffect::SetHarmonyQuantize(quantize) => {
                 self.set_harmony_quantize(quantize, context.beat)
             }
@@ -1789,7 +1836,7 @@ impl EffectExecutor {
             InteractionEffect::State(action) => self.state_action(action),
             InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
-            InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration),
+            InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration, context.beat),
             InteractionEffect::SetHarmonyQuantize(quantize) => {
                 self.set_harmony_quantize(quantize, context.beat)
             }

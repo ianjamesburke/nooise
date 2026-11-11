@@ -63,6 +63,12 @@ pub(crate) struct Triad {
 }
 
 impl Triad {
+    /// A placeholder for unused fixed-capacity storage.
+    pub(crate) const C_MAJOR: Self = Self {
+        root: 0,
+        quality: TriadQuality::Major,
+    };
+
     pub(crate) fn new(root: i32, quality: TriadQuality) -> Self {
         Self {
             root: root.rem_euclid(12) as u8,

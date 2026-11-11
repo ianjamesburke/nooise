@@ -13,7 +13,7 @@ use std::fmt;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-use super::push::{HeldChord, PushedHarmony};
+use super::push::{HarmonyEvent, HarmonyLoop, HeldChord, PushedHarmony};
 use super::range_epoch::{CURRENT_RANGE_EPOCH, DRUNKEN_WAVE_EPOCH, stale_modulation};
 use super::song_ids::{song_id_at, song_id_index};
 use super::voice::{TONAL_MAX_LOOP_STEPS, TonalSequenceState, Triad, TriadQuality};
@@ -68,6 +68,12 @@ const KICK_BASS_LATCH_RECORD: u8 = 15;
 /// first bar; undo history is never saved.
 const PUSH_HARMONY_RECORD: u8 = 16;
 const PUSH_HARMONY_VERSION: u8 = 1;
+/// A harmony loop (`G`): version, slot, bars, its start beat rebased to the
+/// song's beat zero, then at most `LOOP_EVENT_LIMIT` events of offset
+/// (1/1024 beat), root, quality and four notes: 8 bytes each.
+const HARMONY_LOOP_RECORD: u8 = 17;
+const HARMONY_LOOP_VERSION: u8 = 1;
+const LOOP_OFFSET_STEPS_PER_BEAT: f64 = 1024.0;
 const CHORD_OVERRIDES_VERSION: u8 = 2;
 /// Relative Motion has an explicit reference; previous absolute sampled
 /// payloads are refused rather than given a different musical meaning.
@@ -383,10 +389,17 @@ pub(crate) fn encode_song_code_at_epoch(
         payload.extend_from_slice(&vamp.end_beat.to_le_bytes());
         write_record(VAMP_RECORD, &payload, &mut bytes)?;
     }
-    if song.push.is_active() {
+    if song.push.held.is_some() || song.push.queued.is_some() {
         write_record(
             PUSH_HARMONY_RECORD,
             &write_push_harmony(&song.push)?,
+            &mut bytes,
+        )?;
+    }
+    if let Some(looping) = &song.push.looping {
+        write_record(
+            HARMONY_LOOP_RECORD,
+            &write_harmony_loop(looping)?,
             &mut bytes,
         )?;
     }
@@ -463,6 +476,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     let mut editor_motion_record_seen = false;
     let mut vamp_record_seen = false;
     let mut push_record_seen = false;
+    let mut harmony_loop = None;
     let mut lane_bypass = None;
     let mut epoch = 0;
     let mut chord_overrides_seen = false;
@@ -525,6 +539,12 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
                 push_record_seen = true;
                 song.push = read_push_harmony(payload)?;
             }
+            HARMONY_LOOP_RECORD => {
+                if harmony_loop.is_some() {
+                    return Err(SongCodeError::InvalidPushHarmony);
+                }
+                harmony_loop = Some(read_harmony_loop(payload)?);
+            }
             RANGE_EPOCH_RECORD => epoch = Reader::new(payload).u16()?,
             MIDI_ROWS_RECORD => {
                 return Err(SongCodeError::RetiredControl("midi routing"));
@@ -563,6 +583,7 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
         }
     }
 
+    song.push.looping = harmony_loop;
     if let Some(payload) = lane_bypass {
         read_lane_bypass(payload, &mut song)?;
     }
@@ -1534,6 +1555,59 @@ fn write_push_harmony(push: &PushedHarmony) -> Result<Vec<u8>, SongCodeError> {
     Ok(out)
 }
 
+fn write_harmony_loop(looping: &HarmonyLoop) -> Result<Vec<u8>, SongCodeError> {
+    let mut out = vec![HARMONY_LOOP_VERSION, looping.slot, looping.bars];
+    out.extend_from_slice(&looping.start_beat.to_le_bytes());
+    out.push(looping.events().len() as u8);
+    for event in looping.events() {
+        let offset = (event.at * LOOP_OFFSET_STEPS_PER_BEAT).round();
+        if !(0.0..=f64::from(u16::MAX)).contains(&offset)
+            || event.notes.iter().any(|note| !(0..=127).contains(note))
+        {
+            return Err(SongCodeError::InvalidPushHarmony);
+        }
+        out.extend_from_slice(&(offset as u16).to_le_bytes());
+        out.extend_from_slice(&[event.triad.root() as u8, event.triad.quality.tag()]);
+        out.extend(event.notes.map(|note| note as u8));
+    }
+    Ok(out)
+}
+
+fn read_harmony_loop(bytes: &[u8]) -> Result<HarmonyLoop, SongCodeError> {
+    let invalid = |_| SongCodeError::InvalidPushHarmony;
+    let mut reader = Reader::new(bytes);
+    if reader.u8().map_err(invalid)? != HARMONY_LOOP_VERSION {
+        return Err(SongCodeError::InvalidPushHarmony);
+    }
+    let slot = reader.u8().map_err(invalid)?;
+    let bars = reader.u8().map_err(invalid)?;
+    let start_beat = reader.f64().map_err(invalid)?;
+    let count = usize::from(reader.u8().map_err(invalid)?);
+    let mut events = Vec::with_capacity(count);
+    for _ in 0..count {
+        let offset = reader.u16().map_err(invalid)?;
+        let root = reader.u8().map_err(invalid)?;
+        let quality = TriadQuality::from_tag(reader.u8().map_err(invalid)?)
+            .ok_or(SongCodeError::InvalidPushHarmony)?;
+        let mut notes = [0; 4];
+        for note in &mut notes {
+            *note = i32::from(reader.u8().map_err(invalid)?);
+        }
+        if root >= 12 || notes[3] > 127 || !notes.windows(2).all(|pair| pair[0] <= pair[1]) {
+            return Err(SongCodeError::InvalidPushHarmony);
+        }
+        events.push(HarmonyEvent {
+            at: f64::from(offset) / LOOP_OFFSET_STEPS_PER_BEAT,
+            triad: Triad::new(i32::from(root), quality),
+            notes,
+        });
+    }
+    if !reader.is_empty() {
+        return Err(SongCodeError::InvalidPushHarmony);
+    }
+    HarmonyLoop::new(slot, bars, start_beat, &events).ok_or(SongCodeError::InvalidPushHarmony)
+}
+
 fn read_push_harmony(bytes: &[u8]) -> Result<PushedHarmony, SongCodeError> {
     let invalid = |_| SongCodeError::InvalidPushHarmony;
     let mut reader = Reader::new(bytes);
@@ -1581,7 +1655,7 @@ fn read_push_harmony(bytes: &[u8]) -> Result<PushedHarmony, SongCodeError> {
     if !reader.is_empty() || (held.is_none() && queued.is_none()) {
         return Err(SongCodeError::InvalidPushHarmony);
     }
-    Ok(PushedHarmony::restored(held, queued))
+    Ok(PushedHarmony::restored(held, queued, None))
 }
 
 fn read_vamp(bytes: &[u8]) -> Result<VampState, SongCodeError> {
@@ -1614,6 +1688,31 @@ fn read_vamp(bytes: &[u8]) -> Result<VampState, SongCodeError> {
 #[cfg(test)]
 mod planned_action_codec_tests {
     use super::*;
+
+    /// The fullest loop (32 changes over 8 bars) costs a few hundred
+    /// characters, keeping a code short enough to paste.
+    #[test]
+    fn a_full_harmony_loop_keeps_the_code_short() {
+        let events: Vec<HarmonyEvent> = (0..crate::fluid::push::LOOP_EVENT_LIMIT)
+            .map(|index| HarmonyEvent {
+                at: index as f64,
+                triad: Triad::new(index as i32, TriadQuality::Minor),
+                notes: [45, 48, 52, 57],
+            })
+            .collect();
+        let mut song = SongState::default();
+        song.push.looping = HarmonyLoop::new(0, 8, -3.5, &events);
+        let bare = encode_song_code(&SongState::default()).unwrap().len();
+        let code = encode_song_code(&song).unwrap();
+        assert!(
+            code.len() - bare < 400,
+            "a full loop costs {}",
+            code.len() - bare
+        );
+        let decoded = decode_song_code(&code).unwrap().push.looping.unwrap();
+        assert_eq!(decoded.events().len(), 32);
+        assert_eq!(decoded.start_beat, -3.5);
+    }
 
     #[test]
     fn malformed_push_harmony_records_are_refused() {
