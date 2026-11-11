@@ -1280,7 +1280,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
-                filled_sections: [false; sections::SECTION_COUNT],
+                filled_states: [false; states::STATE_COUNT],
             },
         });
         publisher.publish(shared, model, session, &view, false);

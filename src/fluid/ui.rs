@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use super::interaction::{INSTRUMENTS, LEAD_PLAY_KEYS, PARAMETERS, SectionLeader};
+use super::interaction::{INSTRUMENTS, LEAD_PLAY_KEYS, PARAMETERS, StateLeader};
 use super::widget::{Dial, DialScale};
 use super::*;
 
@@ -207,8 +207,8 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         draw_help(f, inner);
     }
     match &view.mode {
-        ModeSurface::Performance(PerformanceSurface::Sections { leader }) => {
-            draw_section_leader(f, inner, view, *leader);
+        ModeSurface::Performance(PerformanceSurface::States { leader }) => {
+            draw_state_leader(f, inner, view, *leader);
         }
         ModeSurface::Performance(surface) => draw_leader(f, inner, surface),
         _ => {}
@@ -315,7 +315,7 @@ fn chord_ribbon(beat: f64, span: ChordSpan) -> Line<'static> {
     Line::from(spans)
 }
 
-/// How long a queued section waits, in whole bars rounded up, so the last
+/// How long a queued state waits, in whole bars rounded up, so the last
 /// bar of the phrase reads `in 1 bar`. A stopped clock restarts the phrase
 /// from its first chord, so no countdown is true until it runs again.
 fn queue_countdown(transport: Transport, telemetry: &TelemetryView) -> String {
@@ -350,21 +350,21 @@ fn draw_harmony(
             Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
         ),
     ];
-    let section = match (&session.pending_section, session.current_section) {
+    let state = match (&session.pending_state, session.current_state) {
         (Some(pending), current) => Some(format!(
             " · {}→ {} {}",
             current.map_or_else(String::new, |index| format!(
                 "{} ",
-                sections::SECTION_NAMES[index]
+                states::STATE_NAMES[index]
             )),
-            sections::SECTION_NAMES[pending.index],
+            states::STATE_NAMES[pending.index],
             queue_countdown(session.transport, telemetry),
         )),
-        (None, Some(index)) => Some(format!(" · SECTION {}", sections::SECTION_NAMES[index])),
+        (None, Some(index)) => Some(format!(" · STATE {}", states::STATE_NAMES[index])),
         (None, None) => None,
     };
-    if let Some(section) = section {
-        key_spans.push(Span::styled(section, Style::default().fg(LIVE_AMBER)));
+    if let Some(state) = state {
+        key_spans.push(Span::styled(state, Style::default().fg(LIVE_AMBER)));
     }
     f.render_widget(
         Paragraph::new(Line::from(key_spans)).alignment(Alignment::Center),
@@ -1228,7 +1228,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         }
         Line::from(spans)
     };
-    let section = |title: &'static str, rows: &[KeyRow]| -> Vec<Line<'static>> {
+    let state = |title: &'static str, rows: &[KeyRow]| -> Vec<Line<'static>> {
         let mut lines = vec![
             Line::from(Span::styled(title, heading_style)),
             Line::from(Span::styled(rule.clone(), rule_style)),
@@ -1241,7 +1241,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         lines
     };
 
-    let mut lines = section(
+    let mut lines = state(
         "General",
         &[
             &[
@@ -1263,7 +1263,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             ],
         ],
     );
-    lines.extend(section(
+    lines.extend(state(
         "Gestures",
         &[
             &[
@@ -1278,7 +1278,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             ],
         ],
     ));
-    lines.extend(section(
+    lines.extend(state(
         "Editors",
         &[
             &[("/", "palette"), ("f", "LFO"), ("\u{21e7}F", "add LFO")],
@@ -1289,7 +1289,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             ],
         ],
     ));
-    lines.extend(section(
+    lines.extend(state(
         "Lead (i to enter)",
         &[
             &[
@@ -1305,7 +1305,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             ],
         ],
     ));
-    lines.extend(section(
+    lines.extend(state(
         "Jump (Space, then one key)",
         &[
             &jump_layers[..4],
@@ -1319,10 +1319,10 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             ],
         ],
     ));
-    lines.extend(section(
-        "Sections (' queue, \" store)",
+    lines.extend(state(
+        "States (' queue, \" store)",
         &[
-            &[("' 1-9", "queue section"), ("' '", "previous section")],
+            &[("' 1-9", "queue state"), ("' '", "previous state")],
             &[
                 ("\" 1-9", "store here (replaces)"),
                 ("' same", "cancel queue"),
@@ -1372,20 +1372,20 @@ fn leader_frame(f: &mut Frame, inner: Rect, title: &'static str, desired_height:
 }
 
 /// The pending `'` or `"` leader: slots 1-9 in three rows, each marked empty
-/// or filled, with the playing and queued sections called out.
-fn draw_section_leader(f: &mut Frame, inner: Rect, view: &UiViewModel<'_>, leader: SectionLeader) {
+/// or filled, with the playing and queued states called out.
+fn draw_state_leader(f: &mut Frame, inner: Rect, view: &UiViewModel<'_>, leader: StateLeader) {
     let (title, hint) = match leader {
-        SectionLeader::Queue => (" Queue section ", "1-9 Queue   ' Previous"),
-        SectionLeader::Store => (" Store section ", "1-9 Store here (replaces)"),
+        StateLeader::Queue => (" Queue state ", "1-9 Queue   ' Previous"),
+        StateLeader::Store => (" Store state ", "1-9 Store here (replaces)"),
     };
     let content = leader_frame(f, inner, title, 7);
-    let queued = view.session.pending_section.as_ref().map(|p| p.index);
+    let queued = view.session.pending_state.as_ref().map(|p| p.index);
     let key_style = Style::default()
         .fg(BROWSE_PALETTE.active)
         .add_modifier(Modifier::BOLD);
     let cell = |index: usize| -> Vec<Span<'static>> {
         let (label, style) = match (
-            view.session.current_section == Some(index),
+            view.session.current_state == Some(index),
             queued == Some(index),
         ) {
             (true, true) => ("now+next", Style::default().fg(LIVE_AMBER)),
@@ -1394,13 +1394,13 @@ fn draw_section_leader(f: &mut Frame, inner: Rect, view: &UiViewModel<'_>, leade
                 "next",
                 Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
             ),
-            (false, false) if view.filled_sections[index] => {
+            (false, false) if view.filled_states[index] => {
                 ("filled", Style::default().fg(Color::Rgb(205, 210, 222)))
             }
             (false, false) => ("empty", Style::default().fg(DIM_TEXT)),
         };
         vec![
-            Span::styled(format!("{} ", sections::SECTION_NAMES[index]), key_style),
+            Span::styled(format!("{} ", states::STATE_NAMES[index]), key_style),
             Span::styled(format!("{label:<10}"), style),
         ]
     };
@@ -1473,8 +1473,8 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
             lines.push(single("Esc", "Cancel"));
             lines
         }
-        PerformanceSurface::Sections { .. } => {
-            unreachable!("section leaders render through draw_section_leader")
+        PerformanceSurface::States { .. } => {
+            unreachable!("state leaders render through draw_state_leader")
         }
         PerformanceSurface::ChooseParameter { instrument } => vec![
             Line::from(Span::styled(instrument.name().to_string(), label_style)),
@@ -1985,7 +1985,7 @@ mod motion_render_tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
-                filled_sections: [false; sections::SECTION_COUNT],
+                filled_states: [false; states::STATE_COUNT],
             },
         });
         let ModeSurface::Automation(surface) = &view.mode else {

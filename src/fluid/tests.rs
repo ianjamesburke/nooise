@@ -311,7 +311,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
             },
             gesture_now_seconds: 0.0,
             gesture_holds_available: true,
-            filled_sections: [false; sections::SECTION_COUNT],
+            filled_states: [false; states::STATE_COUNT],
         },
     });
     let backend = TestBackend::new(width, height);
@@ -13008,7 +13008,7 @@ fn sequencer_completion_tonal_hold_releases_on_stop_or_sequence_edit() {
 }
 
 #[test]
-fn sequencer_completion_section_restore_releases_outgoing_tonal_tie() {
+fn sequencer_completion_state_restore_releases_outgoing_tonal_tie() {
     let mut controls = TonalControls {
         level: 0.5,
         step_count: 2.0,
@@ -13031,7 +13031,7 @@ fn sequencer_completion_section_restore_releases_outgoing_tonal_tie() {
     }
     assert!(
         engine.voices.is_empty(),
-        "section recall must not strand a held voice"
+        "state recall must not strand a held voice"
     );
 }
 

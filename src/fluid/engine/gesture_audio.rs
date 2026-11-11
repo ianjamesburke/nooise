@@ -357,7 +357,7 @@ struct BeatRepeat {
     beat_index: Option<i64>,
     beat_start: u64,
     /// Frame of the last grid line that did not follow the previous beat: a
-    /// section landing or transport restart. The signal may be discontinuous
+    /// state landing or transport restart. The signal may be discontinuous
     /// there, so no pre-roll may reach back across it.
     grid_break: u64,
     state: RepeatState,
@@ -984,10 +984,10 @@ mod tests {
         assert!(matches!(bank.fx.repeat.state, RepeatState::Looping { .. }));
     }
 
-    /// A section landing restarts the beat clock and swaps the song under the
+    /// A state landing restarts the beat clock and swaps the song under the
     /// stage through a short fade; a hold must ride through both.
     #[test]
-    fn beat_repeat_section_landing_mid_hold_does_not_click() {
+    fn beat_repeat_state_landing_mid_hold_does_not_click() {
         for landing in [QUARTER * 3 + 5_000, QUARTER * 5 + 5_000] {
             let mut bank = GestureAudioBank::new(SAMPLE_RATE);
             let mut clock = Clock::new();
@@ -1014,7 +1014,7 @@ mod tests {
                 |_| BPM,
                 song,
             ));
-            assert_no_click(&out, "section landing");
+            assert_no_click(&out, "state landing");
         }
     }
 

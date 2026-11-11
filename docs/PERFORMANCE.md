@@ -1,35 +1,35 @@
 # Live performance
 
-## Prepared sections
+## Prepared states
 
-A bank holds nine numbered sections, 1 through 9. Store, recall and cancel
+A bank holds nine numbered states, 1 through 9. Store, recall and cancel
 each have a two-key gesture from ordinary browsing and a `/` operation, so the
 keyboard path never needs a typed command.
 
-`'` (apostrophe) opens the Queue leader. A digit `1`-`9` queues that section.
-The digit of the section already queued cancels the queue, the same toggle feel
-as `Space m`. A second `'` queues the previous section: the one that was
+`'` (apostrophe) opens the Queue leader. A digit `1`-`9` queues that state.
+The digit of the state already queued cancels the queue, the same toggle feel
+as `Space m`. A second `'` queues the previous state: the one that was
 current before the most recent landing, so `''` goes back and, repeated,
-alternates between two sections. With no previous section it says so and
+alternates between two states. With no previous state it says so and
 returns to browsing.
 
 `"` (Shift plus the same key) opens the Store leader. A digit `1`-`9` stores the
 current song snapshot into that slot at once, replacing whatever is there, with
-no confirmation. The message says `Stored section 3` for an empty slot and
-`Replaced section 3` for an occupied one. Esc cancels either leader with no
+no confirmation. The message says `Stored state 3` for an empty slot and
+`Replaced state 3` for an occupied one. Esc cancels either leader with no
 effect. Both leaders act on a key press and need no key-release support, and
 both open only from browsing: in the palette, numeric entry, or an editor,
 `'` and `"` are ordinary characters or nothing. A terminal may report `"` as the
 glyph alone, the glyph with Shift, or `'` with Shift; all three open the Store
 leader. A compact overlay lists slots 1-9, each marked `empty` or `filled`,
-with `now` on the current section and `next` on the queued one, a title
-saying `Queue section` or `Store section`, and `Esc Cancel`.
+with `now` on the current state and `next` on the queued one, a title
+saying `Queue state` or `Store state`, and `Esc Cancel`.
 
-The same operations are reachable through `/`: `/store section 1` to `9`,
-`/queue section 1` to `9`, `/queue next section` (the next filled slot in number
-order, skipping empty slots and wrapping), `/queue previous section`, and
-`/cancel section queue`. There is one store operation and it overwrites. A new
-queue replaces the old one; the key header shows the current section and queued
+The same operations are reachable through `/`: `/store state 1` to `9`,
+`/queue state 1` to `9`, `/queue next state` (the next filled slot in number
+order, skipping empty slots and wrapping), `/queue previous state`, and
+`/cancel state queue`. There is one store operation and it overwrites. A new
+queue replaces the old one; the key header shows the current state and queued
 destination, with the bars left (`1 → 2 in 3 bars`, rounded up, so the last bar
 reads `in 1 bar`). The change lands at the end of the sounding Phrase, the moment
 the chord window wraps to its first chord, and starts the destination at its
@@ -41,21 +41,21 @@ Offset or Length edit made while waiting moves it exactly as it moves the phrase
 it off the wrap. A queue made on the last beat of a phrase lands at that
 imminent wrap; one made after the wrap sample waits for the next phrase end.
 Under a held or latched Vamp the pad plays one chord, so the end of that chord is
-the phrase end. A queued section waits while stopped, shows `waiting`, and after
+the phrase end. A queued state waits while stopped, shows `waiting`, and after
 a restart lands at the first phrase end, a whole phrase from beat zero. The wait
 is one phrase: song 1 is 8 chords of 4 bars at 82 BPM, 32 bars or about 94
 seconds; the longest possible phrase, 8 chords of 64 bars at 30 BPM, is 512 bars
 or 68 minutes.
 Physical holds continue across recall until release; held Vamp locks the
 destination first chord. The destination supplies the saved q latch and
-individual mutes. An empty slot, a stopped clock and a missing previous section
+individual mutes. An empty slot, a stopped clock and a missing previous state
 each show a message and leave the current song playing.
 
 Launch with `nooise --set PATH` to save and reopen the bank. Without `--set`,
-sections last only for this run. The file holds one `number<TAB>song code` line
+states last only for this run. The file holds one `number<TAB>song code` line
 per filled slot and does not contain recorded audio. A bank that is invalid, or
 that still uses the old letter names A, B and C, is refused with a message at
-launch (sections are now numbered 1 to 9); nothing translates an old file. The
+launch (states are now numbered 1 to 9); nothing translates an old file. The
 current song keeps playing.
 
 ## Slapback preset
@@ -109,7 +109,7 @@ frame. Navigation is never saved in a song code.
 
 Tap `q` to latch a Kick+Bass group mute; tap again to clear it. Hold for at least 250 ms to mute temporarily, returning to the previous latch state on release. This gate never changes individual layer mutes. It survives in song codes; a physical hold does not. Focus loss or entering an editor releases a hold without changing the latch. `/group mute` toggles the latch, including on terminals without key-release reporting. On such terminals `q` also toggles on each reported press; if the terminal reports autorepeat as indistinguishable presses, use the palette to avoid accidental repeated toggles.
 
-Hold `w` for Submerge, `e` for Rise, `r` for Perc Roll, and `b` for Beat Repeat. Beat Repeat is a quarter-note repeat of the live Master mix: pressing mid-beat plays on dry until the next beat line, then loops the beat the hold began in, locked to the grid, for as long as it is held. The loop length is fixed when it starts, so a tempo change during the hold does not retime it; the next hold uses the new tempo. A hold needs a full beat of live audio behind it, so a loaded hold, or one pressed in the first beat after start, begins looping one beat later. A hold pressed while the transport is stopped waits for it to run. Release is quantized: on key-up the loop keeps playing to the next beat line, then returns to the live mix within 10 ms (so the sound can outlast the key by up to one beat). A release before the loop has engaged cancels at once, and pressing again before the beat line keeps the loop. On a stopped transport release fades at once. After a section landing or transport restart the first loop is a beat later, so it never repeats the song swap. Loop seams and engage are crossfaded. `/repeat` starts the effect without key-release support; Escape releases it. Captured audio is never embedded in song codes. Arrows and Tab remain available while holding. Opening a keyboard-owning editor or losing focus releases physical holds, and a held key must come up before starting again.
+Hold `w` for Submerge, `e` for Rise, `r` for Perc Roll, and `b` for Beat Repeat. Beat Repeat is a quarter-note repeat of the live Master mix: pressing mid-beat plays on dry until the next beat line, then loops the beat the hold began in, locked to the grid, for as long as it is held. The loop length is fixed when it starts, so a tempo change during the hold does not retime it; the next hold uses the new tempo. A hold needs a full beat of live audio behind it, so a loaded hold, or one pressed in the first beat after start, begins looping one beat later. A hold pressed while the transport is stopped waits for it to run. Release is quantized: on key-up the loop keeps playing to the next beat line, then returns to the live mix within 10 ms (so the sound can outlast the key by up to one beat). A release before the loop has engaged cancels at once, and pressing again before the beat line keeps the loop. On a stopped transport release fades at once. After a state landing or transport restart the first loop is a beat later, so it never repeats the song swap. Loop seams and engage are crossfaded. `/repeat` starts the effect without key-release support; Escape releases it. Captured audio is never embedded in song codes. Arrows and Tab remain available while holding. Opening a keyboard-owning editor or losing focus releases physical holds, and a held key must come up before starting again.
 
 Hold or tap `a` in Browsing for an indefinite chord vamp quantized to the start
 of the currently playing chord, so whatever chord is sounding stays locked seamlessly
@@ -157,7 +157,7 @@ loaded from a song code.
 Opening a keyboard-owning editor, Lead play, the palette or the Jump leader
 releases gestures. A key held through that transition must be released before
 it can start another gesture. Reported focus loss and shutdown also release held
-gestures. The one exception is the section leaders (`'` and `"`): opening one,
+gestures. The one exception is the state leaders (`'` and `"`): opening one,
 completing it with a digit, or cancelling it leaves a physical hold running, and
 a key-up while one is pending releases the hold exactly as in browsing. On a
 terminal without key-release support, the latched `q` and `a` toggles are state
@@ -304,7 +304,7 @@ Mute share a row with Motion Grab, and `Esc Cancel` has the bottom row. The foot
 visible.
 
 Motion Record and a shared lane editor remain deferred. `Space 1/2/4/8` are
-assigned to Grab; state-mark recall has its own routes, the `'` and `"` section
+assigned to Grab; state-mark recall has its own routes, the `'` and `"` state
 leaders above.
 
 Lead play retains its own `i` entry and existing bindings.
@@ -346,11 +346,11 @@ Lead play retains its own `i` entry and existing bindings.
    Bass again: the cursor is back where it was left. Shift+Tab to Lead, then
    Tab: the hub is back, with BPM reachable by arrows.
 11. With `--set PATH`, press `"` then `1`, `2`, `3` in turn after changing a knob
-   each time: the message reads `Stored section N`. Press `'` then `2`: the
-   header counts down the bars (`in N bars`) and the section lands when the chord
+   each time: the message reads `Stored state N`. Press `'` then `2`: the
+   header counts down the bars (`in N bars`) and the state lands when the chord
    progression loops back to its first chord. Press `'` then
    `2` again before the bar: the queue cancels. After a landing, press `'` `'`:
-   the previous section is queued. Press `"` then `2`: `Replaced section 2`, with
+   the previous state is queued. Press `"` then `2`: `Replaced state 2`, with
    no prompt. Press `'` then `9`, an empty slot: a message, and the song plays on.
    Hold `w` and press `'` then `3`: the Submerge stays held through the landing.
    Quit and relaunch with the same path: the filled slots show `filled` in the
