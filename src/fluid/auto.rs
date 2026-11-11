@@ -931,6 +931,17 @@ impl MorphState {
 
             (spec.set)(&mut next, value);
         }
+        // Clap plays its stored steps, and a song may store steps apart from
+        // its preset (the historical all-hit snapshot baseline). The pattern
+        // setter above re-seeds steps from the preset table, so while a preset
+        // pattern sounds, carry the stored steps of the endpoint it belongs to.
+        if next.clap.pattern < super::CUSTOM_CLAP_PATTERN_INDEX as f32 {
+            next.clap.steps = if next.clap.pattern == from.clap.pattern {
+                from.clap.steps
+            } else {
+                to.clap.steps
+            };
+        }
         next
     }
 
@@ -1814,6 +1825,29 @@ mod tests {
         assert_eq!(cursor.window.progression, 3);
         assert_eq!(cursor.chord_beats, 4.0);
         assert_eq!(slots[..5], [4, 5, 6, 7, 4]);
+    }
+
+    #[test]
+    fn morph_keeps_each_endpoints_stored_clap_steps_under_a_preset_pattern() {
+        // Song codes keep the historical all-hit Clap baseline under Steady,
+        // which differs from the Steady preset's single step 5.
+        let mut from = FluidControls::default();
+        from.clap.steps = [1.0; super::super::CLAP_STEP_COUNT];
+        let mut to = from.clone();
+        to.clap.apply_pattern_preset(1.0);
+        to.clap.steps[0] = 1.0;
+        let morph = MorphState::new(
+            vec![
+                SongState::from_controls(from.clone()),
+                SongState::from_controls(to.clone()),
+            ],
+            8,
+        );
+        assert_eq!(morph.controls_at(0.0).clap.steps, from.clap.steps);
+        let leg = morph.leg_beats(0);
+        let late = morph.controls_at(leg - 0.5);
+        assert_eq!(late.clap.pattern, to.clap.pattern, "the pattern switched");
+        assert_eq!(late.clap.steps, to.clap.steps);
     }
 
     #[test]
