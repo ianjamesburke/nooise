@@ -109,7 +109,7 @@ frame. Navigation is never saved in a song code.
 
 Tap `q` to latch a Kick+Bass group mute; tap again to clear it. Hold for at least 250 ms to mute temporarily, returning to the previous latch state on release. This gate never changes individual layer mutes. It survives in song codes; a physical hold does not. Focus loss or entering an editor releases a hold without changing the latch. `/group mute` toggles the latch, including on terminals without key-release reporting. On such terminals `q` also toggles on each reported press; if the terminal reports autorepeat as indistinguishable presses, use the palette to avoid accidental repeated toggles.
 
-Hold `w` for Submerge, `e` for Rise, `r` for Perc Roll, and `b` for Freeze. Freeze captures the latest half-second of the live Master mix and repeats overlapping normal-speed grains, preserving the captured pitch. It collects live audio first if the rolling buffer has not filled, including after loading an active hold. Release returns to the live mix within 10 ms. `/freeze` starts the effect without key-release support; Escape releases it. Captured audio is never embedded in song codes. Arrows and Tab remain available while holding. Opening a keyboard-owning editor or losing focus releases physical holds, and a held key must come up before starting again.
+Hold `w` for Submerge, `e` for Rise, `r` for Perc Roll, and `b` for Beat Repeat. Beat Repeat is a quarter-note repeat of the live Master mix: pressing mid-beat plays on dry until the next beat line, then loops the beat the hold began in, locked to the grid, for as long as it is held. The loop length is fixed when it starts, so a tempo change during the hold does not retime it; the next hold uses the new tempo. A hold needs a full beat of live audio behind it, so a loaded hold, or one pressed in the first beat after start, begins looping one beat later. A hold pressed while the transport is stopped waits for it to run. Loop seams are crossfaded and release returns to the live mix within 10 ms. `/repeat` starts the effect without key-release support; Escape releases it. Captured audio is never embedded in song codes. Arrows and Tab remain available while holding. Opening a keyboard-owning editor or losing focus releases physical holds, and a held key must come up before starting again.
 
 Hold or tap `a` in Browsing for an indefinite chord vamp quantized to the start
 of the currently playing chord, so whatever chord is sounding stays locked seamlessly
@@ -135,7 +135,7 @@ on top of it.
 
 The footer is two rows: a gesture-activity row above a stable exits/mode-help
 row, so a held gesture never crowds out `Esc release · ^Q quit` or the row
-below it. Idle, the activity row lists each hold's key and name (`q mute  w submerge  e rise  r roll  b freeze`); held or returning, it switches to a
+below it. Idle, the activity row lists each hold's key and name (`q mute  w submerge  e rise  r roll  b repeat`); held or returning, it switches to a
 bold readout of gesture and amount — `↑` means rising, `↓` returning, and `R`
 marks a restored hold loaded from a song code. The row below stays a terse
 `BROWSE · ? shortcuts   ^Q quit`; pressing `?` opens the full keyboard-shortcut
@@ -168,7 +168,7 @@ Hold gestures require negotiated key-release support. Without it, q and palette 
 The runtime never guesses release from a timeout or keyboard repeat.
 
 A saved song carries active gesture amounts and envelope direction, with no
-audio buffers. Freeze rebuilds its rolling capture from live audio after loading. Loaded holds resume where they were. A code from a build with
+audio buffers. Beat Repeat rebuilds its capture from live audio after loading. Loaded holds resume where they were. A code from a build with
 per-layer gestures that carries a gesture aimed at a voice is refused as a
 retired per-layer gesture. Press the matching
 gesture key to claim a loaded hold and release it, or use Escape to release
@@ -312,10 +312,10 @@ Lead play retains its own `i` entry and existing bindings.
 ## Audio smoke
 
 1. Run `cargo run` in a terminal reporting key releases. Tap `q`: Kick and Bass mute; tap again and they return. Mute Kick individually, then use a long `q` hold: releasing must leave Kick muted. Repeat with the group latch already on; the hold must preserve it.
-2. Hold `w`, `e`, `r`, and `b` in turn while navigating with arrows and Tab. Freeze should capture the current mix into a sustained, repeated smear and return smoothly on release. Overlap Freeze with another gesture and check both readouts.
+2. Hold `w`, `e`, `r`, and `b` in turn while navigating with arrows and Tab. Beat Repeat should loop the beat you pressed in, in time with the tempo and without clicks at the seam, and return smoothly on release. Overlap Beat Repeat with another gesture and check both readouts.
 3. Tap `a` and inspect `VAMP` beside the chord. Tap again and inspect `VAMP ENDING` until the next chord boundary. Check both at 46x11 and while browsing another layer.
-4. Open the palette while holding a gesture, return to Browse, and keep the key down. It must stay released until a fresh press after key-up. Test `/freeze` and Escape, and `/group mute` on a terminal without key-release support.
-5. Save with the q latch and Vamp active, reload the code, and confirm both resume. Save a held Freeze and reload; the audio history must rebuild from live audio instead of containing captured samples.
+4. Open the palette while holding a gesture, return to Browse, and keep the key down. It must stay released until a fresh press after key-up. Test `/repeat` and Escape, and `/group mute` on a terminal without key-release support.
+5. Save with the q latch and Vamp active, reload the code, and confirm both resume. Save a held Beat Repeat and reload; the audio history must rebuild from live audio instead of containing captured samples.
 6. Move to a non-Level Bass row, then press Space, `d`: it returns to that
    remembered Bass row in Browse with nothing changed, and `h`/`j`/`k`/`l`
    work at once. From Bass press Space, `j`: the cursor reaches Bass Level.

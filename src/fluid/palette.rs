@@ -142,7 +142,7 @@ impl PaletteEntry {
                 Operation::ToggleAuto => "auto morph".to_string(),
                 Operation::ToggleVamp => "chord vamp".to_string(),
                 Operation::ToggleKickBass => "kick and bass".to_string(),
-                Operation::ToggleFreeze => "live mix".to_string(),
+                Operation::ToggleBeatRepeat => "live beat".to_string(),
                 Operation::ChordNames(_) => "display".to_string(),
                 Operation::OutputDevice => "routing".to_string(),
                 Operation::Section(_) => "section bank".to_string(),

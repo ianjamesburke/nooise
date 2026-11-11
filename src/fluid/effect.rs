@@ -1614,7 +1614,7 @@ impl EffectExecutor {
             | InteractionEffect::ReleaseVamp
             | InteractionEffect::ToggleVamp
             | InteractionEffect::ToggleKickBass
-            | InteractionEffect::ToggleFreeze
+            | InteractionEffect::ToggleBeatRepeat
             | InteractionEffect::GestureReleaseAll) => {
                 Err(EffectFailure::UnsupportedInteraction(unsupported))
             }
@@ -2217,13 +2217,17 @@ impl EffectExecutor {
                     generation: snapshot.generation,
                 })
             }
-            InteractionEffect::ToggleFreeze => {
+            InteractionEffect::ToggleBeatRepeat => {
                 let now_seconds = self.session.audio_seconds();
                 let snapshot = self.session.update(|snapshot| {
-                    if snapshot.gestures.envelope(GestureKind::Freeze).held {
-                        snapshot.gestures.release(GestureKind::Freeze, now_seconds);
+                    if snapshot.gestures.envelope(GestureKind::BeatRepeat).held {
+                        snapshot
+                            .gestures
+                            .release(GestureKind::BeatRepeat, now_seconds);
                     } else {
-                        snapshot.gestures.press(GestureKind::Freeze, now_seconds);
+                        snapshot
+                            .gestures
+                            .press(GestureKind::BeatRepeat, now_seconds);
                     }
                 });
                 Ok(EffectAcknowledgement::Published {

@@ -366,7 +366,7 @@ mod tests {
         let mut destination = LiveSessionSnapshot::from_controls(FluidControls::default());
         destination.kick_bass_latched = true;
         destination.muted[Tab::Kick as usize] = true;
-        destination.gestures.lanes[GestureKind::Freeze as usize] = GestureEnvelope {
+        destination.gestures.lanes[GestureKind::BeatRepeat as usize] = GestureEnvelope {
             amount: 0.4,
             at_seconds: 0.0,
             held: true,
@@ -393,9 +393,9 @@ mod tests {
         );
         assert!(landed.gestures.rise.held && !landed.gestures.rise.restored);
         assert!(!landed.gestures.envelope(GestureKind::Echo).held);
-        assert!(landed.gestures.envelope(GestureKind::Freeze).restored);
+        assert!(landed.gestures.envelope(GestureKind::BeatRepeat).restored);
         assert_eq!(
-            landed.gestures.envelope(GestureKind::Freeze).at_seconds,
+            landed.gestures.envelope(GestureKind::BeatRepeat).at_seconds,
             5.0
         );
     }

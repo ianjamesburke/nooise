@@ -5929,7 +5929,7 @@ fn performance_status_frames_at_minimum_and_roomy_sizes() {
             );
             if label == "combined" {
                 assert!(text.contains("Kick+Bass latched"), "{text}");
-                assert!(text.contains("Freeze"), "{text}");
+                assert!(text.contains("Beat Repeat"), "{text}");
             }
             if std::env::var_os("NOOISE_PRINT_STATUS_FRAMES").is_some() {
                 println!("--- {width}x{height} {label} ---\n{text}");
@@ -5939,27 +5939,27 @@ fn performance_status_frames_at_minimum_and_roomy_sizes() {
 }
 
 #[test]
-fn reduced_terminal_can_toggle_group_mute_and_start_then_release_freeze() {
+fn reduced_terminal_can_toggle_group_mute_and_start_then_release_beat_repeat() {
     let press = |ch| key(0, FixtureKey::Character(ch), InputPhase::Press);
     let save = modified_key(0, FixtureKey::Character('s'), InputPhase::Press, 1 << 1);
     let result = replay(&[press('q'), save], TerminalCapabilities::default());
     let song = song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
     assert!(song.kick_bass_latched);
-    let freeze = replay(
+    let repeat = replay(
         &[
             press('/'),
-            press('f'),
             press('r'),
             press('e'),
+            press('p'),
             press('e'),
-            press('z'),
-            press('e'),
+            press('a'),
+            press('t'),
             key(0, FixtureKey::Enter, InputPhase::Press),
             TraceEvent::Tick { after_ms: 100 },
             key(0, FixtureKey::Escape, InputPhase::Press),
         ],
         TerminalCapabilities::default(),
     );
-    assert_eq!(freeze.effect_count("ToggleFreeze"), 1);
-    assert_eq!(freeze.effect_count("GestureReleaseAll"), 1);
+    assert_eq!(repeat.effect_count("ToggleBeatRepeat"), 1);
+    assert_eq!(repeat.effect_count("GestureReleaseAll"), 1);
 }

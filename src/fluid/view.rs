@@ -682,7 +682,7 @@ fn rise_activity(session: &LiveSessionSnapshot, now_seconds: f64) -> Option<Stri
 /// gesture, so the row that shows a live readout while holding still tells
 /// you what's available when nothing is held.
 fn gesture_idle_hint() -> String {
-    "q mute  w submerge  e rise  r roll  b freeze".to_string()
+    "q mute  w submerge  e rise  r roll  b repeat".to_string()
 }
 
 fn gesture_activities(session: &LiveSessionSnapshot, now_seconds: f64) -> Vec<GestureActivity> {
@@ -1536,7 +1536,7 @@ mod tests {
         });
         session.kick_bass_latched = true;
         session.vamp = Some(VampState::start(0.0, 0));
-        session.gestures.lanes[GestureKind::Freeze as usize] = GestureEnvelope {
+        session.gestures.lanes[GestureKind::BeatRepeat as usize] = GestureEnvelope {
             amount: 1.0,
             held: true,
             ..GestureEnvelope::default()
@@ -1555,7 +1555,7 @@ mod tests {
             );
             let key_line = frame.lines().find(|line| line.contains("KEY")).unwrap();
             assert!(key_line.contains("1␠→␠2␠in␠2␠bars"), "{frame}");
-            for expected in ["VAMP", "Kick+Bass␠latched", "Freeze"] {
+            for expected in ["VAMP", "Kick+Bass␠latched", "Beat␠Repeat"] {
                 assert!(frame.contains(expected), "missing {expected}: {frame}");
             }
             if std::env::var_os("NOOISE_PRINT_STATUS_FRAMES").is_some() {

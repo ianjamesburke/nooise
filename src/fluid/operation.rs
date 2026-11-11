@@ -17,7 +17,7 @@ pub(crate) enum Operation {
     ToggleAuto,
     ToggleVamp,
     ToggleKickBass,
-    ToggleFreeze,
+    ToggleBeatRepeat,
     ChordNames(ChordNames),
     ClearSequence,
     Section(SectionAction),
@@ -140,7 +140,7 @@ impl Operation {
         Self::ToggleAuto,
         Self::ToggleVamp,
         Self::ToggleKickBass,
-        Self::ToggleFreeze,
+        Self::ToggleBeatRepeat,
         Self::ChordNames(ChordNames::Roman),
         Self::ChordNames(ChordNames::Letters),
         Self::ClearSequence,
@@ -269,11 +269,11 @@ impl Operation {
                 aliases: &["group mute", "q mute"],
                 description: "toggle the Kick and Bass group gate",
             },
-            Self::ToggleFreeze => OperationSpec {
+            Self::ToggleBeatRepeat => OperationSpec {
                 operation: self,
-                label: "Freeze mix",
-                aliases: &["freeze", "smear", "grain repeat"],
-                description: "capture live audio; Escape releases",
+                label: "Beat repeat",
+                aliases: &["repeat", "beat repeat", "stutter"],
+                description: "loop the current beat of live audio; Escape releases",
             },
             Self::Section(action) => OperationSpec {
                 operation: self,
@@ -326,7 +326,7 @@ impl Operation {
             | Self::Section(_)
             | Self::ToggleVamp
             | Self::ToggleKickBass
-            | Self::ToggleFreeze
+            | Self::ToggleBeatRepeat
             | Self::ToggleAuto => None,
         }
     }

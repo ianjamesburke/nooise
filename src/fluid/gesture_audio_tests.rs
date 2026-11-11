@@ -320,20 +320,22 @@ fn render_live_gesture_audition() {
 }
 
 #[test]
-fn freeze_key_captures_live_audio_and_returns_to_the_running_mix() {
-    let mut dry = GesturePlayer::new(12_000.0);
-    let mut wet = GesturePlayer::new(12_000.0);
-    dry.render(1.0);
-    wet.render(1.0);
-    wet.gesture(GestureKind::Freeze, KeyEventKind::Press);
+fn beat_repeat_key_loops_the_live_beat_and_returns_to_the_running_mix() {
+    const SAMPLE_RATE: f32 = 12_000.0;
+    let mut dry = GesturePlayer::new(SAMPLE_RATE);
+    let mut wet = GesturePlayer::new(SAMPLE_RATE);
+    dry.render(2.0);
+    wet.render(2.0);
+    wet.gesture(GestureKind::BeatRepeat, KeyEventKind::Press);
+    // Two default-tempo beats cover the wait for the next grid line and a full repeat.
     let mut difference = 0.0;
-    for _ in 0..6_000 {
+    for _ in 0..(2.0 * 60.0 / 82.0 * SAMPLE_RATE) as usize {
         let clean = dry.engine.next_stereo();
-        let frozen = wet.engine.next_stereo();
-        difference += (clean.0 - frozen.0).abs() + (clean.1 - frozen.1).abs();
+        let repeated = wet.engine.next_stereo();
+        difference += (clean.0 - repeated.0).abs() + (clean.1 - repeated.1).abs();
     }
-    assert!(difference > 1.0, "freeze must alter captured live audio");
-    wet.gesture(GestureKind::Freeze, KeyEventKind::Release);
+    assert!(difference > 1.0, "beat repeat must alter the live mix");
+    wet.gesture(GestureKind::BeatRepeat, KeyEventKind::Release);
     for _ in 0..240 {
         dry.engine.next_stereo();
         wet.engine.next_stereo();

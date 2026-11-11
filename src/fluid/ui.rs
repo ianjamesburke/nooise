@@ -1274,7 +1274,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             ],
             &[
                 ("a", "chord vamp (hold/tap)"),
-                ("b", "freeze (hold / palette)"),
+                ("b", "beat repeat (hold / palette)"),
             ],
         ],
     ));

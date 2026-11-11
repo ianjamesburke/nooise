@@ -22,12 +22,7 @@ const PROCESSOR_CLEAR_SAMPLES_PER_FRAME: usize = 512;
 const ECHO_FEEDBACK_SECONDS: f32 = 0.03;
 
 struct GestureFx {
-    freeze_buffer: Vec<(f32, f32)>,
-    freeze_write: usize,
-    freeze_filled: usize,
-    freeze_phase: usize,
-    freeze_active: bool,
-    freeze_capture_gain: f32,
+    repeat: BeatRepeat,
     submerge: SlotFx,
     lift: SlotFx,
     bloom: SlotFx,
@@ -52,12 +47,7 @@ struct GestureFx {
 impl GestureFx {
     fn new(sample_rate: f32, max_delay_samples: usize) -> Self {
         Self {
-            freeze_buffer: vec![(0.0, 0.0); (sample_rate * 0.5).max(2.0) as usize],
-            freeze_write: 0,
-            freeze_filled: 0,
-            freeze_phase: 0,
-            freeze_active: false,
-            freeze_capture_gain: 0.0,
+            repeat: BeatRepeat::new(sample_rate),
             submerge: SlotFx::Filter(StereoFilter::default()),
             lift: SlotFx::Filter(StereoFilter::default()),
             bloom: SlotFx::Reverb(FdnReverb::new(sample_rate)),
@@ -89,17 +79,11 @@ impl GestureFx {
         max_delay_samples: usize,
         sample_rate: f32,
     ) -> (f32, f32) {
-        let freeze_amount = amounts[GestureKind::Freeze as usize];
-        if freeze_amount <= f32::EPSILON || self.freeze_filled < self.freeze_buffer.len() {
-            self.freeze_active = false;
-            self.freeze_capture_gain = 0.0;
-            self.freeze_buffer[self.freeze_write] = sample;
-            self.freeze_write = (self.freeze_write + 1) % self.freeze_buffer.len();
-            self.freeze_filled = (self.freeze_filled + 1).min(self.freeze_buffer.len());
-        } else if !self.freeze_active {
-            self.freeze_active = true;
-            self.freeze_phase = 0;
-        }
+        // The repeat records every live sample, held or not, so a press always
+        // finds the beat it began in.
+        let repeated =
+            self.repeat
+                .process(sample, amounts[GestureKind::BeatRepeat as usize], timing);
 
         if amounts == [0.0; GESTURE_COUNT]
             && !self.submerge_active
@@ -110,32 +94,7 @@ impl GestureFx {
             return sample;
         }
 
-        let mut source = sample;
-        if self.freeze_active {
-            // Each head resets only where its Hann window reaches zero. The
-            // heads overlap by half a grain, giving complementary weights.
-            let grain = (((sample_rate * 0.12) as usize).max(4) / 2) * 2;
-            let len = self.freeze_buffer.len();
-            let span = len.saturating_sub(grain + 1).max(1);
-            let read_grain = |time: usize, offset: usize| {
-                let age = time % grain;
-                let cycle = time / grain;
-                let start = (cycle.wrapping_mul(grain / 2).wrapping_add(offset)) % span;
-                // Unit-speed playback sustains the captured pitch.
-                let position = start + age;
-                let left = self.freeze_buffer[(self.freeze_write + position) % len];
-                let weight = 0.5 - 0.5 * (std::f32::consts::TAU * age as f32 / grain as f32).cos();
-                (left.0 * weight, left.1 * weight)
-            };
-            let first = read_grain(self.freeze_phase, 0);
-            let second = read_grain(self.freeze_phase.wrapping_add(grain / 2), grain / 4);
-            let frozen = (first.0 + second.0, first.1 + second.1);
-            self.freeze_capture_gain = (self.freeze_capture_gain
-                + 1.0 / (GESTURE_RELEASE_SECONDS as f32 * sample_rate).max(1.0))
-            .min(1.0);
-            source = mix_stereo(source, frozen, freeze_amount * self.freeze_capture_gain);
-            self.freeze_phase = self.freeze_phase.wrapping_add(1);
-        }
+        let mut source = repeated;
 
         let submerge_amount = amounts[GestureKind::Submerge as usize];
         if submerge_amount > f32::EPSILON {
@@ -349,6 +308,159 @@ impl GestureFx {
     }
 }
 
+/// Beat Repeat slice length in quarter notes. The only length: one beat.
+const BEAT_REPEAT_BEATS: i64 = 1;
+/// Pre-roll blended over the loop seam. The wrap then lands on the audio that
+/// originally followed the slice, so a loop of arbitrary material has no click.
+const BEAT_REPEAT_SEAM_SECONDS: f32 = 0.002;
+/// A slice is accepted when its measured length is within a quarter of the
+/// nominal beat; a transport restart or jump between grid lines is not a beat.
+const BEAT_REPEAT_LENGTH_TOLERANCE_DIVISOR: usize = 4;
+
+enum RepeatState {
+    Idle,
+    /// Pressed: waiting for the grid line that ends the beat the hold began in.
+    Armed {
+        start: u64,
+        beat: i64,
+    },
+    /// `pos` reads the slice body; `gain` fades the loop in over the release time.
+    Looping {
+        pos: usize,
+        len: usize,
+        gain: f32,
+    },
+}
+
+/// Tempo-synced repeat of the live Master mix. History records continuously;
+/// a hold arms at the beat it began in, copies that beat when its grid line
+/// ends it, and loops the copy until release. Storage is allocated up front.
+struct BeatRepeat {
+    history: Vec<(f32, f32)>,
+    /// `seam` pre-roll samples, then the loop body.
+    slice: Vec<(f32, f32)>,
+    /// Samples recorded so far; the next write lands at `frame % history.len()`.
+    frame: u64,
+    beat_index: Option<i64>,
+    beat_start: u64,
+    state: RepeatState,
+    seam: usize,
+    max_len: usize,
+}
+
+impl BeatRepeat {
+    fn new(sample_rate: f32) -> Self {
+        let seam = ((sample_rate * BEAT_REPEAT_SEAM_SECONDS) as usize).max(1);
+        // Longest accepted slice: the beat at the slowest tempo, plus tolerance.
+        let beat_samples_max = f64::from(sample_rate) * 60.0 / f64::from(MASTER_BPM_MIN);
+        let max_len = (beat_samples_max * BEAT_REPEAT_BEATS as f64 * 1.25).ceil() as usize + 1;
+        Self {
+            history: vec![(0.0, 0.0); max_len + seam + 2],
+            slice: vec![(0.0, 0.0); max_len + seam],
+            frame: 0,
+            beat_index: None,
+            beat_start: 0,
+            state: RepeatState::Idle,
+            seam,
+            max_len,
+        }
+    }
+
+    /// Returns `sample` with the loop mixed in by `amount`.
+    fn process(&mut self, sample: (f32, f32), amount: f32, timing: TimingContext) -> (f32, f32) {
+        let pressed = amount > f32::EPSILON;
+        if !pressed {
+            self.state = RepeatState::Idle;
+        }
+
+        let beat_index = timing.beat.floor() as i64;
+        if self.beat_index != Some(beat_index) {
+            self.beat_index = Some(beat_index);
+            self.on_grid_line(beat_index, timing);
+            self.beat_start = self.frame;
+        }
+        if pressed && matches!(self.state, RepeatState::Idle) {
+            self.state = RepeatState::Armed {
+                start: self.beat_start,
+                beat: beat_index,
+            };
+        }
+
+        let mut output = sample;
+        if let RepeatState::Looping { pos, len, gain } = &mut self.state {
+            let mut looped = self.slice[self.seam + *pos];
+            let tail = (*pos + self.seam).saturating_sub(*len);
+            if tail > 0 {
+                let t = tail as f32 / self.seam as f32;
+                looped = mix_stereo(looped, self.slice[tail - 1], t);
+            }
+            *gain = (*gain + 1.0 / (GESTURE_RELEASE_SECONDS as f32 * timing.sample_rate as f32))
+                .min(1.0);
+            output = mix_stereo(sample, looped, amount * *gain);
+            *pos = (*pos + 1) % *len;
+        }
+
+        let capacity = self.history.len() as u64;
+        self.history[(self.frame % capacity) as usize] = sample;
+        self.frame += 1;
+        output
+    }
+
+    /// The clock entered a new beat at the current frame. An armed hold whose
+    /// beat just ended copies it and starts looping; a hold that cannot use
+    /// this line (no pre-roll yet, or not one beat long) re-arms on it.
+    fn on_grid_line(&mut self, beat_index: i64, timing: TimingContext) {
+        let RepeatState::Armed { start, beat } = self.state else {
+            return;
+        };
+        let elapsed_beats = beat_index - beat;
+        if elapsed_beats > 0 && elapsed_beats < BEAT_REPEAT_BEATS {
+            return;
+        }
+        let len = (self.frame - start) as usize;
+        let nominal =
+            (timing.sample_rate * 60.0 / timing.bpm * BEAT_REPEAT_BEATS as f64).round() as usize;
+        // The pre-roll must be real audio too, or the seam would dip to silence.
+        let plausible = elapsed_beats == BEAT_REPEAT_BEATS
+            && start >= self.seam as u64
+            && len >= self.seam * 2
+            && len <= self.max_len
+            && len.abs_diff(nominal) * BEAT_REPEAT_LENGTH_TOLERANCE_DIVISOR <= nominal;
+        if plausible {
+            self.copy_history(start as i64 - self.seam as i64, self.seam + len);
+            self.state = RepeatState::Looping {
+                pos: 0,
+                len,
+                gain: 0.0,
+            };
+        } else {
+            self.state = RepeatState::Armed {
+                start: self.frame,
+                beat: beat_index,
+            };
+        }
+    }
+
+    /// Copies `count` recorded samples starting at frame `from` into `slice`;
+    /// frames before the first sample read as silence.
+    fn copy_history(&mut self, from: i64, count: usize) {
+        let capacity = self.history.len();
+        let mut done = 0;
+        if from < 0 {
+            done = (from.unsigned_abs() as usize).min(count);
+            self.slice[..done].fill((0.0, 0.0));
+        }
+        let mut frame = (from + done as i64) as u64;
+        while done < count {
+            let index = (frame % capacity as u64) as usize;
+            let run = (count - done).min(capacity - index);
+            self.slice[done..done + run].copy_from_slice(&self.history[index..index + run]);
+            done += run;
+            frame += run as u64;
+        }
+    }
+}
+
 /// Linear weight on a wet return. It slews to 0 over
 /// `GESTURE_RELEASE_SECONDS` while the envelope falls, so on key-up the wash
 /// itself stops instead of ringing on as a tail, and back toward 1 otherwise.
@@ -421,104 +533,198 @@ impl GestureAudioBank {
 mod tests {
     use super::*;
 
+    const BPM: f64 = 120.0;
+    const QUARTER: usize = (SAMPLE_RATE as f64 * 60.0 / BPM) as usize;
+
+    /// Timing for output frame `frame` of a constant-tempo transport that
+    /// starts on beat zero.
+    fn clock(frame: usize, bpm: f64) -> TimingContext {
+        TimingContext::new(
+            SAMPLE_RATE as f64,
+            bpm,
+            frame as f64 * bpm / (60.0 * SAMPLE_RATE as f64),
+        )
+    }
+
+    /// A signal whose value names its own frame, so a loop's origin is readable.
+    fn ramp(frame: usize) -> (f32, f32) {
+        let value = frame as f32 * 1e-6;
+        (value, -value)
+    }
+
+    fn repeat_amounts(amount: f32) -> [f32; GESTURE_COUNT] {
+        let mut amounts = [0.0; GESTURE_COUNT];
+        amounts[GestureKind::BeatRepeat as usize] = amount;
+        amounts
+    }
+
+    /// Plays `frames` of the ramp starting at `from`, holding Beat Repeat from `press`.
+    fn play(
+        bank: &mut GestureAudioBank,
+        from: usize,
+        frames: usize,
+        press: usize,
+    ) -> Vec<(f32, f32)> {
+        (from..from + frames)
+            .map(|frame| {
+                let amount = if frame >= press { 1.0 } else { 0.0 };
+                bank.process(ramp(frame), repeat_amounts(amount), clock(frame, BPM))
+            })
+            .collect()
+    }
+
     #[test]
-    fn freeze_sustains_pitch_instead_of_dropping_an_octave() {
-        for sample_rate in [44_100.0, 48_000.0] {
-            for hz in [110.0, 440.0, 997.0] {
-                let mut bank = GestureAudioBank::new(sample_rate);
-                for frame in 0..sample_rate as usize {
-                    let x = (std::f32::consts::TAU * hz * frame as f32 / sample_rate).sin() * 0.2;
-                    bank.process((x, -x), [0.0; GESTURE_COUNT], timing());
-                }
-                let mut crossings = 0;
-                let mut previous = 0.0;
-                let mut energy = 0.0;
-                for frame in 0..sample_rate as usize * 2 {
-                    let (left, right) =
-                        bank.process((0.0, 0.0), active(GestureKind::Freeze), timing());
-                    assert_eq!(left, -right);
-                    if frame >= sample_rate as usize {
-                        crossings += usize::from(previous <= 0.0 && left > 0.0);
-                        energy += left * left;
-                    }
-                    previous = left;
-                }
-                assert!(
-                    (crossings as f32 - hz).abs() < hz * 0.05,
-                    "{sample_rate} Hz: expected {hz} Hz, measured {crossings}"
-                );
-                assert!(energy / sample_rate > 0.001, "sustain cancelled away");
+    fn beat_repeat_loops_exactly_one_quarter_note_starting_on_the_grid() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        // Press 0.3 of the way into beat 1.
+        let press = QUARTER + QUARTER * 3 / 10;
+        let out = play(&mut bank, 0, QUARTER * 6, press);
+
+        let RepeatState::Looping { len, .. } = bank.fx.repeat.state else {
+            panic!("hold did not reach the loop");
+        };
+        assert!(
+            len.abs_diff(QUARTER) <= 1,
+            "loop was {len} samples, not {QUARTER}"
+        );
+        let seam = bank.fx.repeat.seam;
+        let origin = bank.fx.repeat.slice[seam].0;
+        assert!(
+            (origin - (QUARTER as f32 * 1e-6)).abs() < 1.5e-6,
+            "slice began at {origin}, not on beat 1"
+        );
+        // Dry until the next grid line, then the loop repeats the captured beat.
+        assert_eq!(out[press], ramp(press));
+        let engage = QUARTER * 2 + 480;
+        let period = &out[engage..engage + len];
+        for later in 1..=2 {
+            let next = &out[engage + later * len..engage + (later + 1) * len];
+            for (a, b) in period.iter().zip(next) {
+                assert!((a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5);
             }
         }
+        assert!(period.iter().all(|x| x.0 >= QUARTER as f32 * 1e-6 - 2e-6));
     }
 
     #[test]
-    fn freeze_captures_live_history_and_returns_to_dry_without_allocation() {
+    fn beat_repeat_length_follows_the_tempo_at_capture() {
+        for bpm in [60.0, 96.0, 174.0] {
+            let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+            let frames = (SAMPLE_RATE as f64 * 60.0 / bpm * 3.5) as usize;
+            for frame in 0..frames {
+                let amount = if frame > 100 { 1.0 } else { 0.0 };
+                bank.process(ramp(frame), repeat_amounts(amount), clock(frame, bpm));
+            }
+            let RepeatState::Looping { len, .. } = bank.fx.repeat.state else {
+                panic!("{bpm} BPM: hold did not reach the loop");
+            };
+            let beat = (SAMPLE_RATE as f64 * 60.0 / bpm).round() as usize;
+            assert!(
+                len.abs_diff(beat) <= 1,
+                "{bpm} BPM: loop {len}, beat {beat}"
+            );
+        }
+    }
+
+    #[test]
+    fn beat_repeat_loop_length_is_latched_when_tempo_changes_mid_hold() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        let capacity = bank.fx.freeze_buffer.capacity();
-        for i in 0..24_000 {
-            let value = (i as f32 * 0.031).sin() * 0.2;
-            bank.process((value, value), [0.0; GESTURE_COUNT], timing());
+        play(&mut bank, 0, QUARTER * 3, QUARTER / 2);
+        let RepeatState::Looping { len, .. } = bank.fx.repeat.state else {
+            panic!("hold did not reach the loop");
+        };
+        for frame in QUARTER * 3..QUARTER * 6 {
+            bank.process(ramp(frame), repeat_amounts(1.0), clock(frame, 90.0));
         }
-        let mut amounts = [0.0; GESTURE_COUNT];
-        amounts[GestureKind::Freeze as usize] = 1.0;
-        let mut energy = 0.0;
-        for _ in 0..48_000 {
-            let sample = bank.process((0.0, 0.0), amounts, timing());
-            assert!(sample.0.is_finite() && sample.1.is_finite());
-            energy += sample.0.abs();
+        let RepeatState::Looping { len: after, .. } = bank.fx.repeat.state else {
+            panic!("tempo change dropped the loop");
+        };
+        assert_eq!(len, after);
+    }
+
+    #[test]
+    fn beat_repeat_seam_and_engage_are_smooth_for_non_periodic_material() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let tone = |frame: usize| {
+            let x = (std::f32::consts::TAU * 100.3 * frame as f32 / SAMPLE_RATE).sin() * 0.2;
+            (x, x)
+        };
+        let mut previous = (0.0, 0.0);
+        for frame in 0..QUARTER * 8 {
+            let amount = if frame > QUARTER / 3 { 1.0 } else { 0.0 };
+            let next = bank.process(tone(frame), repeat_amounts(amount), clock(frame, BPM));
+            assert!(
+                (next.0 - previous.0).abs() < 0.012,
+                "frame {frame}: {previous:?} -> {next:?}"
+            );
+            previous = next;
         }
-        assert!(energy > 100.0);
-        assert_eq!(bank.fx.freeze_buffer.capacity(), capacity);
-        assert_eq!(
-            bank.process((0.17, -0.17), [0.0; GESTURE_COUNT], timing()),
-            (0.17, -0.17)
+    }
+
+    #[test]
+    fn beat_repeat_release_returns_to_live_within_the_fade_without_allocation() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let (history, slice) = (
+            bank.fx.repeat.history.capacity(),
+            bank.fx.repeat.slice.capacity(),
         );
+        let tone = |frame: usize| {
+            let x = (std::f32::consts::TAU * 100.3 * frame as f32 / SAMPLE_RATE).sin() * 0.2;
+            (x, x)
+        };
+        let held = QUARTER * 4;
+        for frame in 0..held {
+            bank.process(tone(frame), repeat_amounts(1.0), clock(frame, BPM));
+        }
+        let fade = (GESTURE_RELEASE_SECONDS as f32 * SAMPLE_RATE) as usize;
+        let mut previous = bank.process(tone(held), repeat_amounts(1.0), clock(held, BPM));
+        for step in 0..fade {
+            let frame = held + 1 + step;
+            let amount = 1.0 - (step + 1) as f32 / fade as f32;
+            let next = bank.process(tone(frame), repeat_amounts(amount), clock(frame, BPM));
+            assert!(
+                (next.0 - previous.0).abs() < 0.012,
+                "release: {previous:?} -> {next:?}"
+            );
+            previous = next;
+        }
+        let frame = held + 1 + fade;
+        assert_eq!(
+            bank.process(tone(frame), [0.0; GESTURE_COUNT], clock(frame, BPM)),
+            tone(frame)
+        );
+        assert_eq!(bank.fx.repeat.history.capacity(), history);
+        assert_eq!(bank.fx.repeat.slice.capacity(), slice);
     }
 
     #[test]
-    fn freeze_grain_boundaries_and_release_are_smooth_for_discontinuous_history() {
+    fn beat_repeat_loaded_hold_waits_for_live_audio_then_fades_in() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        for i in 0..24_000 {
-            let value = i as f32 / 24_000.0 * 0.8 - 0.4;
-            bank.process((value, value), [0.0; GESTURE_COUNT], timing());
-        }
-        let mut amounts = [0.0; GESTURE_COUNT];
-        amounts[GestureKind::Freeze as usize] = 1.0;
-        let mut previous = bank.process((0.0, 0.0), amounts, timing()).0;
-        for _ in 0..120_000 {
-            let next = bank.process((0.0, 0.0), amounts, timing()).0;
-            assert!(
-                (next - previous).abs() < 0.005,
-                "grain seam: {previous} -> {next}"
-            );
+        let mut previous = (0.3, 0.3);
+        for frame in 0..QUARTER * 3 {
+            let tone = (0.3, 0.3);
+            let next = bank.process(tone, repeat_amounts(1.0), clock(frame, BPM));
+            assert!((next.0 - previous.0).abs() < 0.005, "frame {frame}");
             previous = next;
+            if frame < QUARTER * 2 {
+                assert_eq!(next, tone, "no loop before a full beat of live pre-roll");
+            }
         }
-        for step in (0..480).rev() {
-            amounts[GestureKind::Freeze as usize] = step as f32 / 480.0;
-            let next = bank.process((0.0, 0.0), amounts, timing()).0;
-            assert!(
-                (next - previous).abs() < 0.005,
-                "release: {previous} -> {next}"
-            );
-            previous = next;
-        }
+        assert!(matches!(bank.fx.repeat.state, RepeatState::Looping { .. }));
     }
 
     #[test]
-    fn restored_freeze_fades_in_after_initial_capture() {
+    fn beat_repeat_press_while_transport_is_stopped_stays_dry() {
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
-        let mut amounts = [0.0; GESTURE_COUNT];
-        amounts[GestureKind::Freeze as usize] = 1.0;
-        let mut previous = 0.4;
-        for i in 0..26_000 {
-            let input = (0.4 - i as f32 / 24_000.0 * 0.4).max(0.0);
-            let next = bank.process((input, input), amounts, timing()).0;
-            assert!(
-                (next - previous).abs() < 0.005,
-                "capture transition: {previous} -> {next}"
+        for frame in 0..QUARTER * 2 {
+            let timing = TimingContext {
+                transport: Transport::Stopped,
+                ..clock(0, BPM)
+            };
+            assert_eq!(
+                bank.process(ramp(frame), repeat_amounts(1.0), timing),
+                ramp(frame)
             );
-            previous = next;
         }
     }
 

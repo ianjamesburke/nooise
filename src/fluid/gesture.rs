@@ -55,7 +55,7 @@ pub(crate) enum GestureKind {
     Submerge,
     Echo,
     Lift,
-    Freeze,
+    BeatRepeat,
 }
 
 impl GestureKind {
@@ -64,7 +64,7 @@ impl GestureKind {
         Self::Submerge,
         Self::Echo,
         Self::Lift,
-        Self::Freeze,
+        Self::BeatRepeat,
     ];
 
     /// Wire tag 3 belonged to the retired Thin gesture and is never reused.
@@ -76,7 +76,7 @@ impl GestureKind {
             Self::Submerge => 1,
             Self::Echo => 2,
             Self::Lift => 4,
-            Self::Freeze => 5,
+            Self::BeatRepeat => 5,
         }
     }
 
@@ -87,7 +87,7 @@ impl GestureKind {
     pub(crate) fn from_key(key: char) -> Option<Self> {
         match key {
             'w' => Some(Self::Submerge),
-            'b' => Some(Self::Freeze),
+            'b' => Some(Self::BeatRepeat),
             // 'z' => Some(Self::Bloom),
             // 'c' => Some(Self::Submerge),
             // 'v' => Some(Self::Echo),
@@ -103,7 +103,7 @@ impl GestureKind {
             Self::Submerge => 'w',
             Self::Echo => 'v',
             Self::Lift => 'x',
-            Self::Freeze => 'b',
+            Self::BeatRepeat => 'b',
         }
     }
 
@@ -113,7 +113,7 @@ impl GestureKind {
             Self::Submerge => "Submerge",
             Self::Echo => "Echo",
             Self::Lift => "Lift",
-            Self::Freeze => "Freeze",
+            Self::BeatRepeat => "Beat Repeat",
         }
     }
 
@@ -123,7 +123,7 @@ impl GestureKind {
             Self::Submerge => 1.2,
             Self::Echo => 0.7,
             Self::Lift => 0.55,
-            Self::Freeze => 0.05,
+            Self::BeatRepeat => 0.05,
         }
     }
 }

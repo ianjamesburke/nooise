@@ -1581,7 +1581,7 @@ pub(crate) enum InteractionEffect {
     ReleaseVamp,
     ToggleVamp,
     ToggleKickBass,
-    ToggleFreeze,
+    ToggleBeatRepeat,
     GestureReleaseAll,
     Save,
     Quit,
@@ -2500,7 +2500,7 @@ fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> Interac
                 || *operation == Operation::ToggleAuto
                 || *operation == Operation::ToggleVamp
                 || *operation == Operation::ToggleKickBass
-                || *operation == Operation::ToggleFreeze
+                || *operation == Operation::ToggleBeatRepeat
     ) || (palette.editor_motion_target.is_some()
         && matches!(entry, PaletteEntry::Operation(Operation::Motion(action)) if editor_motion_action(*action, palette)))
         || (palette.resume.is_some()
@@ -2613,7 +2613,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::ToggleAuto => InteractionEffect::ToggleAuto,
         Operation::ToggleVamp => InteractionEffect::ToggleVamp,
         Operation::ToggleKickBass => InteractionEffect::ToggleKickBass,
-        Operation::ToggleFreeze => InteractionEffect::ToggleFreeze,
+        Operation::ToggleBeatRepeat => InteractionEffect::ToggleBeatRepeat,
         Operation::Section(action) => InteractionEffect::Section(action),
         Operation::ClearSequence => {
             InteractionEffect::ClearSequence(palette.planned_tab.unwrap_or(Tab::Chords))
