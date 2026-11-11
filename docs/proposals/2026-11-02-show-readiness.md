@@ -161,6 +161,12 @@ monophonic sliding part against overlapping piano notes, before a three-part UI
 change. Compare keyboard reach, arpeggiator behavior, saved evolving state,
 mutes, effects, and CPU. A rename alone does not resolve the current duplication.
 
+## November 10 requests
+
+| Topic | Captured request | Next proof |
+| --- | --- | --- |
+| Downbeat reset | "Need a way to reset the down beat cleanly"; when the felt bar drifts from the grid, re-anchor rather than change the song. Implemented as `d` / `/downbeat` ([Performance](../PERFORMANCE.md#downbeat-reset)). | Tap `d` off the bar during a set with Kick and a queued state; confirm the kick lands on the tap and the chord rings on. |
+
 ## Named songs and transition previews
 
 November 3 follow-up idea, proposed for a later slice: `nooise moss` resolves a

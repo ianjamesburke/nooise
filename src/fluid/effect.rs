@@ -1308,6 +1308,40 @@ impl EffectExecutor {
         }
     }
 
+    /// Make this moment beat one of bar one. Like the transport it is an
+    /// overlay on the song, not an edit: auto, MRU and tempo are untouched.
+    /// The audio engine re-anchors on the first sample that observes the
+    /// counter (`FluidEngine::reanchor_downbeat`). Here, the session state
+    /// stamped on the old bar grid moves to the new one: Motion loops restart
+    /// from their first sample, a planned mute and staged edits wait for the
+    /// new grid's next bar, and live edit and Lead histories clear.
+    pub(crate) fn reset_downbeat(&mut self) -> EffectAcknowledgement {
+        if self.session.load().transport == Transport::Stopped {
+            self.show_message("Clock stopped: Shift+P starts at bar one".to_string());
+            return EffectAcknowledgement::NoChange;
+        }
+        let snapshot = self.session.update(|snapshot| {
+            snapshot.downbeat_reset = snapshot.downbeat_reset.wrapping_add(1);
+            snapshot.automation.restart();
+            snapshot.planned = snapshot.planned.map(|action| match action {
+                PlannedAction::Mute { tab, .. } => PlannedAction::Mute {
+                    tab,
+                    target_beat: 4.0,
+                },
+            });
+        });
+        self.capture_history = CaptureHistory::default();
+        self.phrase = LeadPhraseBuffer::default();
+        self.edit_beat = 0.0;
+        if let Some((beat, _)) = &mut self.pending {
+            *beat = 4.0;
+        }
+        self.show_message("Downbeat: bar one".to_string());
+        EffectAcknowledgement::Published {
+            generation: snapshot.generation,
+        }
+    }
+
     pub(crate) fn stop_transport(&mut self) {
         self.session
             .update(|snapshot| snapshot.transport = Transport::Stopped);
@@ -1590,6 +1624,7 @@ impl EffectExecutor {
             | InteractionEffect::ToggleUnits
             | InteractionEffect::ToggleMute(_)
             | InteractionEffect::ToggleTransport
+            | InteractionEffect::ResetDownbeat
             | InteractionEffect::RemoveAutomation
             | InteractionEffect::RandomizeAutomationRow
             | InteractionEffect::RandomizeSelected
@@ -1742,6 +1777,7 @@ impl EffectExecutor {
                 self.toggle_transport();
                 Ok(self.published())
             }
+            InteractionEffect::ResetDownbeat => Ok(self.reset_downbeat()),
             InteractionEffect::RemoveAutomation => self.with_automation(|executor, automation| {
                 remove_automation_effect(
                     executor,

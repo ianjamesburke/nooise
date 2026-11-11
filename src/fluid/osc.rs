@@ -12,7 +12,10 @@
 //! `handle_nooise`), expires Take 5 note-offs and drives its MIDI looper on it
 //! (`adapters/take5.rs` `clock`, `advance_clock`), and replays lane loops on it
 //! (`adapters/looper.rs`). It goes out on change at the 5 ms poll and must not
-//! be rate-limited, as must hits, chords, phrases, and voice notes. Level and
+//! be rate-limited, as must hits, chords, phrases, and voice notes. The beat
+//! jumps back to zero, without a stop, on a transport restart, a state landing,
+//! and a downbeat reset (`d`); consumers must treat a lower beat as a new
+//! timeline, not as time running backwards. Level and
 //! gesture meters are only displayed (foorm samples them per 33 ms frame) or
 //! folded into baton's energy, so they go out on change at about 30 Hz.
 //!

@@ -62,6 +62,9 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) transport: Transport,
     /// Counts explicit restarts, including stop/play between audio reads.
     pub(crate) transport_restart: u64,
+    /// Counts downbeat resets. Live-only: the audio engine re-anchors bar one
+    /// on the first sample that observes a change, without stopping.
+    pub(crate) downbeat_reset: u64,
     /// How chords are written on screen. Live-only: a display choice, never
     /// read by the audio thread or written to a song code.
     pub(crate) chord_names: ChordNames,
@@ -109,6 +112,7 @@ impl LiveSessionSnapshot {
             drunken_phase_beat: song.drunken_phase_beat,
             transport: Transport::Playing,
             transport_restart: 0,
+            downbeat_reset: 0,
             chord_names: ChordNames::default(),
             tonal_sequence: song
                 .tonal_sequence
@@ -143,6 +147,7 @@ impl LiveSessionSnapshot {
             drunken_phase_beat: 0.0,
             transport: Transport::Playing,
             transport_restart: 0,
+            downbeat_reset: 0,
             chord_names: ChordNames::default(),
         }
     }

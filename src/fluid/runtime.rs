@@ -631,6 +631,9 @@ fn browsing_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('a') => Intent::ToggleVamp,
         PhysicalKey::Character('q') => Intent::ToggleKickBass,
         PhysicalKey::Character('i') => Intent::EnterLeadPlay,
+        // Downbeat: the left middle finger's home key, so the move that sets
+        // the timing reference is played eyes-closed on the beat.
+        PhysicalKey::Character('d') => Intent::ResetDownbeat,
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Jump),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         PhysicalKey::Enter => Intent::TouchSelected,

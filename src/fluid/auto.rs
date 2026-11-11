@@ -714,6 +714,15 @@ impl MorphState {
         }
     }
 
+    /// The same morph with its timeline moved `beats` earlier, for a downbeat
+    /// reset that restarts the sounding chord at beat zero. Legs, phrases and
+    /// progress keep their alignment with the pad's chords.
+    pub(crate) fn rebased(&self, beats: f64) -> Self {
+        let mut rebased = self.clone();
+        rebased.origin_beat -= beats;
+        rebased
+    }
+
     pub(crate) fn restarted(&self) -> Self {
         let mut restarted = self.clone();
         restarted.origin_beat = 0.0;

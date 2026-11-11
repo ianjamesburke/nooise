@@ -1873,6 +1873,19 @@ impl ProgressionCursor {
         self.span
     }
 
+    /// Downbeat reset: the sounding chord starts again at transport beat
+    /// zero, on the same step and window, so its count restarts and no chord
+    /// is skipped or re-struck. Returns the beat that chord had started on,
+    /// which is how far the harmonic timeline moves back.
+    pub(crate) fn restart_chord_at_zero(&mut self) -> f64 {
+        let interval = GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats;
+        let start = self.next_chord_beat.map_or(0.0, |next| next - interval);
+        self.next_chord_beat = Some(interval);
+        self.morph_phrase_start = self.morph_phrase_start.map(|phrase| phrase - start);
+        self.span = self.compute_span();
+        start
+    }
+
     /// Start of the sounding phrase, for a live auto toggle after chord edits.
     pub(crate) fn phrase_start_beat(&self) -> f64 {
         self.next_chord_beat.map_or(0.0, |next| {

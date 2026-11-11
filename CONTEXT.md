@@ -34,6 +34,10 @@
 - **Transport:** whether the beat clock runs (`Transport::Playing` or
   `Stopped`). Stopped holds the beat and fires no grid hit while audio keeps
   running, so tails ring out. Live-session state, never in a song code.
+- **Downbeat reset:** `d` or `/downbeat` makes the press beat one of bar one
+  without stopping. The sounding chord restarts its count instead of
+  changing, and every grid restarts at step 1. It is live-only and never in a
+  song code.
 - **Frame:** one immutable view-model snapshot passed to the renderer and one
   completed terminal draw from that snapshot. A state change is not visibly
   complete until a corresponding frame has been drawn.

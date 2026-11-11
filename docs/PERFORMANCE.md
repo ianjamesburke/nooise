@@ -224,6 +224,37 @@ untouched, like mute.
 A song code never carries the stopped state. A stopped song is silence,
 not a state worth sharing, so a loaded code always plays.
 
+## Downbeat reset
+
+When the grid stops matching the beat you feel, press `d` on beat one, or use
+`/downbeat` (also `reset downbeat`, `beat one`, `bar one`). The moment the
+audio observes the press becomes beat one of bar one. The clock keeps
+running at the same tempo. It works from browsing on every terminal, as a
+press edge with no key-release support needed.
+
+- Harmony: the sounding chord rings on without being struck again and starts
+  its count over, so the next chord arrives one full chord after the press.
+  No chord is skipped. A Vamp keeps its chord the same way.
+- Rhythm: every grid and step sequencer starts again at step 1 on the press,
+  so the Kick's first step hits right away. Tonal, Arp and Lead patterns
+  restart, and LFO phases follow the new bar.
+- Queued state: it still lands at the end of the phrase. The phrase is
+  measured from the restarted chord, so the countdown grows by however much
+  of that chord had already played.
+- `Space m`: a planned mute waits for the next bar of the new grid, beat 5.
+  Staged palette edits move to that bar too.
+- Motion loops restart from their first sample on the new bar. Live edit
+  history and Lead phrase history clear, as they do after Shift+P.
+- Beat Repeat: a held loop keeps its captured beat. Its release waits for the
+  next beat line of the new grid.
+- Auto: the morph keeps going, moved back with the restarted chord, so its
+  phrases stay on the chords. Pressing `d` doesn't count as an edit, so auto
+  keeps running.
+
+While the clock is stopped, `d` only shows a message, because Shift+P already
+starts at bar one. Song codes never carry a reset. It only moves the live
+clock, and a loaded code always starts at beat zero anyway.
+
 ## Jump
 
 Space is a leader key. A layer key opens that layer at the row last active
@@ -357,6 +388,10 @@ Lead play retains its own `i` entry and existing bindings.
    `'` overlay and recall as stored. Check both overlays at 46x11.
 12. Edit the set file to start a line with `A`: relaunch shows the refusal at
    launch and the song plays.
+13. With Kick audible, tap `d` a beat off the bar: the kick lands on the tap,
+   the chord keeps ringing with no re-attack, and the ribbon restarts that
+   chord's first measure. Queue a state, tap `d` mid-phrase: the `in N bars`
+   countdown grows, and the landing falls on the new grid's phrase end.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the
