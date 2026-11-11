@@ -6177,30 +6177,46 @@ fn the_palette_pushes_the_harmony() {
     assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 4.0)));
 }
 
-/// Unquantized (the default) a push lands at once: the next production tick
-/// already sounds it, with no countdown in the header.
+/// By default a push lands on the next beat line: live but in time. Moves
+/// before that beat compose, and the header shows no bar countdown.
 #[test]
-fn by_default_a_push_lands_at_once() {
-    let result = replay(
+fn by_default_a_push_lands_on_the_next_beat() {
+    let press = |character| key(0, FixtureKey::Character(character), InputPhase::Press);
+    let before_beat = replay(
         &[
             space(InputPhase::Press),
-            key(0, FixtureKey::Character('f'), InputPhase::Press),
-            TraceEvent::Tick { after_ms: 20 },
+            press('l'),
+            press('l'),
+            TraceEvent::Tick { after_ms: 500 },
+        ],
+        TerminalCapabilities::full(),
+    );
+    // Two lifts before the beat compose: E minor, then B diminished.
+    assert_eq!(
+        queued_harmony(&before_beat),
+        Some(("Bdim".to_string(), 1.0))
+    );
+    assert_eq!(before_beat.harmony_held, None);
+    let frame = &before_beat.frames.last().unwrap().text;
+    assert!(
+        frame.contains("Am7add11 → Bdim ") && !frame.contains(" bar"),
+        "{frame}"
+    );
+    assert!(frame.contains("Bdim · 1 beat"), "{frame}");
+    let landed = replay(
+        &[
+            space(InputPhase::Press),
+            press('l'),
+            press('l'),
+            TraceEvent::Tick { after_ms: 1_100 },
         ],
         TerminalCapabilities::full(),
     );
     assert_eq!(
-        result.harmony_held.map(|held| held.triad.name(0)),
-        Some("C".to_string())
+        landed.harmony_held.map(|held| held.triad.name(0)),
+        Some("Bdim".to_string())
     );
-    assert_eq!(result.harmony_queued, None);
-    // The last frame drew before the tick landed it: the queued move shows
-    // with no countdown.
-    let frame = &result.frames.last().unwrap().text;
-    assert!(
-        frame.contains("Am7add11 → C ") && !frame.contains(" bar"),
-        "{frame}"
-    );
+    assert_eq!(landed.harmony_queued, None);
 }
 
 /// `/harmony quantize 2` (the alias spelling) sets two-bar landings from
@@ -6221,7 +6237,7 @@ fn the_palette_sets_the_quantize_and_the_overlay_shows_it() {
     let result = replay(&trace, TerminalCapabilities::full());
     assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 8.0)));
     let frame = &result.frames.last().unwrap().text;
-    assert!(frame.contains("quantize 2 bars"), "{frame}");
+    assert!(frame.contains("Em · 2 bars"), "{frame}");
     assert!(frame.contains("Em in 2 bars"), "{frame}");
 }
 

@@ -91,9 +91,9 @@
   chord on landing.
 - **Push the Harmony:** steering the harmony by moves from the chord
   sounding now (P, L, R, scale steps of 1-3, fifths, home) while Space is
-  held, never by naming a chord. A **move** lands at once, or on the next 1,
-  2 or 4 bar line when **chord quantize** is set, composing with one already
-  queued. The **pushed chord** is the triad a landed move sounds; it holds
+  held, never by naming a chord. A **move** lands on the next beat line by default
+  (**chord quantize** can make it the next 1, 2 or 4 bar line, or at once),
+  composing with one already queued. The **pushed chord** is the triad a landed move sounds; it holds
   the progression on its slot from then on (there is no way back but a
   state or song change).
 - **Morph leg:** an outgoing song's hold followed by its crossing into the

@@ -1171,7 +1171,7 @@ impl EffectExecutor {
         let phrase_start = self.session.audio_phrase_start();
         let mut outcome = PushOutcome::Nothing;
         let mut shift = 0;
-        let mut quantize = PushQuantize::Off;
+        let mut quantize = PushQuantize::default();
         let snapshot = self.session.update(|snapshot| {
             let pad = &snapshot.controls.pad;
             let progression = progression_index(pad.progression);
@@ -1187,7 +1187,7 @@ impl EffectExecutor {
                     .push
                     .act(action, HomeKey::of_progression(progression), authored, beat);
         });
-        let when = match quantize.bars() {
+        let when = match quantize.grid_beats() {
             None => String::new(),
             Some(_) => format!(" · quantize {}", quantize.label()),
         };

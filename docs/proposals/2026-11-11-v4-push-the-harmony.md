@@ -27,7 +27,7 @@ above and below a home-row key are sizes or variants of the same move).
   diminished P/L/R neighbours exist so no key is a dead end, and every chord
   stays inside MIDI 40-79. Undo with nothing to undo says so and changes
   nothing.
-- **Rewards practice.** Unquantized (the default), every key is its own
+- **Rewards practice.** On the default beat grid (or off), every key is its own
   change, so chords are played live; bigger jumps are their own keys (`u`,
   `m`, `i`, `,`) rather than repeated taps. Quantized, moves chain before the
   line (`l l`, `f d`). Voice leading is deterministic: the same chain from
@@ -62,13 +62,14 @@ as one move. Focus loss ends a held push. Ctrl+C still quits.
 
 The rows above and below the other move columns stay unbound for now.
 
-Where a move lands is the chord quantize setting. It defaults to off: a move
-lands on the next sample. `/harmony quantize 1`, `2` or `4` (palette rows
-`Harmony quantize off/1 bar/2 bars/4 bars`) make moves wait for the next 1,
-2 or 4 bar line, where a second move before the line composes from the
-queued chord and keeps the line. Changing the setting re-times a waiting move
+Where a move lands is the chord quantize setting,
+`/harmony quantize beat|1|2|4|off` (palette rows `Harmony quantize 1 beat /
+1 bar / 2 bars / 4 bars / off`). It defaults to `beat`: a move lands on the
+next beat line of the engine clock, live but in time. `1`, `2` or `4` wait
+for that bar line; `off` lands on the next sample. Before the line, a second
+move composes from the queued chord and keeps the line. Changing the setting re-times a waiting move
 from now. The header shows the sounding chord and the queued one, with a bar
-countdown only when quantized (`CHORDS  C → G in 1 bar  PUSH`). The overlay
+countdown only on a bar grid (`CHORDS  C → G in 1 bar  PUSH`). The overlay
 shows now/next and the quantize setting, the two step columns laid out as on
 the keyboard (`u j m`, `i k ,`), and the other moves, each with the chord it
 would produce: the eyes-open learning aid. Every move and undo is also a `/`
@@ -153,7 +154,7 @@ display choice would. It is a play-style preference of the player, not part
 of the song, so sharing a code must not change how someone else's keys
 respond. What it already affected is saved: the pushed chord and any queued
 move. It lives in the live session (`PushedHarmony::quantize`), survives state
-landings, resets to off on launch, and needs no record or migration.
+landings, resets to `beat` on launch, and needs no record or migration.
 
 ## What this build leaves out
 

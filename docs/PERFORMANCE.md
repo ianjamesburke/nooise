@@ -86,18 +86,19 @@ recall or another song is the way out), and undo stops at the first landed
 push. Every move and undo is also a `/` operation (`/harmony lift`,
 `/push l`, `/harmony down 2 steps`).
 
-By default a move lands at once, so chords can be played live.
-`/harmony quantize 1`, `2` or `4` makes moves wait for the next 1, 2 or 4
-bar line, and `/harmony quantize off` plays live again. The setting shows in
-the overlay, is not saved with songs, and re-times a waiting move when
-changed. While quantized, a second move before the line composes from the
-queued chord and keeps the line, so `l l` is two fifths up. The pad voices
+By default a move lands on the next beat, so chords are played live and in
+time. `/harmony quantize 1`, `2` or `4` makes moves wait for the next 1, 2
+or 4 bar line, `/harmony quantize off` lands them at once, and
+`/harmony quantize beat` returns to the default. The setting shows in the
+overlay, is not saved with songs, resets to `beat` on launch, and re-times a
+waiting move when changed. A second move before the line composes from the
+queued chord and keeps the line, so a quick `l l` is two fifths up. The pad voices
 the new triad from the notes it is sounding, each voice moving to a nearby
 chord tone, and changes exactly as an authored chord does: the new chord
 fades in over the pad Attack while the old one rings out over Release. The
 Bass follows the new root in its own register, and the progression stays on
 the sounding slot like a Vamp. The header reads `CHORDS  C → G in 1 bar
-PUSH` (the countdown only when quantized), and the overlay lists every move
+PUSH` (the countdown only on a bar grid), and the overlay lists every move
 with the chord it would produce. A saved song keeps the pushed chord and any
 queued move, which lands on the loaded song's first bar; undo history is not
 saved. Holding Space, pushing and letting go keep other physical holds

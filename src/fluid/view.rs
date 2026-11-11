@@ -1650,7 +1650,7 @@ mod tests {
                     assert!(chords.contains("C␠→␠G␠in␠1␠bar␠␠PUSH"), "{frame}");
                 }
                 for expected in [
-                    "now␠C␠→␠G␠␠␠quantize␠1␠bar",
+                    "now␠C␠→␠G␠·␠1␠bar",
                     "u↓2␠Em",
                     "j↓1␠F",
                     "m↓3␠Dm",

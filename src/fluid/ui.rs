@@ -391,12 +391,13 @@ fn draw_harmony(
         ];
         if let Some((target, land_beat)) = &harmony.queued {
             spans.push(Span::styled(
-                match harmony.quantize {
-                    PushQuantize::Off => format!(" → {target}"),
-                    _ => format!(
+                if harmony.quantize.counts_bars() {
+                    format!(
                         " → {target} {}",
                         bar_countdown(session.transport, telemetry, *land_beat)
-                    ),
+                    )
+                } else {
+                    format!(" → {target}")
                 },
                 Style::default().fg(LIVE_AMBER),
             ));
@@ -1517,7 +1518,7 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: 
         ]);
     }
     now.push(Span::styled(
-        format!("   quantize {}", harmony.quantize.label()),
+        format!(" · {}", harmony.quantize.label()),
         label_style,
     ));
     let mut lines = vec![

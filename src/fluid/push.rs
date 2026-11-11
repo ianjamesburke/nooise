@@ -28,16 +28,18 @@ pub(crate) struct HeldChord {
 pub(crate) struct QueuedPush {
     /// The chord the move lands on.
     pub(crate) target: Triad,
-    /// The beat it lands on: now when unquantized, else a bar line.
+    /// The beat it lands on: now when unquantized, else a beat or bar line.
     pub(crate) land_beat: f64,
 }
 
-/// Where moves land: at once (`Off`, the default, for playing chords live)
-/// or on the next 1, 2 or 4 bar line. A play-style preference of the player,
-/// not part of the song: live-only, never in a song code.
+/// Where moves land: on the next beat line (`Beat`, the default: live but
+/// in time), at once (`Off`), or on the next 1, 2 or 4 bar line. A
+/// play-style preference of the player, not part of the song: live-only,
+/// never in a song code, back to `Beat` on launch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum PushQuantize {
     #[default]
+    Beat,
     Off,
     OneBar,
     TwoBars,
@@ -45,18 +47,26 @@ pub(crate) enum PushQuantize {
 }
 
 impl PushQuantize {
-    pub(crate) const fn bars(self) -> Option<u32> {
+    /// The grid a move waits for, in beats, or `None` when it lands at once.
+    pub(crate) const fn grid_beats(self) -> Option<f64> {
         match self {
             Self::Off => None,
-            Self::OneBar => Some(1),
-            Self::TwoBars => Some(2),
-            Self::FourBars => Some(4),
+            Self::Beat => Some(1.0),
+            Self::OneBar => Some(4.0),
+            Self::TwoBars => Some(8.0),
+            Self::FourBars => Some(16.0),
         }
+    }
+
+    /// Whether the wait is long enough to count down in bars.
+    pub(crate) const fn counts_bars(self) -> bool {
+        matches!(self, Self::OneBar | Self::TwoBars | Self::FourBars)
     }
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Off => "off",
+            Self::Beat => "1 beat",
             Self::OneBar => "1 bar",
             Self::TwoBars => "2 bars",
             Self::FourBars => "4 bars",
@@ -64,14 +74,11 @@ impl PushQuantize {
     }
 
     /// The beat a move made at `beat` lands on: `beat` itself when off, else
-    /// the next line of this many bars strictly after it.
+    /// the next grid line strictly after it.
     pub(crate) fn landing(self, beat: f64) -> f64 {
-        match self.bars() {
+        match self.grid_beats() {
             None => beat,
-            Some(bars) => {
-                let grid = f64::from(bars) * 4.0;
-                (beat / grid).floor() * grid + grid
-            }
+            Some(grid) => (beat / grid).floor() * grid + grid,
         }
     }
 }
@@ -359,9 +366,11 @@ mod tests {
 
     #[test]
     fn off_lands_at_once_and_each_grid_lands_on_its_next_line() {
-        assert_eq!(PushQuantize::default(), PushQuantize::Off);
+        assert_eq!(PushQuantize::default(), PushQuantize::Beat);
         for (quantize, beat, expected) in [
             (PushQuantize::Off, 5.25, 5.25),
+            (PushQuantize::Beat, 5.25, 6.0),
+            (PushQuantize::Beat, 6.0, 7.0),
             (PushQuantize::OneBar, 5.25, 8.0),
             (PushQuantize::OneBar, 8.0, 12.0),
             (PushQuantize::TwoBars, 5.25, 8.0),
@@ -372,6 +381,7 @@ mod tests {
             assert_eq!(quantize.landing(beat), expected, "{quantize:?} at {beat}");
         }
         let mut push = PushedHarmony::default();
+        push.set_quantize(PushQuantize::Off, 0.0);
         push.push(HarmonyMove::Relative, KEY, am(), 5.25);
         assert!(push.is_due(5.25), "off lands on the next sample");
     }

@@ -114,7 +114,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 67] = [
+    pub(crate) const ALL: [Self; 68] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -178,6 +178,7 @@ impl Operation {
         Self::Harmony(HarmonyAction::Move(HarmonyMove::StepUpTwo)),
         Self::Harmony(HarmonyAction::Move(HarmonyMove::StepUpThree)),
         Self::Harmony(HarmonyAction::Undo),
+        Self::HarmonyQuantize(PushQuantize::Beat),
         Self::HarmonyQuantize(PushQuantize::Off),
         Self::HarmonyQuantize(PushQuantize::OneBar),
         Self::HarmonyQuantize(PushQuantize::TwoBars),
@@ -352,12 +353,18 @@ impl Operation {
             Self::HarmonyQuantize(quantize) => OperationSpec {
                 operation: self,
                 label: match quantize {
+                    PushQuantize::Beat => "Harmony quantize 1 beat",
                     PushQuantize::Off => "Harmony quantize off",
                     PushQuantize::OneBar => "Harmony quantize 1 bar",
                     PushQuantize::TwoBars => "Harmony quantize 2 bars",
                     PushQuantize::FourBars => "Harmony quantize 4 bars",
                 },
                 aliases: match quantize {
+                    PushQuantize::Beat => &[
+                        "harmony quantize beat",
+                        "push quantize beat",
+                        "chord quantize beat",
+                    ],
                     PushQuantize::Off => &[
                         "harmony quantize 0",
                         "push quantize off",
@@ -375,6 +382,7 @@ impl Operation {
                 },
                 description: match quantize {
                     PushQuantize::Off => "harmony pushes land at once",
+                    PushQuantize::Beat => "harmony pushes land on the next beat (the default)",
                     _ => "harmony pushes wait for the next bar line of this length",
                 },
             },

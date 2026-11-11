@@ -3093,12 +3093,13 @@ mod push_tests {
     fn each_quantize_setting_lands_on_its_own_sample() {
         for (quantize, line) in [
             (PushQuantize::Off, None),
+            (PushQuantize::Beat, Some(6.0)),
             (PushQuantize::OneBar, Some(8.0)),
             (PushQuantize::TwoBars, Some(8.0)),
             (PushQuantize::FourBars, Some(16.0)),
         ] {
             let (session, mut engine, mut effects) = engine_quantized(quantize);
-            play_until_beat(&mut engine, 5.0);
+            play_until_beat(&mut engine, 5.5);
             push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
             let pressed = engine.current_sample;
             while session.load().push.held.is_none() {
