@@ -145,7 +145,7 @@ impl PaletteEntry {
                 Operation::ToggleBeatRepeat => "live beat".to_string(),
                 Operation::ChordNames(_) => "display".to_string(),
                 Operation::OutputDevice => "routing".to_string(),
-                Operation::Section(_) => "section bank".to_string(),
+                Operation::State(_) => "state bank".to_string(),
                 Operation::Harmony(_) => "harmony".to_string(),
                 Operation::HarmonyQuantize(_) => "where pushes land".to_string(),
                 Operation::ClearSequence => "visible sequence".to_string(),

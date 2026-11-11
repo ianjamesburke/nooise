@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use update_check::check_for_update;
 
+#[cfg(test)]
+mod alloc_count;
 mod audio;
 mod fluid;
 mod fx;
@@ -92,7 +94,7 @@ struct Cli {
     /// Start the full built-in song loop at this song number, then wrap around.
     #[arg(long, global = true, value_name = "SONG")]
     from: Option<usize>,
-    /// Load and save section snapshots in this set file.
+    /// Load and save state snapshots in this set file.
     #[arg(long, global = true, value_name = "PATH")]
     set: Option<std::path::PathBuf>,
     /// Start live playback with Master Level at 0%.
@@ -622,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn section_set_is_live_only() {
+    fn state_set_is_live_only() {
         assert!(
             parse(&["--set", "songs.set"])
                 .unwrap()

@@ -1,4 +1,4 @@
-# November 21 show readiness
+# November 22 show readiness
 
 Status: the November 3 performance batch is integrated into V3. The show date,
 V3 target, and rehearsal/post-mortem loop are confirmed. Listening and the
@@ -8,8 +8,8 @@ sequences stay at the following checkpoint, as confirmed by Ian.
 
 ## Outcome
 
-Play a prepared set on November 21, 2026, with room to improvise, moving between
-musical sections and songs inside one running nooise instance. Develop on `v3`
+Play a prepared set on November 22, 2026 (5:30 to 6:30 pm, one hour), with room to improvise, moving between
+musical states and songs inside one running nooise instance. Develop on `v3`
 or worktrees based on it. Each batch ends with a recorded performance and a short
 post-mortem that determines the next batch.
 
@@ -20,24 +20,24 @@ placeholder; the final rehearsals must run for the actual booked duration.
 ## Work order
 
 The current batch covers Perc startup level, Bass's Saw startup sound, Bass Offbeat, replacement reverb,
-temporary freeze/smear, Vamp visibility, q tap/hold, and live section recall.
+temporary freeze/smear, Vamp visibility, q tap/hold, and live state recall.
 The follow-up `/slapback` preset request also belongs to this batch: Delay
 Amount 40%, left/right time 0.25, Feedback 0%.
-Its next human gate is a 15–20 minute set with section recall and recovery.
+Its next human gate is a 15–20 minute set with state recall and recovery.
 The melodic spike follows that rehearsal.
 
 1. Record a short baseline set on current V3. Prepare three contrasting states
    for one piece and write down exactly where current controls interrupt playing.
 2. Build the smallest usable state bank and live recall path. Play an intro,
-   main section, breakdown, and return without restarting the process.
+   main state, breakdown, and return without restarting the process.
 3. Resolve melodic behavior through a bounded spike and playing comparison.
 4. Assemble the full set; fix the problems heard and encountered in rehearsal.
 5. Freeze the show build and its song material; rehearse the actual rig twice.
 
 ## State recall and song structure
 
-The first deliverable is a named bank of sections with a manual next-section
-operation. The performer can stay in a section indefinitely, choose another,
+The first deliverable is a named bank of states with a manual next-state
+operation. The performer can stay in a state indefinitely, choose another,
 see which state is queued, and cancel or replace it before it lands. Every
 operation must be reachable through normal browsing or `/`.
 
@@ -48,7 +48,7 @@ progression mid-phrase. The bar-versus-phrase comparison is settled.
 It must settle BPM changes, destination phrase position, active automation,
 evolved notes, pending mutes, vamp, gestures, and the fate of unsaved live edits.
 Suggested first policy: recall restores the authored snapshot; saving a new
-version is explicit. Avoid accidentally overwriting a prepared section.
+version is explicit. Avoid accidentally overwriting a prepared state.
 
 Start with an audible, click-free state change. Try parameter morphing only if
 the rehearsal needs it. An audio crossfade between two engines has different
@@ -58,13 +58,13 @@ adopting it; an invalid or retired code must leave the current music playing.
 A compact song code remains one musical snapshot. Names, ordering, and transition
 instructions belong in a separate set/session document. Loading a set must not
 require gear configuration, and ordinary startup must remain immediately playable.
-Do not build a timed arrangement editor unless manual section recall proves
+Do not build a timed arrangement editor unless manual state recall proves
 insufficient in rehearsal.
 
 Acceptance: play A → B → C → A without a restart or unintended silence; cancel
 and replace a queued transition; load an invalid code without disrupting playback;
 save/reopen the bank and hear the chosen melody/evolution/automation state return.
-Test both a same-tempo section change and a change between songs at different tempos.
+Test both a same-tempo state change and a change between songs at different tempos.
 
 ## Melodic spike
 
@@ -181,20 +181,20 @@ move while discrete changes wait for their musical boundary.
 Muted preparation, tempo matching, tempo preservation, gradual morphing, and
 headphone audition remain separate design choices. Muting an instance alone
 does not provide headphone cueing. Baton clock/session ownership is unresolved.
-The current numbered section-bank batch (slots 1-9) is the foundation, not an implementation
+The current numbered state-bank batch (slots 1-9) is the foundation, not an implementation
 of this library, preview, discovery, or multi-engine design.
 
 ## Rehearsal checkpoints
 
 | Target | Work to bring | Performance gate |
 | --- | --- | --- |
-| Nov 2–4 | Baseline recording, three section snapshots, current task audit | Play 10 minutes; identify the three largest interruptions and choose one piece for the recall spike |
-| Nov 5–8 | In-process section bank/recall and q tap/hold | Play 15–20 minutes with sections 1/2/3/return, one song transition, and hands-free breakdowns; exercise cancel and recovery |
+| Nov 2–4 | Baseline recording, three state snapshots, current task audit | Play 10 minutes; identify the three largest interruptions and choose one piece for the recall spike |
+| Nov 5–8 | In-process state bank/recall and q tap/hold | Play 15–20 minutes with states 1/2/3/return, one song transition, and hands-free breakdowns; exercise cancel and recovery |
 | Nov 9–12 | Chosen melodic slice, any required harmony fixes, longer phrase only if it earns its place | Play the draft set end to end; decide the final feature scope and song order |
-| Nov 13–16 | Rehearsal fixes, balanced patches, complete set material and startup path | Full-duration recorded set on the intended rig, including setup, ending, and a deliberate wrong-section recovery |
+| Nov 13–16 | Rehearsal fixes, balanced patches, complete set material and startup path | Full-duration recorded set on the intended rig, including setup, ending, and a deliberate wrong-state recovery |
 | Nov 17–18 | Frozen candidate and matching saved material | Two full-duration passes with no blocking failure; verify restart/reload and backup material |
 | Nov 19–20 | Only blocking fixes and regression rehearsal | Pack and check the rig; verify the exact show binary and material together |
-| Nov 21 | Rehearsed build and set | Soundcheck routing, levels, first transition, and ending |
+| Nov 22 | Rehearsed build and set | Soundcheck routing, levels, first transition, and ending |
 
 If recall slips, keep the existing melodic voices for the show. If a new feature
 cannot be rehearsed by November 16, defer it. Any later blocking fix requires a
@@ -209,7 +209,7 @@ next batch. Re-test the failed moment, then play another uninterrupted set.
 
 Show acceptance includes startup from a fresh launch, correct output routing,
 usable level balance, no audible dropouts/clipping, planned transitions, recovery
-from a wrong section, a deliberate ending, and a matching backup binary/material
+from a wrong state, a deliberate ending, and a matching backup binary/material
 pair. Automated gates support this evidence; they do not replace listening.
 
 ## Current work to reconcile

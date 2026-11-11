@@ -311,7 +311,7 @@ fn render_to_buffer(test: RenderTest<'_>) -> Buffer {
             },
             gesture_now_seconds: 0.0,
             gesture_holds_available: true,
-            filled_sections: [false; sections::SECTION_COUNT],
+            filled_states: [false; states::STATE_COUNT],
         },
     });
     let backend = TestBackend::new(width, height);
@@ -10789,14 +10789,14 @@ const CHORD_BUILDER_SOURCE_NOTES: [[i32; 4]; 304] = [
     [50, 54, 60, 64], // Funk4 6
     [45, 55, 60, 64], // Funk4 7
     [47, 55, 62, 64], // Funk4 8
-    [53, 60, 64, 69], // Harvest 1
-    [45, 52, 55, 60], // Harvest 2
-    [50, 53, 60, 64], // Harvest 3
-    [46, 53, 57, 62], // Harvest 4
-    [55, 62, 65, 70], // Harvest 5
-    [48, 53, 55, 58], // Harvest 6
-    [53, 57, 60, 67], // Harvest 7
-    [46, 53, 60, 62], // Harvest 8
+    [53, 57, 60, 67], // Harvest 1
+    [46, 53, 60, 62], // Harvest 2
+    [53, 60, 64, 69], // Harvest 3
+    [45, 52, 55, 60], // Harvest 4
+    [50, 53, 60, 64], // Harvest 5
+    [46, 53, 57, 62], // Harvest 6
+    [55, 62, 65, 70], // Harvest 7
+    [48, 53, 55, 58], // Harvest 8
     [43, 46, 53, 57], // Ember 1
     [39, 46, 50, 55], // Ember 2
     [48, 55, 58, 63], // Ember 3
@@ -13008,7 +13008,7 @@ fn sequencer_completion_tonal_hold_releases_on_stop_or_sequence_edit() {
 }
 
 #[test]
-fn sequencer_completion_section_restore_releases_outgoing_tonal_tie() {
+fn sequencer_completion_state_restore_releases_outgoing_tonal_tie() {
     let mut controls = TonalControls {
         level: 0.5,
         step_count: 2.0,
@@ -13031,7 +13031,7 @@ fn sequencer_completion_section_restore_releases_outgoing_tonal_tie() {
     }
     assert!(
         engine.voices.is_empty(),
-        "section recall must not strand a held voice"
+        "state recall must not strand a held voice"
     );
 }
 

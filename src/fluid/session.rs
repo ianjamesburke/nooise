@@ -5,9 +5,13 @@
 //! audio thread only ever reads one coherent generation.
 
 use super::*;
+use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver, SyncSender};
+
+use super::automation::RetiredRoutes;
 
 #[derive(Clone)]
-pub(crate) struct PendingSection {
+pub(crate) struct PendingState {
     pub(crate) index: usize,
     pub(crate) snapshot: Arc<LiveSessionSnapshot>,
 }
@@ -35,12 +39,12 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) kick_bass_press_seconds: Option<f64>,
     /// A boundary action that changes the audible future of this session.
     pub(crate) planned: Option<PlannedAction>,
-    pub(crate) pending_section: Option<PendingSection>,
-    pub(crate) current_section: Option<usize>,
-    /// The section that was current before the most recent landing; `''`
+    pub(crate) pending_state: Option<PendingState>,
+    pub(crate) current_state: Option<usize>,
+    /// The state that was current before the most recent landing; `''`
     /// queues it. Live-only.
-    pub(crate) previous_section: Option<usize>,
-    pub(crate) section_revision: u64,
+    pub(crate) previous_state: Option<usize>,
+    pub(crate) state_revision: u64,
     /// Active chord vamp (`a`), locking Pads, Bass, Arp, and Lead to the nearest
     /// chord start until released into the next chord in the progression.
     pub(crate) vamp: Option<VampState>,
@@ -96,10 +100,10 @@ impl LiveSessionSnapshot {
             kick_bass_latched: song.kick_bass_latched,
             kick_bass_press_seconds: None,
             planned: song.planned,
-            pending_section: None,
-            current_section: None,
-            previous_section: None,
-            section_revision: 0,
+            pending_state: None,
+            current_state: None,
+            previous_state: None,
+            state_revision: 0,
             vamp: song.vamp,
             vamp_press_seconds: None,
             vamp_latched: song.vamp.is_some(),
@@ -131,10 +135,10 @@ impl LiveSessionSnapshot {
             kick_bass_latched: false,
             kick_bass_press_seconds: None,
             planned: None,
-            pending_section: None,
-            current_section: None,
-            previous_section: None,
-            section_revision: 0,
+            pending_state: None,
+            current_state: None,
+            previous_state: None,
+            state_revision: 0,
             vamp: None,
             vamp_press_seconds: None,
             vamp_latched: false,
@@ -149,9 +153,37 @@ impl LiveSessionSnapshot {
     }
 }
 
+/// Heap the audio thread lets go of. It is never dropped there: the engine
+/// hands it to `LiveSession::retire`, and a non-audio thread frees it in
+/// `LiveSession::reclaim`.
+pub(crate) enum Retired {
+    /// A published generation the engine observed and has moved past.
+    // Never read: the payload exists only to be dropped by `reclaim`.
+    #[allow(dead_code)]
+    Snapshot(Arc<LiveSessionSnapshot>),
+    /// The automation plan's previous route storage.
+    // Never read: the payload exists only to be dropped by `reclaim`.
+    #[allow(dead_code)]
+    AutomationRoutes(RetiredRoutes),
+}
+
+/// Retired heap waiting for a non-audio thread. Holds one UI-loop interval of
+/// audio-side session changes with wide margin.
+const RETIRE_CAPACITY: usize = 512;
+
+struct RetireQueue {
+    /// Bounded and preallocated: `try_send` never allocates or blocks, and no
+    /// receiver ever waits, so a send never wakes a thread.
+    sender: SyncSender<Retired>,
+    receiver: Mutex<Receiver<Retired>>,
+    /// Items the audio thread had to free itself because the queue was full.
+    overflowed: AtomicU64,
+}
+
 #[derive(Clone)]
 pub(crate) struct LiveSession {
     published: Arc<ArcSwap<LiveSessionSnapshot>>,
+    retired: Arc<RetireQueue>,
     /// Audio-owned monotonic clock; gestures store their anchors in the
     /// aggregate snapshot, while readers sample this clock without a lock.
     audio_seconds_bits: Arc<AtomicU64>,
@@ -164,8 +196,14 @@ pub(crate) struct LiveSession {
 
 impl LiveSession {
     pub(crate) fn new(snapshot: LiveSessionSnapshot) -> Self {
+        let (sender, receiver) = mpsc::sync_channel(RETIRE_CAPACITY);
         Self {
             published: Arc::new(ArcSwap::from_pointee(snapshot)),
+            retired: Arc::new(RetireQueue {
+                sender,
+                receiver: Mutex::new(receiver),
+                overflowed: AtomicU64::new(0),
+            }),
             audio_seconds_bits: Arc::new(AtomicU64::new(0)),
             audio_beat_bits: Arc::new(AtomicU64::new(0)),
             audio_phrase_start_bits: Arc::new(AtomicU64::new(0)),
@@ -176,6 +214,37 @@ impl LiveSession {
 
     pub(crate) fn load(&self) -> Arc<LiveSessionSnapshot> {
         self.published.load_full()
+    }
+
+    /// The published generation without taking ownership: the audio thread
+    /// compares it against the Arc it already holds, so a guard that is
+    /// dropped never releases the last reference.
+    pub(crate) fn published(&self) -> arc_swap::Guard<Arc<LiveSessionSnapshot>> {
+        self.published.load()
+    }
+
+    /// Queue heap for `reclaim`. Never blocks or allocates; when the queue
+    /// is full the caller frees it in place and `retire_overflows` counts it.
+    pub(crate) fn retire(&self, item: Retired) {
+        if self.retired.sender.try_send(item).is_err() {
+            self.retired.overflowed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Free everything the audio thread retired, on the calling thread.
+    /// Called from the UI turn loop; returns how many items it dropped.
+    pub(crate) fn reclaim(&self) -> usize {
+        match self.retired.receiver.try_lock() {
+            Ok(receiver) => receiver.try_iter().count(),
+            Err(_) => 0,
+        }
+    }
+
+    /// How many retired items were freed by their sender because `reclaim`
+    /// had fallen a full queue behind.
+    #[cfg(test)]
+    pub(crate) fn retire_overflows(&self) -> u64 {
+        self.retired.overflowed.load(Ordering::Relaxed)
     }
 
     pub(crate) fn audio_seconds(&self) -> f64 {
@@ -207,7 +276,7 @@ impl LiveSession {
             .store(beat.to_bits(), Ordering::Relaxed);
     }
 
-    /// The beat a queued section lands on, or `None` when nothing is queued.
+    /// The beat a queued state lands on, or `None` when nothing is queued.
     pub(crate) fn audio_phrase_end(&self) -> Option<f64> {
         let end = f64::from_bits(self.audio_phrase_end_bits.load(Ordering::Relaxed));
         end.is_finite().then_some(end)
@@ -224,12 +293,12 @@ impl LiveSession {
     }
 
     /// Replace the entire authored song without applying edit-time lane invalidation.
-    pub(crate) fn land_section(&self, pending: &PendingSection, now_seconds: f64) -> bool {
+    pub(crate) fn land_state(&self, pending: &PendingState, now_seconds: f64) -> bool {
         {
             let current = self.published.load_full();
             if current.transport != Transport::Playing
                 || !current
-                    .pending_section
+                    .pending_state
                     .as_ref()
                     .is_some_and(|p| Arc::ptr_eq(&p.snapshot, &pending.snapshot))
             {
@@ -243,7 +312,7 @@ impl LiveSession {
             // Where pushes land is the player's preference, not the section's.
             next.push.quantize = current.push.quantize;
             next.gestures = pending.snapshot.gestures.restored_at(now_seconds);
-            // Section state replaces authored latches, but keys physically held
+            // The landed state replaces authored latches, but keys physically held
             // across the boundary remain under the performer's finger.
             next.hold_muted = current.hold_muted;
             next.kick_bass_press_seconds = current.kick_bass_press_seconds;
@@ -256,7 +325,7 @@ impl LiveSession {
             if current.gestures.rise.held && !current.gestures.rise.restored {
                 next.gestures.rise = current.gestures.rise;
             }
-            // A held vamp follows the new section's first chord. Its physical
+            // A held vamp follows the new state's first chord. Its physical
             // release still uses the original press time and destination grid.
             if current.vamp_press_seconds.is_some() && current.vamp.is_some() {
                 next.vamp = Some(VampState::start(
@@ -266,9 +335,9 @@ impl LiveSession {
                 next.vamp_press_seconds = current.vamp_press_seconds;
                 next.vamp_latched = false;
             }
-            next.previous_section = current.current_section;
-            next.current_section = Some(pending.index);
-            next.section_revision = current.section_revision.wrapping_add(1);
+            next.previous_state = current.current_state;
+            next.current_state = Some(pending.index);
+            next.state_revision = current.state_revision.wrapping_add(1);
             next.transport_restart = current.transport_restart.wrapping_add(1);
             let next = Arc::new(next);
             let previous = self.published.compare_and_swap(&current, next);
@@ -357,7 +426,7 @@ mod tests {
     use std::thread;
 
     #[test]
-    fn section_landing_preserves_live_holds_and_uses_destination_latches() {
+    fn state_landing_preserves_live_holds_and_uses_destination_latches() {
         let mut current = LiveSessionSnapshot::from_controls(FluidControls::default());
         current.hold_muted = [true, true, true];
         current.kick_bass_press_seconds = Some(2.0);
@@ -379,13 +448,13 @@ mod tests {
             held: true,
             restored: true,
         };
-        let pending = PendingSection {
+        let pending = PendingState {
             index: 1,
             snapshot: Arc::new(destination),
         };
-        current.pending_section = Some(pending.clone());
+        current.pending_state = Some(pending.clone());
         let session = LiveSession::new(current);
-        assert!(session.land_section(&pending, 5.0));
+        assert!(session.land_state(&pending, 5.0));
         let landed = session.load();
         assert_eq!(landed.hold_muted, [true, true, true]);
         assert_eq!(landed.kick_bass_press_seconds, Some(2.0));
@@ -408,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn release_after_section_landing_keeps_destination_group_latch_and_layer_mutes() {
+    fn release_after_state_landing_keeps_destination_group_latch_and_layer_mutes() {
         use super::super::interaction::InteractionEffect;
         let mut current = LiveSessionSnapshot::from_controls(FluidControls::default());
         current.hold_muted[HoldMute::KickAndBass as usize] = true;
@@ -416,13 +485,13 @@ mod tests {
         let mut destination = LiveSessionSnapshot::from_controls(FluidControls::default());
         destination.kick_bass_latched = true;
         destination.muted[Tab::Bass as usize] = true;
-        let pending = PendingSection {
+        let pending = PendingState {
             index: 0,
             snapshot: Arc::new(destination),
         };
-        current.pending_section = Some(pending.clone());
+        current.pending_state = Some(pending.clone());
         let session = LiveSession::new(current);
-        assert!(session.land_section(&pending, 2.0));
+        assert!(session.land_state(&pending, 2.0));
         session.publish_audio_seconds(2.0);
         let mut effects = EffectExecutor::seeded(
             session.clone(),
@@ -456,36 +525,36 @@ mod tests {
     }
 
     #[test]
-    fn stopped_transport_does_not_land_a_pending_section() {
+    fn stopped_transport_does_not_land_a_pending_state() {
         let mut current = LiveSessionSnapshot::from_controls(FluidControls::default());
         let destination = LiveSessionSnapshot::from_controls(FluidControls::default());
-        let pending = PendingSection {
+        let pending = PendingState {
             index: 0,
             snapshot: Arc::new(destination),
         };
-        current.pending_section = Some(pending.clone());
+        current.pending_state = Some(pending.clone());
         current.transport = Transport::Stopped;
         let session = LiveSession::new(current);
-        assert!(!session.land_section(&pending, 1.0));
+        assert!(!session.land_state(&pending, 1.0));
         let after = session.load();
         assert_eq!(after.transport, Transport::Stopped);
-        assert!(after.pending_section.is_some());
+        assert!(after.pending_state.is_some());
     }
 
     #[test]
-    fn section_landing_moves_physical_vamp_to_destination_first_chord() {
+    fn state_landing_moves_physical_vamp_to_destination_first_chord() {
         let mut current = LiveSessionSnapshot::from_controls(FluidControls::default());
         current.vamp = Some(VampState::start(12.0, 0));
         current.vamp_press_seconds = Some(3.0);
         let mut destination = LiveSessionSnapshot::from_controls(FluidControls::default());
         destination.controls.pad.chord_offset = 3.0;
-        let pending = PendingSection {
+        let pending = PendingState {
             index: 0,
             snapshot: Arc::new(destination),
         };
-        current.pending_section = Some(pending.clone());
+        current.pending_state = Some(pending.clone());
         let session = LiveSession::new(current);
-        assert!(session.land_section(&pending, 4.0));
+        assert!(session.land_state(&pending, 4.0));
         let landed = session.load();
         assert_eq!(landed.vamp, Some(VampState::start(0.0, 3)));
         assert_eq!(landed.vamp_press_seconds, Some(3.0));
@@ -493,20 +562,20 @@ mod tests {
     }
 
     #[test]
-    fn section_landing_uses_destination_vamp_without_a_physical_press() {
+    fn state_landing_uses_destination_vamp_without_a_physical_press() {
         let mut current = LiveSessionSnapshot::from_controls(FluidControls::default());
         current.vamp = Some(VampState::start(8.0, 1));
         current.vamp_latched = true;
         let mut destination = LiveSessionSnapshot::from_controls(FluidControls::default());
         destination.vamp = Some(VampState::start(0.0, 2));
         destination.vamp_latched = true;
-        let pending = PendingSection {
+        let pending = PendingState {
             index: 0,
             snapshot: Arc::new(destination),
         };
-        current.pending_section = Some(pending.clone());
+        current.pending_state = Some(pending.clone());
         let session = LiveSession::new(current);
-        assert!(session.land_section(&pending, 4.0));
+        assert!(session.land_state(&pending, 4.0));
         let landed = session.load();
         assert_eq!(landed.vamp, Some(VampState::start(0.0, 2)));
         assert!(landed.vamp_latched);

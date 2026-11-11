@@ -754,7 +754,7 @@ pub(crate) fn apply_osc_ui_command(
 /// The opt-in outside sources a live UI loop drains each turn. Each is
 /// launch configuration, never song state.
 pub(crate) struct LiveAdapters {
-    pub(crate) section_path: Option<std::path::PathBuf>,
+    pub(crate) state_path: Option<std::path::PathBuf>,
     pub(crate) output_routing: audio::OutputRouting,
     pub(crate) chassis_tap: Option<ChassisTapReceiver>,
     pub(crate) osc_rx: Option<osc::OscReceiver>,
@@ -770,7 +770,7 @@ pub(crate) fn production_ui_loop(
     adapters: LiveAdapters,
 ) -> Result<(), Box<dyn Error>> {
     let LiveAdapters {
-        section_path,
+        state_path,
         output_routing,
         chassis_tap,
         osc_rx,
@@ -778,7 +778,7 @@ pub(crate) fn production_ui_loop(
     } = adapters;
     let mut model = interaction::InteractionModel::default();
     let mut effects = EffectExecutor::new(session.live, auto)
-        .with_section_path(section_path)
+        .with_state_path(state_path)
         .with_output_routing(output_routing);
     let mut source = runtime::CrosstermEventSource::new(terminal.capabilities());
     let clock = runtime::MonotonicClock::start();
@@ -852,6 +852,8 @@ pub(crate) fn production_ui_loop(
         }
 
         if tick_due {
+            // Free what the audio thread retired since the last tick.
+            effects.session().reclaim();
             effects.expire_message(SAVE_MESSAGE_TTL);
             let dt = now.saturating_sub(last_tick).as_secs_f32().min(0.05);
             fluid.tick(dt, &telemetry);
@@ -921,7 +923,7 @@ pub(crate) fn production_ui_loop(
                     },
                     gesture_now_seconds,
                     gesture_holds_available: terminal.capabilities().supports_holds(),
-                    filled_sections: effects.filled_sections(),
+                    filled_states: effects.filled_states(),
                 },
             });
             if let Some(osc_ui) = &osc_ui_state {

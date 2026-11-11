@@ -866,10 +866,10 @@ pub(crate) enum JumpStage {
     },
 }
 
-/// What the digit does once a section leader is pending: queue that section
+/// What the digit does once a state leader is pending: queue that state
 /// (`'`), or store the current song into it (`"`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SectionLeader {
+pub(crate) enum StateLeader {
     Queue,
     Store,
 }
@@ -879,9 +879,9 @@ pub(crate) enum PerformanceMode {
     Jump {
         stage: JumpStage,
     },
-    /// A pending `'` or `"`: the next key picks a section slot.
-    Sections {
-        leader: SectionLeader,
+    /// A pending `'` or `"`: the next key picks a state slot.
+    States {
+        leader: StateLeader,
     },
     /// Push the Harmony: `c` opens it for one move, Shift+`C` latches it
     /// until Esc. Its home-row keys push the harmony instead of browsing.
@@ -900,12 +900,12 @@ impl PerformanceMode {
     }
 
     /// Whether opening this leader leaves physical holds running. Jump
-    /// releases them like every other keyboard owner; the section leaders
+    /// releases them like every other keyboard owner; the state leaders
     /// exist to be played with a gesture key held down.
     pub(crate) fn preserves_holds(self) -> bool {
         match self {
             Self::Jump { .. } => false,
-            Self::Sections { .. } | Self::Harmony { .. } => true,
+            Self::States { .. } | Self::Harmony { .. } => true,
         }
     }
 }
@@ -1212,12 +1212,12 @@ pub(crate) enum Intent {
     JumpToParameter(PerformanceParameter),
     /// Arm or cancel the visible layer's next-bar mute.
     PlanMute,
-    /// Open the `'` (queue) or `"` (store) section leader.
-    OpenSectionLeader(SectionLeader),
-    /// The 0-based section slot a pending section leader's digit names.
-    ChooseSection(usize),
+    /// Open the `'` (queue) or `"` (store) state leader.
+    OpenStateLeader(StateLeader),
+    /// The 0-based section slot a pending state leader's digit names.
+    ChooseState(usize),
     /// `''`: queue the section that was current before the last landing.
-    PreviousSection,
+    PreviousState,
     /// Open Push the Harmony for one move (`c`) or latched (Shift+`C`).
     OpenHarmony {
         latched: bool,
@@ -1378,10 +1378,10 @@ impl Intent {
             | Self::JumpToParameter(_)
             | Self::PlanMute
             | Self::GrabMotion(_)
-            | Self::ChooseSection(_)
-            | Self::PreviousSection
+            | Self::ChooseState(_)
+            | Self::PreviousState
             | Self::PushHarmony(_) => &[ModeKind::Performance],
-            Self::OpenSectionLeader(_) | Self::OpenHarmony { .. } => &[ModeKind::Browsing],
+            Self::OpenStateLeader(_) | Self::OpenHarmony { .. } => &[ModeKind::Browsing],
         }
     }
 
@@ -1425,9 +1425,9 @@ impl Intent {
             | Self::JumpToParameter(_)
             | Self::PlanMute
             | Self::GrabMotion(_)
-            | Self::OpenSectionLeader(_)
-            | Self::ChooseSection(_)
-            | Self::PreviousSection
+            | Self::OpenStateLeader(_)
+            | Self::ChooseState(_)
+            | Self::PreviousState
             | Self::OpenHarmony { .. }
             | Self::PushHarmony(_)
             | Self::EnterLeadPlay
@@ -1555,10 +1555,10 @@ pub(crate) enum InteractionEffect {
     ToggleMute(Tab),
     /// Arm or cancel this layer's mute at the next bar.
     PlanMute(Tab),
-    Section(super::SectionAction),
-    /// The recall leader's digit: queue that section, or cancel the queue
+    State(super::StateAction),
+    /// The recall leader's digit: queue that state, or cancel the queue
     /// when it is already the queued one. The kernel cannot see the queue.
-    ToggleSectionQueue(usize),
+    ToggleStateQueue(usize),
     /// One Push the Harmony key. The kernel cannot see the harmony, so the
     /// executor resolves the move against the chord sounding now.
     Harmony(super::HarmonyAction),
@@ -2013,8 +2013,8 @@ fn update_browsing(
         Intent::ActivatePerformance(kind) => {
             *next_mode = Some(InteractionMode::Performance(PerformanceMode::new(kind)));
         }
-        Intent::OpenSectionLeader(leader) => {
-            *next_mode = Some(InteractionMode::Performance(PerformanceMode::Sections {
+        Intent::OpenStateLeader(leader) => {
+            *next_mode = Some(InteractionMode::Performance(PerformanceMode::States {
                 leader,
             }));
         }
@@ -2383,8 +2383,8 @@ fn update_performance(
             PerformanceMode::Jump { stage } => {
                 update_jump(stage, navigation, layer_rows, intent, next_mode, effects);
             }
-            PerformanceMode::Sections { leader } => {
-                update_section_leader(*leader, intent, next_mode, effects);
+            PerformanceMode::States { leader } => {
+                update_state_leader(*leader, intent, next_mode, effects);
             }
             PerformanceMode::Harmony { latched } => {
                 update_harmony(*latched, intent, next_mode, effects);
@@ -2393,25 +2393,25 @@ fn update_performance(
     }
 }
 
-/// The section leaders: `'` queues and `"` stores. The digit names the slot
+/// The state leaders: `'` queues and `"` stores. The digit names the slot
 /// and completes the leader; Esc leaves it with no effect. Every route acts
 /// on a Press edge, and a physical hold stays running throughout.
-fn update_section_leader(
-    leader: SectionLeader,
+fn update_state_leader(
+    leader: StateLeader,
     intent: Intent,
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
 ) {
     let effect = match (leader, intent) {
         (_, Intent::Cancel) => None,
-        (SectionLeader::Queue, Intent::ChooseSection(index)) => {
-            Some(InteractionEffect::ToggleSectionQueue(index))
+        (StateLeader::Queue, Intent::ChooseState(index)) => {
+            Some(InteractionEffect::ToggleStateQueue(index))
         }
-        (SectionLeader::Store, Intent::ChooseSection(index)) => Some(InteractionEffect::Section(
-            super::SectionAction::Store(index),
-        )),
-        (SectionLeader::Queue, Intent::PreviousSection) => {
-            Some(InteractionEffect::Section(super::SectionAction::Previous))
+        (StateLeader::Store, Intent::ChooseState(index)) => {
+            Some(InteractionEffect::State(super::StateAction::Store(index)))
+        }
+        (StateLeader::Queue, Intent::PreviousState) => {
+            Some(InteractionEffect::State(super::StateAction::Previous))
         }
         _ => return,
     };
@@ -2663,7 +2663,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::ToggleVamp => InteractionEffect::ToggleVamp,
         Operation::ToggleKickBass => InteractionEffect::ToggleKickBass,
         Operation::ToggleBeatRepeat => InteractionEffect::ToggleBeatRepeat,
-        Operation::Section(action) => InteractionEffect::Section(action),
+        Operation::State(action) => InteractionEffect::State(action),
         Operation::Harmony(action) => InteractionEffect::Harmony(action),
         Operation::HarmonyQuantize(quantize) => InteractionEffect::SetHarmonyQuantize(quantize),
         Operation::ClearSequence => {
@@ -3455,30 +3455,23 @@ mod tests {
         assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
     }
 
-    fn open_leader(leader: SectionLeader) -> InteractionModel {
-        update(
-            InteractionModel::default(),
-            Intent::OpenSectionLeader(leader),
-        )
-        .model
+    fn open_leader(leader: StateLeader) -> InteractionModel {
+        update(InteractionModel::default(), Intent::OpenStateLeader(leader)).model
     }
 
     #[test]
-    fn section_leaders_open_only_from_browsing_and_hold_their_kind() {
-        for leader in [SectionLeader::Queue, SectionLeader::Store] {
-            let opened = update(
-                InteractionModel::default(),
-                Intent::OpenSectionLeader(leader),
-            );
+    fn state_leaders_open_only_from_browsing_and_hold_their_kind() {
+        for leader in [StateLeader::Queue, StateLeader::Store] {
+            let opened = update(InteractionModel::default(), Intent::OpenStateLeader(leader));
             assert!(opened.effects.is_empty());
             assert_eq!(
                 opened.model.mode,
-                InteractionMode::Performance(PerformanceMode::Sections { leader })
+                InteractionMode::Performance(PerformanceMode::States { leader })
             );
             // A second open, or a Jump open, leaves a pending leader alone.
             for intent in [
-                Intent::OpenSectionLeader(SectionLeader::Store),
-                Intent::OpenSectionLeader(SectionLeader::Queue),
+                Intent::OpenStateLeader(StateLeader::Store),
+                Intent::OpenStateLeader(StateLeader::Queue),
                 Intent::ActivatePerformance(PerformanceKind::Jump),
             ] {
                 let again = update(opened.model.clone(), intent);
@@ -3494,7 +3487,7 @@ mod tests {
                     mode,
                     ..InteractionModel::default()
                 };
-                let result = update(model.clone(), Intent::OpenSectionLeader(leader));
+                let result = update(model.clone(), Intent::OpenStateLeader(leader));
                 assert_eq!(result.model, model);
                 assert!(result.effects.is_empty());
             }
@@ -3503,51 +3496,48 @@ mod tests {
 
     #[test]
     fn queue_leader_digit_previous_and_escape_return_to_browsing() {
-        let digit = update(open_leader(SectionLeader::Queue), Intent::ChooseSection(3));
+        let digit = update(open_leader(StateLeader::Queue), Intent::ChooseState(3));
         assert_eq!(digit.model.mode, InteractionMode::Browsing);
-        assert_eq!(
-            digit.effects,
-            vec![InteractionEffect::ToggleSectionQueue(3)]
-        );
-        let previous = update(open_leader(SectionLeader::Queue), Intent::PreviousSection);
+        assert_eq!(digit.effects, vec![InteractionEffect::ToggleStateQueue(3)]);
+        let previous = update(open_leader(StateLeader::Queue), Intent::PreviousState);
         assert_eq!(previous.model.mode, InteractionMode::Browsing);
         assert_eq!(
             previous.effects,
-            vec![InteractionEffect::Section(
-                super::super::SectionAction::Previous
+            vec![InteractionEffect::State(
+                super::super::StateAction::Previous
             )]
         );
-        let cancelled = update(open_leader(SectionLeader::Queue), Intent::Cancel);
+        let cancelled = update(open_leader(StateLeader::Queue), Intent::Cancel);
         assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
         assert!(cancelled.effects.is_empty());
     }
 
     #[test]
     fn store_leader_digit_stores_and_has_no_previous_gesture() {
-        let digit = update(open_leader(SectionLeader::Store), Intent::ChooseSection(8));
+        let digit = update(open_leader(StateLeader::Store), Intent::ChooseState(8));
         assert_eq!(digit.model.mode, InteractionMode::Browsing);
         assert_eq!(
             digit.effects,
-            vec![InteractionEffect::Section(
-                super::super::SectionAction::Store(8)
-            )]
+            vec![InteractionEffect::State(super::super::StateAction::Store(
+                8
+            ))]
         );
-        let previous = update(open_leader(SectionLeader::Store), Intent::PreviousSection);
-        assert_eq!(previous.model, open_leader(SectionLeader::Store));
+        let previous = update(open_leader(StateLeader::Store), Intent::PreviousState);
+        assert_eq!(previous.model, open_leader(StateLeader::Store));
         assert!(previous.effects.is_empty());
-        let cancelled = update(open_leader(SectionLeader::Store), Intent::Cancel);
+        let cancelled = update(open_leader(StateLeader::Store), Intent::Cancel);
         assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
         assert!(cancelled.effects.is_empty());
     }
 
     #[test]
-    fn jump_routes_and_section_routes_do_not_cross() {
+    fn jump_routes_and_state_routes_do_not_cross() {
         let jump = update(
             InteractionModel::default(),
             Intent::ActivatePerformance(PerformanceKind::Jump),
         )
         .model;
-        for intent in [Intent::ChooseSection(0), Intent::PreviousSection] {
+        for intent in [Intent::ChooseState(0), Intent::PreviousState] {
             let result = update(jump.clone(), intent);
             assert_eq!(result.model, jump);
             assert!(result.effects.is_empty());
@@ -3560,18 +3550,18 @@ mod tests {
                 instrument: PerformanceInstrument::Pads,
             },
         ] {
-            let leader = open_leader(SectionLeader::Queue);
+            let leader = open_leader(StateLeader::Queue);
             let result = update(leader.clone(), intent);
             assert_eq!(result.model, leader);
             assert!(result.effects.is_empty());
         }
     }
 
-    /// Only the section leaders keep a physical hold running. Jump, the
+    /// Only the state leaders keep a physical hold running. Jump, the
     /// palette and every other keyboard owner still quarantine it and emit
     /// `GestureReleaseAll`, so the exemption cannot leak.
     #[test]
-    fn only_the_section_leaders_preserve_physical_holds() {
+    fn only_the_state_leaders_preserve_physical_holds() {
         let held = || {
             update(
                 InteractionModel::default(),
@@ -3594,13 +3584,13 @@ mod tests {
             );
             assert!(!result.model.gesture_input.has_active(), "{intent:?}");
         }
-        for leader in [SectionLeader::Queue, SectionLeader::Store] {
-            let opened = update(held(), Intent::OpenSectionLeader(leader));
+        for leader in [StateLeader::Queue, StateLeader::Store] {
+            let opened = update(held(), Intent::OpenStateLeader(leader));
             assert!(opened.effects.is_empty());
             assert!(opened.model.gesture_input.has_active());
             assert!(opened.model.mode.preserves_holds());
             // Digit and Esc finish the leader without touching the hold.
-            for finish in [Intent::ChooseSection(0), Intent::Cancel] {
+            for finish in [Intent::ChooseState(0), Intent::Cancel] {
                 let done = update(opened.model.clone(), finish);
                 assert!(
                     !done.effects.contains(&InteractionEffect::GestureReleaseAll),

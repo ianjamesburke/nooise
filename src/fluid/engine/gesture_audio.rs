@@ -90,6 +90,7 @@ impl GestureFx {
             && !self.lift_active
             && !self.bloom_has_history
             && !self.echo_has_history
+            && !self.repeat.is_active()
         {
             return sample;
         }
@@ -324,12 +325,24 @@ enum RepeatState {
         start: u64,
         beat: i64,
     },
-    /// `pos` reads the slice body; `gain` fades the loop in over the release time.
+    /// `pos` reads the slice body; `gain` is the loop's weight in the output,
+    /// slewed over the release time so every edge is a short crossfade.
     Looping {
         pos: usize,
         len: usize,
         gain: f32,
+        release: Release,
     },
+}
+
+/// How a loop is leaving. The key-up is quantized: the loop keeps playing
+/// until the clock's next beat line, then fades back to live.
+#[derive(Clone, Copy, PartialEq)]
+enum Release {
+    Held,
+    /// Key is up; waiting for the beat line (or a stopped transport).
+    AtNextLine,
+    Fading,
 }
 
 /// Tempo-synced repeat of the live Master mix. History records continuously;
@@ -343,6 +356,10 @@ struct BeatRepeat {
     frame: u64,
     beat_index: Option<i64>,
     beat_start: u64,
+    /// Frame of the last grid line that did not follow the previous beat: a
+    /// state landing or transport restart. The signal may be discontinuous
+    /// there, so no pre-roll may reach back across it.
+    grid_break: u64,
     state: RepeatState,
     seam: usize,
     max_len: usize,
@@ -360,26 +377,55 @@ impl BeatRepeat {
             frame: 0,
             beat_index: None,
             beat_start: 0,
+            grid_break: 0,
             state: RepeatState::Idle,
             seam,
             max_len,
         }
     }
 
-    /// Returns `sample` with the loop mixed in by `amount`.
+    /// True while the loop is armed or audible, including after key-up and
+    /// until the quantized fade ends. Idle output is the dry sample exactly.
+    fn is_active(&self) -> bool {
+        !matches!(self.state, RepeatState::Idle)
+    }
+
+    /// Returns `sample` with the loop mixed in. `amount` is only the key: any
+    /// positive value is held, and the loop's own weight carries the audio, so
+    /// the gesture envelope's 10 ms fall cannot cut a loop short of its beat
+    /// line.
     fn process(&mut self, sample: (f32, f32), amount: f32, timing: TimingContext) -> (f32, f32) {
-        let pressed = amount > f32::EPSILON;
-        if !pressed {
-            self.state = RepeatState::Idle;
+        let held = amount > f32::EPSILON;
+        match &mut self.state {
+            // Released before the loop engaged: nothing audible to finish.
+            RepeatState::Armed { .. } if !held => self.state = RepeatState::Idle,
+            RepeatState::Looping { release, .. } => {
+                if held {
+                    *release = Release::Held;
+                } else if *release == Release::Held {
+                    *release = Release::AtNextLine;
+                }
+                // Without a running clock no beat line will come.
+                if *release == Release::AtNextLine && timing.transport == Transport::Stopped {
+                    *release = Release::Fading;
+                }
+            }
+            _ => {}
         }
 
         let beat_index = timing.beat.floor() as i64;
         if self.beat_index != Some(beat_index) {
+            if self
+                .beat_index
+                .is_some_and(|previous| previous + 1 != beat_index)
+            {
+                self.grid_break = self.frame;
+            }
             self.beat_index = Some(beat_index);
             self.on_grid_line(beat_index, timing);
             self.beat_start = self.frame;
         }
-        if pressed && matches!(self.state, RepeatState::Idle) {
+        if held && matches!(self.state, RepeatState::Idle) {
             self.state = RepeatState::Armed {
                 start: self.beat_start,
                 beat: beat_index,
@@ -387,17 +433,30 @@ impl BeatRepeat {
         }
 
         let mut output = sample;
-        if let RepeatState::Looping { pos, len, gain } = &mut self.state {
+        if let RepeatState::Looping {
+            pos,
+            len,
+            gain,
+            release,
+        } = &mut self.state
+        {
             let mut looped = self.slice[self.seam + *pos];
             let tail = (*pos + self.seam).saturating_sub(*len);
             if tail > 0 {
                 let t = tail as f32 / self.seam as f32;
                 looped = mix_stereo(looped, self.slice[tail - 1], t);
             }
-            *gain = (*gain + 1.0 / (GESTURE_RELEASE_SECONDS as f32 * timing.sample_rate as f32))
-                .min(1.0);
-            output = mix_stereo(sample, looped, amount * *gain);
+            let step = 1.0 / (GESTURE_RELEASE_SECONDS as f32 * timing.sample_rate as f32);
+            *gain = if *release == Release::Fading {
+                (*gain - step).max(0.0)
+            } else {
+                (*gain + step).min(1.0)
+            };
+            output = mix_stereo(sample, looped, *gain);
             *pos = (*pos + 1) % *len;
+            if *release == Release::Fading && *gain == 0.0 {
+                self.state = RepeatState::Idle;
+            }
         }
 
         let capacity = self.history.len() as u64;
@@ -410,6 +469,12 @@ impl BeatRepeat {
     /// beat just ended copies it and starts looping; a hold that cannot use
     /// this line (no pre-roll yet, or not one beat long) re-arms on it.
     fn on_grid_line(&mut self, beat_index: i64, timing: TimingContext) {
+        if let RepeatState::Looping { release, .. } = &mut self.state {
+            if *release == Release::AtNextLine {
+                *release = Release::Fading;
+            }
+            return;
+        }
         let RepeatState::Armed { start, beat } = self.state else {
             return;
         };
@@ -420,9 +485,10 @@ impl BeatRepeat {
         let len = (self.frame - start) as usize;
         let nominal =
             (timing.sample_rate * 60.0 / timing.bpm * BEAT_REPEAT_BEATS as f64).round() as usize;
-        // The pre-roll must be real audio too, or the seam would dip to silence.
+        // The pre-roll must be real audio from this stretch of the song: before the
+        // first frame it is silence, before a grid break it is another song.
         let plausible = elapsed_beats == BEAT_REPEAT_BEATS
-            && start >= self.seam as u64
+            && start >= self.grid_break + self.seam as u64
             && len >= self.seam * 2
             && len <= self.max_len
             && len.abs_diff(nominal) * BEAT_REPEAT_LENGTH_TOLERANCE_DIVISOR <= nominal;
@@ -432,6 +498,7 @@ impl BeatRepeat {
                 pos: 0,
                 len,
                 gain: 0.0,
+                release: Release::Held,
             };
         } else {
             self.state = RepeatState::Armed {
@@ -661,40 +728,371 @@ mod tests {
         }
     }
 
+    /// 100.3 Hz is not periodic over a beat, so any seam, edge or fade that
+    /// is not smooth shows up as a jump. The dry tone steps at most 0.0026.
+    fn tone(frame: usize) -> (f32, f32) {
+        let x = (std::f32::consts::TAU * 100.3 * frame as f32 / SAMPLE_RATE).sin() * 0.2;
+        (x, x)
+    }
+
+    /// The largest sample-to-sample jump the dry tone makes, plus what one
+    /// 2 ms equal-weight blend of two out-of-phase tones may add.
+    const CLICK_STEP: f32 = 0.008;
+
+    /// A transport clock whose beat integrates its tempo, so tempo changes,
+    /// stops and jumps are continuous in the way the engine's are.
+    struct Clock {
+        beat: f64,
+        transport: Transport,
+    }
+
+    impl Clock {
+        fn new() -> Self {
+            Self {
+                beat: 0.0,
+                transport: Transport::Playing,
+            }
+        }
+
+        fn tick(&mut self, bpm: f64) -> TimingContext {
+            let timing = TimingContext {
+                transport: self.transport,
+                ..TimingContext::new(SAMPLE_RATE as f64, bpm, self.beat)
+            };
+            if self.transport == Transport::Playing {
+                self.beat += bpm / (60.0 * SAMPLE_RATE as f64);
+            }
+            timing
+        }
+    }
+
+    /// Runs `frames` samples and returns every output. `key` says whether the
+    /// gesture is held at a frame; `bpm` is the tempo at a frame.
+    fn run(
+        bank: &mut GestureAudioBank,
+        clock: &mut Clock,
+        frames: std::ops::Range<usize>,
+        key: impl Fn(usize) -> bool,
+        bpm: impl Fn(usize) -> f64,
+        input: impl Fn(usize) -> (f32, f32),
+    ) -> Vec<(f32, f32)> {
+        frames
+            .map(|frame| {
+                let amounts = repeat_amounts(if key(frame) { 1.0 } else { 0.0 });
+                bank.process(input(frame), amounts, clock.tick(bpm(frame)))
+            })
+            .collect()
+    }
+
+    fn assert_no_click(out: &[(f32, f32)], what: &str) {
+        for (index, pair) in out.windows(2).enumerate() {
+            let step = (pair[1].0 - pair[0].0)
+                .abs()
+                .max((pair[1].1 - pair[0].1).abs());
+            assert!(step < CLICK_STEP, "{what}: jump {step} at output {index}");
+        }
+    }
+
+    const FADE: usize = (GESTURE_RELEASE_SECONDS * SAMPLE_RATE as f64) as usize;
+
     #[test]
-    fn beat_repeat_release_returns_to_live_within_the_fade_without_allocation() {
+    fn beat_repeat_release_keeps_looping_to_the_next_beat_line_then_fades_to_live() {
+        let line = QUARTER * 5;
+        let release = QUARTER * 4 + QUARTER / 3;
+        let total = line + QUARTER;
+        let mut held_bank = GestureAudioBank::new(SAMPLE_RATE);
+        let always = run(
+            &mut held_bank,
+            &mut Clock::new(),
+            0..total,
+            |f| f > 100,
+            |_| BPM,
+            tone,
+        );
         let mut bank = GestureAudioBank::new(SAMPLE_RATE);
         let (history, slice) = (
             bank.fx.repeat.history.capacity(),
             bank.fx.repeat.slice.capacity(),
         );
-        let tone = |frame: usize| {
-            let x = (std::f32::consts::TAU * 100.3 * frame as f32 / SAMPLE_RATE).sin() * 0.2;
-            (x, x)
-        };
-        let held = QUARTER * 4;
-        for frame in 0..held {
-            bank.process(tone(frame), repeat_amounts(1.0), clock(frame, BPM));
-        }
-        let fade = (GESTURE_RELEASE_SECONDS as f32 * SAMPLE_RATE) as usize;
-        let mut previous = bank.process(tone(held), repeat_amounts(1.0), clock(held, BPM));
-        for step in 0..fade {
-            let frame = held + 1 + step;
-            let amount = 1.0 - (step + 1) as f32 / fade as f32;
-            let next = bank.process(tone(frame), repeat_amounts(amount), clock(frame, BPM));
-            assert!(
-                (next.0 - previous.0).abs() < 0.012,
-                "release: {previous:?} -> {next:?}"
-            );
-            previous = next;
-        }
-        let frame = held + 1 + fade;
-        assert_eq!(
-            bank.process(tone(frame), [0.0; GESTURE_COUNT], clock(frame, BPM)),
-            tone(frame)
+        let out = run(
+            &mut bank,
+            &mut Clock::new(),
+            0..total,
+            |f| f > 100 && f < release,
+            |_| BPM,
+            tone,
         );
+
+        assert_eq!(
+            &out[..line],
+            &always[..line],
+            "the loop kept playing after key-up until the beat line"
+        );
+        assert_no_click(&out, "quantized release");
+        assert_ne!(out[line + FADE / 2], tone(line + FADE / 2), "mid-fade");
+        for (frame, sample) in out.iter().enumerate().skip(line + FADE + 1) {
+            assert_eq!(*sample, tone(frame), "live again at {frame}");
+        }
         assert_eq!(bank.fx.repeat.history.capacity(), history);
         assert_eq!(bank.fx.repeat.slice.capacity(), slice);
+        assert!(!bank.fx.repeat.is_active());
+    }
+
+    #[test]
+    fn beat_repeat_release_before_the_loop_engages_cancels_at_once() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        // Pressed and released inside beat 3; the loop would engage at beat 4.
+        let (press, release) = (QUARTER * 3 + 1_000, QUARTER * 3 + 3_000);
+        let out = run(
+            &mut bank,
+            &mut Clock::new(),
+            0..QUARTER * 5,
+            |f| f >= press && f < release,
+            |_| BPM,
+            tone,
+        );
+        for (frame, sample) in out.iter().enumerate() {
+            assert_eq!(*sample, tone(frame), "nothing audible at {frame}");
+        }
+    }
+
+    #[test]
+    fn beat_repeat_repress_before_the_beat_line_keeps_the_loop() {
+        let line = QUARTER * 5;
+        let (release, repress) = (QUARTER * 4 + 3_000, QUARTER * 4 + 6_000);
+        let mut held = GestureAudioBank::new(SAMPLE_RATE);
+        let always = run(
+            &mut held,
+            &mut Clock::new(),
+            0..line + QUARTER,
+            |f| f > 100,
+            |_| BPM,
+            tone,
+        );
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let out = run(
+            &mut bank,
+            &mut Clock::new(),
+            0..line + QUARTER,
+            |f| f > 100 && !(release..repress).contains(&f),
+            |_| BPM,
+            tone,
+        );
+        assert_eq!(out, always);
+    }
+
+    #[test]
+    fn beat_repeat_release_on_a_stopped_transport_fades_at_once() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let mut clock = Clock::new();
+        let mut out = run(
+            &mut bank,
+            &mut clock,
+            0..QUARTER * 4,
+            |f| f > 100,
+            |_| BPM,
+            tone,
+        );
+        clock.transport = Transport::Stopped;
+        let release = QUARTER * 4;
+        out.extend(run(
+            &mut bank,
+            &mut clock,
+            release..release + QUARTER,
+            |_| false,
+            |_| BPM,
+            tone,
+        ));
+        assert_no_click(&out, "stopped release");
+        assert_eq!(out[release + FADE + 1], tone(release + FADE + 1));
+    }
+
+    #[test]
+    fn beat_repeat_stopping_the_transport_mid_hold_does_not_click_or_end_the_loop() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let mut clock = Clock::new();
+        let mut out = run(
+            &mut bank,
+            &mut clock,
+            0..QUARTER * 4 + 777,
+            |f| f > 100,
+            |_| BPM,
+            tone,
+        );
+        clock.transport = Transport::Stopped;
+        out.extend(run(
+            &mut bank,
+            &mut clock,
+            QUARTER * 4 + 777..QUARTER * 7,
+            |_| true,
+            |_| BPM,
+            tone,
+        ));
+        assert_no_click(&out, "stop mid-hold");
+        assert!(matches!(bank.fx.repeat.state, RepeatState::Looping { .. }));
+    }
+
+    #[test]
+    fn beat_repeat_tempo_change_mid_hold_does_not_click() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let mut clock = Clock::new();
+        let bpm = |f: usize| if f < QUARTER * 4 { 120.0 } else { 70.0 };
+        let mut out = run(
+            &mut bank,
+            &mut clock,
+            0..QUARTER * 9,
+            |f| f > 100,
+            bpm,
+            tone,
+        );
+        let release = QUARTER * 9;
+        out.extend(run(
+            &mut bank,
+            &mut clock,
+            release..release + QUARTER * 4,
+            |_| false,
+            bpm,
+            tone,
+        ));
+        assert_no_click(&out, "tempo change and release");
+    }
+
+    #[test]
+    fn beat_repeat_rejected_slice_rearms_without_a_click() {
+        let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+        let mut clock = Clock::new();
+        // Pressed in beat 3; a transport jump of half a beat before the next
+        // line makes that "beat" implausibly short, so the hold must re-arm.
+        let mut out = run(
+            &mut bank,
+            &mut clock,
+            0..QUARTER * 3 + 2_000,
+            |f| f > QUARTER * 3,
+            |_| BPM,
+            tone,
+        );
+        clock.beat += 0.5;
+        out.extend(run(
+            &mut bank,
+            &mut clock,
+            QUARTER * 3 + 2_000..QUARTER * 7,
+            |f| f > QUARTER * 3,
+            |_| BPM,
+            tone,
+        ));
+        assert_no_click(&out, "rejected slice");
+        assert!(matches!(bank.fx.repeat.state, RepeatState::Looping { .. }));
+    }
+
+    /// A state landing restarts the beat clock and swaps the song under the
+    /// stage through a short fade; a hold must ride through both.
+    #[test]
+    fn beat_repeat_state_landing_mid_hold_does_not_click() {
+        for landing in [QUARTER * 3 + 5_000, QUARTER * 5 + 5_000] {
+            let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+            let mut clock = Clock::new();
+            let song = |f: usize| {
+                let t = ((f as f32 - landing as f32) / 240.0).clamp(0.0, 1.0);
+                let old = tone(f);
+                let new = (old.0 * 0.5 + 0.1, old.1 * 0.5 + 0.1);
+                (old.0 + (new.0 - old.0) * t, old.1 + (new.1 - old.1) * t)
+            };
+            let mut out = run(
+                &mut bank,
+                &mut clock,
+                0..landing,
+                |f| f > 100,
+                |_| BPM,
+                song,
+            );
+            clock.beat = 0.0;
+            out.extend(run(
+                &mut bank,
+                &mut clock,
+                landing..QUARTER * 9,
+                |f| f > 100,
+                |_| BPM,
+                song,
+            ));
+            assert_no_click(&out, "state landing");
+        }
+    }
+
+    /// The song under the stage can swap in one sample (the engine hides it
+    /// with a fade only downstream, and only once). A loop must never carry
+    /// that swap in its pre-roll, or it repeats the cut on every beat.
+    #[test]
+    fn beat_repeat_never_loops_a_song_swap_it_could_not_hide() {
+        for (landing, hold_from) in [
+            (QUARTER * 4 + 5_000, 100),
+            (QUARTER * 4 + 5_000, QUARTER * 4 + 100),
+            (QUARTER * 6 + 9_000, QUARTER * 6 + 100),
+        ] {
+            let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+            let mut clock = Clock::new();
+            let song = |f: usize| {
+                if f < landing {
+                    tone(f)
+                } else {
+                    let x =
+                        (std::f32::consts::TAU * 150.7 * f as f32 / SAMPLE_RATE).sin() * 0.1 + 0.05;
+                    (x, x)
+                }
+            };
+            let mut out = run(
+                &mut bank,
+                &mut clock,
+                0..landing,
+                |f| f > hold_from,
+                |_| BPM,
+                song,
+            );
+            clock.beat = 0.0;
+            out.extend(run(
+                &mut bank,
+                &mut clock,
+                landing..landing + QUARTER * 6,
+                |f| f > hold_from,
+                |_| BPM,
+                song,
+            ));
+            // The swap itself is in the input; everything after it must be clean.
+            assert_no_click(
+                &out[landing + 1..],
+                &format!("swap at {landing}, hold from {hold_from}"),
+            );
+        }
+    }
+
+    #[test]
+    fn beat_repeat_does_not_add_a_click_to_other_gestures_returns() {
+        let baseline_step = |repeat_held: bool| {
+            let mut bank = GestureAudioBank::new(SAMPLE_RATE);
+            let mut clock = Clock::new();
+            let mut amounts = [1.0; GESTURE_COUNT];
+            let mut worst = 0.0_f32;
+            let mut previous = (0.0, 0.0);
+            for frame in 0..QUARTER * 8 {
+                amounts[GestureKind::BeatRepeat as usize] =
+                    if repeat_held && frame > 100 && frame < QUARTER * 5 {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                let next = bank.process(tone(frame), amounts, clock.tick(BPM));
+                if frame > QUARTER {
+                    worst = worst.max((next.0 - previous.0).abs());
+                }
+                previous = next;
+            }
+            worst
+        };
+        let without = baseline_step(false);
+        let with = baseline_step(true);
+        assert!(
+            with < without + 0.006,
+            "overlap added a jump: {without} -> {with}"
+        );
     }
 
     #[test]

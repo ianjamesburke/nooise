@@ -17,6 +17,8 @@ use crate::fx::reverb::{FdnReverb, ReverbParams};
 use super::*;
 
 mod gesture_audio;
+#[cfg(test)]
+mod perf_probe;
 
 use gesture_audio::GestureAudioBank;
 
@@ -686,11 +688,10 @@ pub(crate) struct FluidEngine {
     /// The UI publishes planned actions ahead of time; audio owns their exact
     /// boundary so an onset never sees the previous mute state.
     planned: Option<PlannedAction>,
-    pending_section: Option<PendingSection>,
-    section_landed_sample: Option<u64>,
-    /// The beat a queued section lands on, while one is queued.
-    section_end_beat: Option<f64>,
-    section_gain: f32,
+    state_landed_sample: Option<u64>,
+    /// The beat a queued state lands on, while one is queued.
+    state_end_beat: Option<f64>,
+    state_gain: f32,
     pub(crate) vamp: Option<VampState>,
     vamp_active: bool,
     pub(crate) vamp_landed_beat: Option<f64>,
@@ -730,7 +731,12 @@ pub(crate) struct FluidEngine {
     /// Allocation-free per-sample plan, rebuilt only when aggregate
     /// session identity changes, without comparing or cloning automation maps.
     plan: AutomationPlan,
-    plan_source: Arc<LiveSessionSnapshot>,
+    /// The published generation this engine has observed: its only retained
+    /// session reference. Superseded generations go to `LiveSession::retire`,
+    /// so the audio thread never frees one.
+    observed: Arc<LiveSessionSnapshot>,
+    /// `observed` changed since its state was last applied to the engine.
+    observed_unapplied: bool,
     effective: FluidControls,
     authored_muted: MuteState,
     module_timing: ModuleTimingPlan,
@@ -768,9 +774,9 @@ impl FluidEngine {
             initial_pad.chord_offset = f32::from(held.slot);
             initial_pad.held_chord = Some(held);
         }
-        let plan_source = Arc::clone(&live);
         let mut plan = AutomationPlan::default();
-        plan.rebuild(&plan_source.automation);
+        // Construction runs off the audio thread; an empty plan has no storage.
+        let _ = plan.rebuild(&live.automation);
         Self {
             current_sample: 0,
             sample_rate,
@@ -786,10 +792,9 @@ impl FluidEngine {
                 holds
             },
             planned: live.planned,
-            pending_section: live.pending_section.clone(),
-            section_landed_sample: None,
-            section_end_beat: None,
-            section_gain: 1.0,
+            state_landed_sample: None,
+            state_end_beat: None,
+            state_gain: 1.0,
             vamp: live.vamp,
             vamp_active,
             vamp_landed_beat: None,
@@ -856,7 +861,8 @@ impl FluidEngine {
             transport_restart: live.transport_restart,
             awaiting_initial_play: live.transport == Transport::Stopped,
             plan,
-            plan_source,
+            observed: live,
+            observed_unapplied: false,
         }
     }
 
@@ -974,64 +980,58 @@ impl FluidEngine {
 
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
+        // Every publication reaches the engine on the next sample, so a
+        // command arriving at any moment still lands on its boundary.
+        self.observe_published();
         if self.awaiting_initial_play {
-            if self.session.load().transport == Transport::Stopped {
+            if self.observed.transport == Transport::Stopped {
                 return (0.0, 0.0);
             }
             self.awaiting_initial_play = false;
         }
-        // A queued section lands on the pad cursor's phrase end, the same
+        // A queued state lands on the pad cursor's phrase end, the same
         // `ProgressionCursor::phrase_end_beat` that every phrase consumer
         // reads, recomputed each sample so chord edits and a held Vamp move
         // it exactly as they move the phrase. `tempo.beat` is already the beat
         // this sample's pad tick will use, so landing here is before the
         // crossing, never a sample after it.
-        // The queue is read from the session every sample, not on the control
-        // tick: a phrase end is not bar-aligned, and a section queued a few
-        // samples before it must still land on it.
-        self.pending_section = self.session.load().pending_section.clone();
-        self.section_end_beat = self
-            .pending_section
+        self.state_end_beat = self
+            .observed
+            .pending_state
             .as_ref()
             .and_then(|_| self.phrase_end_now());
-        self.session.publish_audio_phrase_end(self.section_end_beat);
-        let section_due = self.transport == Transport::Playing
+        self.session.publish_audio_phrase_end(self.state_end_beat);
+        let state_due = self.transport == Transport::Playing
             && self
-                .section_end_beat
+                .state_end_beat
                 .is_some_and(|end| self.tempo.beat + GRID_BEAT_EPSILON >= end);
-        let landed = if section_due {
-            let pending = self.pending_section.take().unwrap();
-            let landed = self.session.land_section(
-                &pending,
-                self.current_sample as f64 / f64::from(self.sample_rate),
-            );
-            if landed {
-                self.morph.store(Arc::new(None));
-                self.section_landed_sample = Some(self.current_sample);
-            }
-            landed
-        } else {
-            false
-        };
-        // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
+        let landed = state_due
+            && self.observed.pending_state.as_ref().is_some_and(|pending| {
+                self.session.land_state(
+                    pending,
+                    self.current_sample as f64 / f64::from(self.sample_rate),
+                )
+            });
+        if landed {
+            self.morph.store(Arc::new(None));
+            self.state_landed_sample = Some(self.current_sample);
+            self.observe_published();
+        }
+        let restarting =
+            self.observed_unapplied && self.transport_restart != self.observed.transport_restart;
+        if restarting {
+            self.transport_restart = self.observed.transport_restart;
+            self.restart_sequence();
+        }
+        // ~2.9 ms at 44.1 kHz: the clock and the auto morph advance on this
+        // cadence; session state is applied on change, never polled.
         let morph_boundary = self
             .morph
             .load()
             .as_ref()
             .as_ref()
             .is_some_and(|morph| self.morph_writer.boundary_due(morph, self.tempo.beat));
-        // Inspect newly queued work on every sample near a bar: a command
-        // arriving between ordinary control ticks must still reach that bar.
-        let until_bar = 4.0 - self.tempo.beat.rem_euclid(4.0);
-        let probe_beats = 128.0 * self.tempo.bpm / (60.0 * f64::from(self.sample_rate));
-        let near_bar = until_bar <= probe_beats;
-        if self.current_sample.is_multiple_of(128) || morph_boundary || section_due || near_bar {
-            let live = self.session.load();
-            let restarting = self.transport_restart != live.transport_restart;
-            if restarting {
-                self.transport_restart = live.transport_restart;
-                self.restart_sequence();
-            }
+        if self.current_sample.is_multiple_of(128) || morph_boundary || landed || restarting {
             self.session.publish_audio_beat(self.tempo.beat);
             self.session
                 .publish_audio_phrase_start(self.pad.cursor.phrase_start_beat());
@@ -1050,25 +1050,7 @@ impl StereoEngine for FluidEngine {
                     snapshot.automation = next_automation.clone();
                     Ok(())
                 });
-            }
-            let session = self.session.load();
-            if landed {
-                self.tonal.restore_sequence(&session.tonal_sequence);
-            }
-            self.snapshot = session.controls.clone();
-            self.effective.clone_from(&self.snapshot);
-            if restarting {
-                self.pad.restart_sequence(&self.snapshot.pad);
-            }
-            self.gesture_snapshot = session.gestures.clone();
-            self.drunken_phase_beat = session.drunken_phase_beat;
-            self.transport = session.transport;
-            self.control_smoothers
-                .set_targets(&self.snapshot, self.sample_rate);
-            if landed {
-                self.tempo.bpm = f64::from(self.snapshot.master.bpm);
-                self.control_smoothers
-                    .settle("master.bpm", self.snapshot.master.bpm);
+                self.observe_published();
             }
             if morph_boundary
                 && morph_source
@@ -1076,32 +1058,23 @@ impl StereoEngine for FluidEngine {
                     .as_ref()
                     .is_some_and(|morph| morph.position_at(self.tempo.beat).blend.is_none())
             {
+                self.apply_observed(landed, restarting);
                 // Restore both dropped layers for the first landing note.
                 // Kick also captures Level when the hit is constructed.
-                self.control_smoothers
-                    .settle("kick.level", self.snapshot.kick.level);
-                self.control_smoothers
-                    .settle("bass.level", self.snapshot.bass.level);
-            }
-            self.authored_muted = session.muted;
-            self.planned = session.planned;
-            self.pending_section = session.pending_section.clone();
-            self.hold_muted = session.hold_muted;
-            self.hold_muted[HoldMute::KickAndBass as usize] |= session.kick_bass_latched;
-            if self.vamp != session.vamp {
-                self.vamp = session.vamp;
-            }
-            let muted = self.planned_mute_state(self.tempo.beat, self.tempo.bpm, session.muted);
-            self.mute_gates.set_targets(&muted, self.sample_rate);
-            self.muted = muted;
-            self.lead.observe(session.lead_play);
-            self.master_bus
-                .set_controls(&self.snapshot.master, self.sample_rate);
-            if !Arc::ptr_eq(&session, &self.plan_source) {
-                self.plan.rebuild(&session.automation);
-                self.plan_source = Arc::clone(&session);
+                let smoothers = &mut self.control_smoothers;
+                smoothers.settle(
+                    smoothers.kick_level,
+                    self.snapshot.kick.level,
+                    &mut self.effective,
+                );
+                smoothers.settle(
+                    smoothers.bass_level,
+                    self.snapshot.bass.level,
+                    &mut self.effective,
+                );
             }
         }
+        self.apply_observed(landed, restarting);
 
         let fade = startup_fade(self.current_sample, self.sample_rate);
         self.control_smoothers.apply(&mut self.effective);
@@ -1347,19 +1320,19 @@ impl StereoEngine for FluidEngine {
             mute_gains[Tab::Master as usize],
         );
         let fade_samples = (self.sample_rate * 0.005).max(1.0) as u64;
-        let fade_in = self.section_landed_sample.map_or(1.0, |start| {
+        let fade_in = self.state_landed_sample.map_or(1.0, |start| {
             (self.current_sample.saturating_sub(start) as f32 / fade_samples as f32).min(1.0)
         });
-        let fade_out = self.section_end_beat.map_or(1.0, |end| {
+        let fade_out = self.state_end_beat.map_or(1.0, |end| {
             let remaining = ((end - self.tempo.beat) * 60.0 * f64::from(self.sample_rate)
                 / self.tempo.bpm) as f32;
             (remaining / fade_samples as f32).clamp(0.0, 1.0)
         });
         let target_gain = fade_in.min(fade_out);
         let step = 1.0 / fade_samples as f32;
-        self.section_gain += (target_gain - self.section_gain).clamp(-step, step);
-        out.0 *= self.section_gain;
-        out.1 *= self.section_gain;
+        self.state_gain += (target_gain - self.state_gain).clamp(-step, step);
+        out.0 *= self.state_gain;
+        out.1 *= self.state_gain;
         self.level_acc[Tab::Master as usize] += out.0 * out.0 + out.1 * out.1;
         if self.current_sample.is_multiple_of(LEVEL_BLOCK) {
             let block_seconds = LEVEL_BLOCK as f32 / self.sample_rate;
@@ -1395,6 +1368,65 @@ impl StereoEngine for FluidEngine {
 }
 
 impl FluidEngine {
+    /// Adopt a newer published generation, if there is one. The superseded
+    /// Arc is retired rather than dropped: the publisher has usually released
+    /// it already, so this engine may hold its last reference.
+    fn observe_published(&mut self) -> bool {
+        let published = self.session.published();
+        if Arc::ptr_eq(&published, &self.observed) {
+            return false;
+        }
+        let previous =
+            std::mem::replace(&mut self.observed, arc_swap::Guard::into_inner(published));
+        self.session.retire(Retired::Snapshot(previous));
+        self.observed_unapplied = true;
+        true
+    }
+
+    /// Derive the engine's working state from `observed` once per change.
+    fn apply_observed(&mut self, landed: bool, restarting: bool) {
+        if !self.observed_unapplied {
+            return;
+        }
+        self.observed_unapplied = false;
+        // A second handle so fields of `self` can be written while reading it;
+        // `observed` keeps the generation alive, so this drop never frees.
+        let session = Arc::clone(&self.observed);
+        if landed {
+            self.tonal.restore_sequence(&session.tonal_sequence);
+        }
+        self.snapshot.clone_from(&session.controls);
+        self.effective.clone_from(&self.snapshot);
+        if restarting {
+            self.pad.restart_sequence(&self.snapshot.pad);
+        }
+        self.gesture_snapshot.clone_from(&session.gestures);
+        self.drunken_phase_beat = session.drunken_phase_beat;
+        self.transport = session.transport;
+        self.control_smoothers
+            .set_targets(&self.snapshot, self.sample_rate);
+        if landed {
+            // Tempo is a Timing row with no smoother: the clock takes it at once.
+            self.tempo.bpm = f64::from(self.snapshot.master.bpm);
+        }
+        self.authored_muted = session.muted;
+        self.planned = session.planned;
+        self.hold_muted = session.hold_muted;
+        self.hold_muted[HoldMute::KickAndBass as usize] |= session.kick_bass_latched;
+        if self.vamp != session.vamp {
+            self.vamp = session.vamp;
+        }
+        let muted = self.planned_mute_state(self.tempo.beat, self.tempo.bpm, session.muted);
+        self.mute_gates.set_targets(&muted, self.sample_rate);
+        self.muted = muted;
+        self.lead.observe(session.lead_play);
+        self.master_bus
+            .set_controls(&self.snapshot.master, self.sample_rate);
+        if let Some(retired) = self.plan.rebuild(&session.automation) {
+            self.session.retire(Retired::AutomationRoutes(retired));
+        }
+    }
+
     /// Start the existing click-free gate early enough that it reaches its
     /// target on the downbeat, then publish the audible state on that sample.
     fn advance_planned_mute(&mut self, timing: TimingContext) {
@@ -1409,7 +1441,7 @@ impl FluidEngine {
             return;
         }
         let action = PlannedAction::Mute { tab, target_beat };
-        let session = self.session.load();
+        let session = Arc::clone(&self.observed);
         if session.planned != Some(action) {
             self.planned = session.planned;
             let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
@@ -1440,9 +1472,11 @@ impl FluidEngine {
             Ok(snapshot) => {
                 self.planned = None;
                 self.muted = self.planned_mute_state(timing.beat, timing.bpm, snapshot.muted);
+                self.observe_published();
             }
             Err(()) => {
-                let session = self.session.load();
+                self.observe_published();
+                let session = Arc::clone(&self.observed);
                 self.planned = session.planned;
                 let boundary_muted =
                     self.planned_mute_state(timing.beat, timing.bpm, session.muted);
@@ -1537,9 +1571,8 @@ impl FluidEngine {
     }
 
     fn advance_vamp(&mut self, timing: TimingContext) {
-        let session = self.session.load();
-        if session.vamp != self.vamp {
-            self.vamp = session.vamp;
+        if self.observed.vamp != self.vamp {
+            self.vamp = self.observed.vamp;
         }
 
         let mut released_vamp = None;
@@ -1557,9 +1590,11 @@ impl FluidEngine {
                 Ok(_) => {
                     self.vamp = None;
                     released_vamp = Some(vamp);
+                    self.observe_published();
                 }
                 Err(()) => {
-                    self.vamp = self.session.load().vamp;
+                    self.observe_published();
+                    self.vamp = self.observed.vamp;
                 }
             }
         }
@@ -1578,6 +1613,7 @@ impl FluidEngine {
                             }
                             Ok::<(), ()>(())
                         });
+                        self.observe_published();
                     }
                 }
                 self.vamp_landed_beat = None;
@@ -1680,22 +1716,23 @@ mod planned_mute_tests {
     }
 
     #[test]
-    fn plan_source_retains_the_published_session_without_map_copies() {
+    fn engine_observes_each_publication_on_the_next_sample() {
         let (mut engine, session) = engine_with_planned_mute(false);
         let original = session.load();
         engine.next_stereo();
-        assert!(Arc::ptr_eq(&engine.plan_source, &original));
+        assert!(Arc::ptr_eq(&engine.observed, &original));
         session
             .transact(|snapshot| {
                 snapshot.controls.master.level = 0.4;
                 Ok::<_, ()>(())
             })
             .unwrap();
-        for _ in 0..128 {
-            engine.next_stereo();
-        }
-        assert!(Arc::ptr_eq(&engine.plan_source, &session.load()));
-        assert!(!Arc::ptr_eq(&engine.plan_source, &original));
+        engine.next_stereo();
+        assert!(Arc::ptr_eq(&engine.observed, &session.load()));
+        assert_eq!(engine.snapshot.master.level, 0.4);
+        // The superseded generation waits for a non-audio thread.
+        drop(original);
+        assert_eq!(session.reclaim(), 1);
     }
 
     #[test]
@@ -1750,6 +1787,67 @@ mod planned_mute_tests {
         assert!(!session.load().muted[Tab::Kick as usize]);
         assert_eq!(session.load().planned, None);
         assert_eq!(engine.mute_gates.gates[Tab::Kick as usize].current, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod retire_tests {
+    use super::*;
+    use crate::alloc_count::{HeapTraffic, count};
+    use crate::fluid::auto::decode_auto_states;
+
+    /// A UI edit is observed on the next sample. On an automated song that
+    /// sample rebuilds the automation plan, and the superseded snapshot and
+    /// route storage must reach the UI thread instead of being freed here.
+    #[test]
+    fn ui_edits_on_an_automated_song_free_nothing_on_the_audio_thread() {
+        let song = &decode_auto_states()[2];
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(song));
+        let mut engine = FluidEngine::new(
+            44_100.0,
+            session.clone(),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(3);
+        for _ in 0..44_100 {
+            engine.next_stereo();
+        }
+        assert!(engine.plan.live_routes() > 0, "song must carry automation");
+        let lfo = ControlAddress::new("pad.level");
+        let mut observed = HeapTraffic::default();
+        for edit in 0..48 {
+            // Alternate a plain knob edit with adding and clearing a lane, so
+            // routes are rebuilt, carried, faded and removed.
+            session.update(|snapshot| match edit % 3 {
+                0 => snapshot.controls.master.level = 0.5 + 0.004 * edit as f32,
+                1 => {
+                    snapshot.automation.add_route(lfo, LfoRoute::default());
+                }
+                _ => snapshot.automation.clear_control(lfo),
+            });
+            let before = Arc::as_ptr(&engine.observed);
+            let ((), traffic) = count(|| {
+                engine.next_stereo();
+            });
+            assert_ne!(
+                Arc::as_ptr(&engine.observed),
+                before,
+                "edit {edit} observed"
+            );
+            assert_eq!(traffic.frees, 0, "edit {edit} freed on the audio thread");
+            observed += traffic;
+            // The UI turn loop frees what was retired.
+            assert!(session.reclaim() >= 1);
+            for _ in 0..2_048 {
+                engine.next_stereo();
+            }
+            session.reclaim();
+        }
+        assert_eq!(session.retire_overflows(), 0);
+        // The plan rebuild still allocates its new routes (out of scope);
+        // print it so the remaining half stays visible.
+        println!("48 observed edits: {observed:?}");
     }
 }
 
@@ -1888,6 +1986,9 @@ impl OutputGates {
 pub(crate) struct ControlSmoother {
     pub(crate) spec: &'static ControlSpec,
     pub(crate) ramp: EasedRamp,
+    /// The module slot this row addresses, parsed once from its id so the
+    /// audio thread never parses id strings.
+    slot_address: Option<ModuleSlotAddress>,
     slot_kind: Option<f32>,
     slot_filter_type: Option<f32>,
     /// True while the smoother is settled AND its target equals the snapshot
@@ -1913,6 +2014,7 @@ impl ControlSmoother {
         Self {
             spec,
             ramp: EasedRamp::settled(value),
+            slot_address: ModuleSlotAddress::parse(spec.id),
             slot_kind: None,
             slot_filter_type: None,
             idle: false,
@@ -1942,6 +2044,9 @@ fn filter_type_for_slot(slot: &ModuleSlot) -> Option<f32> {
 pub(crate) struct ControlSmoothers {
     pub(crate) smoothers: Vec<ControlSmoother>,
     active: Vec<usize>,
+    /// Rows the engine settles at a morph landing, resolved at construction.
+    kick_level: usize,
+    bass_level: usize,
 }
 
 impl ControlSmoothers {
@@ -1952,14 +2057,25 @@ impl ControlSmoothers {
             .filter(|spec| seen.insert(spec.id))
             .map(|spec| {
                 let mut smoother = ControlSmoother::for_spec(spec, (spec.get)(c));
-                let slot = module_slot_row(spec.id, c).map(|(slot, _)| slot);
+                let slot = smoother
+                    .slot_address
+                    .and_then(|address| address.resolve(c))
+                    .map(|(slot, _)| slot);
                 smoother.slot_kind = slot.map(|slot| slot.kind);
                 smoother.slot_filter_type = slot.and_then(filter_type_for_slot);
                 smoother
             })
             .collect();
+        let index_of = |id: &str| {
+            smoothers
+                .iter()
+                .position(|smoother: &ControlSmoother| smoother.spec.id == id)
+                .unwrap_or_else(|| panic!("{id} is a registered smoothed control"))
+        };
         Self {
             active: Vec::with_capacity(smoothers.len()),
+            kick_level: index_of("kick.level"),
+            bass_level: index_of("bass.level"),
             smoothers,
         }
     }
@@ -1969,14 +2085,15 @@ impl ControlSmoothers {
         self.active.clear();
         for (index, smoother) in self.smoothers.iter_mut().enumerate() {
             let snapshot_value = (smoother.spec.get)(c);
-            let slot = module_slot_row(smoother.spec.id, c).map(|(slot, _)| slot);
+            let row = smoother.slot_address.and_then(|address| address.resolve(c));
+            let slot = row.map(|(slot, _)| slot);
             let slot_kind = slot.map(|slot| slot.kind);
             let slot_filter_type = slot.and_then(filter_type_for_slot);
             if slot_kind != smoother.slot_kind
                 || slot_filter_type != smoother.slot_filter_type
                 || (snapshot_value != smoother.ramp.target
-                    && (!smoother.spec.contextual(c).kind.smooths_audio()
-                        || is_swing_amount_row(smoother.spec.id, c)))
+                    && (!smoother.spec.contextual_row(row).kind.smooths_audio()
+                        || is_swing_amount(row)))
             {
                 // Slot fields change meaning with the module. Timing and
                 // discrete values (including Swing) must arrive immediately;
@@ -1994,11 +2111,13 @@ impl ControlSmoothers {
         }
     }
 
-    fn settle(&mut self, id: &str, value: f32) {
-        if let Some(smoother) = self.smoothers.iter_mut().find(|s| s.spec.id == id) {
-            smoother.ramp = EasedRamp::settled(value);
-            smoother.idle = true;
-        }
+    /// Jump one row to `value` and write it to the working controls, so a
+    /// settle between session changes is heard on this very sample.
+    fn settle(&mut self, index: usize, value: f32, working: &mut FluidControls) {
+        let smoother = &mut self.smoothers[index];
+        smoother.ramp = EasedRamp::settled(value);
+        smoother.idle = true;
+        (smoother.spec.set)(working, value);
     }
 
     pub(crate) fn apply(&mut self, next: &mut FluidControls) {
@@ -2634,7 +2753,7 @@ impl MasterBus {
 }
 
 #[cfg(test)]
-mod section_tests {
+mod state_tests {
     use super::*;
 
     const RATE: f32 = 8000.0;
@@ -2663,7 +2782,7 @@ mod section_tests {
     fn queue(session: &LiveSession, index: usize, destination: &SongState) {
         let snapshot = Arc::new(LiveSessionSnapshot::from_song(destination));
         session.update(|s| {
-            s.pending_section = Some(PendingSection {
+            s.pending_state = Some(PendingState {
                 index,
                 snapshot: snapshot.clone(),
             })
@@ -2680,18 +2799,18 @@ mod section_tests {
         }
     }
 
-    /// Plays until a section lands and returns the beat the landing sample
+    /// Plays until a state lands and returns the beat the landing sample
     /// started on, i.e. the beat the old song had reached.
     fn play_to_landing(engine: &mut FluidEngine, session: &LiveSession) -> f64 {
         for _ in 0..400_000 {
             let before = engine.tempo.beat;
-            let generation = session.load().section_revision;
+            let generation = session.load().state_revision;
             engine.next_stereo();
-            if session.load().section_revision != generation {
+            if session.load().state_revision != generation {
                 return before;
             }
         }
-        panic!("the queued section never landed");
+        panic!("the queued state never landed");
     }
 
     fn assert_on_wrap(landed_at: f64, wrap: f64, engine: &FluidEngine) {
@@ -2703,7 +2822,7 @@ mod section_tests {
     }
 
     #[test]
-    fn a_queued_section_lands_exactly_on_the_phrase_wrap_and_starts_at_beat_zero() {
+    fn a_queued_state_lands_exactly_on_the_phrase_wrap_and_starts_at_beat_zero() {
         let (session, mut engine) = engine_for(&short_song(120.0));
         let destination = short_song(90.0);
         play_until_beat(&mut engine, 3.0);
@@ -2712,16 +2831,54 @@ mod section_tests {
         // phrase wraps at 8.
         let landed_at = play_to_landing(&mut engine, &session);
         assert_on_wrap(landed_at, 8.0, &engine);
-        assert_eq!(session.load().current_section, Some(1));
+        assert_eq!(session.load().current_state, Some(1));
         assert!(engine.tempo.beat < 0.01, "destination starts at beat zero");
         assert_eq!(session.load().controls.master.bpm, 90.0);
-        assert!(session.load().pending_section.is_none());
+        assert!(session.load().pending_state.is_none());
         // The destination's own phrase is what the next queue waits for.
         play_until_beat(&mut engine, 1.0);
         queue(&session, 0, &short_song(120.0));
         let again = play_to_landing(&mut engine, &session);
         assert_on_wrap(again, 8.0, &engine);
-        assert_eq!(session.load().previous_section, Some(1));
+        assert_eq!(session.load().previous_state, Some(1));
+    }
+
+    /// A hold across a landing must not loop the song swap: the cut is hidden
+    /// by the engine's fade only once, so a loop that carried it would click
+    /// on every repeat. Worst jump is compared with the same landing dry.
+    #[test]
+    fn beat_repeat_held_across_a_state_landing_adds_no_click() {
+        let worst_jump = |hold: bool, hold_at: f64| {
+            let (session, mut engine) = engine_for(&short_song(120.0));
+            engine.reseed(5);
+            play_until_beat(&mut engine, hold_at);
+            if hold {
+                let now = session.audio_seconds();
+                session.update(|s| s.gestures.press(GestureKind::BeatRepeat, now));
+            }
+            queue(&session, 1, &short_song(90.0));
+            let landed_at = play_to_landing(&mut engine, &session);
+            assert!(landed_at > 7.9, "landed at {landed_at}");
+            let mut previous = engine.next_stereo();
+            let mut worst = 0.0_f32;
+            // Past the landing fade, across several repeats of the new song.
+            for frame in 0..RATE as usize * 8 {
+                let next = engine.next_stereo();
+                if frame > (RATE * 0.05) as usize {
+                    worst = worst.max((next.0 - previous.0).abs());
+                }
+                previous = next;
+            }
+            worst
+        };
+        for hold_at in [2.5, 7.2] {
+            let dry = worst_jump(false, hold_at);
+            let held = worst_jump(true, hold_at);
+            assert!(
+                held < dry * 2.0 + 0.01,
+                "hold from beat {hold_at}: dry worst {dry}, held worst {held}"
+            );
+        }
     }
 
     #[test]
@@ -2745,17 +2902,17 @@ mod section_tests {
         play_until_beat(&mut engine, 1.0);
         queue(&session, 1, &short_song(100.0));
         play_until_beat(&mut engine, 6.0);
-        session.update(|s| s.pending_section = None);
+        session.update(|s| s.pending_state = None);
         play_until_beat(&mut engine, 9.0);
-        assert_eq!(session.load().current_section, None);
-        assert!(engine.section_gain > 0.99, "cancel recovers the fade");
+        assert_eq!(session.load().current_state, None);
+        assert!(engine.state_gain > 0.99, "cancel recovers the fade");
         // A replacement queued before the wrap lands once, at that wrap.
         queue(&session, 2, &short_song(100.0));
         play_until_beat(&mut engine, 12.0);
         queue(&session, 3, &short_song(80.0));
         let landed_at = play_to_landing(&mut engine, &session);
         assert_on_wrap(landed_at, 16.0, &engine);
-        assert_eq!(session.load().current_section, Some(3));
+        assert_eq!(session.load().current_state, Some(3));
         assert_eq!(session.load().controls.master.bpm, 80.0);
     }
 
@@ -2773,7 +2930,7 @@ mod section_tests {
         queue(&session, 1, &short_song(90.0));
         assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
         // The fade stays continuous even with no room to ramp.
-        assert!(engine.section_gain.is_finite());
+        assert!(engine.state_gain.is_finite());
     }
 
     /// A queue the engine sees by the sample that crosses the wrap belongs to
@@ -2794,7 +2951,7 @@ mod section_tests {
             engine.next_stereo();
         }
         engine.next_stereo(); // the crossing sample, nothing queued
-        assert_eq!(session.load().current_section, None);
+        assert_eq!(session.load().current_state, None);
         queue(&session, 1, &short_song(90.0));
         assert_on_wrap(play_to_landing(&mut engine, &session), 16.0, &engine);
     }
@@ -2859,8 +3016,8 @@ mod section_tests {
         for _ in 0..20_000 {
             engine.next_stereo();
         }
-        assert!(session.load().pending_section.is_some());
-        assert_eq!(session.load().current_section, None);
+        assert!(session.load().pending_state.is_some());
+        assert_eq!(session.load().current_state, None);
         effects.start_transport();
         // Restart is beat zero of a fresh phrase: the first phrase end after
         // it is a whole phrase away, where the bar rule's first new bar was
@@ -2885,7 +3042,7 @@ mod section_tests {
     }
 
     #[test]
-    fn the_published_phrase_end_is_the_same_beat_the_section_lands_on() {
+    fn the_published_phrase_end_is_the_same_beat_the_state_lands_on() {
         let (session, mut engine) = engine_for(&short_song(120.0));
         assert_eq!(session.audio_phrase_end(), None);
         play_until_beat(&mut engine, 1.0);
@@ -2939,20 +3096,20 @@ mod section_tests {
         queue(&session, 0, &short_song(120.0));
         for _ in 0..1000 {
             engine.next_stereo();
-            if engine.section_gain < 0.7 {
+            if engine.state_gain < 0.7 {
                 break;
             }
         }
-        assert!(engine.section_gain < 0.7);
-        session.update(|s| s.pending_section = None);
-        let mut previous = engine.section_gain;
+        assert!(engine.state_gain < 0.7);
+        session.update(|s| s.pending_state = None);
+        let mut previous = engine.state_gain;
         for _ in 0..400 {
             engine.next_stereo();
-            assert!((engine.section_gain - previous).abs() <= 0.026);
-            previous = engine.section_gain;
+            assert!((engine.state_gain - previous).abs() <= 0.026);
+            previous = engine.state_gain;
         }
-        assert!(engine.section_gain > 0.99);
-        assert_eq!(session.load().current_section, None);
+        assert!(engine.state_gain > 0.99);
+        assert_eq!(session.load().current_state, None);
     }
 }
 

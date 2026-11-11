@@ -41,7 +41,20 @@
   layers, each showing its level and opening that layer on Enter; Master's
   own controls follow. Tab reaches it after Lead, and Esc from a layer's
   root returns to it on that layer's row.
-- **Section leader:** a pending `'` or `"` that waits for one digit `1`-`9` naming a section slot. `'` queues the section (a second `'` queues the previous one) and `"` stores the current song there, replacing any stored one. It opens only from browsing, acts on key presses, and leaves physical holds running.
+- **State leader:** a pending `'` or `"` that waits for one digit `1`-`9` naming a stored-state slot. `'` queues that state (a second `'` queues the previous one) and `"` stores the current song there, replacing any stored one. It opens only from browsing, acts on key presses, and leaves physical holds running.
+- **State (stored state):** one numbered slot, 1-9, in the state bank. It
+  holds a whole song snapshot (controls and automation) that the performer
+  stored from the live song and recalls with the State leader or `/queue state
+  N`. Stored states live only in the `--set` file and are never in a song
+  code. The word "state" alone means this in the UI, the palette, and the
+  performance docs; say "stored state" where it could be misread.
+- **Auto state:** one of the built-in song endpoints (`AUTO_STATES`) that
+  `nooise auto` morphs between, also reachable as built-in song numbers. It
+  is authored in the source, never stored in the bank, and unrelated to the
+  1-9 slots. Both a stored state and an auto state are a `SongState` value in
+  code, which only means "a complete snapshot". The bank is `StateBank` and
+  its recall types are `State*`; the morph endpoints are `AUTO_STATES`.
+  "Section" is retired for both.
 - **Layer:** one voice's page (Pads, Perc, Bass, Kick, Tonal, Clap, Arp,
   Lead), entered from the hub. It remembers its row for the session.
 - **Breadcrumb:** the line naming the path from the hub to the open page,
@@ -69,7 +82,7 @@
 - **Chord window:** the part of a progression that loops: Chord Count chords
   starting at Chord Offset, wrapping past the eighth. Count 4, Offset 4 plays
   chords 5–8.
-- **Phrase:** one run of the chord window at one Chord Length. A queued section lands where the phrase ends, when the window wraps to its first chord. Manual
+- **Phrase:** one run of the chord window at one Chord Length. A queued state lands where the phrase ends, when the window wraps to its first chord. Manual
   window/length edits wait for the sounding chord to end, then preserve its
   successor where possible; selecting another progression starts at its first
   chord. An auto morph keeps the outgoing harmony through whole phrases
@@ -83,7 +96,7 @@
   progression.
 - **Morph leg:** an outgoing song's hold followed by its crossing into the
   next song. `--bars` requests an approximate total length. Hold and crossing
-  each round to whole outgoing phrases, at least one phrase per section.
+  each round to whole outgoing phrases, at least one phrase each.
   Progression, chord length/window, and Swing change on the landing; Kick
   and Bass return at their destination levels.
 - **Tempo bridge:** a transition tempo near the outgoing BPM that is half or

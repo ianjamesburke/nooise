@@ -517,7 +517,13 @@ impl ControlSpec {
     /// decode crosses this seam, so detail rendering cannot disagree with the
     /// value semantics used by the engine.
     pub(crate) fn contextual(&self, c: &FluidControls) -> Self {
-        let Some((slot, field)) = module_slot_row(self.id, c) else {
+        self.contextual_row(module_slot_row(self.id, c))
+    }
+
+    /// `contextual` for a caller that already resolved this row's slot,
+    /// through a `ModuleSlotAddress` parsed once off the audio thread.
+    pub(crate) fn contextual_row(&self, row: Option<(&ModuleSlot, ModuleSlotField)>) -> Self {
+        let Some((slot, field)) = row else {
             return *self;
         };
         let Some(kind) = slot.kind() else {
@@ -881,8 +887,13 @@ pub(crate) fn normalize_swing_input(value: f32) -> f32 {
 /// the one `SingleAmount` family whose amount reads on the 50-75% scale
 /// instead of the generic 0-100%.
 pub(crate) fn is_swing_amount_row(id: &str, c: &FluidControls) -> bool {
+    is_swing_amount(module_slot_row(id, c))
+}
+
+/// Whether a resolved slot row is a loaded Swing module's Amount.
+pub(crate) fn is_swing_amount(row: Option<(&ModuleSlot, ModuleSlotField)>) -> bool {
     matches!(
-        module_slot_row(id, c),
+        row,
         Some((slot, ModuleSlotField::Amount)) if slot.kind().is_some_and(|kind| kind.id == "swing")
     )
 }
@@ -3617,9 +3628,32 @@ pub(crate) fn module_slot_row<'a>(
     id: &str,
     c: &'a FluidControls,
 ) -> Option<(&'a ModuleSlot, ModuleSlotField)> {
-    let (layer, index, field) = parse_module_slot_id(id)?;
-    let slots = c.modules.for_tab(module_layer_tab(layer)?)?;
-    slots.get(index).map(|slot| (slot, field))
+    ModuleSlotAddress::parse(id)?.resolve(c)
+}
+
+/// A slot-row id parsed once: which layer chain, slot, and field it names.
+/// Audio-rate callers hold this instead of re-parsing the id string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ModuleSlotAddress {
+    tab: Tab,
+    index: usize,
+    field: ModuleSlotField,
+}
+
+impl ModuleSlotAddress {
+    pub(crate) fn parse(id: &str) -> Option<Self> {
+        let (layer, index, field) = parse_module_slot_id(id)?;
+        Some(Self {
+            tab: module_layer_tab(layer)?,
+            index,
+            field,
+        })
+    }
+
+    pub(crate) fn resolve(self, c: &FluidControls) -> Option<(&ModuleSlot, ModuleSlotField)> {
+        let slots = c.modules.for_tab(self.tab)?;
+        slots.get(self.index).map(|slot| (slot, self.field))
+    }
 }
 
 /// The tab whose module chain a slot-row id prefix (`pad` in

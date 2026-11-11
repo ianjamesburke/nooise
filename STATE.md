@@ -27,13 +27,13 @@ Updated: 2026-11-06
   round-trips explicitly and stays under 200 characters with every gesture on.
 - The `b` hold is Beat Repeat: one quarter note of live Master, captured on the
   grid and looped in time. Loop length, grid start, seam, release and
-  section-hold tests pass. Its musical feel still needs audition.
+  state-hold tests pass. Its musical feel still needs audition.
 - Automated verification: 995 tests passed, 9 ignored; strict all-target Clippy,
   formatting, build, and diff checks passed. The unchanged golden DSP fixture
   explicitly raises Perc to its prior level, retaining its existing checksum.
 - Release headroom probe: all 21 built-in songs and 38 fresh progressions, 354
   gesture renders plus dry references, zero clamp hits.
-- Muted real-app PTY smoke displayed Clap Rate 0.25, stored/reopened A/B sections,
+- Muted real-app PTY smoke displayed Clap Rate 0.25, stored/reopened A/B states,
   exercised the `b` hold and release, and exited cleanly twice. Evidence lives under
   `target/playing-feedback/`; no listening or physical-keyboard acceptance claimed.
 - The show plan records proposed independent Pad articulation rhythm and three
@@ -46,11 +46,11 @@ Updated: 2026-11-06
 
 - Implementation completed in this worktree on top of `7ba8a96`; the older `8573732` candidate was selectively ported, preserving subsequent v3 and show work.
 - User confirmed v3 Slur remains: chord steps advance their own harmony without restarting the swell. Literal chord Tie in the original stint is superseded; Lead and Tonal retain literal note ties.
-- Shared sixteen-step windows; Pad Rate reaches 0.125 beats. Lead and every Tonal character sustain through the complete final Tie and loop wrap. Tonal evolution preserves rests/ties, and stop, sequence edits, and section restoration release outgoing holds. Chord rests suppress new chord-following triggers; Scale remains playable.
+- Shared sixteen-step windows; Pad Rate reaches 0.125 beats. Lead and every Tonal character sustain through the complete final Tie and loop wrap. Tonal evolution preserves rests/ties, and stop, sequence edits, and state restoration release outgoing holds. Chord rests suppress new chord-following triggers; Scale remains playable.
 - All 21 built-in songs re-encoded through the current encoder at range epoch 15. Older modulation on the expanded Pad Rate dial is refused as StaleRange.
-- Verification: 991 Rust tests passed, 9 ignored; 6 Python authoring tests passed; format, strict all-target Clippy, build, and diff checks passed. New tests cover short-decay ties, loop wrap, initial source-less ties, evolution, follower rests, and section restoration.
+- Verification: 991 Rust tests passed, 9 ignored; 6 Python authoring tests passed; format, strict all-target Clippy, build, and diff checks passed. New tests cover short-decay ties, loop wrap, initial source-less ties, evolution, follower rests, and state restoration.
 - `src/AGENTS.md` updated for the shared sequence primitive, timing, sustain and current Slur contract. Root and product DOX documents and child indexes remain unchanged because ownership and workflow did not change.
-- Muted real-app PTY smoke: the Rate row displayed 0.125 beats after keyboard reset; A/B sections stored, recalled, reopened, and both app launches exited 0. Evidence: `target/stint-0007/live-smoke.json` and `.ansi`. This does not establish listening or physical-keyboard acceptance.
+- Muted real-app PTY smoke: the Rate row displayed 0.125 beats after keyboard reset; A/B states stored, recalled, reopened, and both app launches exited 0. Evidence: `target/stint-0007/live-smoke.json` and `.ansi`. This does not establish listening or physical-keyboard acceptance.
 - Hands-on listening remains pending. No PR, merge, release, or publication; run `cargo run` here to audition.
 
 ## Previous show checkpoint
@@ -69,7 +69,7 @@ Updated: 2026-11-06
 - Hold `b` or use `/repeat` for a quarter-note beat repeat of the live mix.
 - `VAMP` and `VAMP ENDING` appear beside the chord.
 - Tap `q` for a saved Kick+Bass latch; hold for a temporary gate. Individual mutes remain independent.
-- Nine numbered sections (1-9): `"` then a digit stores (overwriting), `'` then a digit queues for the end of the phrase (the header counts down the bars; the queued digit again cancels, `''` queues the previous section), all also reachable through `/`; `--set PATH` persistence. The key header shows the current and queued sections. Recall retains performed holds, restores the destination snapshot, and lands at its authored tempo and beat zero.
+- Nine numbered states (1-9): `"` then a digit stores (overwriting), `'` then a digit queues for the end of the phrase (the header counts down the bars; the queued digit again cancels, `''` queues the previous state), all also reachable through `/`; `--set PATH` persistence. The key header shows the current and queued states. Recall retains performed holds, restores the destination snapshot, and lands at its authored tempo and beat zero.
 - `/slapback` sets Delay Amount to 40%, both synchronized times to 0.25 beats, and Feedback to 0%. It also reapplies these values to an existing Delay.
 
 The [performance guide](docs/PERFORMANCE.md) owns the controls and terminal-capability contracts.
@@ -83,10 +83,10 @@ Microphone work stays separate. The [October gate](docs/proposals/2026-10-05-sta
 - Final build, format, strict all-target Clippy, and diff checks: PASS.
 - Full final suite: 981 passed, 0 failed, 9 ignored. Baseline: 955 passed, 0 failed, 8 ignored.
 - Production keyboard/session/audio coverage: A → B → C → A, queue cancel/replace, incoming tempos, bank reopen, invalid code refusal, saved Tonal evolution and module Motion, physical holds across recall, and cancellation during the transition fade.
-- Populated render inspection at 46×11 and 80×24: current/queued sections, Vamp, q latch and the `b` hold remain visible together. `target/show-checkpoint/combined-frames.txt` records the combined frame.
+- Populated render inspection at 46×11 and 80×24: current/queued states, Vamp, q latch and the `b` hold remain visible together. `target/show-checkpoint/combined-frames.txt` records the combined frame.
 - Actual app/PTY smoke with Master at zero: stored A/B, recalled them, used `/slapback` and the `b` hold command, quit, reopened the bank and recalled again. Both launches exited 0. Evidence: `target/show-checkpoint/live-smoke.json` and `.ansi`. This was not listening or physical keyboard acceptance.
 - Two final seed-21, 30-second renders match SHA-256 `9da9d0579325c538c1b8779c637eb4f4c75454d84bd4beab67c4c091cab4280b`. Files: `target/show-checkpoint/after.wav` and `after-repeat.wav`.
-- Broad DSP probe after sound/gesture integration: 59 built-in songs/fresh progressions, 354 wet gesture cases, zero clamp hits; highest dry peak 0.341 and wet peak 0.335. This diagnostic preceded section/preset integration. The final full suite reran the populated-hold combined loud-song headroom gate. Full table: `target/show-checkpoint/all-song-levels.log`.
+- Broad DSP probe after sound/gesture integration: 59 built-in songs/fresh progressions, 354 wet gesture cases, zero clamp hits; highest dry peak 0.341 and wet peak 0.335. This diagnostic preceded state/preset integration. The final full suite reran the populated-hold combined loud-song headroom gate. Full table: `target/show-checkpoint/all-song-levels.log`.
 - Final checks: `target/show-checkpoint/final-gates.log`. Baseline binary/render and candidate binary are retained in the same local artifact directory.
 
 ## Listening and performance gate
@@ -99,11 +99,11 @@ Compare `target/show-checkpoint/reverb-before.wav` and `reverb-after.wav`, then
 listen on actual show material. Captured audio is not part of saved songs.
 
 1. Launch with `cargo run -- --set show-rehearsal.set`. Prepare contrasting
-   snapshots with `"1`, `"2`, `"3` (or `/store section 1`). Storing into an
+   snapshots with `"1`, `"2`, `"3` (or `/store state 1`). Storing into an
    occupied slot replaces it at once, with no prompt.
 2. Record 15–20 uninterrupted minutes. Play 1 → 2 → 3 → 1 with `'1`, `'2`, `'3`
-   or `/queue next section`; cancel one queued destination with the same digit, use
-   `''` to go back, and recover from one wrong section. Include a different-tempo destination.
+   or `/queue next state`; cancel one queued destination with the same digit, use
+   `''` to go back, and recover from one wrong state. Include a different-tempo destination.
 3. Play q tap/hold, Vamp ending, Beat Repeat release, Offbeat and Slapback. Listen for
    useful balance, clicks, dropouts and a clean ending on the intended audio route.
    Physical holds need a terminal reporting key releases; fallback palette paths
@@ -112,6 +112,6 @@ listen on actual show material. Captured audio is not part of saved songs.
    the three largest interruptions and use them to choose the next batch.
 
 The set-duration rig rehearsal, subjective reverb choice, physical key-release
-behavior and real-device dropout acceptance remain open. The section publication
+behavior and real-device dropout acceptance remain open. The state publication
 uses a bounded CAS attempt but still clones the prepared snapshot on audio;
 no worst-case populated landing-latency benchmark has been claimed.

@@ -70,7 +70,7 @@ automation editing, palette use, and future performance grammar directly.
 
 1. Exactly one `InteractionMode` variant owns keyboard input at a time.
    Browsing, numeric entry, palette, automation editing, the Jump leader,
-   the section leaders, and Lead play cannot be simultaneously active. Temporary effect gestures belong to
+   the state leaders, and Lead play cannot be simultaneously active. Temporary effect gestures belong to
    Browsing and do not take over navigation. Their audio returns can continue
    after another mode takes keyboard ownership.
 2. Mode-specific data is stored inside its owning enum variant. Illegal
@@ -165,7 +165,7 @@ automation editing, palette use, and future performance grammar directly.
 22. Gestures play over the Master bus; Repeat cannot retrigger a held one.
     Matching key Release works after modifier changes. Modal entry releases
     gestures and quarantines still-down keys until their physical release.
-    The section leaders are the one exception: `PerformanceMode::preserves_holds`
+    The state leaders are the one exception: `PerformanceMode::preserves_holds`
     names the owners that leave physical holds running, so opening, finishing,
     or cancelling `'` or `"` keeps a hold and its key-up releases it as in Browsing.
     Reported focus loss and shutdown also release held gestures.
